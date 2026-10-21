@@ -1261,8 +1261,10 @@ host: use `email`/`push`, or answer with `roomlerd consent`.
 ⚠️ **macOS native requires tokio off the main thread.** AppKit delivers events
 on the main run loop and `#[tokio::main]` parks it, so under
 `viewer-indicator-macos` the runtime moves to a worker and `main` hands the
-main thread to `NSApp`. That is why the feature is compiled by CI but not yet
-in the macOS release build.
+main thread to `NSApp`. That is why the feature stayed out of the macOS release
+build until FR-97 P2b ran the real-Mac procedure: a candidate on a Mac where the
+daemon started and a prompt both appeared and answered. Approve connected the
+viewer, and Deny declined it. The companion stays the fallback.
 ⚠️ **The macOS panel appears in the captured stream.** `NSWindowSharingNone` is
 ignored by `CGDisplayStream`, which is what our capture uses. ⚠️ Since FR-27 the marker is written by **all three**
 consent-bearing subsystems — remote control, Fleet-RPC `exec` and Roomler SSH —

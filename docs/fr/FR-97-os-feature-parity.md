@@ -219,7 +219,7 @@ declared routes; the in-daemon overlay ACL; key rotation; ephemeral nodes; the s
 | # | Feature | Windows | Linux | macOS | Where it stops | Phase / owner |
 |---|---|---|---|---|---|---|
 | R1 | System audio in a session | ✅ WASAPI loopback | ❌ **the default microphone, always**: cpal lists only ALSA devices, so the `.monitor` pick never matched (measured, §8). Since P3c-1 a named device only, else no track and the reason (`audio_source.rs:253`) | ❌ | macOS: no capture backend; since P0c no `opus` either (`encode/caps.rs:700`) ✔. Linux: nothing captures the session's monitor (P3c-2) | P0c, P2a, P3c |
-| R2 | Native consent panel | ✅ | ✅ X11 · ⛔ Wayland → companion | ❌ | Built (`indicator/mac.rs`), not in the release set (`release-agent.yml:2564-2580`) | P2b (D3) |
+| R2 | Native consent panel | ✅ | ✅ X11 · ⛔ Wayland → companion | 🟡 P2b: in the release set (`.github/workflows/release-agent.yml:2581`), proven on a Mac (§8) | Was: built (`indicator/mac.rs`), not in the release set. The companion stays the fallback | P2b (D3) |
 | R3 | Remote Apps | ✅ | ✅ X11 · 🟡 Wayland: Xwayland windows (FR-56) | ❌ | `Unavailable::Platform` (`apps/mod.rs:347`); no `apps/macos.rs` | P2c |
 | R4 | Live cursor shape | ✅ | ✅ X11 since P3a (XFixes), and the DRM arm's hardware cursor (FR-93 P3c, 0.4.134); a per-user Wayland compositor draws it into the frames | ❌ | `capture/cursor.rs:90`; an XFixes decoder already exists for recordings (`capture/pointer.rs:187-230`). *P8-2:* the inventory missed the DRM arm (`agents/roomlerd/src/capture/cursor.rs:128-152`) | P3a, P2d |
 | R5 | "Host is locked" consent hint | ✅ | ✅ since P3b: advisory, from logind's `LockedHint`, and input passes (`lock_state.rs:331`) | ❌ | `LockState` is always `Unlocked` off Windows (`lock_state.rs:290-311`), on purpose for Linux: the hint never becomes one | P2d, P3b |
@@ -615,10 +615,19 @@ test of the SIGKILL property itself.
   same stream feeds FR-85's recorder (R12). Until it ships, P0c stops advertising `opus` on macOS.
 - **D2, video through SCK as well.** It would bring dirty rects (R13), keep the banner out of the stream (R14), and
   cursor metadata (R4), but it replaces a backend that works. Decide on a measured A/B of latency and CPU.
-- **P2b, the native consent panel.** Follow the procedure written at `release-agent.yml:2564-2580`: a dispatch
+- **P2b, the native consent panel.** Follow the procedure written at `release-agent.yml:2564-2578`: a dispatch
   build on a real Mac where the daemon starts and a prompt appears and answers, then add `viewer-indicator-macos` to
   the release set. It moves tokio off the main thread on every Mac, and a Mac that fails to start cannot pull its own
   fix, so it goes to one Mac, then the field Macs, then a release.
+  *Built and proven on one Mac (2026-10-21, §8).* A candidate with the feature in the release set was installed on a
+  tart Mac with both halves, the per-user half asking for consent, and a viewer was connected from outside:
+  - both halves started;
+  - the worker chose the native surface (`native=true`; the released 0.4.149 chose the companion);
+  - the panel came up within 2 s;
+  - Approve connected the viewer and Deny declined it.
+
+  The click came from a posted mouse event at the button's place in the panel's own layout. System Events does not
+  list a borderless window at the screen-saver level, so a UI-scripted click cannot reach it.
 - **P2c, Remote Apps without AppKit.** List with `CGWindowListCopyWindowInfo` (titles need the Screen Recording grant
   already held), focus with the Accessibility API (`AXUIElement` raise and `kAXFrontmostAttribute`), launch
   allowlisted apps through LaunchServices (`open -b <bundle id>`). It runs in the GUI worker and crosses FR-43's
@@ -1111,7 +1120,7 @@ model on Windows, so the three agree on what the mode means.
 | **P1c** | macOS DNS: MagicDNS + the exit catch-all | `ROOMLERD_MACOS_DNS_STEER=0` | vmtest | M |
 | **P1d** | A macOS per-org utun run once; the stale warning; the port holder. *In review:* run on the released 0.4.143 (§8); the warning removed; the port holder through `lsof` | — | a tart Mac, two orgs | S |
 | **P2a** | macOS system audio (SCK) | `ROOMLERD_SCK_AUDIO=0` | a field Mac | M–L |
-| **P2b** | macOS native consent panel (D3) | the release feature set | one Mac, then the field Macs | S–M |
+| **P2b** | macOS native consent panel (D3): `viewer-indicator-macos` in the release feature set (built; proven on a tart Mac, red on 0.4.149; the field Mac and a release follow) | the release feature set | one Mac, then the field Macs | S–M |
 | **P2c** | macOS Remote Apps | `[apps] enabled` | a field Mac | M–L |
 | **P2d** | macOS lock hint, layout, display-match | per-verb caps | a field Mac | M |
 | **P2e** | macOS clipboard images + RTF | `ROOMLERD_CLIPBOARD_NATIVE=0` | a field Mac | S–M |
@@ -1202,6 +1211,8 @@ one depends on it.
   microphone.
 - [ ] **AC8 (P2b–P2e):** on a Mac, the native consent panel answers; Remote Apps lists, focuses and launches; the
   locked-host hint arrives; layout switching and display-match work and restore; copied images reach the viewer.
+  *(The first clause is field-verified on P2b's candidate on a tart Mac, §8: the companion took the prompt on 0.4.149;
+  on the candidate the native panel came up, Approve connected the viewer and Deny declined it.)*
 - [x] **AC9 (P3a–P3f):** on the Linux lab, the cursor shape follows; the locked hint arrives; a session holds sleep
   off; session audio is never a microphone; received files land as the seat user; layout, display-match and image
   sync work on X11; uinput types a German and a French string.
@@ -1314,7 +1325,7 @@ one depends on it.
 |---|---|---|
 | **D1** | Serving where no kernel NAT exists (macOS, Windows Home, Windows v6) | **Decided (per recommendation, 2026-10-21):** pf on macOS (kernel speed, the same model as Linux and Windows), built as P1b and field-verified (AC5). No userspace egress is built: P4e stays parked until P0d's counts show Windows Home exits are wanted |
 | **D2** | macOS capture: SCK for audio only, or video too | Audio first (P2a); move video only on a measured win in latency or CPU |
-| **D3** | Ship `viewer-indicator-macos` (tokio off the main thread on every Mac) | Yes, through the written real-Mac procedure: one Mac, then the field, then a release |
+| **D3** | Ship `viewer-indicator-macos` (tokio off the main thread on every Mac) | **Decided (per recommendation, 2026-10-21):** yes, through the written real-Mac procedure: one Mac (done, a tart Mac, §8), then the field, then a release |
 | **D4** | One umbrella FR, or a family | One umbrella that owns the matrix, P0 and the docs; L-sized phases split into their own FRs when they start |
 | **D5** | Setup-wizard daemon roles on Linux and macOS | Stop offering the wizard for agents now (P0c); build the macOS role only if onboarding data shows people reach for it |
 | **D6** | Intel Macs; Windows ARM64 | Decide on P0d's counts. Apple has said macOS 26 is the last release for Intel Macs, which argues against A1 unless a customer needs it |
@@ -1498,3 +1509,5 @@ one depends on it.
 | 2026-10-21 | released 0.4.149 | the tart Mac of the 0.4.149 release check (its own row in this log): both halves, the root half with the overlay | 🔴 **P2g (AC19), macOS.** As the console user (what the companion asks), `roomler devices --json` answered `overlay: no_node` with 1 item, the per-user half itself. As root, the root half answered `overlay: ok` with 8 items, the vmtest org's netmap. There was no `/var/run/roomler-person` |
 | 2026-10-21 | the box's 0.4.148 system install, then this phase's branch built natively on the box (`50d0d3e03`, the release's aarch64 feature line), swapped in by a unit drop-in and restored afterwards | the lab's Asahi box (Fedora Asahi Remix 42), a system install, the companion running as the desktop user | 🔴→🟢 **P2g (AC19), Linux.** As the desktop user, `roomler devices` was refused by the person socket (*"… run `sudo roomler …`"*), and that is what its companion's Devices page showed. On the branch it answered `overlay: ok` with 18 items, the same as root's own answer, while `peers` stayed refused |
 | 2026-10-21 | this phase's candidate: the `.pkg` from release-lane rehearsal 39595163043 on `298e55a0a` (`38d9c075…`; roomlerd `24e1c735…`) | a fresh throwaway tart Mac (vmtest-golden, macOS 15.7.7), both halves enrolled standard in the vmtest org (the root half with the overlay), `auto_update` off, the FR-43 supervisor on. Both rows were deleted and the VM destroyed afterwards | 🟢 **P2g (AC19), macOS.** `/var/run/roomler-person` is `root:daemon drwxr-xr-x`, and `501.sock` in it is `admin`'s, `srw-------`. As the console user, `roomler devices --json` answered `overlay: ok` with 8 items, the same set as root's. 🔴 **Its kill switch:** with `ROOMLERD_PERSON_SOCKET=0` in the root half's LaunchDaemon environment and a restart, the root half logged *person socket: off*, the socket was gone, and the console user's answer was `no_node` with 1 item again. 🔴 **P2h, on the same run:** as the console user, `roomler peers` was empty and `roomler status` had no overlay address, while root had 7 peers and `100.65.20.13` |
+| 2026-10-21 | released 0.4.149 (its `.pkg`, `f7f8d298…`) | a throwaway tart Mac (vmtest-golden, macOS 15.7.7), both halves enrolled standard in the vmtest org, the per-user half asking for consent (`auto_grant_session = false`), the FR-43 supervisor on. A Playwright viewer on mars (purestat aborted) connected to the per-user half through prod | 🔴 **P2b (AC8), the red.** The worker logged *consent prompt surface … native=false … have_surface=true*: the companion, running, took the prompt, and the worker had no window on screen |
+| 2026-10-21 | P2b's candidate: the `.pkg` from release-lane rehearsal 39602057824 on `806a9d17f` (`0d471e7a…`; roomlerd `d7b190ed…`), `viewer-indicator-macos` in the release feature set | the same set-up on a fresh clone; both rows deleted and the VM destroyed afterwards | 🟢 **P2b (AC8), one Mac.** Both halves started, and the worker ran the AppKit loop. **Approve:** the worker logged `native=true` 0.1 s after the viewer's Connect. Within 2 s the window server listed its 480×240 panel at the screen-saver level (1000). A posted click at the Approve button's place in the panel's layout closed it, and the worker logged *native consent panel decision allow=true*, then *outcome=Granted*. The viewer reached "connected" 7 s after its Connect and held 10 s. **Deny:** the same panel, the Deny button: *allow=false*, *outcome=Denied*, and the viewer showed "Someone at that device declined the request." 2.5 s after its Connect. A first attempt clicked through System Events and could not: it lists no window for a borderless panel at that level |
