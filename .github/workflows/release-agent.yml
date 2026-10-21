@@ -2561,8 +2561,9 @@ jobs:
         # `otool -L` recursively and copies whatever the binary actually
         # links, which is why adding a library here required no change there.
         #
-        # ⚠️ FR-27 — `viewer-indicator-macos` is deliberately NOT in this set
-        # yet, and turning it on is a decision, not a cleanup.
+        # ⚠️ FR-27 / FR-97 P2b — `viewer-indicator-macos`, the native consent
+        # panel, is in this set, and turning it on was a decision, not a
+        # cleanup.
         #
         # The feature does not merely add a window: it moves tokio OFF the main
         # thread in `main.rs`, because AppKit will not deliver a click to an
@@ -2571,15 +2572,13 @@ jobs:
         # owned by the root helper — a daemon that fails to start cannot pull
         # its own fix, so recovery is a manual reinstall per Mac.
         #
-        # It compiles in CI (`macOS overlay compile check` builds
-        # `--lib --bins --features viewer-indicator-macos`), so the code is not
-        # rotting. To enable: build a `workflow_dispatch` artifact with the
-        # feature, run it on a real Mac, confirm the daemon starts AND a prompt
-        # both appears and answers — then add it here. Until then macOS prompts
-        # go to the desktop companion, which works.
+        # So it went through the real-Mac procedure first: a `workflow_dispatch`
+        # artifact with the feature, on a real Mac, where the daemon started AND
+        # a prompt both appeared and answered (FR-97 P2b, §8). Taking it out
+        # again sends macOS prompts back to the desktop companion, which works.
         env:
           CMAKE_POLICY_VERSION_MINIMUM: "3.5"
-        run: cargo build -p roomlerd --release --features "full,hive,vp9-444,vp9-444-bindgen,overlay-l3,overlay-netstack,ssh-server,ffmpeg-encoder" --target aarch64-apple-darwin
+        run: cargo build -p roomlerd --release --features "full,hive,vp9-444,vp9-444-bindgen,overlay-l3,overlay-netstack,ssh-server,ffmpeg-encoder,viewer-indicator-macos" --target aarch64-apple-darwin
 
       # The `roomler` CLI. macOS shipped WITHOUT one until rc.454 — the pkg
       # payload was the .app and nothing else — so `roomler peers` was
