@@ -174,14 +174,18 @@ fn arrivals(from: Ipv4Addr, mut delivered: mpsc::UnboundedReceiver<Vec<u8>>, see
 }
 
 /// Sample the runtime's published view of its one peer every 100 ms and keep
-/// the transitions: which carrier each end believes it holds, and when.
+/// the transitions: which carrier each end believes it holds, whether an
+/// upgrade probe is in flight (`+probe`), and when.
 fn carrier_timeline(view: watch::Receiver<OverlayView>, log: Timeline, stop: Arc<AtomicBool>) {
     tokio::spawn(async move {
         let mut last = String::new();
         while !stop.load(Ordering::Relaxed) {
             let now = view.borrow().peers.first().map_or_else(
                 || "none".to_string(),
-                |p| format!("{:?}/{}", p.connection, p.relay_kind.as_deref().unwrap_or("-")),
+                |p| {
+                    let probing = if p.upgrading { "+probe" } else { "" };
+                    format!("{:?}/{}{probing}", p.connection, p.relay_kind.as_deref().unwrap_or("-"))
+                },
             );
             if now != last {
                 log.lock().unwrap().push((Instant::now(), now.clone()));

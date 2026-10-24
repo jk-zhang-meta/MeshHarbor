@@ -240,8 +240,27 @@ pub(crate) const UPWARD_PROBE_SPACING: Duration = Duration::from_secs(120);
 pub(crate) const FAST_RETURN_WINDOW: Duration = Duration::from_secs(60);
 /// F3 — the suppression half-life of a srflx/public failure inside the
 /// fast-return lane (eligibility re-crosses after exactly one half-life).
-/// LAN keeps the P8 fixed spacing — it never enters the lane's rule.
+/// LAN joins the lane's rule since F3b (below); `OVERLAY_FAST_RETURN_LAN=0`
+/// keeps it on the P8 fixed spacing.
 pub(crate) const FAST_RETURN_HALF_LIFE: Duration = Duration::from_secs(4);
+/// F3b — the LAN probe-spacing pin inside an open fast-return lane (P8's
+/// [`LAN_PROBE_SPACING`] outside it). F0 measured a LAN pair's return gated
+/// by the 60 s pin alone (20–60 s after the heal). P8's point is bilateral:
+/// each side's INIT opens its own stateful-firewall hole for the other's. One
+/// side probing more often can only land inside the other's open window more
+/// often, so a mixed fleet keeps its alignment, and the lane bounds the extra
+/// probes to [`FAST_RETURN_WINDOW`].
+pub(crate) const FAST_RETURN_LAN_SPACING: Duration = Duration::from_secs(5);
+
+/// The LAN probe-spacing pin for `p` at `now` (F3b): [`FAST_RETURN_LAN_SPACING`]
+/// inside an open fast-return lane unless `lan_off`, else [`LAN_PROBE_SPACING`].
+fn lan_spacing(p: &PeerPath, lan_off: bool, now: Instant) -> Duration {
+    if !lan_off && p.fast_return_until.is_some_and(|until| until > now) {
+        FAST_RETURN_LAN_SPACING
+    } else {
+        LAN_PROBE_SPACING
+    }
+}
 
 /// Q clamp: quality lives in [−Q_CLAMP, +Q_CLAMP].
 const Q_CLAMP: f64 = 100.0;
@@ -540,6 +559,9 @@ pub(crate) struct PathMonitor {
     /// F3 kill switch, set once by the runtime from
     /// `OVERLAY_FAST_RETURN=0`: no lane is ever armed (pre-F3 behaviour).
     fast_return_off: bool,
+    /// F3b kill switch (`OVERLAY_FAST_RETURN_LAN=0`): LAN keeps the P8 fixed
+    /// spacing and ordinary penalties even inside the lane.
+    fast_return_lan_off: bool,
 }
 
 impl PathMonitor {
@@ -551,6 +573,12 @@ impl PathMonitor {
         }
     }
 
+    /// F3b on or off: whether LAN joins the fast-return lane (`Default` = on).
+    pub(crate) fn with_fast_return_lan(mut self, enabled: bool) -> Self {
+        self.fast_return_lan_off = !enabled;
+        self
+    }
+
     // -- evidence events -----------------------------------------------------
 
     /// A direct-tier attempt FAILED (carrier death on that tier, or a probe
@@ -559,9 +587,10 @@ impl PathMonitor {
     /// table reads it at the same moment).
     fn book_failure(&mut self, peer: &ObjectId, tier: DirectTier, mbb: bool, now: Instant) {
         let Some(idx) = tier_idx(tier) else { return };
+        let lane_tier = matches!(tier, DirectTier::Public | DirectTier::Srflx)
+            || (tier == DirectTier::Lan && !self.fast_return_lan_off);
         let p = self.peers.entry(*peer).or_default();
-        let fast_lane = matches!(tier, DirectTier::Public | DirectTier::Srflx)
-            && p.fast_return_until.is_some_and(|until| until > now);
+        let fast_lane = lane_tier && p.fast_return_until.is_some_and(|until| until > now);
         let t = &mut p.tiers[idx];
         if fast_lane {
             // F3 — inside the lane a failed re-attempt is the outage still
@@ -1115,9 +1144,11 @@ impl PathMonitor {
             };
         }
 
-        let lan_spaced_out = state
-            .and_then(|p| p.last_lan_attempt)
-            .is_some_and(|t| now.saturating_duration_since(t) < LAN_PROBE_SPACING);
+        let lan_spaced_out = state.is_some_and(|p| {
+            p.last_lan_attempt.is_some_and(|t| {
+                now.saturating_duration_since(t) < lan_spacing(p, self.fast_return_lan_off, now)
+            })
+        });
 
         let mut best: Option<(DirectTier, f64)> = None;
         for tier in DIRECT_TIERS {
@@ -1200,9 +1231,9 @@ impl PathMonitor {
             return None;
         }
 
-        let lan_spaced_out = p
-            .last_lan_attempt
-            .is_some_and(|t| now.saturating_duration_since(t) < LAN_PROBE_SPACING);
+        let lan_spaced_out = p.last_lan_attempt.is_some_and(|t| {
+            now.saturating_duration_since(t) < lan_spacing(p, self.fast_return_lan_off, now)
+        });
         let voluntary_ok = p.hysteresis.voluntary_allowed(now);
         let cur_q = p.tiers[cur_idx].q.get();
 
@@ -1293,9 +1324,9 @@ impl PathMonitor {
         {
             return None;
         }
-        let lan_spaced_out = p
-            .last_lan_attempt
-            .is_some_and(|t| now.saturating_duration_since(t) < LAN_PROBE_SPACING);
+        let lan_spaced_out = p.last_lan_attempt.is_some_and(|t| {
+            now.saturating_duration_since(t) < lan_spacing(p, self.fast_return_lan_off, now)
+        });
 
         // First higher-precedence tier passing ALL gates (a penalized top
         // tier falls through to the next one — eligibility needs `&self`,
@@ -1713,8 +1744,26 @@ mod tests {
         assert_eq!(m.strikes(&a, DirectTier::Srflx), 1);
         assert!(!m.eligible(&a, DirectTier::Srflx, t1 + past_short));
 
-        // LAN under MBB keeps the P8 fixed spacing even inside the lane.
+        // F3b — LAN joins the lane: an in-lane expiry lapses after the short
+        // half-life with no strike, and the spacing pin drops to 5 s; once
+        // the lane lapses, P8's 60 s pin is back.
         let mut m = PathMonitor::default();
+        let t0 = Instant::now();
+        m.on_death(&a, DirectTier::Lan, DeathReason::RekeyUnanswered, true, t0);
+        let t1 = t0 + Duration::from_secs(12);
+        m.on_probe_started(&a, DirectTier::Lan, t0);
+        m.on_probe_result(&a, DirectTier::Lan, ProbeOutcome::Expired, true, t1);
+        assert!(m.eligible(&a, DirectTier::Lan, t1 + past_short));
+        assert_eq!(m.strikes(&a, DirectTier::Lan), 0);
+        let p = &m.peers[&a];
+        assert_eq!(lan_spacing(p, false, t1), FAST_RETURN_LAN_SPACING);
+        assert_eq!(lan_spacing(p, true, t1), LAN_PROBE_SPACING, "the F3b kill switch");
+        let lapsed = t0 + FAST_RETURN_WINDOW + Duration::from_secs(1);
+        assert_eq!(lan_spacing(p, false, lapsed), LAN_PROBE_SPACING);
+
+        // `OVERLAY_FAST_RETURN_LAN=0`: LAN keeps the P8 fixed spacing even
+        // inside the lane (the pre-F3b behaviour).
+        let mut m = PathMonitor::default().with_fast_return_lan(false);
         let t0 = Instant::now();
         m.on_death(&a, DirectTier::Lan, DeathReason::RekeyUnanswered, true, t0);
         let t1 = t0 + Duration::from_secs(12);
