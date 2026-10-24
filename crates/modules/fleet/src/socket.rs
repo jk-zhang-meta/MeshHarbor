@@ -33,6 +33,76 @@ use crate::FleetState;
 use crate::hub::DispatchCtx;
 use axum::{extract::WebSocketUpgrade, response::Response};
 use roomler_core::ws::upgrade::{MAX_WS_MESSAGE_BYTES, send_goodbye_and_close, tid_matches_claim};
+use roomler_core::{business_authority::AuthenticatedDevice, client_ip::ConnectionOrigin};
+
+/// Authority is stricter than the legacy management token-generation switch:
+/// a signed old credential must never be stamped as the current generation.
+fn authority_identity_current(
+    presented_generation: u32,
+    row_generation: u32,
+    expected_owner: ObjectId,
+    current_owner: ObjectId,
+) -> bool {
+    presented_generation == row_generation && expected_owner == current_owner
+}
+
+async fn observe_business_connection(
+    state: &FleetState,
+    tenant_id: ObjectId,
+    agent_id: ObjectId,
+    owner_user_id: ObjectId,
+    presented_generation: u32,
+    origin: &ConnectionOrigin,
+    connection_id: &str,
+) -> Option<AuthenticatedDevice> {
+    // Re-read after hello, not the upgrade's cached pre-read. The same shared
+    // authentication helper checks current device status and account admission.
+    let current = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        let (_, _, row) = crate::auth_agent::accepted_agent(
+            state,
+            &agent_id.to_hex(),
+            &tenant_id.to_hex(),
+            Some(presented_generation),
+        )
+        .await?;
+        if !authority_identity_current(
+            presented_generation,
+            row.token_gen,
+            owner_user_id,
+            row.owner_user_id,
+        ) {
+            return Err(roomler_core::ApiError::Unauthorized(
+                "Current device identity required for business evidence".into(),
+            ));
+        }
+        AuthenticatedDevice::from_agent(&row)
+    })
+    .await;
+    let device = match current {
+        Ok(Ok(device)) => device,
+        _ => {
+            warn!(%agent_id, "business identity unavailable; retaining management socket without authority");
+            return None;
+        }
+    };
+    if !matches!(
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            roomler_core::business_authority::record_connection_observation(
+                &state.core,
+                &device,
+                origin,
+                connection_id,
+            ),
+        )
+        .await,
+        Ok(Ok(_))
+    ) {
+        // Never log source addresses, headers or private record contents.
+        warn!(%agent_id, "business observation unavailable; no business authority inferred");
+    }
+    Some(device)
+}
 
 /// Handle a socket that authenticated as an agent.
 ///
@@ -48,6 +118,8 @@ pub async fn handle_agent_socket(
     // pre-S6 agent build); direction input when THIS agent originates
     // tunnel opens toward a foreign-homed target.
     dialed_tid: Option<String>,
+    connection_origin: ConnectionOrigin,
+    presented_generation: u32,
 ) {
     info!(%agent_id, %tenant_id, "remote-control agent WS connected");
     let conn_established_ms = bson::DateTime::now().timestamp_millis();
@@ -134,6 +206,16 @@ pub async fn handle_agent_socket(
     // as the connection that wrote its hello, so this connection's teardown
     // writes `Offline` only while no newer hello has replaced it.
     let conn_id = uuid::Uuid::new_v4().to_string();
+    let business_device = observe_business_connection(
+        &state,
+        tenant_id,
+        agent_id,
+        owner_user_id,
+        presented_generation,
+        &connection_origin,
+        &conn_id,
+    )
+    .await;
 
     // Persist: mark online, update hello fields on the Mongo row. Best-effort —
     // signaling still works if Mongo lags.
@@ -1081,6 +1163,17 @@ pub async fn handle_agent_socket(
     } else {
         debug!(%agent_id, "teardown skipped Offline+presence (newer connection owns the slot)");
     }
+    if let Some(device) = business_device.as_ref() {
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            roomler_core::business_authority::close_connection_observation(
+                &state.core,
+                device,
+                &conn_id,
+            ),
+        )
+        .await;
+    }
     info!(%agent_id, "remote-control agent WS disconnected");
 }
 
@@ -1410,6 +1503,24 @@ fn mesh_link_doc(l: &roomler_ai_remote_control::signaling::PeerLink) -> bson::Do
 mod tests {
     use super::*;
 
+    #[test]
+    fn authority_requires_actual_presented_generation_even_when_legacy_control_accepts() {
+        let owner = ObjectId::new();
+        assert!(authority_identity_current(7, 7, owner, owner));
+        assert!(!authority_identity_current(6, 7, owner, owner));
+        assert!(!authority_identity_current(8, 7, owner, owner));
+    }
+
+    #[test]
+    fn authority_does_not_relabel_an_old_owner_after_reassignment() {
+        assert!(!authority_identity_current(
+            7,
+            7,
+            ObjectId::new(),
+            ObjectId::new(),
+        ));
+    }
+
     /// Every numeric counter the agent reports must survive into the
     /// persisted document. This test exists because they did not: the
     /// hand-built doc dropped four wave-3 fields for several releases while
@@ -1488,6 +1599,7 @@ pub async fn ws_upgrade_agent(
     state: FleetState,
     token: String,
     tid: Option<String>,
+    connection_origin: ConnectionOrigin,
     ws: WebSocketUpgrade,
 ) -> Response {
     let claims = match state.auth.verify_agent_token(&token) {
@@ -1604,6 +1716,7 @@ pub async fn ws_upgrade_agent(
         }
     }
     let token_exp = claims.exp;
+    let presented_generation = claims.generation;
 
     ws.max_message_size(MAX_WS_MESSAGE_BYTES)
         .max_frame_size(MAX_WS_MESSAGE_BYTES)
@@ -1665,6 +1778,8 @@ pub async fn ws_upgrade_agent(
                 tenant_id,
                 agent.owner_user_id,
                 tid,
+                connection_origin,
+                presented_generation,
             )
             .await;
         })

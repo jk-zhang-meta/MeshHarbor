@@ -66,6 +66,7 @@ pub mod tunnel;
 pub mod turn_usage;
 pub mod routes {
     pub mod agent_ssh;
+    pub mod business_authority;
     pub mod overlay_block;
     pub mod overlay_key;
     pub mod overlay_policy;
@@ -576,6 +577,10 @@ impl Module for NetworkState {
         // module's rows only when it is mounted.
 
         Router::new()
+            .route(
+                "/admin/business-authority/{kind}/{tenant_id}/{device_id}",
+                get(routes::business_authority::get).put(routes::business_authority::approve),
+            )
             .route("/device-shares/{id}/ssh", get(shared_ssh::metadata))
             .route("/device-shares/{id}/ssh/ws", get(shared_ssh::connect))
             .nest("/tenant/{tenant_id}/agent", agent)
@@ -662,6 +667,15 @@ impl Module for NetworkState {
         }
 
         vec![
+            // Central-use approvals and observed source addresses are private
+            // security records, not ordinary Agent/TunnelClient JSON fields.
+            // Role approvals need no set here: their deterministic `_id` is the
+            // only key, and MongoDB rejects an empty createIndexes request.
+            IndexSet {
+                collection: roomler_core::business_authority::OBSERVATIONS_COLLECTION,
+                pre_ops: Vec::new(),
+                indexes: vec![index_ttl(bson::doc! { "expires_at": 1 }, 0)],
+            },
             // tunnel clients — same uniqueness contract as agents
             // (re-enroll-on-same-machine rehydrates the soft-deleted row in
             // place). `owner_user_id` index speeds the "my tunnel clients"

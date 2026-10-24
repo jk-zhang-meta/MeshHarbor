@@ -51,6 +51,7 @@
 pub mod admission;
 pub mod agent_socket;
 pub mod attribution;
+pub mod business_authority;
 pub mod campaign;
 pub mod capabilities;
 pub mod client_ip;

@@ -15,6 +15,7 @@ use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use crate::state::AppState;
+use roomler_core::client_ip::{ConnectionOrigin, PeerAddr};
 
 // FR-69 P7b — what every upgrade shares moved to core: the query shape, the
 // affinity check and the "say why, then close" refusal. Re-exported so the
@@ -24,6 +25,7 @@ pub use roomler_core::ws::upgrade::{WsParams, send_goodbye_and_close, tid_matche
 pub async fn ws_upgrade(
     State(state): State<AppState>,
     Query(params): Query<WsParams>,
+    PeerAddr(peer): PeerAddr,
     // Wave 2 — the User-Agent and forwarded-for header are read HERE,
     // at the only point where they exist. The UA yields a browser
     // family; the IP resolves to a country and is then dropped (see
@@ -31,6 +33,16 @@ pub async fn ws_upgrade(
     headers: axum::http::HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Response {
+    // Captured once from the listener and explicitly trusted proxy chain. No
+    // device frame may replace this context after the headers are consumed.
+    // This is separate from legacy analytics and does not reject management
+    // sockets when security geography is unknown.
+    let connection_origin = ConnectionOrigin::capture(
+        &headers,
+        peer,
+        &state.settings.app.business_trusted_proxy_cidrs,
+        state.settings.app.rate_limit_trusted_hops,
+    );
     match params.role.as_deref() {
         // Native clients. They have no cookie jar, so the URL is the only
         // place their credential can be — and accepting a cookie for these
@@ -40,11 +52,18 @@ pub async fn ws_upgrade(
         // `/ws` route and this role gate; a role whose module is not mounted
         // is refused with 503 rather than silently dropped.
         Some("agent") => match params.token {
-            Some(t) => state.modules.agent_upgrade(t, params.tid, ws).await,
+            Some(t) => {
+                state
+                    .modules
+                    .agent_upgrade(t, params.tid, connection_origin, ws)
+                    .await
+            }
             None => unauthorized("agent role requires ?token="),
         },
         Some("tunnel-client") => match params.token {
-            Some(t) => state.modules.tunnel_client_upgrade(t, params.tid, ws),
+            Some(t) => state
+                .modules
+                .tunnel_client_upgrade(t, params.tid, connection_origin, ws),
             None => unauthorized("tunnel-client role requires ?token="),
         },
         _ => {

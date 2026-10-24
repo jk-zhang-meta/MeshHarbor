@@ -1241,6 +1241,11 @@ pub struct AppSettings {
     /// exactly 1 hop is ours.
     #[serde(default = "default_rate_limit_trusted_hops")]
     pub rate_limit_trusted_hops: usize,
+    /// Explicit proxy peer/suffix CIDRs for security-sensitive business source
+    /// observations. Empty means no forwarded address is trusted. This does not
+    /// change the legacy analytics/rate-limit deployment's behavior.
+    #[serde(default, deserialize_with = "deserialize_business_proxy_cidrs")]
+    pub business_trusted_proxy_cidrs: Vec<String>,
     /// Sustained auth-endpoint attempts per minute, per (client IP, account).
     /// Deliberately far stricter than the general `/api` limit: this is the
     /// brute-force gate, and it must not depend on starving the whole API.
@@ -1280,6 +1285,26 @@ fn default_rate_limit_burst() -> u32 {
 }
 fn default_rate_limit_trusted_hops() -> usize {
     1
+}
+/// This one setting accepts either a TOML/JSON list or the environment's CSV
+/// string, without changing parsing of unrelated numeric-looking secrets.
+fn deserialize_business_proxy_cidrs<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Cidrs {
+        List(Vec<String>),
+        Text(String),
+    }
+    Ok(match Cidrs::deserialize(deserializer)? {
+        Cidrs::List(values) => values,
+        Cidrs::Text(value) if value.trim().is_empty() => vec![],
+        // Preserve empty components: the strict capture rejects an invalid
+        // proxy configuration rather than silently widening trust.
+        Cidrs::Text(value) => value.split(',').map(|s| s.trim().to_string()).collect(),
+    })
 }
 fn default_auth_rate_limit_per_min() -> u32 {
     10
@@ -1606,6 +1631,7 @@ impl Settings {
             .set_default("app.rate_limit_per_sec", 1)?
             .set_default("app.rate_limit_burst", 60)?
             .set_default("app.rate_limit_trusted_hops", 1)?
+            .set_default("app.business_trusted_proxy_cidrs", Vec::<String>::new())?
             .set_default("app.auth_rate_limit_per_min", 10)?
             .set_default("app.auth_rate_limit_burst", 20)?
             .set_default("database.url", "mongodb://localhost:27019")?
@@ -1736,9 +1762,40 @@ mod rate_limit_tests {
             rate_limit_per_sec: per_sec,
             rate_limit_burst: 60,
             rate_limit_trusted_hops: 1,
+            business_trusted_proxy_cidrs: vec![],
             auth_rate_limit_per_min: auth_per_min,
             auth_rate_limit_burst: 20,
         }
+    }
+
+    #[test]
+    fn business_proxy_cidrs_accept_scoped_list_or_csv_without_global_env_changes() {
+        #[derive(serde::Deserialize)]
+        struct OnlyProxy {
+            #[serde(default, deserialize_with = "super::deserialize_business_proxy_cidrs")]
+            cidrs: Vec<String>,
+        }
+        for raw in [
+            r#"{"cidrs":["127.0.0.1/32","fd00::/64"]}"#,
+            r#"{"cidrs":"127.0.0.1/32, fd00::/64"}"#,
+        ] {
+            let parsed: OnlyProxy = serde_json::from_str(raw).unwrap();
+            assert_eq!(parsed.cidrs, vec!["127.0.0.1/32", "fd00::/64"]);
+        }
+        for raw in [r#"{}"#, r#"{"cidrs":""}"#, r#"{"cidrs":[]}"#] {
+            assert!(
+                serde_json::from_str::<OnlyProxy>(raw)
+                    .unwrap()
+                    .cidrs
+                    .is_empty()
+            );
+        }
+        let invalid: OnlyProxy =
+            serde_json::from_str(r#"{"cidrs":"127.0.0.1/32,,fd00::/64"}"#).unwrap();
+        assert_eq!(
+            invalid.cidrs[1], "",
+            "capture must reject rather than widen invalid input"
+        );
     }
 
     /// The whole point of the helper: a req/s number must become a

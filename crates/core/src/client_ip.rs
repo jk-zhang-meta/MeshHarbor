@@ -105,6 +105,156 @@ where
     }
 }
 
+/// How a business-policy source was established. This is deliberately separate
+/// from the legacy analytics/rate-limit header helper above: a hop count alone
+/// does not authenticate the socket peer or the header's trusted suffix.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConnectionOriginSource {
+    SocketPeer,
+    TrustedProxyChain,
+    MissingPeer,
+    InvalidProxyConfiguration,
+    AmbiguousHeader,
+    InvalidTrustedChain,
+}
+
+impl ConnectionOriginSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::SocketPeer => "socket_peer",
+            Self::TrustedProxyChain => "trusted_proxy_chain",
+            Self::MissingPeer => "missing_peer",
+            Self::InvalidProxyConfiguration => "invalid_proxy_configuration",
+            Self::AmbiguousHeader => "ambiguous_header",
+            Self::InvalidTrustedChain => "invalid_trusted_chain",
+        }
+    }
+}
+
+/// An immutable, server-captured connection observation, NOT a wire DTO or an
+/// authorization grant. Owners pass it through upgrade/authentication; an agent
+/// message cannot replace it. Only the security producer may persist its fields.
+#[derive(Debug, Clone)]
+pub struct ConnectionOrigin {
+    transport_peer: Option<IpAddr>,
+    client_ip: Option<IpAddr>,
+    source: ConnectionOriginSource,
+    captured_at: bson::DateTime,
+}
+
+impl ConnectionOrigin {
+    const MAX_XFF_BYTES: usize = 8192;
+    const MAX_XFF_ENTRIES: usize = 64;
+    const MAX_TRUSTED_PROXIES: usize = 64;
+    const MAX_TRUSTED_HOPS: usize = 32;
+
+    pub fn capture(
+        headers: &HeaderMap,
+        peer: Option<SocketAddr>,
+        trusted_proxy_cidrs: &[String],
+        trusted_hops: usize,
+    ) -> Self {
+        use ipnet::IpNet;
+        let transport_peer = peer.map(|p| canonical_ip(p.ip()));
+        let mut result = Self {
+            transport_peer,
+            client_ip: None,
+            source: ConnectionOriginSource::MissingPeer,
+            captured_at: bson::DateTime::now(),
+        };
+        let Some(peer) = transport_peer else {
+            return result;
+        };
+        if trusted_hops > Self::MAX_TRUSTED_HOPS
+            || trusted_proxy_cidrs.len() > Self::MAX_TRUSTED_PROXIES
+        {
+            result.source = ConnectionOriginSource::InvalidProxyConfiguration;
+            return result;
+        }
+        let mut proxies = Vec::with_capacity(trusted_proxy_cidrs.len());
+        for raw in trusted_proxy_cidrs {
+            let Ok(net) = raw.trim().parse::<IpNet>() else {
+                result.source = ConnectionOriginSource::InvalidProxyConfiguration;
+                return result;
+            };
+            // A global wildcard makes an attacker a trusted proxy. Operators
+            // use canonical IPv4 CIDRs rather than mapped-IPv6 CIDR ambiguity.
+            if net.prefix_len() == 0
+                || matches!(net.network(), IpAddr::V6(v) if v.to_ipv4_mapped().is_some())
+            {
+                result.source = ConnectionOriginSource::InvalidProxyConfiguration;
+                return result;
+            }
+            proxies.push(net);
+        }
+        let values: Vec<_> = headers.get_all(X_FORWARDED_FOR).iter().take(2).collect();
+        if values.len() > 1
+            || values
+                .first()
+                .is_some_and(|v| v.as_bytes().len() > Self::MAX_XFF_BYTES)
+        {
+            result.source = ConnectionOriginSource::AmbiguousHeader;
+            return result;
+        }
+        let trusted = |ip: IpAddr| proxies.iter().any(|net| net.contains(&canonical_ip(ip)));
+        if trusted_hops == 0 || !trusted(peer) {
+            // An untrusted direct caller's forwarded claim cannot move it.
+            result.client_ip = Some(peer);
+            result.source = ConnectionOriginSource::SocketPeer;
+            return result;
+        }
+        result.source = ConnectionOriginSource::InvalidTrustedChain;
+        let Some(raw) = values.first().and_then(|v| v.to_str().ok()) else {
+            return result;
+        };
+        let entries: Vec<_> = raw.split(',').map(str::trim).collect();
+        if entries.len() > Self::MAX_XFF_ENTRIES
+            || entries.iter().any(|s| s.is_empty())
+            || entries.len() <= trusted_hops
+        {
+            return result;
+        }
+        let client_index = entries.len() - trusted_hops - 1;
+        // Both the actual immediate peer AND every claimed trusted suffix hop
+        // must be configured. Never fall back to a proxy's own address here.
+        if !entries[client_index + 1..].iter().all(|s| {
+            s.parse::<IpAddr>()
+                .is_ok_and(|ip| trusted(canonical_ip(ip)))
+        }) {
+            return result;
+        }
+        let Ok(client) = entries[client_index].parse::<IpAddr>() else {
+            return result;
+        };
+        result.client_ip = Some(canonical_ip(client));
+        result.source = ConnectionOriginSource::TrustedProxyChain;
+        result
+    }
+
+    pub fn client_ip(&self) -> Option<IpAddr> {
+        self.client_ip
+    }
+    pub fn transport_peer(&self) -> Option<IpAddr> {
+        self.transport_peer
+    }
+    pub fn source(&self) -> ConnectionOriginSource {
+        self.source
+    }
+    pub fn captured_at(&self) -> bson::DateTime {
+        self.captured_at
+    }
+}
+
+fn canonical_ip(ip: IpAddr) -> IpAddr {
+    match ip {
+        IpAddr::V6(ip) => ip
+            .to_ipv4_mapped()
+            .map(IpAddr::V4)
+            .unwrap_or(IpAddr::V6(ip)),
+        ip => ip,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -197,5 +347,132 @@ mod tests {
             .unwrap();
         req.extensions_mut().insert(ConnectInfo(peer));
         assert_eq!(client_ip(&req, 1), Some(ip("198.51.100.7")));
+    }
+
+    fn captured(xff: &str, peer: &str, cidrs: &[&str], hops: usize) -> ConnectionOrigin {
+        ConnectionOrigin::capture(
+            &headers(xff),
+            Some(peer.parse().unwrap()),
+            &cidrs.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+            hops,
+        )
+    }
+
+    #[test]
+    fn security_origin_ignores_forged_header_from_untrusted_direct_peer() {
+        let o = captured("1.2.3.4, 10.10.0.1", "198.51.100.9:443", &["10.0.0.0/8"], 1);
+        assert_eq!(o.client_ip(), Some(ip("198.51.100.9")));
+        assert_eq!(o.source(), ConnectionOriginSource::SocketPeer);
+    }
+
+    #[test]
+    fn security_origin_requires_real_peer_even_with_plausible_header() {
+        let o = ConnectionOrigin::capture(
+            &headers("203.0.113.9, 10.10.0.1"),
+            None,
+            &["10.0.0.0/8".into()],
+            1,
+        );
+        assert_eq!(o.client_ip(), None);
+        assert_eq!(o.source(), ConnectionOriginSource::MissingPeer);
+    }
+
+    #[test]
+    fn security_origin_validates_immediate_and_suffix_proxies() {
+        let o = captured(
+            "spoof, 203.0.113.9, 10.10.0.1",
+            "10.10.0.2:443",
+            &["10.0.0.0/8"],
+            1,
+        );
+        assert_eq!(o.client_ip(), Some(ip("203.0.113.9")));
+        assert_eq!(o.source(), ConnectionOriginSource::TrustedProxyChain);
+        assert_eq!(o.transport_peer(), Some(ip("10.10.0.2")));
+    }
+
+    #[test]
+    fn security_origin_unknown_when_trusted_chain_is_short_missing_or_invalid() {
+        for xff in [
+            "10.10.0.1",
+            "",
+            "unknown, 10.10.0.1",
+            "203.0.113.9, 198.51.100.2",
+            "203.0.113.9, , 10.10.0.1",
+        ] {
+            assert_eq!(
+                captured(xff, "10.10.0.2:443", &["10.0.0.0/8"], 1).client_ip(),
+                None,
+                "{xff}"
+            );
+        }
+        let o = ConnectionOrigin::capture(
+            &HeaderMap::new(),
+            Some("10.10.0.2:443".parse().unwrap()),
+            &["10.0.0.0/8".into()],
+            1,
+        );
+        assert_eq!(o.client_ip(), None, "proxy itself is not client authority");
+    }
+
+    #[test]
+    fn security_origin_rejects_duplicate_header_and_resource_overflow() {
+        let mut h = headers("203.0.113.9, 10.10.0.1");
+        h.append(X_FORWARDED_FOR, "1.2.3.4, 10.10.0.1".parse().unwrap());
+        let peer = Some("10.10.0.2:443".parse().unwrap());
+        assert_eq!(
+            ConnectionOrigin::capture(&h, peer, &["10.0.0.0/8".into()], 1).source(),
+            ConnectionOriginSource::AmbiguousHeader
+        );
+        assert_eq!(
+            captured(&"1".repeat(8193), "10.10.0.2:443", &["10.0.0.0/8"], 1).client_ip(),
+            None
+        );
+        assert_eq!(
+            captured(
+                &vec!["10.1.1.1"; 65].join(","),
+                "10.10.0.2:443",
+                &["10.0.0.0/8"],
+                1
+            )
+            .client_ip(),
+            None
+        );
+        assert_eq!(
+            captured("203.0.113.9", "10.10.0.2:443", &["10.0.0.0/8"], 33).client_ip(),
+            None
+        );
+    }
+
+    #[test]
+    fn security_origin_never_invents_automatic_proxy_trust() {
+        let o = captured("1.2.3.4, 10.10.0.1", "10.10.0.2:443", &[], 1);
+        assert_eq!(o.client_ip(), Some(ip("10.10.0.2")));
+        assert_eq!(o.source(), ConnectionOriginSource::SocketPeer);
+        for cidr in ["0.0.0.0/0", "::/0", "not-a-cidr", "::ffff:10.0.0.0/104"] {
+            assert_eq!(
+                captured("203.0.113.9, 10.10.0.1", "10.10.0.2:443", &[cidr], 1).source(),
+                ConnectionOriginSource::InvalidProxyConfiguration
+            );
+        }
+    }
+
+    #[test]
+    fn security_origin_normalizes_mapped_addresses_and_supports_ipv6_chain() {
+        let o = captured(
+            "::ffff:203.0.113.9, ::ffff:10.10.0.1",
+            "[::ffff:10.10.0.2]:443",
+            &["10.0.0.0/8"],
+            1,
+        );
+        assert_eq!(o.client_ip(), Some(ip("203.0.113.9")));
+        assert_eq!(o.transport_peer(), Some(ip("10.10.0.2")));
+        let o = captured("2001:db8::9, fd00::1", "[fd00::2]:443", &["fd00::/64"], 1);
+        assert_eq!(o.client_ip(), Some(ip("2001:db8::9")));
+    }
+
+    #[test]
+    fn security_origin_direct_mode_uses_socket_not_forwarded_claim() {
+        let o = captured("203.0.113.9", "198.51.100.7:443", &["10.0.0.0/8"], 0);
+        assert_eq!(o.client_ip(), Some(ip("198.51.100.7")));
     }
 }

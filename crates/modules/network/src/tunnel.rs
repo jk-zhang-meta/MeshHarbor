@@ -55,6 +55,7 @@ use crate::NetworkState;
 use crate::agent_arms::pump_server_messages;
 use axum::{extract::WebSocketUpgrade, response::Response};
 use roomler_core::ws::upgrade::{MAX_WS_MESSAGE_BYTES, send_goodbye_and_close, tid_matches_claim};
+use roomler_core::{business_authority::AuthenticatedDevice, client_ip::ConnectionOrigin};
 
 /// Outbound channel capacity. Per-tunnel-client. Generous because a
 /// single peer multiplexes many flows; the dominant traffic is per-
@@ -65,6 +66,70 @@ const OUTBOUND_CAP: usize = 256;
 /// cheap (one Mongo find_by_id per minute per active connection)
 /// and matches the existing agent heartbeat rhythm.
 const REVOCATION_CHECK_INTERVAL: Duration = Duration::from_secs(60);
+
+fn authority_identity_current(
+    presented_generation: u32,
+    row_generation: u32,
+    claimed_owner: ObjectId,
+    current_owner: ObjectId,
+) -> bool {
+    presented_generation == row_generation && claimed_owner == current_owner
+}
+
+async fn observe_business_connection(
+    state: &NetworkState,
+    tenant_id: ObjectId,
+    client_id: ObjectId,
+    owner_user_id: ObjectId,
+    presented_generation: u32,
+    origin: &ConnectionOrigin,
+    connection_id: &str,
+) -> Option<AuthenticatedDevice> {
+    let current = tokio::time::timeout(Duration::from_secs(3), async {
+        let row = state
+            .tunnel_clients
+            .find_live_in_tenant(tenant_id, client_id)
+            .await?;
+        if matches!(row.status, AgentStatus::Quarantined)
+            || !authority_identity_current(
+                presented_generation,
+                row.token_gen,
+                owner_user_id,
+                row.owner_user_id,
+            )
+        {
+            return Err(roomler_core::ApiError::Unauthorized(
+                "Current client identity required for business evidence".into(),
+            ));
+        }
+        roomler_core::admission::authorize_user_id(&state.core, row.owner_user_id, None).await?;
+        AuthenticatedDevice::from_tunnel_client(&row)
+    })
+    .await;
+    let device = match current {
+        Ok(Ok(device)) => device,
+        _ => {
+            warn!(%client_id, "business identity unavailable; retaining management socket without authority");
+            return None;
+        }
+    };
+    if !matches!(
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            roomler_core::business_authority::record_connection_observation(
+                &state.core,
+                &device,
+                origin,
+                connection_id,
+            ),
+        )
+        .await,
+        Ok(Ok(_))
+    ) {
+        warn!(%client_id, "business observation unavailable; no business authority inferred");
+    }
+    Some(device)
+}
 
 /// Drive a tunnel-client WS until either the client closes, the
 /// signalling layer errors, or the revocation re-check kills the
@@ -77,9 +142,22 @@ pub async fn handle_tunnel_client_socket(
     tenant_id: ObjectId,
     owner_user_id: ObjectId,
     dialed_tid: Option<String>,
+    connection_origin: ConnectionOrigin,
+    presented_generation: u32,
 ) {
     info!(%tunnel_client_id, %tenant_id, %owner_user_id, "tunnel-client WS connected");
     let conn_established_ms = bson::DateTime::now().timestamp_millis();
+    let connection_id = uuid::Uuid::new_v4().to_string();
+    let business_device = observe_business_connection(
+        &state,
+        tenant_id,
+        tunnel_client_id,
+        owner_user_id,
+        presented_generation,
+        &connection_origin,
+        &connection_id,
+    )
+    .await;
 
     let (socket_tx, mut socket_rx) = socket.split();
     let socket_tx = Arc::new(Mutex::new(socket_tx));
@@ -445,6 +523,17 @@ pub async fn handle_tunnel_client_socket(
     // some other clone is still alive.
     drop(outbound_tx);
     pump.abort();
+    if let Some(device) = business_device.as_ref() {
+        let _ = tokio::time::timeout(
+            Duration::from_secs(1),
+            roomler_core::business_authority::close_connection_observation(
+                &state.core,
+                device,
+                &connection_id,
+            ),
+        )
+        .await;
+    }
     info!(%tunnel_client_id, "tunnel-client WS disconnected");
 }
 
@@ -2221,6 +2310,7 @@ pub fn ws_upgrade_tunnel_client(
     state: NetworkState,
     token: String,
     tid: Option<String>,
+    connection_origin: ConnectionOrigin,
     ws: WebSocketUpgrade,
 ) -> Response {
     let claims = match state.auth.verify_tunnel_client_token(&token) {
@@ -2334,6 +2424,8 @@ pub fn ws_upgrade_tunnel_client(
             tenant_id,
             owner_user_id,
             tid,
+            connection_origin,
+            token_gen,
         )
         .await;
     })
@@ -2342,6 +2434,24 @@ pub fn ws_upgrade_tunnel_client(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn authority_cannot_upgrade_an_old_token_to_the_current_generation() {
+        let owner = ObjectId::new();
+        assert!(authority_identity_current(4, 4, owner, owner));
+        assert!(!authority_identity_current(3, 4, owner, owner));
+        assert!(!authority_identity_current(5, 4, owner, owner));
+    }
+
+    #[test]
+    fn authority_uses_the_current_owner_not_only_the_signed_old_claim() {
+        assert!(!authority_identity_current(
+            4,
+            4,
+            ObjectId::new(),
+            ObjectId::new(),
+        ));
+    }
 
     fn grant(dst: Option<(&str, u16)>, exp: i64) -> SessionGrant {
         SessionGrant {

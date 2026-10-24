@@ -88,6 +88,21 @@ pub struct GeoIp {
     reader: Option<maxminddb::Reader<Vec<u8>>>,
 }
 
+/// The loaded reader's own version metadata, not an IP label or a guessed
+/// filename. This is NOT a content hash or a cryptographic attestation.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct GeoIpDatasetIdentity {
+    pub database_type: String,
+    pub build_epoch: u64,
+    pub ip_version: u16,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GeoIpSecurityLookup {
+    pub dataset: Option<GeoIpDatasetIdentity>,
+    pub country_code: Option<String>,
+}
+
 impl GeoIp {
     /// Open the database named by `stats.geoip_mmdb`. A missing or
     /// unreadable file is logged and degrades to "no geo", because
@@ -141,6 +156,59 @@ impl GeoIp {
         let r = self.reader.as_ref()?;
         let looked: maxminddb::geoip2::Country = r.lookup(ip).ok()?;
         looked.country?.iso_code.map(str::to_string)
+    }
+
+    /// Security producers use the same loaded reader regardless of whether
+    /// optional analytics collection is enabled. Missing data stays unknown.
+    pub fn security_lookup(&self, ip: IpAddr) -> GeoIpSecurityLookup {
+        let ip = match ip {
+            IpAddr::V6(v) => v.to_ipv4_mapped().map(IpAddr::V4).unwrap_or(IpAddr::V6(v)),
+            ip => ip,
+        };
+        let dataset = self.reader.as_ref().map(|r| GeoIpDatasetIdentity {
+            database_type: r.metadata.database_type.clone(),
+            build_epoch: r.metadata.build_epoch,
+            ip_version: r.metadata.ip_version,
+        });
+        GeoIpSecurityLookup {
+            // A loopback/private proxy is not a geographically located client.
+            // Do not let an unusually broad database turn a missing trusted
+            // proxy configuration into a fabricated non-mainland observation.
+            country_code: if private_or_local_source(ip) {
+                None
+            } else {
+                self.country(ip)
+            },
+            dataset,
+        }
+    }
+}
+
+/// Only explicit private/local source categories are excluded here. This is not
+/// a hand-maintained "all global Internet addresses" classifier: other special
+/// addresses still require an actual country result from the loaded database.
+fn private_or_local_source(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v) => {
+            let a = v.octets();
+            v.is_private()
+                || v.is_loopback()
+                || v.is_link_local()
+                || v.is_unspecified()
+                || v.is_multicast()
+                || v.is_broadcast()
+                || a[0] == 0
+                || a[0] >= 240
+                || (a[0] == 100 && (64..128).contains(&a[1]))
+        }
+        IpAddr::V6(v) => {
+            let first = v.segments()[0];
+            v.is_loopback()
+                || v.is_unspecified()
+                || v.is_multicast()
+                || first & 0xfe00 == 0xfc00
+                || first & 0xffc0 == 0xfe80
+        }
     }
 }
 
@@ -329,6 +397,13 @@ mod tests {
         assert_eq!(g.country("8.8.8.8".parse().unwrap()), None);
         // No database ⇒ nobody to credit on the dashboard.
         assert_eq!(g.database(), None);
+        assert_eq!(
+            g.security_lookup("8.8.8.8".parse().unwrap()),
+            GeoIpSecurityLookup {
+                dataset: None,
+                country_code: None
+            }
+        );
         // A configured-but-missing file degrades the same way.
         let g = GeoIp::open(Some("/nonexistent/GeoLite2-Country.mmdb"));
         assert!(!g.enabled());
@@ -426,6 +501,36 @@ mod tests {
         // What the dashboard credits: the database's own type, not a guess
         // from the file name.
         assert_eq!(g.database(), Some("DBIP-Country-Lite"));
+        let security = g.security_lookup("8.8.8.8".parse().unwrap());
+        assert_eq!(security.country_code.as_deref(), Some("US"));
+        assert_eq!(
+            security.dataset.as_ref().unwrap().database_type,
+            "DBIP-Country-Lite"
+        );
+        assert_eq!(security.dataset.as_ref().unwrap().ip_version, 4);
+        assert!(security.dataset.as_ref().unwrap().build_epoch > 0);
+        for source in [
+            "127.0.0.1",
+            "10.1.2.3",
+            "100.64.1.1",
+            "169.254.1.1",
+            "::1",
+            "fd00::1",
+            "fe80::1",
+            "::ffff:127.0.0.1",
+        ] {
+            assert_eq!(
+                g.security_lookup(source.parse().unwrap()).country_code,
+                None,
+                "{source}"
+            );
+        }
+        assert_eq!(
+            g.security_lookup("::ffff:8.8.8.8".parse().unwrap())
+                .country_code
+                .as_deref(),
+            Some("US")
+        );
         // `country.iso_code` is the field the analytics stores. A reader that
         // looked anywhere else (`registered_country`, which DB-IP's Lite
         // database does not carry) would answer `None` for every address,

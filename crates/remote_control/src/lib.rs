@@ -34,6 +34,9 @@
 // agent-side consumers opt out with `default-features = false`.
 #[cfg(feature = "server")]
 pub mod audit;
+/// Shared hard-region and protected-management decision model. Authority-bearing
+/// inputs must be produced by authenticated server/verifier paths, not wire DTOs.
+pub mod business_reachability;
 pub mod connect_code;
 pub mod consent;
 pub mod derp_frame;

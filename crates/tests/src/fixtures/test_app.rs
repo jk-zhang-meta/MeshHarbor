@@ -426,6 +426,7 @@ fn test_settings() -> Settings {
             // Tests talk to the server directly, so no proxy prepends a
             // hop — trust the peer address, not any client-sent header.
             rate_limit_trusted_hops: 0,
+            business_trusted_proxy_cidrs: vec![],
             auth_rate_limit_per_min: 10,
             auth_rate_limit_burst: 20,
             host: "127.0.0.1".to_string(),

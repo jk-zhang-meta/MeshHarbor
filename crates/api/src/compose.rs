@@ -332,12 +332,19 @@ impl Modules {
         &self,
         token: String,
         tid: Option<String>,
+        origin: roomler_core::client_ip::ConnectionOrigin,
         ws: axum::extract::WebSocketUpgrade,
     ) -> axum::response::Response {
         #[cfg(feature = "fleet")]
         if let Some(fleet) = &self.fleet {
-            return roomler_ai_mod_fleet::socket::ws_upgrade_agent(fleet.clone(), token, tid, ws)
-                .await;
+            return roomler_ai_mod_fleet::socket::ws_upgrade_agent(
+                fleet.clone(),
+                token,
+                tid,
+                origin,
+                ws,
+            )
+            .await;
         }
         module_unavailable("fleet")
     }
@@ -349,6 +356,7 @@ impl Modules {
         &self,
         token: String,
         tid: Option<String>,
+        origin: roomler_core::client_ip::ConnectionOrigin,
         ws: axum::extract::WebSocketUpgrade,
     ) -> axum::response::Response {
         #[cfg(feature = "network")]
@@ -357,6 +365,7 @@ impl Modules {
                 network.clone(),
                 token,
                 tid,
+                origin,
                 ws,
             );
         }
