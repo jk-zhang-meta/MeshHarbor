@@ -696,6 +696,10 @@ const OUTBOUND_QUEUE_PKTS: usize = 512;
 /// Most packets the outbound pump hands the sender per call (one GSO send
 /// carries at most 64 segments on Linux).
 const OUTBOUND_BURST_PKTS: usize = 64;
+/// Most decrypted packets the inbound writer hands the TUN per call: a Linux
+/// offload device coalesces each TCP run among them into one super-packet
+/// write. wireguard-go's batch size.
+const INBOUND_BURST_PKTS: usize = 128;
 
 /// rc.211 (re-scoped by P1/S6) — slow-handler watchdog threshold. Since P1 the
 /// data plane runs entirely off-loop (reader → outbound pump → carriers), so a
@@ -2518,12 +2522,21 @@ impl OverlayRuntime {
         wg.set_local_scope(Some(self_v4), &self.advertised_routes);
 
         // Inbound writer: decrypted packets → TUN. Independent of the
-        // device, so it's a plain spawned task.
+        // device, so it's a plain spawned task. It hands the device what is
+        // already queued, never waiting for more, so a Linux offload device
+        // can coalesce TCP runs (`tun_offload`) at no added latency.
         let writer_tun = tun.clone();
         let inbound = tokio::spawn(async move {
             let mut rx = tun_rx;
+            let mut burst: Vec<Vec<u8>> = Vec::with_capacity(INBOUND_BURST_PKTS);
             while let Some(pkt) = rx.recv().await {
-                if let Err(e) = writer_tun.write_packet(&pkt).await {
+                burst.push(pkt);
+                while burst.len() < INBOUND_BURST_PKTS
+                    && let Ok(p) = rx.try_recv()
+                {
+                    burst.push(p);
+                }
+                if let Err(e) = writer_tun.write_packets(&mut burst).await {
                     debug!(%e, "overlay: TUN write failed; inbound writer exiting");
                     break;
                 }
@@ -3088,9 +3101,12 @@ impl OverlayRuntime {
         let (tun_pkt_tx, tun_pkt_rx) = mpsc::channel::<Vec<u8>>(OUTBOUND_QUEUE_PKTS);
         let reader_tun = tun.clone();
         let tun_reader = tokio::spawn(async move {
+            // One device read can carry many packets: every segment of a TSO
+            // super-packet on a Linux offload device (`tun_offload`).
+            let mut pkts: Vec<Vec<u8>> = Vec::new();
             loop {
-                match reader_tun.read_packet().await {
-                    Ok(pkt) => {
+                match reader_tun.read_packets(&mut pkts).await {
+                    Ok(()) => {
                         // Reader-side twin of `warn_if_slow`: a slow send here
                         // means the channel is FULL — since P1 the consumer is
                         // the dedicated outbound PUMP, so a full queue indicts
@@ -3098,8 +3114,10 @@ impl OverlayRuntime {
                         // the control loop. Complements the pump's per-packet
                         // timer, which can't see future-PENDING time.
                         let t0 = Instant::now();
-                        if tun_pkt_tx.send(pkt).await.is_err() {
-                            break; // outbound pump gone
+                        for pkt in pkts.drain(..) {
+                            if tun_pkt_tx.send(pkt).await.is_err() {
+                                return; // outbound pump gone
+                            }
                         }
                         let ms = t0.elapsed().as_millis();
                         if ms > LOOP_STALL_WARN_MS {

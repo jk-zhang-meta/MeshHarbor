@@ -40,6 +40,25 @@ pub trait TunIo: Send + Sync {
     /// Write one IP packet to the device.
     async fn write_packet(&self, packet: &[u8]) -> std::io::Result<()>;
 
+    /// Read the IP packets of the next device read, appended to `out` (at
+    /// least one). A Linux offload device (`overlay::tun_offload`) returns
+    /// every segment of a TSO super-packet from one read; the default is one
+    /// [`read_packet`](Self::read_packet).
+    async fn read_packets(&self, out: &mut Vec<Vec<u8>>) -> std::io::Result<()> {
+        out.push(self.read_packet().await?);
+        Ok(())
+    }
+
+    /// Write a burst of IP packets in order, draining `packets`. A Linux
+    /// offload device coalesces TCP runs into super-packets first; the
+    /// default writes each with [`write_packet`](Self::write_packet).
+    async fn write_packets(&self, packets: &mut Vec<Vec<u8>>) -> std::io::Result<()> {
+        for p in packets.drain(..) {
+            self.write_packet(&p).await?;
+        }
+        Ok(())
+    }
+
     /// The OS interface name backing this device, when it has one (SystemTun);
     /// `None` for mocks/netstack. Multi-org v2: per-adapter consumers (subnet-
     /// router NAT) must name THIS device, not the historical singleton.
@@ -2651,6 +2670,10 @@ mod system {
         /// do not survive (rc.289).
         #[cfg(windows)]
         escalated: std::sync::Mutex<std::collections::HashSet<Ipv4Addr>>,
+        /// Linux — the virtio-net framing and TSO/GRO state of a device opened
+        /// with offload; `None` is the plain one-packet-per-call device.
+        #[cfg(target_os = "linux")]
+        vnet: Option<crate::overlay::tun_offload::VnetIo>,
     }
 
     /// rc.209 — bounded retry-with-backoff around a fallible create. Returns the
@@ -3969,6 +3992,18 @@ mod system {
             }
             #[cfg(target_os = "linux")]
             config.tun_name(opts.name.as_str());
+            // Linux — a virtio-net header on every read and write lets the
+            // device carry TCP super-packets both ways (`tun_offload`).
+            // `ROOMLERD_OVERLAY_TUN_OFFLOAD=0` opens the plain device instead,
+            // exactly the pre-offload behaviour.
+            #[cfg(target_os = "linux")]
+            let offload = crate::env::flag("OVERLAY_TUN_OFFLOAD", true);
+            #[cfg(target_os = "linux")]
+            if offload {
+                config.platform_config(|p| {
+                    p.vnet_hdr(true);
+                });
+            }
 
             // rc.209 — Wintun's `WintunCreateAdapter` can transiently fail with
             // "device installation mutex: Access is denied" when a PRIOR adapter
@@ -4008,6 +4043,14 @@ mod system {
                 },
             )?;
             let dev = Arc::new(dev);
+            #[cfg(target_os = "linux")]
+            let vnet = offload.then(|| {
+                use std::os::fd::AsRawFd as _;
+                crate::overlay::tun_offload::VnetIo::new(
+                    dev.as_raw_fd(),
+                    crate::env::flag("OVERLAY_TUN_USO", false),
+                )
+            });
 
             // Ask the OS what it named this device. Windows/Linux answer with
             // the name we asked for; macOS answers `utunN`, which is the only
@@ -4273,7 +4316,16 @@ mod system {
                 in_block_fp: std::sync::Mutex::new(Vec::new()),
                 #[cfg(windows)]
                 escalated: std::sync::Mutex::new(std::collections::HashSet::new()),
+                #[cfg(target_os = "linux")]
+                vnet,
             })
+        }
+
+        /// Linux — what the TUN offload has done on this device, `None` for a
+        /// device opened without it (`ROOMLERD_OVERLAY_TUN_OFFLOAD=0`).
+        #[cfg(target_os = "linux")]
+        pub fn offload_stats(&self) -> Option<crate::overlay::tun_offload::OffloadStats> {
+            self.vnet.as_ref().map(|v| v.stats())
         }
     }
 
@@ -4322,6 +4374,10 @@ mod system {
     #[async_trait]
     impl TunIo for SystemTun {
         async fn read_packet(&self) -> std::io::Result<Vec<u8>> {
+            #[cfg(target_os = "linux")]
+            if let Some(v) = &self.vnet {
+                return v.read_one(&self.dev).await;
+            }
             // Overlay MTU is 1280; 1600 covers it plus any platform
             // packet-information headroom the crate may surface.
             let mut buf = vec![0u8; 1600];
@@ -4335,11 +4391,35 @@ mod system {
         }
 
         async fn write_packet(&self, packet: &[u8]) -> std::io::Result<()> {
+            #[cfg(target_os = "linux")]
+            if let Some(v) = &self.vnet {
+                return v.write_one(&self.dev, packet).await;
+            }
             self.dev
                 .send(packet)
                 .await
                 .map(|_| ())
                 .map_err(|e| std::io::Error::other(e.to_string()))
+        }
+
+        async fn read_packets(&self, out: &mut Vec<Vec<u8>>) -> std::io::Result<()> {
+            #[cfg(target_os = "linux")]
+            if let Some(v) = &self.vnet {
+                return v.read(&self.dev, out).await;
+            }
+            out.push(self.read_packet().await?);
+            Ok(())
+        }
+
+        async fn write_packets(&self, packets: &mut Vec<Vec<u8>>) -> std::io::Result<()> {
+            #[cfg(target_os = "linux")]
+            if let Some(v) = &self.vnet {
+                return v.write(&self.dev, packets).await;
+            }
+            for p in packets.drain(..) {
+                self.write_packet(&p).await?;
+            }
+            Ok(())
         }
 
         fn os_name(&self) -> Option<String> {

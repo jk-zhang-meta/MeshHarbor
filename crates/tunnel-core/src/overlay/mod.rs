@@ -85,6 +85,11 @@ pub(crate) mod sockbuf;
 #[cfg(feature = "overlay-netstack")]
 pub mod split_tun;
 pub mod tun;
+/// Linux TUN segmentation and receive offload (the virtio-net header):
+/// splits the kernel's TSO super-packets on read, coalesces TCP runs on write.
+/// Pure packet logic plus the `SystemTun` device glue.
+#[cfg(any(all(target_os = "linux", feature = "overlay-l3"), test))]
+pub(crate) mod tun_offload;
 /// #2213 / #2220 — reading a UDP socket past the errors Windows reports about
 /// an EARLIER datagram (an ICMP port-unreachable, as 10054), for every loop
 /// that serves a real OS socket.
