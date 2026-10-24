@@ -3222,7 +3222,20 @@ impl OverlayRuntime {
                     reconcile_org_recovery(&mut wg, &mut by_node, &mut relay, &mut org_q, &mut alloc_q, &mut relay_bq);
                     let followed = self.sweep_authenticated_derp_follow(&mut wg, &mut by_node, &mut relay, &current_peers);
                     let promoted = self.sweep_org_upgrades(&mut wg, &mut by_node, &mut relay, &current_peers);
-                    if followed || promoted {
+                    // A latched make-before-break probe is promoted here, on the
+                    // 1 s tick, rather than up to 5 s later on the fallback sweep;
+                    // the exit-route reconcile below covers its new carrier.
+                    let latched = super::direct::fast_probe_promote_enabled()
+                        && upgrade_probes
+                            .values()
+                            .any(|p| wg.probe_handshake_done(&p.pubkey) == Some(true));
+                    if latched {
+                        self.sweep_upgrade_probes(
+                            &mut wg, &mut by_node, &mut relay, &tun,
+                            &mut upgrade_probes, &mut relay_bq,
+                        ).await;
+                    }
+                    if followed || promoted || latched {
                         self.reconcile_exit_routing(&mut wg, &tun, &by_node, &current_peers, &mut exit_state).await;
                         self.publish_view(&self_ip, &by_node, &current_peers, &upgrade_probes, exit_node_status(self.exit_node.as_deref(), &exit_state), &wg, &path_trials, server_path_trial_v1);
                     }

@@ -717,6 +717,14 @@ pub fn birth_lan_probe_enabled() -> bool {
     crate::env::flag("OVERLAY_BIRTH_LAN_PROBE", true)
 }
 
+/// A make-before-break probe that has LATCHED is promoted on the next 1 s
+/// business-scout tick instead of waiting for the 5 s fallback sweep, which
+/// was most of a fresh LAN pair's remaining time on the floor (F0). Expiry
+/// stays on the fallback sweep. `=0` restores fallback-only promotion.
+pub fn fast_probe_promote_enabled() -> bool {
+    crate::env::flag("OVERLAY_FAST_PROBE_PROMOTE", true)
+}
+
 pub fn make_before_break_enabled() -> bool {
     match crate::env::node_env("OVERLAY_MBB") {
         Some(v) => {
