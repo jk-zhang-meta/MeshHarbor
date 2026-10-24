@@ -154,7 +154,6 @@ impl ConnectionOrigin {
         trusted_proxy_cidrs: &[String],
         trusted_hops: usize,
     ) -> Self {
-        use ipnet::IpNet;
         let transport_peer = peer.map(|p| canonical_ip(p.ip()));
         let mut result = Self {
             transport_peer,
@@ -165,27 +164,22 @@ impl ConnectionOrigin {
         let Some(peer) = transport_peer else {
             return result;
         };
-        if trusted_hops > Self::MAX_TRUSTED_HOPS
-            || trusted_proxy_cidrs.len() > Self::MAX_TRUSTED_PROXIES
-        {
+        let Some(proxies) = parse_trusted_proxies(trusted_proxy_cidrs) else {
             result.source = ConnectionOriginSource::InvalidProxyConfiguration;
             return result;
+        };
+        let trusted = |ip: IpAddr| proxies.iter().any(|net| net.contains(&canonical_ip(ip)));
+        if !trusted(peer) {
+            // An untrusted direct caller's forwarded claim cannot move it, and
+            // no header it sends (duplicate, oversized) can make it unknown.
+            result.client_ip = Some(peer);
+            result.source = ConnectionOriginSource::SocketPeer;
+            return result;
         }
-        let mut proxies = Vec::with_capacity(trusted_proxy_cidrs.len());
-        for raw in trusted_proxy_cidrs {
-            let Ok(net) = raw.trim().parse::<IpNet>() else {
-                result.source = ConnectionOriginSource::InvalidProxyConfiguration;
-                return result;
-            };
-            // A global wildcard makes an attacker a trusted proxy. Operators
-            // use canonical IPv4 CIDRs rather than mapped-IPv6 CIDR ambiguity.
-            if net.prefix_len() == 0
-                || matches!(net.network(), IpAddr::V6(v) if v.to_ipv4_mapped().is_some())
-            {
-                result.source = ConnectionOriginSource::InvalidProxyConfiguration;
-                return result;
-            }
-            proxies.push(net);
+        if trusted_hops > Self::MAX_TRUSTED_HOPS {
+            warn_invalid_proxy_configuration();
+            result.source = ConnectionOriginSource::InvalidProxyConfiguration;
+            return result;
         }
         let values: Vec<_> = headers.get_all(X_FORWARDED_FOR).iter().take(2).collect();
         if values.len() > 1
@@ -196,13 +190,9 @@ impl ConnectionOrigin {
             result.source = ConnectionOriginSource::AmbiguousHeader;
             return result;
         }
-        let trusted = |ip: IpAddr| proxies.iter().any(|net| net.contains(&canonical_ip(ip)));
-        if trusted_hops == 0 || !trusted(peer) {
-            // An untrusted direct caller's forwarded claim cannot move it.
-            result.client_ip = Some(peer);
-            result.source = ConnectionOriginSource::SocketPeer;
-            return result;
-        }
+        // The immediate peer is a configured proxy, so its own address is never
+        // the client. `trusted_hops` counts the further entries our proxies
+        // appended; with zero, the last entry is what the peer observed.
         result.source = ConnectionOriginSource::InvalidTrustedChain;
         let Some(raw) = values.first().and_then(|v| v.to_str().ok()) else {
             return result;
@@ -243,6 +233,39 @@ impl ConnectionOrigin {
     pub fn captured_at(&self) -> bson::DateTime {
         self.captured_at
     }
+}
+
+/// `None` for configuration that must not widen trust: too many entries, an
+/// unparsable CIDR (including an empty CSV component), a global `/0`, or an
+/// ambiguous IPv4-mapped IPv6 network. Logged once so a typo is not silent.
+fn parse_trusted_proxies(raw: &[String]) -> Option<Vec<ipnet::IpNet>> {
+    let parsed = (raw.len() <= ConnectionOrigin::MAX_TRUSTED_PROXIES)
+        .then(|| {
+            raw.iter()
+                .map(|s| s.trim().parse::<ipnet::IpNet>().ok())
+                .collect::<Option<Vec<_>>>()
+        })
+        .flatten()
+        .filter(|nets| {
+            nets.iter().all(|net| {
+                net.prefix_len() != 0
+                    && !matches!(net.network(), IpAddr::V6(v) if v.to_ipv4_mapped().is_some())
+            })
+        });
+    if parsed.is_none() {
+        warn_invalid_proxy_configuration();
+    }
+    parsed
+}
+
+fn warn_invalid_proxy_configuration() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        tracing::warn!(
+            "app.business_trusted_proxy_cidrs / rate_limit_trusted_hops is invalid; \
+             every business source observation stays unknown until it is fixed"
+        )
+    });
 }
 
 fn canonical_ip(ip: IpAddr) -> IpAddr {
@@ -474,5 +497,48 @@ mod tests {
     fn security_origin_direct_mode_uses_socket_not_forwarded_claim() {
         let o = captured("203.0.113.9", "198.51.100.7:443", &["10.0.0.0/8"], 0);
         assert_eq!(o.client_ip(), Some(ip("198.51.100.7")));
+    }
+
+    /// A single trusted reverse proxy (zero further hops) must yield the address
+    /// it observed, never its own: otherwise every client inherits the proxy's
+    /// region (e.g. all mainland clients read as HK behind an HK proxy).
+    #[test]
+    fn security_origin_single_trusted_proxy_with_zero_hops_uses_its_observation() {
+        let o = captured("203.0.113.9", "10.10.0.2:443", &["10.0.0.0/8"], 0);
+        assert_eq!(o.client_ip(), Some(ip("203.0.113.9")));
+        assert_eq!(o.source(), ConnectionOriginSource::TrustedProxyChain);
+        let o = captured("spoof, 203.0.113.9", "10.10.0.2:443", &["10.0.0.0/8"], 0);
+        assert_eq!(o.client_ip(), Some(ip("203.0.113.9")));
+        for xff in ["", "unknown", "203.0.113.9,,"] {
+            let o = captured(xff, "10.10.0.2:443", &["10.0.0.0/8"], 0);
+            assert_eq!(o.client_ip(), None, "{xff}");
+            assert_ne!(o.client_ip(), Some(ip("10.10.0.2")));
+        }
+        let o = ConnectionOrigin::capture(
+            &HeaderMap::new(),
+            Some("10.10.0.2:443".parse().unwrap()),
+            &["10.0.0.0/8".into()],
+            0,
+        );
+        assert_eq!(o.client_ip(), None, "trusted proxy without header is unknown");
+    }
+
+    /// Headers an untrusted caller sends are ignored entirely, including ones
+    /// that would make a trusted chain ambiguous; so is unused hop config.
+    #[test]
+    fn security_origin_untrusted_peer_headers_cannot_make_source_unknown() {
+        let peer = Some("198.51.100.9:443".parse().unwrap());
+        let mut dup = headers("203.0.113.9");
+        dup.append(X_FORWARDED_FOR, "1.2.3.4".parse().unwrap());
+        for (h, cidrs, hops) in [
+            (dup, vec![], 1),
+            (headers(&"1".repeat(9000)), vec![], 1),
+            (headers("203.0.113.9"), vec![], 99),
+            (headers("203.0.113.9"), vec!["10.0.0.0/8".to_string()], 99),
+        ] {
+            let o = ConnectionOrigin::capture(&h, peer, &cidrs, hops);
+            assert_eq!(o.client_ip(), Some(ip("198.51.100.9")));
+            assert_eq!(o.source(), ConnectionOriginSource::SocketPeer);
+        }
     }
 }

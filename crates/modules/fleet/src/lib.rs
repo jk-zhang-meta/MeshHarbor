@@ -564,6 +564,15 @@ impl Module for FleetState {
     /// and `setup_diagnostics` (FR-102 P3b) were born here.
     fn indexes(&self) -> Vec<IndexSet> {
         vec![
+            // The agent socket records private business source observations
+            // (core business_authority). Their expiry index must exist whenever
+            // fleet runs, not only when the network module is mounted; the
+            // network module declares the same idempotent spec for clients.
+            IndexSet {
+                collection: roomler_core::business_authority::OBSERVATIONS_COLLECTION,
+                pre_ops: Vec::new(),
+                indexes: vec![index_ttl(bson::doc! { "expires_at": 1 }, 0)],
+            },
             IndexSet {
                 collection: "consent_requests",
                 pre_ops: Vec::new(),

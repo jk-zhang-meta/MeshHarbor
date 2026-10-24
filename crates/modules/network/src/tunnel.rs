@@ -148,16 +148,21 @@ pub async fn handle_tunnel_client_socket(
     info!(%tunnel_client_id, %tenant_id, %owner_user_id, "tunnel-client WS connected");
     let conn_established_ms = bson::DateTime::now().timestamp_millis();
     let connection_id = uuid::Uuid::new_v4().to_string();
-    let business_device = observe_business_connection(
-        &state,
-        tenant_id,
-        tunnel_client_id,
-        owner_user_id,
-        presented_generation,
-        &connection_origin,
-        &connection_id,
-    )
-    .await;
+    let business_observation = roomler_core::business_authority::ObservationTask::spawn({
+        let (state, origin, connection_id) = (state.clone(), connection_origin.clone(), connection_id.clone());
+        async move {
+            observe_business_connection(
+                &state,
+                tenant_id,
+                tunnel_client_id,
+                owner_user_id,
+                presented_generation,
+                &origin,
+                &connection_id,
+            )
+            .await
+        }
+    });
 
     let (socket_tx, mut socket_rx) = socket.split();
     let socket_tx = Arc::new(Mutex::new(socket_tx));
@@ -523,17 +528,7 @@ pub async fn handle_tunnel_client_socket(
     // some other clone is still alive.
     drop(outbound_tx);
     pump.abort();
-    if let Some(device) = business_device.as_ref() {
-        let _ = tokio::time::timeout(
-            Duration::from_secs(1),
-            roomler_core::business_authority::close_connection_observation(
-                &state.core,
-                device,
-                &connection_id,
-            ),
-        )
-        .await;
-    }
+    business_observation.finish(&state.core, &connection_id).await;
     info!(%tunnel_client_id, "tunnel-client WS disconnected");
 }
 

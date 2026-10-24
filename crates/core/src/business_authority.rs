@@ -7,7 +7,7 @@
 
 use bson::{DateTime, doc, oid::ObjectId};
 use mongodb::options::ReturnDocument;
-use roomler_ai_remote_control::models::{Agent, TunnelClient};
+use roomler_ai_remote_control::models::{Agent, AgentStatus, TunnelClient};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -20,6 +20,9 @@ use crate::{
 pub const ROLE_APPROVALS_COLLECTION: &str = "business_device_roles";
 pub const OBSERVATIONS_COLLECTION: &str = "business_connection_observations";
 pub const OBSERVATION_TTL_MILLIS: i64 = 60_000;
+/// DB-IP Country Lite is released monthly. A database older than this is not
+/// security evidence: zones fail closed until the image is rebuilt.
+pub const MAX_GEOIP_DATASET_AGE_SECS: u64 = 120 * 24 * 3600;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -236,6 +239,8 @@ pub struct DeviceAuthorityView {
     pub role_approval: Option<RoleApproval>,
     pub effective_role: DeviceUseRole,
     pub last_observation: Option<ConnectionObservation>,
+    /// Newest still-open observation that is current right now, if any.
+    pub current_observation: Option<ConnectionObservation>,
     pub observation_is_current: bool,
 }
 
@@ -261,7 +266,16 @@ fn require_role_approver(
     }
 }
 
-async fn verify_current_device(core: &Core, device: &AuthenticatedDevice) -> Result<(), ApiError> {
+/// Re-reads the registration immediately before a write. `require_active`
+/// additionally demands a non-quarantined device whose owner is still
+/// admitted: quarantine and de-admission do not bump the token generation, so
+/// identity equality alone would let such a device mint current evidence.
+/// Revocation and diagnostics pass `false` so they keep working on those rows.
+async fn verify_current_device(
+    core: &Core,
+    device: &AuthenticatedDevice,
+    require_active: bool,
+) -> Result<(), ApiError> {
     let filter = doc! { "_id": device.identity.device_id, "tenant_id": device.identity.tenant_id, "deleted_at": bson::Bson::Null };
     let actual = match device.identity.kind {
         DeviceKind::Agent => core
@@ -270,8 +284,7 @@ async fn verify_current_device(core: &Core, device: &AuthenticatedDevice) -> Res
             .find_one(filter)
             .await
             .map_err(storage_error)?
-            .as_ref()
-            .map(AuthenticatedDevice::from_agent)
+            .map(|row| Ok::<_, ApiError>((AuthenticatedDevice::from_agent(&row)?, row.status, row.owner_user_id)))
             .transpose()?,
         DeviceKind::TunnelClient => core
             .db
@@ -279,17 +292,20 @@ async fn verify_current_device(core: &Core, device: &AuthenticatedDevice) -> Res
             .find_one(filter)
             .await
             .map_err(storage_error)?
-            .as_ref()
-            .map(AuthenticatedDevice::from_tunnel_client)
+            .map(|row| Ok::<_, ApiError>((AuthenticatedDevice::from_tunnel_client(&row)?, row.status, row.owner_user_id)))
             .transpose()?,
     };
-    if actual
-        .as_ref()
-        .is_none_or(|row| row.identity != device.identity)
-    {
+    let Some((_, status, owner)) = actual.filter(|(row, _, _)| row.identity == device.identity)
+    else {
         return Err(ApiError::Conflict(
             "Device identity changed; reload current registration".into(),
         ));
+    };
+    if require_active {
+        if matches!(status, AgentStatus::Quarantined) {
+            return Err(ApiError::Conflict("Device is quarantined".into()));
+        }
+        crate::admission::authorize_user_id(core, owner, None).await?;
     }
     Ok(())
 }
@@ -354,12 +370,14 @@ fn observation(
         .map(DateTime::from_millis)
         .unwrap_or(now);
     let source_current = captured <= now && now < expiry && origin.client_ip().is_some();
-    // Metadata is a database-defined version, not a content signature. A future
-    // or empty build identity cannot support the security classification.
+    // Metadata is a database-defined version, not a content signature. A future,
+    // empty or stale build identity cannot support the security classification.
+    let now_secs = now.timestamp_millis().max(0) as u64 / 1000;
     let dataset_current = geo.dataset.as_ref().is_some_and(|d| {
         !d.database_type.is_empty()
             && d.build_epoch > 0
-            && d.build_epoch <= (now.timestamp_millis().max(0) as u64 / 1000)
+            && d.build_epoch <= now_secs
+            && now_secs - d.build_epoch <= MAX_GEOIP_DATASET_AGE_SECS
     });
     let country_code = if source_current && dataset_current {
         geo.country_code
@@ -404,7 +422,7 @@ pub async fn record_connection_observation(
     origin: &ConnectionOrigin,
     connection_id: &str,
 ) -> Result<ConnectionObservation, ApiError> {
-    verify_current_device(core, device).await?;
+    verify_current_device(core, device, true).await?;
     let approval = core
         .db
         .collection::<RoleApproval>(ROLE_APPROVALS_COLLECTION)
@@ -433,6 +451,36 @@ pub async fn record_connection_observation(
         .await
         .map_err(storage_error)?;
     Ok(row)
+}
+
+/// A connection's observation recorder, run beside (not before) the socket's
+/// management loop so slow storage can never delay hello/registration.
+pub struct ObservationTask(tokio::task::JoinHandle<Option<AuthenticatedDevice>>);
+
+impl ObservationTask {
+    pub fn spawn(
+        record: impl std::future::Future<Output = Option<AuthenticatedDevice>> + Send + 'static,
+    ) -> Self {
+        Self(tokio::spawn(record))
+    }
+
+    /// Wait briefly for the recorder so its insert cannot land after the close,
+    /// then close exactly this connection. A recorder still running after the
+    /// bound is aborted; at worst one open row remains until its 60 s expiry.
+    pub async fn finish(mut self, core: &Core, connection_id: &str) {
+        let wait = std::time::Duration::from_secs(2);
+        match tokio::time::timeout(wait, &mut self.0).await {
+            Ok(Ok(Some(device))) => {
+                let _ = tokio::time::timeout(
+                    std::time::Duration::from_secs(1),
+                    close_connection_observation(core, &device, connection_id),
+                )
+                .await;
+            }
+            Ok(_) => {}
+            Err(_) => self.0.abort(),
+        }
+    }
 }
 
 /// Close exactly this old/new connection identity; never upsert, overwrite a
@@ -471,7 +519,8 @@ pub async fn approve_device_role(
     require_role_approver(&core.settings.auth.account_approval, auth.user_id)?;
     crate::admission::authorize_user_id(core, auth.user_id, Some(auth.claims.approval_revision))
         .await?;
-    verify_current_device(core, device).await?;
+    // Granting needs an active device; revoking must work on any current row.
+    verify_current_device(core, device, role != DeviceUseRole::Unknown).await?;
     let reason = reason.trim();
     if reason.is_empty() || reason.len() > 512 || reason.chars().any(char::is_control) {
         return Err(ApiError::BadRequest(
@@ -497,7 +546,7 @@ pub async fn get_device_authority(
     core: &Core,
     device: &AuthenticatedDevice,
 ) -> Result<DeviceAuthorityView, ApiError> {
-    verify_current_device(core, device).await?;
+    verify_current_device(core, device, false).await?;
     let role_approval = core
         .db
         .collection::<RoleApproval>(ROLE_APPROVALS_COLLECTION)
@@ -506,23 +555,29 @@ pub async fn get_device_authority(
         .map_err(storage_error)?;
     let identity = bson::to_bson(&device.identity)
         .map_err(|_| ApiError::Internal("Device identity serialization failed".into()))?;
-    let last_observation = core
+    let observations = core
         .db
-        .collection::<ConnectionObservation>(OBSERVATIONS_COLLECTION)
-        .find_one(doc! { "identity": identity })
+        .collection::<ConnectionObservation>(OBSERVATIONS_COLLECTION);
+    let last_observation = observations
+        .find_one(doc! { "identity": identity.clone() })
         .sort(doc! { "captured_at": -1 })
         .await
         .map_err(storage_error)?;
+    // A newer closed row must not hide an older connection that is still open.
     let now = DateTime::now();
-    let observation_is_current = last_observation
-        .as_ref()
-        .is_some_and(|o| o.is_current_for(device, &o.connection_id, now));
+    let current_observation = observations
+        .find_one(doc! { "identity": identity, "closed_at": bson::Bson::Null })
+        .sort(doc! { "captured_at": -1 })
+        .await
+        .map_err(storage_error)?
+        .filter(|o| o.is_current_for(device, &o.connection_id, now));
     Ok(DeviceAuthorityView {
         identity: device.identity.clone(),
         effective_role: effective_role(role_approval.as_ref(), device, current_owner(core)?, now),
         role_approval,
         last_observation,
-        observation_is_current,
+        observation_is_current: current_observation.is_some(),
+        current_observation,
     })
 }
 
@@ -554,7 +609,7 @@ mod tests {
             country_code: code.map(str::to_string),
             dataset: Some(GeoIpDatasetIdentity {
                 database_type: "fixture-country".into(),
-                build_epoch: 1,
+                build_epoch: (DateTime::now().timestamp_millis() / 1000 - 86_400) as u64,
                 ip_version: 4,
             }),
         }
@@ -749,6 +804,21 @@ mod tests {
                 .unwrap()
                 .zone,
             None
+        );
+        let mut stale = geo(Some("CN"));
+        stale.dataset.as_mut().unwrap().build_epoch -= MAX_GEOIP_DATASET_AGE_SECS;
+        assert_eq!(
+            observation(&d, &o, "c", stale, None, None, o.captured_at())
+                .unwrap()
+                .zone,
+            None,
+            "a database older than the bound is not security evidence"
+        );
+        assert_eq!(
+            observation(&d, &o, "c", geo(Some("CN")), None, None, o.captured_at())
+                .unwrap()
+                .zone,
+            Some(BusinessZone::Mainland)
         );
     }
 

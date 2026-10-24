@@ -206,16 +206,21 @@ pub async fn handle_agent_socket(
     // as the connection that wrote its hello, so this connection's teardown
     // writes `Offline` only while no newer hello has replaced it.
     let conn_id = uuid::Uuid::new_v4().to_string();
-    let business_device = observe_business_connection(
-        &state,
-        tenant_id,
-        agent_id,
-        owner_user_id,
-        presented_generation,
-        &connection_origin,
-        &conn_id,
-    )
-    .await;
+    let business_observation = roomler_core::business_authority::ObservationTask::spawn({
+        let (state, origin, conn_id) = (state.clone(), connection_origin.clone(), conn_id.clone());
+        async move {
+            observe_business_connection(
+                &state,
+                tenant_id,
+                agent_id,
+                owner_user_id,
+                presented_generation,
+                &origin,
+                &conn_id,
+            )
+            .await
+        }
+    });
 
     // Persist: mark online, update hello fields on the Mongo row. Best-effort —
     // signaling still works if Mongo lags.
@@ -1163,17 +1168,7 @@ pub async fn handle_agent_socket(
     } else {
         debug!(%agent_id, "teardown skipped Offline+presence (newer connection owns the slot)");
     }
-    if let Some(device) = business_device.as_ref() {
-        let _ = tokio::time::timeout(
-            std::time::Duration::from_secs(1),
-            roomler_core::business_authority::close_connection_observation(
-                &state.core,
-                device,
-                &conn_id,
-            ),
-        )
-        .await;
-    }
+    business_observation.finish(&state.core, &conn_id).await;
     info!(%agent_id, "remote-control agent WS disconnected");
 }
 
