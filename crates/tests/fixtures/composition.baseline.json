@@ -1,6 +1,14 @@
 {
   "routes": [
     {
+      "path": "/api/account/devices",
+      "methods": "GET,HEAD"
+    },
+    {
+      "path": "/api/account/devices/summary",
+      "methods": "GET,HEAD"
+    },
+    {
       "path": "/api/admin/growth/alerts",
       "methods": "GET,HEAD"
     },
@@ -189,6 +197,10 @@
       "methods": "POST"
     },
     {
+      "path": "/api/agent/artifacts/{tag}/{filename}",
+      "methods": "GET,HEAD"
+    },
+    {
       "path": "/api/agent/crash",
       "methods": "POST"
     },
@@ -249,6 +261,22 @@
       "methods": "POST"
     },
     {
+      "path": "/api/auth/approval",
+      "methods": "GET,HEAD"
+    },
+    {
+      "path": "/api/auth/approval/access",
+      "methods": "GET,HEAD"
+    },
+    {
+      "path": "/api/auth/approval/status",
+      "methods": "POST"
+    },
+    {
+      "path": "/api/auth/approval/{user_id}",
+      "methods": "POST"
+    },
+    {
       "path": "/api/auth/login",
       "methods": "POST"
     },
@@ -259,6 +287,10 @@
     {
       "path": "/api/auth/me",
       "methods": "GET,HEAD,PUT"
+    },
+    {
+      "path": "/api/auth/native/share-ssh/login",
+      "methods": "POST"
     },
     {
       "path": "/api/auth/refresh",
@@ -282,6 +314,30 @@
     },
     {
       "path": "/api/consent/{token}/deny",
+      "methods": "POST"
+    },
+    {
+      "path": "/api/device-shares",
+      "methods": "GET,HEAD,POST"
+    },
+    {
+      "path": "/api/device-shares/{id}/ssh",
+      "methods": "GET,HEAD"
+    },
+    {
+      "path": "/api/device-shares/{id}/ssh/ws",
+      "methods": "GET,HEAD"
+    },
+    {
+      "path": "/api/device-shares/{share_id}/check",
+      "methods": "POST"
+    },
+    {
+      "path": "/api/device-shares/{share_id}/remote",
+      "methods": "GET,HEAD"
+    },
+    {
+      "path": "/api/device-shares/{share_id}/revoke",
       "methods": "POST"
     },
     {
@@ -1419,6 +1475,33 @@
               "name": 1
             },
             "unique": true
+          }
+        ]
+      },
+      {
+        "collection": "device_share_grants",
+        "indexes": [
+          {
+            "key": {
+              "recipient_user_id": 1,
+              "device_id": 1,
+              "revoked_at": 1,
+              "expires_at": 1
+            }
+          },
+          {
+            "key": {
+              "owner_user_id": 1,
+              "created_at": -1,
+              "_id": -1
+            }
+          },
+          {
+            "key": {
+              "recipient_user_id": 1,
+              "created_at": -1,
+              "_id": -1
+            }
           }
         ]
       },
@@ -3624,6 +3707,33 @@
         ]
       },
       {
+        "collection": "device_share_grants",
+        "indexes": [
+          {
+            "key": {
+              "recipient_user_id": 1,
+              "device_id": 1,
+              "revoked_at": 1,
+              "expires_at": 1
+            }
+          },
+          {
+            "key": {
+              "owner_user_id": 1,
+              "created_at": -1,
+              "_id": -1
+            }
+          },
+          {
+            "key": {
+              "recipient_user_id": 1,
+              "created_at": -1,
+              "_id": -1
+            }
+          }
+        ]
+      },
+      {
         "collection": "enroll_token_issued",
         "indexes": [
           {
@@ -5484,6 +5594,10 @@
     ]
   },
   "wire": [
+    "rc:share.ssh.connect",
+    "rc:share.ssh.prepared",
+    "rc:share.ssh.lease.challenge",
+    "rc:share.lease.challenge",
     "rc:agent.hello",
     "rc:agent.heartbeat",
     "rc:relay.probe_report",
@@ -5557,13 +5671,27 @@
     "rc:overlay.netcheck",
     "rc:overlay.leave",
     "rc:overlay.relay_probe",
+    "rc:overlay.path_trial_request",
+    "rc:overlay.path_trial_ready",
+    "rc:overlay.path_trial_committed",
+    "rc:overlay.path_trial_abort",
+    "rc:overlay.path_trial_return_request",
+    "rc:overlay.path_trial_return_ready",
+    "rc:overlay.path_trial_returned",
+    "rc:overlay.path_trial_return_abort",
+    "rc:overlay.org_relay_discover",
     "rc:overlay.relay_request",
+    "rc:overlay.org_relay_fallback_request",
     "rc:overlay.warm_relay_request",
     "rc:extauth.start",
     "rc:extauth.finish",
     "rc:extauth.ke2",
     "rc:extauth.outcome",
     "rc:extauth.session",
+    "rc:share.ssh.setup",
+    "rc:share.ssh.forward",
+    "rc:share.ssh.lease.renewal",
+    "rc:share.lease.renewal",
     "rc:session.created",
     "rc:request",
     "rc:sdp.offer",
@@ -5608,7 +5736,18 @@
     "rc:overlay.relay_grant",
     "rc:overlay.warm_relay_grant",
     "rc:overlay.force_derp",
+    "rc:overlay.path_trial_start",
+    "rc:overlay.path_trial_commit",
+    "rc:overlay.path_trial_finalize",
+    "rc:overlay.path_trial_abort",
+    "rc:overlay.path_trial_return_prepare",
+    "rc:overlay.path_trial_return_commit",
+    "rc:overlay.path_trial_return_finalize",
+    "rc:overlay.path_trial_return_abort",
+    "rc:overlay.org_relay_candidates",
     "rc:overlay.relay_session",
+    "rc:overlay.relay_bridge_serve",
+    "rc:overlay.relay_bridge_revoke",
     "rc:overlay.relay_serve",
     "rc:overlay.relay_revoke",
     "rc:overlay.join_refused",
@@ -5691,6 +5830,16 @@
     "rc:overlay.join": "network",
     "rc:overlay.leave": "network",
     "rc:overlay.netcheck": "network",
+    "rc:overlay.org_relay_discover": "network",
+    "rc:overlay.org_relay_fallback_request": "network",
+    "rc:overlay.path_trial_abort": "network",
+    "rc:overlay.path_trial_committed": "network",
+    "rc:overlay.path_trial_ready": "network",
+    "rc:overlay.path_trial_request": "network",
+    "rc:overlay.path_trial_return_abort": "network",
+    "rc:overlay.path_trial_return_ready": "network",
+    "rc:overlay.path_trial_return_request": "network",
+    "rc:overlay.path_trial_returned": "network",
     "rc:overlay.relay_probe": "network",
     "rc:overlay.relay_request": "network",
     "rc:overlay.srflx": "network",
@@ -5706,6 +5855,10 @@
     "rc:sdp.offer": "remote",
     "rc:session.request": "remote",
     "rc:session.stats": "remote",
+    "rc:share.lease.challenge": "remote",
+    "rc:share.ssh.connect": "network",
+    "rc:share.ssh.lease.challenge": "network",
+    "rc:share.ssh.prepared": "network",
     "rc:ssh.activity": "network",
     "rc:ssh.grant_ack": "network",
     "rc:ssh.request": "network",
