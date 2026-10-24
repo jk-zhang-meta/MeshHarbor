@@ -451,7 +451,7 @@ cascade's guarantees while replacing its reactive counters:
 verbosity (the 10-min decision summaries); selection is always
 monitor-driven — rollback is a release revert, not an env flip.
 
-### Fast failover and return to direct (F0–F3c)
+### Fast failover and return to direct (F0–F3c, F2)
 
 Measured end to end by the F0 harness, the ignored test
 `overlay::runtime::failover_bench::failover_stall_and_return`. It runs two
@@ -464,7 +464,8 @@ switches below flipped on one binary:
 | | birth → direct | stall (min / median / max) | back on direct after the heal |
 |---|---|---|---|
 | all switches below off | 30.1 s | 7.3 / 8.0 / 8.1 s | 42.3 / 43.0 / 48.0 s |
-| all on | 1.3 s | 3.5 / 4.0 / 4.2 s | 4.2 / 4.7 / 4.9 s |
+| all on, before F2 | 1.3 s | 3.5 / 4.0 / 4.2 s | 4.2 / 4.7 / 4.9 s |
+| all on, with F2 standby copies | 1.3 s | 1.8 / 2.0 s (2 runs; 4.1 s with copies off) | 4.5 / 4.8 s |
 
 A 90 s outage came back 40 s after the heal before F3c, and 4 s after it.
 
@@ -474,6 +475,7 @@ sequenceDiagram
   participant B as node B
   Note over A,B: the direct path goes dark under traffic
   A->>A: business scout (1 s tick): tx up, rx flat, so arm a proof (forced handshake)
+  A->>B: unanswered after 0.2 s: data also rides /derp as tagged standby copies (F2)
   A->>A: unanswered after 0.8 s: second initiation (F1)
   A->>A: unanswered at 2 s: RekeyUnanswered, onto the DERP floor, lane opens (F3)
   B->>B: the same, or #27 demote-follow on A's /derp frames
@@ -493,13 +495,17 @@ sequenceDiagram
 | F3c | each in-lane failure extends the lane, up to 5 min after the conviction, doubling penalty and spacing up to 20 s | `OVERLAY_FAST_RETURN_EXTEND=0` | `path.rs` `FAST_RETURN_MAX`, `FAST_RETURN_BACKOFF_CAP` |
 | Birth probe | a fresh peer whose first carrier is the DERP floor starts its LAN probe in the same walk, not on the next ~30 s re-upgrade walk | `OVERLAY_BIRTH_LAN_PROBE=0` | `runtime/establish.rs`, floor block of the relay birth branch |
 | Fast promote | a latched probe is promoted on the 1 s tick instead of the 5 s fallback sweep | `OVERLAY_FAST_PROBE_PROMOTE=0` | `runtime.rs`, `business_scout` arm |
+| F2 standby copies | while a proof has gone unanswered for 200 ms, the peer's data is also sent over `/derp`, tagged `STANDBY_MAGIC`; the receiver takes it into the same session through the same ingress gate, and the replay window drops the second of original and copy | `OVERLAY_STANDBY_COPIES=0` | `transport/derp.rs` `STANDBY_MAGIC`; `wg.rs` `StandbyTee`, `decap_standby`; `runtime/establish.rs` `sweep_standby`, `standby_tee_wanted` |
 
-> ⚠️ What is left of the stall is detection (1–2 s) plus the 2 s proof
-> window. Getting under 2 s needs dual-send on suspicion (F2), which must land
-> whole. A receiver that accepts standby `/derp` frames without following
-> them keeps its own rx advancing, which blinds its scout to its own dead
-> direct tx (a B→A blackhole). F2 also needs per-carrier rx accounting and a
-> capability bit.
+> ⚠️ F2's invariants. A pre-F2 `DerpMux` routes any non-WG payload it cannot
+> place as `Unrouted`, i.e. as a demotion that #27 follows. So copies go only
+> to a peer whose authenticated disco `STANDBY_HELLO` (kind 0x10, sent on its
+> direct carrier, which an older peer ignores) is fresh. That needs no wire
+> change. A copy counts in no rx stat: a receiver whose own rx advanced on
+> copies would be blind to its own dead direct tx. The tee waits 200 ms for
+> the proof's answer, so a healthy one-way stream's recurring proofs copy
+> nothing. What is left of the stall is the business scout's 1–2 s detection
+> plus that wait.
 >
 > ⚠️ Only a LAN pair in one netns is measured so far: srflx/public tiers and
 > real WAN RTTs are not. F1's 2 s window assumes a direct RTT below about 1 s;
