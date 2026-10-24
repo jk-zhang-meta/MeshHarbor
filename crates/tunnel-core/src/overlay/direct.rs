@@ -725,6 +725,15 @@ pub fn fast_probe_promote_enabled() -> bool {
     crate::env::flag("OVERLAY_FAST_PROBE_PROMOTE", true)
 }
 
+/// F4 — while an upgrade probe is in flight, check its latch every 100 ms and
+/// promote it then, instead of on the 1 s scout tick: the responder promotes
+/// as soon as the initiator's first direct packet lands, and the initiator's
+/// lag behind it is a dark window for its own direction (F0-WAN measured up
+/// to 0.73 s). Needs `OVERLAY_FAST_PROBE_PROMOTE`. `=0` restores the 1 s tick.
+pub fn probe_watch_enabled() -> bool {
+    crate::env::flag("OVERLAY_PROBE_WATCH", true)
+}
+
 /// F2 — standby copies: while a business or Major proof for a direct peer is
 /// pending, that peer's data is ALSO sent over `/derp`, tagged so its receiver
 /// takes it into the session without following us onto DERP. Only to a peer

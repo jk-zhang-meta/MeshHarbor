@@ -551,6 +551,13 @@ const STANDBY_HELLO_EVERY: Duration = Duration::from_secs(20);
 const STANDBY_ARM_AFTER: Duration = Duration::from_millis(200);
 /// F2 — while a proof is pending, the tees are re-decided this often.
 const STANDBY_WATCH_TICK: Duration = Duration::from_millis(100);
+/// F4 — while an upgrade probe is in flight, its latch is checked this often.
+/// The responder end promotes the moment the initiator's first direct packet
+/// arrives; until the initiator promotes too, its stream still rides `/derp`
+/// in the relay carrier's session, which the responder has just replaced, so
+/// that direction is dark for the initiator's promote lag (F0-WAN: 0–1 s, the
+/// scout tick's phase).
+const PROBE_WATCH_TICK: Duration = Duration::from_millis(100);
 const BUSINESS_SCOUT_TICK: Duration = Duration::from_secs(1);
 
 // This is a bounded authorization query, never a session/cache authorization.
@@ -2877,6 +2884,10 @@ impl OverlayRuntime {
         let mut standby_peers: HashMap<[u8; 32], Option<Instant>> = HashMap::new();
         let mut standby_watch = tokio::time::interval(STANDBY_WATCH_TICK);
         standby_watch.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let probe_watch_on =
+            super::direct::fast_probe_promote_enabled() && super::direct::probe_watch_enabled();
+        let mut probe_watch = tokio::time::interval(PROBE_WATCH_TICK);
+        probe_watch.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         // netstate PR-2 — subscribe to the process-wide network monitor
         // (typed deltas replace the P4 string feed; ONE OS registration per
         // process, see `netstate`). `None` (either kill-switch off /
@@ -3236,6 +3247,22 @@ impl OverlayRuntime {
                         && let Some(mux) = relay.as_ref().and_then(|r| r.derp_mux_handle())
                     {
                         self.arm_standby_tees(&wg, &by_node, &mux);
+                    }
+                }
+                // F4 — promote a latched probe within one watch tick instead of
+                // on the next 1 s scout tick (see `PROBE_WATCH_TICK`). A lock-free
+                // latch read per probe; the promote is the scout arm's own.
+                _ = probe_watch.tick(), if probe_watch_on && !upgrade_probes.is_empty() => {
+                    let latched = upgrade_probes
+                        .values()
+                        .any(|p| wg.probe_handshake_done(&p.pubkey) == Some(true));
+                    if latched {
+                        self.sweep_upgrade_probes(
+                            &mut wg, &mut by_node, &mut relay, &tun,
+                            &mut upgrade_probes, &mut relay_bq,
+                        ).await;
+                        self.reconcile_exit_routing(&mut wg, &tun, &by_node, &current_peers, &mut exit_state).await;
+                        self.publish_view(&self_ip, &by_node, &current_peers, &upgrade_probes, exit_node_status(self.exit_node.as_deref(), &exit_state), &wg, &path_trials, server_path_trial_v1);
                     }
                 }
                 _ = business_scout.tick() => {
