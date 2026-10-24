@@ -3497,7 +3497,28 @@ pub(crate) async fn process_inbound(
     tun_tx: &mpsc::Sender<Vec<u8>>,
     ingress: &Ingress,
 ) -> bool {
+    let (authenticated, packet) = decap_inbound(t, n, buf, carrier, ingress);
+    if let Some(p) = packet {
+        let _ = tun_tx.send(p).await;
+    }
+    authenticated
+}
+
+/// [`process_inbound`] without the delivery: whether the datagram
+/// authenticated, and the decrypted IP packet it carried (a WireGuard
+/// datagram carries at most one) for the caller to hand to the TUN channel.
+/// A batched receive path decrypts a whole run of datagrams this way under one
+/// `Tunn` lock, then delivers the packets back to back once the lock is
+/// released.
+pub(crate) fn decap_inbound(
+    t: &mut Tunn,
+    n: usize,
+    buf: &mut [u8],
+    carrier: &Arc<Carrier>,
+    ingress: &Ingress,
+) -> (bool, Option<Vec<u8>>) {
     let stats = &ingress.stats;
+    let mut delivered = None;
     // Decapsulate writes into a separate scratch buffer so the borrow on
     // the result doesn't alias the inbound `buf`.
     let mut out = vec![0u8; WG_BUF];
@@ -3576,7 +3597,7 @@ pub(crate) async fn process_inbound(
                 stats.rx.fetch_add(1, Ordering::Relaxed);
                 let (at, len) = (pkt.as_ptr() as usize, pkt.len());
                 let span = (at - out.as_ptr() as usize, len);
-                let _ = tun_tx.send(into_packet(out, span)).await;
+                delivered = Some(into_packet(out, span));
             }
         }
         TunnResult::WriteToTunnelV6(pkt, src) => {
@@ -3584,7 +3605,7 @@ pub(crate) async fn process_inbound(
                 stats.rx.fetch_add(1, Ordering::Relaxed);
                 let (at, len) = (pkt.as_ptr() as usize, pkt.len());
                 let span = (at - out.as_ptr() as usize, len);
-                let _ = tun_tx.send(into_packet(out, span)).await;
+                delivered = Some(into_packet(out, span));
             }
         }
         TunnResult::Done => {}
@@ -3604,7 +3625,7 @@ pub(crate) async fn process_inbound(
             .handshake_at
             .store(mono_ms_now().max(1), Ordering::Relaxed);
     }
-    authenticated
+    (authenticated, delivered)
 }
 
 /// The decrypted packet at `(offset, len)` of the decapsulation buffer, as an

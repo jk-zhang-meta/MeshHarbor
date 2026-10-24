@@ -53,6 +53,8 @@ use tracing::{debug, info, warn};
 
 use super::direct;
 use super::disco::DiscoInbound;
+#[cfg(target_os = "linux")]
+use super::wg::decap_inbound;
 use super::wg::{
     Carrier, DirectInbound, Ingress, UNKNOWN_INIT_MAX_SOURCES, UNKNOWN_INIT_MIN_INTERVAL, WgSender,
     authenticate_init_with, is_wg_shaped, process_inbound,
@@ -499,21 +501,17 @@ impl CarrierPlane {
                         };
                         for i in 0..msgs {
                             let (src, datagrams) = b.datagrams(i);
-                            for dg in datagrams {
-                                let n = dg.len();
-                                plane
-                                    .on_datagram(
-                                        &sock,
-                                        &local,
-                                        stat.as_deref(),
-                                        src,
-                                        dg,
-                                        n,
-                                        &mut recent_unknown,
-                                        &mut last_stun_drop_log,
-                                    )
-                                    .await;
-                            }
+                            plane
+                                .on_datagrams(
+                                    &sock,
+                                    &local,
+                                    stat.as_deref(),
+                                    src,
+                                    datagrams,
+                                    &mut recent_unknown,
+                                    &mut last_stun_drop_log,
+                                )
+                                .await;
                         }
                         continue;
                     }
@@ -547,6 +545,70 @@ impl CarrierPlane {
                     .await;
             }
         })
+    }
+
+    /// One message of a batched read: the datagrams GRO joined from `src`
+    /// (Linux). A run of WG data datagrams for one session is decrypted under
+    /// ONE route lookup and ONE `Tunn` lock, and its packets reach the TUN
+    /// channel back to back once the lock is released, so the inbound writer
+    /// coalesces the run (`tun_offload`) instead of a packet or two at a time.
+    /// Anything else, and a session's first datagram from a new source (a
+    /// roam candidate), takes the per-datagram path, in arrival order.
+    #[cfg(target_os = "linux")]
+    #[allow(clippy::too_many_arguments)]
+    async fn on_datagrams(
+        self: &Arc<Self>,
+        sock: &Arc<UdpSocket>,
+        local: &str,
+        stat: Option<&direct::SockStat>,
+        src: SocketAddr,
+        datagrams: std::slice::ChunksMut<'_, u8>,
+        recent_unknown: &mut HashMap<SocketAddr, (Instant, u32)>,
+        last_stun_drop_log: &mut Option<Instant>,
+    ) {
+        let mut run: Option<InboundRun> = None;
+        for dg in datagrams {
+            let n = dg.len();
+            let idx = match Tunn::parse_incoming_packet(dg) {
+                Ok(Packet::PacketData(p)) => Some(p.receiver_idx >> 8),
+                _ => None,
+            };
+            let Some(idx) = idx else {
+                if let Some(r) = run.take() {
+                    r.deliver().await;
+                }
+                self.on_datagram(sock, local, stat, src, dg, n, recent_unknown, last_stun_drop_log)
+                    .await;
+                continue;
+            };
+            if let Some(s) = stat {
+                s.bump();
+            }
+            if run.as_ref().is_none_or(|r| r.idx != idx) {
+                if let Some(r) = run.take() {
+                    r.deliver().await;
+                }
+                let Routed::Session { tunn, ingress, tun_tx } = self.route_by_index(idx, src) else {
+                    self.handle_datagram(sock, src, dg, n, Some(&mut *recent_unknown)).await;
+                    continue;
+                };
+                run = Some(InboundRun {
+                    idx,
+                    tunn: tunn.lock_owned().await,
+                    ingress,
+                    tun_tx,
+                    reply: Carrier::direct(sock.clone(), src),
+                    packets: Vec::new(),
+                });
+            }
+            let r = run.as_mut().expect("a run is open");
+            if let (_, Some(p)) = decap_inbound(&mut r.tunn, n, dg, &r.reply, &r.ingress) {
+                r.packets.push(p);
+            }
+        }
+        if let Some(r) = run.take() {
+            r.deliver().await;
+        }
     }
 
     /// One datagram read by a plane recv loop: liveness, disco, STUN, then WG.
@@ -1055,6 +1117,33 @@ enum Routed {
     },
     ForwardInit(mpsc::Sender<DirectInbound>),
     Drop,
+}
+
+/// A run of one session's data datagrams being decrypted by
+/// [`CarrierPlane::on_datagrams`]: the session held, its packets collected.
+#[cfg(target_os = "linux")]
+struct InboundRun {
+    idx: u32,
+    tunn: tokio::sync::OwnedMutexGuard<Tunn>,
+    ingress: Ingress,
+    tun_tx: mpsc::Sender<Vec<u8>>,
+    reply: Arc<Carrier>,
+    packets: Vec<Vec<u8>>,
+}
+
+#[cfg(target_os = "linux")]
+impl InboundRun {
+    /// Release the session, then hand its packets to the TUN channel back to
+    /// back, in order.
+    async fn deliver(self) {
+        let Self { tunn, tun_tx, packets, .. } = self;
+        drop(tunn);
+        for p in packets {
+            if tun_tx.send(p).await.is_err() {
+                break;
+            }
+        }
+    }
 }
 
 /// An attached engine's capability: allocate plane-unique session indices and
@@ -2654,6 +2743,36 @@ mod tests {
         assert_eq!(got.packet, ping.to_vec());
         assert!(!task.is_finished(), "the plane loop must still be running");
         task.abort();
+    }
+
+    /// A GSO burst arrives as ONE GRO-joined message and is decrypted as one
+    /// run (`on_datagrams`): every packet delivered, intact and in order.
+    #[cfg(target_os = "linux")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_gso_burst_is_delivered_whole_and_in_order() {
+        let (kp_a, kp_b) = (WgKeypair::generate(), WgKeypair::generate());
+        let (plane_a, plane_b) = (CarrierPlane::new(), CarrierPlane::new());
+        let sock_a = Arc::new(tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let sock_b = Arc::new(tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let (addr_a, addr_b) = (sock_a.local_addr().unwrap(), sock_b.local_addr().unwrap());
+        plane_a.adopt_socket(sock_a.clone());
+        plane_b.adopt_socket(sock_b.clone());
+        let (mut a, _ra) = engine(&plane_a, &kp_a).await;
+        let (mut b, mut rb) = engine(&plane_b, &kp_b).await;
+        let (ip_a, ip_b) = (Ipv4Addr::new(100, 65, 9, 1), Ipv4Addr::new(100, 65, 9, 2));
+        b.add_direct_peer(sock_b.clone(), kp_a.public.to_bytes(), ip_a, addr_a, false).await;
+        a.add_direct_peer(sock_a.clone(), kp_b.public.to_bytes(), ip_b, addr_b, true).await;
+        pump_until_delivered(&a, &mut rb, &synthetic_ipv4(ip_a, ip_b, b"warm")).await;
+        while timeout(Duration::from_millis(200), rb.recv()).await.is_ok() {}
+
+        let burst: Vec<Vec<u8>> = (0u16..48)
+            .map(|i| synthetic_ipv4(ip_a, ip_b, &[&i.to_be_bytes()[..], &[0x5a; 1000]].concat()))
+            .collect();
+        a.send_ip_batch(&burst).await;
+        for (i, want) in burst.iter().enumerate() {
+            let got = timeout(Duration::from_secs(2), rb.recv()).await.expect("delivered").unwrap();
+            assert_eq!(&got, want, "packet {i} lost, reordered or altered");
+        }
     }
 
     /// Process CPU seconds (user + system) from `/proc/self/stat`; benches only.
