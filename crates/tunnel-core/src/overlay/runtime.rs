@@ -3219,6 +3219,15 @@ impl OverlayRuntime {
                 // original fallback cadence.
                 _ = business_scout.tick() => {
                     self.scout_business_traffic(&mut wg, &mut by_node, &mut business_samples);
+                    // F1 — a proof armed here is convicted at its own deadline, not
+                    // at whichever fallback tick comes next: only the fallback arm
+                    // re-armed the recheck, so the verdict landed up to 5 s late
+                    // (F0: the stall sat at 5.0 s, phase-locked to the tick).
+                    if business_poke_fast()
+                        && let Some(wait) = business_poke_recheck(&by_node, Instant::now())
+                    {
+                        fallback.reset_after(wait);
+                    }
                     reconcile_org_recovery(&mut wg, &mut by_node, &mut relay, &mut org_q, &mut alloc_q, &mut relay_bq);
                     let followed = self.sweep_authenticated_derp_follow(&mut wg, &mut by_node, &mut relay, &current_peers);
                     let promoted = self.sweep_org_upgrades(&mut wg, &mut by_node, &mut relay, &current_peers);
