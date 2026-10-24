@@ -235,6 +235,18 @@ pub struct CarrierPlane {
     /// org, the other locked on relay until a restart swapped the winner).
     /// OFF restores the legacy shortcut.
     init_auth_first: AtomicBool,
+    /// F0 — test-only fault: while set, every datagram this plane's sockets
+    /// receive is dropped before demux (and before any rx accounting), so the
+    /// direct path is dark in both directions while sends still leave and
+    /// `/derp` keeps working (`runtime::failover_bench`).
+    #[cfg(test)]
+    pub(crate) blackhole: AtomicBool,
+    /// F0 — test-only: bind only these of the gathered LAN addresses, so two
+    /// planes in one netns model two machines with disjoint addresses (a
+    /// peer endpoint on one of OUR addresses is never a LAN candidate,
+    /// `direct::pick_same_subnet_endpoint`).
+    #[cfg(test)]
+    pub(crate) lan_only: Mutex<Option<Vec<Ipv4Addr>>>,
 }
 
 impl CarrierPlane {
@@ -264,6 +276,10 @@ impl CarrierPlane {
             binds_performed: AtomicU32::new(0),
             regather: tokio::sync::Notify::new(),
             init_auth_first: AtomicBool::new(direct::init_auth_first_enabled()),
+            #[cfg(test)]
+            blackhole: AtomicBool::new(false),
+            #[cfg(test)]
+            lan_only: Mutex::new(None),
         })
     }
 
@@ -328,6 +344,11 @@ impl CarrierPlane {
             return Some(v);
         }
         let ifaces = direct::gather_lan_interfaces();
+        #[cfg(test)]
+        let ifaces: Vec<_> = match self.lan_only.lock().unwrap().as_ref() {
+            Some(keep) => ifaces.into_iter().filter(|(ip, _)| keep.contains(ip)).collect(),
+            None => ifaces,
+        };
         let my_ips: Vec<Ipv4Addr> = ifaces.iter().map(|(ip, _)| *ip).collect();
         if my_ips.is_empty() {
             info!("carrier plane: no usable LAN interface; direct path off (relay only)");
@@ -566,6 +587,10 @@ impl CarrierPlane {
         recent_unknown: &mut HashMap<SocketAddr, (Instant, u32)>,
         last_stun_drop_log: &mut Option<Instant>,
     ) {
+        #[cfg(test)]
+        if self.blackhole.load(Ordering::Relaxed) {
+            return;
+        }
         let mut run: Option<InboundRun> = None;
         for dg in datagrams {
             let n = dg.len();
@@ -624,6 +649,10 @@ impl CarrierPlane {
         recent_unknown: &mut HashMap<SocketAddr, (Instant, u32)>,
         last_stun_drop_log: &mut Option<Instant>,
     ) {
+        #[cfg(test)]
+        if self.blackhole.load(Ordering::Relaxed) {
+            return;
+        }
         if let Some(s) = stat {
             s.bump();
         }

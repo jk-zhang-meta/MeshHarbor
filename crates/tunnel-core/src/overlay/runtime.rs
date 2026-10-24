@@ -65,6 +65,8 @@ pub use path_trial::test_support::{
     Harness as PathTrialTestHarness, Snapshot as PathTrialTestSnapshot,
 };
 mod route_guard;
+#[cfg(test)]
+mod failover_bench;
 
 use establish::*;
 // Path-compat re-export: `tun.rs` purge names these as
@@ -8122,12 +8124,12 @@ mod tests {
         assert!(view.peers[2].debug.is_none() && view.peers[3].debug.is_none());
     }
 
-    struct MockTun {
+    pub(super) struct MockTun {
         inject: Mutex<mpsc::UnboundedReceiver<Vec<u8>>>,
         delivered: mpsc::UnboundedSender<Vec<u8>>,
     }
     impl MockTun {
-        fn new() -> (
+        pub(super) fn new() -> (
             Arc<Self>,
             mpsc::UnboundedSender<Vec<u8>>,
             mpsc::UnboundedReceiver<Vec<u8>>,
@@ -8174,7 +8176,7 @@ mod tests {
         }
     }
 
-    fn synthetic_ipv4(src: Ipv4Addr, dst: Ipv4Addr, payload: &[u8]) -> Vec<u8> {
+    pub(super) fn synthetic_ipv4(src: Ipv4Addr, dst: Ipv4Addr, payload: &[u8]) -> Vec<u8> {
         let total = 20 + payload.len();
         let mut p = vec![0u8; total];
         p[0] = 0x45;
@@ -8188,7 +8190,7 @@ mod tests {
         p
     }
 
-    fn net() -> OverlayNetworkInfo {
+    pub(super) fn net() -> OverlayNetworkInfo {
         OverlayNetworkInfo {
             org_relay_fallback_v1: false,
             cidr: "100.64.0.0/10".into(),
@@ -8200,7 +8202,7 @@ mod tests {
             stun_urls: vec![],
         }
     }
-    fn peer(kp: &WgKeypair, ip: &str) -> NetmapPeer {
+    pub(super) fn peer(kp: &WgKeypair, ip: &str) -> NetmapPeer {
         NetmapPeer {
             node_id: ObjectId::new(),
             overlay_ip: ip.into(),
