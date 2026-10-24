@@ -281,7 +281,9 @@ cascade's guarantees while replacing its reactive counters:
   lifecycle module; voluntary switches are ≥30 s apart per peer. The
   bilateral 60 s LAN punch cadence is pinned in the probe scheduler
   independent of any score (the hibernate-recovery cadence survives mixed
-  fleets by construction).
+  fleets by construction), except inside a fast-return lane (F3b, below),
+  where one end probing more often only adds chances to land inside the
+  other end's open firewall window.
 - **Active revalidation (Stage 2).** The health sweep pokes an established
   carrier with a forced WG rekey when it has been silent > 30 s, or when no
   *initiator-role* handshake has completed in 120 s (initiator-role only —
@@ -448,6 +450,60 @@ cascade's guarantees while replacing its reactive counters:
 `ROOMLERD_OVERLAY_PATHMON` (default `on`) now governs only telemetry
 verbosity (the 10-min decision summaries); selection is always
 monitor-driven — rollback is a release revert, not an env flip.
+
+### Fast failover and return to direct (F0–F3c)
+
+Measured end to end by the F0 harness, the ignored test
+`overlay::runtime::failover_bench::failover_stall_and_return`. It runs two
+relay-mode runtimes, each on its own carrier plane, with a fake control plane
+and a fake `/derp`. A test-only blackhole drops every received direct
+datagram (both directions dark, `/derp` untouched), and a 50 pps stream runs
+each way. The pair is LAN, in one netns, 5 jittered runs per row, with the kill
+switches below flipped on one binary:
+
+| | birth → direct | stall (min / median / max) | back on direct after the heal |
+|---|---|---|---|
+| all switches below off | 30.1 s | 7.3 / 8.0 / 8.1 s | 42.3 / 43.0 / 48.0 s |
+| all on | 1.3 s | 3.5 / 4.0 / 4.2 s | 4.2 / 4.7 / 4.9 s |
+
+A 90 s outage came back 40 s after the heal before F3c, and 4 s after it.
+
+```mermaid
+sequenceDiagram
+  participant A as node A
+  participant B as node B
+  Note over A,B: the direct path goes dark under traffic
+  A->>A: business scout (1 s tick): tx up, rx flat, so arm a proof (forced handshake)
+  A->>A: unanswered after 0.8 s: second initiation (F1)
+  A->>A: unanswered at 2 s: RekeyUnanswered, onto the DERP floor, lane opens (F3)
+  B->>B: the same, or #27 demote-follow on A's /derp frames
+  loop inside the lane (up to 5 min, F3c)
+    A->>B: make-before-break probe (LAN spacing 5 s, backing off to 20 s)
+  end
+  Note over A,B: the path heals: a probe in flight latches on its next 5 s re-send
+  A->>A: promoted on the next 1 s tick (fast promote)
+```
+
+| Mechanism | What it does | Kill switch | Where |
+|---|---|---|---|
+| F1 double tap | a business proof still unanswered after 800 ms gets one more initiation; verdict at 2 s instead of 6 s | `OVERLAY_BUSINESS_POKE_FAST=0` | `lifecycle.rs` `BUSINESS_POKE_*`; `runtime/establish.rs` `scout_business_traffic` |
+| F1 recheck | the scout arm re-arms the verdict at the proof's own deadline, not the next 5 s fallback tick | same | `runtime.rs`, `business_scout` arm |
+| F3 lane | a `RekeyUnanswered` death on a direct tier opens a 60 s lane: an in-lane srflx/public failure books a 4 s half-life and no strike; `install_peers` walks every 5 s | `OVERLAY_FAST_RETURN=0` | `path.rs` `FAST_RETURN_*` |
+| F3b | LAN joins the lane: the spacing pin drops from 60 s to 5 s, with the same short penalty | `OVERLAY_FAST_RETURN_LAN=0` | `path.rs` `lan_spacing` |
+| F3c | each in-lane failure extends the lane, up to 5 min after the conviction, doubling penalty and spacing up to 20 s | `OVERLAY_FAST_RETURN_EXTEND=0` | `path.rs` `FAST_RETURN_MAX`, `FAST_RETURN_BACKOFF_CAP` |
+| Birth probe | a fresh peer whose first carrier is the DERP floor starts its LAN probe in the same walk, not on the next ~30 s re-upgrade walk | `OVERLAY_BIRTH_LAN_PROBE=0` | `runtime/establish.rs`, floor block of the relay birth branch |
+| Fast promote | a latched probe is promoted on the 1 s tick instead of the 5 s fallback sweep | `OVERLAY_FAST_PROBE_PROMOTE=0` | `runtime.rs`, `business_scout` arm |
+
+> ⚠️ What is left of the stall is detection (1–2 s) plus the 2 s proof
+> window. Getting under 2 s needs dual-send on suspicion (F2), which must land
+> whole. A receiver that accepts standby `/derp` frames without following
+> them keeps its own rx advancing, which blinds its scout to its own dead
+> direct tx (a B→A blackhole). F2 also needs per-carrier rx accounting and a
+> capability bit.
+>
+> ⚠️ Only a LAN pair in one netns is measured so far: srflx/public tiers and
+> real WAN RTTs are not. F1's 2 s window assumes a direct RTT below about 1 s;
+> on a GEO-satellite path the kill switch restores the 6 s window.
 
 ## Phase D: the relay tiers
 
