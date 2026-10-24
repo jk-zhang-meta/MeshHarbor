@@ -451,7 +451,7 @@ cascade's guarantees while replacing its reactive counters:
 verbosity (the 10-min decision summaries); selection is always
 monitor-driven — rollback is a release revert, not an env flip.
 
-### Fast failover and return to direct (F0–F3c, F2)
+### Fast failover and return to direct (F0–F4)
 
 Measured end to end by the F0 harness, the ignored test
 `overlay::runtime::failover_bench::failover_stall_and_return`. It runs two
@@ -469,6 +469,33 @@ switches below flipped on one binary:
 
 A 90 s outage came back 40 s after the heal before F3c, and 4 s after it.
 
+**On real WAN pairs (F0-WAN).** The ignored test
+`overlay::runtime::failover_bench::failover_wan_node` runs one runtime per
+machine: real NICs, real STUN, so two public hosts meet on the fleet-default
+srflx tier. A TCP splice on a third host stands in for `/derp` and carries the
+hello, the `rc:overlay.srflx` adverts and the run's control words. The fault is
+the same blackhole on both planes, 25 s unless noted. In the table, "stall" is
+the worse direction, and "after the heal" is when both ends carry the stream
+on direct again:
+
+| Pair (direct RTT) | Build | n | birth → direct | stall (min / median / max) | back on direct after the heal | longest gap after the heal |
+|---|---|---|---|---|---|---|
+| Hyonix HK ↔ Tokyo (43 ms), relay on Isvoro HK | all switches off | 2 | ≈ 5.3 s | 7.6 / 7.9 s | 2.3 / 7.6 s | 59 / 78 ms |
+| | all on, before F4 | 5 | ≈ 1.3 s | 1.77 / 2.13 / 2.39 s | 4.0 / 4.5 / 4.8 s | 78–79 ms |
+| | all on, with F4 | 2 | ≈ 0 s | 1.97 / 2.23 s | 4.0 / 4.1 s | 78–79 ms |
+| | all off, 90 s outage | 1 | ≈ 5.3 s | 8.7 s | 8.3 s | 1.0 s |
+| | all on, 90 s outage, before F4 | 1 | ≈ 1.3 s | 2.4 s | 4.0 s | 79 ms |
+| aliyun-3 ↔ aliyun-6 (1:1 NAT, security group, 1 ms), relay on a mainland host via ssh tunnels | all switches off | 1 | ≈ 5.3 s | 7.6 s | 7.6 s | 324 ms |
+| | all on, before F4 | 6 | ≈ 1.5 s | 1.35 / 1.58 / 2.16 s | 4.0 / 4.2 / 4.8 s | **722–727 ms** |
+| | all on, 90 s outage, before F4 | 1 | ≈ 1.5 s | 2.2 s | 4.8 s | 722 ms |
+| | all on, with F4 | 3 | ≈ 0 s | 1.84 / 2.24 / 2.34 s | 3.7 / 4.1 / 4.2 s | 40–47 ms |
+
+"Birth → direct" is the settle time minus the harness's 3 s quiet window. F4
+does not touch detection, so its stall rows differ from the rows above only by
+the jittered cut's sampling (n is small). The mainland pair punched through the
+security group from both sides with no inbound rule, which is the srflx tier
+doing what it is for.
+
 ```mermaid
 sequenceDiagram
   participant A as node A
@@ -483,7 +510,8 @@ sequenceDiagram
     A->>B: make-before-break probe (LAN spacing 5 s, backing off to 20 s)
   end
   Note over A,B: the path heals: a probe in flight latches on its next 5 s re-send
-  A->>A: promoted on the next 1 s tick (fast promote)
+  B->>B: the responder promotes when A's first direct packet lands
+  A->>A: promoted within 100 ms of its latch (F4)
 ```
 
 | Mechanism | What it does | Kill switch | Where |
@@ -495,6 +523,7 @@ sequenceDiagram
 | F3c | each in-lane failure extends the lane, up to 5 min after the conviction, doubling penalty and spacing up to 20 s | `OVERLAY_FAST_RETURN_EXTEND=0` | `path.rs` `FAST_RETURN_MAX`, `FAST_RETURN_BACKOFF_CAP` |
 | Birth probe | a fresh peer whose first carrier is the DERP floor starts its LAN probe in the same walk, not on the next ~30 s re-upgrade walk | `OVERLAY_BIRTH_LAN_PROBE=0` | `runtime/establish.rs`, floor block of the relay birth branch |
 | Fast promote | a latched probe is promoted on the 1 s tick instead of the 5 s fallback sweep | `OVERLAY_FAST_PROBE_PROMOTE=0` | `runtime.rs`, `business_scout` arm |
+| F4 probe watch | while a probe is in flight, its latch is checked every 100 ms. The responder promotes as soon as the initiator's first direct packet lands; until the initiator promotes too, its stream still rides `/derp` in the relay carrier's session, which the responder has just replaced. The 1 s scout tick is phase-locked to the 5 s walk that starts the probe, so that dark window was a steady ~0.72 s on the mainland pair | `OVERLAY_PROBE_WATCH=0` (also off with `OVERLAY_FAST_PROBE_PROMOTE=0`) | `runtime.rs` `PROBE_WATCH_TICK`, `probe_watch` arm |
 | F2 standby copies | while a proof has gone unanswered for 200 ms, the peer's data is also sent over `/derp`, tagged `STANDBY_MAGIC`; the receiver takes it into the same session through the same ingress gate, and the replay window drops the second of original and copy | `OVERLAY_STANDBY_COPIES=0` | `transport/derp.rs` `STANDBY_MAGIC`; `wg.rs` `StandbyTee`, `decap_standby`; `runtime/establish.rs` `sweep_standby`, `standby_tee_wanted` |
 
 > ⚠️ F2's invariants. A pre-F2 `DerpMux` routes any non-WG payload it cannot
@@ -507,9 +536,14 @@ sequenceDiagram
 > nothing. What is left of the stall is the business scout's 1–2 s detection
 > plus that wait.
 >
-> ⚠️ Only a LAN pair in one netns is measured so far: srflx/public tiers and
-> real WAN RTTs are not. F1's 2 s window assumes a direct RTT below about 1 s;
-> on a GEO-satellite path the kill switch restores the 6 s window.
+> ⚠️ What F0-WAN does not cover yet:
+> - its `/derp` is a TCP splice, not the real relay server and its queueing;
+> - every measured host has an endpoint-independent mapping (a public NIC or
+>   a 1:1 NAT), so no symmetric or port-restricted NAT has been tested;
+> - the fault is a blackhole on receive, not a path that degrades slowly.
+>
+> F1's 2 s window assumes a direct RTT below about 1 s; on a GEO-satellite
+> path the kill switch restores the 6 s window.
 
 ## Phase D: the relay tiers
 
