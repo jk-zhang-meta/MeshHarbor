@@ -370,6 +370,17 @@ impl Carrier {
         }))
     }
 
+    /// The socket and current destination of a direct carrier — what a GSO
+    /// batch send needs; `None` for relay carriers.
+    fn direct_parts(&self) -> Option<(&Arc<UdpSocket>, SocketAddr)> {
+        match self {
+            Carrier::Direct { sock, dst, .. } => {
+                Some((sock, *dst.read().unwrap_or_else(|e| e.into_inner())))
+            }
+            _ => None,
+        }
+    }
+
     /// A direct UDP carrier (vs a coturn relay). The runtime uses this to
     /// decide handshake direction: a direct carrier needs BOTH ends to
     /// initiate (bilateral hole-punch — see `install_ready`).
@@ -964,21 +975,51 @@ impl WgSender {
         // guard is dropped before any await (enforced by !Send — see above).
         let sp = {
             let g = self.0.read().unwrap();
-            let pubkey = if let Some(dst) = Router::dst_of_ip_packet(packet) {
-                // v4 or derived-ULA v6 → the v4 routing table (a miss is
-                // final — no fall-through to the v6 exit).
-                g.router.route(&dst)
-            } else if Router::is_global_v6_dst(packet).is_some() {
-                g.router.v6_exit()
-            } else {
-                None
-            };
-            pubkey.and_then(|pk| g.peers.get(&pk).cloned())
+            Self::route(&g, packet).and_then(|pk| g.peers.get(&pk).cloned())
         };
         match sp {
             Some(sp) => sp.send(packet).await,
             None => false,
         }
+    }
+
+    /// The peer owning `packet`'s destination: v4 or derived-ULA v6 → the v4
+    /// routing table (a miss is final — no fall-through to the v6 exit); a
+    /// global v6 destination → the configured v6 exit.
+    fn route(g: &SendState, packet: &[u8]) -> Option<[u8; 32]> {
+        if let Some(dst) = Router::dst_of_ip_packet(packet) {
+            g.router.route(&dst)
+        } else if Router::is_global_v6_dst(packet).is_some() {
+            g.router.v6_exit()
+        } else {
+            None
+        }
+    }
+
+    /// Send a burst of outbound IP packets — what the outbound pump has
+    /// queued at once. One routing pass under one read guard; each peer's
+    /// share is then encapsulated under ONE Tunn lock and, on a direct
+    /// carrier, sent as GSO runs ([`SendPeer::send_batch`]). Per-peer packet
+    /// order is preserved. Returns how many were handed to a carrier.
+    pub async fn send_ip_batch(&self, packets: &[Vec<u8>]) -> usize {
+        let mut groups: Vec<(SendPeer, Vec<usize>)> = Vec::new();
+        {
+            let g = self.0.read().unwrap();
+            for (i, p) in packets.iter().enumerate() {
+                let Some(sp) = Self::route(&g, p).and_then(|pk| g.peers.get(&pk)) else {
+                    continue;
+                };
+                match groups.iter_mut().find(|(s, _)| Arc::ptr_eq(&s.tunn, &sp.tunn)) {
+                    Some((_, idxs)) => idxs.push(i),
+                    None => groups.push((sp.clone(), vec![i])),
+                }
+            }
+        }
+        let mut sent = 0;
+        for (sp, idxs) in groups {
+            sent += sp.send_batch(packets, &idxs).await;
+        }
+        sent
     }
 
     /// Encapsulate + send `packet` to a specific peer. `false` if the peer is
@@ -1000,22 +1041,14 @@ impl SendPeer {
         let mut buf = vec![0u8; WG_BUF];
         // rc.211 — encapsulate UNDER the lock, send AFTER releasing it (see
         // the timer tasks): never hold the Tunn lock across a carrier send.
-        let out = {
+        let len = {
             let mut t = self.tunn.lock().await;
-            match t.encapsulate(packet, &mut buf) {
-                TunnResult::WriteToNetwork(b) => Some(b.to_vec()),
-                TunnResult::Done => None,
-                TunnResult::Err(e) => {
-                    warn!(?e, "wg encapsulate error");
-                    None
-                }
-                _ => None,
-            }
+            encapsulate_into(&mut t, packet, &mut buf)
         };
-        match out {
-            Some(b) => {
+        match len {
+            Some(n) => {
                 self.stats.tx_attempted.fetch_add(1, Ordering::Relaxed);
-                let ok = send_wg_recorded(&self.carrier, &self.stats, &b).await.is_ok();
+                let ok = send_wg_recorded(&self.carrier, &self.stats, &buf[..n]).await.is_ok();
                 if ok {
                     self.stats.tx.fetch_add(1, Ordering::Relaxed);
                 }
@@ -1024,6 +1057,117 @@ impl SendPeer {
             None => false,
         }
     }
+
+    /// [`Self::send`] for several packets to this peer, in order. All are
+    /// encapsulated under ONE Tunn lock straight into one buffer; on a direct
+    /// carrier each run of equal-size WG data datagrams then leaves as one
+    /// GSO `sendmsg`. Handshake/cookie output (no session yet) keeps the
+    /// recorded single send; a refused GSO send is retried datagram by
+    /// datagram, so every path still ends in [`Carrier::send`]'s semantics.
+    async fn send_batch(&self, packets: &[Vec<u8>], idxs: &[usize]) -> usize {
+        let direct = self.carrier.direct_parts();
+        let max_segs = super::udp_batch::max_send_segments();
+        if idxs.len() < 2 || max_segs < 2 || direct.is_none() {
+            let mut sent = 0;
+            for &i in idxs {
+                if self.send(&packets[i]).await {
+                    sent += 1;
+                }
+            }
+            return sent;
+        }
+        let mut wire: Vec<u8> = Vec::with_capacity(idxs.len() * WG_BUF);
+        let mut lens: Vec<usize> = Vec::with_capacity(idxs.len());
+        let mut control: Vec<Vec<u8>> = Vec::new();
+        {
+            let mut t = self.tunn.lock().await;
+            for &i in idxs {
+                let off = wire.len();
+                wire.resize(off + WG_BUF, 0);
+                match encapsulate_into(&mut t, &packets[i], &mut wire[off..]) {
+                    // Type 4 = transport data; anything else is a handshake step.
+                    Some(n) if wire[off] == 4 => {
+                        wire.truncate(off + n);
+                        lens.push(n);
+                    }
+                    Some(n) => {
+                        control.push(wire[off..off + n].to_vec());
+                        wire.truncate(off);
+                    }
+                    None => wire.truncate(off),
+                }
+            }
+        }
+        let stats = &self.stats;
+        stats
+            .tx_attempted
+            .fetch_add((lens.len() + control.len()) as u64, Ordering::Relaxed);
+        let mut sent = 0;
+        for c in &control {
+            if send_wg_recorded(&self.carrier, stats, c).await.is_ok() {
+                sent += 1;
+            }
+        }
+        let (sock, dst) = direct.expect("checked above");
+        let mut start = 0;
+        let mut i = 0;
+        while i < lens.len() {
+            // A GSO run: equal-size datagrams, the last possibly shorter, at
+            // most `max_segs` of them and within one UDP datagram's length.
+            let seg = lens[i];
+            let cap = max_segs.min((u16::MAX as usize - 512) / seg).max(1);
+            let mut j = i + 1;
+            while j < lens.len() && j - i < cap && lens[j] <= seg {
+                let last = lens[j] < seg;
+                j += 1;
+                if last {
+                    break;
+                }
+            }
+            let end = start + lens[i..j].iter().sum::<usize>();
+            let ok = if j - i == 1 {
+                send_wg_recorded(&self.carrier, stats, &wire[start..end]).await.is_ok()
+            } else {
+                super::udp_batch::send_segments(sock, dst, &wire[start..end], seg).await.is_ok()
+            };
+            if ok {
+                sent += j - i;
+            } else if j - i > 1 {
+                let mut off = start;
+                for &n in &lens[i..j] {
+                    if self.carrier.send(&wire[off..off + n]).await.is_ok() {
+                        sent += 1;
+                    }
+                    off += n;
+                }
+            }
+            start = end;
+            i = j;
+        }
+        stats.tx.fetch_add(sent as u64, Ordering::Relaxed);
+        sent
+    }
+}
+
+/// Encapsulate `packet` into the front of `out`; the datagram length when
+/// boringtun produced one (data, or a handshake initiation while no session
+/// exists). boringtun writes from the start of `out`; the copy covers any
+/// other layout so callers can always send `out[..n]`.
+fn encapsulate_into(t: &mut Tunn, packet: &[u8], out: &mut [u8]) -> Option<usize> {
+    let base = out.as_ptr() as usize;
+    let (off, n) = match t.encapsulate(packet, out) {
+        TunnResult::WriteToNetwork(b) => (b.as_ptr() as usize - base, b.len()),
+        TunnResult::Done => return None,
+        TunnResult::Err(e) => {
+            warn!(?e, "wg encapsulate error");
+            return None;
+        }
+        _ => return None,
+    };
+    if off != 0 {
+        out.copy_within(off..off + n, 0);
+    }
+    Some(n)
 }
 
 /// A candidate owns a private receive/timer/crypto session without changing
@@ -3022,6 +3166,11 @@ impl WgDevice {
         self.send.send_ip_packet(packet).await
     }
 
+    /// A burst of outbound IP packets through the shared [`WgSender`].
+    pub async fn send_ip_batch(&self, packets: &[Vec<u8>]) -> usize {
+        self.send.send_ip_batch(packets).await
+    }
+
     /// Encapsulate + send `packet` to a specific peer. `false` if the
     /// peer is unknown, the handshake hasn't completed, or the carrier send
     /// failed. P1 (S6) — delegates to the shared [`WgSender`].
@@ -3425,13 +3574,17 @@ pub(crate) async fn process_inbound(
         TunnResult::WriteToTunnelV4(pkt, src) => {
             if ingress.permits(IpAddr::V4(src), pkt) {
                 stats.rx.fetch_add(1, Ordering::Relaxed);
-                let _ = tun_tx.send(pkt.to_vec()).await;
+                let (at, len) = (pkt.as_ptr() as usize, pkt.len());
+                let span = (at - out.as_ptr() as usize, len);
+                let _ = tun_tx.send(into_packet(out, span)).await;
             }
         }
         TunnResult::WriteToTunnelV6(pkt, src) => {
             if ingress.permits(IpAddr::V6(src), pkt) {
                 stats.rx.fetch_add(1, Ordering::Relaxed);
-                let _ = tun_tx.send(pkt.to_vec()).await;
+                let (at, len) = (pkt.as_ptr() as usize, pkt.len());
+                let span = (at - out.as_ptr() as usize, len);
+                let _ = tun_tx.send(into_packet(out, span)).await;
             }
         }
         TunnResult::Done => {}
@@ -3452,6 +3605,16 @@ pub(crate) async fn process_inbound(
             .store(mono_ms_now().max(1), Ordering::Relaxed);
     }
     authenticated
+}
+
+/// The decrypted packet at `(offset, len)` of the decapsulation buffer, as an
+/// owned packet without a second allocation (boringtun writes it at offset 0).
+fn into_packet(mut out: Vec<u8>, (off, len): (usize, usize)) -> Vec<u8> {
+    if off != 0 {
+        out.copy_within(off..off + len, 0);
+    }
+    out.truncate(len);
+    out
 }
 
 /// Phase C — the WireGuard datagram shape: a 4-byte little-endian message type

@@ -479,7 +479,45 @@ impl CarrierPlane {
             // response starves the srflx keepalive, whose watchdog then
             // rebuilds the whole plane — that must not be invisible).
             let mut last_stun_drop_log: Option<Instant> = None;
+            // Linux: up to RECV_BATCH messages per syscall, GRO-joined runs
+            // split back into datagrams (`udp_batch`). A socket that refuses
+            // the setup keeps the one-datagram reads below.
+            #[cfg(target_os = "linux")]
+            let mut batch = super::udp_batch::BatchRecv::new(&sock)
+                .inspect_err(|e| debug!(%e, %local, "carrier plane: batched receive unavailable"))
+                .ok();
             loop {
+                #[cfg(target_os = "linux")]
+                {
+                    if let Some(b) = batch.as_mut() {
+                        let msgs = match b.recv(&sock).await {
+                            Ok(n) => n,
+                            Err(e) => {
+                                warn!(%e, %local, "carrier plane: recv ended; loop exiting");
+                                break;
+                            }
+                        };
+                        for i in 0..msgs {
+                            let (src, datagrams) = b.datagrams(i);
+                            for dg in datagrams {
+                                let n = dg.len();
+                                plane
+                                    .on_datagram(
+                                        &sock,
+                                        &local,
+                                        stat.as_deref(),
+                                        src,
+                                        dg,
+                                        n,
+                                        &mut recent_unknown,
+                                        &mut last_stun_drop_log,
+                                    )
+                                    .await;
+                            }
+                        }
+                        continue;
+                    }
+                }
                 // #2220 — read on past the errors about an EARLIER datagram:
                 // Windows reports a peer's ICMP port-unreachable as 10054 on
                 // the next receive, and ending here on it left this socket
@@ -495,54 +533,81 @@ impl CarrierPlane {
                         break;
                     }
                 };
-                if let Some(s) = &stat {
-                    s.bump();
-                }
-                // C1 — disco: the out-of-tunnel carrier echo, answered
-                // unconditionally. Shape-disjoint from WG and STUN by
-                // construction (see `overlay::disco`), so it can never steal a
-                // live datagram. On the plane the sender may belong to ANY
-                // attached engine, so each is tried in turn (N ≤ a handful,
-                // and only after the cheap shape + known-peer filters).
-                if super::disco::is_disco_shaped(&buf[..n]) {
-                    // Pongs are routed to the owning engine inside; a ping
-                    // yields the bytes to echo back.
-                    if let Some(pong) = plane.disco_handle(&buf[..n], src)
-                        && super::direct::disco_respond_enabled()
-                    {
-                        let s = sock.clone();
-                        tokio::spawn(async move {
-                            let _ = s.send_to(&pong, src).await;
-                        });
-                        crate::evidence::DISCO_ANSWERED.fetch_add(1, Ordering::Relaxed);
-                    }
-                    continue;
-                }
-                let stun_tx = { plane.lock().stun_tx.clone() };
-                if crate::transport::stun::has_stun_cookie(&buf[..n]) && !is_wg_shaped(&buf[..n]) {
-                    if stun_tx
-                        .try_send(StunInbound {
-                            src,
-                            packet: buf[..n].to_vec(),
-                        })
-                        .is_err()
-                        && last_stun_drop_log
-                            .is_none_or(|t| t.elapsed() >= std::time::Duration::from_secs(10))
-                    {
-                        last_stun_drop_log = Some(Instant::now());
-                        warn!(
-                            %src, %local,
-                            "carrier plane: STUN response dropped (channel full) — a starved \
-                             srflx keepalive ends in a watchdog plane rebuild"
-                        );
-                    }
-                    continue;
-                }
                 plane
-                    .handle_datagram(&sock, src, &mut buf, n, Some(&mut recent_unknown))
+                    .on_datagram(
+                        &sock,
+                        &local,
+                        stat.as_deref(),
+                        src,
+                        &mut buf,
+                        n,
+                        &mut recent_unknown,
+                        &mut last_stun_drop_log,
+                    )
                     .await;
             }
         })
+    }
+
+    /// One datagram read by a plane recv loop: liveness, disco, STUN, then WG.
+    #[allow(clippy::too_many_arguments)]
+    async fn on_datagram(
+        self: &Arc<Self>,
+        sock: &Arc<UdpSocket>,
+        local: &str,
+        stat: Option<&direct::SockStat>,
+        src: SocketAddr,
+        buf: &mut [u8],
+        n: usize,
+        recent_unknown: &mut HashMap<SocketAddr, (Instant, u32)>,
+        last_stun_drop_log: &mut Option<Instant>,
+    ) {
+        if let Some(s) = stat {
+            s.bump();
+        }
+        // C1 — disco: the out-of-tunnel carrier echo, answered
+        // unconditionally. Shape-disjoint from WG and STUN by
+        // construction (see `overlay::disco`), so it can never steal a
+        // live datagram. On the plane the sender may belong to ANY
+        // attached engine, so each is tried in turn (N ≤ a handful,
+        // and only after the cheap shape + known-peer filters).
+        if super::disco::is_disco_shaped(&buf[..n]) {
+            // Pongs are routed to the owning engine inside; a ping
+            // yields the bytes to echo back.
+            if let Some(pong) = self.disco_handle(&buf[..n], src)
+                && super::direct::disco_respond_enabled()
+            {
+                let s = sock.clone();
+                tokio::spawn(async move {
+                    let _ = s.send_to(&pong, src).await;
+                });
+                crate::evidence::DISCO_ANSWERED.fetch_add(1, Ordering::Relaxed);
+            }
+            return;
+        }
+        if crate::transport::stun::has_stun_cookie(&buf[..n]) && !is_wg_shaped(&buf[..n]) {
+            // Only a STUN datagram needs the channel: taking the plane lock
+            // for it on every WG data packet was pure per-packet overhead.
+            let stun_tx = { self.lock().stun_tx.clone() };
+            if stun_tx
+                .try_send(StunInbound {
+                    src,
+                    packet: buf[..n].to_vec(),
+                })
+                .is_err()
+                && last_stun_drop_log
+                    .is_none_or(|t| t.elapsed() >= std::time::Duration::from_secs(10))
+            {
+                *last_stun_drop_log = Some(Instant::now());
+                warn!(
+                    %src, %local,
+                    "carrier plane: STUN response dropped (channel full) — a starved \
+                     srflx keepalive ends in a watchdog plane rebuild"
+                );
+            }
+            return;
+        }
+        self.handle_datagram(sock, src, buf, n, Some(recent_unknown)).await;
     }
 
     /// Take the receiver for plane-routed STUN Binding responses. `None`
@@ -2589,5 +2654,83 @@ mod tests {
         assert_eq!(got.packet, ping.to_vec());
         assert!(!task.is_finished(), "the plane loop must still be running");
         task.abort();
+    }
+
+    /// Process CPU seconds (user + system) from `/proc/self/stat`; benches only.
+    fn process_cpu_secs() -> f64 {
+        let stat = std::fs::read_to_string("/proc/self/stat").unwrap_or_default();
+        let tail = stat.rsplit_once(')').map(|(_, t)| t).unwrap_or("");
+        let f: Vec<&str> = tail.split_whitespace().collect();
+        let ticks = |i: usize| f.get(i).and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0);
+        (ticks(11) + ticks(12)) / 100.0
+    }
+
+    /// Production-shaped data-plane throughput (not a correctness test;
+    /// `--ignored`): both ends receive through a carrier plane recv loop and
+    /// send through `send_ip_packet`'s routing path, over real UDP. Env:
+    /// MH_BENCH_PACKETS (200000), MH_BENCH_SIZE (1280), MH_BENCH_A / _B bind
+    /// addresses (127.0.0.1), MH_BENCH_BATCH (1 = one packet per call).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[ignore]
+    async fn bench_plane_direct_throughput() {
+        let env = |k: &str, d: &str| std::env::var(k).unwrap_or_else(|_| d.to_string());
+        let n: usize = env("MH_BENCH_PACKETS", "200000").parse().unwrap();
+        let size: usize = env("MH_BENCH_SIZE", "1280").parse().unwrap();
+        let batch: usize = env("MH_BENCH_BATCH", "1").parse().unwrap();
+        let (bind_a, bind_b) = (env("MH_BENCH_A", "127.0.0.1"), env("MH_BENCH_B", "127.0.0.1"));
+        let (kp_a, kp_b) = (WgKeypair::generate(), WgKeypair::generate());
+        let (plane_a, plane_b) = (CarrierPlane::new(), CarrierPlane::new());
+        let sock_a = Arc::new(tokio::net::UdpSocket::bind(format!("{bind_a}:0")).await.unwrap());
+        let sock_b = Arc::new(tokio::net::UdpSocket::bind(format!("{bind_b}:0")).await.unwrap());
+        for s in [&sock_a, &sock_b] {
+            super::super::sockbuf::tune_carrier(s, "bench");
+        }
+        let (addr_a, addr_b) = (sock_a.local_addr().unwrap(), sock_b.local_addr().unwrap());
+        plane_a.adopt_socket(sock_a.clone());
+        plane_b.adopt_socket(sock_b.clone());
+        let (mut a, _ra) = engine(&plane_a, &kp_a).await;
+        let (mut b, mut rb) = engine(&plane_b, &kp_b).await;
+        let (ip_a, ip_b) = (Ipv4Addr::new(100, 65, 9, 1), Ipv4Addr::new(100, 65, 9, 2));
+        b.add_direct_peer(sock_b.clone(), kp_a.public.to_bytes(), ip_a, addr_a, false).await;
+        a.add_direct_peer(sock_a.clone(), kp_b.public.to_bytes(), ip_b, addr_b, true).await;
+        let pkt = synthetic_ipv4(ip_a, ip_b, &vec![0x5a; size.saturating_sub(20)]);
+        pump_until_delivered(&a, &mut rb, &pkt).await;
+        while timeout(Duration::from_millis(200), rb.recv()).await.is_ok() {}
+
+        let counter = tokio::spawn(async move {
+            let (mut got, mut bytes, mut last) = (0usize, 0usize, std::time::Instant::now());
+            while let Ok(Some(p)) = timeout(Duration::from_secs(2), rb.recv()).await {
+                got += 1;
+                bytes += p.len();
+                last = std::time::Instant::now();
+            }
+            (got, bytes, last)
+        });
+        let chunk: Vec<Vec<u8>> = vec![pkt.clone(); batch.max(1)];
+        let (cpu0, t0) = (process_cpu_secs(), std::time::Instant::now());
+        let mut left = n;
+        while left > 0 {
+            let k = left.min(batch.max(1));
+            if batch <= 1 {
+                a.send_ip_packet(&pkt).await;
+            } else {
+                a.send_ip_batch(&chunk[..k]).await;
+            }
+            left -= k;
+        }
+        let send_secs = t0.elapsed().as_secs_f64();
+        let (got, bytes, last) = counter.await.unwrap();
+        let secs = last.duration_since(t0).as_secs_f64().max(1e-9);
+        let cpu = process_cpu_secs() - cpu0;
+        println!(
+            "BENCH plane-direct size={size} batch={batch} sent={n} delivered={got} loss={:.2}% \
+             send_pps={:.0} delivered_pps={:.0} delivered_mbps={:.1} wall={secs:.2}s cpu={cpu:.2}s cpu_per_gbit={:.2}s",
+            100.0 * (n - got.min(n)) as f64 / n as f64,
+            n as f64 / send_secs,
+            got as f64 / secs,
+            bytes as f64 * 8.0 / secs / 1e6,
+            cpu / (bytes as f64 * 8.0 / 1e9).max(1e-9),
+        );
+        drop((a, b));
     }
 }

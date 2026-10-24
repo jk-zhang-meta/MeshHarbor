@@ -198,6 +198,9 @@ core-foundation = "0.9"
 # no new crate.
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2"
+# Batched data-plane UDP I/O (recvmmsg + GRO, GSO sends) — `overlay::udp_batch`.
+# Already in the tree via quinn; no new crate.
+quinn-udp = { version = "0.5", default-features = false }
 
 [features]
 # Local integration tests only; never enabled by production profiles.

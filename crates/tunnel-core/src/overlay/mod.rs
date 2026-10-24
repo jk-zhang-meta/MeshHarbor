@@ -88,6 +88,7 @@ pub mod tun;
 /// #2213 / #2220 — reading a UDP socket past the errors Windows reports about
 /// an EARLIER datagram (an ICMP port-unreachable, as 10054), for every loop
 /// that serves a real OS socket.
+pub(crate) mod udp_batch;
 pub(crate) mod udp_recv;
 /// C4 — the warm TURN allocation's loop-side state and pure helpers
 /// (`docs/overlay-warm-relay.md`).

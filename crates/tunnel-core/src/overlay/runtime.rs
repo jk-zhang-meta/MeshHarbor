@@ -693,6 +693,9 @@ fn resumed_from_suspend(mono_elapsed: Duration, wall_elapsed: Duration) -> bool 
 /// in-flight packets between the reader and the pump; the reader-side
 /// backpressure warn fires if the pump ever lets it fill.
 const OUTBOUND_QUEUE_PKTS: usize = 512;
+/// Most packets the outbound pump hands the sender per call (one GSO send
+/// carries at most 64 segments on Linux).
+const OUTBOUND_BURST_PKTS: usize = 64;
 
 /// rc.211 (re-scoped by P1/S6) — slow-handler watchdog threshold. Since P1 the
 /// data plane runs entirely off-loop (reader → outbound pump → carriers), so a
@@ -3127,12 +3130,24 @@ impl OverlayRuntime {
         let sender = wg.sender();
         let mut outbound_pump = tokio::spawn(async move {
             let mut rx = tun_pkt_rx;
+            let mut burst: Vec<Vec<u8>> = Vec::with_capacity(OUTBOUND_BURST_PKTS);
             while let Some(pkt) = rx.recv().await {
+                // Take what is ALREADY queued, never waiting for more: a lone
+                // packet leaves exactly as before, while a burst shares one
+                // routing pass, one Tunn lock per peer and (Linux, direct)
+                // GSO sends — FR-110's batched-I/O lever.
+                burst.push(pkt);
+                while burst.len() < OUTBOUND_BURST_PKTS
+                    && let Ok(p) = rx.try_recv()
+                {
+                    burst.push(p);
+                }
                 let t0 = Instant::now();
-                let _ = sender.send_ip_packet(&pkt).await;
+                let _ = sender.send_ip_batch(&burst).await;
                 // >250 ms here is now PURE send-path latency (a wedged
                 // carrier send), un-polluted by loop scheduling.
-                warn_if_slow("pump:send_ip_packet", t0);
+                warn_if_slow("pump:send_ip_batch", t0);
+                burst.clear();
             }
             debug!("overlay: TUN reader ended; outbound pump exiting");
         });

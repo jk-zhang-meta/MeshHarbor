@@ -9229,6 +9229,7 @@ dependencies = [
  "ipnet",
  "libc",
  "quinn",
+ "quinn-udp",
  "rand 0.9.4",
  "rcgen",
  "ring",
