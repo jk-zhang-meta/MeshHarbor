@@ -20,7 +20,9 @@
 //! Ignored (real time, ~2 min). One binary measures each phase through the
 //! kill switches `ROOMLERD_OVERLAY_BUSINESS_POKE_FAST=0` (F1 off) and
 //! `ROOMLERD_OVERLAY_FAST_RETURN=0` (F3 off). Knobs: `MH_FO_BLOCK_S` (25),
-//! `MH_FO_OBSERVE_S` (75). Each plane binds ONE address of the shared netns
+//! `MH_FO_OBSERVE_S` (75), `MH_FO_JITTER_MS` (0: a random extra wait before
+//! the cut, so repeated runs sample the runtime's 1 s / 5 s tick phases
+//! instead of hitting the same one every time). Each plane binds ONE address of the shared netns
 //! (`MH_FO_LAN_A`/`_B`, default the suite's veth 10.254.41.1/.2), because a
 //! peer endpoint on one of our own addresses is never a LAN candidate; run
 //! with `ROOMLERD_OVERLAY_DIRECT_PORT=0` so the two planes don't race a port.
@@ -301,6 +303,16 @@ async fn failover_stall_and_return() {
     // the business scout and `carrier_tick` alike: a cut inside it measures
     // the grace, not the failover (the first F0 runs cut 3 s in).
     tokio::time::sleep(crate::overlay::lifecycle::DIRECT_GRACE + Duration::from_secs(4)).await;
+    let jitter_ms: u64 = std::env::var("MH_FO_JITTER_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    if jitter_ms > 0 {
+        let nanos = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map_or(0, |d| d.subsec_nanos());
+        tokio::time::sleep(Duration::from_millis(u64::from(nanos) % jitter_ms)).await;
+    }
     let cut = Instant::now();
     a.plane.blackhole.store(true, Ordering::Relaxed);
     b.plane.blackhole.store(true, Ordering::Relaxed);
