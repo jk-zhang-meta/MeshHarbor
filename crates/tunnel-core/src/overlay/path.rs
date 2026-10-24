@@ -230,6 +230,18 @@ const DEMOTE_RELAY_Q_FLOOR: f64 = -99.0;
 /// pure opportunity cost; a failed one books the normal tier penalty
 /// which paces retries further.
 pub(crate) const UPWARD_PROBE_SPACING: Duration = Duration::from_secs(120);
+/// §6.3 F3 — after an active-proof conviction ([`DeathReason::RekeyUnanswered`],
+/// business or Major poke) the peer sits in a fast-return lane for this long:
+/// the runtime walks every fallback tick instead of every ~30 s, and a
+/// srflx/public failure inside the lane books [`FAST_RETURN_HALF_LIFE`] with
+/// no strike. A probe is then almost always in flight during the outage, and
+/// its ~5 s initiation re-send sees the recovery — return ≈ ≤5 s + RTT +
+/// one promote tick, instead of 60 s penalties climbing to 15 min.
+pub(crate) const FAST_RETURN_WINDOW: Duration = Duration::from_secs(60);
+/// F3 — the suppression half-life of a srflx/public failure inside the
+/// fast-return lane (eligibility re-crosses after exactly one half-life).
+/// LAN keeps the P8 fixed spacing — it never enters the lane's rule.
+pub(crate) const FAST_RETURN_HALF_LIFE: Duration = Duration::from_secs(4);
 
 /// Q clamp: quality lives in [−Q_CLAMP, +Q_CLAMP].
 const Q_CLAMP: f64 = 100.0;
@@ -401,6 +413,9 @@ struct PeerPath {
     /// can tell a tier that is merely unpenalised (eligible) from one that is
     /// actually on the ballot. `None` until the first decision.
     avail: Option<TierAvailability>,
+    /// F3 — the fast-return lane armed by a `RekeyUnanswered` death; cleared
+    /// by a latched probe (direct is back) or when it lapses.
+    fast_return_until: Option<Instant>,
 }
 
 fn tier_idx(tier: DirectTier) -> Option<usize> {
@@ -522,9 +537,20 @@ pub(crate) struct PathMonitor {
     peers: HashMap<ObjectId, PeerPath>,
     /// Global in-flight probe count (bounds [`decide`]'s Probe proposals).
     probes_in_flight: usize,
+    /// F3 kill switch, set once by the runtime from
+    /// `OVERLAY_FAST_RETURN=0`: no lane is ever armed (pre-F3 behaviour).
+    fast_return_off: bool,
 }
 
 impl PathMonitor {
+    /// A monitor with the F3 fast-return lane on or off (`Default` = on).
+    pub(crate) fn with_fast_return(enabled: bool) -> Self {
+        Self {
+            fast_return_off: !enabled,
+            ..Self::default()
+        }
+    }
+
     // -- evidence events -----------------------------------------------------
 
     /// A direct-tier attempt FAILED (carrier death on that tier, or a probe
@@ -534,7 +560,20 @@ impl PathMonitor {
     fn book_failure(&mut self, peer: &ObjectId, tier: DirectTier, mbb: bool, now: Instant) {
         let Some(idx) = tier_idx(tier) else { return };
         let p = self.peers.entry(*peer).or_default();
+        let fast_lane = matches!(tier, DirectTier::Public | DirectTier::Srflx)
+            && p.fast_return_until.is_some_and(|until| until > now);
         let t = &mut p.tiers[idx];
+        if fast_lane {
+            // F3 — inside the lane a failed re-attempt is the outage still
+            // holding, not new evidence against the tier: short penalty, no
+            // strike, so the ladder never escalates on one outage.
+            t.penalty = Some(Penalty {
+                w: weight(tier),
+                half_life: FAST_RETURN_HALF_LIFE,
+                at: now,
+            });
+            return;
+        }
         t.fails += 1;
         t.penalty = Some(Penalty {
             w: weight(tier),
@@ -570,11 +609,12 @@ impl PathMonitor {
         // to is the reliable path, and a transient blip should re-attempt
         // direct via make-before-break with zero suppression.
         if matches!(reason, DeathReason::RekeyUnanswered) {
-            self.peers
-                .entry(*peer)
-                .or_default()
-                .hysteresis
-                .record_switch(now);
+            let fast_return_off = self.fast_return_off;
+            let p = self.peers.entry(*peer).or_default();
+            p.hysteresis.record_switch(now);
+            if tier.is_direct() && !fast_return_off {
+                p.fast_return_until = Some(now + FAST_RETURN_WINDOW);
+            }
             return;
         }
         if tier.is_direct() {
@@ -736,6 +776,8 @@ impl PathMonitor {
                     p.tiers[idx].fails = 0;
                 }
                 p.hysteresis.record_switch(now);
+                // F3 — direct is back; the lane has done its job.
+                p.fast_return_until = None;
             }
             ProbeOutcome::Expired => {
                 self.book_failure(peer, tier, mbb, now);
@@ -850,6 +892,14 @@ impl PathMonitor {
 
     /// PR-E — the current strike count on a direct tier. The sweep's sticky-
     /// pin log line keys off this now that the legacy fail maps are gone.
+    /// F3 — is any peer inside its fast-return lane? The runtime then walks
+    /// `install_peers` every fallback tick instead of every ~30 s.
+    pub(crate) fn fast_return_active(&self, now: Instant) -> bool {
+        self.peers
+            .values()
+            .any(|p| p.fast_return_until.is_some_and(|until| until > now))
+    }
+
     pub(crate) fn strikes(&self, peer: &ObjectId, tier: DirectTier) -> u32 {
         tier_idx(tier)
             .and_then(|idx| self.peers.get(peer).map(|p| p.tiers[idx].fails))
@@ -1606,6 +1656,84 @@ mod tests {
         m.on_death(&a, DirectTier::Lan, DeathReason::RxStale, true, t0);
         assert_eq!(m.strikes(&a, DirectTier::Lan), 1);
         assert!(!m.eligible(&a, DirectTier::Lan, t0 + Duration::from_secs(1)));
+    }
+
+    /// §6.3 F3 — a poke conviction opens the fast-return lane. Inside it a
+    /// srflx/public failure (a probe expiry, or the fresh attempt's own
+    /// handshake deadline) books a `FAST_RETURN_HALF_LIFE` penalty and NO
+    /// strike, so the outage never climbs the 60 s → 15 min ladder; a latch
+    /// closes the lane; once it lapses the ordinary ladder applies again.
+    #[test]
+    fn poke_conviction_opens_fast_return_lane() {
+        let a = oid(1);
+        let past_short = FAST_RETURN_HALF_LIFE + Duration::from_millis(1);
+        for tier in [DirectTier::Srflx, DirectTier::Public] {
+            let mut m = PathMonitor::default();
+            let t0 = Instant::now();
+            m.on_death(&a, tier, DeathReason::RekeyUnanswered, true, t0);
+            assert!(m.fast_return_active(t0), "{tier:?} conviction arms the lane");
+
+            let t1 = t0 + Duration::from_secs(12);
+            m.on_probe_started(&a, tier, t0);
+            m.on_probe_result(&a, tier, ProbeOutcome::Expired, true, t1);
+            assert!(!m.eligible(&a, tier, t1 + Duration::from_secs(1)));
+            assert!(
+                m.eligible(&a, tier, t1 + past_short),
+                "{tier:?} in-lane expiry must lapse after the short half-life"
+            );
+            let t2 = t1 + Duration::from_secs(16);
+            m.on_death(&a, tier, DeathReason::HandshakeDeadline, true, t2);
+            assert!(m.eligible(&a, tier, t2 + past_short));
+            assert_eq!(m.strikes(&a, tier), 0, "{tier:?} in-lane failures book no strike");
+            assert!(!m.is_sticky(&a, tier, true));
+
+            let t3 = t0 + FAST_RETURN_WINDOW + Duration::from_secs(1);
+            assert!(!m.fast_return_active(t3), "{tier:?} lane lapses");
+            m.on_probe_started(&a, tier, t3);
+            m.on_probe_result(&a, tier, ProbeOutcome::Expired, true, t3);
+            assert_eq!(m.strikes(&a, tier), 1, "{tier:?} ordinary ladder after the lane");
+            assert!(!m.eligible(&a, tier, t3 + Duration::from_secs(30)));
+        }
+
+        // A latched probe closes the lane: a later failure books normally.
+        let mut m = PathMonitor::default();
+        let t0 = Instant::now();
+        m.on_death(&a, DirectTier::Srflx, DeathReason::RekeyUnanswered, true, t0);
+        m.on_probe_started(&a, DirectTier::Srflx, t0);
+        m.on_probe_result(
+            &a,
+            DirectTier::Srflx,
+            ProbeOutcome::Latched { latency_ms: None },
+            true,
+            t0 + Duration::from_secs(3),
+        );
+        assert!(!m.fast_return_active(t0 + Duration::from_secs(3)));
+        let t1 = t0 + Duration::from_secs(10);
+        m.on_death(&a, DirectTier::Srflx, DeathReason::RxStale, true, t1);
+        assert_eq!(m.strikes(&a, DirectTier::Srflx), 1);
+        assert!(!m.eligible(&a, DirectTier::Srflx, t1 + past_short));
+
+        // LAN under MBB keeps the P8 fixed spacing even inside the lane.
+        let mut m = PathMonitor::default();
+        let t0 = Instant::now();
+        m.on_death(&a, DirectTier::Lan, DeathReason::RekeyUnanswered, true, t0);
+        let t1 = t0 + Duration::from_secs(12);
+        m.on_probe_started(&a, DirectTier::Lan, t0);
+        m.on_probe_result(&a, DirectTier::Lan, ProbeOutcome::Expired, true, t1);
+        assert!(!m.eligible(&a, DirectTier::Lan, t1 + past_short));
+        assert!(m.eligible(&a, DirectTier::Lan, t1 + H_ORDINARY + Duration::from_secs(1)));
+
+        // A relay-carrier conviction does not arm it, nor does the kill switch.
+        let mut m = PathMonitor::default();
+        m.on_death(&a, DirectTier::Relay, DeathReason::RekeyUnanswered, true, t0);
+        assert!(!m.fast_return_active(t0));
+        let mut m = PathMonitor::with_fast_return(false);
+        m.on_death(&a, DirectTier::Srflx, DeathReason::RekeyUnanswered, true, t0);
+        assert!(!m.fast_return_active(t0));
+        m.on_probe_started(&a, DirectTier::Srflx, t0);
+        m.on_probe_result(&a, DirectTier::Srflx, ProbeOutcome::Expired, true, t0);
+        assert_eq!(m.strikes(&a, DirectTier::Srflx), 1);
+        assert!(!m.eligible(&a, DirectTier::Srflx, t0 + past_short));
     }
 
     /// F — `explain` must never contradict the selector it describes. The

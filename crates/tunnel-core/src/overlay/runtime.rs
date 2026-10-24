@@ -142,16 +142,20 @@ impl PathShadow {
         }
         let demote = path::DemoteMode::parse(crate::env::node_env("OVERLAY_DEMOTE").as_deref());
         let upward = crate::env::flag("OVERLAY_UPWARD_PROBE", true);
+        // §6.3 F3 kill switch: `OVERLAY_FAST_RETURN=0` restores the pre-F3
+        // return-to-direct pacing after a poke conviction.
+        let fast_return = crate::env::flag("OVERLAY_FAST_RETURN", true);
         info!(
             demote = demote.as_str(),
             upward,
+            fast_return,
             "overlay pathmon: voluntary moves armed (B2 demotion; B3 mid-tier upward probing)"
         );
         Self {
             mode,
             demote,
             upward,
-            mon: path::PathMonitor::default(),
+            mon: path::PathMonitor::with_fast_return(fast_return),
             stats: path::ShadowStats::default(),
             last_div_log: HashMap::new(),
             last_demote_log: HashMap::new(),
@@ -3636,6 +3640,13 @@ impl OverlayRuntime {
                     if fast_reupgrade_until.is_some() && !fast_walk {
                         fast_reupgrade_until = None;
                     }
+                    // §6.3 F3 — a peer convicted by an active proof is in its
+                    // fast-return lane: walk every tick so the next direct
+                    // attempt follows each short in-lane penalty at once.
+                    let fast_walk = fast_walk
+                        || self
+                            .shadow(|s| s.mon.fast_return_active(Instant::now()))
+                            .unwrap_or(false);
                     // A loss already walked every peer in this same pass.
                     if !carrier_lost && (fast_walk || reupgrade_ticks.is_multiple_of(REUPGRADE_EVERY_N_TICKS)) {
                         let peers: Vec<NetmapPeer> = current_peers.values().cloned().collect();
