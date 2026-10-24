@@ -2881,3 +2881,264 @@ async fn metadata_discovery_cursor_rebuilds_backbone_after_approval_and_mode_cha
     assert_no_discovery_allocation(&mut rig.r).await;
     assert_no_discovery_allocation(&mut exit).await;
 }
+
+/// The new purpose is a real network WS message; no legacy TURN request is
+/// involved and every frame is inspected so an accidental grant cannot hide.
+async fn request_org_only(rig: &mut Rig, serial: u64) {
+    rig.a.send(Message::Text(json!({
+        "t":"rc:overlay.org_relay_fallback_request", "peer_node_id":rig.b_node,
+        "request_id":serial
+    }).to_string().into())).await.unwrap();
+}
+
+async fn recv_org_only_session(ws: &mut Ws) -> Value {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let frame = tokio::time::timeout_at(deadline, ws.next()).await
+            .expect("ORG-only session timeout").expect("WS open").expect("WS frame");
+        if let Message::Text(text) = frame {
+            let value: Value = serde_json::from_str(&text).unwrap();
+            assert_ne!(value["t"], json!("rc:overlay.relay_grant"), "ORG-only must never grant TURN");
+            assert_ne!(value["t"], json!("rc:overlay.force_derp"), "ORG-only is not TURN churn");
+            if value["t"] == json!("rc:overlay.relay_session") { return value; }
+        }
+    }
+}
+
+async fn assert_org_only_quiet(ws: &mut Ws) {
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(250);
+    while let Ok(Some(Ok(frame))) = tokio::time::timeout_at(deadline, ws.next()).await {
+        if let Message::Text(text) = frame {
+            let value: Value = serde_json::from_str(&text).unwrap();
+            assert!(!["rc:overlay.relay_grant", "rc:overlay.force_derp", "rc:overlay.relay_session",
+                "rc:overlay.relay_serve"].contains(&value["t"].as_str().unwrap_or_default()), "unexpected allocation: {}", value["t"]);
+        }
+    }
+}
+
+#[tokio::test]
+async fn org_only_fallback_mints_without_turn_churn_and_repushes_remaining_ttl() {
+    let mut rig = Rig::up("org-only-ok", true, Some(true)).await;
+    rig.arm().await;
+    let map = join(&mut rig.a, 1, Some(true), "203.0.113.10:41641").await;
+    assert_eq!(map["network"]["org_relay_fallback_v1"], json!(true));
+    request_org_only(&mut rig, 1).await;
+    let sa = recv_org_only_session(&mut rig.a).await;
+    let sb = recv_org_only_session(&mut rig.b).await;
+    let serve = recv_t(&mut rig.r, "rc:overlay.relay_serve", Duration::from_secs(5)).await.unwrap();
+    assert_eq!(sa["vni"], serve["vni"]);
+    assert_eq!(sa["vni"], sb["vni"]);
+    let a = ObjectId::parse_str(&rig.a_node).unwrap();
+    let b = ObjectId::parse_str(&rig.b_node).unwrap();
+    let r = ObjectId::parse_str(&rig.r_node).unwrap();
+    let pk = roomler_ai_mod_network::overlay::pair_key(a,b);
+    let first = rig.app.state.network().org_relay.active_session(&pk).unwrap();
+    let rows = audit_rows(&rig.app, &rig.seeded).await.len();
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    request_org_only(&mut rig, 2).await;
+    let again = recv_org_only_session(&mut rig.a).await;
+    let network = rig.app.state.network();
+    assert_eq!(again["vni"], sa["vni"]);
+    assert_eq!(again["generation"], sa["generation"]);
+    assert_eq!(again["bind_secret"], sa["bind_secret"]);
+    assert!(again["max_lifetime_secs"].as_u64().unwrap() < sa["max_lifetime_secs"].as_u64().unwrap());
+    assert_eq!(network.org_relay.active_session(&pk).unwrap().expires_at, first.expires_at);
+    assert_eq!(audit_rows(&rig.app, &rig.seeded).await.len(), rows);
+    assert!(network.relay_pair_churn.is_empty(), "ORG-only cannot arm or consume TURN churn");
+    for _ in 0..29 { assert!(network.relay_rate_limiter.check(a,r,30)); }
+    assert!(!network.relay_rate_limiter.check(a,r,30), "one mint spent one slot; repush spent none");
+    assert_org_only_quiet(&mut rig.a).await;
+    assert_org_only_quiet(&mut rig.b).await;
+    assert_org_only_quiet(&mut rig.r).await;
+}
+
+#[tokio::test]
+async fn org_only_fallback_preserves_forced_derp_pin_without_churn_or_mint() {
+    use roomler_ai_mod_network::overlay::{PairChurn,arm_grant,churn_note_request,pair_key};
+    let mut rig = Rig::up("org-only-pin", true, Some(true)).await;
+    rig.arm().await;
+    let pk = pair_key(ObjectId::parse_str(&rig.a_node).unwrap(),ObjectId::parse_str(&rig.b_node).unwrap());
+    let base = std::time::Instant::now() - Duration::from_secs(30);
+    let mut churn = PairChurn::default();
+    for cycle in 0..3u64 {
+        let grant = base + Duration::from_secs(cycle*6);
+        arm_grant(&mut churn,grant);
+        assert_eq!(churn_note_request(&mut churn,grant+Duration::from_secs(6)),cycle==2);
+    }
+    let before = format!("{churn:?}");
+    rig.app.state.network().relay_pair_churn.insert(pk.clone(),churn);
+    request_org_only(&mut rig,1).await;
+    assert_org_only_quiet(&mut rig.a).await;
+    assert_org_only_quiet(&mut rig.b).await;
+    assert_org_only_quiet(&mut rig.r).await;
+    let network=rig.app.state.network();
+    assert_eq!(format!("{:?}",network.relay_pair_churn.get(&pk).unwrap().value()),before);
+    assert!(network.org_relay.active_session(&pk).is_none());
+    assert!(audit_rows(&rig.app,&rig.seeded).await.iter().all(|r|r["action"] != "mint"));
+}
+
+#[tokio::test]
+async fn org_only_fallback_reauthorizes_stale_cached_relay_and_mints_alternate() {
+    let (mut rig,mut extra,extra_agent,extra_node,_,_)=alternate_onehop_fixture("org-only-stale").await;
+    request_org_only(&mut rig,1).await;
+    let old=recv_org_only_session(&mut rig.a).await;
+    recv_org_only_session(&mut rig.b).await;
+    let original=old["relay_node_id"]==json!(rig.r_node);
+    let (old_agent,new_node)=if original {(rig.r_agent.clone(),extra_node.clone())}else{(extra_agent.clone(),rig.r_node.clone())};
+    if original {recv_t(&mut rig.r,"rc:overlay.relay_serve",Duration::from_secs(5)).await.unwrap();}
+    else {recv_t(&mut extra,"rc:overlay.relay_serve",Duration::from_secs(5)).await.unwrap();}
+    // Simulate an out-of-band policy update: no route revoker removes the
+    // cached lease. The next request itself must reauthorize and retire it.
+    rig.app.db.collection::<bson::Document>("agents").update_one(
+        doc!{"_id":ObjectId::parse_str(&old_agent).unwrap()},
+        doc!{"$set":{"peer_relay_policy.serve":false}}
+    ).await.unwrap();
+    request_org_only(&mut rig,2).await;
+    let fresh=recv_org_only_session(&mut rig.a).await;
+    recv_org_only_session(&mut rig.b).await;
+    assert_eq!(fresh["relay_node_id"],json!(new_node));
+    assert!(fresh["generation"].as_u64().unwrap()>old["generation"].as_u64().unwrap());
+    assert_ne!(fresh["bind_secret"],old["bind_secret"]);
+    if original {recv_t(&mut extra,"rc:overlay.relay_serve",Duration::from_secs(5)).await.unwrap();}
+    else {recv_t(&mut rig.r,"rc:overlay.relay_serve",Duration::from_secs(5)).await.unwrap();}
+    let rows=audit_rows(&rig.app,&rig.seeded).await;
+    assert!(rows.iter().any(|r|r["action"]=="revoke" && r["vni"]==old["vni"] && r["reason"]=="org-fallback-reauthorization"));
+    assert_eq!(rows.iter().filter(|r|r["action"]=="mint" && r["denied"].is_null()).count(),2);
+    assert!(rig.app.state.network().relay_pair_churn.is_empty());
+    assert_org_only_quiet(&mut rig.a).await;
+}
+
+#[tokio::test]
+async fn org_only_fallback_mode_acl_primary_and_mint_rate_gates_fail_closed() {
+    for (slug,mode,primary,acl,deny) in [
+        ("org-only-off","off",Some(true),true,None),
+        ("org-only-warn","warn",Some(true),true,None),
+        ("org-only-noacl","on",Some(true),false,Some("acl_denied")),
+        ("org-only-secondary","on",Some(false),true,Some("secondary_org")),
+        ("org-only-rate","on",Some(true),true,Some("rate_limited")),
+    ] {
+        let mut rig=Rig::up(slug,true,primary).await;
+        set_mode(&rig.app,&rig.seeded,mode).await;
+        assert_eq!(approve(&rig.app,&rig.seeded,&rig.r_agent,true).await,200);
+        if acl {grant_relay(&rig.app,&rig.seeded,&rig.r_node).await;}
+        if deny==Some("rate_limited") {
+            let network=rig.app.state.network();
+            for _ in 0..30 {assert!(network.relay_rate_limiter.check(ObjectId::parse_str(&rig.a_node).unwrap(),ObjectId::parse_str(&rig.r_node).unwrap(),30));}
+        }
+        request_org_only(&mut rig,1).await;
+        if mode!="off" {
+            let row=wait_mint_row(&rig.app,&rig.seeded).await;
+            assert_eq!(row["denied"],deny.map(|d|json!(d)).unwrap_or(Value::Null));
+            assert_eq!(row["warn_only"],json!(mode=="warn"));
+        }
+        assert_org_only_quiet(&mut rig.a).await;
+        assert_org_only_quiet(&mut rig.b).await;
+        assert_org_only_quiet(&mut rig.r).await;
+        assert!(rig.app.state.network().relay_pair_churn.is_empty());
+    }
+}
+
+#[tokio::test]
+async fn org_only_fallback_rejects_cross_tenant_self_and_unjoined_requesters() {
+    let mut rig=Rig::up("org-only-identity",true,Some(true)).await;
+    rig.arm().await;
+    let foreign=rig.app.seed_tenant("org-only-foreign").await;
+    let (_,tok)=enroll(&rig.app,&foreign,"org-only-foreign-node").await;
+    let mut ws=connect(&rig.app,&tok,&[]).await;
+    join(&mut ws,9,Some(true),"203.0.113.99:41641").await;
+    let foreign_id=node_id(&rig.app,&foreign,"org-only-foreign-node").await;
+    for (serial,peer) in [(1,foreign_id),(2,rig.a_node.clone())] {
+        rig.a.send(Message::Text(json!({"t":"rc:overlay.org_relay_fallback_request","peer_node_id":peer,"request_id":serial}).to_string().into())).await.unwrap();
+    }
+    let (_,tok)=enroll(&rig.app,&rig.seeded,"org-only-unjoined").await;
+    let mut unjoined=connect(&rig.app,&tok,&[]).await;
+    unjoined.send(Message::Text(json!({"t":"rc:overlay.org_relay_fallback_request","peer_node_id":rig.b_node,"request_id":3}).to_string().into())).await.unwrap();
+    assert_org_only_quiet(&mut unjoined).await;
+    assert_org_only_quiet(&mut rig.a).await;
+    assert_org_only_quiet(&mut rig.b).await;
+    assert_org_only_quiet(&mut rig.r).await;
+    assert!(rig.app.state.network().relay_pair_churn.is_empty());
+    assert!(audit_rows(&rig.app,&rig.seeded).await.iter().all(|r|r["action"]!="mint"));
+}
+
+#[tokio::test]
+async fn org_only_fallback_simultaneous_members_claim_one_live_generation() {
+    let mut rig=Rig::up("org-only-concurrent",true,Some(true)).await;
+    rig.arm().await;
+    let a_msg=Message::Text(json!({"t":"rc:overlay.org_relay_fallback_request","peer_node_id":rig.b_node,"request_id":1}).to_string().into());
+    let b_msg=Message::Text(json!({"t":"rc:overlay.org_relay_fallback_request","peer_node_id":rig.a_node,"request_id":2}).to_string().into());
+    let (a,b)=tokio::join!(rig.a.send(a_msg),rig.b.send(b_msg));a.unwrap();b.unwrap();
+    let sa=recv_org_only_session(&mut rig.a).await;
+    let sb=recv_org_only_session(&mut rig.b).await;
+    let serve=recv_t(&mut rig.r,"rc:overlay.relay_serve",Duration::from_secs(5)).await.unwrap();
+    assert_eq!(sa["vni"],sb["vni"]);assert_eq!(sa["generation"],sb["generation"]);
+    assert_eq!(sa["vni"],serve["vni"]);assert_eq!(sa["generation"],serve["generation"]);
+    // A losing query may repush the canonical lease to its asker. It may
+    // never send a different live generation, a TURN grant, or another Serve.
+    for ws in [&mut rig.a,&mut rig.b] {
+        let deadline=tokio::time::Instant::now()+Duration::from_millis(300);
+        while let Ok(Some(Ok(frame)))=tokio::time::timeout_at(deadline,ws.next()).await {
+            if let Message::Text(text)=frame {
+                let value:Value=serde_json::from_str(&text).unwrap();
+                assert_ne!(value["t"],json!("rc:overlay.relay_grant"));
+                assert_ne!(value["t"],json!("rc:overlay.force_derp"));
+                if value["t"]=="rc:overlay.relay_session" {
+                    assert_eq!(value["vni"],serve["vni"]);
+                    assert_eq!(value["generation"],serve["generation"]);
+                }
+            }
+        }
+    }
+    assert_org_only_quiet(&mut rig.r).await;
+    let rows=audit_rows(&rig.app,&rig.seeded).await;
+    assert_eq!(rows.iter().filter(|row|row["action"]=="mint" && row["denied"].is_null()).count(),1);
+    let network=rig.app.state.network();
+    let r=ObjectId::parse_str(&rig.r_node).unwrap();
+    assert_eq!(network.org_relay.sessions_on_relay(r),1);
+    assert!(network.relay_pair_churn.is_empty());
+    let mut slots_left=0;
+    for member in [&rig.a_node,&rig.b_node] {
+        let member=ObjectId::parse_str(member).unwrap();
+        while network.relay_rate_limiter.check(member,r,30) {slots_left+=1;}
+    }
+    assert_eq!(slots_left,59,"only the winning mint consumes a requester->relay slot");
+}
+
+#[tokio::test]
+async fn org_only_fallback_multi_peer_query_budget_allows_128_and_bounds_129() {
+    let mut rig=Rig::up("org-only-query-budget",true,Some(true)).await;
+    rig.arm().await;
+    let (_,c_token)=enroll(&rig.app,&rig.seeded,"org-only-query-c").await;
+    let (_,d_token)=enroll(&rig.app,&rig.seeded,"org-only-query-d").await;
+    let mut c=connect(&rig.app,&c_token,&[]).await;
+    let mut d=connect(&rig.app,&d_token,&[]).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    join(&mut c,6,Some(true),"203.0.113.16:41641").await;
+    join(&mut d,7,Some(true),"203.0.113.17:41641").await;
+    let peers=[rig.b_node.clone(),node_id(&rig.app,&rig.seeded,"org-only-query-c").await,
+        node_id(&rig.app,&rig.seeded,"org-only-query-d").await];
+    let mut leases=std::collections::HashMap::new();
+    for serial in 1..=128u64 {
+        let peer=&peers[((serial-1)%3)as usize];
+        rig.a.send(Message::Text(json!({"t":"rc:overlay.org_relay_fallback_request",
+            "peer_node_id":peer,"request_id":serial}).to_string().into())).await.unwrap();
+        let session=recv_org_only_session(&mut rig.a).await;
+        assert_eq!(session["peer_node_id"],json!(peer));
+        let identity=(session["vni"].clone(),session["generation"].clone());
+        if let Some(previous)=leases.insert(peer.clone(),identity.clone()) {assert_eq!(identity,previous);}
+    }
+    assert_eq!(leases.len(),3,"queries genuinely cover multiple peer pairs");
+    rig.a.send(Message::Text(json!({"t":"rc:overlay.org_relay_fallback_request",
+        "peer_node_id":peers[0],"request_id":129}).to_string().into())).await.unwrap();
+    assert_org_only_quiet(&mut rig.a).await;
+    let network=rig.app.state.network();
+    let a=ObjectId::parse_str(&rig.a_node).unwrap();
+    let relay=ObjectId::parse_str(&rig.r_node).unwrap();
+    let mut remaining=0;
+    while network.relay_rate_limiter.check(a,relay,30) {remaining+=1;}
+    assert_eq!(remaining,27,"3 fresh peer leases spent 3 mint slots; 125 healthy repushes spent none");
+    assert_eq!(network.org_relay.sessions_on_relay(relay),3);
+    assert!(network.relay_pair_churn.is_empty());
+    let rows=audit_rows(&rig.app,&rig.seeded).await;
+    assert_eq!(rows.iter().filter(|r|r["action"]=="mint" && r["denied"].is_null()).count(),3);
+}

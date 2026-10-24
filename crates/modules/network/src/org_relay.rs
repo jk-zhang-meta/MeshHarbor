@@ -433,6 +433,15 @@ async fn plan_mint_candidates(
     requester: &OverlayNode,
     peer: &OverlayNode,
 ) -> Result<Vec<Plan>, PeerRelayDenyReason> {
+    plan_mint_candidates_reusing(state, requester, peer, None).await
+}
+
+async fn plan_mint_candidates_reusing(
+    state: &NetworkState,
+    requester: &OverlayNode,
+    peer: &OverlayNode,
+    reuse: Option<&OrgRelaySession>,
+) -> Result<Vec<Plan>, PeerRelayDenyReason> {
     use PeerRelayDenyReason as D;
     let tenant_id = requester.tenant_id;
     if peer.tenant_id != tenant_id {
@@ -507,7 +516,9 @@ async fn plan_mint_candidates(
         if extras.org_primary != Some(true) || extras.relay_withdrawn {
             continue;
         }
-        if state.org_relay.sessions_on_relay(relay_id) >= limits::MAX_SESSIONS_PER_RELAY {
+        if state.org_relay.sessions_on_relay(relay_id) >= limits::MAX_SESSIONS_PER_RELAY
+            && !reuse.is_some_and(|session| session.relay.node_id == relay_id)
+        {
             continue;
         }
         // Gate 2 — BOTH members must be granted this relay; each binds to it.
@@ -996,6 +1007,72 @@ pub async fn maybe_mint(state: &NetworkState, requester: &OverlayNode, peer: &Ov
             return;
         }
     };
+    mint_plan(state, requester, peer, plan, warn_only, None).await;
+}
+
+/// A fallback query reauthorizes cached leases, and never allocates TURN.
+/// In particular a stale but unexpired relay lease cannot suppress reselection.
+pub async fn maybe_mint_fallback(state: &NetworkState, requester: &OverlayNode, peer: &OverlayNode) {
+    let tenant_id = requester.tenant_id;
+    let mode = peer_relay_mode(state, tenant_id).await;
+    if mode == PeerRelayMode::Off { return; }
+    let (Some(req_id), Some(peer_id)) = (requester.id, peer.id) else { return };
+    let pk = pair_key(req_id, peer_id);
+    if crate::overlay::org_fallback_forced_derp(state, &pk) { return; }
+    let cached = state.org_relay.active_session(&pk);
+    let mut epoch = state.org_relay.eligibility_generation();
+    let mut verdict = plan_mint_candidates_reusing(state, requester, peer, cached.as_ref()).await;
+    if epoch != state.org_relay.eligibility_generation()
+        || crate::overlay::org_fallback_forced_derp(state, &pk) { return; }
+    if let Some(session) = cached {
+        let authorized = verdict.as_ref().is_ok_and(|plans| plans.iter().any(|plan| {
+            plan.relay.id == Some(session.relay.node_id)
+                && plan.relay_agent_id == session.relay_agent_id
+                && plan.relay.node_ref == session.relay.node_ref
+                && plan.endpoints == session.endpoints
+                && [(req_id, requester), (peer_id, peer)].iter().all(|(id, node)| {
+                    session.member_index(*id).is_some_and(|i| {
+                        session.members[i].wg_public_key == node.wg_public_key
+                            && session.members[i].party.node_ref == node.node_ref
+                    })
+                })
+        }));
+        if authorized && mode != PeerRelayMode::Warn {
+            if let Some(i) = session.member_index(req_id) { push_member(state, &session, i).await; }
+            return;
+        }
+        if !authorized {
+            revoke_where(state, "org-fallback-reauthorization", |current| {
+                current.pair_key == pk && current.vni == session.vni
+                    && current.generation == session.generation
+            }).await;
+            // Revocation changes the epoch. Re-read after its audit await so
+            // a concurrent approval/ACL/membership change cannot reuse a plan.
+            epoch = state.org_relay.eligibility_generation();
+            verdict = plan_mint_candidates(state, requester, peer).await;
+        }
+    }
+    if epoch != state.org_relay.eligibility_generation()
+        || crate::overlay::org_fallback_forced_derp(state, &pk) { return; }
+    let verdict = verdict.and_then(|plans| plans.into_iter().next().ok_or(PeerRelayDenyReason::NoRelay));
+    match verdict {
+        Ok(plan) => mint_plan(state, requester, peer, plan, mode == PeerRelayMode::Warn, Some(epoch)).await,
+        Err(reason) => audit_mint(state, tenant_id, req_id, peer_id, None, None,
+            mode == PeerRelayMode::Warn, Some(reason)).await,
+    }
+}
+
+async fn mint_plan(
+    state: &NetworkState,
+    requester: &OverlayNode,
+    peer: &OverlayNode,
+    plan: Plan,
+    warn_only: bool,
+    fallback_epoch: Option<u64>,
+) {
+    let tenant_id = requester.tenant_id;
+    let (Some(req_id), Some(peer_id)) = (requester.id, peer.id) else { return };
+    let pk = pair_key(req_id, peer_id);
     let relay_id = plan.relay.id.unwrap_or_default();
     let Some(vni) = state.org_relay.alloc_vni(relay_id) else {
         // Every VNI on that relay is held: it is full in a way the session
@@ -1045,22 +1122,67 @@ pub async fn maybe_mint(state: &NetworkState, requester: &OverlayNode, peer: &Ov
         endpoints: plan.endpoints.clone(),
         expires_at: Instant::now() + Duration::from_secs(u64::from(limits::MAX_LIFETIME_SECS)),
     };
-    audit_mint(
-        state,
-        tenant_id,
-        req_id,
-        peer_id,
-        Some((plan.relay_agent_id, relay_id)),
-        Some(vni),
-        warn_only,
-        None,
-    )
-    .await;
+    // Legacy ordering stays intact; fallback audits only its winning claim.
+    if fallback_epoch.is_none() || warn_only {
+        if fallback_epoch.is_some() && !state.relay_rate_limiter.check(req_id, relay_id, limits::MINT_RATE_LIMIT_PER_MINUTE) {
+            audit_mint(state, tenant_id, req_id, peer_id, None, None, warn_only,
+                Some(PeerRelayDenyReason::RateLimited)).await;
+            return;
+        }
+        audit_mint(state, tenant_id, req_id, peer_id, Some((plan.relay_agent_id, relay_id)),
+            Some(vni), warn_only, None).await;
+    }
     if warn_only {
         info!(%tenant_id, requester = %req_id, peer = %peer_id, relay = %relay_id, vni, "org-relay [warn]: would mint; pushing nothing");
         return;
     }
-    state.org_relay.sessions.insert(pk.clone(), session.clone());
+    if let Some(epoch) = fallback_epoch {
+        if epoch != state.org_relay.eligibility_generation()
+            || crate::overlay::org_fallback_forced_derp(state, &pk) { return; }
+        // Both members can cross policy IO with cached=None. Claim under the
+        // pair entry, consume mint budget only for the winner, and release the
+        // guard before any push/audit await. Never overwrite a live generation.
+        let claim = match state.org_relay.sessions.entry(pk.clone()) {
+            dashmap::mapref::entry::Entry::Occupied(mut entry) => {
+                if entry.get().expires_at > Instant::now() {
+                    Ok(Some(entry.get().clone()))
+                } else if state.relay_rate_limiter.check(req_id, relay_id, limits::MINT_RATE_LIMIT_PER_MINUTE) {
+                    entry.insert(session.clone());
+                    Ok(None)
+                } else { Err(PeerRelayDenyReason::RateLimited) }
+            }
+            dashmap::mapref::entry::Entry::Vacant(entry) => {
+                if state.relay_rate_limiter.check(req_id, relay_id, limits::MINT_RATE_LIMIT_PER_MINUTE) {
+                    entry.insert(session.clone());
+                    Ok(None)
+                } else { Err(PeerRelayDenyReason::RateLimited) }
+            }
+        };
+        match claim {
+            Ok(Some(current)) => {
+                // A concurrent winner may have used a different authorization
+                // snapshot. Only this freshly authorized exact lease is reused.
+                if current.relay.node_id == relay_id && current.relay.node_ref == plan.relay.node_ref
+                    && current.endpoints == plan.endpoints
+                    && [(req_id, requester), (peer_id, peer)].iter().all(|(id,node)| {
+                        current.member_index(*id).is_some_and(|i| current.members[i].wg_public_key == node.wg_public_key
+                            && current.members[i].party.node_ref == node.node_ref)
+                    })
+                    && epoch == state.org_relay.eligibility_generation()
+                    && !crate::overlay::org_fallback_forced_derp(state, &pk)
+                    && let Some(i) = current.member_index(req_id)
+                { push_member(state, &current, i).await; }
+                return;
+            }
+            Err(reason) => {
+                audit_mint(state, tenant_id, req_id, peer_id, None, None, false, Some(reason)).await;
+                return;
+            }
+            Ok(None) => {}
+        }
+    } else {
+        state.org_relay.sessions.insert(pk.clone(), session.clone());
+    }
     info!(%tenant_id, requester = %req_id, peer = %peer_id, relay = %relay_id, vni, generation,
         endpoints = ?session.endpoints, "org-relay: minted");
 
@@ -1088,11 +1210,18 @@ pub async fn maybe_mint(state: &NetworkState, requester: &OverlayNode, peer: &Ov
     .await;
     push_member(state, &session, 0).await;
     push_member(state, &session, 1).await;
+    if fallback_epoch.is_some() {
+        audit_mint(state, tenant_id, req_id, peer_id, Some((plan.relay_agent_id, relay_id)),
+            Some(vni), false, None).await;
+    }
 }
 
 /// `rc:overlay.relay_session` to member `i`, naming the OTHER member as its
 /// peer and carrying only its own secret.
 async fn push_member(state: &NetworkState, s: &OrgRelaySession, i: usize) {
+    let remaining = s.expires_at.saturating_duration_since(Instant::now()).as_secs()
+        .min(u64::from(limits::MAX_LIFETIME_SECS)) as u32;
+    if remaining == 0 { return; }
     let me = &s.members[i];
     let other = &s.members[1 - i];
     send_to_node_ref(
@@ -1106,7 +1235,7 @@ async fn push_member(state: &NetworkState, s: &OrgRelaySession, i: usize) {
             relay_endpoints: s.endpoints.clone(),
             bind_secret: me.bind_secret.clone(),
             bind_secs: limits::BIND_SECS,
-            max_lifetime_secs: limits::MAX_LIFETIME_SECS,
+            max_lifetime_secs: remaining,
         },
     )
     .await;

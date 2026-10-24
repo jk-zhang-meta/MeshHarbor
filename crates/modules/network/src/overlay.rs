@@ -177,6 +177,10 @@ pub async fn relay_overlay_msg_from_node(
             .await;
             None
         }
+        ClientMsg::OverlayOrgRelayFallbackRequest { peer_node_id, request_id } => {
+            handle_org_relay_fallback_request(state, ident, peer_node_id, request_id).await;
+            None
+        }
         ClientMsg::OverlayPathTrialRequest {
             peer_node_id,
             relay_node_id,
@@ -787,6 +791,7 @@ async fn handle_overlay_join(
                     .unwrap_or(&network.cidr)
                     .to_string(),
                 cidrs: join_blocks.cidrs().to_vec(),
+                org_relay_fallback_v1: true,
                 mtu: network.mtu,
                 magic_domain,
                 nameservers,
@@ -1117,6 +1122,49 @@ async fn handle_org_relay_discover(
         }
     }
     crate::org_relay::discover(state, &requester, &peer, request_id, cursor).await;
+}
+
+/// ORG-only recovery is deliberately separate from TURN allocation/churn.
+/// The authenticated socket supplies the requester; policy reads fail closed.
+async fn handle_org_relay_fallback_request(
+    state: &NetworkState,
+    ident: NodeIdentity,
+    peer_node_id: ObjectId,
+    request_id: u64,
+) {
+    let Some(requester) = current_node(state, ident).await else { return };
+    let Some(requester_id) = requester.id else { return };
+    // One bounded key per authenticated requester, distinct from discovery's
+    // self-key and every real requester->relay mint key. No arbitrary peer
+    // lookup can grow the limiter; retries cannot bypass the mint ceiling.
+    // A client queues at most 64 per 60s. Two adjacent batches may arrive
+    // inside one server window; keep query admission separate from mint's 30.
+    if !state.relay_rate_limiter.check_bounded(requester_id, ObjectId::from_bytes([0; 12]), 128) {
+        return;
+    }
+    let peer = match state.overlay_nodes.base.find_by_id(peer_node_id).await {
+        Ok(peer) if peer.tenant_id == requester.tenant_id
+            && peer_node_id != requester_id && peer.deleted_at.is_none() => peer,
+        _ => return,
+    };
+    let pk = pair_key(requester_id, peer_node_id);
+    if org_fallback_forced_derp(state, &pk) { return; }
+    let Ok(acl) = try_load_acl(state, requester.tenant_id, PolicyLoad::Always).await else { return };
+    if acl.enforcing() {
+        let Ok(source) = try_overlay_source_of(state, &requester).await else { return };
+        let routes = peer.effective_routes();
+        if !evaluate_overlay(&acl.policies, &source, OverlayPeerRef {
+            node_id: peer_node_id, overlay_ip: &peer.overlay_ip, approved_routes: &routes,
+        }).visible { return; }
+    }
+    debug!(requester = %requester_id, peer = %peer_node_id, request_id,
+        "org-relay: ORG-only fallback requested");
+    crate::org_relay::maybe_mint_fallback(state, &requester, &peer).await;
+}
+
+/// Read-only: ORG queries never consume a TURN grant or clear/refresh its pin.
+pub(crate) fn org_fallback_forced_derp(state: &NetworkState, pk: &str) -> bool {
+    state.relay_pair_churn.get(pk).is_some_and(|pc| forced_active(&pc, Instant::now()))
 }
 
 /// Mint symmetric coturn creds for a relay leg to `peer_node_id`.
