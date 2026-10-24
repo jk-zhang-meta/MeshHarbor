@@ -709,6 +709,14 @@ pub fn public_direct_enabled() -> bool {
 /// re-established relay). `=0` ⇒ the pre-rc.208 destructive upgrade, byte-for-
 /// byte. Covers BOTH the outbound upgrade AND the inbound-accept path
 /// (`handle_direct_inbound`) since rc.209.
+/// Birth probe: a peer whose first carrier is the DERP floor and that has a LAN
+/// candidate starts its make-before-break LAN probe at birth, instead of waiting
+/// for the next ~30 s re-upgrade walk. F0 measured every LAN pair spending ~30 s
+/// on the floor first. `=0` restores the walk-only upgrade.
+pub fn birth_lan_probe_enabled() -> bool {
+    crate::env::flag("OVERLAY_BIRTH_LAN_PROBE", true)
+}
+
 pub fn make_before_break_enabled() -> bool {
     match crate::env::node_env("OVERLAY_MBB") {
         Some(v) => {

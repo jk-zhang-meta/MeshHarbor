@@ -293,6 +293,10 @@ async fn failover_stall_and_return() {
         );
     };
 
+    // Cut only once the direct carrier is past `DIRECT_GRACE`, which blinds
+    // the business scout and `carrier_tick` alike: a cut inside it measures
+    // the grace, not the failover (the first F0 runs cut 3 s in).
+    tokio::time::sleep(crate::overlay::lifecycle::DIRECT_GRACE + Duration::from_secs(4)).await;
     let cut = Instant::now();
     a.plane.blackhole.store(true, Ordering::Relaxed);
     b.plane.blackhole.store(true, Ordering::Relaxed);

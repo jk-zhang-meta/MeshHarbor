@@ -1886,6 +1886,34 @@ impl OverlayRuntime {
                         if !coord.strategy_is_derp(&np.node_id, &cfg) {
                             coord.request(np.node_id, cfg.clone()).await;
                         }
+                        // Birth probe — the `continue` below skips the fresh
+                        // path's LAN probe-first, which left a LAN pair on the
+                        // floor until the next re-upgrade walk (~30 s, F0).
+                        // Probe off the floor now: make-before-break, so a
+                        // dead LAN candidate costs only the probe deadline. A
+                        // server DERP pin still wins, as it does on the walk.
+                        if make_before_break
+                            && crate::overlay::direct::birth_lan_probe_enabled()
+                            && !wg.has_direct_probe(&cfg.public_key)
+                            && !self
+                                .shadow(|s| s.mon.forced_derp_active(&np.node_id, now))
+                                .unwrap_or(false)
+                            && let (Some(ctx), Some((local_ip, dst))) = (direct_ctx, direct_dst)
+                            && let Some(sock) = lan_egress_socket(ctx, local_ip, dst).await
+                        {
+                            record("install_peers:birth", path::PathAction::Probe(DirectTier::Lan));
+                            self.start_upgrade_probe(
+                                wg,
+                                upgrade_probes,
+                                np.node_id,
+                                &cfg,
+                                sock,
+                                dst,
+                                DirectTier::Lan,
+                                now,
+                            )
+                            .await;
+                        }
                         continue;
                     }
                     // rc.416 (#25) — reaching here means `build_floor` itself

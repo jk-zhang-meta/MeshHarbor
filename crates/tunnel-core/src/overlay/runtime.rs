@@ -5049,6 +5049,76 @@ mod tests {
 
     /// P3 PR-E — a monitor-penalized tier is not probed by the upgrade arm
     /// (the eligibility plane is the ONE suppression system now).
+    /// Birth probe — a fresh LAN peer whose first carrier is the DERP floor
+    /// starts its LAN upgrade probe in the SAME walk, instead of riding the
+    /// floor until the next re-upgrade walk (F0 measured ~30 s per LAN pair).
+    /// Make-before-break: the floor stays the installed carrier until the
+    /// probe latches.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_floored_lan_peer_probes_lan_at_birth() {
+        let kp = WgKeypair::generate();
+        let peer_kp = WgKeypair::generate();
+        let (out_tx, _out_rx) = mpsc::channel::<ClientMsg>(16);
+        let (tun_mock, _inj, _del) = MockTun::new();
+        let tf: TunFactory = {
+            let m = tun_mock.clone();
+            Box::new(move |_, _, _| Ok(m.clone() as Arc<dyn TunIo>))
+        };
+        let rt = OverlayRuntime::new_relay(kp.clone(), out_tx.clone(), tf, 1280);
+        let mux = DerpMux::new(kp.public.to_bytes()).0;
+        let mut relay = Some(RelayCoordinator::new(
+            out_tx,
+            kp.public.to_bytes(),
+            true,
+            vec![],
+            Some(mux),
+        ));
+        let (mut wg, _tun_rx) = WgDevice::new(kp.secret.clone());
+        let tun: Arc<dyn TunIo> = tun_mock;
+        let sock = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let my_ip: Ipv4Addr = "10.1.2.9".parse().unwrap();
+        let ctx = DirectCtx {
+            socks: vec![(my_ip, sock)],
+            my_ips: vec![my_ip],
+            endpoints: vec![],
+            public_sock: None,
+            punch: None,
+            my_nat: None,
+        };
+        let mut lan_peer = peer(&peer_kp, "100.64.0.7");
+        lan_peer.lan_endpoints = vec!["10.1.2.3:1000".into()];
+        lan_peer.supports_derp = true;
+        lan_peer.supports_derp_floor = true;
+        let mut by_node = HashMap::new();
+        let mut upgrade_probes = HashMap::new();
+
+        rt.install_peers(
+            &mut wg,
+            &mut by_node,
+            &mut relay,
+            &tun,
+            std::slice::from_ref(&lan_peer),
+            Some(&ctx),
+            &mut upgrade_probes,
+            &mut test_relay_bq(),
+            "test",
+        )
+        .await;
+        let e = by_node
+            .get(&lan_peer.node_id)
+            .expect("the floor is installed at birth");
+        assert_eq!(
+            e.relay_kind,
+            Some(RelayKind::Derp),
+            "the floor carries until the probe latches"
+        );
+        let probe = upgrade_probes
+            .get(&lan_peer.node_id)
+            .expect("the LAN probe starts in the same walk");
+        assert_eq!(probe.tier, DirectTier::Lan);
+        assert!(wg.has_direct_probe(&peer_kp.public.to_bytes()));
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn upgrade_arm_respects_monitor_penalty() {
         let kp = WgKeypair::generate();
