@@ -114,6 +114,25 @@ pub(super) struct DirectCandidates {
 /// during a VPN window stayed relay-locked until a daemon restart.
 pub(super) const LAN_DEAD_STRIKES: u32 = 3;
 
+/// F2 — the tee decision: copy a peer's data onto `/derp` only while a
+/// business or Major proof for it has gone unanswered past
+/// [`STANDBY_ARM_AFTER`], and only to a peer that takes copies. A healthy
+/// path answers within one RTT, so the recurring proofs of a healthy one-way
+/// stream never copy anything.
+pub(super) fn standby_tee_wanted(
+    poke: Option<PokeArm>,
+    answered: bool,
+    capable: bool,
+    now: Instant,
+) -> bool {
+    capable
+        && !answered
+        && poke.is_some_and(|p| {
+            (p.from_business || p.from_major)
+                && now.saturating_duration_since(p.at) >= STANDBY_ARM_AFTER
+        })
+}
+
 pub(super) fn resolve_direct_candidates(
     direct_ctx: Option<&DirectCtx>,
     cfg: &PeerConfig,
@@ -361,6 +380,69 @@ impl OverlayRuntime {
                 info!(peer = %nid, tier = ?e.tier,
                     "overlay: unanswered business traffic — fast validation of the direct carrier");
             }
+        }
+    }
+
+    /// F2 — standby upkeep, once per scout tick. Every peer on a direct
+    /// carrier keeps a standby sink (a rebuilt peer gets a new one) and hears
+    /// our `STANDBY_HELLO` every [`STANDBY_HELLO_EVERY`], sent only while that
+    /// carrier is direct so an older receiver never sees it on `/derp`. A
+    /// peer that left its direct carrier has its standby route retired. The
+    /// tees themselves are [`Self::arm_standby_tees`].
+    pub(super) async fn sweep_standby(
+        &self,
+        wg: &mut WgDevice,
+        by_node: &HashMap<ObjectId, Installed>,
+        mux: &Arc<crate::transport::derp::DerpMux>,
+        standby: &mut HashMap<[u8; 32], Option<Instant>>,
+    ) {
+        let now = Instant::now();
+        let direct: std::collections::HashSet<[u8; 32]> =
+            by_node.values().filter(|e| e.is_direct).map(|e| e.pubkey).collect();
+        standby.retain(|pk, _| {
+            let keep = direct.contains(pk);
+            if !keep {
+                mux.clear_standby(pk);
+            }
+            keep
+        });
+        for e in by_node.values().filter(|e| e.is_direct) {
+            if !wg.has_standby_sink(&e.pubkey) {
+                wg.attach_standby_sink(&e.pubkey, mux.standby_route(e.pubkey));
+            }
+            let last = standby.entry(e.pubkey).or_insert(None);
+            if last.is_none_or(|t| now.saturating_duration_since(t) >= STANDBY_HELLO_EVERY) {
+                let frame = crate::overlay::disco::standby_hello(
+                    &e.pubkey,
+                    &self.keypair.secret,
+                    &self.keypair.public,
+                );
+                if wg.sender().send_disco_raw(&e.pubkey, &frame).await.is_some() {
+                    *last = Some(now);
+                }
+            }
+        }
+        self.arm_standby_tees(wg, by_node, mux);
+    }
+
+    /// F2 — the tee of each direct peer, on the scout tick and every
+    /// [`STANDBY_WATCH_TICK`] while a proof is pending: copies flow while a
+    /// proof stays unanswered past [`STANDBY_ARM_AFTER`], to a peer whose
+    /// hello is fresh, and stop the moment it is answered.
+    pub(super) fn arm_standby_tees(
+        &self,
+        wg: &WgDevice,
+        by_node: &HashMap<ObjectId, Installed>,
+        mux: &Arc<crate::transport::derp::DerpMux>,
+    ) {
+        let now = Instant::now();
+        for e in by_node.values().filter(|e| e.is_direct) {
+            let answered = e
+                .poke
+                .is_some_and(|p| wg.peer_initiator_hs_answered(&e.pubkey, p.at));
+            let capable = crate::overlay::disco::standby_capable(&e.pubkey, now);
+            let tee = standby_tee_wanted(e.poke, answered, capable, now);
+            wg.set_standby_tee(&e.pubkey, tee.then(|| mux.clone()));
         }
     }
 
@@ -3399,6 +3481,26 @@ mod tests {
             CandidateRotation::default(),
         );
         assert!(got.public.is_none(), "OVERLAY_PUBLIC_DIRECT is default-OFF");
+    }
+
+    #[test]
+    fn standby_copies_wait_for_an_unanswered_proof() {
+        // F2 — `standby_tee_wanted`: nothing without a pending proof, nothing
+        // for a young one, copies for one unanswered past STANDBY_ARM_AFTER,
+        // none once answered, none to a peer that takes no copies, none for
+        // a proof that is neither business nor Major.
+        let now = Instant::now();
+        let old = now - STANDBY_ARM_AFTER - Duration::from_millis(1);
+        let business = |at| Some(PokeArm { at, from_major: false, from_business: true });
+        assert!(!standby_tee_wanted(None, false, true, now));
+        assert!(!standby_tee_wanted(business(now), false, true, now));
+        assert!(standby_tee_wanted(business(old), false, true, now));
+        assert!(!standby_tee_wanted(business(old), true, true, now));
+        assert!(!standby_tee_wanted(business(old), false, false, now));
+        let major = Some(PokeArm { at: old, from_major: true, from_business: false });
+        assert!(standby_tee_wanted(major, false, true, now));
+        let other = Some(PokeArm { at: old, from_major: false, from_business: false });
+        assert!(!standby_tee_wanted(other, false, true, now));
     }
 
     #[tokio::test]

@@ -61,6 +61,34 @@ use sha2::Sha256;
 pub(crate) const MAGIC: &[u8; 8] = b"RMDISCO1";
 pub(crate) const KIND_PING: u8 = 1;
 pub(crate) const KIND_PONG: u8 = 2;
+/// F2 — "I take standby copies" (`derp::STANDBY_MAGIC`), sent on a direct
+/// carrier. Kind 0x10 stays clear of the follow-control kinds 3–6. A receiver
+/// older than F2 drops it as an unknown kind, so it is safe to send to anyone.
+pub(crate) const KIND_STANDBY_HELLO: u8 = 0x10;
+/// F2 — how long a peer's `STANDBY_HELLO` counts (it re-sends every 20 s).
+pub(crate) const STANDBY_HELLO_TTL: std::time::Duration = std::time::Duration::from_secs(90);
+
+/// F2 — peers whose AUTHENTICATED `STANDBY_HELLO` arrived, by static key,
+/// with when. Process-wide because every recv seam verifies through
+/// [`classify`], and a static key names one peer in one org.
+static STANDBY_PEERS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<[u8; 32], std::time::Instant>>,
+> = std::sync::LazyLock::new(Default::default);
+
+/// F2 — does `peer` take standby copies (a fresh authenticated hello)?
+pub(crate) fn standby_capable(peer: &[u8; 32], now: std::time::Instant) -> bool {
+    STANDBY_PEERS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(peer)
+        .is_some_and(|at| now.saturating_duration_since(*at) < STANDBY_HELLO_TTL)
+}
+
+/// F2 — our `STANDBY_HELLO` to `peer`.
+pub(crate) fn standby_hello(peer: &[u8; 32], secret: &StaticSecret, public: &PublicKey) -> Vec<u8> {
+    let shared = shared_secret(secret, &PublicKey::from(*peer));
+    build(KIND_STANDBY_HELLO, [0; 8], public.as_bytes(), None, &shared)
+}
 
 const OFF_KIND: usize = 8;
 const OFF_NONCE: usize = 10;
@@ -108,7 +136,7 @@ pub(crate) fn parse(pkt: &[u8], shared: &[u8; 32]) -> Option<Disco> {
         return None;
     }
     let kind = pkt[OFF_KIND];
-    if kind != KIND_PING && kind != KIND_PONG {
+    if kind != KIND_PING && kind != KIND_PONG && kind != KIND_STANDBY_HELLO {
         return None;
     }
     if !mac_ok(pkt, shared) {
@@ -209,6 +237,11 @@ pub(crate) fn classify(
             // packet — see `DiscoInbound::at`.
             at: std::time::Instant::now(),
         }),
+        KIND_STANDBY_HELLO => {
+            let mut peers = STANDBY_PEERS.lock().unwrap_or_else(|e| e.into_inner());
+            peers.insert(d.sender, std::time::Instant::now());
+            Verdict::Ignore
+        }
         _ => Verdict::Ignore,
     }
 }

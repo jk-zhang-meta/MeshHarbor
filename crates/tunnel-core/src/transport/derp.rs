@@ -166,6 +166,14 @@ enum RouteKind {
 /// another, and a QUIC packet that does is a 2^-64 event.
 pub const HIVE_MAGIC: &[u8; 8] = b"RMHIVE01";
 
+/// F2 — a STANDBY copy: a WG data datagram its sender ALSO carries on a
+/// direct carrier it currently suspects, duplicated here so the stream rides
+/// out the suspicion. It goes to the peer's standby sink and nowhere else; a
+/// miss is counted, never `Unrouted`, because the sender has not demoted and
+/// #27 must not follow a suspicion. Sent only to a peer that announced it
+/// takes standby copies: an older receiver would route it as a demotion.
+pub const STANDBY_MAGIC: &[u8; 8] = b"RMSTBY01";
+
 /// FR-90 P2d-2c — which Hive stream a payload belongs to: its grant's id, 12
 /// bytes. A peer pair carries any number of streams at once (two sessions,
 /// a renewal beside the grant it replaces), where the tunnel's route is one
@@ -223,7 +231,11 @@ impl Drop for DerpConn {
                 }
             }
         }
-        if routes.wg.is_none() && routes.tunnel.is_none() && routes.hive.is_empty() {
+        if routes.wg.is_none()
+            && routes.tunnel.is_none()
+            && routes.hive.is_empty()
+            && routes.standby.is_none()
+        {
             peers.remove(&self.peer_pubkey);
         }
     }
@@ -246,6 +258,8 @@ struct PeerRoutes {
     /// FR-90 P2d-2c — Hive replica streams to this peer, by tag; split from
     /// the rest by [`HIVE_MAGIC`] before anything else is read.
     hive: HashMap<HiveStreamTag, mpsc::Sender<Vec<u8>>>,
+    /// F2 — the standby sink for [`STANDBY_MAGIC`] copies from this peer.
+    standby: Option<mpsc::Sender<Vec<u8>>>,
 }
 
 /// Which consumer an inbound DERP payload belongs to: WireGuard and disco to
@@ -396,6 +410,8 @@ pub struct DerpMux {
     /// since none of these says anything about the carrier the overlay reads
     /// `dropped_unrouted` for.
     dropped_hive: Arc<std::sync::atomic::AtomicU64>,
+    /// F2 — STANDBY copies with no standby sink to take them.
+    dropped_standby: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl DerpMux {
@@ -416,6 +432,7 @@ impl DerpMux {
             dropped_backpressure: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             dropped_stale: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             dropped_hive: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            dropped_standby: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         });
         (mux, ws_out_rx)
     }
@@ -517,6 +534,51 @@ impl DerpMux {
         self.dropped_hive.load(Ordering::Relaxed)
     }
 
+    /// F2 — register `peer_pubkey`'s standby sink: its [`STANDBY_MAGIC`]
+    /// copies arrive on the returned receiver with the magic stripped. A second
+    /// call replaces the first (whose receiver then sees its channel close).
+    pub fn standby_route(&self, peer_pubkey: DerpPubKey) -> mpsc::Receiver<Vec<u8>> {
+        let (tx, rx) = mpsc::channel(INBOUND_QUEUE);
+        self.peers
+            .lock()
+            .unwrap()
+            .entry(peer_pubkey)
+            .or_default()
+            .standby = Some(tx);
+        rx
+    }
+
+    /// F2 — retire `peer_pubkey`'s standby sink; later copies are counted drops.
+    pub fn clear_standby(&self, peer_pubkey: &DerpPubKey) {
+        let mut peers = self.peers.lock().unwrap();
+        let Some(routes) = peers.get_mut(peer_pubkey) else {
+            return;
+        };
+        routes.standby = None;
+        if routes.wg.is_none() && routes.tunnel.is_none() && routes.hive.is_empty() {
+            peers.remove(peer_pubkey);
+        }
+    }
+
+    /// F2 — STANDBY copies that found no standby sink.
+    pub fn standby_drops(&self) -> u64 {
+        self.dropped_standby.load(Ordering::Relaxed)
+    }
+
+    /// F2 — send one STANDBY copy of a WG data datagram to `peer_pubkey`.
+    /// Loss-tolerant like every DERP send: a down mux or a full queue drops
+    /// the copy (`false`), while the direct original is still in flight.
+    pub fn send_standby(&self, peer_pubkey: &DerpPubKey, datagram: &[u8]) -> bool {
+        if !self.alive.load(Ordering::Relaxed) {
+            return false;
+        }
+        let mut frame = Vec::with_capacity(32 + STANDBY_MAGIC.len() + datagram.len());
+        frame.extend_from_slice(peer_pubkey);
+        frame.extend_from_slice(STANDBY_MAGIC);
+        frame.extend_from_slice(datagram);
+        self.ws_out.try_send((Instant::now(), frame)).is_ok()
+    }
+
     fn build_conn(
         &self,
         peer_pubkey: DerpPubKey,
@@ -589,6 +651,19 @@ impl DerpMux {
             });
             if !delivered {
                 self.dropped_hive.fetch_add(1, Ordering::Relaxed);
+            }
+            return;
+        }
+        // F2 — a STANDBY copy goes to the peer's standby sink and nowhere
+        // else. A miss is counted, never `Unrouted`: its sender is still on
+        // its direct carrier, merely suspecting it, so #27 must not follow.
+        if let Some(rest) = payload.strip_prefix(STANDBY_MAGIC.as_slice()) {
+            let tx = {
+                let peers = self.peers.lock().unwrap();
+                peers.get(&src).and_then(|r| r.standby.clone())
+            };
+            if tx.is_none_or(|tx| tx.try_send(rest.to_vec()).is_err()) {
+                self.dropped_standby.fetch_add(1, Ordering::Relaxed);
             }
             return;
         }
@@ -920,6 +995,51 @@ mod tests {
 
     /// FR-90 P2d-2c — a Hive conn frames each payload as
     /// `[peer || HIVE_MAGIC || tag || packet]`.
+    /// F2 — a STANDBY copy reaches the peer's standby sink, magic stripped,
+    /// and no other consumer; with no sink it is a counted drop that reports
+    /// no `Unrouted` (#27 must not follow a suspicion); a WG conn retiring
+    /// leaves the sink in place; `send_standby` frames
+    /// `[peer || STANDBY_MAGIC || datagram]`.
+    #[tokio::test]
+    async fn a_standby_copy_reaches_only_the_standby_sink_and_never_reports_unrouted() {
+        let (mux, mut out_rx) = DerpMux::new(pk(0x01));
+        let (ev_tx, mut ev_rx) = mpsc::channel(DerpMux::EVENT_SINK_DEPTH);
+        mux.set_event_sink(ev_tx);
+        let peer = pk(0x02);
+        let mut copy = STANDBY_MAGIC.to_vec();
+        copy.extend_from_slice(&[4, 0, 0, 0, 9, 9]);
+
+        mux.deliver(&frame(peer, &copy));
+        assert_eq!(mux.standby_drops(), 1, "no sink yet: a counted drop");
+        let mut sink = mux.standby_route(peer);
+        let wg_conn = mux.conn_for(peer);
+        mux.deliver(&frame(peer, &copy));
+        assert_eq!(sink.recv().await.unwrap(), [4, 0, 0, 0, 9, 9]);
+        let mut buf = [0u8; 64];
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), wg_conn.recv_from(&mut buf))
+                .await
+                .is_err(),
+            "the WG consumer never sees a standby copy"
+        );
+        drop(wg_conn);
+        mux.deliver(&frame(peer, &copy));
+        assert_eq!(sink.recv().await.unwrap(), [4, 0, 0, 0, 9, 9], "the sink outlives the WG route");
+        mux.clear_standby(&peer);
+        mux.deliver(&frame(peer, &copy));
+        assert_eq!(mux.standby_drops(), 2);
+        assert!(ev_rx.try_recv().is_err(), "a standby copy never reports Unrouted");
+
+        assert!(mux.send_standby(&peer, &[4, 1, 2]));
+        let (_, f) = out_rx.recv().await.unwrap();
+        let mut want = peer.to_vec();
+        want.extend_from_slice(STANDBY_MAGIC);
+        want.extend_from_slice(&[4, 1, 2]);
+        assert_eq!(f, want);
+        mux.mark_down();
+        assert!(!mux.send_standby(&peer, &[4, 1, 2]), "a down mux drops the copy");
+    }
+
     #[tokio::test]
     async fn a_hive_conn_frames_its_magic_and_its_tag() {
         let (mux, mut out_rx) = DerpMux::new(pk(0x01));

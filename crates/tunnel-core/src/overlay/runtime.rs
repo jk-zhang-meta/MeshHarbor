@@ -544,6 +544,13 @@ const RELAY_REFRESH_COOLDOWN: Duration = Duration::from_secs(30);
 /// How often the carrier-health sweep runs. Cheap (lock-free atomic reads), so
 /// a tighter cadence is fine and makes detection quicker.
 const FALLBACK_TICK: Duration = Duration::from_secs(5);
+/// F2 — how often each direct peer hears our `STANDBY_HELLO`.
+const STANDBY_HELLO_EVERY: Duration = Duration::from_secs(20);
+/// F2 — a proof unanswered this long starts standby copies: longer than a
+/// healthy path's RTT, so a healthy one-way stream's proofs never copy.
+const STANDBY_ARM_AFTER: Duration = Duration::from_millis(200);
+/// F2 — while a proof is pending, the tees are re-decided this often.
+const STANDBY_WATCH_TICK: Duration = Duration::from_millis(100);
 const BUSINESS_SCOUT_TICK: Duration = Duration::from_secs(1);
 
 // This is a bounded authorization query, never a session/cache authorization.
@@ -2867,6 +2874,9 @@ impl OverlayRuntime {
         let mut business_scout = tokio::time::interval(BUSINESS_SCOUT_TICK);
         business_scout.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut business_samples = HashMap::new();
+        let mut standby_peers: HashMap<[u8; 32], Option<Instant>> = HashMap::new();
+        let mut standby_watch = tokio::time::interval(STANDBY_WATCH_TICK);
+        standby_watch.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         // netstate PR-2 — subscribe to the process-wide network monitor
         // (typed deltas replace the P4 string feed; ONE OS registration per
         // process, see `netstate`). `None` (either kill-switch off /
@@ -3219,6 +3229,15 @@ impl OverlayRuntime {
                 // Only lock-free traffic reads and a bounded fresh proof:
                 // carrier verdicts, retries and the heavier work stay on the
                 // original fallback cadence.
+                _ = standby_watch.tick(), if !standby_peers.is_empty()
+                    && by_node.values().any(|e| e.poke.is_some()) =>
+                {
+                    if super::direct::standby_copies_enabled()
+                        && let Some(mux) = relay.as_ref().and_then(|r| r.derp_mux_handle())
+                    {
+                        self.arm_standby_tees(&wg, &by_node, &mux);
+                    }
+                }
                 _ = business_scout.tick() => {
                     self.scout_business_traffic(&mut wg, &mut by_node, &mut business_samples);
                     // F1 — a proof armed here is convicted at its own deadline, not
@@ -3245,6 +3264,11 @@ impl OverlayRuntime {
                             &mut wg, &mut by_node, &mut relay, &tun,
                             &mut upgrade_probes, &mut relay_bq,
                         ).await;
+                    }
+                    if super::direct::standby_copies_enabled()
+                        && let Some(mux) = relay.as_ref().and_then(|r| r.derp_mux_handle())
+                    {
+                        self.sweep_standby(&mut wg, &by_node, &mux, &mut standby_peers).await;
                     }
                     if followed || promoted || latched {
                         self.reconcile_exit_routing(&mut wg, &tun, &by_node, &current_peers, &mut exit_state).await;

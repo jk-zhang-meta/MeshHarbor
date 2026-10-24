@@ -130,14 +130,22 @@ impl Node {
 /// One direction of the fake `/derp` relay: a frame `from` addresses to the
 /// other mux's pubkey arrives there prefixed with `from`, as the real relay
 /// stamps the authenticated sender; every business-sized frame is timed.
-fn relay(from: [u8; 32], mut rx: mpsc::Receiver<OutboundFrame>, to: Arc<DerpMux>, seen: Stamps) {
+fn relay(
+    from: [u8; 32],
+    mut rx: mpsc::Receiver<OutboundFrame>,
+    to: Arc<DerpMux>,
+    seen: Stamps,
+    copies: Stamps,
+) {
     let to_pk = to.self_pubkey();
     tokio::spawn(async move {
         while let Some((_, frame)) = rx.recv().await {
             if frame.len() < 32 || frame[..32] != to_pk[..] {
                 continue;
             }
-            if frame.len() - 32 >= BUSINESS_MIN_WG {
+            if frame[32..].starts_with(crate::transport::derp::STANDBY_MAGIC) {
+                copies.lock().unwrap().push(Instant::now());
+            } else if frame.len() - 32 >= BUSINESS_MIN_WG {
                 seen.lock().unwrap().push(Instant::now());
             }
             let mut inbound = from.to_vec();
@@ -246,9 +254,9 @@ async fn failover_stall_and_return() {
     );
     println!("FAILOVER-ENDPOINTS a={ea:?} b={eb:?}");
 
-    let on_derp: Stamps = Default::default();
-    relay(a.kp.public.to_bytes(), a.mux_out.take().unwrap(), b.mux.clone(), on_derp.clone());
-    relay(b.kp.public.to_bytes(), b.mux_out.take().unwrap(), a.mux.clone(), on_derp.clone());
+    let (on_derp, copies): (Stamps, Stamps) = Default::default();
+    relay(a.kp.public.to_bytes(), a.mux_out.take().unwrap(), b.mux.clone(), on_derp.clone(), copies.clone());
+    relay(b.kp.public.to_bytes(), b.mux_out.take().unwrap(), a.mux.clone(), on_derp.clone(), copies.clone());
     let (pa, pb) = (a.as_peer(&ea), b.as_peer(&eb));
     for (n, other) in [(&a, pb), (&b, pa)] {
         n.events
@@ -329,6 +337,7 @@ async fn failover_stall_and_return() {
     let (stall_ab, stall_ba) = (longest_gap(&at_b, cut, heal), longest_gap(&at_a, cut, heal));
     let (heal_ab, heal_ba) = (longest_gap(&at_b, heal, end), longest_gap(&at_a, heal, end));
     let floored = on_derp.iter().filter(|t| **t > cut && **t <= heal).count();
+    let standby_copies = copies.lock().unwrap().len();
     let last_on_derp = on_derp.iter().rev().find(|t| **t > heal).copied();
     let return_ms = match last_on_derp {
         None => Some(0),
@@ -339,7 +348,7 @@ async fn failover_stall_and_return() {
     println!(
         "FAILOVER {{\"poke_fast\":\"{}\",\"fast_return\":\"{}\",\"direct_after_ms\":{},\"block_s\":{},\
          \"stall_ab_ms\":{},\"stall_ba_ms\":{},\"floor_frames\":{},\"return_ms\":{},\
-         \"heal_gap_ab_ms\":{},\"heal_gap_ba_ms\":{}}}",
+         \"heal_gap_ab_ms\":{},\"heal_gap_ba_ms\":{},\"standby_copies\":{}}}",
         env("OVERLAY_BUSINESS_POKE_FAST"),
         env("OVERLAY_FAST_RETURN"),
         direct_after.as_millis(),
@@ -350,6 +359,7 @@ async fn failover_stall_and_return() {
         return_ms.map_or_else(|| "null".into(), |v| v.to_string()),
         heal_ab.as_millis(),
         heal_ba.as_millis(),
+        standby_copies,
     );
     println!(
         "FAILOVER-TIMELINE a={} b={}",

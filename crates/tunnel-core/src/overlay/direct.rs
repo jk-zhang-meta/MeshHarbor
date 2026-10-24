@@ -725,6 +725,14 @@ pub fn fast_probe_promote_enabled() -> bool {
     crate::env::flag("OVERLAY_FAST_PROBE_PROMOTE", true)
 }
 
+/// F2 — standby copies: while a business or Major proof for a direct peer is
+/// pending, that peer's data is ALSO sent over `/derp`, tagged so its receiver
+/// takes it into the session without following us onto DERP. Only to a peer
+/// that announced it takes copies. `=0`: no sinks, no hellos, no copies.
+pub fn standby_copies_enabled() -> bool {
+    crate::env::flag("OVERLAY_STANDBY_COPIES", true)
+}
+
 pub fn make_before_break_enabled() -> bool {
     match crate::env::node_env("OVERLAY_MBB") {
         Some(v) => {

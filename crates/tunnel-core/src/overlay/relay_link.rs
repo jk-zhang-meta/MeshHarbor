@@ -763,6 +763,11 @@ impl RelayCoordinator {
         self.derp_mux.is_some()
     }
 
+    /// F2 — the node-level `/derp` mux that standby copies ride, if any.
+    pub fn derp_mux_handle(&self) -> Option<Arc<DerpMux>> {
+        self.derp_mux.clone()
+    }
+
     /// P7 — hand the coordinator a lazily-opened `/derp` mux (a UDP-capable
     /// node skips the startup open and only needs one when the server
     /// force-pins a pair onto DERP). First mux wins; a second call is a no-op

@@ -501,8 +501,44 @@ impl Carrier {
 /// (locking it on a timer inside the packet loop is what added a ~660 ms
 /// latency spike every sweep in rc.136), and uses "tx climbing while rx is
 /// flat" as a fast, lock-free "this carrier is one-way / dead" signal.
+/// F2 — one peer's standby tee: while armed, every WG data datagram the peer's
+/// carrier sends is ALSO sent as a STANDBY copy over the node's DERP mux, so
+/// the stream rides out a suspected direct carrier. Lock-free while disarmed.
+#[derive(Default)]
+pub(crate) struct StandbyTee {
+    armed: AtomicBool,
+    /// A standby sink is attached for this peer instance.
+    sink: AtomicBool,
+    to: std::sync::Mutex<Option<(Arc<crate::transport::derp::DerpMux>, [u8; 32])>>,
+}
+
+impl StandbyTee {
+    fn set(&self, to: Option<(Arc<crate::transport::derp::DerpMux>, [u8; 32])>) {
+        let mut slot = self.to.lock().unwrap_or_else(|e| e.into_inner());
+        self.armed.store(to.is_some(), Ordering::Relaxed);
+        *slot = to;
+    }
+
+    fn armed(&self) -> bool {
+        self.armed.load(Ordering::Relaxed)
+    }
+
+    /// Copy `datagram` when armed and it is WG data (type 4); a handshake or a
+    /// cookie stays on its own carrier.
+    fn copy(&self, datagram: &[u8]) {
+        if !self.armed() || datagram.first() != Some(&4) {
+            return;
+        }
+        if let Some((mux, pk)) = self.to.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+            mux.send_standby(pk, datagram);
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct PeerStats {
+    /// F2 — see [`StandbyTee`].
+    standby: StandbyTee,
     // Carrier role is set by the runtime on this exact owner, never inherited
     // by a replacement Peer. The send mirror additionally fences Tunn/carrier.
     derp_role: AtomicBool,
@@ -1052,6 +1088,7 @@ impl SendPeer {
                 if ok {
                     self.stats.tx.fetch_add(1, Ordering::Relaxed);
                 }
+                self.stats.standby.copy(&buf[..n]);
                 ok
             }
             None => false,
@@ -1145,6 +1182,13 @@ impl SendPeer {
             i = j;
         }
         stats.tx.fetch_add(sent as u64, Ordering::Relaxed);
+        if stats.standby.armed() {
+            let mut off = 0;
+            for &n in &lens {
+                stats.standby.copy(&wire[off..off + n]);
+                off += n;
+            }
+        }
         sent
     }
 }
@@ -3303,6 +3347,61 @@ impl WgDevice {
 
     /// Lock-free business activity for the fast scout. Keep the public traffic
     /// counters' successful-send meaning unchanged when a local send fails.
+    /// F2 — arm (`Some(mux)`) or disarm (`None`) `peer_public`'s standby tee.
+    pub(crate) fn set_standby_tee(
+        &self,
+        peer_public: &[u8; 32],
+        mux: Option<Arc<crate::transport::derp::DerpMux>>,
+    ) -> bool {
+        let Some(p) = self.peers.get(peer_public) else {
+            return false;
+        };
+        p.stats.standby.set(mux.map(|m| (m, *peer_public)));
+        true
+    }
+
+    /// F2 — take `peer_public`'s STANDBY copies (`rx`, from
+    /// `DerpMux::standby_route`) into its WG session via [`decap_standby`]:
+    /// the ingress gate of any inbound packet, no rx stat. The task is the
+    /// peer's, so it ends with the peer; a rebuilt peer needs a new sink.
+    pub(crate) fn attach_standby_sink(
+        &mut self,
+        peer_public: &[u8; 32],
+        mut rx: mpsc::Receiver<Vec<u8>>,
+    ) -> bool {
+        let Some(stats) = self.peers.get(peer_public).map(|p| p.stats.clone()) else {
+            return false;
+        };
+        let ingress = self.ingress_for(*peer_public, stats);
+        let tun_tx = self.tun_tx.clone();
+        let Some(p) = self.peers.get_mut(peer_public) else {
+            return false;
+        };
+        let tunn = p.tunn.clone();
+        p.stats.standby.sink.store(true, Ordering::Relaxed);
+        p.tasks.push(tokio::spawn(async move {
+            while let Some(copy) = rx.recv().await {
+                let packet = {
+                    let mut t = tunn.lock().await;
+                    decap_standby(&mut t, &copy, &ingress)
+                };
+                if let Some(packet) = packet
+                    && tun_tx.send(packet).await.is_err()
+                {
+                    break;
+                }
+            }
+        }));
+        true
+    }
+
+    /// F2 — is a standby sink attached for `peer_public`'s current session?
+    pub(crate) fn has_standby_sink(&self, peer_public: &[u8; 32]) -> bool {
+        self.peers
+            .get(peer_public)
+            .is_some_and(|p| p.stats.standby.sink.load(Ordering::Relaxed))
+    }
+
     pub(crate) fn peer_business_traffic(&self, peer_public: &[u8; 32]) -> Option<(u64, u64)> {
         let p = self.peers.get(peer_public)?;
         Some((p.stats.tx_attempted.load(Ordering::Relaxed),
@@ -3510,6 +3609,30 @@ pub(crate) async fn process_inbound(
 /// A batched receive path decrypts a whole run of datagrams this way under one
 /// `Tunn` lock, then delivers the packets back to back once the lock is
 /// released.
+/// F2 — decapsulate one STANDBY copy into the peer's session: WG data only,
+/// through the same ingress gate as [`decap_inbound`], and counted in NO rx
+/// stat. A copy is not evidence that the direct carrier works, so the business
+/// scout and the health sweep keep judging that carrier by what it delivers
+/// itself. A replay (its direct original got here first), a handshake or a
+/// cookie is dropped, and nothing is ever sent in reply.
+pub(crate) fn decap_standby(t: &mut Tunn, datagram: &[u8], ingress: &Ingress) -> Option<Vec<u8>> {
+    if datagram.len() < 16 || datagram[..4] != [4, 0, 0, 0] {
+        return None;
+    }
+    let mut out = vec![0u8; WG_BUF];
+    let (src, pkt) = match t.decapsulate(None, datagram, &mut out) {
+        TunnResult::WriteToTunnelV4(pkt, src) => (IpAddr::V4(src), pkt),
+        TunnResult::WriteToTunnelV6(pkt, src) => (IpAddr::V6(src), pkt),
+        _ => return None,
+    };
+    if !ingress.permits(src, pkt) {
+        return None;
+    }
+    let (at, len) = (pkt.as_ptr() as usize, pkt.len());
+    let span = (at - out.as_ptr() as usize, len);
+    Some(into_packet(out, span))
+}
+
 pub(crate) fn decap_inbound(
     t: &mut Tunn,
     n: usize,
@@ -4633,6 +4756,56 @@ mod tests {
     /// peers report `None`; a fresh peer reports `Some(false)` until the
     /// handshake completes, then `Some(true)` on BOTH the initiator and the
     /// responder (each sets it from an inbound packet).
+    /// F2 — a STANDBY copy is taken into the peer's session through the ingress
+    /// gate and reaches the TUN, while the data rx counter the business scout
+    /// reads stays untouched; the same copy again (a replay) is dropped.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_standby_copy_reaches_the_tun_without_counting_as_carrier_rx() {
+        let a = WgKeypair::generate();
+        let b = WgKeypair::generate();
+        let (pk_a, pk_b) = (a.public.to_bytes(), b.public.to_bytes());
+        let sock_a = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let sock_b = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let (addr_a, addr_b) = (sock_a.local_addr().unwrap(), sock_b.local_addr().unwrap());
+        let (mut dev_a, _rx_a) = WgDevice::new(a.secret.clone());
+        let (mut dev_b, mut rx_b) = WgDevice::new(b.secret.clone());
+        dev_a.add_peer(pk_b, IP_B, Carrier::direct(sock_a.clone(), addr_b), true);
+        dev_b.add_peer(pk_a, IP_A, Carrier::direct(sock_b.clone(), addr_a), false);
+        wait_connected(&dev_a, &pk_b).await;
+
+        let mux_b = crate::transport::derp::DerpMux::new(pk_b).0;
+        assert!(dev_b.attach_standby_sink(&pk_a, mux_b.standby_route(pk_a)));
+        // One packet A's session seals that travels ONLY as a standby copy.
+        let pkt = synthetic_ipv4(IP_A, IP_B, b"standby-copy");
+        let mut wire = vec![0u8; WG_BUF];
+        let n = {
+            let mut t = dev_a.peers[&pk_b].tunn.lock().await;
+            encapsulate_into(&mut t, &pkt, &mut wire).expect("a session exists")
+        };
+        assert_eq!(wire[0], 4, "WG data");
+        let rx_before = dev_b.peers[&pk_a].stats.rx.load(Ordering::Relaxed);
+        let mut frame = pk_a.to_vec();
+        frame.extend_from_slice(crate::transport::derp::STANDBY_MAGIC);
+        frame.extend_from_slice(&wire[..n]);
+
+        mux_b.deliver(&frame);
+        let got = tokio::time::timeout(Duration::from_secs(5), rx_b.recv())
+            .await
+            .expect("the copy reaches B's TUN")
+            .expect("tun channel open");
+        assert_eq!(got, pkt);
+        assert_eq!(
+            dev_b.peers[&pk_a].stats.rx.load(Ordering::Relaxed),
+            rx_before,
+            "a copy is not carrier rx"
+        );
+        mux_b.deliver(&frame);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(300), rx_b.recv()).await.is_err(),
+            "a replayed copy is dropped"
+        );
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn peer_handshake_done_latches_on_session_establish() {
         let a = WgKeypair::generate();
