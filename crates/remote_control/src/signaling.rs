@@ -2496,6 +2496,15 @@ pub enum ClientMsg {
         derp_mux_failed: bool,
     },
 
+    /// ORG-only fallback query. Sent only after the server's explicit
+    /// network capability; it must never enter TURN grant/churn handling.
+    #[serde(rename = "rc:overlay.org_relay_fallback_request")]
+    OverlayOrgRelayFallbackRequest {
+        #[serde(with = "oid_hex")]
+        peer_node_id: ObjectId,
+        request_id: u64,
+    },
+
     /// C4 stage 1 — pair-less coturn credentials for the node's standing
     /// WARM allocation (one TURN/UDP allocation established while UDP
     /// works and kept alive so corp-VPN flow-grandfathering preserves a
@@ -2758,6 +2767,9 @@ impl ClientMsg {
             ClientMsg::OverlayRelayProbe { .. } => "rc:overlay.relay_probe",
             ClientMsg::OverlayRelayRequest { .. } => "rc:overlay.relay_request",
             ClientMsg::OverlayOrgRelayDiscover { .. } => "rc:overlay.org_relay_discover",
+            ClientMsg::OverlayOrgRelayFallbackRequest { .. } => {
+                "rc:overlay.org_relay_fallback_request"
+            }
             ClientMsg::OverlayPathTrialRequest { .. } => "rc:overlay.path_trial_request",
             ClientMsg::OverlayPathTrialReady { .. } => "rc:overlay.path_trial_ready",
             ClientMsg::OverlayPathTrialCommitted { .. } => "rc:overlay.path_trial_committed",
@@ -2841,6 +2853,7 @@ impl ClientMsg {
             | ClientMsg::OverlayRelayProbe { .. }
             | ClientMsg::OverlayRelayRequest { .. }
             | ClientMsg::OverlayOrgRelayDiscover { .. }
+            | ClientMsg::OverlayOrgRelayFallbackRequest { .. }
             | ClientMsg::OverlayPathTrialRequest { .. }
             | ClientMsg::OverlayPathTrialReady { .. }
             | ClientMsg::OverlayPathTrialCommitted { .. }
@@ -2968,6 +2981,7 @@ pub const CLIENT_MSG_OWNERS: &[(&str, Owner)] = &[
     ("rc:overlay.relay_probe", Owner::Network),
     ("rc:overlay.relay_request", Owner::Network),
     ("rc:overlay.org_relay_discover", Owner::Network),
+    ("rc:overlay.org_relay_fallback_request", Owner::Network),
     ("rc:overlay.path_trial_request", Owner::Network),
     ("rc:overlay.path_trial_ready", Owner::Network),
     ("rc:overlay.path_trial_committed", Owner::Network),
@@ -3067,6 +3081,10 @@ mod namespace_tests {
                 limit: None,
             },
             ClientMsg::OverlayLeave {},
+            ClientMsg::OverlayOrgRelayFallbackRequest {
+                peer_node_id: ObjectId::new(),
+                request_id: 1,
+            },
             ClientMsg::TunnelTerminate {
                 session_id: ObjectId::new(),
                 reason: CloseReason::ClientShutdown,
@@ -5779,6 +5797,10 @@ pub struct NetmapPeer {
 /// its TUN/MTU and validate its own address against the range.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct OverlayNetworkInfo {
+    /// Explicit support for the typed ORG-only fallback query. Old servers
+    /// omit it, so a new client must not send the new request to them.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub org_relay_fallback_v1: bool,
     /// The block containing **this recipient's own** overlay address.
     ///
     /// FR-47 P5d — this used to be the network's single CIDR, and for every
@@ -10358,6 +10380,7 @@ mod tests {
         // `cidr`. That equality is what makes multi-block inert on every
         // deployment that exists today.
         let net = OverlayNetworkInfo {
+            org_relay_fallback_v1: false,
             cidr: "100.65.0.0/22".into(),
             cidrs: vec!["100.65.0.0/22".into()],
             mtu: 1280,
@@ -10417,6 +10440,7 @@ mod tests {
             path_trial_v1: true,
             self_ip: "100.65.8.1".into(),
             network: OverlayNetworkInfo {
+                org_relay_fallback_v1: false,
                 cidr: "100.65.8.0/22".into(),
                 cidrs: vec!["100.65.4.0/22".into(), "100.65.8.0/22".into()],
                 mtu: 1280,
@@ -11244,6 +11268,7 @@ mod tests {
             path_trial_v1: false,
             self_ip: "100.64.0.3".into(),
             network: OverlayNetworkInfo {
+                org_relay_fallback_v1: false,
                 cidr: "100.64.0.0/10".into(),
                 cidrs: vec![],
                 mtu: 1280,
@@ -12240,5 +12265,53 @@ mod discovery_cursor_wire_tests {
         );
         new["cursor"] = serde_json::json!({"relay_node_id":"not-an-id"});
         assert!(serde_json::from_value::<ClientMsg>(new).is_err());
+    }
+}
+
+#[cfg(test)]
+mod org_fallback_wire_tests {
+    use super::*;
+    #[test]
+    fn org_fallback_wire_support_defaults_closed_and_request_is_distinct() {
+        let old = r#"{"cidr":"100.64.0.0/10","mtu":1280}"#;
+        let mut network: OverlayNetworkInfo = serde_json::from_str(old).unwrap();
+        assert!(!network.org_relay_fallback_v1);
+        assert!(
+            !serde_json::to_string(&network)
+                .unwrap()
+                .contains("org_relay_fallback_v1")
+        );
+        network.org_relay_fallback_v1 = true;
+        assert!(
+            serde_json::from_value::<OverlayNetworkInfo>(serde_json::to_value(network).unwrap())
+                .unwrap()
+                .org_relay_fallback_v1
+        );
+        let id = ObjectId::new();
+        let message = ClientMsg::OverlayOrgRelayFallbackRequest {
+            peer_node_id: id,
+            request_id: 17,
+        };
+        let value = serde_json::to_value(message).unwrap();
+        assert_eq!(value["t"], "rc:overlay.org_relay_fallback_request");
+        assert!(value.get("current_kind").is_none() && value.get("reason").is_none());
+        let parsed: ClientMsg = serde_json::from_value(value).unwrap();
+        assert!(
+            matches!(parsed,ClientMsg::OverlayOrgRelayFallbackRequest {peer_node_id,request_id:17}if peer_node_id==id)
+        );
+        assert!(matches!(parsed.namespace(), Owner::Network));
+        let legacy: ClientMsg = serde_json::from_value(
+            serde_json::json!({"t":"rc:overlay.relay_request","peer_node_id":id.to_hex()}),
+        )
+        .unwrap();
+        assert!(matches!(
+            legacy,
+            ClientMsg::OverlayRelayRequest {
+                current_kind: None,
+                reason: None,
+                derp_mux_failed: false,
+                ..
+            }
+        ));
     }
 }

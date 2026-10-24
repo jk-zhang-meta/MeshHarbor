@@ -469,6 +469,12 @@ struct Installed {
     /// a carrier decision must not hang off a debug string that a stray edit to
     /// the display label could silently change.
     relay_kind: Option<crate::overlay::relay_link::RelayKind>,
+    /// The DERP incumbent remains active until this authorized ORG link
+    /// proves an initiator-role WG handshake on its own private session.
+    org_upgrade: Option<(ReadyLink, Instant)>,
+    org_recovery_until: Option<Instant>,
+    org_recovery_notified_until: Option<Instant>,
+    org_recovery_needs_query: bool,
 }
 
 impl Installed {
@@ -494,6 +500,10 @@ impl Installed {
             carrier_local: None,
             carrier_dst: None,
             relay_kind: None,
+            org_upgrade: None,
+            org_recovery_until: None,
+            org_recovery_notified_until: None,
+            org_recovery_needs_query: false,
             last_rtt_ms: None,
             last_rx_at: now,
             relay_local: None,
@@ -524,6 +534,88 @@ const RELAY_REFRESH_COOLDOWN: Duration = Duration::from_secs(30);
 /// a tighter cadence is fine and makes detection quicker.
 const FALLBACK_TICK: Duration = Duration::from_secs(5);
 const BUSINESS_SCOUT_TICK: Duration = Duration::from_secs(1);
+
+// This is a bounded authorization query, never a session/cache authorization.
+// Discovery hints are invalidated by ordinary D0 deltas and quality cooldowns,
+// so they cannot gate recovery from actual carrier loss. The server re-runs
+// current policy before issuing any session or secret. Keep DERP installed.
+async fn request_org_fallbacks(
+    enabled: bool,
+    installed: &HashMap<ObjectId, Installed>,
+    peers: &HashMap<ObjectId, NetmapPeer>,
+    relay: &mut Option<RelayCoordinator>,
+    now: Instant,
+) -> Vec<ObjectId> {
+    if !enabled {
+        return Vec::new();
+    }
+    let Some(relay) = relay.as_mut() else {
+        return Vec::new();
+    };
+    let mut candidates = Vec::new();
+    for (id, current) in installed {
+        if current.is_direct || current.relay_kind != Some(RelayKind::Derp)
+            || current.org_recovery_until.is_some_and(|until| now < until) {
+            continue;
+        }
+        let Some(metadata) = peers.get(id).filter(|p| p.supports_org_relay) else {
+            continue;
+        };
+        let Some(peer) = peer_config_from_netmap(metadata) else {
+            continue;
+        };
+        if peer.public_key != current.pubkey
+            || peer.overlay_ip != current.overlay_ip
+        {
+            continue;
+        }
+        candidates.push(*id);
+    }
+    relay.request_org_fallback_batch(candidates, now).await
+}
+
+fn reconcile_org_recovery(
+    wg: &mut WgDevice, by_node: &mut HashMap<ObjectId, Installed>,
+    relay: &mut Option<RelayCoordinator>, org_q: &mut OrgBindQueue,
+    alloc_q: &mut RelayAllocQueue, relay_bq: &mut RelayBuildQueue,
+) {
+    for (nid, e) in by_node.iter_mut() {
+        if let Some(until) = wg.org_recovery_until(&e.pubkey)
+            && e.org_recovery_notified_until.is_none_or(|old| until > old)
+        {
+            e.org_recovery_until = Some(until); e.org_recovery_notified_until = Some(until);
+            e.org_recovery_needs_query = true;
+            e.org_upgrade = None; wg.cancel_org_upgrade(&e.pubkey);
+            org_q.invalidate(nid); alloc_q.invalidate(nid); relay_bq.invalidate(nid);
+            if let Some(r) = relay.as_mut() { r.org_bind_failed(nid); }
+        }
+    }
+}
+fn finish_org_recovery_queries(
+    sent: Vec<ObjectId>, wg: &WgDevice, by_node: &mut HashMap<ObjectId, Installed>,
+) {
+    for nid in sent {
+        if let Some(e) = by_node.get_mut(&nid) && wg.finish_org_recovery_query(&e.pubkey) {
+            e.org_recovery_needs_query = false;
+            e.org_recovery_until = None; e.org_recovery_notified_until = None;
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn request_reconciled_org_fallbacks(
+    enabled: bool, wg: &mut WgDevice, installed: &mut HashMap<ObjectId, Installed>,
+    peers: &HashMap<ObjectId, NetmapPeer>, relay: &mut Option<RelayCoordinator>,
+    org_q: &mut OrgBindQueue, alloc_q: &mut RelayAllocQueue, relay_bq: &mut RelayBuildQueue,
+    now: Instant,
+) -> Vec<ObjectId> {
+    // A delayed main loop can resume on this tick before its scout. Discharge
+    // old work first, even when the local recovery backoff already expired.
+    reconcile_org_recovery(wg, installed, relay, org_q, alloc_q, relay_bq);
+    let sent = request_org_fallbacks(enabled, installed, peers, relay, now).await;
+    finish_org_recovery_queries(sent.clone(), wg, installed);
+    sent
+}
 
 fn business_poke_recheck(by_node: &HashMap<ObjectId, Installed>, now: Instant) -> Option<Duration> {
     let deadline = by_node.values().filter_map(|e| e.poke)
@@ -762,16 +854,30 @@ fn accept_org_bind_session(
     alloc_queue: &mut RelayAllocQueue,
     peers: &HashMap<ObjectId, NetmapPeer>,
     installed: &HashMap<ObjectId, Installed>,
-) {
+) -> bool {
+    if relay.org_relay_pinned(&peer) || installed.get(&peer).is_some_and(|e| {
+        e.org_recovery_until.is_some_and(|until| Instant::now() < until) || e.org_recovery_needs_query
+    }) { return false; }
     let needed = org_bind_needed(relay.is_tracking(&peer), installed.get(&peer));
     if !relay.org_session_accept(peer, session) {
-        return;
+        return false;
     }
     queue.invalidate(&peer);
     if needed && let Some(pc) = peers.get(&peer).and_then(peer_config_from_netmap) {
         alloc_queue.invalidate(&peer);
         relay.forget(&peer);
         relay.org_request_bind(peer, pc);
+    }
+    true
+}
+
+fn cancel_org_upgrade_candidate(
+    peer: &ObjectId, wg: &mut WgDevice, installed: &mut HashMap<ObjectId, Installed>,
+) {
+    if let Some(e) = installed.get_mut(peer) {
+        wg.cancel_org_upgrade(&e.pubkey);
+        wg.cancel_derp_follow(&e.pubkey);
+        e.org_upgrade = None;
     }
 }
 
@@ -812,7 +918,8 @@ fn commit_current_org_bind(
     }
     let identity_matches = peers.get(&done.node_id).and_then(org_peer_identity)
         == Some((done.peer_public_key, done.peer_overlay_ip));
-    if !identity_matches || installed.get(&done.node_id).is_some_and(|p| p.is_direct) {
+    if relay.org_relay_pinned(&done.node_id) || !identity_matches || installed.get(&done.node_id).is_some_and(|p| p.is_direct
+        || p.org_recovery_until.is_some_and(|until| Instant::now() < until) || p.org_recovery_needs_query) {
         if let Some(conn) = done.conn {
             conn.close();
         }
@@ -2327,6 +2434,8 @@ impl OverlayRuntime {
             }
         };
 
+        let mut server_org_fallback = network.org_relay_fallback_v1;
+
         let Ok(self_v4) = self_ip.parse::<Ipv4Addr>() else {
             warn!(%self_ip, "overlay: server sent a non-IPv4 self_ip; aborting runtime");
             return;
@@ -3053,6 +3162,13 @@ impl OverlayRuntime {
                 // original fallback cadence.
                 _ = business_scout.tick() => {
                     self.scout_business_traffic(&mut wg, &mut by_node, &mut business_samples);
+                    reconcile_org_recovery(&mut wg, &mut by_node, &mut relay, &mut org_q, &mut alloc_q, &mut relay_bq);
+                    let followed = self.sweep_authenticated_derp_follow(&mut wg, &mut by_node, &mut relay, &current_peers);
+                    let promoted = self.sweep_org_upgrades(&mut wg, &mut by_node, &mut relay, &current_peers);
+                    if followed || promoted {
+                        self.reconcile_exit_routing(&mut wg, &tun, &by_node, &current_peers, &mut exit_state).await;
+                        self.publish_view(&self_ip, &by_node, &current_peers, &upgrade_probes, exit_node_status(self.exit_node.as_deref(), &exit_state), &wg, &path_trials, server_path_trial_v1);
+                    }
                 },
                 // rc.211 — commit a finished OFF-LOOP relay carrier build (the
                 // spawned QUIC-over-TURN rendezvous — see `RelayBuildQueue`).
@@ -3265,6 +3381,7 @@ impl OverlayRuntime {
                     if let Some(r) = relay.as_mut() {
                         for p in r.reap_org_sessions(Instant::now()) {
                             org_q.invalidate(&p);
+                            cancel_org_upgrade_candidate(&p, &mut wg, &mut by_node);
                             debug!(peer = %p, "overlay relay: org-relay session expired (absolute lifetime)");
                         }
                         for job in r.take_org_jobs() {
@@ -3447,6 +3564,11 @@ impl OverlayRuntime {
                         &mut upgrade_probes, &mut relay_bq,
                     ).await;
                     warn_if_slow("sweep_upgrade_probes", t0);
+                    request_reconciled_org_fallbacks(
+                        self.org_primary && super::direct::org_relay_enabled() && server_org_discovery && server_org_fallback,
+                        &mut wg, &mut by_node, &current_peers, &mut relay,
+                        &mut org_q, &mut alloc_q, &mut relay_bq, Instant::now(),
+                    ).await;
                     // D8 — periodic direct re-upgrade (~every 6th tick ≈ 30 s).
                     // A lapsed cooldown only takes effect on the next netmap
                     // otherwise; a quiet mesh would never re-attempt direct after
@@ -4046,6 +4168,7 @@ impl OverlayRuntime {
                         path_trial::clear_observation_view(&self.peer_view,path_trials.observation_runtime_id());
                         server_path_trial_v1 = false;
                         server_org_discovery = false; // await explicit support on the NEW full netmap
+                        server_org_fallback = false;
                         org_discovery.invalidate(); // old WS replies cannot refresh metadata
                         self.outbound.swap(outbound);
                         // Join-send failure = the new session died within ms.
@@ -4138,6 +4261,7 @@ impl OverlayRuntime {
                         path_trial::clear_observation_view(&self.peer_view,path_trials.observation_runtime_id());
                         server_path_trial_v1 = path_trial_v1;
                         server_org_discovery = org_relay_discovery;
+                        server_org_fallback = new_network.org_relay_fallback_v1;
                         org_discovery.invalidate(); // authoritative membership / key / ACL reconciliation
                         let old_peers = std::mem::take(&mut current_peers);
                         current_peers = peers.iter().map(|p| (p.node_id, p.clone())).collect();
@@ -4430,13 +4554,20 @@ impl OverlayRuntime {
                     Some(OverlayEvent::OrgRelaySession { vni, generation, peer_node_id, relay_node_id, relay_endpoints, bind_secret, bind_secs, max_lifetime_secs }) => {
                         let t_arm = Instant::now();
                         if self.path_trial_managed.lock().unwrap_or_else(|e|e.into_inner()).contains(&peer_node_id) { continue; }
+                        if by_node.get(&peer_node_id).is_some_and(|e| wg.org_recovery_held(&e.pubkey)) {
+                            org_q.invalidate(&peer_node_id); alloc_q.invalidate(&peer_node_id); relay_bq.invalidate(&peer_node_id);
+                            if let Some(r) = relay.as_mut() { r.org_bind_failed(&peer_node_id); }
+                            continue;
+                        }
                         if let Some(r) = relay.as_mut() {
                             match crate::overlay::orgrelay::member::OrgSession::from_wire(vni, generation, relay_node_id, &relay_endpoints, &bind_secret, bind_secs, max_lifetime_secs) {
                                 Some(session) => {
-                                    accept_org_bind_session(
+                                    if accept_org_bind_session(
                                         peer_node_id, session, r, &mut org_q,
                                         &mut alloc_q, &current_peers, &by_node,
-                                    );
+                                    ) {
+                                        cancel_org_upgrade_candidate(&peer_node_id, &mut wg, &mut by_node);
+                                    }
                                     for job in r.take_org_jobs() {
                                         let label = current_peers.get(&job.relay_node_id).map(|p| p.name.clone()).unwrap_or_else(|| job.relay_node_id.to_hex());
                                         let epoch = org_q.stamp(job.node_id);
@@ -4463,6 +4594,7 @@ impl OverlayRuntime {
                             && let Some(peer) = r.org_session_revoke(vni)
                         {
                             org_q.invalidate(&peer);
+                            cancel_org_upgrade_candidate(&peer, &mut wg, &mut by_node);
                             info!(%peer, vni, "overlay relay: org-relay session revoked by the server — the sweep re-coordinates the pair");
                         }
                     }
@@ -4498,6 +4630,7 @@ impl OverlayRuntime {
                             // inside the forced window.
                             alloc_q.invalidate(&peer_node_id);
                             let mut link = r.force_derp(peer_node_id, Duration::from_millis(ttl_ms), derp_url.as_deref());
+                            if r.org_relay_pinned(&peer_node_id) { org_q.invalidate(&peer_node_id); }
                             // rc.222 — stamp-only + an INSTALLED TURN relay for
                             // the pair: tear it down NOW and rebuild under the
                             // pin. The server just certified the pair's TURN
@@ -7944,6 +8077,7 @@ mod tests {
 
     fn net() -> OverlayNetworkInfo {
         OverlayNetworkInfo {
+            org_relay_fallback_v1: false,
             cidr: "100.64.0.0/10".into(),
             cidrs: vec![],
             mtu: 1280,
@@ -9289,7 +9423,7 @@ mod tests {
         assert!(!relay.is_tracking(&nid), "no stuck in-flight bookkeeping");
     }
 
-    async fn pending_org_test_bind(
+    pub(super) async fn pending_org_test_bind(
         relay: &mut RelayCoordinator,
         nid: ObjectId,
         peer: &NetmapPeer,
@@ -9378,6 +9512,58 @@ mod tests {
             );
             assert!(!conn.is_alive(), "{case}");
         }
+    }
+
+    #[tokio::test]
+    async fn org_fallback_force_pin_wins_over_controlled_udp_completion_and_late_session() {
+        use base64::Engine as _;
+        let kp = WgKeypair::generate();
+        let nid = ObjectId::new();
+        let ip = Ipv4Addr::new(100, 64, 0, 7);
+        let peers = HashMap::from([(nid, test_netmap_peer(nid, ip, &kp))]);
+        let (tx, _rx) = mpsc::channel(8);
+        let mux = DerpMux::new([0; 32]).0;
+        let mut relay = RelayCoordinator::new(tx, [0; 32], true, vec![], Some(mux));
+        let (done, mut q, conn) = pending_org_test_bind(&mut relay, nid, &peers[&nid], 17, 7).await;
+        let _ = relay.force_derp(nid, Duration::from_secs(60), None);
+        assert!(relay.org_relay_pinned(&nid));
+        assert!(
+            commit_current_org_bind(done, &mut q, &peers, &HashMap::new(), &mut relay).is_none()
+        );
+        assert!(
+            !conn.is_alive(),
+            "completed old UDP bind must be closed inside pin"
+        );
+        let secret = base64::engine::general_purpose::STANDARD.encode([8u8; 32]);
+        let late = super::super::orgrelay::member::OrgSession::from_wire(
+            18,
+            8,
+            ObjectId::new(),
+            &["8.8.8.8:47865".into()],
+            &secret,
+            10,
+            60,
+        )
+        .unwrap();
+        let (alloc_tx, _alloc_rx) = mpsc::channel(1);
+        let mut alloc = RelayAllocQueue {
+            in_flight: HashMap::new(),
+            epoch: 0,
+            tx: alloc_tx,
+        };
+        accept_org_bind_session(
+            nid,
+            late,
+            &mut relay,
+            &mut q,
+            &mut alloc,
+            &peers,
+            &HashMap::new(),
+        );
+        assert!(
+            relay.take_org_jobs().is_empty(),
+            "late session may not start another bind while pinned"
+        );
     }
 
     #[tokio::test]
@@ -9618,5 +9804,655 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
+    }
+}
+
+#[cfg(test)]
+mod org_fallback_tests {
+    use super::*;
+    use roomler_ai_remote_control::signaling::OrgRelayCandidateWire;
+
+    async fn fixture() -> (
+        ObjectId,
+        HashMap<ObjectId, Installed>,
+        HashMap<ObjectId, NetmapPeer>,
+        super::super::orgrelay::discovery::Discovery,
+        Option<RelayCoordinator>,
+        mpsc::Receiver<ClientMsg>,
+        Instant,
+    ) {
+        let key = WgKeypair::generate();
+        let id = ObjectId::new();
+        let now = Instant::now();
+        let peer:NetmapPeer=serde_json::from_value(serde_json::json!({
+            "node_id":id.to_hex(),"overlay_ip":"100.64.0.2","wg_public_key":key.public_base64(),
+            "reachable":true,"supports_org_relay":true,"supports_derp":true,"supports_derp_floor":true
+        })).unwrap();
+        let peers = HashMap::from([(id, peer)]);
+        let cfg = peer_config_from_netmap(&peers[&id]).unwrap();
+        let (tx, rx) = mpsc::channel(8);
+        let mux = DerpMux::new([0; 32]).0;
+        let mut relay = RelayCoordinator::new(tx, [0; 32], false, vec![], Some(mux));
+        relay.set_org_relay(true);
+        assert!(relay.build_floor(id, &cfg).is_some());
+        let installed = HashMap::from([(
+            id,
+            Installed {
+                is_direct: false,
+                relay_kind: Some(RelayKind::Derp),
+                ..Installed::base(cfg.public_key, cfg.overlay_ip, DirectTier::Relay, now)
+            },
+        )]);
+        let mut discovery = super::super::orgrelay::discovery::Discovery::default();
+        let (metadata_tx, mut metadata_rx) = mpsc::channel(4);
+        discovery
+            .request(true, true, &peers, &ControlTx::new(metadata_tx), now)
+            .await;
+        let ClientMsg::OverlayOrgRelayDiscover { request_id, .. } = metadata_rx.try_recv().unwrap()
+        else {
+            panic!("expected actual queued discovery request")
+        };
+        assert_eq!(
+            discovery.receive_page(
+                &peers,
+                id,
+                request_id,
+                vec![OrgRelayCandidateWire {
+                    relay_node_id: ObjectId::new(),
+                    exit_relay_node_id: None,
+                    endpoints: vec!["8.8.8.8:47865".into()]
+                }],
+                30,
+                None,
+                now
+            ),
+            1
+        );
+        (id, installed, peers, discovery, Some(relay), rx, now)
+    }
+
+    #[tokio::test]
+    async fn org_fallback_runtime_fresh_hint_bootstraps_derp_without_replacing_it() {
+        let (id, installed, peers, discovery, mut relay, mut rx, now) = fixture().await;
+        let since = installed[&id].since;
+        request_org_fallbacks(true, &installed, &peers, &mut relay, now).await;
+        assert!(
+            matches!(rx.try_recv(),Ok(ClientMsg::OverlayOrgRelayFallbackRequest{peer_node_id,..})if peer_node_id==id),
+            "a fresh metadata hint must reach the real server-mint control channel from DERP"
+        );
+        assert_eq!(installed[&id].since, since);
+        assert_eq!(installed[&id].relay_kind, Some(RelayKind::Derp));
+        assert!(relay.as_ref().unwrap().is_floored(&id));
+        assert!(
+            relay
+                .as_mut()
+                .unwrap()
+                .grant_accept(id, vec![], "unrelated-turn".into())
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn org_fallback_runtime_requires_enabled_current_identity_capability_and_derp() {
+        for gate in 0..8 {
+            let (id, mut installed, mut peers, mut discovery, mut relay, mut rx, now) =
+                fixture().await;
+            let mut enabled = true;
+            let mut at = now;
+            match gate {
+                0 => enabled = false,
+                1 => installed.get_mut(&id).unwrap().is_direct = true,
+                2 => peers.get_mut(&id).unwrap().supports_org_relay = false,
+                3 => peers.get_mut(&id).unwrap().reachable = false,
+                4 => {
+                    peers.get_mut(&id).unwrap().wg_public_key =
+                        WgKeypair::generate().public_base64()
+                }
+                5 => installed.get_mut(&id).unwrap().relay_kind = Some(RelayKind::Turn),
+                6 => peers.get_mut(&id).unwrap().overlay_ip = "100.64.0.99".into(),
+                7 => { peers.remove(&id); },
+                _ => unreachable!(),
+            }
+            request_org_fallbacks(enabled, &installed, &peers, &mut relay, at).await;
+            assert!(rx.try_recv().is_err(), "unsafe request at gate {gate}");
+        }
+    }
+    #[tokio::test]
+    async fn org_fallback_runtime_quality_cooldown_does_not_block_real_carrier_loss() {
+        let (id, installed, peers, mut discovery, mut relay, mut rx, now) = fixture().await;
+        let candidate = discovery.candidate_for(&peers, id, now).unwrap();
+        let identity = (peers[&id].wg_public_key.clone(), peers[&id].overlay_ip.clone());
+        discovery.note_failure(&peers, id, &identity, &candidate, now);
+        assert!(discovery.candidate_for(&peers, id, now).is_none(),
+            "normal quality trials must retain their existing failure cooldown");
+        request_org_fallbacks(true, &installed, &peers, &mut relay, now).await;
+        assert!(matches!(rx.try_recv(), Ok(ClientMsg::OverlayOrgRelayFallbackRequest { peer_node_id, .. }) if peer_node_id == id),
+            "fresh current metadata must allow the server-authorized fallback query during DERP, independently of quality trial cooldown");
+        assert!(relay.as_ref().unwrap().is_floored(&id));
+    }
+
+    #[tokio::test]
+    async fn org_fallback_runtime_unrelated_delta_cannot_delay_authoritative_query() {
+        let (id, installed, peers, mut discovery, mut relay, mut rx, now) = fixture().await;
+        discovery.reconcile_delta(&peers, &[]);
+        assert!(discovery.candidate_for(&peers, id, now).is_none(),
+            "discovery authorization hints must remain invalidated on every delta");
+        request_org_fallbacks(true, &installed, &peers, &mut relay, now).await;
+        assert!(matches!(rx.try_recv(), Ok(ClientMsg::OverlayOrgRelayFallbackRequest { peer_node_id, .. }) if peer_node_id == id),
+            "current peer and DERP carrier must reach authoritative server authorization after an unrelated D0 delta");
+    }
+
+    #[tokio::test]
+    async fn org_fallback_runtime_expired_discovery_does_not_reuse_session_or_block_query() {
+        let (id, installed, peers, discovery, mut relay, mut rx, now) = fixture().await;
+        let at = now + Duration::from_secs(31);
+        assert!(discovery.candidate_for(&peers, id, at).is_none());
+        request_org_fallbacks(true, &installed, &peers, &mut relay, at).await;
+        assert!(matches!(rx.try_recv(), Ok(ClientMsg::OverlayOrgRelayFallbackRequest { peer_node_id, .. }) if peer_node_id == id));
+        assert!(relay.as_ref().unwrap().is_floored(&id));
+    }
+
+}
+
+#[cfg(test)]
+mod org_upgrade_tests {
+    use super::*;
+    fn test_relay_bq() -> RelayBuildQueue {
+        let (tx, _rx) = mpsc::channel(4);
+        RelayBuildQueue {
+            in_flight: HashMap::new(),
+            epoch: 0,
+            tx,
+        }
+    }
+
+    fn test_netmap_peer(nid: ObjectId, overlay_ip: Ipv4Addr, kp: &WgKeypair) -> NetmapPeer {
+        NetmapPeer {
+            node_id: nid,
+            overlay_ip: overlay_ip.to_string(),
+            name: "pc".into(),
+            wg_public_key: kp.public_base64(),
+            supports_derp: true,
+            supports_derp_floor: true,
+            reachable: true,
+            endpoints: vec![],
+            lan_endpoints: vec![],
+            srflx_endpoints: vec![],
+            srflx_nat: None,
+            udp_dialer_ok: None,
+            relay_home: None,
+            warm_relay_endpoint: None,
+            supports_quic: false,
+            supports_relay_single: false,
+            supports_forced_derp: false,
+            caps: None,
+            supports_overlay_echo: false,
+            supports_org_relay: false,
+            relay_strategy: None,
+            routes: vec![],
+            agent_id: None,
+            ingress_rules: None,
+        }
+    }
+
+
+    use crate::transport::relay::UdpRelayConn;
+    use base64::Engine;
+    use crate::overlay::disco::derp_follow as proofwire;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    #[derive(Default)]
+    struct FollowTap {
+        frames: std::sync::Mutex<Vec<Vec<u8>>>, held: std::sync::Mutex<Vec<Vec<u8>>>,
+        hold_init: AtomicBool, hold_proof: AtomicBool,
+    }
+    impl FollowTap {
+        fn forward(&self, bytes: &[u8]) -> bool {
+            let mut seen=self.frames.lock().unwrap();
+            if seen.len()==1024 {seen.remove(0);}
+            seen.push(bytes.to_vec());drop(seen);
+            let body=&bytes[32..];
+            let hold = body.len()==148 && body[0]==1 && self.hold_init.swap(false,Ordering::Relaxed)
+                || proofwire::shaped(body) && body[8]==proofwire::Kind::Proof as u8 && self.hold_proof.swap(false,Ordering::Relaxed);
+            if hold {self.held.lock().unwrap().push(bytes.to_vec());}
+            !hold
+        }
+        fn count(&self, kind:proofwire::Kind)->usize {
+            self.frames.lock().unwrap().iter().filter(|f|proofwire::shaped(&f[32..])&&f[40]==kind as u8).count()
+        }
+    }
+    struct FollowUdp { socket:UdpSocket, drop_ack:Arc<AtomicBool> }
+    #[async_trait]
+    impl crate::transport::relay::RelayConn for FollowUdp {
+        async fn send_to(&self, bytes:&[u8], target:SocketAddr)->std::io::Result<usize> {
+            if proofwire::shaped(bytes) && bytes[8]==proofwire::Kind::HelloAck as u8 && self.drop_ack.load(Ordering::Relaxed) {
+                return Ok(bytes.len()); // fixture drops only capability ACK on the actual carrier
+            }
+            self.socket.send_to(bytes,target).await
+        }
+        async fn recv_from(&self,bytes:&mut[u8])->std::io::Result<(usize,SocketAddr)> {self.socket.recv_from(bytes).await}
+        fn local_addr(&self)->std::io::Result<SocketAddr> {self.socket.local_addr()}
+    }
+
+    struct CandidateTun;
+    #[async_trait]
+    impl TunIo for CandidateTun {
+        async fn read_packet(&self)->std::io::Result<Vec<u8>> { std::future::pending().await }
+        async fn write_packet(&self,_:&[u8])->std::io::Result<()> { Ok(()) }
+    }
+
+    struct End {
+        rt: OverlayRuntime, wg: WgDevice,
+        received: mpsc::Receiver<Vec<u8>>, installed: HashMap<ObjectId, Installed>,
+        peers: HashMap<ObjectId, NetmapPeer>, relay: Option<RelayCoordinator>,
+        tun: Arc<dyn TunIo>, bq: RelayBuildQueue,
+        mux: Arc<DerpMux>, events: mpsc::Receiver<crate::transport::derp::MuxEvent>,
+        id: ObjectId, pk: [u8;32], ip: Ipv4Addr,
+        control: mpsc::Receiver<ClientMsg>, tap: Arc<FollowTap>, drop_org_ack: Arc<AtomicBool>,
+    }
+    async fn pair() -> (End, End, Vec<tokio::task::JoinHandle<()>>) {
+        let a = WgKeypair::generate(); let b = WgKeypair::generate();
+        let aip = Ipv4Addr::new(100,65,4,2); let bip = Ipv4Addr::new(100,65,4,3);
+        let aid = ObjectId::new(); let bid = ObjectId::new();
+        let (am, mut ar) = DerpMux::new(a.public.to_bytes());
+        let (bm, mut br) = DerpMux::new(b.public.to_bytes());
+        async fn end(key: WgKeypair, peer: &WgKeypair, id: ObjectId,
+            ip: Ipv4Addr, mux: Arc<DerpMux>) -> End {
+            let (tx, control) = mpsc::channel(16);
+            let mock = Arc::new(CandidateTun);
+            let tf: TunFactory = { let m=mock.clone(); Box::new(move |_,_,_| Ok(m.clone() as Arc<dyn TunIo>)) };
+            let rt = OverlayRuntime::new_relay(key.clone(), tx.clone(), tf, 1280);
+            let (mut wg, received) = WgDevice::new(key.secret.clone());
+            let peers=HashMap::from([(id,test_netmap_peer(id,ip,peer))]);
+            let cfg=peer_config_from_netmap(&peers[&id]).unwrap();
+            let mut r=RelayCoordinator::new(tx,key.public.to_bytes(),false,vec![],Some(mux.clone()));
+            let floor=r.build_floor(id,&cfg).unwrap();
+            let tun:Arc<dyn TunIo>=mock;
+            let mut installed=HashMap::new(); let mut bq=test_relay_bq();
+            let (et,events)=mpsc::channel(32); mux.set_event_sink(et);
+            rt.install_ready(&mut wg,&mut installed,&tun,floor,&mut bq).await;
+            End {rt,wg,received,installed,peers,relay:Some(r),tun,bq,mux,events,id,pk:peer.public.to_bytes(),ip,
+                control,tap:Arc::new(FollowTap::default()),drop_org_ack:Arc::new(AtomicBool::new(false))}
+        }
+        let ea=end(a.clone(),&b,bid,bip,am.clone()).await;
+        let eb=end(b.clone(),&a,aid,aip,bm.clone()).await;
+        let ap=a.public.to_bytes();let bp=b.public.to_bytes();
+        let tap_ab=ea.tap.clone();let tap_ba=eb.tap.clone();
+        let bridge_ab=tokio::spawn(async move {while let Some((_,mut f))=ar.recv().await {
+            f[..32].copy_from_slice(&ap);if tap_ab.forward(&f){bm.deliver(&f);}
+        }});
+        let bridge_ba=tokio::spawn(async move {while let Some((_,mut f))=br.recv().await {
+            f[..32].copy_from_slice(&bp);if tap_ba.forward(&f){am.deliver(&f);}
+        }});
+        let deadline=Instant::now()+Duration::from_secs(5);
+        while !(ea.wg.peer_handshake_done(&ea.pk)==Some(true) && eb.wg.peer_handshake_done(&eb.pk)==Some(true)) {
+            assert!(Instant::now()<deadline,"real DERP WG handshake");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        (ea,eb,vec![bridge_ab,bridge_ba])
+    }
+    async fn links(a:&End,b:&End)->(ReadyLink,ReadyLink) {
+        let sa=UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let sb=UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let aa=sa.local_addr().unwrap();let ba=sb.local_addr().unwrap();
+        let ca:Arc<dyn crate::transport::relay::RelayConn>=Arc::new(FollowUdp{socket:sa,drop_ack:a.drop_org_ack.clone()});
+        let cb:Arc<dyn crate::transport::relay::RelayConn>=Arc::new(FollowUdp{socket:sb,drop_ack:b.drop_org_ack.clone()});
+        let make=|e:&End,c:Arc<dyn crate::transport::relay::RelayConn>,dst| ReadyLink {
+            node_id:e.id,public_key:e.pk,overlay_ip:e.ip,carrier:Carrier::relay(c.clone(),dst),
+            relay_parts:Some((c,dst)),extra_permission_targets:vec![],supports_quic:false,
+            single_relay:None,relay_kind:RelayKind::Org,subnets:vec![],
+        };
+        (make(a,ca,ba),make(b,cb,aa))
+    }
+    async fn stage(e:&mut End,l:ReadyLink) {
+        e.rt.install_ready(&mut e.wg,&mut e.installed,&e.tun,l,&mut e.bq).await;
+    }
+    fn settle(e:&mut End)->bool {
+        e.rt.sweep_org_upgrades(&mut e.wg,&mut e.installed,&mut e.relay,&e.peers)
+    }
+    fn packet(src:Ipv4Addr,dst:Ipv4Addr,label:u8)->Vec<u8> {
+        let mut p=vec![0u8;21];p[0]=0x45;p[2..4].copy_from_slice(&21u16.to_be_bytes());
+        p[8]=64;p[9]=17;p[12..16].copy_from_slice(&src.octets());p[16..20].copy_from_slice(&dst.octets());p[20]=label;p
+    }
+    async fn payload(a:&End,b:&mut End,label:u8) {
+        let p=packet(b.ip,a.ip,label);
+        assert!(a.wg.send_ip_packet(&p).await);
+        let got=tokio::time::timeout(Duration::from_secs(2),b.received.recv()).await.unwrap().unwrap();
+        assert_eq!(got,p,"real WG payload must survive on current sender");
+    }
+    async fn promoted(a:&mut End,b:&mut End) {
+        let deadline=Instant::now()+Duration::from_secs(8);
+        loop {
+            settle(a);settle(b);
+            if a.installed[&a.id].relay_kind==Some(RelayKind::Org)
+                && b.installed[&b.id].relay_kind==Some(RelayKind::Org) {break;}
+            assert!(Instant::now()<deadline,"both own INIT responses must promote");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+    #[tokio::test]
+    async fn org_upgrade_failed_candidate_keeps_real_derp_payload_and_cannot_borrow_floor_proof() {
+        let (mut a,mut b,tasks)=pair().await;let (la,_lb)=links(&a,&b).await;
+        stage(&mut a,la).await;
+        assert_eq!(a.installed[&a.id].relay_kind,Some(RelayKind::Derp),"unproven candidate cannot replace DERP");
+        payload(&a,&mut b,1).await;payload(&b,&mut a,2).await;
+        assert!(!settle(&mut a),"floor handshake/data are not candidate proof");
+        assert_eq!(a.installed[&a.id].relay_kind,Some(RelayKind::Derp));
+        for t in tasks {t.abort();}
+    }
+    #[tokio::test]
+    async fn org_upgrade_simultaneous_real_handshakes_and_delayed_floor_frames() {
+        let (mut a,mut b,tasks)=pair().await;let (la,lb)=links(&a,&b).await;
+        stage(&mut a,la).await;stage(&mut b,lb).await;
+        let deadline=Instant::now()+Duration::from_secs(8);
+        while !(a.wg.org_upgrade_ready(&a.pk) && b.wg.org_upgrade_ready(&b.pk)) {
+            assert!(Instant::now()<deadline,"real initiator-role proof on both candidates");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(settle(&mut a));
+        assert_eq!(b.installed[&b.id].relay_kind,Some(RelayKind::Derp));
+        let before=a.wg.peer_traffic(&a.pk).unwrap();
+        // B is genuinely still sending old-session encrypted business over
+        // DERP while A's sender has already cut over to ORG.
+        payload(&b,&mut a,3).await;
+        assert!(a.events.try_recv().is_err(),"valid delayed floor data must not emit demote-follow");
+        assert_eq!(a.wg.peer_traffic(&a.pk).unwrap(),before,"valid floor data cannot credit ORG counters");
+        payload(&a,&mut b,4).await;
+        assert!(settle(&mut b));
+        payload(&a,&mut b,5).await;payload(&b,&mut a,6).await;
+        for t in tasks {t.abort();}
+    }
+    #[tokio::test]
+    async fn org_upgrade_one_end_early_recovers_its_own_initiator_proof() {
+        let (mut a,mut b,tasks)=pair().await;let (la,lb)=links(&a,&b).await;
+        stage(&mut a,la).await;
+        let mut discarded = [0u8; 2048];
+        loop {
+            let n=tokio::time::timeout(Duration::from_secs(1),lb.relay_parts.as_ref().unwrap().0.recv_from(&mut discarded)).await.unwrap().unwrap().0;
+            if n>=148 && discarded[0]==1 { break; }
+            assert_eq!(&discarded[..n],b"\x00","only the real permission bootstrap precedes INIT");
+        }
+        stage(&mut b,lb).await;promoted(&mut a,&mut b).await;
+        payload(&a,&mut b,5).await;payload(&b,&mut a,6).await;
+        for t in tasks {t.abort();}
+    }
+    #[tokio::test]
+    async fn org_upgrade_remove_fences_late_real_candidate_completion() {
+        let (mut a,mut b,tasks)=pair().await;let (la,lb)=links(&a,&b).await;
+        stage(&mut a,la).await;a.wg.remove_peer(&a.pk).await;
+        stage(&mut b,lb).await;
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        assert!(!settle(&mut a),"removed incumbent cannot be resurrected");
+        assert_eq!(a.wg.peer_handshake_done(&a.pk),None);
+        for t in tasks {t.abort();}
+    }
+
+    #[tokio::test]
+    async fn org_upgrade_identical_completion_does_not_rearm_and_expiry_keeps_floor() {
+        let (mut a,mut b,tasks)=pair().await;let (la,_lb)=links(&a,&b).await;
+        stage(&mut a,la.clone()).await;
+        let since=a.installed[&a.id].org_upgrade.as_ref().unwrap().1;
+        stage(&mut a,la).await;
+        assert_eq!(a.installed[&a.id].org_upgrade.as_ref().unwrap().1,since);
+        a.installed.get_mut(&a.id).unwrap().org_upgrade.as_mut().unwrap().1=
+            Instant::now()-DirectTier::Relay.handshake_deadline()-Duration::from_secs(1);
+        assert!(!settle(&mut a));
+        assert!(a.installed[&a.id].org_upgrade.is_none());
+        payload(&a,&mut b,7).await;payload(&b,&mut a,8).await;
+        for t in tasks {t.abort();}
+    }
+    #[tokio::test]
+    async fn org_upgrade_force_pin_replacement_cancels_late_real_handshake() {
+        let (mut a,mut b,tasks)=pair().await;let (la,lb)=links(&a,&b).await;
+        stage(&mut a,la).await;
+        let id=a.id;
+        let mut r=a.relay.take().unwrap();
+        let mut floor=r.force_derp(id,Duration::from_secs(60),None);
+        if floor.is_none() {
+            // Same stamp-only fallback used by the real ForceDerp arm.
+            floor=r.follow_peer_to_derp(id,peer_config_from_netmap(&a.peers[&id]).unwrap());
+        }
+        a.relay=Some(r);
+        stage(&mut a,floor.unwrap()).await;
+        stage(&mut b,lb).await;
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert!(!settle(&mut a));
+        assert!(a.installed[&id].org_upgrade.is_none());
+        assert_eq!(a.installed[&id].relay_kind,Some(RelayKind::Derp));
+        for t in tasks {t.abort();}
+    }
+    #[tokio::test]
+    async fn org_upgrade_revoke_cancels_pending_candidate_without_weakening_floor() {
+        let (mut a,mut b,tasks)=pair().await;let (la,lb)=links(&a,&b).await;
+        let session=super::super::orgrelay::member::OrgSession::from_wire(
+            77,1,ObjectId::new(),&["8.8.8.8:47865".into()],&base64::engine::general_purpose::STANDARD.encode([11u8;32]),10,60).unwrap();
+        assert!(a.relay.as_mut().unwrap().org_session_accept(a.id,session));
+        stage(&mut a,la).await;
+        let id=a.relay.as_mut().unwrap().org_session_revoke(77).unwrap();
+        cancel_org_upgrade_candidate(&id,&mut a.wg,&mut a.installed);
+        stage(&mut b,lb).await;
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert!(!settle(&mut a));
+        assert!(a.installed[&id].org_upgrade.is_none());
+        payload(&a,&mut b,9).await;payload(&b,&mut a,10).await;
+        for t in tasks {t.abort();}
+    }
+    fn fresh_poll(e:&mut End)->bool {
+        e.rt.sweep_authenticated_derp_follow(&mut e.wg,&mut e.installed,&mut e.relay,&e.peers)
+    }
+    async fn cap_ready(a:&mut End,b:&mut End) {
+        let until=Instant::now()+Duration::from_secs(9);
+        while !a.wg.test_follow_capable(&a.pk)||!b.wg.test_follow_capable(&b.pk) {
+            fresh_poll(a);fresh_poll(b);
+            assert!(Instant::now()<until,"fresh ORG-owner capability exchange");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+    async fn as_org(a:&mut End,b:&mut End) {
+        let (la,lb)=links(a,b).await;stage(a,la).await;stage(b,lb).await;
+        promoted(a,b).await;cap_ready(a,b).await;
+    }
+    async fn fallback(e:&mut End) {
+        let link=e.relay.as_mut().unwrap().follow_peer_to_derp(e.id,peer_config_from_netmap(&e.peers[&e.id]).unwrap()).unwrap();
+        stage(e,link).await;
+        assert!(e.wg.poke_handshake(&e.pk),"new actual DERP owner emits a real INIT");
+    }
+    async fn held(tap:&FollowTap)->Vec<u8> {
+        let until=Instant::now()+Duration::from_secs(2);
+        loop {
+            if let Some(p)=tap.held.lock().unwrap().pop(){return p;}
+            assert!(Instant::now()<until,"expected real withheld wire packet");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+    #[tokio::test]
+    async fn fresh_follow_real_new_derp_init_restores_same_floor_and_recovers_after_org_loss() {
+        let (mut a,mut b,tasks)=pair().await;as_org(&mut a,&mut b).await;
+        payload(&a,&mut b,20).await;payload(&b,&mut a,21).await;
+        fallback(&mut b).await; // destroys B's real ORG UDP socket/owner
+        let until=Instant::now()+Duration::from_secs(3);
+        while a.installed[&a.id].relay_kind!=Some(RelayKind::Derp) {
+            fresh_poll(&mut a);
+            assert!(Instant::now()<until,"authenticated owner proof must follow without health timeout");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(a.wg.org_recovery_held(&a.pk));assert!(b.wg.org_recovery_held(&b.pk));
+        assert!(a.installed[&a.id].org_recovery_needs_query);
+        payload(&a,&mut b,22).await;payload(&b,&mut a,23).await;
+        // A second copy of a consumed actual proof cannot change the sender.
+        let proof=b.tap.frames.lock().unwrap().iter().find(|f|proofwire::shaped(&f[32..])&&f[40]==proofwire::Kind::Proof as u8).unwrap().clone();
+        a.mux.deliver(&proof);assert!(!fresh_poll(&mut a));
+        for t in tasks {t.abort();}
+    }
+    #[tokio::test]
+    async fn fresh_follow_unseen_old_init_while_peer_org_and_old_data_do_not_demote() {
+        let (mut a,mut b,tasks)=pair().await;
+        b.tap.hold_init.store(true,Ordering::Relaxed);
+        assert!(b.wg.poke_handshake(&b.pk));
+        let old=held(&b.tap).await; // a valid, previously unseen floor INIT
+        as_org(&mut a,&mut b).await;
+        let old_org=a.wg.peer_traffic(&a.pk).unwrap();
+        a.mux.deliver(&old);
+        let until=Instant::now()+Duration::from_millis(400);
+        while Instant::now()<until {fresh_poll(&mut a);fresh_poll(&mut b);tokio::time::sleep(Duration::from_millis(10)).await;}
+        assert!(a.tap.count(proofwire::Kind::Challenge)>0,"old unseen INIT really passed Tunn and initiated a fresh challenge");
+        assert_eq!(b.tap.count(proofwire::Kind::Proof),0,"retained floor cannot attest while ORG owner is active");
+        assert_eq!(a.installed[&a.id].relay_kind,Some(RelayKind::Org));
+        assert_eq!(a.wg.peer_traffic(&a.pk).unwrap(),old_org,"old floor does not credit ORG");
+        // Replay the same authentic INIT, and delayed genuine old ciphertext.
+        a.mux.deliver(&old);
+        if let Some(data)=b.tap.frames.lock().unwrap().iter().find(|f|f.len()>36&&f[32..36]==[4,0,0,0]).cloned(){a.mux.deliver(&data);}
+        fresh_poll(&mut a);
+        assert_eq!(a.installed[&a.id].relay_kind,Some(RelayKind::Org));
+        payload(&a,&mut b,24).await;payload(&b,&mut a,25).await;
+        for t in tasks {t.abort();}
+    }
+    #[tokio::test]
+    async fn fresh_follow_missing_hello_ack_never_sends_derp_challenge_and_later_recovers_capability() {
+        let (mut a,mut b,tasks)=pair().await;
+        b.drop_org_ack.store(true,Ordering::Relaxed);
+        let (la,lb)=links(&a,&b).await;stage(&mut a,la).await;stage(&mut b,lb).await;promoted(&mut a,&mut b).await;
+        let until=Instant::now()+Duration::from_millis(3_300);
+        while Instant::now()<until {fresh_poll(&mut a);fresh_poll(&mut b);tokio::time::sleep(Duration::from_millis(10)).await;}
+        assert!(!a.wg.test_follow_capable(&a.pk));
+        assert_eq!(a.tap.count(proofwire::Kind::Challenge),0,"no new frame goes to DERP before explicit capability ACK");
+        payload(&a,&mut b,26).await;payload(&b,&mut a,27).await;
+        b.drop_org_ack.store(false,Ordering::Relaxed);cap_ready(&mut a,&mut b).await;
+        for t in tasks {t.abort();}
+    }
+    #[tokio::test]
+    async fn fresh_follow_late_valid_proof_cannot_revive_after_revoke_pin_remove_rekey_or_reip() {
+        for case in 0..5 {
+            let (mut a,mut b,tasks)=pair().await;as_org(&mut a,&mut b).await;
+            b.tap.hold_proof.store(true,Ordering::Relaxed);fallback(&mut b).await;
+            let until=Instant::now()+Duration::from_secs(2);
+            while b.tap.held.lock().unwrap().is_empty(){fresh_poll(&mut a);assert!(Instant::now()<until);tokio::time::sleep(Duration::from_millis(10)).await;}
+            let proof=held(&b.tap).await;
+            let previous_key=a.pk;
+            match case {
+                0 => {
+                    let session=super::super::orgrelay::member::OrgSession::from_wire(77,1,ObjectId::new(),&["8.8.8.8:47865".into()],&base64::engine::general_purpose::STANDARD.encode([17u8;32]),10,60).unwrap();
+                    a.relay.as_mut().unwrap().org_session_accept(a.id,session);
+                    let peer=a.relay.as_mut().unwrap().org_session_revoke(77).unwrap();
+                    cancel_org_upgrade_candidate(&peer,&mut a.wg,&mut a.installed);
+                },
+                1 => {
+                    let r=a.relay.as_mut().unwrap();
+                    let floor=r.force_derp(a.id,Duration::from_secs(60),None)
+                        .or_else(||r.follow_peer_to_derp(a.id,peer_config_from_netmap(&a.peers[&a.id]).unwrap())).unwrap();
+                    assert!(r.org_relay_pinned(&a.id));stage(&mut a,floor).await;
+                },
+                2 => {a.wg.remove_peer(&a.pk).await;a.installed.remove(&a.id);a.peers.remove(&a.id);},
+                _ => {
+                    a.wg.remove_peer(&a.pk).await;a.installed.remove(&a.id);
+                    let mut peer=a.peers[&a.id].clone();
+                    if case==3 {
+                        let replacement=WgKeypair::generate();
+                        peer.wg_public_key=replacement.public_base64();a.pk=replacement.public.to_bytes();
+                    } else {
+                        a.ip=Ipv4Addr::new(100,65,4,99);peer.overlay_ip=a.ip.to_string();
+                    }
+                    a.peers.insert(a.id,peer);
+                    let floor=a.relay.as_mut().unwrap().follow_peer_to_derp(a.id,peer_config_from_netmap(&a.peers[&a.id]).unwrap()).unwrap();
+                    stage(&mut a,floor).await;
+                },
+            }
+            a.mux.deliver(&proof);tokio::time::sleep(Duration::from_millis(20)).await;
+            assert!(!fresh_poll(&mut a),"old nonce/owner must not mutate replacement state");
+            if case==0 {assert_eq!(a.installed[&a.id].relay_kind,Some(RelayKind::Org));}
+            if case==1 {assert_eq!(a.installed[&a.id].relay_kind,Some(RelayKind::Derp));}
+            if case==2 {assert_eq!(a.wg.peer_count(),0);}
+            if case>=3 {
+                assert_eq!(a.wg.peer_count(),1);
+                assert_eq!(a.installed[&a.id].pubkey,a.pk);
+                assert_eq!(a.installed[&a.id].overlay_ip,a.ip);
+                assert_eq!(a.installed[&a.id].relay_kind,Some(RelayKind::Derp));
+                if case==3 {assert_eq!(a.wg.peer_handshake_done(&previous_key),None);}
+                if case==4 {assert!(!a.wg.org_recovery_held(&a.pk),"different IP never inherits another identity's hold");}
+            }
+            for t in tasks {t.abort();}
+        }
+    }
+    #[tokio::test]
+    async fn fresh_follow_hold_rejects_late_session_and_expiry_requires_successful_fresh_request() {
+        let (mut a,mut b,tasks)=pair().await;as_org(&mut a,&mut b).await;
+        let (old_done,mut q,old_conn)=super::tests::pending_org_test_bind(a.relay.as_mut().unwrap(),a.id,&a.peers[&a.id],88,1).await;
+        let (at,_ar)=mpsc::channel(4);let mut alloc=RelayAllocQueue {in_flight:HashMap::new(),epoch:0,tx:at};
+        let alloc_epoch=alloc.stamp(a.id);let mut old_bq=test_relay_bq();let build_epoch=old_bq.stamp(a.id);
+        assert!(old_conn.is_alive());
+        fallback(&mut b).await;
+        let until=Instant::now()+Duration::from_secs(3);
+        while !fresh_poll(&mut a) {assert!(Instant::now()<until);tokio::time::sleep(Duration::from_millis(10)).await;}
+        assert!(q.in_flight.contains_key(&a.id),"simulate fallback tick running before its first recovery scout");
+        let now=Instant::now();
+        a.relay.as_mut().unwrap().set_org_relay(true);
+        for p in a.peers.values_mut(){p.supports_org_relay=true;}
+        assert!(request_org_fallbacks(true,&a.installed,&a.peers,&mut a.relay,now).await.is_empty());
+        let secret=base64::engine::general_purpose::STANDARD.encode([13u8;32]);
+        let session=||super::super::orgrelay::member::OrgSession::from_wire(99,1,ObjectId::new(),&["8.8.8.8:47865".into()],&secret,10,60).unwrap();
+        assert!(!accept_org_bind_session(a.id,session(),a.relay.as_mut().unwrap(),&mut q,&mut alloc,&a.peers,&a.installed));
+        // Isolate expiry-boundary testing from packet authentication: only the
+        // monotonic hold clock is advanced, no WG/proof counter is fabricated.
+        a.wg.test_expire_recovery_hold(&a.pk);
+        a.installed.get_mut(&a.id).unwrap().org_recovery_until=Some(Instant::now()-Duration::from_millis(1));
+        assert!(!accept_org_bind_session(a.id,session(),a.relay.as_mut().unwrap(),&mut q,&mut alloc,&a.peers,&a.installed),"expiry alone cannot revive a lease");
+        for p in a.peers.values_mut(){p.supports_org_relay=true;}
+        let sent=request_reconciled_org_fallbacks(true,&mut a.wg,&mut a.installed,&a.peers,&mut a.relay,&mut q,&mut alloc,&mut old_bq,Instant::now()).await;
+        assert!(!q.in_flight.contains_key(&a.id));
+        assert!(!alloc.take_if_current(&a.id,alloc_epoch));assert!(!old_bq.take_if_current(&a.id,build_epoch));
+        assert!(old_conn.is_alive(),"off-loop completion closes at its rejected commit, not queue invalidation");
+        assert_eq!(sent,vec![a.id]);
+        assert!(matches!(a.control.try_recv().unwrap(),ClientMsg::OverlayOrgRelayFallbackRequest {..}));
+        assert!(a.wg.org_recovery_until(&a.pk).is_none(),"successful fresh query consumes the expired marker");
+        assert!(accept_org_bind_session(a.id,session(),a.relay.as_mut().unwrap(),&mut q,&mut alloc,&a.peers,&a.installed),"fresh request permits a new bind, not an old pending completion");
+        assert!(commit_current_org_bind(old_done,&mut q,&a.peers,&a.installed,a.relay.as_mut().unwrap()).is_none(),"pre-fence completion cannot overwrite fresh admission after expiry");
+        assert!(!old_conn.is_alive(),"rejected late completion releases its actual UDP conn");
+        reconcile_org_recovery(&mut a.wg,&mut a.installed,&mut a.relay,&mut q,&mut alloc,&mut old_bq);
+        assert!(!a.installed[&a.id].org_recovery_needs_query,"expired marker cannot reappear after successful fresh request");
+        for t in tasks {t.abort();}
+    }
+    #[tokio::test]
+    async fn fresh_follow_proof_attestation_blocks_an_already_wg_ready_org_candidate() {
+        let (mut a,mut b,tasks)=pair().await;
+        let (la,lb)=links(&a,&b).await;let retained_org=lb.clone();
+        stage(&mut a,la).await;stage(&mut b,lb).await;promoted(&mut a,&mut b).await;cap_ready(&mut a,&mut b).await;
+        fallback(&mut b).await;
+        stage(&mut b,retained_org).await;
+        let until=Instant::now()+Duration::from_secs(3);
+        while !b.wg.org_upgrade_ready(&b.pk) {
+            assert!(Instant::now()<until,"candidate must possess genuine WG proof before fence");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(b.installed[&b.id].relay_kind,Some(RelayKind::Derp));
+        while !b.wg.org_recovery_held(&b.pk) {
+            fresh_poll(&mut a);assert!(Instant::now()<until);tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(!settle(&mut b),"proof attestation and promotion serialize through the same sender owner");
+        assert_eq!(b.installed[&b.id].relay_kind,Some(RelayKind::Derp));
+        assert!(b.installed[&b.id].org_upgrade.is_none());
+        while a.installed[&a.id].relay_kind!=Some(RelayKind::Derp) {
+            fresh_poll(&mut a);assert!(Instant::now()<until);tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        payload(&a,&mut b,28).await;payload(&b,&mut a,29).await;
+        for t in tasks {t.abort();}
+    }
+    #[tokio::test]
+    async fn fresh_follow_closed_or_full_control_queue_cannot_clear_admission_fence() {
+        for full in [false,true] {
+            let (mut a,mut b,tasks)=pair().await;as_org(&mut a,&mut b).await;fallback(&mut b).await;
+            let until=Instant::now()+Duration::from_secs(3);
+            while !fresh_poll(&mut a) {assert!(Instant::now()<until);tokio::time::sleep(Duration::from_millis(10)).await;}
+            a.wg.test_expire_recovery_hold(&a.pk);
+            a.installed.get_mut(&a.id).unwrap().org_recovery_until=Some(Instant::now()-Duration::from_millis(1));
+            a.relay.as_mut().unwrap().set_org_relay(true);
+            for p in a.peers.values_mut(){p.supports_org_relay=true;}
+            if full {
+                for i in 0..16 {a.rt.outbound.send(ClientMsg::OverlayOrgRelayFallbackRequest{peer_node_id:ObjectId::new(),request_id:i}).await.unwrap();}
+            } else {a.control.close();}
+            let sent=request_org_fallbacks(true,&a.installed,&a.peers,&mut a.relay,Instant::now()).await;
+            assert!(sent.is_empty(),"only a true successful enqueue qualifies");
+            finish_org_recovery_queries(sent,&a.wg,&mut a.installed);
+            assert!(a.installed[&a.id].org_recovery_needs_query);
+            for t in tasks {t.abort();}
+        }
     }
 }

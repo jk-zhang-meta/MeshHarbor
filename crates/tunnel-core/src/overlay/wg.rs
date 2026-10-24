@@ -37,6 +37,7 @@ use tokio::sync::{Mutex, Semaphore, mpsc};
 use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 
+use super::disco::derp_follow as follow;
 use super::ingress::{dst_ip_of, parse_l4, rules_permit};
 use super::router::{LocalScope, Router, RpfMode, RpfVerdict};
 use crate::transport::quic::QuicPeer;
@@ -491,6 +492,16 @@ impl Carrier {
 /// flat" as a fast, lock-free "this carrier is one-way / dead" signal.
 #[derive(Default)]
 pub struct PeerStats {
+    // Carrier role is set by the runtime on this exact owner, never inherited
+    // by a replacement Peer. The send mirror additionally fences Tunn/carrier.
+    derp_role: AtomicBool,
+    recovery_hold: Arc<AtomicU64>,
+    org_role: AtomicBool,
+    sent_inits: std::sync::Mutex<std::collections::VecDeque<[u8; 32]>>,
+    follow_init: std::sync::Mutex<Option<([u8; 32], Instant)>>,
+    follow_ack: std::sync::Mutex<Option<follow::Frame>>,
+    follow_proof: std::sync::Mutex<Option<follow::Frame>>,
+    follow_reply_at: AtomicU64,
     tx: AtomicU64,
     /// Encapsulated business sends submitted to the carrier, including errors.
     /// Only SendPeer::send advances this; handshake/keepalive timer sends do not.
@@ -915,6 +926,24 @@ impl WgSender {
         self.0.read().unwrap().peers.contains_key(pk)
     }
 
+    fn attest_active_derp(&self, public: &[u8; 32], tunn: &Arc<Mutex<Tunn>>, carrier: &Arc<Carrier>, init: &[u8; 32]) -> bool {
+        let g = self.0.read().unwrap();
+        let Some(p) = g.peers.get(public) else { return false; };
+        if !Arc::ptr_eq(&p.tunn, tunn) || !Arc::ptr_eq(&p.carrier, carrier)
+            || !p.stats.derp_role.load(Ordering::Relaxed)
+            || !p.stats.sent_inits.lock().unwrap_or_else(|e|e.into_inner()).contains(init)
+        { return false; }
+        p.stats.recovery_hold.fetch_max(mono_ms_now().saturating_add(60_000), Ordering::Relaxed);
+        true
+    }
+
+    fn same_owner(&self, public: &[u8; 32], tunn: &Arc<Mutex<Tunn>>, carrier: &Arc<Carrier>, derp: bool) -> bool {
+        self.0.read().unwrap().peers.get(public).is_some_and(|p| {
+            Arc::ptr_eq(&p.tunn, tunn) && Arc::ptr_eq(&p.carrier, carrier)
+                && (!derp || p.stats.derp_role.load(Ordering::Relaxed))
+        })
+    }
+
     pub(crate) fn new() -> Self {
         Self(Arc::new(std::sync::RwLock::new(SendState {
             router: Router::new(),
@@ -986,7 +1015,7 @@ impl SendPeer {
         match out {
             Some(b) => {
                 self.stats.tx_attempted.fetch_add(1, Ordering::Relaxed);
-                let ok = self.carrier.send(&b).await.is_ok();
+                let ok = send_wg_recorded(&self.carrier, &self.stats, &b).await.is_ok();
                 if ok {
                     self.stats.tx.fetch_add(1, Ordering::Relaxed);
                 }
@@ -1000,6 +1029,37 @@ impl SendPeer {
 /// A candidate owns a private receive/timer/crypto session without changing
 /// the active sender. After commit, the incumbent stays receiving until both
 /// peers acknowledge and the coordinator finalizes this exact trial.
+struct FollowRound {
+    nonce: [u8; 16],
+    init: [u8; 32],
+    started: Instant,
+    sent: u8,
+    last_sent: Option<Instant>,
+}
+struct DerpFollowState {
+    org: std::sync::Weak<Mutex<Tunn>>,
+    floor: std::sync::Weak<Mutex<Tunn>>,
+    hello: FollowRound,
+    capable: bool,
+    pending: Option<FollowRound>,
+    next_round: Instant,
+}
+impl FollowRound {
+    fn new(init: [u8; 32]) -> Self {
+        Self { nonce: follow::nonce(), init, started: Instant::now(), sent: 0, last_sent: None }
+    }
+    fn fresh(&self) -> bool { self.started.elapsed() < Duration::from_secs(3) }
+    fn due(&self) -> bool {
+        self.fresh() && self.sent < 3
+            && self.last_sent.is_none_or(|at| at.elapsed() >= Duration::from_secs(1))
+    }
+}
+
+struct OrgUpgradePeer {
+    candidate: Peer,
+    incumbent_tunn: std::sync::Weak<Mutex<Tunn>>,
+}
+
 struct PathTrialPeer {
     public_key: [u8; 32],
     candidate: Option<Peer>,
@@ -1027,6 +1087,15 @@ pub struct WgDevice {
     /// in flight.
     probes: HashMap<[u8; 32], Peer>,
     path_trials: HashMap<ObjectId, PathTrialPeer>,
+    /// Authorized DERP-to-ORG upgrades keep a private WG candidate until an
+    /// actual response to our own initiation proves both directions.
+    org_upgrades: HashMap<[u8; 32], OrgUpgradePeer>,
+    /// Receive-only incumbent ownership prevents delayed floor ciphertext
+    /// from becoming a false Unrouted/demote-follow signal after cutover.
+    /// Removed with the active peer; its counters never prove ORG health.
+    org_floor_receivers: HashMap<[u8; 32], Peer>,
+    derp_follow: HashMap<[u8; 32], DerpFollowState>,
+    recovery: HashMap<[u8; 32], (Ipv4Addr, Arc<AtomicU64>)>,
     /// Brief receive-only drain after a coordinated rollback. Still owned by
     /// this device and removed immediately on peer removal/rekey.
     path_trial_drains: HashMap<ObjectId, ([u8; 32], Instant, Peer)>,
@@ -1102,6 +1171,10 @@ impl WgDevice {
                 peers: HashMap::new(),
                 probes: HashMap::new(),
                 path_trials: HashMap::new(),
+                org_upgrades: HashMap::new(),
+                org_floor_receivers: HashMap::new(),
+                derp_follow: HashMap::new(),
+                recovery: HashMap::new(),
                 path_trial_drains: HashMap::new(),
                 send: WgSender::new(),
                 tun_tx,
@@ -1337,6 +1410,12 @@ impl WgDevice {
         stats: Arc<PeerStats>,
     ) {
         let mut g = self.send.0.write().unwrap();
+        Self::send_install_locked(&mut g, peer_public, overlay_ip, tunn, carrier, stats);
+    }
+    fn send_install_locked(
+        g: &mut SendState, peer_public: [u8; 32], overlay_ip: Ipv4Addr,
+        tunn: Arc<Mutex<Tunn>>, carrier: Arc<Carrier>, stats: Arc<PeerStats>,
+    ) {
         if let Some(prev) = g.router.upsert(overlay_ip, peer_public) {
             // Expected once, right after the server recycled a removed device's
             // address to a new machine and we haven't reaped the old peer yet.
@@ -1407,6 +1486,8 @@ impl WgDevice {
         carrier: Arc<Carrier>,
         initiate: bool,
     ) {
+        self.cancel_org_upgrade(&peer_public);
+        self.drop_org_floor_receiver(&peer_public);
         let peer = self.make_carrier_peer(
             peer_public,
             overlay_ip,
@@ -1444,7 +1525,7 @@ impl WgDevice {
         );
         let tunn = Arc::new(Mutex::new(tunn));
 
-        let stats = Arc::new(PeerStats::default());
+        let stats = Arc::new(PeerStats { recovery_hold: self.recovery_for(peer_public, overlay_ip), ..PeerStats::default() });
 
         // Multi-org v2 — register this session on the plane's receiver-index
         // demux even though it is NOT a direct install.
@@ -1485,6 +1566,9 @@ impl WgDevice {
         // recv task: carrier → decapsulate → tun / network echo.
         let recv_tunn = tunn.clone();
         let recv_carrier = carrier.clone();
+        let recv_sender = self.sender();
+        let recv_stats = stats.clone();
+        let follow_shared = super::disco::shared_secret(&self.secret, &PublicKey::from(peer_public));
         let tun_tx = self.tun_tx.clone();
         let recv_ingress = self.ingress_for(peer_public, stats.clone());
         let disco_secret = self.secret.clone();
@@ -1500,6 +1584,49 @@ impl WgDevice {
                         break;
                     }
                 };
+                if follow::shaped(&buf[..n]) {
+                    if let Some(frame) = follow::decode(&buf[..n], &peer_public, disco_public.as_bytes(), &follow_shared) {
+                        match frame.kind {
+                            follow::Kind::HelloAck => {
+                                *recv_stats.follow_ack.lock().unwrap_or_else(|e|e.into_inner()) = Some(frame);
+                            }
+                            follow::Kind::Proof => {
+                                *recv_stats.follow_proof.lock().unwrap_or_else(|e|e.into_inner()) = Some(frame);
+                            }
+                            follow::Kind::Hello | follow::Kind::Challenge => {
+                                let challenge = frame.kind == follow::Kind::Challenge;
+                                let allowed = if challenge {
+                                    recv_sender.same_owner(&peer_public, &recv_tunn, &recv_carrier, true)
+                                        && recv_stats.sent_inits.lock().unwrap_or_else(|e|e.into_inner()).contains(&frame.init)
+                                } else {
+                                    recv_stats.org_role.load(Ordering::Relaxed)
+                                        && recv_sender.same_owner(&peer_public, &recv_tunn, &recv_carrier, false)
+                                };
+                                let now = mono_ms_now().max(1);
+                                let last = recv_stats.follow_reply_at.load(Ordering::Relaxed);
+                                if allowed && (last == 0 || now.saturating_sub(last) >= 1_000)
+                                    && recv_stats.follow_reply_at.compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed).is_ok()
+                                    && let Ok(permit) = disco_replies.clone().try_acquire_owned()
+                                {
+                                    let reply = follow::Frame { kind: if challenge { follow::Kind::Proof } else { follow::Kind::HelloAck }, ..frame };
+                                    if let Some(bytes) = follow::encode(&reply, disco_public.as_bytes(), &peer_public, &follow_shared) {
+                                        let (sender, tunn, carrier, stats) = (recv_sender.clone(), recv_tunn.clone(), recv_carrier.clone(), recv_stats.clone());
+                                        tokio::spawn(async move {
+                                            let _permit = permit;
+                                            // Recheck after queueing: a stale owner never attests DERP.
+                                            if challenge {
+                                                if !sender.attest_active_derp(&peer_public, &tunn, &carrier, &reply.init) { return; }
+                                            } else if !stats.org_role.load(Ordering::Relaxed)
+                                                || !sender.same_owner(&peer_public, &tunn, &carrier, false) { return; }
+                                            let _ = tokio::time::timeout(Duration::from_millis(100), carrier.send(&bytes)).await;
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    continue;
+                }
                 // Authenticated end-to-end echo rides the SAME carrier as
                 // WG, but never enters Tunn or refreshes WG liveness counters.
                 // Exact expected peer matching rejects another tenant member.
@@ -1541,10 +1668,45 @@ impl WgDevice {
             }
         });
 
+        let timer_task = Self::spawn_carrier_timer(tunn.clone(), carrier.clone(), stats.clone());
+
+        let peer = Peer {
+            tunn: tunn.clone(),
+            carrier: carrier.clone(),
+            overlay_ip,
+            tasks: vec![recv_task, timer_task],
+            stats: stats.clone(),
+            direct_src: None,
+            plane_idx: self.plane.as_ref().map(|_| index),
+            direct_index: None,
+        };
+        if initiate {
+            let init_stats = stats.clone();
+            tokio::spawn(async move {
+                let mut buf = vec![0u8; WG_BUF];
+                // rc.211 — same lock-then-send split as the timer tasks.
+                let out = {
+                    let mut t = tunn.lock().await;
+                    match t.format_handshake_initiation(&mut buf, false) {
+                        TunnResult::WriteToNetwork(b) => Some(b.to_vec()),
+                        _ => None,
+                    }
+                };
+                if let Some(b) = out {
+                    let _ = send_wg_recorded(&carrier, &init_stats, &b).await;
+                }
+            });
+        }
+        peer
+    }
+
+    fn spawn_carrier_timer(
+        tunn: Arc<Mutex<Tunn>>, carrier: Arc<Carrier>, stats: Arc<PeerStats>,
+    ) -> JoinHandle<()> {
         // timer task: drive handshake retries + keepalives.
-        let timer_tunn = tunn.clone();
-        let timer_carrier = carrier.clone();
-        let timer_task = tokio::spawn(async move {
+        let timer_tunn = tunn;
+        let timer_carrier = carrier;
+        tokio::spawn(async move {
             let mut buf = vec![0u8; WG_BUF];
             let mut tick = tokio::time::interval(Duration::from_millis(TIMER_TICK_MS));
             loop {
@@ -1573,63 +1735,221 @@ impl WgDevice {
                     }
                 };
                 if let Some(b) = out {
-                    let _ = timer_carrier.send(&b).await;
+                    let _ = send_wg_recorded(&timer_carrier, &stats, &b).await;
                 }
             }
-        });
-
-        let peer = Peer {
-            tunn: tunn.clone(),
-            carrier: carrier.clone(),
-            overlay_ip,
-            tasks: vec![recv_task, timer_task],
-            stats: stats.clone(),
-            direct_src: None,
-            plane_idx: self.plane.as_ref().map(|_| index),
-            direct_index: None,
-        };
-        if initiate {
-            tokio::spawn(async move {
-                let mut buf = vec![0u8; WG_BUF];
-                // rc.211 — same lock-then-send split as the timer tasks.
-                let out = {
-                    let mut t = tunn.lock().await;
-                    match t.format_handshake_initiation(&mut buf, false) {
-                        TunnResult::WriteToNetwork(b) => Some(b.to_vec()),
-                        _ => None,
-                    }
-                };
-                if let Some(b) = out {
-                    let _ = carrier.send(&b).await;
-                }
-            });
-        }
-        peer
+        })
     }
 
-    /// Start a bilateral-protocol candidate. No router/send entry is changed.
-    /// Only one trial per peer, and never start without a direct incumbent.
-    pub(crate) fn start_path_trial(
-        &mut self,
-        trial: ObjectId,
-        public: [u8; 32],
-        ip: Ipv4Addr,
-        carrier: Arc<Carrier>,
+    /// Start only over the exact current non-direct incumbent. Both ends
+    /// initiate: a responder-only session is insufficient promotion proof.
+    pub(crate) fn start_org_upgrade(
+        &mut self, public: [u8; 32], ip: Ipv4Addr, carrier: Arc<Carrier>,
     ) -> bool {
-        if self.path_trials.contains_key(&trial)
-            || self.path_trials.values().any(|p| p.public_key == public)
-        {
-            return false;
-        }
-        let Some(active) = self.peers.get(&public) else {
-            return false;
-        };
-        if !matches!(&*active.carrier, Carrier::Direct { .. }) || active.overlay_ip != ip {
-            return false;
+        if self.org_recovery_held(&public) { return false; }
+        let Some(active) = self.peers.get(&public) else { return false; };
+        if active.carrier.is_direct() || active.overlay_ip != ip { return false; }
+        if self.org_upgrades.get(&public).is_some_and(|u| Arc::ptr_eq(&u.candidate.carrier, &carrier)) {
+            return false; // an identical completion never re-arms its handshake
         }
         let incumbent_tunn = Arc::downgrade(&active.tunn);
-        let (tx, pongs) = mpsc::channel(32);
-        let mut candidate = self.make_carrier_peer(public, ip, carrier, true, tx);
+        self.cancel_org_upgrade(&public);
+        let mut candidate = self.make_carrier_peer(
+            public, ip, carrier, true, self.disco_events_tx.clone(),
+        );
+        candidate.stats.org_role.store(true, Ordering::Relaxed);
+        Self::drive_initiator_proof(&mut candidate);
+        self.org_upgrades.insert(public, OrgUpgradePeer { candidate, incumbent_tunn });
+        true
+    }
+
+    fn recovery_for(&mut self, public: [u8; 32], ip: Ipv4Addr) -> Arc<AtomicU64> {
+        self.recovery.retain(|_, (_, hold)| hold.load(Ordering::Relaxed) > mono_ms_now() || Arc::strong_count(hold) > 1);
+        let entry = self.recovery.entry(public).or_insert_with(|| (ip, Arc::new(AtomicU64::new(0))));
+        if entry.0 != ip { *entry = (ip, Arc::new(AtomicU64::new(0))); }
+        entry.1.clone()
+    }
+    pub(crate) fn org_recovery_until(&self, public: &[u8; 32]) -> Option<Instant> {
+        let at = self.recovery.get(public)?.1.load(Ordering::Relaxed);
+        (at != 0).then(|| wg_epoch() + Duration::from_millis(at))
+    }
+    pub(crate) fn finish_org_recovery_query(&self, public: &[u8;32]) -> bool {
+        let Some((_,hold))=self.recovery.get(public) else {return true;};
+        let at=hold.load(Ordering::Relaxed);
+        if at>mono_ms_now() {return false;}
+        hold.compare_exchange(at,0,Ordering::Relaxed,Ordering::Relaxed).is_ok()
+    }
+    pub(crate) fn org_recovery_held(&self, public: &[u8; 32]) -> bool {
+        self.org_recovery_until(public).is_some_and(|until| Instant::now() < until)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_follow_capable(&self, public: &[u8;32]) -> bool {
+        self.derp_follow.get(public).is_some_and(|s|s.capable)
+    }
+    #[cfg(test)]
+    pub(crate) fn test_expire_recovery_hold(&self, public: &[u8;32]) {
+        // Clock-boundary fixture only; never creates an INIT, proof or authorization.
+        if let Some((_,at))=self.recovery.get(public) {at.store(mono_ms_now().saturating_sub(1).max(1),Ordering::Relaxed);}
+    }
+    pub(crate) fn set_peer_relay_role(&self, public: &[u8; 32], derp: bool, org: bool) {
+        if let Some(p) = self.peers.get(public) {
+            p.stats.derp_role.store(derp, Ordering::Relaxed);
+            p.stats.org_role.store(org, Ordering::Relaxed);
+        }
+    }
+
+    pub(crate) fn cancel_derp_follow(&mut self, public: &[u8; 32]) {
+        self.derp_follow.remove(public);
+        if let Some(p) = self.org_floor_receivers.get(public) {
+            *p.stats.follow_init.lock().unwrap_or_else(|e|e.into_inner()) = None;
+            *p.stats.follow_proof.lock().unwrap_or_else(|e|e.into_inner()) = None;
+        }
+    }
+
+    pub(crate) fn peer_relay_addrs(&self, public: &[u8; 32]) -> (Option<SocketAddr>, Option<SocketAddr>) {
+        match self.peers.get(public).map(|p| p.carrier.as_ref()) {
+            Some(Carrier::Relay { conn, dst, .. }) => (conn.local_addr().ok(), Some(*dst)),
+            _ => (None, None),
+        }
+    }
+
+    /// Cheap control-loop poll. It never changes routing for an unanswered
+    /// capability exchange, challenge, late packet, or bad authentication.
+    pub(crate) fn poll_derp_follow(&mut self, public: &[u8; 32]) -> bool {
+        let Some(active) = self.peers.get(public) else { return false; };
+        let Some(floor) = self.org_floor_receivers.get(public) else { return false; };
+        let Some(state) = self.derp_follow.get_mut(public) else { return false; };
+        if !active.stats.org_role.load(Ordering::Relaxed)
+            || !floor.stats.derp_role.load(Ordering::Relaxed)
+            || !std::sync::Weak::ptr_eq(&state.org, &Arc::downgrade(&active.tunn))
+            || !std::sync::Weak::ptr_eq(&state.floor, &Arc::downgrade(&floor.tunn))
+        { return false; }
+        if let Some(ack) = active.stats.follow_ack.lock().unwrap_or_else(|e|e.into_inner()).take()
+            && state.hello.fresh() && state.hello.sent > 0
+            && ack.kind == follow::Kind::HelloAck && ack.nonce == state.hello.nonce
+            && ack.init == [0; 32]
+        { state.capable = true; }
+
+        let shared = super::disco::shared_secret(&self.secret, &PublicKey::from(*public));
+        let send = self.send.clone();
+        let self_public = self.public.to_bytes();
+        let emit = |frame: follow::Frame, carrier: Arc<Carrier>, org: Arc<Mutex<Tunn>>, org_carrier: Arc<Carrier>| {
+            if let Some(bytes) = follow::encode(&frame, &self_public, public, &shared) {
+                let send = send.clone(); let public = *public;
+                tokio::spawn(async move {
+                    if !send.same_owner(&public, &org, &org_carrier, false) { return; }
+                    let _ = tokio::time::timeout(Duration::from_millis(100), carrier.send(&bytes)).await;
+                });
+            }
+        };
+        if !state.capable {
+            if state.hello.started.elapsed() >= Duration::from_secs(5) {
+                state.hello = FollowRound::new([0; 32]);
+            }
+            if state.hello.due() {
+                let frame = follow::Frame { kind: follow::Kind::Hello, nonce: state.hello.nonce, init: [0; 32] };
+                state.hello.sent += 1; state.hello.last_sent = Some(Instant::now());
+                emit(frame, active.carrier.clone(), active.tunn.clone(), active.carrier.clone());
+            }
+            // Unknown/old peer: no new packet is ever sent on DERP. Ordinary
+            // carrier health remains solely responsible for fallback.
+            return false;
+        }
+        let proof = floor.stats.follow_proof.lock().unwrap_or_else(|e|e.into_inner()).take();
+        if let Some(proof) = proof
+            && let Some(round) = state.pending.as_ref()
+            && round.fresh() && round.sent > 0
+            && proof.kind == follow::Kind::Proof && proof.nonce == round.nonce && proof.init == round.init
+        {
+            // Exclusive device owner; neither current Tunn can change between
+            // the exact-owner check above and this atomic sender restoration.
+            return self.restore_org_floor(public);
+        }
+        if state.pending.as_ref().is_some_and(|r| !r.fresh()) { state.pending = None; }
+        if state.pending.is_none() && Instant::now() >= state.next_round
+            && let Some((digest, at)) = floor.stats.follow_init.lock().unwrap_or_else(|e|e.into_inner()).take()
+            && at.elapsed() < Duration::from_secs(5)
+        {
+            state.pending = Some(FollowRound::new(digest));
+            state.next_round = Instant::now() + Duration::from_secs(5);
+        }
+        if let Some(round) = state.pending.as_mut() && round.due() {
+            let frame = follow::Frame { kind: follow::Kind::Challenge, nonce: round.nonce, init: round.init };
+            round.sent += 1; round.last_sent = Some(Instant::now());
+            emit(frame, floor.carrier.clone(), active.tunn.clone(), active.carrier.clone());
+        }
+        false
+    }
+
+    fn restore_org_floor(&mut self, public: &[u8; 32]) -> bool {
+        let Some(mut floor) = self.org_floor_receivers.remove(public) else { return false; };
+        floor.stats.recovery_hold.fetch_max(mono_ms_now().saturating_add(60_000), Ordering::Relaxed);
+        self.derp_follow.remove(public); // consume nonce before any new owner
+        self.cancel_org_upgrade(public);
+        floor.tasks.push(Self::spawn_carrier_timer(floor.tunn.clone(), floor.carrier.clone(), floor.stats.clone()));
+        let (ip, tunn, carrier, stats) = (floor.overlay_ip, floor.tunn.clone(), floor.carrier.clone(), floor.stats.clone());
+        if let Some(old_org) = self.peers.insert(*public, floor) { self.unregister_plane_route(&old_org); }
+        self.send_install(*public, ip, tunn, carrier, stats);
+        self.debug_assert_send_synced();
+        true
+    }
+
+
+    pub(crate) fn org_upgrade_ready(&self, public: &[u8; 32]) -> bool {
+        self.org_upgrades.get(public).is_some_and(|u| {
+            !u.candidate.carrier.is_dead()
+                && u.candidate.stats.hs_response_at.load(Ordering::Relaxed) != 0
+                && self.peers.get(public).is_some_and(|p| {
+                    p.overlay_ip == u.candidate.overlay_ip
+                        && p.stats.recovery_hold.load(Ordering::Relaxed) <= mono_ms_now()
+                        && std::sync::Weak::ptr_eq(&u.incumbent_tunn, &Arc::downgrade(&p.tunn))
+                })
+        })
+    }
+
+    pub(crate) fn cancel_org_upgrade(&mut self, public: &[u8; 32]) {
+        if let Some(u) = self.org_upgrades.remove(public) {
+            self.unregister_plane_route(&u.candidate);
+        }
+    }
+
+    fn drop_org_floor_receiver(&mut self, public: &[u8; 32]) {
+        self.derp_follow.remove(public);
+        if let Some(p) = self.org_floor_receivers.remove(public) {
+            self.unregister_plane_route(&p);
+        }
+    }
+
+    pub(crate) fn promote_org_upgrade(&mut self, public: &[u8; 32]) -> bool {
+        let sender = self.send.clone();
+        let mut locked = sender.0.write().unwrap();
+        if !self.org_upgrade_ready(public) { return false; }
+        let u = self.org_upgrades.remove(public).expect("ready candidate");
+        let candidate = u.candidate;
+        let (ip, tunn, carrier, stats) = (candidate.overlay_ip,
+            candidate.tunn.clone(), candidate.carrier.clone(), candidate.stats.clone());
+        if let Some(mut old) = self.peers.insert(*public, candidate) {
+            // make_carrier_peer owns [receive, timer]. Retain receive only;
+            // old keepalives/retries must not imply that DERP remains active.
+            for timer in old.tasks.drain(1..) { timer.abort(); }
+            self.drop_org_floor_receiver(public);
+            *old.stats.follow_init.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            *old.stats.follow_proof.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            self.derp_follow.insert(*public, DerpFollowState {
+                org: Arc::downgrade(&tunn), floor: Arc::downgrade(&old.tunn),
+                hello: FollowRound::new([0; 32]), capable: false, pending: None,
+                next_round: Instant::now(),
+            });
+            self.org_floor_receivers.insert(*public, old);
+        }
+        Self::send_install_locked(&mut locked, *public, ip, tunn, carrier, stats);
+        drop(locked);
+        self.debug_assert_send_synced();
+        true
+    }
+
+    fn drive_initiator_proof(candidate: &mut Peer) {
         // A candidate can establish as RESPONDER after its own initial init
         // was lost (e.g. before the peer bound). Boringtun then has a session
         // and need not retry our init, but promotion deliberately still needs
@@ -1674,7 +1994,7 @@ impl WgDevice {
                     if !proof_carrier.is_dead() {
                         let _ = tokio::time::timeout(
                             Duration::from_millis(100),
-                            proof_carrier.send(&bytes),
+                            send_wg_recorded(&proof_carrier, &proof_stats, &bytes),
                         )
                         .await;
                     }
@@ -1684,6 +2004,32 @@ impl WgDevice {
                 }
             }
         }));
+    }
+
+    /// Start a bilateral-protocol candidate. No router/send entry is changed.
+    /// Only one trial per peer, and never start without a direct incumbent.
+    pub(crate) fn start_path_trial(
+        &mut self,
+        trial: ObjectId,
+        public: [u8; 32],
+        ip: Ipv4Addr,
+        carrier: Arc<Carrier>,
+    ) -> bool {
+        if self.path_trials.contains_key(&trial)
+            || self.path_trials.values().any(|p| p.public_key == public)
+        {
+            return false;
+        }
+        let Some(active) = self.peers.get(&public) else {
+            return false;
+        };
+        if !matches!(&*active.carrier, Carrier::Direct { .. }) || active.overlay_ip != ip {
+            return false;
+        }
+        let incumbent_tunn = Arc::downgrade(&active.tunn);
+        let (tx, pongs) = mpsc::channel(32);
+        let mut candidate = self.make_carrier_peer(public, ip, carrier, true, tx);
+        Self::drive_initiator_proof(&mut candidate);
         self.path_trials.insert(
             trial,
             PathTrialPeer {
@@ -2294,6 +2640,8 @@ impl WgDevice {
         dst: SocketAddr,
         initiate: bool,
     ) {
+        self.cancel_org_upgrade(&peer_public);
+        self.drop_org_floor_receiver(&peer_public);
         if let Some(peer) = self
             .make_direct_peer(sock, peer_public, overlay_ip, dst, initiate)
             .await
@@ -2339,7 +2687,7 @@ impl WgDevice {
             None,
         )));
 
-        let stats = Arc::new(PeerStats::default());
+        let stats = Arc::new(PeerStats { recovery_hold: self.recovery_for(peer_public, overlay_ip), ..PeerStats::default() });
         let ingress = self.ingress_for(peer_public, stats.clone());
         // Register for demux BEFORE the handshake so inbound is routed —
         // on the plane by session index (unique across every attached
@@ -2378,6 +2726,7 @@ impl WgDevice {
         // this peer's inbound.
         let timer_tunn = tunn.clone();
         let timer_carrier = carrier.clone();
+        let timer_stats = stats.clone();
         let timer_task = tokio::spawn(async move {
             let mut buf = vec![0u8; WG_BUF];
             let mut tick = tokio::time::interval(Duration::from_millis(TIMER_TICK_MS));
@@ -2407,7 +2756,7 @@ impl WgDevice {
                     }
                 };
                 if let Some(b) = out {
-                    let _ = timer_carrier.send(&b).await;
+                    let _ = send_wg_recorded(&timer_carrier, &timer_stats, &b).await;
                 }
             }
         });
@@ -2415,6 +2764,7 @@ impl WgDevice {
         if initiate {
             let it = tunn.clone();
             let ic = carrier.clone();
+            let init_stats = stats.clone();
             tokio::spawn(async move {
                 let mut buf = vec![0u8; WG_BUF];
                 // rc.211 — same lock-then-send split as the timer tasks.
@@ -2426,7 +2776,7 @@ impl WgDevice {
                     }
                 };
                 if let Some(b) = out {
-                    let _ = ic.send(&b).await;
+                    let _ = send_wg_recorded(&ic, &init_stats, &b).await;
                 }
             });
         }
@@ -2525,6 +2875,8 @@ impl WgDevice {
     /// its own per-peer bookkeeping and forgets the now-unused relay allocation.
     pub fn promote_direct_probe(&mut self, peer_public: &[u8; 32]) -> bool {
         if let Some(probe) = self.probes.remove(peer_public) {
+            self.cancel_org_upgrade(peer_public);
+            self.drop_org_floor_receiver(peer_public);
             let overlay_ip = probe.overlay_ip;
             let (tunn, carrier, stats) = (
                 probe.tunn.clone(),
@@ -2603,6 +2955,8 @@ impl WgDevice {
     /// `async` because un-registering a shared-direct peer locks the demux
     /// routing table.
     pub async fn remove_peer(&mut self, peer_public: &[u8; 32]) {
+        self.cancel_org_upgrade(peer_public);
+        self.drop_org_floor_receiver(peer_public);
         // Withdraw the sender before any asynchronous backup demux cleanup.
         let active = self.peers.remove(peer_public);
         if active.is_some() {
@@ -2891,7 +3245,7 @@ impl WgDevice {
         let Some(p) = self.peers.get(peer_public) else {
             return false;
         };
-        let (tunn, carrier) = (p.tunn.clone(), p.carrier.clone());
+        let (tunn, carrier, stats) = (p.tunn.clone(), p.carrier.clone(), p.stats.clone());
         tokio::spawn(async move {
             let mut buf = vec![0u8; WG_BUF];
             let out = {
@@ -2902,7 +3256,7 @@ impl WgDevice {
                 }
             };
             if let Some(b) = out {
-                let _ = carrier.send(&b).await;
+                let _ = send_wg_recorded(&carrier, &stats, &b).await;
             }
         });
         true
@@ -2965,6 +3319,18 @@ impl WgDevice {
     }
 }
 
+async fn send_wg_recorded(carrier: &Arc<Carrier>, stats: &PeerStats, bytes: &[u8]) -> io::Result<usize> {
+    let n = carrier.send(bytes).await?;
+    if n == bytes.len() && let Some(digest) = follow::init_digest(bytes) {
+        let mut sent = stats.sent_inits.lock().unwrap_or_else(|e|e.into_inner());
+        if !sent.contains(&digest) {
+            if sent.len() == 4 { sent.pop_front(); }
+            sent.push_back(digest);
+        }
+    }
+    Ok(n)
+}
+
 /// Handle one inbound carrier datagram: decapsulate, echo any
 /// handshake/cookie/queued bytes back over the carrier, and deliver a
 /// decrypted IP packet to the TUN channel.
@@ -2987,6 +3353,11 @@ pub(crate) async fn process_inbound(
     // the result doesn't alias the inbound `buf`.
     let mut out = vec![0u8; WG_BUF];
     let res = t.decapsulate(None, &buf[..n], &mut out);
+    let authenticated_init = matches!(&res, TunnResult::WriteToNetwork(p)
+        if p.len() == 92 && p[..4] == [2, 0, 0, 0]);
+    if authenticated_init && let Some(digest) = follow::init_digest(&buf[..n]) {
+        *stats.follow_init.lock().unwrap_or_else(|e|e.into_inner()) = Some((digest, Instant::now()));
+    }
     let authenticated = n > 0 && !matches!(res, TunnResult::Err(_));
     // rc.206 — a non-empty inbound datagram that passed WG decapsulation (data, a
     // handshake step, OR a content-free persistent-keepalive → `Done`) proves we
@@ -3039,9 +3410,10 @@ pub(crate) async fn process_inbound(
                 }
             }
             let c = carrier.clone();
+            let send_stats = stats.clone();
             tokio::spawn(async move {
                 for b in outs {
-                    let _ = c.send(&b).await;
+                    let _ = send_wg_recorded(&c, &send_stats, &b).await;
                 }
             });
         }

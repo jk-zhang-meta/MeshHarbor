@@ -269,6 +269,10 @@ struct Allocated {
 }
 
 /// Drives the relay handshake for every peer the node wants to reach.
+const ORG_FALLBACK_GAP: Duration = Duration::from_secs(60);
+const ORG_FALLBACK_RETENTION: Duration = Duration::from_secs(120);
+const ORG_FALLBACK_MAX_PEERS: usize = 64;
+
 pub struct RelayCoordinator {
     /// rc.307 (B) — swappable: the runtime outlives control-WS sessions and
     /// re-binds this on every `Reattach`, so relay re-requests after a
@@ -277,6 +281,10 @@ pub struct RelayCoordinator {
     /// rc.307 (B) — detached-mode log damper: `true` after the first failed
     /// control send, cleared by the first success (post-reattach).
     warned_detached: bool,
+    // Explicit ORG-only bootstrap requests never occupy legacy TURN pending.
+    org_fallback_last: HashMap<ObjectId, Instant>,
+    org_fallback_serial: u64,
+    org_fallback_cursor: Option<ObjectId>,
     /// Requested (and maybe granted), not yet allocated.
     pending: HashMap<ObjectId, PendingPeer>,
     /// Allocated + advertised; awaiting the peer's relayed address.
@@ -550,6 +558,9 @@ impl RelayCoordinator {
         Self {
             outbound: outbound.into(),
             warned_detached: false,
+            org_fallback_last: HashMap::new(),
+            org_fallback_serial: 0,
+            org_fallback_cursor: None,
             pending: HashMap::new(),
             allocated: HashMap::new(),
             advertised: HashMap::new(),
@@ -897,6 +908,7 @@ impl RelayCoordinator {
         self.forced_derp_until
             .retain(|_, until| Instant::now() < *until);
         self.forced_derp_until.insert(node_id, Instant::now() + ttl);
+        self.drop_org_session(&node_id); // a later bind must not defeat this pin
         let live = &self.forced_derp_until;
         self.forced_urls.retain(|n, _| live.contains_key(n));
         info!(
@@ -1332,6 +1344,95 @@ impl RelayCoordinator {
             || self.dialing.contains_key(node_id)
             || self.derping.contains_key(node_id)
             || self.org_binding.contains(node_id)
+    }
+
+    /// Query only the ORG mint path, gated by fresh metadata in the runtime.
+    /// Neither the installed DERP carrier nor legacy TURN pending is changed.
+    pub(crate) async fn request_org_fallback(&mut self, peer: ObjectId, now: Instant) -> bool {
+        if !self.org_relay
+            || self.forced_derp_active(&peer)
+            || self.pending.contains_key(&peer)
+            || self.org_binding.contains(&peer)
+            || self
+                .death_streaks
+                .get(&peer)
+                .is_some_and(|(streak, until)| {
+                    relay_death_backoff(*streak).is_some() && now < *until
+                })
+        {
+            return false;
+        }
+        self.org_fallback_last
+            .retain(|_, at| now.saturating_duration_since(*at) < ORG_FALLBACK_RETENTION);
+        if self
+            .org_fallback_last
+            .get(&peer)
+            .is_some_and(|at| now.saturating_duration_since(*at) < ORG_FALLBACK_GAP)
+        {
+            return false;
+        }
+        if !self.org_fallback_last.contains_key(&peer)
+            && self.org_fallback_last.len() >= ORG_FALLBACK_MAX_PEERS
+        {
+            // Never evict a live cooldown. A cooled oldest entry can safely
+            // yield to a previously unseen peer without a 120s starvation gap.
+            let oldest = self
+                .org_fallback_last
+                .iter()
+                .filter(|(_, at)| now.saturating_duration_since(**at) >= ORG_FALLBACK_GAP)
+                .min_by_key(|(id, at)| (**at, **id))
+                .map(|(id, _)| *id);
+            let Some(oldest) = oldest else {
+                return false;
+            };
+            self.org_fallback_last.remove(&oldest);
+        }
+        let Some(request_id) = self.org_fallback_serial.checked_add(1) else {
+            return false;
+        };
+        self.org_fallback_serial = request_id;
+        self.org_fallback_last.insert(peer, now);
+        let sent = matches!(
+            tokio::time::timeout(
+                Duration::from_millis(10),
+                self.outbound
+                    .send(ClientMsg::OverlayOrgRelayFallbackRequest {
+                        peer_node_id: peer,
+                        request_id
+                    })
+            )
+            .await,
+            Ok(Ok(()))
+        );
+        if sent {
+            self.org_fallback_cursor = Some(peer);
+            // A live lease can outlast its failed carrier. A real server reply
+            // may rebind the same immutable lease without extending its TTL.
+            self.drop_org_session(&peer);
+            info!(peer=%peer,request_id,"overlay relay: ORG-only fallback requested while retaining DERP");
+        }
+        sent
+    }
+
+    /// Continue after the last queued peer so a bounded cooldown table does
+    /// not let a stable traversal refresh the same first 64 peers forever.
+    pub(crate) async fn request_org_fallback_batch(
+        &mut self,
+        mut peers: Vec<ObjectId>,
+        now: Instant,
+    ) -> Vec<ObjectId> {
+        let cursor = self.org_fallback_cursor;
+        peers.sort_unstable_by_key(|id| (cursor.is_some_and(|last| *id <= last), *id));
+        peers.dedup();
+        let mut sent = Vec::new();
+        for peer in peers {
+            if self.request_org_fallback(peer, now).await { sent.push(peer); }
+        }
+        sent
+    }
+
+    pub(crate) fn org_relay_pinned(&self, peer: &ObjectId) -> bool {
+        self.forced_derp_active(peer)
     }
 
     /// Kick off a relay link. The strategy decides the mechanics:
@@ -4439,4 +4540,198 @@ mod tests {
         let link = c.try_build(&n).expect("same-worker relay dst builds");
         assert_eq!(link.relay_parts.unwrap().1, dst.parse().unwrap());
     }
+    #[tokio::test]
+    async fn org_fallback_explicit_query_preserves_floor_and_ignores_unrelated_turn_grant() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        let (mux, mut frames) = DerpMux::new([0; 32]);
+        let mut c = RelayCoordinator::new(tx, [0; 32], false, vec![], Some(mux));
+        c.set_org_relay(true);
+        c.derp = true;
+        c.derp_floor = true;
+        let node = ObjectId::new();
+        let peer = PeerConfig {
+            supports_derp: true,
+            supports_derp_floor: true,
+            supports_relay_single: false,
+            srflx_endpoints: vec![],
+            ..base_peer()
+        };
+        let floor = c.build_floor(node, &peer).unwrap();
+        let (conn, dst) = floor.relay_parts.unwrap();
+        let now = Instant::now();
+        assert!(
+            c.request_org_fallback(node, now).await,
+            "fresh authorized metadata must have a server mint entrypoint even on DERP"
+        );
+        let ClientMsg::OverlayOrgRelayFallbackRequest {
+            peer_node_id,
+            request_id,
+        } = rx.try_recv().unwrap()
+        else {
+            panic!("expected the typed ORG-only fallback request")
+        };
+        assert_eq!(peer_node_id, node);
+        assert_eq!(request_id, 1);
+        assert!(!c.is_tracking(&node));
+        assert!(c.is_floored(&node));
+        assert!(
+            c.grant_accept(node, vec![], "unused-turn-reply".into())
+                .is_none(),
+            "an unrelated legacy TURN reply must not create a new allocation"
+        );
+        assert_eq!(conn.send_to(b"floor-still-live", dst).await.unwrap(), 16);
+        assert!(
+            frames.try_recv().is_ok(),
+            "the same DERP connection still emits datagrams"
+        );
+        assert!(
+            !c.request_org_fallback(node, now + Duration::from_secs(59))
+                .await
+        );
+        assert!(rx.try_recv().is_err());
+        assert!(c.request_org_fallback(node, now + ORG_FALLBACK_GAP).await);
+        assert!(rx.try_recv().is_ok());
+    }
+
+    #[tokio::test]
+    async fn org_fallback_respects_off_pin_pending_bind_and_death_backoff() {
+        for gate in 0..5 {
+            let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+            let mux = DerpMux::new([0; 32]).0;
+            let mut c = RelayCoordinator::new(tx, [0; 32], false, vec![], Some(mux));
+            c.set_org_relay(true);
+            let node = ObjectId::new();
+            let now = Instant::now();
+            match gate {
+                0 => c.set_org_relay(false),
+                1 => {
+                    c.forced_derp_until
+                        .insert(node, now + Duration::from_secs(120));
+                }
+                2 => {
+                    c.pending.insert(
+                        node,
+                        PendingPeer {
+                            peer: base_peer(),
+                            ice: None,
+                            pair_key: None,
+                        },
+                    );
+                }
+                3 => {
+                    c.org_binding.insert(node);
+                }
+                4 => {
+                    c.death_streaks
+                        .insert(node, (3, now + Duration::from_secs(60)));
+                }
+                _ => unreachable!(),
+            }
+            assert!(
+                !c.request_org_fallback(node, now).await,
+                "ignored gate {gate}"
+            );
+            assert!(rx.try_recv().is_err());
+            assert!(c.org_fallback_last.is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn org_fallback_queue_pressure_and_peer_state_are_bounded() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        tx.send(ClientMsg::OverlayWarmRelayRequest {})
+            .await
+            .unwrap();
+        let mut c = RelayCoordinator::new(tx, [0; 32], false, vec![], None);
+        c.set_org_relay(true);
+        let node = ObjectId::new();
+        let now = Instant::now();
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), c.request_org_fallback(node, now))
+                .await
+                .is_ok()
+        );
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(ClientMsg::OverlayWarmRelayRequest {})
+        ));
+        assert!(
+            !c.request_org_fallback(node, now + Duration::from_secs(1))
+                .await,
+            "failed queue sends consume the same cooldown"
+        );
+        assert!(rx.try_recv().is_err());
+        let (tx2, mut rx2) = tokio::sync::mpsc::channel(128);
+        let mut c2 = RelayCoordinator::new(tx2, [0; 32], false, vec![], None);
+        c2.set_org_relay(true);
+        for _ in 0..ORG_FALLBACK_MAX_PEERS {
+            assert!(c2.request_org_fallback(ObjectId::new(), now).await);
+        }
+        assert_eq!(c2.org_fallback_last.len(), ORG_FALLBACK_MAX_PEERS);
+        assert!(!c2.request_org_fallback(ObjectId::new(), now).await);
+        while rx2.try_recv().is_ok() {}
+        assert!(
+            c2.request_org_fallback(ObjectId::new(), now + ORG_FALLBACK_GAP)
+                .await
+        );
+        assert_eq!(c2.org_fallback_last.len(), ORG_FALLBACK_MAX_PEERS);
+        assert!(
+            c2.request_org_fallback(ObjectId::new(), now + ORG_FALLBACK_RETENTION * 2)
+                .await
+        );
+        assert_eq!(c2.org_fallback_last.len(), 1);
+    }
+    #[tokio::test]
+    async fn org_fallback_live_lease_on_derp_can_be_requeried_without_fake_session() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        let mut c = RelayCoordinator::new(tx, [0; 32], false, vec![], None);
+        c.set_org_relay(true);
+        let node = ObjectId::new();
+        c.org_session_accept(node, org_session(9, 60));
+        assert!(c.org_sessions[&node].is_live(Instant::now()));
+        assert!(c.request_org_fallback(node, Instant::now()).await);
+        assert!(
+            matches!(rx.try_recv(),Ok(ClientMsg::OverlayOrgRelayFallbackRequest{peer_node_id,..})if peer_node_id==node)
+        );
+        assert!(
+            !c.org_sessions.contains_key(&node),
+            "old failed carrier lease must not suppress its restoration reply"
+        );
+    }
+    #[tokio::test]
+    async fn org_fallback_fixed_peer_order_rotates_without_breaking_cooldowns() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1024);
+        let mut c = RelayCoordinator::new(tx, [0; 32], false, vec![], None);
+        c.set_org_relay(true);
+        let peers: Vec<_> = (1..=200u32)
+            .map(|n| {
+                let mut bytes = [0u8; 12];
+                bytes[8..].copy_from_slice(&n.to_be_bytes());
+                ObjectId::from_bytes(bytes)
+            })
+            .collect();
+        let now = Instant::now();
+        let mut sent_at = HashMap::new();
+        let mut serial = 0;
+        for round in 0..4 {
+            let at = now + ORG_FALLBACK_GAP * round;
+            c.request_org_fallback_batch(peers.clone(), at).await;
+            let mut count = 0;
+            while let Ok(message) = rx.try_recv() {
+                let ClientMsg::OverlayOrgRelayFallbackRequest { peer_node_id, request_id } = message else {
+                    panic!("unexpected legacy request");
+                };
+                assert_eq!(request_id, serial + 1);
+                serial = request_id;
+                if let Some(previous) = sent_at.insert(peer_node_id, at) {
+                    assert!(at.duration_since(previous) >= ORG_FALLBACK_GAP);
+                }
+                count += 1;
+            }
+            assert!(count <= ORG_FALLBACK_MAX_PEERS);
+            assert!(c.org_fallback_last.len() <= ORG_FALLBACK_MAX_PEERS);
+        }
+        assert_eq!(sent_at.len(), peers.len(), "fixed-order peers must all get a turn");
+    }
+
 }

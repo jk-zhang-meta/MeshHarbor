@@ -2649,6 +2649,9 @@ impl OverlayRuntime {
             );
             return false;
         };
+        // ORG has an explicit fresh active-floor protocol. A pk-only mux
+        // notice cannot distinguish old ciphertext from current peer intent.
+        if by_node.get(&nid).is_some_and(|e| e.relay_kind == Some(RelayKind::Org)) { return false; }
         // #34 — a carrier we JUST promoted is not evidence of disagreement.
         //
         // The peer has to complete its own probe → latch → cutover, which was
@@ -2741,14 +2744,29 @@ impl OverlayRuntime {
         link: ReadyLink,
         quic: Option<Arc<Carrier>>,
     ) {
+        if link.relay_kind == RelayKind::Org && wg.org_recovery_held(&link.public_key) { return; }
         let (relay_local, relay_dst) = match &link.relay_parts {
             Some((conn, dst)) => (conn.local_addr().ok(), Some(*dst)),
             None => (None, None),
         };
         let carrier = quic.unwrap_or_else(|| link.carrier.clone());
+        if link.relay_kind == RelayKind::Org
+            && by_node.get(&link.node_id).is_some_and(|e| {
+                e.pubkey == link.public_key && e.overlay_ip == link.overlay_ip
+                    && e.relay_kind == Some(RelayKind::Derp)
+            })
+        {
+            if wg.start_org_upgrade(link.public_key, link.overlay_ip, carrier) {
+                let node_id = link.node_id;
+                by_node.get_mut(&node_id).expect("incumbent checked").org_upgrade =
+                    Some((link, Instant::now()));
+            }
+            return;
+        }
         let initiate = carrier.is_direct() || self.keypair.public.to_bytes() < link.public_key;
         let is_direct = carrier.is_direct();
         wg.add_peer(link.public_key, link.overlay_ip, carrier, initiate);
+        wg.set_peer_relay_role(&link.public_key, link.relay_kind == RelayKind::Derp, link.relay_kind == RelayKind::Org);
         by_node.insert(
             link.node_id,
             Installed {
@@ -2785,6 +2803,75 @@ impl OverlayRuntime {
         self.install_subnets(wg, tun, link.node_id, link.public_key, &link.subnets)
             .await;
         info!(peer = %link.node_id, overlay_ip = %link.overlay_ip, initiate, "overlay: peer installed");
+    }
+
+    pub(super) fn sweep_authenticated_derp_follow(
+        &self, wg: &mut WgDevice, by_node: &mut HashMap<ObjectId, Installed>,
+        relay: &mut Option<RelayCoordinator>, current_peers: &HashMap<ObjectId, NetmapPeer>,
+    ) -> bool {
+        let mut changed = false;
+        for (nid, e) in by_node.iter_mut() {
+            if e.relay_kind != Some(RelayKind::Org) { continue; }
+            if !current_peers.get(nid).and_then(peer_config_from_netmap)
+                .is_some_and(|p| p.public_key == e.pubkey && p.overlay_ip == e.overlay_ip)
+            {
+                wg.cancel_derp_follow(&e.pubkey);
+                continue;
+            }
+            if !wg.poll_derp_follow(&e.pubkey) { continue; }
+            let (local, dst) = wg.peer_relay_addrs(&e.pubkey);
+            let traffic = wg.peer_traffic(&e.pubkey).unwrap_or((0,0));
+            *e = Installed {
+                hs_done: wg.peer_handshake_done(&e.pubkey) == Some(true),
+                initiated: true, relay_kind: Some(RelayKind::Derp),
+                last_traffic: traffic, relay_local: local, relay_dst: dst,
+                carrier_local: local, carrier_dst: dst,
+                org_recovery_until: wg.org_recovery_until(&e.pubkey),
+                org_recovery_needs_query: true,
+                ..Installed::base(e.pubkey, e.overlay_ip, DirectTier::Relay, Instant::now())
+            };
+            if let Some(r) = relay.as_mut() { r.org_bind_failed(nid); }
+            info!(peer = %nid, "overlay relay: authenticated fresh active-DERP proof — restored retained floor");
+            changed = true;
+        }
+        changed
+    }
+
+    /// Settle only an authorized candidate tied to the current key/IP and
+    /// incumbent. A failed or revoked candidate never withdraws the floor.
+    pub(super) fn sweep_org_upgrades(
+        &self, wg: &mut WgDevice, by_node: &mut HashMap<ObjectId, Installed>,
+        relay: &mut Option<RelayCoordinator>, current_peers: &HashMap<ObjectId, NetmapPeer>,
+    ) -> bool {
+        let mut changed = false;
+        for (nid, e) in by_node.iter_mut() {
+            let Some((link, since)) = e.org_upgrade.as_ref() else { continue; };
+            let current = current_peers.get(nid).and_then(peer_config_from_netmap)
+                .is_some_and(|p| p.public_key == link.public_key && p.overlay_ip == link.overlay_ip);
+            if !current || wg.org_recovery_held(&e.pubkey) || e.org_recovery_needs_query
+                || since.elapsed() >= DirectTier::Relay.handshake_deadline() {
+                wg.cancel_org_upgrade(&e.pubkey);
+                e.org_upgrade = None;
+                if let Some(r) = relay.as_mut() { r.org_bind_failed(nid); }
+                info!(peer = %nid, "overlay relay: ORG candidate did not settle; DERP retained");
+                continue;
+            }
+            if !wg.promote_org_upgrade(&e.pubkey) { continue; }
+            let (link, _) = e.org_upgrade.take().expect("candidate checked");
+            let (local, dst) = link.relay_parts.as_ref()
+                .map(|(c, d)| (c.local_addr().ok(), Some(*d))).unwrap_or((None, None));
+            *e = Installed {
+                hs_done: true,
+                initiated: true,
+                relay_kind: Some(RelayKind::Org),
+                relay_local: local, relay_dst: dst,
+                carrier_local: local, carrier_dst: dst,
+                ..Installed::base(link.public_key, link.overlay_ip, DirectTier::Relay, Instant::now())
+            };
+            info!(peer = %nid, "overlay relay: ORG carrier promoted after authenticated WG response (DERP receive retained)");
+            changed = true;
+        }
+        changed
     }
 
     /// R3 — the socket half of a direct-plane rebuild: tear down everything
