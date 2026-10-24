@@ -345,6 +345,9 @@ struct PokeArm {
 struct BusinessTrafficSample {
     installed_at: Instant,
     traffic: (u64, u64),
+    /// §6.3 F1 — the arm instant of the business proof this carrier already
+    /// re-sent an initiation for (at most one re-send per proof).
+    retapped: Option<Instant>,
 }
 
 /// An installed peer carrier + the bookkeeping the direct→relay fallback
@@ -617,10 +620,25 @@ async fn request_reconciled_org_fallbacks(
     sent
 }
 
+/// §6.3 F1 kill switch: `OVERLAY_BUSINESS_POKE_FAST=0` restores the pre-F1
+/// business proof (one initiation, 6 s window). Read once.
+fn business_poke_fast() -> bool {
+    static FAST: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *FAST.get_or_init(|| crate::env::flag("OVERLAY_BUSINESS_POKE_FAST", true))
+}
+
+fn business_poke_window() -> Duration {
+    if business_poke_fast() {
+        crate::overlay::lifecycle::BUSINESS_POKE_DEADLINE
+    } else {
+        crate::overlay::lifecycle::BUSINESS_POKE_LEGACY_DEADLINE
+    }
+}
+
 fn business_poke_recheck(by_node: &HashMap<ObjectId, Installed>, now: Instant) -> Option<Duration> {
     let deadline = by_node.values().filter_map(|e| e.poke)
         .filter(|p| p.from_business && !p.from_major)
-        .map(|p| p.at + crate::overlay::lifecycle::BUSINESS_POKE_DEADLINE
+        .map(|p| p.at + business_poke_window()
             + Duration::from_millis(250)).min()?;
     let wait = deadline.saturating_duration_since(now).max(Duration::from_millis(100));
     (wait < FALLBACK_TICK).then_some(wait)
@@ -6072,6 +6090,52 @@ mod tests {
     }
 
 
+    #[tokio::test]
+    async fn business_scout_resends_one_initiation_for_an_unanswered_business_proof() {
+        let kp = WgKeypair::generate();
+        let peer_kp = WgKeypair::generate();
+        let (out_tx, _out_rx) = mpsc::channel::<ClientMsg>(16);
+        let (tun_mock, _inj, _del) = MockTun::new();
+        let tf: TunFactory = {
+            let m = tun_mock.clone();
+            Box::new(move |_, _, _| Ok(m.clone() as Arc<dyn TunIo>))
+        };
+        let rt = OverlayRuntime::new_relay(kp.clone(), out_tx, tf, 1280);
+        let (mut wg, _tun_rx) = WgDevice::new(kp.secret.clone());
+        let sock = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        wg.ensure_direct_demux(sock.clone());
+        let dead: SocketAddr = "127.0.0.1:9".parse().unwrap();
+        let ip = Ipv4Addr::new(100, 64, 0, 7);
+        let pk = peer_kp.public.to_bytes();
+        wg.add_direct_peer(sock.clone(), pk, ip, dead, true).await;
+        wg.test_latch_handshake_done(&pk);
+        let nid = ObjectId::from_bytes([77, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        let mut by_node = HashMap::new();
+        by_node.insert(nid, Installed {
+            since: Instant::now() - Duration::from_secs(20),
+            last_rx_at: Instant::now(),
+            ..Installed::base(pk, ip, DirectTier::Srflx, Instant::now())
+        });
+        let mut samples = HashMap::new();
+        wg.test_set_ip_traffic(&pk, 10, 10);
+        rt.scout_business_traffic(&mut wg, &mut by_node, &mut samples);
+
+        // A business proof armed before the re-send point, still unanswered.
+        let at = Instant::now() - crate::overlay::lifecycle::BUSINESS_POKE_RETAP_AFTER;
+        by_node.get_mut(&nid).unwrap().poke = Some(PokeArm { at, from_major: false, from_business: true });
+        wg.test_set_ip_traffic(&pk, 20, 10);
+        rt.scout_business_traffic(&mut wg, &mut by_node, &mut samples);
+        assert_eq!(samples[&nid].retapped, Some(at), "one fresh initiation for the unanswered proof");
+        assert_eq!(by_node[&nid].poke.unwrap().at, at, "the re-send keeps the proof's window");
+
+        // A Major proof is never re-sent by the scout.
+        let major = Instant::now() - Duration::from_secs(1);
+        by_node.get_mut(&nid).unwrap().poke = Some(PokeArm { at: major, from_major: true, from_business: false });
+        wg.test_set_ip_traffic(&pk, 30, 10);
+        rt.scout_business_traffic(&mut wg, &mut by_node, &mut samples);
+        assert_eq!(samples[&nid].retapped, Some(at));
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn business_scout_detects_loss_inside_a_mixed_health_bucket() {
         let kp = WgKeypair::generate();
@@ -6301,11 +6365,16 @@ mod tests {
             poke: Some(PokeArm { at: now, from_major: false, from_business: true }),
             ..Installed::base([0; 32], Ipv4Addr::new(100, 64, 0, 5), DirectTier::Srflx, now)
         });
-        assert!(business_poke_recheck(&peers, now).is_none());
-        assert_eq!(business_poke_recheck(&peers, now + Duration::from_secs(5)),
-            Some(Duration::from_millis(1250)));
+        // §6.3 F1 — the 2 s business window closes before the next 5 s sweep,
+        // so the recheck is scheduled from the moment the proof is armed.
+        let due = crate::overlay::lifecycle::BUSINESS_POKE_DEADLINE + Duration::from_millis(250);
+        assert_eq!(business_poke_recheck(&peers, now), Some(due));
+        assert_eq!(business_poke_recheck(&peers, now + Duration::from_secs(1)),
+            Some(due - Duration::from_secs(1)));
         assert_eq!(business_poke_recheck(&peers, now + Duration::from_secs(7)),
             Some(Duration::from_millis(100)));
+        // Further away than the regular sweep: no extra wake-up.
+        assert!(business_poke_recheck(&peers, now - Duration::from_secs(4)).is_none());
         peers.get_mut(&nid).unwrap().poke.as_mut().unwrap().from_business = false;
         assert!(business_poke_recheck(&peers, now + Duration::from_secs(5)).is_none());
         peers.get_mut(&nid).unwrap().poke = None;

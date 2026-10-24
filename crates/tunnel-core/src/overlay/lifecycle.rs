@@ -257,8 +257,22 @@ pub(crate) const POKE_PROOF_AFTER: Duration = Duration::from_secs(120);
 /// armed on a net-change, and `netstate` publishes at most one material Major
 /// per `MAJOR_PUBLISH_COOLDOWN` (120 s), so this cannot become a churn engine.
 pub(crate) const MAJOR_POKE_DEADLINE: Duration = Duration::from_secs(2);
-/// Established-path validation permits the normal five-second WG retry.
-pub(crate) const BUSINESS_POKE_DEADLINE: Duration = Duration::from_secs(6);
+/// §6.3 F1 — the conviction window for a poke armed by unanswered BUSINESS
+/// traffic on an established direct carrier. The business scout re-sends one
+/// fresh initiation after [`BUSINESS_POKE_RETAP_AFTER`], so this window judges
+/// TWO attempts about a second apart, and a false conviction needs both lost.
+/// The trade is the [`MAJOR_POKE_DEADLINE`] one: a false conviction costs a
+/// detour over the DERP floor (`RekeyUnanswered` books no penalty), a late one
+/// blackholes the pair for the whole window. It was 6 s (one initiation plus
+/// boringtun's ~5 s re-send), which is most of the measured 8.75 s stall.
+pub(crate) const BUSINESS_POKE_DEADLINE: Duration = Duration::from_secs(2);
+/// The pre-F1 window, restored by `OVERLAY_BUSINESS_POKE_FAST=0` (the scout
+/// then skips the re-send too).
+pub(crate) const BUSINESS_POKE_LEGACY_DEADLINE: Duration = Duration::from_secs(6);
+/// F1 — how long a business poke may stay unanswered before the scout sends
+/// its single extra initiation. Below the 1 s scout tick, so tick jitter
+/// cannot push the re-send past the window.
+pub(crate) const BUSINESS_POKE_RETAP_AFTER: Duration = Duration::from_millis(800);
 
 /// Why a carrier died. Precedence when several signals co-trip (mirrors the
 /// pre-P2 log selection, which keyed off `(hard_dead, rx_stale)` in this
@@ -365,6 +379,10 @@ pub(crate) struct PokeState {
 /// is clock-free.
 pub(crate) struct HealthInputs {
     pub(crate) tier: DirectTier,
+    /// §6.3 F1 — the business-poke window the runtime chose
+    /// ([`BUSINESS_POKE_DEADLINE`], or the legacy one under its kill switch).
+    /// An input, so this module stays env-free.
+    pub(crate) business_poke_window: Duration,
     /// `Installed.is_direct` (drives the strike-clear + relay holdoff rules).
     pub(crate) is_direct: bool,
     /// `WgDevice::peer_carrier_dead` — the rc.181 send-error latch.
@@ -437,7 +455,7 @@ pub(crate) fn carrier_tick(i: &HealthInputs) -> HealthVerdict {
                 let window = if p.from_major {
                     MAJOR_POKE_DEADLINE
                 } else if p.from_business && i.is_direct {
-                    BUSINESS_POKE_DEADLINE
+                    i.business_poke_window
                 } else {
                     i.tier.handshake_deadline()
                 };
@@ -672,6 +690,7 @@ mod tests {
     /// test.
     fn established() -> HealthInputs {
         HealthInputs {
+            business_poke_window: BUSINESS_POKE_DEADLINE,
             tier: DirectTier::Lan,
             is_direct: true,
             hard_dead: false,
@@ -1157,6 +1176,21 @@ mod tests {
             assert!(carrier_tick(&input(BUSINESS_POKE_DEADLINE + Duration::from_secs(1),
                 false, false)).death.is_none(), "periodic pokes retain the original tier deadline");
         }
+    }
+
+    #[test]
+    fn business_poke_window_is_an_input_and_the_kill_switch_restores_six_seconds() {
+        let input = |age| HealthInputs {
+            business_poke_window: BUSINESS_POKE_LEGACY_DEADLINE,
+            poke: Some(PokeState { since_poke: age, answered: false,
+                from_major: false, from_business: true }),
+            ..established()
+        };
+        assert!(carrier_tick(&input(BUSINESS_POKE_DEADLINE + Duration::from_secs(1))).death.is_none());
+        assert_eq!(carrier_tick(&input(BUSINESS_POKE_LEGACY_DEADLINE + Duration::from_millis(1))).death,
+            Some(DeathReason::RekeyUnanswered));
+        assert!(BUSINESS_POKE_RETAP_AFTER < BUSINESS_POKE_DEADLINE / 2,
+            "the re-send must leave the second initiation most of the window");
     }
 
     #[test]

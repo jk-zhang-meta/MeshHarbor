@@ -318,8 +318,9 @@ impl OverlayRuntime {
                 samples.remove(nid);
                 continue;
             };
+            let retapped = samples.get(nid).and_then(|s| s.retapped);
             let Some(previous) = samples.insert(*nid, BusinessTrafficSample {
-                installed_at: e.since, traffic,
+                installed_at: e.since, traffic, retapped,
             }) else {
                 continue;
             };
@@ -331,7 +332,24 @@ impl OverlayRuntime {
             // Do not settle answered proofs here: the normal sweep remains
             // their only consumer. In particular, a healthy one-way stream
             // cannot turn this faster sampler into a per-second rekey loop.
-            if e.poke.is_some_and(|p| p.from_major || p.from_business) {
+            if let Some(p) = e.poke.filter(|p| p.from_major || p.from_business) {
+                // §6.3 F1 — the one exception: a business proof still
+                // unanswered after BUSINESS_POKE_RETAP_AFTER gets ONE fresh
+                // initiation, so its 2 s window judges two attempts. Once per
+                // proof (keyed by its arm instant), never for a Major poke.
+                if p.from_business && !p.from_major && super::business_poke_fast()
+                    && retapped != Some(p.at)
+                    && now.saturating_duration_since(p.at)
+                        >= crate::overlay::lifecycle::BUSINESS_POKE_RETAP_AFTER
+                    && !wg.peer_initiator_hs_answered(&e.pubkey, p.at)
+                    && wg.poke_handshake(&e.pubkey)
+                {
+                    if let Some(s) = samples.get_mut(nid) {
+                        s.retapped = Some(p.at);
+                    }
+                    info!(peer = %nid, tier = ?e.tier,
+                        "overlay: business proof still unanswered — second initiation");
+                }
                 continue;
             }
             if wg.poke_handshake(&e.pubkey) {
@@ -431,6 +449,7 @@ impl OverlayRuntime {
             // verdict.
             let since_last_rx = now.saturating_duration_since(e.last_rx_at);
             let v = carrier_tick(&HealthInputs {
+                business_poke_window: super::business_poke_window(),
                 tier: e.tier,
                 is_direct: e.is_direct,
                 hard_dead: wg.peer_carrier_dead(&e.pubkey).unwrap_or(false),
