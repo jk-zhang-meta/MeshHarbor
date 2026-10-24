@@ -6213,4 +6213,75 @@ mod tests {
         assert!(!da.commit_path_trial(late));
         assert!(!da.commit_path_trial_return(late));
     }
+
+    /// Process CPU seconds (user + system) from `/proc/self/stat`; benches only.
+    fn process_cpu_secs() -> f64 {
+        let stat = std::fs::read_to_string("/proc/self/stat").unwrap_or_default();
+        let tail = stat.rsplit_once(')').map(|(_, t)| t).unwrap_or("");
+        let f: Vec<&str> = tail.split_whitespace().collect();
+        let ticks = |i: usize| f.get(i).and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0);
+        (ticks(11) + ticks(12)) / 100.0
+    }
+
+    /// Data-plane throughput baseline (not a correctness test; `--ignored`).
+    /// Two handshaked devices over real UDP: one task pushes packets through
+    /// `send_to_peer` as fast as it returns; the receiver counts what the TUN
+    /// channel delivers. Env: MH_BENCH_PACKETS (200000), MH_BENCH_SIZE (1280),
+    /// MH_BENCH_A / MH_BENCH_B bind addresses (127.0.0.1).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[ignore]
+    async fn bench_direct_udp_throughput() {
+        let env = |k: &str, d: &str| std::env::var(k).unwrap_or_else(|_| d.to_string());
+        let n: usize = env("MH_BENCH_PACKETS", "200000").parse().unwrap();
+        let size: usize = env("MH_BENCH_SIZE", "1280").parse().unwrap();
+        let (bind_a, bind_b) = (env("MH_BENCH_A", "127.0.0.1"), env("MH_BENCH_B", "127.0.0.1"));
+        let a = WgKeypair::generate();
+        let b = WgKeypair::generate();
+        let sock_a = Arc::new(UdpSocket::bind(format!("{bind_a}:0")).await.unwrap());
+        let sock_b = Arc::new(UdpSocket::bind(format!("{bind_b}:0")).await.unwrap());
+        for s in [&sock_a, &sock_b] {
+            super::super::sockbuf::tune_carrier(s, "bench");
+        }
+        let (addr_a, addr_b) = (sock_a.local_addr().unwrap(), sock_b.local_addr().unwrap());
+        let (mut dev_a, _rx_a) = WgDevice::new(a.secret.clone());
+        let (mut dev_b, mut rx_b) = WgDevice::new(b.secret.clone());
+        dev_a.add_peer(b.public.to_bytes(), IP_B, Carrier::direct(sock_a.clone(), addr_b), true);
+        dev_b.add_peer(a.public.to_bytes(), IP_A, Carrier::direct(sock_b.clone(), addr_a), false);
+        let pk_b = b.public.to_bytes();
+        wait_connected(&dev_a, &pk_b).await;
+        let pkt = synthetic_ipv4(IP_A, IP_B, &vec![0x5a; size.saturating_sub(20)]);
+        send_until_ok(&dev_a, &pk_b, &pkt).await;
+        while tokio::time::timeout(Duration::from_millis(200), rx_b.recv()).await.is_ok() {}
+
+        let counter = tokio::spawn(async move {
+            let (mut got, mut bytes, mut last) = (0usize, 0usize, Instant::now());
+            while let Ok(Some(p)) = tokio::time::timeout(Duration::from_secs(2), rx_b.recv()).await {
+                got += 1;
+                bytes += p.len();
+                last = Instant::now();
+            }
+            (got, bytes, last)
+        });
+        let (cpu0, t0) = (process_cpu_secs(), Instant::now());
+        let mut sent_ok = 0usize;
+        for _ in 0..n {
+            if dev_a.send_to_peer(&pk_b, &pkt).await {
+                sent_ok += 1;
+            }
+        }
+        let send_secs = t0.elapsed().as_secs_f64();
+        let (got, bytes, last) = counter.await.unwrap();
+        let secs = last.duration_since(t0).as_secs_f64().max(1e-9);
+        let cpu = process_cpu_secs() - cpu0;
+        println!(
+            "BENCH direct-udp size={size} sent={n} encap_ok={sent_ok} delivered={got} loss={:.2}% \
+             send_pps={:.0} delivered_pps={:.0} delivered_mbps={:.1} wall={secs:.2}s cpu={cpu:.2}s cpu_per_gbit={:.2}s",
+            100.0 * (n - got.min(n)) as f64 / n as f64,
+            n as f64 / send_secs,
+            got as f64 / secs,
+            bytes as f64 * 8.0 / secs / 1e6,
+            cpu / (bytes as f64 * 8.0 / 1e9).max(1e-9),
+        );
+        drop((dev_a, dev_b));
+    }
 }
