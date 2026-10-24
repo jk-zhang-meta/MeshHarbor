@@ -426,7 +426,8 @@ pub async fn maybe_start(
         // Unification P1 — publish the live mesh view for the LocalAPI so
         // `roomler status` / `peers` see per-device connection types.
         .with_peer_view(peer_view)
-        .with_org_primary(!cfg.derived_org);
+        .with_org_primary(!cfg.derived_org)
+        .with_relay_listener_readiness(crate::relay_server::readiness());
     // FIELD: endpoints are advertised lazily — the relay coordinator
     // trickles each relayed address post-allocation — so join carries none.
     tokio::spawn(rt.run(evt_rx, Vec::new()));
@@ -958,11 +959,15 @@ pub fn intercept(
             self_ip,
             network,
             peers,
+            org_relay_discovery,
+            path_trial_v1,
             ..
         } => OverlayEvent::Netmap {
             self_ip,
             network,
             peers,
+            org_relay_discovery,
+            path_trial_v1,
         },
         ServerMsg::OverlayNetmapDelta {
             upserts, removes, ..
@@ -1019,7 +1024,18 @@ pub fn intercept(
         // session onto the device owner's listener — the `rc:agent.update`
         // trust line. The server refuses these for a secondary-org node
         // already; this is the device's own half of that rule.
-        ServerMsg::OverlayRelaySession { .. }
+        ServerMsg::OverlayPathTrialReturnPrepare { .. }
+        | ServerMsg::OverlayPathTrialReturnCommit { .. }
+        | ServerMsg::OverlayPathTrialReturnFinalize { .. }
+        | ServerMsg::OverlayPathTrialReturnAbort { .. }
+        | ServerMsg::OverlayPathTrialStart { .. }
+        | ServerMsg::OverlayPathTrialCommit { .. }
+        | ServerMsg::OverlayPathTrialFinalize { .. }
+        | ServerMsg::OverlayPathTrialAbort { .. }
+        | ServerMsg::OverlayOrgRelayCandidates { .. }
+        | ServerMsg::OverlayRelaySession { .. }
+        | ServerMsg::OverlayRelayBridgeServe { .. }
+        | ServerMsg::OverlayRelayBridgeRevoke { .. }
         | ServerMsg::OverlayRelayServe { .. }
         | ServerMsg::OverlayRelayRevoke { .. }
             if !is_primary =>
@@ -1027,6 +1043,27 @@ pub fn intercept(
             warn!("overlay: org-relay frame on a secondary org's WS; dropped");
             return None;
         }
+        trial @ (ServerMsg::OverlayPathTrialReturnPrepare { .. }
+        | ServerMsg::OverlayPathTrialReturnCommit { .. }
+        | ServerMsg::OverlayPathTrialReturnFinalize { .. }
+        | ServerMsg::OverlayPathTrialReturnAbort { .. }
+        | ServerMsg::OverlayPathTrialStart { .. }
+        | ServerMsg::OverlayPathTrialCommit { .. }
+        | ServerMsg::OverlayPathTrialFinalize { .. }
+        | ServerMsg::OverlayPathTrialAbort { .. }) => OverlayEvent::PathTrial(trial),
+        ServerMsg::OverlayOrgRelayCandidates {
+            peer_node_id,
+            request_id,
+            candidates,
+            ttl_secs,
+            next_cursor,
+        } => OverlayEvent::OrgRelayCandidates {
+            peer_node_id,
+            request_id,
+            candidates,
+            ttl_secs,
+            next_cursor,
+        },
         ServerMsg::OverlayRelaySession {
             vni,
             generation,
@@ -1048,6 +1085,17 @@ pub fn intercept(
         },
         // The RELAY's copy: install into this node's relay server, if it is
         // serving. Never reaches the member runtime.
+        ServerMsg::OverlayRelayBridgeServe { bridge } => {
+            crate::relay_server::install_bridge_from_wire(bridge);
+            return None;
+        }
+        ServerMsg::OverlayRelayBridgeRevoke {
+            trial_id,
+            generation,
+        } => {
+            crate::relay_server::revoke_bridge_from_wire(trial_id, generation);
+            return None;
+        }
         ServerMsg::OverlayRelayServe {
             vni,
             generation,
@@ -1285,4 +1333,47 @@ pub fn record_join_refusal(reason: signaling::OverlayJoinRefusal, detail: &str) 
 /// The last refusal, if this daemon has seen one.
 pub fn last_join_refusal() -> Option<localapi::JoinRefusalStatus> {
     LAST_JOIN_REFUSAL.lock().ok().and_then(|s| s.clone())
+}
+
+#[cfg(test)]
+mod org_relay_discovery_dispatch_tests {
+    use super::*;
+    #[tokio::test]
+    async fn org_relay_discovery_old_netmap_capability_is_forwarded_as_false() {
+        let (tx, mut rx) = mpsc::channel(2);
+        let msg: ServerMsg = serde_json::from_value(serde_json::json!({
+            "t":"rc:overlay.netmap", "self_ip":"100.64.0.1",
+            "network":{"cidr":"100.64.0.0/10","mtu":1280}, "peers":[]
+        }))
+        .unwrap();
+        assert!(intercept(&tx, msg, true).is_none());
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(OverlayEvent::Netmap {
+                org_relay_discovery: false,
+                ..
+            })
+        ));
+    }
+    #[tokio::test]
+    async fn org_relay_discovery_signaling_candidates_reach_runtime_only_on_primary_org() {
+        let (tx, mut rx) = mpsc::channel(4);
+        let peer_node_id = bson::oid::ObjectId::new();
+        let msg = || ServerMsg::OverlayOrgRelayCandidates {
+            peer_node_id,
+            request_id: 17,
+            candidates: vec![],
+            ttl_secs: 0,
+            next_cursor: None,
+        };
+        assert!(intercept(&tx, msg(), false).is_none());
+        assert!(rx.try_recv().is_err());
+        assert!(intercept(&tx, msg(), true).is_none());
+        assert!(
+            matches!(rx.try_recv(), Ok(OverlayEvent::OrgRelayCandidates {
+            peer_node_id: id, request_id: 17, ttl_secs: 0, candidates, ..
+        }) if id == peer_node_id && candidates.is_empty())
+        );
+        assert!(rx.try_recv().is_err()); // no serving/session/TURN action
+    }
 }

@@ -88,6 +88,13 @@ pub trait AgentSocketLifecycle: Send + Sync {
         let _ = (ctx, warm_relay);
     }
 
+    /// Security revocation, after dispatch cancellation and identity-gated
+    /// hub removal. Must synchronously fence in-memory data-plane access;
+    /// persistence belongs in closing/closed and must not delay revocation.
+    fn revoked(&self, ctx: &AgentCtx) {
+        let _ = ctx;
+    }
+
     /// The socket is closing, BEFORE the Hub unregistration: release what
     /// must go regardless of who owns the slot (tunnel sessions live on this
     /// connection's peers and die with it).

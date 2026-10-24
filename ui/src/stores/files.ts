@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 G ROX EOOD
+import { appPath } from '@/utils/deployment'
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { api } from '@/api/client'
@@ -98,7 +99,7 @@ export const useFileStore = defineStore('files', () => {
   }
 
   function downloadUrl(tenantId: string, fileId: string): string {
-    return `/api/tenant/${tenantId}/file/${fileId}/download`
+    return appPath(`/api/tenant/${tenantId}/file/${fileId}/download`)
   }
 
   return {

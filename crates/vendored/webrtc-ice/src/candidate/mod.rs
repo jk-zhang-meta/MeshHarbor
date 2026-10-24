@@ -17,7 +17,9 @@ use std::fmt;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
+use tokio::time::Instant;
+use util::sync::Mutex as SyncMutex;
 
 use async_trait::async_trait;
 use candidate_base::*;
@@ -227,7 +229,17 @@ impl fmt::Display for CandidatePairState {
 }
 
 /// Represents a combination of a local and remote candidate.
+/// Authenticated proof belongs to a PAIR, not a shared remote candidate.
+pub(crate) const PAIR_PROOF_FRESHNESS: Duration = Duration::from_secs(6);
+#[derive(Default)]
+pub(crate) struct PairProof {
+    pub(crate) authenticated_at: Option<Instant>,
+    pub(crate) streak_start: Option<Instant>,
+    pub(crate) successes: u8,
+    pub(crate) probed_at: Option<Instant>,
+}
 pub struct CandidatePair {
+    pub(crate) proof: SyncMutex<PairProof>,
     pub(crate) ice_role_controlling: AtomicBool,
     pub remote: Arc<dyn Candidate + Send + Sync>,
     pub local: Arc<dyn Candidate + Send + Sync>,
@@ -240,6 +252,7 @@ impl Default for CandidatePair {
     fn default() -> Self {
         Self {
             ice_role_controlling: AtomicBool::new(false),
+            proof: SyncMutex::new(PairProof::default()),
             remote: Arc::new(CandidateBase::default()),
             local: Arc::new(CandidateBase::default()),
             state: AtomicU8::new(CandidatePairState::Waiting as u8),
@@ -284,6 +297,54 @@ impl PartialEq for CandidatePair {
 }
 
 impl CandidatePair {
+    pub(crate) fn note_probe(&self) {
+        self.proof.lock().probed_at = Some(Instant::now());
+    }
+    pub(crate) fn probe_due(&self, interval: Duration) -> bool {
+        self.proof.lock().probed_at.is_none_or(|at| {
+            Instant::now()
+                .checked_duration_since(at)
+                .is_some_and(|age| age >= interval)
+        })
+    }
+    pub(crate) fn note_authenticated_success(&self) {
+        let now = Instant::now();
+        let mut proof = self.proof.lock();
+        let continuous = proof.authenticated_at.is_some_and(|at| {
+            now.checked_duration_since(at)
+                .is_some_and(|age| age <= PAIR_PROOF_FRESHNESS)
+        });
+        if continuous {
+            proof.successes = proof.successes.saturating_add(1);
+        } else {
+            proof.streak_start = Some(now);
+            proof.successes = 1;
+        }
+        proof.authenticated_at = Some(now);
+    }
+    pub(crate) fn authenticated_age(&self) -> Option<Duration> {
+        self.proof
+            .lock()
+            .authenticated_at
+            .and_then(|at| Instant::now().checked_duration_since(at))
+    }
+    pub(crate) fn authenticated_fresh(&self) -> bool {
+        self.authenticated_age()
+            .is_some_and(|age| age <= PAIR_PROOF_FRESHNESS)
+    }
+    pub(crate) fn recovery_ready(&self, stable_for: Duration) -> bool {
+        let now = Instant::now();
+        let proof = self.proof.lock();
+        proof.successes >= 3
+            && proof.authenticated_at.is_some_and(|at| {
+                now.checked_duration_since(at)
+                    .is_some_and(|age| age <= PAIR_PROOF_FRESHNESS)
+            })
+            && proof.streak_start.is_some_and(|at| {
+                now.checked_duration_since(at)
+                    .is_some_and(|age| age >= stable_for)
+            })
+    }
     #[must_use]
     pub fn new(
         local: Arc<dyn Candidate + Send + Sync>,
@@ -292,6 +353,7 @@ impl CandidatePair {
     ) -> Self {
         Self {
             ice_role_controlling: AtomicBool::new(controlling),
+            proof: SyncMutex::new(PairProof::default()),
             remote,
             local,
             state: AtomicU8::new(CandidatePairState::Waiting as u8),

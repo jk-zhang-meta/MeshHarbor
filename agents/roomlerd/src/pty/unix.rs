@@ -36,6 +36,8 @@ pub struct PtyProcess {
     /// process-group id. Kept separately because `child.id()` returns `None`
     /// once the child has been reaped.
     pgid: libc::pid_t,
+    /// Opt-in only for shared SSH: a revoked lease cannot be ignored as HUP.
+    hard_kill: bool,
 }
 
 /// Open a pty pair. Returns `(master, slave)` as owned fds.
@@ -79,7 +81,22 @@ fn open_pty(size: WinSize) -> io::Result<(OwnedFd, OwnedFd)> {
         return Err(io::Error::last_os_error());
     }
     // SAFETY: openpty succeeded, so both are fresh fds this process owns.
-    Ok(unsafe { (OwnedFd::from_raw_fd(master), OwnedFd::from_raw_fd(slave)) })
+    let (master, slave) = unsafe { (OwnedFd::from_raw_fd(master), OwnedFd::from_raw_fd(slave)) };
+    // openpty does NOT set close-on-exec. Closing only the parent's slave
+    // leaves the ORIGINAL descriptors inherited by the shell and its children,
+    // even though Command dup2s separate Stdio clones onto 0/1/2. A detached
+    // stdout child can then keep the terminal alive indefinitely. Mark both
+    // originals; dup2 still leaves the intended standard descriptors open.
+    // Own both first so any fcntl error closes the complete fresh pair.
+    for fd in [&master, &slave] {
+        let flags = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFD) };
+        if flags < 0
+            || unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFD, flags | libc::FD_CLOEXEC) } < 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    Ok((master, slave))
 }
 
 /// Which shell to run when the client asked for a login shell.
@@ -212,6 +229,7 @@ impl PtyProcess {
             master,
             child,
             pgid,
+            hard_kill: false,
         })
     }
 
@@ -245,8 +263,20 @@ impl PtyProcess {
     /// 128+n rather than to 0, which is what `exit_status` would otherwise
     /// report for a killed process.
     pub async fn wait(&mut self) -> u32 {
+        // EOF can precede a background child's exit. End the still-owned
+        // group BEFORE reaping its leader releases the numeric PID reservation.
+        if self.hard_kill && self.pgid > 0 && self.child.id().is_some() {
+            unsafe {
+                libc::killpg(self.pgid, libc::SIGKILL);
+            }
+        }
         match self.child.wait().await {
             Ok(status) => {
+                // Reaping releases the PID reservation. Never send a hard signal
+                // to this numeric PGID afterwards: it can belong to somebody else.
+                if self.hard_kill {
+                    self.pgid = 0;
+                }
                 if let Some(code) = status.code() {
                     code.clamp(0, 255) as u32
                 } else {
@@ -259,6 +289,13 @@ impl PtyProcess {
                 1
             }
         }
+    }
+
+    /// Shared-only teardown; set before handing this owner to the output task.
+    /// The unreaped direct child pins its PID/PGID, so drop can synchronously
+    /// SIGKILL the still-owned group without a delayed recycled-PGID race.
+    pub(crate) fn hard_kill_on_drop(&mut self) {
+        self.hard_kill = true;
     }
 
     /// Signal the whole process group, not just the shell.
@@ -284,7 +321,17 @@ impl Drop for PtyProcess {
     fn drop(&mut self) {
         // A dropped session must not leave a shell running against a master
         // nobody reads — that is a process leak reachable from the network.
-        self.kill_group();
+        if self.hard_kill {
+            if self.pgid > 0 && self.child.id().is_some() {
+                // SAFETY: this owner has not reaped its session leader, so the
+                // group id cannot have been reassigned. No delayed signal task.
+                unsafe {
+                    libc::killpg(self.pgid, libc::SIGKILL);
+                }
+            }
+        } else {
+            self.kill_group();
+        }
     }
 }
 
@@ -382,6 +429,52 @@ mod tests {
         assert!(master.as_raw_fd() >= 0);
         assert!(slave.as_raw_fd() >= 0);
         assert_ne!(master.as_raw_fd(), slave.as_raw_fd());
+    }
+
+    #[test]
+    fn open_pty_original_descriptors_are_close_on_exec() {
+        let (master, slave) = open_pty(WinSize { cols: 80, rows: 24 }).unwrap();
+        for fd in [&master, &slave] {
+            let flags = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFD) };
+            assert!(flags >= 0);
+            assert_ne!(flags & libc::FD_CLOEXEC, 0);
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_real_pty_shell_inherits_only_its_three_terminal_stdio_descriptors() {
+        // Read THIS shell's fd table, not readlink's. Stdio remains a real
+        // terminal, but neither original openpty fd may survive exec.
+        let command = r#"test -t 0 && test -t 1 && test -t 2 || exit 7; for f in /proc/$$/fd/*; do n=${f##*/}; [ "$n" -gt 2 ] || continue; t=$(readlink "$f" 2>/dev/null) || continue; case "$t" in /dev/pts/*|/dev/ptmx) printf 'EXTRA_PTY_FD=%s:%s\n' "$n" "$t";; esac; done; printf 'FD-CHECK-DONE\n'"#;
+        let mut pty = PtyProcess::spawn(
+            Some(command),
+            "xterm",
+            WinSize { cols: 80, rows: 24 },
+            &crate::exec::RunAs::Daemon,
+        )
+        .unwrap();
+        pty.hard_kill_on_drop();
+        let mut bytes = Vec::new();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let mut buf = [0u8; 1024];
+            loop {
+                let n = pty.read(&mut buf).await.unwrap();
+                if n == 0 {
+                    break;
+                }
+                bytes.extend_from_slice(&buf[..n]);
+            }
+        })
+        .await
+        .expect("terminal must reach EOF without hidden inherited slave fds");
+        assert_eq!(pty.wait().await, 0);
+        let text = String::from_utf8(bytes).unwrap();
+        assert!(text.contains("FD-CHECK-DONE"));
+        assert!(
+            !text.contains("EXTRA_PTY_FD="),
+            "unexpected inherited descriptor: {text}"
+        );
     }
 
     /// The geometry asked for is the geometry the terminal reports — this is

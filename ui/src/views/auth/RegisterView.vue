@@ -10,6 +10,8 @@
             {{ $t('auth.register') }}
           </v-card-title>
 
+          <div class="text-center text-subtitle-1 mb-4" data-testid="product-name">{{ PRODUCT_TITLE }}</div>
+
           <v-form ref="formRef" @submit.prevent="handleRegister">
             <v-text-field
               v-model="email"
@@ -119,6 +121,7 @@ import { useAuthStore } from '@/stores/auth'
 import { useWsStore } from '@/stores/ws'
 import { useValidation } from '@/composables/useValidation'
 import { useBrand } from '@/composables/useBrand'
+import { PRODUCT_TITLE } from '@/utils/product'
 import {
   ATTRIBUTION_ENABLED,
   SELF_REPORTED_OPTIONS,

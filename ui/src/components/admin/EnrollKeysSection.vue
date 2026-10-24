@@ -181,6 +181,7 @@
 </template>
 
 <script setup lang="ts">
+import { appOrigin } from '@/utils/deployment'
 import { onMounted, reactive, ref, watch } from 'vue'
 import { useAgentStore, type EnrollmentKeyRow } from '@/stores/agents'
 import { useResponsiveDialog } from '@/composables/useResponsiveDialog'
@@ -191,7 +192,7 @@ const { fullscreen } = useResponsiveDialog()
 
 const keys = ref<EnrollmentKeyRow[]>([])
 const error = ref<string | null>(null)
-const origin = window.location.origin
+const origin = appOrigin(window.location.origin)
 
 const mintOpen = ref(false)
 const minting = ref(false)

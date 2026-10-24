@@ -7,6 +7,7 @@ import {
 } from '@/composables/useTutorialProgress'
 import { ref, computed } from 'vue'
 import { api } from '@/api/client'
+import { useAccountApprovalStore } from '@/stores/accountApproval'
 import router from '@/plugins/router'
 import { subscribePush, unsubscribePush } from '@/composables/usePush'
 import { markSignedIn, clearSignedIn, looksSignedIn } from '@/api/session'
@@ -42,6 +43,7 @@ export const useAuthStore = defineStore('auth', () => {
    * the server said had completed a chapter.
    */
   function adoptSession(u: User) {
+    if (user.value?.id !== u.id) useAccountApprovalStore().reset()
     user.value = u
     seedTutorialFromServer(u.id, u.tutorial)
   }
@@ -150,6 +152,7 @@ export const useAuthStore = defineStore('auth', () => {
    * this store.
    */
   function forgetLocalSession() {
+    useAccountApprovalStore().reset()
     user.value = null
     signedIn.value = false
     clearSignedIn()
@@ -186,6 +189,7 @@ export const useAuthStore = defineStore('auth', () => {
    * locally rather than trapping the user in a session they asked to leave.
    */
   async function logout() {
+    useAccountApprovalStore().reset()
     unsubscribePush().catch(() => {})
     try {
       await api.post('/auth/logout', {})

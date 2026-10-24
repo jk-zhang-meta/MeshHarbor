@@ -60,16 +60,16 @@
 
 use std::any::Any;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use async_trait::async_trait;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, ReadHalf, WriteHalf};
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
-use tokio_rustls::TlsConnector;
 use tokio_rustls::client::TlsStream;
+use tokio_rustls::TlsConnector;
 use util::{Conn, Error};
 
 /// Initial read-buffer capacity. 4 KiB covers most STUN messages
@@ -516,5 +516,245 @@ mod tests {
         let second = parse_frame_len(next).unwrap().unwrap();
         assert_eq!(second, 12);
         assert_eq!(next.len(), 12);
+    }
+
+    /// Actual TLS sockets, not only frame-length arithmetic. Linux test child
+    /// gets an ephemeral trust file via its own environment before OnceLock;
+    /// no process-global env mutation, OS trust edit, or verifier bypass.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn real_tls_stream_fragment_coalesce_eof_and_hostname() {
+        use std::os::unix::fs::DirBuilderExt;
+        use std::path::PathBuf;
+        use std::process::{Command, Stdio};
+        use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+        const CHILD: &str = "TCP_TURN_TLS_TEST_CHILD_DIR";
+        if let Some(path) = std::env::var_os(CHILD) {
+            let dir = PathBuf::from(path);
+            assert!(dir.is_dir() && !dir.is_symlink());
+            assert_eq!(
+                std::env::var_os("SSL_CERT_FILE"),
+                Some(dir.join("ca.pem").into_os_string())
+            );
+            assert!(std::env::var_os("SSL_CERT_DIR").is_none());
+            // libtest --nocapture may leave its "test ... " prefix on this
+            // line. Keep every exact marker on an independent line.
+            println!();
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            rt.block_on(async {
+                tokio::time::timeout(Duration::from_secs(15), real_tls_stream_child(&dir))
+                    .await
+                    .expect("15s TLS child deadline")
+                    .expect("real TLS stream oracle")
+            });
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!(
+            "meshharbor-tcp-turn-tls-test-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::DirBuilder::new().mode(0o700).create(&dir).unwrap();
+        struct Cleanup(PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                // Only this invocation's known public test certificate/path.
+                let _ = std::fs::remove_file(self.0.join("ca.pem"));
+                let _ = std::fs::remove_dir(&self.0);
+            }
+        }
+        let cleanup = Cleanup(dir.clone());
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "tests::real_tls_stream_fragment_coalesce_eof_and_hostname",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(CHILD, &dir)
+            .env("SSL_CERT_FILE", dir.join("ca.pem"))
+            .env_remove("SSL_CERT_DIR")
+            .env("RUST_LOG", "off")
+            .env("RUST_BACKTRACE", "0")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let began = Instant::now();
+        loop {
+            if child.try_wait().unwrap().is_some() {
+                break;
+            }
+            if began.elapsed() >= Duration::from_secs(25) {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("25s parent deadline killed owned TLS test child");
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        let output = child.wait_with_output().unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success(),
+            "TLS child status={} stderr={}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+                .chars()
+                .take(4096)
+                .collect::<String>()
+        );
+        for marker in [
+            "TCP_TURN_TLS_HANDSHAKE_PASS",
+            "TCP_TURN_TLS_FRAGMENT_COALESCE_PASS",
+            "TCP_TURN_TLS_SEND_FRAME_PASS",
+            "TCP_TURN_TLS_PARTIAL_EOF_PASS",
+            "TCP_TURN_TLS_WRONG_HOSTNAME_REJECTED",
+        ] {
+            assert_eq!(
+                stdout.lines().filter(|line| *line == marker).count(),
+                1,
+                "missing/duplicate TLS oracle marker {marker}"
+            );
+            println!("{marker}");
+        }
+        drop(cleanup);
+        assert!(!dir.exists(), "task TLS certificate directory not removed");
+    }
+
+    #[cfg(target_os = "linux")]
+    async fn real_tls_stream_child(
+        dir: &std::path::Path,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        use std::sync::Arc;
+        use std::time::Duration;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::{TcpListener, TcpStream};
+        use tokio::sync::oneshot;
+        use tokio_rustls::rustls::{
+            pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer},
+            ServerConfig,
+        };
+        use tokio_rustls::TlsAcceptor;
+        use util::Conn;
+
+        let rcgen::CertifiedKey { cert, key_pair } =
+            rcgen::generate_simple_self_signed(vec!["localhost".to_owned()])?;
+        let mut ca = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(dir.join("ca.pem"))?;
+        ca.write_all(cert.pem().as_bytes())?;
+        drop(ca); // Certificate is public; ephemeral private key stays in memory.
+        let config = ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(
+                vec![cert.der().clone()],
+                PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key_pair.serialize_der())),
+            )?;
+        let acceptor = TlsAcceptor::from(Arc::new(config));
+        let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await?;
+        let addr = listener.local_addr()?;
+        let frames = [
+            stun_header(0),
+            chandata_frame(0x4000, 5),
+            chandata_frame(0x4001, 4),
+        ];
+        let expected = frames.clone();
+        let request = stun_header(0);
+        let request_for_server = request.clone();
+        let (fragment_tx, fragment_rx) = oneshot::channel();
+        let (release_tx, release_rx) = oneshot::channel();
+        let server_acceptor = acceptor.clone();
+        let server = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await?;
+            let mut tls = server_acceptor.accept(tcp).await?;
+            tls.write_all(&frames[0][..2]).await?;
+            tls.flush().await?;
+            let _ = fragment_tx.send(());
+            release_rx.await?;
+            // Remainder of a fragmented STUN frame PLUS two ChannelData
+            // frames in one TLS write: read boundaries cannot be assumed.
+            let mut joined = frames[0][2..].to_vec();
+            joined.extend_from_slice(&frames[1]);
+            joined.extend_from_slice(&frames[2]);
+            tls.write_all(&joined).await?;
+            tls.flush().await?;
+            let mut received = vec![0; request_for_server.len()];
+            tls.read_exact(&mut received).await?;
+            assert_eq!(
+                received, request_for_server,
+                "TLS adapter outbound frame changed"
+            );
+            // Declare 28 bytes but send only six before close-notify/EOF.
+            // recv_from must error, not return a truncated TURN frame or hang.
+            tls.write_all(&[0x00, 0x01, 0x00, 0x08, 0x21, 0x12]).await?;
+            tls.shutdown().await?;
+            Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+        });
+        let tcp = TcpStream::connect(addr).await?;
+        let client = super::TcpTurnConn::connect_tls(tcp, "localhost").await?;
+        println!("TCP_TURN_TLS_HANDSHAKE_PASS");
+        fragment_rx.await?;
+        let mut buf = [0u8; 512];
+        assert!(
+            tokio::time::timeout(Duration::from_millis(30), client.recv_from(&mut buf))
+                .await
+                .is_err(),
+            "two-byte TLS fragment must not produce a TURN frame"
+        );
+        let _ = release_tx.send(());
+        for frame in expected {
+            let (n, peer) =
+                tokio::time::timeout(Duration::from_secs(2), client.recv_from(&mut buf)).await??;
+            assert_eq!(peer, addr);
+            assert_eq!(n, frame.len());
+            assert_eq!(&buf[..n], frame.as_slice());
+        }
+        println!("TCP_TURN_TLS_FRAGMENT_COALESCE_PASS");
+        assert_eq!(client.send_to(&request, addr).await?, request.len());
+        tokio::time::timeout(Duration::from_secs(2), server).await???;
+        println!("TCP_TURN_TLS_SEND_FRAME_PASS");
+        assert!(
+            tokio::time::timeout(Duration::from_secs(2), client.recv_from(&mut buf))
+                .await?
+                .is_err(),
+            "partial TLS frame EOF must fail"
+        );
+        client.close().await?;
+        assert!(
+            client.send(&request).await.is_err(),
+            "closed TLS adapter accepted a send"
+        );
+        println!("TCP_TURN_TLS_PARTIAL_EOF_PASS");
+
+        let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await?;
+        let addr = listener.local_addr()?;
+        let server = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await?;
+            let _ = acceptor.accept(tcp).await; // Expected peer certificate alert.
+            Ok::<(), std::io::Error>(())
+        });
+        let tcp = TcpStream::connect(addr).await?;
+        let error = match super::TcpTurnConn::connect_tls(tcp, "wrong-hostname.invalid").await {
+            Ok(_) => panic!("TLS adapter accepted certificate for the wrong hostname"),
+            Err(error) => error.to_string().to_lowercase(),
+        };
+        assert!(
+            error.contains("notvalidforname") || error.contains("not valid for name"),
+            "wrong-hostname failure was not certificate-name validation"
+        );
+        tokio::time::timeout(Duration::from_secs(2), server).await???;
+        println!("TCP_TURN_TLS_WRONG_HOSTNAME_REJECTED");
+        Ok(())
     }
 }

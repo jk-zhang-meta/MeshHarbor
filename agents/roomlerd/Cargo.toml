@@ -728,6 +728,10 @@ hive = ["dep:roomler-hive-node", "dep:hyper", "dep:hyper-util", "dep:http-body-u
 # workflows name their features. Even compiled, `init_as_daemon` refuses when
 # the daemon is root, so it can never be how a session runs as root.
 hive-test-launcher = ["hive"]
+# Narrow local CP/dataplane oracle; no production profile enables this.
+# The daemon's native listener module requires an overlay surface. Use the
+# OS-free netstack surface (not overlay-l3/TUN); the harness opens no stack.
+backbone-test-support = ["overlay-netstack", "roomler-ai-tunnel-core/path-trial-test-support"]
 # FR-90 P3-3 — the device's half of the vault: a key the daemon makes while the
 # device's own `vault_enabled` is on, kept in memory only and new at every
 # start, its public half in the primary enrollment's hello. Implies `hive`:
@@ -863,6 +867,7 @@ embed-resource = "3"
 
 [dev-dependencies]
 tokio-test = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
 tempfile = { workspace = true }
 # Turns on `config::test_fixture` for THIS crate's test builds (feature
 # unification applies dev-dep features to the normal dep during `cargo
@@ -918,7 +923,7 @@ peer-to-peer; the server never sees raw pixels or keystrokes."""
 # DRIVER stays the host's, and it is a `suggests`, not `recommends`: apt
 # installs recommends by default, and Mesa's VA driver drags LLVM (~100 MB)
 # onto every headless server on the next agent update.
-depends = "libc6, libxcb1, libxcb-shm0, libxcb-randr0, libasound2"
+depends = "libc6 (>= 2.35), libxcb1, libxcb-shm0, libxcb-randr0, libasound2, libssl3, libstdc++6, libgcc-s1"
 # `ip` (iproute2) is how a Linux node gives its TUN the overlay IPv6; without it
 # the node stays v4-only and an exit cannot serve IPv6 (FR-97 §8, 2026-10-16: a
 # minimal container). A `recommends`, NOT a `depends`, for the reason above: the

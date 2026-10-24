@@ -144,7 +144,7 @@ async fn run_install_inner(
         },
     );
     let health = asset_resolver::resolve(
-        &crate::proxy::tunnel_base(),
+        &crate::proxy::tunnel_base(&server),
         &platform,
         "latest",
         crate::proxy::USER_AGENT,
@@ -174,25 +174,32 @@ async fn run_install_inner(
         .join("roomler-setup")
         .join(&health.tag)
         .join(&health.filename);
-    let url = format!(
-        "{}{}",
-        crate::proxy::origin_of(&crate::proxy::tunnel_base()),
-        health.uri
-    );
+    let center_base = crate::proxy::origin_of(&crate::proxy::tunnel_base(&server));
+    let url = format!("{}{}", center_base, health.uri);
     let spec = asset_resolver::DownloadSpec {
+        center_base: &center_base,
         url: &url,
         dest: &staged,
         user_agent: crate::proxy::USER_AGENT,
         artifact_label: "CLI archive",
     };
+    let signature_url =
+        asset_resolver::release_signature_url(&center_base, &health.tag, &health.filename)
+            .map_err(|e| failed(ErrorCode::Download, format!("release signature URL: {e}")))?;
     let progress_emitter = on_event.clone();
-    asset_resolver::download(&spec, &crate::CANCEL_REQUESTED, move |received| {
-        // DownloadProgress fires many times per MB; skip the replay
-        // log mirror — the SPA's live listener catches the stream.
-        let _ = progress_emitter.send(ProgressEvent::DownloadProgress {
-            received_bytes: received,
-        });
-    })
+    asset_resolver::download_signed(
+        &spec,
+        &signature_url,
+        &crate::CANCEL_REQUESTED,
+        roomlerd::pgp_verify::verify_release_artifact,
+        move |received| {
+            // DownloadProgress fires many times per MB; skip the replay
+            // log mirror — the SPA's live listener catches the stream.
+            let _ = progress_emitter.send(ProgressEvent::DownloadProgress {
+                received_bytes: received,
+            });
+        },
+    )
     .await
     .map_err(|e| failed(ErrorCode::Download, format!("download installer: {e}")))?;
     diag.ok();

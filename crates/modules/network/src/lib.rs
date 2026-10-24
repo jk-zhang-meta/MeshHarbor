@@ -60,6 +60,7 @@ pub mod hooks;
 pub mod org_relay;
 pub mod overlay;
 pub mod relay_allowance;
+pub mod shared_ssh;
 pub mod ssh_grant_acks;
 pub mod tunnel;
 pub mod turn_usage;
@@ -103,6 +104,8 @@ pub struct NetworkState {
     /// via the Hub's `send_to_agent`). Used by the overlay broker to fan
     /// netmaps/deltas to client nodes.
     pub overlay_nodes_by_id: TunnelClientOutbound,
+    /// Live join snapshots, for fail-closed security removal without Mongo IO.
+    pub admission_nodes: Arc<DashMap<ObjectId, roomler_ai_remote_control::models::OverlayNode>>,
     /// DERP relay registry: `(network_id, wg_pubkey)` → the outbound frame
     /// sender for that node's live `/derp` WS. The pubkey-addressed
     /// forwarding map for the both-UDP-blocked carrier tier. The relay that
@@ -150,6 +153,9 @@ pub struct NetworkState {
     /// HTTP route and the device-originated WS leg — both funnel through the
     /// same `dispatch`, so neither transport is unlimited.
     pub ssh_rate_limiter: Arc<RateLimiter>,
+    pub(crate) shared_ssh_sessions: Arc<DashMap<ObjectId, shared_ssh::SharedSshSession>>,
+    pub(crate) shared_ssh_slots: Arc<tokio::sync::Semaphore>,
+    pub(crate) ssh_shared_lease_limiter: Arc<RateLimiter>,
     /// FR-83 — grants whose caller is held until the target acknowledges
     /// them. Pod-local like the Hub's exec waiters: the push only succeeds
     /// when the target's socket is here, and its ack arrives on that socket.
@@ -289,6 +295,7 @@ impl Module for NetworkState {
             overlay_nodes: Arc::new(OverlayNodeDao::new(db)),
             overlay_policies: Arc::new(OverlayPolicyDao::new(db)),
             overlay_nodes_by_id: Arc::new(DashMap::new()),
+            admission_nodes: Arc::new(DashMap::new()),
             derp_registry: Arc::new(DashMap::new()),
             derp_acl: Arc::new(DashMap::new()),
             derp_cancels: Arc::new(DashMap::new()),
@@ -300,6 +307,9 @@ impl Module for NetworkState {
             key_rotation_audit: Arc::new(KeyRotationAuditDao::new(db)),
             peer_relay_audit: Arc::new(PeerRelayAuditDao::new(db)),
             ssh_rate_limiter: Arc::new(RateLimiter::new()),
+            shared_ssh_sessions: Arc::new(DashMap::new()),
+            shared_ssh_slots: Arc::new(tokio::sync::Semaphore::new(64)),
+            ssh_shared_lease_limiter: Arc::new(RateLimiter::new()),
             ssh_grant_acks: Arc::new(ssh_grant_acks::SshGrantAcks::new()),
             ssh_pending: Arc::new(SshPendingDao::new(db)),
             relay_rate_limiter: Arc::new(RateLimiter::new()),
@@ -566,6 +576,8 @@ impl Module for NetworkState {
         // module's rows only when it is mounted.
 
         Router::new()
+            .route("/device-shares/{id}/ssh", get(shared_ssh::metadata))
+            .route("/device-shares/{id}/ssh/ws", get(shared_ssh::connect))
             .nest("/tenant/{tenant_id}/agent", agent)
             .nest("/tenant/{tenant_id}/tunnel-client", tunnel_client)
             .nest("/tenant/{tenant_id}/tunnel-policy", tunnel_policy)

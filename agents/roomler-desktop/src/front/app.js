@@ -91,7 +91,7 @@ window.Roomler = (function () {
 
   /* ── router ─────────────────────────────────────────────────────── */
 
-  const VIEWS = ['overview', 'devices', 'tunnels', 'recordings', 'settings', 'onboarding', 'welcome'];
+  const VIEWS = ['overview', 'devices', 'account', 'tunnels', 'recordings', 'settings', 'onboarding', 'welcome'];
   // The pre-overhaul front was one page per file and tray.rs navigated by
   // filename hash; map those so any stale caller still lands somewhere sane.
   const LEGACY = {

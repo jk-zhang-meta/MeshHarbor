@@ -122,6 +122,17 @@ pub async fn handle_forward_request(
             }
         };
 
+    handle_preopened_forward(session_id, flow_id, stream, tunnel_peer, outbound).await;
+}
+/// Existing DC/flow pump, also used by the typed embedded-SSH socketpair. This
+/// function accepts an already-open stream, never a new host/port authority.
+pub(crate) async fn handle_preopened_forward(
+    session_id: ObjectId,
+    flow_id: u32,
+    stream: TcpStream,
+    tunnel_peer: &Arc<AgentTunnelPeer>,
+    outbound: mpsc::Sender<ClientMsg>,
+) {
     // Make sure the DC pool is fully open before assigning a channel.
     // Under normal operation the SDP/ICE handshake finishes long
     // before the first flow request, so this resolves immediately.

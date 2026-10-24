@@ -1634,6 +1634,7 @@ async fn relay_sdp_offer_to_agent(
     if let Err(e) = state.fleet.rc_hub.send_to_agent(
         s.agent_id,
         ServerMsg::TunnelSdpOffer {
+            shared_lease: None,
             session_id: request_session_id,
             sdp,
         },
@@ -2061,6 +2062,23 @@ pub async fn relay_tunnel_client_msg_from_agent(
     }
 }
 
+/// Admission fence: all sessions lose forwarding before any audit IO.
+pub(crate) fn fence_originated_sessions(
+    state: &NetworkState,
+    sessions: &std::collections::HashMap<ObjectId, TunnelSession>,
+) {
+    for s in sessions.values() {
+        state.tunnel_clients_by_session.remove(&s.tunnel_session_id);
+        let _ = state.fleet.rc_hub.send_to_agent(
+            s.agent_id,
+            ServerMsg::TunnelTerminate {
+                session_id: s.tunnel_session_id,
+                reason: CloseReason::ServerTerminated,
+            },
+        );
+    }
+}
+
 /// Tear down every tunnel session an agent originated when its WS drops.
 /// Mirrors the tunnel-client socket's disconnect path: for each session,
 /// tell the target agent, drop the reply-channel registration, and audit
@@ -2133,7 +2151,7 @@ pub async fn terminate_sessions_targeting_agent(state: &NetworkState, agent_id: 
     // agent's `tunnel_peers_survive_reattach`.
     let grace = state.settings.rc.tunnel_grace_secs;
     if grace == 0 {
-        terminate_agent_sessions_now(state, agent_id).await;
+        terminate_agent_sessions_now(state, agent_id);
         return;
     }
     let state = state.clone();
@@ -2159,14 +2177,14 @@ pub async fn terminate_sessions_targeting_agent(state: &NetworkState, agent_id: 
             return;
         }
         info!(%agent_id, grace_secs = grace, "R3 grace expired — agent still offline; terminating tunnel sessions");
-        terminate_agent_sessions_now(&state, agent_id).await;
+        terminate_agent_sessions_now(&state, agent_id);
     });
 }
 
 /// Immediately terminate every tunnel session targeting `agent_id`: drop the
 /// by-target index and push `TunnelTerminate` to each client. The pre-R3
 /// behaviour, now also the grace-expiry path.
-async fn terminate_agent_sessions_now(state: &NetworkState, agent_id: ObjectId) {
+pub(crate) fn terminate_agent_sessions_now(state: &NetworkState, agent_id: ObjectId) {
     let Some((_, session_ids)) = state.tunnel_sessions_by_target_agent.remove(&agent_id) else {
         return;
     };

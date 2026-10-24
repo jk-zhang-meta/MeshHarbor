@@ -21,6 +21,7 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { useSnackbar } from '@/composables/useSnackbar'
+import { PRODUCT_TITLE } from '@/utils/product'
 
 const snackbar = useSnackbar()
 
@@ -45,6 +46,7 @@ function syncFullscreenTarget() {
 }
 
 onMounted(() => {
+  document.title = PRODUCT_TITLE
   document.addEventListener('fullscreenchange', syncFullscreenTarget)
   syncFullscreenTarget()
 })

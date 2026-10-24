@@ -152,11 +152,11 @@ pub fn cmd_default_device_name() -> String {
         .unwrap_or_else(|_| "roomler-device".to_string())
 }
 
-/// Production roomler.ai URL. Operators usually leave this as-is;
+/// Default MeshHarbor center URL. Operators usually leave this as-is;
 /// staging / on-prem deployments edit it.
 #[tauri::command]
 pub fn cmd_default_server_url() -> String {
-    "https://roomler.ai".to_string()
+    crate::proxy::DEFAULT_SERVER.to_string()
 }
 
 // ─── Token introspection ─────────────────────────────────────────────────────
@@ -575,8 +575,11 @@ mod tests {
     }
 
     #[test]
-    fn default_server_url_is_roomler_ai() {
-        assert_eq!(cmd_default_server_url(), "https://roomler.ai");
+    fn default_server_url_is_meshharbor_center() {
+        assert_eq!(
+            cmd_default_server_url(),
+            "https://www.itachi.fans/meshharbor"
+        );
     }
 
     #[test]

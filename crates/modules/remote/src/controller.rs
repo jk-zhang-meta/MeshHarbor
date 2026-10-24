@@ -54,6 +54,18 @@ pub const SESSION_REQUESTS_PER_MINUTE: u32 = 60;
 /// (the socket then runs its other arms); a denial is answered on the
 /// controller's sender and counts as handled.
 pub async fn handle_controller_frame(state: &RemoteState, frame: ControllerFrame<'_>) -> bool {
+    if matches!(
+        serde_json::from_str::<ClientMsg>(frame.text),
+        Ok(ClientMsg::SharedLeaseChallenge { .. })
+    ) {
+        let _ = frame.controller_tx.try_send(ServerMsg::Error {
+            session_id: None,
+            code: "permission_denied".into(),
+            message: "Shared lease challenges are authenticated-agent-only".into(),
+            open_nonce: None,
+        });
+        return true;
+    }
     // FR-52 P3c — an external-access login is not a session: it has its own
     // gates and never reaches the Hub. Before the authz gate below, which
     // would judge an outsider by a membership they do not have.
@@ -238,7 +250,36 @@ pub async fn dispatch_controller_rc(
     };
     // …and so does the cross-pod relay, for the same reason.
     let relay_tenant_name = tenant_name;
-    let dispatched = hub.dispatch(&ctx, parsed);
+    // Recheck the share at the actual creation site, not just a UI/check endpoint.
+    let shared_scope = match crate::device_share::scope_for_request(state, user_id, &parsed).await {
+        Ok(v) => v.map(|(mut scope, _)| {
+            scope.consent_mode = ctx.consent_mode;
+            scope
+        }),
+        Err(reason) => {
+            if let Some(lease) = &slot {
+                crate::slots::release_unused(state, lease, None).await;
+            }
+            let _ = controller_tx.try_send(ServerMsg::Error {
+                session_id: None,
+                code: "permission_denied".into(),
+                message: reason,
+                open_nonce: None,
+            });
+            return true;
+        }
+    };
+    let mut created_session = None;
+    let dispatched = if shared_scope.is_some() {
+        hub.dispatch_capturing_session(&ctx, parsed, &mut created_session)
+    } else {
+        hub.dispatch(&ctx, parsed)
+    };
+    if dispatched.is_ok()
+        && let (Some(scope), Some(session)) = (shared_scope, created_session)
+    {
+        crate::device_share::watch_session(state.clone(), session, scope);
+    }
     // FR-115 P3b — a slot the hub did not take (it refused, or coalesced the
     // request into a session that already exists) goes back now.
     if let Some(lease) = &slot {
@@ -674,6 +715,16 @@ pub async fn resolve_session_authz(
 ) -> Result<SessionAuthz, String> {
     use roomler_ai_db::models::role::permissions;
     use roomler_ai_remote_control::models::AgentStatus;
+
+    if let Ok(
+        msg @ ClientMsg::SessionRequest {
+            share_grant_id: Some(_),
+            ..
+        },
+    ) = serde_json::from_str::<ClientMsg>(text)
+    {
+        return crate::device_share::session_authz(state, controller_user_id, &msg).await;
+    }
 
     let (agent_id, override_reason) = match serde_json::from_str::<ClientMsg>(text) {
         Ok(ClientMsg::SessionRequest {

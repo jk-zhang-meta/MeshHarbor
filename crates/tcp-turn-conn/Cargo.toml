@@ -40,3 +40,8 @@ version = "0.10.0"
 features = ["conn", "vnet", "sync"]
 default-features = false
 package = "webrtc-util"
+
+# Test-only: already locked dependencies, no production TLS/trust changes.
+[dev-dependencies]
+rcgen = { version = "=0.13.2", default-features = false, features = ["ring", "pem"] }
+tokio = { version = "1", default-features = false, features = ["rt", "time"] }

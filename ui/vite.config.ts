@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 G ROX EOOD
+import { deploymentPath, normalizeBasePath } from './src/utils/deploymentPath'
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import vuetify from 'vite-plugin-vuetify'
@@ -7,7 +8,11 @@ import { resolve } from 'path'
 
 const apiTarget = process.env.VITE_API_URL || 'http://localhost:5001'
 
+const basePath = normalizeBasePath(process.env.VITE_BASE_PATH || '/')
+const stripBase = (path: string): string => basePath === '/' ? path : `/${path.slice(basePath.length)}`
+
 export default defineConfig({
+  base: basePath,
   plugins: [
     vue(),
     vuetify({ autoImport: true }),
@@ -97,11 +102,13 @@ export default defineConfig({
   server: {
     port: 5000,
     proxy: {
-      '/api': {
+      [deploymentPath('/api', basePath)]: {
+        rewrite: stripBase,
         target: apiTarget,
         changeOrigin: true,
       },
-      '/ws': {
+      [deploymentPath('/ws', basePath)]: {
+        rewrite: stripBase,
         target: apiTarget,
         changeOrigin: true,
         ws: true,

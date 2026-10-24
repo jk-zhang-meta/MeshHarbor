@@ -32,6 +32,8 @@ pub mod mesh;
 /// Display names on the CLI: the peers↔devices join and the device-selector
 /// rule for `ping` / `exec` / `ssh` (pure; `docs/device-naming.md`).
 pub mod names;
+pub mod native_auth;
+pub mod share_sshcmd;
 pub mod sshcmd;
 pub mod update;
 

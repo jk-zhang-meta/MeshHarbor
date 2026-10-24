@@ -29,8 +29,8 @@ use axum::{
 use bson::{DateTime, oid::ObjectId};
 use roomler_ai_db::models::role::permissions;
 use roomler_ai_remote_control::models::{
-    Agent, AgentStatus, PeerRelayAuditAction, PeerRelayAuditEvent, PeerRelayDenyReason,
-    PeerRelayMode, PeerRelayPolicy, RpcCap,
+    Agent, AgentStatus, MAX_PEER_RELAY_BACKBONE_EDGES, PeerRelayAuditAction, PeerRelayAuditEvent,
+    PeerRelayDenyReason, PeerRelayMode, PeerRelayPolicy, RpcCap,
 };
 use roomler_ai_services::dao::base::PaginationParams;
 use serde::{Deserialize, Serialize};
@@ -58,8 +58,11 @@ pub fn decide_approval(
     if !permissions::has(caller_permissions, permissions::MANAGE_AGENTS) {
         return Err(PeerRelayDenyReason::NotDeviceAdmin);
     }
-    if requested.serve
-        && !current.serve
+    let adds_backbone_edge = requested
+        .approved_backbone_edges
+        .iter()
+        .any(|e| !current.approved_backbone_edges.contains(e));
+    if ((requested.serve && !current.serve) || adds_backbone_edge)
         && !permissions::has(caller_permissions, permissions::EXEC_DEVICE)
     {
         return Err(PeerRelayDenyReason::CannotGrantRelay);
@@ -89,6 +92,8 @@ pub struct RelayDeviceView {
     /// the most common "why is nothing relayed?" answer, so it is on screen.
     pub serving: bool,
     pub static_endpoints: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub approved_backbone_edges: Vec<roomler_ai_remote_control::models::PeerRelayBackboneEdge>,
 }
 
 impl From<Agent> for RelayDeviceView {
@@ -99,6 +104,7 @@ impl From<Agent> for RelayDeviceView {
             status: a.status,
             serving: a.capabilities.has_rpc(RpcCap::RelayServer),
             static_endpoints: a.peer_relay_policy.static_endpoints,
+            approved_backbone_edges: a.peer_relay_policy.approved_backbone_edges,
         }
     }
 }
@@ -215,6 +221,42 @@ pub async fn set_policy(
         )));
     }
 
+    // A backbone edge is never a general private-network probe target. It
+    // names a live approved relay in THIS tenant and one exact unicast socket.
+    if requested.approved_backbone_edges.len() > MAX_PEER_RELAY_BACKBONE_EDGES
+        || (!requested.serve && !requested.approved_backbone_edges.is_empty())
+    {
+        return Err(ApiError::BadRequest(
+            "backbone edges require an approved source relay and at most 8 edges".into(),
+        ));
+    }
+    let overlay_cidr = if requested.approved_backbone_edges.is_empty() {
+        None
+    } else {
+        Some(state.overlay_networks.get_or_create(tid).await?.cidr)
+    };
+    let mut seen = std::collections::HashSet::new();
+    for edge in &requested.approved_backbone_edges {
+        let target = ObjectId::parse_str(&edge.relay_agent_id)
+            .map_err(|_| ApiError::BadRequest("invalid backbone relay agent id".into()))?;
+        if target == aid
+            || !seen.insert(target)
+            || !valid_backbone_endpoint(&edge.endpoint)
+            || !overlay_cidr
+                .as_ref()
+                .is_some_and(|cidr| backbone_endpoint_outside_overlay(&edge.endpoint, cidr))
+        {
+            return Err(ApiError::BadRequest(
+                "backbone edges must be distinct other relays with a unicast ip:port".into(),
+            ));
+        }
+        let target = state.fleet.agents.find_live_in_tenant(tid, target).await?;
+        if !target.peer_relay_policy.serve {
+            return Err(ApiError::BadRequest(
+                "backbone target is not relay-approved".into(),
+            ));
+        }
+    }
     let verdict = decide_approval(perms, &agent.peer_relay_policy, &requested);
     let event = PeerRelayAuditEvent {
         id: None,
@@ -246,6 +288,15 @@ pub async fn set_policy(
         .agents
         .update_peer_relay_policy(tid, aid, &requested)
         .await?;
+    state.org_relay.invalidate_eligibility();
+    // Remove all affected live two-leg trials synchronously before audit IO;
+    // adding an unrelated edge leaves existing paths and direct peers alone.
+    let revoked = crate::org_relay::revoke_removed_backbone_edges_sync(
+        &state,
+        tid,
+        aid,
+        &requested.approved_backbone_edges,
+    );
     if !requested.serve {
         // §7 trigger 3 — clearing the approval tears down what it carried.
         let n = crate::org_relay::revoke_relay_agent(&state, tid, aid, "policy_revoked").await;
@@ -254,11 +305,60 @@ pub async fn set_policy(
                 "peer-relay: live sessions revoked with the approval");
         }
     }
+    for event in revoked {
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            state.peer_relay_audit.record(event),
+        )
+        .await;
+    }
     warn!(
         tenant = %tenant_id, agent = %agent_id, admin = %auth.user_id,
         serve = requested.serve, "peer-relay: device approval changed"
     );
     Ok(Json(requested))
+}
+
+/// Fail closed for malformed tenant ranges and overlay destinations. Kept
+/// separate from local NIC pinning: both center and native gates must pass.
+pub fn backbone_endpoint_outside_overlay(endpoint: &str, tenant_cidr: &str) -> bool {
+    let Ok(endpoint) = endpoint.parse::<std::net::SocketAddr>() else {
+        return false;
+    };
+    let Ok(network) = tenant_cidr.parse::<ipnet::IpNet>() else {
+        return false;
+    };
+    valid_backbone_endpoint(&endpoint.to_string()) && !network.contains(&endpoint.ip())
+}
+
+/// Dedicated server-to-server endpoint validator. Keep the existing public
+/// client endpoint validator unchanged; this does not authorize a bridge.
+pub fn valid_backbone_endpoint(s: &str) -> bool {
+    use std::net::{IpAddr, SocketAddr};
+    let Ok(endpoint) = s.parse::<SocketAddr>() else {
+        return false;
+    };
+    if endpoint.port() == 0 {
+        return false;
+    }
+    match endpoint.ip() {
+        IpAddr::V4(ip) => {
+            !ip.is_unspecified()
+                && !ip.is_loopback()
+                && !ip.is_link_local()
+                && !ip.is_multicast()
+                && !ip.is_broadcast()
+                && ip.octets()[0] != 0
+                && ip.octets()[0] < 240
+        }
+        IpAddr::V6(ip) => {
+            !ip.is_unspecified()
+                && !ip.is_loopback()
+                && !ip.is_multicast()
+                && !ip.is_unicast_link_local()
+                && ip.to_ipv4_mapped().is_none()
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -388,6 +488,7 @@ mod tests {
         PeerRelayPolicy {
             serve,
             static_endpoints: Vec::new(),
+            approved_backbone_edges: Vec::new(),
         }
     }
 
@@ -444,5 +545,64 @@ mod tests {
     #[test]
     fn administrator_bypasses_as_everywhere_else() {
         assert_eq!(decide_approval(ADMINISTRATOR, &p(false), &p(true)), Ok(()));
+    }
+    #[test]
+    fn new_backbone_edge_needs_exec_but_removal_does_not() {
+        let mut old = p(true);
+        let mut requested = old.clone();
+        requested.approved_backbone_edges.push(
+            roomler_ai_remote_control::models::PeerRelayBackboneEdge {
+                relay_agent_id: ObjectId::new().to_hex(),
+                endpoint: "10.20.30.40:3478".into(),
+            },
+        );
+        assert_eq!(
+            decide_approval(DEFAULT_ADMIN, &old, &requested),
+            Err(PeerRelayDenyReason::CannotGrantRelay)
+        );
+        assert_eq!(
+            decide_approval(DEFAULT_ADMIN | EXEC_DEVICE, &old, &requested),
+            Ok(())
+        );
+        old = requested;
+        assert_eq!(decide_approval(DEFAULT_ADMIN, &old, &p(true)), Ok(()));
+    }
+    #[test]
+    fn backbone_endpoint_is_exact_unicast_but_not_the_client_public_policy() {
+        assert!(valid_backbone_endpoint("10.20.30.40:3478"));
+        assert!(valid_backbone_endpoint("[fd00::2]:3478"));
+        for s in [
+            "localhost:3478",
+            "127.0.0.1:3478",
+            "169.254.169.254:80",
+            "0.0.0.0:3478",
+            "224.0.0.1:3478",
+            "255.255.255.255:3478",
+            "[::1]:3478",
+            "[fe80::1]:3478",
+            "10.0.0.2:0",
+        ] {
+            assert!(!valid_backbone_endpoint(s), "{s}");
+        }
+        assert!(!crate::org_relay::valid_static_endpoint("10.20.30.40:3478"));
+    }
+    #[test]
+    fn backbone_endpoint_must_not_be_in_current_tenant_overlay() {
+        assert!(backbone_endpoint_outside_overlay(
+            "10.20.0.2:3478",
+            "100.64.0.0/10"
+        ));
+        assert!(!backbone_endpoint_outside_overlay(
+            "10.20.0.2:3478",
+            "10.0.0.0/8"
+        ));
+        assert!(!backbone_endpoint_outside_overlay(
+            "[fd00::2]:3478",
+            "fd00::/64"
+        ));
+        assert!(!backbone_endpoint_outside_overlay(
+            "10.20.0.2:3478",
+            "invalid"
+        ));
     }
 }

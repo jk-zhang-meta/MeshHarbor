@@ -148,6 +148,16 @@ pub fn index_plan(multi_block: bool) -> IndexPlan {
         ],
     ));
 
+    // Explicit device-share ledger. Expiry is checked synchronously; do not TTL-delete audit history.
+    sets.push(set(
+        "device_share_grants",
+        vec![
+            index(bson::doc! {"recipient_user_id":1,"device_id":1,"revoked_at":1,"expires_at":1}),
+            index(bson::doc! {"owner_user_id":1,"created_at":-1,"_id":-1}),
+            index(bson::doc! {"recipient_user_id":1,"created_at":-1,"_id":-1}),
+        ],
+    ));
+
     // Tenant Members
     sets.push(set(
         "tenant_members",

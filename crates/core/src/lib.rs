@@ -48,6 +48,7 @@
 //! (`crates/agent-core`), which held the name `roomler-core` from FR-21 until
 //! FR-69.
 
+pub mod admission;
 pub mod agent_socket;
 pub mod attribution;
 pub mod campaign;
@@ -90,3 +91,5 @@ pub use module::Module;
 pub use roomler_ai_db::indexes::{IndexOp, IndexPlan, IndexSet};
 pub use state::Core;
 pub use ws::{Role, UpgradeSpec, WsCtx, WsHandler, WsHandlerSpec, WsRegistration};
+
+pub mod device_share;

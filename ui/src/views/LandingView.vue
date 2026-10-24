@@ -10,7 +10,7 @@
          bar is unchanged. -->
     <v-app-bar flat color="transparent" class="landing-nav">
       <v-toolbar-title class="font-weight-bold text-h5 flex-0-0">
-        <img :src="BRAND_LOGO_LIGHT" alt="Roomler" width="127" height="36" class="landing-brand-logo" />
+        <img :src="BRAND_LOGO_LIGHT" alt="MeshHarbor · 织港" width="180" height="36" class="landing-brand-logo" />
       </v-toolbar-title>
       <v-spacer />
       <v-btn variant="text" href="#features" class="d-none d-md-inline-flex">Features</v-btn>
@@ -19,7 +19,7 @@
       <!-- FR-60: `href`, not `:to` — /docs is statically generated HTML served
            by nginx, not a route in this SPA's router. A router-link would
            resolve to the 404 view. -->
-      <v-btn variant="text" href="/docs/" class="d-none d-md-inline-flex">Docs</v-btn>
+      <v-btn variant="text" :href="appPath('/docs/')" class="d-none d-md-inline-flex">Docs</v-btn>
       <v-btn variant="outlined" color="primary" :to="{ name: 'login' }" class="mx-2 d-none d-sm-inline-flex">Log In</v-btn>
       <v-btn color="primary" :to="{ name: 'register' }" class="d-none d-sm-inline-flex">Get Started Free</v-btn>
       <v-btn color="primary" :to="{ name: 'register' }" class="d-sm-none" size="small">Sign Up</v-btn>
@@ -38,7 +38,7 @@
           <v-list-item href="#features" title="Features" />
           <v-list-item href="#download" title="Download" />
           <v-list-item href="#pricing" title="Pricing" />
-          <v-list-item href="/docs/" title="Docs" />
+          <v-list-item :href="appPath('/docs/')" title="Docs" />
           <template v-if="xs">
             <v-divider class="my-1" />
             <v-list-item :to="{ name: 'login' }" title="Log In" prepend-icon="mdi-login" />
@@ -211,7 +211,7 @@
       <v-container>
         <v-row>
           <v-col cols="12" sm="3">
-            <div class="text-h6 font-weight-bold mb-2">Roomler</div>
+            <div class="text-h6 font-weight-bold mb-2">MeshHarbor · 织港</div>
             <p class="text-body-2 landing-muted">Remote access, private networking, and collaboration for your devices and your team.</p>
           </v-col>
           <v-col cols="6" sm="2">
@@ -219,14 +219,14 @@
             <a href="#features" class="text-body-2 landing-muted mb-1 d-block text-decoration-none">Features</a>
             <a href="#download" class="text-body-2 landing-muted mb-1 d-block text-decoration-none">Download</a>
             <a href="#pricing" class="text-body-2 landing-muted mb-1 d-block text-decoration-none">Pricing</a>
-            <a href="/docs/" class="text-body-2 landing-muted mb-1 d-block text-decoration-none">Documentation</a>
+            <a :href="appPath('/docs/')" class="text-body-2 landing-muted mb-1 d-block text-decoration-none">Documentation</a>
           </v-col>
           <v-col cols="6" sm="2">
             <div class="text-subtitle-2 font-weight-bold mb-2">Install</div>
-            <a href="/docs/start/install/windows/" class="text-body-2 landing-muted mb-1 d-block text-decoration-none">Windows</a>
-            <a href="/docs/start/install/macos/" class="text-body-2 landing-muted mb-1 d-block text-decoration-none">macOS</a>
-            <a href="/docs/start/install/linux/" class="text-body-2 landing-muted mb-1 d-block text-decoration-none">Linux</a>
-            <a href="/docs/start/self-hosting/" class="text-body-2 landing-muted mb-1 d-block text-decoration-none">Self-hosting</a>
+            <a :href="appPath('/docs/start/install/windows/')" class="text-body-2 landing-muted mb-1 d-block text-decoration-none">Windows</a>
+            <a :href="appPath('/docs/start/install/macos/')" class="text-body-2 landing-muted mb-1 d-block text-decoration-none">macOS</a>
+            <a :href="appPath('/docs/start/install/linux/')" class="text-body-2 landing-muted mb-1 d-block text-decoration-none">Linux</a>
+            <a :href="appPath('/docs/start/self-hosting/')" class="text-body-2 landing-muted mb-1 d-block text-decoration-none">Self-hosting</a>
           </v-col>
           <v-col cols="6" sm="2">
             <div class="text-subtitle-2 font-weight-bold mb-2">Legal</div>
@@ -242,7 +242,7 @@
           </v-col>
         </v-row>
         <v-divider class="my-4" />
-        <div class="text-body-2 landing-muted text-center">&copy; {{ new Date().getFullYear() }} G ROX EOOD &mdash; Roomler. All rights reserved.</div>
+        <div class="text-body-2 landing-muted text-center">&copy; {{ new Date().getFullYear() }} G ROX EOOD &mdash; Roomler. All rights reserved. MeshHarbor · 织港 is based on Roomler.</div>
       </v-container>
     </v-footer>
 
@@ -254,6 +254,8 @@
 </template>
 
 <script setup lang="ts">
+import { appOrigin } from '@/utils/deployment'
+import { appPath } from '@/utils/deployment'
 import { onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { useDisplay } from 'vuetify'
@@ -285,7 +287,7 @@ const osIcon: Record<string, string> = {
   linux: 'mdi-linux',
   macos: 'mdi-apple',
 }
-const downloads = installCards(window.location.origin).map((card) => ({
+const downloads = installCards(appOrigin(window.location.origin)).map((card) => ({
   ...card,
   icon: osIcon[card.os]!,
 }))
@@ -300,7 +302,7 @@ const plans = ref<Plan[]>(FALLBACK_PLANS.map((p) => ({ ...p, features: [...p.fea
 
 onMounted(async () => {
   try {
-    const resp = await fetch('/api/stripe/plans')
+    const resp = await fetch(appPath('/api/stripe/plans'))
     if (resp.ok) {
       const live = (await resp.json()) as Plan[]
       if (Array.isArray(live) && live.length > 0) plans.value = live

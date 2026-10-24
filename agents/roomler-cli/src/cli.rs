@@ -78,6 +78,28 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// SSH to one explicitly shared device, using the approved recipient account.
+    /// No org enrollment, overlay membership or OS SSH server is required.
+    /// SSH itself retains the selected OS account's powers, not a sandbox.
+    ShareSsh {
+        #[arg(long, default_value = "https://www.itachi.fans/meshharbor")]
+        server: String,
+        #[arg(long)]
+        share: String,
+        /// File containing a valid recipient access JWT; never passed in argv/URL.
+        #[arg(long, required_unless_present = "login", conflicts_with = "login")]
+        access_token_file: Option<PathBuf>,
+        /// Prompt for account password without echo; Access JWT stays in memory.
+        /// No browser-cookie export, refresh, persistent login or MFA downgrade.
+        #[arg(long, requires = "username", conflicts_with = "access_token_file")]
+        login: bool,
+        #[arg(long, requires = "login")]
+        username: Option<String>,
+        #[arg(long, default_value_t = 0)]
+        session_secs: u64,
+        #[arg(last = true)]
+        args: Vec<String>,
+    },
     /// Enroll this laptop against a Roomler server using an admin-issued
     /// tunnel-enrollment token. Writes the long-lived `TunnelClient` JWT
     /// to the config file. Mirrors `roomlerd enroll`.
@@ -1192,6 +1214,39 @@ where
             )
             .await
         }
+        Command::ShareSsh {
+            server,
+            share,
+            access_token_file,
+            login,
+            username,
+            session_secs,
+            args,
+        } => {
+            let code = if login {
+                crate::native_auth::interactive(
+                    &server,
+                    &share,
+                    username.as_deref().context("--username required")?,
+                    session_secs,
+                    &args,
+                )
+                .await?
+            } else {
+                crate::share_sshcmd::run(
+                    &server,
+                    &share,
+                    access_token_file.context("--access-token-file required")?,
+                    session_secs,
+                    &args,
+                )
+                .await?
+            };
+            match code {
+                0 => Ok(()),
+                code => std::process::exit(code),
+            }
+        }
         Command::Ssh {
             device,
             session_secs,
@@ -1917,5 +1972,41 @@ mod tests {
             "--json",
         ]);
         assert!(r.is_err(), "--json must not be accepted on `forward`");
+    }
+    #[test]
+    fn native_shared_ssh_auth_modes_are_exclusive_and_password_is_not_an_argument() {
+        let base = [
+            "roomler",
+            "share-ssh",
+            "--share",
+            "111111111111111111111111",
+        ];
+        assert!(Cli::try_parse_from(base).is_err());
+        for tail in [
+            vec!["--login"],
+            vec!["--username", "alice"],
+            vec![
+                "--login",
+                "--username",
+                "alice",
+                "--access-token-file",
+                "file",
+            ],
+            vec![
+                "--login",
+                "--username",
+                "alice",
+                "--password",
+                "not-accepted",
+            ],
+        ] {
+            assert!(Cli::try_parse_from(base.into_iter().chain(tail)).is_err());
+        }
+        assert!(
+            Cli::try_parse_from(base.into_iter().chain(["--login", "--username", "alice"])).is_ok()
+        );
+        assert!(
+            Cli::try_parse_from(base.into_iter().chain(["--access-token-file", "file"])).is_ok()
+        );
     }
 }

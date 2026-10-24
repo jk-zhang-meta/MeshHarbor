@@ -30,9 +30,10 @@ use std::time::{Duration, Instant};
 use boringtun::noise::errors::WireGuardError;
 use boringtun::noise::{Packet, Tunn, TunnResult};
 use boringtun::x25519::{PublicKey, StaticSecret};
+use bson::oid::ObjectId;
 use bytes::Bytes;
 use tokio::net::UdpSocket;
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::{Mutex, Semaphore, mpsc};
 use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 
@@ -184,6 +185,33 @@ pub enum Carrier {
 }
 
 impl Carrier {
+    /// Logical end-to-end path key for authenticated disco correlation. For a
+    /// relay this is the peer destination (possibly synthetic), NOT the relay
+    /// server's address; the receiver verifies the expected peer's MAC.
+    fn disco_endpoint(&self) -> SocketAddr {
+        match self {
+            Self::Direct { dst, .. } => *dst.read().unwrap_or_else(|e| e.into_inner()),
+            Self::Relay { dst, .. } => *dst,
+            Self::QuicRelay { conn, .. } => conn.remote_address(),
+        }
+    }
+
+    /// Diagnostic probes must never set the carrier's data-plane dead latch.
+    /// A refusal/lost reply is a sample, not authority to evict a live path.
+    async fn send_disco(&self, bytes: &[u8]) -> io::Result<usize> {
+        match self {
+            Self::Direct { sock, dst, .. } => {
+                let dst = *dst.read().unwrap_or_else(|e| e.into_inner());
+                sock.send_to(bytes, dst).await
+            }
+            Self::Relay { conn, dst, .. } => conn.send_to(bytes, *dst).await,
+            Self::QuicRelay { conn, .. } => conn
+                .send_datagram(Bytes::copy_from_slice(bytes))
+                .map(|_| bytes.len())
+                .map_err(io::Error::other),
+        }
+    }
+
     pub fn direct(sock: Arc<UdpSocket>, dst: SocketAddr) -> Arc<Self> {
         Arc::new(Carrier::Direct {
             sock,
@@ -464,6 +492,9 @@ impl Carrier {
 #[derive(Default)]
 pub struct PeerStats {
     tx: AtomicU64,
+    /// Encapsulated business sends submitted to the carrier, including errors.
+    /// Only SendPeer::send advances this; handshake/keepalive timer sends do not.
+    tx_attempted: AtomicU64,
     rx: AtomicU64,
     /// rc.206 — count of authenticated inbound packets from this peer since the
     /// health sweep last drained it (`peer_take_rx_any`): data, a handshake step,
@@ -847,15 +878,9 @@ struct SendState {
 pub struct WgSender(Arc<std::sync::RwLock<SendState>>);
 
 impl WgSender {
-    /// C2 (disco) — send a RAW, out-of-tunnel datagram over this peer's
-    /// DIRECT carrier path: the carrier's own socket, to the carrier's current
-    /// dst. Returns the dst it went to, so the prober can key the measurement
-    /// by the exact path. `None` for an unknown peer or a relay carrier (a
-    /// relay leg is measured in C4, when it becomes a warm candidate).
-    ///
-    /// Raw on purpose: measuring INSIDE the tunnel is what made rc.346 depend
-    /// on the peer's OS. This rides the same socket the carrier's WG datagrams
-    /// ride, so it measures precisely what real data experiences.
+    /// Send the same authenticated, out-of-tunnel disco frame over the
+    /// CURRENT carrier, direct or relay. The runtime still treats these as
+    /// diagnostics; a response is not a quality-based promotion grant.
     pub(crate) async fn send_disco_raw(
         &self,
         peer_public: &[u8; 32],
@@ -865,13 +890,12 @@ impl WgSender {
             let g = self.0.read().unwrap();
             g.peers.get(peer_public)?.carrier.clone()
         };
-        let (sock, dst) = match &*carrier {
-            Carrier::Direct { sock, dst, .. } => {
-                (sock.clone(), *dst.read().unwrap_or_else(|e| e.into_inner()))
-            }
-            _ => return None,
-        };
-        sock.send_to(bytes, dst).await.ok().map(|_| dst)
+        let dst = carrier.disco_endpoint();
+        tokio::time::timeout(Duration::from_millis(100), carrier.send_disco(bytes))
+            .await
+            .ok()?
+            .ok()
+            .map(|_| dst)
     }
 
     /// The relay transport + server for `pk`'s carrier, `None` when direct or
@@ -961,6 +985,7 @@ impl SendPeer {
         };
         match out {
             Some(b) => {
+                self.stats.tx_attempted.fetch_add(1, Ordering::Relaxed);
                 let ok = self.carrier.send(&b).await.is_ok();
                 if ok {
                     self.stats.tx.fetch_add(1, Ordering::Relaxed);
@@ -970,6 +995,20 @@ impl SendPeer {
             None => false,
         }
     }
+}
+
+/// A candidate owns a private receive/timer/crypto session without changing
+/// the active sender. After commit, the incumbent stays receiving until both
+/// peers acknowledge and the coordinator finalizes this exact trial.
+struct PathTrialPeer {
+    public_key: [u8; 32],
+    candidate: Option<Peer>,
+    incumbent: Option<Peer>,
+    incumbent_tunn: std::sync::Weak<Mutex<Tunn>>,
+    committed_tunn: Option<std::sync::Weak<Mutex<Tunn>>>,
+    pongs: mpsc::Receiver<super::disco::DiscoInbound>,
+    committed: bool,
+    returned: bool,
 }
 
 /// A node's userspace WireGuard device: one static keypair, N peers,
@@ -987,6 +1026,10 @@ pub struct WgDevice {
     /// peer that can only relay). Empty unless the feature is on + an upgrade is
     /// in flight.
     probes: HashMap<[u8; 32], Peer>,
+    path_trials: HashMap<ObjectId, PathTrialPeer>,
+    /// Brief receive-only drain after a coordinated rollback. Still owned by
+    /// this device and removed immediately on peer removal/rekey.
+    path_trial_drains: HashMap<ObjectId, ([u8; 32], Instant, Peer)>,
     /// P1 (S6) — the shared send half (Router + send-triple mirror). This
     /// device is the SOLE writer; the outbound pump reads. See [`WgSender`].
     send: WgSender,
@@ -1058,6 +1101,8 @@ impl WgDevice {
                 public,
                 peers: HashMap::new(),
                 probes: HashMap::new(),
+                path_trials: HashMap::new(),
+                path_trial_drains: HashMap::new(),
                 send: WgSender::new(),
                 tun_tx,
                 next_index: 1,
@@ -1362,6 +1407,31 @@ impl WgDevice {
         carrier: Arc<Carrier>,
         initiate: bool,
     ) {
+        let peer = self.make_carrier_peer(
+            peer_public,
+            overlay_ip,
+            carrier,
+            initiate,
+            self.disco_events_tx.clone(),
+        );
+        let (tunn, carrier, stats) = (peer.tunn.clone(), peer.carrier.clone(), peer.stats.clone());
+        if let Some(old) = self.peers.insert(peer_public, peer) {
+            self.unregister_plane_route(&old);
+        }
+        self.send_install(peer_public, overlay_ip, tunn, carrier, stats);
+        self.debug_assert_send_synced();
+    }
+
+    /// Builds a fully live but UNROUTED carrier/Tunn pair. Used both by normal
+    /// installs and path-trial shadows, so crypto/timers/ingress stay identical.
+    fn make_carrier_peer(
+        &mut self,
+        peer_public: [u8; 32],
+        overlay_ip: Ipv4Addr,
+        carrier: Arc<Carrier>,
+        initiate: bool,
+        disco_sink: mpsc::Sender<super::disco::DiscoInbound>,
+    ) -> Peer {
         let index = self.alloc_index();
 
         let tunn = Tunn::new(
@@ -1417,6 +1487,9 @@ impl WgDevice {
         let recv_carrier = carrier.clone();
         let tun_tx = self.tun_tx.clone();
         let recv_ingress = self.ingress_for(peer_public, stats.clone());
+        let disco_secret = self.secret.clone();
+        let disco_public = self.public;
+        let disco_replies = Arc::new(Semaphore::new(1));
         let recv_task = tokio::spawn(async move {
             let mut buf = vec![0u8; WG_BUF];
             loop {
@@ -1427,6 +1500,42 @@ impl WgDevice {
                         break;
                     }
                 };
+                // Authenticated end-to-end echo rides the SAME carrier as
+                // WG, but never enters Tunn or refreshes WG liveness counters.
+                // Exact expected peer matching rejects another tenant member.
+                if super::disco::is_disco_shaped(&buf[..n]) {
+                    match super::disco::classify(
+                        &buf[..n],
+                        recv_carrier.disco_endpoint(),
+                        &disco_secret,
+                        &disco_public,
+                        |pk| pk == &peer_public,
+                    ) {
+                        super::disco::Verdict::Answer(pong) => {
+                            if super::direct::disco_respond_enabled()
+                                && let Ok(permit) = disco_replies.clone().try_acquire_owned()
+                            {
+                                // Never await a congested relay's reply write
+                                // on the WG receive loop; one bounded reply
+                                // task per peer, with no Tunn/route lock held.
+                                let carrier = recv_carrier.clone();
+                                tokio::spawn(async move {
+                                    let _permit = permit;
+                                    let _ = tokio::time::timeout(
+                                        Duration::from_millis(100),
+                                        carrier.send_disco(&pong),
+                                    )
+                                    .await;
+                                });
+                            }
+                        }
+                        super::disco::Verdict::Pong(pong) => {
+                            let _ = disco_sink.try_send(pong);
+                        }
+                        super::disco::Verdict::Ignore => {}
+                    }
+                    continue;
+                }
                 let mut t = recv_tunn.lock().await;
                 process_inbound(&mut t, n, &mut buf, &recv_carrier, &tun_tx, &recv_ingress).await;
             }
@@ -1469,30 +1578,16 @@ impl WgDevice {
             }
         });
 
-        if let Some(old) = self.peers.insert(
-            peer_public,
-            Peer {
-                tunn: tunn.clone(),
-                carrier: carrier.clone(),
-                overlay_ip,
-                tasks: vec![recv_task, timer_task],
-                stats: stats.clone(),
-                direct_src: None,
-                plane_idx: None,
-                direct_index: None,
-            },
-        ) {
-            self.unregister_plane_route(&old);
-        }
-        self.send_install(
-            peer_public,
+        let peer = Peer {
+            tunn: tunn.clone(),
+            carrier: carrier.clone(),
             overlay_ip,
-            tunn.clone(),
-            carrier.clone(),
-            stats,
-        );
-        self.debug_assert_send_synced();
-
+            tasks: vec![recv_task, timer_task],
+            stats: stats.clone(),
+            direct_src: None,
+            plane_idx: self.plane.as_ref().map(|_| index),
+            direct_index: None,
+        };
         if initiate {
             tokio::spawn(async move {
                 let mut buf = vec![0u8; WG_BUF];
@@ -1509,6 +1604,561 @@ impl WgDevice {
                 }
             });
         }
+        peer
+    }
+
+    /// Start a bilateral-protocol candidate. No router/send entry is changed.
+    /// Only one trial per peer, and never start without a direct incumbent.
+    pub(crate) fn start_path_trial(
+        &mut self,
+        trial: ObjectId,
+        public: [u8; 32],
+        ip: Ipv4Addr,
+        carrier: Arc<Carrier>,
+    ) -> bool {
+        if self.path_trials.contains_key(&trial)
+            || self.path_trials.values().any(|p| p.public_key == public)
+        {
+            return false;
+        }
+        let Some(active) = self.peers.get(&public) else {
+            return false;
+        };
+        if !matches!(&*active.carrier, Carrier::Direct { .. }) || active.overlay_ip != ip {
+            return false;
+        }
+        let incumbent_tunn = Arc::downgrade(&active.tunn);
+        let (tx, pongs) = mpsc::channel(32);
+        let mut candidate = self.make_carrier_peer(public, ip, carrier, true, tx);
+        // A candidate can establish as RESPONDER after its own initial init
+        // was lost (e.g. before the peer bound). Boringtun then has a session
+        // and need not retry our init, but promotion deliberately still needs
+        // a response to OUR initiation. Recover that proof, never replace it
+        // with the weaker responder latch or authenticated stateless echo.
+        // This task owns only cloneable candidate fields, NOT Peer itself;
+        // Peer::drop aborts it on retire/remove/rekey, with no ownership cycle.
+        let (proof_tunn, proof_carrier, proof_stats) = (
+            candidate.tunn.clone(),
+            candidate.carrier.clone(),
+            candidate.stats.clone(),
+        );
+        candidate.tasks.push(tokio::spawn(async move {
+            let mut sent = 0u8;
+            for _ in 0..8 {
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                if proof_carrier.is_dead()
+                    || proof_stats.hs_response_at.load(Ordering::Relaxed) != 0
+                {
+                    return;
+                }
+                if !proof_stats.handshake.load(Ordering::Relaxed) {
+                    continue;
+                }
+                let out = {
+                    let Ok(mut t) =
+                        tokio::time::timeout(Duration::from_millis(100), proof_tunn.lock()).await
+                    else {
+                        continue;
+                    };
+                    if proof_stats.hs_response_at.load(Ordering::Relaxed) != 0 {
+                        return;
+                    }
+                    let mut buf = vec![0u8; WG_BUF];
+                    match t.format_handshake_initiation(&mut buf, true) {
+                        TunnResult::WriteToNetwork(bytes) => Some(bytes.to_vec()),
+                        _ => None,
+                    }
+                };
+                if let Some(bytes) = out {
+                    sent += 1;
+                    if !proof_carrier.is_dead() {
+                        let _ = tokio::time::timeout(
+                            Duration::from_millis(100),
+                            proof_carrier.send(&bytes),
+                        )
+                        .await;
+                    }
+                    if sent >= 3 {
+                        return;
+                    }
+                }
+            }
+        }));
+        self.path_trials.insert(
+            trial,
+            PathTrialPeer {
+                public_key: public,
+                candidate: Some(candidate),
+                incumbent: None,
+                incumbent_tunn,
+                committed_tunn: None,
+                pongs,
+                committed: false,
+                returned: false,
+            },
+        );
+        true
+    }
+
+    pub(crate) fn path_trial_handshake_done(&self, trial: ObjectId) -> bool {
+        let Some(t) = self.path_trials.get(&trial) else {
+            return false;
+        };
+        let peer = if t.committed {
+            self.peers.get(&t.public_key).filter(|p| {
+                t.committed_tunn.as_ref().is_some_and(|committed| {
+                    std::sync::Weak::ptr_eq(committed, &Arc::downgrade(&p.tunn))
+                })
+            })
+        } else {
+            t.candidate.as_ref()
+        };
+        peer.is_some_and(|p| {
+            !p.carrier.is_dead() && p.stats.hs_response_at.load(Ordering::Relaxed) != 0
+        })
+    }
+
+    pub(crate) async fn send_path_trial_disco(
+        &self,
+        trial: ObjectId,
+        bytes: &[u8],
+    ) -> Option<SocketAddr> {
+        let t = self.path_trials.get(&trial)?;
+        let peer = if t.returned {
+            t.incumbent.as_ref()?
+        } else if t.committed {
+            self.peers.get(&t.public_key)?
+        } else {
+            t.candidate.as_ref()?
+        };
+        let carrier = peer.carrier.clone();
+        let dst = carrier.disco_endpoint();
+        tokio::time::timeout(Duration::from_millis(100), carrier.send_disco(bytes))
+            .await
+            .ok()?
+            .ok()
+            .map(|_| dst)
+    }
+
+    /// The standing P2P endpoint has a separate Tunn and receive ownership;
+    /// active relay probes must never be credited as P2P measurements.
+    pub(crate) async fn send_path_trial_direct_disco(
+        &self,
+        trial: ObjectId,
+        bytes: &[u8],
+    ) -> Option<SocketAddr> {
+        let t = self.path_trials.get(&trial)?;
+        let p = if !t.committed || t.returned {
+            self.peers.get(&t.public_key)?
+        } else {
+            t.incumbent.as_ref()?
+        };
+        if !p.carrier.is_direct() {
+            return None;
+        }
+        let carrier = p.carrier.clone();
+        let dst = carrier.disco_endpoint();
+        tokio::time::timeout(Duration::from_millis(100), carrier.send_disco(bytes))
+            .await
+            .ok()?
+            .ok()
+            .map(|_| dst)
+    }
+    pub(crate) fn path_trial_direct_ready(&self, trial: ObjectId) -> bool {
+        let Some(t) = self.path_trials.get(&trial) else {
+            return false;
+        };
+        let direct = if !t.committed || t.returned {
+            self.peers
+                .get(&t.public_key)
+                .filter(|p| std::sync::Weak::ptr_eq(&t.incumbent_tunn, &Arc::downgrade(&p.tunn)))
+        } else {
+            t.incumbent.as_ref()
+        };
+        direct.is_some_and(|p| {
+            p.carrier.is_direct()
+                && !p.carrier.is_dead()
+                && p.stats.handshake.load(Ordering::Relaxed)
+        })
+    }
+    /// Repair ONLY a retained direct shadow. The active relay/send triple and
+    /// its authorization lifetime are untouched. Fresh Tunn/index/stats replace
+    /// a conclusively dead or never-established session; no dead flag is reset.
+    /// The caller still requires fresh paired quality and bilateral Return2PC.
+    pub(crate) async fn rebuild_path_trial_direct(&mut self, trial: ObjectId) -> bool {
+        if self.path_trial_direct_ready(trial) {
+            return false;
+        }
+        let Some(t) = self.path_trials.get(&trial) else {
+            return false;
+        };
+        if !t.committed || t.returned {
+            return false;
+        }
+        let Some(active) = self.peers.get(&t.public_key) else {
+            return false;
+        };
+        if active.carrier.is_direct()
+            || active.carrier.is_dead()
+            || !t
+                .committed_tunn
+                .as_ref()
+                .is_some_and(|w| std::sync::Weak::ptr_eq(w, &Arc::downgrade(&active.tunn)))
+        {
+            return false;
+        }
+        let Some(old) = t.incumbent.as_ref() else {
+            return false;
+        };
+        let Carrier::Direct { sock, dst, .. } = old.carrier.as_ref() else {
+            return false;
+        };
+        // Reuse the CURRENT authenticated/roamed endpoint and its existing
+        // interface socket. Socket/NIC rebuild belongs to the existing direct
+        // plane executor, not a second network scheduler here.
+        let (sock, dst, public, ip) = (
+            sock.clone(),
+            *dst.read().unwrap_or_else(|e| e.into_inner()),
+            t.public_key,
+            old.overlay_ip,
+        );
+        let Some(fresh) = self.make_direct_peer(sock, public, ip, dst, true).await else {
+            return false;
+        };
+        let t = self
+            .path_trials
+            .get_mut(&trial)
+            .expect("exclusive device owner");
+        t.incumbent_tunn = Arc::downgrade(&fresh.tunn);
+        let old = t
+            .incumbent
+            .replace(fresh)
+            .expect("retained shadow checked above");
+        // make_direct_peer may register the SAME source first. Exact Tunn/index
+        // ownership prevents old cleanup deleting the new receiver registration.
+        self.unregister_trial_owned(&old).await;
+        drop(old);
+        true
+    }
+
+    pub(crate) fn path_trial_direct_endpoint(&self, trial: ObjectId) -> Option<SocketAddr> {
+        let t = self.path_trials.get(&trial)?;
+        if t.returned || !t.committed {
+            return None;
+        }
+        t.incumbent.as_ref()?.carrier.direct_dst()
+    }
+
+    #[cfg(any(test, feature = "path-trial-test-support"))]
+    pub(crate) fn fail_retained_path_trial_direct(&self, trial: ObjectId) -> bool {
+        let Some(t) = self.path_trials.get(&trial) else {
+            return false;
+        };
+        if !t.committed || t.returned {
+            return false;
+        }
+        let Some(p) = t.incumbent.as_ref() else {
+            return false;
+        };
+        p.carrier.mark_dead();
+        true
+    }
+
+    pub(crate) fn commit_path_trial_return(&mut self, trial: ObjectId) -> bool {
+        // Echo quality cannot revive a dead/never-established retained Tunn.
+        // Recheck at the actual atomic sender convergence, not just Ready.
+        if !self.path_trial_direct_ready(trial) {
+            return false;
+        }
+        let Some(t) = self.path_trials.get_mut(&trial) else {
+            return false;
+        };
+        if !t.committed {
+            return false;
+        }
+        let Some(current) = self.peers.get(&t.public_key) else {
+            return false;
+        };
+        if t.returned {
+            return std::sync::Weak::ptr_eq(&t.incumbent_tunn, &Arc::downgrade(&current.tunn));
+        }
+        if !t
+            .committed_tunn
+            .as_ref()
+            .is_some_and(|w| std::sync::Weak::ptr_eq(w, &Arc::downgrade(&current.tunn)))
+        {
+            return false;
+        }
+        let Some(direct) = t.incumbent.take() else {
+            return false;
+        };
+        let (ip, tunn, carrier, stats) = (
+            direct.overlay_ip,
+            direct.tunn.clone(),
+            direct.carrier.clone(),
+            direct.stats.clone(),
+        );
+        t.incumbent = self.peers.insert(t.public_key, direct);
+        t.returned = true;
+        let public = t.public_key;
+        self.send_install(public, ip, tunn, carrier, stats);
+        self.debug_assert_send_synced();
+        true
+    }
+    pub(crate) fn abort_path_trial_return(&mut self, trial: ObjectId) -> bool {
+        let Some(t) = self.path_trials.get_mut(&trial) else {
+            return false;
+        };
+        if !t.returned {
+            return true;
+        }
+        let Some(current) = self.peers.get(&t.public_key) else {
+            return false;
+        };
+        if !std::sync::Weak::ptr_eq(&t.incumbent_tunn, &Arc::downgrade(&current.tunn)) {
+            return false;
+        }
+        let Some(relay) = t.incumbent.take() else {
+            return false;
+        };
+        if !t
+            .committed_tunn
+            .as_ref()
+            .is_some_and(|w| std::sync::Weak::ptr_eq(w, &Arc::downgrade(&relay.tunn)))
+        {
+            t.incumbent = Some(relay);
+            return false;
+        }
+        let (ip, tunn, carrier, stats) = (
+            relay.overlay_ip,
+            relay.tunn.clone(),
+            relay.carrier.clone(),
+            relay.stats.clone(),
+        );
+        t.incumbent = self.peers.insert(t.public_key, relay);
+        t.returned = false;
+        let public = t.public_key;
+        self.send_install(public, ip, tunn, carrier, stats);
+        self.debug_assert_send_synced();
+        true
+    }
+    pub(crate) fn finalize_path_trial_return(&mut self, trial: ObjectId) -> bool {
+        let Some(t) = self.path_trials.get(&trial) else {
+            return false;
+        };
+        if !t.returned
+            || !self.peers.get(&t.public_key).is_some_and(|p| {
+                std::sync::Weak::ptr_eq(&t.incumbent_tunn, &Arc::downgrade(&p.tunn))
+            })
+        {
+            return false;
+        }
+        let mut t = self.path_trials.remove(&trial).unwrap();
+        if let Some(relay) = t.incumbent.take() {
+            self.unregister_plane_route(&relay);
+        }
+        true
+    }
+
+    /// Separate sink means a candidate pong can never be mistaken for an
+    /// active-path pong, even if physical/synthetic endpoint numbers coincide.
+    pub(crate) fn drain_path_trial_disco(
+        &mut self,
+        trial: ObjectId,
+    ) -> Vec<super::disco::DiscoInbound> {
+        let Some(t) = self.path_trials.get_mut(&trial) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        while let Ok(p) = t.pongs.try_recv() {
+            out.push(p);
+        }
+        out
+    }
+
+    /// Called ONLY after the runtime validates a fresh bilateral Commit.
+    /// Exact incumbent Tunn identity prevents a late commit overwriting a
+    /// recovered/rekeyed/reinstalled path; handshake alone never authorizes it.
+    pub(crate) fn commit_path_trial(&mut self, trial: ObjectId) -> bool {
+        if !self.path_trial_handshake_done(trial) {
+            return false;
+        }
+        let Some(t) = self.path_trials.get_mut(&trial) else {
+            return false;
+        };
+        if t.committed {
+            return true;
+        }
+        let Some(current) = self.peers.get(&t.public_key) else {
+            return false;
+        };
+        if !std::sync::Weak::ptr_eq(&t.incumbent_tunn, &Arc::downgrade(&current.tunn)) {
+            return false;
+        }
+        let Some(candidate) = t.candidate.take() else {
+            return false;
+        };
+        let (ip, tunn, carrier, stats) = (
+            candidate.overlay_ip,
+            candidate.tunn.clone(),
+            candidate.carrier.clone(),
+            candidate.stats.clone(),
+        );
+        t.committed_tunn = Some(Arc::downgrade(&tunn));
+        t.incumbent = self.peers.insert(t.public_key, candidate);
+        t.committed = true;
+        let public = t.public_key;
+        // DO NOT unregister/drop the incumbent. Its receive path must remain
+        // valid while the other end is still prepared and sends over direct.
+        self.send_install(public, ip, tunn, carrier, stats);
+        self.debug_assert_send_synced();
+        true
+    }
+
+    pub(crate) fn finalize_path_trial(&mut self, trial: ObjectId) -> bool {
+        if !self.path_trials.get(&trial).is_some_and(|t| t.committed) {
+            return false;
+        }
+        // Preserve incumbent receiver/identity until negotiated return or revoke.
+        true
+    }
+
+    /// Strict authorization/identity retirement. Never rolls the old peer back.
+    /// Returns true only if this trial owned and removed the active sender.
+    async fn unregister_trial_owned(&self, p: &Peer) {
+        if let (Some(index), Some(plane)) = (p.plane_idx, &self.plane) {
+            plane.unregister_route(index);
+        }
+        if p.plane_idx.is_some() {
+            return;
+        }
+        if p.direct_src.is_none() && p.direct_index.is_none() {
+            return;
+        }
+        let Some(demux) = &self.direct else { return };
+        let roam = p.direct_index.and_then(|idx| {
+            demux
+                .index_routes
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&idx)
+                .map(|s| s.src)
+        });
+        let mut routes = demux.routes.lock().await;
+        for src in [p.direct_src, roam].into_iter().flatten() {
+            if routes
+                .get(&src)
+                .is_some_and(|(tunn, _)| Arc::ptr_eq(tunn, &p.tunn))
+            {
+                routes.remove(&src);
+            }
+        }
+    }
+
+    pub(crate) async fn retire_path_trial(&mut self, trial: ObjectId) -> bool {
+        let Some(mut t) = self.path_trials.remove(&trial) else {
+            return false;
+        };
+        let owned = t.committed
+            && self.peers.get(&t.public_key).is_some_and(|p| {
+                if t.returned {
+                    std::sync::Weak::ptr_eq(&t.incumbent_tunn, &Arc::downgrade(&p.tunn))
+                } else {
+                    t.committed_tunn
+                        .as_ref()
+                        .is_some_and(|x| std::sync::Weak::ptr_eq(x, &Arc::downgrade(&p.tunn)))
+                }
+            });
+        // Remove the send route before awaiting demux cleanup. Exact Tunn
+        // ownership prevents a stale trial from touching a newer same-key peer.
+        let active = if owned {
+            let p = self.peers.remove(&t.public_key);
+            self.send_uninstall(&t.public_key);
+            p
+        } else {
+            None
+        };
+        if let Some(p) = t.candidate.take() {
+            self.unregister_trial_owned(&p).await;
+        }
+        if let Some(p) = t.incumbent.take() {
+            self.unregister_trial_owned(&p).await;
+        }
+        if let Some(p) = active {
+            self.unregister_trial_owned(&p).await;
+        }
+        owned
+    }
+
+    pub(crate) fn abort_path_trial(&mut self, trial: ObjectId) -> bool {
+        let Some(mut t) = self.path_trials.remove(&trial) else {
+            return false;
+        };
+        if !t.committed {
+            if let Some(candidate) = t.candidate.take() {
+                self.unregister_plane_route(&candidate);
+            }
+            return true;
+        }
+        let current_matches = self.peers.get(&t.public_key).is_some_and(|p| {
+            t.committed_tunn.as_ref().is_some_and(|committed| {
+                std::sync::Weak::ptr_eq(committed, &Arc::downgrade(&p.tunn))
+            })
+        });
+        if !current_matches {
+            if let Some(old) = t.incumbent.take() {
+                self.unregister_plane_route(&old);
+            }
+            return false; // never restore over an unrelated newer install
+        }
+        let Some(old) = t.incumbent.take() else {
+            return false;
+        };
+        let (ip, tunn, carrier, stats) = (
+            old.overlay_ip,
+            old.tunn.clone(),
+            old.carrier.clone(),
+            old.stats.clone(),
+        );
+        if let Some(candidate) = self.peers.insert(t.public_key, old) {
+            self.unregister_plane_route(&candidate);
+            self.path_trial_drains.insert(
+                trial,
+                (
+                    t.public_key,
+                    Instant::now() + Duration::from_secs(10),
+                    candidate,
+                ),
+            );
+        }
+        self.send_install(t.public_key, ip, tunn, carrier, stats);
+        self.debug_assert_send_synced();
+        true
+    }
+
+    pub(crate) fn reap_path_trial_drains(&mut self, now: Instant) {
+        self.path_trial_drains
+            .retain(|_, (_, until, _)| now < *until);
+    }
+
+    async fn discard_path_trials_for(&mut self, public: &[u8; 32]) {
+        let ids: Vec<_> = self
+            .path_trials
+            .iter()
+            .filter(|(_, t)| &t.public_key == public)
+            .map(|(id, _)| *id)
+            .collect();
+        for id in ids {
+            if let Some(t) = self.path_trials.remove(&id) {
+                if let Some(p) = t.candidate {
+                    self.unregister_trial_owned(&p).await;
+                }
+                if let Some(p) = t.incumbent {
+                    self.unregister_trial_owned(&p).await;
+                }
+            }
+        }
+        self.path_trial_drains.retain(|_, (p, _, _)| p != public);
     }
 
     /// rc.134 — ensure the shared direct-LAN socket + its demux loop exist.
@@ -1953,9 +2603,14 @@ impl WgDevice {
     /// `async` because un-registering a shared-direct peer locks the demux
     /// routing table.
     pub async fn remove_peer(&mut self, peer_public: &[u8; 32]) {
-        if let Some(p) = self.peers.remove(peer_public) {
+        // Withdraw the sender before any asynchronous backup demux cleanup.
+        let active = self.peers.remove(peer_public);
+        if active.is_some() {
             self.send_uninstall(peer_public);
             self.debug_assert_send_synced();
+        }
+        self.discard_path_trials_for(peer_public).await;
+        if let Some(p) = active {
             self.unregister_direct(&p).await;
         }
     }
@@ -2143,6 +2798,14 @@ impl WgDevice {
         self.rpf = mode;
     }
 
+    /// Lock-free business activity for the fast scout. Keep the public traffic
+    /// counters' successful-send meaning unchanged when a local send fails.
+    pub(crate) fn peer_business_traffic(&self, peer_public: &[u8; 32]) -> Option<(u64, u64)> {
+        let p = self.peers.get(peer_public)?;
+        Some((p.stats.tx_attempted.load(Ordering::Relaxed),
+            p.stats.rx.load(Ordering::Relaxed)))
+    }
+
     pub fn peer_take_rx_any(&self, peer_public: &[u8; 32]) -> u64 {
         match self.peers.get(peer_public) {
             Some(p) => p.stats.rx_any.swap(0, Ordering::Relaxed),
@@ -2243,6 +2906,15 @@ impl WgDevice {
             }
         });
         true
+    }
+
+    /// Test fixture for the carrier sweep's lock-free IP traffic inputs.
+    #[cfg(test)]
+    pub fn test_set_ip_traffic(&self, peer_public: &[u8; 32], tx: u64, rx: u64) {
+        let p = self.peers.get(peer_public).expect("installed test peer");
+        p.stats.tx.store(tx, Ordering::Relaxed);
+        p.stats.tx_attempted.store(tx, Ordering::Relaxed);
+        p.stats.rx.store(rx, Ordering::Relaxed);
     }
 
     /// Test-only: stamp `peer_public`'s initiator-handshake instant to NOW, as
@@ -4540,5 +5212,633 @@ mod tests {
             .expect("the demux loop must still read after the port-unreachables")
             .expect("sink open");
         assert_eq!(got.packet, ping.to_vec());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn carrier_disco_authenticated_echo_over_relay_keeps_wg_data_working() {
+        use crate::transport::relay::UdpRelayConn;
+        let a = WgKeypair::generate();
+        let b = WgKeypair::generate();
+        let sa = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let sb = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let aa = sa.local_addr().unwrap();
+        let ab = sb.local_addr().unwrap();
+        let (mut da, _ra) = WgDevice::new(a.secret.clone());
+        let (mut db, mut rb) = WgDevice::new(b.secret.clone());
+        let mut echoes = da.take_disco_events().unwrap();
+        da.add_peer(
+            b.public.to_bytes(),
+            IP_B,
+            Carrier::relay(Arc::new(UdpRelayConn(sa)), ab),
+            true,
+        );
+        db.add_peer(
+            a.public.to_bytes(),
+            IP_A,
+            Carrier::relay(Arc::new(UdpRelayConn(sb)), aa),
+            false,
+        );
+        wait_connected(&da, &b.public.to_bytes()).await;
+        let nonce = [17; 8];
+        let frame = super::super::disco::build(
+            super::super::disco::KIND_PING,
+            nonce,
+            a.public.as_bytes(),
+            None,
+            &super::super::disco::shared_secret(&a.secret, &b.public),
+        );
+        assert_eq!(
+            da.sender()
+                .send_disco_raw(&b.public.to_bytes(), &frame)
+                .await,
+            Some(ab)
+        );
+        let echo = tokio::time::timeout(Duration::from_secs(2), echoes.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(echo.sender, b.public.to_bytes());
+        assert_eq!(echo.nonce, nonce);
+        assert_eq!(
+            echo.src, ab,
+            "measurement is keyed by this installed end-to-end path"
+        );
+        let pkt = synthetic_ipv4(IP_A, IP_B, b"WG data survives authenticated carrier echo");
+        send_until_ok(&da, &b.public.to_bytes(), &pkt).await;
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(2), rb.recv())
+                .await
+                .unwrap()
+                .unwrap(),
+            pkt
+        );
+        assert_eq!(da.peer_count(), 1);
+        assert_eq!(db.peer_count(), 1);
+        da.remove_peer(&b.public.to_bytes()).await;
+        db.remove_peer(&a.public.to_bytes()).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn carrier_disco_rejects_valid_frame_from_wrong_peer_without_wg_liveness_credit() {
+        use crate::transport::relay::UdpRelayConn;
+        let a = WgKeypair::generate();
+        let b = WgKeypair::generate();
+        let c = WgKeypair::generate();
+        let sa = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let sb = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let aa = sa.local_addr().unwrap();
+        let ab = sb.local_addr().unwrap();
+        let (mut da, _rx) = WgDevice::new(a.secret.clone());
+        let mut echoes = da.take_disco_events().unwrap();
+        da.add_peer(
+            b.public.to_bytes(),
+            IP_B,
+            Carrier::relay(Arc::new(UdpRelayConn(sa)), ab),
+            false,
+        );
+        let forged = super::super::disco::build(
+            super::super::disco::KIND_PONG,
+            [23; 8],
+            c.public.as_bytes(),
+            Some(ab),
+            &super::super::disco::shared_secret(&c.secret, &a.public),
+        );
+        sb.send_to(&forged, aa).await.unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), echoes.recv())
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            da.peer_take_rx_any(&b.public.to_bytes()),
+            0,
+            "disco cannot fake WG health"
+        );
+        da.remove_peer(&b.public.to_bytes()).await;
+    }
+
+    /// Real candidate-carrier fault: drop outgoing handshake initiations,
+    /// while still delivering the other peer's initiation and our response.
+    /// No Tunn state, nonce, key, liveness stamp, or time is fabricated.
+    struct CandidateInitLoss {
+        socket: UdpSocket,
+        block_initiations: std::sync::atomic::AtomicBool,
+        dropped: std::sync::atomic::AtomicUsize,
+    }
+    #[async_trait::async_trait]
+    impl crate::transport::relay::RelayConn for CandidateInitLoss {
+        async fn send_to(&self, bytes: &[u8], dst: SocketAddr) -> std::io::Result<usize> {
+            if bytes.starts_with(&[1, 0, 0, 0]) && self.block_initiations.load(Ordering::Relaxed) {
+                self.dropped.fetch_add(1, Ordering::Relaxed);
+                return Ok(bytes.len());
+            }
+            self.socket.send_to(bytes, dst).await
+        }
+        async fn recv_from(&self, bytes: &mut [u8]) -> std::io::Result<(usize, SocketAddr)> {
+            self.socket.recv_from(bytes).await
+        }
+        fn local_addr(&self) -> std::io::Result<SocketAddr> {
+            self.socket.local_addr()
+        }
+    }
+    struct CandidateProofFixture {
+        a: WgDevice,
+        b: WgDevice,
+        a_key: [u8; 32],
+        b_key: [u8; 32],
+        old_a: Arc<Mutex<Tunn>>,
+        old_b: Arc<Mutex<Tunn>>,
+        trial: ObjectId,
+        fault: Arc<CandidateInitLoss>,
+        a_inbox: mpsc::Receiver<Vec<u8>>,
+        b_inbox: mpsc::Receiver<Vec<u8>>,
+    }
+    impl CandidateProofFixture {
+        async fn new() -> Self {
+            use crate::transport::relay::UdpRelayConn;
+            let a = WgKeypair::generate();
+            let b = WgKeypair::generate();
+            let sa = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+            let sb = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+            let (mut da, a_inbox) = WgDevice::new(a.secret.clone());
+            let (mut db, b_inbox) = WgDevice::new(b.secret.clone());
+            da.ensure_direct_demux(sa.clone());
+            db.ensure_direct_demux(sb.clone());
+            da.add_direct_peer(
+                sa.clone(),
+                b.public.to_bytes(),
+                IP_B,
+                sb.local_addr().unwrap(),
+                true,
+            )
+            .await;
+            db.add_direct_peer(
+                sb.clone(),
+                a.public.to_bytes(),
+                IP_A,
+                sa.local_addr().unwrap(),
+                false,
+            )
+            .await;
+            wait_connected(&da, &b.public.to_bytes()).await;
+            let old_a = da.peers[&b.public.to_bytes()].tunn.clone();
+            let old_b = db.peers[&a.public.to_bytes()].tunn.clone();
+            let ca = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+            let cb = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+            let aa = ca.local_addr().unwrap();
+            let ab = cb.local_addr().unwrap();
+            let fault = Arc::new(CandidateInitLoss {
+                socket: cb,
+                block_initiations: std::sync::atomic::AtomicBool::new(true),
+                dropped: std::sync::atomic::AtomicUsize::new(0),
+            });
+            let trial = ObjectId::new();
+            assert!(db.start_path_trial(
+                trial,
+                a.public.to_bytes(),
+                IP_A,
+                Carrier::relay(fault.clone(), aa)
+            ));
+            tokio::time::timeout(Duration::from_secs(1), async {
+                while fault.dropped.load(Ordering::Relaxed) == 0 {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            })
+            .await
+            .expect("the first real candidate initiation must actually be dropped");
+            assert!(!db.path_trial_handshake_done(trial));
+            assert!(da.start_path_trial(
+                trial,
+                b.public.to_bytes(),
+                IP_B,
+                Carrier::relay(Arc::new(UdpRelayConn(ca)), ab)
+            ));
+            tokio::time::timeout(Duration::from_secs(1), async {
+                while !da.path_trial_handshake_done(trial)
+                    || !db.path_trials[&trial]
+                        .candidate
+                        .as_ref()
+                        .unwrap()
+                        .stats
+                        .handshake
+                        .load(Ordering::Relaxed)
+                {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            })
+            .await
+            .expect("B must establish a REAL responder session from A's delivered initiation");
+            assert!(
+                !db.path_trial_handshake_done(trial),
+                "responder-only session cannot fake our strict initiator proof"
+            );
+            assert!(Arc::ptr_eq(&old_a, &da.peers[&b.public.to_bytes()].tunn));
+            assert!(Arc::ptr_eq(&old_b, &db.peers[&a.public.to_bytes()].tunn));
+            Self {
+                a: da,
+                b: db,
+                a_key: a.public.to_bytes(),
+                b_key: b.public.to_bytes(),
+                old_a,
+                old_b,
+                trial,
+                fault,
+                a_inbox,
+                b_inbox,
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn path_trial_candidate_proof_recovers_real_responder_after_lost_initial_init() {
+        tokio::time::timeout(Duration::from_secs(8), async {
+            let mut f = CandidateProofFixture::new().await;
+            // Removing a packet fault cannot itself satisfy crypto readiness.
+            f.fault.block_initiations.store(false, Ordering::Relaxed);
+            tokio::time::timeout(Duration::from_secs(4), async {
+                while !f.b.path_trial_handshake_done(f.trial) {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("candidate-owned bounded poke must obtain a REAL WG response");
+            assert!(Arc::ptr_eq(&f.old_a, &f.a.peers[&f.b_key].tunn));
+            assert!(
+                Arc::ptr_eq(&f.old_b, &f.b.peers[&f.a_key].tunn),
+                "proof must not promote or replace the incumbent"
+            );
+            assert!(f.a.commit_path_trial(f.trial));
+            assert!(f.b.commit_path_trial(f.trial));
+            let packet = synthetic_ipv4(
+                IP_A,
+                IP_B,
+                b"real cryptographic candidate proof, not a responder latch substitution",
+            );
+            send_until_ok(&f.a, &f.b_key, &packet).await;
+            assert_eq!(
+                tokio::time::timeout(Duration::from_secs(1), f.b_inbox.recv())
+                    .await
+                    .unwrap()
+                    .unwrap(),
+                packet
+            );
+            let packet = synthetic_ipv4(
+                IP_B,
+                IP_A,
+                b"candidate response proof supports real reverse WG payload",
+            );
+            send_until_ok(&f.b, &f.a_key, &packet).await;
+            assert_eq!(
+                tokio::time::timeout(Duration::from_secs(1), f.a_inbox.recv())
+                    .await
+                    .unwrap()
+                    .unwrap(),
+                packet
+            );
+        })
+        .await
+        .expect("bounded candidate initiator-proof regression");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn path_trial_candidate_proof_pokes_are_bounded_and_abort_stops_owned_tasks() {
+        let mut f = CandidateProofFixture::new().await;
+        tokio::time::sleep(Duration::from_millis(6500)).await;
+        assert!(
+            !f.b.path_trial_handshake_done(f.trial),
+            "dropped initiations never become a successful response"
+        );
+        assert_eq!(
+            f.fault.dropped.load(Ordering::Relaxed),
+            4,
+            "one initial initiation plus at most THREE candidate proof pokes"
+        );
+        assert!(Arc::ptr_eq(&f.old_b, &f.b.peers[&f.a_key].tunn));
+        assert!(
+            !f.b.retire_path_trial(f.trial).await,
+            "retiring an unpromoted candidate must not remove active direct"
+        );
+        let before = f.fault.dropped.load(Ordering::Relaxed);
+        tokio::time::sleep(Duration::from_millis(2200)).await;
+        assert_eq!(
+            f.fault.dropped.load(Ordering::Relaxed),
+            before,
+            "no candidate task may outlive exact owner retirement"
+        );
+        assert!(Arc::ptr_eq(&f.old_b, &f.b.peers[&f.a_key].tunn));
+        assert!(!f.b.path_trial_handshake_done(f.trial));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn path_trial_shadow_bilateral_commit_keeps_both_old_receivers_until_finalize() {
+        use crate::transport::relay::UdpRelayConn;
+        let a = WgKeypair::generate();
+        let b = WgKeypair::generate();
+        let sa = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let sb = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let (mut da, mut ra) = WgDevice::new(a.secret.clone());
+        let (mut db, mut rb) = WgDevice::new(b.secret.clone());
+        da.ensure_direct_demux(sa.clone());
+        db.ensure_direct_demux(sb.clone());
+        da.add_direct_peer(
+            sa.clone(),
+            b.public.to_bytes(),
+            IP_B,
+            sb.local_addr().unwrap(),
+            true,
+        )
+        .await;
+        db.add_direct_peer(
+            sb.clone(),
+            a.public.to_bytes(),
+            IP_A,
+            sa.local_addr().unwrap(),
+            false,
+        )
+        .await;
+        wait_connected(&da, &b.public.to_bytes()).await;
+        let old_a = da.peers[&b.public.to_bytes()].tunn.clone();
+        let old_b = db.peers[&a.public.to_bytes()].tunn.clone();
+        let ca = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let cb = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let aa = ca.local_addr().unwrap();
+        let ab = cb.local_addr().unwrap();
+        let trial = ObjectId::new();
+        assert!(da.start_path_trial(
+            trial,
+            b.public.to_bytes(),
+            IP_B,
+            Carrier::relay(Arc::new(UdpRelayConn(ca)), ab)
+        ));
+        assert!(db.start_path_trial(
+            trial,
+            a.public.to_bytes(),
+            IP_A,
+            Carrier::relay(Arc::new(UdpRelayConn(cb)), aa)
+        ));
+        for _ in 0..200 {
+            if da.path_trial_handshake_done(trial) && db.path_trial_handshake_done(trial) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(da.path_trial_handshake_done(trial) && db.path_trial_handshake_done(trial));
+        assert!(
+            Arc::ptr_eq(&old_a, &da.peers[&b.public.to_bytes()].tunn),
+            "shadow never moves sender"
+        );
+        assert!(Arc::ptr_eq(&old_b, &db.peers[&a.public.to_bytes()].tunn));
+        let frame = super::super::disco::build(
+            super::super::disco::KIND_PING,
+            [31; 8],
+            a.public.as_bytes(),
+            None,
+            &super::super::disco::shared_secret(&a.secret, &b.public),
+        );
+        assert_eq!(da.send_path_trial_disco(trial, &frame).await, Some(ab));
+        let mut candidate_echo = Vec::new();
+        for _ in 0..100 {
+            candidate_echo = da.drain_path_trial_disco(trial);
+            if !candidate_echo.is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(candidate_echo.len(), 1);
+        assert_eq!(candidate_echo[0].sender, b.public.to_bytes());
+        assert!(da.commit_path_trial(trial)); // B is still prepared/direct
+        let ab_pkt = synthetic_ipv4(IP_A, IP_B, b"A trial -> B prepared");
+        send_until_ok(&da, &b.public.to_bytes(), &ab_pkt).await;
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(2), rb.recv())
+                .await
+                .unwrap()
+                .unwrap(),
+            ab_pkt
+        );
+        let ba_pkt = synthetic_ipv4(IP_B, IP_A, b"B old direct -> A retained old receiver");
+        send_until_ok(&db, &a.public.to_bytes(), &ba_pkt).await;
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(2), ra.recv())
+                .await
+                .unwrap()
+                .unwrap(),
+            ba_pkt
+        );
+        assert!(db.commit_path_trial(trial));
+        assert!(da.finalize_path_trial(trial));
+        assert!(db.finalize_path_trial(trial));
+        assert!(da.path_trials.contains_key(&trial));
+        assert!(da.path_trials[&trial].incumbent.is_some());
+        assert!(
+            da.peers[&b.public.to_bytes()]
+                .carrier
+                .relay_transport_info()
+                .is_some()
+        );
+        assert!(da.path_trial_direct_ready(trial));
+        let retained_stats = da.path_trials[&trial]
+            .incumbent
+            .as_ref()
+            .unwrap()
+            .stats
+            .clone();
+        retained_stats.handshake.store(false, Ordering::Relaxed);
+        assert!(!da.path_trial_direct_ready(trial));
+        assert!(!da.commit_path_trial_return(trial));
+        retained_stats.handshake.store(true, Ordering::Relaxed);
+        let retained_carrier = da.path_trials[&trial]
+            .incumbent
+            .as_ref()
+            .unwrap()
+            .carrier
+            .clone();
+        retained_carrier.mark_dead();
+        assert!(!da.path_trial_direct_ready(trial));
+        assert!(!da.commit_path_trial_return(trial));
+        assert!(
+            !da.peers[&b.public.to_bytes()].carrier.is_direct(),
+            "refused return preserves the healthy relay sender"
+        );
+        let relay_a = da.peers[&b.public.to_bytes()].tunn.clone();
+        assert!(da.rebuild_path_trial_direct(trial).await);
+        assert!(
+            retained_carrier.is_dead(),
+            "old sticky-dead carrier never revives"
+        );
+        assert!(
+            Arc::ptr_eq(&relay_a, &da.peers[&b.public.to_bytes()].tunn),
+            "fresh direct preparation cannot touch active relay sender"
+        );
+        assert!(
+            !std::sync::Weak::ptr_eq(
+                &da.path_trials[&trial].incumbent_tunn,
+                &Arc::downgrade(&old_a)
+            ),
+            "fresh independent Tunn, not a dead-flag reset"
+        );
+        tokio::time::timeout(Duration::from_secs(6), async {
+            while !da.path_trial_direct_ready(trial) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(
+            !da.rebuild_path_trial_direct(trial).await,
+            "healthy repaired shadow is reused, not endlessly replaced"
+        );
+        let held = synthetic_ipv4(
+            IP_A,
+            IP_B,
+            b"fresh shadow ready but relay still owns sender",
+        );
+        send_until_ok(&da, &b.public.to_bytes(), &held).await;
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(2), rb.recv())
+                .await
+                .unwrap()
+                .unwrap(),
+            held
+        );
+        assert!(da.commit_path_trial_return(trial)); // B remains relay sender
+        assert!(da.peers[&b.public.to_bytes()].carrier.is_direct());
+        let d_to_r = synthetic_ipv4(IP_A, IP_B, b"return direct -> retained B direct");
+        send_until_ok(&da, &b.public.to_bytes(), &d_to_r).await;
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(2), rb.recv())
+                .await
+                .unwrap()
+                .unwrap(),
+            d_to_r
+        );
+        let r_to_d = synthetic_ipv4(IP_B, IP_A, b"B relay -> retained A relay");
+        send_until_ok(&db, &a.public.to_bytes(), &r_to_d).await;
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(2), ra.recv())
+                .await
+                .unwrap()
+                .unwrap(),
+            r_to_d
+        );
+        // A dedicated ReturnAbort rolls back partial return without destroying
+        // either receive path or reusing an old candidate Tunn/index.
+        assert!(da.abort_path_trial_return(trial));
+        assert!(!da.peers[&b.public.to_bytes()].carrier.is_direct());
+        assert!(da.commit_path_trial_return(trial));
+        assert!(db.commit_path_trial_return(trial));
+        assert!(da.finalize_path_trial_return(trial));
+        assert!(db.finalize_path_trial_return(trial));
+        assert!(!da.path_trials.contains_key(&trial));
+        assert!(!da.commit_path_trial(trial)); // late initial Commit cannot revive
+        assert!(!da.abort_path_trial_return(trial)); // late abort cannot revive relay
+        let done = synthetic_ipv4(IP_A, IP_B, b"both returned direct payload");
+        send_until_ok(&da, &b.public.to_bytes(), &done).await;
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(2), rb.recv())
+                .await
+                .unwrap()
+                .unwrap(),
+            done
+        );
+        let ca = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let cb = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let aa = ca.local_addr().unwrap();
+        let ab = cb.local_addr().unwrap();
+        let late = ObjectId::new();
+        assert!(da.start_path_trial(
+            late,
+            b.public.to_bytes(),
+            IP_B,
+            Carrier::relay(Arc::new(UdpRelayConn(ca)), ab)
+        ));
+        assert!(db.start_path_trial(
+            late,
+            a.public.to_bytes(),
+            IP_A,
+            Carrier::relay(Arc::new(UdpRelayConn(cb)), aa)
+        ));
+        for _ in 0..200 {
+            if da.path_trial_handshake_done(late) && db.path_trial_handshake_done(late) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(da.commit_path_trial(late));
+        assert!(db.commit_path_trial(late));
+        // An actual task-owned silent endpoint prevents the repaired Tunn
+        // establishing. Probe timeout must leave both working relay senders,
+        // not revive the dead retained session or unilaterally return direct.
+        let blackhole = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let old = da.path_trials[&late]
+            .incumbent
+            .as_ref()
+            .unwrap()
+            .carrier
+            .clone();
+        old.set_direct_dst(blackhole.local_addr().unwrap());
+        old.mark_dead();
+        let active_relay = da.peers[&b.public.to_bytes()].tunn.clone();
+        assert!(da.rebuild_path_trial_direct(late).await);
+        let fresh = da.path_trials[&late]
+            .incumbent
+            .as_ref()
+            .unwrap()
+            .tunn
+            .clone();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(150), async {
+                while !da.path_trial_direct_ready(late) {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            })
+            .await
+            .is_err(),
+            "silent endpoint must not produce a fresh handshake"
+        );
+        assert!(old.is_dead());
+        assert!(!da.commit_path_trial_return(late));
+        assert!(Arc::ptr_eq(
+            &active_relay,
+            &da.peers[&b.public.to_bytes()].tunn
+        ));
+        let held = synthetic_ipv4(IP_A, IP_B, b"fresh direct timeout keeps working relay");
+        send_until_ok(&da, &b.public.to_bytes(), &held).await;
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(2), rb.recv())
+                .await
+                .unwrap()
+                .unwrap(),
+            held
+        );
+        da.remove_peer(&b.public.to_bytes()).await;
+        db.remove_peer(&a.public.to_bytes()).await;
+        assert!(
+            !da.rebuild_path_trial_direct(late).await,
+            "late repair cannot resurrect removed/rekeyed trial identity"
+        );
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while Arc::strong_count(&fresh) != 1 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("removed shadow tasks and demux entries must release its Tunn");
+        assert!(
+            da.direct
+                .as_ref()
+                .unwrap()
+                .index_routes
+                .lock()
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            da.direct.as_ref().unwrap().routes.lock().await.is_empty(),
+            "removed committed trial cannot leave authorized direct Tunn behind"
+        );
+        assert!(db.direct.as_ref().unwrap().routes.lock().await.is_empty());
+        assert!(!da.commit_path_trial(late));
+        assert!(!da.commit_path_trial_return(late));
     }
 }

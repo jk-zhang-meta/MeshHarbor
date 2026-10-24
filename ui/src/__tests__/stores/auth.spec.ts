@@ -349,3 +349,45 @@ describe('useAuthStore', () => {
     })
   })
 })
+
+// The owner display permission must not survive an account boundary.
+describe('account approval permission follows the signed-in account', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    localStorage.clear()
+    vi.clearAllMocks()
+  })
+  async function signedInOwner() {
+    const { useAccountApprovalStore } = await import('@/stores/accountApproval')
+    const auth = useAuthStore()
+    auth.user = USER
+    const approval = useAccountApprovalStore()
+    mockApi.get.mockResolvedValueOnce({ enabled: true, is_owner: true })
+    await approval.loadAccess(USER.id)
+    expect(approval.isOwner).toBe(true)
+    return { auth, approval }
+  }
+  it('clears owner state immediately when logout starts, before the network response', async () => {
+    const { auth, approval } = await signedInOwner()
+    let finish!: (value: unknown) => void
+    mockApi.post.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve }))
+    const task = auth.logout()
+    expect(approval.isOwner).toBe(false)
+    expect(approval.items).toEqual([])
+    finish({})
+    await task
+  })
+  it('clears owner state when the locally refused session is forgotten', async () => {
+    const { auth, approval } = await signedInOwner()
+    auth.forgetLocalSession()
+    expect(approval.isOwner).toBe(false)
+    expect(approval.userId).toBeNull()
+  })
+  it('clears old owner permission when login adopts another user', async () => {
+    const { auth, approval } = await signedInOwner()
+    mockApi.post.mockResolvedValueOnce({ user: { ...USER, id: 'another-user' } })
+    await auth.login('another-user', 'password')
+    expect(approval.isOwner).toBe(false)
+    expect(approval.userId).toBeNull()
+  })
+})

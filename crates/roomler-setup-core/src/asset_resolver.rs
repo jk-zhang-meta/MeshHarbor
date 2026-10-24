@@ -23,9 +23,96 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+
+// This crate cannot depend on either updater. Keep the boundary at the shared
+// setup transport so every installer and companion uses the caller-selected proxy.
+fn trusted_url(raw: &str) -> Result<reqwest::Url> {
+    let path = raw.split('?').next().unwrap_or(raw);
+    let lower = path.to_ascii_lowercase();
+    if path.contains('\\')
+        || raw.chars().any(|c| c.is_control())
+        || ["%2e", "%2f", "%5c", "%25", "%00", "%0a", "%0d"]
+            .iter()
+            .any(|s| lower.contains(s))
+        || path
+            .split_once("://")
+            .and_then(|(_, p)| p.split_once('/'))
+            .is_some_and(|(_, p)| p.split('/').any(|c| c == "." || c == ".."))
+    {
+        bail!("ambiguous setup artifact URL");
+    }
+    let url = reqwest::Url::parse(raw).context("invalid setup artifact URL")?;
+    if url.scheme() != "https"
+        || url.host_str().is_none()
+        || url.host_str().is_some_and(|h| h.contains('*'))
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.fragment().is_some()
+    {
+        bail!("setup artifacts require HTTPS without userinfo or fragment");
+    }
+    Ok(url)
+}
+
+fn center_boundary(raw: &str) -> Result<reqwest::Url> {
+    let mut url = trusted_url(raw)?;
+    if url.query().is_some() {
+        bail!("setup center base must not contain a query");
+    }
+    url.set_path(&format!("{}/", url.path().trim_end_matches('/')));
+    Ok(url)
+}
+
+fn endpoint_boundary(raw: &str) -> Result<reqwest::Url> {
+    let mut url = trusted_url(raw)?;
+    let path = url.path().trim_end_matches('/');
+    let prefix = [
+        "/api/agent/installer",
+        "/api/tunnel/installer",
+        "/api/tunnel-wizard",
+        "/api/agent/latest-release",
+        "/api/tunnel/latest-release",
+        "/api/setup/latest-release",
+    ]
+    .iter()
+    .find_map(|s| path.strip_suffix(s))
+    .unwrap_or(path)
+    .to_string();
+    url.set_path(&prefix);
+    url.set_query(None);
+    center_boundary(url.as_str())
+}
+
+fn scoped_url(boundary: &reqwest::Url, raw: &str) -> Result<reqwest::Url> {
+    let url = trusted_url(raw)?;
+    if url.origin() != boundary.origin() || !url.path().starts_with(boundary.path()) {
+        bail!("setup artifact URL escaped the configured center origin/prefix");
+    }
+    Ok(url)
+}
+
+fn http_client(
+    boundary: reqwest::Url,
+    user_agent: &str,
+    timeout: Duration,
+) -> Result<reqwest::Client> {
+    reqwest::Client::builder()
+        .user_agent(user_agent)
+        .timeout(timeout)
+        .redirect(reqwest::redirect::Policy::custom(move |attempt| {
+            if attempt.previous().len() < 3 && scoped_url(&boundary, attempt.url().as_str()).is_ok()
+            {
+                attempt.follow()
+            } else {
+                attempt.error("setup redirect escaped its configured center or redirect budget")
+            }
+        }))
+        .build()
+        .context("building reqwest client")
+}
 
 /// Unified mirror of the backend's installer-health JSON. The agent
 /// endpoint (`agent_release.rs`) returns the discriminator as
@@ -71,12 +158,10 @@ pub async fn resolve(
     version: &str,
     user_agent: &str,
 ) -> Result<ArtifactHealth> {
+    let boundary = endpoint_boundary(base)?;
     let url = format!("{base}/{target}/health?version={version}");
-    let client = reqwest::Client::builder()
-        .user_agent(user_agent)
-        .timeout(Duration::from_secs(30))
-        .build()
-        .context("building reqwest client")?;
+    scoped_url(&boundary, &url)?;
+    let client = http_client(boundary.clone(), user_agent, Duration::from_secs(30))?;
     let resp = client
         .get(&url)
         .send()
@@ -89,6 +174,13 @@ pub async fn resolve(
         ));
     }
     let health: ArtifactHealth = resp.json().await.context("parsing installer-health JSON")?;
+    if !health.uri.starts_with('/') || health.uri.starts_with("//") {
+        bail!("installer-health uri must be a center-relative absolute path");
+    }
+    scoped_url(
+        &boundary,
+        &format!("{}{}", boundary.as_str().trim_end_matches('/'), health.uri),
+    )?;
     Ok(health)
 }
 
@@ -98,6 +190,9 @@ pub async fn resolve(
 /// the agent wizard, `"CLI archive"` for the tunnel wizard — kept
 /// caller-supplied so the legacy error strings stay byte-identical).
 pub struct DownloadSpec<'a> {
+    /// Actual caller-selected center/proxy base, including its deployment prefix.
+    /// Never derive this authority from the manifest's untrusted download URL.
+    pub center_base: &'a str,
     /// Absolute URL (proxy origin + `health.uri`), caller-composed.
     pub url: &'a str,
     /// Full staging path (the caller owns the temp-namespace
@@ -124,18 +219,11 @@ pub async fn download<F: FnMut(u64)>(
     cancel: &AtomicBool,
     mut on_progress: F,
 ) -> Result<()> {
-    if let Some(parent) = spec.dest.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("creating staging dir {}", parent.display()))?;
-    }
-
-    let client = reqwest::Client::builder()
-        .user_agent(spec.user_agent)
-        .timeout(Duration::from_secs(15 * 60)) // 15 min for slow corp networks
-        .build()
-        .context("building reqwest client")?;
+    let boundary = center_boundary(spec.center_base)?;
+    let url = scoped_url(&boundary, spec.url)?;
+    let client = http_client(boundary, spec.user_agent, Duration::from_secs(15 * 60))?;
     let resp = client
-        .get(spec.url)
+        .get(url)
         .send()
         .await
         .with_context(|| format!("GET {}", spec.url))?;
@@ -148,6 +236,10 @@ pub async fn download<F: FnMut(u64)>(
         ));
     }
 
+    if let Some(parent) = spec.dest.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating staging dir {}", parent.display()))?;
+    }
     use futures::StreamExt;
     let mut file = tokio::fs::File::create(spec.dest)
         .await
@@ -171,6 +263,114 @@ pub async fn download<F: FnMut(u64)>(
     drop(file);
 
     Ok(())
+}
+
+/// Exact immutable center-side signature route for a health-resolved package.
+pub fn release_signature_url(center_base: &str, tag: &str, filename: &str) -> Result<String> {
+    let boundary = center_boundary(center_base)?;
+    let token = |value: &str| {
+        !value.is_empty()
+            && value.len() <= 236
+            && !matches!(value, "." | "..")
+            && value
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || b"._-+".contains(&c))
+    };
+    if !token(tag)
+        || !token(filename)
+        || !["agent-v", "tunnel-v", "setup-v"]
+            .iter()
+            .any(|p| tag.starts_with(p) && tag.len() > p.len())
+    {
+        bail!("invalid resolved release tag or filename for signature");
+    }
+    let mut url = boundary.clone();
+    url.path_segments_mut()
+        .map_err(|_| anyhow!("center cannot contain artifact path"))?
+        .pop_if_empty()
+        .extend(["api", "agent", "artifacts", tag, &format!("{filename}.asc")]);
+    scoped_url(&boundary, url.as_str())?;
+    Ok(url.into())
+}
+
+/// Manifest asset sidecar: suffix is part of PATH, never the version query.
+pub fn detached_signature_url(center_base: &str, artifact_url: &str) -> Result<String> {
+    let boundary = center_boundary(center_base)?;
+    let mut url = scoped_url(&boundary, artifact_url)?;
+    url.set_path(&format!("{}.asc", url.path()));
+    scoped_url(&boundary, url.as_str())?;
+    Ok(url.into())
+}
+
+/// Remote auto-install is fail closed on missing/invalid detached signatures.
+/// The app supplies the existing pinned verifier; core adds no crypto/dependency.
+/// No caller may unpack/execute before this helper succeeds. Local-artifact
+/// installation does not call this remote-only path and keeps its explicit SHA.
+pub async fn download_signed<F: FnMut(u64)>(
+    spec: &DownloadSpec<'_>,
+    signature_url: &str,
+    cancel: &AtomicBool,
+    verifier: fn(&[u8], &str) -> Result<()>,
+    on_progress: F,
+) -> Result<()> {
+    const MAX_SIGNATURE: usize = 1024 * 1024;
+    const MAX_ARTIFACT: u64 = 512 * 1024 * 1024;
+    let boundary = center_boundary(spec.center_base)?;
+    scoped_url(&boundary, spec.url)?;
+    let signature_url = scoped_url(&boundary, signature_url)?;
+    let client = http_client(boundary, spec.user_agent, Duration::from_secs(30))?;
+    let response = client
+        .get(signature_url)
+        .send()
+        .await
+        .context("fetching required release signature")?
+        .error_for_status()
+        .context("missing release signature: refusing unsigned artifact")?;
+    if response
+        .content_length()
+        .is_some_and(|n| n > MAX_SIGNATURE as u64)
+    {
+        bail!("release signature exceeds size limit");
+    }
+    use futures::StreamExt;
+    let mut signature = Vec::new();
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        if cancel.load(Ordering::Relaxed) {
+            bail!("signature download cancelled");
+        }
+        let chunk = chunk.context("reading release signature")?;
+        if signature.len().saturating_add(chunk.len()) > MAX_SIGNATURE {
+            bail!("release signature exceeds size limit");
+        }
+        signature.extend_from_slice(&chunk);
+    }
+    let signature =
+        std::str::from_utf8(&signature).context("release signature is not UTF-8 armor")?;
+    let result = async {
+        download(spec, cancel, on_progress).await?;
+        let file = tokio::fs::File::open(spec.dest)
+            .await
+            .context("opening staged artifact for signature")?;
+        use tokio::io::AsyncReadExt;
+        let mut bytes = Vec::new();
+        file.take(MAX_ARTIFACT + 1)
+            .read_to_end(&mut bytes)
+            .await
+            .context("reading bounded staged artifact")?;
+        if bytes.len() as u64 > MAX_ARTIFACT {
+            bail!("signed artifact exceeds size limit");
+        }
+        if cancel.load(Ordering::Relaxed) {
+            bail!("signature verification cancelled");
+        }
+        verifier(&bytes, signature).context("release PGP signature verification failed")
+    }
+    .await;
+    if result.is_err() {
+        let _ = tokio::fs::remove_file(spec.dest).await;
+    }
+    result
 }
 
 /// A companion asset located by [`find_release_asset`] — a binary
@@ -220,11 +420,9 @@ pub async fn find_release_asset(
     suffix: &str,
     user_agent: &str,
 ) -> Result<Option<ReleaseAsset>> {
-    let client = reqwest::Client::builder()
-        .user_agent(user_agent)
-        .timeout(Duration::from_secs(30))
-        .build()
-        .context("building reqwest client")?;
+    let boundary = endpoint_boundary(latest_release_url)?;
+    scoped_url(&boundary, latest_release_url)?;
+    let client = http_client(boundary.clone(), user_agent, Duration::from_secs(30))?;
     let resp = client
         .get(latest_release_url)
         .send()
@@ -248,6 +446,7 @@ pub async fn find_release_asset(
             if lower.ends_with(".sha256") || !lower.contains(&nc) || !lower.ends_with(&sfx) {
                 continue;
             }
+            scoped_url(&boundary, &a.browser_download_url)?;
             return Ok(Some(ReleaseAsset {
                 url: a.browser_download_url,
                 filename: a.name,

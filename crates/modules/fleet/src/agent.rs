@@ -47,6 +47,8 @@ pub struct EnrollmentTokenResponse {
     pub jti: String,
     /// FR-104 — the token may also anchor the device it enrolls.
     pub anchor: bool,
+    /// This credential explicitly approves its enrolled device as an org relay.
+    pub relay_server: bool,
 }
 
 /// Optional body for `POST …/agent/enroll-token`. The dashboard (and every
@@ -58,6 +60,10 @@ pub struct EnrollmentTokenRequest {
     /// same pasted token. Default off.
     #[serde(default)]
     pub anchor: bool,
+    /// Server enrollment only: requires the same EXEC_DEVICE permission as
+    /// approving a relay through the per-device policy API. Default off.
+    #[serde(default)]
+    pub relay_server: bool,
 }
 
 impl EnrollmentTokenRequest {
@@ -106,11 +112,26 @@ pub async fn issue_enrollment_token(
     )
     .await?;
 
-    let anchor = EnrollmentTokenRequest::from_body(&headers, &body)?.anchor;
-    let (token, jti) =
-        state
-            .auth
-            .issue_enrollment_token_with(auth.user_id, tid, ENROLLMENT_TTL_SECS, anchor)?;
+    let requested = EnrollmentTokenRequest::from_body(&headers, &body)?;
+    if requested.relay_server {
+        require_permission(
+            &state,
+            tid,
+            auth.user_id,
+            permissions::EXEC_DEVICE,
+            "EXEC_DEVICE",
+        )
+        .await?;
+    }
+    let anchor = requested.anchor;
+    let relay_server = requested.relay_server;
+    let (token, jti) = state.auth.issue_enrollment_token_with_relay(
+        auth.user_id,
+        tid,
+        ENROLLMENT_TTL_SECS,
+        anchor,
+        relay_server,
+    )?;
     // FR-102 P3 — the issuance on record (the jti, never the token), so the
     // digest can say how many tokens were minted and how many enrolled.
     // Best-effort: a ledger that could not answer must not cost the admin
@@ -131,11 +152,16 @@ pub async fn issue_enrollment_token(
         );
     }
 
+    if relay_server {
+        tracing::info!(tenant = %tid, admin = %auth.user_id, %jti,
+            "fleet: single-use enrollment token carries explicit relay approval");
+    }
     Ok(Json(EnrollmentTokenResponse {
         enrollment_token: token,
         expires_in: ENROLLMENT_TTL_SECS,
         jti,
         anchor,
+        relay_server,
     }))
 }
 
@@ -188,6 +214,10 @@ pub async fn enroll_agent(
         .map_err(|_| ApiError::BadRequest("Invalid tenant_id claim".to_string()))?;
     let admin_uid = ObjectId::parse_str(&claims.sub)
         .map_err(|_| ApiError::BadRequest("Invalid admin user id claim".to_string()))?;
+
+    // A signed delegation cannot outlive its issuer's admission. Check before
+    // consuming either a single-use token or an ephemeral enrollment key.
+    roomler_core::admission::authorize_user_id(&state.core, admin_uid, None).await?;
 
     // An archived org accepts no devices — including back into an existing
     // row, which is what makes archiving a throwaway org actually final
@@ -304,6 +334,23 @@ pub async fn enroll_agent(
     let agent_id = agent
         .id
         .ok_or_else(|| ApiError::Internal("agent missing _id".to_string()))?;
+    // Only the signed, single-use credential grants this policy. The narrow
+    // update preserves endpoints and fails closed against removal/generation
+    // changes. A failed write can leave an ordinary row and a consumed token;
+    // it must NEVER return an apparently successful agent credential.
+    if claims.relay_server {
+        let granted = state
+            .agents
+            .grant_relay_server(tid, agent_id, agent.token_gen)
+            .await?;
+        if !granted {
+            return Err(ApiError::ServiceUnavailable(
+                "Device changed during relay enrollment; request a fresh enrollment token".into(),
+            ));
+        }
+        tracing::info!(tenant = %tid, agent = %agent_id, admin = %admin_uid,
+            jti = %claims.jti, "fleet: signed enrollment approved relay serving");
+    }
     // FR-104 — which token enrolled this device, so an `anchor: true` token
     // can anchor exactly this one afterwards. Best-effort: a failure here
     // costs only that second use (the anchor then needs a fresh token).
@@ -2254,6 +2301,22 @@ mod enrollment_token_request_tests {
             Some(false),
             "a body that is not declared JSON is ignored, as before"
         );
+    }
+
+    #[test]
+    fn relay_grant_is_explicit_and_independent_of_anchor() {
+        let mut headers = HeaderMap::new();
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        for body in ["", "{}", r#"{"anchor":true}"#] {
+            assert!(
+                !EnrollmentTokenRequest::from_body(&headers, body.as_bytes())
+                    .unwrap()
+                    .relay_server
+            );
+        }
+        let request =
+            EnrollmentTokenRequest::from_body(&headers, br#"{"relay_server":true}"#).unwrap();
+        assert!(request.relay_server && !request.anchor);
     }
 
     #[test]

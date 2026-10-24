@@ -399,6 +399,21 @@ pub fn org_of_username(username: &str) -> Option<&str> {
     (org.len() == 24 && org.bytes().all(|b| b.is_ascii_hexdigit())).then_some(org)
 }
 
+/// Public STUN redundancy for both REST/browser and per-session/native ICE.
+/// These are discovery servers, NOT relays: no credentials, TURN allocations,
+/// or forced-relay policy. Keep independent providers so one blocked UDP
+/// destination does not leave a WAN session with only private host candidates.
+pub fn default_stun_servers() -> Vec<IceServer> {
+    vec![IceServer {
+        urls: vec![
+            "stun:stun.cloudflare.com:3478".into(),
+            "stun:stun.l.google.com:19302".into(),
+        ],
+        username: None,
+        credential: None,
+    }]
+}
+
 /// Convenience: also include public STUN servers so trickle ICE has something
 /// to work with even before TURN auth completes.
 pub fn ice_servers_for(user_id: &str, turn: Option<&TurnConfig>) -> Vec<IceServer> {
@@ -412,11 +427,7 @@ pub fn ice_servers_for_with_ttl(
     turn: Option<&TurnConfig>,
     ttl_override: Option<u32>,
 ) -> Vec<IceServer> {
-    let mut out = vec![IceServer {
-        urls: vec!["stun:stun.l.google.com:19302".into()],
-        username: None,
-        credential: None,
-    }];
+    let mut out = default_stun_servers();
     if let Some(t) = turn {
         out.push(match ttl_override {
             Some(ttl) => t.issue_with_ttl(user_id, ttl),
@@ -434,11 +445,7 @@ pub fn ice_servers_for_session(
     session_key: &str,
     turn: Option<&TurnConfig>,
 ) -> Vec<IceServer> {
-    let mut out = vec![IceServer {
-        urls: vec!["stun:stun.l.google.com:19302".into()],
-        username: None,
-        credential: None,
-    }];
+    let mut out = default_stun_servers();
     if let Some(t) = turn {
         out.push(t.issue_for_session(user_id, session_key));
     }
@@ -454,11 +461,7 @@ pub fn ice_servers_for_session_with_ttl(
     turn: Option<&TurnConfig>,
     ttl_secs: u32,
 ) -> Vec<IceServer> {
-    let mut out = vec![IceServer {
-        urls: vec!["stun:stun.l.google.com:19302".into()],
-        username: None,
-        credential: None,
-    }];
+    let mut out = default_stun_servers();
     if let Some(t) = turn {
         out.push(t.issue_for_session_with_ttl(user_id, session_key, ttl_secs));
     }
@@ -617,6 +620,34 @@ mod tests {
             .as_secs();
         assert!(expiry > now && expiry <= now + 600);
         assert!(cred.credential.unwrap().len() >= 20);
+    }
+
+    #[test]
+    fn stun_redundancy_is_identical_for_browser_native_and_ttl_paths() {
+        let expected = default_stun_servers();
+        for actual in [
+            ice_servers_for("u", None),
+            ice_servers_for_session("u", "session", None),
+            ice_servers_for_session_with_ttl("u", "session", None, 60),
+        ] {
+            assert_eq!(actual.len(), 1);
+            assert_eq!(actual[0].urls, expected[0].urls);
+            assert_eq!(
+                actual[0].urls,
+                vec![
+                    "stun:stun.cloudflare.com:3478",
+                    "stun:stun.l.google.com:19302"
+                ]
+            );
+            assert!(actual[0].username.is_none() && actual[0].credential.is_none());
+            assert!(actual[0].urls.iter().all(|u| u.starts_with("stun:")));
+        }
+        let cfg = region_cfg("turn.example");
+        let actual = ice_servers_for_session("u", "session", Some(&cfg));
+        assert_eq!(actual.len(), 2, "real TURN remains additive, not replaced");
+        assert_eq!(actual[0].urls, expected[0].urls);
+        assert!(actual[1].urls.iter().all(|u| u.starts_with("turn:")));
+        assert!(actual[1].username.is_some() && actual[1].credential.is_some());
     }
 
     #[test]

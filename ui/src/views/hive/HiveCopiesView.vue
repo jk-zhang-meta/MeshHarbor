@@ -321,6 +321,7 @@
 </template>
 
 <script setup lang="ts">
+import { appOrigin } from '@/utils/deployment'
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
@@ -630,7 +631,7 @@ async function mint(): Promise<void> {
 /** How to run the image with the minted token, against this server. */
 const snippets = computed(() => {
   const token = minted.value?.enrollment_token ?? ''
-  const server = window.location.origin
+  const server = appOrigin(window.location.origin)
   return [
     {
       key: 'docker',

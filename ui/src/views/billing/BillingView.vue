@@ -194,6 +194,7 @@
 </template>
 
 <script setup lang="ts">
+import { appOrigin } from '@/utils/deployment'
 import { ref, computed, onMounted, watch } from 'vue'
 import { useTenantStore } from '@/stores/tenant'
 import { api } from '@/api/client'
@@ -431,8 +432,8 @@ async function checkout(planId: string) {
       plan: planId,
       interval: interval.value,
       currency: shownCurrency.value,
-      success_url: `${window.location.origin}/tenant/${currentTenant.value.id}/billing?success=true`,
-      cancel_url: `${window.location.origin}/tenant/${currentTenant.value.id}/billing?canceled=true`,
+      success_url: `${appOrigin(window.location.origin)}/tenant/${currentTenant.value.id}/billing?success=true`,
+      cancel_url: `${appOrigin(window.location.origin)}/tenant/${currentTenant.value.id}/billing?canceled=true`,
     })
     if (result.url) window.location.href = result.url
   } catch (e) {
@@ -472,7 +473,7 @@ async function openPortal() {
   try {
     const result = await api.post<{ url: string }>('/stripe/portal', {
       tenant_id: currentTenant.value.id,
-      return_url: `${window.location.origin}/tenant/${currentTenant.value.id}/billing`,
+      return_url: `${appOrigin(window.location.origin)}/tenant/${currentTenant.value.id}/billing`,
     })
     if (result.url) window.location.href = result.url
   } catch (e) {

@@ -37,6 +37,23 @@ impl RemoteAgentSocket {
 impl AgentMsgHandler for RemoteAgentSocket {
     async fn handle(&self, ctx: &AgentCtx, msg: ClientMsg) -> Option<ClientMsg> {
         match msg {
+            ClientMsg::SharedLeaseChallenge {
+                session_id,
+                grant_id,
+                lease_epoch,
+                challenge_id,
+            } => {
+                crate::device_share::renew_lease(
+                    &self.state,
+                    ctx,
+                    session_id,
+                    grant_id,
+                    lease_epoch,
+                    challenge_id,
+                )
+                .await;
+                None
+            }
             ClientMsg::SessionStats {
                 session_id,
                 bytes_sent,

@@ -622,11 +622,25 @@ const PROBE_HEIGHT: u32 = 270;
 /// <10ms on boxes with no HW encoder); subsequent calls return the
 /// cached result.
 pub fn detect() -> AgentCaps {
-    CACHED_CAPS
+    let caps = CACHED_CAPS
         .get_or_init(|| {
             with_honest_words(with_config_lists(cached_or_probed()), &HostFacts::here())
         })
-        .clone()
+        .clone();
+    // Listener lifetime is not part of the expensive encoder probe cache.
+    #[cfg(any(feature = "overlay-l3", feature = "overlay-netstack"))]
+    let caps = with_relay_server_readiness(caps, crate::relay_server::listening_port().is_some());
+    caps
+}
+
+#[cfg(any(feature = "overlay-l3", feature = "overlay-netstack"))]
+fn with_relay_server_readiness(mut caps: AgentCaps, ready: bool) -> AgentCaps {
+    use roomler_ai_remote_control::models::RpcCap;
+    caps.rpc.retain(|cap| cap != RpcCap::RelayServer.wire());
+    if ready {
+        caps.rpc.push(RpcCap::RelayServer.wire().to_owned());
+    }
+    caps
 }
 
 /// FR-97 P0c — what this host can actually serve, as plain facts, so the
@@ -1908,6 +1922,7 @@ fn rpc_caps() -> Vec<String> {
         RpcCap::Config,
         RpcCap::ConfigReport,
         RpcCap::ExternalAccess,
+        RpcCap::SharedSessionLease,
     ];
     // FR-97 P5a — a Linux or macOS build runs `console_user` as the person at
     // its screen: SSH's account mode, and the `run_as` of `rc:rpc.exec`,
@@ -1918,6 +1933,7 @@ fn rpc_caps() -> Vec<String> {
     caps.push(RpcCap::ConsoleUser);
     if cfg!(feature = "ssh-server") {
         caps.push(RpcCap::Ssh);
+        caps.push(RpcCap::SharedSshStream);
         // P5d. Distinct from `ssh` because agents rc.419 and earlier advertise
         // `ssh` while silently ignoring `SshPolicy.consent_mode` — the server
         // refuses to store a non-auto consent policy for a device that cannot
@@ -1952,13 +1968,13 @@ fn rpc_caps() -> Vec<String> {
     // an enrollment that could not keep a key says so with an empty
     // `peer_auth_key` on its hello, and signs nothing.
     caps.push(RpcCap::PeerAuth);
-    // FR-19 — advertise the org-relay SERVER only when this device has opted
-    // in (`relay_server_enabled`, gate 4). The server never installs a session
+    // FR-19 — advertise the org-relay SERVER only after the opted-in
+    // listener actually bound (configuration alone is not readiness). The server never installs a session
     // on a device that does not advertise this, so a device that has not opted
     // in is simply never asked — and a build without the overlay features has
     // no relay to advertise at all.
     #[cfg(any(feature = "overlay-l3", feature = "overlay-netstack"))]
-    if tunnel_core::overlay::orgrelay::relay_server_enabled() {
+    if crate::relay_server::listening_port().is_some() {
         caps.push(RpcCap::RelayServer);
     }
     // FR-40 — a build with an overlay surface can retire its overlay key on
@@ -3427,5 +3443,15 @@ mod tests {
             std::env::remove_var(child::PHASE_ENV);
             std::env::remove_var(child::NAMES_444_ENV);
         }
+    }
+
+    #[cfg(any(feature = "overlay-l3", feature = "overlay-netstack"))]
+    #[test]
+    fn relay_readiness_refresh_only_changes_the_relay_capability() {
+        let mut caps = AgentCaps::default();
+        caps.rpc = vec!["ssh".into(), "files".into()];
+        let ready = with_relay_server_readiness(caps.clone(), true);
+        assert_eq!(ready.rpc, vec!["ssh", "files", "relay-server"]);
+        assert_eq!(with_relay_server_readiness(ready, false).rpc, caps.rpc);
     }
 }

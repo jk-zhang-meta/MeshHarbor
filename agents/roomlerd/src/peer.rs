@@ -1879,6 +1879,34 @@ impl AgentPeer {
     /// viewer before the peer dies. Without it the grace was a window in
     /// which the controller still drove the machine its owner had just taken
     /// back. Idempotent: [`Self::close`] and the drop repeat every step.
+    /// An independent shared-lease timer owns these handles, not this pump's poll.
+    pub fn shared_lease_stop(&self) -> std::sync::Arc<dyn Fn() + Send + Sync> {
+        let end = self.session_end.clone();
+        let media = self.media_pump.as_ref().map(|t| t.abort_handle());
+        #[cfg(feature = "audio")]
+        let audio = self.audio_pump.as_ref().map(|t| t.abort_handle());
+        let rtcp = self.rtcp_reader.as_ref().map(|t| t.abort_handle());
+        let pc = self.pc.clone();
+        let sid = self.session_id;
+        std::sync::Arc::new(move || {
+            end.cancel();
+            if let Some(t) = &media {
+                t.abort();
+            }
+            #[cfg(feature = "audio")]
+            if let Some(t) = &audio {
+                t.abort();
+            }
+            if let Some(t) = &rtcp {
+                t.abort();
+            }
+            crate::input::arbiter::global().session_closed(sid);
+            let pc = pc.clone();
+            tokio::spawn(async move {
+                let _ = tokio::time::timeout(std::time::Duration::from_secs(3), pc.close()).await;
+            });
+        })
+    }
     pub fn stop_serving(&self) {
         // First: the channel handlers let go whatever the channels do next.
         self.session_end.cancel();
@@ -12966,6 +12994,25 @@ mod ice_relay_tcp_tests {
             username: with_cred.then(|| "u".to_string()),
             credential: with_cred.then(|| "c".to_string()),
         }
+    }
+
+    #[test]
+    fn stun_redundancy_native_mapping_keeps_both_providers_without_credentials() {
+        let servers = roomler_ai_remote_control::turn_creds::default_stun_servers();
+        let mapped = map_ice_servers(&servers);
+        assert_eq!(mapped.len(), 1);
+        assert_eq!(
+            mapped[0].urls,
+            vec![
+                "stun:stun.cloudflare.com:3478",
+                "stun:stun.l.google.com:19302"
+            ]
+        );
+        assert!(mapped[0].username.is_empty() && mapped[0].credential.is_empty());
+        assert!(
+            map_ice_servers(&[]).is_empty(),
+            "intentional host-only ICE remains host-only"
+        );
     }
 
     #[test]

@@ -194,6 +194,8 @@ pub const KEEP_BUSY_ASK_WAIT: std::time::Duration = std::time::Duration::from_mi
 pub struct SessionParams {
     /// Hex, like every other id this channel carries.
     pub session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shared_lease: Option<roomler_ai_remote_control::signaling::SharedSessionLease>,
     pub codec: String,
     pub transport: Option<String>,
     pub chroma: Option<String>,
@@ -364,6 +366,7 @@ pub fn delegable_inbound(msg: &ServerMsg) -> bool {
     matches!(
         msg,
         ServerMsg::SessionCreated { .. }
+            | ServerMsg::SharedLeaseRenewal { .. }
             | ServerMsg::SdpOffer { .. }
             | ServerMsg::SdpAnswer { .. }
             | ServerMsg::Ice { .. }
@@ -447,6 +450,12 @@ struct Inner {
     /// `Terminate`, because a recording outlives its session by the re-attach
     /// grace and its last claims come after.
     record_sessions: Mutex<std::collections::VecDeque<String>>,
+    shared_sessions: Mutex<
+        std::collections::VecDeque<(
+            String,
+            roomler_ai_remote_control::signaling::SharedSessionLease,
+        )>,
+    >,
     /// FR-92 — every org's last keep-busy policy (tenant hex → denied), as
     /// this daemon's control WS loops received it. On a supervised Mac the
     /// WORKER runs keep busy, while delegation itself is primary-only — so
@@ -641,10 +650,19 @@ impl DelegateHost {
             .expect("to_worker mutex")
             .clone();
         let Some(tx) = tx else { return false };
-        tx.try_send(DelegateFrame::ToWorker {
-            msg: Box::new(msg.clone()),
-        })
-        .is_ok()
+        let sent = tx
+            .try_send(DelegateFrame::ToWorker {
+                msg: Box::new(msg.clone()),
+            })
+            .is_ok();
+        if sent && let ServerMsg::Terminate { session_id, .. } = msg {
+            self.inner
+                .shared_sessions
+                .lock()
+                .expect("shared sessions mutex")
+                .retain(|(sid, _)| *sid != session_id.to_hex());
+        }
+        sent
     }
 
     /// FR-92 — one org's keep-busy policy arrived on this daemon's control
@@ -747,7 +765,46 @@ impl DelegateHost {
     /// Must reach the worker BEFORE the `SdpOffer` that consumes them. It does,
     /// because both travel the same ordered channel and the daemon resolves
     /// them while handling `Request`, which the server always sends first.
+    pub fn has_shared_params(&self, sid: bson::oid::ObjectId) -> bool {
+        self.inner
+            .shared_sessions
+            .lock()
+            .expect("shared sessions mutex")
+            .iter()
+            .any(|(s, _)| *s == sid.to_hex())
+    }
     pub fn send_params(&self, frame: DelegateFrame) -> bool {
+        let shared = match &frame {
+            DelegateFrame::SessionParams(p) => p
+                .shared_lease
+                .clone()
+                .map(|scope| (p.session_id.clone(), scope)),
+            _ => None,
+        };
+        if shared.is_some()
+            && !self
+                .inner
+                .worker_caps
+                .lock()
+                .expect("worker caps mutex")
+                .as_ref()
+                .is_some_and(|c| {
+                    c.has_rpc(roomler_ai_remote_control::models::RpcCap::SharedSessionLease)
+                })
+        {
+            return false; // old GUI workers may not silently strip the shared lease
+        }
+        if shared.is_some()
+            && self
+                .inner
+                .shared_sessions
+                .lock()
+                .expect("shared sessions mutex")
+                .len()
+                >= 64
+        {
+            return false;
+        }
         // FR-85 P1e-mac — remembered HERE, where the grant crosses, so the
         // relay's admission of a worker's `RecordingActivity` cannot drift from
         // what the worker was actually given — and only once it DID cross: a
@@ -771,6 +828,16 @@ impl DelegateHost {
         let Some(tx) = tx else { return false };
         if tx.try_send(frame).is_err() {
             return false;
+        }
+        if let Some((sid, scope)) = shared {
+            let mut held = self
+                .inner
+                .shared_sessions
+                .lock()
+                .expect("shared sessions mutex");
+            if !held.iter().any(|(s, _)| *s == sid) {
+                held.push_back((sid, scope));
+            }
         }
         if let Some(session_id) = recorded {
             let mut held = self
@@ -998,6 +1065,11 @@ impl DelegateHost {
         // advertising a capture target that has gone, and the next session
         // would get the black screen P2b existed to fix.
         *self.inner.worker_caps.lock().expect("worker caps mutex") = None;
+        self.inner
+            .shared_sessions
+            .lock()
+            .expect("shared sessions mutex")
+            .clear();
         // FR-92 — and the questions it will now never answer: dropping each
         // sender ends its caller's wait at once instead of at the timeout.
         self.inner
@@ -1015,7 +1087,27 @@ impl DelegateHost {
     /// applies to itself is not a filter. Anything it may put on this socket it
     /// says AS THE DEVICE.
     fn relay_upstream(&self, msg: ClientMsg) {
-        if !delegable_outbound(&msg) && !self.records_session_of(&msg) {
+        let shared_challenge = if let ClientMsg::SharedLeaseChallenge {
+            session_id,
+            grant_id,
+            lease_epoch,
+            ..
+        } = &msg
+        {
+            self.inner
+                .shared_sessions
+                .lock()
+                .expect("shared sessions mutex")
+                .iter()
+                .any(|(sid, scope)| {
+                    *sid == session_id.to_hex()
+                        && scope.grant_id == *grant_id
+                        && scope.lease_epoch == *lease_epoch
+                })
+        } else {
+            false
+        };
+        if !delegable_outbound(&msg) && !self.records_session_of(&msg) && !shared_challenge {
             tracing::warn!(
                 kind = msg_kind(&msg),
                 "delegation: worker tried to send a message it is not allowed to; dropping"
@@ -1711,6 +1803,7 @@ mod routing_tests {
     #[test]
     fn only_rc_session_messages_reach_the_worker() {
         assert!(delegable_inbound(&ServerMsg::SdpOffer {
+            shared_lease: None,
             session_id: oid(),
             sdp: String::new(),
             ice_servers: Vec::new(),
@@ -1881,6 +1974,7 @@ mod params_tests {
     fn the_negotiated_transport_survives_the_crossing() {
         let params = SessionParams {
             session_id: bson::oid::ObjectId::new().to_hex(),
+            shared_lease: None,
             codec: "h264".into(),
             transport: Some("data-channel-h264".into()),
             chroma: None,
@@ -1922,6 +2016,7 @@ mod params_tests {
     fn an_absent_transport_is_distinguishable_from_a_present_one() {
         let mut p = SessionParams {
             session_id: bson::oid::ObjectId::new().to_hex(),
+            shared_lease: None,
             codec: "h264".into(),
             transport: None,
             chroma: None,
@@ -1948,6 +2043,7 @@ mod params_tests {
     ) -> SessionParams {
         SessionParams {
             session_id: session_id.to_string(),
+            shared_lease: None,
             codec: "h264".into(),
             transport: None,
             chroma: None,
@@ -2257,5 +2353,146 @@ mod params_tests {
             Some(Vec::new()),
             "an older worker says nothing, and so does the device"
         );
+    }
+}
+
+#[cfg(test)]
+mod shared_lease_delegation_tests {
+    use super::*;
+    use roomler_ai_remote_control::{models::RpcCap, signaling::SharedSessionLease};
+    #[test]
+    fn shared_lease_delegation_requires_worker_cap_and_exact_handed_scope() {
+        let host = DelegateHost::new();
+        let sid = bson::oid::ObjectId::new();
+        let scope = SharedSessionLease {
+            grant_id: bson::oid::ObjectId::new(),
+            lease_epoch: "11111111-1111-4111-8111-111111111111".into(),
+        };
+        let (to_worker, mut worker) = tokio::sync::mpsc::channel(8);
+        *host.inner.to_worker.lock().unwrap() = Some(to_worker);
+        let params = || {
+            DelegateFrame::SessionParams(Box::new(SessionParams {
+                session_id: sid.to_hex(),
+                shared_lease: Some(scope.clone()),
+                codec: "h264".into(),
+                transport: None,
+                chroma: None,
+                chunk_framing: false,
+                audio: false,
+                permissions: roomler_ai_remote_control::permissions::Permissions::VIEW,
+                controller_name: "fixture".into(),
+                input_mode: None,
+                asking_org: None,
+                record: None,
+                rc_overlay: None,
+                idle_secs: None,
+                lock_on_end: None,
+            }))
+        };
+        assert!(!host.send_params(params()));
+        assert!(worker.try_recv().is_err());
+        let mut caps = AgentCaps::default();
+        caps.rpc.push(RpcCap::SharedSessionLease.wire().into());
+        *host.inner.worker_caps.lock().unwrap() = Some(caps);
+        assert!(host.send_params(params()));
+        assert!(host.has_shared_params(sid));
+        assert!(
+            matches!(worker.try_recv().unwrap(),DelegateFrame::SessionParams(p) if p.shared_lease==Some(scope.clone()))
+        );
+        let (up, mut replies) = tokio::sync::mpsc::channel(8);
+        host.set_outbound(up);
+        let challenge = |grant| ClientMsg::SharedLeaseChallenge {
+            session_id: sid,
+            grant_id: grant,
+            lease_epoch: scope.lease_epoch.clone(),
+            challenge_id: 1,
+        };
+        assert!(
+            !delegable_outbound(&challenge(scope.grant_id)),
+            "not globally whitelisted as device authority"
+        );
+        host.relay_upstream(challenge(bson::oid::ObjectId::new()));
+        assert!(replies.try_recv().is_err());
+        host.relay_upstream(challenge(scope.grant_id));
+        assert!(matches!(
+            replies.try_recv().unwrap(),
+            ClientMsg::SharedLeaseChallenge { .. }
+        ));
+        assert!(delegable_inbound(&ServerMsg::SharedLeaseRenewal {
+            session_id: sid,
+            grant_id: scope.grant_id,
+            lease_epoch: scope.lease_epoch,
+            challenge_id: 1
+        }));
+    }
+}
+
+#[cfg(test)]
+mod shared_lease_params_scope_regressions {
+    use super::*;
+    use roomler_ai_remote_control::signaling::SharedSessionLease;
+    #[tokio::test]
+    async fn shared_lease_actual_params_roundtrip_after_end_cannot_reopen_offer_or_attach() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
+        let sid = bson::oid::ObjectId::new();
+        let scope = SharedSessionLease {
+            grant_id: bson::oid::ObjectId::new(),
+            lease_epoch: "11111111-1111-4111-8111-111111111111".into(),
+        };
+        let params = SessionParams {
+            session_id: sid.to_hex(),
+            shared_lease: Some(scope.clone()),
+            codec: "h264".into(),
+            transport: None,
+            chroma: None,
+            chunk_framing: false,
+            audio: false,
+            permissions: roomler_ai_remote_control::permissions::Permissions::VIEW,
+            controller_name: "fixture".into(),
+            input_mode: None,
+            asking_org: None,
+            record: None,
+            rc_overlay: None,
+            idle_secs: None,
+            lock_on_end: None,
+        };
+        let raw = serde_json::to_string(&DelegateFrame::SessionParams(Box::new(params))).unwrap();
+        let DelegateFrame::SessionParams(p) = serde_json::from_str(&raw).unwrap() else {
+            panic!("actual Params frame")
+        };
+        let mut r = crate::shared_lease::SharedLeases::default();
+        assert!(r.note_optional(sid, p.shared_lease.as_ref()));
+        r.end(sid);
+        let DelegateFrame::SessionParams(mut late) = serde_json::from_str(&raw).unwrap() else {
+            panic!("late Params frame")
+        };
+        assert!(!r.note_optional(sid, late.shared_lease.as_ref()));
+        late.shared_lease = None;
+        assert!(!r.note_optional(sid, late.shared_lease.as_ref()));
+        let (tx, _) = tokio::sync::mpsc::channel(8);
+        for shared_lease in [Some(scope.clone()), None] {
+            let offer = ServerMsg::SdpOffer {
+                session_id: sid,
+                shared_lease: shared_lease.clone(),
+                sdp: String::new(),
+                ice_servers: vec![],
+                extauth_mac: None,
+                peer_auth: None,
+            };
+            assert!(!r.offer(sid, &offer, &tx));
+            let flag = Arc::new(AtomicBool::new(false));
+            let f = flag.clone();
+            assert!(!r.attach(
+                sid,
+                shared_lease.as_ref(),
+                Arc::new(move || {
+                    f.store(true, Ordering::SeqCst);
+                })
+            ));
+            assert!(flag.load(Ordering::SeqCst));
+        }
     }
 }

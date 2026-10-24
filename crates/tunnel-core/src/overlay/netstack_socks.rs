@@ -349,6 +349,7 @@ mod tests {
         use crate::overlay::router::derive_overlay_v6;
 
         let view = OverlayView {
+            path_trials: None,
             self_ip: Some("100.64.0.1".into()),
             self_ip6: None,
             peers: vec![
@@ -430,6 +431,7 @@ mod tests {
         let socks_addr = socks.local_addr().unwrap();
         let (handle_tx, handle_rx) = watch::channel(Some(a.handle.clone()));
         let (view_tx, view_rx) = watch::channel(OverlayView {
+            path_trials: None,
             self_ip: Some(a_ip.to_string()),
             self_ip6: None,
             peers: vec![peer("peerb", &b_ip.to_string())],

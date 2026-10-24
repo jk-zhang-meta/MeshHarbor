@@ -427,6 +427,24 @@ pub async fn derp_upgrade(
                 .unwrap();
         }
     }
+    if state.settings.auth.account_approval.enabled {
+        let gate = tokio::time::timeout(
+            Duration::from_secs(3),
+            roomler_ai_mod_fleet::auth_agent::accepted_agent(
+                &state.fleet,
+                &claims.sub,
+                &claims.tenant_id,
+                Some(claims.generation),
+            ),
+        )
+        .await;
+        if !matches!(gate, Ok(Ok(_))) {
+            return Response::builder()
+                .status(403)
+                .body("Device owner admission required".into())
+                .unwrap();
+        }
+    }
     ws.max_message_size(roomler_core::ws::upgrade::MAX_WS_MESSAGE_BYTES)
         .max_frame_size(roomler_core::ws::upgrade::MAX_WS_MESSAGE_BYTES)
         .on_upgrade(move |socket| handle_derp_socket(state, socket, agent_id))
@@ -475,6 +493,36 @@ async fn handle_derp_socket(state: NetworkState, socket: WebSocket, agent_id: Ob
         );
         return;
     }
+    // Recheck after the registration frame: a client can delay that frame
+    // past an account suspension which happened after the HTTP upgrade.
+    let admission_check = || async {
+        tokio::time::timeout(
+            Duration::from_secs(3),
+            roomler_ai_mod_fleet::auth_agent::accepted_agent(
+                &state.fleet,
+                &agent_id.to_hex(),
+                &node.tenant_id.to_hex(),
+                None,
+            ),
+        )
+        .await
+    };
+    if state.settings.auth.account_approval.enabled && !matches!(admission_check().await, Ok(Ok(_)))
+    {
+        return;
+    }
+    let admission_watchdog = async {
+        if !state.settings.auth.account_approval.enabled {
+            std::future::pending::<()>().await;
+        }
+        loop {
+            tokio::time::sleep(Duration::from_secs(5)).await;
+            if !matches!(admission_check().await, Ok(Ok(_))) {
+                return;
+            }
+        }
+    };
+    tokio::pin!(admission_watchdog);
     let key: DerpKey = (network_id, self_pubkey);
     let (out_tx, mut out_rx) = mpsc::channel::<Vec<u8>>(DERP_SEND_QUEUE);
     // Last-writer-wins on re-registration: a reconnect for the same pubkey
@@ -532,6 +580,10 @@ async fn handle_derp_socket(state: NetworkState, socket: WebSocket, agent_id: Ob
     // Read loop: forward each data frame to its dst within THIS network.
     loop {
         tokio::select! {
+            _ = &mut admission_watchdog => {
+                info!(%agent_id, "derp: device account admission revoked");
+                break;
+            }
             msg = ws_rx.next() => match msg {
                 Some(Ok(Message::Binary(frame))) => {
                     forward_frame(
@@ -557,6 +609,8 @@ async fn handle_derp_socket(state: NetworkState, socket: WebSocket, agent_id: Ob
             }
         }
     }
+    // Stop outbound IO before directory persistence can block cleanup.
+    write.abort();
     // Deregister — but ONLY if we're still the registered sender. A newer
     // reconnect (last-writer-wins) may have replaced us; we must not evict it.
     let removal_was_ours = state

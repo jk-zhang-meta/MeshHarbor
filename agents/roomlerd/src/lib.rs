@@ -189,6 +189,7 @@ pub mod session_idle;
 /// device's half: the owner's floor, and the masking every grant goes through.
 pub mod session_policy;
 pub mod session_telemetry;
+pub mod shared_lease;
 pub mod signaling;
 /// FR-93 P5h — a computer going to sleep tells every viewer first.
 pub mod sleep_notice;
@@ -210,6 +211,9 @@ pub mod ssh_origin;
 /// endpoint publisher, and the worker's word. Compiled everywhere; off
 /// Windows it advertises nothing.
 pub mod ssh_service;
+pub mod ssh_shared_bridge;
+#[cfg(feature = "ssh-server")]
+pub mod ssh_shared_stream;
 pub mod subnet_detect;
 /// FR-84 D3 — which supervisor will relaunch this process, decided from
 /// evidence the supervisor left; the only gate on `RestartDaemon`. Pure and

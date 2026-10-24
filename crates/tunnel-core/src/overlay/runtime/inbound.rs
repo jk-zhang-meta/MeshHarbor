@@ -86,6 +86,20 @@ impl OverlayRuntime {
             return;
         }
 
+        // A bilateral trial owns the sender. An unsolicited direct init may
+        // not unilaterally overwrite its decision; existing direct receiver
+        // routes above remain usable throughout make-before-break.
+        if by_node
+            .get(&node_id)
+            .is_some_and(|p| p.pubkey == cfg.public_key && p.overlay_ip == cfg.overlay_ip)
+            && self
+                .path_trial_managed
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .contains(&node_id)
+        {
+            return;
+        }
         // Classify the arriving source into a tier (pure helper below).
         let now = Instant::now();
         let make_before_break = crate::overlay::direct::make_before_break_enabled();

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 G ROX EOOD
+import { APP_BASE_PATH, appPath } from '@/utils/deployment'
 import { api } from '@/api/client'
 
 function urlBase64ToUint8Array(base64String: string): Uint8Array {
@@ -20,7 +21,7 @@ export async function subscribePush(): Promise<void> {
     const config = await api.get<{ vapid_public_key: string }>('/push/config')
     if (!config.vapid_public_key) return
 
-    const registration = await navigator.serviceWorker.register('/sw.js')
+    const registration = await navigator.serviceWorker.register(appPath('/sw.js'), { scope: APP_BASE_PATH })
     await navigator.serviceWorker.ready
 
     const permission = await Notification.requestPermission()
@@ -49,7 +50,7 @@ export async function unsubscribePush(): Promise<void> {
   if (!('serviceWorker' in navigator) || !('PushManager' in window)) return
 
   try {
-    const registration = await navigator.serviceWorker.getRegistration()
+    const registration = await navigator.serviceWorker.getRegistration(APP_BASE_PATH)
     if (!registration) return
 
     const subscription = await registration.pushManager.getSubscription()

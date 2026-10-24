@@ -126,25 +126,58 @@ pub async fn bind(
     secret: &BindSecret,
     deadline: Duration,
 ) -> Result<Duration, BindError> {
+    // A Serve push and this member's first UDP Bind arrive over independent
+    // connections. Loss/reordering must not strand a valid candidate for the
+    // entire budget. Retransmit one fresh attempt's EXACT Bind, never expand
+    // its original deadline, and never exceed eight sends per endpoint.
+    const MAX_SENDS: usize = 8;
+    const RETRY_BASE: Duration = Duration::from_millis(250);
+    const RETRY_MAX: Duration = Duration::from_secs(2);
     let nonce = fresh_nonce();
     let t1 = tag1(secret, vni, generation, &nonce);
+    let request = ControlFrame::Bind { nonce, tag1: t1 }.encode(vni);
     let started = Instant::now();
-    sock.send_to(&ControlFrame::Bind { nonce, tag1: t1 }.encode(vni), relay)
-        .await?;
-
+    let mut sent = 0usize;
+    let mut next_send = Duration::ZERO;
+    let mut retry_gap = RETRY_BASE;
     let mut buf = [0u8; CTRL_BUF];
     let cookie = loop {
-        let left = deadline.saturating_sub(started.elapsed());
-        if left.is_zero() {
+        let elapsed = started.elapsed();
+        if elapsed >= deadline {
             return Err(BindError::Timeout);
         }
-        let (n, from) = match timeout(left, sock.recv_from(&mut buf)).await {
+        if sent < MAX_SENDS && elapsed >= next_send {
+            match timeout(
+                deadline.saturating_sub(started.elapsed()),
+                sock.send_to(&request, relay),
+            )
+            .await
+            {
+                Ok(result) => {
+                    result?;
+                }
+                Err(_) => return Err(BindError::Timeout),
+            }
+            sent += 1;
+            next_send = started.elapsed().saturating_add(retry_gap);
+            retry_gap = retry_gap.saturating_mul(2).min(RETRY_MAX);
+        }
+        let wake = if sent < MAX_SENDS {
+            deadline.min(next_send)
+        } else {
+            deadline
+        };
+        let wait = wake.saturating_sub(started.elapsed());
+        if wait.is_zero() {
+            continue;
+        }
+        let (n, from) = match timeout(wait, sock.recv_from(&mut buf)).await {
             Ok(Ok(r)) => r,
             Ok(Err(e)) => return Err(BindError::Unreachable(e)),
-            Err(_) => return Err(BindError::Timeout),
+            Err(_) => continue,
         };
-        // Only the relay we asked may answer, and only about this VNI with
-        // OUR nonce — anything else on the socket is not a challenge for us.
+        // Receiving noise cannot reset the retry timer or the original budget.
+        // Only the exact relay, VNI, and this attempt's nonce can challenge us.
         if from != relay {
             continue;
         }
@@ -163,16 +196,29 @@ pub async fn bind(
     };
     let rtt = started.elapsed();
     let t2 = tag2(secret, &cookie, &nonce);
-    sock.send_to(
-        &ControlFrame::Answer {
-            nonce,
-            cookie,
-            tag2: t2,
-        }
-        .encode(vni),
-        relay,
+    let remaining = deadline.saturating_sub(started.elapsed());
+    if remaining.is_zero() {
+        return Err(BindError::Timeout);
+    }
+    match timeout(
+        remaining,
+        sock.send_to(
+            &ControlFrame::Answer {
+                nonce,
+                cookie,
+                tag2: t2,
+            }
+            .encode(vni),
+            relay,
+        ),
     )
-    .await?;
+    .await
+    {
+        Ok(result) => {
+            result?;
+        }
+        Err(_) => return Err(BindError::Timeout),
+    }
     Ok(rtt)
 }
 
@@ -189,29 +235,42 @@ pub struct EndpointOutcome {
 /// the first that challenges. `per_endpoint` bounds each attempt so a dead
 /// first endpoint cannot eat the whole bind budget.
 ///
-/// Returns the endpoint that answered and every outcome observed on the way
+/// Returns the actual bound socket, endpoint, and every outcome observed on the way
 /// (including the winner's), so the caller can report each one.
 pub async fn bind_any(
-    sock: &UdpSocket,
     endpoints: &[SocketAddr],
     vni: u32,
     generation: u64,
     secret: &BindSecret,
     per_endpoint: Duration,
-) -> Result<(SocketAddr, Vec<EndpointOutcome>), (BindError, Vec<EndpointOutcome>)> {
+) -> Result<(UdpSocket, SocketAddr, Vec<EndpointOutcome>), (BindError, Vec<EndpointOutcome>)> {
     if endpoints.is_empty() {
         return Err((BindError::NoEndpoint, Vec::new()));
     }
     let mut outcomes = Vec::with_capacity(endpoints.len());
     for &ep in endpoints {
-        match bind(sock, ep, vni, generation, secret, per_endpoint).await {
+        // Each endpoint owns a matching-family socket. Keep the winning socket:
+        // the relay authenticated its observed source, not a later replacement.
+        let addr = if ep.is_ipv6() { "[::]:0" } else { "0.0.0.0:0" };
+        let sock = match UdpSocket::bind(addr).await {
+            Ok(sock) => sock,
+            Err(error) => {
+                outcomes.push(EndpointOutcome {
+                    endpoint: ep,
+                    reachable: false,
+                    rtt: None,
+                });
+                return Err((BindError::Io(error), outcomes));
+            }
+        };
+        match bind(&sock, ep, vni, generation, secret, per_endpoint).await {
             Ok(rtt) => {
                 outcomes.push(EndpointOutcome {
                     endpoint: ep,
                     reachable: true,
                     rtt: Some(rtt),
                 });
-                return Ok((ep, outcomes));
+                return Ok((sock, ep, outcomes));
             }
             Err(e) if e.is_no_answer() => {
                 debug!(relay = %ep, vni, %e, "org-relay bind: no challenge from this endpoint");
@@ -387,6 +446,250 @@ mod tests {
         (addr, stats)
     }
 
+    fn retry_fixture_session() -> Session {
+        let now = Instant::now();
+        Session {
+            vni: VNI,
+            generation: GEN,
+            members: [
+                Member {
+                    wg_public: [0xAA; 32],
+                    secret: BindSecret::from_bytes([1; 32]),
+                },
+                Member {
+                    wg_public: [0xBB; 32],
+                    secret: BindSecret::from_bytes([2; 32]),
+                },
+            ],
+            bound: [None, None],
+            max_lifetime: now + Duration::from_secs(60),
+            idle_deadline: now + Duration::from_secs(60),
+            bind_deadline: now + Duration::from_secs(30),
+        }
+    }
+
+    #[tokio::test]
+    async fn bind_retries_after_actual_unknown_vni_then_late_session_install() {
+        use crate::overlay::orgrelay::server::RelayCommand;
+        tokio::time::timeout(Duration::from_secs(3), async {
+            let relay_sock = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+            let relay = relay_sock.local_addr().unwrap();
+            let stats = Arc::new(RelayStats::default());
+            let (mut server, _handle) =
+                RelayServer::new(CookieKey::from_bytes([7; 32]), stats.clone());
+            let client = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+            let bind_client = client.clone();
+            let task = tokio::spawn(async move {
+                bind(
+                    &bind_client,
+                    relay,
+                    VNI,
+                    GEN,
+                    &BindSecret::from_bytes([1; 32]),
+                    Duration::from_millis(1200),
+                )
+                .await
+            });
+            let mut packet = [0u8; CTRL_BUF];
+            let (n, from) = timeout(Duration::from_secs(1), relay_sock.recv_from(&mut packet))
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(matches!(
+                ControlFrame::decode(&packet[..n]),
+                Some((VNI, ControlFrame::Bind { .. }))
+            ));
+            assert!(server.handle(from, &packet[..n], Instant::now()).is_none());
+            assert_eq!(
+                stats.snapshot().drop_unknown_vni,
+                1,
+                "the FIRST real Bind actually arrived before its grant"
+            );
+            server.apply(RelayCommand::Install(Box::new(retry_fixture_session())));
+            assert_eq!(server.sessions_active(), 1);
+            let serving = tokio::spawn(server.serve(relay_sock));
+            let result = task.await.unwrap();
+            // Stop the owned server on the RED path too, before asserting.
+            if result.is_ok() {
+                timeout(Duration::from_millis(300), async {
+                    while stats.snapshot().bound != 1 {
+                        tokio::time::sleep(Duration::from_millis(5)).await;
+                    }
+                })
+                .await
+                .expect("real Answer must authenticate at the production server");
+            }
+            serving.abort();
+            let _ = serving.await;
+            assert!(
+                result.is_ok(),
+                "late authorized Serve must be recoverable inside the original deadline: {result:?}"
+            );
+            assert_eq!(stats.snapshot().bound, 1);
+            assert_eq!(stats.snapshot().drop_bad_tag1, 0);
+            assert_eq!(stats.snapshot().drop_bad_tag2, 0);
+        })
+        .await
+        .expect("bounded late-Serve regression");
+    }
+
+    #[tokio::test]
+    async fn bind_retries_zero_budget_sends_nothing_and_short_budget_has_one_attempt() {
+        let relay = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let addr = relay.local_addr().unwrap();
+        let client = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let secret = BindSecret::from_bytes([1; 32]);
+        let mut buf = [0u8; CTRL_BUF];
+        assert!(matches!(
+            bind(&client, addr, VNI, GEN, &secret, Duration::ZERO).await,
+            Err(BindError::Timeout)
+        ));
+        assert!(
+            timeout(Duration::from_millis(50), relay.recv_from(&mut buf))
+                .await
+                .is_err(),
+            "zero budget must emit no datagram"
+        );
+        assert!(matches!(
+            bind(&client, addr, VNI, GEN, &secret, Duration::from_millis(100)).await,
+            Err(BindError::Timeout)
+        ));
+        let (n, _) = timeout(Duration::from_millis(50), relay.recv_from(&mut buf))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            ControlFrame::decode(&buf[..n]),
+            Some((VNI, ControlFrame::Bind { .. }))
+        ));
+        assert!(
+            timeout(Duration::from_millis(50), relay.recv_from(&mut buf))
+                .await
+                .is_err(),
+            "short budget must not trigger an extra send after expiry"
+        );
+    }
+
+    #[tokio::test]
+    async fn bind_retries_invalid_challenges_do_not_extend_deadline_or_suppress_pacing() {
+        let relay = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let addr = relay.local_addr().unwrap();
+        let client = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let secret = BindSecret::from_bytes([1; 32]);
+        let started = Instant::now();
+        let capture = async {
+            let mut received = Vec::new();
+            let mut buf = [0u8; CTRL_BUF];
+            let mut destination = None;
+            let mut nonce = None;
+            while started.elapsed() < Duration::from_millis(1200) {
+                if let Ok(Ok((n, from))) =
+                    timeout(Duration::from_millis(20), relay.recv_from(&mut buf)).await
+                {
+                    let Some((VNI, ControlFrame::Bind { nonce: seen, .. })) =
+                        ControlFrame::decode(&buf[..n])
+                    else {
+                        panic!("only Bind is allowed before an authenticated matching Challenge")
+                    };
+                    if let Some(previous) = nonce {
+                        assert_eq!(
+                            previous, seen,
+                            "all retry packets keep one fresh attempt nonce"
+                        );
+                    }
+                    nonce = Some(seen);
+                    destination = Some(from);
+                    received.push((started.elapsed(), buf[..n].to_vec()));
+                }
+                if let (Some(dst), Some(mut wrong)) = (destination, nonce) {
+                    wrong[0] ^= 1;
+                    relay
+                        .send_to(
+                            &ControlFrame::Challenge {
+                                nonce: wrong,
+                                cookie: [0; 16],
+                            }
+                            .encode(VNI),
+                            dst,
+                        )
+                        .await
+                        .unwrap();
+                }
+            }
+            received
+        };
+        let attempt = async {
+            let result = bind(&client, addr, VNI, GEN, &secret, Duration::from_secs(1)).await;
+            (result, started.elapsed())
+        };
+        let ((result, elapsed), packets) = tokio::join!(attempt, capture);
+        assert!(
+            elapsed >= Duration::from_millis(900) && elapsed < Duration::from_millis(1300),
+            "invalid packets cannot reset the absolute deadline: {elapsed:?}"
+        );
+        assert!(
+            matches!(result, Err(BindError::Timeout)),
+            "wrong nonce never authenticates"
+        );
+        assert!(
+            (2..=3).contains(&packets.len()),
+            "invalid RX cannot suppress paced retries or create a flood; count={}",
+            packets.len()
+        );
+        assert!(
+            packets.windows(2).all(|p| p[0].1 == p[1].1),
+            "retries preserve the exact authenticated Bind bytes"
+        );
+        assert!(
+            packets
+                .windows(2)
+                .all(|p| p[1].0.saturating_sub(p[0].0) >= Duration::from_millis(200))
+        );
+        assert!(
+            packets.iter().all(|p| p.0 < Duration::from_secs(1)),
+            "no retransmit beyond the original deadline"
+        );
+    }
+
+    #[tokio::test]
+    async fn bind_retries_silent_endpoint_has_absolute_deadline_and_eight_send_cap() {
+        let relay = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let addr = relay.local_addr().unwrap();
+        let client = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let secret = BindSecret::from_bytes([1; 32]);
+        let started = Instant::now();
+        let capture = async {
+            let mut packets = Vec::new();
+            let mut buf = [0u8; CTRL_BUF];
+            while started.elapsed() < Duration::from_millis(11200) {
+                let left = Duration::from_millis(11200).saturating_sub(started.elapsed());
+                match timeout(left, relay.recv_from(&mut buf)).await {
+                    Ok(Ok((n, _))) => packets.push((started.elapsed(), buf[..n].to_vec())),
+                    Err(_) => break,
+                    other => panic!("owned silent UDP endpoint failed: {other:?}"),
+                }
+            }
+            packets
+        };
+        let (result, packets) = tokio::join!(
+            bind(&client, addr, VNI, GEN, &secret, Duration::from_secs(11)),
+            capture
+        );
+        assert!(matches!(result, Err(BindError::Timeout)));
+        assert_eq!(
+            packets.len(),
+            8,
+            "initial + at most seven retries, no unbounded control traffic"
+        );
+        assert!(packets.windows(2).all(|p| p[0].1 == p[1].1));
+        assert!(
+            packets
+                .windows(2)
+                .all(|p| p[1].0.saturating_sub(p[0].0) >= Duration::from_millis(200))
+        );
+        assert!(packets.iter().all(|p| p.0 < Duration::from_secs(11)));
+    }
+
     /// A member's proof that its handshake matches the relay's: bind on both
     /// sides, then ciphertext-shaped bytes cross in both directions and come
     /// out as the payload alone.
@@ -472,11 +775,9 @@ mod tests {
     #[tokio::test]
     async fn bind_any_tries_endpoints_in_order_and_reports_each_one() {
         let (relay, _) = relay_with_session([[1; 32], [2; 32]]).await;
-        let sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let dead: SocketAddr = "127.0.0.1:9".parse().unwrap();
         let secret = BindSecret::from_bytes([1; 32]);
-        let (winner, outcomes) = bind_any(
-            &sock,
+        let (_sock, winner, outcomes) = bind_any(
             &[dead, relay],
             VNI,
             GEN,
@@ -492,7 +793,7 @@ mod tests {
         assert_eq!(outcomes[1].endpoint, relay);
         assert!(outcomes[1].reachable && outcomes[1].rtt.is_some());
 
-        let (e, outcomes) = bind_any(&sock, &[], VNI, GEN, &secret, Duration::from_millis(100))
+        let (e, outcomes) = bind_any(&[], VNI, GEN, &secret, Duration::from_millis(100))
             .await
             .expect_err("no endpoints");
         assert!(matches!(e, BindError::NoEndpoint));

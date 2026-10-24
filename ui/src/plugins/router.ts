@@ -127,6 +127,25 @@ const routes: RouteRecordRaw[] = [
         component: () => import('@/views/dashboard/DashboardView.vue'),
       },
       {
+        path: 'my-devices', name: 'my-devices',
+        component: () => import('@/views/account/PersonalDevicesView.vue'),
+      },
+      {
+        path: 'device-shares', name: 'device-shares',
+        component: () => import('@/views/account/DeviceSharesView.vue'),
+      },
+      {
+        path: 'device-shares/:shareId/remote', name: 'shared-remote',
+        component: () => import('@/views/remote/SharedRemoteView.vue'),
+        meta: { module: 'remote', remountOn: 'shareId' },
+      },
+      {
+        // Global, not tenant membership. The view asks the server for owner access.
+        path: 'account-approval',
+        name: 'account-approval',
+        component: () => import('@/views/account/AccountApprovalView.vue'),
+      },
+      {
         path: 'profile/edit',
         name: 'profile-edit',
         component: () => import('@/views/profile/ProfileEditView.vue'),
@@ -362,7 +381,7 @@ const routes: RouteRecordRaw[] = [
 ]
 
 const router = createRouter({
-  history: createWebHistory(),
+  history: createWebHistory(import.meta.env.BASE_URL),
   routes,
 })
 

@@ -652,7 +652,11 @@ impl DaemonState {
 #[async_trait]
 impl LocalApiState for DaemonState {
     fn status(&self) -> NodeStatus {
+        let connected = self.connected.load(Ordering::Relaxed);
         NodeStatus {
+            path_trials: connected
+                .then(|| self.overlay.borrow().path_trials.clone())
+                .flatten(),
             node_id: self.node_id.clone(),
             name: self.name.lock().map(|n| n.clone()).unwrap_or_default(),
             version: self.version.clone(),
@@ -663,7 +667,7 @@ impl LocalApiState for DaemonState {
             // so it's kept even across a brief disconnect.
             overlay_ip: self.overlay.borrow().self_ip.clone(),
             overlay_ip6: self.overlay.borrow().self_ip6.clone(),
-            connected: self.connected.load(Ordering::Relaxed),
+            connected,
             // FR-51 P4 — the primary enrollment's nature, stamped at startup.
             ephemeral: self.ephemeral,
             // P5/S4 — exit-node routing status the overlay runtime published.
@@ -2220,6 +2224,7 @@ mod tests {
 
     fn view() -> OverlayView {
         OverlayView {
+            path_trials: None,
             self_ip: Some("100.64.0.2".into()),
             self_ip6: Some("fd72:6f6f:6d6c::6440:2".into()),
             peers: vec![PeerInfo {

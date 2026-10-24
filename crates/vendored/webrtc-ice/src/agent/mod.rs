@@ -53,6 +53,8 @@ use crate::url::*;
 
 #[derive(Debug, Clone)]
 pub(crate) struct BindingRequest {
+    // Some on every real sender; None only preserves legacy synthetic requests.
+    pub(crate) local_candidate_id: Option<String>,
     pub(crate) timestamp: Instant,
     pub(crate) transaction_id: TransactionId,
     pub(crate) destination: SocketAddr,
@@ -63,6 +65,7 @@ impl Default for BindingRequest {
     fn default() -> Self {
         Self {
             timestamp: Instant::now(),
+            local_candidate_id: None,
             transaction_id: TransactionId::default(),
             destination: SocketAddr::new(Ipv4Addr::new(0, 0, 0, 0).into(), 0),
             is_use_candidate: false,

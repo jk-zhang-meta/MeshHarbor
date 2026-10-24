@@ -177,6 +177,10 @@ pub fn wire_rc_relay(state: &RemoteState) {
                 )
                 .map_err(|e| format!("bad frame: {e}"))?;
 
+                if matches!(&frame, ClientMsg::SessionRequest { share_grant_id: Some(_), .. }) {
+                    return Ok(serde_json::json!({"dispatched": false,"code":"permission_denied","message":"Cross-pod device shares are not supported"}));
+                }
+
                 // Get-or-create the proxy for this origin conn.
                 let tx = {
                     let entry = state.rc_proxy_controllers.entry(conn.clone());

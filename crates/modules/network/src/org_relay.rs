@@ -52,7 +52,7 @@ use roomler_ai_remote_control::{
         NodeRef, OverlayNode, PeerRelayAuditAction, PeerRelayAuditEvent, PeerRelayDenyReason,
         PeerRelayMode, RpcCap, peer_relay_limits as limits,
     },
-    signaling::{RelayMemberWire, ServerMsg},
+    signaling::{OrgRelayCandidateWire, OrgRelayDiscoveryCursorWire, RelayMemberWire, ServerMsg},
 };
 use tracing::{debug, info, warn};
 use tunnel_core::policy::{OverlayPeerRef, OverlaySource, evaluate_overlay};
@@ -63,6 +63,12 @@ use crate::overlay::{
     try_overlay_source_of,
 };
 use roomler_core::net::is_global_unicast;
+
+mod trial;
+pub use trial::{
+    PathTrialReturnUpdate, PathTrialUpdate, request as path_trial_request,
+    return_update as path_trial_return_update, update as path_trial_update,
+};
 
 /// How long a cached `peer_relay_mode` read stands. The org switch route
 /// invalidates on write (same pod, by tenant affinity), so this only bounds
@@ -79,6 +85,14 @@ pub struct JoinExtras {
     pub org_primary: Option<bool>,
     /// The node's org-relay listening port, when it serves.
     pub relay_port: Option<u16>,
+    /// Explicit loss after advertising a listener. Kept across further empty
+    /// joins, while legacy clients which never supplied a port retain fallback.
+    pub relay_withdrawn: bool,
+    pub supports_org_relay_multi_candidate: bool,
+    pub supports_org_relay_discovery_cursor: bool,
+    pub supports_path_trial_v1: bool,
+    pub supports_path_backbone_v1: bool,
+    pub relay_backbone_ready: bool,
 }
 
 #[derive(Clone)]
@@ -148,6 +162,9 @@ pub struct OrgRelayState {
     join_extras: DashMap<ObjectId, JoinExtras>,
     probes: DashMap<(ObjectId, ObjectId), Vec<ProbeRecord>>,
     mode_cache: DashMap<ObjectId, (PeerRelayMode, Instant)>,
+    trials: trial::PathTrials,
+    // Conservative generation for membership/policy decisions spanning async IO.
+    eligibility_epoch: AtomicU64,
 }
 
 impl OrgRelayState {
@@ -155,14 +172,30 @@ impl OrgRelayState {
         Self::default()
     }
 
+    pub(crate) fn invalidate_eligibility(&self) {
+        self.eligibility_epoch.fetch_add(1, Ordering::AcqRel);
+    }
+    fn eligibility_generation(&self) -> u64 {
+        self.eligibility_epoch.load(Ordering::Acquire)
+    }
+
     /// Record what a join said beyond the row. Overwrites on every rejoin so a
     /// build that stops advertising a port, or an org that stops being
     /// primary, is not remembered as it was.
-    pub fn note_join(&self, node_id: ObjectId, extras: JoinExtras) {
-        self.join_extras.insert(node_id, extras);
+    pub fn note_join(&self, node_id: ObjectId, mut extras: JoinExtras) -> bool {
+        self.invalidate_eligibility();
+        let mut entry = self.join_extras.entry(node_id).or_default();
+        let previous = *entry;
+        let changed_listener =
+            previous.relay_port.is_some() && previous.relay_port != extras.relay_port;
+        extras.relay_withdrawn = extras.relay_port.is_none()
+            && (previous.relay_port.is_some() || previous.relay_withdrawn);
+        *entry = extras;
+        changed_listener
     }
 
     pub fn forget_node(&self, node_id: ObjectId) {
+        self.invalidate_eligibility();
         self.join_extras.remove(&node_id);
         self.probes.retain(|(reporter, _), _| *reporter != node_id);
     }
@@ -175,6 +208,7 @@ impl OrgRelayState {
     }
 
     pub fn invalidate_mode(&self, tenant_id: ObjectId) {
+        self.invalidate_eligibility();
         self.mode_cache.remove(&tenant_id);
     }
 
@@ -196,6 +230,7 @@ impl OrgRelayState {
             .iter()
             .filter(|e| e.relay.node_id == relay_node_id && e.expires_at > now)
             .count()
+            + self.trials.sessions_on_relay(relay_node_id, now)
     }
 
     /// Next free 24-bit VNI on a relay — globally unique PER RELAY NODE, never
@@ -205,12 +240,18 @@ impl OrgRelayState {
     /// never alias a session), and any VNI a live session on that relay
     /// still holds.
     fn alloc_vni(&self, relay_node_id: ObjectId) -> Option<u32> {
-        let in_use: Vec<u32> = self
+        let reserved = self.trials.vnis_on_relay(relay_node_id);
+        self.alloc_vni_with_reserved(relay_node_id, &reserved)
+    }
+
+    fn alloc_vni_with_reserved(&self, relay_node_id: ObjectId, reserved: &[u32]) -> Option<u32> {
+        let mut in_use: Vec<u32> = self
             .sessions
             .iter()
             .filter(|e| e.relay.node_id == relay_node_id)
             .map(|e| e.vni)
             .collect();
+        in_use.extend_from_slice(reserved);
         let mut cursor = self.next_vni.entry(relay_node_id).or_insert(1);
         // At most `MAX_SESSIONS_PER_RELAY` live VNIs plus the two reserved
         // values can stand in the way; bound the walk accordingly.
@@ -321,6 +362,7 @@ struct Plan {
     relay: OverlayNode,
     relay_agent_id: ObjectId,
     endpoints: Vec<String>,
+    backbone_edges: Vec<roomler_ai_remote_control::models::PeerRelayBackboneEdge>,
 }
 
 /// The relay's dialable `ip:port`s: its own public addresses (srflx first —
@@ -372,13 +414,25 @@ pub fn valid_static_endpoint(s: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Gates 2–5 for one request. Pure over what it reads; the caller audits the
-/// verdict and, under `on`, mints.
+/// Shared candidate authorization (gates 2–4). Discovery only returns metadata;
+/// the mint caller additionally applies gate 5 and audits its verdict.
 async fn plan_mint(
     state: &NetworkState,
     requester: &OverlayNode,
     peer: &OverlayNode,
 ) -> Result<Plan, PeerRelayDenyReason> {
+    plan_mint_candidates(state, requester, peer)
+        .await?
+        .into_iter()
+        .next()
+        .ok_or(PeerRelayDenyReason::NoRelay)
+}
+
+async fn plan_mint_candidates(
+    state: &NetworkState,
+    requester: &OverlayNode,
+    peer: &OverlayNode,
+) -> Result<Vec<Plan>, PeerRelayDenyReason> {
     use PeerRelayDenyReason as D;
     let tenant_id = requester.tenant_id;
     if peer.tenant_id != tenant_id {
@@ -450,7 +504,7 @@ async fn plan_mint(
         }
         let extras = state.org_relay.join_extras(relay_id);
         // Serving is primary-only: a UDP listener is host-global.
-        if extras.org_primary != Some(true) {
+        if extras.org_primary != Some(true) || extras.relay_withdrawn {
             continue;
         }
         if state.org_relay.sessions_on_relay(relay_id) >= limits::MAX_SESSIONS_PER_RELAY {
@@ -487,6 +541,7 @@ async fn plan_mint(
             relay: node,
             relay_agent_id: agent_id,
             endpoints,
+            backbone_edges: agent.peer_relay_policy.approved_backbone_edges,
         });
     }
     if candidates.is_empty() {
@@ -521,17 +576,360 @@ async fn plan_mint(
             state.org_relay.sessions_on_relay(relay_id),
         )
     });
-    let plan = candidates.swap_remove(0);
-    let relay_id = plan.relay.id.unwrap_or_default();
+    Ok(candidates)
+}
 
-    // Gate 5 — after the identity gates, keyed as the spec prescribes.
-    if !state
-        .relay_rate_limiter
-        .check(req_id, relay_id, limits::MINT_RATE_LIMIT_PER_MINUTE)
+pub fn revoke_backbone_node_sync(
+    state: &NetworkState,
+    tenant: ObjectId,
+    node: ObjectId,
+    member_withdrawn: bool,
+    ingress_withdrawn: bool,
+) -> Vec<PeerRelayAuditEvent> {
+    trial::revoke_backbone_node(state, tenant, node, member_withdrawn, ingress_withdrawn)
+}
+
+pub fn revoke_removed_backbone_edges_sync(
+    state: &NetworkState,
+    tenant: ObjectId,
+    source: ObjectId,
+    approved: &[roomler_ai_remote_control::models::PeerRelayBackboneEdge],
+) -> Vec<PeerRelayAuditEvent> {
+    trial::revoke_removed_backbone_edges(state, tenant, source, approved)
+}
+
+struct BackbonePlan {
+    ingress: Plan,
+    exit: Plan,
+    private_endpoint: String,
+}
+
+async fn plan_backbone(
+    state: &NetworkState,
+    requester: &OverlayNode,
+    peer: &OverlayNode,
+    ingress_id: ObjectId,
+    exit_id: ObjectId,
+) -> Result<BackbonePlan, PeerRelayDenyReason> {
+    use PeerRelayDenyReason as D;
+    let (Some(a), Some(b)) = (requester.id, peer.id) else {
+        return Err(D::RequesterUnsupported);
+    };
+    if ingress_id == exit_id
+        || !state.org_relay.join_extras(a).supports_path_backbone_v1
+        || !state.org_relay.join_extras(b).supports_path_backbone_v1
+        || !state.org_relay.join_extras(ingress_id).relay_backbone_ready
     {
-        return Err(D::RateLimited);
+        return Err(D::RequesterUnsupported);
     }
-    Ok(plan)
+    let network = state
+        .overlay_networks
+        .get_or_create(requester.tenant_id)
+        .await
+        .map_err(|_| D::PolicyUnreadable)?;
+    if network.mtu > limits::BACKBONE_MAX_OVERLAY_MTU {
+        return Err(D::RequesterUnsupported);
+    }
+    let mut plans = plan_mint_candidates(state, requester, peer).await?;
+    let Some(exit_index) = plans.iter().position(|p| p.relay.id == Some(exit_id)) else {
+        return Err(D::NoRelay);
+    };
+    let exit = plans.remove(exit_index);
+    let Some(ingress_index) = plans.iter().position(|p| p.relay.id == Some(ingress_id)) else {
+        return Err(D::NoRelay);
+    };
+    let ingress = plans.remove(ingress_index);
+    let endpoint = ingress
+        .backbone_edges
+        .iter()
+        .take(8)
+        .find(|edge| {
+            ObjectId::parse_str(&edge.relay_agent_id).ok() == Some(exit.relay_agent_id)
+                && crate::routes::peer_relay::valid_backbone_endpoint(&edge.endpoint)
+        })
+        .map(|e| e.endpoint.clone())
+        .ok_or(D::NoRelay)?;
+    if !crate::routes::peer_relay::backbone_endpoint_outside_overlay(&endpoint, &network.cidr) {
+        return Err(D::NonRoutableEndpoint);
+    }
+    Ok(BackbonePlan {
+        ingress,
+        exit,
+        private_endpoint: endpoint,
+    })
+}
+
+fn discovery_key(c: &OrgRelayCandidateWire) -> (ObjectId, Option<ObjectId>) {
+    (c.relay_node_id, c.exit_relay_node_id)
+}
+fn discovery_cursor(c: &OrgRelayCandidateWire) -> OrgRelayDiscoveryCursorWire {
+    OrgRelayDiscoveryCursorWire {
+        relay_node_id: c.relay_node_id,
+        exit_relay_node_id: c.exit_relay_node_id,
+    }
+}
+/// At most six hints retained while scanning the already-authorized planner.
+/// Ring order provides coverage; output order remains planner preference order.
+fn discovery_page(
+    hints: impl Iterator<Item = OrgRelayCandidateWire>,
+    cursor: OrgRelayDiscoveryCursorWire,
+) -> (
+    Vec<OrgRelayCandidateWire>,
+    Option<OrgRelayDiscoveryCursorWire>,
+) {
+    let key = (cursor.relay_node_id, cursor.exit_relay_node_id);
+    let mut first = Vec::new();
+    let mut after = Vec::new();
+    for (rank, hint) in hints.enumerate() {
+        let k = discovery_key(&hint);
+        fn keep(
+            window: &mut Vec<(usize, OrgRelayCandidateWire)>,
+            rank: usize,
+            hint: OrgRelayCandidateWire,
+        ) {
+            if window
+                .iter()
+                .any(|(_, c)| discovery_key(c) == discovery_key(&hint))
+            {
+                return;
+            }
+            window.push((rank, hint));
+            window.sort_by_key(|(_, c)| discovery_key(c));
+            window.truncate(3);
+        }
+        keep(&mut first, rank, hint.clone());
+        if k > key {
+            keep(&mut after, rank, hint);
+        }
+    }
+    for entry in first {
+        if after.len() == 3 {
+            break;
+        }
+        if !after
+            .iter()
+            .any(|(_, c)| discovery_key(c) == discovery_key(&entry.1))
+        {
+            after.push(entry);
+        }
+    }
+    // Last traversed, NOT maximum key: a page may wrap through the origin.
+    let next = after.last().map(|(_, c)| discovery_cursor(c));
+    after.sort_by_key(|(rank, _)| *rank);
+    (after.into_iter().map(|(_, c)| c).collect(), next)
+}
+
+/// Return a short-lived selection hint using the SAME candidate authorization
+/// as session minting. No VNI, secret, session, TURN allocation, or peer push.
+/// The caller already bounded requests and checked the pair's visibility.
+pub async fn discover(
+    state: &NetworkState,
+    requester: &OverlayNode,
+    peer: &OverlayNode,
+    request_id: u64,
+    cursor: Option<OrgRelayDiscoveryCursorWire>,
+) {
+    let Some(peer_id) = peer.id else { return };
+    let mut candidates = Vec::new();
+    let extras = requester
+        .id
+        .map(|id| state.org_relay.join_extras(id))
+        .unwrap_or_default();
+    let traversal =
+        extras.supports_org_relay_multi_candidate && extras.supports_org_relay_discovery_cursor;
+    let mut next_cursor = None;
+    let mut backbone_cidr = None;
+    let enabled = peer_relay_mode(state, requester.tenant_id).await == PeerRelayMode::On;
+    if enabled {
+        let path_caps = requester
+            .id
+            .is_some_and(|id| state.org_relay.join_extras(id).supports_path_backbone_v1)
+            && state
+                .org_relay
+                .join_extras(peer_id)
+                .supports_path_backbone_v1;
+        let path_network = if path_caps {
+            state
+                .overlay_networks
+                .get_or_create(requester.tenant_id)
+                .await
+                .ok()
+                .filter(|n| n.mtu <= limits::BACKBONE_MAX_OVERLAY_MTU)
+        } else {
+            None
+        };
+        if let Some(path_network) = path_network {
+            backbone_cidr = Some(path_network.cidr.clone());
+            if let Ok(plans) = plan_mint_candidates(state, requester, peer).await {
+                // Ordering is only a discovery hint, NEVER a path-quality
+                // decision. A bilateral same-metric trial must prove the full
+                // path including the private backbone before application use.
+                'sources: for ingress in &plans {
+                    let Some(ingress_id) = ingress.relay.id else {
+                        continue;
+                    };
+                    if !state.org_relay.join_extras(ingress_id).relay_backbone_ready {
+                        continue;
+                    }
+                    for edge in ingress.backbone_edges.iter().take(8) {
+                        if !crate::routes::peer_relay::backbone_endpoint_outside_overlay(
+                            &edge.endpoint,
+                            &path_network.cidr,
+                        ) {
+                            continue;
+                        }
+                        let Ok(target) = ObjectId::parse_str(&edge.relay_agent_id) else {
+                            continue;
+                        };
+                        let Some(exit) = plans
+                            .iter()
+                            .find(|p| p.relay_agent_id == target && p.relay.id != Some(ingress_id))
+                        else {
+                            continue;
+                        };
+                        candidates.push(OrgRelayCandidateWire {
+                            relay_node_id: ingress_id,
+                            endpoints: ingress.endpoints.iter().take(4).cloned().collect(),
+                            exit_relay_node_id: exit.relay.id,
+                        });
+                        if candidates.len() >= 2 {
+                            break 'sources;
+                        }
+                    }
+                }
+            }
+        }
+        if requester.id.is_some_and(|id| {
+            state
+                .org_relay
+                .join_extras(id)
+                .supports_org_relay_multi_candidate
+        }) {
+            // Metadata only: preserve the existing authorized ordering, and
+            // fill unused slots after the original (at most two) backbone
+            // hints. Failure/cooldown and trials remain client-owned; discovery
+            // never establishes or promotes a path. Old clients retain their
+            // exact single-one-hop response because they reject this shape.
+            if let Ok(plans) = plan_mint_candidates(state, requester, peer).await {
+                for plan in plans {
+                    if candidates.len() >= 3 {
+                        break;
+                    }
+                    let Some(relay_node_id) = plan.relay.id else {
+                        continue;
+                    };
+                    if candidates
+                        .iter()
+                        .any(|c| c.relay_node_id == relay_node_id && c.exit_relay_node_id.is_none())
+                    {
+                        continue;
+                    }
+                    candidates.push(OrgRelayCandidateWire {
+                        relay_node_id,
+                        exit_relay_node_id: None,
+                        endpoints: plan.endpoints.into_iter().take(4).collect(),
+                    });
+                }
+            }
+        } else if let Ok(plan) = plan_mint(state, requester, peer).await {
+            if let Some(relay_node_id) = plan.relay.id {
+                candidates.push(OrgRelayCandidateWire {
+                    relay_node_id,
+                    exit_relay_node_id: None,
+                    endpoints: plan.endpoints.into_iter().take(4).collect(),
+                });
+            }
+        }
+    }
+    if traversal && enabled {
+        if let Some(cursor) = cursor {
+            // Existing two-hop scope is unchanged: only the original at-most-two
+            // backbone hints participate. All one-hop plans are freshly filtered.
+            match plan_mint_candidates(state, requester, peer).await {
+                Ok(plans) => {
+                    // Never carry a backbone hint across the await into this
+                    // fresh page snapshot: approval, ACL or approved edges may
+                    // have changed. Rebuild only the existing <=2 hint scope.
+                    let mut backbone = Vec::new();
+                    let current_path_caps = requester.id.is_some_and(|id| {
+                        state.org_relay.join_extras(id).supports_path_backbone_v1
+                    }) && state
+                        .org_relay
+                        .join_extras(peer_id)
+                        .supports_path_backbone_v1;
+                    if let Some(cidr) = backbone_cidr.as_deref().filter(|_| current_path_caps) {
+                        'sources: for ingress in &plans {
+                            let Some(ingress_id) = ingress.relay.id else {
+                                continue;
+                            };
+                            if !state.org_relay.join_extras(ingress_id).relay_backbone_ready {
+                                continue;
+                            }
+                            for edge in ingress.backbone_edges.iter().take(8) {
+                                if !crate::routes::peer_relay::backbone_endpoint_outside_overlay(
+                                    &edge.endpoint,
+                                    cidr,
+                                ) {
+                                    continue;
+                                }
+                                let Ok(target) = ObjectId::parse_str(&edge.relay_agent_id) else {
+                                    continue;
+                                };
+                                let Some(exit) = plans.iter().find(|p| {
+                                    p.relay_agent_id == target && p.relay.id != Some(ingress_id)
+                                }) else {
+                                    continue;
+                                };
+                                let hint = OrgRelayCandidateWire {
+                                    relay_node_id: ingress_id,
+                                    endpoints: ingress.endpoints.iter().take(4).cloned().collect(),
+                                    exit_relay_node_id: exit.relay.id,
+                                };
+                                if !backbone
+                                    .iter()
+                                    .any(|c| discovery_key(c) == discovery_key(&hint))
+                                {
+                                    backbone.push(hint);
+                                }
+                                if backbone.len() == 2 {
+                                    break 'sources;
+                                }
+                            }
+                        }
+                    }
+                    let onehop = plans.into_iter().filter_map(|p| {
+                        p.relay.id.map(|id| OrgRelayCandidateWire {
+                            relay_node_id: id,
+                            exit_relay_node_id: None,
+                            endpoints: p.endpoints.into_iter().take(4).collect(),
+                        })
+                    });
+                    (candidates, next_cursor) =
+                        discovery_page(backbone.into_iter().chain(onehop), cursor);
+                }
+                Err(_) => candidates.clear(), // no stale-page fallback on authorization failure
+            }
+        } else {
+            // Preserve the original preferred first page, including backbone reservation.
+            next_cursor = candidates
+                .iter()
+                .max_by_key(|c| discovery_key(c))
+                .map(discovery_cursor);
+        }
+    }
+    let ttl_secs = if candidates.is_empty() { 0 } else { 30 };
+    send_to_node(
+        state,
+        requester,
+        ServerMsg::OverlayOrgRelayCandidates {
+            peer_node_id: peer_id,
+            request_id,
+            candidates,
+            ttl_secs,
+            next_cursor,
+        },
+    )
+    .await;
 }
 
 fn random_secret() -> String {
@@ -567,7 +965,19 @@ pub async fn maybe_mint(state: &NetworkState, requester: &OverlayNode, peer: &Ov
         return;
     }
 
-    let verdict = plan_mint(state, requester, peer).await;
+    let verdict = plan_mint(state, requester, peer).await.and_then(|plan| {
+        let relay_id = plan.relay.id.unwrap_or_default();
+        // Gate 5 belongs to minting, not metadata discovery. Preserve its
+        // existing requester->relay ceiling and audited refusal behavior.
+        if state
+            .relay_rate_limiter
+            .check(req_id, relay_id, limits::MINT_RATE_LIMIT_PER_MINUTE)
+        {
+            Ok(plan)
+        } else {
+            Err(PeerRelayDenyReason::RateLimited)
+        }
+    });
     let plan = match verdict {
         Ok(plan) => plan,
         Err(reason) => {
@@ -741,47 +1151,111 @@ async fn audit_mint(
 /// Tear down every live session `pred` selects: `rc:overlay.relay_revoke` to
 /// the relay and both members, the record dropped, one audit row per session
 /// naming the trigger. Returns how many were revoked.
+/// Send control messages without DB access or awaited channel capacity. A
+/// failed push is not an acknowledgment; the authoritative state is already
+/// removed and the normal reconnect/receiver liveness paths remain in force.
+fn push_control(state: &NetworkState, node: &NodeRef, msg: ServerMsg) -> bool {
+    match node {
+        NodeRef::Agent { agent_id } => state.fleet.rc_hub.send_to_agent(*agent_id, msg).is_ok(),
+        NodeRef::TunnelClient { tunnel_client_id } => state
+            .overlay_nodes_by_id
+            .get(tunnel_client_id)
+            .is_some_and(|tx| tx.try_send(msg).is_ok()),
+    }
+}
+
+fn revoke_matching_sync(
+    state: &NetworkState,
+    reason: &str,
+    pred: impl Fn(&OrgRelaySession) -> bool,
+) -> Vec<PeerRelayAuditEvent> {
+    // Even zero current sessions must invalidate an in-flight authorization.
+    state.org_relay.invalidate_eligibility();
+    let victims: Vec<OrgRelaySession> = state
+        .org_relay
+        .sessions
+        .iter()
+        .filter(|entry| pred(entry.value()))
+        .map(|entry| entry.value().clone())
+        .collect();
+    let mut events = Vec::new();
+    for session in victims {
+        // Do not remove a newer generation which replaced the selected row.
+        if state
+            .org_relay
+            .sessions
+            .remove_if(&session.pair_key, |_, current| {
+                current.vni == session.vni && current.generation == session.generation
+            })
+            .is_none()
+        {
+            continue;
+        }
+        let message = ServerMsg::OverlayRelayRevoke { vni: session.vni };
+        push_control(state, &session.relay.node_ref, message.clone());
+        for member in &session.members {
+            push_control(state, &member.party.node_ref, message.clone());
+        }
+        events.push(PeerRelayAuditEvent {
+            id: None,
+            tenant_id: session.tenant_id,
+            action: PeerRelayAuditAction::Revoke,
+            agent_id: Some(session.relay_agent_id),
+            user_id: None,
+            requester_node_id: Some(session.members[0].party.node_id),
+            peer_node_id: Some(session.members[1].party.node_id),
+            relay_node_id: Some(session.relay.node_id),
+            serve: None,
+            vni: Some(session.vni),
+            warn_only: false,
+            at: DateTime::now(),
+            denied: None,
+            reason: Some(reason.to_string()),
+        });
+    }
+    events.extend(state.org_relay.trials.revoke_where(state, reason, &pred));
+    events
+}
+
+/// Admission revocation: no current_node lookup, storage operation or await
+/// precedes terminating every session in which this authenticated agent acts.
+/// The caller owns bounded persistence of the returned audit events.
+pub fn revoke_agent_sync(
+    state: &NetworkState,
+    tenant_id: ObjectId,
+    agent_id: ObjectId,
+    reason: &str,
+) -> Vec<PeerRelayAuditEvent> {
+    let is_agent =
+        |node: &NodeRef| matches!(node, NodeRef::Agent { agent_id: id } if *id == agent_id);
+    revoke_matching_sync(state, reason, |session| {
+        session.tenant_id == tenant_id
+            && (is_agent(&session.relay.node_ref)
+                || session
+                    .members
+                    .iter()
+                    .any(|member| is_agent(&member.party.node_ref)))
+    })
+}
+
 pub async fn revoke_where(
     state: &NetworkState,
     reason: &str,
     pred: impl Fn(&OrgRelaySession) -> bool,
 ) -> usize {
-    let victims: Vec<OrgRelaySession> = state
-        .org_relay
-        .sessions
-        .iter()
-        .filter(|e| pred(e.value()))
-        .map(|e| e.value().clone())
-        .collect();
-    for s in &victims {
-        state.org_relay.sessions.remove(&s.pair_key);
-        let msg = ServerMsg::OverlayRelayRevoke { vni: s.vni };
-        send_to_node_ref(state, &s.relay.node_ref, msg.clone()).await;
-        for m in &s.members {
-            send_to_node_ref(state, &m.party.node_ref, msg.clone()).await;
-        }
-        info!(tenant_id = %s.tenant_id, vni = s.vni, relay = %s.relay.node_id, reason, "org-relay: session revoked");
-        let event = PeerRelayAuditEvent {
-            id: None,
-            tenant_id: s.tenant_id,
-            action: PeerRelayAuditAction::Revoke,
-            agent_id: Some(s.relay_agent_id),
-            user_id: None,
-            requester_node_id: Some(s.members[0].party.node_id),
-            peer_node_id: Some(s.members[1].party.node_id),
-            relay_node_id: Some(s.relay.node_id),
-            serve: None,
-            vni: Some(s.vni),
-            warn_only: false,
-            at: DateTime::now(),
-            denied: None,
-            reason: Some(reason.to_string()),
-        };
-        if let Err(e) = state.peer_relay_audit.record(event).await {
-            warn!(%e, "org-relay: audit write failed");
+    // Complete ALL removals and notifications before the first audit IO.
+    let events = revoke_matching_sync(state, reason, pred);
+    let count = events.len();
+    for event in events {
+        if !matches!(
+            tokio::time::timeout(Duration::from_secs(3), state.peer_relay_audit.record(event))
+                .await,
+            Ok(Ok(_))
+        ) {
+            warn!("org-relay: revoke audit failed or timed out after control revocation");
         }
     }
-    victims.len()
+    count
 }
 
 /// Trigger 1 — the org switched peer relays off.
@@ -815,6 +1289,7 @@ pub async fn revoke_node(state: &NetworkState, node_id: ObjectId, reason: &str) 
 /// blip costs one session; tearing down every LIVE session on a blip is the
 /// "spurious deny takes the mesh down" failure `load_acl` fails open to avoid.
 pub async fn reconcile_acl(state: &NetworkState, tenant_id: ObjectId) {
+    state.org_relay.invalidate_eligibility();
     let acl = match try_load_acl(state, tenant_id, PolicyLoad::Always).await {
         Ok(a) => a,
         Err(e) => {
@@ -822,13 +1297,14 @@ pub async fn reconcile_acl(state: &NetworkState, tenant_id: ObjectId) {
             return;
         }
     };
-    let live: Vec<OrgRelaySession> = state
+    let mut live: Vec<OrgRelaySession> = state
         .org_relay
         .sessions
         .iter()
         .filter(|e| e.tenant_id == tenant_id)
         .map(|e| e.value().clone())
         .collect();
+    live.extend(state.org_relay.trials.sessions_for_tenant(tenant_id));
     for s in live {
         let Ok(relay) = state.overlay_nodes.base.find_by_id(s.relay.node_id).await else {
             continue;
@@ -1020,5 +1496,142 @@ mod tests {
             st.probe_verdict(b, relay, Instant::now()),
             ProbeVerdict::Unreachable
         );
+    }
+
+    #[test]
+    fn multi_candidate_capability_is_replaced_not_latched_on_rejoin() {
+        let state = OrgRelayState::new();
+        let node = ObjectId::new();
+        state.note_join(
+            node,
+            JoinExtras {
+                supports_org_relay_multi_candidate: true,
+                ..Default::default()
+            },
+        );
+        assert!(state.join_extras(node).supports_org_relay_multi_candidate);
+        state.note_join(node, JoinExtras::default());
+        assert!(!state.join_extras(node).supports_org_relay_multi_candidate);
+    }
+
+    #[test]
+    fn listener_withdrawal_stays_withdrawn_but_legacy_missing_port_is_supported() {
+        let state = OrgRelayState::new();
+        let node = ObjectId::new();
+        let extras = |port| JoinExtras {
+            org_primary: Some(true),
+            relay_port: port,
+            relay_withdrawn: false,
+            supports_org_relay_multi_candidate: false,
+            supports_org_relay_discovery_cursor: false,
+            supports_path_trial_v1: false,
+            supports_path_backbone_v1: false,
+            relay_backbone_ready: false,
+        };
+        assert!(!state.note_join(node, extras(None)));
+        assert!(
+            !state.join_extras(node).relay_withdrawn,
+            "legacy missing port still uses default"
+        );
+        assert!(!state.note_join(node, extras(Some(3478))));
+        assert!(state.note_join(node, extras(None)));
+        assert!(state.join_extras(node).relay_withdrawn);
+        assert!(!state.note_join(node, extras(None)));
+        assert!(
+            state.join_extras(node).relay_withdrawn,
+            "empty repeated join cannot resurrect listener"
+        );
+        assert!(!state.note_join(node, extras(Some(3479))));
+        assert!(!state.join_extras(node).relay_withdrawn);
+        assert!(
+            state.note_join(node, extras(Some(3480))),
+            "port replacement retires old sessions"
+        );
+    }
+}
+
+#[cfg(test)]
+mod discovery_traversal_tests {
+    use super::*;
+    fn hint(n: u8) -> OrgRelayCandidateWire {
+        OrgRelayCandidateWire {
+            relay_node_id: ObjectId::from_bytes([n; 12]),
+            exit_relay_node_id: None,
+            endpoints: vec!["8.8.8.8:3478".into()],
+        }
+    }
+    #[test]
+    fn discovery_traversal_five_relays_preserves_preference_and_wraps() {
+        let all: Vec<_> = [5, 2, 4, 1, 3].into_iter().map(hint).collect();
+        // Initial response is the original planner preference, not lowest IDs.
+        let preferred = all[..3].to_vec();
+        let mut cursor = preferred
+            .iter()
+            .max_by_key(|c| discovery_key(c))
+            .map(discovery_cursor)
+            .unwrap();
+        let mut seen: std::collections::HashSet<_> = preferred.iter().map(discovery_key).collect();
+        for _ in 0..2 {
+            let (page, next) = discovery_page(all.clone().into_iter(), cursor);
+            assert_eq!(page.len(), 3);
+            assert_eq!(
+                page.iter()
+                    .map(discovery_key)
+                    .collect::<std::collections::HashSet<_>>()
+                    .len(),
+                3
+            );
+            // Every page presents hints in original planner preference order.
+            assert!(
+                page.windows(2)
+                    .all(|p| all.iter().position(|c| c == &p[0])
+                        < all.iter().position(|c| c == &p[1]))
+            );
+            seen.extend(page.iter().map(discovery_key));
+            cursor = next.unwrap();
+        }
+        assert_eq!(seen.len(), 5);
+        // Wrapped cursor is the last canonical traversal entry, not max or last displayed.
+        let (page, next) = discovery_page(all.into_iter(), discovery_cursor(&hint(4)));
+        assert_eq!(next.unwrap(), discovery_cursor(&hint(2)));
+        assert_eq!(
+            page.iter().map(|c| c.relay_node_id).collect::<Vec<_>>(),
+            vec![
+                hint(5).relay_node_id,
+                hint(2).relay_node_id,
+                hint(1).relay_node_id
+            ]
+        );
+    }
+    #[test]
+    fn discovery_traversal_dynamic_set_unknown_cursor_empty_and_duplicate_bounds() {
+        let cursor = discovery_cursor(&hint(3));
+        let mut all = vec![hint(1), hint(2), hint(4), hint(5)]; // revoked 3 absent
+        all.push(hint(6)); // newly joined relay, no leaf address input
+        let mut next = cursor;
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..3 {
+            let (page, c) = discovery_page(all.clone().into_iter().chain(all.clone()), next);
+            assert!(
+                page.len() <= 3
+                    && page
+                        .iter()
+                        .all(|c| c.relay_node_id != hint(3).relay_node_id)
+            );
+            assert_eq!(
+                page.iter()
+                    .map(discovery_key)
+                    .collect::<std::collections::HashSet<_>>()
+                    .len(),
+                page.len()
+            );
+            seen.extend(page.iter().map(discovery_key));
+            next = c.unwrap();
+        }
+        assert_eq!(seen.len(), 5);
+        let (page, next) = discovery_page(std::iter::empty(), cursor);
+        assert!(page.is_empty() && next.is_none());
+        let (page, _) = discovery_page(vec![hint(1)].into_iter(), discovery_cursor(&hint(99)));
+        assert_eq!(page, vec![hint(1)]);
     }
 }

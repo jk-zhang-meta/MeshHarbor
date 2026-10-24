@@ -238,6 +238,7 @@ mod tests {
     fn carrier_tallies_and_median_rtt() {
         let mut s = SysSampler::new();
         let view = OverlayView {
+            path_trials: None,
             self_ip: Some("100.64.0.7".into()),
             self_ip6: None,
             peers: vec![
@@ -279,6 +280,7 @@ mod tests {
     fn unreachable_peers_are_edges_not_carriers() {
         let mut s = SysSampler::new();
         let view = OverlayView {
+            path_trials: None,
             self_ip: Some("100.64.0.7".into()),
             self_ip6: None,
             peers: vec![
@@ -310,6 +312,7 @@ mod tests {
     fn overlay_volume_sums_across_edges() {
         let mut s = SysSampler::new();
         let view = OverlayView {
+            path_trials: None,
             self_ip: Some("100.64.0.7".into()),
             self_ip6: None,
             peers: vec![
@@ -350,6 +353,7 @@ mod tests {
     fn relay_edges_carry_the_qualified_flavour() {
         let mut s = SysSampler::new();
         let view = OverlayView {
+            path_trials: None,
             self_ip: Some("100.64.0.7".into()),
             self_ip6: None,
             peers: vec![

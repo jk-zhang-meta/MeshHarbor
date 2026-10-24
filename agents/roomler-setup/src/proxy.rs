@@ -20,37 +20,39 @@
 /// (health GET, artifact download, tunnel-enroll POST).
 pub const USER_AGENT: &str = concat!("roomler-setup/", env!("CARGO_PKG_VERSION"));
 
-/// Default proxy base for the daemon MSI endpoint family.
-const DEFAULT_AGENT_BASE: &str = "https://roomler.ai/api/agent/installer";
+/// MeshHarbor default center; explicit wizard input remains authoritative.
+pub const DEFAULT_SERVER: &str = "https://www.itachi.fans/meshharbor";
+const AGENT_SUFFIX: &str = "/api/agent/installer";
 
 /// Default proxy base for the tunnel-CLI archive endpoint family.
 /// NB: `/api/tunnel/installer` serves the `roomler` CLI
 /// tarball; the (P4c-2-retired) `/api/tunnel-wizard` family served
 /// the wizard EXE itself — pointing here at the latter made the
 /// wizard install ITSELF (rc.60 bug, fixed rc.61).
-const DEFAULT_TUNNEL_BASE: &str = "https://roomler.ai/api/tunnel/installer";
+const TUNNEL_SUFFIX: &str = "/api/tunnel/installer";
 
 /// Resolve the daemon-MSI proxy base at runtime. Env override
 /// `ROOMLER_INSTALLER_PROXY_BASE` (inherited from the legacy agent
-/// wizard so staging fixtures keep working) — else the production
-/// default. Always returned without a trailing slash.
-pub fn agent_base() -> String {
+/// wizard so staging fixtures keep working) — else the selected center,
+/// including its deployment prefix. Returned without a trailing slash.
+pub fn agent_base(server: &str) -> String {
     let raw = std::env::var("ROOMLER_INSTALLER_PROXY_BASE")
         .ok()
-        .unwrap_or_else(|| DEFAULT_AGENT_BASE.to_string());
+        .unwrap_or_else(|| format!("{}{}", normalise(server), AGENT_SUFFIX));
     normalise(&raw)
 }
 
 /// Resolve the tunnel-CLI proxy base at runtime. Env override chain
 /// `ROOMLER_TUNNEL_CLI_PROXY_BASE` → legacy alias
 /// `ROOMLER_TUNNEL_WIZARD_PROXY_BASE` (back-compat with any test
-/// fixture that pre-dates the rc.61 rename) → the production default.
+/// fixture that pre-dates the rc.61 rename) → the selected center, including
+/// its deployment prefix.
 /// Always returned without a trailing slash.
-pub fn tunnel_base() -> String {
+pub fn tunnel_base(server: &str) -> String {
     let raw = std::env::var("ROOMLER_TUNNEL_CLI_PROXY_BASE")
         .ok()
         .or_else(|| std::env::var("ROOMLER_TUNNEL_WIZARD_PROXY_BASE").ok())
-        .unwrap_or_else(|| DEFAULT_TUNNEL_BASE.to_string());
+        .unwrap_or_else(|| format!("{}{}", normalise(server), TUNNEL_SUFFIX));
     normalise(&raw)
 }
 
@@ -60,7 +62,7 @@ fn normalise(raw: &str) -> String {
     raw.trim_end_matches('/').to_string()
 }
 
-/// Pure: the origin (scheme://host[:port]) part of a proxy base —
+/// Pure: the deployment base (including any path prefix) of a proxy base —
 /// used when composing absolute URLs from `health.uri`, which already
 /// starts with the `/api/...` path, so concatenation must not double
 /// up. Strips the canonical `/api/agent/installer` and `/api/tunnel/
@@ -96,6 +98,16 @@ mod tests {
         assert_eq!(
             normalise("https://roomler.ai/api/tunnel/installer"),
             "https://roomler.ai/api/tunnel/installer"
+        );
+    }
+
+    #[test]
+    fn deployment_prefix_is_retained_when_composing_download_urls() {
+        let base = "https://www.itachi.fans/meshharbor/api/agent/installer";
+        assert_eq!(origin_of(base), DEFAULT_SERVER);
+        assert_eq!(
+            format!("{}{}", origin_of(base), "/api/agent/installer/asset"),
+            "https://www.itachi.fans/meshharbor/api/agent/installer/asset"
         );
     }
 

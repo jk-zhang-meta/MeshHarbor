@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 G ROX EOOD
+import { appPath } from '@/utils/deployment'
 import router from '@/plugins/router'
 import { useSnackbar } from '@/composables/useSnackbar'
 import { clearSignedIn } from '@/api/session'
 
-const BASE_URL = '/api'
+const BASE_URL = appPath('/api')
 
 const AUTH_PATHS = ['/auth/login', '/auth/register', '/auth/refresh', '/oauth/']
 

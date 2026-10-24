@@ -1240,6 +1240,10 @@ pub enum RpcCap {
     /// advertising this. No other verb starts with `peer`, and matching stays
     /// equality regardless.
     PeerAuth,
+    /// Agent enforces shared sessions with a hard 12-second monotonic lease.
+    SharedSessionLease,
+    /// Typed single-use embedded SSH stream, no generic forwarding.
+    SharedSshStream,
 }
 
 impl RpcCap {
@@ -1289,11 +1293,13 @@ impl RpcCap {
             Self::ExternalAccess => "external-access",
             Self::ExternalSession => "external-session",
             Self::PeerAuth => "peer-auth",
+            Self::SharedSessionLease => "shared-session-lease-v1",
+            Self::SharedSshStream => "shared-ssh-stream-v1",
         }
     }
 
     /// Every verb THIS build knows about.
-    pub const ALL: [RpcCap; 38] = [
+    pub const ALL: [RpcCap; 40] = [
         Self::Exec,
         Self::Originate,
         Self::Ssh,
@@ -1332,6 +1338,8 @@ impl RpcCap {
         Self::ExternalAccess,
         Self::ExternalSession,
         Self::PeerAuth,
+        Self::SharedSessionLease,
+        Self::SharedSshStream,
     ];
 
     /// Parse a wire verb. `None` for anything unrecognised — see
@@ -3651,6 +3659,19 @@ pub enum PeerRelayMode {
     On,
 }
 
+/// An administrator-approved directional backbone edge. This does not grant
+/// any client permission to dial private endpoints: only a separately opted-in
+/// relay process, with its own CIDR allowlist, may consume such an edge.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct PeerRelayBackboneEdge {
+    /// Same-tenant, live, separately relay-approved target agent (hex ObjectId).
+    pub relay_agent_id: String,
+    /// Exact UDP ip:port, never DNS. Private unicast is allowed ONLY here.
+    pub endpoint: String,
+}
+
+pub const MAX_PEER_RELAY_BACKBONE_EDGES: usize = 8;
+
 /// FR-19 gate 3 — may THIS device serve as an org relay for its tenant?
 /// Per-device and admin-set; the device's own `relay_server_enabled` (gate 4)
 /// is separate and device-local, so approving here does nothing on a device
@@ -3673,12 +3694,21 @@ pub struct PeerRelayPolicy {
     /// through here. Tried AFTER the measured candidates.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub static_endpoints: Vec<String>,
+    /// Default-empty server policy, NOT a device-local opt-in. Ordinary enroll
+    /// tokens must preserve this field and never acquire backbone permission.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub approved_backbone_edges: Vec<PeerRelayBackboneEdge>,
 }
 
 /// Bounds on FR-19 relay minting. Server-side only — the relay device
 /// re-clamps every session lifetime against its own table
 /// (`orgrelay::session`), so nothing here is trusted by a device.
 pub mod peer_relay_limits {
+    /// Experimental two-hop payload ceiling; no existing TUN MTU is changed.
+    pub const BACKBONE_MAX_CIPHERTEXT: usize = 1400;
+    /// WG data payload is padded to 16 bytes, then adds 32 bytes of framing.
+    pub const BACKBONE_MAX_OVERLAY_MTU: u16 = 1360;
+
     /// Mints per minute per (requesting node, relay node) pair — the key the
     /// spec prescribes (§4 "Rate limiting"): a mint writes state onto a THIRD
     /// device, so the pair to bound is requester × relay, not requester × peer.
@@ -9943,5 +9973,32 @@ pub fn should_redeliver(
     match request.delivered_at {
         None => true,
         Some(at) => (now.timestamp_millis() - at.timestamp_millis()) / 1000 >= REDELIVER_AFTER_SECS,
+    }
+}
+
+#[cfg(test)]
+mod backbone_policy_tests {
+    use super::*;
+    #[test]
+    fn missing_backbone_edges_are_default_closed_and_known_edges_round_trip() {
+        let policy: PeerRelayPolicy =
+            serde_json::from_str(r#"{"serve":true,"static_endpoints":[]}"#).unwrap();
+        assert!(policy.approved_backbone_edges.is_empty());
+        assert!(
+            serde_json::to_value(&policy)
+                .unwrap()
+                .get("approved_backbone_edges")
+                .is_none()
+        );
+        let policy = PeerRelayPolicy {
+            serve: true,
+            static_endpoints: vec!["8.8.8.8:3478".into()],
+            approved_backbone_edges: vec![PeerRelayBackboneEdge {
+                relay_agent_id: ObjectId::new().to_hex(),
+                endpoint: "10.20.0.2:3478".into(),
+            }],
+        };
+        let encoded = bson::to_bson(&policy).unwrap();
+        assert_eq!(bson::from_bson::<PeerRelayPolicy>(encoded).unwrap(), policy);
     }
 }

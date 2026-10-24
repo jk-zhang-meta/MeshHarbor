@@ -34,6 +34,9 @@ pub struct User {
     pub timezone: String,
     #[serde(default)]
     pub is_verified: bool,
+    /// Missing on legacy documents means unreviewed, never approved.
+    #[serde(default)]
+    pub account_approval: AccountApproval,
     #[serde(default)]
     pub is_mfa_enabled: bool,
     pub last_active_at: Option<DateTime>,
@@ -58,6 +61,38 @@ pub struct User {
     pub created_at: DateTime,
     pub updated_at: DateTime,
     pub deleted_at: Option<DateTime>,
+}
+
+/// Account admission is independent of email verification and tenant roles.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AccountApprovalState {
+    Pending,
+    Approved,
+    Rejected,
+    Suspended,
+    #[default]
+    LegacyUnreviewed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AccountApproval {
+    #[serde(default)]
+    pub state: AccountApprovalState,
+    pub reviewed_by: Option<ObjectId>,
+    pub reviewed_at: Option<DateTime>,
+    /// CAS revision and user-token revocation generation.
+    #[serde(default)]
+    pub revision: u32,
+}
+
+impl AccountApproval {
+    pub fn pending() -> Self {
+        Self {
+            state: AccountApprovalState::Pending,
+            ..Self::default()
+        }
+    }
 }
 
 /// FR-88 — the campaign a sign-up arrived from, as stored on `users`.
@@ -212,4 +247,22 @@ fn default_timezone() -> String {
 
 impl User {
     pub const COLLECTION: &'static str = "users";
+}
+
+#[cfg(test)]
+mod account_approval_tests {
+    use super::*;
+    #[test]
+    fn account_approval_legacy_missing_fields_never_auto_approve() {
+        let old: AccountApproval = bson::from_document(bson::doc! {}).unwrap();
+        assert_eq!(old.state, AccountApprovalState::LegacyUnreviewed);
+        assert_eq!(old.revision, 0);
+        assert_eq!(
+            AccountApproval::pending().state,
+            AccountApprovalState::Pending
+        );
+        let round: AccountApproval =
+            bson::from_bson(bson::to_bson(&AccountApproval::pending()).unwrap()).unwrap();
+        assert_eq!(round.state, AccountApprovalState::Pending);
+    }
 }

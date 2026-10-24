@@ -180,6 +180,7 @@
 </template>
 
 <script setup lang="ts">
+import { appOrigin } from '@/utils/deployment'
 import { ref, computed, watch, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { useDisplay } from 'vuetify'
@@ -311,7 +312,7 @@ function statusColor(status: string) {
 }
 
 function copyLink(code: string) {
-  const url = `${window.location.origin}/invite/${code}`
+  const url = `${appOrigin(window.location.origin)}/invite/${code}`
   navigator.clipboard.writeText(url)
   showSuccess('Invite link copied to clipboard')
 }

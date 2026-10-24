@@ -336,6 +336,10 @@ impl AgentTunnelPeer {
     /// Close the peer + drop every flow. Idempotent. Caller is
     /// responsible for removing the peer from any agent-side session
     /// map before calling; this is just the resource teardown.
+    /// Synchronous cut for a shared lease, independent of the signaling pump.
+    pub fn stop_serving(&self) {
+        self.flow_canceller.cancel();
+    }
     pub async fn close(&self) {
         // #2129 — end every live flow FIRST, so an idle flow's pump returns
         // (closing its dst socket and releasing its DC reference) instead of

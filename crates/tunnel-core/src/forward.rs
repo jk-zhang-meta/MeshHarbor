@@ -319,7 +319,18 @@ const _: () = assert!(CHUNK_BYTES > mux::FLOW_ID_HEADER_BYTES);
 /// message is dispatched. Same `Arc<FlowStats>` is handed to
 /// `run_flow` so the throughput logger and the receive counter share
 /// one set of atomics.
-type FlowMap = Arc<Mutex<HashMap<u32, (mpsc::Sender<Bytes>, Arc<FlowStats>)>>>;
+type FlowMap = Arc<
+    Mutex<
+        HashMap<
+            u32,
+            (
+                mpsc::Sender<Bytes>,
+                Arc<FlowStats>,
+                Option<(Arc<PendingIngress>, u8)>,
+            ),
+        >,
+    >,
+>;
 
 /// Owns one `RTCDataChannel` and routes inbound messages to per-flow
 /// `mpsc::Receiver<Bytes>`. Install once per DC right after the pool
@@ -329,10 +340,194 @@ type FlowMap = Arc<Mutex<HashMap<u32, (mpsc::Sender<Bytes>, Arc<FlowStats>)>>>;
 pub struct FlowDemux {
     dc: Arc<RTCDataChannel>,
     flows: FlowMap,
+    pending_slots: Arc<tokio::sync::Semaphore>,
     /// Session throughput aggregate (P3b-3), stamped onto every
     /// registered flow's [`FlowStats`] so the pumps mirror bytes into
     /// it. `None` on the agent target side + tests (no `flows` verb).
     session: Option<Arc<SessionThroughput>>,
+}
+
+/// Pending prefixes are bounded independently of the existing active-flow
+/// throughput queue: at most 128 pending opens/pool and 256 KiB each. No global
+/// unknown-flow cache exists. Byte budget + DC binding share one atomic state,
+/// so a racing packet cannot overflow/change DC after Accept validation.
+const MAX_PENDING_POOL_FLOWS: usize = 128;
+const MAX_PENDING_PREFIX_BYTES: usize = 256 * 1024;
+const PREFIX_BYTES_MASK: u64 = (1 << 24) - 1;
+const PREFIX_SEEN_MASK: u64 = 0xffff_ffff << 24;
+const PREFIX_ACTIVE: u64 = 1 << 63;
+const PREFIX_OVERFLOW: u64 = 1 << 62;
+#[derive(Default)]
+struct PendingIngress {
+    state: AtomicU64,
+}
+impl PendingIngress {
+    fn admit(&self, dc_index: u8, len: usize) -> bool {
+        if dc_index >= 32 {
+            return false;
+        }
+        let mut old = self.state.load(Ordering::Acquire);
+        loop {
+            if old & PREFIX_ACTIVE != 0 {
+                return ((old >> 56) & 0x3f) as u8 == dc_index;
+            }
+            if old & PREFIX_OVERFLOW != 0 {
+                return false;
+            }
+            let bytes = (old & PREFIX_BYTES_MASK) as usize;
+            let allowed = bytes
+                .checked_add(len)
+                .is_some_and(|n| n <= MAX_PENDING_PREFIX_BYTES);
+            let next = if allowed {
+                (old & !PREFIX_BYTES_MASK) | (bytes + len) as u64 | (1 << (24 + dc_index))
+            } else {
+                old | PREFIX_OVERFLOW
+            };
+            match self
+                .state
+                .compare_exchange_weak(old, next, Ordering::AcqRel, Ordering::Acquire)
+            {
+                Ok(_) => return allowed,
+                Err(current) => old = current,
+            }
+        }
+    }
+    fn accept(&self, dc_index: u8) -> anyhow::Result<()> {
+        anyhow::ensure!(dc_index < 32, "unsupported authoritative DC index");
+        let mut old = self.state.load(Ordering::Acquire);
+        loop {
+            anyhow::ensure!(
+                old & PREFIX_OVERFLOW == 0,
+                "pending forward prefix exceeded 256 KiB"
+            );
+            anyhow::ensure!(
+                old & PREFIX_ACTIVE == 0,
+                "flow registration already activated"
+            );
+            anyhow::ensure!(
+                old & PREFIX_SEEN_MASK & !(1 << (24 + dc_index)) == 0,
+                "pending bytes arrived on a non-authoritative DC"
+            );
+            let next = old | PREFIX_ACTIVE | ((dc_index as u64) << 56);
+            match self
+                .state
+                .compare_exchange_weak(old, next, Ordering::AcqRel, Ordering::Acquire)
+            {
+                Ok(_) => return Ok(()),
+                Err(current) => old = current,
+            }
+        }
+    }
+}
+
+/// Reserve one already-known local flow before its request crosses signalling.
+/// All DC aliases share ONE bounded mailbox/stats, not one queue per channel.
+/// No payload is released to TCP until the caller receives authoritative Accept.
+/// Drop removes only our own aliases, including task-abort/send/reject paths.
+pub struct FlowPoolRegistration {
+    flow_id: u32,
+    demuxes: Arc<Vec<FlowDemux>>,
+    from_dc: Option<mpsc::Receiver<Bytes>>,
+    stats: Arc<FlowStats>,
+    ingress: Arc<PendingIngress>,
+    pending: Option<tokio::sync::OwnedSemaphorePermit>,
+}
+impl FlowPoolRegistration {
+    pub async fn reserve(demuxes: Arc<Vec<FlowDemux>>, flow_id: u32) -> anyhow::Result<Self> {
+        let first = demuxes
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("empty DC pool"))?;
+        anyhow::ensure!(flow_id != KEEPALIVE_FLOW_ID, "reserved keepalive flow ID");
+        anyhow::ensure!(
+            demuxes.len() <= 32,
+            "DC pool exceeds pending reservation bound"
+        );
+        let pending = first
+            .pending_slots
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| anyhow::anyhow!("pending DC forward capacity reached"))?;
+        let (tx, rx) = mpsc::channel(FLOW_INBOX_CAP);
+        let stats = Arc::new(FlowStats {
+            session: first.session.clone(),
+            ..Default::default()
+        });
+        // Construct the guard before the first await/insert: cancellation during
+        // partial registration still removes every inserted alias by identity.
+        let reservation = Self {
+            flow_id,
+            demuxes,
+            from_dc: Some(rx),
+            stats,
+            ingress: Arc::new(PendingIngress::default()),
+            pending: Some(pending),
+        };
+        for (idx, demux) in reservation.demuxes.iter().enumerate() {
+            let mut map = demux.flows.lock().await;
+            anyhow::ensure!(
+                !map.contains_key(&flow_id),
+                "flow already registered in DC pool"
+            );
+            map.insert(
+                flow_id,
+                (
+                    tx.clone(),
+                    reservation.stats.clone(),
+                    Some((reservation.ingress.clone(), idx as u8)),
+                ),
+            );
+        }
+        // Do NOT retain tx in the guard: in-band half-close must drop the last
+        // sender and deliver EOF once the chosen DC unregisters its alias.
+        drop(tx);
+        Ok(reservation)
+    }
+    async fn remove_owned(demux: &FlowDemux, flow_id: u32, stats: &Arc<FlowStats>) {
+        let mut map = demux.flows.lock().await;
+        if map
+            .get(&flow_id)
+            .is_some_and(|(_, current, _)| Arc::ptr_eq(current, stats))
+        {
+            map.remove(&flow_id);
+        }
+    }
+    pub async fn activate(
+        &mut self,
+        dc_index: u8,
+    ) -> anyhow::Result<(mpsc::Receiver<Bytes>, Arc<FlowStats>)> {
+        anyhow::ensure!(
+            (dc_index as usize) < self.demuxes.len(),
+            "server returned out-of-range dc_index {dc_index}"
+        );
+        self.ingress.accept(dc_index)?;
+        for (idx, demux) in self.demuxes.iter().enumerate() {
+            if idx != dc_index as usize {
+                Self::remove_owned(demux, self.flow_id, &self.stats).await;
+            }
+        }
+        let rx = self
+            .from_dc
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("flow registration already activated"))?;
+        self.pending.take();
+        Ok((rx, self.stats.clone()))
+    }
+}
+impl Drop for FlowPoolRegistration {
+    fn drop(&mut self) {
+        let demuxes = self.demuxes.clone();
+        let stats = self.stats.clone();
+        let flow_id = self.flow_id;
+        let pending = self.pending.take();
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(async move {
+                let _pending_until_removed = pending;
+                for demux in demuxes.iter() {
+                    Self::remove_owned(demux, flow_id, &stats).await;
+                }
+            });
+        }
+    }
 }
 
 impl FlowDemux {
@@ -379,7 +574,7 @@ impl FlowDemux {
                     let map = flows.lock().await;
                     map.get(&flow_id).cloned()
                 };
-                let Some((tx, stats)) = entry else {
+                let Some((tx, stats, pending)) = entry else {
                     trace!(
                         flow_id,
                         len = payload.len(),
@@ -387,6 +582,11 @@ impl FlowDemux {
                     );
                     return;
                 };
+                if let Some((ingress, dc_index)) = pending
+                    && !ingress.admit(dc_index, payload.len())
+                {
+                    return; // bounded/incorrect pending flow is rejected on Accept
+                }
                 // Count receipt the instant we dispatch — BEFORE the
                 // (potentially blocking) mailbox send — so `dc_recv_bytes`
                 // reflects what actually arrived off the DC, independent
@@ -401,7 +601,12 @@ impl FlowDemux {
                 }
             })
         }));
-        Self { dc, flows, session }
+        Self {
+            dc,
+            flows,
+            session,
+            pending_slots: Arc::new(tokio::sync::Semaphore::new(MAX_PENDING_POOL_FLOWS)),
+        }
     }
 
     /// Open a mailbox for `flow_id`. Returns the receiver (yielding
@@ -417,7 +622,10 @@ impl FlowDemux {
             ..Default::default()
         });
         let mut map = self.flows.lock().await;
-        if map.insert(flow_id, (tx, Arc::clone(&stats))).is_some() {
+        if map
+            .insert(flow_id, (tx, Arc::clone(&stats), None))
+            .is_some()
+        {
             warn!(
                 flow_id,
                 "tunnel flow re-registered; previous mailbox dropped"
@@ -430,6 +638,11 @@ impl FlowDemux {
     pub async fn unregister(&self, flow_id: u32) {
         let mut map = self.flows.lock().await;
         map.remove(&flow_id);
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn registered_for_test(&self, flow_id: u32) -> bool {
+        self.flows.lock().await.contains_key(&flow_id)
     }
 
     /// Borrow the DC so the caller can hand it to [`run_flow`].
@@ -1206,6 +1419,162 @@ mod tests {
     use crate::transport::webrtc_dc::TunnelPeer;
     use std::sync::Arc;
     use std::time::Duration;
+
+    #[test]
+    fn preaccept_prefix_budget_and_authoritative_dc_are_fail_closed() {
+        let prefix = PendingIngress::default();
+        assert!(prefix.admit(1, MAX_PENDING_PREFIX_BYTES));
+        assert!(!prefix.admit(1, 1));
+        assert!(
+            prefix.accept(1).is_err(),
+            "overflow must not release a truncated prefix"
+        );
+        let wrong = PendingIngress::default();
+        assert!(wrong.admit(0, 3));
+        assert!(
+            wrong.accept(1).is_err(),
+            "wrong-channel data cannot be relabeled by Accept"
+        );
+        let valid = PendingIngress::default();
+        assert!(valid.admit(1, 3));
+        valid.accept(1).unwrap();
+        assert!(
+            valid.admit(1, usize::MAX),
+            "active flows retain normal throughput queue"
+        );
+        assert!(!valid.admit(0, 1));
+        assert!(valid.accept(1).is_err());
+    }
+
+    async fn preaccept_pool() -> (TunnelPeer, Arc<Vec<FlowDemux>>) {
+        let peer = TunnelPeer::new(vec![]).await.unwrap();
+        let mut demuxes = Vec::new();
+        for idx in 0..peer.pool_size() {
+            demuxes.push(FlowDemux::install(peer.dc(idx).unwrap(), None).await);
+        }
+        (peer, Arc::new(demuxes))
+    }
+
+    async fn preaccept_removed(pool: &Arc<Vec<FlowDemux>>, flow: u32) {
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let mut found = false;
+                for d in pool.iter() {
+                    found |= d.flows.lock().await.contains_key(&flow);
+                }
+                if !found {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("RAII must remove every alias");
+    }
+
+    #[tokio::test]
+    async fn preaccept_pool_shares_one_queue_stats_and_preserves_half_close() {
+        let (peer, pool) = preaccept_pool().await;
+        let mut guard = FlowPoolRegistration::reserve(pool.clone(), 1)
+            .await
+            .unwrap();
+        let first = pool[0].flows.lock().await.get(&1).unwrap().clone();
+        for demux in pool.iter() {
+            let entry = demux.flows.lock().await.get(&1).unwrap().clone();
+            assert!(
+                entry.0.same_channel(&first.0),
+                "no pool-size buffer multiplier"
+            );
+            assert!(Arc::ptr_eq(&entry.1, &first.1));
+        }
+        let (sender, stats, pending) = pool[1].flows.lock().await.get(&1).unwrap().clone();
+        assert!(pending.unwrap().0.admit(1, 6));
+        sender.send(Bytes::from_static(b"banner")).await.unwrap();
+        drop((sender, first));
+        let (mut rx, activated_stats) = guard.activate(1).await.unwrap();
+        assert!(Arc::ptr_eq(&stats, &activated_stats));
+        for (idx, demux) in pool.iter().enumerate() {
+            assert_eq!(demux.flows.lock().await.contains_key(&1), idx == 1);
+        }
+        assert_eq!(rx.recv().await.unwrap().as_ref(), b"banner");
+        // Same removal the ordered in-band half-close performs; the guard
+        // must not keep a hidden sender alive after the authoritative alias.
+        pool[1].unregister(1).await;
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), rx.recv())
+                .await
+                .unwrap()
+                .is_none()
+        );
+        drop(guard);
+        preaccept_removed(&pool, 1).await;
+        peer.close().await;
+    }
+
+    #[tokio::test]
+    async fn preaccept_capacity_is_bounded_and_drop_releases_owned_slots_only() {
+        let (peer, pool) = preaccept_pool().await;
+        let mut guards = Vec::new();
+        for id in 1..=MAX_PENDING_POOL_FLOWS as u32 {
+            guards.push(
+                FlowPoolRegistration::reserve(pool.clone(), id)
+                    .await
+                    .unwrap(),
+            );
+        }
+        assert!(
+            FlowPoolRegistration::reserve(pool.clone(), 999)
+                .await
+                .is_err()
+        );
+        drop(guards.pop());
+        preaccept_removed(&pool, MAX_PENDING_POOL_FLOWS as u32).await;
+        let replacement = FlowPoolRegistration::reserve(pool.clone(), 999)
+            .await
+            .unwrap();
+        drop(replacement);
+        drop(guards);
+        preaccept_removed(&pool, 1).await;
+        preaccept_removed(&pool, 999).await;
+        let old = FlowPoolRegistration::reserve(pool.clone(), 777)
+            .await
+            .unwrap();
+        let (mut fresh_rx, fresh_stats) = pool[0].register(777).await;
+        drop(old);
+        preaccept_removed(&Arc::new(pool.iter().skip(1).cloned().collect()), 777).await;
+        let fresh = pool[0].flows.lock().await.get(&777).unwrap().clone();
+        assert!(
+            Arc::ptr_eq(&fresh_stats, &fresh.1),
+            "late cleanup cannot delete a replacement"
+        );
+        fresh.0.send(Bytes::from_static(b"fresh")).await.unwrap();
+        assert_eq!(fresh_rx.recv().await.unwrap().as_ref(), b"fresh");
+        pool[0].unregister(777).await;
+        peer.close().await;
+    }
+
+    #[tokio::test]
+    async fn preaccept_abort_during_partial_reserve_removes_inserted_aliases() {
+        let (peer, pool) = preaccept_pool().await;
+        let blocked = pool[1].flows.lock().await;
+        let task = tokio::spawn(FlowPoolRegistration::reserve(pool.clone(), 1));
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !pool[0].flows.lock().await.contains_key(&1) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        task.abort();
+        assert!(matches!(task.await, Err(e) if e.is_cancelled()));
+        drop(blocked);
+        preaccept_removed(&pool, 1).await;
+        assert_eq!(
+            pool[0].pending_slots.available_permits(),
+            MAX_PENDING_POOL_FLOWS
+        );
+        peer.close().await;
+    }
 
     /// P3b-3: a session-tracked `FlowStats` mirrors TCP-side byte adds into the
     /// shared `SessionThroughput` (`bytes_out` = local→peer, `bytes_in` =

@@ -8,8 +8,10 @@
 //!   probes and forwards nothing. There is no session table and no data path
 //!   here; those arrive with P2.
 
+pub mod backbone;
 pub mod bind;
 pub mod client;
+pub(crate) mod discovery;
 pub mod member;
 pub mod responder;
 pub mod server;

@@ -1872,7 +1872,18 @@ impl RelayCoordinator {
     /// carries a new VNI, and a re-push of the SAME session (the server's
     /// idempotent re-request path) is harmless to overwrite. A previous
     /// carrier is closed so the runtime rebuilds onto the new session.
-    pub fn org_session_accept(&mut self, peer: ObjectId, session: OrgSession) {
+    pub fn org_session_accept(&mut self, peer: ObjectId, session: OrgSession) -> bool {
+        // A replay of one immutable minted session is not a replacement.
+        // Keep its original lifetime, in-flight bind and already-bound carrier.
+        if self.org_sessions.get(&peer).is_some_and(|old| {
+            old.vni == session.vni
+                && old.generation == session.generation
+                && old.relay_node_id == session.relay_node_id
+                && old.endpoints == session.endpoints
+                && old.is_live(Instant::now())
+        }) {
+            return false;
+        }
         if let Some(old) = self.org_sessions.insert(peer, session)
             && let Some(conn) = old.conn
         {
@@ -1880,6 +1891,7 @@ impl RelayCoordinator {
         }
         self.org_binding.remove(&peer);
         self.org_jobs.retain(|j| j.node_id != peer);
+        true
     }
 
     /// `rc:overlay.relay_revoke` — drop the session with this VNI, closing its
@@ -1950,6 +1962,8 @@ impl RelayCoordinator {
             return;
         }
         let job = OrgBindJob {
+            peer_public_key: peer_cfg.public_key,
+            peer_overlay_ip: peer_cfg.overlay_ip,
             node_id: peer,
             relay_node_id: s.relay_node_id,
             vni: s.vni,
@@ -1971,6 +1985,7 @@ impl RelayCoordinator {
     pub fn commit_org_bind(
         &mut self,
         peer: ObjectId,
+        generation: u64,
         conn: Arc<OrgRelayConn>,
     ) -> Option<ReadyLink> {
         self.org_binding.remove(&peer);
@@ -1978,7 +1993,7 @@ impl RelayCoordinator {
             conn.close();
             return None;
         };
-        if s.vni != conn.vni() {
+        if s.vni != conn.vni() || s.generation != generation || !s.is_live(Instant::now()) {
             conn.close();
             return None;
         }
@@ -2476,14 +2491,14 @@ mod tests {
         let relay: SocketAddr = "127.0.0.1:9".parse().unwrap();
         let stale = Arc::new(OrgRelayConn::new(sock.clone(), relay, 10, "r".into()));
         assert!(
-            coord.commit_org_bind(node, stale.clone()).is_none(),
+            coord.commit_org_bind(node, 1, stale.clone()).is_none(),
             "a bind for another VNI never commits"
         );
         assert!(!stale.is_alive(), "a refused conn is closed");
 
         let fresh = Arc::new(OrgRelayConn::new(sock, relay, 11, "r".into()));
         let link = coord
-            .commit_org_bind(node, fresh.clone())
+            .commit_org_bind(node, 1, fresh.clone())
             .expect("the current session commits");
         assert_eq!(link.relay_kind, RelayKind::Org);
         assert!(

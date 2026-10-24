@@ -338,6 +338,7 @@ async fn test_handle_peer_reflexive_unknown_remote() -> Result<()> {
                 transaction_id: tid,
                 destination: SocketAddr::from_str("0.0.0.0:0")?,
                 is_use_candidate: false,
+                ..Default::default()
             }];
         }
         let ufrag_pwd = a.internal.ufrag_pwd.lock().await;

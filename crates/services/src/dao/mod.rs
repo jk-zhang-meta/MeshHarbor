@@ -60,3 +60,5 @@ pub mod activation_code;
 pub mod user;
 
 pub use base::BaseDao;
+
+pub mod device_share;

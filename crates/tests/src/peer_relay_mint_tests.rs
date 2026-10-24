@@ -686,3 +686,2198 @@ async fn every_refusal_is_audited_with_its_reason() {
         rig.assert_nothing_pushed_to_a().await;
     }
 }
+
+async fn discover(rig: &mut Rig, peer: &str, request_id: u64) -> Value {
+    rig.a.send(Message::Text(json!({
+        "t": "rc:overlay.org_relay_discover", "peer_node_id": peer, "request_id": request_id,
+    }).to_string().into())).await.unwrap();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let reply = loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        let frame = tokio::time::timeout(remaining, rig.a.next())
+            .await
+            .expect("discovery deadline")
+            .expect("open websocket")
+            .expect("websocket frame");
+        if let Message::Text(text) = frame {
+            let value: Value = serde_json::from_str(&text).unwrap();
+            assert!(
+                !matches!(
+                    value["t"].as_str(),
+                    Some(
+                        "rc:overlay.relay_grant"
+                            | "rc:overlay.relay_session"
+                            | "rc:overlay.relay_serve"
+                            | "rc:overlay.force_derp"
+                    )
+                ),
+                "discovery allocated or changed a carrier before replying: {value}"
+            );
+            if value["t"] == json!("rc:overlay.org_relay_candidates") {
+                break value;
+            }
+        }
+    };
+    assert_eq!(reply["request_id"], json!(request_id));
+    reply
+}
+
+async fn assert_no_discovery_allocation(ws: &mut Ws) {
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(150);
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return;
+        }
+        match tokio::time::timeout(remaining, ws.next()).await {
+            Ok(Some(Ok(Message::Text(text)))) => {
+                let value: Value = serde_json::from_str(&text).unwrap();
+                assert!(
+                    !matches!(
+                        value["t"].as_str(),
+                        Some(
+                            "rc:overlay.relay_grant"
+                                | "rc:overlay.relay_session"
+                                | "rc:overlay.relay_serve"
+                                | "rc:overlay.force_derp"
+                        )
+                    ),
+                    "discovery allocated or changed a carrier: {value}"
+                );
+            }
+            Err(_) => return,
+            Ok(Some(Ok(_))) => {}
+            other => panic!("unexpected websocket termination: {other:?}"),
+        }
+    }
+}
+
+#[tokio::test]
+async fn metadata_discovery_is_bounded_and_never_allocates_or_spends_mint_budget() {
+    let mut rig = Rig::up("discovery-ok", true, Some(true)).await;
+    rig.arm().await;
+    let (status, _) = put(
+        &rig.app,
+        &url(
+            &rig.seeded,
+            &format!("/agent/{}/peer-relay-policy", rig.r_agent),
+        ),
+        &rig.seeded.admin.access_token,
+        json!({ "serve": true, "static_endpoints": [
+            "1.1.1.1:3478", "9.9.9.9:3478", "8.8.4.4:3478", "1.0.0.1:3478", "9.9.9.10:3478"
+        ] }),
+    )
+    .await;
+    assert_eq!(status, 200);
+    let peer = rig.b_node.clone();
+    for request_id in 1..=2 {
+        let reply = discover(&mut rig, &peer, request_id).await;
+        assert_eq!(reply["peer_node_id"], json!(peer));
+        assert_eq!(reply["ttl_secs"], json!(30));
+        let candidates = reply["candidates"].as_array().unwrap();
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0]["relay_node_id"], json!(rig.r_node));
+        assert_eq!(candidates[0]["endpoints"].as_array().unwrap().len(), 4);
+        assert!(reply.get("vni").is_none() && reply.get("bind_secret").is_none());
+    }
+    let (a, b, r) = (
+        ObjectId::parse_str(&rig.a_node).unwrap(),
+        ObjectId::parse_str(&rig.b_node).unwrap(),
+        ObjectId::parse_str(&rig.r_node).unwrap(),
+    );
+    let network = rig.app.state.network();
+    assert!(
+        network
+            .org_relay
+            .active_session(&roomler_ai_mod_network::overlay::pair_key(a, b))
+            .is_none()
+    );
+    assert_eq!(network.org_relay.sessions_on_relay(r), 0);
+    assert!(
+        network.relay_pair_churn.is_empty(),
+        "discovery is not TURN churn evidence"
+    );
+    for _ in 0..30 {
+        assert!(
+            network.relay_rate_limiter.check(a, r, 30),
+            "discovery cannot spend mint budget"
+        );
+    }
+    assert!(
+        audit_rows(&rig.app, &rig.seeded)
+            .await
+            .iter()
+            .all(|row| row["action"] != json!("mint"))
+    );
+    assert_no_discovery_allocation(&mut rig.a).await;
+    assert_no_discovery_allocation(&mut rig.b).await;
+    assert_no_discovery_allocation(&mut rig.r).await;
+}
+
+/// A new requester can cover three authorized one-hop paths; a legacy
+/// requester receives exactly the previous single hint. This is metadata,
+/// not a bind, route change, probe grant, or session allocation.
+#[tokio::test]
+async fn metadata_discovery_multi_onehop_negotiates_caps_and_preserves_all_gates() {
+    let mut rig = Rig::up("discovery-multi", true, Some(true)).await;
+    rig.arm().await;
+    let mut relays = Vec::new();
+    let mut allowed = vec![rig.r_node.clone()];
+    let mut approved_agents = vec![rig.r_agent.clone()];
+    // Four eligible relays prove the total cap, plus an approved but
+    // ACL-denied relay which may NEVER fill a slot, even when all others go.
+    for (index, endpoint) in [
+        "1.1.1.1:41641",
+        "8.8.4.4:41641",
+        "9.9.9.9:41641",
+        "1.0.0.1:41641",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let machine = format!("discovery-multi-r{index}");
+        let (agent, token) = enroll(&rig.app, &rig.seeded, &machine).await;
+        let mut ws = connect(&rig.app, &token, &["relay-server"]).await;
+        join(&mut ws, 10 + index as u8, Some(true), endpoint).await;
+        let node = node_id(&rig.app, &rig.seeded, &machine).await;
+        assert_eq!(approve(&rig.app, &rig.seeded, &agent, true).await, 200);
+        if index < 3 {
+            grant_relay(&rig.app, &rig.seeded, &node).await;
+            allowed.push(node);
+            approved_agents.push(agent);
+        }
+        relays.push(ws);
+    }
+    let peer = rig.b_node.clone();
+    let old = discover(&mut rig, &peer, 1).await;
+    assert_eq!(old["candidates"].as_array().unwrap().len(), 1);
+    let rejoin = |flag| {
+        json!({"t":"rc:overlay.join", "wg_public_key":BASE64.encode([1;32]),
+        "mtu":1280, "endpoints":["203.0.113.10:41641"], "supports_org_relay":true,
+        "supports_server_relay_strategy":true, "org_primary":true, "relay_port":3478,
+        "supports_org_relay_multi_candidate":flag})
+    };
+    rig.a
+        .send(Message::Text(rejoin(false).to_string().into()))
+        .await
+        .unwrap();
+    recv_t(&mut rig.a, "rc:overlay.netmap", Duration::from_secs(5))
+        .await
+        .unwrap();
+    let explicit_false = discover(&mut rig, &peer, 2).await;
+    assert_eq!(
+        explicit_false["candidates"], old["candidates"],
+        "missing and false retain the exact legacy hint"
+    );
+    rig.a
+        .send(Message::Text(rejoin(true).to_string().into()))
+        .await
+        .unwrap();
+    recv_t(&mut rig.a, "rc:overlay.netmap", Duration::from_secs(5))
+        .await
+        .unwrap();
+    let new = discover(&mut rig, &peer, 3).await;
+    let hints = new["candidates"].as_array().unwrap();
+    assert_eq!(hints.len(), 3);
+    assert_eq!(
+        hints[0], old["candidates"][0],
+        "preserve existing preference order"
+    );
+    let ids: std::collections::HashSet<_> = hints
+        .iter()
+        .map(|c| c["relay_node_id"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(ids.len(), 3, "no duplicate candidate identities");
+    assert!(
+        ids.iter().all(|id| allowed.contains(id)),
+        "only the shared planner's ACL-authorized relays"
+    );
+    assert!(hints.iter().all(|c| {
+        c.get("exit_relay_node_id").is_none()
+            && c["endpoints"]
+                .as_array()
+                .is_some_and(|e| !e.is_empty() && e.len() <= 4)
+    }));
+    assert_eq!(new["ttl_secs"], json!(30));
+    // Remove the preferred relay through the real policy API. Discovery
+    // must still expose all three remaining eligible paths, not starvation.
+    let first = hints[0]["relay_node_id"].as_str().unwrap();
+    let first_index = allowed.iter().position(|id| id == first).unwrap();
+    assert_eq!(
+        approve(&rig.app, &rig.seeded, &approved_agents[first_index], false).await,
+        200
+    );
+    let after = discover(&mut rig, &peer, 4).await;
+    let after = after["candidates"].as_array().unwrap();
+    assert_eq!(after.len(), 3);
+    assert!(after.iter().all(|c| c["relay_node_id"] != json!(first)));
+    for agent in &approved_agents {
+        assert_eq!(approve(&rig.app, &rig.seeded, agent, false).await, 200);
+    }
+    let empty = discover(&mut rig, &peer, 5).await;
+    assert_eq!(
+        empty["candidates"],
+        json!([]),
+        "approved but ACL-denied cannot leak as fallback"
+    );
+    assert_eq!(empty["ttl_secs"], json!(0));
+    assert!(
+        rig.app
+            .state
+            .network()
+            .org_relay
+            .active_session(&roomler_ai_mod_network::overlay::pair_key(
+                ObjectId::parse_str(&rig.a_node).unwrap(),
+                ObjectId::parse_str(&peer).unwrap()
+            ))
+            .is_none()
+    );
+    assert!(
+        audit_rows(&rig.app, &rig.seeded)
+            .await
+            .iter()
+            .all(|r| r["action"] != json!("mint"))
+    );
+    assert_no_discovery_allocation(&mut rig.a).await;
+    assert_no_discovery_allocation(&mut rig.b).await;
+    assert_no_discovery_allocation(&mut rig.r).await;
+    for ws in &mut relays {
+        assert_no_discovery_allocation(ws).await;
+    }
+}
+
+#[tokio::test]
+async fn metadata_discovery_respects_modes_approval_acl_and_primary() {
+    let mut rig = Rig::up("discovery-gates", true, Some(true)).await;
+    let grant = rig.arm().await;
+    let peer = rig.b_node.clone();
+    for (request_id, mode) in [(1, "off"), (2, "warn")] {
+        set_mode(&rig.app, &rig.seeded, mode).await;
+        let reply = discover(&mut rig, &peer, request_id).await;
+        assert_eq!(reply["candidates"], json!([]));
+        assert_eq!(reply["ttl_secs"], json!(0));
+    }
+    set_mode(&rig.app, &rig.seeded, "on").await;
+    approve(&rig.app, &rig.seeded, &rig.r_agent, false).await;
+    assert_eq!(discover(&mut rig, &peer, 3).await["candidates"], json!([]));
+    approve(&rig.app, &rig.seeded, &rig.r_agent, true).await;
+    assert_eq!(
+        app_delete(
+            &rig.app,
+            &url(&rig.seeded, &format!("/overlay-acl/{grant}")),
+            &rig.seeded.admin.access_token
+        )
+        .await,
+        200
+    );
+    assert_eq!(
+        discover(&mut rig, &peer, 4).await["candidates"],
+        json!([]),
+        "relay ACL must affirmatively authorize both endpoints"
+    );
+    grant_relay(&rig.app, &rig.seeded, &rig.r_node).await;
+    // Rejoining as a secondary loses eligibility despite a valid agent JWT.
+    join(&mut rig.a, 1, Some(false), "203.0.113.10:41641").await;
+    assert_eq!(discover(&mut rig, &peer, 5).await["candidates"], json!([]));
+    assert_no_discovery_allocation(&mut rig.b).await;
+    assert_no_discovery_allocation(&mut rig.r).await;
+}
+
+#[tokio::test]
+async fn metadata_discovery_rejects_cross_tenant_and_bounds_requester_flood() {
+    let mut rig = Rig::up("discovery-flood", true, Some(true)).await;
+    rig.arm().await;
+    let other = rig.app.seed_tenant("discovery-other").await;
+    let (_, token) = enroll(&rig.app, &other, "discovery-other-node").await;
+    let mut outsider = connect(&rig.app, &token, &[]).await;
+    join(&mut outsider, 9, Some(true), "203.0.113.99:41641").await;
+    let outside_id = node_id(&rig.app, &other, "discovery-other-node").await;
+    rig.a.send(Message::Text(json!({ "t": "rc:overlay.org_relay_discover", "peer_node_id": outside_id, "request_id": 1 }).to_string().into())).await.unwrap();
+    assert!(
+        recv_t(
+            &mut rig.a,
+            "rc:overlay.org_relay_candidates",
+            Duration::from_millis(200)
+        )
+        .await
+        .is_none()
+    );
+    let peer = rig.b_node.clone();
+    // The refused cross-tenant request already consumed one requester slot.
+    for request_id in 2..=6 {
+        assert_eq!(
+            discover(&mut rig, &peer, request_id).await["candidates"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+    rig.a
+        .send(Message::Text(
+            json!({ "t": "rc:overlay.org_relay_discover", "peer_node_id": peer, "request_id": 7 })
+                .to_string()
+                .into(),
+        ))
+        .await
+        .unwrap();
+    assert!(
+        recv_t(
+            &mut rig.a,
+            "rc:overlay.org_relay_candidates",
+            Duration::from_millis(200)
+        )
+        .await
+        .is_none()
+    );
+    assert_no_discovery_allocation(&mut rig.b).await;
+    assert_no_discovery_allocation(&mut rig.r).await;
+}
+
+#[tokio::test]
+async fn metadata_discovery_requires_actual_relay_server_capability() {
+    let mut rig = Rig::up("discovery-not-serving", false, Some(true)).await;
+    rig.arm().await;
+    let peer = rig.b_node.clone();
+    let reply = discover(&mut rig, &peer, 1).await;
+    assert_eq!(reply["candidates"], json!([]));
+    assert_eq!(reply["ttl_secs"], json!(0));
+    assert_no_discovery_allocation(&mut rig.b).await;
+    assert_no_discovery_allocation(&mut rig.r).await;
+}
+
+#[tokio::test]
+async fn live_listener_withdrawal_revokes_and_removes_discovery_without_reconnect() {
+    let mut rig = Rig::up("listener-withdraw", true, Some(true)).await;
+    rig.arm().await;
+    let peer = rig.b_node.clone();
+    assert_eq!(
+        discover(&mut rig, &peer, 1).await["candidates"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    rig.request().await;
+    let (serve, _, _) = rig.expect_minted().await;
+    let vni = serve["vni"].as_u64().unwrap();
+    // Same authenticated relay WS, same WG identity and advertised carrier
+    // endpoint. Only the actual org-relay listener stopped. No disconnect,
+    // user/admin policy edit, or false capability blob is used to hide it.
+    rig.r
+        .send(Message::Text(
+            json!({
+                "t": "rc:overlay.join", "wg_public_key": BASE64.encode([3; 32]),
+                "mtu": 1280, "endpoints": ["8.8.8.8:41641"],
+                "supports_org_relay": true, "supports_server_relay_strategy": true,
+                "org_primary": true
+            })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .unwrap();
+    rig.expect_revoked(vni).await;
+    let map = recv_t(&mut rig.r, "rc:overlay.netmap", Duration::from_secs(5))
+        .await
+        .unwrap();
+    assert_eq!(map["org_relay_discovery"], json!(true));
+    assert_eq!(discover(&mut rig, &peer, 2).await["candidates"], json!([]));
+    let node = ObjectId::parse_str(&rig.r_node).unwrap();
+    let agent = ObjectId::parse_str(&rig.r_agent).unwrap();
+    assert!(
+        rig.app
+            .state
+            .network()
+            .org_relay
+            .join_extras(node)
+            .relay_withdrawn
+    );
+    assert!(
+        rig.app.state.fleet().rc_hub.is_agent_online(agent),
+        "relay control WS never disconnected"
+    );
+    assert!(
+        rig.app
+            .state
+            .fleet()
+            .agents
+            .base
+            .find_by_id(agent)
+            .await
+            .unwrap()
+            .capabilities
+            .has_rpc(roomler_ai_remote_control::models::RpcCap::RelayServer),
+        "explicit port withdrawal must win even before heartbeat caps arrive"
+    );
+    assert_eq!(rig.app.state.network().org_relay.sessions_on_relay(node), 0);
+    assert!(
+        audit_rows(&rig.app, &rig.seeded)
+            .await
+            .iter()
+            .any(|row| row["action"] == json!("revoke")
+                && row["reason"] == json!("listener_changed"))
+    );
+    // Repeated empty advertisement does not resurrect a default-port relay.
+    rig.r
+        .send(Message::Text(
+            json!({
+                "t": "rc:overlay.join", "wg_public_key": BASE64.encode([3; 32]),
+                "mtu": 1280, "endpoints": ["8.8.8.8:41641"],
+                "supports_org_relay": true, "org_primary": true
+            })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .unwrap();
+    recv_t(&mut rig.r, "rc:overlay.netmap", Duration::from_secs(5))
+        .await
+        .unwrap();
+    assert_eq!(discover(&mut rig, &peer, 3).await["candidates"], json!([]));
+    // Recovery uses the same WS, not a new enrollment or manual relay list.
+    join(&mut rig.r, 3, Some(true), "8.8.8.8:41641").await;
+    assert_eq!(
+        discover(&mut rig, &peer, 4).await["candidates"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_no_discovery_allocation(&mut rig.a).await;
+    assert_no_discovery_allocation(&mut rig.b).await;
+    assert_no_discovery_allocation(&mut rig.r).await;
+}
+
+async fn trial_join(ws: &mut Ws, seed: u8, capable: bool) {
+    ws.send(Message::Text(
+        json!({
+            "t": "rc:overlay.join", "wg_public_key": BASE64.encode([seed; 32]),
+            "mtu": 1280, "endpoints": ["203.0.113.10:41641"],
+            "supports_org_relay": true, "supports_path_trial_v1": capable,
+            "supports_server_relay_strategy": true, "org_primary": true, "relay_port": 3478
+        })
+        .to_string()
+        .into(),
+    ))
+    .await
+    .unwrap();
+    let map = recv_t(ws, "rc:overlay.netmap", Duration::from_secs(5))
+        .await
+        .unwrap();
+    assert_eq!(map["path_trial_v1"], json!(true));
+}
+
+async fn trial_message(ws: &mut Ws, kind: &str, id: &Value) {
+    ws.send(Message::Text(
+        json!({ "t": kind, "trial_id": id }).to_string().into(),
+    ))
+    .await
+    .unwrap();
+}
+
+async fn begin_trial(rig: &mut Rig, request_id: u64) -> (Value, Value, Value) {
+    rig.a
+        .send(Message::Text(
+            json!({
+                "t": "rc:overlay.path_trial_request", "peer_node_id": rig.b_node,
+                "relay_node_id": rig.r_node, "request_id": request_id
+            })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .unwrap();
+    let relay = recv_t(&mut rig.r, "rc:overlay.relay_serve", Duration::from_secs(5))
+        .await
+        .unwrap();
+    let a = recv_t(
+        &mut rig.a,
+        "rc:overlay.path_trial_start",
+        Duration::from_secs(5),
+    )
+    .await
+    .unwrap();
+    let b = recv_t(
+        &mut rig.b,
+        "rc:overlay.path_trial_start",
+        Duration::from_secs(5),
+    )
+    .await
+    .unwrap();
+    (relay, a, b)
+}
+
+/// Two equally authorized relays: no probe result or policy change is used
+/// to manufacture a different ranking. A caller may choose a fresh non-first
+/// hint, but the server must still reauthorize that EXACT requested relay.
+async fn alternate_onehop_fixture(slug: &str) -> (Rig, Ws, String, String, String, String) {
+    let mut rig = Rig::up(slug, true, Some(true)).await;
+    let original_acl = rig.arm().await;
+    let machine = format!("{slug}-extra");
+    let (agent, token) = enroll(&rig.app, &rig.seeded, &machine).await;
+    let mut extra = connect(&rig.app, &token, &["relay-server"]).await;
+    join(&mut extra, 4, Some(true), "1.1.1.1:41641").await;
+    let node = node_id(&rig.app, &rig.seeded, &machine).await;
+    assert_eq!(approve(&rig.app, &rig.seeded, &agent, true).await, 200);
+    let extra_acl = grant_relay(&rig.app, &rig.seeded, &node).await;
+    for (ws, seed) in [(&mut rig.a, 1u8), (&mut rig.b, 2u8)] {
+        ws.send(Message::Text(
+            json!({"t":"rc:overlay.join", "wg_public_key":BASE64.encode([seed;32]),
+                "mtu":1280, "endpoints":["203.0.113.10:41641"], "supports_org_relay":true,
+                "supports_path_trial_v1":true, "supports_org_relay_multi_candidate":true,
+                "supports_server_relay_strategy":true, "org_primary":true, "relay_port":3478
+            })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .unwrap();
+        recv_t(ws, "rc:overlay.netmap", Duration::from_secs(5))
+            .await
+            .unwrap();
+    }
+    (rig, extra, agent, node, original_acl, extra_acl)
+}
+
+async fn request_onehop(rig: &mut Rig, relay: &str, serial: u64) {
+    rig.a
+        .send(Message::Text(
+            json!({"t":"rc:overlay.path_trial_request",
+                "peer_node_id":rig.b_node, "relay_node_id":relay, "request_id":serial
+            })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn path_trial_nonpreferred_onehop_is_fresh_authorized_and_revocation_fails_closed() {
+    let (mut rig, mut extra, extra_agent, extra_node, _, _) =
+        alternate_onehop_fixture("trial-alternate").await;
+    let peer = rig.b_node.clone();
+    let metadata = discover(&mut rig, &peer, 1).await;
+    let hints = metadata["candidates"].as_array().unwrap();
+    assert_eq!(hints.len(), 2);
+    let preferred = hints[0]["relay_node_id"].as_str().unwrap().to_owned();
+    let requested = hints[1]["relay_node_id"].as_str().unwrap().to_owned();
+    assert_ne!(requested, preferred);
+    assert!(requested == rig.r_node || requested == extra_node);
+    request_onehop(&mut rig, &requested, 41).await;
+    let a = recv_t(
+        &mut rig.a,
+        "rc:overlay.path_trial_start",
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("fresh authorized nonpreferred discovery hint must be requestable");
+    let b = recv_t(
+        &mut rig.b,
+        "rc:overlay.path_trial_start",
+        Duration::from_secs(5),
+    )
+    .await
+    .unwrap();
+    let serve = recv_t(
+        if requested == rig.r_node {
+            &mut rig.r
+        } else {
+            &mut extra
+        },
+        "rc:overlay.relay_serve",
+        Duration::from_secs(5),
+    )
+    .await
+    .unwrap();
+    assert_eq!(a["relay_node_id"], json!(requested));
+    assert_eq!(b["relay_node_id"], json!(requested));
+    assert_eq!(a["trial_id"], b["trial_id"]);
+    assert_eq!(a["vni"], serve["vni"]);
+    assert_eq!(a["generation"], serve["generation"]);
+    assert_eq!(a["peer_wg_public_key"], json!(BASE64.encode([2; 32])));
+    assert_eq!(b["peer_wg_public_key"], json!(BASE64.encode([1; 32])));
+    assert_no_discovery_allocation(if requested == rig.r_node {
+        &mut extra
+    } else {
+        &mut rig.r
+    })
+    .await;
+    // Do not trust a previously authorized cached hint after approval changes.
+    let agent = if requested == rig.r_node {
+        rig.r_agent.clone()
+    } else {
+        extra_agent
+    };
+    assert_eq!(approve(&rig.app, &rig.seeded, &agent, false).await, 200);
+    for ws in [&mut rig.a, &mut rig.b] {
+        assert_eq!(
+            recv_t(ws, "rc:overlay.path_trial_abort", Duration::from_secs(5))
+                .await
+                .unwrap()["trial_id"],
+            a["trial_id"]
+        );
+    }
+    let relay = if requested == rig.r_node {
+        &mut rig.r
+    } else {
+        &mut extra
+    };
+    assert_eq!(
+        recv_t(relay, "rc:overlay.relay_revoke", Duration::from_secs(5))
+            .await
+            .unwrap()["vni"],
+        serve["vni"]
+    );
+    request_onehop(&mut rig, &requested, 42).await;
+    assert!(
+        recv_t(
+            &mut rig.a,
+            "rc:overlay.path_trial_start",
+            Duration::from_millis(250)
+        )
+        .await
+        .is_none()
+    );
+    assert_no_discovery_allocation(&mut rig.r).await;
+    assert_no_discovery_allocation(&mut extra).await;
+}
+
+#[tokio::test]
+async fn path_trial_nonpreferred_onehop_acl_removed_does_not_fall_back_to_other_relay() {
+    let (mut rig, mut extra, _, extra_node, original_acl, extra_acl) =
+        alternate_onehop_fixture("trial-alternate-acl").await;
+    let peer = rig.b_node.clone();
+    let metadata = discover(&mut rig, &peer, 1).await;
+    let hints = metadata["candidates"].as_array().unwrap();
+    assert_eq!(hints.len(), 2);
+    let preferred = hints[0]["relay_node_id"].as_str().unwrap().to_owned();
+    let requested = hints[1]["relay_node_id"].as_str().unwrap().to_owned();
+    let acl = if requested == rig.r_node {
+        original_acl
+    } else {
+        extra_acl
+    };
+    assert_eq!(
+        app_delete(
+            &rig.app,
+            &url(&rig.seeded, &format!("/overlay-acl/{acl}")),
+            &rig.seeded.admin.access_token
+        )
+        .await,
+        200
+    );
+    request_onehop(&mut rig, &requested, 51).await;
+    assert!(
+        recv_t(
+            &mut rig.a,
+            "rc:overlay.path_trial_start",
+            Duration::from_millis(250)
+        )
+        .await
+        .is_none()
+    );
+    assert_no_discovery_allocation(&mut rig.r).await;
+    assert_no_discovery_allocation(&mut extra).await;
+    let fresh = discover(&mut rig, &peer, 2).await;
+    assert_eq!(fresh["candidates"].as_array().unwrap().len(), 1);
+    assert_eq!(fresh["candidates"][0]["relay_node_id"], json!(preferred));
+    assert!(requested == rig.r_node || requested == extra_node);
+    // Authorization still works for the other actual relay: rejection cannot
+    // be a false-positive caused by missing path capability or a closed WS.
+    request_onehop(&mut rig, &preferred, 52).await;
+    let start = recv_t(
+        &mut rig.a,
+        "rc:overlay.path_trial_start",
+        Duration::from_secs(5),
+    )
+    .await
+    .unwrap();
+    assert_eq!(start["relay_node_id"], json!(preferred));
+}
+
+#[tokio::test]
+async fn path_trial_bilateral_ack_preserves_active_session_and_uses_independent_vni() {
+    let mut rig = Rig::up("trial-commit", true, Some(true)).await;
+    rig.arm().await;
+    trial_join(&mut rig.a, 1, true).await;
+    trial_join(&mut rig.b, 2, true).await;
+    rig.request().await;
+    let (old, _, _) = rig.expect_minted().await;
+    let (relay, a, b) = begin_trial(&mut rig, 1).await;
+    assert_ne!(
+        old["vni"], relay["vni"],
+        "candidate cannot overwrite active relay session"
+    );
+    assert_eq!(a["vni"], relay["vni"]);
+    assert_eq!(a["trial_id"], b["trial_id"]);
+    assert_ne!(a["bind_secret"], b["bind_secret"]);
+    assert_eq!(a["peer_wg_public_key"], json!(BASE64.encode([2; 32])));
+    let id = &a["trial_id"];
+    trial_message(&mut rig.a, "rc:overlay.path_trial_ready", id).await;
+    assert!(
+        recv_t(
+            &mut rig.a,
+            "rc:overlay.path_trial_commit",
+            Duration::from_millis(100)
+        )
+        .await
+        .is_none()
+    );
+    trial_message(&mut rig.b, "rc:overlay.path_trial_ready", id).await;
+    for ws in [&mut rig.a, &mut rig.b] {
+        assert_eq!(
+            recv_t(ws, "rc:overlay.path_trial_commit", Duration::from_secs(5))
+                .await
+                .unwrap()["trial_id"],
+            *id
+        );
+    }
+    trial_message(&mut rig.a, "rc:overlay.path_trial_committed", id).await;
+    assert!(
+        recv_t(
+            &mut rig.a,
+            "rc:overlay.path_trial_finalize",
+            Duration::from_millis(100)
+        )
+        .await
+        .is_none()
+    );
+    trial_message(&mut rig.b, "rc:overlay.path_trial_committed", id).await;
+    for ws in [&mut rig.a, &mut rig.b] {
+        assert_eq!(
+            recv_t(ws, "rc:overlay.path_trial_finalize", Duration::from_secs(5))
+                .await
+                .unwrap()["trial_id"],
+            *id
+        );
+    }
+    let pair = roomler_ai_mod_network::overlay::pair_key(
+        ObjectId::parse_str(&rig.a_node).unwrap(),
+        ObjectId::parse_str(&rig.b_node).unwrap(),
+    );
+    assert_eq!(
+        rig.app
+            .state
+            .network()
+            .org_relay
+            .active_session(&pair)
+            .unwrap()
+            .vni,
+        old["vni"].as_u64().unwrap() as u32
+    );
+    assert_eq!(
+        rig.app
+            .state
+            .network()
+            .org_relay
+            .sessions_on_relay(ObjectId::parse_str(&rig.r_node).unwrap()),
+        2
+    );
+    // Replaying an already finalized request does not allocate another VNI.
+    rig.a
+        .send(Message::Text(
+            json!({ "t": "rc:overlay.path_trial_request", "peer_node_id": rig.b_node,
+        "relay_node_id": rig.r_node, "request_id": 1 })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        recv_t(
+            &mut rig.a,
+            "rc:overlay.path_trial_finalize",
+            Duration::from_secs(5)
+        )
+        .await
+        .unwrap()["trial_id"],
+        *id
+    );
+    assert!(
+        recv_t(
+            &mut rig.r,
+            "rc:overlay.relay_serve",
+            Duration::from_millis(100)
+        )
+        .await
+        .is_none()
+    );
+
+    // A late preparation failure must not roll back one finalized member.
+    trial_message(&mut rig.a, "rc:overlay.path_trial_abort", id).await;
+    assert!(
+        recv_t(
+            &mut rig.b,
+            "rc:overlay.path_trial_abort",
+            Duration::from_millis(100)
+        )
+        .await
+        .is_none()
+    );
+}
+
+#[tokio::test]
+async fn path_trial_legacy_peer_is_not_sent_new_variant_and_revoke_covers_trial() {
+    let mut rig = Rig::up("trial-gates", true, Some(true)).await;
+    rig.arm().await;
+    trial_join(&mut rig.a, 1, true).await;
+    // b is the legacy/default-false peer. Nothing may be installed on relay.
+    rig.a
+        .send(Message::Text(
+            json!({ "t": "rc:overlay.path_trial_request", "peer_node_id": rig.b_node,
+        "relay_node_id": rig.r_node, "request_id": 1 })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .unwrap();
+    assert!(
+        recv_t(
+            &mut rig.r,
+            "rc:overlay.relay_serve",
+            Duration::from_millis(150)
+        )
+        .await
+        .is_none()
+    );
+    assert!(
+        recv_t(
+            &mut rig.b,
+            "rc:overlay.path_trial_start",
+            Duration::from_millis(100)
+        )
+        .await
+        .is_none()
+    );
+    trial_join(&mut rig.b, 2, true).await;
+    let (_, a, _) = begin_trial(&mut rig, 2).await;
+    assert_eq!(
+        approve(&rig.app, &rig.seeded, &rig.r_agent, false).await,
+        200
+    );
+    for ws in [&mut rig.a, &mut rig.b] {
+        assert_eq!(
+            recv_t(ws, "rc:overlay.path_trial_abort", Duration::from_secs(5))
+                .await
+                .unwrap()["trial_id"],
+            a["trial_id"]
+        );
+    }
+    assert_eq!(
+        recv_t(
+            &mut rig.r,
+            "rc:overlay.relay_revoke",
+            Duration::from_secs(5)
+        )
+        .await
+        .unwrap()["vni"],
+        a["vni"]
+    );
+    assert_eq!(
+        rig.app
+            .state
+            .network()
+            .org_relay
+            .sessions_on_relay(ObjectId::parse_str(&rig.r_node).unwrap()),
+        0
+    );
+}
+
+async fn finalize_trial_for_return(rig: &mut Rig) -> Value {
+    let (_, a, _) = begin_trial(rig, 1).await;
+    let id = a["trial_id"].clone();
+    for ws in [&mut rig.a, &mut rig.b] {
+        trial_message(ws, "rc:overlay.path_trial_ready", &id).await;
+    }
+    for ws in [&mut rig.a, &mut rig.b] {
+        recv_t(ws, "rc:overlay.path_trial_commit", Duration::from_secs(5))
+            .await
+            .unwrap();
+    }
+    for ws in [&mut rig.a, &mut rig.b] {
+        trial_message(ws, "rc:overlay.path_trial_committed", &id).await;
+    }
+    for ws in [&mut rig.a, &mut rig.b] {
+        recv_t(ws, "rc:overlay.path_trial_finalize", Duration::from_secs(5))
+            .await
+            .unwrap();
+    }
+    a
+}
+
+async fn return_message(ws: &mut Ws, kind: &str, id: &Value, return_id: &str) {
+    ws.send(Message::Text(
+        json!({"t":kind,"trial_id":id,"return_id":return_id})
+            .to_string()
+            .into(),
+    ))
+    .await
+    .unwrap();
+}
+
+async fn expect_return_both(rig: &mut Rig, kind: &str, return_id: &str) {
+    for ws in [&mut rig.a, &mut rig.b] {
+        assert_eq!(
+            recv_t(ws, kind, Duration::from_secs(5)).await.unwrap()["return_id"],
+            json!(return_id)
+        );
+    }
+}
+
+#[tokio::test]
+async fn path_trial_return_bilateral_ack_retires_vni_only_after_both_and_fences_stale_attempt() {
+    let mut rig = Rig::up("trial-return", true, Some(true)).await;
+    rig.arm().await;
+    trial_join(&mut rig.a, 1, true).await;
+    trial_join(&mut rig.b, 2, true).await;
+    let trial = finalize_trial_for_return(&mut rig).await;
+    let id = &trial["trial_id"];
+    let stale = ObjectId::new().to_hex();
+    // The relay itself is not a member and cannot ask peers to change senders.
+    return_message(
+        &mut rig.r,
+        "rc:overlay.path_trial_return_request",
+        id,
+        &stale,
+    )
+    .await;
+    assert!(
+        recv_t(
+            &mut rig.a,
+            "rc:overlay.path_trial_return_prepare",
+            Duration::from_millis(100)
+        )
+        .await
+        .is_none()
+    );
+    return_message(
+        &mut rig.a,
+        "rc:overlay.path_trial_return_request",
+        id,
+        &stale,
+    )
+    .await;
+    expect_return_both(&mut rig, "rc:overlay.path_trial_return_prepare", &stale).await;
+    return_message(&mut rig.a, "rc:overlay.path_trial_return_abort", id, &stale).await;
+    expect_return_both(&mut rig, "rc:overlay.path_trial_return_abort", &stale).await;
+    assert!(
+        recv_t(
+            &mut rig.r,
+            "rc:overlay.relay_revoke",
+            Duration::from_millis(100)
+        )
+        .await
+        .is_none(),
+        "failed healthy return keeps relay allocation"
+    );
+
+    // Recovery after a lost ReturnAbort: either phase retransmission or
+    // duplicate request replays the aborted decision; no one-sided timeout.
+    return_message(&mut rig.b, "rc:overlay.path_trial_returned", id, &stale).await;
+    expect_return_both(&mut rig, "rc:overlay.path_trial_return_abort", &stale).await;
+    return_message(
+        &mut rig.a,
+        "rc:overlay.path_trial_return_request",
+        id,
+        &stale,
+    )
+    .await;
+    expect_return_both(&mut rig, "rc:overlay.path_trial_return_abort", &stale).await;
+    let fresh = ObjectId::new().to_hex();
+    return_message(
+        &mut rig.a,
+        "rc:overlay.path_trial_return_request",
+        id,
+        &fresh,
+    )
+    .await;
+    expect_return_both(&mut rig, "rc:overlay.path_trial_return_prepare", &fresh).await;
+    // Delayed old attempt messages cannot abort or ready the new attempt.
+    return_message(&mut rig.b, "rc:overlay.path_trial_return_ready", id, &stale).await;
+    return_message(&mut rig.a, "rc:overlay.path_trial_return_abort", id, &stale).await;
+    return_message(&mut rig.a, "rc:overlay.path_trial_return_ready", id, &fresh).await;
+    assert!(
+        recv_t(
+            &mut rig.a,
+            "rc:overlay.path_trial_return_commit",
+            Duration::from_millis(100)
+        )
+        .await
+        .is_none()
+    );
+    return_message(&mut rig.b, "rc:overlay.path_trial_return_ready", id, &fresh).await;
+    expect_return_both(&mut rig, "rc:overlay.path_trial_return_commit", &fresh).await;
+    return_message(&mut rig.a, "rc:overlay.path_trial_returned", id, &fresh).await;
+    assert!(
+        recv_t(
+            &mut rig.r,
+            "rc:overlay.relay_revoke",
+            Duration::from_millis(100)
+        )
+        .await
+        .is_none(),
+        "one ACK cannot release a live receive path"
+    );
+    return_message(&mut rig.b, "rc:overlay.path_trial_returned", id, &fresh).await;
+    expect_return_both(&mut rig, "rc:overlay.path_trial_return_finalize", &fresh).await;
+    assert_eq!(
+        recv_t(
+            &mut rig.r,
+            "rc:overlay.relay_revoke",
+            Duration::from_secs(5)
+        )
+        .await
+        .unwrap()["vni"],
+        trial["vni"]
+    );
+    assert_eq!(
+        rig.app
+            .state
+            .network()
+            .org_relay
+            .sessions_on_relay(ObjectId::parse_str(&rig.r_node).unwrap()),
+        0
+    );
+    return_message(&mut rig.a, "rc:overlay.path_trial_return_abort", id, &fresh).await;
+    return_message(&mut rig.b, "rc:overlay.path_trial_returned", id, &fresh).await;
+    expect_return_both(&mut rig, "rc:overlay.path_trial_return_finalize", &fresh).await;
+    assert!(
+        recv_t(
+            &mut rig.r,
+            "rc:overlay.relay_revoke",
+            Duration::from_millis(100)
+        )
+        .await
+        .is_none(),
+        "duplicate ack is idempotent"
+    );
+}
+
+#[tokio::test]
+async fn path_trial_return_authorization_revoke_is_strict_abort_not_healthy_return() {
+    let mut rig = Rig::up("return-revoke", true, Some(true)).await;
+    rig.arm().await;
+    trial_join(&mut rig.a, 1, true).await;
+    trial_join(&mut rig.b, 2, true).await;
+    let trial = finalize_trial_for_return(&mut rig).await;
+    let id = &trial["trial_id"];
+    let return_id = ObjectId::new().to_hex();
+    return_message(
+        &mut rig.a,
+        "rc:overlay.path_trial_return_request",
+        id,
+        &return_id,
+    )
+    .await;
+    expect_return_both(&mut rig, "rc:overlay.path_trial_return_prepare", &return_id).await;
+    assert_eq!(
+        approve(&rig.app, &rig.seeded, &rig.r_agent, false).await,
+        200
+    );
+    for ws in [&mut rig.a, &mut rig.b] {
+        assert_eq!(
+            recv_t(ws, "rc:overlay.path_trial_abort", Duration::from_secs(5))
+                .await
+                .unwrap()["trial_id"],
+            *id
+        );
+    }
+    assert_eq!(
+        recv_t(
+            &mut rig.r,
+            "rc:overlay.relay_revoke",
+            Duration::from_secs(5)
+        )
+        .await
+        .unwrap()["vni"],
+        trial["vni"]
+    );
+    return_message(
+        &mut rig.a,
+        "rc:overlay.path_trial_return_ready",
+        id,
+        &return_id,
+    )
+    .await;
+    return_message(
+        &mut rig.b,
+        "rc:overlay.path_trial_return_ready",
+        id,
+        &return_id,
+    )
+    .await;
+    assert!(
+        recv_t(
+            &mut rig.a,
+            "rc:overlay.path_trial_return_commit",
+            Duration::from_millis(100)
+        )
+        .await
+        .is_none()
+    );
+}
+
+async fn backbone_join(ws: &mut Ws, seed: u8, path: bool, serving: bool, endpoint: &str) {
+    ws.send(Message::Text(json!({"t":"rc:overlay.join","wg_public_key":BASE64.encode([seed;32]),"mtu":1280,"endpoints":[endpoint],"supports_org_relay":true,"supports_server_relay_strategy":true,"supports_path_trial_v1":true,"supports_path_backbone_v1":path,"relay_backbone_ready":serving,"org_primary":true,"relay_port":3478}).to_string().into())).await.unwrap();
+    recv_t(ws, "rc:overlay.netmap", Duration::from_secs(5))
+        .await
+        .unwrap();
+}
+async fn request_backbone(rig: &mut Rig, exit: &str, serial: u64) {
+    rig.a.send(Message::Text(json!({"t":"rc:overlay.path_trial_request","peer_node_id":rig.b_node,"relay_node_id":rig.r_node,"exit_relay_node_id":exit,"request_id":serial}).to_string().into())).await.unwrap();
+}
+
+#[tokio::test]
+async fn backbone_discovery_trial_dual_grants_return_and_edge_withdrawal_are_one_authorized_path() {
+    let mut rig = Rig::up("backbone-path", true, Some(true)).await;
+    rig.arm().await;
+    let (exit_agent, exit_token) = enroll(&rig.app, &rig.seeded, "backbone-exit").await;
+    let mut exit = connect(&rig.app, &exit_token, &["relay-server"]).await;
+    join(&mut exit, 4, Some(true), "8.8.4.4:41641").await;
+    let exit_node = node_id(&rig.app, &rig.seeded, "backbone-exit").await;
+    assert_eq!(approve(&rig.app, &rig.seeded, &exit_agent, true).await, 200);
+    grant_relay(&rig.app, &rig.seeded, &exit_node).await;
+    let source_policy = url(
+        &rig.seeded,
+        &format!("/agent/{}/peer-relay-policy", rig.r_agent),
+    );
+    assert_eq!(put(&rig.app,&source_policy,&rig.seeded.admin.access_token,json!({"serve":true,"approved_backbone_edges":[{"relay_agent_id":exit_agent,"endpoint":"10.20.0.2:3478"}]})).await.0,200);
+    backbone_join(&mut rig.a, 1, true, false, "203.0.113.10:41641").await;
+    backbone_join(&mut rig.b, 2, true, false, "203.0.113.11:41641").await;
+    // No bridge offer from the native source: approved topology alone cannot
+    // create a private dial task or even advertise a two-hop candidate.
+    let peer = rig.b_node.clone();
+    let metadata = discover(&mut rig, &peer, 1).await;
+    assert!(
+        metadata["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|c| c.get("exit_relay_node_id").is_none())
+    );
+    backbone_join(&mut rig.r, 3, true, true, "8.8.8.8:41641").await;
+    // Both API and fresh mint defend the tenant's real overlay range, not
+    // merely the native operator's exclusion inventory or an old hint.
+    // New tenants use carved /22 blocks above the legacy reserve. Derive
+    // the forbidden underlay from an actually leased node in THIS tenant,
+    // not a hard-coded address that may belong to another/legacy range.
+    let state = rig.app.state.network();
+    let tid = ObjectId::parse_str(&rig.seeded.tenant_id).unwrap();
+    let network = state.overlay_networks.get_or_create(tid).await.unwrap();
+    let peer_row = state
+        .overlay_nodes
+        .base
+        .find_by_id(ObjectId::parse_str(&rig.b_node).unwrap())
+        .await
+        .unwrap();
+    assert!(
+        roomler_ai_remote_control::models::overlay_host(&network.cidr, &peer_row.overlay_ip)
+            .is_some(),
+        "fixture forbidden address must belong to this tenant's actual CIDR"
+    );
+    let overlay_endpoint = format!("{}:3478", peer_row.overlay_ip);
+    assert_eq!(put(&rig.app,&source_policy,&rig.seeded.admin.access_token,json!({"serve":true,"approved_backbone_edges":[{"relay_agent_id":exit_agent,"endpoint":overlay_endpoint}]})).await.0,400);
+    {
+        let state = rig.app.state.network();
+        let tid = ObjectId::parse_str(&rig.seeded.tenant_id).unwrap();
+        let aid = ObjectId::parse_str(&rig.r_agent).unwrap();
+        let mut policy = state
+            .fleet
+            .agents
+            .find_live_in_tenant(tid, aid)
+            .await
+            .unwrap()
+            .peer_relay_policy;
+        policy.approved_backbone_edges[0].endpoint = overlay_endpoint.clone();
+        state
+            .fleet
+            .agents
+            .update_peer_relay_policy(tid, aid, &policy)
+            .await
+            .unwrap();
+        // Deliberately bypass the route: fresh planner/discovery must reject
+        // persisted invalid edges without relying on an eligibility nudge.
+    }
+    let metadata = discover(&mut rig, &peer, 2).await;
+    assert!(
+        metadata["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|c| c.get("exit_relay_node_id").is_none()),
+        "stored invalid edges cannot be discovered"
+    );
+    rig.b.send(Message::Text(json!({"t":"rc:overlay.path_trial_request","peer_node_id":rig.a_node,"relay_node_id":rig.r_node,"exit_relay_node_id":exit_node,"request_id":90}).to_string().into())).await.unwrap();
+    assert!(
+        recv_t(
+            &mut rig.r,
+            "rc:overlay.relay_serve",
+            Duration::from_millis(100)
+        )
+        .await
+        .is_none(),
+        "fresh trial rejects a persisted overlay-target edge"
+    );
+    assert_eq!(put(&rig.app,&source_policy,&rig.seeded.admin.access_token,json!({"serve":true,"approved_backbone_edges":[{"relay_agent_id":exit_agent,"endpoint":"10.20.0.2:3478"}]})).await.0,200);
+    let metadata = discover(&mut rig, &peer, 3).await;
+    assert!(
+        metadata["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["relay_node_id"] == rig.r_node && c["exit_relay_node_id"] == exit_node)
+    );
+    assert!(
+        !metadata.to_string().contains("10.20.0.2"),
+        "private underlay targets never go to leaf clients"
+    );
+    request_backbone(&mut rig, &exit_node, 1).await;
+    let first = recv_t(&mut rig.r, "rc:overlay.relay_serve", Duration::from_secs(5))
+        .await
+        .unwrap();
+    let bridge = recv_t(
+        &mut rig.r,
+        "rc:overlay.relay_bridge_serve",
+        Duration::from_secs(5),
+    )
+    .await
+    .unwrap()["bridge"]
+        .clone();
+    let second = recv_t(&mut exit, "rc:overlay.relay_serve", Duration::from_secs(5))
+        .await
+        .unwrap();
+    let a = recv_t(
+        &mut rig.a,
+        "rc:overlay.path_trial_start",
+        Duration::from_secs(5),
+    )
+    .await
+    .unwrap();
+    let b = recv_t(
+        &mut rig.b,
+        "rc:overlay.path_trial_start",
+        Duration::from_secs(5),
+    )
+    .await
+    .unwrap();
+    assert_eq!(a["relay_node_id"], rig.r_node);
+    assert_eq!(b["relay_node_id"], exit_node);
+    assert_eq!(a["vni"], first["vni"]);
+    assert_eq!(b["vni"], second["vni"]);
+    assert_eq!(bridge["local_vni"], first["vni"]);
+    assert_eq!(bridge["remote_vni"], second["vni"]);
+    assert_eq!(bridge["source_agent_id"], rig.r_agent);
+    assert_eq!(bridge["target_agent_id"], exit_agent);
+    assert_eq!(
+        bridge["local_bind_secret"],
+        first["members"][1]["bind_secret"]
+    );
+    assert_eq!(
+        bridge["remote_bind_secret"],
+        second["members"][0]["bind_secret"]
+    );
+    assert_eq!(a["bind_secret"], first["members"][0]["bind_secret"]);
+    assert_eq!(b["bind_secret"], second["members"][1]["bind_secret"]);
+    let id = &a["trial_id"];
+    for ws in [&mut rig.a, &mut rig.b] {
+        trial_message(ws, "rc:overlay.path_trial_ready", id).await;
+    }
+    for ws in [&mut rig.a, &mut rig.b] {
+        recv_t(ws, "rc:overlay.path_trial_commit", Duration::from_secs(5))
+            .await
+            .unwrap();
+    }
+    for ws in [&mut rig.a, &mut rig.b] {
+        trial_message(ws, "rc:overlay.path_trial_committed", id).await;
+    }
+    for ws in [&mut rig.a, &mut rig.b] {
+        recv_t(ws, "rc:overlay.path_trial_finalize", Duration::from_secs(5))
+            .await
+            .unwrap();
+    }
+    let ret = ObjectId::new().to_hex();
+    return_message(&mut rig.a, "rc:overlay.path_trial_return_request", id, &ret).await;
+    expect_return_both(&mut rig, "rc:overlay.path_trial_return_prepare", &ret).await;
+    for ws in [&mut rig.a, &mut rig.b] {
+        return_message(ws, "rc:overlay.path_trial_return_ready", id, &ret).await;
+    }
+    expect_return_both(&mut rig, "rc:overlay.path_trial_return_commit", &ret).await;
+    return_message(&mut rig.a, "rc:overlay.path_trial_returned", id, &ret).await;
+    assert!(
+        recv_t(
+            &mut exit,
+            "rc:overlay.relay_revoke",
+            Duration::from_millis(100)
+        )
+        .await
+        .is_none()
+    );
+    return_message(&mut rig.b, "rc:overlay.path_trial_returned", id, &ret).await;
+    expect_return_both(&mut rig, "rc:overlay.path_trial_return_finalize", &ret).await;
+    assert_eq!(
+        recv_t(
+            &mut rig.r,
+            "rc:overlay.relay_revoke",
+            Duration::from_secs(5)
+        )
+        .await
+        .unwrap()["vni"],
+        first["vni"]
+    );
+    assert_eq!(
+        recv_t(
+            &mut rig.r,
+            "rc:overlay.relay_bridge_revoke",
+            Duration::from_secs(5)
+        )
+        .await
+        .unwrap()["trial_id"],
+        *id
+    );
+    assert_eq!(
+        recv_t(&mut exit, "rc:overlay.relay_revoke", Duration::from_secs(5))
+            .await
+            .unwrap()["vni"],
+        second["vni"]
+    );
+    // A fresh trial gets independent allocations, and removing only the edge
+    // (not relay approval) synchronously revokes BOTH legs and the bridge.
+    request_backbone(&mut rig, &exit_node, 2).await;
+    let first = recv_t(&mut rig.r, "rc:overlay.relay_serve", Duration::from_secs(5))
+        .await
+        .unwrap();
+    let bridge = recv_t(
+        &mut rig.r,
+        "rc:overlay.relay_bridge_serve",
+        Duration::from_secs(5),
+    )
+    .await
+    .unwrap()["bridge"]
+        .clone();
+    let second = recv_t(&mut exit, "rc:overlay.relay_serve", Duration::from_secs(5))
+        .await
+        .unwrap();
+    let a = recv_t(
+        &mut rig.a,
+        "rc:overlay.path_trial_start",
+        Duration::from_secs(5),
+    )
+    .await
+    .unwrap();
+    recv_t(
+        &mut rig.b,
+        "rc:overlay.path_trial_start",
+        Duration::from_secs(5),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        put(
+            &rig.app,
+            &source_policy,
+            &rig.seeded.admin.access_token,
+            json!({"serve":true})
+        )
+        .await
+        .0,
+        200
+    );
+    for ws in [&mut rig.a, &mut rig.b] {
+        assert_eq!(
+            recv_t(ws, "rc:overlay.path_trial_abort", Duration::from_secs(5))
+                .await
+                .unwrap()["trial_id"],
+            a["trial_id"]
+        );
+    }
+    assert_eq!(
+        recv_t(
+            &mut rig.r,
+            "rc:overlay.relay_revoke",
+            Duration::from_secs(5)
+        )
+        .await
+        .unwrap()["vni"],
+        first["vni"]
+    );
+    assert_eq!(
+        recv_t(
+            &mut rig.r,
+            "rc:overlay.relay_bridge_revoke",
+            Duration::from_secs(5)
+        )
+        .await
+        .unwrap()["trial_id"],
+        bridge["trial_id"]
+    );
+    assert_eq!(
+        recv_t(&mut exit, "rc:overlay.relay_revoke", Duration::from_secs(5))
+            .await
+            .unwrap()["vni"],
+        second["vni"]
+    );
+}
+
+#[cfg(target_os = "linux")]
+struct CompositeDirectLink {
+    delay: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    tasks: Vec<tokio::task::JoinHandle<()>>,
+    a: std::net::SocketAddr,
+    b: std::net::SocketAddr,
+}
+#[cfg(target_os = "linux")]
+impl Drop for CompositeDirectLink {
+    fn drop(&mut self) {
+        for task in &self.tasks {
+            task.abort();
+        }
+    }
+}
+#[cfg(target_os = "linux")]
+impl CompositeDirectLink {
+    async fn new(a: std::net::SocketAddr, b: std::net::SocketAddr) -> Self {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicU64, Ordering},
+        };
+        let left = Arc::new(tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let right = Arc::new(tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let aa = left.local_addr().unwrap();
+        let ab = right.local_addr().unwrap();
+        let delay = Arc::new(AtomicU64::new(40));
+        let mut tasks = Vec::new();
+        for (input, output, dst) in [(left.clone(), right.clone(), b), (right, left, a)] {
+            let delay = delay.clone();
+            tasks.push(tokio::spawn(async move {
+                let mut bytes = [0u8; 4096];
+                loop {
+                    let (n, _) = input.recv_from(&mut bytes).await.unwrap();
+                    assert!(n < bytes.len(), "fixture must never truncate a datagram");
+                    let ms = delay.load(Ordering::Relaxed);
+                    if ms > 0 {
+                        tokio::time::sleep(Duration::from_millis(ms)).await;
+                    }
+                    output.send_to(&bytes[..n], dst).await.unwrap();
+                }
+            }));
+        }
+        Self {
+            delay,
+            tasks,
+            a: aa,
+            b: ab,
+        }
+    }
+    fn recover(&self) {
+        self.delay.store(0, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+#[cfg(target_os = "linux")]
+async fn composite_drive(
+    label: &str,
+    h: &mut roomlerd::relay_server::backbone_test_support::PathTrialTestHarness,
+    output: &mut tokio::sync::mpsc::Receiver<roomler_ai_remote_control::signaling::ClientMsg>,
+    ws: &mut Ws,
+    trace: &mut Vec<(String, String)>,
+    trial: ObjectId,
+    fault: Option<std::time::Instant>,
+) {
+    h.tick().await;
+    while let Ok(msg) = output.try_recv() {
+        let value = serde_json::to_value(&msg).unwrap();
+        let tag = value["t"].as_str().unwrap().to_string();
+        if tag == "rc:overlay.path_trial_return_request" {
+            let snap = h.snapshot(trial);
+            assert_eq!(
+                snap.windows.len(),
+                9,
+                "production hysteresis needs nine actual paired rounds"
+            );
+            assert!(snap.windows.iter().filter(|w| w.0.is_some()).count() >= 6);
+            assert!(
+                snap.windows.iter().filter(|w| w.1.is_none()).count() >= 6,
+                "bridge fault must create real echo loss, not an injected score"
+            );
+            let fault = fault.expect("no return may be triggered before task-owned bridge fault");
+            assert!(
+                snap.windows.iter().filter(|w| w.2 >= fault).count() >= 6,
+                "decision must use newly transmitted post-fault probes"
+            );
+        }
+        trace.push((label.into(), tag));
+        ws.send(Message::Text(value.to_string().into()))
+            .await
+            .unwrap();
+    }
+    // Bound both work and wait; unrelated netmaps/pings cannot starve ticks.
+    for _ in 0..32 {
+        let frame = match tokio::time::timeout(Duration::from_millis(1), ws.next()).await {
+            Ok(Some(Ok(Message::Text(t)))) => t,
+            Ok(Some(Ok(_))) => continue,
+            Err(_) => break,
+            other => panic!("fixture WS ended: {other:?}"),
+        };
+        let value: Value = serde_json::from_str(&frame).unwrap();
+        let tag = value["t"].as_str().unwrap_or("");
+        if tag.starts_with("rc:overlay.path_trial_") {
+            trace.push((format!("server->{label}"), tag.into()));
+        }
+        if let Ok(msg) = serde_json::from_value(value) {
+            h.control(msg).await;
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn composite_ip(src: std::net::Ipv4Addr, dst: std::net::Ipv4Addr, payload: &[u8]) -> Vec<u8> {
+    let mut packet = vec![0u8; 20 + payload.len()];
+    packet[0] = 0x45;
+    let len = packet.len() as u16;
+    packet[2..4].copy_from_slice(&len.to_be_bytes());
+    packet[8] = 64;
+    packet[9] = 17;
+    packet[12..16].copy_from_slice(&src.octets());
+    packet[16..20].copy_from_slice(&dst.octets());
+    packet[20..].copy_from_slice(payload);
+    packet
+}
+
+#[tokio::test]
+#[cfg(target_os = "linux")]
+async fn backbone_real_manager_fault_actual_echo_hysteresis_and_server_return_2pc() {
+    tokio::time::timeout(Duration::from_secs(45),async {
+        use roomlerd::relay_server::backbone_test_support::{NativeRelay,PathTrialTestHarness,WgKeypair};
+        use roomler_ai_remote_control::signaling::{NetmapPeer,ServerMsg};
+        use std::{sync::Arc,net::Ipv4Addr,time::Instant};
+        let mut rig=Rig::up("backbone-real-fault",true,Some(true)).await;rig.arm().await;
+        let source=NativeRelay::start().await.unwrap();let target=NativeRelay::start().await.unwrap();
+        let (exit_agent,exit_token)=enroll(&rig.app,&rig.seeded,"backbone-fault-exit").await;
+        let mut exit=connect(&rig.app,&exit_token,&["relay-server"]).await;
+        let join_relay=|key:u8,port:u16,ready:bool|json!({"t":"rc:overlay.join","wg_public_key":BASE64.encode([key;32]),"mtu":1280,"endpoints":[format!("8.8.8.8:{port}")],"supports_org_relay":true,"supports_path_trial_v1":true,"supports_path_backbone_v1":true,"relay_backbone_ready":ready,"org_primary":true,"relay_port":port});
+        rig.r.send(Message::Text(join_relay(3,source.port(),true).to_string().into())).await.unwrap();recv_t(&mut rig.r,"rc:overlay.netmap",Duration::from_secs(5)).await.unwrap();
+        exit.send(Message::Text(join_relay(4,target.port(),false).to_string().into())).await.unwrap();recv_t(&mut exit,"rc:overlay.netmap",Duration::from_secs(5)).await.unwrap();
+        let exit_node=node_id(&rig.app,&rig.seeded,"backbone-fault-exit").await;
+        assert_eq!(approve(&rig.app,&rig.seeded,&exit_agent,true).await,200);grant_relay(&rig.app,&rig.seeded,&exit_node).await;
+        let policy_url=url(&rig.seeded,&format!("/agent/{}/peer-relay-policy",rig.r_agent));
+        assert_eq!(put(&rig.app,&policy_url,&rig.seeded.admin.access_token,json!({"serve":true,"approved_backbone_edges":[{"relay_agent_id":exit_agent,"endpoint":target.underlay_endpoint().to_string()}]})).await.0,200);
+        let own_a=WgKeypair::generate();let own_b=WgKeypair::generate();
+        for (ws,key) in [(&mut rig.a,own_a.public_base64()),(&mut rig.b,own_b.public_base64())] {
+            ws.send(Message::Text(json!({"t":"rc:overlay.join","wg_public_key":key,"mtu":1280,"endpoints":["203.0.113.10:41641"],"supports_org_relay":true,"supports_path_trial_v1":true,"supports_path_backbone_v1":true,"org_primary":true}).to_string().into())).await.unwrap();recv_t(ws,"rc:overlay.netmap",Duration::from_secs(5)).await.unwrap();
+        }
+        let a_id=ObjectId::parse_str(&rig.a_node).unwrap();let b_id=ObjectId::parse_str(&rig.b_node).unwrap();
+        let a_ip:Ipv4Addr=rig.app.state.network().overlay_nodes.base.find_by_id(a_id).await.unwrap().overlay_ip.parse().unwrap();
+        let b_ip:Ipv4Addr=rig.app.state.network().overlay_nodes.base.find_by_id(b_id).await.unwrap().overlay_ip.parse().unwrap();
+        let sa=Arc::new(tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap());let sb=Arc::new(tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let direct=CompositeDirectLink::new(sa.local_addr().unwrap(),sb.local_addr().unwrap()).await;
+        let peer=|id:ObjectId,ip:Ipv4Addr,key:String|serde_json::from_value::<NetmapPeer>(json!({"node_id":id.to_hex(),"overlay_ip":ip.to_string(),"wg_public_key":key,"reachable":true,"supports_org_relay":true,"supports_overlay_echo":true})).unwrap();
+        let (mut a,mut a_out)=PathTrialTestHarness::new(own_a.clone(),peer(b_id,b_ip,own_b.public_base64()),sa,direct.a,true).await;
+        let (mut b,mut b_out)=PathTrialTestHarness::new(own_b,peer(a_id,a_ip,own_a.public_base64()),sb,direct.b,false).await;
+        tokio::time::timeout(Duration::from_secs(5),async{while !a.handshake_done()||!b.handshake_done(){tokio::time::sleep(Duration::from_millis(10)).await;}}).await.unwrap();
+        request_backbone(&mut rig,&exit_node,1).await;
+        let s1=recv_t(&mut rig.r,"rc:overlay.relay_serve",Duration::from_secs(5)).await.unwrap();
+        let bridge=recv_t(&mut rig.r,"rc:overlay.relay_bridge_serve",Duration::from_secs(5)).await.unwrap();
+        let s2=recv_t(&mut exit,"rc:overlay.relay_serve",Duration::from_secs(5)).await.unwrap();
+        let mut start_a=recv_t(&mut rig.a,"rc:overlay.path_trial_start",Duration::from_secs(5)).await.unwrap();
+        let mut start_b=recv_t(&mut rig.b,"rc:overlay.path_trial_start",Duration::from_secs(5)).await.unwrap();
+        let trial=ObjectId::parse_str(start_a["trial_id"].as_str().unwrap()).unwrap();let generation=bridge["bridge"]["generation"].as_u64().unwrap();
+        target.serve(serde_json::from_value::<ServerMsg>(s2).unwrap(),None);source.serve(serde_json::from_value::<ServerMsg>(s1).unwrap(),None);source.serve(serde_json::from_value::<ServerMsg>(bridge).unwrap(),Some(source.policy_to(&target)));
+        // Only public-address->owned-loopback endpoint resolution is mapped.
+        // The authenticated CP identity, VNI, secrets, and actual private NIC
+        // endpoint from the approved edge remain untouched and are exercised.
+        start_a["relay_endpoints"]=json!([source.endpoint().to_string()]);start_b["relay_endpoints"]=json!([target.endpoint().to_string()]);
+        a.control(serde_json::from_value(start_a).unwrap()).await;b.control(serde_json::from_value(start_b).unwrap()).await;
+        let mut trace=Vec::new();
+        loop {
+            composite_drive("a",&mut a,&mut a_out,&mut rig.a,&mut trace,trial,None).await;
+            composite_drive("b",&mut b,&mut b_out,&mut rig.b,&mut trace,trial,None).await;
+            if a.snapshot(trial).phase=="finalized"&&b.snapshot(trial).phase=="finalized"{break;}
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(!a.snapshot(trial).direct_sender&&!b.snapshot(trial).direct_sender,"actual measured healthy relay must first become both senders");
+        let packet=composite_ip(a_ip,b_ip,b"actual WG application payload through approved two-hop manager");assert!(a.send_packet(&packet).await);assert_eq!(b.receive_packet().await.unwrap(),packet);
+        source.probe_healthy().await.unwrap();target.probe_healthy().await.unwrap();
+        // Retained direct carriers have a conclusive sticky-dead verdict.
+        // Only the actual Engine tick may create fresh shadow crypto sessions;
+        // no data sender/relay grant is changed during this recovery.
+        a.fail_retained_direct(trial);b.fail_retained_direct(trial);
+        loop {
+            composite_drive("a",&mut a,&mut a_out,&mut rig.a,&mut trace,trial,None).await;
+            composite_drive("b",&mut b,&mut b_out,&mut rig.b,&mut trace,trial,None).await;
+            assert!(!a.snapshot(trial).direct_sender&&!b.snapshot(trial).direct_sender);
+            if a.snapshot(trial).direct_ready&&b.snapshot(trial).direct_ready{break;}
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let held=composite_ip(a_ip,b_ip,b"sticky-dead shadow rebuilt with fresh WG handshake; relay remains active");assert!(a.send_packet(&held).await);assert_eq!(b.receive_packet().await.unwrap(),held);
+        source.fail_owned_bridge(trial,generation).await.unwrap();direct.recover();let fault=Instant::now();
+        // CP has NOT received an offline or revoke signal: listener + P2P
+        // stay alive; only real candidate echo timeout can start this return.
+        source.probe_healthy().await.unwrap();target.probe_healthy().await.unwrap();
+        loop {
+            composite_drive("a",&mut a,&mut a_out,&mut rig.a,&mut trace,trial,Some(fault)).await;
+            composite_drive("b",&mut b,&mut b_out,&mut rig.b,&mut trace,trial,Some(fault)).await;
+            if a.snapshot(trial).phase=="retired"&&b.snapshot(trial).phase=="retired"{break;}
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let a_state=a.snapshot(trial);let b_state=b.snapshot(trial);assert!(a_state.direct_sender&&b_state.direct_sender&&!a_state.managed&&!b_state.managed);
+        for (owner,kind) in [("a","rc:overlay.path_trial_return_ready"),("b","rc:overlay.path_trial_return_ready"),("a","rc:overlay.path_trial_returned"),("b","rc:overlay.path_trial_returned"),("server->a","rc:overlay.path_trial_return_finalize"),("server->b","rc:overlay.path_trial_return_finalize")] {assert!(trace.iter().any(|(o,k)|o==owner&&k==kind),"missing real protocol step {owner} {kind}");}
+        let packet=composite_ip(a_ip,b_ip,b"after bridge fault A to B actual P2P");assert!(a.send_packet(&packet).await);assert_eq!(b.receive_packet().await.unwrap(),packet);
+        let packet=composite_ip(b_ip,a_ip,b"after bridge fault B to A actual P2P");assert!(b.send_packet(&packet).await);assert_eq!(a.receive_packet().await.unwrap(),packet);
+        for want in ["rc:overlay.relay_revoke","rc:overlay.relay_bridge_revoke"]{let msg=recv_t(&mut rig.r,want,Duration::from_secs(5)).await.unwrap();source.serve(serde_json::from_value(msg).unwrap(),None);}
+        let msg=recv_t(&mut exit,"rc:overlay.relay_revoke",Duration::from_secs(5)).await.unwrap();target.serve(serde_json::from_value(msg).unwrap(),None);
+        source.probe_healthy().await.unwrap();target.probe_healthy().await.unwrap();
+        println!("real bridge manager fault -> actual authenticated echo loss/fresh hysteresis -> bilateral server Return2PC -> bidirectional WG P2P payload: PASS; listeners remained healthy; no NIC/route/WAN changes");
+    }).await.expect("bounded local bridge-fault composite oracle exceeded 45 seconds");
+}
+
+/// Pump the SAME Discovery and Engine APIs as the runtime, through real agent
+/// WS frames. Only public-address resolution is mapped to task loopback.
+#[cfg(target_os = "linux")]
+#[allow(clippy::too_many_arguments)]
+async fn alternate_composite_drive(
+    h: &mut roomlerd::relay_server::backbone_test_support::PathTrialTestHarness,
+    output: &mut tokio::sync::mpsc::Receiver<roomler_ai_remote_control::signaling::ClientMsg>,
+    ws: &mut Ws,
+    discover: bool,
+    expected_hint_count: usize,
+    first_id: &str,
+    first_endpoint: std::net::SocketAddr,
+    backup_endpoint: std::net::SocketAddr,
+    requests: &mut Vec<(String, std::time::Instant)>,
+    controls: &mut Vec<(String, ObjectId)>,
+) {
+    use roomler_ai_remote_control::signaling::ClientMsg;
+    h.tick().await;
+    if discover {
+        h.request_discovery().await;
+    }
+    while let Ok(msg) = output.try_recv() {
+        if let ClientMsg::OverlayPathTrialRequest {
+            relay_node_id,
+            exit_relay_node_id,
+            ..
+        } = &msg
+        {
+            assert!(
+                exit_relay_node_id.is_none(),
+                "this oracle covers one-hop alternatives"
+            );
+            requests.push((relay_node_id.to_hex(), std::time::Instant::now()));
+            let role = if relay_node_id.to_hex() == first_id {
+                "first"
+            } else {
+                "alternate"
+            };
+            println!(
+                "ALT_REQUEST ordinal={} role={} since_first_ms={}",
+                requests.len(),
+                role,
+                requests.first().unwrap().1.elapsed().as_millis()
+            );
+        }
+        ws.send(Message::Text(serde_json::to_string(&msg).unwrap().into()))
+            .await
+            .unwrap();
+    }
+    for _ in 0..32 {
+        let text = match tokio::time::timeout(Duration::from_millis(1), ws.next()).await {
+            Ok(Some(Ok(Message::Text(text)))) => text,
+            Ok(Some(Ok(_))) => continue,
+            Err(_) => break,
+            other => panic!("composite fixture WS ended: {other:?}"),
+        };
+        let mut value: Value = serde_json::from_str(&text).unwrap();
+        if let (Some(tag), Some(id)) = (value["t"].as_str(), value["trial_id"].as_str()) {
+            if tag.starts_with("rc:overlay.path_trial_") {
+                controls.push((tag.to_owned(), ObjectId::parse_str(id).unwrap()));
+                let phase = match tag {
+                    "rc:overlay.path_trial_start" => "start",
+                    "rc:overlay.path_trial_commit" => "commit",
+                    "rc:overlay.path_trial_finalize" => "finalize",
+                    "rc:overlay.path_trial_abort" => "abort",
+                    _ => "other_path_control",
+                };
+                println!("ALT_SERVER phase={phase}");
+            }
+        }
+        if value["t"] == json!("rc:overlay.path_trial_start") {
+            let endpoint = if value["relay_node_id"] == json!(first_id) {
+                first_endpoint
+            } else {
+                backup_endpoint
+            };
+            value["relay_endpoints"] = json!([endpoint.to_string()]);
+        }
+        if value["t"] == json!("rc:overlay.org_relay_candidates") {
+            assert_eq!(
+                h.receive_discovery(serde_json::from_value(value).unwrap()),
+                expected_hint_count
+            );
+        } else if let Ok(msg) = serde_json::from_value(value) {
+            h.control(msg).await;
+        }
+    }
+}
+
+#[tokio::test]
+#[cfg(target_os = "linux")]
+async fn org_relay_discovery_actual_alternate_wg_payload_and_late_bind_generation_fence() {
+    run_alternate_wg_composite(false).await;
+}
+
+#[tokio::test]
+#[cfg(target_os = "linux")]
+async fn org_relay_discovery_five_registered_hidden_relay_actual_wg_and_late_bind_fence() {
+    run_alternate_wg_composite(true).await;
+}
+
+/// Same real 100s oracle and native managers; only the registered inventory
+/// and legitimate central display names vary. No score/clock/cache injection.
+#[cfg(target_os = "linux")]
+async fn run_alternate_wg_composite(five_registered_relays: bool) {
+    tokio::time::timeout(Duration::from_secs(100), async {
+        use roomlerd::relay_server::backbone_test_support::{NativeRelay, PathTrialTestHarness, WgKeypair};
+        use roomler_ai_remote_control::signaling::{ClientMsg, NetmapPeer, ServerMsg};
+        use std::{net::Ipv4Addr, sync::Arc, time::Instant};
+        let diagnostic_started=Instant::now();
+        println!("ALT_STAGE setup elapsed_ms=0");
+        let slug=if five_registered_relays {"hidden-five-real-wg"} else {"alternate-real-wg"};
+        let (mut rig, mut extra, extra_agent, extra_node, _, _) = alternate_onehop_fixture(slug).await;
+        println!("ALT_STAGE central_fixture_ready elapsed_ms={}",diagnostic_started.elapsed().as_millis());
+        let original_native = NativeRelay::start().await.unwrap();
+        let extra_native = NativeRelay::start().await.unwrap();
+        let hint_count=if five_registered_relays {3} else {2};
+        let mut registered_ids=vec![rig.r_node.clone(),extra_node.clone()];
+        let mut registered_agents=vec![rig.r_agent.clone(),extra_agent];
+        // These are genuine enrolled+online+approved relay servers. Their
+        // centrally stored names control only planner tie preference; their
+        // ObjectIds remain assigned by actual registration, in canonical order.
+        let mut standby_relays=Vec::new();
+        if five_registered_relays {
+            for index in 0..3u8 {
+                let machine=format!("{slug}-standby-{index}");
+                let(agent,token)=enroll(&rig.app,&rig.seeded,&machine).await;
+                let mut ws=connect(&rig.app,&token,&["relay-server"]).await;
+                let native=NativeRelay::start().await.unwrap();
+                join(&mut ws,5+index,Some(true),&format!("8.8.4.4:{}",native.port())).await;
+                // join's legacy port3478 is replaced with this manager's real port.
+                ws.send(Message::Text(json!({"t":"rc:overlay.join","wg_public_key":BASE64.encode([5+index;32]),
+                    "mtu":1280,"endpoints":[format!("8.8.4.4:{}",native.port())],"supports_org_relay":true,
+                    "org_primary":true,"relay_port":native.port()}).to_string().into())).await.unwrap();
+                recv_t(&mut ws,"rc:overlay.netmap",Duration::from_secs(5)).await.unwrap();
+                let id=node_id(&rig.app,&rig.seeded,&machine).await;
+                assert_eq!(approve(&rig.app,&rig.seeded,&agent,true).await,200);
+                grant_relay(&rig.app,&rig.seeded,&id).await;
+                registered_ids.push(id);registered_agents.push(agent);standby_relays.push((ws,native));
+            }
+            assert!(registered_ids.windows(2).all(|p|ObjectId::parse_str(&p[0]).unwrap()<ObjectId::parse_str(&p[1]).unwrap()),"fixture labels1..5 must reflect real canonical node IDs");
+            // AgentDao::list_relay_approved sorts persisted NAME; the planner's
+            // equal unknown-probe/zero-session class is stable. Use that actual
+            // admin API, not fabricated RTT or rewritten Discovery metadata.
+            for (index,rank) in [1,4,2,5,3].into_iter().enumerate() {
+                assert_eq!(put(&rig.app,&url(&rig.seeded,&format!("/agent/{}",registered_agents[index])),
+                    &rig.seeded.admin.access_token,json!({"name":format!("coverage-preference-{rank:02}")})).await.0,200);
+            }
+        }
+        // The real listener ports, identities, relay Serve decoder and manager
+        // are used. Only their public addresses are fixture-resolved locally.
+        for (ws, seed, port, public) in [(&mut rig.r, 3u8, original_native.port(), "8.8.8.8"),
+            (&mut extra, 4u8, extra_native.port(), "1.1.1.1")] {
+            ws.send(Message::Text(json!({"t":"rc:overlay.join", "wg_public_key":BASE64.encode([seed;32]),
+                "mtu":1280, "endpoints":[format!("{public}:{port}")], "supports_org_relay":true,
+                "org_primary":true, "relay_port":port}).to_string().into())).await.unwrap();
+            recv_t(ws,"rc:overlay.netmap",Duration::from_secs(5)).await.unwrap();
+        }
+        let own_a=WgKeypair::generate(); let own_b=WgKeypair::generate();
+        for (ws,key) in [(&mut rig.a,own_a.public_base64()),(&mut rig.b,own_b.public_base64())] {
+            ws.send(Message::Text(json!({"t":"rc:overlay.join", "wg_public_key":key, "mtu":1280,
+                "endpoints":["203.0.113.10:41641"], "supports_org_relay":true,
+                "supports_path_trial_v1":true, "supports_org_relay_multi_candidate":true,
+                "supports_org_relay_discovery_cursor":five_registered_relays,
+                "org_primary":true}).to_string().into())).await.unwrap();
+            recv_t(ws,"rc:overlay.netmap",Duration::from_secs(5)).await.unwrap();
+        }
+        let a_id=ObjectId::parse_str(&rig.a_node).unwrap();let b_id=ObjectId::parse_str(&rig.b_node).unwrap();
+        let state=rig.app.state.network();
+        let a_ip:Ipv4Addr=state.overlay_nodes.base.find_by_id(a_id).await.unwrap().overlay_ip.parse().unwrap();
+        let b_ip:Ipv4Addr=state.overlay_nodes.base.find_by_id(b_id).await.unwrap().overlay_ip.parse().unwrap();
+        let sa=Arc::new(tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let sb=Arc::new(tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let direct=CompositeDirectLink::new(sa.local_addr().unwrap(),sb.local_addr().unwrap()).await;
+        let peer=|id:ObjectId,ip:Ipv4Addr,key:String|serde_json::from_value::<NetmapPeer>(json!({
+            "node_id":id.to_hex(),"overlay_ip":ip.to_string(),"wg_public_key":key,
+            "reachable":true,"supports_org_relay":true,"supports_overlay_echo":true})).unwrap();
+        let (mut a,mut a_out)=PathTrialTestHarness::new(own_a.clone(),peer(b_id,b_ip,own_b.public_base64()),sa,direct.a,true).await;
+        let (mut b,mut b_out)=PathTrialTestHarness::new(own_b,peer(a_id,a_ip,own_a.public_base64()),sb,direct.b,false).await;
+        tokio::time::timeout(Duration::from_secs(5),async {
+            while !a.handshake_done()||!b.handshake_done(){tokio::time::sleep(Duration::from_millis(10)).await;}
+        }).await.unwrap();
+        println!("ALT_STAGE direct_handshake_ready elapsed_ms={}",diagnostic_started.elapsed().as_millis());
+        let original_a=a.installed_identity().unwrap(); let original_b=b.installed_identity().unwrap();
+        a.request_discovery().await;
+        let discovery=a_out.recv().await.unwrap();
+        assert!(matches!(discovery,ClientMsg::OverlayOrgRelayDiscover{..}));
+        rig.a.send(Message::Text(serde_json::to_string(&discovery).unwrap().into())).await.unwrap();
+        let metadata=recv_t(&mut rig.a,"rc:overlay.org_relay_candidates",Duration::from_secs(5)).await.unwrap();
+        let hints=metadata["candidates"].as_array().unwrap();assert_eq!(hints.len(),hint_count);
+        let first=hints[0]["relay_node_id"].as_str().unwrap().to_owned();
+        let backup=if five_registered_relays {
+            let observed:Vec<_>=hints.iter().map(|c|c["relay_node_id"].as_str().unwrap().to_owned()).collect();
+            assert_eq!(observed,vec![registered_ids[0].clone(),registered_ids[2].clone(),registered_ids[4].clone()],"real central preference must yield canonical IDs[1,3,5]");
+            assert!(hints.iter().all(|c|c["relay_node_id"]!=registered_ids[1]),"healthy canonical2 must be hidden from initial metadata");
+            assert_eq!(first,registered_ids[0]);
+            assert!(metadata.get("next_cursor").is_some(),"real WS must negotiate traversal");
+            registered_ids[1].clone()
+        } else {hints[1]["relay_node_id"].as_str().unwrap().to_owned()};
+        assert!(first==rig.r_node||first==extra_node);assert_ne!(first,backup);
+        assert_eq!(a.receive_discovery(serde_json::from_value(metadata).unwrap()),hint_count);
+        println!("ALT_STAGE discovery_received candidate_count={} hidden_healthy={} elapsed_ms={}",hint_count,five_registered_relays,diagnostic_started.elapsed().as_millis());
+        let first_requested_at=Instant::now(); // lower bound before the actual paced tick
+        a.tick().await;
+        let request=a_out.recv().await.unwrap();
+        assert!(matches!(&request,ClientMsg::OverlayPathTrialRequest{relay_node_id,..} if relay_node_id.to_hex()==first));
+        rig.a.send(Message::Text(serde_json::to_string(&request).unwrap().into())).await.unwrap();
+        let mut start_a=recv_t(&mut rig.a,"rc:overlay.path_trial_start",Duration::from_secs(5)).await.unwrap();
+        let mut start_b=recv_t(&mut rig.b,"rc:overlay.path_trial_start",Duration::from_secs(5)).await.unwrap();
+        let first_trial=ObjectId::parse_str(start_a["trial_id"].as_str().unwrap()).unwrap();
+        let first_generation=start_a["generation"].as_u64().unwrap();
+        let (first_native,backup_native,mut first_ws,mut backup_ws)=if first==rig.r_node {
+            (original_native,extra_native,rig.r,extra)
+        } else {(extra_native,original_native,extra,rig.r)};
+        let first_endpoint=first_native.endpoint();let backup_endpoint=backup_native.endpoint();
+        let serve=recv_t(&mut first_ws,"rc:overlay.relay_serve",Duration::from_secs(5)).await.unwrap();
+        first_native.serve(serde_json::from_value::<ServerMsg>(serve).unwrap(),None);
+        start_a["relay_endpoints"]=json!([first_endpoint.to_string()]);
+        start_b["relay_endpoints"]=json!([first_endpoint.to_string()]);
+        let late_start_a=start_a.clone();let late_start_b=start_b.clone();
+        a.control(serde_json::from_value(start_a).unwrap()).await;
+        let mut late=a.hold_completed_bind().await;
+        assert_eq!(late.trial_id(),first_trial);assert!(late.is_alive());
+        println!("ALT_STAGE first_actual_bind_held elapsed_ms={}",diagnostic_started.elapsed().as_millis());
+        // Fault only the owned listener. The first REAL successful completion
+        // is retained while B actually fails bind and the real server
+        // withdraws it (client Abort or the existing preparation deadline).
+        // No score, timeout, or generation is injected.
+        drop(first_native);
+        tokio::time::timeout(Duration::from_secs(2),async {
+            loop {if let Ok(sock)=tokio::net::UdpSocket::bind(("0.0.0.0",first_endpoint.port())).await {drop(sock);break;}
+                tokio::time::sleep(Duration::from_millis(10)).await;}
+        }).await.unwrap();
+        b.control(serde_json::from_value(start_b).unwrap()).await;
+        println!("ALT_STAGE first_listener_gone_responder_started elapsed_ms={}",diagnostic_started.elapsed().as_millis());
+        let mut requests=vec![(first.clone(),first_requested_at)];let mut responder_requests=Vec::new();
+        let mut controls_a=Vec::new();let mut controls_b=Vec::new();
+        let mut backup_trial=None;let mut backup_start=None;let mut served=false;
+        let mut next_diagnostic=Instant::now();
+        loop {
+            alternate_composite_drive(&mut a,&mut a_out,&mut rig.a,true,hint_count,&first,first_endpoint,backup_endpoint,&mut requests,&mut controls_a).await;
+            alternate_composite_drive(&mut b,&mut b_out,&mut rig.b,false,hint_count,&first,first_endpoint,backup_endpoint,&mut responder_requests,&mut controls_b).await;
+            assert!(responder_requests.is_empty(),"no responder-side duplicate trial");
+            assert!(requests.len()<=2,"one initial attempt and one alternate, no request flood");
+            if requests.len()==2 {
+                assert_eq!(requests[1].0,backup);
+                assert!(requests[1].1.duration_since(first_requested_at)>=Duration::from_secs(60),"real production request pacing remains intact");
+            } else {
+                assert_eq!(a.installed_identity(),Some(original_a));
+                assert_eq!(b.installed_identity(),Some(original_b));
+            }
+            if !served {
+                if let Some(value)=recv_t(&mut backup_ws,"rc:overlay.relay_serve",Duration::from_millis(1)).await {
+                    assert_eq!(requests.len(),2);
+                    let generation=value["generation"].as_u64().unwrap();assert!(generation>first_generation);
+                    backup_native.serve(serde_json::from_value(value).unwrap(),None);served=true;
+                    println!("ALT_STAGE alternate_manager_serve elapsed_ms={}",diagnostic_started.elapsed().as_millis());
+                }
+            }
+            // The real Engine exposes no fabricated winner. The trial id is
+            // observed from its server Start via the server's actual sessions.
+            if backup_trial.is_none() && served {
+                let sessions=state.org_relay.sessions_on_relay(ObjectId::parse_str(&backup).unwrap());
+                assert_eq!(sessions,1,"exactly one current alternate reservation");
+                // Captured on a separate read below by the helper's trace API.
+            }
+            if let Some((id,start))=a.active_trial_observation() {
+                if id!=first_trial { backup_trial=Some(id);backup_start=Some(start); }
+            }
+            if Instant::now()>=next_diagnostic {
+                next_diagnostic=Instant::now()+Duration::from_secs(5);
+                let (at,ap,ad,ac,af,av)=a.diagnostic_counters();
+                let (bt,bp,bd,bc,bf,bv)=b.diagnostic_counters();
+                let aid=backup_trial.unwrap_or(first_trial);
+                let aa=a.snapshot(aid);let bb=b.snapshot(aid);
+                let (aq,ah,aw,adn,arn,adm,arm)=a.diagnostic_quality(aid);
+                let (bq,bh,bw,bdn,brn,bdm,brm)=b.diagnostic_quality(aid);
+                println!("ALT_QUALITY a_score_ready={} b_score_ready={} a_wg_initiator_ready={} b_wg_initiator_ready={} a_windows={} b_windows={} a_direct_success={} b_direct_success={} a_relay_success={} b_relay_success={} a_direct_median_ms={:?} b_direct_median_ms={:?} a_relay_median_ms={:?} b_relay_median_ms={:?}",
+                    aq,bq,ah,bh,aw,bw,adn,bdn,arn,brn,adm,bdm,arm,brm);
+                println!("ALT_STATE elapsed_ms={} requests={} manager_served={} a_phase={} b_phase={} a_trials={} b_trials={} a_pending={} b_pending={} a_delay_ms={} b_delay_ms={} a_candidate={} b_candidate={} a_failed={} b_failed={} a_current={} b_current={} a_direct={} b_direct={} a_managed={} b_managed={} server_abort_a={} server_abort_b={}",
+                    diagnostic_started.elapsed().as_millis(),requests.len(),served,aa.phase,bb.phase,at,bt,ap,bp,ad,bd,ac,bc,af,bf,av,bv,aa.direct_sender,bb.direct_sender,aa.managed,bb.managed,
+                    controls_a.iter().any(|(t,id)|t=="rc:overlay.path_trial_abort"&&*id==first_trial),
+                    controls_b.iter().any(|(t,id)|t=="rc:overlay.path_trial_abort"&&*id==first_trial));
+            }
+            if let Some(id)=backup_trial {
+                if a.snapshot(id).phase=="finalized"&&b.snapshot(id).phase=="finalized" {break;}
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        println!("ALT_STAGE alternate_bilateral_finalized elapsed_ms={}",diagnostic_started.elapsed().as_millis());
+        let second_trial=backup_trial.unwrap();assert!(backup_start.unwrap()>first_requested_at);
+        assert_ne!(first_trial,second_trial);assert!(served);assert_eq!(requests.len(),2);
+        for controls in [&controls_a,&controls_b] {
+            assert!(controls.iter().any(|(tag,id)|tag=="rc:overlay.path_trial_abort"&&*id==first_trial),"actual server withdrawal must retire the first trial");
+            for kind in ["rc:overlay.path_trial_commit","rc:overlay.path_trial_finalize"] {
+                assert!(controls.iter().any(|(tag,id)|tag==kind&&*id==second_trial),"both actual server 2PC decisions must be observed");
+            }
+        }
+        // Read the actual accepted Engine phases via the SAME production
+        // bounded watch publisher, after real bilateral WG/2PC (no fake state).
+        let observed_controls=|status:&roomlerd::relay_server::backbone_test_support::PathTrialStatus| {
+            status.transitions.iter().map(|t|(t.sequence,t.trial_id.clone(),t.peer_node_id.clone(),t.from,t.to,t.event,t.return_id.clone())).collect::<Vec<_>>()
+        };
+        for (h,expected_peer) in [(&a,b_id),(&b,a_id)] {
+            let observed=h.local_observation();
+            assert!(observed.active.len()<=4 && observed.transitions.len()<=32);
+            let current=observed.active.iter().find(|t|t.trial_id==second_trial.to_hex()).expect("real current alternate trial visible");
+            assert_eq!(current.peer_node_id,expected_peer.to_hex());
+            assert_eq!(current.phase,roomlerd::relay_server::backbone_test_support::PathTrialPhase::Finalized);
+            assert_eq!(current.return_id,None);
+            assert_eq!(current.samples.len(),9);assert!(current.samples.len()<=9);
+            assert_eq!(usize::from(current.direct_success),current.samples.iter().filter(|s|s.direct_rtt_ns.is_some()).count());
+            assert_eq!(usize::from(current.candidate_success),current.samples.iter().filter(|s|s.candidate_rtt_ns.is_some()).count());
+            for (event,from,to) in [(roomlerd::relay_server::backbone_test_support::PathTrialEvent::Commit,roomlerd::relay_server::backbone_test_support::PathTrialPhase::Ready,roomlerd::relay_server::backbone_test_support::PathTrialPhase::Committed),
+                (roomlerd::relay_server::backbone_test_support::PathTrialEvent::Finalize,roomlerd::relay_server::backbone_test_support::PathTrialPhase::Committed,roomlerd::relay_server::backbone_test_support::PathTrialPhase::Finalized)] {
+                let entries:Vec<_>=observed.transitions.iter().filter(|t|t.trial_id==second_trial.to_hex()&&t.event==event).collect();
+                assert_eq!(entries.len(),1,"exactly one accepted actual transition");
+                assert_eq!(entries[0].peer_node_id,expected_peer.to_hex());assert_eq!(entries[0].from,Some(from));assert_eq!(entries[0].to,Some(to));assert_eq!(entries[0].return_id,None);
+            }
+        }
+        let before_rejected_a=a.local_observation();let before_rejected_b=b.local_observation();
+        assert_eq!(a.trial_count(),1);assert_eq!(b.trial_count(),1);
+        assert!(!a.snapshot(second_trial).direct_sender&&!b.snapshot(second_trial).direct_sender);
+        let identity_a=a.installed_identity().unwrap();let identity_b=b.installed_identity().unwrap();
+        assert_eq!((identity_a.0,identity_a.1),(original_a.0,original_a.1));
+        assert_eq!((identity_b.0,identity_b.1),(original_b.0,original_b.1));
+        assert_ne!(identity_a.2,original_a.2);assert_ne!(identity_b.2,original_b.2);
+        let payload=composite_ip(a_ip,b_ip,b"actual alternate one-hop WG payload after first bind failure");
+        assert!(a.send_packet(&payload).await);assert_eq!(b.receive_packet().await.unwrap(),payload);
+        println!("ALT_STAGE alternate_payload_received elapsed_ms={}",diagnostic_started.elapsed().as_millis());
+        // Deliver the original AUTHENTICATED bind result through the same
+        // Engine queue after a newer generation finalized. It must close.
+        assert!(late.is_alive());a.release_completed_bind(&mut late).await;a.tick().await;
+        assert!(!late.is_alive(),"stale actual bound socket must be closed");
+        println!("ALT_STAGE stale_actual_bind_closed elapsed_ms={}",diagnostic_started.elapsed().as_millis());
+        for (h,start) in [(&mut a,late_start_a),(&mut b,late_start_b)] {
+            h.control(serde_json::from_value(start.clone()).unwrap()).await;
+            h.control(serde_json::from_value(start).unwrap()).await;
+        }
+        assert_eq!(a.installed_identity(),Some(identity_a));assert_eq!(b.installed_identity(),Some(identity_b));
+        assert_eq!(a.trial_count(),1);assert_eq!(b.trial_count(),1);
+        assert_eq!(a.snapshot(second_trial).phase,"finalized");assert_eq!(b.snapshot(second_trial).phase,"finalized");
+        let after_rejected_a=a.local_observation();let after_rejected_b=b.local_observation();
+        assert_eq!((after_rejected_a.runtime_id,after_rejected_a.epoch),(before_rejected_a.runtime_id,before_rejected_a.epoch));
+        assert_eq!((after_rejected_b.runtime_id,after_rejected_b.epoch),(before_rejected_b.runtime_id,before_rejected_b.epoch));
+        assert_eq!(observed_controls(&after_rejected_a),observed_controls(&before_rejected_a),"late actual Bound and rejected old Starts cannot forge accepted history");
+        assert_eq!(observed_controls(&after_rejected_b),observed_controls(&before_rejected_b));
+        println!("ACTUAL_WG_OWNER_OBSERVATION: PASS (both accepted Commit/Finalize; same production bounded watch; late rejection adds no transition)");
+        let payload=composite_ip(b_ip,a_ip,b"late first bind and duplicate Start cannot overwrite newer relay generation");
+        assert!(b.send_packet(&payload).await);assert_eq!(a.receive_packet().await.unwrap(),payload);
+        if five_registered_relays {
+            for (ws,_) in &mut standby_relays {assert_no_discovery_allocation(ws).await;}
+            println!("DISCOVERY_HIDDEN_FIVE_WG: PASS (5 real registrations; initial canonical[1,3,5]; actual second canonical2; real60s; bilateral2PC; exactbytes; latefirst fenced)");
+        }
+        println!("DISCOVERY_ALTERNATE_WG_LATE_BIND: PASS (real 60s pacing; same WG keys/IP; real bind + manager bytes; no clock/score injection)");
+    }).await.expect("bounded real-clock alternate composite exceeded 100 seconds");
+}
+
+async fn discovery_cursor_join(rig: &mut Rig, cap: Option<bool>) {
+    let mut message = json!({"t":"rc:overlay.join","wg_public_key":BASE64.encode([1;32]),"mtu":1280,"endpoints":["203.0.113.10:41641"],"supports_org_relay":true,"supports_org_relay_multi_candidate":true,"supports_path_trial_v1":true,"supports_server_relay_strategy":true,"org_primary":true,"relay_port":3478});
+    if let Some(cap) = cap {
+        message["supports_org_relay_discovery_cursor"] = json!(cap);
+    }
+    rig.a
+        .send(Message::Text(message.to_string().into()))
+        .await
+        .unwrap();
+    recv_t(&mut rig.a, "rc:overlay.netmap", Duration::from_secs(5))
+        .await
+        .unwrap();
+}
+async fn discovery_cursor_page(rig: &mut Rig, serial: u64, cursor: Option<Value>) -> Value {
+    let mut request =
+        json!({"t":"rc:overlay.org_relay_discover","peer_node_id":rig.b_node,"request_id":serial});
+    if let Some(cursor) = cursor {
+        request["cursor"] = cursor;
+    }
+    rig.a
+        .send(Message::Text(request.to_string().into()))
+        .await
+        .unwrap();
+    let reply = recv_t(
+        &mut rig.a,
+        "rc:overlay.org_relay_candidates",
+        Duration::from_secs(5),
+    )
+    .await
+    .unwrap();
+    assert_eq!(reply["request_id"], serial);
+    assert!(reply.get("vni").is_none() && reply.get("bind_secret").is_none());
+    reply
+}
+#[tokio::test]
+async fn metadata_discovery_cursor_covers_five_relays_and_rechecks_acl_between_pages() {
+    let mut rig = Rig::up("discovery-cursor", true, Some(true)).await;
+    let original_acl = rig.arm().await;
+    let mut relays = Vec::new();
+    let mut ids = vec![rig.r_node.clone()];
+    let mut acls = vec![original_acl];
+    for index in 0..4 {
+        let machine = format!("discovery-cursor-r{index}");
+        let (agent, token) = enroll(&rig.app, &rig.seeded, &machine).await;
+        let mut ws = connect(&rig.app, &token, &["relay-server"]).await;
+        join(&mut ws, 20 + index, Some(true), "1.1.1.1:41641").await;
+        let id = node_id(&rig.app, &rig.seeded, &machine).await;
+        assert_eq!(approve(&rig.app, &rig.seeded, &agent, true).await, 200);
+        acls.push(grant_relay(&rig.app, &rig.seeded, &id).await);
+        ids.push(id);
+        relays.push(ws);
+    }
+    // Rollout absence and explicit false preserve the complete old response shape.
+    discovery_cursor_join(&mut rig, None).await;
+    let old = discovery_cursor_page(&mut rig, 1, None).await;
+    discovery_cursor_join(&mut rig, Some(false)).await;
+    let false_page = discovery_cursor_page(
+        &mut rig,
+        2,
+        Some(json!({"relay_node_id":ObjectId::new().to_hex()})),
+    )
+    .await;
+    assert_eq!(old["candidates"], false_page["candidates"]);
+    assert!(old.get("next_cursor").is_none() && false_page.get("next_cursor").is_none());
+    discovery_cursor_join(&mut rig, Some(true)).await;
+    let first = discovery_cursor_page(&mut rig, 3, None).await;
+    assert_eq!(
+        first["candidates"], old["candidates"],
+        "preferred initial page unchanged"
+    );
+    let mut seen = std::collections::HashSet::new();
+    let mut page = first;
+    for serial in 4..=5 {
+        for c in page["candidates"].as_array().unwrap() {
+            assert!(ids.contains(&c["relay_node_id"].as_str().unwrap().to_owned()));
+            seen.insert(c["relay_node_id"].as_str().unwrap().to_owned());
+        }
+        page = discovery_cursor_page(&mut rig, serial, Some(page["next_cursor"].clone())).await;
+    }
+    for c in page["candidates"].as_array().unwrap() {
+        seen.insert(c["relay_node_id"].as_str().unwrap().to_owned());
+    }
+    assert_eq!(
+        seen.len(),
+        5,
+        "five eligible relays cannot remain hidden behind first three"
+    );
+    // Delete a real ACL between pages. Caller supplied/stale position cannot authorize it.
+    let denied = ids[0].clone();
+    assert_eq!(
+        app_delete(
+            &rig.app,
+            &url(&rig.seeded, &format!("/overlay-acl/{}", acls[0])),
+            &rig.seeded.admin.access_token
+        )
+        .await,
+        200
+    );
+    let final_page = discovery_cursor_page(&mut rig, 6, Some(page["next_cursor"].clone())).await;
+    assert!(
+        final_page["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|c| c["relay_node_id"] != denied)
+    );
+    // Fresh trial mint must deny the now-unapproved ACL even with a former hint.
+    trial_join(&mut rig.b, 2, true).await;
+    request_onehop(&mut rig, &denied, 1).await;
+    assert!(
+        recv_t(
+            &mut rig.a,
+            "rc:overlay.path_trial_start",
+            Duration::from_millis(150)
+        )
+        .await
+        .is_none()
+    );
+    assert!(
+        rig.app
+            .state
+            .network()
+            .org_relay
+            .active_session(&roomler_ai_mod_network::overlay::pair_key(
+                ObjectId::parse_str(&rig.a_node).unwrap(),
+                ObjectId::parse_str(&rig.b_node).unwrap()
+            ))
+            .is_none()
+    );
+    assert!(
+        audit_rows(&rig.app, &rig.seeded)
+            .await
+            .iter()
+            .all(|row| row["action"] != json!("mint"))
+    );
+    assert_no_discovery_allocation(&mut rig.a).await;
+    assert_no_discovery_allocation(&mut rig.b).await;
+    assert_no_discovery_allocation(&mut rig.r).await;
+    for ws in &mut relays {
+        assert_no_discovery_allocation(ws).await;
+    }
+}
+
+#[tokio::test]
+async fn metadata_discovery_cursor_rebuilds_backbone_after_approval_and_mode_changes() {
+    let mut rig = Rig::up("discovery-cursor-backbone", true, Some(true)).await;
+    rig.arm().await;
+    let (agent, token) = enroll(&rig.app, &rig.seeded, "discovery-cursor-exit").await;
+    let mut exit = connect(&rig.app, &token, &["relay-server"]).await;
+    join(&mut exit, 4, Some(true), "1.1.1.1:41641").await;
+    let exit_id = node_id(&rig.app, &rig.seeded, "discovery-cursor-exit").await;
+    assert_eq!(approve(&rig.app, &rig.seeded, &agent, true).await, 200);
+    grant_relay(&rig.app, &rig.seeded, &exit_id).await;
+    let source_policy = url(
+        &rig.seeded,
+        &format!("/agent/{}/peer-relay-policy", rig.r_agent),
+    );
+    assert_eq!(put(&rig.app,&source_policy,&rig.seeded.admin.access_token,json!({"serve":true,"approved_backbone_edges":[{"relay_agent_id":agent,"endpoint":"10.20.0.2:3478"}]})).await.0,200);
+    backbone_join(&mut rig.r, 3, true, true, "8.8.8.8:41641").await;
+    backbone_join(&mut rig.b, 2, true, false, "203.0.113.11:41641").await;
+    rig.a.send(Message::Text(json!({"t":"rc:overlay.join","wg_public_key":BASE64.encode([1;32]),"mtu":1280,"endpoints":["203.0.113.10:41641"],"supports_org_relay":true,"supports_org_relay_multi_candidate":true,"supports_org_relay_discovery_cursor":true,"supports_path_backbone_v1":true,"supports_path_trial_v1":true,"org_primary":true,"relay_port":3478}).to_string().into())).await.unwrap();
+    recv_t(&mut rig.a, "rc:overlay.netmap", Duration::from_secs(5))
+        .await
+        .unwrap();
+    let first = discovery_cursor_page(&mut rig, 1, None).await;
+    assert!(
+        first["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["relay_node_id"] == rig.r_node && c["exit_relay_node_id"] == exit_id)
+    );
+    assert_eq!(approve(&rig.app, &rig.seeded, &agent, false).await, 200);
+    let second = discovery_cursor_page(&mut rig, 2, Some(first["next_cursor"].clone())).await;
+    assert!(
+        second["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|c| c.get("exit_relay_node_id").is_none() && c["relay_node_id"] != exit_id)
+    );
+    set_mode(&rig.app, &rig.seeded, "off").await;
+    let off = discovery_cursor_page(&mut rig, 3, Some(second["next_cursor"].clone())).await;
+    assert_eq!(off["candidates"], json!([]));
+    assert_eq!(off["ttl_secs"], 0);
+    assert!(off.get("next_cursor").is_none());
+    assert_no_discovery_allocation(&mut rig.a).await;
+    assert_no_discovery_allocation(&mut rig.b).await;
+    assert_no_discovery_allocation(&mut rig.r).await;
+    assert_no_discovery_allocation(&mut exit).await;
+}

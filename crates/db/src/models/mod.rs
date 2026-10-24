@@ -53,3 +53,6 @@ pub use newsletter_issue::*;
 
 pub mod newsletter_send;
 pub use newsletter_send::*;
+
+pub mod device_share;
+pub use device_share::*;

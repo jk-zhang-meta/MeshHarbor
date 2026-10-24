@@ -35,6 +35,10 @@
           </svg>
           Devices
         </a>
+        <a href="#/account" data-view="account">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="7" r="4"></circle><path d="M4 22v-3a8 8 0 0 1 16 0v3"></path></svg>
+          My devices &amp; sharing
+        </a>
         <a href="#/tunnels" data-view="tunnels">
           <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <polyline points="17 1 21 5 17 9"></polyline>
@@ -249,6 +253,21 @@
       <!-- Devices (FR-84 D5c): the devices this one's private network lets it
            see, as the server lists them (devices.js + grid.js), and the mesh
            graph of the same set (mesh.js). -->
+      <section id="view-account" class="view" hidden>
+        <div class="view-head"><h2>My devices &amp; sharing</h2></div>
+        <p class="view-sub">Your personal device inventory and the centre's authoritative sharing records — separate from this node's organization network.</p>
+        <div class="card">
+          <h3>Personal account</h3>
+          <p>Sign in inside the built-in account window. See device counts, shares received and sent, permissions, creation/expiry times and revocations. Revoked and expired records remain visible.</p>
+          <div class="actions">
+            <button type="button" class="primary" id="account-devices">My devices &amp; counts</button>
+            <button type="button" id="account-received">Shared with me</button>
+            <button type="button" id="account-sent">Shared by me</button>
+          </div>
+          <p id="account-error" role="alert" hidden></p>
+          <p class="muted">Account sign-in and sharing permissions are enforced by the centre. This window never borrows the device service's credentials. Desktop/file sessions use the existing supported viewer or browser.</p>
+        </div>
+      </section>
       <section id="view-devices" class="view" hidden>
         <div class="view-head"><h2>Devices</h2></div>
         <p class="view-sub">
@@ -1081,6 +1100,7 @@
     <script src="grid.js"></script>
     <script src="mesh.js"></script>
     <script src="devices.js"></script>
+    <script src="account.js"></script>
     <script src="tunnels.js"></script>
     <script src="recordings.js"></script>
     <script src="editor.js"></script>

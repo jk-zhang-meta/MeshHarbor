@@ -34,6 +34,7 @@
     windows_subsystem = "windows"
 )]
 
+mod account_window;
 mod commands;
 mod desktop_log;
 mod editor;
@@ -94,6 +95,7 @@ fn main() {
     first_run::set_launch_view(show_view.clone());
 
     tauri::Builder::default()
+        .manage(account_window::CenterPolicy::default())
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             // Second invocation: focus the existing window instead
             // of starting a new tray. Prevents "10 trays running"
@@ -164,6 +166,7 @@ fn main() {
             commands::cmd_tail_log,
             commands::cmd_open_remote,
             commands::cmd_open_roomler,
+            commands::cmd_open_account,
             // FR-85 — the Recordings view.
             commands::cmd_recordings_view,
             commands::cmd_record_start,

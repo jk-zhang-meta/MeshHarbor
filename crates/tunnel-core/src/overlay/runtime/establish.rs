@@ -269,6 +269,83 @@ impl OverlayRuntime {
     ///   re-allocated its coturn port (restart/churn) and we're dialing a stale
     ///   one. Re-request so we re-allocate + re-dial the peer's CURRENT address
     ///   ([`RELAY_REFRESH_COOLDOWN`] bounds two ends ping-ponging).
+    /// Run the fallback health pass and immediately repair a real removal.
+    /// The establish walk supplies the existing DERP floor and coordinates
+    /// better tiers; a healthy pass does not add any walk or retry work.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) async fn sweep_and_repair_carriers(
+        &self,
+        wg: &mut WgDevice,
+        by_node: &mut HashMap<ObjectId, Installed>,
+        relay: &mut Option<RelayCoordinator>,
+        tun: &Arc<dyn TunIo>,
+        relay_refresh_cooldown: &mut HashMap<ObjectId, Instant>,
+        current_peers: &HashMap<ObjectId, NetmapPeer>,
+        force_poke: ForcedPoke,
+        direct_ctx: Option<&DirectCtx>,
+        upgrade_probes: &mut HashMap<ObjectId, UpgradeProbe>,
+        relay_bq: &mut RelayBuildQueue,
+    ) -> bool {
+        let carrier_lost = self.sweep_carrier_health(
+            wg, by_node, relay, tun, relay_refresh_cooldown, current_peers, force_poke,
+        ).await;
+        if carrier_lost {
+            let peers: Vec<NetmapPeer> = current_peers.values().cloned().collect();
+            self.install_peers(wg, by_node, relay, tun, &peers, direct_ctx,
+                upgrade_probes, relay_bq, "carrier-loss").await;
+        }
+        carrier_lost
+    }
+
+    /// Sample business traffic independently of the five-second health bucket.
+    /// This lane may start proof, but never settles proof or judges a carrier.
+    pub(super) fn scout_business_traffic(
+        &self,
+        wg: &mut WgDevice,
+        by_node: &mut HashMap<ObjectId, Installed>,
+        samples: &mut HashMap<ObjectId, BusinessTrafficSample>,
+    ) {
+        samples.retain(|nid, _| by_node.contains_key(nid));
+        let now = Instant::now();
+        for (nid, e) in by_node.iter_mut() {
+            if !e.is_direct || !wg.peer_handshake_done(&e.pubkey).unwrap_or(false)
+                || now.saturating_duration_since(e.since) < crate::overlay::lifecycle::DIRECT_GRACE
+            {
+                samples.remove(nid);
+                continue;
+            }
+            let Some(traffic) = wg.peer_business_traffic(&e.pubkey) else {
+                samples.remove(nid);
+                continue;
+            };
+            let Some(previous) = samples.insert(*nid, BusinessTrafficSample {
+                installed_at: e.since, traffic,
+            }) else {
+                continue;
+            };
+            if previous.installed_at != e.since
+                || traffic.0 <= previous.traffic.0 || traffic.1 != previous.traffic.1
+            {
+                continue;
+            }
+            // Do not settle answered proofs here: the normal sweep remains
+            // their only consumer. In particular, a healthy one-way stream
+            // cannot turn this faster sampler into a per-second rekey loop.
+            if e.poke.is_some_and(|p| p.from_major || p.from_business) {
+                continue;
+            }
+            if wg.poke_handshake(&e.pubkey) {
+                e.poke = Some(PokeArm {
+                    at: now,
+                    from_major: false,
+                    from_business: true,
+                });
+                info!(peer = %nid, tier = ?e.tier,
+                    "overlay: unanswered business traffic — fast validation of the direct carrier");
+            }
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(super) async fn sweep_carrier_health(
         &self,
@@ -279,8 +356,9 @@ impl OverlayRuntime {
         relay_refresh_cooldown: &mut HashMap<ObjectId, Instant>,
         current_peers: &HashMap<ObjectId, NetmapPeer>,
         force_poke: ForcedPoke,
-    ) {
+    ) -> bool {
         let now = Instant::now();
+        let mut carrier_lost = false;
         // P3 PR-A — the shadow monitor consumes the same env read the legacy
         // escalation table does, at the same moment.
         let mbb = crate::overlay::direct::make_before_break_enabled();
@@ -334,6 +412,7 @@ impl OverlayRuntime {
                 since_poke: now.saturating_duration_since(p.at),
                 answered: wg.peer_initiator_hs_answered(&e.pubkey, p.at),
                 from_major: p.from_major,
+                from_business: p.from_business,
             });
             // Diagnostic — capture poke state before `poke` moves into
             // `carrier_tick` (see `OVERLAY_SESSION_TRACE`).
@@ -485,9 +564,16 @@ impl OverlayRuntime {
             // wide, and the pre-#26 arming skipped it entirely), and the tight
             // window is only honest against a FRESH initiation — boringtun's
             // last re-send of an in-flight poke can already be ~5 s old.
+            // An unanswered business packet is evidence to VERIFY the path
+            // before TCP backs off and the next idle sweep clears its
+            // one-way counter. Keep the normal handshake proof/deadline;
+            // healthy one-way traffic can answer without a carrier switch.
+            let unanswered_traffic = e.is_direct && handshake_done && v.bad_sweeps > 0;
             let forced = force_poke != ForcedPoke::No
                 && e.is_direct
                 && should_poke_on_netchange(handshake_done);
+            let business_rearm = unanswered_traffic
+                && e.poke.is_some_and(|p| !p.from_major && !p.from_business);
             if let Some(reason) = v.death {
                 dead.push((*nid, e.tier, reason));
             } else if forced {
@@ -499,6 +585,7 @@ impl OverlayRuntime {
                     e.poke = Some(PokeArm {
                         at: now,
                         from_major,
+                        from_business: false,
                     });
                     // FR-68 — each poke re-keys a peer and can demote a healthy
                     // direct carrier, so this is what turns "the mesh feels
@@ -511,6 +598,16 @@ impl OverlayRuntime {
                         rearmed, from_major,
                         "overlay: net-change — revalidating direct carrier now (forced rekey poke)"
                     );
+                }
+            } else if business_rearm {
+                if wg.poke_handshake(&e.pubkey) {
+                    e.poke = Some(PokeArm {
+                        at: now,
+                        from_major: false,
+                        from_business: true,
+                    });
+                    info!(peer = %nid, tier = ?e.tier,
+                        "overlay: existing proof rearmed for unanswered business traffic");
                 }
             } else if e.poke.is_none() {
                 // Stage 2 — arm an active revalidation for a SURVIVOR when the
@@ -533,14 +630,17 @@ impl OverlayRuntime {
                 // can never catch this: the re-inits themselves keep
                 // `last_rx_at` fresh.
                 let pressured = handshake_done && e.reinit_recent >= REINIT_PRESSURE_MIN;
-                if (pressured || should_poke(handshake_done, false, since_last_rx, since_proof))
+                if (pressured || unanswered_traffic
+                    || should_poke(handshake_done, false, since_last_rx, since_proof))
                     && wg.poke_handshake(&e.pubkey)
                 {
-                    // Not a net-change poke: judged on the tier's handshake
-                    // deadline, as before #26.
+                    // Business data on an established direct path gets a
+                    // liveness-sized window. Periodic/pressure-only pokes keep
+                    // the original establishment deadline.
                     e.poke = Some(PokeArm {
                         at: now,
                         from_major: false,
+                        from_business: unanswered_traffic,
                     });
                     if pressured {
                         info!(
@@ -550,6 +650,12 @@ impl OverlayRuntime {
                         );
                         e.reinit_recent = 0;
                         e.reinit_window_from = now;
+                    } else if unanswered_traffic {
+                        info!(
+                            peer = %nid, tier = ?e.tier,
+                            bad_sweeps = v.bad_sweeps,
+                            "overlay: unanswered business traffic — verifying the direct carrier now"
+                        );
                     } else {
                         debug!(
                             peer = %nid, tier = ?e.tier,
@@ -564,6 +670,7 @@ impl OverlayRuntime {
             let Some(e) = by_node.remove(&nid) else {
                 continue;
             };
+            carrier_lost = true;
             // P3 PR-A — a death is path-selection evidence: the monitor books
             // the strike + suppression penalty (≡ the cooldown insert below)
             // and slams the tier's quality. The tripwire then proves the
@@ -770,6 +877,7 @@ impl OverlayRuntime {
         }
         // P3 PR-A — the 10-min shadow summary rides the 5 s sweep cadence.
         self.shadow(|s| s.maybe_summary(now));
+        carrier_lost
     }
 
     /// rc.131 — bind the shared direct-carrier socket + discover our LAN
@@ -1202,6 +1310,18 @@ impl OverlayRuntime {
                 }
                 other => other,
             };
+            // The negotiated bilateral trial owns carrier selection, but only
+            // AFTER authoritative key/IP reconciliation above. Never allow the
+            // legacy relay-to-direct upgrader to split the two-member decision.
+            if installed.is_some()
+                && self
+                    .path_trial_managed
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .contains(&np.node_id)
+            {
+                continue;
+            }
             // P3 PR-A — the shadow monitor's answer to the SAME question this
             // walk is about to answer, computed up-front; every decision exit
             // below records the legacy outcome against it (`record`). Legacy
@@ -1959,6 +2079,14 @@ impl OverlayRuntime {
         let mbb = crate::overlay::direct::make_before_break_enabled();
         let mut settled: Vec<ObjectId> = Vec::new();
         for (nid, p) in upgrade_probes.iter() {
+            if self
+                .path_trial_managed
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .contains(nid)
+            {
+                continue;
+            }
             // P2 — the promote/expire/wait decision is the pure
             // `lifecycle::probe_tick`; this loop executes the disposition.
             let verdict = probe_tick(

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 G ROX EOOD
+import { appPath } from '@/utils/deployment'
 /**
  * FR-22 part 4 — persist each connect attempt's marks.
  *
@@ -74,7 +75,7 @@ export interface RcConnectUploadContext {
 export const RC_CONNECT_LOG_TARGET = 'rc.connect'
 /** Bump when `fields` changes shape, so a miner can tell records apart. */
 export const RC_CONNECT_RECORD_VERSION = 1
-export const RC_CONNECT_UPLOAD_PATH = '/api/log/browser'
+export const RC_CONNECT_UPLOAD_PATH = appPath('/api/log/browser')
 /** Well under the governor's 60/min per IP, and above anything the ladder
  *  can legitimately produce (its fastest steady state is one attempt per
  *  `RC_REQUEST_TIMEOUT_MS`, i.e. 15/min, and those are the records worth

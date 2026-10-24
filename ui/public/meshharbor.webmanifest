@@ -1,0 +1,10 @@
+{
+  "name": "MeshHarbor · 织港",
+  "short_name": "织港",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#008b85",
+  "icons": [{"src": "meshharbor.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any"}]
+}

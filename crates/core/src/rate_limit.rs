@@ -65,6 +65,34 @@ impl RateLimiter {
         allowed
     }
 
+    /// Bounded-memory variant for metadata discovery. Only admitted attempts
+    /// are retained, at most `limit_per_minute` per key. Refusals neither grow
+    /// the vector nor prolong the window. The existing `check` is unchanged.
+    /// Callers must derive keys from authenticated identities, not payload ids.
+    pub fn check_bounded(&self, caller: ObjectId, device: ObjectId, limit_per_minute: u32) -> bool {
+        self.check_bounded_at(caller, device, limit_per_minute, Instant::now())
+    }
+
+    fn check_bounded_at(
+        &self,
+        caller: ObjectId,
+        device: ObjectId,
+        limit_per_minute: u32,
+        now: Instant,
+    ) -> bool {
+        if limit_per_minute == 0 {
+            return true;
+        }
+        self.maybe_sweep(now);
+        let mut entry = self.hits.entry((caller, device)).or_default();
+        entry.retain(|t| now.duration_since(*t) < WINDOW);
+        if entry.len() >= limit_per_minute as usize {
+            return false;
+        }
+        entry.push(now);
+        true
+    }
+
     /// Drop keys whose whole window has expired. Cheap and amortized: only
     /// runs once the map is large enough to be worth walking.
     fn maybe_sweep(&self, now: Instant) {
@@ -123,5 +151,21 @@ mod tests {
         for _ in 0..10 {
             assert!(!rl.check(caller, device, 1));
         }
+    }
+
+    #[test]
+    fn bounded_rejections_do_not_grow_memory_or_extend_the_window() {
+        let rl = RateLimiter::new();
+        let id = ObjectId::new();
+        let now = Instant::now();
+        for _ in 0..6 {
+            assert!(rl.check_bounded_at(id, id, 6, now));
+        }
+        for _ in 0..10_000 {
+            assert!(!rl.check_bounded_at(id, id, 6, now + Duration::from_secs(59)));
+        }
+        assert_eq!(rl.hits.get(&(id, id)).unwrap().len(), 6);
+        assert!(rl.check_bounded_at(id, id, 6, now + WINDOW));
+        assert_eq!(rl.hits.get(&(id, id)).unwrap().len(), 1);
     }
 }

@@ -47,6 +47,7 @@ where
             .ok_or_else(|| ApiError::Unauthorized("No token provided".to_string()))?;
 
         let claims = core.auth.verify_access_token(&token)?;
+        crate::admission::authorize_claims(&core, &claims).await?;
 
         let user_id = ObjectId::parse_str(&claims.sub)
             .map_err(|_| ApiError::Unauthorized("Invalid user ID in token".to_string()))?;

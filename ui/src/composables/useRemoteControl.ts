@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 G ROX EOOD
+import { appRoutePath } from '@/utils/deployment'
+import { defaultStunServers } from '@/utils/stun'
 import { ref, watch, onBeforeUnmount, computed, type Ref, type ComputedRef } from 'vue'
 import { useWsStore } from '@/stores/ws'
 import { api } from '@/api/client'
@@ -673,7 +675,7 @@ export function expectedOrgTid(
   pathname: string,
 ): string | null {
   if (explicitOrgId && /^[0-9a-f]{24}$/.test(explicitOrgId)) return explicitOrgId
-  return pathname.match(/^\/tenant\/([0-9a-f]{24})\b/)?.[1] ?? null
+  return appRoutePath(pathname).match(/^\/tenant\/([0-9a-f]{24})\b/)?.[1] ?? null
 }
 
 /**
@@ -4442,9 +4444,10 @@ export function filterCapsByPreference(
  * back to false (legacy rc.18 fail-fast upload semantics).
  */
 export function useRemoteControl(
-  agent?: Ref<Agent | null>,
+  agent?: Ref<Pick<Agent, 'id' | 'os' | 'capabilities' | 'peer_auth_key'> | null>,
   opts?: {
     external?: boolean
+    shareGrantId?: () => string | null
     /**
      * FR-100 P2a — the signed-in user's id, which the device's signature over
      * its answer names. Without it this page never asks for one.
@@ -4461,6 +4464,7 @@ export function useRemoteControl(
   // accept an answer — it never falls back to an unsealed, ordinary session.
   // The browser-side twin of the device remembering an ended external session.
   const externalMode = opts?.external === true
+  const sharedMode = !!opts?.shareGrantId
   let externalAuth: ExternalSessionAuth | null = null
   function forgetExternalAuth() {
     externalAuth?.appKey.fill(0)
@@ -9042,14 +9046,14 @@ export function useRemoteControl(
     let iceServers: IceServer[] = []
     try {
       const creds = await api.get<TurnCredsResponse>(
-        externalMode
+        externalMode || sharedMode
           ? '/turn/credentials'
           : turnCredsPath(agentId, expectedOrgTid(orgId, location.pathname)),
       )
       iceServers = creds.ice_servers
     } catch {
       // Fall back to a public STUN if the server has none configured.
-      iceServers = [{ urls: ['stun:stun.l.google.com:19302'] }]
+      iceServers = defaultStunServers()
     }
     if (gen !== connectGen) return // #1631 - torn down during the TURN fetch
     markConnect('turn_ready')
@@ -9063,7 +9067,7 @@ export function useRemoteControl(
     // FR-52 P4e — never for an external session: its frame cannot carry a
     // relay descriptor (F4), and a relay on THIS host's mesh could not reach a
     // device in someone else's organization anyway.
-    if (localRelayEnabled.value && !externalMode) {
+    if (localRelayEnabled.value && !externalMode && !sharedMode) {
       localRelay = await probeLocalRelay()
       if (localRelay) {
         iceServers = [localRelayIceServer(localRelay), ...iceServers]
@@ -10508,7 +10512,8 @@ export function useRemoteControl(
         : {
             t: 'rc:session.request',
             agent_id: agentId,
-            permissions: withPrivacyAsked(permissions, askedCaps),
+            permissions: sharedMode ? permissions : withPrivacyAsked(permissions, askedCaps),
+            ...(sharedMode ? { share_grant_id: opts?.shareGrantId?.() } : {}),
             browser_caps: browserCaps,
           }
     // loopback-TURN corp-relay (Phase 2): forward the probed descriptor so the
@@ -10572,12 +10577,12 @@ export function useRemoteControl(
     // pre-audio agents/servers keep the silent-by-default behaviour via
     // `#[serde(default)]`). Field name locked by a unit test on
     // `audioRequestFields`.
-    Object.assign(requestPayload, audioRequestFields(audioEnabled.value))
+    Object.assign(requestPayload, audioRequestFields(sharedMode ? false : audioEnabled.value))
     // Phase 5 Ã¢ÂÂ admin break-glass. A non-empty reason asks the server to skip
     // consent; it's honoured ONLY if the server validates the caller as an
     // ADMINISTRATOR who isn't the owner (a non-admin's value is ignored). One-
     // shot: cleared after send so a later normal Connect isn't a silent force.
-    if (overrideReason.value.trim() && !externalMode) {
+    if (overrideReason.value.trim() && !externalMode && !sharedMode) {
       requestPayload.override_reason = overrideReason.value.trim()
     }
     // #1631 - a request we abandoned to this same agent may still be

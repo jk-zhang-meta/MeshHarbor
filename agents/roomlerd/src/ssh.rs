@@ -528,7 +528,7 @@ pub fn generate_host_key() -> anyhow::Result<String> {
 }
 
 #[cfg(feature = "ssh-server")]
-mod sshd {
+pub(crate) mod sshd {
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -993,6 +993,10 @@ mod sshd {
         /// auth succeeded, so the handlers treat its absence as a refusal
         /// rather than a reachable state.
         policy: Option<ResolvedSessionPolicy>,
+        /// A share stream owns precisely one grant, never the global/key-list fallback.
+        shared_stream: bool,
+        shared_cancel: Option<tokio_util::sync::CancellationToken>,
+        stream_grant: Option<super::Grant>,
         /// Whether the session-deadline watchdog is running; armed on the
         /// first channel open so multiplexed channels share one timer.
         deadline_armed: bool,
@@ -1051,6 +1055,9 @@ mod sshd {
                 ctx,
                 peer,
                 policy: None,
+                shared_stream: false,
+                shared_cancel: None,
+                stream_grant: None,
                 deadline_armed: false,
                 pty_req: None,
                 channel_input: None,
@@ -1062,6 +1069,18 @@ mod sshd {
             }
         }
 
+        pub(crate) fn new_shared(
+            ctx: Arc<Ctx>,
+            peer: std::net::SocketAddr,
+            grant: super::Grant,
+            cancel: tokio_util::sync::CancellationToken,
+        ) -> Self {
+            let mut handler = Self::new(ctx, peer);
+            handler.shared_stream = true;
+            handler.shared_cancel = Some(cancel);
+            handler.stream_grant = Some(grant);
+            handler
+        }
         /// FR-90 P3-8-2a — was this session granted one command? `false`
         /// before authentication, when russh delivers no request anyway.
         fn one_command(&self) -> bool {
@@ -1491,13 +1510,16 @@ mod sshd {
             let asker = self.asker.clone();
 
             if let Some(sentinel) = consent
-                && let Err(why) = await_consent(
-                    &asker,
-                    &handle,
-                    channel,
-                    &caller,
-                    &sentinel,
-                    "open an interactive shell",
+                && let Err(why) = crate::ssh_shared_stream::while_authorized(
+                    self.shared_cancel.as_ref(),
+                    await_consent(
+                        &asker,
+                        &handle,
+                        channel,
+                        &caller,
+                        &sentinel,
+                        "open an interactive shell",
+                    ),
                 )
                 .await
             {
@@ -1509,6 +1531,13 @@ mod sshd {
                 return Ok(());
             }
 
+            if self
+                .shared_cancel
+                .as_ref()
+                .is_some_and(|c| c.is_cancelled())
+            {
+                return Ok(());
+            }
             let pty = match crate::pty::PtyProcess::spawn(command.as_deref(), &term, size, &run_as)
             {
                 Ok(p) => p,
@@ -1521,6 +1550,18 @@ mod sshd {
                     let _ = handle.close(channel).await;
                     return Ok(());
                 }
+            };
+
+            // A shared lease is a hard authorization deadline, not a terminal
+            // hangup request that a shell may ignore. Only Unix needs this
+            // distinction (the Windows pseudoconsole already owns its job).
+            #[cfg(unix)]
+            let pty = {
+                let mut pty = pty;
+                if self.shared_stream {
+                    pty.hard_kill_on_drop();
+                }
+                pty
             };
 
             info!(
@@ -1545,7 +1586,7 @@ mod sshd {
             });
 
             let caller_for_pump = caller.clone();
-            tokio::spawn(async move {
+            let mut pump = tokio::spawn(async move {
                 let mut pty = pty;
                 let mut buf = vec![0u8; 16 * 1024];
                 loop {
@@ -1571,6 +1612,11 @@ mod sshd {
                 let _ = handle.close(channel).await;
                 // `pty` drops here, which kills anything still in the group.
             });
+            if let Some(cancel) = self.shared_cancel.clone() {
+                tokio::spawn(async move {
+                    tokio::select! { biased; _ = cancel.cancelled() => pump.abort(), _ = &mut pump => {} }
+                });
+            }
 
             Ok(())
         }
@@ -1617,7 +1663,26 @@ mod sshd {
             // matches. It is the path that carries a roomler identity, and it
             // is single-use — so a captured public key cannot be replayed into
             // a second session even within the grant's lifetime.
-            if let Some(grant) = super::take_grant_for(key) {
+            if self
+                .shared_cancel
+                .as_ref()
+                .is_some_and(|c| c.is_cancelled())
+            {
+                return Ok(Auth::reject());
+            }
+            let grant = if self.shared_stream {
+                if !self.stream_grant.as_ref().is_some_and(|g| {
+                    g.deadline > std::time::Instant::now()
+                        && PublicKey::from_openssh(&g.public_key)
+                            .is_ok_and(|k| k.key_data() == key.key_data())
+                }) {
+                    return Ok(Auth::reject());
+                }
+                self.stream_grant.take()
+            } else {
+                super::take_grant_for(key)
+            };
+            if let Some(grant) = grant {
                 info!(
                     peer = %self.peer, %user, %fingerprint,
                     grant_id = %grant.grant_id, caller = %grant.caller,
@@ -1642,6 +1707,9 @@ mod sshd {
                 return Ok(Auth::Accept);
             }
 
+            if self.shared_stream {
+                return Ok(Auth::reject());
+            }
             // Otherwise the device-owned list. Compare KEY DATA, not the
             // `PublicKey` itself: the parsed value carries the trailing
             // comment, so the same key recorded with a different comment would
@@ -1724,7 +1792,12 @@ mod sshd {
             _session: &mut Session,
         ) -> Result<(), Self::Error> {
             use russh::ChannelOpenFailure;
-
+            if self.shared_stream {
+                reply
+                    .reject(ChannelOpenFailure::AdministrativelyProhibited)
+                    .await;
+                return Ok(());
+            }
             let host = host_to_connect.to_string();
             // A u32 on the wire; anything above 65535 is a malformed request,
             // not a port we should try.
@@ -1918,7 +1991,12 @@ mod sshd {
             self.channel_input = Some(tx);
             // FR-89 — minted HERE, before the consent wait, so a channel that
             // closes while the operator is being asked leaves nothing to run.
-            let abort = tokio_util::sync::CancellationToken::new();
+            let abort = self
+                .shared_cancel
+                .as_ref()
+                .map_or_else(tokio_util::sync::CancellationToken::new, |c| {
+                    c.child_token()
+                });
             self.exec_aborts.insert(channel, abort.clone());
             let job = ExecJob {
                 handle,
@@ -1931,7 +2009,10 @@ mod sshd {
                 activity,
                 stdin,
                 abort,
-                streaming: self.ctx.exec_streaming,
+                // Shared sessions must remain cancellable even when ordinary SSH opts
+                // into the legacy buffered engine (which has no abort input).
+                shared_stream: self.shared_stream,
+                streaming: self.ctx.exec_streaming || self.shared_stream,
             };
             tokio::spawn(run_exec(job));
             Ok(())
@@ -2088,6 +2169,15 @@ mod sshd {
             name: &str,
             session: &mut Session,
         ) -> Result<(), Self::Error> {
+            if self.shared_stream {
+                return refuse(
+                    session,
+                    channel,
+                    self.peer,
+                    name,
+                    "device sharing grants SSH shell/exec only, not subsystems or file transfer",
+                );
+            }
             // FR-90 P3-8-2a — nor a subsystem, `sftp` included.
             if self.one_command() {
                 return refuse(
@@ -2416,7 +2506,9 @@ mod sshd {
         stdin: crate::exec::StdinFeed,
         /// FR-89 — fired when the channel closes or the session ends.
         abort: tokio_util::sync::CancellationToken,
-        /// FR-89 — the device's `ssh_exec_streaming`.
+        /// Shared sessions require immediate revocation, including during consent.
+        shared_stream: bool,
+        /// Ordinary device setting; shared sessions always use the abortable engine.
         streaming: bool,
     }
 
@@ -2467,6 +2559,7 @@ mod sshd {
             activity,
             stdin,
             abort,
+            shared_stream,
             streaming,
         } = job;
 
@@ -2475,13 +2568,16 @@ mod sshd {
         // has already told the caller where to dial by then, so a refusal there
         // would surface as a connection that rejects them for no stated reason.
         if let Some(sentinel) = consent
-            && let Err(why) = await_consent(
-                &asker,
-                &handle,
-                channel,
-                &caller,
-                &sentinel,
-                "run a command",
+            && let Err(why) = crate::ssh_shared_stream::while_authorized(
+                if shared_stream { Some(&abort) } else { None },
+                await_consent(
+                    &asker,
+                    &handle,
+                    channel,
+                    &caller,
+                    &sentinel,
+                    "run a command",
+                ),
             )
             .await
         {
@@ -2772,18 +2868,18 @@ pub fn live_connections() -> usize {
 
 /// Counts one connection in [`LIVE_CONNECTIONS`] for as long as it lives,
 /// whichever way `serve_conn` returns.
-#[cfg(all(feature = "overlay-netstack", feature = "ssh-server"))]
-struct LiveConnection;
+#[cfg(feature = "ssh-server")]
+pub(crate) struct LiveConnection;
 
-#[cfg(all(feature = "overlay-netstack", feature = "ssh-server"))]
+#[cfg(feature = "ssh-server")]
 impl LiveConnection {
-    fn open() -> Self {
+    pub(crate) fn open() -> Self {
         LIVE_CONNECTIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Self
     }
 }
 
-#[cfg(all(feature = "overlay-netstack", feature = "ssh-server"))]
+#[cfg(feature = "ssh-server")]
 impl Drop for LiveConnection {
     fn drop(&mut self) {
         LIVE_CONNECTIONS.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
@@ -2840,6 +2936,33 @@ pub struct Grant {
     /// produce a grant that never expires. The server's value only ever
     /// SHORTENS the local ceiling.
     deadline: std::time::Instant,
+}
+
+#[cfg(feature = "ssh-server")]
+impl Grant {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn for_shared_stream(
+        grant_id: String,
+        public_key: String,
+        caller: String,
+        account_mode: String,
+        account: Option<String>,
+        consent_mode: Option<roomler_ai_remote_control::models::ConsentMode>,
+        session_secs: u64,
+        deadline: std::time::Instant,
+    ) -> Self {
+        Self {
+            grant_id,
+            public_key,
+            caller,
+            account_mode,
+            account,
+            consent_mode,
+            session_secs,
+            one_command: false,
+            deadline,
+        }
+    }
 }
 
 /// Pending grants, oldest first.

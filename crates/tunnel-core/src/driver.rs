@@ -46,7 +46,8 @@ use webrtc::ice_transport::ice_server::RTCIceServer;
 
 use crate::flow_listener::Carry;
 use crate::forward::{
-    FlowCancel, FlowCanceller, FlowDemux, HalfCloseSink, SessionThroughput, run_flow, run_flow_quic,
+    FlowCancel, FlowCanceller, FlowDemux, FlowPoolRegistration, HalfCloseSink, SessionThroughput,
+    run_flow, run_flow_quic,
 };
 use crate::signaling_link::{TunnelSignalingSink, TunnelSignalingSource};
 use crate::transport::quic::{self, QuicConnection, QuicPeer};
@@ -1367,18 +1368,39 @@ async fn handle_local_connection(
     // while it is live.
     cancel: FlowCancel,
 ) -> Result<()> {
+    // The exit may send server-first bytes over its fast DC before the slower
+    // WS Accept reaches us. Reserve this known flow BEFORE announcing it.
+    let mut registration = match FlowPoolRegistration::reserve(demuxes.clone(), flow_id).await {
+        Ok(r) => r,
+        Err(e) => {
+            reply_registry.lock().await.remove(&flow_id);
+            return Err(e);
+        }
+    };
     // Send the request.
-    sink.send(ClientMsg::TcpForwardRequest {
+    let request = sink.send(ClientMsg::TcpForwardRequest {
         session_id,
         flow_id,
         dst_host: dst_host.to_string(),
         dst_port,
-    })
-    .await
-    .context("send TcpForwardRequest")?;
+    });
+    let sent = tokio::select! {
+        biased;
+        _ = cancel.cancelled() => { reply_registry.lock().await.remove(&flow_id); return Ok(()); }
+        sent = request => sent,
+    };
+    if let Err(e) = sent {
+        reply_registry.lock().await.remove(&flow_id);
+        return Err(e).context("send TcpForwardRequest");
+    }
 
     // Wait for reply.
-    let reply = match tokio::time::timeout(FLOW_OPEN_TIMEOUT, reply_rx).await {
+    let outcome = tokio::select! {
+        biased;
+        _ = cancel.cancelled() => { reply_registry.lock().await.remove(&flow_id); return Ok(()); }
+        outcome = tokio::time::timeout(FLOW_OPEN_TIMEOUT, reply_rx) => outcome,
+    };
+    let reply = match outcome {
         Ok(Ok(r)) => {
             record_flow_progress(&flow_timeout_streak);
             r
@@ -1406,9 +1428,6 @@ async fn handle_local_connection(
     let dc_index = match reply {
         ForwardReply::Accept { dc_index } => {
             info!(flow_id, dc_index, "rc:tunnel.tcp.accept");
-            if socks {
-                crate::socks5::reply(&mut tcp, crate::socks5::REP_SUCCESS).await;
-            }
             dc_index
         }
         ForwardReply::Reject { kind, reason } => {
@@ -1425,12 +1444,24 @@ async fn handle_local_connection(
     // robin gave us a CHOICE; server is authoritative.)
     let Some(demux) = demuxes.get(dc_index as usize) else {
         warn!(flow_id, dc_index, "server returned out-of-range dc_index");
+        close_failed_forward(&sink, session_id, flow_id).await;
         drop(tcp);
         bail!("server returned out-of-range dc_index {dc_index}");
     };
     let demux = demux.clone();
 
-    let (from_dc, stats) = demux.register(flow_id).await;
+    // Preserve the SAME receiver/stats: re-registering here would drop the
+    // already-buffered SSH banner. Retire only non-authoritative DC aliases.
+    let (from_dc, stats) = match registration.activate(dc_index).await {
+        Ok(accepted) => accepted,
+        Err(error) => {
+            close_failed_forward(&sink, session_id, flow_id).await;
+            return Err(error).context("activate accepted DC flow");
+        }
+    };
+    if socks {
+        crate::socks5::reply(&mut tcp, crate::socks5::REP_SUCCESS).await;
+    }
     active_flows.lock().await.insert(flow_id, dc_index);
 
     // Half-close audit callback. The in-band sentinel in the pump
@@ -1476,6 +1507,27 @@ async fn handle_local_connection(
     active_flows.lock().await.remove(&flow_id);
     demux.unregister(flow_id).await;
     Ok(())
+}
+
+// An Accepted target may already own a destination socket. If local binding
+// fails, close that exact flow as well as removing local aliases. A congested
+// signalling sink must not turn failure cleanup into an unbounded wait.
+async fn close_failed_forward(
+    sink: &Arc<dyn TunnelSignalingSink>,
+    session_id: ObjectId,
+    flow_id: u32,
+) {
+    let _ = tokio::time::timeout(
+        Duration::from_secs(1),
+        sink.send(ClientMsg::TcpClosed {
+            session_id,
+            flow_id,
+            reason: CloseReason::IoError,
+            bytes_in: 0,
+            bytes_out: 0,
+        }),
+    )
+    .await;
 }
 
 /// WS read loop. Owns every inbound `ServerMsg` after the
@@ -2346,6 +2398,402 @@ mod tests {
     use crate::signaling_link::TunnelSignalingSink;
     use async_trait::async_trait;
     use tokio::sync::mpsc;
+
+    // Force the fast ordered DC prefix to be processed before permitting the
+    // signalling Accept. The second/probe flow is an ordered application-level
+    // receipt barrier, not a sleep or an assumption about dc.send completion.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn server_first_ssh_prefix_survives_dc_before_ws_accept() {
+        use bytes::Bytes;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        const FLOW: u32 = 1;
+        const PROBE: u32 = 99;
+        const INDEX: u8 = 1; // authoritative, deliberately not the hint (0)
+        const BANNER: &[u8] = b"SSH-2.0-MeshHarbor-server-first\r\n";
+        struct DelayedAccept {
+            dc: Arc<webrtc::data_channel::RTCDataChannel>,
+            probe: Mutex<tokio::sync::mpsc::Receiver<Bytes>>,
+            ready: Mutex<Option<oneshot::Sender<()>>>,
+            release: Mutex<Option<oneshot::Receiver<()>>>,
+            registry: ReplyRegistry,
+        }
+        #[async_trait]
+        impl TunnelSignalingSink for DelayedAccept {
+            async fn send(&self, msg: ClientMsg) -> Result<()> {
+                if let ClientMsg::TcpForwardRequest { flow_id, .. } = msg {
+                    assert_eq!(flow_id, FLOW);
+                    self.dc.send(&Bytes::from(crate::mux::encode(FLOW, BANNER))).await?;
+                    self.dc.send(&Bytes::from(crate::mux::encode(PROBE, b"prefix-processed"))).await?;
+                    assert_eq!(self.probe.lock().await.recv().await.unwrap().as_ref(), b"prefix-processed");
+                    self.ready.lock().await.take().unwrap().send(()).unwrap();
+                    self.release.lock().await.take().unwrap().await.unwrap();
+                    self.registry.lock().await.remove(&FLOW).unwrap().send(ForwardReply::Accept { dc_index: INDEX }).unwrap();
+                }
+                Ok(())
+            }
+        }
+        let origin = TunnelPeer::new(vec![]).await.unwrap();
+        let target = TunnelPeer::new(vec![]).await.unwrap();
+        let target_pc = target.peer_connection();
+        origin.on_local_ice_candidate(move |candidate| {
+            let pc = target_pc.clone();
+            Box::pin(async move { if let Some(candidate) = candidate { let _ = pc.add_ice_candidate(candidate.to_json().unwrap()).await; } })
+        });
+        let origin_pc = origin.peer_connection();
+        target.on_local_ice_candidate(move |candidate| {
+            let pc = origin_pc.clone();
+            Box::pin(async move { if let Some(candidate) = candidate { let _ = pc.add_ice_candidate(candidate.to_json().unwrap()).await; } })
+        });
+        let offer = origin.create_offer().await.unwrap();
+        let answer = target.accept_offer(&offer.sdp).await.unwrap();
+        origin.accept_answer(&answer.sdp).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(15), origin.wait_pool_open()).await.unwrap().unwrap();
+        tokio::time::timeout(Duration::from_secs(15), target.wait_pool_open()).await.unwrap().unwrap();
+        let mut demuxes = Vec::new();
+        for idx in 0..origin.pool_size() { demuxes.push(FlowDemux::install(origin.dc(idx).unwrap(), None).await); }
+        let demuxes = Arc::new(demuxes);
+        let (probe, _) = demuxes[INDEX as usize].register(PROBE).await;
+        let remote = FlowDemux::install(target.dc(INDEX).unwrap(), None).await;
+        let (mut client_prefix, _) = remote.register(FLOW).await;
+        let remote_dc = target.dc(INDEX).unwrap();
+        // A real SSH server sends KEXINIT only after the client identification.
+        // Baseline drops the prior server banner and exposes this binary prefix
+        // to the app instead (the observed OpenSSH invalid-format failure).
+        let kex = tokio::spawn(async move {
+            let bytes = client_prefix.recv().await.unwrap();
+            assert!(bytes.starts_with(b"SSH-2.0-"));
+            remote_dc.send(&Bytes::from(crate::mux::encode(FLOW, &[0u8; 64]))).await.unwrap();
+        });
+        let local = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut app = tokio::net::TcpStream::connect(local.local_addr().unwrap()).await.unwrap();
+        let (tcp, peer_addr) = local.accept().await.unwrap();
+        let registry: ReplyRegistry = Arc::new(Mutex::new(HashMap::new()));
+        let (reply_tx, reply_rx) = oneshot::channel();
+        registry.lock().await.insert(FLOW, reply_tx);
+        let (ready_tx, ready_rx) = oneshot::channel();
+        let (release_tx, release_rx) = oneshot::channel();
+        let sink = Arc::new(DelayedAccept { dc: target.dc(INDEX).unwrap(), probe: Mutex::new(probe), ready: Mutex::new(Some(ready_tx)), release: Mutex::new(Some(release_rx)), registry: registry.clone() });
+        let cancellation = FlowCanceller::new();
+        let flow = tokio::spawn(handle_local_connection(tcp, peer_addr, FLOW, 0, ObjectId::new(), "embedded-ssh", 22, sink, reply_rx, registry, Arc::new(Mutex::new(HashMap::new())), demuxes.clone(), false, Arc::new(AtomicU32::new(0)), Arc::new(Notify::new()), cancellation.handle()));
+        tokio::time::timeout(Duration::from_secs(5), ready_rx).await.unwrap().unwrap();
+        let mut no_early_release = [0u8; 1];
+        assert_eq!(app.try_read(&mut no_early_release).unwrap_err().kind(), std::io::ErrorKind::WouldBlock, "DC bytes cannot reach TCP before accepted scope");
+        release_tx.send(()).unwrap();
+        app.write_all(b"SSH-2.0-regression-client\r\n").await.unwrap();
+        let mut received = vec![0u8; BANNER.len()];
+        let received_result = tokio::time::timeout(Duration::from_secs(3), app.read_exact(&mut received)).await;
+        let kex_result = tokio::time::timeout(Duration::from_secs(3), kex).await;
+        cancellation.cancel();
+        let _ = tokio::time::timeout(Duration::from_secs(3), flow).await.unwrap();
+        kex_result.unwrap().unwrap();
+        origin.close().await;
+        target.close().await;
+        assert!(matches!(received_result, Ok(Ok(_))), "SSH prefix did not arrive intact");
+        assert_eq!(received.as_slice(), BANNER, "server-first SSH banner lost before WS Accept; binary KEX exposed");
+    }
+
+    #[tokio::test]
+    async fn preaccept_driver_cleans_aliases_on_send_reject_cancel_timeout_and_abort() {
+        struct Sink {
+            mode: u8,
+            ready: Mutex<Option<oneshot::Sender<()>>>,
+            registry: ReplyRegistry,
+            pool: Arc<Vec<FlowDemux>>,
+        }
+        #[async_trait]
+        impl TunnelSignalingSink for Sink {
+            async fn send(&self, msg: ClientMsg) -> Result<()> {
+                if let ClientMsg::TcpForwardRequest { flow_id, .. } = msg {
+                    for d in self.pool.iter() {
+                        assert!(
+                            d.registered_for_test(flow_id).await,
+                            "must register before request"
+                        );
+                    }
+                    let _ = self.ready.lock().await.take().unwrap().send(());
+                    match self.mode {
+                        0 => anyhow::bail!("deliberate send failure"),
+                        1 => {
+                            let _ = self.registry.lock().await.remove(&flow_id).unwrap().send(
+                                ForwardReply::Reject {
+                                    kind: RejectKind::AgentError,
+                                    reason: "fixture reject".into(),
+                                },
+                            );
+                        }
+                        2 => {
+                            self.registry.lock().await.remove(&flow_id);
+                        }
+                        4 => return std::future::pending().await,
+                        _ => {}
+                    }
+                }
+                Ok(())
+            }
+        }
+        let peer = TunnelPeer::new(vec![]).await.unwrap();
+        let mut pool = Vec::new();
+        for idx in 0..peer.pool_size() {
+            pool.push(FlowDemux::install(peer.dc(idx).unwrap(), None).await);
+        }
+        let pool = Arc::new(pool);
+        for mode in 0..=6u8 {
+            let flow_id = mode as u32 + 1;
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let _app = tokio::net::TcpStream::connect(listener.local_addr().unwrap())
+                .await
+                .unwrap();
+            let (tcp, addr) = listener.accept().await.unwrap();
+            let registry: ReplyRegistry = Arc::new(Mutex::new(HashMap::new()));
+            let (tx, rx) = oneshot::channel();
+            registry.lock().await.insert(flow_id, tx);
+            let active: ActiveFlows = Arc::new(Mutex::new(HashMap::new()));
+            let (ready_tx, ready_rx) = oneshot::channel();
+            let sink = Arc::new(Sink {
+                mode,
+                ready: Mutex::new(Some(ready_tx)),
+                registry: registry.clone(),
+                pool: pool.clone(),
+            });
+            let cancellation = FlowCanceller::new();
+            let task = tokio::spawn(handle_local_connection(
+                tcp,
+                addr,
+                flow_id,
+                0,
+                ObjectId::new(),
+                "fixture",
+                22,
+                sink,
+                rx,
+                registry.clone(),
+                active.clone(),
+                pool.clone(),
+                false,
+                Arc::new(AtomicU32::new(0)),
+                Arc::new(Notify::new()),
+                cancellation.handle(),
+            ));
+            tokio::time::timeout(Duration::from_secs(2), ready_rx)
+                .await
+                .unwrap()
+                .unwrap();
+            match mode {
+                3 | 4 => cancellation.cancel(), // cancel waiting Accept / stuck signalling send
+                6 => task.abort(),
+                _ => {}
+            }
+            let result = tokio::time::timeout(FLOW_OPEN_TIMEOUT + Duration::from_secs(2), task)
+                .await
+                .unwrap();
+            if mode == 6 {
+                assert!(matches!(result, Err(e) if e.is_cancelled()));
+            } else {
+                let result = result.unwrap();
+                assert_eq!(result.is_err(), matches!(mode, 0 | 2 | 5));
+            }
+            tokio::time::timeout(Duration::from_secs(2), async {
+                loop {
+                    let mut any = false;
+                    for d in pool.iter() {
+                        any |= d.registered_for_test(flow_id).await;
+                    }
+                    if !any {
+                        break;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("all pending aliases must be removed on every exit");
+            assert!(active.lock().await.is_empty());
+            if mode != 6 {
+                assert!(registry.lock().await.is_empty());
+            }
+            // Task-abort reply removal remains the dispatcher's ownership;
+            // this test checks the new reservation's cancellation-safe aliases.
+            registry.lock().await.clear();
+        }
+        peer.close().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn preaccept_invalid_binding_closes_target_bounded_without_releasing_bytes() {
+        use bytes::Bytes;
+        use tokio::io::AsyncReadExt;
+        struct Sink {
+            mode: u8,
+            dc: Arc<webrtc::data_channel::RTCDataChannel>,
+            probe: Mutex<mpsc::Receiver<Bytes>>,
+            registry: ReplyRegistry,
+            closed: Mutex<Vec<(ObjectId, u32, CloseReason, u64, u64)>>,
+        }
+        #[async_trait]
+        impl TunnelSignalingSink for Sink {
+            async fn send(&self, msg: ClientMsg) -> Result<()> {
+                match msg {
+                    ClientMsg::TcpForwardRequest { flow_id, .. } => {
+                        if self.mode != 2 {
+                            let prefix = if self.mode == 1 {
+                                vec![42; 1]
+                            } else {
+                                vec![42; 60 * 1024]
+                            };
+                            for _ in 0..if self.mode == 1 { 1 } else { 5 } {
+                                self.dc
+                                    .send(&Bytes::from(crate::mux::encode(flow_id, &prefix)))
+                                    .await?;
+                            }
+                            self.dc
+                                .send(&Bytes::from(crate::mux::encode(99, b"processed")))
+                                .await?;
+                            assert_eq!(
+                                self.probe.lock().await.recv().await.unwrap().as_ref(),
+                                b"processed"
+                            );
+                        }
+                        let index = match self.mode {
+                            1 => 1,
+                            2 => 255,
+                            _ => 0,
+                        };
+                        self.registry
+                            .lock()
+                            .await
+                            .remove(&flow_id)
+                            .unwrap()
+                            .send(ForwardReply::Accept { dc_index: index })
+                            .unwrap();
+                    }
+                    ClientMsg::TcpClosed {
+                        session_id,
+                        flow_id,
+                        reason,
+                        bytes_in,
+                        bytes_out,
+                    } => {
+                        self.closed
+                            .lock()
+                            .await
+                            .push((session_id, flow_id, reason, bytes_in, bytes_out));
+                        if self.mode == 3 {
+                            return std::future::pending().await;
+                        }
+                    }
+                    _ => {}
+                }
+                Ok(())
+            }
+        }
+        let origin = TunnelPeer::new(vec![]).await.unwrap();
+        let target = TunnelPeer::new(vec![]).await.unwrap();
+        let pc = target.peer_connection();
+        origin.on_local_ice_candidate(move |candidate| {
+            let pc = pc.clone();
+            Box::pin(async move {
+                if let Some(c) = candidate {
+                    let _ = pc.add_ice_candidate(c.to_json().unwrap()).await;
+                }
+            })
+        });
+        let pc = origin.peer_connection();
+        target.on_local_ice_candidate(move |candidate| {
+            let pc = pc.clone();
+            Box::pin(async move {
+                if let Some(c) = candidate {
+                    let _ = pc.add_ice_candidate(c.to_json().unwrap()).await;
+                }
+            })
+        });
+        let offer = origin.create_offer().await.unwrap();
+        let answer = target.accept_offer(&offer.sdp).await.unwrap();
+        origin.accept_answer(&answer.sdp).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(15), origin.wait_pool_open())
+            .await
+            .unwrap()
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(15), target.wait_pool_open())
+            .await
+            .unwrap()
+            .unwrap();
+        let mut pool = Vec::new();
+        for idx in 0..origin.pool_size() {
+            pool.push(FlowDemux::install(origin.dc(idx).unwrap(), None).await);
+        }
+        let pool = Arc::new(pool);
+        for mode in 0..=3u8 {
+            let flow_id = mode as u32 + 1;
+            let session_id = ObjectId::new();
+            let (probe, _) = pool[0].register(99).await;
+            let registry: ReplyRegistry = Arc::new(Mutex::new(HashMap::new()));
+            let (tx, rx) = oneshot::channel();
+            registry.lock().await.insert(flow_id, tx);
+            let sink = Arc::new(Sink {
+                mode,
+                dc: target.dc(0).unwrap(),
+                probe: Mutex::new(probe),
+                registry: registry.clone(),
+                closed: Mutex::new(Vec::new()),
+            });
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let mut app = tokio::net::TcpStream::connect(listener.local_addr().unwrap())
+                .await
+                .unwrap();
+            let (tcp, addr) = listener.accept().await.unwrap();
+            let cancel = FlowCanceller::new();
+            let result = tokio::time::timeout(
+                Duration::from_secs(4),
+                handle_local_connection(
+                    tcp,
+                    addr,
+                    flow_id,
+                    0,
+                    session_id,
+                    "fixture",
+                    22,
+                    sink.clone(),
+                    rx,
+                    registry,
+                    Arc::new(Mutex::new(HashMap::new())),
+                    pool.clone(),
+                    false,
+                    Arc::new(AtomicU32::new(0)),
+                    Arc::new(Notify::new()),
+                    cancel.handle(),
+                ),
+            )
+            .await
+            .expect("failed-flow close must stay bounded");
+            assert!(result.is_err());
+            let mut received = Vec::new();
+            app.read_to_end(&mut received).await.unwrap();
+            assert!(
+                received.is_empty(),
+                "invalid/unaccepted scope cannot release buffered data"
+            );
+            assert_eq!(
+                sink.closed.lock().await.as_slice(),
+                &[(session_id, flow_id, CloseReason::IoError, 0, 0)]
+            );
+            tokio::time::timeout(Duration::from_secs(2), async {
+                loop {
+                    let mut any = false;
+                    for d in pool.iter() {
+                        any |= d.registered_for_test(flow_id).await;
+                    }
+                    if !any {
+                        break;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            pool[0].unregister(99).await;
+        }
+        origin.close().await;
+        target.close().await;
+    }
 
     /// #1685 — the owner learns that the listener serves from the bind
     /// itself: never before it, never from a failed bind, and a caller with

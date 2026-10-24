@@ -142,6 +142,8 @@ pub fn build_router(state: AppState) -> Router {
     let credential_routes = Router::new()
         .route("/register", post(routes::auth::register))
         .route("/login", post(routes::auth::login))
+        .route("/native/share-ssh/login", post(routes::auth::native_share_ssh_login))
+        .route("/approval/status", post(routes::account_approval::status))
         .layer(axum::middleware::from_fn_with_state(
             auth_rate_limit_state,
             middleware::auth_rate_limit::auth_rate_limit,
@@ -149,6 +151,12 @@ pub fn build_router(state: AppState) -> Router {
 
     // Auth routes (no tenant prefix)
     let auth_routes = Router::new()
+        .route("/approval/access", get(routes::account_approval::access))
+        .route("/approval", get(routes::account_approval::list))
+        .route(
+            "/approval/{user_id}",
+            post(routes::account_approval::review),
+        )
         .route("/logout", post(routes::auth::logout))
         .route("/refresh", post(routes::auth::refresh))
         .route("/activate", post(routes::auth::activate))
@@ -365,6 +373,31 @@ pub fn build_router(state: AppState) -> Router {
         "/tenant/{tenant_id}/device",
         Router::new().route("/", get(routes::device::list_devices)),
     );
+
+    // User-only personal directory: actual ownership + nonpending membership,
+    // never a tenant-wide/platform-admin device inventory.
+    #[cfg(feature = "fleet")]
+    let api = if state.modules.fleet.is_some() {
+        api.route("/account/devices", get(routes::account_devices::list))
+            .route("/account/devices/summary", get(routes::account_devices::summary))
+    } else { api };
+
+    // Explicit account-to-single-device shares never create tenant membership.
+    #[cfg(feature = "fleet")]
+    let api = if state.modules.fleet.is_some() {
+        api.nest(
+            "/device-shares",
+            Router::new()
+                .route(
+                    "/",
+                    get(routes::device_share::list).post(routes::device_share::create),
+                )
+                .route("/{share_id}/revoke", post(routes::device_share::revoke))
+                .route("/{share_id}/check", post(routes::device_share::check)),
+        )
+    } else {
+        api
+    };
 
     // FR-84 D5a — a device's OWN view of its org, agent-token authenticated:
     // the devices its overlay netmap already carries (plus itself) and the

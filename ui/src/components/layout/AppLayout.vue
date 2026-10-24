@@ -28,7 +28,7 @@
         @click="rail = false"
       />
       <v-list-item v-else style="cursor: pointer" @click="goHome">
-        <img :src="brandLogo" alt="Roomler" width="113" height="32" class="app-brand-logo" />
+        <img :src="brandLogo" alt="MeshHarbor · 织港" width="160" height="32" class="app-brand-logo" />
         <template v-if="!mobile" #append>
           <v-btn
             icon="mdi-chevron-double-left"
@@ -403,6 +403,16 @@
       </v-list>
 
 
+      <v-list density="compact">
+        <v-list-item :to="{ path: '/my-devices', query: route.query.desktop === '1' ? { desktop: '1' } : {} }" prepend-icon="mdi-account-multiple" title="My devices &amp; sharing" data-testid="personal-devices-nav" />
+        <v-list-item :to="{ path: '/device-shares', query: route.query.desktop === '1' ? { desktop: '1' } : {} }" prepend-icon="mdi-share-variant" title="Device shares" data-testid="device-shares-nav" />
+      </v-list>
+
+      <!-- Central approval is global; never hide it behind tenant membership. -->
+      <v-list v-if="accountApproval.isOwner" density="compact">
+        <v-list-item to="/account-approval" prepend-icon="mdi-account-check" title="Account approvals" data-testid="account-approval-nav" />
+      </v-list>
+
       <template #append>
         <!-- Mini conference widget (visible when in call but navigated away) -->
         <mini-conference
@@ -619,7 +629,7 @@
             <v-list-item
               prepend-icon="mdi-book-open-variant"
               title="Documentation"
-              href="/docs/"
+              :href="appPath('/docs/')"
               target="_blank"
               rel="noopener"
             />
@@ -714,11 +724,14 @@
 </template>
 
 <script setup lang="ts">
+import { appPath } from '@/utils/deployment'
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useTheme, useDisplay } from 'vuetify'
 import { useAuth } from '@/composables/useAuth'
+import { useAccountApprovalStore } from '@/stores/accountApproval'
 import { useBrand } from '@/composables/useBrand'
+import { PRODUCT_TITLE } from '@/utils/product'
 import SpotlightTour from '@/components/tutorial/SpotlightTour.vue'
 import { useSpotlightTour } from '@/composables/useSpotlightTour'
 import { usePageViews } from '@/composables/usePageViews'
@@ -760,6 +773,11 @@ const { mobile, xs } = useDisplay()
 const { showError: showCreateOrgError } = useSnackbar()
 const { rules } = useValidation()
 const { auth, logout: handleLogout } = useAuth()
+const accountApproval = useAccountApprovalStore()
+watch(() => auth.user?.id ?? null, (id) => {
+  accountApproval.reset()
+  if (id) void accountApproval.loadAccess(id)
+}, { immediate: true })
 // Wave 2 — route-change beacon for the platform analytics. Installed
 // once here, in the authenticated shell, so it never runs for logged-out
 // visitors (landing / auth pages live outside this layout).
@@ -1120,9 +1138,12 @@ const settingsRoute = computed(() =>
 
 const pageTitle = computed(() => {
   const name = route.name as string
+  if (name === 'my-devices') return 'My devices & sharing'
+  if (name === 'device-shares' || name === 'shared-remote') return 'Device shares'
+  if (name === 'account-approval') return 'Account approvals'
   if (name === 'room-chat') return 'Chat'
   if (name === 'room-call') return 'Call'
-  return (route.meta.title as string) || 'Roomler'
+  return (route.meta.title as string) || PRODUCT_TITLE
 })
 
 const initials = computed(() => {

@@ -134,6 +134,7 @@ impl UserDao {
             locale: "en-US".to_string(),
             timezone: "UTC".to_string(),
             is_verified: false,
+            account_approval: roomler_ai_db::models::AccountApproval::pending(),
             is_mfa_enabled: false,
             last_active_at: None,
             oauth_providers: Vec::new(),
@@ -147,6 +148,42 @@ impl UserDao {
 
         let id = self.base.insert_one(&user).await?;
         self.base.find_by_id(id).await
+    }
+
+    /// Compare-and-set an explicit owner's review; legacy missing revisions are zero.
+    pub async fn review_account_approval(
+        &self,
+        user_id: ObjectId,
+        expected_revision: u32,
+        state: roomler_ai_db::models::AccountApprovalState,
+        reviewer: ObjectId,
+    ) -> DaoResult<bool> {
+        let next = expected_revision
+            .checked_add(1)
+            .ok_or_else(|| DaoError::Validation("Approval revision exhausted".into()))?;
+        let mut filter = doc! { "_id": user_id, "deleted_at": null };
+        if expected_revision == 0 {
+            filter.insert(
+                "$or",
+                vec![
+                    doc! { "account_approval.revision": 0_i64 },
+                    doc! { "account_approval.revision": { "$exists": false } },
+                ],
+            );
+        } else {
+            filter.insert("account_approval.revision", i64::from(expected_revision));
+        }
+        self.base
+            .update_one(
+                filter,
+                doc! { "$set": {
+                    "account_approval.state": bson::to_bson(&state)?,
+                    "account_approval.reviewed_by": reviewer,
+                    "account_approval.reviewed_at": DateTime::now(),
+                    "account_approval.revision": i64::from(next),
+                } },
+            )
+            .await
     }
 
     pub async fn find_by_email(&self, email: &str) -> DaoResult<User> {
@@ -388,6 +425,7 @@ impl UserDao {
             // password path gives it — not "this account may sign in".
             // OAuth sign-in never consulted it and still doesn't.
             is_verified: email_verified,
+            account_approval: roomler_ai_db::models::AccountApproval::pending(),
             is_mfa_enabled: false,
             last_active_at: None,
             oauth_providers: vec![OAuthProvider {

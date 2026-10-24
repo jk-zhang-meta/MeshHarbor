@@ -2,6 +2,10 @@
 // Copyright (C) 2026 G ROX EOOD
 pub mod fixtures;
 
+/// Real HTTP/Mongo central account approval console routes.
+#[cfg(test)]
+mod account_approval_management_tests;
+
 #[cfg(test)]
 mod auth_tests;
 #[cfg(test)]
@@ -337,3 +341,9 @@ mod vault_ssh_tests;
 mod vault_tests;
 #[cfg(test)]
 mod ws_auth_tests;
+
+#[cfg(test)]
+mod device_share_tests;
+
+#[cfg(test)]
+mod account_devices_tests;

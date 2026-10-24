@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 G ROX EOOD
+import { APP_BASE_PATH, appRoutePath } from '@/utils/deployment'
+import { deploymentWebSocketUrl } from '@/utils/deploymentPath'
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { useAuthStore } from './auth'
@@ -81,7 +83,7 @@ export const useWsStore = defineStore('ws', () => {
    */
   function effectiveTid(): string | null {
     if (affinityTid) return affinityTid
-    const fromPath = (location.pathname ?? '').match(/^\/tenant\/([0-9a-f]{24})\b/)?.[1]
+    const fromPath = appRoutePath(location.pathname ?? '').match(/^\/tenant\/([0-9a-f]{24})\b/)?.[1]
     if (fromPath) return fromPath
     try {
       return globalThis.localStorage?.getItem('roomler-current-tenant') ?? null
@@ -100,17 +102,14 @@ export const useWsStore = defineStore('ws', () => {
    * and a socket that reconnects every few seconds wrote a live 7-day
    * credential to disk each time.
    *
-   * Dev connects straight to the API port to bypass the Vite proxy, which does
-   * not relay WS frames. That is a different PORT, not a different host, and
-   * cookies ignore ports — so the session cookie is sent there too. The
-   * server's origin check compares against `app.frontend_url`, which must
-   * therefore name the Vite origin in dev.
+   * Both Vite's development proxy and the production reverse proxy expose
+   * this deployment's own /ws prefix. The backend origin check still uses
+   * app.frontend_url. Cookie Path isolation is configured by the reverse proxy.
    */
   function wsUrl(tid: string | null): string {
-    const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const wsHost = import.meta.env.DEV ? 'localhost:5001' : location.host
-    const query = tid ? `?tid=${tid}` : ''
-    return `${protocol}//${wsHost}/ws${query}`
+    // Same-origin in development too: Vite's prefix-aware WS proxy strips
+    // the outer base, exactly as the production reverse proxy does.
+    return deploymentWebSocketUrl(`${location.protocol}//${location.host}`, tid, APP_BASE_PATH)
   }
 
   /**

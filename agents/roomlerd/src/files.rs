@@ -3272,7 +3272,7 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_dest_path_accepts_existing_dir() {
-        let base = std::env::temp_dir().join(format!(
+        let base = scratch_drop_dir(&format!(
             "roomler-dest-ok-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -3512,7 +3512,7 @@ mod tests {
         let _env = HOME_ENV_LOCK.lock().await;
         // End-to-end: a `begin` call with dest_path should produce a
         // path under the dest dir, not under Downloads.
-        let base = std::env::temp_dir().join(format!(
+        let base = scratch_drop_dir(&format!(
             "roomler-dest-e2e-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -4179,7 +4179,7 @@ mod tests {
     /// Create an isolated `dest_path`-style tempdir for staging tests, so
     /// the staging dir is fully under our control on every platform.
     async fn stage_tmpdir() -> PathBuf {
-        let base = std::env::temp_dir().join(format!(
+        let base = scratch_drop_dir(&format!(
             "roomler-rc19-stage-{}-{}",
             chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0),
             std::process::id()

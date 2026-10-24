@@ -73,6 +73,7 @@ pub mod install_trace;
 pub mod keep_busy;
 pub mod nudge;
 pub mod presence;
+mod release_delivery;
 pub mod releases;
 pub mod remote_config;
 pub mod removal;
@@ -461,6 +462,10 @@ impl Module for FleetState {
         let public_agent = Router::new()
             .route("/enroll", post(agent::enroll_agent))
             .route("/latest-release", get(agent_release::latest_release))
+            .route(
+                "/artifacts/{tag}/{filename}",
+                get(release_delivery::artifact_proxy),
+            )
             .route(
                 "/installer/{flavour}/health",
                 get(agent_release::installer_health),

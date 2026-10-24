@@ -53,7 +53,7 @@ bytes = "1"
 # `setsockopt` TCP_NODELAY (Nagle off) + a 4 MiB SO_SNDBUF on each accepted
 # stream — the P0 throughput fix (moved here from the CLI's `forward.rs` in
 # P3b-1). Already transitive via vendored webrtc-data, so zero extra build.
-socket2 = "0.5"
+socket2 = { version = "0.5", features = ["all"] }
 
 # CIDR matching in DestinationRule — tiny, no_std-friendly.
 ipnet = "2"
@@ -200,6 +200,8 @@ core-foundation = "0.9"
 libc = "0.2"
 
 [features]
+# Local integration tests only; never enabled by production profiles.
+path-trial-test-support = ["overlay"]
 # Userspace WireGuard L3 overlay (Phase 2+). Off by default.
 overlay = ["dep:boringtun", "dep:if-addrs", "dep:blake2"]
 # Phase 3: the OS TUN device (`overlay::tun::SystemTun`) on top of the WG

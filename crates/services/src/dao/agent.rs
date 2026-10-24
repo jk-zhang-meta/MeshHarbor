@@ -816,13 +816,49 @@ impl AgentDao {
         agent_id: ObjectId,
         policy: &PeerRelayPolicy,
     ) -> DaoResult<bool> {
-        let policy_bson = bson::to_bson(policy).unwrap_or(bson::Bson::Null);
+        let policy_bson = bson::to_bson(policy)?;
         self.base
             .update_one(
                 Self::live_row(tenant_id, agent_id),
                 doc! { "$set": { "peer_relay_policy": policy_bson } },
             )
             .await
+    }
+
+    /// Apply a signed single-use enrollment's explicit relay approval without
+    /// replacing any other policy fields. Generation + live-row predicates
+    /// prevent approving a removed/revived device from a stale enrollment read.
+    /// A matching already-approved row is success too (matched, not modified).
+    pub async fn grant_relay_server(
+        &self,
+        tenant_id: ObjectId,
+        agent_id: ObjectId,
+        token_gen: u32,
+    ) -> DaoResult<bool> {
+        let mut filter = Self::live_row(tenant_id, agent_id);
+        if token_gen == 0 {
+            // Older rows omit generation and deserialize as zero.
+            filter.insert(
+                "$or",
+                bson::bson!([
+                    { "token_gen": 0 }, { "token_gen": { "$exists": false } }
+                ]),
+            );
+        } else {
+            filter.insert("token_gen", i64::from(token_gen));
+        }
+        let result = self
+            .base
+            .collection()
+            .update_one(
+                filter,
+                doc! { "$set": {
+                    "peer_relay_policy.serve": true,
+                    "updated_at": DateTime::now(),
+                } },
+            )
+            .await?;
+        Ok(result.matched_count == 1)
     }
 
     /// Every live device the tenant has approved to serve as an org relay.

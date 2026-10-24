@@ -513,6 +513,37 @@ impl OverlayJoinRefusal {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "t")]
 pub enum ClientMsg {
+    #[serde(rename = "rc:share.ssh.connect")]
+    SharedSshConnect {
+        #[serde(with = "oid_hex")]
+        session_id: ObjectId,
+        flow_id: u32,
+    },
+    #[serde(rename = "rc:share.ssh.prepared")]
+    SharedSshPrepared {
+        #[serde(with = "oid_hex")]
+        session_id: ObjectId,
+        accepted: bool,
+    },
+    #[serde(rename = "rc:share.ssh.lease.challenge")]
+    SharedSshLeaseChallenge {
+        #[serde(with = "oid_hex")]
+        session_id: ObjectId,
+        #[serde(with = "oid_hex")]
+        grant_id: ObjectId,
+        lease_epoch: String,
+        challenge_id: u64,
+    },
+    /// Agent-originated fresh PDP challenge; not a controller authority.
+    #[serde(rename = "rc:share.lease.challenge")]
+    SharedLeaseChallenge {
+        #[serde(with = "oid_hex")]
+        session_id: ObjectId,
+        #[serde(with = "oid_hex")]
+        grant_id: ObjectId,
+        lease_epoch: String,
+        challenge_id: u64,
+    },
     // ─── agent → server ───────────────────────────────────────────────
     /// Agent announces itself after WS auth.
     #[serde(rename = "rc:agent.hello")]
@@ -1751,6 +1782,13 @@ pub enum ClientMsg {
     SessionRequest {
         #[serde(with = "oid_hex")]
         agent_id: ObjectId,
+        /// Explicit account-to-device authority, never tenant membership.
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            with = "option_oid_hex"
+        )]
+        share_grant_id: Option<ObjectId>,
         permissions: Permissions,
         #[serde(default)]
         browser_caps: Vec<String>,
@@ -2233,6 +2271,20 @@ pub enum ClientMsg {
         /// "I SERVE relays" — this says "I can USE one".
         #[serde(default)]
         supports_org_relay: bool,
+        /// Accepts up to three distinct one-hop discovery hints. Absent on
+        /// older clients whose cache accepts only one pure one-hop hint.
+        #[serde(default)]
+        supports_org_relay_multi_candidate: bool,
+        /// Understands bounded traversal cursors; this does not enable org-relay.
+        #[serde(default)]
+        supports_org_relay_discovery_cursor: bool,
+        /// Understands bilateral candidate trials; absent on legacy clients.
+        #[serde(default)]
+        supports_path_trial_v1: bool,
+        #[serde(default)]
+        supports_path_backbone_v1: bool,
+        #[serde(default)]
+        relay_backbone_ready: bool,
         /// FR-47 — this node understands [`ServerMsg::OverlayJoinRefused`], so
         /// a join the server cannot complete comes back as a stated reason
         /// instead of silence. Absent from an older node ⇒ `false`, and such a
@@ -2337,6 +2389,77 @@ pub enum ClientMsg {
         reachable: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         rtt_ms: Option<u32>,
+    },
+
+    /// Negotiate a separate, reversible candidate; never an active session replacement.
+    #[serde(rename = "rc:overlay.path_trial_request")]
+    OverlayPathTrialRequest {
+        #[serde(with = "oid_hex")]
+        peer_node_id: ObjectId,
+        #[serde(with = "oid_hex")]
+        relay_node_id: ObjectId,
+        request_id: u64,
+        #[serde(
+            default,
+            with = "option_oid_hex",
+            skip_serializing_if = "Option::is_none"
+        )]
+        exit_relay_node_id: Option<ObjectId>,
+    },
+    #[serde(rename = "rc:overlay.path_trial_ready")]
+    OverlayPathTrialReady {
+        #[serde(with = "oid_hex")]
+        trial_id: ObjectId,
+    },
+    #[serde(rename = "rc:overlay.path_trial_committed")]
+    OverlayPathTrialCommitted {
+        #[serde(with = "oid_hex")]
+        trial_id: ObjectId,
+    },
+    #[serde(rename = "rc:overlay.path_trial_abort")]
+    OverlayPathTrialAbort {
+        #[serde(with = "oid_hex")]
+        trial_id: ObjectId,
+    },
+    #[serde(rename = "rc:overlay.path_trial_return_request")]
+    OverlayPathTrialReturnRequest {
+        #[serde(with = "oid_hex")]
+        trial_id: ObjectId,
+        #[serde(with = "oid_hex")]
+        return_id: ObjectId,
+    },
+    #[serde(rename = "rc:overlay.path_trial_return_ready")]
+    OverlayPathTrialReturnReady {
+        #[serde(with = "oid_hex")]
+        trial_id: ObjectId,
+        #[serde(with = "oid_hex")]
+        return_id: ObjectId,
+    },
+    #[serde(rename = "rc:overlay.path_trial_returned")]
+    OverlayPathTrialReturned {
+        #[serde(with = "oid_hex")]
+        trial_id: ObjectId,
+        #[serde(with = "oid_hex")]
+        return_id: ObjectId,
+    },
+    #[serde(rename = "rc:overlay.path_trial_return_abort")]
+    OverlayPathTrialReturnAbort {
+        #[serde(with = "oid_hex")]
+        trial_id: ObjectId,
+        #[serde(with = "oid_hex")]
+        return_id: ObjectId,
+    },
+
+    /// Discover one authorized tenant relay for this pair without allocating
+    /// TURN or an org-relay session. Metadata only: never changes a carrier.
+    #[serde(rename = "rc:overlay.org_relay_discover")]
+    OverlayOrgRelayDiscover {
+        #[serde(with = "oid_hex")]
+        peer_node_id: ObjectId,
+        /// Correlates replies to a pending local identity generation.
+        request_id: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cursor: Option<OrgRelayDiscoveryCursorWire>,
     },
 
     /// Node asks for short-lived coturn credentials to stand up a relay
@@ -2560,6 +2683,10 @@ impl ClientMsg {
             ClientMsg::AgentHeartbeat { .. } => "rc:agent.heartbeat",
             ClientMsg::RelayProbeReport { .. } => "rc:relay.probe_report",
             ClientMsg::SessionStats { .. } => "rc:session.stats",
+            ClientMsg::SharedSshConnect { .. } => "rc:share.ssh.connect",
+            ClientMsg::SharedSshPrepared { .. } => "rc:share.ssh.prepared",
+            ClientMsg::SharedSshLeaseChallenge { .. } => "rc:share.ssh.lease.challenge",
+            ClientMsg::SharedLeaseChallenge { .. } => "rc:share.lease.challenge",
             ClientMsg::DerpTicketRequest { .. } => "rc:relay.derp_ticket_request",
             ClientMsg::RpcResult { .. } => "rc:rpc.result",
             ClientMsg::RpcExecRequest { .. } => "rc:rpc.request",
@@ -2630,6 +2757,18 @@ impl ClientMsg {
             ClientMsg::OverlayLeave { .. } => "rc:overlay.leave",
             ClientMsg::OverlayRelayProbe { .. } => "rc:overlay.relay_probe",
             ClientMsg::OverlayRelayRequest { .. } => "rc:overlay.relay_request",
+            ClientMsg::OverlayOrgRelayDiscover { .. } => "rc:overlay.org_relay_discover",
+            ClientMsg::OverlayPathTrialRequest { .. } => "rc:overlay.path_trial_request",
+            ClientMsg::OverlayPathTrialReady { .. } => "rc:overlay.path_trial_ready",
+            ClientMsg::OverlayPathTrialCommitted { .. } => "rc:overlay.path_trial_committed",
+            ClientMsg::OverlayPathTrialAbort { .. } => "rc:overlay.path_trial_abort",
+            ClientMsg::OverlayPathTrialReturnRequest { .. } => {
+                "rc:overlay.path_trial_return_request"
+            }
+            ClientMsg::OverlayPathTrialReturnReady { .. } => "rc:overlay.path_trial_return_ready",
+            ClientMsg::OverlayPathTrialReturned { .. } => "rc:overlay.path_trial_returned",
+            ClientMsg::OverlayPathTrialReturnAbort { .. } => "rc:overlay.path_trial_return_abort",
+
             ClientMsg::OverlayWarmRelayRequest { .. } => "rc:overlay.warm_relay_request",
             ClientMsg::ExtauthStart { .. } => "rc:extauth.start",
             ClientMsg::ExtauthFinish { .. } => "rc:extauth.finish",
@@ -2652,7 +2791,8 @@ impl ClientMsg {
             | ClientMsg::Consent { .. }
             | ClientMsg::ConsentPending { .. }
             | ClientMsg::Ping { .. } => Owner::Fleet,
-            ClientMsg::SessionRequest { .. }
+            ClientMsg::SharedLeaseChallenge { .. }
+            | ClientMsg::SessionRequest { .. }
             | ClientMsg::SdpOffer { .. }
             | ClientMsg::SdpAnswer { .. }
             | ClientMsg::Ice { .. }
@@ -2667,7 +2807,10 @@ impl ClientMsg {
             | ClientMsg::ExtauthKe2 { .. }
             | ClientMsg::ExtauthOutcome { .. }
             | ClientMsg::ExtauthSession { .. } => Owner::Remote,
-            ClientMsg::RelayProbeReport { .. }
+            ClientMsg::SharedSshConnect { .. }
+            | ClientMsg::SharedSshPrepared { .. }
+            | ClientMsg::SharedSshLeaseChallenge { .. }
+            | ClientMsg::RelayProbeReport { .. }
             | ClientMsg::DerpTicketRequest { .. }
             | ClientMsg::SshRequest { .. }
             | ClientMsg::SshActivity { .. }
@@ -2697,6 +2840,16 @@ impl ClientMsg {
             | ClientMsg::OverlayLeave { .. }
             | ClientMsg::OverlayRelayProbe { .. }
             | ClientMsg::OverlayRelayRequest { .. }
+            | ClientMsg::OverlayOrgRelayDiscover { .. }
+            | ClientMsg::OverlayPathTrialRequest { .. }
+            | ClientMsg::OverlayPathTrialReady { .. }
+            | ClientMsg::OverlayPathTrialCommitted { .. }
+            | ClientMsg::OverlayPathTrialAbort { .. }
+            | ClientMsg::OverlayPathTrialReturnRequest { .. }
+            | ClientMsg::OverlayPathTrialReturnReady { .. }
+            | ClientMsg::OverlayPathTrialReturned { .. }
+            | ClientMsg::OverlayPathTrialReturnAbort { .. }
+
             | ClientMsg::OverlayWarmRelayRequest { .. } => Owner::Network,
             ClientMsg::HiveStartAck { .. }
             | ClientMsg::HiveState { .. }
@@ -2736,6 +2889,10 @@ impl ClientMsg {
 /// review. Kept next to [`ClientMsg::namespace`] and locked against both the
 /// enum's renames and the match by the tests below.
 pub const CLIENT_MSG_OWNERS: &[(&str, Owner)] = &[
+    ("rc:share.ssh.connect", Owner::Network),
+    ("rc:share.ssh.prepared", Owner::Network),
+    ("rc:share.ssh.lease.challenge", Owner::Network),
+    ("rc:share.lease.challenge", Owner::Remote),
     ("rc:agent.hello", Owner::Fleet),
     ("rc:agent.heartbeat", Owner::Fleet),
     ("rc:relay.probe_report", Owner::Network),
@@ -2810,6 +2967,15 @@ pub const CLIENT_MSG_OWNERS: &[(&str, Owner)] = &[
     ("rc:overlay.leave", Owner::Network),
     ("rc:overlay.relay_probe", Owner::Network),
     ("rc:overlay.relay_request", Owner::Network),
+    ("rc:overlay.org_relay_discover", Owner::Network),
+    ("rc:overlay.path_trial_request", Owner::Network),
+    ("rc:overlay.path_trial_ready", Owner::Network),
+    ("rc:overlay.path_trial_committed", Owner::Network),
+    ("rc:overlay.path_trial_abort", Owner::Network),
+    ("rc:overlay.path_trial_return_request", Owner::Network),
+    ("rc:overlay.path_trial_return_ready", Owner::Network),
+    ("rc:overlay.path_trial_returned", Owner::Network),
+    ("rc:overlay.path_trial_return_abort", Owner::Network),
     ("rc:overlay.warm_relay_request", Owner::Network),
     ("rc:extauth.start", Owner::Remote),
     ("rc:extauth.finish", Owner::Remote),
@@ -2983,10 +3149,70 @@ mod namespace_tests {
 // Outbound from server
 // ────────────────────────────────────────────────────────────────────────────
 
+/// Shared sessions require a peer-owned short monotonic lease. Missing means
+/// ordinary legacy session, never permission to share with an old agent.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct SharedSessionLease {
+    #[serde(with = "oid_hex")]
+    pub grant_id: ObjectId,
+    pub lease_epoch: String,
+}
+
+/// Target-bound stream specification received only on the authenticated agent WS.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct SharedSshSetup {
+    #[serde(with = "oid_hex")]
+    pub device_id: ObjectId,
+    #[serde(with = "oid_hex")]
+    pub owner_user_id: ObjectId,
+    #[serde(with = "oid_hex")]
+    pub recipient_user_id: ObjectId,
+    pub shared_lease: SharedSessionLease,
+    pub ssh_grant_id: String,
+    pub public_key: String,
+    pub caller: String,
+    pub account_mode: crate::models::SshAccountMode,
+    pub account: Option<String>,
+    pub consent_mode: Option<ConsentMode>,
+    pub expires_at_ms: u64,
+    pub session_secs: u64,
+}
+
 /// Messages the server sends.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "t")]
 pub enum ServerMsg {
+    #[serde(rename = "rc:share.ssh.setup")]
+    SharedSshSetup {
+        #[serde(with = "oid_hex")]
+        session_id: ObjectId,
+        setup: SharedSshSetup,
+    },
+    #[serde(rename = "rc:share.ssh.forward")]
+    SharedSshForward {
+        #[serde(with = "oid_hex")]
+        session_id: ObjectId,
+        flow_id: u32,
+    },
+    #[serde(rename = "rc:share.ssh.lease.renewal")]
+    SharedSshLeaseRenewal {
+        #[serde(with = "oid_hex")]
+        session_id: ObjectId,
+        #[serde(with = "oid_hex")]
+        grant_id: ObjectId,
+        lease_epoch: String,
+        challenge_id: u64,
+    },
+    /// Echo only after the exact session live PDP succeeds.
+    #[serde(rename = "rc:share.lease.renewal")]
+    SharedLeaseRenewal {
+        #[serde(with = "oid_hex")]
+        session_id: ObjectId,
+        #[serde(with = "oid_hex")]
+        grant_id: ObjectId,
+        lease_epoch: String,
+        challenge_id: u64,
+    },
     /// Sent to the controller right after `SessionRequest` so it knows the id.
     #[serde(rename = "rc:session.created")]
     SessionCreated {
@@ -3062,6 +3288,8 @@ pub enum ServerMsg {
     /// falls back to the WebRTC track silently.
     #[serde(rename = "rc:request")]
     Request {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        shared_lease: Option<SharedSessionLease>,
         #[serde(with = "oid_hex")]
         session_id: ObjectId,
         #[serde(with = "oid_hex")]
@@ -3186,6 +3414,9 @@ pub enum ServerMsg {
     /// Server forwards SDP offer from controller → agent.
     #[serde(rename = "rc:sdp.offer")]
     SdpOffer {
+        /// Immutable server-derived scope; shared offers never downgrade to legacy.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        shared_lease: Option<SharedSessionLease>,
         #[serde(with = "oid_hex")]
         session_id: ObjectId,
         sdp: String,
@@ -3788,6 +4019,8 @@ pub enum ServerMsg {
     /// confuse this with a remote-control session offer.
     #[serde(rename = "rc:tunnel.sdp.offer")]
     TunnelSdpOffer {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        shared_lease: Option<SharedSessionLease>,
         #[serde(with = "oid_hex")]
         session_id: ObjectId,
         sdp: String,
@@ -3874,6 +4107,13 @@ pub enum ServerMsg {
     /// a missed delta and (in a later phase) request a resync.
     #[serde(rename = "rc:overlay.netmap")]
     OverlayNetmap {
+        /// Explicit server support. An older server omits this, so a new
+        /// client must not send discovery requests until a full map says true.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        org_relay_discovery: bool,
+        /// Only explicitly capable servers may receive new trial requests.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        path_trial_v1: bool,
         self_ip: String,
         network: OverlayNetworkInfo,
         peers: Vec<NetmapPeer>,
@@ -3956,6 +4196,82 @@ pub enum ServerMsg {
         derp_url: Option<String>,
     },
 
+    /// Dedicated candidate authority. Legacy org-relay sessions are untouched.
+    #[serde(rename = "rc:overlay.path_trial_start")]
+    OverlayPathTrialStart {
+        #[serde(with = "oid_hex")]
+        trial_id: ObjectId,
+        request_id: u64,
+        #[serde(with = "oid_hex")]
+        peer_node_id: ObjectId,
+        peer_wg_public_key: String,
+        vni: u32,
+        generation: u64,
+        #[serde(with = "oid_hex")]
+        relay_node_id: ObjectId,
+        relay_endpoints: Vec<String>,
+        bind_secret: String,
+        bind_secs: u32,
+        max_lifetime_secs: u32,
+    },
+    #[serde(rename = "rc:overlay.path_trial_commit")]
+    OverlayPathTrialCommit {
+        #[serde(with = "oid_hex")]
+        trial_id: ObjectId,
+    },
+    #[serde(rename = "rc:overlay.path_trial_finalize")]
+    OverlayPathTrialFinalize {
+        #[serde(with = "oid_hex")]
+        trial_id: ObjectId,
+    },
+    #[serde(rename = "rc:overlay.path_trial_abort")]
+    OverlayPathTrialAbort {
+        #[serde(with = "oid_hex")]
+        trial_id: ObjectId,
+    },
+    #[serde(rename = "rc:overlay.path_trial_return_prepare")]
+    OverlayPathTrialReturnPrepare {
+        #[serde(with = "oid_hex")]
+        trial_id: ObjectId,
+        #[serde(with = "oid_hex")]
+        return_id: ObjectId,
+    },
+    #[serde(rename = "rc:overlay.path_trial_return_commit")]
+    OverlayPathTrialReturnCommit {
+        #[serde(with = "oid_hex")]
+        trial_id: ObjectId,
+        #[serde(with = "oid_hex")]
+        return_id: ObjectId,
+    },
+    #[serde(rename = "rc:overlay.path_trial_return_finalize")]
+    OverlayPathTrialReturnFinalize {
+        #[serde(with = "oid_hex")]
+        trial_id: ObjectId,
+        #[serde(with = "oid_hex")]
+        return_id: ObjectId,
+    },
+    #[serde(rename = "rc:overlay.path_trial_return_abort")]
+    OverlayPathTrialReturnAbort {
+        #[serde(with = "oid_hex")]
+        trial_id: ObjectId,
+        #[serde(with = "oid_hex")]
+        return_id: ObjectId,
+    },
+
+    /// Pair-specific discovery metadata, sent only to the requester. No bind
+    /// secret or session authority. Empty/TTL zero clears a cached result;
+    /// expiry is relative to receipt and must not be extended by cache reads.
+    #[serde(rename = "rc:overlay.org_relay_candidates")]
+    OverlayOrgRelayCandidates {
+        #[serde(with = "oid_hex")]
+        peer_node_id: ObjectId,
+        request_id: u64,
+        candidates: Vec<OrgRelayCandidateWire>,
+        ttl_secs: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        next_cursor: Option<OrgRelayDiscoveryCursorWire>,
+    },
+
     /// FR-19 — a minted org-relay session, pushed to each MEMBER of the pair.
     /// Only ever sent to a node that advertised `supports_org_relay` on join.
     /// The `bind_secret` is per-(session, member): possession of it is what
@@ -3984,6 +4300,14 @@ pub enum ServerMsg {
     /// FR-19 — the same session, pushed to the RELAY node with BOTH members'
     /// secrets so it can verify either party's bind. Only ever sent to a node
     /// whose hello advertised the `relay-server` verb.
+    #[serde(rename = "rc:overlay.relay_bridge_serve")]
+    OverlayRelayBridgeServe { bridge: RelayBridgeWire },
+    #[serde(rename = "rc:overlay.relay_bridge_revoke")]
+    OverlayRelayBridgeRevoke {
+        #[serde(with = "oid_hex")]
+        trial_id: ObjectId,
+        generation: u64,
+    },
     #[serde(rename = "rc:overlay.relay_serve")]
     OverlayRelayServe {
         vni: u32,
@@ -4835,6 +5159,56 @@ pub struct CapVectorWire {
     /// The central `/derp` WS is up + registered (the floor's health).
     #[serde(default)]
     pub derp_ws_ok: bool,
+}
+
+/// Discovery hint only, never permission to install or promote a carrier.
+/// Server emits at most one candidate with at most four public endpoints.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct OrgRelayCandidateWire {
+    #[serde(with = "oid_hex")]
+    pub relay_node_id: ObjectId,
+    pub endpoints: Vec<String>,
+    #[serde(
+        default,
+        with = "option_oid_hex",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub exit_relay_node_id: Option<ObjectId>,
+}
+
+/// Non-authorizing position in a freshly filtered discovery set. Never a grant.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OrgRelayDiscoveryCursorWire {
+    #[serde(with = "oid_hex")]
+    pub relay_node_id: ObjectId,
+    #[serde(
+        default,
+        with = "option_oid_hex",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub exit_relay_node_id: Option<ObjectId>,
+}
+
+/// A same-tenant, policy-approved two-leg bridge. Never emitted to a legacy
+/// relay, and not a general-purpose dial command. Native local CIDR refusal
+/// remains authoritative even for a server-issued grant.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct RelayBridgeWire {
+    #[serde(with = "oid_hex")]
+    pub trial_id: ObjectId,
+    pub generation: u64,
+    #[serde(with = "oid_hex")]
+    pub source_agent_id: ObjectId,
+    #[serde(with = "oid_hex")]
+    pub target_agent_id: ObjectId,
+    pub local_vni: u32,
+    pub local_generation: u64,
+    pub local_bind_secret: String,
+    pub remote_endpoint: String,
+    pub remote_vni: u32,
+    pub remote_generation: u64,
+    pub remote_bind_secret: String,
+    pub max_lifetime_secs: u32,
 }
 
 /// One member of an org-relay session as pushed to the relay in
@@ -8377,6 +8751,7 @@ mod tests {
         assert!(s.contains("\"agent_id\":\"507f1f77bcf86cd799439012\""));
 
         let req = ClientMsg::SessionRequest {
+            share_grant_id: None,
             agent_id,
             permissions: Permissions::VIEW | Permissions::INPUT,
             browser_caps: vec!["h264".into(), "h265".into()],
@@ -8400,6 +8775,7 @@ mod tests {
 
         // With a value set, the field appears
         let req_with_t = ClientMsg::SessionRequest {
+            share_grant_id: None,
             agent_id,
             permissions: Permissions::VIEW,
             browser_caps: vec![],
@@ -8421,6 +8797,7 @@ mod tests {
             "None local_relay must be skipped"
         );
         let req_lr = ClientMsg::SessionRequest {
+            share_grant_id: None,
             agent_id,
             permissions: Permissions::VIEW,
             browser_caps: vec![],
@@ -8461,6 +8838,7 @@ mod tests {
     #[test]
     fn request_rc_overlay_is_off_when_absent_and_round_trips_when_on() {
         let req = |rc_overlay| ServerMsg::Request {
+            shared_lease: None,
             session_id: ObjectId::parse_str("507f1f77bcf86cd799439011").unwrap(),
             controller_user_id: ObjectId::parse_str("507f1f77bcf86cd799439012").unwrap(),
             controller_name: "Alice".into(),
@@ -8508,6 +8886,7 @@ mod tests {
     fn request_session_policy_is_additive_and_reads_unknown_values_as_off() {
         use crate::models::{FeaturePolicy, SessionPolicy};
         let req = |session_policy| ServerMsg::Request {
+            shared_lease: None,
             session_id: ObjectId::parse_str("507f1f77bcf86cd799439011").unwrap(),
             controller_user_id: ObjectId::parse_str("507f1f77bcf86cd799439012").unwrap(),
             controller_name: "Alice".into(),
@@ -8601,6 +8980,7 @@ mod tests {
     fn the_idle_limit_fields_are_additive() {
         let sid = ObjectId::parse_str("507f1f77bcf86cd799439011").unwrap();
         let req = |idle_secs| ServerMsg::Request {
+            shared_lease: None,
             session_id: sid,
             controller_user_id: ObjectId::parse_str("507f1f77bcf86cd799439012").unwrap(),
             controller_name: "Alice".into(),
@@ -8682,6 +9062,7 @@ mod tests {
         use crate::models::LockOnEnd;
         let sid = ObjectId::parse_str("507f1f77bcf86cd799439011").unwrap();
         let req = |lock_on_end| ServerMsg::Request {
+            shared_lease: None,
             session_id: sid,
             controller_user_id: ObjectId::parse_str("507f1f77bcf86cd799439012").unwrap(),
             controller_name: "Alice".into(),
@@ -10032,6 +10413,8 @@ mod tests {
         // A GROWN org: block 0 is full, block 1 was appended. This node holds an
         // ordinal in block 1, so P5d sends it block 1 as its own `cidr`.
         let grown = ServerMsg::OverlayNetmap {
+            org_relay_discovery: true,
+            path_trial_v1: true,
             self_ip: "100.65.8.1".into(),
             network: OverlayNetworkInfo {
                 cidr: "100.65.8.0/22".into(),
@@ -10145,6 +10528,11 @@ mod tests {
             supports_forced_derp: true,
             supports_overlay_echo: false,
             supports_org_relay: false,
+            supports_org_relay_multi_candidate: false,
+            supports_org_relay_discovery_cursor: false,
+            supports_path_trial_v1: false,
+            supports_path_backbone_v1: false,
+            relay_backbone_ready: false,
             supports_join_refusal: true,
             org_primary: None,
             relay_port: None,
@@ -10852,6 +11240,8 @@ mod tests {
         // node_id (different namespace), so the test can assert both round-trip.
         let agent_id = ObjectId::parse_str("aaaaaaaaaaaaaaaaaaaaaaaa").unwrap();
         let m = ServerMsg::OverlayNetmap {
+            org_relay_discovery: false,
+            path_trial_v1: false,
             self_ip: "100.64.0.3".into(),
             network: OverlayNetworkInfo {
                 cidr: "100.64.0.0/10".into(),
@@ -11651,5 +12041,204 @@ mod tests {
             .since(earlier),
             Tally::default()
         );
+    }
+
+    #[test]
+    fn org_relay_multi_candidate_join_capability_defaults_closed_and_round_trips() {
+        let old = serde_json::json!({"t":"rc:overlay.join", "wg_public_key":"k",
+            "endpoints":[], "mtu":1280});
+        for advertised in [None, Some(false), Some(true)] {
+            let mut value = old.clone();
+            if let Some(flag) = advertised {
+                value["supports_org_relay_multi_candidate"] = serde_json::json!(flag);
+            }
+            let decoded: ClientMsg = serde_json::from_value(value).unwrap();
+            assert!(matches!(&decoded, ClientMsg::OverlayJoin {
+                supports_org_relay_multi_candidate, ..
+            } if *supports_org_relay_multi_candidate == advertised.unwrap_or(false)));
+            let encoded = serde_json::to_value(decoded).unwrap();
+            assert_eq!(
+                encoded["supports_org_relay_multi_candidate"],
+                advertised.unwrap_or(false)
+            );
+            serde_json::from_value::<ClientMsg>(encoded).unwrap();
+        }
+        // OverlayJoin has always ignored additive fields: this capability is
+        // a response-shape negotiation, not a new message or feature opt-in.
+        let mut value = old;
+        value["future_unrecognized_join_capability"] = serde_json::json!(true);
+        assert!(matches!(
+            serde_json::from_value::<ClientMsg>(value).unwrap(),
+            ClientMsg::OverlayJoin {
+                supports_org_relay_multi_candidate: false,
+                supports_org_relay_discovery_cursor: false,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn org_relay_discovery_wire_is_pair_specific_metadata_only() {
+        let old_netmap = r#"{"t":"rc:overlay.netmap","self_ip":"100.64.0.7","network":{"cidr":"100.64.0.0/10","mtu":1280},"peers":[]}"#;
+        assert!(matches!(
+            serde_json::from_str::<ServerMsg>(old_netmap).unwrap(),
+            ServerMsg::OverlayNetmap {
+                org_relay_discovery: false,
+                path_trial_v1: false,
+                ..
+            }
+        ));
+        let peer = ObjectId::new();
+        let request = ClientMsg::OverlayOrgRelayDiscover {
+            peer_node_id: peer,
+            request_id: 7,
+            cursor: None,
+        };
+        let value = serde_json::to_value(&request).unwrap();
+        assert_eq!(value["t"], "rc:overlay.org_relay_discover");
+        let decoded: ClientMsg = serde_json::from_value(value).unwrap();
+        assert!(
+            matches!(decoded, ClientMsg::OverlayOrgRelayDiscover { peer_node_id, request_id: 7, .. } if peer_node_id == peer)
+        );
+        let response = ServerMsg::OverlayOrgRelayCandidates {
+            peer_node_id: peer,
+            request_id: 7,
+            candidates: vec![OrgRelayCandidateWire {
+                exit_relay_node_id: None,
+                relay_node_id: ObjectId::new(),
+                endpoints: vec!["8.8.8.8:3478".into()],
+            }],
+            ttl_secs: 30,
+            next_cursor: None,
+        };
+        let value = serde_json::to_value(&response).unwrap();
+        assert_eq!(value["t"], "rc:overlay.org_relay_candidates");
+        assert!(value.get("vni").is_none() && value.get("bind_secret").is_none());
+        let decoded: ServerMsg = serde_json::from_value(value).unwrap();
+        assert!(
+            matches!(decoded, ServerMsg::OverlayOrgRelayCandidates { peer_node_id, request_id: 7, ttl_secs: 30, .. } if peer_node_id == peer)
+        );
+    }
+
+    #[test]
+    fn path_trial_capabilities_default_closed_and_new_messages_round_trip() {
+        let old = r#"{"t":"rc:overlay.join","wg_public_key":"legacy","endpoints":[],"mtu":1280}"#;
+        assert!(matches!(
+            serde_json::from_str::<ClientMsg>(old).unwrap(),
+            ClientMsg::OverlayJoin {
+                supports_path_trial_v1: false,
+                supports_path_backbone_v1: false,
+                relay_backbone_ready: false,
+                ..
+            }
+        ));
+        let id = ObjectId::new();
+        for message in [
+            ClientMsg::OverlayPathTrialReady { trial_id: id },
+            ClientMsg::OverlayPathTrialCommitted { trial_id: id },
+            ClientMsg::OverlayPathTrialAbort { trial_id: id },
+        ] {
+            let json = serde_json::to_value(message).unwrap();
+            assert!(
+                json["t"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("rc:overlay.path_trial_")
+            );
+            assert_eq!(json["trial_id"], id.to_hex());
+            serde_json::from_value::<ClientMsg>(json).unwrap();
+        }
+        for message in [
+            ServerMsg::OverlayPathTrialCommit { trial_id: id },
+            ServerMsg::OverlayPathTrialFinalize { trial_id: id },
+            ServerMsg::OverlayPathTrialAbort { trial_id: id },
+        ] {
+            serde_json::from_value::<ServerMsg>(serde_json::to_value(message).unwrap()).unwrap();
+        }
+    }
+    #[test]
+    fn return_wire_carries_attempt_identity_and_round_trips() {
+        let id = ObjectId::new();
+        let r = ObjectId::new();
+        for msg in [
+            ClientMsg::OverlayPathTrialReturnRequest {
+                trial_id: id,
+                return_id: r,
+            },
+            ClientMsg::OverlayPathTrialReturnReady {
+                trial_id: id,
+                return_id: r,
+            },
+            ClientMsg::OverlayPathTrialReturned {
+                trial_id: id,
+                return_id: r,
+            },
+            ClientMsg::OverlayPathTrialReturnAbort {
+                trial_id: id,
+                return_id: r,
+            },
+        ] {
+            let value = serde_json::to_value(msg).unwrap();
+            assert_eq!(value["trial_id"], id.to_hex());
+            assert_eq!(value["return_id"], r.to_hex());
+            let decoded: ClientMsg = serde_json::from_value(value.clone()).unwrap();
+            assert_eq!(serde_json::to_value(decoded).unwrap(), value);
+        }
+        for msg in [
+            ServerMsg::OverlayPathTrialReturnPrepare {
+                trial_id: id,
+                return_id: r,
+            },
+            ServerMsg::OverlayPathTrialReturnCommit {
+                trial_id: id,
+                return_id: r,
+            },
+            ServerMsg::OverlayPathTrialReturnFinalize {
+                trial_id: id,
+                return_id: r,
+            },
+            ServerMsg::OverlayPathTrialReturnAbort {
+                trial_id: id,
+                return_id: r,
+            },
+        ] {
+            let value = serde_json::to_value(msg).unwrap();
+            let decoded: ServerMsg = serde_json::from_value(value.clone()).unwrap();
+            assert_eq!(serde_json::to_value(decoded).unwrap(), value);
+        }
+    }
+}
+
+#[cfg(test)]
+mod discovery_cursor_wire_tests {
+    use super::*;
+    #[test]
+    fn discovery_cursor_wire_capability_defaults_and_roundtrips() {
+        for cap in [None, Some(false), Some(true)] {
+            let mut v = serde_json::json!({"t":"rc:overlay.join","wg_public_key":"legacy","endpoints":[],"mtu":1280});
+            if let Some(cap) = cap {
+                v["supports_org_relay_discovery_cursor"] = cap.into();
+            }
+            assert!(
+                matches!(serde_json::from_value::<ClientMsg>(v).unwrap(),ClientMsg::OverlayJoin {supports_org_relay_discovery_cursor:c,..} if c==cap.unwrap_or(false))
+            );
+        }
+        let peer = ObjectId::new();
+        let relay = ObjectId::new();
+        let old = serde_json::json!({"t":"rc:overlay.org_relay_discover","peer_node_id":peer.to_hex(),"request_id":1});
+        let oldmsg: ClientMsg = serde_json::from_value(old.clone()).unwrap();
+        assert_eq!(serde_json::to_value(oldmsg).unwrap(), old);
+        let mut new = old;
+        new["cursor"] = serde_json::json!({"relay_node_id":relay.to_hex()});
+        let decoded: ClientMsg = serde_json::from_value(new.clone()).unwrap();
+        assert_eq!(serde_json::to_value(decoded).unwrap(), new);
+        let reply = serde_json::json!({"t":"rc:overlay.org_relay_candidates","peer_node_id":peer.to_hex(),"request_id":1,"candidates":[],"ttl_secs":0});
+        assert_eq!(
+            serde_json::to_value(serde_json::from_value::<ServerMsg>(reply.clone()).unwrap())
+                .unwrap(),
+            reply
+        );
+        new["cursor"] = serde_json::json!({"relay_node_id":"not-an-id"});
+        assert!(serde_json::from_value::<ClientMsg>(new).is_err());
     }
 }

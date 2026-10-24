@@ -17,6 +17,7 @@
 </template>
 
 <script setup lang="ts">
+import { appPath } from '@/utils/deployment'
 import { ref, onMounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
@@ -55,7 +56,7 @@ onMounted(async () => {
   // bounced and this view's error alert never renders (e2e oauth.spec locks
   // the intended behaviour: show "Failed to complete OAuth login" here).
   // Same-origin, so the session cookie rides along by itself.
-  const sessionOk = await fetch('/api/auth/me')
+  const sessionOk = await fetch(appPath('/api/auth/me'))
     .then((r) => r.ok)
     .catch(() => false)
   if (!sessionOk) {

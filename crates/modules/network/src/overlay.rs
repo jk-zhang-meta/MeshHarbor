@@ -98,6 +98,11 @@ pub async fn relay_overlay_msg_from_node(
             supports_derp_floor,
             supports_overlay_echo,
             supports_org_relay,
+            supports_org_relay_multi_candidate,
+            supports_org_relay_discovery_cursor,
+            supports_path_trial_v1,
+            supports_path_backbone_v1,
+            relay_backbone_ready,
             supports_join_refusal,
             org_primary,
             relay_port,
@@ -119,6 +124,11 @@ pub async fn relay_overlay_msg_from_node(
                 supports_derp_floor,
                 supports_overlay_echo,
                 supports_org_relay,
+                supports_org_relay_multi_candidate,
+                supports_org_relay_discovery_cursor,
+                supports_path_trial_v1,
+                supports_path_backbone_v1,
+                relay_backbone_ready,
                 supports_join_refusal,
                 org_primary,
                 relay_port,
@@ -165,6 +175,117 @@ pub async fn relay_overlay_msg_from_node(
                 },
             )
             .await;
+            None
+        }
+        ClientMsg::OverlayPathTrialRequest {
+            peer_node_id,
+            relay_node_id,
+            request_id,
+            exit_relay_node_id,
+        } => {
+            crate::org_relay::path_trial_request(
+                state,
+                ident,
+                peer_node_id,
+                relay_node_id,
+                request_id,
+                exit_relay_node_id,
+            )
+            .await;
+            None
+        }
+        ClientMsg::OverlayPathTrialReady { trial_id } => {
+            crate::org_relay::path_trial_update(
+                state,
+                ident,
+                trial_id,
+                crate::org_relay::PathTrialUpdate::Ready,
+            )
+            .await;
+            None
+        }
+        ClientMsg::OverlayPathTrialCommitted { trial_id } => {
+            crate::org_relay::path_trial_update(
+                state,
+                ident,
+                trial_id,
+                crate::org_relay::PathTrialUpdate::Committed,
+            )
+            .await;
+            None
+        }
+        ClientMsg::OverlayPathTrialAbort { trial_id } => {
+            crate::org_relay::path_trial_update(
+                state,
+                ident,
+                trial_id,
+                crate::org_relay::PathTrialUpdate::Abort,
+            )
+            .await;
+            None
+        }
+        ClientMsg::OverlayPathTrialReturnRequest {
+            trial_id,
+            return_id,
+        } => {
+            crate::org_relay::path_trial_return_update(
+                state,
+                ident,
+                trial_id,
+                return_id,
+                crate::org_relay::PathTrialReturnUpdate::Request,
+            )
+            .await;
+            None
+        }
+        ClientMsg::OverlayPathTrialReturnReady {
+            trial_id,
+            return_id,
+        } => {
+            crate::org_relay::path_trial_return_update(
+                state,
+                ident,
+                trial_id,
+                return_id,
+                crate::org_relay::PathTrialReturnUpdate::Ready,
+            )
+            .await;
+            None
+        }
+        ClientMsg::OverlayPathTrialReturned {
+            trial_id,
+            return_id,
+        } => {
+            crate::org_relay::path_trial_return_update(
+                state,
+                ident,
+                trial_id,
+                return_id,
+                crate::org_relay::PathTrialReturnUpdate::Returned,
+            )
+            .await;
+            None
+        }
+        ClientMsg::OverlayPathTrialReturnAbort {
+            trial_id,
+            return_id,
+        } => {
+            crate::org_relay::path_trial_return_update(
+                state,
+                ident,
+                trial_id,
+                return_id,
+                crate::org_relay::PathTrialReturnUpdate::Abort,
+            )
+            .await;
+            None
+        }
+        ClientMsg::OverlayOrgRelayDiscover {
+            peer_node_id,
+            request_id,
+            cursor,
+        } => {
+            handle_org_relay_discover(state, ident, peer_node_id, request_id, cursor).await;
             None
         }
         ClientMsg::OverlayWarmRelayRequest {} => {
@@ -247,6 +368,11 @@ async fn handle_overlay_join(
     supports_derp_floor: bool,
     supports_overlay_echo: bool,
     supports_org_relay: bool,
+    supports_org_relay_multi_candidate: bool,
+    supports_org_relay_discovery_cursor: bool,
+    supports_path_trial_v1: bool,
+    supports_path_backbone_v1: bool,
+    relay_backbone_ready: bool,
     supports_join_refusal: bool,
     org_primary: Option<bool>,
     relay_port: Option<u16>,
@@ -511,13 +637,40 @@ async fn handle_overlay_join(
     // affinity) and overwritten on every rejoin so nothing stale survives a
     // build or an org that stopped saying it.
     if let Some(id) = self_node.id {
-        state.org_relay.note_join(
+        let previous = state.org_relay.join_extras(id);
+        let listener_changed = state.org_relay.note_join(
             id,
             crate::org_relay::JoinExtras {
                 org_primary,
                 relay_port,
+                relay_withdrawn: false,
+                supports_org_relay_multi_candidate,
+                supports_org_relay_discovery_cursor,
+                supports_path_trial_v1,
+                supports_path_backbone_v1,
+                relay_backbone_ready,
             },
         );
+        let withdrawn = crate::org_relay::revoke_backbone_node_sync(
+            state,
+            tenant_id,
+            id,
+            previous.supports_path_backbone_v1 && !supports_path_backbone_v1,
+            previous.relay_backbone_ready && !relay_backbone_ready,
+        );
+        if listener_changed && let NodeRef::Agent { agent_id } = &self_node.node_ref {
+            // The authenticated node withdrew or replaced its actual listener.
+            // Retire only sessions it SERVES, never its healthy direct peers.
+            crate::org_relay::revoke_relay_agent(state, tenant_id, *agent_id, "listener_changed")
+                .await;
+        }
+        for event in withdrawn {
+            let _ = tokio::time::timeout(
+                std::time::Duration::from_secs(3),
+                state.peer_relay_audit.record(event),
+            )
+            .await;
+        }
     }
 
     let all = match state
@@ -605,11 +758,17 @@ async fn handle_overlay_join(
     // list captured before the block it caused.
     let join_blocks = state.overlay_networks.block_list(&network).await;
 
+    if let Some(id) = self_node.id {
+        state.admission_nodes.insert(id, self_node.clone());
+    }
+
     // Full netmap → joiner.
     send_to_node(
         state,
         &self_node,
         ServerMsg::OverlayNetmap {
+            org_relay_discovery: true,
+            path_trial_v1: true,
             self_ip: self_node.overlay_ip.clone(),
             network: OverlayNetworkInfo {
                 // FR-47 P5d — the block containing THIS node's own address,
@@ -821,11 +980,57 @@ fn needs_tls_relay(node: &OverlayNode) -> bool {
 }
 
 /// Graceful leave (or WS teardown): mark offline + tell peers to drop.
+/// Security removal is not an ordinary offline event: recipients must drop
+/// installed keys/routes, not retain a cached peer. Operates only on live
+/// same-network join snapshots and bounded outbound queues; never queries DB.
+pub fn revoke_agent_admission(state: &NetworkState, agent_id: ObjectId) {
+    let victims: Vec<_> = state
+        .admission_nodes
+        .iter()
+        .filter(|entry| matches!(entry.node_ref, NodeRef::Agent { agent_id: id } if id == agent_id))
+        .map(|entry| entry.value().clone())
+        .collect();
+    for node in victims {
+        let Some(id) = node.id else { continue };
+        state.admission_nodes.remove(&id);
+        let msg = ServerMsg::OverlayNetmapDelta {
+            epoch: next_epoch(),
+            upserts: vec![],
+            removes: vec![id],
+        };
+        for peer in state
+            .admission_nodes
+            .iter()
+            .filter(|p| p.tenant_id == node.tenant_id && p.network_id == node.network_id)
+        {
+            match peer.node_ref {
+                NodeRef::Agent { agent_id } => {
+                    let _ = state.fleet.rc_hub.send_to_agent(agent_id, msg.clone());
+                }
+                NodeRef::TunnelClient { tunnel_client_id } => {
+                    if let Some(tx) = state.overlay_nodes_by_id.get(&tunnel_client_id) {
+                        let _ = tx.try_send(msg.clone());
+                    }
+                }
+            }
+        }
+        if let Ok(bytes) = BASE64.decode(&node.wg_public_key) {
+            if let Ok(key) = <[u8; 32]>::try_from(bytes.as_slice()) {
+                state.derp_registry.remove(&(node.network_id, key));
+                if let Some(cancel) = state.derp_cancels.get(&(node.network_id, key)) {
+                    cancel.notify_one();
+                }
+            }
+        }
+    }
+}
+
 pub async fn handle_overlay_leave(state: &NetworkState, ident: NodeIdentity) {
     let Some(self_node) = current_node(state, ident).await else {
         return; // never joined the overlay — nothing to tear down
     };
     let Some(self_id) = self_node.id else { return };
+    state.admission_nodes.remove(&self_id);
     // FR-19 — a party that leaves takes its relay sessions with it: the
     // other member and the relay hear the revoke now rather than at the
     // session's absolute lifetime.
@@ -857,6 +1062,61 @@ struct RelayRequestEvidence {
     current_kind: Option<String>,
     reason: Option<String>,
     derp_mux_failed: bool,
+}
+
+/// Metadata-only discovery, not the TURN/session allocation path. Source
+/// identity comes from the authenticated socket, never a caller-supplied id.
+async fn handle_org_relay_discover(
+    state: &NetworkState,
+    ident: NodeIdentity,
+    peer_node_id: ObjectId,
+    request_id: u64,
+    cursor: Option<roomler_ai_remote_control::signaling::OrgRelayDiscoveryCursorWire>,
+) {
+    let Some(requester) = current_node(state, ident).await else {
+        return;
+    };
+    let Some(requester_id) = requester.id else {
+        return;
+    };
+    // A reserved self-key on the existing limiter: mint candidates exclude
+    // the requester, so this never consumes its requester->relay mint budget.
+    // Bound before a peer lookup; arbitrary ids cannot create limiter keys.
+    if !state
+        .relay_rate_limiter
+        .check_bounded(requester_id, requester_id, 6)
+    {
+        return;
+    }
+    let peer = match state.overlay_nodes.base.find_by_id(peer_node_id).await {
+        Ok(peer) if peer.tenant_id == requester.tenant_id && peer_node_id != requester_id => peer,
+        _ => return,
+    };
+    // Same pair visibility guard as relay_request, with unreadable policy
+    // inputs failing closed rather than leaking discovery metadata.
+    let Ok(acl) = try_load_acl(state, requester.tenant_id, PolicyLoad::Always).await else {
+        return;
+    };
+    if acl.enforcing() {
+        let Ok(source) = try_overlay_source_of(state, &requester).await else {
+            return;
+        };
+        let routes = peer.effective_routes();
+        if !evaluate_overlay(
+            &acl.policies,
+            &source,
+            OverlayPeerRef {
+                node_id: peer_node_id,
+                overlay_ip: &peer.overlay_ip,
+                approved_routes: &routes,
+            },
+        )
+        .visible
+        {
+            return;
+        }
+    }
+    crate::org_relay::discover(state, &requester, &peer, request_id, cursor).await;
 }
 
 /// Mint symmetric coturn creds for a relay leg to `peer_node_id`.
@@ -2752,13 +3012,14 @@ fn turn_url_host_port(u: &str) -> Option<String> {
 /// its server-reflexive candidates, derived from the configured coturn workers.
 /// A coturn `turn:host:port` UDP listener also answers STUN Binding requests, so
 /// each UDP `turn:` URL maps to a `stun:host:port`. `turns:` (TLS) and
-/// `?transport=tcp` variants are skipped — plain STUN is UDP. Deduped. Empty
-/// when TURN isn't configured (dev), which leaves the srflx tier inert.
+/// `?transport=tcp` variants are skipped — plain STUN is UDP. Deduped.
+/// If no UDP worker is available (including TLS-only/no authenticated TURN),
+/// reuse the canonical public STUN list. Discovery does not require TURN auth.
 fn stun_urls_from_turn(state: &NetworkState) -> Vec<String> {
-    match build_turn_config(&state.settings.turn) {
-        Some(cfg) => stun_urls_from_turn_urls(&cfg.urls),
-        None => Vec::new(),
-    }
+    let urls = build_turn_config(&state.settings.turn)
+        .map(|cfg| cfg.urls)
+        .unwrap_or_default();
+    stun_urls_from_turn_urls(&urls)
 }
 
 /// Pure core of [`stun_urls_from_turn`] — testable without an `AppState`.
@@ -2776,7 +3037,14 @@ fn stun_urls_from_turn_urls(turn_urls: &[String]) -> Vec<String> {
             out.push(stun);
         }
     }
-    out
+    if out.is_empty() {
+        turn_creds::default_stun_servers()
+            .into_iter()
+            .flat_map(|server| server.urls)
+            .collect()
+    } else {
+        out
+    }
 }
 
 /// Short-TTL process cache of resolved coturn worker IP sets, keyed by host
@@ -3361,8 +3629,14 @@ mod tests {
                 "stun:coturn.roomler.ai:443".to_string(),
             ]
         );
-        // No TURN configured → empty (srflx tier inert).
-        assert!(stun_urls_from_turn_urls(&[]).is_empty());
+        // No usable UDP TURN worker still permits unauthenticated discovery.
+        assert_eq!(
+            stun_urls_from_turn_urls(&[]),
+            turn_creds::default_stun_servers()
+                .into_iter()
+                .flat_map(|server| server.urls)
+                .collect::<Vec<_>>()
+        );
         // A same host:port on both UDP transports dedupes.
         assert_eq!(
             stun_urls_from_turn_urls(&[
@@ -3371,6 +3645,135 @@ mod tests {
             ]),
             vec!["stun:1.2.3.4:3478".to_string()]
         );
+    }
+
+
+    /// Pure settings/builder coverage: no state, network, secret read or mint.
+    fn overlay_stun_test_settings(
+        url: Option<&str>,
+        secret: bool,
+    ) -> roomler_ai_config::TurnSettings {
+        roomler_ai_config::TurnSettings {
+            url: url.map(str::to_owned),
+            worker_urls: None,
+            username: None,
+            password: None,
+            shared_secret: secret.then(|| "fixture-only-secret".to_string()),
+            force_relay: Some(false),
+            ttl_secs: Some(600),
+        }
+    }
+
+    fn overlay_stun_urls_for_settings(turn: &roomler_ai_config::TurnSettings) -> Vec<String> {
+        let urls = build_turn_config(turn)
+            .map(|cfg| cfg.urls)
+            .unwrap_or_default();
+        stun_urls_from_turn_urls(&urls)
+    }
+
+    fn overlay_stun_canonical_urls() -> Vec<String> {
+        turn_creds::default_stun_servers()
+            .into_iter()
+            .flat_map(|server| {
+                assert!(server.username.is_none() && server.credential.is_none());
+                server.urls
+            })
+            .collect()
+    }
+
+    #[test]
+    fn overlay_stun_empty_and_blank_turn_reuse_credential_free_canonical_list() {
+        let expected = overlay_stun_canonical_urls();
+        assert_eq!(
+            expected,
+            vec![
+                "stun:stun.cloudflare.com:3478",
+                "stun:stun.l.google.com:19302"
+            ]
+        );
+        assert_eq!(stun_urls_from_turn_urls(&[]), expected);
+        for url in [None, Some(""), Some("   ")] {
+            assert_eq!(
+                overlay_stun_urls_for_settings(&overlay_stun_test_settings(url, true)),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn overlay_stun_explicit_udp_turn_retains_priority_order_and_deduplication() {
+        let urls = vec![
+            "turn:worker-b.example:3479?transport=udp".to_string(),
+            "turns:worker-a.example:5349?transport=tcp".to_string(),
+            "turn:worker-a.example:3478?transport=udp".to_string(),
+            "turn:worker-b.example:3479".to_string(),
+            "turn:worker-a.example:3478?transport=tcp".to_string(),
+        ];
+        assert_eq!(
+            stun_urls_from_turn_urls(&urls),
+            vec!["stun:worker-b.example:3479", "stun:worker-a.example:3478"]
+        );
+        assert_eq!(
+            overlay_stun_urls_for_settings(&overlay_stun_test_settings(
+                Some("turn:worker-b.example:3479?transport=udp"),
+                true
+            )),
+            vec!["stun:worker-b.example:3479"]
+        );
+    }
+
+    #[test]
+    fn overlay_stun_tls_or_tcp_only_never_reinterprets_listener_as_udp() {
+        let expected = overlay_stun_canonical_urls();
+        for url in [
+            "turns:tls.example:5349?transport=tcp",
+            "turns:tls.example:443?transport=udp",
+            "turn:tcp.example:3478?transport=tcp",
+        ] {
+            let actual =
+                overlay_stun_urls_for_settings(&overlay_stun_test_settings(Some(url), true));
+            assert_eq!(actual, expected);
+            assert!(actual.iter().all(|u| u.starts_with("stun:")
+                && !u.contains("tls.example")
+                && !u.contains("tcp.example")));
+        }
+    }
+
+    #[test]
+    fn overlay_stun_missing_turn_secret_still_discovers_without_minting_turn() {
+        for url in [
+            None,
+            Some("turn:worker.example:3478?transport=udp"),
+            Some("turns:tls.example:5349?transport=tcp"),
+        ] {
+            let settings = overlay_stun_test_settings(url, false);
+            assert!(
+                build_turn_config(&settings).is_none(),
+                "TURN auth remains unavailable without a secret"
+            );
+            assert_eq!(
+                overlay_stun_urls_for_settings(&settings),
+                overlay_stun_canonical_urls()
+            );
+            assert_eq!(settings.force_relay, Some(false));
+        }
+    }
+
+    #[test]
+    fn overlay_stun_fallback_does_not_modify_configured_turn_or_credentials() {
+        let settings =
+            overlay_stun_test_settings(Some("turns:tls.example:5349?transport=tcp"), true);
+        let before = build_turn_config(&settings).unwrap();
+        assert_eq!(
+            overlay_stun_urls_for_settings(&settings),
+            overlay_stun_canonical_urls()
+        );
+        let after = build_turn_config(&settings).unwrap();
+        assert_eq!(before.urls, after.urls);
+        assert_eq!(before.workers, after.workers);
+        assert_eq!(before.ttl_secs, after.ttl_secs);
+        assert_eq!(before.shared_secret, after.shared_secret);
+        assert_eq!(settings.force_relay, Some(false));
     }
 
     #[test]

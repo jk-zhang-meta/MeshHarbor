@@ -2231,6 +2231,7 @@ mod tests {
 
         // (e) A target-only variant (TunnelSdpOffer) always passes through.
         let offer = ServerMsg::TunnelSdpOffer {
+            shared_lease: None,
             session_id: sid,
             sdp: "x".into(),
         };

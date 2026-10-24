@@ -63,7 +63,7 @@
               icon="mdi-download"
               variant="text"
               size="x-small"
-              :href="`/api/tenant/${tenantId}/file/${file.id}/download`"
+              :href="appPath(`/api/tenant/${tenantId}/file/${file.id}/download`)"
               target="_blank"
             />
             <v-btn
@@ -89,6 +89,7 @@
 </template>
 
 <script setup lang="ts">
+import { appPath } from '@/utils/deployment'
 import { ref } from 'vue'
 import { useRoomStore, type FileEntry } from '@/stores/rooms'
 

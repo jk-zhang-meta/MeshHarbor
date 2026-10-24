@@ -372,7 +372,7 @@ function renderWelcome() {
   // launch) and names the server the diagnostics would go to — the one the
   // enrollment goes to, as the Server page currently has it.
   document.getElementById("diag-opt-in").checked = state.diagOptIn;
-  document.getElementById("diag-server").textContent = state.server || "https://roomler.ai";
+  document.getElementById("diag-server").textContent = state.server || "https://www.itachi.fans/meshharbor";
 }
 
 function crossFlavourWarning(agentDetect, flavour) {
@@ -877,7 +877,7 @@ function renderDone() {
   document.getElementById("done-anchor-note").hidden = !anchorFailed;
   if (anchorFailed) {
     document.getElementById("done-anchor-reason").textContent = state.anchorSkipReason ?? "";
-    const server = (state.server || "https://roomler.ai").replace(/\/+$/, "");
+    const server = (state.server || "https://www.itachi.fans/meshharbor").replace(/\/+$/, "");
     document.getElementById("done-anchor-command").textContent =
       `roomlerd anchor create --server ${server} --token <fresh token> ` +
       `--device ${done.principalId ?? "<device id>"}`;

@@ -1116,7 +1116,28 @@ impl Default for RcSettings {
 }
 
 #[derive(Debug, Deserialize, Clone)]
+pub struct AccountApprovalSettings {
+    /// Opt-in deployment policy; unrelated application features are unchanged.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Explicit existing user ObjectId. Never inferred from signup order/email.
+    #[serde(default)]
+    pub owner_user_id: Option<String>,
+}
+
+impl Default for AccountApprovalSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            owner_user_id: None,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Clone)]
 pub struct AuthSettings {
+    #[serde(default)]
+    pub account_approval: AccountApprovalSettings,
     /// When true, `register` sets `is_verified: true` on the new user
     /// directly, bypassing the email activation flow. Default false —
     /// production keeps the email-link activation as the only path.
@@ -1153,6 +1174,7 @@ impl Default for AuthSettings {
     fn default() -> Self {
         Self {
             auto_verify: false,
+            account_approval: AccountApprovalSettings::default(),
             reconcile_managed_roles: default_true(),
         }
     }
@@ -2001,5 +2023,17 @@ mod relay_cost_file_tests {
         // it is never what an operator means by filling this file in.
         assert!(c.derp_gb.unwrap() > 0.0);
         assert!(c.sfu_participant_hour.unwrap() > 0.0);
+    }
+}
+
+#[cfg(test)]
+mod account_approval_tests {
+    use super::*;
+    #[test]
+    fn account_approval_is_opt_in_without_implicit_owner() {
+        let settings = AuthSettings::default();
+        assert!(!settings.account_approval.enabled);
+        assert!(settings.account_approval.owner_user_id.is_none());
+        assert!(settings.reconcile_managed_roles);
     }
 }

@@ -143,6 +143,15 @@ async fn ws_upgrade_user(
         }
     };
 
+    // A valid signature is not current account admission. This is deliberately
+    // shared with HTTP/OAuth/refresh, rather than a separate socket policy.
+    if roomler_core::admission::authorize_claims(&state.core, &claims)
+        .await
+        .is_err()
+    {
+        return forbidden("account admission denied");
+    }
+
     // S6 — user JWTs carry no tenant claim, so a present `tid` is
     // validated against `tenant_members`. Rejecting a non-member claim
     // matters: `tid` is attacker-choosable in the URL, and accepting an
@@ -189,7 +198,7 @@ async fn ws_upgrade_user(
             let session =
                 crate::user_analytics::open_session(&state, user_id, analytics_tenant, &ua, ip)
                     .await;
-            handle_socket(socket, state.clone(), user_id, username, tid).await;
+            handle_socket(socket, state.clone(), user_id, username, tid, claims).await;
             if let Some(id) = session {
                 crate::user_analytics::close_session(&state, id).await;
             }
@@ -205,7 +214,12 @@ async fn handle_socket(
     // kept for the cross-pod direction rule. None = key-less dial that
     // hashed on client IP.
     dialed_tid: Option<String>,
+    claims: roomler_ai_services::auth::Claims,
 ) {
+    // Close the upgrade-to-registration race before registering any controller.
+    if !admission_current(&state.core, &claims).await {
+        return;
+    }
     let connection_id = Uuid::new_v4().to_string();
     let conn_established_ms = bson::DateTime::now().timestamp_millis();
     info!(?user_id, %connection_id, "WebSocket connected");
@@ -217,14 +231,6 @@ async fn handle_socket(
         .ws_storage
         .add(user_id, connection_id.clone(), sender.clone());
 
-    // S6 — mirror into the cross-pod online registry (advisory; the 30 s
-    // heartbeat in main.rs re-asserts it and the 90 s TTL self-heals).
-    if let Some(pubsub) = &state.redis_pubsub
-        && let Err(e) = pubsub.online_add(&user_id.to_hex()).await
-    {
-        tracing::debug!("online-registry add failed: {e}");
-    }
-
     // Register this tab with the remote-control Hub so `rc:*` replies find us.
     // Each browser tab gets its own controller tx; the Hub routes by tx, not
     // by user id, so multiple tabs don't cross signals. FR-69 P7b — the Hub
@@ -232,60 +238,95 @@ async fn handle_socket(
     // the tab's `rc:*` frames fall through unhandled.
     let rc = state.modules.register_controller(user_id, sender.clone());
 
-    {
-        // `connection_id` lets the client scope its call sessions to this
-        // exact WS connection (call/join + call/leave bodies) — the id is
-        // minted per socket, so consumers must re-read it after any redial.
-        let msg = serde_json::json!({
-            "type": "connected",
-            "user_id": user_id.to_hex(),
-            "connection_id": connection_id,
-        });
-        let mut guard = sender.lock().await;
-        let _ = guard
-            .send(Message::text(serde_json::to_string(&msg).unwrap()))
-            .await;
-    }
-
-    // Resolve a human-friendly display name for this controller once per
-    // connection. It's the identity shown to the viewee — the "Being
-    // viewed by" overlay caption + its initials avatar — and in owner
-    // approval notifications. The JWT only carries the login username, so
-    // look up the profile's display_name here, falling back to the
-    // username when it's unset.
-    let controller_display = match state.users.base.find_by_id(user_id).await {
-        Ok(u) if !u.display_name.trim().is_empty() => u.display_name,
-        _ => username,
-    };
-
-    while let Some(msg) = receiver.next().await {
-        match msg {
-            Ok(Message::Text(text)) => {
-                handle_client_message(
-                    &state,
-                    &user_id,
-                    &connection_id,
-                    &controller_display,
-                    rc.as_ref().map(|(tx, _)| tx),
-                    &text,
-                    dialed_tid.as_deref(),
-                    conn_established_ms,
-                )
-                .await;
+    // The watchdog races the ENTIRE session, not only receiver.next(): slow
+    // writes, initialization and stalled module handlers must not prevent revoke.
+    let revoked = run_until_revoked(
+        async {
+            // S6 — mirror into the cross-pod online registry (advisory; the 30 s
+            // heartbeat in main.rs re-asserts it and the 90 s TTL self-heals).
+            if let Some(pubsub) = &state.redis_pubsub
+                && let Err(e) = pubsub.online_add(&user_id.to_hex()).await
+            {
+                tracing::debug!("online-registry add failed: {e}");
             }
-            Ok(Message::Ping(data)) => {
+
+            {
+                // `connection_id` lets the client scope its call sessions to this
+                // exact WS connection (call/join + call/leave bodies) — the id is
+                // minted per socket, so consumers must re-read it after any redial.
+                let msg = serde_json::json!({
+                    "type": "connected",
+                    "user_id": user_id.to_hex(),
+                    "connection_id": connection_id,
+                });
                 let mut guard = sender.lock().await;
-                let _ = guard.send(Message::Pong(data)).await;
+                let _ = guard
+                    .send(Message::text(serde_json::to_string(&msg).unwrap()))
+                    .await;
             }
-            Ok(Message::Close(_)) => {
-                break;
+
+            // Resolve a human-friendly display name for this controller once per
+            // connection. It's the identity shown to the viewee — the "Being
+            // viewed by" overlay caption + its initials avatar — and in owner
+            // approval notifications. The JWT only carries the login username, so
+            // look up the profile's display_name here, falling back to the
+            // username when it's unset.
+            let controller_display = match state.users.base.find_by_id(user_id).await {
+                Ok(u) if !u.display_name.trim().is_empty() => u.display_name,
+                _ => username,
+            };
+
+            while let Some(msg) = receiver.next().await {
+                match msg {
+                    Ok(Message::Text(text)) => {
+                        if !admission_current(&state.core, &claims).await {
+                            break;
+                        }
+                        handle_client_message(
+                            &state,
+                            &user_id,
+                            &connection_id,
+                            &controller_display,
+                            rc.as_ref().map(|(tx, _)| tx),
+                            &text,
+                            dialed_tid.as_deref(),
+                            conn_established_ms,
+                        )
+                        .await;
+                    }
+                    Ok(Message::Ping(data)) => {
+                        let mut guard = sender.lock().await;
+                        let _ = guard.send(Message::Pong(data)).await;
+                    }
+                    Ok(Message::Close(_)) => {
+                        break;
+                    }
+                    Err(e) => {
+                        warn!(?user_id, %connection_id, %e, "WebSocket error");
+                        break;
+                    }
+                    _ => {}
+                }
             }
-            Err(e) => {
-                warn!(?user_id, %connection_id, %e, "WebSocket error");
-                break;
+        },
+        async {
+            if !state.settings.auth.account_approval.enabled {
+                std::future::pending::<()>().await;
             }
-            _ => {}
-        }
+            loop {
+                if !admission_current(&state.core, &claims).await {
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            }
+        },
+    )
+    .await;
+    if revoked {
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            sender.lock().await.send(Message::Close(None)).await
+        })
+        .await;
     }
 
     // Cleanup
@@ -320,6 +361,34 @@ async fn handle_socket(
     state.modules.ws_closed(&ctx).await;
 
     info!(?user_id, %connection_id, "WebSocket disconnected");
+}
+
+/// Dropping the losing session future releases any sender lock before cleanup.
+async fn run_until_revoked(
+    session: impl std::future::Future<Output = ()>,
+    revocation: impl std::future::Future<Output = ()>,
+) -> bool {
+    tokio::select! {
+        biased;
+        _ = revocation => true,
+        _ = session => false,
+    }
+}
+
+async fn admission_current(
+    core: &roomler_core::Core,
+    claims: &roomler_ai_services::auth::Claims,
+) -> bool {
+    if !core.settings.auth.account_approval.enabled {
+        return true;
+    }
+    // User JWT expiry must apply to long-lived sockets as well as new requests.
+    if claims.exp <= chrono::Utc::now().timestamp() {
+        return false;
+    }
+    roomler_core::admission::authorize_claims(core, claims)
+        .await
+        .is_ok()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -426,6 +495,39 @@ mod tests {
         let mut h = HeaderMap::new();
         h.insert(COOKIE, HeaderValue::from_str(raw).unwrap());
         h
+    }
+
+    #[tokio::test]
+    async fn account_approval_watchdog_cancels_stalled_session_and_releases_lock() {
+        let sender = Arc::new(Mutex::new(()));
+        let session_sender = sender.clone();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let revoked = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            run_until_revoked(
+                async move {
+                    let _held = session_sender.lock().await;
+                    let _ = started_tx.send(());
+                    // A handler/write that never finishes, with the sender held.
+                    std::future::pending::<()>().await;
+                },
+                async move {
+                    let _ = started_rx.await;
+                },
+            ),
+        )
+        .await
+        .unwrap();
+        assert!(revoked);
+        assert!(
+            sender.try_lock().is_ok(),
+            "cleanup must not inherit held locks"
+        );
+    }
+
+    #[tokio::test]
+    async fn account_approval_watchdog_preserves_completed_session() {
+        assert!(!run_until_revoked(async {}, std::future::pending()).await);
     }
 
     #[test]

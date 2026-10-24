@@ -1452,6 +1452,101 @@ impl Hub {
         // (a refusal, or a coalesced duplicate that returned another id).
         slot: Option<Lease>,
     ) -> Result<ObjectId> {
+        self.create_session_full_scoped(
+            agent_id,
+            controller_user_id,
+            controller_name,
+            controller_tx,
+            permissions,
+            browser_caps,
+            preferred_transport,
+            chroma_pref,
+            chunk_framing,
+            audio_enabled,
+            consent_mode,
+            override_reason,
+            local_relay,
+            rc_overlay,
+            input_mode,
+            tenant_name,
+            may_record,
+            session_policy,
+            max_duration,
+            idle_secs,
+            lock_on_end,
+            external,
+            org_session_cap,
+            slot,
+            None,
+        )
+    }
+
+    fn create_session_full_scoped(
+        &self,
+        agent_id: ObjectId,
+        controller_user_id: ObjectId,
+        controller_name: String,
+        controller_tx: ClientTx,
+        permissions: Permissions,
+        browser_caps: Vec<String>,
+        preferred_transport: Option<String>,
+        chroma_pref: Option<String>,
+        chunk_framing: Option<bool>,
+        audio_enabled: bool,
+        consent_mode: ConsentMode,
+        override_reason: Option<String>,
+        local_relay: Option<LocalRelayDescriptor>,
+        // #1882 — the device's `AccessPolicy.rc_overlay`, resolved by the
+        // authz gate. Rides `ServerMsg::Request`, and gates whether
+        // `forward_offer` hands the agent `local_relay` at all.
+        rc_overlay: bool,
+        input_mode: Option<roomler_ai_remote_control::models::InputMode>,
+        // Multi-org — display name of the requesting org, for the host's
+        // consent prompt. See `ServerMsg::Request::tenant_name`.
+        tenant_name: Option<String>,
+        may_record: bool,
+        // FR-101 P2 — the org's session policy, read by the authz gate.
+        session_policy: OrgPolicy,
+        // FR-101 P4b — the org's maximum session length, armed when the
+        // session goes live. `None` = no limit.
+        max_duration: Option<std::time::Duration>,
+        // FR-101 P4b-2 — the idle limit, in seconds: the shorter of the org's
+        // and the device's own, resolved by the authz gate. The device keeps
+        // it; `None` = no idle limit.
+        idle_secs: Option<u32>,
+        // FR-99 P3b — what the device's access policy asks of the session's
+        // end, resolved by the authz gate. `None` = nothing asked.
+        lock_on_end: Option<LockOnEnd>,
+        // FR-52 P4 — `Some` for an EXTERNAL session: the login the device must
+        // bind it to, forwarded in `ServerMsg::Request`. Passed only by the
+        // extauth relay (`roomler_ai_mod_remote::extauth`), after it found the
+        // principal's verified login and checked the device advertises
+        // `external-session`; `dispatch` always passes `None`.
+        external: Option<roomler_ai_remote_control::signaling::ExternalGrant>,
+        // FR-115 P3 — how many remote sessions the device's organization may
+        // run at once (`DispatchCtx::org_session_cap`). `None` = no cap.
+        org_session_cap: Option<u32>,
+        // FR-115 P3b — a cluster-wide slot the async caller already claimed
+        // for this session: the session is created under the lease's id, and
+        // the hub renews the lease and gives it back when the session ends.
+        // The caller passes `org_session_cap: None` with it (the slot IS the
+        // count), and releases the slot itself when no session took its id
+        // (a refusal, or a coalesced duplicate that returned another id).
+        slot: Option<Lease>,
+        share_grant_id: Option<ObjectId>,
+    ) -> Result<ObjectId> {
+        let permissions = if share_grant_id.is_some() {
+            permissions & (Permissions::VIEW | Permissions::INPUT | Permissions::FILES)
+        } else {
+            permissions
+        };
+        let device_share_scope = share_grant_id.map(|grant_id| {
+            roomler_ai_remote_control::session::DeviceShareSessionScope {
+                grant_id,
+                ceiling: permissions,
+            }
+        });
+
         // rc.185 — self-heal the fast connect→disconnect race. A controller
         // that connects then drops before teardown completes can leave an
         // ORPHANED session pinned to this agent: `active_sessions` stays
@@ -1510,6 +1605,7 @@ impl Hub {
         let existing = self.inner.sessions.iter().find_map(|e| {
             let s = e.value().lock();
             let is_dup = s.agent_id == agent_id
+                && s.device_share_scope() == device_share_scope
                 && s.controller_tx
                     .as_ref()
                     .map(|tx| ptr_eq(tx, &controller_tx) && !tx.is_closed())
@@ -1517,7 +1613,7 @@ impl Hub {
             is_dup.then(|| {
                 (
                     s.id,
-                    s.permissions,
+                    s.permissions(),
                     s.record_refused,
                     s.privacy_refused,
                     s.features_refused.clone(),
@@ -1679,7 +1775,7 @@ impl Hub {
             && !agent_arbitrates
             && self.inner.sessions.iter().any(|e| {
                 let s = e.value().lock();
-                s.agent_id == agent_id && s.permissions.contains(Permissions::INPUT)
+                s.agent_id == agent_id && s.permissions().contains(Permissions::INPUT)
             }) {
             info!(
                 "agent {} already has an INPUT-holding session and does not arbitrate — new \
@@ -1750,6 +1846,10 @@ impl Hub {
             permissions,
             controller_tx.clone(),
         );
+        if let Some(scope) = device_share_scope {
+            live.bind_device_share(scope)?;
+            live.set_shared_lease_epoch(uuid::Uuid::new_v4().to_string())?;
+        }
         // Loopback-TURN corp-relay (Phase 2): remember the controller's local
         // agent TURN descriptor so `forward_offer` can hand the REMOTE agent a
         // relay it reaches over the overlay. Validated at use, not here.
@@ -1841,7 +1941,9 @@ impl Hub {
         // Move to AwaitingConsent and tell the agent. The agent always gets the
         // Request (it needs the codec / transport context) + the mode directive;
         // for Email/Push it will NOT respond — the owner resolves the slot.
+        let shared_lease = self.shared_lease(session_id);
         let request = ServerMsg::Request {
+            shared_lease,
             session_id,
             controller_user_id,
             controller_name: controller_name.clone(),
@@ -2131,7 +2233,7 @@ impl Hub {
         // device signs its answer against. The hub never reads it.
         peer_auth: Option<roomler_ai_remote_control::signaling::PeerAuthOffer>,
     ) -> Result<()> {
-        let (agent_id, local_relay, rc_overlay, region, org) =
+        let (agent_id, local_relay, rc_overlay, region, org, shared_lease) =
             self.with_session(session_id, |s| {
                 // Also what stands the negotiating reaper down: once an offer
                 // exists, the ICE layer owns liveness.
@@ -2142,6 +2244,20 @@ impl Hub {
                     s.rc_overlay,
                     s.relay_region.clone(),
                     s.tenant_id,
+                    match s.device_share_scope() {
+                        Some(scope) => {
+                            Some(roomler_ai_remote_control::signaling::SharedSessionLease {
+                                grant_id: scope.grant_id,
+                                lease_epoch: s
+                                    .shared_lease_epoch()
+                                    .ok_or(Error::PermissionDenied(
+                                        "shared session missing immutable lease",
+                                    ))?
+                                    .to_string(),
+                            })
+                        }
+                        None => None,
+                    },
                 ))
             })?;
         let user_id = self.controller_for(session_id).unwrap_or_default();
@@ -2192,6 +2308,7 @@ impl Hub {
         let agent_tx = self.agent_tx(agent_id)?;
         agent_tx
             .try_send(ServerMsg::SdpOffer {
+                shared_lease,
                 session_id,
                 sdp,
                 ice_servers: ice,
@@ -3468,10 +3585,29 @@ impl Hub {
     /// `None` once the session has ended (callers fall back to the stored
     /// `remote_sessions` row: a recording's last report arrives after its
     /// session is gone).
+    /// Exactly one live watchdog per immutable share-bound session (retries coalesce).
+    pub fn shared_lease(
+        &self,
+        session_id: ObjectId,
+    ) -> Option<roomler_ai_remote_control::signaling::SharedSessionLease> {
+        let e = self.inner.sessions.get(&session_id)?;
+        let s = e.value().lock();
+        Some(roomler_ai_remote_control::signaling::SharedSessionLease {
+            grant_id: s.device_share_scope()?.grant_id,
+            lease_epoch: s.shared_lease_epoch()?.to_string(),
+        })
+    }
+    pub fn claim_device_share_watch(&self, session_id: ObjectId, grant_id: ObjectId) -> bool {
+        self.inner
+            .sessions
+            .get(&session_id)
+            .is_some_and(|e| e.value().lock().claim_share_watch(grant_id))
+    }
+
     pub fn session_grant(&self, session_id: ObjectId) -> Option<(ObjectId, ObjectId, Permissions)> {
         self.inner.sessions.get(&session_id).map(|e| {
             let s = e.value().lock();
-            (s.agent_id, s.controller_user_id, s.permissions)
+            (s.agent_id, s.controller_user_id, s.permissions())
         })
     }
 
@@ -3774,11 +3910,23 @@ impl Hub {
     }
 
     pub fn dispatch(&self, ctx: &DispatchCtx, msg: ClientMsg) -> Result<()> {
+        self.dispatch_capturing_session(ctx, msg, &mut None)
+    }
+
+    /// Exact created/coalesced session ID for a caller that must bind a live scope.
+    pub fn dispatch_capturing_session(
+        &self,
+        ctx: &DispatchCtx,
+        msg: ClientMsg,
+        created: &mut Option<ObjectId>,
+    ) -> Result<()> {
+        *created = None;
         match (ctx.role, msg) {
             (
                 Role::Controller,
                 ClientMsg::SessionRequest {
                     agent_id,
+                    share_grant_id, // checked by remote's explicit share PDP, not a Hub authority
                     permissions,
                     browser_caps,
                     preferred_transport,
@@ -3805,7 +3953,7 @@ impl Hub {
                 let user_id = ctx.user_id.ok_or(Error::PermissionDenied("no user"))?;
                 let name = ctx.controller_name.clone().unwrap_or_default();
                 let tx = ctx.controller_tx.clone().ok_or(Error::SendFailed)?;
-                self.create_session_full(
+                let session_id = self.create_session_full_scoped(
                     agent_id,
                     user_id,
                     name,
@@ -3839,7 +3987,9 @@ impl Hub {
                     ctx.org_session_cap,
                     // FR-115 P3b — the slot the owner pod claimed, if any.
                     ctx.slot.clone(),
+                    share_grant_id,
                 )?;
+                *created = Some(session_id);
                 Ok(())
             }
             (

@@ -287,7 +287,7 @@ async fn run_install_inner(
         },
     );
     let health = asset_resolver::resolve(
-        &crate::proxy::agent_base(),
+        &crate::proxy::agent_base(&server),
         flavour_for_proxy,
         "latest",
         crate::proxy::USER_AGENT,
@@ -317,26 +317,33 @@ async fn run_install_inner(
         .join("roomler-setup")
         .join(&health.tag)
         .join(&health.filename);
-    let url = format!(
-        "{}{}",
-        crate::proxy::origin_of(&crate::proxy::agent_base()),
-        health.uri
-    );
+    let center_base = crate::proxy::origin_of(&crate::proxy::agent_base(&server));
+    let url = format!("{}{}", center_base, health.uri);
     let spec = asset_resolver::DownloadSpec {
+        center_base: &center_base,
         url: &url,
         dest: &staged,
         user_agent: crate::proxy::USER_AGENT,
         artifact_label: "installer",
     };
+    let signature_url =
+        asset_resolver::release_signature_url(&center_base, &health.tag, &health.filename)
+            .map_err(|e| failed(ErrorCode::Download, format!("release signature URL: {e}")))?;
     let progress_emitter = on_event.clone();
-    asset_resolver::download(&spec, &crate::CANCEL_REQUESTED, move |received| {
-        // Skip the replay-log mirror here — DownloadProgress fires
-        // hundreds of times per MB and would balloon the log. The
-        // SPA's primary listener catches the live stream.
-        let _ = progress_emitter.send(ProgressEvent::DownloadProgress {
-            received_bytes: received,
-        });
-    })
+    asset_resolver::download_signed(
+        &spec,
+        &signature_url,
+        &crate::CANCEL_REQUESTED,
+        roomlerd::pgp_verify::verify_release_artifact,
+        move |received| {
+            // Skip the replay-log mirror here — DownloadProgress fires
+            // hundreds of times per MB and would balloon the log. The
+            // SPA's primary listener catches the live stream.
+            let _ = progress_emitter.send(ProgressEvent::DownloadProgress {
+                received_bytes: received,
+            });
+        },
+    )
     .await
     .map_err(|e| failed(ErrorCode::Download, format!("download installer: {e}")))?;
     diag.ok();
@@ -349,7 +356,7 @@ async fn run_install_inner(
             .map_err(|e| failed(ErrorCode::Other, format!("sha256 verify: {e}")))?,
         None => {
             // Pre-Oct-2024 releases lack the digest field. Accept
-            // the download as-is but flag it loudly.
+            // the PGP-authenticated download but flag the missing SHA digest.
             tracing::warn!(
                 tag = %health.tag,
                 "installer asset lacks sha256 digest — skipping verification"
@@ -603,7 +610,7 @@ async fn run_install_inner(
     // (P3b: recorded as its own step — `ok`, or `failed: companion` — and
     // not at all where it does not apply.)
     diag.begin(Step::Companion);
-    let desktop_installed = place_desktop_companion(wfx, on_event).await;
+    let desktop_installed = place_desktop_companion(wfx, &server, on_event).await;
     best_effort_outcome(diag, desktop_installed, ErrorCode::Companion);
 
     // --- Step 7b': anchor the device for SYSTEM exec (FR-104) -----------
@@ -778,6 +785,7 @@ async fn anchor_device(
 #[cfg(target_os = "windows")]
 async fn place_desktop_companion(
     flavour: WindowsInstallFlavour,
+    server: &str,
     on_event: &Channel<ProgressEvent>,
 ) -> Option<bool> {
     let dir =
@@ -788,7 +796,7 @@ async fn place_desktop_companion(
             artifact: "roomler-desktop".to_string(),
         },
     );
-    let origin = crate::proxy::origin_of(&crate::proxy::agent_base());
+    let origin = crate::proxy::origin_of(&crate::proxy::agent_base(server));
     let lr_url = format!("{origin}/api/agent/latest-release");
     let asset = match asset_resolver::find_release_asset(
         &lr_url,
@@ -815,12 +823,28 @@ async fn place_desktop_companion(
         .join("roomler-setup")
         .join(&asset.filename);
     let spec = asset_resolver::DownloadSpec {
+        center_base: &origin,
         url: &asset.url,
         dest: &staged,
         user_agent: crate::proxy::USER_AGENT,
         artifact_label: "desktop companion",
     };
-    if let Err(e) = asset_resolver::download(&spec, &crate::CANCEL_REQUESTED, |_| {}).await {
+    let signature_url = match asset_resolver::detached_signature_url(&origin, &asset.url) {
+        Ok(url) => url,
+        Err(e) => {
+            tracing::warn!(error = %e, "desktop signature URL refused — companion skipped");
+            return Some(false);
+        }
+    };
+    if let Err(e) = asset_resolver::download_signed(
+        &spec,
+        &signature_url,
+        &crate::CANCEL_REQUESTED,
+        roomlerd::pgp_verify::verify_release_artifact,
+        |_| {},
+    )
+    .await
+    {
         tracing::warn!(error = %e, "downloading roomler-desktop failed — companion skipped");
         return Some(false);
     }
@@ -888,6 +912,7 @@ fn start_user_task() {}
 #[cfg(not(target_os = "windows"))]
 async fn place_desktop_companion(
     _flavour: WindowsInstallFlavour,
+    _server: &str,
     _on_event: &Channel<ProgressEvent>,
 ) -> Option<bool> {
     None

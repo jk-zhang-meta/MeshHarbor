@@ -21,7 +21,7 @@ use axum::{
     Json,
     body::Body,
     extract::{Path, Query, State},
-    http::{HeaderMap, HeaderValue, StatusCode},
+    http::{HeaderMap, StatusCode},
     response::Response,
 };
 use serde::{Deserialize, Serialize};
@@ -72,12 +72,13 @@ pub async fn setup_latest_release(
         peer,
         install_trace::asset::SETUP_LATEST_RELEASE,
     );
+    let base = crate::release_delivery::public_base(&state.settings.app.frontend_url)?;
     let releases = releases::cached(&state).await?;
     let filtered: Vec<AgentRelease> = releases
         .into_iter()
         .filter(|r| r.tag_name.starts_with("setup-v"))
         .collect();
-    Ok(Json(filtered))
+    Ok(Json(crate::release_delivery::own_urls(filtered, &base)?))
 }
 
 /// `GET /api/setup/{platform}/health` — manifest for the unified
@@ -89,6 +90,7 @@ pub async fn setup_installer_health(
     Query(params): Query<InstallerQuery>,
 ) -> Result<Json<InstallerHealth>, ApiError> {
     let normalised = normalise_platform(&platform)?;
+    crate::release_delivery::validate_version(&params.version)?;
     let releases = releases::cached(&state).await?;
     let release = pick_release_for(&releases, &params.version, "setup-v").ok_or_else(|| {
         ApiError::NotFound(format!(
@@ -102,13 +104,17 @@ pub async fn setup_installer_health(
             normalised, release.tag_name
         ))
     })?;
+    crate::release_delivery::validate_asset(release, asset)?;
     Ok(Json(InstallerHealth {
         tag: release.tag_name.clone(),
         platform: normalised.to_string(),
         filename: asset.name.clone(),
         size: asset.size,
         digest: asset.digest.clone(),
-        uri: format!("/api/setup/{}?version={}", normalised, params.version),
+        uri: crate::release_delivery::health_uri(
+            &format!("/api/setup/{}", normalised),
+            &release.tag_name,
+        ),
     }))
 }
 
@@ -121,6 +127,7 @@ pub async fn setup_installer_proxy(
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     let normalised = normalise_platform(&platform)?;
+    crate::release_delivery::validate_version(&params.version)?;
     // FR-102 P3 — the wizard archive itself, usually a browser on the site.
     install_trace::count_fetch(
         &state,
@@ -142,7 +149,7 @@ pub async fn setup_installer_proxy(
         ))
     })?;
 
-    stream_asset(asset).await
+    stream_asset(release, asset).await
 }
 
 /// Pick the unified-wizard asset for a platform. Asset naming follows
@@ -209,17 +216,17 @@ const INSTALL_PS1: &str = include_str!("../../../../scripts/install.ps1");
 /// shell script is a silent-failure machine: edit the line and the server keeps
 /// serving the old default with nothing failing anywhere. The test is what
 /// makes that a build error instead.
-const SERVER_NEEDLE_SH: &str = "SERVER=\"https://roomler.ai\"";
-const SERVER_NEEDLE_PS1: &str = "[string]$Server = 'https://roomler.ai',";
+const SERVER_NEEDLE_SH: &str = "SERVER=\"https://www.itachi.fans/meshharbor\"";
+const SERVER_NEEDLE_PS1: &str = "[string]$Server = 'https://www.itachi.fans/meshharbor',";
 
-/// The origin to substitute, or `None` to serve the script unchanged.
+/// The deployment base to substitute, or `None` to serve the script unchanged.
 ///
 /// ⚠️ The result is spliced into a shell double-quoted string and a PowerShell
 /// single-quoted string, inside a script that then runs as **root / SYSTEM**. A
 /// value carrying `"`, `$`, a backtick, a quote or a newline would be command
 /// injection into an installer, authored by whoever can set an env var on the
 /// API process. So this is a narrow POSITIVE match — scheme, host, optional
-/// port, optional trailing slash, nothing else — and anything outside it is
+/// port, safe deployment path segments and an optional trailing slash. Anything else is
 /// refused rather than escaped.
 ///
 /// Refusing is always safe: serving the compiled-in default is exactly the
@@ -234,9 +241,23 @@ fn substitutable_origin(frontend_url: &str) -> Option<String> {
         return None;
     };
     let rest = &raw[scheme.len() + 3..];
-    // One optional trailing slash is idiomatic in config and harmless. A real
-    // PATH is not: the installer appends its own (`$SERVER/api/agent/...`).
-    let hostport = rest.strip_suffix('/').unwrap_or(rest);
+    // A deployment prefix belongs before the appended `/api/...` path. Keep
+    // it verbatim, but permit only shell-literal-safe, non-traversing segments.
+    let base = rest.strip_suffix('/').unwrap_or(rest);
+    let (hostport, prefix) = base.split_once('/').unwrap_or((base, ""));
+    if base.len() > 2048
+        || (base.contains('/')
+            && prefix.split('/').any(|segment| {
+                segment.is_empty()
+                    || segment == "."
+                    || segment == ".."
+                    || !segment.bytes().all(|b| {
+                        b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~')
+                    })
+            }))
+    {
+        return None;
+    }
     if hostport.is_empty() || hostport.len() > 253 {
         return None;
     }
@@ -256,14 +277,14 @@ fn substitutable_origin(frontend_url: &str) -> Option<String> {
     {
         return None;
     }
-    Some(format!("{scheme}://{hostport}"))
+    Some(format!("{scheme}://{base}"))
 }
 
 /// Substitute `needle`'s embedded default for this deployment's own origin, or
 /// hand back the script untouched when the origin is unusable or identical.
 ///
 /// Borrows in the identical case on purpose: the hosted service's
-/// `frontend_url` IS `https://roomler.ai`, so the overwhelmingly common path
+/// `frontend_url` is the compiled-in MeshHarbor center, so the common path
 /// allocates nothing and serves byte-identical bytes.
 fn with_server_default<'a>(
     script: &'a str,
@@ -274,9 +295,9 @@ fn with_server_default<'a>(
     let Some(origin) = substitutable_origin(frontend_url) else {
         tracing::warn!(
             frontend_url,
-            "install script: app.frontend_url is not a plain scheme://host[:port], \
+            "install script: app.frontend_url is not a safe deployment base, \
              serving the compiled-in server default unchanged — a device installed \
-             from this server will enrol against roomler.ai unless --server is passed"
+             from this server will use the compiled-in MeshHarbor center unless --server is passed"
         );
         return Cow::Borrowed(script);
     };
@@ -335,48 +356,14 @@ pub async fn install_script_ps1(
 
 /// Stream a release asset's bytes through the proxy with download
 /// headers.
-async fn stream_asset(asset: &AgentReleaseAsset) -> Result<Response, ApiError> {
-    let client = reqwest::Client::builder()
-        .user_agent(concat!("roomler-ai-api/", env!("CARGO_PKG_VERSION")))
-        .timeout(Duration::from_secs(60))
-        .build()
-        .map_err(|e| ApiError::Internal(format!("reqwest client build: {e}")))?;
-    let upstream = client
-        .get(&asset.browser_download_url)
-        .send()
-        .await
-        .map_err(|e| ApiError::Internal(format!("upstream wizard fetch failed: {e}")))?;
-
-    let status = upstream.status();
-    if !status.is_success() {
-        return Err(ApiError::Internal(format!(
-            "upstream wizard fetch returned {status}"
-        )));
-    }
-    let content_length = upstream.content_length();
-    let content_type = content_type_for(&asset.name);
-
-    let mut builder = Response::builder()
-        .status(StatusCode::OK)
-        .header("Content-Type", content_type)
-        .header(
-            "Content-Disposition",
-            HeaderValue::from_str(&format!(
-                "attachment; filename=\"{}\"",
-                sanitise_header_value(&asset.name)
-            ))
-            .unwrap_or_else(|_| HeaderValue::from_static("attachment")),
-        )
-        .header("Cache-Control", "public, max-age=3600");
-    if let Some(len) = content_length {
-        builder = builder.header("Content-Length", len);
-    }
-    let body = Body::from_stream(upstream.bytes_stream());
-    builder
-        .body(body)
-        .map_err(|e| ApiError::Internal(format!("response build failed: {e}")))
+async fn stream_asset(
+    release: &AgentRelease,
+    asset: &AgentReleaseAsset,
+) -> Result<Response, ApiError> {
+    crate::release_delivery::stream_asset(release, asset, content_type_for(&asset.name)).await
 }
 
+#[cfg(test)]
 fn sanitise_header_value(s: &str) -> String {
     s.chars()
         .filter(|c| !matches!(c, '\r' | '\n' | '"'))
@@ -631,6 +618,18 @@ mod tests {
                 "https://my-roomler.example.com:8443",
             ),
             ("  https://roomler.ai  ", "https://roomler.ai"),
+            (
+                "https://www.itachi.fans/meshharbor",
+                "https://www.itachi.fans/meshharbor",
+            ),
+            (
+                "https://www.itachi.fans/meshharbor/",
+                "https://www.itachi.fans/meshharbor",
+            ),
+            (
+                "https://custom.example/customer/site-1_2.v3~",
+                "https://custom.example/customer/site-1_2.v3~",
+            ),
         ] {
             assert_eq!(
                 substitutable_origin(input).as_deref(),
@@ -641,7 +640,7 @@ mod tests {
     }
 
     /// The security half. This value is spliced into a script that runs as
-    /// root/SYSTEM, so anything that is not plainly a scheme://host[:port] is
+    /// root/SYSTEM, so anything outside the safe deployment-base grammar is
     /// REFUSED rather than escaped — a refusal serves the compiled-in default,
     /// which is exactly the behaviour before this existed.
     #[test]
@@ -656,10 +655,13 @@ mod tests {
             "https://roomler.ai'; iex 'x",
             // newline — would append whole statements to the script
             "https://roomler.ai\nrm -rf /",
-            // a path: the installer appends its own, so this is wrong even
-            // when it is harmless
-            "https://roomler.ai/base",
-            "https://roomler.ai/api/",
+            // Paths must be literal-safe and cannot traverse or contain empty segments.
+            "https://roomler.ai/base/../other",
+            "https://roomler.ai/base/./other",
+            "https://roomler.ai/base//other",
+            "https://roomler.ai/base%2fother",
+            "https://roomler.ai/base$(id)",
+            "https://roomler.ai/base'; iex 'x",
             // userinfo, query, fragment
             "https://user:pw@roomler.ai",
             "https://roomler.ai?x=1",
@@ -710,7 +712,7 @@ mod tests {
     }
 
     /// The hosted service's own case, and the reason this ships without a
-    /// staged rollout: prod's `frontend_url` IS `https://roomler.ai`, so the
+    /// staged rollout: the compiled-in center IS `https://www.itachi.fans/meshharbor`, so the
     /// bytes it serves do not change at all.
     #[test]
     fn the_hosted_origin_serves_the_script_byte_identical() {
@@ -718,7 +720,7 @@ mod tests {
             INSTALL_SH,
             SERVER_NEEDLE_SH,
             |o| format!("SERVER=\"{o}\""),
-            "https://roomler.ai",
+            "https://www.itachi.fans/meshharbor",
         );
         assert_eq!(sh.as_ref(), INSTALL_SH);
         assert!(matches!(sh, Cow::Borrowed(_)), "identical ⇒ no allocation");

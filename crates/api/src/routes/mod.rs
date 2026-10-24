@@ -5,6 +5,7 @@
 // enrollment, consent, exec, remote config, releases and the installer
 // proxies, logs, crashes) is the `fleet` module's (P5a). What is left here is
 // core's, `remote`'s and `network`'s, until their own PRs.
+pub mod account_approval;
 pub mod auth;
 pub mod background_task;
 pub mod capabilities;
@@ -37,3 +38,9 @@ pub mod tenant;
 pub mod usage;
 
 pub mod user;
+
+#[cfg(feature = "fleet")]
+pub mod device_share;
+
+#[cfg(feature = "fleet")]
+pub mod account_devices;

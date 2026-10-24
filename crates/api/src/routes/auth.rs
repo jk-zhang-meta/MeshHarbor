@@ -247,7 +247,9 @@ pub async fn register(
     }
 
     // Create a default tenant if requested
-    if let (Some(tenant_name), Some(tenant_slug)) = (body.tenant_name, body.tenant_slug) {
+    if !state.settings.auth.account_approval.enabled
+        && let (Some(tenant_name), Some(tenant_slug)) = (body.tenant_name, body.tenant_slug)
+    {
         state
             .tenants
             .create(tenant_name, tenant_slug, user_id)
@@ -255,7 +257,9 @@ pub async fn register(
     }
 
     // Auto-accept invite if invite_code provided
-    if let Some(ref invite_code) = body.invite_code {
+    if !state.settings.auth.account_approval.enabled
+        && let Some(ref invite_code) = body.invite_code
+    {
         match auto_accept_invite(&state, user_id, &user.email, invite_code).await {
             Ok(_) => {}
             Err(e) => {
@@ -268,7 +272,7 @@ pub async fn register(
     // returning tokens directly. Test helpers (`registerUserViaApi`)
     // expect `{ access_token, user }` in the body; without this they
     // call subsequent endpoints with `Bearer undefined` → 401.
-    if state.settings.auth.auto_verify {
+    if state.settings.auth.auto_verify && !state.settings.auth.account_approval.enabled {
         let tokens = state
             .auth
             .generate_tokens(user_id, &user.email, &user.username)?;
@@ -314,8 +318,12 @@ pub async fn register(
         StatusCode::CREATED,
         HeaderMap::new(),
         Json(RegisterResponse {
-            message: "Registration successful. Please check your email to activate your account."
-                .to_string(),
+            message: if state.settings.auth.account_approval.enabled {
+                "Registration submitted. Email verification and owner approval are required before access.".to_string()
+            } else {
+                "Registration successful. Please check your email to activate your account."
+                    .to_string()
+            },
             access_token: None,
             refresh_token: None,
             expires_in: None,
@@ -324,10 +332,9 @@ pub async fn register(
     ))
 }
 
-pub async fn login(
-    State(state): State<Core>,
-    Json(body): Json<LoginRequest>,
-) -> Result<(HeaderMap, Json<AuthResponse>), ApiError> {
+/// Credential proof only, also used by the read-only approval status endpoint.
+/// It issues no token and does not accept OAuth provider assertions from a caller.
+pub(super) async fn password_identity(state: &Core, body: &LoginRequest) -> Result<User, ApiError> {
     let lookup = if let Some(ref username) = body.username {
         state.users.find_by_username(username).await
     } else if let Some(ref email) = body.email {
@@ -363,16 +370,86 @@ pub async fn login(
         return Err(invalid());
     };
 
+    Ok(user)
+}
+
+/// One-shot native shared-SSH login. Password proof first, then exact share and
+/// current server policies; no cookie, refresh, storage or browser-session export.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeShareSshLoginRequest {
+    pub username: Option<String>,
+    pub email: Option<String>,
+    pub password: String,
+    pub share_grant_id: String,
+}
+#[derive(Serialize)]
+pub struct NativeShareSshLoginResponse {
+    /// General account Access JWT, not a share-only credential.
+    pub access_token: String,
+    pub expires_in: u64,
+    pub user_id: String,
+}
+pub async fn native_share_ssh_login(
+    State(state): State<Core>,
+    Json(body): Json<NativeShareSshLoginRequest>,
+) -> Result<Json<NativeShareSshLoginResponse>, ApiError> {
+    let user = password_identity(
+        &state,
+        &LoginRequest {
+            username: body.username,
+            email: body.email,
+            password: body.password,
+        },
+    )
+    .await?;
+    roomler_core::admission::require_user(&state, &user, None)?;
+    roomler_core::device_share::require_recipient(&user)?;
+    let user_id = user
+        .id
+        .ok_or_else(|| ApiError::Unauthorized("Account missing identity".into()))?;
+    let grant = bson::oid::ObjectId::parse_str(body.share_grant_id)
+        .map_err(|_| ApiError::BadRequest("Invalid share ID".into()))?;
+    roomler_core::device_share::authorize_grant(
+        &state,
+        user_id,
+        grant,
+        roomler_ai_db::models::DeviceShareOperation::Ssh,
+    )
+    .await?;
+    let (access_token, expires_in) = state.auth.generate_access_token_at_revision(
+        user_id,
+        &user.email,
+        &user.username,
+        user.account_approval.revision,
+    )?;
+    Ok(Json(NativeShareSshLoginResponse {
+        access_token,
+        expires_in,
+        user_id: user_id.to_hex(),
+    }))
+}
+
+pub async fn login(
+    State(state): State<Core>,
+    Json(body): Json<LoginRequest>,
+) -> Result<(HeaderMap, Json<AuthResponse>), ApiError> {
+    let user = password_identity(&state, &body).await?;
+
     if !user.is_verified {
         return Err(ApiError::Unauthorized(
             "Account not activated. Please check your email for the activation link.".to_string(),
         ));
     }
 
+    roomler_core::admission::require_user(&state, &user, None)?;
     let user_id = user.id.unwrap();
-    let tokens = state
-        .auth
-        .generate_tokens(user_id, &user.email, &user.username)?;
+    let tokens = state.auth.generate_tokens_at_revision(
+        user_id,
+        &user.email,
+        &user.username,
+        user.account_approval.revision,
+    )?;
 
     let mut headers = HeaderMap::new();
     let cookie = format!(
@@ -515,10 +592,14 @@ pub async fn refresh(
         .map_err(|_| ApiError::Unauthorized("Invalid user ID".to_string()))?;
 
     let user = state.users.base.find_by_id(user_id).await?;
+    roomler_core::admission::require_user(&state, &user, Some(claims.approval_revision))?;
 
-    let tokens = state
-        .auth
-        .generate_tokens(user_id, &user.email, &user.username)?;
+    let tokens = state.auth.generate_tokens_at_revision(
+        user_id,
+        &user.email,
+        &user.username,
+        user.account_approval.revision,
+    )?;
 
     let mut headers = HeaderMap::new();
     let cookie = format!(
@@ -687,6 +768,7 @@ mod tests {
             locale: "en-US".into(),
             timezone: "UTC".into(),
             is_verified: true,
+            account_approval: roomler_ai_db::models::AccountApproval::pending(),
             is_mfa_enabled: false,
             last_active_at: None,
             oauth_providers: vec![OAuthProvider {

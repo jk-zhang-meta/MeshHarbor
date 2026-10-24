@@ -528,3 +528,137 @@ mod tests {
         assert_eq!(tenant_id_from_jwt("hello"), None);
     }
 }
+
+/// Adapter for the explicit share endpoint. The existing tunnel driver still
+/// owns SDP/ICE/DC/flow pumping; only its one static TCP request becomes a typed
+/// embedded-SSH open. No arbitrary destination is ever sent to the share route.
+struct SharedSshSink {
+    tx: mpsc::Sender<ClientMsg>,
+}
+#[async_trait]
+impl TunnelSignalingSink for SharedSshSink {
+    async fn send(&self, msg: ClientMsg) -> anyhow::Result<()> {
+        let msg = match msg {
+            ClientMsg::TcpForwardRequest {
+                session_id,
+                flow_id,
+                dst_host,
+                dst_port,
+            } if dst_host == "embedded-ssh" && dst_port == 22 => ClientMsg::SharedSshConnect {
+                session_id,
+                flow_id,
+            },
+            other @ (ClientMsg::TunnelHello { .. }
+            | ClientMsg::TunnelOpen { .. }
+            | ClientMsg::TunnelSdpOffer { .. }
+            | ClientMsg::TunnelIce { .. }
+            | ClientMsg::TcpHalfClose { .. }
+            | ClientMsg::TcpClosed { .. }
+            | ClientMsg::TunnelTerminate { .. }) => other,
+            _ => anyhow::bail!("shared SSH transport cannot request another service"),
+        };
+        self.tx
+            .send(msg)
+            .await
+            .context("shared SSH signaling channel closed")
+    }
+}
+#[allow(clippy::too_many_arguments)]
+pub async fn run_shared_ssh_transport(
+    server: String,
+    token: String,
+    share: ObjectId,
+    public_key: String,
+    session_secs: u64,
+    agent: ObjectId,
+    ready: tunnel_core::driver::ListeningHook,
+) -> Result<SessionOutcome> {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    let ws = derive_ws_url(&server)?;
+    let base = ws
+        .strip_suffix("/ws")
+        .context("server WS URL must end in /ws")?;
+    let url = format!(
+        "{base}/api/device-shares/{share}/ssh/ws?public_key={}&session_secs={session_secs}",
+        urlencoding_lite(&public_key)
+    );
+    let mut request = url.into_client_request()?;
+    request
+        .headers_mut()
+        .insert("Authorization", format!("Bearer {token}").parse()?);
+    let (socket, _) =
+        tokio::time::timeout(std::time::Duration::from_secs(8), connect_async(request))
+            .await
+            .context("shared SSH WS connect timeout")?
+            .context("shared SSH WS authorization")?;
+    let (mut writer, reader) = socket.split();
+    let (tx, mut rx) = mpsc::channel::<ClientMsg>(64);
+    struct AbortWriter(tokio::task::JoinHandle<()>);
+    impl Drop for AbortWriter {
+        fn drop(&mut self) {
+            self.0.abort();
+        }
+    }
+    let _writer = AbortWriter(tokio::spawn(async move {
+        let mut keepalive = tokio::time::interval(WS_KEEPALIVE);
+        keepalive.tick().await;
+        loop {
+            tokio::select! {
+                msg=rx.recv()=>{let Some(msg)=msg else {break;};let Ok(text)=serde_json::to_string(&msg) else {break;};if !matches!(tokio::time::timeout(std::time::Duration::from_secs(3),writer.send(Message::Text(text.into()))).await,Ok(Ok(()))){break;}},
+                _=keepalive.tick()=>{if !matches!(tokio::time::timeout(std::time::Duration::from_secs(3),writer.send(Message::Ping(Vec::new().into()))).await,Ok(Ok(()))){break;}},
+            }
+        }
+    }));
+    run_tunnel_session(
+        Arc::new(SharedSshSink { tx }),
+        Box::new(WsSource { inner: reader }),
+        0,
+        SessionParams {
+            agent_id: agent,
+            target: Target::Static {
+                host: "embedded-ssh".into(),
+                port: 22,
+            },
+            client_version: env!("CARGO_PKG_VERSION").into(),
+            derp: None,
+            on_listening: Some(ready),
+            net_grant: None,
+        },
+        vec![TRANSPORT_WEBRTC_DC_V1.into()],
+        TRANSPORT_WEBRTC_DC_V1.into(),
+        Arc::new(tunnel_core::forward::SessionThroughput::default()),
+    )
+    .await
+}
+#[cfg(test)]
+mod shared_ssh_sink_tests {
+    use super::*;
+    #[tokio::test]
+    async fn shared_ssh_driver_sink_maps_only_typed_service_and_refuses_other_destinations() {
+        let (tx, mut rx) = mpsc::channel(8);
+        let sink = SharedSshSink { tx };
+        let sid = ObjectId::new();
+        sink.send(ClientMsg::TcpForwardRequest {
+            session_id: sid,
+            flow_id: 7,
+            dst_host: "embedded-ssh".into(),
+            dst_port: 22,
+        })
+        .await
+        .unwrap();
+        assert!(
+            matches!(rx.recv().await.unwrap(),ClientMsg::SharedSshConnect {session_id,flow_id:7} if session_id==sid)
+        );
+        assert!(
+            sink.send(ClientMsg::TcpForwardRequest {
+                session_id: sid,
+                flow_id: 8,
+                dst_host: "127.0.0.1".into(),
+                dst_port: 22
+            })
+            .await
+            .is_err()
+        );
+        assert!(rx.try_recv().is_err());
+    }
+}

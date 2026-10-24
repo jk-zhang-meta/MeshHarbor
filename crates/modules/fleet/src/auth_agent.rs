@@ -255,7 +255,7 @@ fn anchor_matches(current: Option<&str>, presented: &str) -> bool {
 /// they name, [`refusal_reason`], and for an agent token (`gen` is `Some`)
 /// [`generation_refusal`]. One definition of "this device may still act",
 /// whichever credential is asking.
-async fn accepted_agent(
+pub async fn accepted_agent(
     fleet: &FleetState,
     sub: &str,
     tenant: &str,
@@ -312,6 +312,8 @@ async fn accepted_agent(
         );
         return Err(ApiError::Unauthorized(reason.to_string()));
     }
+
+    roomler_core::admission::authorize_user_id(&fleet.core, agent.owner_user_id, None).await?;
 
     Ok((agent_id, tenant_id, agent))
 }

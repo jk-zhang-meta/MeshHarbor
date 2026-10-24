@@ -891,7 +891,7 @@ const DEFAULT_SSH_PORT: u16 = 2222;
 /// ed25519 only, matching what the agent's host key and the whole design use.
 /// Checked here as well as agent-side so a typo is a clear 200-with-error from
 /// the API rather than a session that mysteriously never authenticates.
-fn is_supported_public_key(line: &str) -> bool {
+pub(crate) fn is_supported_public_key(line: &str) -> bool {
     let mut parts = line.split_whitespace();
     let Some(algo) = parts.next() else {
         return false;

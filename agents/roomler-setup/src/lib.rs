@@ -27,6 +27,8 @@ pub mod orchestrator_agent;
 pub mod orchestrator_tunnel;
 pub mod proxy;
 pub mod role;
+// Internal only: live Unix roles remain gated until reviewed local bundles ship.
+pub(crate) mod unix_local_install;
 
 use std::sync::atomic::{AtomicBool, AtomicU32};
 

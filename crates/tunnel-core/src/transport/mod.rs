@@ -14,6 +14,7 @@
 use async_trait::async_trait;
 
 pub mod derp;
+pub mod fabric;
 pub mod quic;
 pub mod relay;
 pub mod stun;

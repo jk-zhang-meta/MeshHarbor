@@ -469,9 +469,18 @@ impl AgentInternal {
             (*selected_pair).as_ref().map_or_else(
                 || (false, Duration::from_secs(0)),
                 |selected_pair| {
-                    let disconnected_time = SystemTime::now()
-                        .duration_since(selected_pair.remote.last_received())
-                        .unwrap_or_else(|_| Duration::from_secs(0));
+                    // A standby may share this remote candidate: its traffic
+                    // must not keep the dead selected pair falsely alive.
+                    let authenticated_age = if self.keepalive_interval.is_zero() {
+                        None // Explicitly disabled consent keeps the legacy RX timeout.
+                    } else {
+                        selected_pair.authenticated_age()
+                    };
+                    let disconnected_time = authenticated_age.unwrap_or_else(|| {
+                        SystemTime::now()
+                            .duration_since(selected_pair.remote.last_received())
+                            .unwrap_or_else(|_| Duration::from_secs(0))
+                    });
                     (true, disconnected_time)
                 },
             )
@@ -767,9 +776,13 @@ impl AgentInternal {
 
         self.invalidate_pending_binding_requests(Instant::now())
             .await;
+        if let Some(pair) = self.find_pair(local, remote).await {
+            pair.note_probe();
+        }
         {
             let mut pending_binding_requests = self.pending_binding_requests.lock().await;
             pending_binding_requests.push(BindingRequest {
+                local_candidate_id: Some(local.id()),
                 timestamp: Instant::now(),
                 transaction_id: m.transaction_id,
                 destination: remote.addr(),

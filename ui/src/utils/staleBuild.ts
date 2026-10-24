@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 G ROX EOOD
+import { appPath } from '@/utils/deployment'
 /**
  * A tab that outlived a promote. Every image ships a new set of
  * content-hashed chunks and none of the old ones, so a tab still running the
@@ -77,7 +78,7 @@ export function installStaleBuildRecovery(host: Host, router: Pick<Router, 'onEr
       storage = undefined
     }
     if (!claimReload(storage, Date.now())) return
-    if (to) host.location.assign(to)
+    if (to) host.location.assign(appPath(to))
     else host.location.reload()
   }
   const schedule = () => {

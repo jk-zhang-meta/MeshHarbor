@@ -6,8 +6,8 @@
 #
 # Usage (pipe from the API, or run a checked-out copy):
 #
-#   curl -fsSL https://roomler.ai/api/setup/install.sh | sh -s -- \
-#       --role daemon --token <enrollment-jwt> [--server https://roomler.ai] \
+#   curl -fsSL https://www.itachi.fans/meshharbor/api/setup/install.sh | sh -s -- \
+#       --role daemon --token <enrollment-jwt> [--server https://www.itachi.fans/meshharbor] \
 #       [--name "$(hostname)"]
 #
 #   Roles:
@@ -47,22 +47,36 @@
 set -eu
 
 # ⚠️ FR-50 — this line is REWRITTEN at serve time by the server that hands you
-# this script (`crates/api/src/routes/setup_release.rs`), so a script fetched
+# this script (`crates/modules/fleet/src/setup_release.rs`), so a script fetched
 # from a self-hosted Roomler enrols against THAT server and not the hosted one.
 # A piped script cannot see the URL it was fetched from — there is no $0 and no
 # filename — so the substitution has to happen on the server side. The literal
 # below is the default for a checkout, and it is also what a server serves
-# UNCHANGED when its own `app.frontend_url` is not a plain scheme://host[:port].
+# UNCHANGED when its own `app.frontend_url` is not a safe scheme://host[:port][/deployment-prefix].
 # `--server` still overrides either.
 #
 # ⚠️ The API holds this exact text as a needle and a unit test asserts it
 # appears exactly once, so editing it fails the build rather than silently
 # disabling the substitution. Change both together.
-SERVER="https://roomler.ai"
+SERVER="https://www.itachi.fans/meshharbor"
 ROLE=""
 TOKEN=""
+CREDENTIALS_STDIN=0
 NAME="$(hostname 2>/dev/null || echo roomler-device)"
 DOWNLOAD_ONLY=0
+# Explicit reviewed local-only daemon + CLI mode; never resolves latest assets.
+LOCAL_PACKAGE=""
+LOCAL_PACKAGE_SHA=""
+LOCAL_CLI=""
+LOCAL_CLI_SHA=""
+LOCAL_MODE=0
+LOCAL_PHASE=preflight
+LOCAL_CLI_STATE=not-started
+LOCAL_PACKAGE_STATE=not-started
+LOCAL_ENROLL_STATE=not-started
+LOCAL_STARTUP_STATE=not-started
+LOCAL_MARKER_STATE=not-required
+LOCAL_MARKER_TAG=""
 SYSTEM=0
 # Machine-global config for the --system (root) flow. The system unit starts
 # at boot before any login, so a $HOME-derived path would be unreachable —
@@ -92,6 +106,8 @@ usage() {
     echo "usage: install.sh --role daemon|tunnel [--server URL] [--token JWT] [--name NAME]"
     echo "                  [--daemon-token JWT] [--system] [--download-only] [--no-enroll]"
     echo "                  [--desktop|--no-desktop]"
+    echo "                  [--local-package PATH --local-package-sha256 HEX"
+    echo "                   --local-cli PATH --local-cli-sha256 HEX] (daemon only; no downloads)"
     echo "       install.sh --uninstall [--keep-config]"
     echo
     echo "  --uninstall     Remove every Roomler part on this machine — the daemon, the"
@@ -123,10 +139,15 @@ while [ $# -gt 0 ]; do
         --role) ROLE="$2"; shift 2 ;;
         --server) SERVER="$2"; shift 2 ;;
         --token) TOKEN="$2"; shift 2 ;;
+        --credentials-stdin) CREDENTIALS_STDIN=1; shift ;;
         --name) NAME="$2"; shift 2 ;;
         --daemon-token) DAEMON_TOKEN="$2"; shift 2 ;;
         --system) SYSTEM=1; shift ;;
         --download-only) DOWNLOAD_ONLY=1; shift ;;
+        --local-package) LOCAL_PACKAGE="$2"; shift 2 ;;
+        --local-package-sha256) LOCAL_PACKAGE_SHA="$2"; shift 2 ;;
+        --local-cli) LOCAL_CLI="$2"; shift 2 ;;
+        --local-cli-sha256) LOCAL_CLI_SHA="$2"; shift 2 ;;
         --no-enroll) NO_ENROLL=1; shift ;;
         --desktop) DESKTOP=1; shift ;;
         --no-desktop) DESKTOP=0; shift ;;
@@ -137,12 +158,25 @@ while [ $# -gt 0 ]; do
     esac
 done
 
+if [ "$CREDENTIALS_STDIN" = 1 ]; then
+    [ -z "$TOKEN" ] && [ -z "$DAEMON_TOKEN" ] && [ "$UNINSTALL" != 1 ] || {
+        echo "error: protected credential input cannot be mixed with token arguments or uninstall" >&2; exit 1;
+    }
+    # Reset any inherited export attribute before receiving private values.
+    unset TOKEN DAEMON_TOKEN
+    TOKEN=""; DAEMON_TOKEN=""
+    IFS= read -r TOKEN && IFS= read -r DAEMON_TOKEN || {
+        echo "error: protected credential input is incomplete" >&2; exit 1;
+    }
+fi
+
 if [ "$UNINSTALL" = 1 ]; then
     # It removes every Roomler part on this machine, so a --role would read as
     # "only this part" and remove more than was asked: refuse it, with the rest
     # of the install options.
     if [ -n "$ROLE" ] || [ -n "$TOKEN" ] || [ -n "$DAEMON_TOKEN" ] || [ "$SYSTEM" = 1 ] ||
-        [ "$DOWNLOAD_ONLY" = 1 ] || [ "$NO_ENROLL" = 1 ] || [ -n "$DESKTOP" ]; then
+        [ "$DOWNLOAD_ONLY" = 1 ] || [ "$NO_ENROLL" = 1 ] || [ -n "$DESKTOP" ] ||
+        [ -n "$LOCAL_PACKAGE$LOCAL_PACKAGE_SHA$LOCAL_CLI$LOCAL_CLI_SHA" ]; then
         echo "error: --uninstall removes every Roomler part on this machine and takes no install options (only --keep-config)" >&2
         exit 1
     fi
@@ -172,6 +206,30 @@ fi
 if [ -n "$DAEMON_TOKEN" ] && { [ "$ROLE" != daemon ] || [ "$OS" != Darwin ]; }; then
     echo "error: --daemon-token applies to '--role daemon' on macOS only" >&2
     exit 1
+fi
+
+if [ -n "$LOCAL_PACKAGE$LOCAL_PACKAGE_SHA$LOCAL_CLI$LOCAL_CLI_SHA" ]; then
+    [ "$ROLE" = daemon ] && [ -n "$LOCAL_PACKAGE" ] && [ -n "$LOCAL_PACKAGE_SHA" ] &&
+        [ -n "$LOCAL_CLI" ] && [ -n "$LOCAL_CLI_SHA" ] || {
+        echo "error: local daemon mode requires both artifacts and both SHA256 values" >&2; exit 1;
+    }
+    [ "$DESKTOP" != 1 ] || { echo "error: local mode never downloads a desktop companion" >&2; exit 1; }
+    case "$LOCAL_PACKAGE" in /*) ;; *) echo "error: local daemon package path must be absolute" >&2; exit 1 ;; esac
+    case "$OS/$LOCAL_PACKAGE" in
+        Linux/*.deb|Darwin/*.pkg) ;;
+        *) echo "error: local daemon package must be an absolute Linux .deb or macOS .pkg path" >&2; exit 1 ;;
+    esac
+    case "$LOCAL_CLI" in /*) ;; *) echo "error: local CLI path must be absolute" >&2; exit 1 ;; esac
+    for local_file in "$LOCAL_PACKAGE" "$LOCAL_CLI"; do
+        [ -f "$local_file" ] && [ -s "$local_file" ] && [ ! -L "$local_file" ] || {
+            echo "error: local artifact must be a nonempty regular nonsymlink file" >&2; exit 1;
+        }
+    done
+    for local_sha in "$LOCAL_PACKAGE_SHA" "$LOCAL_CLI_SHA"; do
+        [ "${#local_sha}" = 64 ] || { echo "error: local SHA256 must be 64 lowercase hex characters" >&2; exit 1; }
+        case "$local_sha" in *[!0-9a-f]*) echo "error: local SHA256 must be 64 lowercase hex characters" >&2; exit 1 ;; esac
+    done
+    LOCAL_MODE=1
 fi
 
 # ─── who is the desktop user? ───────────────────────────────────────────────
@@ -211,7 +269,30 @@ if [ "$OS" = Darwin ] && [ "$UNINSTALL" != 1 ]; then
 fi
 
 STAGE="$(mktemp -d /tmp/roomler-install.XXXXXX)"
-trap 'rm -rf "$STAGE"' EXIT
+finish_install() {
+    local_exit=$1
+    if [ "$LOCAL_MODE" = 1 ] && [ "$local_exit" != 0 ]; then
+        # Only compensate a marker created by THIS attempt, never a preexisting
+        # marker, config, package or service. Package managers can have partial
+        # effects even on nonzero exit: this is NOT an OS rollback.
+        if [ "$LOCAL_MARKER_STATE" = owned-created ]; then
+            if sudo /bin/sh -c '[ -f "$1" ] && [ ! -L "$1" ] && printf "%s\n" "$2" | cmp -s - "$1" && rm -f "$1"' roomler-local-marker "$MACOS_DAEMON_MARKER" "$LOCAL_MARKER_TAG"; then
+                LOCAL_MARKER_STATE=owned-marker-compensated
+            else
+                LOCAL_MARKER_STATE=marker-changed-or-retained-inspect
+            fi
+        fi
+        (umask 077; printf 'phase=%s\ncli=%s\npackage=%s\nenrollment=%s\nstartup=%s\nmarker=%s\nos_rollback=false\nrecovery=inspect-native-package-and-service-state-no-blind-uninstall\n' \
+            "$LOCAL_PHASE" "$LOCAL_CLI_STATE" "$LOCAL_PACKAGE_STATE" "$LOCAL_ENROLL_STATE" "$LOCAL_STARTUP_STATE" "$LOCAL_MARKER_STATE" > "$STAGE/local-state.txt")
+        printf 'LOCAL_INSTALL_INCOMPLETE phase=%s cli=%s package=%s enrollment=%s startup=%s marker=%s os_rollback=false evidence=%s\n' \
+            "$LOCAL_PHASE" "$LOCAL_CLI_STATE" "$LOCAL_PACKAGE_STATE" "$LOCAL_ENROLL_STATE" "$LOCAL_STARTUP_STATE" "$LOCAL_MARKER_STATE" "$STAGE" >&2
+        # Verified nonsecret snapshots/state remain private for exact recovery.
+        # No credentials are persisted; they arrived only over stdin.
+    else
+        rm -rf "$STAGE"
+    fi
+}
+trap 'finish_install $?' EXIT
 
 say()  { printf '==> %s\n' "$*"; }
 warn() { printf 'WARNING: %s\n' "$*" >&2; }
@@ -400,6 +481,10 @@ restart_old_user_daemon() {
 }
 
 install_daemon_linux() {
+    if [ "$LOCAL_MODE" = 1 ]; then
+        fmt=deb
+        deb="$LOCAL_PACKAGE"
+    else
     releases="$STAGE/releases.json"
     say "resolving latest agent release via $SERVER/api/agent/latest-release"
     curl -fsSL -o "$releases" "$SERVER/api/agent/latest-release"
@@ -438,6 +523,8 @@ install_daemon_linux() {
     download "$url" "$deb"
     verify_sha256 "$deb" "$digest"
 
+    fi
+
     if [ "$DOWNLOAD_ONLY" = 1 ]; then
         if [ "$fmt" = deb ]; then
             say "download-only: would run: sudo dpkg -i $deb"
@@ -458,7 +545,13 @@ install_daemon_linux() {
 
     if [ "$fmt" = deb ]; then
         say "installing the roomlerd daemon (.deb — sudo required)"
-        sudo dpkg -i "$deb" || sudo apt-get -f install -y
+        if [ "$LOCAL_MODE" = 1 ]; then
+            LOCAL_PHASE=package-install; LOCAL_PACKAGE_STATE=attempted
+            sudo dpkg -i "$deb" # no package-manager download/fallback in local mode
+            LOCAL_PACKAGE_STATE=command-succeeded
+        else
+            sudo dpkg -i "$deb" || sudo apt-get -f install -y
+        fi
     else
         say "installing the roomlerd daemon (tarball — sudo required)"
         # --strip-components=1 drops the versioned prefix dir so the payload
@@ -479,13 +572,19 @@ install_daemon_linux() {
         repair_tarball_owners
     fi
 
+    [ "$LOCAL_MODE" != 1 ] || check_local_cli_after_package
     enroll_daemon /usr/bin/roomlerd
 
     if [ "$SYSTEM" = 1 ]; then
         disable_update_helper
         say "enabling the systemd SYSTEM unit (root: self-update, the overlay TUN, and the desktop of the person on screen)"
         sudo systemctl daemon-reload || true
+        if [ "$LOCAL_MODE" = 1 ]; then LOCAL_PHASE=systemd-start; LOCAL_STARTUP_STATE=attempted; fi
         sudo systemctl enable --now roomlerd.service
+        if [ "$LOCAL_MODE" = 1 ]; then
+            sudo systemctl is-active --quiet roomlerd.service
+            LOCAL_STARTUP_STATE=command-succeeded
+        fi
         say "daemon status: $(sudo systemctl is-active roomlerd.service || true)"
         say "logs: sudo journalctl -u roomlerd.service -f"
     else
@@ -509,6 +608,9 @@ install_daemon_linux() {
 }
 
 install_daemon_macos() {
+    if [ "$LOCAL_MODE" = 1 ]; then
+        pkg="$LOCAL_PACKAGE"
+    else
     releases="$STAGE/releases.json"
     say "resolving latest agent release via $SERVER/api/agent/latest-release"
     curl -fsSL -o "$releases" "$SERVER/api/agent/latest-release"
@@ -518,6 +620,8 @@ install_daemon_macos() {
     pkg="$STAGE/roomlerd.pkg"
     download "$url" "$pkg"
     verify_sha256 "$pkg" "$digest"
+
+    fi
 
     # The .app kept its legacy internal name through the roomlerd rename —
 # RETIRED-NAME-ANCHOR(5): the macOS .app bundle name is FROZEN (FR-21 D5) —
@@ -543,18 +647,33 @@ install_daemon_macos() {
     # advertised one-liner despite shipping for months.
     if [ -n "$DAEMON_TOKEN" ]; then
         say "requesting the privileged half (root LaunchDaemon — the overlay needs root)"
-        sudo mkdir -p "$(dirname "$MACOS_DAEMON_MARKER")"
-        sudo touch "$MACOS_DAEMON_MARKER"
+        if [ "$LOCAL_MODE" = 1 ]; then
+            LOCAL_PHASE=backend-marker
+            if sudo test -e "$MACOS_DAEMON_MARKER"; then
+                LOCAL_MARKER_STATE=preexisting-preserved
+            else
+                LOCAL_MARKER_TAG="roomler-local-$$-$(basename "$STAGE")"
+                sudo mkdir -p "$(dirname "$MACOS_DAEMON_MARKER")"
+                sudo /bin/sh -c 'umask 077; set -C; printf "%s\n" "$2" > "$1"' roomler-local-marker "$MACOS_DAEMON_MARKER" "$LOCAL_MARKER_TAG"
+                LOCAL_MARKER_STATE=owned-created
+            fi
+        else
+            sudo mkdir -p "$(dirname "$MACOS_DAEMON_MARKER")"
+            sudo touch "$MACOS_DAEMON_MARKER"
+        fi
     fi
 
     say "installing the roomler agent (.pkg — sudo required)"
+    if [ "$LOCAL_MODE" = 1 ]; then LOCAL_PHASE=package-install; LOCAL_PACKAGE_STATE=attempted; fi
     sudo installer -pkg "$pkg" -target /
+    if [ "$LOCAL_MODE" = 1 ]; then LOCAL_PACKAGE_STATE=command-succeeded; fi
 
     [ -x "$daemon_bin" ] || {
         echo "error: the package did not install $daemon_bin" >&2
         exit 1
     }
 
+    [ "$LOCAL_MODE" != 1 ] || check_local_cli_after_package
     # ── the per-user half: capture + input, inside the GUI session ──
     enroll_daemon "$daemon_bin"
 
@@ -563,8 +682,12 @@ install_daemon_macos() {
     # 0 has no Aqua domain, the error went to /dev/null, and the warning that
     # replaced it ("will pick up the config at next login") was misleading.
     say "restarting the LaunchAgent so it picks up the enrollment"
-    launchctl kickstart -k "gui/$CONSOLE_UID/com.roomler.agent" 2>/dev/null \
-        || warn "launchctl kickstart failed — the agent will pick up the config at next login"
+    if [ "$LOCAL_MODE" = 1 ]; then LOCAL_PHASE=launchagent-start; LOCAL_STARTUP_STATE=attempted; fi
+    if ! launchctl kickstart -k "gui/$CONSOLE_UID/com.roomler.agent" 2>/dev/null; then
+        [ "$LOCAL_MODE" != 1 ] || { echo "error: local LaunchAgent startup failed" >&2; exit 1; }
+        warn "launchctl kickstart failed — the agent will pick up the config at next login"
+    fi
+    if [ "$LOCAL_MODE" = 1 ]; then LOCAL_STARTUP_STATE=user-command-succeeded; fi
 
     # ── the privileged half: overlay/mesh, as root, its own enrollment ──
     if [ -n "$DAEMON_TOKEN" ]; then
@@ -585,6 +708,7 @@ install_macos_privileged_half() {
     daemon_bin="$1"
 
     if [ ! -f /Library/LaunchDaemons/com.roomler.daemon.plist ]; then
+        [ "$LOCAL_MODE" != 1 ] || { echo "error: local package omitted the privileged backend" >&2; exit 1; }
         warn "the package did not install the LaunchDaemon — skipping the privileged half"
         return 0
     fi
@@ -601,13 +725,19 @@ install_macos_privileged_half() {
         # The install trace rides the environment (see `install_trace`): a
         # root LaunchDaemon is the `system` scope.
         # shellcheck disable=SC2046
+        if [ "$LOCAL_MODE" = 1 ]; then LOCAL_PHASE=backend-enrollment; LOCAL_ENROLL_STATE=backend-attempted; fi
         sudo $(install_trace system) "$daemon_bin" --config "$MACOS_DAEMON_CONFIG" \
             enroll --server "$SERVER" --token "$DAEMON_TOKEN" --name "$NAME-daemon" --overlay
+        if [ "$LOCAL_MODE" = 1 ]; then LOCAL_ENROLL_STATE=backend-command-succeeded; fi
     fi
 
     say "starting the privileged half"
-    sudo launchctl kickstart -k system/com.roomler.daemon 2>/dev/null \
-        || warn "launchctl kickstart failed for the daemon — it will start at next boot"
+    if [ "$LOCAL_MODE" = 1 ]; then LOCAL_PHASE=launchdaemon-start; LOCAL_STARTUP_STATE=backend-attempted; fi
+    if ! sudo launchctl kickstart -k system/com.roomler.daemon 2>/dev/null; then
+        [ "$LOCAL_MODE" != 1 ] || { echo "error: local privileged backend startup failed" >&2; exit 1; }
+        warn "launchctl kickstart failed for the daemon — it will start at next boot"
+    fi
+    if [ "$LOCAL_MODE" = 1 ]; then LOCAL_STARTUP_STATE=command-succeeded; fi
 }
 
 # macOS grants these two by hand, per binary, and never errors when they are
@@ -669,7 +799,13 @@ enroll_daemon() {
     # env + two VAR=value words, binary + --config + path), none of which
     # contain whitespace.
     # shellcheck disable=SC2086
-    $enroll_sudo $enroll_trace $enroll_bin enroll --server "$SERVER" --token "$TOKEN" --name "$NAME"
+    if [ "$LOCAL_MODE" = 1 ]; then LOCAL_PHASE=enrollment; LOCAL_ENROLL_STATE=attempted; fi
+    if [ "$LOCAL_MODE" = 1 ] && [ "$SYSTEM" = 1 ]; then
+        $enroll_sudo $enroll_trace $enroll_bin enroll --server "$SERVER" --token "$TOKEN" --name "$NAME" --overlay
+    else
+        $enroll_sudo $enroll_trace $enroll_bin enroll --server "$SERVER" --token "$TOKEN" --name "$NAME"
+    fi
+    if [ "$LOCAL_MODE" = 1 ]; then LOCAL_ENROLL_STATE=user-command-succeeded; fi
 }
 
 # ─── tunnel role ────────────────────────────────────────────────────────────
@@ -1480,14 +1616,108 @@ if [ "$UNINSTALL" = 1 ]; then
     uninstall_finish
 fi
 
+local_fresh_install_only() {
+    for parent in /etc/roomler /etc/roomler-agent; do
+        [ ! -d "$parent" ] || { [ -r "$parent" ] && [ -x "$parent" ]; } || {
+            echo "error: existing daemon configuration scope is inaccessible; refusing local bootstrap" >&2; exit 1;
+        }
+    done
+    for existing in /usr/local/bin/roomler /usr/local/bin/roomler-tunnel /usr/local/bin/roomlerd /etc/roomler/config.toml /etc/roomler-agent/config.toml /etc/default/roomlerd; do
+        [ ! -e "$existing" ] && [ ! -L "$existing" ] || {
+            echo "error: local bootstrap preserves existing Roomler state; reviewed migration required" >&2; exit 1;
+        }
+    done
+    if [ "$OS" = Linux ]; then
+        command -v dpkg-query >/dev/null 2>&1 || { echo "error: local .deb requires readable native package inventory" >&2; exit 1; }
+        for package_name in roomlerd roomler-agent roomler-desktop roomler roomler-tunnel; do
+            if dpkg-query -W "$package_name" >/dev/null 2>&1; then
+                echo "error: existing Roomler package state requires reviewed migration" >&2; exit 1
+            else
+                inventory_exit=$?
+                [ "$inventory_exit" = 1 ] || { echo "error: package inventory unavailable; refusing local bootstrap" >&2; exit 1; }
+            fi
+        done
+        for unit in roomlerd.service roomler.service roomler-agent.service roomler-update.service roomler-update.timer roomler-update.path; do
+            for base in /etc/systemd/system /usr/lib/systemd/system /lib/systemd/system /etc/systemd/user /usr/lib/systemd/user "${HOME}/.config/systemd/user"; do
+                [ ! -e "$base/$unit" ] && [ ! -L "$base/$unit" ] || { echo "error: existing Roomler service state is preserved" >&2; exit 1; }
+            done
+        done
+        for existing in /usr/bin/roomlerd /usr/bin/roomler /usr/bin/roomler-tunnel /usr/bin/roomler-agent /usr/bin/roomler-desktop /usr/lib/roomler-agent; do
+            [ ! -e "$existing" ] && [ ! -L "$existing" ] || { echo "error: existing Linux daemon must be migrated explicitly" >&2; exit 1; }
+        done
+    else
+        command -v pkgutil >/dev/null 2>&1 || { echo "error: native macOS package inventory is unavailable" >&2; exit 1; }
+        registered_packages="$(pkgutil --pkgs 2>/dev/null)" || { echo "error: native macOS package inventory failed" >&2; exit 1; }
+        [ "${#registered_packages}" -le 65536 ] || { echo "error: native package inventory exceeds bootstrap bound" >&2; exit 1; }
+        if printf '%s\n' "$registered_packages" | grep -q '^com\.roomler\.'; then
+            echo "error: existing macOS Roomler package requires reviewed migration" >&2; exit 1
+        fi
+        for existing in /Library/Roomler /Library/LaunchDaemons/com.roomler.daemon.plist /Library/LaunchDaemons/com.roomler.update.plist /Library/LaunchAgents/com.roomler.agent.plist /Library/LaunchAgents/com.roomler.desktop.plist; do
+            [ ! -e "$existing" ] && [ ! -L "$existing" ] || { echo "error: existing macOS daemon must be migrated explicitly" >&2; exit 1; }
+        done
+        console_home="$(home_of "$CONSOLE_USER")"
+        case "$console_home" in /*) ;; *) echo "error: cannot identify console-user configuration scope" >&2; exit 1 ;; esac
+        for existing in "$console_home/Library/LaunchAgents/com.roomler.agent.plist" "$console_home/Library/LaunchAgents/com.roomler.desktop.plist"; do
+            [ ! -e "$existing" ] && [ ! -L "$existing" ] || { echo "error: existing user LaunchAgent state is preserved" >&2; exit 1; }
+        done
+        account_config_paths "$console_home" | while IFS= read -r existing; do
+            [ ! -e "$existing" ] && [ ! -L "$existing" ] || { echo "error: existing macOS enrollment is preserved" >&2; exit 1; }
+        done
+        [ ! -L "$MACOS_DAEMON_MARKER" ] || { echo "error: backend marker symlink is not owned by this bootstrap" >&2; exit 1; }
+    fi
+}
+
+prepare_local_artifacts() {
+    # Private snapshots close the verify/use race. Source changes cannot swap
+    # the reviewed bytes between SHA verification and privileged installation.
+    case "$OS" in Linux) local_suffix=deb ;; Darwin) local_suffix=pkg ;; esac
+    cp "$LOCAL_PACKAGE" "$STAGE/local-daemon.$local_suffix"
+    cp "$LOCAL_CLI" "$STAGE/local-roomler"
+    LOCAL_PACKAGE="$STAGE/local-daemon.$local_suffix"
+    LOCAL_CLI="$STAGE/local-roomler"
+    verify_sha256 "$LOCAL_PACKAGE" "$LOCAL_PACKAGE_SHA"
+    verify_sha256 "$LOCAL_CLI" "$LOCAL_CLI_SHA"
+    LOCAL_PHASE=cli-preflight
+    chmod 700 "$LOCAL_CLI"
+    "$LOCAL_CLI" --version >/dev/null
+    local_fresh_install_only
+}
+
+check_local_cli_after_package() {
+    LOCAL_PHASE=cli-post-package-check
+    verify_sha256 /usr/local/bin/roomler "$LOCAL_CLI_SHA"
+    /usr/local/bin/roomler --version >/dev/null
+}
+
+install_local_cli() {
+    if [ "$DOWNLOAD_ONLY" = 1 ]; then
+        say "download-only: would run: sudo install -m 755 $LOCAL_CLI /usr/local/bin/roomler"
+        return 0
+    fi
+    LOCAL_PHASE=cli-install; LOCAL_CLI_STATE=attempted
+    sudo install -m 755 "$LOCAL_CLI" /usr/local/bin/roomler
+    LOCAL_PHASE=cli-alias
+    sudo ln -sf /usr/local/bin/roomler /usr/local/bin/roomler-tunnel
+    LOCAL_PHASE=cli-installed-check
+    /usr/local/bin/roomler --version >/dev/null
+    LOCAL_CLI_STATE=ready
+}
+
+[ "$LOCAL_MODE" != 1 ] || prepare_local_artifacts
+
 say "roomler install.sh — role=$ROLE os=$OS server=$SERVER"
 
 case "$ROLE/$OS" in
     # FR-27 — the companion AFTER the daemon: it depends on `roomlerd` (the
     # .deb literally Depends on it), and it reuses the release listing the
     # daemon step already fetched.
-    daemon/Linux)  install_daemon_linux; install_desktop_linux ;;
-    daemon/Darwin) install_daemon_macos ;;
+    daemon/Linux)
+        [ "$LOCAL_MODE" != 1 ] || install_local_cli
+        install_daemon_linux
+        [ "$LOCAL_MODE" = 1 ] || install_desktop_linux ;;
+    daemon/Darwin)
+        [ "$LOCAL_MODE" != 1 ] || install_local_cli
+        install_daemon_macos ;;
     tunnel/Linux)  install_tunnel_linux ;;
     tunnel/Darwin) install_tunnel_macos ;;
 esac

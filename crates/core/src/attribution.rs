@@ -659,6 +659,7 @@ mod tests {
             locale: "en-US".into(),
             timezone: "UTC".into(),
             is_verified: false,
+            account_approval: roomler_ai_db::models::AccountApproval::pending(),
             is_mfa_enabled: false,
             last_active_at: None,
             oauth_providers: Vec::new(),

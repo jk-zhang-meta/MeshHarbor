@@ -1518,6 +1518,7 @@ async fn daemon_main() -> Result<()> {
     }
 
     let config_path = resolve_config_path(cli.config.clone())?;
+    updater::set_update_config_path(config_path.clone())?;
 
     let cmd = cli.command.unwrap_or(Command::Run {
         encoder: None,
@@ -3450,7 +3451,7 @@ async fn run_cmd(
     // `overlay::maybe_start`. Opt-in and default off: a device that has not
     // set `relay_server_enabled` binds nothing and logs nothing.
     #[cfg(any(feature = "overlay-l3", feature = "overlay-netstack"))]
-    roomlerd::relay_server::maybe_start();
+    roomlerd::relay_server::maybe_start().await;
 
     // Phase 3b: generate + persist this node's WireGuard identity on the
     // first overlay-enabled startup. The public key is what the netmap

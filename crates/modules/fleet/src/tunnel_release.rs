@@ -18,13 +18,10 @@
 
 use axum::{
     Json,
-    body::Body,
     extract::{Path, Query, State},
-    http::{HeaderValue, StatusCode},
     response::Response,
 };
 use serde::{Deserialize, Serialize};
-use std::time::Duration;
 
 use roomler_core::ApiError;
 
@@ -67,10 +64,12 @@ pub struct InstallerHealth {
 pub async fn latest_release(
     State(state): State<FleetState>,
 ) -> Result<Json<Vec<AgentRelease>>, ApiError> {
+    let base = crate::release_delivery::public_base(&state.settings.app.frontend_url)?;
     let releases = releases::cached(&state).await?;
-    Ok(Json(crate::agent_release::filter_component_releases(
-        releases, "tunnel-v",
-    )))
+    Ok(Json(crate::release_delivery::own_urls(
+        crate::agent_release::filter_component_releases(releases, "tunnel-v"),
+        &base,
+    )?))
 }
 
 /// `GET /api/tunnel/installer/{platform}/health` — manifest (tag,
@@ -82,6 +81,7 @@ pub async fn installer_health(
     Query(params): Query<InstallerQuery>,
 ) -> Result<Json<InstallerHealth>, ApiError> {
     let normalised = normalise_platform(&platform)?;
+    crate::release_delivery::validate_version(&params.version)?;
     let releases = releases::cached(&state).await?;
     let release = pick_release(&releases, &params.version).ok_or_else(|| {
         ApiError::NotFound(format!("no release matching version={}", params.version))
@@ -92,15 +92,16 @@ pub async fn installer_health(
             normalised, release.tag_name
         ))
     })?;
+    crate::release_delivery::validate_asset(release, asset)?;
     Ok(Json(InstallerHealth {
         tag: release.tag_name.clone(),
         platform: normalised.to_string(),
         filename: asset.name.clone(),
         size: asset.size,
         digest: asset.digest.clone(),
-        uri: format!(
-            "/api/tunnel/installer/{}?version={}",
-            normalised, params.version
+        uri: crate::release_delivery::health_uri(
+            &format!("/api/tunnel/installer/{}", normalised),
+            &release.tag_name,
         ),
     }))
 }
@@ -113,6 +114,7 @@ pub async fn installer_proxy(
     Query(params): Query<InstallerQuery>,
 ) -> Result<Response, ApiError> {
     let normalised = normalise_platform(&platform)?;
+    crate::release_delivery::validate_version(&params.version)?;
     let releases = releases::cached(&state).await?;
     let release = pick_release(&releases, &params.version).ok_or_else(|| {
         ApiError::NotFound(format!("no release matching version={}", params.version))
@@ -124,48 +126,10 @@ pub async fn installer_proxy(
         ))
     })?;
 
-    let client = reqwest::Client::builder()
-        .user_agent(concat!("roomler-ai-api/", env!("CARGO_PKG_VERSION")))
-        .timeout(Duration::from_secs(60))
-        .build()
-        .map_err(|e| ApiError::Internal(format!("reqwest client build: {e}")))?;
-    let upstream = client
-        .get(&asset.browser_download_url)
-        .send()
-        .await
-        .map_err(|e| ApiError::Internal(format!("upstream archive fetch failed: {e}")))?;
-
-    let status = upstream.status();
-    if !status.is_success() {
-        return Err(ApiError::Internal(format!(
-            "upstream archive fetch returned {}",
-            status
-        )));
-    }
-    let content_length = upstream.content_length();
-    let content_type = content_type_for(&asset.name);
-
-    let mut builder = Response::builder()
-        .status(StatusCode::OK)
-        .header("Content-Type", content_type)
-        .header(
-            "Content-Disposition",
-            HeaderValue::from_str(&format!(
-                "attachment; filename=\"{}\"",
-                sanitise_header_value(&asset.name)
-            ))
-            .unwrap_or_else(|_| HeaderValue::from_static("attachment")),
-        )
-        .header("Cache-Control", "public, max-age=3600");
-    if let Some(len) = content_length {
-        builder = builder.header("Content-Length", len);
-    }
-    let body = Body::from_stream(upstream.bytes_stream());
-    builder
-        .body(body)
-        .map_err(|e| ApiError::Internal(format!("response build failed: {e}")))
+    crate::release_delivery::stream_asset(release, asset, content_type_for(&asset.name)).await
 }
 
+#[cfg(test)]
 fn sanitise_header_value(s: &str) -> String {
     s.chars()
         .filter(|c| !matches!(c, '\r' | '\n' | '"'))

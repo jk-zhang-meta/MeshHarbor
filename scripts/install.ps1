@@ -11,13 +11,13 @@
 #
 # Usage (download-then-run keeps parameters simple):
 #
-#   irm https://roomler.ai/api/setup/install.ps1 -OutFile install.ps1
+#   irm https://www.itachi.fans/meshharbor/api/setup/install.ps1 -OutFile install.ps1
 #   powershell -ExecutionPolicy Bypass -File .\install.ps1 `
-#       -Role daemon-system -Token <enrollment-jwt> [-Server https://roomler.ai] `
+#       -Role daemon-system -Token <enrollment-jwt> [-Server https://www.itachi.fans/meshharbor] `
 #       [-Name $env:COMPUTERNAME]
 #
 #   (One-liner equivalent:
-#     & ([scriptblock]::Create((irm https://roomler.ai/api/setup/install.ps1))) -Role daemon-system -Token <jwt>
+#     & ([scriptblock]::Create((irm https://www.itachi.fans/meshharbor/api/setup/install.ps1))) -Role daemon-system -Token <jwt>
 #   )
 #
 # Roles (same vocabulary as the roomler-setup wizard):
@@ -62,12 +62,12 @@ param(
     [ValidateSet('daemon-user', 'daemon-machine', 'daemon-system', 'tunnel-client')]
     [string]$Role = 'daemon-system',
     # ⚠️ FR-50 — REWRITTEN at serve time by the server that hands you this
-    # script (crates/api/src/routes/setup_release.rs), so a script fetched from
+    # script (crates/modules/fleet/src/setup_release.rs), so a script fetched from
     # a self-hosted Roomler enrols against THAT server. Full reasoning in the
     # matching comment in install.sh. ⚠️ The API holds this exact text as a
     # needle and a unit test asserts it appears exactly once, so editing it
     # fails the build rather than silently disabling the substitution.
-    [string]$Server = 'https://roomler.ai',
+    [string]$Server = 'https://www.itachi.fans/meshharbor',
     [string]$Token = '',
     [string]$Name = $env:COMPUTERNAME,
     [switch]$DownloadOnly,
@@ -228,7 +228,8 @@ function Install-Daemon {
 
     Say "installing the MSI (quiet)"
     $proc = Start-Process -FilePath 'msiexec.exe' -ArgumentList $msiArgs -Wait -PassThru
-    if ($proc.ExitCode -ne 0) { throw "msiexec exited $($proc.ExitCode)" }
+    if ($proc.ExitCode -ne 0 -and $proc.ExitCode -ne 3010) { throw "msiexec exited $($proc.ExitCode)" }
+    if ($proc.ExitCode -eq 3010) { Warn "MSI installation succeeded; restart Windows to complete it." }
     if (-not (Test-Path $daemon)) { throw "install finished but $daemon is missing" }
     Say "installed: $installDir (roomlerd.exe + roomler.exe on PATH for new shells)"
 
@@ -402,10 +403,12 @@ function Uninstall-Roomler {
     if ($found.Count -eq 0) {
         Say "no 'Roomler Agent' MSI products registered for this account or machine-wide."
     }
+    $uninstallProblems = @()
     foreach ($p in $found) {
         if ($p.Hive -eq 'HKLM' -and -not (Test-Elevated)) {
             Warn ("'" + $p.Name + "' " + $p.Version + " is a perMachine install -- re-run -Uninstall from an")
             Warn ("ELEVATED PowerShell to remove it, or run: msiexec /x " + $p.Code + " /qn")
+            $uninstallProblems += "machine-wide MSI needs elevation: $($p.Code)"
             continue
         }
         # Best-effort pre-stop so msiexec's FilesInUse never wedges a /qn
@@ -415,7 +418,44 @@ function Uninstall-Roomler {
         else { try { Stop-Service -Name Roomler -Force -ErrorAction SilentlyContinue } catch {} }
         Say ("uninstalling '" + $p.Name + "' " + $p.Version + " (" + $p.Code + ", " + $p.Hive + ")")
         $proc = Start-Process -FilePath 'msiexec.exe' -ArgumentList ("/x " + $p.Code + " /qn /norestart") -Wait -PassThru
-        if ($proc.ExitCode -ne 0) { Warn ("msiexec /x exited " + $proc.ExitCode) } else { Say "uninstalled." }
+        if ($proc.ExitCode -ne 0 -and $proc.ExitCode -ne 3010) {
+            Warn ("msiexec /x exited " + $proc.ExitCode)
+            $uninstallProblems += "MSI $($p.Code) exited $($proc.ExitCode)"
+        } elseif ($proc.ExitCode -eq 3010) {
+            Warn "MSI removal command succeeded; restart Windows to finish pending file operations."
+        } else { Say "MSI removal command completed." }
+    }
+
+    # A failed/skipped MSI is still an installation. Preserve its companion,
+    # login start and client state; a warning followed by "done" hid a partial
+    # uninstall and removed files that the surviving product still needed.
+    if ($uninstallProblems.Count -gt 0) {
+        throw ("Roomler MSI removal is incomplete: " + ($uninstallProblems -join "; ") + ". Remaining companion, startup and tunnel-client state was preserved.")
+    }
+    # Observe product absence before removing script-owned leftovers. Registry
+    # views can settle briefly after msiexec; read only, never repeat /x.
+    $remaining = @()
+    for ($attempt = 0; $attempt -lt 3; $attempt++) {
+        $remaining = @()
+        foreach ($r in $roots) {
+            try {
+                $keys = @(Get-ChildItem -LiteralPath $r.Path -ErrorAction Stop)
+            } catch [System.Management.Automation.ItemNotFoundException] { continue }
+            catch { throw "Could not enumerate MSI registrations in $($r.Hive); remaining companion, startup and tunnel-client state was preserved." }
+            foreach ($key in $keys) {
+                try { $product = Get-ItemProperty -LiteralPath $key.PSPath -ErrorAction Stop }
+                catch [System.Management.Automation.ItemNotFoundException] { continue }
+                catch { throw "Could not read an MSI registration in $($r.Hive); remaining companion, startup and tunnel-client state was preserved." }
+                if ($product.DisplayName -like 'Roomler Agent*' -and $product.PSChildName -like '{*}') {
+                    $remaining += $product.PSChildName
+                }
+            }
+        }
+        if ($remaining.Count -eq 0) { break }
+        if ($attempt -lt 2) { Start-Sleep -Milliseconds 200 }
+    }
+    if ($remaining.Count -gt 0) {
+        throw "Roomler MSI products are still registered; removal is pending or incomplete. Remaining companion, startup and tunnel-client state was preserved. Resolve the MSI state and re-run -Uninstall."
     }
 
     # 1b) FR-84 D6: the companion's login start. The MSI's uninstall custom

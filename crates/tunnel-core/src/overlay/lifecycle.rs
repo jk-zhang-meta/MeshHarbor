@@ -257,6 +257,8 @@ pub(crate) const POKE_PROOF_AFTER: Duration = Duration::from_secs(120);
 /// armed on a net-change, and `netstate` publishes at most one material Major
 /// per `MAJOR_PUBLISH_COOLDOWN` (120 s), so this cannot become a churn engine.
 pub(crate) const MAJOR_POKE_DEADLINE: Duration = Duration::from_secs(2);
+/// Established-path validation permits the normal five-second WG retry.
+pub(crate) const BUSINESS_POKE_DEADLINE: Duration = Duration::from_secs(6);
 
 /// Why a carrier died. Precedence when several signals co-trip (mirrors the
 /// pre-P2 log selection, which keyed off `(hard_dead, rx_stale)` in this
@@ -353,6 +355,8 @@ pub(crate) struct PokeState {
     /// on the carrier — the class belongs to the question being asked, and a
     /// re-arm is what re-decides it.
     pub(crate) from_major: bool,
+    /// Proof for an established direct path with unanswered application data.
+    pub(crate) from_business: bool,
 }
 
 /// Everything [`carrier_tick`] needs about one installed carrier, gathered by
@@ -432,6 +436,8 @@ pub(crate) fn carrier_tick(i: &HealthInputs) -> HealthVerdict {
             i.poke.as_ref().is_some_and(|p| {
                 let window = if p.from_major {
                     MAJOR_POKE_DEADLINE
+                } else if p.from_business && i.is_direct {
+                    BUSINESS_POKE_DEADLINE
                 } else {
                     i.tier.handshake_deadline()
                 };
@@ -1135,6 +1141,25 @@ mod tests {
     }
 
     #[test]
+    fn business_poke_has_an_established_path_window_and_requires_failed_proof() {
+        for tier in [DirectTier::Lan, DirectTier::Public, DirectTier::Srflx] {
+            let input = |age, answered, business| HealthInputs {
+                tier,
+                poke: Some(PokeState { since_poke: age, answered,
+                    from_major: false, from_business: business }),
+                ..established()
+            };
+            assert!(carrier_tick(&input(BUSINESS_POKE_DEADLINE, false, true)).death.is_none());
+            assert_eq!(carrier_tick(&input(BUSINESS_POKE_DEADLINE + Duration::from_millis(1),
+                false, true)).death, Some(DeathReason::RekeyUnanswered));
+            assert!(carrier_tick(&input(BUSINESS_POKE_DEADLINE + Duration::from_secs(1),
+                true, true)).death.is_none(), "an answered proof preserves the healthy carrier");
+            assert!(carrier_tick(&input(BUSINESS_POKE_DEADLINE + Duration::from_secs(1),
+                false, false)).death.is_none(), "periodic pokes retain the original tier deadline");
+        }
+    }
+
+    #[test]
     fn should_poke_matrix() {
         let s = Duration::from_secs;
         // Silence trigger: strictly past POKE_SILENCE_AFTER.
@@ -1167,6 +1192,7 @@ mod tests {
                     since_poke,
                     answered,
                     from_major: false,
+                    from_business: false,
                 }),
                 ..established()
             };
@@ -1198,6 +1224,7 @@ mod tests {
                 since_poke: Duration::from_secs(60),
                 answered: false,
                 from_major: false,
+                from_business: false,
             }),
             ..established()
         };
@@ -1211,6 +1238,7 @@ mod tests {
                 since_poke: Duration::from_secs(60),
                 answered: false,
                 from_major: false,
+                from_business: false,
             }),
             ..established()
         };
@@ -1241,6 +1269,7 @@ mod tests {
                     since_poke,
                     answered,
                     from_major,
+                    from_business: false,
                 }),
                 ..established()
             };
@@ -1283,6 +1312,7 @@ mod tests {
                 since_poke: s(60),
                 answered: false,
                 from_major: true,
+                from_business: false,
             }),
             ..established()
         };
@@ -1326,6 +1356,7 @@ mod tests {
                 since_poke: Duration::from_secs(46),
                 answered: false,
                 from_major: false,
+                from_business: false,
             }),
             ..established()
         };
@@ -1347,6 +1378,7 @@ mod tests {
                 since_poke: Duration::from_secs(31),
                 answered: false,
                 from_major: false,
+                from_business: false,
             }),
             ..established()
         };

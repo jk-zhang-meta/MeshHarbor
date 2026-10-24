@@ -147,6 +147,7 @@
 </template>
 
 <script setup lang="ts">
+import { appOrigin } from '@/utils/deployment'
 import { computed, ref } from 'vue'
 import { useResponsiveDialog } from '@/composables/useResponsiveDialog'
 import {
@@ -202,7 +203,7 @@ const anchorOffered = computed(() => props.kind === 'agent' && scope.value !== '
 const commands = computed(() =>
   enrollCommands(
     props.kind,
-    window.location.origin,
+    appOrigin(window.location.origin),
     props.token,
     scope.value,
     props.anchor === true,

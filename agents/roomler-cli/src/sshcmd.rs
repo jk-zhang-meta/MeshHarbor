@@ -265,7 +265,7 @@ where
     Ok(())
 }
 
-fn mint_session_key() -> Result<ssh_key::PrivateKey> {
+pub(crate) fn mint_session_key() -> Result<ssh_key::PrivateKey> {
     use ssh_key::private::{Ed25519Keypair, PrivateKey};
     // Seeded from the OS CSPRNG and constructed from the bytes rather than an
     // RNG-generic API, for the same reason the agent's host-key mint does it

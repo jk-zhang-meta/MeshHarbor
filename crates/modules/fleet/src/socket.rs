@@ -545,414 +545,456 @@ pub async fn handle_agent_socket(
     liveness.tick().await; // arm; first tick fires immediately
     let mut last_rx = std::time::Instant::now();
 
-    // Read loop. rc.53: wrapped in `tokio::select!` so the Hub's
-    // displacement-cancel notify exits this loop within milliseconds
-    // — without the cancel arm, a displaced socket would linger up
-    // to one 25 s keepalive interval (auto-fail #3 in v2 plan).
-    loop {
-        tokio::select! {
-            // `biased` so cancel fires deterministically when both
-            // arms are ready in the same poll cycle. Without this,
-            // tokio's random arm selection could starve the cancel
-            // for several iterations in a hot read loop.
-            biased;
-            _ = cancel.notified() => {
-                info!(%agent_id, "agent connection cancelled by Hub (replaced by newer); exiting read-loop");
+    // This future wraps the whole dispatch loop: an inline handler stalled
+    // on IO must not starve account revocation. Fresh row reads honor owner
+    // reassignment rather than trusting the owner captured on connection.
+    let admission_watchdog = async {
+        if !state.settings.auth.account_approval.enabled {
+            std::future::pending::<()>().await;
+        }
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            let result = tokio::time::timeout(
+                std::time::Duration::from_secs(3),
+                crate::auth_agent::accepted_agent(
+                    &state,
+                    &agent_id.to_hex(),
+                    &tenant_id.to_hex(),
+                    None,
+                ),
+            )
+            .await;
+            if !matches!(result, Ok(Ok(_))) {
                 break;
             }
-            _ = liveness.tick() => {
-                if last_rx.elapsed() > rx_deadline {
-                    warn!(%agent_id, elapsed_s = last_rx.elapsed().as_secs(),
-                        "agent WS receive-liveness deadline exceeded — reaping half-open socket");
+        }
+    };
+    let dispatch_loop = async {
+        // Read loop. rc.53: wrapped in `tokio::select!` so the Hub's
+        // displacement-cancel notify exits this loop within milliseconds
+        // — without the cancel arm, a displaced socket would linger up
+        // to one 25 s keepalive interval (auto-fail #3 in v2 plan).
+        loop {
+            tokio::select! {
+                // `biased` so cancel fires deterministically when both
+                // arms are ready in the same poll cycle. Without this,
+                // tokio's random arm selection could starve the cancel
+                // for several iterations in a hot read loop.
+                biased;
+                _ = cancel.notified() => {
+                    info!(%agent_id, "agent connection cancelled by Hub (replaced by newer); exiting read-loop");
                     break;
                 }
-                continue;
-            }
-            maybe_msg = socket_rx.next() => {
-                let Some(msg) = maybe_msg else { break };
-                // EVERY inbound frame proves the leg alive — including
-                // Pings/Pongs/Binary (the catch-all below).
-                last_rx = std::time::Instant::now();
-                match msg {
-                    Ok(Message::Text(text)) => match serde_json::from_str::<ClientMsg>(&text) {
-                        Ok(parsed) => {
-                            // FR-69 P5c — every message has ONE owner
-                            // (`ClientMsg::namespace()`). Fleet's own arms run
-                            // below; `remote`'s and `network`'s run through the
-                            // handlers their modules registered on the core —
-                            // the tunnel relays, the overlay relay, the probe
-                            // report, the DERP ticket, SSH, key rotation, the
-                            // session stats. A handler hands back what it did
-                            // not consume, and that reaches the Hub's own
-                            // dispatch below exactly as before.
-                            let parsed = match parsed.namespace() {
-                                Owner::Fleet => parsed,
-                                owner => match state.agent_socket.handler(owner.id()) {
-                                    Some(handler) => match handler.handle(&actx, parsed).await {
-                                        Some(rest) => rest,
-                                        None => continue,
-                                    },
-                                    None => {
-                                        debug!(
-                                            %agent_id, owner = owner.id(),
-                                            "no agent-socket handler registered for this owner — the message reaches the Hub dispatch"
-                                        );
-                                        parsed
-                                    }
-                                },
-                            };
-                            // Fleet RPC. Rebinding through a `match` rather
-                            // than two `if let`s keeps `parsed` un-moved on
-                            // the fall-through path that still reaches the
-                            // Hub dispatch below.
-                            let parsed = match parsed {
-                                // A command's answer — resolve whoever is
-                                // parked on it. An unknown id is normal: that
-                                // caller already hit its deadline and gave up.
-                                ClientMsg::RpcResult {
-                                    request_id,
-                                    exit_code,
-                                    stdout,
-                                    stderr,
-                                    truncated,
-                                    duration_ms,
-                                    error,
-                                } => {
-                                    let delivered = state.rc_hub.deliver_exec_result(
-                                        &request_id,
-                                        roomler_ai_remote_control::models::ExecOutcome {
-                                            exit_code,
-                                            stdout,
-                                            stderr,
-                                            truncated,
-                                            duration_ms,
-                                            error,
-                                            // FR-94 — a worker's result says
-                                            // nothing about its identity; the
-                                            // audit's `ran_as` is the server's
-                                            // own routing decision.
-                                            ran_as: None,
+                _ = liveness.tick() => {
+                    if last_rx.elapsed() > rx_deadline {
+                        warn!(%agent_id, elapsed_s = last_rx.elapsed().as_secs(),
+                            "agent WS receive-liveness deadline exceeded — reaping half-open socket");
+                        break;
+                    }
+                    continue;
+                }
+                maybe_msg = socket_rx.next() => {
+                    let Some(msg) = maybe_msg else { break };
+                    // EVERY inbound frame proves the leg alive — including
+                    // Pings/Pongs/Binary (the catch-all below).
+                    last_rx = std::time::Instant::now();
+                    match msg {
+                        Ok(Message::Text(text)) => match serde_json::from_str::<ClientMsg>(&text) {
+                            Ok(parsed) => {
+                                // FR-69 P5c — every message has ONE owner
+                                // (`ClientMsg::namespace()`). Fleet's own arms run
+                                // below; `remote`'s and `network`'s run through the
+                                // handlers their modules registered on the core —
+                                // the tunnel relays, the overlay relay, the probe
+                                // report, the DERP ticket, SSH, key rotation, the
+                                // session stats. A handler hands back what it did
+                                // not consume, and that reaches the Hub's own
+                                // dispatch below exactly as before.
+                                let parsed = match parsed.namespace() {
+                                    Owner::Fleet => parsed,
+                                    owner => match state.agent_socket.handler(owner.id()) {
+                                        Some(handler) => match handler.handle(&actx, parsed).await {
+                                            Some(rest) => rest,
+                                            None => continue,
                                         },
-                                    );
-                                    if !delivered {
-                                        debug!(
-                                            %agent_id, %request_id,
-                                            "rc:rpc.result for an unknown request — caller gave up"
+                                        None => {
+                                            debug!(
+                                                %agent_id, owner = owner.id(),
+                                                "no agent-socket handler registered for this owner — the message reaches the Hub dispatch"
+                                            );
+                                            parsed
+                                        }
+                                    },
+                                };
+                                // Fleet RPC. Rebinding through a `match` rather
+                                // than two `if let`s keeps `parsed` un-moved on
+                                // the fall-through path that still reaches the
+                                // Hub dispatch below.
+                                let parsed = match parsed {
+                                    // A command's answer — resolve whoever is
+                                    // parked on it. An unknown id is normal: that
+                                    // caller already hit its deadline and gave up.
+                                    ClientMsg::RpcResult {
+                                        request_id,
+                                        exit_code,
+                                        stdout,
+                                        stderr,
+                                        truncated,
+                                        duration_ms,
+                                        error,
+                                    } => {
+                                        let delivered = state.rc_hub.deliver_exec_result(
+                                            &request_id,
+                                            roomler_ai_remote_control::models::ExecOutcome {
+                                                exit_code,
+                                                stdout,
+                                                stderr,
+                                                truncated,
+                                                duration_ms,
+                                                error,
+                                                // FR-94 — a worker's result says
+                                                // nothing about its identity; the
+                                                // audit's `ran_as` is the server's
+                                                // own routing decision.
+                                                ran_as: None,
+                                            },
                                         );
+                                        if !delivered {
+                                            debug!(
+                                                %agent_id, %request_id,
+                                                "rc:rpc.result for an unknown request — caller gave up"
+                                            );
+                                        }
+                                        continue;
                                     }
-                                    continue;
-                                }
-                                // A device asking to run something on ANOTHER
-                                // device (`roomler exec`). Spawned: the
-                                // target's command can take minutes and this
-                                // is the REQUESTING agent's read loop.
-                                ClientMsg::RpcExecRequest {
-                                    request_id,
-                                    target,
-                                    shell,
-                                    command,
-                                    timeout_ms,
-                                } => {
-                                    let state = state.clone();
-                                    let reply_tx = registered_tx.clone();
-                                    tokio::spawn(async move {
-                                        handle_agent_exec_request(
-                                            &state, tenant_id, agent_id, request_id, target, shell,
-                                            command, timeout_ms, reply_tx,
-                                        )
-                                        .await;
-                                    });
-                                    continue;
-                                }
-                                // Remote config — the device's own account of
-                                // what it did with a pushed desired-config
-                                // (`docs/remote-config.md`). Recorded on the
-                                // agent row rather than in `config_audit`:
-                                // that collection holds the SERVER's decisions
-                                // and is authoritative, while this is a claim
-                                // by a host that may be compromised. Folding
-                                // them together would leave a reader unable to
-                                // tell which is which.
-                                //
-                                // ⚠️ `tenant_id` / `agent_id` come from the
-                                // authenticated WS, never the frame, so a
-                                // device can only report about itself.
-                                ClientMsg::ConfigStatus {
-                                    revision,
-                                    outcome,
-                                    live,
-                                    needs_restart,
-                                    detail,
-                                } => {
-                                    let state = state.clone();
-                                    tokio::spawn(async move {
-                                        record_config_report(
-                                            &state,
-                                            tenant_id,
-                                            agent_id,
-                                            revision,
-                                            outcome,
-                                            live,
-                                            needs_restart,
-                                            detail,
-                                        )
-                                        .await;
-                                    });
-                                    continue;
-                                }
-                                other => other,
-                            };
-                            // Phase 7: refresh last_seen_at on every heartbeat. Hub
-                            // dispatch is a no-op for AgentHeartbeat (handled here);
-                            // we still call dispatch so any future routing logic
-                            // (e.g. metrics fan-out) only needs one entry point.
-                            // Stats PR-1: destructure the fields BEFORE `parsed`
-                            // moves into dispatch — the sample ingest below needs
-                            // them. The legacy rss/cpu scalars are hardcoded 0 on
-                            // every shipped agent, so they are deliberately NOT
-                            // persisted (a real zero must stay distinguishable
-                            // from "not measured"; the v2 `sys` block covers it).
-                            let heartbeat_sessions = if let ClientMsg::AgentHeartbeat {
-                                active_sessions,
-                                sys,
-                                srflx_count,
-                                warm_relay,
-                                companion_version,
-                                caps,
-                                keep_busy,
-                                ..
-                            } = &parsed
-                            {
-                                Some((
-                                    *active_sessions,
-                                    sys.clone(),
-                                    *srflx_count,
-                                    warm_relay.clone(),
-                                    companion_version.clone(),
-                                    caps.clone(),
-                                    keep_busy.clone(),
-                                ))
-                            } else {
-                                None
-                            };
-                            if let Err(e) = state.rc_hub.dispatch(&ctx, parsed) {
-                                warn!(%agent_id, %e, "rc:* dispatch failed (agent)");
-                            }
-                            if let Some((
-                                active_sessions,
-                                sys,
-                                srflx_count,
-                                warm_relay,
-                                companion_version,
-                                caps,
-                                keep_busy,
-                            )) = heartbeat_sessions
-                            {
-                                // FR-43 P2c — an agent announces changed
-                                // capabilities here because caps otherwise
-                                // travel only in `rc:agent.hello`, and a macOS
-                                // daemon's GUI worker attaches after that.
-                                //
-                                // ⚠️ `None` means "no news", NOT "no
-                                // capabilities": the stored blob must be left
-                                // alone, the same rule as `permissions`' own
-                                // `None` vs `Some([])`.
-                                if let Some(caps) = caps.as_ref()
-                                    && let Err(e) =
-                                        state.agents.update_capabilities(agent_id, caps).await
-                                {
-                                    warn!(%agent_id, %e, "agent update_capabilities failed");
-                                }
-                                // FR-85 P3 — the device's owner switches remote
-                                // recording on or off while connected, and the
-                                // agent re-announces its caps here. Without this
-                                // the hub would keep the hello's answer until the
-                                // next reconnect: an owner's OFF would still let
-                                // controllers ask for RECORD (the device refuses
-                                // them, but the grant should not say yes), and an
-                                // ON would do nothing. Same `None` rule as above.
-                                if let Some(caps) = caps.as_ref() {
-                                    state.rc_hub.set_agent_record_support(
-                                        agent_id,
-                                        crate::hub::RecordSupport::from_caps(caps),
-                                    );
-                                    // FR-99 — the owner switches privacy mode
-                                    // on or off while connected: the same
-                                    // reasoning, and an OFF must stop the
-                                    // next grant at once.
-                                    state.rc_hub.set_agent_privacy_support(
-                                        agent_id,
-                                        crate::hub::PrivacySupport::from_caps(caps),
-                                    );
-                                    // FR-101 P2 — and whether its prompt names
-                                    // `ask` features, for an agent that updated
-                                    // its words without reconnecting.
-                                    state.rc_hub.set_agent_asks_features(
-                                        agent_id,
-                                        caps.has_rpc(RpcCap::SessionPolicy),
-                                    );
-                                    // FR-101 P2b — and its floor: a new
-                                    // `off` reaches the next grant at once.
-                                    state.rc_hub.set_agent_device_session_policy(
-                                        agent_id,
-                                        caps.session_policy,
-                                    );
-                                    // FR-101 P4b-2 — and its idle word.
-                                    state.rc_hub.set_agent_enforces_idle(
-                                        agent_id,
-                                        caps.has_rpc(RpcCap::IdleTimeout),
-                                    );
-                                    // FR-99 P3b — and its lock word.
-                                    state.rc_hub.set_agent_honours_lock_on_end(
-                                        agent_id,
-                                        caps.has_rpc(RpcCap::LockOnEnd),
-                                    );
-                                    // FR-94 — the SYSTEM service came up, was
-                                    // anchored, or went away while this worker
-                                    // stayed connected: route the next command
-                                    // by what the device says now.
-                                    state.rc_hub.set_agent_exec_system_support(
-                                        agent_id,
-                                        caps.has_rpc(RpcCap::ExecSystem),
-                                    );
-                                    // FR-105 — and its SSH word, for the
-                                    // same reason.
-                                    state.rc_hub.set_agent_ssh_system_support(
-                                        agent_id,
-                                        caps.has_rpc(RpcCap::SshSystem),
-                                    );
-                                    // FR-92 — the owner re-allowed keep busy on
-                                    // the device, so its word reappeared: hand it
-                                    // the org's policy NOW, or a deny made while
-                                    // the word was absent would never reach it.
-                                    // Only on the reappearance — caps are also
-                                    // re-announced for the record word and the
-                                    // worker's permissions.
-                                    let keep_busy = advertises_keep_busy(caps);
-                                    let had_keep_busy = state
-                                        .rc_hub
-                                        .set_agent_keep_busy_support(agent_id, keep_busy);
-                                    if keep_busy && !had_keep_busy {
-                                        push_keep_busy_policy_on_connect(
-                                            &state,
-                                            tenant_id,
-                                            agent_id,
-                                            &registered_tx,
-                                        )
-                                        .await;
+                                    // A device asking to run something on ANOTHER
+                                    // device (`roomler exec`). Spawned: the
+                                    // target's command can take minutes and this
+                                    // is the REQUESTING agent's read loop.
+                                    ClientMsg::RpcExecRequest {
+                                        request_id,
+                                        target,
+                                        shell,
+                                        command,
+                                        timeout_ms,
+                                    } => {
+                                        let state = state.clone();
+                                        let reply_tx = registered_tx.clone();
+                                        tokio::spawn(async move {
+                                            handle_agent_exec_request(
+                                                &state, tenant_id, agent_id, request_id, target, shell,
+                                                command, timeout_ms, reply_tx,
+                                            )
+                                            .await;
+                                        });
+                                        continue;
                                     }
-                                }
-                                match state
-                                    .agents
-                                    .touch_heartbeat(
-                                        agent_id,
-                                        warm_relay.as_deref(),
-                                        companion_version.as_deref(),
-                                        keep_busy.as_ref(),
-                                    )
-                                    .await
-                                {
-                                    // FR-92 P7 — the row as it was BEFORE this
-                                    // beat came back with the write: an edge
-                                    // between its brief and this one is a
-                                    // history row (the device's claim). Inline,
-                                    // not spawned: edges are rare, and two
-                                    // beats' edges must land in order.
+                                    // Remote config — the device's own account of
+                                    // what it did with a pushed desired-config
+                                    // (`docs/remote-config.md`). Recorded on the
+                                    // agent row rather than in `config_audit`:
+                                    // that collection holds the SERVER's decisions
+                                    // and is authoritative, while this is a claim
+                                    // by a host that may be compromised. Folding
+                                    // them together would leave a reader unable to
+                                    // tell which is which.
                                     //
-                                    // ⚠️ `tenant_id` / `agent_id` are the
-                                    // authenticated socket's, never the frame's.
-                                    Ok(Some(before)) => {
-                                        crate::keep_busy::record_device_edge(
-                                            &state,
-                                            tenant_id,
+                                    // ⚠️ `tenant_id` / `agent_id` come from the
+                                    // authenticated WS, never the frame, so a
+                                    // device can only report about itself.
+                                    ClientMsg::ConfigStatus {
+                                        revision,
+                                        outcome,
+                                        live,
+                                        needs_restart,
+                                        detail,
+                                    } => {
+                                        let state = state.clone();
+                                        tokio::spawn(async move {
+                                            record_config_report(
+                                                &state,
+                                                tenant_id,
+                                                agent_id,
+                                                revision,
+                                                outcome,
+                                                live,
+                                                needs_restart,
+                                                detail,
+                                            )
+                                            .await;
+                                        });
+                                        continue;
+                                    }
+                                    other => other,
+                                };
+                                // Phase 7: refresh last_seen_at on every heartbeat. Hub
+                                // dispatch is a no-op for AgentHeartbeat (handled here);
+                                // we still call dispatch so any future routing logic
+                                // (e.g. metrics fan-out) only needs one entry point.
+                                // Stats PR-1: destructure the fields BEFORE `parsed`
+                                // moves into dispatch — the sample ingest below needs
+                                // them. The legacy rss/cpu scalars are hardcoded 0 on
+                                // every shipped agent, so they are deliberately NOT
+                                // persisted (a real zero must stay distinguishable
+                                // from "not measured"; the v2 `sys` block covers it).
+                                let heartbeat_sessions = if let ClientMsg::AgentHeartbeat {
+                                    active_sessions,
+                                    sys,
+                                    srflx_count,
+                                    warm_relay,
+                                    companion_version,
+                                    caps,
+                                    keep_busy,
+                                    ..
+                                } = &parsed
+                                {
+                                    Some((
+                                        *active_sessions,
+                                        sys.clone(),
+                                        *srflx_count,
+                                        warm_relay.clone(),
+                                        companion_version.clone(),
+                                        caps.clone(),
+                                        keep_busy.clone(),
+                                    ))
+                                } else {
+                                    None
+                                };
+                                if let Err(e) = state.rc_hub.dispatch(&ctx, parsed) {
+                                    warn!(%agent_id, %e, "rc:* dispatch failed (agent)");
+                                }
+                                if let Some((
+                                    active_sessions,
+                                    sys,
+                                    srflx_count,
+                                    warm_relay,
+                                    companion_version,
+                                    caps,
+                                    keep_busy,
+                                )) = heartbeat_sessions
+                                {
+                                    // FR-43 P2c — an agent announces changed
+                                    // capabilities here because caps otherwise
+                                    // travel only in `rc:agent.hello`, and a macOS
+                                    // daemon's GUI worker attaches after that.
+                                    //
+                                    // ⚠️ `None` means "no news", NOT "no
+                                    // capabilities": the stored blob must be left
+                                    // alone, the same rule as `permissions`' own
+                                    // `None` vs `Some([])`.
+                                    if let Some(caps) = caps.as_ref()
+                                        && let Err(e) =
+                                            state.agents.update_capabilities(agent_id, caps).await
+                                    {
+                                        warn!(%agent_id, %e, "agent update_capabilities failed");
+                                    }
+                                    // FR-85 P3 — the device's owner switches remote
+                                    // recording on or off while connected, and the
+                                    // agent re-announces its caps here. Without this
+                                    // the hub would keep the hello's answer until the
+                                    // next reconnect: an owner's OFF would still let
+                                    // controllers ask for RECORD (the device refuses
+                                    // them, but the grant should not say yes), and an
+                                    // ON would do nothing. Same `None` rule as above.
+                                    if let Some(caps) = caps.as_ref() {
+                                        state.rc_hub.set_agent_record_support(
                                             agent_id,
-                                            &before,
+                                            crate::hub::RecordSupport::from_caps(caps),
+                                        );
+                                        // FR-99 — the owner switches privacy mode
+                                        // on or off while connected: the same
+                                        // reasoning, and an OFF must stop the
+                                        // next grant at once.
+                                        state.rc_hub.set_agent_privacy_support(
+                                            agent_id,
+                                            crate::hub::PrivacySupport::from_caps(caps),
+                                        );
+                                        // FR-101 P2 — and whether its prompt names
+                                        // `ask` features, for an agent that updated
+                                        // its words without reconnecting.
+                                        state.rc_hub.set_agent_asks_features(
+                                            agent_id,
+                                            caps.has_rpc(RpcCap::SessionPolicy),
+                                        );
+                                        // FR-101 P2b — and its floor: a new
+                                        // `off` reaches the next grant at once.
+                                        state.rc_hub.set_agent_device_session_policy(
+                                            agent_id,
+                                            caps.session_policy,
+                                        );
+                                        // FR-101 P4b-2 — and its idle word.
+                                        state.rc_hub.set_agent_enforces_idle(
+                                            agent_id,
+                                            caps.has_rpc(RpcCap::IdleTimeout),
+                                        );
+                                        // FR-99 P3b — and its lock word.
+                                        state.rc_hub.set_agent_honours_lock_on_end(
+                                            agent_id,
+                                            caps.has_rpc(RpcCap::LockOnEnd),
+                                        );
+                                        // FR-94 — the SYSTEM service came up, was
+                                        // anchored, or went away while this worker
+                                        // stayed connected: route the next command
+                                        // by what the device says now.
+                                        state.rc_hub.set_agent_exec_system_support(
+                                            agent_id,
+                                            caps.has_rpc(RpcCap::ExecSystem),
+                                        );
+                                        // FR-105 — and its SSH word, for the
+                                        // same reason.
+                                        state.rc_hub.set_agent_ssh_system_support(
+                                            agent_id,
+                                            caps.has_rpc(RpcCap::SshSystem),
+                                        );
+                                        // FR-92 — the owner re-allowed keep busy on
+                                        // the device, so its word reappeared: hand it
+                                        // the org's policy NOW, or a deny made while
+                                        // the word was absent would never reach it.
+                                        // Only on the reappearance — caps are also
+                                        // re-announced for the record word and the
+                                        // worker's permissions.
+                                        let keep_busy = advertises_keep_busy(caps);
+                                        let had_keep_busy = state
+                                            .rc_hub
+                                            .set_agent_keep_busy_support(agent_id, keep_busy);
+                                        if keep_busy && !had_keep_busy {
+                                            push_keep_busy_policy_on_connect(
+                                                &state,
+                                                tenant_id,
+                                                agent_id,
+                                                &registered_tx,
+                                            )
+                                            .await;
+                                        }
+                                    }
+                                    match state
+                                        .agents
+                                        .touch_heartbeat(
+                                            agent_id,
+                                            warm_relay.as_deref(),
+                                            companion_version.as_deref(),
                                             keep_busy.as_ref(),
-                                        )
-                                        .await;
-                                    }
-                                    Ok(None) => {
-                                        debug!(%agent_id, "heartbeat for a device row that is gone");
-                                    }
-                                    Err(e) => {
-                                        warn!(%agent_id, %e, "agent touch_heartbeat failed");
-                                    }
-                                }
-                                // C4 stage 2 (PR-B) — the warm leg mirrored onto
-                                // the overlay-node row is `network`'s write
-                                // (FR-69 P5c): its lifecycle does it.
-                                for (_, lc) in &lifecycles {
-                                    lc.heartbeat(&actx, warm_relay.as_deref()).await;
-                                }
-                                if state.settings.stats.enabled {
-                                    let unix = std::time::SystemTime::now()
-                                        .duration_since(std::time::UNIX_EPOCH)
-                                        .unwrap_or_default()
-                                        .as_secs()
-                                        as i64;
-                                    // Wave 2 — the per-peer edges ride the
-                                    // same block; pulled out before `sys`
-                                    // is consumed below.
-                                    let mesh_links: Vec<bson::Document> = sys
-                                        .as_ref()
-                                        .map(|s| s.links.iter().map(mesh_link_doc).collect())
-                                        .unwrap_or_default();
-                                    let sys_doc = sys.map(|s| machine_sys_doc(&s, srflx_count));
-                                    if let Err(e) = state
-                                        .stats
-                                        .upsert_machine_sample(
-                                            tenant_id,
-                                            agent_id,
-                                            unix,
-                                            active_sessions,
-                                            sys_doc,
                                         )
                                         .await
                                     {
-                                        debug!(%agent_id, %e, "machine sample persist failed");
+                                        // FR-92 P7 — the row as it was BEFORE this
+                                        // beat came back with the write: an edge
+                                        // between its brief and this one is a
+                                        // history row (the device's claim). Inline,
+                                        // not spawned: edges are rare, and two
+                                        // beats' edges must land in order.
+                                        //
+                                        // ⚠️ `tenant_id` / `agent_id` are the
+                                        // authenticated socket's, never the frame's.
+                                        Ok(Some(before)) => {
+                                            crate::keep_busy::record_device_edge(
+                                                &state,
+                                                tenant_id,
+                                                agent_id,
+                                                &before,
+                                                keep_busy.as_ref(),
+                                            )
+                                            .await;
+                                        }
+                                        Ok(None) => {
+                                            debug!(%agent_id, "heartbeat for a device row that is gone");
+                                        }
+                                        Err(e) => {
+                                            warn!(%agent_id, %e, "agent touch_heartbeat failed");
+                                        }
                                     }
-                                    // Wave 2 — this agent's view of the
-                                    // mesh, replaced whole (one row per
-                                    // agent). Kept OUT of the minute
-                                    // buckets: it's current-state, not a
-                                    // time series, and the graph reads
-                                    // the newest snapshot per agent.
-                                    if !mesh_links.is_empty()
-                                        && let Err(e) = state
+                                    // C4 stage 2 (PR-B) — the warm leg mirrored onto
+                                    // the overlay-node row is `network`'s write
+                                    // (FR-69 P5c): its lifecycle does it.
+                                    for (_, lc) in &lifecycles {
+                                        lc.heartbeat(&actx, warm_relay.as_deref()).await;
+                                    }
+                                    if state.settings.stats.enabled {
+                                        let unix = std::time::SystemTime::now()
+                                            .duration_since(std::time::UNIX_EPOCH)
+                                            .unwrap_or_default()
+                                            .as_secs()
+                                            as i64;
+                                        // Wave 2 — the per-peer edges ride the
+                                        // same block; pulled out before `sys`
+                                        // is consumed below.
+                                        let mesh_links: Vec<bson::Document> = sys
+                                            .as_ref()
+                                            .map(|s| s.links.iter().map(mesh_link_doc).collect())
+                                            .unwrap_or_default();
+                                        let sys_doc = sys.map(|s| machine_sys_doc(&s, srflx_count));
+                                        if let Err(e) = state
                                             .stats
-                                            .upsert_mesh_snapshot(tenant_id, agent_id, &mesh_links)
+                                            .upsert_machine_sample(
+                                                tenant_id,
+                                                agent_id,
+                                                unix,
+                                                active_sessions,
+                                                sys_doc,
+                                            )
                                             .await
-                                    {
-                                        debug!(%agent_id, %e, "mesh snapshot persist failed");
+                                        {
+                                            debug!(%agent_id, %e, "machine sample persist failed");
+                                        }
+                                        // Wave 2 — this agent's view of the
+                                        // mesh, replaced whole (one row per
+                                        // agent). Kept OUT of the minute
+                                        // buckets: it's current-state, not a
+                                        // time series, and the graph reads
+                                        // the newest snapshot per agent.
+                                        if !mesh_links.is_empty()
+                                            && let Err(e) = state
+                                                .stats
+                                                .upsert_mesh_snapshot(tenant_id, agent_id, &mesh_links)
+                                                .await
+                                        {
+                                            debug!(%agent_id, %e, "mesh snapshot persist failed");
+                                        }
                                     }
-                                }
-                                // Phase A-1 — refresh the presence claim, gated
-                                // on STILL holding the hub slot (an admin-kicked
-                                // agent whose socket lingers must not re-assert
-                                // a record the hub no longer serves).
-                                if state.rc_hub.is_agent_online(agent_id)
-                                    && let (Some(redis), Some(token)) =
-                                        (&state.redis_pubsub, &presence_token)
-                                    && let Err(e) =
-                                        redis.agent_presence_set(&agent_hex, token).await
-                                {
-                                    debug!(%agent_id, %e, "agent presence refresh failed");
+                                    // Phase A-1 — refresh the presence claim, gated
+                                    // on STILL holding the hub slot (an admin-kicked
+                                    // agent whose socket lingers must not re-assert
+                                    // a record the hub no longer serves).
+                                    if state.rc_hub.is_agent_online(agent_id)
+                                        && let (Some(redis), Some(token)) =
+                                            (&state.redis_pubsub, &presence_token)
+                                        && let Err(e) =
+                                            redis.agent_presence_set(&agent_hex, token).await
+                                    {
+                                        debug!(%agent_id, %e, "agent presence refresh failed");
+                                    }
                                 }
                             }
+                            Err(e) => {
+                                debug!(%agent_id, %e, "ignoring non-rc:* message on agent socket");
+                            }
+                        },
+                        Ok(Message::Ping(data)) => {
+                            let mut guard = socket_tx.lock().await;
+                            let _ = guard.send(Message::Pong(data)).await;
                         }
-                        Err(e) => {
-                            debug!(%agent_id, %e, "ignoring non-rc:* message on agent socket");
-                        }
-                    },
-                    Ok(Message::Ping(data)) => {
-                        let mut guard = socket_tx.lock().await;
-                        let _ = guard.send(Message::Pong(data)).await;
+                        Ok(Message::Close(_)) | Err(_) => break,
+                        _ => {}
                     }
-                    Ok(Message::Close(_)) | Err(_) => break,
-                    _ => {}
                 }
             }
         }
+    };
+    let mut admission_removal = None;
+    tokio::select! {
+        _ = admission_watchdog => {
+            warn!(%agent_id, "device account admission revoked; closing active sessions");
+            // Fence delivery synchronously before any cleanup IO can block.
+            admission_removal = Some(state.rc_hub.unregister_agent(agent_id, Some(&registered_tx)));
+            pump.abort();
+            if admission_removal == Some(true) {
+                for (_, lc) in &lifecycles { lc.revoked(&actx); }
+            }
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+                socket_tx.lock().await.send(Message::Close(None)).await
+            }).await;
+        }
+        _ = dispatch_loop => {}
     }
 
     // Teardown: unregister + mark offline. rc.53: thread `registered_tx`
@@ -976,9 +1018,11 @@ pub async fn handle_agent_socket(
     // the hub removal being OURS: a displaced handler's late teardown must
     // not clobber the displacing connection's Online status or its fresh
     // presence claim (the status-race twin of the rc.53 registry fix).
-    let removal_was_ours = state
-        .rc_hub
-        .unregister_agent(agent_id, Some(&registered_tx));
+    let removal_was_ours = admission_removal.unwrap_or_else(|| {
+        state
+            .rc_hub
+            .unregister_agent(agent_id, Some(&registered_tx))
+    });
     pump.abort();
     // FR-69 P5c — the holders learn whether this removal was ours: `network`
     // runs the overlay leave only then (rc.307 B — a displaced connection's
@@ -1505,7 +1549,18 @@ pub async fn ws_upgrade_agent(
     // once, then waits out its auth ladder (up to an hour) and raises the
     // re-enrollment sentinel. ⚠️ `NotFound` ONLY: any other error (a Mongo
     // blip) still falls through, never reads as "gone".
-    let pre_read = match state.agents.find_any_in_tenant(tenant_id, agent_id).await {
+    let pre_lookup = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        state.agents.find_any_in_tenant(tenant_id, agent_id),
+    )
+    .await;
+    let Ok(pre_lookup) = pre_lookup else {
+        return Response::builder()
+            .status(503)
+            .body("Device lookup timed out".into())
+            .unwrap();
+    };
+    let pre_read = match pre_lookup {
         Ok(row) => Some(row),
         Err(roomler_ai_services::dao::base::DaoError::NotFound) => {
             info!(%agent_id, %tenant_id, "refusing agent WS: row gone (a reaped ephemeral device?)");
@@ -1529,6 +1584,24 @@ pub async fn ws_upgrade_agent(
             .status(401)
             .body("Unauthorized (agent)".into())
             .unwrap();
+    }
+    if state.settings.auth.account_approval.enabled {
+        let admission = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            crate::auth_agent::accepted_agent(
+                &state,
+                &claims.sub,
+                &claims.tenant_id,
+                Some(claims.generation),
+            ),
+        )
+        .await;
+        if !matches!(admission, Ok(Ok(_))) {
+            return Response::builder()
+                .status(403)
+                .body("Device owner admission required".into())
+                .unwrap();
+        }
     }
     let token_exp = claims.exp;
 

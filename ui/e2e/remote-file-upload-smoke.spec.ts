@@ -1,178 +1,98 @@
-/**
- * Phase 3 — file-DC upload smoke against the Phase 1 `agent-e2e`
- * harness. Promotes the env-gated `remote-upload-winhost-a.spec.ts`
- * (which targets PROD with a `.cred` file + an externally-supplied
- * `E2E_UPLOAD_FILE`) into a CI spec that drives the in-cluster
- * fixture agents with a synthesised payload.
- *
- * **Skip-conditions** (mirror remote-session-smoke.spec.ts so the
- * spec ships safely before the cluster harness is bootstrapped):
- *  - `E2E_AGENT_E2E_TENANT_ID` env unset → seed Job hasn't been
- *    run + Secret rebaked.
- *  - No online agent → overlay isn't applied or Pods are still
- *    booting.
- *
- * **What it validates**:
- *  1. The same Connect → phase-chip-"connected" handshake as Phase 2.
- *  2. The file-DC v2 toolbar accepts a file via the hidden
- *     `<input type="file">`.
- *  3. The Transfers panel shows a row matching the upload filename
- *     within 30 s of submission.
- *  4. The transfer reaches `complete` within 2 min — a 1 MB synthetic
- *     payload over the in-cluster network typically takes <2 s, but
- *     SCTP slow-start + the rc.21 SCTP 16 KiB chunk cap make the
- *     ceiling generous.
- *
- * **NOT validated yet**:
- *  - SHA-256 match on the agent-side written file. Needs a test-
- *    only HTTP endpoint on the agent behind a build flag — out of
- *    scope for the first Phase 3 cut. Without it, this spec proves
- *    "the wire protocol completes" but not "the bytes arrived
- *    correctly". A bit-flip in transit would still pass.
- *  - Clipboard round-trip. The agent-e2e Pod has no X server, so
- *    arboard's Linux backend can't connect to a clipboard
- *    regardless of how the controller writes. Needs an Xvfb sidecar
- *    or a separate Windows agent (deferred to Phase 6's installer-
- *    smoke pack).
+/** Real file-DC round trip: random upload -> remote task directory -> browser
+ * download, with byte length, full byte equality and independent SHA-256 check.
+ * The operator must pre-create E2E_AGENT_E2E_REMOTE_DIR inside the disposable
+ * fixture, including a meshharbor-e2e-<task-id> path component. This test does not
+ * create/delete arbitrary remote directories or use a human Downloads folder.
  */
 import { test, expect, type Page } from '@playwright/test'
-import { signInContext } from './fixtures/test-helpers'
-import * as fs from 'node:fs'
-import * as os from 'node:os'
+import { createHash, randomBytes, randomUUID } from 'node:crypto'
+import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
+import { connectFixture, fixtureConfigured, REMOTE_DIR } from './fixtures/remote-fixture'
 
-const API_URL = process.env.E2E_API_URL || 'http://localhost:5001'
-const BASE_URL = process.env.E2E_BASE_URL || 'http://localhost:5000'
-const TENANT_ID = process.env.E2E_AGENT_E2E_TENANT_ID || ''
-const ADMIN_EMAIL = process.env.E2E_AGENT_E2E_ADMIN_EMAIL || 'agent-e2e-admin@roomler.local'
-const ADMIN_PASSWORD =
-  process.env.E2E_AGENT_E2E_ADMIN_PASSWORD || 'agent-e2e-bootstrap-pw-2026'
+test.use({ headless: true, acceptDownloads: true, trace: 'off' })
 
-/** Same discovery helper as remote-session-smoke.spec.ts. Inline-
- *  duplicated rather than extracted into test-helpers.ts to keep
- *  each Phase 2/3 spec self-contained for `git log --follow`. */
-async function findOnlineAgent(token: string): Promise<{ id: string; machine_name: string } | null> {
-  for (let i = 0; i < 6; i++) {
-    const resp = await fetch(`${API_URL}/api/tenant/${TENANT_ID}/agent`, {
-      headers: { Authorization: `Bearer ${token}` },
-    })
-    if (!resp.ok) return null
-    const body = (await resp.json()) as {
-      items?: Array<{ id: string; machine_name: string; is_online: boolean }>
-    }
-    const online = body.items?.find((a) => a.is_online)
-    if (online) return online
-    await new Promise((r) => setTimeout(r, 500))
-  }
-  return null
-}
-
-async function adminLogin(): Promise<string> {
-  const resp = await fetch(`${API_URL}/api/auth/login`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email: ADMIN_EMAIL, password: ADMIN_PASSWORD }),
+async function openFiles(page: Page) {
+  await page.getByRole('button', { name: 'Open viewer settings', exact: true }).click()
+  const settings = page.getByRole('dialog').filter({
+    has: page.getByRole('tab', { name: 'Session', exact: true }),
   })
-  if (!resp.ok) {
-    throw new Error(`admin login failed: ${resp.status} ${await resp.text().catch(() => '')}`)
-  }
-  const body = (await resp.json()) as { access_token: string }
-  return body.access_token
+  await settings.getByRole('tab', { name: 'Session', exact: true }).click()
+  await settings.getByTestId('rc-files-browse').click()
+  const drawer = page.locator('.files-drawer')
+  await expect(drawer).toBeVisible()
+  const input = drawer.getByPlaceholder('Path (Enter to go)')
+  // The first-open roots fetch must finish before submitting another navigation.
+  // Count every accessible loader; Vuetify also mounts an aria-hidden field loader.
+  await expect(input).toHaveValue(/.+/, { timeout: 20_000 })
+  await expect(drawer.getByRole('progressbar')).toHaveCount(0, { timeout: 20_000 })
+  await input.fill(REMOTE_DIR)
+  await input.press('Enter')
+  await expect(drawer.getByRole('progressbar')).toHaveCount(0, { timeout: 20_000 })
+  await expect(drawer.locator('.text-error')).toHaveCount(0)
+  // Canonical Windows paths may acquire a \\?\ prefix. Require the exact task
+  // directory suffix instead of silently accepting a failed navigation/root.
+  await expect.poll(async () => (await input.inputValue()).replace(/^\\\\\?\\/, '')
+    .replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase(), { timeout: 20_000 })
+    .toBe(REMOTE_DIR.replace(/^\\\\\?\\/, '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase())
+  return drawer
 }
 
-/**
- * Generate a 1 MB pseudo-random binary in the runner's tmpdir.
- * Pseudo-random (deterministic seed) so a future Phase 3 follow-on
- * that adds the agent-side SHA-256 check can recompute the expected
- * hash without exchanging the file out-of-band.
- */
-function makeUploadPayload(): { path: string; size: number; name: string } {
-  const size = 1024 * 1024 // 1 MiB
-  const buf = Buffer.alloc(size)
-  // Deterministic byte pattern — LCG seeded with 0xDEADBEEF. Not a
-  // crypto-quality PRNG; we only need "not all-zeros" so the
-  // encoder can't degenerate to a constant-stream optimisation
-  // (analogous to the synthetic-frame backend's anti-flat-image
-  // posture).
-  let s = 0xdeadbeef
-  for (let i = 0; i < size; i++) {
-    s = (s * 1664525 + 1013904223) >>> 0
-    buf[i] = s & 0xff
-  }
-  const name = `upload-smoke-${Date.now()}.bin`
-  const filePath = path.join(os.tmpdir(), name)
-  fs.writeFileSync(filePath, buf)
-  return { path: filePath, size, name }
-}
+test.describe('Remote file-DC byte-integrity smoke against the synthetic harness', () => {
+  test.skip(!fixtureConfigured || !REMOTE_DIR, 'explicit fixture IDs and task-owned REMOTE_DIR required')
+  test.setTimeout(4 * 60 * 1000)
 
-test.describe('Remote file-DC upload smoke against the agent-e2e harness', () => {
-  test.skip(
-    !TENANT_ID,
-    'E2E_AGENT_E2E_TENANT_ID must be set to the rebaked tenant_id from the seed Job.'
-  )
-  test.setTimeout(3 * 60 * 1000)
-
-  test('upload a 1 MiB payload to a synthetic-frame agent and wait for complete', async ({
-    page,
-    context,
-  }) => {
-    const token = await adminLogin()
-    const agent = await findOnlineAgent(token)
-    test.skip(!agent, 'no online enrolled agent found — apply the agent-e2e overlay first')
-    const agentId = agent!.id
-
-    // Cookie-only sessions (#691): sign in through the context's jar.
-    await signInContext(context, ADMIN_EMAIL, ADMIN_PASSWORD)
-
-    const remoteUrl = `${BASE_URL}/tenant/${TENANT_ID}/agent/${agentId}/remote`
-    await page.goto(remoteUrl)
-
-    await expect(
-      page.getByRole('button', { name: /^connect$/i }).first()
-    ).toBeVisible({ timeout: 30_000 })
-    await page.getByRole('button', { name: /^connect$/i }).first().click()
-    await expect(page.locator('text=/^connected$/i').first()).toBeVisible({
-      timeout: 60_000,
+  test('round-trip a random 1 MiB payload without changing a byte', async ({ page, context }, testInfo) => {
+    const parts = REMOTE_DIR.split(/[\\/]/)
+    expect(parts, 'REMOTE_DIR must not traverse parents').not.toContain('..')
+    expect(parts.some((part) => /^meshharbor-e2e-[A-Za-z\d_-]{6,}$/.test(part)),
+      'pre-create an explicitly task-owned meshharbor-e2e-<task-id> directory in the fixture').toBe(true)
+    // Exercise the real supported Blob-download branch. Disabling the optional
+    // native picker in this fresh page prevents an OS dialog/user-desktop effect;
+    // this does NOT stub the DC, remote filesystem, or downloaded payload.
+    await page.addInitScript(() => Object.defineProperty(window, 'showSaveFilePicker', {
+      configurable: true, value: undefined,
+    }))
+    await connectFixture(page, context)
+    const payload = randomBytes(1024 * 1024)
+    const sha256 = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex')
+    const name = `roundtrip-${randomUUID()}.bin`
+    const source = testInfo.outputPath('source', name)
+    const destination = testInfo.outputPath('download', name)
+    await fs.mkdir(path.dirname(source), { recursive: true })
+    await fs.mkdir(path.dirname(destination), { recursive: true })
+    await fs.writeFile(source, payload, { flag: 'wx' })
+    const drawer = await openFiles(page)
+    await drawer.locator('input[type="file"]').setInputFiles(source)
+    await drawer.locator('button[title="Close"]').click()
+    await page.getByRole('button', { name: /transfer\(s\) in progress/i }).click()
+    const transfer = page.locator('.transfer-row', { hasText: name }).first()
+    await expect(transfer).toBeVisible({ timeout: 30_000 })
+    await expect(transfer).toHaveClass(/transfer-(complete|error)\b/, { timeout: 120_000 })
+    await expect(transfer).toHaveClass(/transfer-complete\b/)
+    await page.keyboard.press('Escape')
+    const files = await openFiles(page)
+    const entry = files.locator('.v-list-item').filter({
+      has: page.locator('.v-list-item-title', { hasText: name }),
     })
-
-    // Build + submit the payload.
-    const payload = makeUploadPayload()
-    try {
-      const fileInput = page.locator('input[type="file"]').first()
-      await fileInput.setInputFiles(payload.path)
-
-      // FR-114 — the transfers live in the toolbar's chip POPOVER, closed by
-      // default (RemoteControl.vue, the "Transfers chip"); a status pill
-      // anywhere on the page is not the transfer's. Measured 2026-10-19: the
-      // agent logged `files: complete` 160 ms after `begin`, while the old
-      // page-wide `text=/complete/i` poll waited out its 2 min on a closed
-      // popover. Open it, find OUR row by name, read the status from its
-      // class (`transfer-${status}`).
-      await page
-        .getByRole('button', { name: /transfer\(s\) in progress/i })
-        .click({ timeout: 30_000 })
-      const transferRow = page.locator('.transfer-row', { hasText: payload.name }).first()
-      await expect(
-        transferRow,
-        'transfer row never appeared in the Transfers popover'
-      ).toBeVisible({ timeout: 30_000 })
-
-      // Only `complete` or `error` end a transfer (no terminal `exhausted`
-      // any more). 1 MiB over the pod network is well under 30 s; the 2 min
-      // ceiling absorbs CI vCPU jitter and the encoder's cold start.
-      await expect(transferRow, 'transfer did not end within 2 min').toHaveClass(
-        /transfer-(complete|error)\b/,
-        { timeout: 2 * 60 * 1000 },
-      )
-      const cls = (await transferRow.getAttribute('class')) ?? ''
-      expect(cls, `the transfer ended as: ${cls}`).toMatch(/transfer-complete\b/)
-    } finally {
-      // Clean up the tmpfile regardless of pass/fail.
-      try {
-        fs.unlinkSync(payload.path)
-      } catch {
-        // best-effort
-      }
-    }
+    await expect(entry).toHaveCount(1)
+    const downloadEvent = page.waitForEvent('download', { timeout: 60_000 })
+    await entry.locator(`button[title="Download ${name}"]`).click()
+    const download = await downloadEvent
+    expect(download.suggestedFilename()).toBe(name)
+    await download.saveAs(destination)
+    expect(await download.failure()).toBeNull()
+    const returned = await fs.readFile(destination)
+    expect(returned.length, 'download byte length').toBe(payload.length)
+    expect(returned.equals(payload), 'full downloaded payload equality').toBe(true)
+    const expectedSha256 = sha256(payload)
+    const actualSha256 = sha256(returned)
+    expect(actualSha256, 'download SHA-256').toBe(expectedSha256)
+    await testInfo.attach('file-round-trip-integrity', {
+      body: JSON.stringify({ name, remoteDir: REMOTE_DIR, bytes: returned.length,
+        expectedSha256, actualSha256 }), contentType: 'application/json',
+    })
+    // Only task-owned output/remote fixture paths were written. Retain them for
+    // failure forensics; the runner/fixture owner performs its bounded cleanup.
   })
 })

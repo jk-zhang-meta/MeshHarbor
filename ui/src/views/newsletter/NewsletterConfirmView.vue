@@ -61,6 +61,7 @@
 </template>
 
 <script setup lang="ts">
+import { appPath } from '@/utils/deployment'
 import { ref } from 'vue'
 import { useRoute } from 'vue-router'
 
@@ -73,7 +74,7 @@ async function confirm() {
   const token = String(route.params.token ?? '')
   phase.value = 'busy'
   try {
-    const r = await fetch(`/api/subscribe/confirm/${encodeURIComponent(token)}`, {
+    const r = await fetch(appPath(`/api/subscribe/confirm/${encodeURIComponent(token)}`), {
       method: 'POST',
     })
     if (!r.ok) {

@@ -86,10 +86,14 @@ rand_opaque = { package = "rand", version = "0.8" }
 # release build). Linux only, like `hive`, and a DEV-dependency, so nothing
 # but a test build of this crate compiles it.
 [target.'cfg(target_os = "linux")'.dev-dependencies]
-roomlerd = { path = "../../agents/roomlerd", features = ["hive-test-launcher"] }
+roomlerd = { path = "../../agents/roomlerd", features = ["hive-test-launcher", "backbone-test-support"] }
 # FR-90 P2d-6 — the canary reads the member device's store, which its own
 # process wrote, after that process is gone.
 roomler-hive-node = { path = "../hive-node" }
 # FR-90 P2f-4 — the real hook client (`roomler hive hook`) adopts the terminal
 # session `tests/hive_manage.rs` makes managed, through the device's socket.
 roomler-cli = { path = "../../agents/roomler-cli" }
+
+[features]
+# Test-only opt-in for real embedded SSH; no new dependency or release default.
+native-shared-ssh-composed = ["roomlerd/ssh-server"]

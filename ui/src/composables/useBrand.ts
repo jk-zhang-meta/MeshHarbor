@@ -2,10 +2,10 @@
 // Copyright (C) 2026 G ROX EOOD
 import { computed } from 'vue'
 import { useTheme } from 'vuetify'
-import logoLight from '@/assets/brand/roomler-logo.svg'
-import logoDark from '@/assets/brand/roomler-logo-dark.svg'
-import markLight from '@/assets/brand/roomler-mark-32.svg'
-import markDark from '@/assets/brand/roomler-mark-32-dark.svg'
+import logoLight from '@/assets/brand/meshharbor-logo-light.svg'
+import logoDark from '@/assets/brand/meshharbor-logo-dark.svg'
+import markLight from '@/assets/brand/meshharbor-mark-light.svg'
+import markDark from '@/assets/brand/meshharbor-mark-dark.svg'
 
 /** The light lockup, for a surface that is always light (the landing page
  *  forces the light theme, so it does not follow the app's). */

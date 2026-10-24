@@ -74,6 +74,36 @@ impl NetworkAgentSocket {
 impl AgentMsgHandler for NetworkAgentSocket {
     async fn handle(&self, ctx: &AgentCtx, msg: ClientMsg) -> Option<ClientMsg> {
         let state = &self.state;
+        let msg = match msg {
+            ClientMsg::SharedSshPrepared {
+                session_id,
+                accepted,
+            } => {
+                crate::shared_ssh::prepared(state, ctx, session_id, accepted).await;
+                return None;
+            }
+            ClientMsg::SharedSshLeaseChallenge {
+                session_id,
+                grant_id,
+                lease_epoch,
+                challenge_id,
+            } => {
+                crate::shared_ssh::renew(
+                    state,
+                    ctx,
+                    session_id,
+                    grant_id,
+                    lease_epoch,
+                    challenge_id,
+                )
+                .await;
+                return None;
+            }
+            other => other,
+        };
+        if !crate::shared_ssh::agent_frame_allowed(state, ctx, &msg) {
+            return None;
+        }
         let Some(conn) = self.conn(ctx) else {
             // No hello ran for this connection (cannot happen: the socket
             // calls `hello` before it reads); hand the message back rather
@@ -236,6 +266,36 @@ impl AgentSocketLifecycle for NetworkAgentSocket {
             .await
         {
             tracing::warn!(agent = %ctx.agent_id, %e, "overlay-node warm-relay mirror failed");
+        }
+    }
+
+    fn revoked(&self, ctx: &AgentCtx) {
+        crate::overlay::revoke_agent_admission(&self.state, ctx.agent_id);
+        let events = crate::org_relay::revoke_agent_sync(
+            &self.state,
+            ctx.tenant_id,
+            ctx.agent_id,
+            "account_admission_revoked",
+        );
+        let audit = self.state.peer_relay_audit.clone();
+        if !events.is_empty() {
+            tokio::spawn(async move {
+                for event in events {
+                    let _ = tokio::time::timeout(
+                        std::time::Duration::from_secs(3),
+                        audit.record(event),
+                    )
+                    .await;
+                }
+            });
+        }
+        crate::tunnel::terminate_agent_sessions_now(&self.state, ctx.agent_id);
+        // Dispatch has been cancelled before this synchronous hook, releasing
+        // its per-connection mutex. Leave records for the normal audit cleanup.
+        if let Some(conn) = self.conns.get(&ctx.conn_id) {
+            if let Ok(conn) = conn.try_lock() {
+                crate::tunnel::fence_originated_sessions(&self.state, &conn.sessions);
+            }
         }
     }
 

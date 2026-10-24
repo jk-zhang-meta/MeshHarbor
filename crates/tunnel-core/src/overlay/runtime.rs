@@ -58,6 +58,12 @@ use roomler_ai_remote_control::signaling::{ClientMsg, IceServer, NetmapPeer, Ove
 // block unchanged — a pure move, no behavior change.
 mod establish;
 mod inbound;
+mod path_trial;
+#[cfg(feature = "path-trial-test-support")]
+#[doc(hidden)]
+pub use path_trial::test_support::{
+    Harness as PathTrialTestHarness, Snapshot as PathTrialTestSnapshot,
+};
 mod route_guard;
 
 use establish::*;
@@ -330,10 +336,20 @@ pub(super) enum ForcedPoke {
 struct PokeArm {
     at: Instant,
     from_major: bool,
+    from_business: bool,
+}
+
+/// A separate sampling baseline keeps the cheap business scout from changing
+/// the health sweep's five-second one-way counters or consuming its liveness.
+#[derive(Clone, Copy)]
+struct BusinessTrafficSample {
+    installed_at: Instant,
+    traffic: (u64, u64),
 }
 
 /// An installed peer carrier + the bookkeeping the direct→relay fallback
 /// (rc.136/137) needs.
+#[derive(Clone)]
 struct Installed {
     pubkey: [u8; 32],
     overlay_ip: Ipv4Addr,
@@ -507,6 +523,17 @@ const RELAY_REFRESH_COOLDOWN: Duration = Duration::from_secs(30);
 /// How often the carrier-health sweep runs. Cheap (lock-free atomic reads), so
 /// a tighter cadence is fine and makes detection quicker.
 const FALLBACK_TICK: Duration = Duration::from_secs(5);
+const BUSINESS_SCOUT_TICK: Duration = Duration::from_secs(1);
+
+fn business_poke_recheck(by_node: &HashMap<ObjectId, Installed>, now: Instant) -> Option<Duration> {
+    let deadline = by_node.values().filter_map(|e| e.poke)
+        .filter(|p| p.from_business && !p.from_major)
+        .map(|p| p.at + crate::overlay::lifecycle::BUSINESS_POKE_DEADLINE
+            + Duration::from_millis(250)).min()?;
+    let wait = deadline.saturating_duration_since(now).max(Duration::from_millis(100));
+    (wait < FALLBACK_TICK).then_some(wait)
+}
+
 /// FR-97 P3i — how often the host firewall is asked again what it lets a mesh
 /// peer reach on the adapter. Zones and rules change by hand and rarely; the
 /// sweep's view publish (every [`FALLBACK_TICK`]) carries a new answer out.
@@ -703,6 +730,9 @@ type RelayAllocQueue = EpochQueue<AllocDone>;
 /// so the pair takes the TURN/DERP path on its next request.
 struct OrgBindDone {
     epoch: u64,
+    generation: u64,
+    peer_public_key: [u8; 32],
+    peer_overlay_ip: Ipv4Addr,
     node_id: ObjectId,
     relay_node_id: ObjectId,
     conn: Option<Arc<crate::overlay::orgrelay::client::OrgRelayConn>>,
@@ -716,6 +746,89 @@ struct OrgBindDone {
 /// the SAME session (by VNI) drops a bind that a re-mint superseded mid-flight.
 type OrgBindQueue = EpochQueue<OrgBindDone>;
 
+/// A queued relay request is not authority to demote a recovered direct path.
+/// There is no direct-vs-relay quality grant in this protocol slice.
+fn org_bind_needed(tracking: bool, installed: Option<&Installed>) -> bool {
+    !installed.is_some_and(|p| p.is_direct) && (tracking || installed.is_some())
+}
+
+/// Accept a true replacement without losing the pre-replacement tracking
+/// reason. A duplicate mint must preserve the current bind epoch and carrier.
+fn accept_org_bind_session(
+    peer: ObjectId,
+    session: super::orgrelay::member::OrgSession,
+    relay: &mut RelayCoordinator,
+    queue: &mut OrgBindQueue,
+    alloc_queue: &mut RelayAllocQueue,
+    peers: &HashMap<ObjectId, NetmapPeer>,
+    installed: &HashMap<ObjectId, Installed>,
+) {
+    let needed = org_bind_needed(relay.is_tracking(&peer), installed.get(&peer));
+    if !relay.org_session_accept(peer, session) {
+        return;
+    }
+    queue.invalidate(&peer);
+    if needed && let Some(pc) = peers.get(&peer).and_then(peer_config_from_netmap) {
+        alloc_queue.invalidate(&peer);
+        relay.forget(&peer);
+        relay.org_request_bind(peer, pc);
+    }
+}
+
+fn org_peer_identity(peer: &NetmapPeer) -> Option<([u8; 32], Ipv4Addr)> {
+    peer_config_from_netmap(peer).map(|p| (p.public_key, p.overlay_ip))
+}
+
+/// Invalidate even a carrier-less peer's pending bind on remove/rekey/re-IP.
+/// Called before netmap reconciliation; epoch invalidation prevents remove /
+/// re-add ABA even when the returning row has the same public key and address.
+fn invalidate_org_bind_identity(
+    peer: &ObjectId,
+    queue: &mut OrgBindQueue,
+    relay: &mut Option<RelayCoordinator>,
+) {
+    queue.invalidate(peer);
+    if let Some(r) = relay.as_mut() {
+        r.org_bind_failed(peer);
+    }
+}
+
+/// The actual org completion convergence point. Re-check live membership,
+/// captured identity and direct priority AFTER the async bind, not just when
+/// it starts. Rejected current work releases its session/tracking; stale work
+/// must not touch a newer session. A rejected relay carrier is marked closed before its completion is dropped.
+fn commit_current_org_bind(
+    done: OrgBindDone,
+    queue: &mut OrgBindQueue,
+    peers: &HashMap<ObjectId, NetmapPeer>,
+    installed: &HashMap<ObjectId, Installed>,
+    relay: &mut RelayCoordinator,
+) -> Option<ReadyLink> {
+    if !queue.take_if_current(&done.node_id, done.epoch) {
+        if let Some(conn) = done.conn {
+            conn.close();
+        }
+        return None;
+    }
+    let identity_matches = peers.get(&done.node_id).and_then(org_peer_identity)
+        == Some((done.peer_public_key, done.peer_overlay_ip));
+    if !identity_matches || installed.get(&done.node_id).is_some_and(|p| p.is_direct) {
+        if let Some(conn) = done.conn {
+            conn.close();
+        }
+        relay.org_bind_failed(&done.node_id);
+        debug!(peer = %done.node_id, "overlay: refusing org bind commit (peer changed/removed or direct recovered)");
+        return None;
+    }
+    match done.conn {
+        Some(conn) => relay.commit_org_bind(done.node_id, done.generation, conn),
+        None => {
+            relay.org_bind_failed(&done.node_id);
+            None
+        }
+    }
+}
+
 /// Run one org-relay bind off-loop and hand the result to the commit arm.
 /// The socket is fresh per session: the relay binds a member by its observed
 /// source, so every session needs its own.
@@ -727,44 +840,36 @@ fn spawn_org_bind(
 ) {
     use crate::overlay::orgrelay::client::{OrgRelayConn, bind_any};
     tokio::spawn(async move {
-        let bind_addr = match job.endpoints.first() {
-            Some(std::net::SocketAddr::V6(_)) => "[::]:0",
-            _ => "0.0.0.0:0",
-        };
-        let (conn, outcomes) = match tokio::net::UdpSocket::bind(bind_addr).await {
-            Ok(sock) => match bind_any(
-                &sock,
-                &job.endpoints,
-                job.vni,
-                job.generation,
-                &job.secret,
-                job.per_endpoint,
-            )
-            .await
-            {
-                Ok((relay, outcomes)) => (
-                    Some(Arc::new(OrgRelayConn::new(
-                        Arc::new(sock),
-                        relay,
-                        job.vni,
-                        relay_label,
-                    ))),
-                    outcomes,
-                ),
-                Err((e, outcomes)) => {
-                    debug!(peer = %job.node_id, vni = job.vni, %e,
-                        "overlay relay: org-relay bind failed on every endpoint");
-                    (None, outcomes)
-                }
-            },
-            Err(e) => {
-                warn!(%e, "overlay relay: could not open a socket for the org-relay bind");
-                (None, Vec::new())
+        let (conn, outcomes) = match bind_any(
+            &job.endpoints,
+            job.vni,
+            job.generation,
+            &job.secret,
+            job.per_endpoint,
+        )
+        .await
+        {
+            Ok((sock, relay, outcomes)) => (
+                Some(Arc::new(OrgRelayConn::new(
+                    Arc::new(sock),
+                    relay,
+                    job.vni,
+                    relay_label,
+                ))),
+                outcomes,
+            ),
+            Err((e, outcomes)) => {
+                debug!(peer = %job.node_id, vni = job.vni, %e,
+                    "overlay relay: org-relay bind failed on every endpoint");
+                (None, outcomes)
             }
         };
         let _ = tx
             .send(OrgBindDone {
                 epoch,
+                generation: job.generation,
+                peer_public_key: job.peer_public_key,
+                peer_overlay_ip: job.peer_overlay_ip,
                 node_id: job.node_id,
                 relay_node_id: job.relay_node_id,
                 conn,
@@ -794,7 +899,10 @@ pub enum OverlayEvent {
         self_ip: String,
         network: OverlayNetworkInfo,
         peers: Vec<NetmapPeer>,
+        org_relay_discovery: bool,
+        path_trial_v1: bool,
     },
+    PathTrial(roomler_ai_remote_control::signaling::ServerMsg),
     /// Incremental update.
     NetmapDelta {
         upserts: Vec<NetmapPeer>,
@@ -806,7 +914,9 @@ pub enum OverlayEvent {
     /// re-advertise srflx. Carriers, TUN, WG state all stay up — a server
     /// deploy / pod roll no longer tears the data plane down (the corp-VPN
     /// relay-lock trigger, 2026-08-05).
-    Reattach { outbound: mpsc::Sender<ClientMsg> },
+    Reattach {
+        outbound: mpsc::Sender<ClientMsg>,
+    },
     /// Coturn creds for a relay leg to `peer_node_id` (relay mode only).
     /// `pair_key` is the server's symmetric `sorted(a,b)` key — both ends
     /// receive an identical value and use it to pick the same coturn worker.
@@ -818,7 +928,9 @@ pub enum OverlayEvent {
     /// C4 stage 1 — pair-less coturn creds for the standing WARM
     /// allocation (the reply to our own `rc:overlay.warm_relay_request`;
     /// relay mode only, gated by `overlay_warm_relay`).
-    WarmRelayGrant { ice_servers: Vec<IceServer> },
+    WarmRelayGrant {
+        ice_servers: Vec<IceServer>,
+    },
     /// P7 — server-pushed per-pair DERP escalation: the server observed
     /// sustained TURN churn for this pair and tells BOTH ends to pin it onto
     /// the DERP carrier for `ttl_ms`. Pushed (never grant-borne) because the
@@ -835,7 +947,10 @@ pub enum OverlayEvent {
     /// (OsPinger/NsPinger, measured over the ACTIVE carrier). Fed to the
     /// PathMonitor's Q for the peer's incumbent tier; never affects
     /// eligibility. Gated by `OVERLAY_RTT_Q` (default on).
-    RttSample { node_id: ObjectId, rtt_ms: u32 },
+    RttSample {
+        node_id: ObjectId,
+        rtt_ms: u32,
+    },
     /// FR-19 P4b — the server minted an org-relay session for us and
     /// `peer_node_id` (`rc:overlay.relay_session`).
     OrgRelaySession {
@@ -850,7 +965,17 @@ pub enum OverlayEvent {
     },
     /// FR-19 P4b — the server tore a session down (`rc:overlay.relay_revoke`:
     /// org mode off, an ACL edit, the relay's approval cleared, a party gone).
-    OrgRelayRevoke { vni: u32 },
+    OrgRelayRevoke {
+        vni: u32,
+    },
+    /// Discovery metadata only: never grants or installs an org-relay session.
+    OrgRelayCandidates {
+        peer_node_id: ObjectId,
+        request_id: u64,
+        candidates: Vec<roomler_ai_remote_control::signaling::OrgRelayCandidateWire>,
+        next_cursor: Option<roomler_ai_remote_control::signaling::OrgRelayDiscoveryCursorWire>,
+        ttl_secs: u32,
+    },
     /// R3/R4 — the embedder observed a LAN-address-set change on a
     /// control-WS reconnect (the `RuntimeFingerprint` lan_ips mismatch that
     /// used to spawn a WHOLE NEW runtime beside this one — which was never
@@ -866,6 +991,20 @@ pub enum OverlayEvent {
 #[async_trait]
 pub trait LinkFactory: Send + Sync {
     async fn build_carrier(&self, peer: &PeerConfig) -> Option<Arc<Carrier>>;
+}
+
+/// Await one coalesced listener transition. Closed/absent publishers never spin.
+async fn relay_listener_changed(rx: &mut Option<watch::Receiver<Option<u16>>>) -> bool {
+    match rx.as_mut() {
+        Some(receiver) => match receiver.changed().await {
+            Ok(()) => true,
+            Err(_) => {
+                *rx = None;
+                false
+            }
+        },
+        None => std::future::pending().await,
+    }
 }
 
 /// Creates the TUN once the node's overlay IP is known. Production
@@ -1252,6 +1391,9 @@ pub struct OverlayRuntime {
     key_epoch: u32,
     /// FR-19 P4b — see [`Self::with_org_primary`].
     org_primary: bool,
+    path_trial_managed: std::sync::Mutex<HashSet<ObjectId>>,
+    /// Actual daemon listener lifetime; never inferred from environment.
+    relay_listener_readiness: Option<watch::Receiver<Option<u16>>>,
     /// Phase 1 — subnet CIDRs this node advertises as a router (from config).
     /// Sent in the join; the server gates them behind admin approval.
     advertised_routes: Vec<String>,
@@ -1475,6 +1617,7 @@ fn build_overlay_view(
     // otherwise-identical reads (HashMap iteration order is nondeterministic).
     peers.sort_by(|a, b| a.node_id.cmp(&b.node_id));
     OverlayView {
+        path_trials: None,
         self_ip: (!self_ip.is_empty()).then(|| self_ip.to_string()),
         self_ip6: derived_v6_of(self_ip),
         peers,
@@ -1533,6 +1676,8 @@ impl OverlayRuntime {
             route_offer_withheld: None,
             peer_view: None,
             org_primary: false,
+            path_trial_managed: std::sync::Mutex::new(HashSet::new()),
+            relay_listener_readiness: None,
             exit_node: None,
             exit_server_ips: Vec::new(),
             netstack_socks: None,
@@ -1568,6 +1713,8 @@ impl OverlayRuntime {
             route_offer_withheld: None,
             peer_view: None,
             org_primary: false,
+            path_trial_managed: std::sync::Mutex::new(HashSet::new()),
+            relay_listener_readiness: None,
             exit_node: None,
             exit_server_ips: Vec::new(),
             netstack_socks: None,
@@ -1675,6 +1822,23 @@ impl OverlayRuntime {
         self
     }
 
+    /// Inject the daemon's actually bound relay listener. Unset means this
+    /// runtime is a client, even if a configuration flag requests serving.
+    pub fn with_relay_listener_readiness(
+        mut self,
+        readiness: watch::Receiver<Option<u16>>,
+    ) -> Self {
+        self.relay_listener_readiness = Some(readiness);
+        self
+    }
+
+    fn ready_relay_port(&self) -> Option<u16> {
+        let rx = self.relay_listener_readiness.as_ref()?;
+        // A dead publisher is not readiness; a watch retains its last value.
+        rx.has_changed().ok()?;
+        (*rx.borrow()).filter(|port| *port != 0)
+    }
+
     /// Rebuild + publish the [`OverlayView`] if a LocalAPI receiver is wired.
     /// Cheap (a few-element Vec + a `watch` replace); called at each point the
     /// netmap or a carrier changes. The `watch` keeps only the latest value, so
@@ -1690,6 +1854,7 @@ impl OverlayRuntime {
     async fn disco_round(
         &self,
         prober: &mut super::disco::Prober,
+        path_trials: &mut path_trial::Engine,
         rx: &mut Option<mpsc::Receiver<super::disco::DiscoInbound>>,
         wg: &WgDevice,
         by_node: &HashMap<ObjectId, Installed>,
@@ -1702,6 +1867,7 @@ impl OverlayRuntime {
         // Absorb replies first so this round's verdicts reflect the last one.
         if let Some(rx) = rx.as_mut() {
             while let Ok(p) = rx.try_recv() {
+                path_trials.active_pong(&p);
                 prober.on_pong(&p);
             }
         }
@@ -1710,11 +1876,12 @@ impl OverlayRuntime {
         // candidate set, never both, but collecting them uniformly means the
         // prune cannot depend on which branch ran.
         let mut probed: HashMap<[u8; 32], Vec<std::net::SocketAddr>> = HashMap::new();
-        for e in by_node.values().filter(|e| e.is_direct) {
+        for e in by_node.values() {
             let (nonce, frame) =
                 prober.next_ping(&e.pubkey, &self.keypair.secret, &self.keypair.public);
+            let sent_at = Instant::now();
             if let Some(dst) = wg.sender().send_disco_raw(&e.pubkey, &frame).await {
-                prober.sent(e.pubkey, dst, nonce);
+                prober.sent_at(e.pubkey, dst, nonce, sent_at);
                 probed.entry(e.pubkey).or_default().push(dst);
             }
         }
@@ -1770,8 +1937,9 @@ impl OverlayRuntime {
                 let Some((dst, sock)) = pair else { continue };
                 let (nonce, frame) =
                     prober.next_ping(&cfg.public_key, &self.keypair.secret, &self.keypair.public);
+                let sent_at = Instant::now();
                 if sock.send_to(&frame, dst).await.is_ok() {
-                    prober.sent(cfg.public_key, dst, nonce);
+                    prober.sent_at(cfg.public_key, dst, nonce, sent_at);
                     probed.entry(cfg.public_key).or_default().push(dst);
                 }
             }
@@ -1824,6 +1992,8 @@ impl OverlayRuntime {
         probing: &HashMap<ObjectId, UpgradeProbe>,
         exit_status: Option<ExitNodeStatus>,
         wg: &WgDevice,
+        path_trials: &path_trial::Engine,
+        path_trial_supported: bool,
     ) {
         if let Some(tx) = &self.peer_view {
             // Capture both clocks together so `last_seen_ms` (absolute epoch-ms)
@@ -1935,6 +2105,11 @@ impl OverlayRuntime {
             });
             // S4 — the exit-node routing status the runtime holds (the view
             // builder is pure over peers, so this is grafted on after).
+            view.path_trials = path_trials.observation(
+                current_peers,
+                by_node,
+                self.org_primary && path_trial::enabled() && path_trial_supported,
+            );
             view.exit_node = exit_status;
             // FR-97 P0b — why this node offers no routes it was configured to.
             view.route_offer_withheld = self.route_offer_withheld.clone();
@@ -2022,14 +2197,24 @@ impl OverlayRuntime {
             // (absent = refused), and `relay_port` is what the mint pairs with
             // this node's public addresses when it serves.
             supports_org_relay: super::direct::org_relay_enabled(),
+            // Parsing capability only; does not enable org relay or path trials.
+            supports_org_relay_multi_candidate: true,
+            supports_org_relay_discovery_cursor: true,
             // FR-47 — unconditionally true: understanding a refusal is not a
             // feature to roll out behind a flag, it is the difference between
             // "the server told us why" and waiting forever on a netmap that
             // is never coming.
             supports_join_refusal: true,
             org_primary: Some(self.org_primary),
-            relay_port: super::orgrelay::relay_server_enabled()
-                .then(super::orgrelay::relay_server_port),
+            supports_path_trial_v1: path_trial::enabled() && self.org_primary,
+            supports_path_backbone_v1: path_trial::enabled()
+                && self.org_primary
+                && self.mtu <= roomler_ai_remote_control::models::peer_relay_limits::BACKBONE_MAX_OVERLAY_MTU
+                && super::orgrelay::backbone::path_enabled(),
+            relay_backbone_ready: self.org_primary
+                && self.ready_relay_port().is_some()
+                && super::orgrelay::backbone::configured_local_policy().is_some(),
+            relay_port: self.ready_relay_port(),
             // Phase 1 — subnet routes we offer (admin must approve server-side).
             advertised_routes: self.advertised_routes.clone(),
             // FR-97 P0b — and, when we withheld them, why.
@@ -2074,6 +2259,10 @@ impl OverlayRuntime {
             advertised.extend(ctx.endpoints.iter().cloned());
         }
 
+        // Listener readiness is independent of the control WS lifetime. Keep
+        // one coalescing watch subscription; no polling task or per-event queue.
+        let mut listener_changes = self.relay_listener_readiness.clone();
+
         if self
             .outbound
             .send(self.make_join(advertised.clone()))
@@ -2090,13 +2279,24 @@ impl OverlayRuntime {
         }
 
         // Phase 1 — wait for the first full netmap (it carries self_ip).
-        let (self_ip, network, first_peers) = loop {
-            match events.recv().await {
+        let (self_ip, network, first_peers, mut server_org_discovery, mut server_path_trial_v1) = loop {
+            let event = tokio::select! {
+                changed = relay_listener_changed(&mut listener_changes) => {
+                    if changed {
+                        let _ = self.outbound.send(self.make_join(advertised.clone())).await;
+                    }
+                    continue;
+                }
+                event = events.recv() => event,
+            };
+            match event {
                 Some(OverlayEvent::Netmap {
                     self_ip,
                     network,
                     peers,
-                }) => break (self_ip, network, peers),
+                    org_relay_discovery,
+                    path_trial_v1,
+                }) => break (self_ip, network, peers, org_relay_discovery, path_trial_v1),
                 // rc.307 (B) — the session died before the first netmap:
                 // re-bind + re-join on the fresh one, keep waiting.
                 Some(OverlayEvent::Reattach { outbound }) => {
@@ -2118,9 +2318,11 @@ impl OverlayRuntime {
                 Some(OverlayEvent::WarmRelayGrant { .. }) => continue, // pre-netmap; ignore
                 Some(OverlayEvent::ForceDerp { .. }) => continue,   // pre-netmap; ignore
                 Some(OverlayEvent::RttSample { .. }) => continue,   // pre-netmap; ignore
+                Some(OverlayEvent::PathTrial(_)) => continue,
                 Some(OverlayEvent::OrgRelaySession { .. }) => continue, // pre-netmap; ignore
-                Some(OverlayEvent::OrgRelayRevoke { .. }) => continue, // pre-netmap; ignore
-                Some(OverlayEvent::RebuildDirect) => continue,      // pre-netmap; no plane yet
+                Some(OverlayEvent::OrgRelayRevoke { .. }) => continue,  // pre-netmap; ignore
+                Some(OverlayEvent::OrgRelayCandidates { .. }) => continue, // no membership yet
+                Some(OverlayEvent::RebuildDirect) => continue,          // pre-netmap; no plane yet
                 None => return,
             }
         };
@@ -2499,7 +2701,21 @@ impl OverlayRuntime {
                 .and_then(|g| g.bypassed().map(str::to_string)),
         });
 
+        // Independent of TURN coordination and the installed P2P/DERP carrier.
+        let mut path_trials = path_trial::Engine::new();
+        let _path_trial_view_guard = path_trial::ObservationViewGuard::new(
+            self.peer_view.clone(),
+            path_trials.observation_runtime_id(),
+        );
+        let mut path_trial_tick = tokio::time::interval(Duration::from_millis(500));
+        path_trial_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut org_discovery = super::orgrelay::discovery::Discovery::default();
+        let mut org_discovery_tick = tokio::time::interval(Duration::from_secs(11));
+        org_discovery_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut fallback = tokio::time::interval(FALLBACK_TICK);
+        let mut business_scout = tokio::time::interval(BUSINESS_SCOUT_TICK);
+        business_scout.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut business_samples = HashMap::new();
         // netstate PR-2 — subscribe to the process-wide network monitor
         // (typed deltas replace the P4 string feed; ONE OS registration per
         // process, see `netstate`). `None` (either kill-switch off /
@@ -2721,6 +2937,8 @@ impl OverlayRuntime {
             &upgrade_probes,
             exit_node_status(self.exit_node.as_deref(), &exit_state),
             &wg,
+            &path_trials,
+            server_path_trial_v1,
         );
 
         // Phase C (D8) — re-upgrade tick counter (see `REUPGRADE_EVERY_N_TICKS`).
@@ -2815,11 +3033,26 @@ impl OverlayRuntime {
         // off-loop.
         loop {
             tokio::select! {
+                changed = relay_listener_changed(&mut listener_changes) => {
+                    if changed {
+                        // Reannounce through the SAME authenticated socket.
+                        // No Reattach: keep WG/direct paths and discovery state.
+                        if self.outbound.send(self.make_join(advertised.clone())).await.is_err() {
+                            warn!("overlay: listener readiness rejoin send failed; normal reattach will retry");
+                        }
+                    }
+                }
                 // P1 (S6) — the pump ending is the session-fatal signal the
                 // TUN-reader `None` used to be.
                 _ = &mut outbound_pump => {
                     debug!("overlay: outbound pump ended; runtime exiting");
                     break;
+                },
+                // Only lock-free traffic reads and a bounded fresh proof:
+                // carrier verdicts, retries and the heavier work stay on the
+                // original fallback cadence.
+                _ = business_scout.tick() => {
+                    self.scout_business_traffic(&mut wg, &mut by_node, &mut business_samples);
                 },
                 // rc.211 — commit a finished OFF-LOOP relay carrier build (the
                 // spawned QUIC-over-TURN rendezvous — see `RelayBuildQueue`).
@@ -2829,14 +3062,14 @@ impl OverlayRuntime {
                 built = built_rx.recv() => {
                     if let Some(built) = built {
                         let t_arm = Instant::now();
-                        if relay_bq.take_if_current(&built.link.node_id, built.epoch) && current_peers.contains_key(&built.link.node_id) {
+                        if relay_bq.take_if_current(&built.link.node_id, built.epoch) && current_peers.contains_key(&built.link.node_id) && !self.path_trial_managed.lock().unwrap_or_else(|e|e.into_inner()).contains(&built.link.node_id) {
                             let BuiltRelay { link, quic, .. } = built;
                             self.install_built(&mut wg, &mut by_node, &tun, link, quic).await;
                             // Same tail as a synchronous relay install: a new
                             // coturn worker may need an exit exemption, and the
                             // LocalAPI view must reflect the new carrier.
                             self.reconcile_exit_routing(&mut wg, &tun, &by_node, &current_peers, &mut exit_state).await;
-                            self.publish_view(&self_ip, &by_node, &current_peers, &upgrade_probes, exit_node_status(self.exit_node.as_deref(), &exit_state), &wg);
+                            self.publish_view(&self_ip, &by_node, &current_peers, &upgrade_probes, exit_node_status(self.exit_node.as_deref(), &exit_state), &wg, &path_trials, server_path_trial_v1);
                         } else {
                             debug!(peer = %built.link.node_id, "overlay: dropping stale off-loop carrier build (peer removed/superseded mid-build)");
                         }
@@ -2876,7 +3109,7 @@ impl OverlayRuntime {
                                 // LocalAPI view must show the carrier the peer
                                 // is actually on.
                                 self.reconcile_exit_routing(&mut wg, &tun, &by_node, &current_peers, &mut exit_state).await;
-                                self.publish_view(&self_ip, &by_node, &current_peers, &upgrade_probes, exit_node_status(self.exit_node.as_deref(), &exit_state), &wg);
+                                self.publish_view(&self_ip, &by_node, &current_peers, &upgrade_probes, exit_node_status(self.exit_node.as_deref(), &exit_state), &wg, &path_trials, server_path_trial_v1);
                             }
                         }
                         // #28 — the `/derp` WS is back. EVERY DERP build
@@ -2927,7 +3160,7 @@ impl OverlayRuntime {
                                             // worker to exempt, and the LocalAPI view must
                                             // reflect the new carrier.
                                             self.reconcile_exit_routing(&mut wg, &tun, &by_node, &current_peers, &mut exit_state).await;
-                                            self.publish_view(&self_ip, &by_node, &current_peers, &upgrade_probes, exit_node_status(self.exit_node.as_deref(), &exit_state), &wg);
+                                            self.publish_view(&self_ip, &by_node, &current_peers, &upgrade_probes, exit_node_status(self.exit_node.as_deref(), &exit_state), &wg, &path_trials, server_path_trial_v1);
                                         }
                                     }
                                     None => {
@@ -2961,27 +3194,18 @@ impl OverlayRuntime {
                                 })
                                 .await;
                         }
-                        if org_q.take_if_current(&done.node_id, done.epoch) {
-                            if let Some(r) = relay.as_mut() {
-                                match done.conn {
-                                    Some(conn) => {
-                                        if let Some(link) = r.commit_org_bind(done.node_id, conn) {
-                                            let t0 = Instant::now();
-                                            self.install_ready(&mut wg, &mut by_node, &tun, link, &mut relay_bq).await;
-                                            warn_if_slow("install_ready(org-relay)", t0);
-                                            self.reconcile_exit_routing(&mut wg, &tun, &by_node, &current_peers, &mut exit_state).await;
-                                            self.publish_view(&self_ip, &by_node, &current_peers, &upgrade_probes, exit_node_status(self.exit_node.as_deref(), &exit_state), &wg);
-                                        }
-                                    }
-                                    None => {
-                                        warn!(peer = %done.node_id,
-                                            "overlay relay: org-relay bind failed — dropping the session (TURN/DERP on the next request)");
-                                        r.org_bind_failed(&done.node_id);
-                                    }
-                                }
+                        if let Some(r) = relay.as_mut() {
+                            if let Some(link) = commit_current_org_bind(
+                                done, &mut org_q, &current_peers, &by_node, r,
+                            ) {
+                                let t0 = Instant::now();
+                                self.install_ready(&mut wg, &mut by_node, &tun, link, &mut relay_bq).await;
+                                warn_if_slow("install_ready(org-relay)", t0);
+                                self.reconcile_exit_routing(&mut wg, &tun, &by_node, &current_peers, &mut exit_state).await;
+                                self.publish_view(&self_ip, &by_node, &current_peers, &upgrade_probes, exit_node_status(self.exit_node.as_deref(), &exit_state), &wg, &path_trials, server_path_trial_v1);
                             }
-                        } else {
-                            debug!(peer = %done.node_id, "overlay: dropping a stale org-relay bind (peer superseded mid-bind)");
+                        } else if let Some(conn) = done.conn {
+                            conn.close();
                         }
                         warn_if_slow("arm:org_bind_commit", t_arm);
                     }
@@ -3184,7 +3408,7 @@ impl OverlayRuntime {
                                 "rebuild",
                             ).await;
                             self.reconcile_exit_routing(&mut wg, &tun, &by_node, &current_peers, &mut exit_state).await;
-                            self.publish_view(&self_ip, &by_node, &current_peers, &upgrade_probes, exit_node_status(self.exit_node.as_deref(), &exit_state), &wg);
+                            self.publish_view(&self_ip, &by_node, &current_peers, &upgrade_probes, exit_node_status(self.exit_node.as_deref(), &exit_state), &wg, &path_trials, server_path_trial_v1);
                             warn_if_slow("rebuild_direct_plane", t0);
                         }
                     }
@@ -3193,7 +3417,7 @@ impl OverlayRuntime {
                     // never reaches here (its lane consumes the flag inline).
                     // The distinction decides the conviction window, so it is
                     // a type, not a bool: see `ForcedPoke`.
-                    self.sweep_carrier_health(
+                    let carrier_lost = self.sweep_and_repair_carriers(
                         &mut wg, &mut by_node, &mut relay, &tun,
                         &mut relay_refresh_cooldown, &current_peers,
                         if std::mem::take(&mut netchange_poke_due) {
@@ -3201,14 +3425,18 @@ impl OverlayRuntime {
                         } else {
                             ForcedPoke::No
                         },
+                        direct_ctx.as_ref(), &mut upgrade_probes, &mut relay_bq,
                     ).await;
-                    warn_if_slow("sweep_carrier_health", t0);
+                    warn_if_slow("sweep_and_repair_carriers", t0);
+                    if let Some(wait) = business_poke_recheck(&by_node, Instant::now()) {
+                        fallback.reset_after(wait);
+                    }
                     // C2 — disco round: one out-of-tunnel echo per direct
                     // carrier over the path it actually uses, then absorb the
                     // replies. MEASUREMENT ONLY — nothing below reads the
                     // table to make a routing decision (that is C3/C6, behind
                     // their own flags). Default OFF.
-                    self.disco_round(&mut disco, &mut disco_rx, &wg, &by_node, &current_peers, direct_ctx.as_ref()).await;
+                    self.disco_round(&mut disco, &mut path_trials, &mut disco_rx, &wg, &by_node, &current_peers, direct_ctx.as_ref()).await;
                     // rc.208 — make-before-break: promote any upgrade probe whose
                     // handshake latched (cut over to direct, drop the relay) and
                     // expire any that missed its deadline (keep the relay). Inert
@@ -3235,7 +3463,8 @@ impl OverlayRuntime {
                     if fast_reupgrade_until.is_some() && !fast_walk {
                         fast_reupgrade_until = None;
                     }
-                    if fast_walk || reupgrade_ticks.is_multiple_of(REUPGRADE_EVERY_N_TICKS) {
+                    // A loss already walked every peer in this same pass.
+                    if !carrier_lost && (fast_walk || reupgrade_ticks.is_multiple_of(REUPGRADE_EVERY_N_TICKS)) {
                         let peers: Vec<NetmapPeer> = current_peers.values().cloned().collect();
                         let t0 = Instant::now();
                         self.install_peers(
@@ -3260,8 +3489,7 @@ impl OverlayRuntime {
                         &current_peers,
                         &upgrade_probes,
                         exit_node_status(self.exit_node.as_deref(), &exit_state),
-                        &wg,
-                    );
+                        &wg, &path_trials, server_path_trial_v1);
                     warn_if_slow("arm:fallback_sweep", t_arm);
                 },
                 // rc.146 — re-assert every installed peer's /32 on the overlay
@@ -3593,6 +3821,20 @@ impl OverlayRuntime {
                 // probe liveness (a 1-byte permission assert, spawned
                 // off-loop) while one is. The probe succeeding while srflx
                 // is NONE is THE measurement: the flow is grandfathered.
+                _ = path_trial_tick.tick() => {
+                    if let Some(rx) = disco_rx.as_mut() { while let Ok(p) = rx.try_recv() {
+                        path_trials.active_pong(&p); disco.on_pong(&p);
+                    }}
+                    path_trials.tick(&self, &mut wg, &current_peers, &mut by_node, &mut org_discovery, server_path_trial_v1).await;
+                    path_trial::publish_observation_view(&self.peer_view,&path_trials,&current_peers,&by_node,
+                        self.org_primary && path_trial::enabled() && server_path_trial_v1);
+                },
+                _ = org_discovery_tick.tick() => {
+                    org_discovery.request(
+                        self.org_primary && super::direct::org_relay_enabled(),
+                        server_org_discovery, &current_peers, &self.outbound, Instant::now(),
+                    ).await;
+                },
                 _ = warm_tick.tick(), if warm_enabled => {
                     let now = Instant::now();
                     // C4 stage 2 — request whenever nothing is live: the
@@ -3786,7 +4028,7 @@ impl OverlayRuntime {
                             &mut relay_bq, inb,
                         ).await;
                         self.reconcile_exit_routing(&mut wg, &tun, &by_node, &current_peers, &mut exit_state).await;
-                        self.publish_view(&self_ip, &by_node, &current_peers, &upgrade_probes, exit_node_status(self.exit_node.as_deref(), &exit_state), &wg);
+                        self.publish_view(&self_ip, &by_node, &current_peers, &upgrade_probes, exit_node_status(self.exit_node.as_deref(), &exit_state), &wg, &path_trials, server_path_trial_v1);
                         warn_if_slow("arm:direct_inbound", t_arm);
                     }
                 },
@@ -3800,6 +4042,11 @@ impl OverlayRuntime {
                     // the point.
                     Some(OverlayEvent::Reattach { outbound }) => {
                         let t_arm = Instant::now();
+                        path_trials.reset_observation(crate::localapi::PathTrialResetReason::Reattach);
+                        path_trial::clear_observation_view(&self.peer_view,path_trials.observation_runtime_id());
+                        server_path_trial_v1 = false;
+                        server_org_discovery = false; // await explicit support on the NEW full netmap
+                        org_discovery.invalidate(); // old WS replies cannot refresh metadata
                         self.outbound.swap(outbound);
                         // Join-send failure = the new session died within ms.
                         // NEVER exit here (a rapid double-flap must not kill
@@ -3862,7 +4109,7 @@ impl OverlayRuntime {
                     // Re-sync: a full netmap is the reconcile point — today it
                     // arrives on every rc.307 re-join (reattach), and the arm
                     // below applies it AUTHORITATIVELY against live state.
-                    Some(OverlayEvent::Netmap { self_ip: new_self_ip, network: new_network, peers }) => {
+                    Some(OverlayEvent::Netmap { self_ip: new_self_ip, network: new_network, peers, org_relay_discovery, path_trial_v1 }) => {
                         let t_arm = Instant::now();
                         // A re-join can only reconcile onto the SAME identity.
                         // A different self_ip (re-enroll / tenant renumber) or
@@ -3887,8 +4134,20 @@ impl OverlayRuntime {
                                 tokio::time::sleep(Duration::from_millis(stall)).await;
                             }
                         }
+                        path_trials.reset_observation(crate::localapi::PathTrialResetReason::FullNetmap);
+                        path_trial::clear_observation_view(&self.peer_view,path_trials.observation_runtime_id());
+                        server_path_trial_v1 = path_trial_v1;
+                        server_org_discovery = org_relay_discovery;
+                        org_discovery.invalidate(); // authoritative membership / key / ACL reconciliation
                         let old_peers = std::mem::take(&mut current_peers);
                         current_peers = peers.iter().map(|p| (p.node_id, p.clone())).collect();
+                        for (nid, old) in &old_peers {
+                            if current_peers.get(nid).and_then(org_peer_identity)
+                                != org_peer_identity(old)
+                            {
+                                invalidate_org_bind_identity(nid, &mut org_q, &mut relay);
+                            }
+                        }
                         // P4 — refresh per-source ingress rules from the netmap
                         // the server just shaped for us.
                         wg.sync_peer_ingress(&current_peers);
@@ -3956,10 +4215,12 @@ impl OverlayRuntime {
                         self.install_peers(&mut wg, &mut by_node, &mut relay, &tun, &peers, direct_ctx.as_ref(), &mut upgrade_probes, &mut relay_bq, "netmap").await;
                         warn_if_slow("install_peers(netmap)", t0);
                         self.reconcile_exit_routing(&mut wg, &tun, &by_node, &current_peers, &mut exit_state).await;
-                        self.publish_view(&self_ip, &by_node, &current_peers, &upgrade_probes, exit_node_status(self.exit_node.as_deref(), &exit_state), &wg);
+                        self.publish_view(&self_ip, &by_node, &current_peers, &upgrade_probes, exit_node_status(self.exit_node.as_deref(), &exit_state), &wg, &path_trials, server_path_trial_v1);
                         warn_if_slow("arm:netmap", t_arm);
                     }
                     Some(OverlayEvent::NetmapDelta { upserts, removes }) => {
+                        path_trials.reset_observation(crate::localapi::PathTrialResetReason::NetmapDelta);
+                        path_trial::clear_observation_view(&self.peer_view,path_trials.observation_runtime_id());
                         let t_arm = Instant::now();
                         // Multi-org P2a — REMOVES FIRST. The tenant-block
                         // renumber (P2b) re-IPs a node as a `remove(id) +
@@ -3969,7 +4230,8 @@ impl OverlayRuntime {
                         // netted to "peer gone". Removes-first makes the pair
                         // a genuine re-IP primitive (evict old → clean
                         // install new); disjoint-id deltas are order-blind.
-                        for node_id in removes {
+                        for node_id in removes.iter().copied() {
+                            invalidate_org_bind_identity(&node_id, &mut org_q, &mut relay);
                             self.evict_peer(
                                 node_id, &mut wg, &mut by_node, &tun, &mut relay, &mut relay_bq,
                                 &mut alloc_q, &mut upgrade_probes, &mut current_peers,
@@ -3977,6 +4239,11 @@ impl OverlayRuntime {
                             ).await;
                         }
                         for p in &upserts {
+                            if current_peers.get(&p.node_id).is_some_and(|old|
+                                org_peer_identity(old) != org_peer_identity(p))
+                            {
+                                invalidate_org_bind_identity(&p.node_id, &mut org_q, &mut relay);
+                            }
                             // rc.225 — endpoint change ⇒ clean cooldown slate
                             // (see the Netmap arm / `direct_endpoints_changed`).
                             if let Some(old) = current_peers.insert(p.node_id, p.clone())
@@ -3988,6 +4255,7 @@ impl OverlayRuntime {
                                 debug!(peer = %p.node_id, "overlay: peer's direct endpoints changed — cleared its path-monitor evidence");
                             }
                         }
+                        org_discovery.reconcile_delta(&current_peers, &removes);
                         // P4 — a delta can change a peer's grant without any
                         // install/removal, so the table is resynced here too.
                         wg.sync_peer_ingress(&current_peers);
@@ -3996,7 +4264,7 @@ impl OverlayRuntime {
                         warn_if_slow("install_peers(delta)", t0);
                         if let Some(names) = &dns_names { sync_name_map(names, &current_peers, network.self_name.as_deref(), self_v4).await; }
                         self.reconcile_exit_routing(&mut wg, &tun, &by_node, &current_peers, &mut exit_state).await;
-                        self.publish_view(&self_ip, &by_node, &current_peers, &upgrade_probes, exit_node_status(self.exit_node.as_deref(), &exit_state), &wg);
+                        self.publish_view(&self_ip, &by_node, &current_peers, &upgrade_probes, exit_node_status(self.exit_node.as_deref(), &exit_state), &wg, &path_trials, server_path_trial_v1);
                         warn_if_slow("arm:netmap_delta", t_arm);
                     }
                     Some(OverlayEvent::RelayGrant { peer_node_id, ice_servers, pair_key }) => {
@@ -4149,27 +4417,26 @@ impl OverlayRuntime {
                         }
                     }
                     // FR-19 P4b — the server minted an org-relay session for a pair.
+                    Some(OverlayEvent::PathTrial(msg)) => {
+                        path_trials.control(msg, &self, &mut wg, &current_peers, &mut by_node, server_path_trial_v1).await;
+                        let managed: Vec<_> = self.path_trial_managed.lock().unwrap_or_else(|e|e.into_inner()).iter().copied().collect();
+                        for node in managed {
+                            org_q.invalidate(&node); alloc_q.invalidate(&node); relay_bq.invalidate(&node);
+                            if let Some(probe)=upgrade_probes.remove(&node) { wg.drop_direct_probe(&probe.pubkey).await; self.shadow(|s|s.mon.on_probe_aborted(&node)); }
+                            if let Some(r)=relay.as_mut() { r.forget(&node); }
+                        }
+                        self.publish_view(&self_ip, &by_node, &current_peers, &upgrade_probes, exit_node_status(self.exit_node.as_deref(), &exit_state), &wg, &path_trials, server_path_trial_v1);
+                    }
                     Some(OverlayEvent::OrgRelaySession { vni, generation, peer_node_id, relay_node_id, relay_endpoints, bind_secret, bind_secs, max_lifetime_secs }) => {
                         let t_arm = Instant::now();
+                        if self.path_trial_managed.lock().unwrap_or_else(|e|e.into_inner()).contains(&peer_node_id) { continue; }
                         if let Some(r) = relay.as_mut() {
                             match crate::overlay::orgrelay::member::OrgSession::from_wire(vni, generation, relay_node_id, &relay_endpoints, &bind_secret, bind_secs, max_lifetime_secs) {
                                 Some(session) => {
-                                    r.org_session_accept(peer_node_id, session);
-                                    // Bind now when the pair NEEDS a relay: TURN
-                                    // coordination in flight, or installed on a
-                                    // non-direct carrier. A DIRECT pair keeps its
-                                    // path — never ratchet — and the session waits
-                                    // for the next relay request.
-                                    let needs_relay = r.is_tracking(&peer_node_id)
-                                        || by_node.get(&peer_node_id).is_some_and(|e| !e.is_direct);
-                                    if needs_relay
-                                        && let Some(np) = current_peers.get(&peer_node_id)
-                                        && let Some(pc) = crate::overlay::netmap::peer_config_from_netmap(np)
-                                    {
-                                        alloc_q.invalidate(&peer_node_id);
-                                        r.forget(&peer_node_id);
-                                        r.org_request_bind(peer_node_id, pc);
-                                    }
+                                    accept_org_bind_session(
+                                        peer_node_id, session, r, &mut org_q,
+                                        &mut alloc_q, &current_peers, &by_node,
+                                    );
                                     for job in r.take_org_jobs() {
                                         let label = current_peers.get(&job.relay_node_id).map(|p| p.name.clone()).unwrap_or_else(|| job.relay_node_id.to_hex());
                                         let epoch = org_q.stamp(job.node_id);
@@ -4182,7 +4449,16 @@ impl OverlayRuntime {
                         }
                         warn_if_slow("arm:org_relay_session", t_arm);
                     }
+                    Some(OverlayEvent::OrgRelayCandidates { peer_node_id, request_id, candidates, ttl_secs, next_cursor }) => {
+                        if self.org_primary && super::direct::org_relay_enabled() && server_org_discovery {
+                            let count = org_discovery.receive_page(&current_peers, peer_node_id, request_id, candidates, ttl_secs, next_cursor, Instant::now());
+                            debug!(target: "tunnel_core::overlay::runtime::org_discovery_metadata", peer = %peer_node_id, candidates = count, "overlay: org-relay discovery metadata received (not a session or path decision)");
+                        } else {
+                            org_discovery.invalidate();
+                        }
+                    }
                     Some(OverlayEvent::OrgRelayRevoke { vni }) => {
+                        org_discovery.invalidate(); // no stale hints survive any relay revocation
                         if let Some(r) = relay.as_mut()
                             && let Some(peer) = r.org_session_revoke(vni)
                         {
@@ -4250,7 +4526,7 @@ impl OverlayRuntime {
                                 self.install_ready(&mut wg, &mut by_node, &tun, link, &mut relay_bq).await;
                                 warn_if_slow("install_ready(spawn-or-sync)", t0);
                                 self.reconcile_exit_routing(&mut wg, &tun, &by_node, &current_peers, &mut exit_state).await;
-                                self.publish_view(&self_ip, &by_node, &current_peers, &upgrade_probes, exit_node_status(self.exit_node.as_deref(), &exit_state), &wg);
+                                self.publish_view(&self_ip, &by_node, &current_peers, &upgrade_probes, exit_node_status(self.exit_node.as_deref(), &exit_state), &wg, &path_trials, server_path_trial_v1);
                             }
                         }
                         warn_if_slow("arm:force_derp", t_arm);
@@ -5509,6 +5785,7 @@ mod tests {
                 poke: Some(PokeArm {
                     at: armed_at,
                     from_major: false,
+                    from_business: false,
                 }),
                 ..Installed::base(pk, overlay_ip, DirectTier::Public, Instant::now())
             },
@@ -5544,6 +5821,329 @@ mod tests {
             "the re-arm must restamp the clock — judging a 2 s window against a \
              5 s-old initiation would convict on stale evidence"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn sweep_business_poke_before_silence_and_through_tcp_backoff() {
+        let kp = WgKeypair::generate();
+        let peer_kp = WgKeypair::generate();
+        let (out_tx, _out_rx) = mpsc::channel::<ClientMsg>(16);
+        let (tun_mock, _inj, _del) = MockTun::new();
+        let tf: TunFactory = {
+            let m = tun_mock.clone();
+            Box::new(move |_, _, _| Ok(m.clone() as Arc<dyn TunIo>))
+        };
+        let rt = OverlayRuntime::new_relay(kp.clone(), out_tx, tf, 1280);
+        let (mut wg, _tun_rx) = WgDevice::new(kp.secret.clone());
+        let sock = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        wg.ensure_direct_demux(sock.clone());
+        let dead: SocketAddr = "127.0.0.1:9".parse().unwrap();
+        let ip = Ipv4Addr::new(100, 64, 0, 4);
+        let pk = peer_kp.public.to_bytes();
+        wg.add_direct_peer(sock, pk, ip, dead, true).await;
+        wg.test_latch_handshake_done(&pk);
+        let nid = ObjectId::from_bytes([74, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        let mut by_node = HashMap::new();
+        by_node.insert(nid, Installed {
+            since: Instant::now().checked_sub(Duration::from_secs(20)).unwrap(),
+            last_rx_at: Instant::now(),
+            ..Installed::base(pk, ip, DirectTier::Srflx, Instant::now())
+        });
+        let tun: Arc<dyn TunIo> = tun_mock;
+        let mut relay = None;
+        let mut refresh = HashMap::new();
+        let peers = HashMap::new();
+        // A healthy idle carrier must not gain a new revalidation trigger.
+        assert!(!rt.sweep_carrier_health(&mut wg, &mut by_node, &mut relay, &tun,
+            &mut refresh, &peers, ForcedPoke::No).await,
+            "healthy idle peers do not request an immediate repair walk");
+        assert!(by_node[&nid].poke.is_none());
+        // A periodic/pressure proof may already be in flight when business
+        // becomes one-way. Upgrade it against a fresh initiation, rather than
+        // leaving the business flow behind its old establishment-sized wait.
+        let earlier = Instant::now().checked_sub(Duration::from_secs(1)).unwrap();
+        by_node.get_mut(&nid).unwrap().poke = Some(PokeArm {
+            at: earlier, from_major: false, from_business: false,
+        });
+        wg.test_set_ip_traffic(&pk, 1, 0);
+        rt.sweep_carrier_health(&mut wg, &mut by_node, &mut relay, &tun,
+            &mut refresh, &peers, ForcedPoke::No).await;
+        assert!(by_node[&nid].poke.is_some(),
+            "unanswered business traffic must start round-trip validation immediately");
+        assert_eq!(by_node[&nid].bad_sweeps, 1);
+        assert!(by_node[&nid].poke.unwrap().from_business,
+            "business suspicion must select the established-path proof window");
+        let armed = by_node[&nid].poke.unwrap().at;
+        assert!(armed > earlier, "a shorter window needs a fresh initiation");
+        wg.test_set_ip_traffic(&pk, 2, 0);
+        rt.sweep_carrier_health(&mut wg, &mut by_node, &mut relay, &tun,
+            &mut refresh, &peers, ForcedPoke::No).await;
+        assert_eq!(by_node[&nid].poke.unwrap().at, armed,
+            "repeated suspicion must not keep moving the proof deadline");
+        let major_at = Instant::now();
+        by_node.get_mut(&nid).unwrap().bad_sweeps = 0;
+        by_node.get_mut(&nid).unwrap().poke = Some(PokeArm {
+            at: major_at, from_major: true, from_business: false,
+        });
+        wg.test_set_ip_traffic(&pk, 3, 0);
+        rt.sweep_carrier_health(&mut wg, &mut by_node, &mut relay, &tun,
+            &mut refresh, &peers, ForcedPoke::No).await;
+        assert!(by_node[&nid].poke.unwrap().from_major,
+            "business suspicion must not replace the more urgent Major proof");
+        assert_eq!(by_node[&nid].poke.unwrap().at, major_at);
+
+        // TCP backs off and submits no further packet. Its idle interval must
+        // not cancel the independent handshake proof or restart its deadline.
+        let at = Instant::now().checked_sub(crate::overlay::lifecycle::BUSINESS_POKE_DEADLINE
+            + Duration::from_secs(1)).unwrap();
+        by_node.get_mut(&nid).unwrap().poke = Some(PokeArm { at, from_major: false, from_business: true });
+        assert!(rt.sweep_carrier_health(&mut wg, &mut by_node, &mut relay, &tun,
+            &mut refresh, &peers, ForcedPoke::No).await,
+            "a real removal requests repair immediately");
+        assert!(!by_node.contains_key(&nid));
+        assert_eq!(rt.path_shadow.lock().unwrap().mon.strikes(&nid, DirectTier::Srflx), 0,
+            "an active proof failure must retain the existing no-strike policy");
+    }
+
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn business_scout_detects_loss_inside_a_mixed_health_bucket() {
+        let kp = WgKeypair::generate();
+        let peer_kp = WgKeypair::generate();
+        let (out_tx, _out_rx) = mpsc::channel::<ClientMsg>(16);
+        let (tun_mock, _inj, _del) = MockTun::new();
+        let tf: TunFactory = {
+            let m = tun_mock.clone();
+            Box::new(move |_, _, _| Ok(m.clone() as Arc<dyn TunIo>))
+        };
+        let rt = OverlayRuntime::new_relay(kp.clone(), out_tx, tf, 1280);
+        let (mut wg, _tun_rx) = WgDevice::new(kp.secret.clone());
+        let sock = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        wg.ensure_direct_demux(sock.clone());
+        let dead: SocketAddr = "127.0.0.1:9".parse().unwrap();
+        let ip = Ipv4Addr::new(100, 64, 0, 6);
+        let pk = peer_kp.public.to_bytes();
+        wg.add_direct_peer(sock.clone(), pk, ip, dead, true).await;
+        wg.test_latch_handshake_done(&pk);
+        let nid = ObjectId::from_bytes([76, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        let mut by_node = HashMap::new();
+        by_node.insert(nid, Installed {
+            since: Instant::now() - Duration::from_secs(20),
+            last_rx_at: Instant::now(),
+            ..Installed::base(pk, ip, DirectTier::Srflx, Instant::now())
+        });
+        let mut samples = HashMap::new();
+        let tun: Arc<dyn TunIo> = tun_mock;
+        let mut relay = None;
+        let mut refresh = HashMap::new();
+        let peers = HashMap::new();
+
+        // The scout first sees healthy traffic. A fault then loses one packet,
+        // but the full five-second bucket still contains pre-fault receives.
+        wg.test_set_ip_traffic(&pk, 10, 10);
+        rt.scout_business_traffic(&mut wg, &mut by_node, &mut samples);
+        assert!(by_node[&nid].poke.is_none());
+        wg.test_set_ip_traffic(&pk, 11, 10);
+        rt.sweep_carrier_health(&mut wg, &mut by_node, &mut relay, &tun,
+            &mut refresh, &peers, ForcedPoke::No).await;
+        assert_eq!(by_node[&nid].bad_sweeps, 0);
+        assert!(by_node[&nid].poke.is_none(), "the mixed health bucket masks this loss");
+        wg.test_bump_rx_any(&pk);
+        rt.scout_business_traffic(&mut wg, &mut by_node, &mut samples);
+        let armed = by_node[&nid].poke.expect("the one-second scout must start proof before the next health sweep");
+        assert!(armed.from_business && !armed.from_major);
+        assert_eq!(by_node[&nid].bad_sweeps, 0);
+        assert_eq!(by_node[&nid].last_traffic, (11, 10));
+        assert_eq!(wg.peer_take_rx_any(&pk), 1, "the scout must not drain sweep liveness");
+        assert_eq!(rt.path_shadow.lock().unwrap().mon.strikes(&nid, DirectTier::Srflx), 0);
+
+        // Repeated sends or TCP idle backoff must not move an existing deadline.
+        wg.test_set_ip_traffic(&pk, 12, 10);
+        rt.scout_business_traffic(&mut wg, &mut by_node, &mut samples);
+        rt.scout_business_traffic(&mut wg, &mut by_node, &mut samples);
+        assert_eq!(by_node[&nid].poke.unwrap().at, armed.at);
+        tokio::time::sleep(Duration::from_millis(2)).await;
+        wg.test_stamp_initiator_hs(&pk);
+        assert!(wg.peer_initiator_hs_answered(&pk, armed.at));
+        rt.scout_business_traffic(&mut wg, &mut by_node, &mut samples);
+        assert_eq!(by_node[&nid].poke.unwrap().at, armed.at,
+            "only the normal sweep settles an answered proof");
+        wg.test_set_ip_traffic(&pk, 12, 11);
+        rt.sweep_carrier_health(&mut wg, &mut by_node, &mut relay, &tun,
+            &mut refresh, &peers, ForcedPoke::No).await;
+        assert!(by_node[&nid].poke.is_none(), "an answered healthy path survives and settles");
+        rt.scout_business_traffic(&mut wg, &mut by_node, &mut samples);
+        assert!(by_node[&nid].poke.is_none());
+
+        let major = Instant::now();
+        by_node.get_mut(&nid).unwrap().poke = Some(PokeArm {
+            at: major, from_major: true, from_business: false,
+        });
+        wg.test_set_ip_traffic(&pk, 13, 11);
+        rt.scout_business_traffic(&mut wg, &mut by_node, &mut samples);
+        assert_eq!(by_node[&nid].poke.unwrap().at, major);
+        assert!(by_node[&nid].poke.unwrap().from_major);
+        let normal = major - Duration::from_secs(1);
+        by_node.get_mut(&nid).unwrap().poke = Some(PokeArm {
+            at: normal, from_major: false, from_business: false,
+        });
+        wg.test_set_ip_traffic(&pk, 14, 11);
+        rt.scout_business_traffic(&mut wg, &mut by_node, &mut samples);
+        assert!(by_node[&nid].poke.unwrap().from_business);
+        assert!(by_node[&nid].poke.unwrap().at > normal);
+
+        // New installations and installing/relay carriers cannot inherit an
+        // older carrier's sample or use this established-direct fast path.
+        by_node.get_mut(&nid).unwrap().poke = None;
+        by_node.get_mut(&nid).unwrap().since = Instant::now() - Duration::from_secs(21);
+        wg.test_set_ip_traffic(&pk, 15, 11);
+        rt.scout_business_traffic(&mut wg, &mut by_node, &mut samples);
+        assert!(by_node[&nid].poke.is_none());
+        wg.remove_peer(&pk).await;
+        wg.add_direct_peer(sock, pk, ip, dead, false).await;
+        wg.test_set_ip_traffic(&pk, 1, 0);
+        rt.scout_business_traffic(&mut wg, &mut by_node, &mut samples);
+        assert!(by_node[&nid].poke.is_none());
+        assert!(!samples.contains_key(&nid));
+        by_node.get_mut(&nid).unwrap().is_direct = false;
+        wg.test_latch_handshake_done(&pk);
+        rt.scout_business_traffic(&mut wg, &mut by_node, &mut samples);
+        assert!(by_node[&nid].poke.is_none());
+        assert!(!samples.contains_key(&nid));
+    }
+
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn business_scout_observes_a_failed_carrier_send_without_inflating_tx() {
+        let kp = WgKeypair::generate();
+        let peer_kp = WgKeypair::generate();
+        let (out_tx, _out_rx) = mpsc::channel::<ClientMsg>(16);
+        let (tun_mock, _inj, _del) = MockTun::new();
+        let tf: TunFactory = {
+            let m = tun_mock.clone();
+            Box::new(move |_, _, _| Ok(m.clone() as Arc<dyn TunIo>))
+        };
+        let rt = OverlayRuntime::new_relay(kp.clone(), out_tx, tf, 1280);
+        let (mut wg, _tun_rx) = WgDevice::new(kp.secret.clone());
+        let sock = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        wg.ensure_direct_demux(sock.clone());
+        // An IPv4-only carrier socket cannot send to an IPv6 destination.
+        // This exercises a real send error without changing a host firewall.
+        let impossible: SocketAddr = "[::1]:9".parse().unwrap();
+        let ip = Ipv4Addr::new(100, 64, 0, 7);
+        let pk = peer_kp.public.to_bytes();
+        wg.add_direct_peer(sock, pk, ip, impossible, false).await;
+        wg.test_latch_handshake_done(&pk);
+        let nid = ObjectId::from_bytes([77, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        let mut by_node = HashMap::new();
+        by_node.insert(nid, Installed {
+            since: Instant::now() - Duration::from_secs(20),
+            last_rx_at: Instant::now(),
+            ..Installed::base(pk, ip, DirectTier::Srflx, Instant::now())
+        });
+        let mut samples = HashMap::new();
+        rt.scout_business_traffic(&mut wg, &mut by_node, &mut samples);
+        let packet = [0x45, 0, 0, 20, 0, 0, 0, 0, 64, 6, 0, 0,
+            100, 64, 0, 1, 100, 64, 0, 7];
+        assert!(!wg.sender().send_to_peer(&pk, &packet).await,
+            "the carrier send must actually fail");
+        assert_eq!(wg.peer_traffic(&pk), Some((0, 0)),
+            "a failed send must not become successful API traffic");
+        assert_eq!(wg.peer_business_traffic(&pk), Some((1, 0)),
+            "failed business sends still require path validation");
+        rt.scout_business_traffic(&mut wg, &mut by_node, &mut samples);
+        let proof = by_node[&nid].poke.expect("failed local business send arms proof");
+        assert!(proof.from_business && !proof.from_major);
+        assert_eq!(by_node[&nid].bad_sweeps, 0);
+        assert_eq!(by_node[&nid].last_traffic, (0, 0));
+        assert!(wg.poke_handshake(&pk));
+        tokio::time::sleep(Duration::from_millis(2)).await;
+        assert_eq!(wg.peer_business_traffic(&pk), Some((1, 0)),
+            "a standalone handshake must not count as business traffic");
+        rt.scout_business_traffic(&mut wg, &mut by_node, &mut samples);
+        assert_eq!(by_node[&nid].poke.unwrap().at, proof.at);
+    }
+
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn sweep_repair_builds_floor_immediately_only_after_a_real_removal() {
+        let kp = WgKeypair::generate();
+        let peer_kp = WgKeypair::generate();
+        let new_kp = WgKeypair::generate();
+        let (out_tx, _out_rx) = mpsc::channel::<ClientMsg>(32);
+        let (tun_mock, _inj, _del) = MockTun::new();
+        let tf: TunFactory = {
+            let m = tun_mock.clone();
+            Box::new(move |_, _, _| Ok(m.clone() as Arc<dyn TunIo>))
+        };
+        let rt = OverlayRuntime::new_relay(kp.clone(), out_tx.clone(), tf, 1280);
+        let mux = DerpMux::new(kp.public.to_bytes()).0;
+        let mut relay = Some(RelayCoordinator::new(out_tx, kp.public.to_bytes(),
+            true, vec![], Some(mux)));
+        let (mut wg, _tun_rx) = WgDevice::new(kp.secret.clone());
+        let sock = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        wg.ensure_direct_demux(sock.clone());
+        let ip = Ipv4Addr::new(100, 64, 0, 8);
+        let new_ip = Ipv4Addr::new(100, 64, 0, 9);
+        let pk = peer_kp.public.to_bytes();
+        wg.add_direct_peer(sock, pk, ip, "127.0.0.1:9".parse().unwrap(), true).await;
+        wg.test_latch_handshake_done(&pk);
+        let nid = ObjectId::from_bytes([78, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        let new_nid = ObjectId::from_bytes([79, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        let mut by_node = HashMap::new();
+        by_node.insert(nid, Installed {
+            since: Instant::now() - Duration::from_secs(20),
+            last_rx_at: Instant::now(),
+            ..Installed::base(pk, ip, DirectTier::Srflx, Instant::now())
+        });
+        let mut current_peers = HashMap::new();
+        current_peers.insert(nid, test_netmap_peer(nid, ip, &peer_kp));
+        // This eligible but uninstalled sentinel exposes any extra walk on
+        // a healthy pass: a walk would floor it immediately too.
+        current_peers.insert(new_nid, test_netmap_peer(new_nid, new_ip, &new_kp));
+        let tun: Arc<dyn TunIo> = tun_mock;
+        let mut refresh = HashMap::new();
+        let mut probes = HashMap::new();
+        let mut bq = test_relay_bq();
+        assert!(!rt.sweep_and_repair_carriers(&mut wg, &mut by_node, &mut relay,
+            &tun, &mut refresh, &current_peers, ForcedPoke::No, None,
+            &mut probes, &mut bq).await);
+        assert!(by_node[&nid].is_direct);
+        assert!(!by_node.contains_key(&new_nid), "healthy sweep must not walk or retry peers");
+
+        by_node.get_mut(&nid).unwrap().poke = Some(PokeArm {
+            at: Instant::now() - crate::overlay::lifecycle::BUSINESS_POKE_DEADLINE
+                - Duration::from_secs(1),
+            from_major: false, from_business: true,
+        });
+        assert!(rt.sweep_and_repair_carriers(&mut wg, &mut by_node, &mut relay,
+            &tun, &mut refresh, &current_peers, ForcedPoke::No, None,
+            &mut probes, &mut bq).await);
+        let repaired = by_node.get(&nid).expect("a dead carrier must be re-floored in this pass");
+        assert!(!repaired.is_direct);
+        assert_eq!(repaired.relay_kind, Some(RelayKind::Derp));
+        assert_eq!(wg.test_route(&ip), Some(pk));
+        assert!(by_node.contains_key(&new_nid), "the existing establish walk repairs all peers");
+    }
+
+    #[test]
+    fn business_poke_recheck_reaches_deadline_without_a_busy_loop() {
+        let now = Instant::now();
+        let nid = ObjectId::from_bytes([75, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        let mut peers = HashMap::new();
+        peers.insert(nid, Installed {
+            poke: Some(PokeArm { at: now, from_major: false, from_business: true }),
+            ..Installed::base([0; 32], Ipv4Addr::new(100, 64, 0, 5), DirectTier::Srflx, now)
+        });
+        assert!(business_poke_recheck(&peers, now).is_none());
+        assert_eq!(business_poke_recheck(&peers, now + Duration::from_secs(5)),
+            Some(Duration::from_millis(1250)));
+        assert_eq!(business_poke_recheck(&peers, now + Duration::from_secs(7)),
+            Some(Duration::from_millis(100)));
+        peers.get_mut(&nid).unwrap().poke.as_mut().unwrap().from_business = false;
+        assert!(business_poke_recheck(&peers, now + Duration::from_secs(5)).is_none());
+        peers.get_mut(&nid).unwrap().poke = None;
+        assert!(business_poke_recheck(&peers, now + Duration::from_secs(5)).is_none());
     }
 
     /// Stage 2 — the sweep's poke wiring end-to-end: a silent ESTABLISHED
@@ -5621,6 +6221,7 @@ mod tests {
                 .checked_sub(LAN_HANDSHAKE_DEADLINE + Duration::from_secs(1))
                 .unwrap(),
             from_major: false,
+            from_business: false,
         });
         rt.sweep_carrier_health(
             &mut wg,
@@ -5665,6 +6266,7 @@ mod tests {
                         .checked_sub(LAN_HANDSHAKE_DEADLINE + Duration::from_secs(1))
                         .unwrap(),
                     from_major: false,
+                    from_business: false,
                 }),
                 ..Installed::base(pk, overlay_ip, DirectTier::Lan, Instant::now())
             },
@@ -7445,6 +8047,8 @@ mod tests {
         // Server pushes each its netmap (the other node as the one peer).
         evt_a
             .send(OverlayEvent::Netmap {
+                org_relay_discovery: false,
+                path_trial_v1: false,
                 self_ip: "100.64.0.1".into(),
                 network: net(),
                 peers: vec![peer(&b, "100.64.0.2")],
@@ -7453,6 +8057,8 @@ mod tests {
             .unwrap();
         evt_b
             .send(OverlayEvent::Netmap {
+                org_relay_discovery: false,
+                path_trial_v1: false,
                 self_ip: "100.64.0.2".into(),
                 network: net(),
                 peers: vec![peer(&a, "100.64.0.1")],
@@ -7542,6 +8148,8 @@ mod tests {
         let peer_a = peer(&a, "100.64.0.1");
         evt_a
             .send(OverlayEvent::Netmap {
+                org_relay_discovery: false,
+                path_trial_v1: false,
                 self_ip: "100.64.0.1".into(),
                 network: net(),
                 peers: vec![peer_b.clone()],
@@ -7550,6 +8158,8 @@ mod tests {
             .unwrap();
         evt_b
             .send(OverlayEvent::Netmap {
+                org_relay_discovery: false,
+                path_trial_v1: false,
                 self_ip: "100.64.0.2".into(),
                 network: net(),
                 peers: vec![peer_a.clone()],
@@ -7595,6 +8205,8 @@ mod tests {
         // touching the carrier: traffic keeps flowing.
         evt_a
             .send(OverlayEvent::Netmap {
+                org_relay_discovery: false,
+                path_trial_v1: false,
                 self_ip: "100.64.0.1".into(),
                 network: net(),
                 peers: vec![peer_b.clone()],
@@ -7619,6 +8231,8 @@ mod tests {
         // down — injected packets stop arriving.
         evt_a
             .send(OverlayEvent::Netmap {
+                org_relay_discovery: false,
+                path_trial_v1: false,
                 self_ip: "100.64.0.1".into(),
                 network: net(),
                 peers: vec![],
@@ -7679,6 +8293,8 @@ mod tests {
         ));
         evt_a
             .send(OverlayEvent::Netmap {
+                org_relay_discovery: false,
+                path_trial_v1: false,
                 self_ip: "100.64.0.1".into(),
                 network: net(),
                 peers: vec![peer(&b, "100.64.0.2")],
@@ -7690,6 +8306,8 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(100)).await;
         evt_a
             .send(OverlayEvent::Netmap {
+                org_relay_discovery: false,
+                path_trial_v1: false,
                 self_ip: "100.64.0.9".into(),
                 network: net(),
                 peers: vec![],
@@ -7769,6 +8387,8 @@ mod tests {
         ));
 
         let netmap_a = OverlayEvent::Netmap {
+            org_relay_discovery: false,
+            path_trial_v1: false,
             self_ip: "100.64.0.1".into(),
             network: net(),
             peers: vec![peer(&b, "100.64.0.2")],
@@ -7776,6 +8396,8 @@ mod tests {
         evt_a.send(netmap_a).await.unwrap();
         evt_b
             .send(OverlayEvent::Netmap {
+                org_relay_discovery: false,
+                path_trial_v1: false,
                 self_ip: "100.64.0.2".into(),
                 network: net(),
                 peers: vec![peer(&a, "100.64.0.1")],
@@ -7812,6 +8434,8 @@ mod tests {
         TEST_NETMAP_STALL_MS.store(2000, std::sync::atomic::Ordering::Relaxed);
         evt_a
             .send(OverlayEvent::Netmap {
+                org_relay_discovery: false,
+                path_trial_v1: false,
                 self_ip: "100.64.0.1".into(),
                 network: net(),
                 peers: vec![peer(&b, "100.64.0.2")],
@@ -7889,6 +8513,8 @@ mod tests {
         // Reach steady state (TUN up, reader + pump spawned).
         evt_a
             .send(OverlayEvent::Netmap {
+                org_relay_discovery: false,
+                path_trial_v1: false,
                 self_ip: "100.64.0.1".into(),
                 network: net(),
                 peers: vec![],
@@ -8580,5 +9206,417 @@ mod tests {
             ),
             "the status names the device's cause"
         );
+    }
+
+    #[test]
+    fn org_relay_join_advertises_multi_candidate_parser_capability() {
+        let (out, _) = mpsc::channel(1);
+        let tf: TunFactory = Box::new(|_, _, _| panic!("join test must not create TUN"));
+        let rt = OverlayRuntime::new_relay(WgKeypair::generate(), out, tf, 1280);
+        assert!(matches!(
+            rt.make_join(vec![]),
+            ClientMsg::OverlayJoin {
+                supports_org_relay_multi_candidate: true,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn relay_listener_readiness_controls_join_and_rejoin_port() {
+        let (out, _) = mpsc::channel(1);
+        let tf: TunFactory = Box::new(|_, _, _| panic!("join test must not create TUN"));
+        let rt = OverlayRuntime::new_relay(WgKeypair::generate(), out, tf, 1280);
+        let port = |msg| match msg {
+            ClientMsg::OverlayJoin { relay_port, .. } => relay_port,
+            _ => panic!("expected join"),
+        };
+        assert_eq!(port(rt.make_join(vec![])), None);
+        let (tx, rx) = watch::channel(None);
+        let rt = rt.with_relay_listener_readiness(rx);
+        assert_eq!(port(rt.make_join(vec![])), None);
+        tx.send_replace(Some(43210));
+        assert_eq!(port(rt.make_join(vec![])), Some(43210));
+        tx.send_replace(None);
+        assert_eq!(port(rt.make_join(vec![])), None);
+        tx.send_replace(Some(43210));
+        drop(tx);
+        assert_eq!(
+            port(rt.make_join(vec![])),
+            None,
+            "closed publisher is not a live listener"
+        );
+    }
+
+    /// Controlled completion at the SAME convergence function used by org_rx:
+    /// a bind starts, then direct recovers, then the old completion arrives.
+    /// No WAN or global environment is used.
+    #[tokio::test]
+    async fn org_bind_completion_never_replaces_recovered_direct() {
+        let kp = WgKeypair::generate();
+        let nid = ObjectId::new();
+        let ip = Ipv4Addr::new(100, 64, 0, 7);
+        let peers = HashMap::from([(nid, test_netmap_peer(nid, ip, &kp))]);
+        let (tx, _rx) = mpsc::channel(8);
+        let mut relay = RelayCoordinator::new(tx, [0; 32], true, vec![], None);
+        let (done, mut q, conn) = pending_org_test_bind(&mut relay, nid, &peers[&nid], 7, 1).await;
+        let (mut wg, _wg_rx) = WgDevice::new(WgKeypair::generate().secret);
+        let sock = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        wg.add_peer(
+            kp.public.to_bytes(),
+            ip,
+            Carrier::direct(sock, "127.0.0.1:9".parse().unwrap()),
+            false,
+        );
+        wg.test_latch_handshake_done(&kp.public.to_bytes());
+        let direct = Installed::base(kp.public.to_bytes(), ip, DirectTier::Lan, Instant::now());
+        let by_node = HashMap::from([(nid, direct)]);
+        assert!(
+            !org_bind_needed(true, by_node.get(&nid)),
+            "stale tracking cannot demote direct"
+        );
+        assert!(commit_current_org_bind(done, &mut q, &peers, &by_node, &mut relay).is_none());
+        assert!(by_node[&nid].is_direct);
+        assert_eq!(by_node[&nid].pubkey, kp.public.to_bytes());
+        assert_eq!(wg.peer_count(), 1);
+        assert_eq!(
+            wg.peer_handshake_done(&kp.public.to_bytes()),
+            Some(true),
+            "the installed direct WG session survives the late completion"
+        );
+        wg.remove_peer(&kp.public.to_bytes()).await;
+        assert!(!conn.is_alive(), "unused bound relay socket is closed");
+        assert!(!relay.is_tracking(&nid), "no stuck in-flight bookkeeping");
+    }
+
+    async fn pending_org_test_bind(
+        relay: &mut RelayCoordinator,
+        nid: ObjectId,
+        peer: &NetmapPeer,
+        vni: u32,
+        generation: u64,
+    ) -> (
+        OrgBindDone,
+        OrgBindQueue,
+        Arc<super::super::orgrelay::client::OrgRelayConn>,
+    ) {
+        use super::super::orgrelay::{bind::BindSecret, client::OrgRelayConn, member::OrgSession};
+        let pc = peer_config_from_netmap(peer).unwrap();
+        relay.org_session_accept(
+            nid,
+            OrgSession {
+                vni,
+                generation,
+                relay_node_id: ObjectId::new(),
+                endpoints: vec!["127.0.0.1:9".parse().unwrap()],
+                secret: BindSecret::from_bytes([7; 32]),
+                bind_budget: Duration::from_secs(3),
+                expires_at: Instant::now() + Duration::from_secs(60),
+                conn: None,
+            },
+        );
+        relay.org_request_bind(nid, pc);
+        let job = relay.take_org_jobs().pop().unwrap();
+        let (tx, _rx) = mpsc::channel(8);
+        let mut q = OrgBindQueue {
+            in_flight: HashMap::new(),
+            epoch: 0,
+            tx,
+        };
+        let epoch = q.stamp(nid);
+        let sock = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let conn = Arc::new(OrgRelayConn::new(
+            sock,
+            job.endpoints[0],
+            vni,
+            "fixture".into(),
+        ));
+        let done = OrgBindDone {
+            epoch,
+            generation,
+            peer_public_key: job.peer_public_key,
+            peer_overlay_ip: job.peer_overlay_ip,
+            node_id: nid,
+            relay_node_id: job.relay_node_id,
+            conn: Some(conn.clone()),
+            outcomes: vec![],
+        };
+        (done, q, conn)
+    }
+
+    #[tokio::test]
+    async fn org_bind_completion_drops_removed_rekeyed_and_readded_peers() {
+        let kp = WgKeypair::generate();
+        let nid = ObjectId::new();
+        let ip = Ipv4Addr::new(100, 64, 0, 7);
+        let peer = test_netmap_peer(nid, ip, &kp);
+        for case in ["removed", "rekeyed", "remove-readd"] {
+            let (tx, _rx) = mpsc::channel(8);
+            let mut relay = Some(RelayCoordinator::new(tx, [0; 32], true, vec![], None));
+            let (done, mut q, conn) =
+                pending_org_test_bind(relay.as_mut().unwrap(), nid, &peer, 7, 1).await;
+            let mut peers = HashMap::from([(nid, peer.clone())]);
+            if case == "removed" {
+                peers.remove(&nid);
+            }
+            if case == "rekeyed" {
+                peers.insert(nid, test_netmap_peer(nid, ip, &WgKeypair::generate()));
+            }
+            if case == "remove-readd" {
+                invalidate_org_bind_identity(&nid, &mut q, &mut relay);
+            }
+            assert!(
+                commit_current_org_bind(
+                    done,
+                    &mut q,
+                    &peers,
+                    &HashMap::new(),
+                    relay.as_mut().unwrap()
+                )
+                .is_none(),
+                "{case}"
+            );
+            assert!(!conn.is_alive(), "{case}");
+        }
+    }
+
+    #[tokio::test]
+    async fn org_bind_completion_preserves_fallback_and_rejects_old_generation() {
+        let kp = WgKeypair::generate();
+        let nid = ObjectId::new();
+        let ip = Ipv4Addr::new(100, 64, 0, 7);
+        let peers = HashMap::from([(nid, test_netmap_peer(nid, ip, &kp))]);
+        let (tx, _rx) = mpsc::channel(8);
+        let mut relay = RelayCoordinator::new(tx, [0; 32], true, vec![], None);
+        let (mut done, mut q, conn) =
+            pending_org_test_bind(&mut relay, nid, &peers[&nid], 7, 2).await;
+        done.generation = 1;
+        assert!(
+            commit_current_org_bind(done, &mut q, &peers, &HashMap::new(), &mut relay).is_none()
+        );
+        assert!(
+            !conn.is_alive(),
+            "same VNI with stale session generation is refused"
+        );
+        let (done, mut q, conn) = pending_org_test_bind(&mut relay, nid, &peers[&nid], 8, 3).await;
+        let link = commit_current_org_bind(done, &mut q, &peers, &HashMap::new(), &mut relay)
+            .expect("no direct: current relay remains valid fallback");
+        assert_eq!(link.relay_kind, RelayKind::Org);
+        assert_eq!(link.public_key, kp.public.to_bytes());
+        assert!(conn.is_alive());
+        assert!(org_bind_needed(true, None));
+    }
+
+    #[tokio::test]
+    async fn org_bind_duplicate_session_preserves_inflight_epoch_and_bound_carrier() {
+        use super::super::orgrelay::{bind::BindSecret, member::OrgSession};
+        let kp = WgKeypair::generate();
+        let nid = ObjectId::new();
+        let peers = HashMap::from([(
+            nid,
+            test_netmap_peer(nid, Ipv4Addr::new(100, 64, 0, 7), &kp),
+        )]);
+        let (tx, _rx) = mpsc::channel(8);
+        let mut relay = RelayCoordinator::new(tx, [0; 32], true, vec![], None);
+        let (done, mut q, conn) = pending_org_test_bind(&mut relay, nid, &peers[&nid], 7, 1).await;
+        let duplicate = OrgSession {
+            vni: 7,
+            generation: 1,
+            relay_node_id: done.relay_node_id,
+            endpoints: vec!["127.0.0.1:9".parse().unwrap()],
+            secret: BindSecret::from_bytes([7; 32]),
+            bind_budget: Duration::from_secs(3),
+            expires_at: Instant::now() + Duration::from_secs(60),
+            conn: None,
+        };
+        let (tx, _rx) = mpsc::channel(8);
+        let mut alloc = RelayAllocQueue {
+            in_flight: HashMap::new(),
+            epoch: 0,
+            tx,
+        };
+        let epoch = done.epoch;
+        accept_org_bind_session(
+            nid,
+            duplicate.clone(),
+            &mut relay,
+            &mut q,
+            &mut alloc,
+            &peers,
+            &HashMap::new(),
+        );
+        assert_eq!(q.in_flight.get(&nid), Some(&epoch));
+        assert!(
+            relay.is_tracking(&nid),
+            "duplicate does not lose the only pending bind"
+        );
+        assert!(
+            relay.take_org_jobs().is_empty(),
+            "duplicate does not restart a bind"
+        );
+        assert!(
+            commit_current_org_bind(done, &mut q, &peers, &HashMap::new(), &mut relay).is_some()
+        );
+        accept_org_bind_session(
+            nid,
+            duplicate,
+            &mut relay,
+            &mut q,
+            &mut alloc,
+            &peers,
+            &HashMap::new(),
+        );
+        assert!(
+            conn.is_alive(),
+            "duplicate after commit must not close the bound carrier"
+        );
+        assert!(relay.take_org_jobs().is_empty());
+    }
+
+    #[tokio::test]
+    async fn org_bind_replacement_reschedules_and_old_failure_cannot_drop_it() {
+        use super::super::orgrelay::{bind::BindSecret, member::OrgSession};
+        let kp = WgKeypair::generate();
+        let nid = ObjectId::new();
+        let peers = HashMap::from([(
+            nid,
+            test_netmap_peer(nid, Ipv4Addr::new(100, 64, 0, 7), &kp),
+        )]);
+        let (tx, _rx) = mpsc::channel(8);
+        let mut relay = RelayCoordinator::new(tx, [0; 32], true, vec![], None);
+        let (mut done, mut q, conn) =
+            pending_org_test_bind(&mut relay, nid, &peers[&nid], 7, 1).await;
+        let replacement = OrgSession {
+            vni: 7,
+            generation: 2,
+            relay_node_id: done.relay_node_id,
+            endpoints: vec!["127.0.0.1:9".parse().unwrap()],
+            secret: BindSecret::from_bytes([8; 32]),
+            bind_budget: Duration::from_secs(3),
+            expires_at: Instant::now() + Duration::from_secs(60),
+            conn: None,
+        };
+        let (tx, _rx) = mpsc::channel(8);
+        let mut alloc = RelayAllocQueue {
+            in_flight: HashMap::new(),
+            epoch: 0,
+            tx,
+        };
+        accept_org_bind_session(
+            nid,
+            replacement,
+            &mut relay,
+            &mut q,
+            &mut alloc,
+            &peers,
+            &HashMap::new(),
+        );
+        let job = relay
+            .take_org_jobs()
+            .pop()
+            .expect("pre-replacement tracking starts the replacement bind");
+        assert_eq!(job.generation, 2);
+        let replacement_epoch = q.stamp(nid);
+        conn.close();
+        done.conn = None; // the old asynchronous bind failed, after replacement
+        assert!(
+            commit_current_org_bind(done, &mut q, &peers, &HashMap::new(), &mut relay).is_none()
+        );
+        assert!(
+            relay.is_tracking(&nid),
+            "stale failure must not drop newer session/bind"
+        );
+        assert_eq!(q.in_flight.get(&nid), Some(&replacement_epoch));
+    }
+
+    #[tokio::test]
+    async fn listener_watch_reannounces_actual_port_over_existing_control_sender() {
+        let (out, mut messages) = mpsc::channel(4);
+        let tf: TunFactory =
+            Box::new(|_, _, _| panic!("listener control test must not create TUN"));
+        let (tx, rx) = watch::channel(Some(3478));
+        let rt = OverlayRuntime::new_relay(WgKeypair::generate(), out, tf, 1280)
+            .with_relay_listener_readiness(rx);
+        let mut changes = rt.relay_listener_readiness.clone();
+        tx.send_replace(None);
+        assert!(relay_listener_changed(&mut changes).await);
+        rt.outbound
+            .send(rt.make_join(vec!["203.0.113.1:41641".into()]))
+            .await
+            .unwrap();
+        assert!(matches!(
+            messages.recv().await,
+            Some(ClientMsg::OverlayJoin {
+                relay_port: None,
+                ..
+            })
+        ));
+        tx.send_replace(Some(3479));
+        assert!(relay_listener_changed(&mut changes).await);
+        rt.outbound.send(rt.make_join(vec![])).await.unwrap();
+        assert!(matches!(
+            messages.recv().await,
+            Some(ClientMsg::OverlayJoin {
+                relay_port: Some(3479),
+                ..
+            })
+        ));
+        drop(tx);
+        assert!(!relay_listener_changed(&mut changes).await);
+        assert!(changes.is_none());
+        assert!(
+            tokio::time::timeout(
+                Duration::from_millis(10),
+                relay_listener_changed(&mut changes)
+            )
+            .await
+            .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn listener_watch_running_runtime_withdraws_without_reattach_or_netmap() {
+        let (out, mut messages) = mpsc::channel(4);
+        let (events, event_rx) = mpsc::channel(4);
+        let socket = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let links = Arc::new(LoopbackLinks {
+            dst: socket.local_addr().unwrap(),
+            sock: socket,
+        });
+        let tf: TunFactory = Box::new(|_, _, _| panic!("no netmap means no TUN creation"));
+        let (tx, rx) = watch::channel(Some(3478));
+        let rt = OverlayRuntime::new(WgKeypair::generate(), out, links, tf, 1280)
+            .with_relay_listener_readiness(rx);
+        let task = tokio::spawn(rt.run(event_rx, vec![]));
+        let first = tokio::time::timeout(Duration::from_secs(1), messages.recv())
+            .await
+            .unwrap();
+        assert!(matches!(
+            first,
+            Some(ClientMsg::OverlayJoin {
+                relay_port: Some(3478),
+                ..
+            })
+        ));
+        tx.send_replace(None);
+        let withdrawn = tokio::time::timeout(Duration::from_secs(1), messages.recv())
+            .await
+            .unwrap();
+        assert!(matches!(
+            withdrawn,
+            Some(ClientMsg::OverlayJoin {
+                relay_port: None,
+                ..
+            })
+        ));
+        assert!(
+            !task.is_finished(),
+            "same runtime stayed attached; no Reattach event was sent"
+        );
+        drop(events);
+        tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .unwrap()
+            .unwrap();
     }
 }

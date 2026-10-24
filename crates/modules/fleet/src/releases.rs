@@ -49,7 +49,7 @@ use roomler_core::ApiError;
 use crate::{FleetState, agent_release::AgentRelease};
 
 /// GitHub repo slug. A fork can override here without touching agents.
-const RELEASES_REPO: &str = "gjovanov/roomler-ai";
+pub(crate) const RELEASES_REPO: &str = "jk-zhang-meta/roomler-ai";
 
 /// GitHub page size — the API max. See the module docs: the shallow
 /// 30-deep page the agent/tunnel caches used loses the rarely-tagged

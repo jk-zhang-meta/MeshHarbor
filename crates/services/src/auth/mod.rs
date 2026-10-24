@@ -30,6 +30,9 @@ pub struct Claims {
     pub exp: i64,
     pub iss: String,
     pub token_type: TokenType,
+    /// Missing pre-approval JWTs are generation zero for migration compatibility.
+    #[serde(default)]
+    pub approval_revision: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -93,6 +96,10 @@ pub struct EnrollmentClaims {
     /// minted without it), which parses as `false`: one use, as before.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub anchor: bool,
+    /// An administrator explicitly authorized this single-use credential to
+    /// approve the device as an org relay. Never a device-supplied role.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub relay_server: bool,
 }
 
 /// Claims carried by a remote-control agent token (aud = agent).
@@ -458,6 +465,42 @@ impl AuthService {
         email: &str,
         username: &str,
     ) -> Result<TokenPair, AuthError> {
+        self.generate_tokens_at_revision(user_id, email, username, 0)
+    }
+
+    /// Native one-shot account login: ordinary account Access authority, NOT a
+    /// share-scoped token. Same configured TTL; no refresh credential is minted.
+    pub fn generate_access_token_at_revision(
+        &self,
+        user_id: ObjectId,
+        email: &str,
+        username: &str,
+        approval_revision: u32,
+    ) -> Result<(String, u64), AuthError> {
+        let now = Utc::now();
+        let claims = Claims {
+            sub: user_id.to_hex(),
+            email: email.into(),
+            username: username.into(),
+            iat: now.timestamp(),
+            exp: (now + Duration::seconds(self.jwt_settings.access_token_ttl_secs as i64))
+                .timestamp(),
+            iss: self.jwt_settings.issuer.clone(),
+            token_type: TokenType::Access,
+            approval_revision,
+        };
+        let token = encode(&self.header(), &claims, &self.signing.encoding)
+            .map_err(|e| AuthError::InvalidToken(e.to_string()))?;
+        Ok((token, self.jwt_settings.access_token_ttl_secs))
+    }
+
+    pub fn generate_tokens_at_revision(
+        &self,
+        user_id: ObjectId,
+        email: &str,
+        username: &str,
+        approval_revision: u32,
+    ) -> Result<TokenPair, AuthError> {
         let now = Utc::now();
 
         let access_claims = Claims {
@@ -469,6 +512,7 @@ impl AuthService {
                 .timestamp(),
             iss: self.jwt_settings.issuer.clone(),
             token_type: TokenType::Access,
+            approval_revision,
         };
 
         let refresh_claims = Claims {
@@ -480,6 +524,7 @@ impl AuthService {
                 .timestamp(),
             iss: self.jwt_settings.issuer.clone(),
             token_type: TokenType::Refresh,
+            approval_revision,
         };
 
         let access_token = encode(&self.header(), &access_claims, &self.signing.encoding)
@@ -545,6 +590,19 @@ impl AuthService {
         ttl_secs: u64,
         anchor: bool,
     ) -> Result<(String, String), AuthError> {
+        self.issue_enrollment_token_with_relay(admin_user_id, tenant_id, ttl_secs, anchor, false)
+    }
+
+    /// Mint the existing single-use enrollment credential with an explicit
+    /// relay grant. Callers must enforce MANAGE_AGENTS + EXEC_DEVICE first.
+    pub fn issue_enrollment_token_with_relay(
+        &self,
+        admin_user_id: ObjectId,
+        tenant_id: ObjectId,
+        ttl_secs: u64,
+        anchor: bool,
+        relay_server: bool,
+    ) -> Result<(String, String), AuthError> {
         let now = Utc::now();
         let jti = uuid_v4_hex();
         let claims = EnrollmentClaims {
@@ -556,6 +614,7 @@ impl AuthService {
             token_type: TokenType::Enrollment,
             jti: jti.clone(),
             anchor,
+            relay_server,
         };
         let token = encode(&self.header(), &claims, &self.signing.encoding)
             .map_err(|e| AuthError::InvalidToken(e.to_string()))?;
@@ -591,8 +650,9 @@ impl AuthService {
             iss: self.jwt_settings.issuer.clone(),
             token_type: TokenType::EphemeralEnrollment,
             jti: jti.to_string(),
-            // A reusable key never anchors: anchoring is a deliberate act.
+            // Reusable keys grant neither host anchoring nor relay approval.
             anchor: false,
+            relay_server: false,
         };
         encode(&self.header(), &claims, &self.signing.encoding)
             .map_err(|e| AuthError::InvalidToken(e.to_string()))
@@ -609,7 +669,10 @@ impl AuthService {
         let claims = self.decode_any::<EnrollmentClaims>(token, &self.validation())?;
         match claims.token_type {
             TokenType::Enrollment => Ok((claims, false)),
-            TokenType::EphemeralEnrollment => Ok((claims, true)),
+            TokenType::EphemeralEnrollment if !claims.relay_server => Ok((claims, true)),
+            TokenType::EphemeralEnrollment => Err(AuthError::InvalidToken(
+                "Ephemeral enrollment cannot grant relay-server approval".to_string(),
+            )),
             _ => Err(AuthError::InvalidToken(
                 "Not an enrollment token".to_string(),
             )),
@@ -1015,6 +1078,63 @@ mod tests {
     }
 
     #[test]
+    fn native_shared_ssh_access_only_signer_keeps_account_scope_revision_and_ttl() {
+        let service = svc();
+        let id = ObjectId::new();
+        let (access, ttl) = service
+            .generate_access_token_at_revision(id, "recipient@test.invalid", "recipient", 7)
+            .unwrap();
+        let claims = service.verify_access_token(&access).unwrap();
+        assert_eq!(claims.sub, id.to_hex());
+        assert_eq!(claims.approval_revision, 7);
+        assert_eq!(ttl, 3600);
+        assert_eq!(claims.exp - claims.iat, 3600);
+        assert!(service.verify_refresh_token(&access).is_err());
+    }
+
+    #[test]
+    fn account_approval_preexisting_claims_default_to_zero_not_a_grant() {
+        let claims: Claims = serde_json::from_value(serde_json::json!({
+            "sub": ObjectId::new().to_hex(), "email": "legacy@test.invalid", "username": "legacy",
+            "iat": 1, "exp": 2, "iss": "test", "token_type": "access"
+        }))
+        .unwrap();
+        assert_eq!(claims.approval_revision, 0);
+    }
+
+    #[test]
+    fn account_approval_revision_survives_both_token_types() {
+        let service = svc();
+        let pair = service
+            .generate_tokens_at_revision(ObjectId::new(), "owner@test.invalid", "owner", 7)
+            .unwrap();
+        assert_eq!(
+            service
+                .verify_access_token(&pair.access_token)
+                .unwrap()
+                .approval_revision,
+            7
+        );
+        assert_eq!(
+            service
+                .verify_refresh_token(&pair.refresh_token)
+                .unwrap()
+                .approval_revision,
+            7
+        );
+        let legacy = service
+            .generate_tokens(ObjectId::new(), "legacy@test.invalid", "legacy")
+            .unwrap();
+        assert_eq!(
+            service
+                .verify_access_token(&legacy.access_token)
+                .unwrap()
+                .approval_revision,
+            0
+        );
+    }
+
+    #[test]
     fn agent_token_roundtrip() {
         let s = svc();
         let agent_id = ObjectId::new();
@@ -1124,6 +1244,61 @@ mod tests {
             .decode(payload)
             .unwrap();
         assert!(!String::from_utf8(json).unwrap().contains("anchor"));
+    }
+
+    #[test]
+    fn relay_enrollment_claim_is_explicit_signed_and_defaults_closed() {
+        use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+        let s = svc();
+        let (admin, tenant) = (ObjectId::new(), ObjectId::new());
+        let (plain, _) = s.issue_enrollment_token(admin, tenant, 600).unwrap();
+        assert!(!s.verify_enrollment_token(&plain).unwrap().relay_server);
+        let payload = URL_SAFE_NO_PAD
+            .decode(plain.split('.').nth(1).unwrap())
+            .unwrap();
+        let mut json: serde_json::Value = serde_json::from_slice(&payload).unwrap();
+        assert!(
+            json.get("relay_server").is_none(),
+            "legacy tokens omit the claim"
+        );
+        json["relay_server"] = serde_json::json!(true);
+        let parts: Vec<_> = plain.split('.').collect();
+        let forged = format!(
+            "{}.{}.{}",
+            parts[0],
+            URL_SAFE_NO_PAD.encode(serde_json::to_vec(&json).unwrap()),
+            parts[2]
+        );
+        assert!(
+            s.verify_enrollment_token_any(&forged).is_err(),
+            "device cannot edit the signed role"
+        );
+        let (relay, _) = s
+            .issue_enrollment_token_with_relay(admin, tenant, 600, true, true)
+            .unwrap();
+        let claims = s.verify_enrollment_token(&relay).unwrap();
+        assert!(
+            claims.relay_server && claims.anchor,
+            "independent grants compose"
+        );
+    }
+
+    #[test]
+    fn even_a_signed_ephemeral_credential_cannot_grant_relay_approval() {
+        let s = svc();
+        let token = s
+            .issue_ephemeral_enroll_key_token(
+                ObjectId::new(),
+                ObjectId::new(),
+                "ephemeral-relay",
+                Utc::now().timestamp() + 600,
+            )
+            .unwrap();
+        let (mut claims, ephemeral) = s.verify_enrollment_token_any(&token).unwrap();
+        assert!(ephemeral && !claims.relay_server);
+        claims.relay_server = true;
+        let invalid_grant = encode(&s.header(), &claims, &s.signing.encoding).unwrap();
+        assert!(s.verify_enrollment_token_any(&invalid_grant).is_err());
     }
 
     /// that user tell SYSTEM what to run.

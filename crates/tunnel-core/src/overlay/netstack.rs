@@ -571,10 +571,14 @@ impl PollLoop {
     }
 
     fn new_tcp_socket() -> tcp::Socket<'static> {
-        tcp::Socket::new(
+        let mut sock = tcp::Socket::new(
             tcp::SocketBuffer::new(vec![0u8; SOCK_BUF]),
             tcp::SocketBuffer::new(vec![0u8; SOCK_BUF]),
-        )
+        );
+        // Small SSH/SOCKS writes must keep reaching a recovered path while
+        // older data is in flight, allowing normal ACK-driven TCP recovery.
+        sock.set_nagle_enabled(false);
+        sock
     }
 
     fn do_connect(&mut self, dst: SocketAddr, resp: oneshot::Sender<io::Result<NsTcpStream>>) {
@@ -1263,6 +1267,87 @@ mod tests {
         let mut got = vec![0u8; msg.len()];
         s.read_exact(&mut got).await.expect("read echo");
         assert_eq!(got, msg, "echo must round-trip through the netstack");
+    }
+
+
+    #[test]
+    fn small_stream_recovers_via_real_duplicate_acks_after_carrier_loss() {
+        fn node(ip: Ipv4Addr) -> (NetstackDevice, Interface, SocketSet<'static>,
+            mpsc::UnboundedReceiver<Vec<u8>>)
+        {
+            let (out_tx, out_rx) = mpsc::unbounded_channel();
+            let mut dev = NetstackDevice { rx: VecDeque::new(), out_tx, mtu: 1280 };
+            let mut cfg = Config::new(HardwareAddress::Ip);
+            cfg.random_seed = 7;
+            let mut iface = Interface::new(cfg, &mut dev, SmolInstant::from_millis(0));
+            iface.update_ip_addrs(|a| {
+                a.push(IpCidr::new(IpAddress::from(ip), 24)).unwrap();
+            });
+            (dev, iface, SocketSet::new(vec![]), out_rx)
+        }
+        let a_ip = Ipv4Addr::new(100, 64, 0, 1);
+        let b_ip = Ipv4Addr::new(100, 64, 0, 2);
+        let (mut ad, mut ai, mut sockets_a, mut a_out) = node(a_ip);
+        let (mut bd, mut bi, mut sockets_b, mut b_out) = node(b_ip);
+        // The exact production helper serves both connect() and listen().
+        let mut server = PollLoop::new_tcp_socket();
+        server.listen(2222).unwrap();
+        let sh = sockets_b.add(server);
+        let mut client = PollLoop::new_tcp_socket();
+        client.connect(ai.context(), (IpAddress::from(b_ip), 2222), 49152).unwrap();
+        let ch = sockets_a.add(client);
+        let mut expected = Vec::new();
+        let mut received = Vec::new();
+        let mut first_after_recovery = None;
+        let mut original_seq = None;
+        let mut duplicate_acks = 0;
+        // Virtual interface time only: this test runs without wall-clock sleeps.
+        // Drop real IP packets at 5 s; the carrier returns at 13.5 s, between
+        // the sender's exponentially backed-off 12 s and 20 s retransmissions.
+        for ms in 0..30_000 {
+            let now = SmolInstant::from_millis(ms);
+            let lost = (5_000..13_500).contains(&ms);
+            if (1_000..20_000).contains(&ms) && ms % 500 == 0 {
+                let payload = format!("record_{:03}:abcdefghijklmnopqrstuvwxyz012345\n", ms / 500);
+                sockets_b.get_mut::<tcp::Socket>(sh).send_slice(payload.as_bytes()).unwrap();
+                expected.extend_from_slice(payload.as_bytes());
+            }
+            for _ in 0..8 {
+                let _ = ai.poll(now, &mut ad, &mut sockets_a);
+                while let Ok(pkt) = a_out.try_recv() {
+                    if ms >= 13_500 {
+                        let ip = smoltcp::wire::Ipv4Packet::new_checked(pkt.as_slice()).unwrap();
+                        let tcp = smoltcp::wire::TcpPacket::new_checked(ip.payload()).unwrap();
+                        if original_seq.is_some_and(|seq| tcp.ack_number() == seq) {
+                            duplicate_acks += 1;
+                        }
+                    }
+                    if !lost { bd.rx.push_back(pkt); }
+                }
+                let _ = bi.poll(now, &mut bd, &mut sockets_b);
+                while let Ok(pkt) = b_out.try_recv() {
+                    if original_seq.is_none() && ms >= 5_000 {
+                        let ip = smoltcp::wire::Ipv4Packet::new_checked(pkt.as_slice()).unwrap();
+                        let tcp = smoltcp::wire::TcpPacket::new_checked(ip.payload()).unwrap();
+                        if !tcp.payload().is_empty() { original_seq = Some(tcp.seq_number()); }
+                    }
+                    if !lost { ad.rx.push_back(pkt); }
+                }
+            }
+            if sockets_a.get::<tcp::Socket>(ch).can_recv() {
+                sockets_a.get_mut::<tcp::Socket>(ch).recv(|b| {
+                    received.extend_from_slice(b);
+                    (b.len(), ())
+                }).unwrap();
+                if ms >= 13_500 && first_after_recovery.is_none() {
+                    first_after_recovery = Some(ms);
+                }
+            }
+        }
+        assert_eq!(received, expected, "the same TCP socket must deliver every byte");
+        assert!(duplicate_acks >= 3, "only real peer-generated duplicate ACKs accelerate recovery");
+        assert!(first_after_recovery.is_some_and(|ms| ms <= 14_550),
+            "small ongoing writes should recover shortly after the carrier, not wait for 20 s RTO: {first_after_recovery:?}");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

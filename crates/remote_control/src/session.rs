@@ -25,7 +25,10 @@ pub struct LiveSession {
     pub agent_id: ObjectId,
     pub tenant_id: ObjectId,
     pub controller_user_id: ObjectId,
-    pub permissions: Permissions,
+    permissions: Permissions,
+    device_share_scope: Option<DeviceShareSessionScope>,
+    share_watch_started: bool,
+    shared_lease_epoch: Option<String>,
     pub phase: SessionPhase,
     pub created_at: DateTime,
     pub started_at: Option<DateTime>,
@@ -116,6 +119,54 @@ pub struct LiveSession {
 }
 
 impl LiveSession {
+    pub fn shared_lease_epoch(&self) -> Option<&str> {
+        self.shared_lease_epoch.as_deref()
+    }
+    pub fn set_shared_lease_epoch(&mut self, epoch: String) -> Result<()> {
+        if self.device_share_scope.is_none()
+            || self
+                .shared_lease_epoch
+                .as_ref()
+                .is_some_and(|e| e != &epoch)
+        {
+            return Err(Error::PermissionDenied("immutable shared lease epoch"));
+        }
+        self.shared_lease_epoch = Some(epoch);
+        Ok(())
+    }
+    pub fn permissions(&self) -> Permissions {
+        self.permissions
+    }
+    /// Every future permission update must cross this ceiling; the field is private.
+    pub fn set_permissions(&mut self, permissions: Permissions) {
+        self.permissions = self
+            .device_share_scope
+            .map_or(permissions, |s| permissions & s.ceiling);
+    }
+    pub fn device_share_scope(&self) -> Option<DeviceShareSessionScope> {
+        self.device_share_scope
+    }
+    pub fn bind_device_share(&mut self, scope: DeviceShareSessionScope) -> Result<()> {
+        if self.device_share_scope.is_some_and(|old| old != scope) {
+            return Err(Error::PermissionDenied(
+                "session already has another share scope",
+            ));
+        }
+        self.device_share_scope = Some(scope);
+        self.set_permissions(self.permissions);
+        Ok(())
+    }
+    pub fn claim_share_watch(&mut self, grant_id: ObjectId) -> bool {
+        if self.share_watch_started
+            || self
+                .device_share_scope
+                .is_none_or(|s| s.grant_id != grant_id)
+        {
+            return false;
+        }
+        self.share_watch_started = true;
+        true
+    }
     pub fn new(
         id: ObjectId,
         agent_id: ObjectId,
@@ -131,6 +182,9 @@ impl LiveSession {
             tenant_id,
             controller_user_id,
             permissions,
+            device_share_scope: None,
+            share_watch_started: false,
+            shared_lease_epoch: None,
             phase: SessionPhase::Pending,
             created_at: DateTime::now(),
             started_at: None,
@@ -280,5 +334,45 @@ mod tests {
         assert!(s.admit_offer().is_err(), "a second offer");
         s.transition(SessionPhase::Active).unwrap();
         assert!(s.admit_offer().is_err(), "a re-offer on a live session");
+    }
+}
+
+/// Immutable identity and service ceiling of a shared-device session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeviceShareSessionScope {
+    pub grant_id: ObjectId,
+    pub ceiling: Permissions,
+}
+#[cfg(test)]
+mod device_share_scope_tests {
+    use super::*;
+    #[test]
+    fn device_share_ceiling_blocks_immediate_permission_elevation_and_scope_rebinding() {
+        let (tx, _rx) = tokio::sync::mpsc::channel(2);
+        let (mut s, _waiter) = LiveSession::new(
+            ObjectId::new(),
+            ObjectId::new(),
+            ObjectId::new(),
+            ObjectId::new(),
+            Permissions::VIEW,
+            tx,
+        );
+        let scope = DeviceShareSessionScope {
+            grant_id: ObjectId::new(),
+            ceiling: Permissions::VIEW,
+        };
+        s.bind_device_share(scope).unwrap();
+        s.set_permissions(Permissions::all());
+        assert_eq!(s.permissions(), Permissions::VIEW);
+        assert!(
+            s.bind_device_share(DeviceShareSessionScope {
+                grant_id: ObjectId::new(),
+                ceiling: Permissions::all()
+            })
+            .is_err()
+        );
+        assert_eq!(s.device_share_scope(), Some(scope));
+        assert!(s.claim_share_watch(scope.grant_id));
+        assert!(!s.claim_share_watch(scope.grant_id));
     }
 }

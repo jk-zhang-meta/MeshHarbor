@@ -16,6 +16,9 @@
 //! Wire shape: newline-delimited JSON, adjacently tagged (`{"t":<verb>}` /
 //! `{"t":<verb>,"d":<payload>}`) so a payload may be a struct OR a sequence.
 
+pub mod path_trials;
+pub use path_trials::*;
+
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -142,6 +145,9 @@ pub struct HostFirewallStatus {
 /// Snapshot of the local node.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct NodeStatus {
+    /// Owner-local bounded path-trial observation. Absent on old/off/detached runtimes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path_trials: Option<PathTrialStatus>,
     pub node_id: String,
     pub name: String,
     pub version: String,
@@ -2595,6 +2601,7 @@ fn sid_is_service_account(sid: windows_sys::Win32::Security::PSID) -> bool {
 /// `Default` one and answer `peers` with `[]`.
 #[derive(Debug, Clone, Default)]
 pub struct OverlayView {
+    pub path_trials: Option<PathTrialStatus>,
     /// This node's assigned overlay IP (the netmap `self_ip`), once joined.
     pub self_ip: Option<String>,
     /// This node's *derived* overlay IPv6, filled by the overlay runtime
@@ -3232,6 +3239,10 @@ where
 /// [`serve_connection_as`] under a [`Scope`]. FR-27 P11: on a
 /// [`Scope::Person`] connection, a request [`person_may`] does not allow is
 /// answered with a refusal before it reaches any handler.
+fn path_trial_observation_allowed(peer: &ClientPeer, scope: Scope) -> bool {
+    scope == Scope::Full && peer.may_connect()
+}
+
 pub async fn serve_connection_scoped<S>(
     stream: S,
     state: &dyn LocalApiState,
@@ -3264,7 +3275,13 @@ where
                 // dispatch through `handle`.
                 // FR-97 P2h — the network view, which a daemon may take from
                 // another process (a two-half Mac's root half).
-                Ok(Request::Status) => Response::Status(Box::new(state.status_view().await)),
+                Ok(Request::Status) => {
+                    let mut status = state.status_view().await;
+                    if !status.connected || !path_trial_observation_allowed(&peer, scope) {
+                        status.path_trials = None;
+                    }
+                    Response::Status(Box::new(status))
+                }
                 Ok(Request::Peers) => Response::Peers(state.peers_view().await),
                 Ok(Request::Ping {
                     target,
@@ -5564,6 +5581,7 @@ mod tests {
     impl LocalApiState for Mock {
         fn status(&self) -> NodeStatus {
             NodeStatus {
+                path_trials: None,
                 node_id: "n1".into(),
                 name: "devbox".into(),
                 version: "0.3.0-rc.154".into(),
@@ -9012,5 +9030,102 @@ mod tests {
                 "a change that did not happen must be an error, got {r:?}"
             );
         }
+    }
+    struct PathObservationMock;
+    #[async_trait]
+    impl LocalApiState for PathObservationMock {
+        fn status(&self) -> NodeStatus {
+            let mut s = Mock.status();
+            s.path_trials = Some(PathTrialStatus {
+                reset_diagnostics: None,
+                runtime_id: 1,
+                epoch: 7,
+                observed_at_ms: 9,
+                history_ttl_ms: 30000,
+                active: vec![],
+                transitions: vec![],
+            });
+            s
+        }
+        fn peers(&self) -> Vec<PeerInfo> {
+            vec![]
+        }
+        fn flows(&self) -> Vec<FlowInfo> {
+            vec![]
+        }
+    }
+    async fn path_observation_status(peer: ClientPeer, scope: Scope) -> NodeStatus {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+        let (client, server) = tokio::io::duplex(65536);
+        let join = tokio::spawn(async move {
+            serve_connection_scoped(server, &PathObservationMock, peer, scope)
+                .await
+                .unwrap()
+        });
+        let (rd, mut wr) = tokio::io::split(client);
+        wr.write_all(b"{\"t\":\"status\"}\n").await.unwrap();
+        let mut rd = tokio::io::BufReader::new(rd);
+        let mut line = String::new();
+        tokio::time::timeout(std::time::Duration::from_secs(1), rd.read_line(&mut line))
+            .await
+            .unwrap()
+            .unwrap();
+        drop(rd);
+        drop(wr);
+        join.await.unwrap();
+        match serde_json::from_str::<Response>(&line).unwrap() {
+            Response::Status(s) => *s,
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+    #[tokio::test]
+    async fn path_trial_observation_status_transport_is_owner_only_and_person_hidden() {
+        let root = ClientPeer {
+            uid: Some(0),
+            ..ClientPeer::UNKNOWN
+        };
+        assert!(
+            path_observation_status(root.clone(), Scope::Full)
+                .await
+                .path_trials
+                .is_some()
+        );
+        assert!(
+            path_observation_status(root, Scope::Person)
+                .await
+                .path_trials
+                .is_none()
+        );
+        let unknown = path_observation_status(ClientPeer::UNKNOWN, Scope::Full).await;
+        assert!(unknown.path_trials.is_none());
+        assert_eq!(unknown.connected, Mock.status().connected);
+        let other = ClientPeer {
+            uid: Some(own_uid().unwrap_or(0).saturating_add(1)),
+            ..ClientPeer::UNKNOWN
+        };
+        assert!(
+            path_observation_status(other, Scope::Full)
+                .await
+                .path_trials
+                .is_none()
+        );
+        let elevated = ClientPeer {
+            elevated: Some(true),
+            ..ClientPeer::UNKNOWN
+        };
+        assert!(
+            path_observation_status(elevated, Scope::Full)
+                .await
+                .path_trials
+                .is_some()
+        );
+        let old = serde_json::to_value(Mock.status()).unwrap();
+        assert!(old.get("path_trials").is_none());
+        assert!(
+            serde_json::from_value::<NodeStatus>(old)
+                .unwrap()
+                .path_trials
+                .is_none()
+        );
     }
 }

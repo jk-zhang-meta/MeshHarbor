@@ -19,7 +19,7 @@ use roomler_ai_remote_control::{
 };
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::{collections::HashMap, sync::Arc, time::Duration};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use tokio_tungstenite::tungstenite::Message;
 use tracing::{debug, info, warn};
 
@@ -1564,6 +1564,7 @@ async fn connect_once(
     let mut last_announced_privacy = privacy_words_in(&hello_caps.rpc);
     // FR-101 P2b — and the owner's session-policy floor it carried, likewise.
     let mut last_announced_session_policy = hello_caps.session_policy;
+    let mut last_announced_relay_server = hello_caps.rpc.iter().any(|word| word == "relay-server");
     let (arch, arch_emulated) = crate::arch::native();
     let hello = ClientMsg::AgentHello {
         machine_name: cfg.machine_name.clone(),
@@ -1745,6 +1746,8 @@ async fn connect_once(
     #[cfg(not(any(feature = "overlay-l3", feature = "overlay-netstack")))]
     let _ = (&overlay_view_tx, &rtt_sample_slot);
     let mut peers: HashMap<bson::oid::ObjectId, AgentPeer> = HashMap::new();
+    let mut shared_leases = crate::shared_lease::SharedLeases::default();
+    let mut shared_ssh = crate::ssh_shared_bridge::SharedSshTargets::default();
     // 2026-07-27 — this connect iteration starts with a fresh session map;
     // release any GPU-clock pin a previous iteration left engaged (its
     // sessions died with the old map).
@@ -1834,6 +1837,13 @@ async fn connect_once(
     let mut heartbeat = tokio::time::interval(Duration::from_secs(30));
     heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     heartbeat.tick().await; // Swallow the immediate first tick.
+    #[cfg(any(feature = "overlay-l3", feature = "overlay-netstack"))]
+    let mut relay_readiness = Some(crate::relay_server::readiness());
+    #[cfg(not(any(feature = "overlay-l3", feature = "overlay-netstack")))]
+    let mut relay_readiness: Option<watch::Receiver<Option<u16>>> = None;
+    if relay_server_ready() != last_announced_relay_server {
+        heartbeat.reset_immediately();
+    }
     let mut sys_sampler = crate::telemetry::SysSampler::new();
 
     // Receive-liveness stamp: refreshed on EVERY inbound frame (the Pongs the
@@ -1876,6 +1886,13 @@ async fn connect_once(
     drop(setup_stage);
     loop {
         tokio::select! {
+            changed = relay_listener_changed(&mut relay_readiness) => {
+                if changed {
+                    // Reuse the existing authenticated heartbeat/caps path,
+                    // without waiting 30s or cycling this control connection.
+                    heartbeat.reset_immediately();
+                }
+            }
             _ = shutdown.changed() => {
                 // #2551 — every arm names its stage, so a stall says where.
                 let _stage = watchdog::enter(ctx.pump, "shutdown");
@@ -2170,7 +2187,9 @@ async fn connect_once(
                 // FR-101 P2b — the owner's floor is live too: a new `off` must
                 // reach the hub's strip (and its reason) within a beat.
                 let session_policy_now = crate::session_policy::caps_policy();
-                let caps = if caps_now == last_announced_permissions
+                let relay_server_now = relay_server_ready();
+                let caps = if relay_server_now == last_announced_relay_server
+                    && caps_now == last_announced_permissions
                     && record_now == last_announced_record
                     && keep_busy_now == last_announced_keep_busy
                     && sas_now == last_announced_sas
@@ -2182,6 +2201,7 @@ async fn connect_once(
                 {
                     None
                 } else {
+                    last_announced_relay_server = relay_server_now;
                     last_announced_permissions = caps_now.clone();
                     last_announced_record = record_now.clone();
                     last_announced_keep_busy = keep_busy_now;
@@ -2580,6 +2600,9 @@ async fn connect_once(
                     crate::delegate::WorkerInbound::Params(p) => {
                         match bson::oid::ObjectId::parse_str(&p.session_id) {
                             Ok(sid) => {
+                                if !shared_leases.note_optional(sid, p.shared_lease.as_ref()) {
+                                    continue;
+                                }
                                 pending_codecs.insert(sid, p.codec);
                                 pending_transports.insert(sid, p.transport);
                                 pending_chroma.insert(sid, p.chroma);
@@ -2641,6 +2664,8 @@ async fn connect_once(
                     &cfg.tenant_id,
                     &mut ws,
                     delegated_msg,
+                    &mut shared_leases,
+                    &mut shared_ssh,
                     &mut peers,
                     &mut pending_codecs,
                     &mut pending_transports,
@@ -2710,6 +2735,8 @@ async fn connect_once(
                                 &cfg.tenant_id,
                                 &mut ws,
                                 parsed,
+                                &mut shared_leases,
+                                &mut shared_ssh,
                                 &mut peers,
                                 &mut pending_codecs,
                                 &mut pending_transports,
@@ -3014,6 +3041,8 @@ async fn handle_server_msg(
         tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
     >,
     msg: ServerMsg,
+    shared_leases: &mut crate::shared_lease::SharedLeases,
+    shared_ssh: &mut crate::ssh_shared_bridge::SharedSshTargets,
     peers: &mut HashMap<bson::oid::ObjectId, AgentPeer>,
     pending_codecs: &mut HashMap<bson::oid::ObjectId, String>,
     pending_transports: &mut HashMap<bson::oid::ObjectId, Option<String>>,
@@ -3074,6 +3103,27 @@ async fn handle_server_msg(
     // sessions under its own row as well.
     carrier_ready_tx: &mpsc::Sender<bson::oid::ObjectId>,
 ) -> Result<(), ConnectError> {
+    if let ServerMsg::TunnelTerminate { session_id, .. } = &msg {
+        shared_leases.end(*session_id);
+        shared_ssh.end(*session_id);
+    }
+    let shared_sid = match &msg {
+        ServerMsg::SdpOffer { session_id, .. }
+        | ServerMsg::SharedLeaseRenewal { session_id, .. }
+        | ServerMsg::Terminate { session_id, .. }
+        | ServerMsg::Ice { session_id, .. }
+        | ServerMsg::SdpAnswer { session_id, .. }
+        | ServerMsg::SessionCreated { session_id, .. } => Some(*session_id),
+        _ => None,
+    };
+    let shared_message = shared_sid.is_some_and(|sid| shared_leases.contains(sid))
+        || matches!(
+            &msg,
+            ServerMsg::SdpOffer {
+                shared_lease: Some(_),
+                ..
+            }
+        );
     // #1632 — a Terminate takes any consent prompt still standing for its
     // session down with it, and does so AHEAD of the delegation gate below:
     // the prompt is this daemon's (`Request` is never delegated — consent is
@@ -3156,6 +3206,7 @@ async fn handle_server_msg(
     // delegated `Terminate` never reaches the arm below. (A no-op for every
     // session that was not external.) FR-100 P1b's notes end with it.
     if let ServerMsg::Terminate { session_id, .. } = &msg {
+        shared_leases.end(*session_id);
         crate::extauth::end_session(remote_cfg, *session_id);
         remote_cfg.peer_auth_offers().forget(*session_id);
     }
@@ -3177,8 +3228,20 @@ async fn handle_server_msg(
     // admin must not be able to drive it. Same rule, and the same reason, as
     // `rc:agent.update`, exec and the FR-19 relay: a host-global resource
     // belongs to the enrollment that owns the host.
+    if shared_message
+        && ctx.is_primary
+        && delegated.is_none()
+        && let Some(delegate) = delegate
+        && shared_sid.is_some_and(|sid| delegate.has_shared_params(sid))
+    {
+        // No fallback after handing a scoped session over: a queue failure may
+        // lose a renewal but can never create a second unscoped peer owner.
+        let _ = delegate.send_to_worker(&msg);
+        return Ok(());
+    }
     if let Some(delegate) = delegate
         && ctx.is_primary
+        && !shared_message
         && crate::delegate::delegable_inbound(&msg)
         && delegate.send_to_worker(&msg)
     {
@@ -3189,8 +3252,100 @@ async fn handle_server_msg(
         return Ok(());
     }
 
+    // Service-typed ACKs cannot renew another service even with a matching SID.
+    let msg = match msg {
+        ServerMsg::SharedLeaseRenewal {
+            session_id,
+            grant_id,
+            lease_epoch,
+            challenge_id,
+        } => match shared_leases.renew(session_id, grant_id, &lease_epoch, challenge_id) {
+            Some(offer) => offer,
+            None => return Ok(()),
+        },
+        ServerMsg::SharedSshLeaseRenewal {
+            session_id,
+            grant_id,
+            lease_epoch,
+            challenge_id,
+        } => match shared_leases.renew_ssh(session_id, grant_id, &lease_epoch, challenge_id) {
+            Some(offer) => offer,
+            None => return Ok(()),
+        },
+        other => other,
+    };
+    if let ServerMsg::TunnelSdpOffer { session_id, .. } = &msg
+        && !shared_leases.offer(*session_id, &msg, outbound_tx)
+    {
+        return Ok(());
+    }
+    if let ServerMsg::TunnelIce {
+        session_id,
+        candidate,
+    } = &msg
+        && shared_leases.hold_ice(*session_id, candidate)
+    {
+        return Ok(());
+    }
+    if let ServerMsg::SdpOffer { session_id, .. } = &msg
+        && !shared_leases.offer(*session_id, &msg, delegated.unwrap_or(outbound_tx))
+    {
+        return Ok(());
+    }
+    if let ServerMsg::Ice {
+        session_id,
+        candidate,
+    } = &msg
+        && shared_leases.hold_ice(*session_id, candidate)
+    {
+        return Ok(());
+    }
     match msg {
+        ServerMsg::SharedSshSetup { session_id, setup } => {
+            let accepted = {
+            #[cfg(feature = "ssh-server")]
+            {
+            let descriptor = setup.shared_lease.clone();
+            let services = crate::ssh::SessionServices {
+                power_activity: Some(crate::power::shared_activity().clone()),
+                asker: crate::ssh::Asker::Here {
+                    broker: consent_broker.clone(),
+                    indicator: indicator.clone(),
+                },
+                activity: crate::ssh::ActivitySink::new(agent_cfg, outbound_tx.clone()),
+            };
+            shared_ssh.note(session_id, setup, agent_cfg, services)
+                && shared_leases.note_ssh(session_id, descriptor)
+            }
+            #[cfg(not(feature = "ssh-server"))]
+            { let _ = setup; false }
+            };
+            if !accepted {
+                shared_ssh.end(session_id);
+                shared_leases.end(session_id);
+            }
+            let _ = outbound_tx.try_send(ClientMsg::SharedSshPrepared {
+                session_id,
+                accepted,
+            });
+        }
+        ServerMsg::SharedSshForward {
+            session_id,
+            flow_id,
+        } => {
+            if let Some(peer) = tunnel_peers.get(&session_id).cloned() {
+                shared_ssh.forward(session_id, flow_id, peer, outbound_tx.clone());
+            } else {
+                let _ = outbound_tx.try_send(ClientMsg::TcpForwardReject {
+                    session_id,
+                    flow_id,
+                    kind: roomler_ai_remote_control::signaling::RejectKind::AclDenied,
+                    reason: "Scoped SSH peer is not available".into(),
+                });
+            }
+        }
         ServerMsg::Request {
+            shared_lease,
             session_id,
             controller_user_id,
             controller_name,
@@ -3216,6 +3371,19 @@ async fn handle_server_msg(
             lock_on_end,
             external,
         } => {
+            if !shared_leases.note_optional(session_id, shared_lease.as_ref()) {
+                let _ = reply_for_session(
+                    ws,
+                    delegated,
+                    &ClientMsg::Terminate {
+                        session_id,
+                        reason: EndReason::AdminTerminated,
+                        limit: None,
+                    },
+                )
+                .await;
+                return Ok(());
+            }
             // #1882 — the device's overlay decision, resolved HERE, by the
             // daemon: it is the process whose overlay knows the blocks, and a
             // delegated session's worker gets this same value.
@@ -3509,6 +3677,7 @@ async fn handle_server_msg(
                 let sent = delegate.send_params(crate::delegate::DelegateFrame::SessionParams(
                     Box::new(crate::delegate::SessionParams {
                         session_id: session_id.to_hex(),
+                        shared_lease: shared_lease.clone(),
                         codec: chosen.clone(),
                         transport: negotiated_transport.clone(),
                         chroma: chroma_pref.clone(),
@@ -3820,6 +3989,7 @@ async fn handle_server_msg(
         }
 
         ServerMsg::SdpOffer {
+            shared_lease,
             session_id,
             sdp,
             ice_servers,
@@ -3996,6 +4166,10 @@ async fn handle_server_msg(
                 }
             };
 
+            if !shared_leases.attach(session_id, shared_lease.as_ref(), peer.shared_lease_stop()) {
+                close_within_budget(peer.close(), session_id, "shared_lease_expired").await;
+                return Ok(());
+            }
             // FR-85 P3b — the `record` channel's context, BEFORE the answer:
             // a channel cannot open until the offer is answered, so it can
             // never see this unset. P1e-mac: on a supervised Mac's worker, a
@@ -4164,6 +4338,9 @@ async fn handle_server_msg(
                     control,
                     idle_tx.clone(),
                 );
+            }
+            for candidate in shared_leases.take_ice(session_id) {
+                let _ = peer.add_remote_candidate(candidate).await;
             }
             peers.insert(session_id, peer);
             // 2026-07-27 — first live session engages the GPU-clock pin
@@ -4391,6 +4568,15 @@ async fn handle_server_msg(
             dst_port,
             owner_user_id: _,
         } => {
+            if shared_ssh.contains(session_id) {
+                let _ = outbound_tx.try_send(ClientMsg::TcpForwardReject {
+                    session_id,
+                    flow_id,
+                    kind: roomler_ai_remote_control::signaling::RejectKind::AclDenied,
+                    reason: "A shared SSH peer has no arbitrary TCP destination".into(),
+                });
+                return Ok(());
+            }
             // Dispatch on the session's negotiated data plane: a QUIC
             // session has an entry in `tunnel_quic_peers`, otherwise
             // it's a WebRTC-DC session in `tunnel_peers`. The server
@@ -4458,6 +4644,10 @@ async fn handle_server_msg(
             dst_port,
             owner_user_id: _,
         } => {
+            if shared_ssh.contains(session_id) {
+                return Ok(());
+            }
+
             if let Some(quic_peer) = tunnel_quic_peers.get(&session_id).cloned() {
                 let outbound = outbound_tx.clone();
                 let acl = forward_acl.clone();
@@ -4508,7 +4698,11 @@ async fn handle_server_msg(
         // peer. Build an AgentTunnelPeer, accept the offer, ship the
         // answer back as `rc:tunnel.sdp.answer`. The peer takes care
         // of its own ICE trickle via the outbound channel.
-        ServerMsg::TunnelSdpOffer { session_id, sdp } => {
+        ServerMsg::TunnelSdpOffer {
+            session_id,
+            sdp,
+            shared_lease,
+        } => {
             match crate::tunnel::peer::AgentTunnelPeer::accept_offer(
                 session_id,
                 &sdp,
@@ -4519,7 +4713,22 @@ async fn handle_server_msg(
             .await
             {
                 Ok((peer, answer_sdp)) => {
-                    tunnel_peers.insert(session_id, Arc::new(peer));
+                    let peer = Arc::new(peer);
+                    if shared_lease.is_some() && !shared_ssh.contains(session_id) {
+                        peer.stop_serving();
+                        return Ok(());
+                    }
+                    if !shared_leases.attach(
+                        session_id,
+                        shared_lease.as_ref(),
+                        shared_ssh.stop(session_id, peer.clone()),
+                    ) {
+                        return Ok(());
+                    }
+                    for candidate in shared_leases.take_ice(session_id) {
+                        let _ = peer.add_remote_ice(candidate).await;
+                    }
+                    tunnel_peers.insert(session_id, peer);
                     let _ = outbound_tx
                         .send(ClientMsg::TunnelSdpAnswer {
                             session_id,
@@ -4547,6 +4756,10 @@ async fn handle_server_msg(
             transport,
             client_derp_pubkey,
         } => {
+            if shared_ssh.contains(session_id) {
+                return Ok(());
+            }
+
             // R4 — quic-derp-v1: the quinn server rides this node's
             // ESTABLISHED `/derp` WS toward the client's pubkey. No TURN
             // allocation, no permission dance. Any missing precondition
@@ -6979,6 +7192,31 @@ fn stub_caps(multi_org_tun: bool, is_primary: bool) -> AgentCaps {
 /// FR-97 P4a — whether this process may send the real Ctrl+Alt+Del now, the
 /// `sas` word `stub_caps` puts in the hello. The heartbeat compares it, so a
 /// changed policy is news within a beat.
+fn relay_server_ready() -> bool {
+    #[cfg(any(feature = "overlay-l3", feature = "overlay-netstack"))]
+    {
+        crate::relay_server::listening_port().is_some()
+    }
+    #[cfg(not(any(feature = "overlay-l3", feature = "overlay-netstack")))]
+    {
+        false
+    }
+}
+
+/// A bounded watch subscription, disabled permanently if its publisher exits.
+async fn relay_listener_changed(rx: &mut Option<watch::Receiver<Option<u16>>>) -> bool {
+    match rx.as_mut() {
+        Some(receiver) => match receiver.changed().await {
+            Ok(()) => true,
+            Err(_) => {
+                *rx = None;
+                false
+            }
+        },
+        None => std::future::pending().await,
+    }
+}
+
 fn sas_advertised() -> bool {
     #[cfg(target_os = "windows")]
     {
@@ -7841,5 +8079,30 @@ mod tests {
         let bare = std::io::Error::other("simple");
         let chain = error_chain(&bare);
         assert_eq!(chain, "simple");
+    }
+
+    #[tokio::test]
+    async fn listener_watch_wakes_heartbeat_and_closed_publisher_does_not_spin() {
+        let (tx, rx) = watch::channel(Some(3478));
+        let mut rx = Some(rx);
+        let mut heartbeat = tokio::time::interval(std::time::Duration::from_secs(30));
+        heartbeat.tick().await;
+        tx.send_replace(None);
+        assert!(relay_listener_changed(&mut rx).await);
+        heartbeat.reset_immediately();
+        tokio::time::timeout(std::time::Duration::from_secs(1), heartbeat.tick())
+            .await
+            .unwrap();
+        drop(tx);
+        assert!(!relay_listener_changed(&mut rx).await);
+        assert!(rx.is_none());
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(10),
+                relay_listener_changed(&mut rx)
+            )
+            .await
+            .is_err()
+        );
     }
 }

@@ -11798,6 +11798,7 @@ version = "0.4.151"
 dependencies = [
  "async-trait",
  "log",
+ "rcgen",
  "rustls-native-certs",
  "tokio",
  "tokio-rustls",

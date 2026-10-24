@@ -1,22 +1,11 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (C) 2026 G ROX EOOD
-//! Self-update against GitHub Releases.
+//! Self-update from the enrolled center or an explicitly selected HTTPS feed.
 //!
-//! Polls `https://api.github.com/repos/gjovanov/roomler-ai/releases/latest`
-//! every ~6 h, compares the release tag to the running binary's
-//! `CARGO_PKG_VERSION`, and — when newer — downloads the platform-
-//! appropriate installer (MSI / .deb / .pkg) and spawns it detached.
-//!
-//! Scope: the agent exits after spawning the installer so the installer
-//! can overwrite the binary without `ERROR_SHARING_VIOLATION`. The
-//! Scheduled Task / systemd unit / LaunchAgent registered via
-//! `roomlerd service install` re-launches the new version on
-//! the next login (Windows) or immediately (Restart=on-failure on
-//! Linux, KeepAlive on macOS).
-//!
-//! Trust model: we assume GitHub-over-TLS is sufficient for now. No
-//! signature check beyond the MSI's cargo-wix / codesign identity
-//! (which the OS verifies at install time).
+//! No implicit upstream fallback. Release/download URL boundaries are checked
+//! before I/O; the existing digest, publisher/signature and artifact-version
+//! checks remain mandatory where they were mandatory before. An unavailable
+//! trusted release leaves the currently installed product running.
 
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
@@ -24,17 +13,69 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use tunnel_core::env::node_env;
 
-/// GitHub "Releases" repo slug. Centralised here so a fork can redirect
-/// its update feed without grepping the codebase.
-pub const RELEASES_REPO: &str = "gjovanov/roomler-ai";
+#[path = "updater_origin.rs"]
+mod origin;
 
-/// Default proxy endpoint that caches GitHub's releases response on
-/// the roomler-ai API server. Eliminates the per-IP GitHub rate
-/// limit (60 req/hr unauth) that bites fleets of agents behind one
-/// NAT. Override via `ROOMLERD_UPDATE_URL` env var for self-
-/// hosted deployments or to bypass the proxy in dev. When the proxy
-/// is unreachable we fall back to direct GitHub.
-pub const DEFAULT_PROXY_URL: &str = "https://roomler.ai/api/agent/latest-release";
+/// Unenrolled MeshHarbor fallback only; enrolled/custom centers retain their prefix.
+pub const DEFAULT_PROXY_URL: &str = "https://www.itachi.fans/meshharbor/api/agent/latest-release";
+
+static UPDATE_CONFIG_PATH: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// Bind the binary's already-resolved --config path. No second config/account store.
+pub fn set_update_config_path(path: PathBuf) -> Result<()> {
+    if let Some(existing) = UPDATE_CONFIG_PATH.get() {
+        if existing != &path {
+            bail!("update config path already bound");
+        }
+    } else if UPDATE_CONFIG_PATH.set(path).is_err() {
+        bail!("update config path binding raced");
+    }
+    Ok(())
+}
+
+fn update_origin() -> Result<origin::UpdateOrigin> {
+    #[derive(Deserialize)]
+    struct Center {
+        server_url: String,
+    }
+    let center = match UPDATE_CONFIG_PATH.get() {
+        Some(path) => match std::fs::read_to_string(path) {
+            Ok(raw) => Some(
+                toml::from_str::<Center>(&raw)
+                    .map_err(|_| {
+                        anyhow::anyhow!("resolved update config is malformed or missing server_url")
+                    })?
+                    .server_url,
+            ),
+            Err(e)
+                if e.kind() == std::io::ErrorKind::NotFound
+                    && path
+                        .symlink_metadata()
+                        .is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound) =>
+            {
+                None
+            }
+            Err(e) => return Err(e).context("reading resolved update config"),
+        },
+        None => None,
+    };
+    origin::UpdateOrigin::resolve(
+        center.as_deref().unwrap_or(origin::DEFAULT_CENTER_URL),
+        node_env("UPDATE_URL").as_deref(),
+        node_env("UPDATE_ASSET_BASE_URL").as_deref(),
+    )
+    .map_err(anyhow::Error::msg)
+}
+
+fn update_redirect_policy(origin: origin::UpdateOrigin, asset: bool) -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(move |attempt| {
+        if origin.permits_redirect(attempt.url().as_str(), asset, attempt.previous().len()) {
+            attempt.follow()
+        } else {
+            attempt.error("update redirect escaped its explicit origin/prefix or redirect budget")
+        }
+    })
+}
 
 /// How often `run_periodic` wakes up and checks for a newer release.
 ///
@@ -45,10 +86,8 @@ pub const DEFAULT_PROXY_URL: &str = "https://roomler.ai/api/agent/latest-release
 /// through the S6 split because their next check was hours away). The
 /// original 24 h choice guarded GitHub's 60-req/IP/h unauthenticated
 /// quota (field 2026-04-27: 8 MSI installs across 5 NAT'd boxes hit 403)
-/// — but the check has been roomler.ai-proxy-first for a long time
-/// (`DEFAULT_PROXY_URL`, server-side 1 h cache), so GitHub only sees
-/// fallback traffic. 4 h keeps even a large NAT'd office far under the
-/// quota on the fallback path. Operators tune via
+/// — the enrolled center now owns that cache/channel. There is no automatic
+/// fallback to another publisher. Operators tune the same cadence through
 /// `update_check_interval_h` / `ROOMLERD_UPDATE_INTERVAL_H`.
 pub const CHECK_INTERVAL: Duration = Duration::from_secs(4 * 3600);
 
@@ -1041,42 +1080,22 @@ fn pick_linux_asset<'a>(
     picked
 }
 
-/// Fetch the list of releases. Uses the roomler-ai backend proxy by
-/// default (caches GitHub's response for 1h on the API server, so a
-/// fleet of agents shares a single upstream call), falls back to
-/// direct GitHub when the proxy is unreachable. Override via
-/// `ROOMLERD_UPDATE_URL` env var for self-hosted deployments.
-///
-/// We do NOT use GitHub's `/releases/latest` because that endpoint
-/// excludes prereleases unconditionally, and our v0.x policy briefly
-/// marked everything as prerelease — agents shipped with 0.1.36
-/// silently 404'd on every check until the proxy + workflow fix
-/// landed. Always pull the full list and let `pick_latest_release`
-/// apply our own filter (draft=false + tag prefix + parseable).
+/// Query exactly one trusted feed; failures never select a different publisher.
 async fn fetch_latest_release() -> Result<GithubRelease> {
-    let proxy_url = node_env("UPDATE_URL").unwrap_or_else(|| DEFAULT_PROXY_URL.to_string());
-    // Proxy first — handles rate limiting, returns the same JSON shape
-    // as GitHub's /releases endpoint (slimmed to fields we read).
-    match fetch_releases_from(&proxy_url).await {
-        Ok(release) => return Ok(release),
-        Err(e) => {
-            tracing::info!(
-                proxy = %proxy_url,
-                error = %format!("{e:#}"),
-                "update proxy unreachable; trying direct GitHub"
-            );
-        }
-    }
-    // Fallback — direct GitHub. Subject to the 60/hr unauth quota
-    // but fine for occasional use when the proxy is offline.
-    let github_url = format!("https://api.github.com/repos/{RELEASES_REPO}/releases?per_page=30");
-    fetch_releases_from(&github_url).await
+    let origin = update_origin()?;
+    let releases = fetch_releases_from(origin.feed().as_str()).await?;
+    pick_latest_release(releases).context("no published agent-v* release in trusted update feed")
 }
 
-async fn fetch_releases_from(url: &str) -> Result<GithubRelease> {
+async fn fetch_releases_from(url: &str) -> Result<Vec<GithubRelease>> {
+    let origin = update_origin()?;
+    if url != origin.feed().as_str() {
+        bail!("manifest URL differs from the configured trusted update feed");
+    }
     let client = reqwest::Client::builder()
         .user_agent(concat!("roomlerd/", env!("CARGO_PKG_VERSION")))
         .timeout(Duration::from_secs(30))
+        .redirect(update_redirect_policy(origin, false))
         .build()
         .context("building reqwest client")?;
     let resp = client
@@ -1127,7 +1146,7 @@ async fn fetch_releases_from(url: &str) -> Result<GithubRelease> {
         bail!("GitHub API returned {}", status);
     }
     let releases: Vec<GithubRelease> = resp.json().await.context("parsing GitHub releases JSON")?;
-    pick_latest_release(releases).context("no published agent-v* release found")
+    Ok(releases)
 }
 
 /// Given a vector of releases from GitHub (newest-first per API
@@ -1553,16 +1572,18 @@ fn discard_download(path: &std::path::Path) {
 /// self-identify as that release or it is discarded — see
 /// [`crate::artifact_version`] for the downgrade this closes.
 pub(crate) async fn download_asset(asset: &GithubAsset, claimed_release: &str) -> Result<PathBuf> {
+    let origin = update_origin()?;
+    origin::validate_asset_name(&asset.name).map_err(anyhow::Error::msg)?;
+    let asset_url = origin
+        .asset_url(&asset.browser_download_url)
+        .map_err(anyhow::Error::msg)?;
     let client = reqwest::Client::builder()
         .user_agent(concat!("roomlerd/", env!("CARGO_PKG_VERSION")))
         .timeout(Duration::from_secs(600))
+        .redirect(update_redirect_policy(origin.clone(), true))
         .build()
         .context("building download client")?;
-    let resp = client
-        .get(&asset.browser_download_url)
-        .send()
-        .await
-        .context("GET asset")?;
+    let resp = client.get(asset_url).send().await.context("GET asset")?;
     if !resp.status().is_success() {
         bail!("asset download returned {}", resp.status());
     }
@@ -1643,10 +1664,16 @@ pub(crate) async fn download_asset(asset: &GithubAsset, claimed_release: &str) -
     // install.
     #[cfg(not(windows))]
     {
-        let asc_url = format!("{}.asc", asset.browser_download_url);
+        let mut asc_url = origin
+            .asset_url(&asset.browser_download_url)
+            .map_err(anyhow::Error::msg)?;
+        asc_url.set_path(&format!("{}.asc", asc_url.path()));
+        let asc_url = origin
+            .asset_url(asc_url.as_str())
+            .map_err(anyhow::Error::msg)?;
         let asc = async {
             let resp = client
-                .get(&asc_url)
+                .get(asc_url.clone())
                 .send()
                 .await
                 .context("GET .asc sidecar")?;
@@ -1746,30 +1773,18 @@ pub(crate) fn verify_sha256(bytes: &[u8], digest: &str) -> Result<()> {
     Ok(())
 }
 
-/// Fetch a specific release by tag from GitHub. Bypasses the
-/// roomler-ai proxy because pinning is rare (per-agent crash-loop
-/// recovery, not a fleet-wide poll), so the proxy's per-IP rate-
-/// limit insulation isn't needed and the round-trip via our backend
-/// would just add latency to a path that's already on the slow side
-/// of the agent's failure recovery.
+/// Exact-tag lookup in the SAME trusted feed, including older entries returned
+/// by that feed. No public same-center by-tag route exists today. If historical
+/// recovery is absent from its list, refuse rather than guessing an upstream URL
+/// or substituting the latest tag. Archive rollback availability remains a center
+/// contract/acceptance requirement, not something this client can manufacture.
 pub(crate) async fn fetch_release_by_tag(tag: &str) -> Result<GithubRelease> {
-    let url = format!("https://api.github.com/repos/{RELEASES_REPO}/releases/tags/{tag}");
-    let client = reqwest::Client::builder()
-        .user_agent(concat!("roomlerd/", env!("CARGO_PKG_VERSION")))
-        .timeout(Duration::from_secs(30))
-        .build()
-        .context("building reqwest client")?;
-    let resp = client
-        .get(&url)
-        .header("Accept", "application/vnd.github+json")
-        .send()
-        .await
-        .context("GET release by tag")?;
-    if !resp.status().is_success() {
-        bail!("GitHub returned {} for tag {tag}", resp.status());
-    }
-    let release: GithubRelease = resp.json().await.context("parsing release JSON")?;
-    Ok(release)
+    let origin = update_origin()?;
+    let releases = fetch_releases_from(origin.feed().as_str()).await?;
+    releases
+        .into_iter()
+        .find(|r| r.tag_name == tag && !r.draft)
+        .context("requested tag unavailable in trusted update feed; no upstream fallback")
 }
 
 /// Pin to a specific release tag. Used by the rollback path when

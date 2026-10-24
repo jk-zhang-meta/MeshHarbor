@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (C) 2026 G ROX EOOD
 //! `roomler self-update` — check the server's tunnel latest-release, download
-//! the newer artifact through the roomler.ai installer proxy (corp-AV
+//! the newer artifact through the configured center installer proxy (corp-AV
 //! friendly, same origin as the manifest), verify it, and replace the running
 //! executable.
 //!
@@ -15,8 +15,8 @@
 //! checked too, but it comes from the same server as the download, so it
 //! proves transport, not origin. Before P6b it was the only check, and a
 //! manifest without a digest skipped it. The `.asc` is fetched from the
-//! asset's own release URL. Where that URL points does not matter: only the
-//! pinned key can have made a signature that verifies.
+//! asset's own release URL, restricted to the configured center prefix. The
+//! pinned key must still have made a signature that verifies.
 //!
 //! A signature proves who built the bytes, not which release they are, so a
 //! server could offer an older signed artifact under a newer version. Where
@@ -126,11 +126,63 @@ fn manifest_asset<'a>(
     })
 }
 
+/// Same URL boundary as the daemon updater: configured HTTPS center + path prefix.
+fn checked_update_url(raw: &str) -> Result<reqwest::Url> {
+    let path = raw.split('?').next().unwrap_or(raw);
+    if path.contains('\\') || raw.chars().any(|c| c.is_control()) {
+        bail!("update URL contains an ambiguous path");
+    }
+    let lower = path.to_ascii_lowercase();
+    for escape in ["%2e", "%2f", "%5c", "%25", "%00", "%0a", "%0d"] {
+        if lower.contains(escape) {
+            bail!("update URL contains an encoded path separator/traversal");
+        }
+    }
+    let raw_path = path.split_once("://").and_then(|(_, s)| s.split_once('/'));
+    if raw_path.is_some_and(|(_, p)| p.split('/').any(|s| s == "." || s == "..")) {
+        bail!("update URL contains a dot segment");
+    }
+    let url = reqwest::Url::parse(raw)?;
+    if url.scheme() != "https"
+        || url.host_str().is_none()
+        || url.host_str().is_some_and(|h| h.contains('*'))
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.fragment().is_some()
+    {
+        bail!("CLI updates require HTTPS without userinfo or fragment");
+    }
+    Ok(url)
+}
+
+fn update_base(raw: &str) -> Result<reqwest::Url> {
+    let mut center = checked_update_url(raw)?;
+    if center.query().is_some() {
+        bail!("update center must not contain a query");
+    }
+    center.set_path(&format!("{}/", center.path().trim_end_matches('/')));
+    Ok(center)
+}
+
+fn signature_url(center: &reqwest::Url, raw: &str) -> Result<reqwest::Url> {
+    let mut asset = checked_update_url(raw)?;
+    if asset.origin() != center.origin() || !asset.path().starts_with(center.path()) {
+        bail!("signature asset URL is outside the configured center prefix");
+    }
+    asset.set_path(&format!("{}.asc", asset.path()));
+    Ok(asset)
+}
+
 /// Entry point for the `self-update` subcommand.
 pub async fn self_update(cfg: &TunnelConfig, check_only: bool) -> Result<()> {
-    let base = cfg.server_url.trim_end_matches('/');
+    let boundary = update_base(&cfg.server_url)?;
+    let base = boundary.as_str().trim_end_matches('/');
     let http = reqwest::Client::builder()
         .user_agent(concat!("roomler-cli/", env!("CARGO_PKG_VERSION")))
+        // Fail closed on redirects, including signature redirects to upstream.
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            attempt.error("CLI updates require direct configured-center responses")
+        }))
         .build()
         .context("build http client")?;
 
@@ -180,7 +232,7 @@ pub async fn self_update(cfg: &TunnelConfig, check_only: bool) -> Result<()> {
     let asset = manifest_asset(&latest.assets, triple, ext)
         .with_context(|| format!("release {} has no {triple}{ext} artifact", latest.tag_name))?;
 
-    // 3) Download through the roomler.ai proxy (same origin as the manifest;
+    // 3) Download through the configured center (same origin as the manifest;
     //    corporate AV trusts it over a raw github.com pull), pinned to the
     //    version the manifest offered, so a release published in between
     //    cannot swap the bytes under the check.
@@ -209,11 +261,13 @@ pub async fn self_update(cfg: &TunnelConfig, check_only: bool) -> Result<()> {
             asset.name
         )
     })?;
+    let asc_url = signature_url(&boundary, url)
+        .context("signature must be served by the configured center")?;
     let asc = http
-        .get(format!("{url}.asc"))
+        .get(asc_url.clone())
         .send()
         .await
-        .with_context(|| format!("fetching {url}.asc"))?
+        .with_context(|| format!("fetching {asc_url}"))?
         .error_for_status()
         .with_context(|| {
             format!(

@@ -1021,6 +1021,19 @@ pub async fn cmd_open_roomler(app: tauri::AppHandle) -> Result<(), String> {
     open_web_or_browser(&app, &url)
 }
 
+/// Personal directory and sharing are account-authenticated, never agent-token lists.
+#[tauri::command]
+pub async fn cmd_open_account(app: tauri::AppHandle, window: tauri::WebviewWindow, section: String) -> Result<(), String> {
+    if window.label() != "main" { return Err("Only the local desktop window may open the account centre".into()); }
+    let server = tokio::task::spawn_blocking(|| {
+        let path = active_config_path(probe_service_state().0 == "scmService")?;
+        if !path.exists() { return Ok(crate::account_window::DEFAULT_CENTER.to_owned()); }
+        let cfg = config::load(&path).map_err(|_| "Cannot load this device's account server configuration".to_owned())?;
+        Ok::<String, String>(cfg.server_url)
+    }).await.map_err(|_| "Cannot resolve the account centre")??;
+    crate::account_window::open(&app, &server, &section)
+}
+
 /// S2/S7 — open the remote-control viewer for one of the agent-backed
 /// devices this one can see (`{server}/tenant/{tid}/agent/{aid}/remote`) —
 /// in-app on Windows, default browser elsewhere. The URL is constructed

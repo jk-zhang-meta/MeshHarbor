@@ -3,6 +3,8 @@
 /// <reference types="vite/client" />
 
 interface ImportMetaEnv {
+  /** Build-time outer path (Vite resolves it into built-in BASE_URL). */
+  readonly VITE_BASE_PATH?: string
   /** FR-69 P9 — comma list of server modules this bundle is built for
    *  (`chat,conference,fleet,remote,network,saas`); unset = all of them.
    *  See `src/modules/registry.ts`. */

@@ -27,13 +27,11 @@
 
 use axum::{
     Json,
-    body::Body,
     extract::{Path, Query, State},
-    http::{HeaderMap, HeaderValue, StatusCode},
+    http::HeaderMap,
     response::Response,
 };
 use serde::{Deserialize, Serialize};
-use std::time::Duration;
 
 use roomler_core::{ApiError, client_ip::PeerAddr};
 
@@ -91,8 +89,12 @@ pub async fn latest_release(
         peer,
         install_trace::asset::AGENT_LATEST_RELEASE,
     );
+    let base = crate::release_delivery::public_base(&state.settings.app.frontend_url)?;
     let releases = releases::cached(&state).await?;
-    Ok(Json(filter_component_releases(releases, "agent-v")))
+    Ok(Json(crate::release_delivery::own_urls(
+        filter_component_releases(releases, "agent-v"),
+        &base,
+    )?))
 }
 
 /// Keep only non-draft releases whose tag starts with `prefix` (`agent-v` /
@@ -228,6 +230,7 @@ pub async fn installer_health(
     Query(params): Query<InstallerQuery>,
 ) -> Result<Json<InstallerHealth>, ApiError> {
     let normalised = normalise_flavour(&flavour)?;
+    crate::release_delivery::validate_version(&params.version)?;
     let releases = releases::cached(&state).await?;
     let release = pick_release(&releases, &params.version).ok_or_else(|| {
         ApiError::NotFound(format!("no release matching version={}", params.version))
@@ -238,15 +241,16 @@ pub async fn installer_health(
             normalised, release.tag_name
         ))
     })?;
+    crate::release_delivery::validate_asset(release, asset)?;
     Ok(Json(InstallerHealth {
         tag: release.tag_name.clone(),
         flavour: normalised.to_string(),
         filename: asset.name.clone(),
         size: asset.size,
         digest: asset.digest.clone(),
-        uri: format!(
-            "/api/agent/installer/{}?version={}",
-            normalised, params.version
+        uri: crate::release_delivery::health_uri(
+            &format!("/api/agent/installer/{}", normalised),
+            &release.tag_name,
         ),
     }))
 }
@@ -260,6 +264,7 @@ pub async fn installer_proxy(
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     let normalised = normalise_flavour(&flavour)?;
+    crate::release_delivery::validate_version(&params.version)?;
     // FR-102 P3 — one fetch of this flavour by this client class.
     install_trace::count_fetch(
         &state,
@@ -278,49 +283,12 @@ pub async fn installer_proxy(
         ))
     })?;
 
-    let client = reqwest::Client::builder()
-        .user_agent(concat!("roomler-ai-api/", env!("CARGO_PKG_VERSION")))
-        .timeout(Duration::from_secs(60))
-        .build()
-        .map_err(|e| ApiError::Internal(format!("reqwest client build: {e}")))?;
-    let upstream = client
-        .get(&asset.browser_download_url)
-        .send()
-        .await
-        .map_err(|e| ApiError::Internal(format!("upstream MSI fetch failed: {e}")))?;
-
-    let status = upstream.status();
-    if !status.is_success() {
-        return Err(ApiError::Internal(format!(
-            "upstream MSI fetch returned {}",
-            status
-        )));
-    }
-    let content_length = upstream.content_length();
-
-    let mut builder = Response::builder()
-        .status(StatusCode::OK)
-        .header("Content-Type", "application/x-msi")
-        .header(
-            "Content-Disposition",
-            HeaderValue::from_str(&format!(
-                "attachment; filename=\"{}\"",
-                sanitise_header_value(&asset.name)
-            ))
-            .unwrap_or_else(|_| HeaderValue::from_static("attachment")),
-        )
-        .header("Cache-Control", "public, max-age=3600");
-    if let Some(len) = content_length {
-        builder = builder.header("Content-Length", len);
-    }
-    let body = Body::from_stream(upstream.bytes_stream());
-    builder
-        .body(body)
-        .map_err(|e| ApiError::Internal(format!("response build failed: {e}")))
+    crate::release_delivery::stream_asset(release, asset, "application/x-msi").await
 }
 
 /// Strip CR/LF and quote characters from a header value to avoid
 /// HTTP header injection if an upstream filename ever contains them.
+#[cfg(test)]
 fn sanitise_header_value(s: &str) -> String {
     s.chars()
         .filter(|c| !matches!(c, '\r' | '\n' | '"'))

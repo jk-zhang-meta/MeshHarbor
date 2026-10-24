@@ -10,6 +10,8 @@
             {{ $t('auth.login') }}
           </v-card-title>
 
+          <div class="text-center text-subtitle-1 mb-4" data-testid="product-name">{{ PRODUCT_TITLE }}</div>
+
           <v-form ref="formRef" @submit.prevent="handleLogin">
             <!-- No auto-capitalisation, no autocorrect: iOS capitalises the first
                  letter of a text field by default, and the server matches the
@@ -88,6 +90,7 @@ import { useAuthStore } from '@/stores/auth'
 import { useWsStore } from '@/stores/ws'
 import { useValidation } from '@/composables/useValidation'
 import { useBrand } from '@/composables/useBrand'
+import { PRODUCT_TITLE } from '@/utils/product'
 import { carriedQuery, signupAttribution, startOAuth, type Landing } from '@/utils/attribution'
 
 const auth = useAuthStore()

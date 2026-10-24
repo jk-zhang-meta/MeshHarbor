@@ -171,10 +171,14 @@ pub async fn complete_sign_in(
     let user = sign_in.user;
     let user_id = user.id.unwrap();
 
-    // Generate JWT tokens
-    let tokens = state
-        .auth
-        .generate_tokens(user_id, &user.email, &user.username)?;
+    roomler_core::admission::require_user(state, &user, None)?;
+    // Generate JWT tokens only after the same admission rule as password login.
+    let tokens = state.auth.generate_tokens_at_revision(
+        user_id,
+        &user.email,
+        &user.username,
+        user.account_approval.revision,
+    )?;
 
     // Set the session cookie (Secure in prod) and clear the one-shot CSRF
     // state cookie now that it has been consumed.

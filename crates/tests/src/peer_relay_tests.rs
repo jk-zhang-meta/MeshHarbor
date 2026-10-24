@@ -317,3 +317,309 @@ async fn try_load_acl_fails_closed_where_load_acl_fails_open() {
     assert_eq!(ctx.mode, OverlayAclMode::Off);
     assert!(ctx.policies.is_empty());
 }
+
+// The enrollment credential, not a device's requested role, carries approval.
+async fn relay_enrollment_token(
+    app: &TestApp,
+    seeded: &SeededTenant,
+    user_token: &str,
+    relay_server: bool,
+) -> (u16, Value) {
+    let response = app
+        .auth_post(&url(seeded, "/agent/enroll-token"), user_token)
+        .json(&json!({ "relay_server": relay_server }))
+        .send()
+        .await
+        .unwrap();
+    let status = response.status().as_u16();
+    (status, response.json().await.unwrap_or(Value::Null))
+}
+
+async fn redeem_relay_enrollment(app: &TestApp, token: &str, machine: &str) -> (u16, Value) {
+    let response = app
+        .client
+        .post(app.url("/api/agent/enroll"))
+        .json(&json!({
+            "enrollment_token": token, "machine_id": machine,
+            "machine_name": "relay enrollment test", "os": "linux", "agent_version": "0.4.151",
+            // An ordinary device is allowed to send unknown fields, but they
+            // must never grant it a relay role.
+            "relay_server": true,
+        }))
+        .send()
+        .await
+        .unwrap();
+    let status = response.status().as_u16();
+    (status, response.json().await.unwrap_or(Value::Null))
+}
+
+#[tokio::test]
+async fn relay_enrollment_requires_both_permissions_and_preserves_plain_policy() {
+    let app = TestApp::spawn().await;
+    let seeded = app.seed_tenant("relayenroll").await;
+    let tid = ObjectId::parse_str(&seeded.tenant_id).unwrap();
+    let owner = &seeded.admin.access_token;
+    let member = &seeded.member.access_token;
+    assert_eq!(
+        relay_enrollment_token(&app, &seeded, member, true).await.0,
+        403
+    );
+    let admin_role = seeded_role_id(&app, &seeded, "admin").await;
+    assign_role(&app, &seeded, &admin_role, &seeded.member.id).await;
+    assert_eq!(
+        relay_enrollment_token(&app, &seeded, member, true).await.0,
+        403,
+        "MANAGE_AGENTS without EXEC_DEVICE cannot mint a relay grant"
+    );
+    assert_eq!(
+        relay_enrollment_token(&app, &seeded, member, false).await.0,
+        200,
+        "ordinary enrollment keeps its old permission contract"
+    );
+
+    let (status, token) = relay_enrollment_token(&app, &seeded, owner, true).await;
+    assert_eq!(status, 200, "{token}");
+    assert_eq!(token["relay_server"], json!(true));
+    let (status, enrolled) = redeem_relay_enrollment(
+        &app,
+        token["enrollment_token"].as_str().unwrap(),
+        "signed-relay",
+    )
+    .await;
+    assert_eq!(status, 200, "{enrolled}");
+    assert!(enrolled["agent_token"].is_string());
+    let aid = ObjectId::parse_str(enrolled["agent_id"].as_str().unwrap()).unwrap();
+    let dao = &app.state.fleet().agents;
+    let row = dao.base.find_by_id(aid).await.unwrap();
+    assert!(
+        row.peer_relay_policy.serve,
+        "no subsequent admin approval PUT needed"
+    );
+    // Existing endpoint configuration survives a later ordinary enrollment.
+    let endpoints = vec!["8.8.8.8:3478".to_string()];
+    let mut policy = row.peer_relay_policy;
+    policy.static_endpoints = endpoints.clone();
+    assert!(
+        dao.update_peer_relay_policy(tid, aid, &policy)
+            .await
+            .unwrap()
+    );
+    let (_, plain) = relay_enrollment_token(&app, &seeded, owner, false).await;
+    let (status, _) = redeem_relay_enrollment(
+        &app,
+        plain["enrollment_token"].as_str().unwrap(),
+        "signed-relay",
+    )
+    .await;
+    assert_eq!(status, 200);
+    let row = dao.base.find_by_id(aid).await.unwrap();
+    assert!(
+        row.peer_relay_policy.serve,
+        "plain token must not revoke existing approval"
+    );
+    assert_eq!(row.peer_relay_policy.static_endpoints, endpoints);
+    let (_, plain) = relay_enrollment_token(&app, &seeded, owner, false).await;
+    let (status, ordinary) = redeem_relay_enrollment(
+        &app,
+        plain["enrollment_token"].as_str().unwrap(),
+        "ordinary-not-relay",
+    )
+    .await;
+    assert_eq!(status, 200);
+    let row = dao
+        .base
+        .find_by_id(ObjectId::parse_str(ordinary["agent_id"].as_str().unwrap()).unwrap())
+        .await
+        .unwrap();
+    assert!(
+        !row.peer_relay_policy.serve,
+        "unsigned request-body role must do nothing"
+    );
+}
+
+#[tokio::test]
+async fn relay_enrollment_grant_matches_live_generation_and_preserves_endpoints() {
+    let app = TestApp::spawn().await;
+    let seeded = app.seed_tenant("relaygrantgen").await;
+    let tid = ObjectId::parse_str(&seeded.tenant_id).unwrap();
+    let cfg = enrol(&app, &seeded, "relay-generation").await;
+    let aid = ObjectId::parse_str(&cfg.agent_id).unwrap();
+    let dao = &app.state.fleet().agents;
+    let endpoints = vec!["8.8.8.8:3478".to_string()];
+    let mut policy = dao.base.find_by_id(aid).await.unwrap().peer_relay_policy;
+    policy.static_endpoints = endpoints.clone();
+    dao.update_peer_relay_policy(tid, aid, &policy)
+        .await
+        .unwrap();
+    assert!(
+        !dao.grant_relay_server(tid, aid, 1).await.unwrap(),
+        "stale generation cannot grant"
+    );
+    assert!(
+        !dao.grant_relay_server(ObjectId::new(), aid, 0)
+            .await
+            .unwrap(),
+        "tenant is part of atomic predicate"
+    );
+    assert!(dao.grant_relay_server(tid, aid, 0).await.unwrap());
+    assert!(
+        dao.grant_relay_server(tid, aid, 0).await.unwrap(),
+        "already approved matching row is successful"
+    );
+    assert_eq!(
+        dao.base
+            .find_by_id(aid)
+            .await
+            .unwrap()
+            .peer_relay_policy
+            .static_endpoints,
+        endpoints
+    );
+    // The enrollment read generation zero; a removal/revival advanced it.
+    dao.base
+        .update_by_id(
+            aid,
+            doc! { "$set": { "token_gen": 1, "peer_relay_policy.serve": false } },
+        )
+        .await
+        .unwrap();
+    assert!(!dao.grant_relay_server(tid, aid, 0).await.unwrap());
+    assert!(
+        !dao.base
+            .find_by_id(aid)
+            .await
+            .unwrap()
+            .peer_relay_policy
+            .serve
+    );
+    assert!(dao.grant_relay_server(tid, aid, 1).await.unwrap());
+    dao.base.update_by_id(aid, doc! { "$set": { "deleted_at": bson::DateTime::now(), "peer_relay_policy.serve": false } }).await.unwrap();
+    assert!(
+        !dao.grant_relay_server(tid, aid, 1).await.unwrap(),
+        "tombstone cannot grant"
+    );
+}
+
+#[tokio::test]
+async fn relay_enrollment_write_failure_returns_no_credentials_and_consumes_token() {
+    let app = TestApp::spawn().await;
+    let seeded = app.seed_tenant("relaygrantfail").await;
+    let tid = ObjectId::parse_str(&seeded.tenant_id).unwrap();
+    let (status, token) =
+        relay_enrollment_token(&app, &seeded, &seeded.admin.access_token, true).await;
+    assert_eq!(status, 200);
+    // Isolated fixture database only: allow creating the ordinary row but
+    // reject the subsequent true grant. No global mongod failpoint or race.
+    app.db
+        .run_command(doc! {
+            "collMod": "agents",
+            "validator": { "peer_relay_policy.serve": { "$ne": true } },
+            "validationLevel": "strict", "validationAction": "error",
+        })
+        .await
+        .unwrap();
+    let token = token["enrollment_token"].as_str().unwrap();
+    let (status, body) = redeem_relay_enrollment(&app, token, "failed-relay-grant").await;
+    assert!(
+        status >= 500,
+        "a failed grant must not report success: {status} {body}"
+    );
+    assert!(
+        body.get("agent_token").is_none(),
+        "no agent credentials on a failed grant"
+    );
+    let row = app
+        .state
+        .fleet()
+        .agents
+        .find_by_tenant_and_machine(tid, "failed-relay-grant")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        !row.peer_relay_policy.serve,
+        "partial row is ordinary, not approved"
+    );
+    let (status, body) = redeem_relay_enrollment(&app, token, "failed-relay-grant").await;
+    assert_eq!(status, 401, "single-use claim is not rolled back: {body}");
+    assert!(body.get("agent_token").is_none());
+}
+
+#[tokio::test]
+async fn backbone_policy_is_same_tenant_approved_exact_and_preserved_by_plain_enrollment() {
+    let app = TestApp::spawn().await;
+    let seeded = app.seed_tenant("backbone-policy").await;
+    let owner = &seeded.admin.access_token;
+    let source = enrol(&app, &seeded, "backbone-source").await;
+    let target = enrol(&app, &seeded, "backbone-target").await;
+    let source_url = url(
+        &seeded,
+        &format!("/agent/{}/peer-relay-policy", source.agent_id),
+    );
+    let target_url = url(
+        &seeded,
+        &format!("/agent/{}/peer-relay-policy", target.agent_id),
+    );
+    let edges = json!([{"relay_agent_id":target.agent_id,"endpoint":"10.20.0.2:3478"}]);
+    let body = json!({"serve":true,"approved_backbone_edges":edges});
+    assert_eq!(
+        put(&app, &source_url, owner, body.clone()).await.0,
+        400,
+        "target needs its own approval"
+    );
+    assert_eq!(
+        put(&app, &target_url, owner, json!({"serve":true})).await.0,
+        200
+    );
+    assert_eq!(put(&app, &source_url, owner, body.clone()).await.0, 200);
+    let tid = ObjectId::parse_str(&seeded.tenant_id).unwrap();
+    let aid = ObjectId::parse_str(&source.agent_id).unwrap();
+    let dao = &app.state.network().fleet.agents;
+    assert_eq!(
+        dao.base
+            .find_by_id(aid)
+            .await
+            .unwrap()
+            .peer_relay_policy
+            .approved_backbone_edges
+            .len(),
+        1
+    );
+    let mut bad = body.clone();
+    bad["approved_backbone_edges"][0]["endpoint"] = json!("169.254.169.254:80");
+    assert_eq!(put(&app, &source_url, owner, bad).await.0, 400);
+    let mut self_edge = body.clone();
+    self_edge["approved_backbone_edges"][0]["relay_agent_id"] = json!(source.agent_id);
+    assert_eq!(put(&app, &source_url, owner, self_edge).await.0, 400);
+    assert_eq!(
+        dao.base
+            .find_by_id(aid)
+            .await
+            .unwrap()
+            .peer_relay_policy
+            .approved_backbone_edges
+            .len(),
+        1,
+        "failed updates retain last policy"
+    );
+    let other = app.seed_tenant("backbone-other").await;
+    let foreign = enrol(&app, &other, "backbone-foreign").await;
+    let mut foreign_edge = body.clone();
+    foreign_edge["approved_backbone_edges"][0]["relay_agent_id"] = json!(foreign.agent_id);
+    assert_eq!(put(&app, &source_url, owner, foreign_edge).await.0, 404);
+    // Ordinary enrollment must not replace approved topology or grant a new
+    // edge. The existing generation-constrained .serve grant stays narrow.
+    let (_, token) = relay_enrollment_token(&app, &seeded, owner, false).await;
+    let (status, _) = redeem_relay_enrollment(
+        &app,
+        token["enrollment_token"].as_str().unwrap(),
+        "backbone-source",
+    )
+    .await;
+    assert_eq!(status, 200);
+    let row = dao.find_live_in_tenant(tid, aid).await.unwrap();
+    assert_eq!(
+        serde_json::to_value(row.peer_relay_policy.approved_backbone_edges).unwrap(),
+        edges
+    );
+}

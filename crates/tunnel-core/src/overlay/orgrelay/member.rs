@@ -8,7 +8,7 @@
 //! coordinator so the types stay next to the client they drive and the
 //! ceilings the member enforces are in one place.
 
-use std::net::SocketAddr;
+use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -92,6 +92,9 @@ impl OrgSession {
 /// moved the TURN allocate off-loop for the same reason).
 #[derive(Clone)]
 pub struct OrgBindJob {
+    /// Identity captured at bind start, rechecked before a late commit.
+    pub peer_public_key: [u8; 32],
+    pub peer_overlay_ip: Ipv4Addr,
     pub node_id: ObjectId,
     pub relay_node_id: ObjectId,
     pub vni: u32,

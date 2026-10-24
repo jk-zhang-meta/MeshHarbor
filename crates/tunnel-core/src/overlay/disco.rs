@@ -457,9 +457,20 @@ impl Prober {
 
     /// Record that the round actually went out to `dst`.
     pub(crate) fn sent(&mut self, peer: [u8; 32], dst: SocketAddr, nonce: [u8; 8]) {
+        self.sent_at(peer, dst, nonce, std::time::Instant::now());
+    }
+
+    /// Timestamp BEFORE the actual carrier write, so relay egress queueing
+    /// is measured just like direct egress queueing, rather than discounted.
+    pub(crate) fn sent_at(
+        &mut self,
+        peer: [u8; 32],
+        dst: SocketAddr,
+        nonce: [u8; 8],
+        at: std::time::Instant,
+    ) {
         self.table.entry((peer, dst)).or_default().on_sent(nonce);
-        self.pending
-            .insert(nonce, (peer, dst, std::time::Instant::now()));
+        self.pending.insert(nonce, (peer, dst, at));
         // Bound the pending map: a path that never answers would otherwise
         // accumulate one entry per round forever.
         if self.pending.len() > 512 {

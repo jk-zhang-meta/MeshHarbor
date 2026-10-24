@@ -1017,3 +1017,330 @@ async fn test_write_use_valid_pair() -> Result<(), Error> {
 
     Ok(())
 }
+
+// Actual virtual UDP/TURN data plane, not socketless seeded pair proof.
+async fn vnet_controlling_local_turn_direct_loss_recovery_fixture() -> Result<(), Error> {
+    use crate::network_type::NetworkType;
+    use std::sync::atomic::AtomicBool;
+
+    fn relayed(agent: &Agent) -> bool {
+        agent
+            .internal
+            .agent_conn
+            .get_selected_pair()
+            .is_some_and(|p| {
+                p.local.candidate_type() == CandidateType::Relay
+                    || p.remote.candidate_type() == CandidateType::Relay
+            })
+    }
+    fn direct(agent: &Agent) -> bool {
+        agent
+            .internal
+            .agent_conn
+            .get_selected_pair()
+            .is_some_and(|p| {
+                p.local.candidate_type() != CandidateType::Relay
+                    && p.remote.candidate_type() != CandidateType::Relay
+            })
+    }
+    async fn diagnostic(agent: &Agent) -> String {
+        let checklist = agent.internal.agent_conn.checklist.lock().await;
+        let rows: Vec<_> = checklist
+            .iter()
+            .map(|p| {
+                format!(
+                    "{}/{}:{:?}:requests={}:fresh={}",
+                    p.local.candidate_type(),
+                    p.remote.candidate_type(),
+                    CandidatePairState::from(p.state.load(Ordering::SeqCst)),
+                    p.binding_request_count.load(Ordering::SeqCst),
+                    p.authenticated_fresh()
+                )
+            })
+            .collect();
+        format!(
+            "role_controlling={} state={:?} pairs=[{}]",
+            agent.internal.is_controlling.load(Ordering::SeqCst),
+            ConnectionState::from(agent.internal.connection_state.load(Ordering::SeqCst)),
+            rows.join(",")
+        )
+    }
+    async fn wait_path(a: &Agent, b: &Agent, relay: bool, cap: Duration) -> Result<(), Error> {
+        let result = tokio::time::timeout(cap, async {
+            loop {
+                if if relay {
+                    relayed(a) && relayed(b)
+                } else {
+                    direct(a) && direct(b)
+                } {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await;
+        if result.is_err() {
+            return Err(Error::Other(format!(
+                "path phase relay={relay} timed out; A {}; B {}",
+                diagnostic(a).await,
+                diagnostic(b).await
+            )));
+        }
+        Ok(())
+    }
+    async fn payload(
+        sender: &impl Conn,
+        receiver: &impl Conn,
+        data: &[u8],
+        a: &Agent,
+        b: &Agent,
+    ) -> Result<(), Error> {
+        // `a` is this invocation's sender agent (and `b` its receiver).
+        // Native direct UDP returns payload bytes. turn 0.9 RelayConn returns
+        // the encoded ChannelData / SendIndication write length instead.
+        // Compute those two exact codec lengths, not an arbitrary >= threshold.
+        let selected = a
+            .internal
+            .agent_conn
+            .get_selected_pair()
+            .ok_or_else(|| Error::Other("payload sender has no selected pair".into()))?;
+        let local_relay = selected.local.candidate_type() == CandidateType::Relay;
+        let phase = if data.starts_with(b"DIRECT:") {
+            "DIRECT"
+        } else if data.starts_with(b"RELAY:") {
+            "RELAY"
+        } else {
+            "RECOVERED"
+        };
+        let expected = if local_relay {
+            let mut channel = turn::proto::chandata::ChannelData {
+                data: data.to_vec(),
+                number: turn::proto::channum::ChannelNumber(0x4000),
+                ..Default::default()
+            };
+            channel.encode();
+            let remote = selected.remote.addr();
+            let mut indication = stun::message::Message::new();
+            indication.build(&[
+                Box::new(stun::agent::TransactionId::new()),
+                Box::new(stun::message::MessageType::new(
+                    stun::message::METHOD_SEND,
+                    stun::message::CLASS_INDICATION,
+                )),
+                Box::new(turn::proto::data::Data(data.to_vec())),
+                Box::new(turn::proto::peeraddr::PeerAddress {
+                    ip: remote.ip(),
+                    port: remote.port(),
+                }),
+                Box::new(stun::fingerprint::FINGERPRINT),
+            ])?;
+            [channel.raw.len(), indication.raw.len()]
+        } else {
+            [data.len(), data.len()]
+        };
+        // Sequence is tiny and deterministic; a timeout is failure, not skip.
+        let len = sender.send(data).await?;
+        if len == 0 || !expected.contains(&len) {
+            let phase = if data.starts_with(b"DIRECT:") {
+                "DIRECT"
+            } else if data.starts_with(b"RELAY:") {
+                "RELAY"
+            } else {
+                "RECOVERED"
+            };
+            let selected = |agent: &Agent| {
+                agent
+                    .internal
+                    .agent_conn
+                    .get_selected_pair()
+                    .map(|p| {
+                        format!(
+                            "{}/{} local_conn={}",
+                            p.local.candidate_type(),
+                            p.remote.candidate_type(),
+                            p.local.get_conn().is_some()
+                        )
+                    })
+                    .unwrap_or_else(|| "no-selected-pair".into())
+            };
+            return Err(Error::Other(format!("virtual datagram send length mismatch phase={phase} actual={len} payload={} A-selected={} B-selected={} A {} B {}", data.len(), selected(a), selected(b), diagnostic(a).await, diagnostic(b).await)));
+        }
+        let mut buf = [0u8; 128];
+        let len = tokio::time::timeout(Duration::from_secs(1), receiver.recv(&mut buf))
+            .await
+            .map_err(|_| Error::Other("same-Conn phase payload receive timed out".into()))??;
+        if len != data.len() || &buf[..len] != data {
+            return Err(Error::Other("same-Conn phase payload mismatch".into()));
+        }
+        println!("VNET_PHASE_PAYLOAD_PASS phase={phase} sender_controlling={} local_relay={local_relay} received_bytes={len}", a.internal.is_controlling.load(Ordering::SeqCst));
+        Ok(())
+    }
+
+    let started = Instant::now();
+    let v = tokio::time::timeout(
+        Duration::from_secs(5),
+        build_vnet(
+            nat::NatType {
+                mode: nat::NatMode::Nat1To1,
+                ..Default::default()
+            },
+            nat::NatType {
+                mode: nat::NatMode::Nat1To1,
+                ..Default::default()
+            },
+        ),
+    )
+    .await
+    .map_err(|_| Error::Other("virtual fixture setup timed out".into()))??;
+    let block_direct = Arc::new(AtomicBool::new(false));
+    let dropped_direct = Arc::new(AtomicU64::new(0));
+    let passed_turn = Arc::new(AtomicU64::new(0));
+    {
+        let blocked = block_direct.clone();
+        let dropped = dropped_direct.clone();
+        let turn = passed_turn.clone();
+        let a: IpAddr = VNET_GLOBAL_IPA.parse().unwrap();
+        let b: IpAddr = VNET_GLOBAL_IPB.parse().unwrap();
+        let relay: IpAddr = VNET_STUN_SERVER_IP.parse().unwrap();
+        v.wan
+            .lock()
+            .await
+            .add_chunk_filter(Box::new(move |chunk: &(dyn Chunk + Send + Sync)| {
+                let src = chunk.source_addr().ip();
+                let dst = chunk.destination_addr().ip();
+                if blocked.load(Ordering::SeqCst) {
+                    if (src == a && dst == b) || (src == b && dst == a) {
+                        dropped.fetch_add(1, Ordering::SeqCst);
+                        return false;
+                    }
+                    if src == relay || dst == relay {
+                        turn.fetch_add(1, Ordering::SeqCst);
+                    }
+                }
+                true
+            }))
+            .await;
+    }
+    // A accepts and has NO STUN/TURN URLs. B dials and has ONLY a TURN URL.
+    // Both advertise their actual 1:1 public host mapping for initial P2P.
+    let a = Arc::new(
+        Agent::new(AgentConfig {
+            urls: vec![],
+            network_types: vec![NetworkType::Udp4],
+            candidate_types: vec![CandidateType::Host],
+            nat_1to1_ips: vec![VNET_GLOBAL_IPA.to_owned()],
+            nat_1to1_ip_candidate_type: CandidateType::Host,
+            multicast_dns_mode: MulticastDnsMode::Disabled,
+            net: Some(v.net0.clone()),
+            ..Default::default()
+        })
+        .await?,
+    );
+    let b = Arc::new(
+        Agent::new(AgentConfig {
+            urls: vec![Url {
+                scheme: SchemeType::Turn,
+                host: VNET_STUN_SERVER_IP.to_owned(),
+                port: VNET_STUN_SERVER_PORT,
+                username: "user".to_owned(),
+                password: "pass".to_owned(),
+                proto: ProtoType::Udp,
+            }],
+            network_types: vec![NetworkType::Udp4],
+            candidate_types: vec![CandidateType::Host, CandidateType::Relay],
+            nat_1to1_ips: vec![VNET_GLOBAL_IPB.to_owned()],
+            nat_1to1_ip_candidate_type: CandidateType::Host,
+            multicast_dns_mode: MulticastDnsMode::Disabled,
+            net: Some(v.net1.clone()),
+            ..Default::default()
+        })
+        .await?,
+    );
+    // Keep production consent/stale/recovery timings. Entire work + cleanup
+    // gets <=45s, no clock/proof injection, no public network or OS route edits.
+    let remaining = Duration::from_secs(40).saturating_sub(started.elapsed());
+    let work = tokio::time::timeout(remaining, async {
+        let (ca, cb) = tokio::time::timeout(Duration::from_secs(8), connect_with_vnet(&a, &b))
+            .await
+            .map_err(|_| {
+                Error::Other("initial asymmetric TURN fixture connection timed out".into())
+            })??;
+        if a.internal.is_controlling.load(Ordering::SeqCst)
+            || !b.internal.is_controlling.load(Ordering::SeqCst)
+        {
+            return Err(Error::Other(
+                "fixture ICE roles do not match accept=A/dial=B".into(),
+            ));
+        }
+        wait_path(&a, &b, false, Duration::from_secs(2)).await?;
+        payload(&*ca, &*cb, b"DIRECT:A_TO_B:000", &a, &b).await?;
+        payload(&*cb, &*ca, b"DIRECT:B_TO_A:001", &b, &a).await?;
+        block_direct.store(true, Ordering::SeqCst);
+        wait_path(&a, &b, true, Duration::from_secs(18)).await?;
+        if dropped_direct.load(Ordering::SeqCst) == 0 {
+            return Err(Error::Other(
+                "direct fault filter did not drop any real packet".into(),
+            ));
+        }
+        for i in 0..3 {
+            payload(
+                &*ca,
+                &*cb,
+                format!("RELAY:A_TO_B:{i:03}").as_bytes(),
+                &a,
+                &b,
+            )
+            .await?;
+            payload(
+                &*cb,
+                &*ca,
+                format!("RELAY:B_TO_A:{i:03}").as_bytes(),
+                &b,
+                &a,
+            )
+            .await?;
+        }
+        if passed_turn.load(Ordering::SeqCst) == 0 {
+            return Err(Error::Other(
+                "TURN traffic was not observed during the direct block".into(),
+            ));
+        }
+        if !block_direct.load(Ordering::SeqCst) || !relayed(&a) || !relayed(&b) {
+            return Err(Error::Other(
+                "relay phase did not remain active during payload exchange".into(),
+            ));
+        }
+        block_direct.store(false, Ordering::SeqCst);
+        wait_path(&a, &b, false, Duration::from_secs(12)).await?;
+        payload(&*ca, &*cb, b"RECOVERED:A_TO_B:005", &a, &b).await?;
+        payload(&*cb, &*ca, b"RECOVERED:B_TO_A:006", &b, &a).await?;
+        // ca/cb are the original AgentConn Arcs throughout all three phases.
+        Ok::<(), Error>(())
+    })
+    .await;
+    block_direct.store(false, Ordering::SeqCst);
+    // Cleanup also runs for work errors/timeouts, before propagating failure.
+    let cleanup = tokio::time::timeout(Duration::from_secs(5), async {
+        let aa = a.close().await;
+        let bb = b.close().await;
+        let vv = v.close().await;
+        aa?;
+        bb?;
+        vv
+    })
+    .await;
+    let outcome =
+        work.map_err(|_| Error::Other("40s virtual migration work budget exhausted".into()))?;
+    cleanup.map_err(|_| Error::Other("virtual migration cleanup exceeded 5s budget".into()))??;
+    outcome
+}
+
+#[tokio::test]
+async fn ice_same_session_vnet_controlling_local_turn_direct_loss_recovery() -> Result<(), Error> {
+    tokio::time::timeout(
+        Duration::from_secs(45),
+        vnet_controlling_local_turn_direct_loss_recovery_fixture(),
+    )
+    .await
+    .map_err(|_| Error::Other("45s hard virtual TURN migration deadline exhausted".into()))?
+}

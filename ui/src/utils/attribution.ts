@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 G ROX EOOD
+import { appPath } from '@/utils/deployment'
 /**
  * FR-88 (#1790) §3a — sign-up attribution: carry, don't store.
  *
@@ -187,7 +188,7 @@ const OAUTH_PARAMS: ReadonlyArray<readonly [keyof SignupAttribution, string]> = 
  *  The server holds it for the ten minutes a sign-in may take; a missing or
  *  expired value means "no attribution", never a failed login. */
 export function oauthStartUrl(provider: string, attribution?: SignupAttribution): string {
-  const base = `/api/oauth/${provider}`
+  const base = appPath(`/api/oauth/${provider}`)
   if (!attribution) return base
   const params = new URLSearchParams()
   for (const [field, param] of OAUTH_PARAMS) {

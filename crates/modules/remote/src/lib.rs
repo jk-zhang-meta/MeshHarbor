@@ -48,6 +48,7 @@ use roomler_core::{
 
 pub mod agent_socket;
 pub mod controller;
+pub mod device_share;
 pub mod extauth;
 pub mod relay;
 pub mod routes;
@@ -84,6 +85,8 @@ pub struct RemoteState {
     /// FR-101 P4a — the per-(caller, device) ceiling on session requests,
     /// checked after the authz gate (`controller::SESSION_REQUESTS_PER_MINUTE`).
     pub session_request_limiter: Arc<RateLimiter>,
+    pub(crate) shared_scopes: Arc<dashmap::DashMap<bson::oid::ObjectId, device_share::ShareScope>>,
+    pub(crate) shared_lease_limiter: Arc<RateLimiter>,
     /// PR-2 relay — owner-side proxy controllers for cross-pod rc sessions,
     /// keyed by the ORIGIN connection id. See [`relay`].
     pub rc_proxy_controllers: Arc<relay::ProxyControllers>,
@@ -128,6 +131,8 @@ impl Module for RemoteState {
             session_feedback: Arc::new(SessionFeedbackDao::new(db)),
             touch_presets: Arc::new(TouchPresetDao::new(db)),
             session_request_limiter: Arc::new(RateLimiter::new()),
+            shared_scopes: Arc::new(dashmap::DashMap::new()),
+            shared_lease_limiter: Arc::new(RateLimiter::new()),
             rc_proxy_controllers: Arc::new(relay::ProxyControllers::new()),
             remote_rc_conns: Arc::new(relay::RemoteRcConns::new()),
             extauth: Arc::new(extauth::ExtauthRelay::new()),
@@ -190,6 +195,10 @@ impl Module for RemoteState {
         let privacy = Router::new().route("/{agent_id}", get(routes::privacy_activity));
 
         Router::new()
+            .route(
+                "/device-shares/{share_id}/remote",
+                get(device_share::device),
+            )
             .nest("/tenant/{tenant_id}/session", session)
             .nest("/tenant/{tenant_id}/recording-activity", recording)
             .nest("/tenant/{tenant_id}/transfer-activity", transfers)
