@@ -158,7 +158,8 @@ impl PathShadow {
             demote,
             upward,
             mon: path::PathMonitor::with_fast_return(fast_return)
-                .with_fast_return_lan(crate::env::flag("OVERLAY_FAST_RETURN_LAN", true)),
+                .with_fast_return_lan(crate::env::flag("OVERLAY_FAST_RETURN_LAN", true))
+                .with_fast_return_extend(crate::env::flag("OVERLAY_FAST_RETURN_EXTEND", true)),
             stats: path::ShadowStats::default(),
             last_div_log: HashMap::new(),
             last_demote_log: HashMap::new(),
