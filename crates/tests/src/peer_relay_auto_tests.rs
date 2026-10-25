@@ -213,6 +213,10 @@ impl AutoRig {
             s.auth.account_approval.enabled = true;
             s.auth.account_approval.owner_user_id = Some(owner_id.to_hex());
             s.app.business_trusted_proxy_cidrs = vec!["127.0.0.1/32".into()];
+            // Loopback is the ONLY proxy, so the last forwarded entry is the
+            // client. `Settings::load()` defaults to one further hop, under
+            // which a single-entry header is a too-short (refused) chain.
+            s.app.rate_limit_trusted_hops = 0;
             s.stats.geoip_mmdb = Some(mmdb);
         })
         .await;
