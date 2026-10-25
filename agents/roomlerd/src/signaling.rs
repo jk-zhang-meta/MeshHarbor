@@ -1625,6 +1625,14 @@ async fn connect_once(
             outbound_tx.clone(),
         ));
     }
+    // MeshHarbor #19 — the host's read-only network inventory, from the
+    // primary enrollment of a single-org device only; it exits with the
+    // connection, like the re-prober.
+    let _ = crate::net_inventory::spawn_reporter(
+        outbound_tx.clone(),
+        ctx.is_primary,
+        cfg.orgs.iter().filter(|o| o.enabled).count(),
+    );
     // P3b-2 PR-C: publish this connection's egress so tunnel-client flow
     // supervisors can open sessions over it; the guard clears it to `None` on
     // every exit path (like `_connected_guard`), so a supervisor holding the

@@ -337,6 +337,83 @@ fn check_section<T>(
     s.items.iter().try_for_each(item)
 }
 
+fn check_interface(i: &Interface) -> Result<(), String> {
+    check_str("interface name", &i.name)?;
+    check_opt("interface kind", &i.kind)?;
+    if i.addrs.len() > MAX_ADDRS_PER_INTERFACE {
+        return Err(format!("interface {}: too many addresses", i.name));
+    }
+    i.addrs
+        .iter()
+        .try_for_each(|a| check_cidr("interface address", a))
+}
+
+fn check_route(r: &Route) -> Result<(), String> {
+    check_str("route table", &r.table)?;
+    check_str("route kind", &r.kind)?;
+    if r.dst != "default" {
+        check_cidr("route dst", &r.dst)?;
+    }
+    if let Some(g) = &r.gateway {
+        check_cidr("route gateway", g)?;
+    }
+    check_opt("route dev", &r.dev)?;
+    check_opt("route protocol", &r.protocol)
+}
+
+fn check_rule(r: &Rule) -> Result<(), String> {
+    check_str("rule selector", &r.selector)?;
+    check_str("rule action", &r.action)
+}
+
+fn check_listener(l: &Listener) -> Result<(), String> {
+    l.addr
+        .parse::<IpAddr>()
+        .map_err(|_| format!("listener: not an address: {:?}", l.addr))?;
+    check_opt("listener process", &l.process)
+}
+
+fn check_chain(c: &FirewallChain) -> Result<(), String> {
+    for (w, s) in [
+        ("backend", &c.backend),
+        ("family", &c.family),
+        ("table", &c.table),
+        ("chain", &c.name),
+    ] {
+        check_str(w, s)?;
+    }
+    check_opt("hook", &c.hook)?;
+    check_opt("chain type", &c.chain_type)?;
+    check_opt("policy", &c.policy)
+}
+
+fn check_fw_rule(r: &FirewallRule) -> Result<(), String> {
+    for (w, s) in [
+        ("backend", &r.backend),
+        ("family", &r.family),
+        ("table", &r.table),
+        ("chain", &r.chain),
+        ("matches", &r.matches),
+        ("verdict", &r.verdict),
+    ] {
+        check_str(w, s)?;
+    }
+    check_opt("target", &r.target)
+}
+
+/// Drop the items `check` refuses, marking the section `partial`.
+fn retain_valid<T>(s: &mut Section<T>, check: fn(&T) -> Result<(), String>) {
+    let before = s.items.len();
+    s.items.retain(|i| check(i).is_ok());
+    let dropped = before - s.items.len();
+    if dropped > 0 {
+        if s.state == SectionState::Complete {
+            s.state = SectionState::Partial;
+        }
+        s.note = Some(format!("{dropped} unreadable items dropped"));
+    }
+}
+
 impl NetInventory {
     /// The bounds and normal forms every accepted snapshot holds. The server
     /// rejects a snapshot that breaks one rather than trim it, so a node bug
@@ -344,74 +421,42 @@ impl NetInventory {
     pub fn validate(&self) -> Result<(), String> {
         check_str("os", &self.os)?;
         check_str("namespaces", &self.namespaces)?;
-        check_section("interfaces", &self.interfaces, MAX_INTERFACES, |i| {
-            check_str("interface name", &i.name)?;
-            check_opt("interface kind", &i.kind)?;
-            if i.addrs.len() > MAX_ADDRS_PER_INTERFACE {
-                return Err(format!("interface {}: too many addresses", i.name));
-            }
-            i.addrs
-                .iter()
-                .try_for_each(|a| check_cidr("interface address", a))
-        })?;
-        check_section("routes", &self.routes, MAX_ROUTES, |r| {
-            check_str("route table", &r.table)?;
-            check_str("route kind", &r.kind)?;
-            if r.dst != "default" {
-                check_cidr("route dst", &r.dst)?;
-            }
-            if let Some(g) = &r.gateway {
-                check_cidr("route gateway", g)?;
-            }
-            check_opt("route dev", &r.dev)?;
-            check_opt("route protocol", &r.protocol)
-        })?;
-        check_section("rules", &self.rules, MAX_RULES, |r| {
-            check_str("rule selector", &r.selector)?;
-            check_str("rule action", &r.action)
-        })?;
-        check_section("listeners", &self.listeners, MAX_LISTENERS, |l| {
-            l.addr
-                .parse::<IpAddr>()
-                .map_err(|_| format!("listener: not an address: {:?}", l.addr))?;
-            check_opt("listener process", &l.process)
-        })?;
+        check_section(
+            "interfaces",
+            &self.interfaces,
+            MAX_INTERFACES,
+            check_interface,
+        )?;
+        check_section("routes", &self.routes, MAX_ROUTES, check_route)?;
+        check_section("rules", &self.rules, MAX_RULES, check_rule)?;
+        check_section("listeners", &self.listeners, MAX_LISTENERS, check_listener)?;
         check_section(
             "firewall_chains",
             &self.firewall_chains,
             MAX_FIREWALL_CHAINS,
-            |c| {
-                for (w, s) in [
-                    ("backend", &c.backend),
-                    ("family", &c.family),
-                    ("table", &c.table),
-                    ("chain", &c.name),
-                ] {
-                    check_str(w, s)?;
-                }
-                check_opt("hook", &c.hook)?;
-                check_opt("chain type", &c.chain_type)?;
-                check_opt("policy", &c.policy)
-            },
+            check_chain,
         )?;
         check_section(
             "firewall_rules",
             &self.firewall_rules,
             MAX_FIREWALL_RULES,
-            |r| {
-                for (w, s) in [
-                    ("backend", &r.backend),
-                    ("family", &r.family),
-                    ("table", &r.table),
-                    ("chain", &r.chain),
-                    ("matches", &r.matches),
-                    ("verdict", &r.verdict),
-                ] {
-                    check_str(w, s)?;
-                }
-                check_opt("target", &r.target)
-            },
+            check_fw_rule,
         )
+    }
+
+    /// The node's side of [`Self::validate`]: drop each item it would
+    /// refuse (an address the kernel printed in a form we do not parse, an
+    /// overlong name) and mark that section `partial`, so one odd entry
+    /// costs that entry, not the whole snapshot.
+    pub fn sanitize(&mut self) {
+        truncate_str(&mut self.os, MAX_STR);
+        truncate_str(&mut self.namespaces, MAX_STR);
+        retain_valid(&mut self.interfaces, check_interface);
+        retain_valid(&mut self.routes, check_route);
+        retain_valid(&mut self.rules, check_rule);
+        retain_valid(&mut self.listeners, check_listener);
+        retain_valid(&mut self.firewall_chains, check_chain);
+        retain_valid(&mut self.firewall_rules, check_fw_rule);
     }
 
     fn item_count(&self) -> usize {
@@ -625,6 +670,20 @@ mod tests {
         assert!(inv.validate().is_err(), "a denied section has no items");
         let mut inv = sample(1);
         inv.routes.items[0].dst = "default".into();
+        assert!(inv.validate().is_ok());
+    }
+
+    #[test]
+    fn sanitize_drops_only_the_bad_items_and_says_so() {
+        let mut inv = sample(3);
+        inv.routes.items[1].dst = "weird-form".into();
+        assert!(inv.validate().is_err());
+        inv.sanitize();
+        assert_eq!(
+            (inv.routes.state, inv.routes.total, inv.routes.items.len()),
+            (SectionState::Partial, 3, 2)
+        );
+        assert!(inv.routes.note.as_deref().unwrap().contains("1 unreadable"));
         assert!(inv.validate().is_ok());
     }
 

@@ -817,6 +817,14 @@ const KEYS: &[KeyMeta] = &[
         description: "netstack TCP congestion control: reno (built-in default; NewReno-lite, cwnd bounds bytes in flight) | none (kill switch: the send buffer alone bounds them). Env: ROOMLERD_OVERLAY_NETSTACK_TCP_CC.",
     },
     KeyMeta {
+        key: "net_inventory",
+        group: Group::NetworkCarriers,
+        tier: Tier::Advanced,
+        live: false,
+        kind: "tribool",
+        description: "Report this host's read-only network inventory (interfaces, routes, policy rules, listeners, firewall/NAT rules; no command lines, comments or payloads) to the server every 5 minutes, for the admin topology view. Multi-org devices never report. Built-in default: on.",
+    },
+    KeyMeta {
         key: "overlay_ipv6",
         group: Group::NetworkCarriers,
         tier: Tier::Advanced,
@@ -2045,6 +2053,7 @@ fn current_value(cfg: &AgentConfig, key: &str) -> Option<String> {
         "overlay_vpn_vantage" => cfg.overlay_vpn_vantage.map(fmt_bool),
         "overlay_portmap" => cfg.overlay_portmap.map(fmt_bool),
         "overlay_ipv6" => cfg.overlay_ipv6.map(fmt_bool),
+        "net_inventory" => cfg.net_inventory.map(fmt_bool),
         "overlay_netstack_tcp_rx_buf" => cfg.overlay_netstack_tcp_rx_buf.map(|v| v.to_string()),
         "overlay_netstack_tcp_tx_buf" => cfg.overlay_netstack_tcp_tx_buf.map(|v| v.to_string()),
         "overlay_netstack_tcp_cc" => cfg.overlay_netstack_tcp_cc.clone(),
@@ -2515,6 +2524,7 @@ pub fn apply(cfg: &mut AgentConfig, key: &str, value: Option<&str>) -> Result<()
         "overlay_vpn_vantage" => cfg.overlay_vpn_vantage = parse_tribool(value)?,
         "overlay_portmap" => cfg.overlay_portmap = parse_tribool(value)?,
         "overlay_ipv6" => cfg.overlay_ipv6 = parse_tribool(value)?,
+        "net_inventory" => cfg.net_inventory = parse_tribool(value)?,
         "overlay_netstack_tcp_rx_buf" => cfg.overlay_netstack_tcp_rx_buf = parse_tcp_buf(key, value)?,
         "overlay_netstack_tcp_tx_buf" => cfg.overlay_netstack_tcp_tx_buf = parse_tcp_buf(key, value)?,
         "overlay_netstack_tcp_cc" => {
@@ -4133,6 +4143,25 @@ mod tests {
 
     /// §6 item 5 — the IPv6 underlay key: tribool, default None (daemon
     /// built-in ON), bridged to the daemon env.
+    #[test]
+    fn net_inventory_set_echo_clear() {
+        let mut cfg = crate::config::test_fixture();
+        assert_eq!(cfg.net_inventory, None, "unset → daemon default (on)");
+        apply(&mut cfg, "net_inventory", Some("off")).unwrap();
+        assert_eq!(
+            current_value(&cfg, "net_inventory").as_deref(),
+            Some("false")
+        );
+        assert!(
+            crate::config::env_bridge_bools(&cfg)
+                .iter()
+                .any(|(k, v)| *k == "NET_INVENTORY" && *v == Some(false)),
+            "bridged to the daemon's env"
+        );
+        apply(&mut cfg, "net_inventory", None).unwrap();
+        assert_eq!(cfg.net_inventory, None, "clear → built-in default");
+    }
+
     #[test]
     fn overlay_ipv6_set_echo_clear() {
         let mut cfg = crate::config::test_fixture();

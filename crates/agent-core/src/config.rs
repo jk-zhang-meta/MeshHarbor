@@ -780,6 +780,11 @@ pub struct AgentConfig {
     /// (`ROOMLERD_OVERLAY_IPV6`).
     #[serde(default)]
     pub overlay_ipv6: Option<bool>,
+    /// MeshHarbor #19 — report this host's read-only network inventory
+    /// (interfaces, routes, rules, listeners, firewall/NAT) to the server
+    /// (`ROOMLERD_NET_INVENTORY`). Built-in default: on (single-org devices).
+    #[serde(default)]
+    pub net_inventory: Option<bool>,
     /// §6 item 5 — netstack per-socket smoltcp receive buffer in bytes, the
     /// window this stack advertises (`ROOMLERD_OVERLAY_NETSTACK_TCP_RX_BUF`,
     /// 16384–16777216). Built-in default: 1 MiB.
@@ -2833,6 +2838,7 @@ pub fn test_fixture() -> AgentConfig {
         overlay_vpn_vantage: None,
         overlay_portmap: None,
         overlay_ipv6: None,
+        net_inventory: None,
         overlay_netstack_tcp_rx_buf: None,
         overlay_netstack_tcp_tx_buf: None,
         overlay_netstack_tcp_cc: None,
@@ -3065,7 +3071,7 @@ mod derived_port_tests {
     }
 }
 
-pub fn env_bridge_bools(cfg: &AgentConfig) -> [(&'static str, Option<bool>); 92] {
+pub fn env_bridge_bools(cfg: &AgentConfig) -> [(&'static str, Option<bool>); 93] {
     [
         ("SHARED_ENCODER", cfg.shared_encoder),
         ("AREA_MIN_BITRATE", cfg.area_min_bitrate),
@@ -3135,6 +3141,7 @@ pub fn env_bridge_bools(cfg: &AgentConfig) -> [(&'static str, Option<bool>); 92]
         ("OVERLAY_VPN_VANTAGE", cfg.overlay_vpn_vantage),
         ("OVERLAY_PORTMAP", cfg.overlay_portmap),
         ("OVERLAY_IPV6", cfg.overlay_ipv6),
+        ("NET_INVENTORY", cfg.net_inventory),
         ("OVERLAY_ROUTE_EVENTS", cfg.overlay_route_events),
         ("OVERLAY_NETMON", cfg.overlay_netmon),
         ("OVERLAY_RELAY_TLS", cfg.overlay_relay_tls),
