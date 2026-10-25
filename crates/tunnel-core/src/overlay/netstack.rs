@@ -584,21 +584,22 @@ struct PollLoop {
 
 /// `name`'s byte count within the TCP buffer bounds; an unparseable or
 /// out-of-range value keeps `default`.
-/// The netstack TCP congestion controller: CUBIC (RFC 9438, rewritten in the
-/// vendored smoltcp), unless `OVERLAY_NETSTACK_TCP_CC` says `reno` (its
-/// NewReno-lite) or `none` (the kill switch: the send buffer alone bounds bytes
-/// in flight). Paced with SACK, CUBIC beat NewReno-lite in 9 matrix cells and
-/// lost none (`netstack_tcp_buffer_matrix`): behind a 64 KiB queue 82 → 96
-/// Mbit/s at 10 ms, 62 → 86 at 50 ms, 46 → 79 at 100 ms; behind the 40 Mbit/s
-/// policer 27.6 → 30.0.
+/// The netstack TCP congestion controller: the vendored smoltcp's
+/// NewReno-lite, unless `OVERLAY_NETSTACK_TCP_CC` says `cubic` (RFC 9438,
+/// rewritten there) or `none` (the kill switch: the send buffer alone bounds
+/// bytes in flight). CUBIC won every simulated matrix cell (behind a 64 KiB
+/// queue 82 → 96 Mbit/s at 10 ms, 46 → 79 at 100 ms) but on the real
+/// HK↔Tokyo path (2026-10-25, paced SACK, 2 MiB) Tokyo's sender delivered
+/// 8.8–8.9 Mbit/s with CUBIC against 198–205 with NewReno-lite (HK's sender:
+/// 180 both). Until that is understood CUBIC stays opt-in.
 fn tcp_cc() -> tcp::CongestionControl {
     match crate::env::node_env("OVERLAY_NETSTACK_TCP_CC")
         .as_deref()
         .map(str::trim)
     {
         Some(v) if v.eq_ignore_ascii_case("none") => tcp::CongestionControl::None,
-        Some(v) if v.eq_ignore_ascii_case("reno") => tcp::CongestionControl::Reno,
-        _ => tcp::CongestionControl::Cubic,
+        Some(v) if v.eq_ignore_ascii_case("cubic") => tcp::CongestionControl::Cubic,
+        _ => tcp::CongestionControl::Reno,
     }
 }
 
@@ -1464,6 +1465,10 @@ mod tests {
         police: Option<(i64, i64)>,
         tokens: i64,
         tokens_at_us: i64,
+        /// Random loss per million packets (deterministic xorshift): a busy
+        /// receiver host dropping bursts, a lossy wireless hop.
+        loss_ppm: u64,
+        rng: u64,
     }
 
     impl SimLink {
@@ -1479,9 +1484,20 @@ mod tests {
                 police: None,
                 tokens: 0,
                 tokens_at_us: 0,
+                loss_ppm: 0,
+                rng: 0x9e37_79b9_7f4a_7c15,
             }
         }
         fn send(&mut self, now_us: i64, pkt: Vec<u8>) {
+            if self.loss_ppm > 0 {
+                self.rng ^= self.rng << 13;
+                self.rng ^= self.rng >> 7;
+                self.rng ^= self.rng << 17;
+                if self.rng % 1_000_000 < self.loss_ppm {
+                    self.dropped += 1;
+                    return;
+                }
+            }
             if let Some((rate, bucket)) = self.police {
                 self.tokens =
                     (self.tokens + (now_us - self.tokens_at_us) * rate / 1000).min(bucket);
@@ -1568,8 +1584,13 @@ mod tests {
         // a receives and acknowledges; b sends the bulk data.
         a_to_b.batch_ms = ack_batch_ms;
         if let Some((mbit, bucket)) = police {
-            b_to_a.police = Some((mbit * 1000 / 8, bucket));
-            b_to_a.tokens = bucket;
+            if mbit > 0 {
+                b_to_a.police = Some((mbit * 1000 / 8, bucket));
+                b_to_a.tokens = bucket;
+            } else {
+                // `(0, ppm)`: no policer, random loss instead.
+                b_to_a.loss_ppm = bucket as u64;
+            }
         }
         let chunk = vec![0x5au8; 64 * 1024];
         let (mut received, mut at_warm, mut wire) = (0usize, 0usize, 0usize);
@@ -1966,6 +1987,33 @@ mod tests {
                 "cubic fills it: {cubic:.1} vs {reno:.1}"
             );
             assert!(amp < 1.1, "with little waste: {amp:.2}");
+        }
+    }
+
+    #[test]
+    #[ignore = "random-loss matrix; run with --ignored --nocapture"]
+    fn netstack_tcp_random_loss_matrix() {
+        use tcp::CongestionControl::{Cubic, Reno};
+        for one_way in [5i64, 25] {
+            for ppm in [1_000i64, 5_000, 10_000, 20_000] {
+                for cc in [Reno, Cubic] {
+                    let (mbps, drops, amp) = sim_bulk_acks(
+                        (TCP_RX_BUF, TCP_TX_BUF),
+                        (cc, true, true),
+                        one_way,
+                        1024 * 1024,
+                        10_000,
+                        3_000,
+                        0,
+                        Some((0, ppm)),
+                    );
+                    eprintln!(
+                        "OBSERVED random loss {}% rtt={}ms cc={cc:?}: {mbps:.1} Mbit/s {drops} drops amp {amp:.2}",
+                        ppm as f64 / 10_000.0,
+                        one_way * 2
+                    );
+                }
+            }
         }
     }
 
