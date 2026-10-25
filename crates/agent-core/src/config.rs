@@ -804,7 +804,7 @@ pub struct AgentConfig {
     pub overlay_netstack_tcp_cc: Option<String>,
     /// §6 item 5 — netstack TCP send pacing: data leaves at gain × cwnd / srtt
     /// instead of a window at a time (`ROOMLERD_OVERLAY_NETSTACK_TCP_PACING`).
-    /// Built-in default: off (opt-in until the field shows a gain).
+    /// Built-in default: on (with SACK recovery it rides policed paths).
     #[serde(default)]
     pub overlay_netstack_tcp_pacing: Option<bool>,
     /// §6 item 5 — netstack TCP SACK loss recovery: a loss resends only the

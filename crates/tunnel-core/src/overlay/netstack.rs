@@ -595,14 +595,16 @@ fn tcp_cc() -> tcp::CongestionControl {
 
 /// The netstack TCP sender's pacing (the vendored smoltcp's
 /// `set_pacing_enabled`): data leaves at gain × cwnd / srtt instead of a whole
-/// window at once. OFF unless `OVERLAY_NETSTACK_TCP_PACING=1`: in simulation it
-/// lifts goodput 2.5–2.7× under compressed ACKs but costs ~11% on a smooth ACK
-/// clock, and the field (2026-10-25) showed no gain yet. On a relay leg policed
-/// near 50 Mbit/s a 4 MiB window delivered 2.2–3.1 Mbit/s paced or not: the
-/// window overshoots the policer and go-back-N recovery collapses, which is
-/// what SACK recovery (`tcp_sack`) addresses.
+/// window at once. ON unless `OVERLAY_NETSTACK_TCP_PACING=0` (the kill switch).
+/// Alone (with go-back-N) it did not help in the field: a resend of the whole
+/// window still collapsed at a policer. With SACK recovery (`tcp_sack`) it is
+/// the pair that rides one: in simulation 2.6 → 27.7 Mbit/s behind a 40 Mbit/s
+/// policer with a 16 KiB bucket (`pacing_and_sack_ride_a_policer`), and on the
+/// real HK↔Tokyo path (2026-10-25, 4 MiB buffers) 179–181 up / 205–268 down
+/// against 116–130 / 82–110 for SACK alone. Its cost is ~8% on a 10 ms path
+/// behind a 64 KiB queue.
 fn tcp_pacing() -> bool {
-    crate::env::flag("OVERLAY_NETSTACK_TCP_PACING", false)
+    crate::env::flag("OVERLAY_NETSTACK_TCP_PACING", true)
 }
 
 /// The netstack TCP SACK loss recovery (the vendored smoltcp's
@@ -1447,6 +1449,12 @@ mod tests {
         flight: VecDeque<(i64, Vec<u8>)>,
         dropped: usize,
         batch_ms: i64,
+        /// A token-bucket policer ahead of the queue: (bytes per ms, bucket
+        /// bytes). Over-rate packets are dropped, not queued (a provider's
+        /// UDP policer, as on the field's relay leg).
+        police: Option<(i64, i64)>,
+        tokens: i64,
+        tokens_at_us: i64,
     }
 
     impl SimLink {
@@ -1459,9 +1467,22 @@ mod tests {
                 flight: VecDeque::new(),
                 dropped: 0,
                 batch_ms: 0,
+                police: None,
+                tokens: 0,
+                tokens_at_us: 0,
             }
         }
         fn send(&mut self, now_us: i64, pkt: Vec<u8>) {
+            if let Some((rate, bucket)) = self.police {
+                self.tokens =
+                    (self.tokens + (now_us - self.tokens_at_us) * rate / 1000).min(bucket);
+                self.tokens_at_us = now_us;
+                if self.tokens < pkt.len() as i64 {
+                    self.dropped += 1;
+                    return;
+                }
+                self.tokens -= pkt.len() as i64;
+            }
             let start = self.busy_until_us.max(now_us);
             if (start - now_us) * self.bytes_per_ms / 1000 + pkt.len() as i64 > self.queue_bytes {
                 self.dropped += 1;
@@ -1493,10 +1514,12 @@ mod tests {
         sim_ms: i64,
         warm_ms: i64,
     ) -> (f64, usize, f64) {
-        sim_bulk_acks(bufs, cc, one_way_ms, queue_bytes, sim_ms, warm_ms, 0)
+        sim_bulk_acks(bufs, cc, one_way_ms, queue_bytes, sim_ms, warm_ms, 0, None)
     }
 
-    /// [`sim_bulk`] with the ACK direction released every `ack_batch_ms`.
+    /// [`sim_bulk`] with the ACK direction released every `ack_batch_ms`, and
+    /// the data direction optionally policed at (Mbit/s, bucket bytes).
+    #[allow(clippy::too_many_arguments)]
     fn sim_bulk_acks(
         (rx, tx): (usize, usize),
         (cc, pacing, sack): (tcp::CongestionControl, bool, bool),
@@ -1505,6 +1528,7 @@ mod tests {
         sim_ms: i64,
         warm_ms: i64,
         ack_batch_ms: i64,
+        police: Option<(i64, i64)>,
     ) -> (f64, usize, f64) {
         fn node(ip: Ipv4Addr) -> (NetstackDevice, Interface, SocketSet<'static>,
             mpsc::UnboundedReceiver<Vec<u8>>)
@@ -1534,6 +1558,10 @@ mod tests {
         let mut b_to_a = SimLink::new(one_way_ms, 100, queue_bytes);
         // a receives and acknowledges; b sends the bulk data.
         a_to_b.batch_ms = ack_batch_ms;
+        if let Some((mbit, bucket)) = police {
+            b_to_a.police = Some((mbit * 1000 / 8, bucket));
+            b_to_a.tokens = bucket;
+        }
         let chunk = vec![0x5au8; 64 * 1024];
         let (mut received, mut at_warm, mut wire) = (0usize, 0usize, 0usize);
         for ms in 0..sim_ms {
@@ -1683,9 +1711,18 @@ mod tests {
                 8_000,
                 3_000,
                 batch,
+                None,
             );
-            let (paced, paced_drops, paced_amp) =
-                sim_bulk_acks(big, (Reno, true, false), 25, 64 * 1024, 8_000, 3_000, batch);
+            let (paced, paced_drops, paced_amp) = sim_bulk_acks(
+                big,
+                (Reno, true, false),
+                25,
+                64 * 1024,
+                8_000,
+                3_000,
+                batch,
+                None,
+            );
             eprintln!(
                 "OBSERVED 4MiB window, 50ms behind a 64 KiB queue, ACKs every {batch}ms: unpaced {burst:.1} Mbit/s {burst_drops} drops amp {burst_amp:.2}; paced {paced:.1} Mbit/s {paced_drops} drops amp {paced_amp:.2}"
             );
@@ -1718,6 +1755,7 @@ mod tests {
                 8_000,
                 3_000,
                 batch,
+                None,
             );
             let (sack, sack_drops, sack_amp) = sim_bulk_acks(
                 big,
@@ -1727,6 +1765,7 @@ mod tests {
                 8_000,
                 3_000,
                 batch,
+                None,
             );
             eprintln!(
                 "OBSERVED 4MiB window, 50ms behind a 64 KiB queue, pacing={pacing}, ACKs every {batch}ms: go-back-N {gbn:.1} Mbit/s {gbn_drops} drops amp {gbn_amp:.2}; SACK {sack:.1} Mbit/s {sack_drops} drops amp {sack_amp:.2}"
@@ -1768,6 +1807,87 @@ mod tests {
                     assert!(
                         sack >= 1.3 * gbn,
                         "a 50 ms shallow path gains: {sack:.1} vs {gbn:.1}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// A provider policer (40 Mbit/s, a 16 KiB bucket, no queue) on a 50 ms
+    /// path: the field's relay leg, where unpaced windows collapsed to 2–3
+    /// Mbit/s. Paced with SACK the defaults ride it; and a big window behind a
+    /// moderate queue, where a lost resend once stalled SACK recovery into an
+    /// RTO, stays far ahead of go-back-N.
+    #[test]
+    fn pacing_and_sack_ride_a_policer() {
+        use tcp::CongestionControl::Reno;
+        let d = (TCP_RX_BUF, TCP_TX_BUF);
+        let police = Some((40, 16 * 1024));
+        let (gbn, _, _) = sim_bulk_acks(
+            d,
+            (Reno, false, false),
+            25,
+            1024 * 1024,
+            10_000,
+            3_000,
+            0,
+            police,
+        );
+        let (ps, _, amp) = sim_bulk_acks(
+            d,
+            (Reno, true, true),
+            25,
+            1024 * 1024,
+            10_000,
+            3_000,
+            0,
+            police,
+        );
+        eprintln!(
+            "OBSERVED policer 40 Mbit/s 16 KiB: go-back-N {gbn:.1}; paced+SACK {ps:.1} amp {amp:.2}"
+        );
+        assert!(
+            ps >= 5.0 * gbn && ps >= 20.0,
+            "paced SACK rides the policer: {ps:.1} vs {gbn:.1}"
+        );
+        assert!(amp < 1.1, "with little waste: {amp:.2}");
+        let big = (4096 * 1024, 4096 * 1024);
+        let (gbn, _, _) = sim_bulk(big, (Reno, false, false), 25, 256 * 1024, 8_000, 3_000);
+        let (sack, _, _) = sim_bulk(big, (Reno, false, true), 25, 256 * 1024, 8_000, 3_000);
+        let (ps, _, _) = sim_bulk(big, (Reno, true, true), 25, 256 * 1024, 8_000, 3_000);
+        eprintln!(
+            "OBSERVED 4 MiB, 50 ms, 256 KiB queue: go-back-N {gbn:.1}; SACK {sack:.1}; paced+SACK {ps:.1}"
+        );
+        assert!(
+            sack >= 0.9 * gbn,
+            "a lost resend no longer stalls SACK: {sack:.1} vs {gbn:.1}"
+        );
+        assert!(ps >= 1.5 * gbn, "paced SACK: {ps:.1} vs {gbn:.1}");
+    }
+
+    /// A provider policer (no queue: over-rate packets drop) on a 50 ms path:
+    /// the field's relay leg. Measures go-back-N vs SACK, unpaced vs paced.
+    #[test]
+    #[ignore = "netstack TCP policer matrix; run with --ignored --nocapture"]
+    fn netstack_tcp_policer_matrix() {
+        use tcp::CongestionControl::Reno;
+        for bufs in [(TCP_RX_BUF, TCP_TX_BUF), (4096 * 1024, 4096 * 1024)] {
+            for bucket in [16 * 1024i64, 64 * 1024] {
+                for (pacing, sack) in [(false, false), (false, true), (true, false), (true, true)] {
+                    let (mbps, drops, amp) = sim_bulk_acks(
+                        bufs,
+                        (Reno, pacing, sack),
+                        25,
+                        1024 * 1024,
+                        10_000,
+                        3_000,
+                        0,
+                        Some((40, bucket)),
+                    );
+                    eprintln!(
+                        "OBSERVED policer 40 Mbit/s bucket {}KiB tx={}KiB pacing={pacing} sack={sack}: {mbps:.1} Mbit/s {drops} drops amp {amp:.2}",
+                        bucket / 1024,
+                        bufs.1 / 1024
                     );
                 }
             }

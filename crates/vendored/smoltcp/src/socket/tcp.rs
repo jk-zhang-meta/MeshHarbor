@@ -550,6 +550,9 @@ pub struct Socket<'a> {
     rexmit_next: TcpSeqNumber,
     /// Unacknowledged, unSACKed bytes below this are presumed lost.
     lost_edge: TcpSeqNumber,
+    /// SND.NXT when the last hole was resent: once data above it is SACKed,
+    /// a hole resent before it that is still not SACKed was lost again.
+    rexmit_mark: Option<TcpSeqNumber>,
 
     /// tsval generator - if some, tcp timestamp is enabled
     tsval_generator: Option<TcpTimestampGenerator>,
@@ -635,6 +638,7 @@ impl<'a> Socket<'a> {
             recovery_point: None,
             rexmit_next: TcpSeqNumber::default(),
             lost_edge: TcpSeqNumber::default(),
+            rexmit_mark: None,
 
             #[cfg(feature = "async")]
             rx_waker: WakerRegistration::new(),
@@ -907,6 +911,7 @@ impl<'a> Socket<'a> {
         self.recovery_point = None;
         self.rexmit_next = self.local_seq_no;
         self.lost_edge = self.local_seq_no;
+        self.rexmit_mark = None;
     }
 
     /// Record one SACK block, clipped to the outstanding data.
@@ -1097,6 +1102,21 @@ impl<'a> Socket<'a> {
                 self.lost_edge.max(high_sacked)
             }
             .max(self.local_seq_no);
+            // A lost resend (RFC 6675 cannot see one; Linux RACK can): data
+            // sent after the last resend arrived, so every hole still open
+            // below `rexmit_next` was lost again. Walk the holes from
+            // SND.UNA once more, as a new congestion event. Without this the
+            // sender ran on new data, all SACKed, until an RTO.
+            if let Some(mark) = self.rexmit_mark
+                && high_sacked > mark
+            {
+                net_debug!("SACK recovery: a resent hole was lost again");
+                self.rexmit_next = self.local_seq_no;
+                self.rexmit_mark = None;
+                self.congestion_controller
+                    .inner_mut()
+                    .on_fast_retransmit(now);
+            }
         }
     }
 
@@ -3037,6 +3057,7 @@ impl<'a> Socket<'a> {
         // ROOMLER PATCH: a resent hole moves HighRxt, not the last byte sent.
         if is_hole {
             self.rexmit_next = repr.seq_number + repr.segment_len();
+            self.rexmit_mark = Some(self.remote_last_seq);
         } else {
             self.remote_last_seq = repr.seq_number + repr.segment_len();
         }
@@ -6893,6 +6914,74 @@ mod test {
             "recovery ends at the recovery point"
         );
         assert!(s.tx_buffer.is_empty());
+    }
+
+    /// ROOMLER PATCH: a resent hole that is lost again is resent once data
+    /// sent after it is SACKed, not left to the retransmission timeout.
+    #[test]
+    fn test_sack_recovery_resends_a_lost_resend() {
+        let mut s = socket_established();
+        s.remote_mss = 6;
+        s.remote_has_sack = true;
+        s.set_sack_recovery_enabled(true);
+        send!(s, time 0, TcpRepr {
+            seq_number: REMOTE_SEQ + 1,
+            ack_number: Some(LOCAL_SEQ + 1),
+            ..SEND_TEMPL
+        });
+        s.send_slice(b"xxxxxxyyyyyy").unwrap();
+        for (i, chunk) in [&b"xxxxxx"[..], &b"yyyyyy"[..]].into_iter().enumerate() {
+            recv!(s, time 1000, Ok(TcpRepr {
+                seq_number: LOCAL_SEQ + 1 + 6 * i,
+                ack_number: Some(REMOTE_SEQ + 1),
+                payload:    chunk,
+                ..RECV_TEMPL
+            }));
+        }
+        let block = |from: usize, to: usize| {
+            Some((
+                (LOCAL_SEQ + 1 + from).0 as u32,
+                (LOCAL_SEQ + 1 + to).0 as u32,
+            ))
+        };
+        for _ in 0..3 {
+            send!(s, time 1050, TcpRepr {
+                seq_number: REMOTE_SEQ + 1,
+                ack_number: Some(LOCAL_SEQ + 1),
+                sack_ranges: [block(6, 12), None, None],
+                ..SEND_TEMPL
+            });
+        }
+        // x is resent, and this resend is lost too.
+        recv!(s, time 1060, Ok(TcpRepr {
+            seq_number: LOCAL_SEQ + 1,
+            ack_number: Some(REMOTE_SEQ + 1),
+            payload:    &b"xxxxxx"[..],
+            ..RECV_TEMPL
+        }));
+        // New data goes out after it, and arrives.
+        s.send_slice(b"zzzzzz").unwrap();
+        recv!(s, time 1070, Ok(TcpRepr {
+            seq_number: LOCAL_SEQ + 1 + 12,
+            ack_number: Some(REMOTE_SEQ + 1),
+            payload:    &b"zzzzzz"[..],
+            ..RECV_TEMPL
+        }));
+        recv_nothing!(s, time 1070);
+        send!(s, time 1150, TcpRepr {
+            seq_number: REMOTE_SEQ + 1,
+            ack_number: Some(LOCAL_SEQ + 1),
+            sack_ranges: [block(6, 18), None, None],
+            ..SEND_TEMPL
+        });
+        // z, sent after the resend, was SACKed: x went missing again.
+        recv!(s, time 1160, Ok(TcpRepr {
+            seq_number: LOCAL_SEQ + 1,
+            ack_number: Some(REMOTE_SEQ + 1),
+            payload:    &b"xxxxxx"[..],
+            ..RECV_TEMPL
+        }));
+        recv_nothing!(s, time 1160);
     }
 
     /// ROOMLER PATCH: with SACK recovery the receiver reports three blocks.

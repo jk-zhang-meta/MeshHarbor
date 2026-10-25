@@ -822,7 +822,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "tribool",
-        description: "netstack TCP send pacing: data leaves at gain × cwnd / srtt instead of a window at a time, so compressed ACKs do not release whole bursts into a shallow queue. Built-in default: off (opt-in). Env: ROOMLERD_OVERLAY_NETSTACK_TCP_PACING.",
+        description: "netstack TCP send pacing: data leaves at gain × cwnd / srtt instead of a window at a time, so compressed ACKs do not release whole bursts into a shallow queue or a policer. Built-in default: on (off is the kill switch). Env: ROOMLERD_OVERLAY_NETSTACK_TCP_PACING.",
     },
     KeyMeta {
         key: "overlay_netstack_tcp_sack",
@@ -4218,11 +4218,14 @@ mod tests {
     }
 
     /// §6 item 5 — the netstack TCP pacing key: tribool, default None
-    /// (daemon built-in off), bridged to the daemon env.
+    /// (daemon built-in on), bridged to the daemon env.
     #[test]
     fn overlay_netstack_tcp_pacing_set_echo_clear() {
         let mut cfg = crate::config::test_fixture();
-        assert_eq!(cfg.overlay_netstack_tcp_pacing, None, "unset → daemon default (off)");
+        assert_eq!(
+            cfg.overlay_netstack_tcp_pacing, None,
+            "unset → daemon default (on)"
+        );
         apply(&mut cfg, "overlay_netstack_tcp_pacing", Some("on")).unwrap();
         assert_eq!(cfg.overlay_netstack_tcp_pacing, Some(true));
         assert_eq!(
