@@ -308,7 +308,58 @@ async fn a_capable_agent_gets_its_set_and_only_its_own_ack_counts() {
     status(&mut ws, &id, 1, true).await;
     let v = applied(&app, tid, tok, &id, "applied").await;
     assert_eq!(v["status"]["applied"], json!("applied"), "{v}");
-    assert_eq!(v["status"]["verified"], json!("unverified"));
+    assert_eq!(
+        v["status"]["verified"],
+        json!("unverified"),
+        "no inventory since the ack yet"
+    );
+
+    // The node's next inventory (after the ack) shows the listener: verified.
+    // One that lacks it would read `drift`.
+    let inv = NetInventory {
+        os: "linux".into(),
+        namespaces: "host_only".into(),
+        listeners: Section::capped(
+            vec![Listener {
+                proto: L4::Tcp,
+                addr: "100.64.0.2".into(),
+                port: 15432,
+                process: Some("roomlerd".into()),
+            }],
+            10,
+        ),
+        ..Default::default()
+    };
+    let frame = json!({ "t": "rc:agent.net_inventory", "boot_id": "b1", "seq": 2, "page": 0, "pages": 1,
+        "observed_at_ms": 2, "inventory": inv });
+    ws.send(Message::Text(frame.to_string().into()))
+        .await
+        .unwrap();
+    let mut seen = Value::Null;
+    for _ in 0..30 {
+        let r = app
+            .auth_get(&format!("/api/tenant/{tid}/managed-forward/{id}"), tok)
+            .send()
+            .await
+            .unwrap();
+        seen = r.json().await.unwrap();
+        if seen["status"]["verified"] == json!("verified") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(seen["status"]["verified"], json!("verified"), "{seen}");
+    let r = app
+        .auth_get(&format!("/api/tenant/{tid}/managed-forward"), tok)
+        .send()
+        .await
+        .unwrap();
+    let l: Value = r.json().await.unwrap();
+    assert_eq!(
+        l["items"][0]["status"]["verified"],
+        json!("verified"),
+        "the list agrees"
+    );
 
     // A bind failure reads as failed, with the agent's reason.
     let m = json!({ "t": "rc:forward.status", "statuses": [{ "id": id, "revision": 1, "listening": false, "error": "Address in use" }] });

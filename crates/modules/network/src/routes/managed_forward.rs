@@ -99,6 +99,48 @@ pub struct MutationResponse {
     pub plan: Plan,
 }
 
+/// v039's verified layer, from the ingress node's own report: `verified`
+/// when a fresh inventory received AFTER the ack shows a listener on the
+/// forward's bind address and port, `drift` when that inventory lacks it,
+/// `unverified` otherwise (no ack, no newer fresh inventory).
+fn verify(
+    view: &mut ForwardView,
+    f: &ManagedForward,
+    inv: Option<&crate::net_inventory::InventoryRow>,
+) {
+    let Some(a) = f
+        .applied
+        .as_ref()
+        .filter(|a| a.revision == f.revision && a.listening)
+    else {
+        return;
+    };
+    let Some(row) = inv.filter(|r| r.fresh(DateTime::now()) && r.received_at > a.at) else {
+        return;
+    };
+    let bind: Option<std::net::IpAddr> = f.spec.bind_addr.parse().ok();
+    let seen = row.inventory.listeners.items.iter().any(|l| {
+        l.proto == f.spec.proto
+            && l.port == f.spec.port
+            && l.addr
+                .parse::<std::net::IpAddr>()
+                .is_ok_and(|x| x.is_unspecified() || Some(x) == bind)
+    });
+    view.status.verified = if seen { "verified" } else { "drift" };
+}
+
+async fn view_of(state: &NetworkState, tid: ObjectId, f: &ManagedForward) -> ForwardView {
+    let mut v: ForwardView = f.into();
+    if let Ok(agent) = ObjectId::parse_str(&f.spec.ingress_agent_id) {
+        let inv = crate::net_inventory::get(state, tid, agent)
+            .await
+            .ok()
+            .flatten();
+        verify(&mut v, f, inv.as_ref());
+    }
+    v
+}
+
 #[derive(Serialize)]
 pub struct ListResponse {
     pub items: Vec<ForwardView>,
@@ -134,9 +176,22 @@ pub async fn list(
 ) -> Result<Json<ListResponse>, ApiError> {
     let tid = gate(&state, &tenant_id, &auth).await?;
     let rows = managed_forward::list(&state, tid).await.map_err(internal)?;
-    Ok(Json(ListResponse {
-        items: rows.iter().map(Into::into).collect(),
-    }))
+    // One inventory read per tenant, not per forward.
+    let invs = crate::net_inventory::list(&state, tid)
+        .await
+        .unwrap_or_default();
+    let items = rows
+        .iter()
+        .map(|f| {
+            let mut v: ForwardView = f.into();
+            let inv = invs
+                .iter()
+                .find(|r| r.agent_id.to_hex() == f.spec.ingress_agent_id);
+            verify(&mut v, f, inv);
+            v
+        })
+        .collect();
+    Ok(Json(ListResponse { items }))
 }
 
 pub async fn get(
@@ -149,7 +204,7 @@ pub async fn get(
         .await
         .map_err(internal)?
         .ok_or_else(|| ApiError::NotFound("Managed forward not found".to_string()))?;
-    Ok(Json((&f).into()))
+    Ok(Json(view_of(&state, tid, &f).await))
 }
 
 pub async fn create(
