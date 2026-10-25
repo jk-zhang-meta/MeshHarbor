@@ -2976,6 +2976,64 @@ async fn org_only_fallback_mints_without_turn_churn_and_repushes_remaining_ttl()
     assert_org_only_quiet(&mut rig.r).await;
 }
 
+/// Field, 2026-10-25: a session minted while the direct path was still up
+/// was never bound inside the relay's bind window, after which the relay
+/// drops every Bind for it; re-pushing that same session on each fallback
+/// re-request stranded the pair for 6 and 26 minutes. Within the window the
+/// session is re-pushed; past it, it is revoked and a fresh one is minted.
+#[tokio::test]
+async fn org_only_fallback_remints_once_the_bind_window_has_passed() {
+    let mut rig = Rig::up("org-only-rebind", true, Some(true)).await;
+    rig.arm().await;
+    join(&mut rig.a, 1, Some(true), "203.0.113.10:41641").await;
+    request_org_only(&mut rig, 1).await;
+    let sa = recv_org_only_session(&mut rig.a).await;
+    let _ = recv_org_only_session(&mut rig.b).await;
+    let serve = recv_t(&mut rig.r, "rc:overlay.relay_serve", Duration::from_secs(5))
+        .await
+        .unwrap();
+    assert_eq!(sa["vni"], serve["vni"]);
+    let a = ObjectId::parse_str(&rig.a_node).unwrap();
+    let b = ObjectId::parse_str(&rig.b_node).unwrap();
+    let pk = roomler_ai_mod_network::overlay::pair_key(a, b);
+    request_org_only(&mut rig, 2).await;
+    let within = recv_org_only_session(&mut rig.a).await;
+    assert_eq!(
+        within["generation"], sa["generation"],
+        "inside the window: the same session"
+    );
+    rig.app.state.network().org_relay.age_past_bind_window(&pk);
+    request_org_only(&mut rig, 3).await;
+    let fresh = recv_org_only_session(&mut rig.a).await;
+    assert_ne!(
+        fresh["generation"], sa["generation"],
+        "past the window: a fresh session"
+    );
+    assert_ne!(fresh["bind_secret"], sa["bind_secret"]);
+    let peer = recv_org_only_session(&mut rig.b).await;
+    assert_eq!(
+        peer["generation"], fresh["generation"],
+        "the peer gets it too"
+    );
+    let serve2 = loop {
+        let s = recv_t(&mut rig.r, "rc:overlay.relay_serve", Duration::from_secs(5))
+            .await
+            .unwrap();
+        if s["generation"] == fresh["generation"] {
+            break s;
+        }
+    };
+    assert_eq!(serve2["vni"], fresh["vni"], "and the relay installs it");
+    let live = rig
+        .app
+        .state
+        .network()
+        .org_relay
+        .active_session(&pk)
+        .unwrap();
+    assert_eq!(json!(live.generation), fresh["generation"]);
+}
+
 #[tokio::test]
 async fn org_only_fallback_preserves_forced_derp_pin_without_churn_or_mint() {
     use roomler_ai_mod_network::overlay::{PairChurn,arm_grant,churn_note_request,pair_key};

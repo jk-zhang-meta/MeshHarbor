@@ -129,6 +129,11 @@ pub struct OrgRelaySession {
     pub members: [SessionMember; 2],
     pub endpoints: Vec<String>,
     pub expires_at: Instant,
+    /// The relay drops every Bind for a session not fully bound by its bind
+    /// deadline (`BIND_SECS` after the install), and later reaps it. Past
+    /// this instant a re-push can no longer bind, so a fallback re-request
+    /// mints a fresh session instead (`maybe_mint_fallback`).
+    pub bind_by: Instant,
 }
 
 impl OrgRelaySession {
@@ -263,6 +268,14 @@ impl OrgRelayState {
             return None;
         }
         Some(s)
+    }
+
+    /// Test hook: as if `pair_key`'s session had outlived its bind window.
+    #[doc(hidden)]
+    pub fn age_past_bind_window(&self, pair_key: &str) {
+        if let Some(mut s) = self.sessions.get_mut(pair_key) {
+            s.bind_by = Instant::now() - Duration::from_secs(1);
+        }
     }
 
     pub fn sessions_on_relay(&self, relay_node_id: ObjectId) -> usize {
@@ -1171,6 +1184,10 @@ pub async fn maybe_mint(state: &NetworkState, requester: &OverlayNode, peer: &Ov
     mint_plan(state, requester, peer, plan, warn_only, fence).await;
 }
 
+/// Time a re-pushed session needs to bind before the relay's bind deadline:
+/// the member's bind sends and the push latency.
+const BIND_REUSE_MARGIN: Duration = Duration::from_secs(8);
+
 /// A fallback query reauthorizes cached leases, and never allocates TURN.
 /// In particular a stale but unexpired relay lease cannot suppress reselection.
 pub async fn maybe_mint_fallback(state: &NetworkState, requester: &OverlayNode, peer: &OverlayNode) {
@@ -1199,9 +1216,25 @@ pub async fn maybe_mint_fallback(state: &NetworkState, requester: &OverlayNode, 
                     })
                 })
         }));
-        if authorized && mode != PeerRelayMode::Warn {
+        // A member asks again only while it has no working org link. Within
+        // the bind window the same session can still bind, so re-push it;
+        // past it the relay drops its Binds (an unbound session dies at its
+        // bind deadline), and re-pushing it stranded the pair until some
+        // other event revoked it (field, 2026-10-25: 6 and 26 minutes).
+        let bindable = Instant::now() + BIND_REUSE_MARGIN < session.bind_by;
+        if authorized && bindable && mode != PeerRelayMode::Warn {
             if let Some(i) = session.member_index(req_id) { push_member(state, &session, i).await; }
             return;
+        }
+        if authorized && !bindable && mode != PeerRelayMode::Warn {
+            revoke_where(state, "org-fallback-bind-window-passed", |current| {
+                current.pair_key == pk
+                    && current.vni == session.vni
+                    && current.generation == session.generation
+            })
+            .await;
+            epoch = state.org_relay.eligibility_generation();
+            verdict = plan_mint_candidates(state, requester, peer).await;
         }
         if !authorized {
             revoke_where(state, "org-fallback-reauthorization", |current| {
@@ -1284,6 +1317,7 @@ async fn mint_plan(
         ],
         endpoints: plan.endpoints.clone(),
         expires_at: Instant::now() + Duration::from_secs(u64::from(limits::MAX_LIFETIME_SECS)),
+        bind_by: Instant::now() + Duration::from_secs(u64::from(limits::BIND_SECS)),
     };
     // Legacy ordering stays intact; fallback audits only its winning claim.
     if fallback_epoch.is_none() || warn_only {
@@ -1773,6 +1807,7 @@ mod tests {
                 ],
                 endpoints: vec!["8.8.8.8:3478".into()],
                 expires_at: Instant::now() + Duration::from_secs(60),
+                bind_by: Instant::now() + Duration::from_secs(30),
             },
         );
         assert!(st.record_probe(a, relay, "8.8.8.8:3478".into(), true, Some(12)));
