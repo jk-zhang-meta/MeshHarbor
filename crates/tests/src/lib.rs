@@ -195,6 +195,8 @@ mod pdf_export_tests;
 #[cfg(test)]
 mod peer_auth_key_tests;
 #[cfg(test)]
+mod business_isolation_tests;
+#[cfg(test)]
 mod peer_relay_auto_tests;
 #[cfg(test)]
 mod peer_relay_mint_tests;

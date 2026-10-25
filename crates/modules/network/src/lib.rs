@@ -51,6 +51,7 @@ use tokio::sync::mpsc;
 
 pub mod agent_arms;
 pub mod agent_socket;
+pub mod business_isolation;
 pub mod derp;
 pub mod derp_acl;
 pub mod derp_cluster;

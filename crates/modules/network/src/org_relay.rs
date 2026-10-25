@@ -173,9 +173,10 @@ pub struct OrgRelayState {
     join_extras: DashMap<ObjectId, JoinExtras>,
     probes: DashMap<(ObjectId, ObjectId), Vec<ProbeRecord>>,
     mode_cache: DashMap<ObjectId, (PeerRelayMode, Instant)>,
-    /// MeshHarbor `auto`: each agent's live connection on this pod, whose
-    /// opening observation is its zone evidence (`hello` binds, `closing`
-    /// unbinds).
+    /// MeshHarbor `auto` and #21: each agent's (`hello` binds, `closing`
+    /// unbinds) and each tunnel client's (its WS binds and unbinds) live
+    /// connection on this pod, whose opening observation is its zone
+    /// evidence. Keyed by the device's ObjectId, unique across both kinds.
     live_conns: DashMap<ObjectId, String>,
     trials: trial::PathTrials,
     // Conservative generation for membership/policy decisions spanning async IO.
@@ -464,19 +465,32 @@ fn agent_zone(state: &NetworkState, agent: &Agent) -> Option<BusinessZone> {
     roomler_core::business_authority::connection_zone(&state.core, &device, &conn)
 }
 
-/// [`agent_zone`] of the agent behind an overlay node; no other node kind
-/// carries zone evidence here.
-async fn node_zone(state: &NetworkState, node: &OverlayNode) -> Option<BusinessZone> {
-    let NodeRef::Agent { agent_id } = &node.node_ref else {
-        return None;
-    };
-    let agent = state
-        .fleet
-        .agents
-        .find_live_in_tenant(node.tenant_id, *agent_id)
-        .await
-        .ok()?;
-    agent_zone(state, &agent)
+/// The business zone of the device behind an overlay node: its live
+/// connection's opening observation on this pod. `None` (no live connection
+/// here, or no zone) refuses wherever a zone gates anything — the auto relay
+/// gate here, and the #21 isolation in netmap shaping.
+pub(crate) async fn node_zone(state: &NetworkState, node: &OverlayNode) -> Option<BusinessZone> {
+    match &node.node_ref {
+        NodeRef::Agent { agent_id } => {
+            let agent = state
+                .fleet
+                .agents
+                .find_live_in_tenant(node.tenant_id, *agent_id)
+                .await
+                .ok()?;
+            agent_zone(state, &agent)
+        }
+        NodeRef::TunnelClient { tunnel_client_id } => {
+            let client = state
+                .tunnel_clients
+                .find_live_in_tenant(node.tenant_id, *tunnel_client_id)
+                .await
+                .ok()?;
+            let conn = state.org_relay.live_conn(*tunnel_client_id)?;
+            let device = AuthenticatedDevice::from_tunnel_client(&client).ok()?;
+            roomler_core::business_authority::connection_zone(&state.core, &device, &conn)
+        }
+    }
 }
 
 /// Shared candidate authorization (gates 2–4). Discovery only returns metadata;
@@ -525,6 +539,22 @@ async fn plan_mint_candidates_reusing(
         || state.org_relay.join_extras(peer_id).org_primary != Some(true)
     {
         return Err(D::SecondaryOrg);
+    }
+    // #21 — the pair must share one zone, and every candidate relay must be
+    // in it (below): no grant, explicit or implicit, carries a pair across
+    // the mainland line. Under `warn` both are only logged.
+    use crate::business_isolation::{self as iso, Mode};
+    let iso_mode = iso::mode(state);
+    let iso_zone = match iso_mode {
+        Mode::Off => None,
+        _ => iso::pair_zone(state, iso_mode, requester, peer).await,
+    };
+    if iso_mode != Mode::Off && iso_zone.is_none() {
+        if iso_mode == Mode::Enforce {
+            warn!(%tenant_id, requester = %req_id, peer = %peer_id, "org-relay: pair not in one business zone; refusing");
+            return Err(D::ZoneDenied);
+        }
+        info!(%tenant_id, requester = %req_id, peer = %peer_id, "org-relay [isolation warn]: would refuse a pair not in one business zone");
     }
 
     // Gate 2's inputs — every read fails CLOSED, each with the reason that
@@ -645,6 +675,13 @@ async fn plan_mint_candidates_reusing(
                 zone_denied += 1;
             }
             continue;
+        }
+        if iso_mode != Mode::Off && (iso_zone.is_none() || agent_zone(state, &agent) != iso_zone) {
+            if iso_mode == Mode::Enforce {
+                zone_denied += 1;
+                continue;
+            }
+            info!(%tenant_id, relay = %relay_id, "org-relay [isolation warn]: would skip a relay outside the pair's zone");
         }
         let port = extras.relay_port.unwrap_or(limits::DEFAULT_RELAY_PORT);
         let endpoints =

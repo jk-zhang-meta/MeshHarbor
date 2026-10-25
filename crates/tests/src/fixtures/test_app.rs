@@ -427,6 +427,7 @@ fn test_settings() -> Settings {
             // hop — trust the peer address, not any client-sent header.
             rate_limit_trusted_hops: 0,
             business_trusted_proxy_cidrs: vec![],
+            business_isolation: "warn".to_string(),
             auth_rate_limit_per_min: 10,
             auth_rate_limit_burst: 20,
             host: "127.0.0.1".to_string(),

@@ -148,6 +148,11 @@ pub async fn handle_tunnel_client_socket(
     info!(%tunnel_client_id, %tenant_id, %owner_user_id, "tunnel-client WS connected");
     let conn_established_ms = bson::DateTime::now().timestamp_millis();
     let connection_id = uuid::Uuid::new_v4().to_string();
+    // MeshHarbor #21 — this connection's opening observation is the client's
+    // zone evidence (`org_relay::node_zone`), as an agent's is from its hello.
+    state
+        .org_relay
+        .bind_live_conn(tunnel_client_id, &connection_id);
     let business_observation = roomler_core::business_authority::ObservationTask::spawn({
         let (state, origin, connection_id) = (state.clone(), connection_origin.clone(), connection_id.clone());
         async move {
@@ -497,6 +502,9 @@ pub async fn handle_tunnel_client_socket(
     // offline so peers' netmaps lose it. Best-effort; no-op if the
     // client never joined the overlay.
     state.overlay_nodes_by_id.remove(&tunnel_client_id);
+    state
+        .org_relay
+        .unbind_live_conn(tunnel_client_id, &connection_id);
     crate::overlay::handle_overlay_leave(
         &state,
         crate::overlay::NodeIdentity::TunnelClient(tunnel_client_id),

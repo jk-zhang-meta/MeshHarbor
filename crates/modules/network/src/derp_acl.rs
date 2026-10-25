@@ -33,6 +33,15 @@
 //! whereas a spurious allow costs one relayed datagram on a tier an honest
 //! client would not have used. The table is rebuilt on every policy change and
 //! on join, so the open window is a brief one after a restart.
+//!
+//! # MeshHarbor #21 isolation
+//!
+//! Under `app.business_isolation = enforce` the table also carries each
+//! node's business zone, and a frame passes only between two nodes with the
+//! same known zone, whatever the ACL mode (a node with no zone relays to
+//! nobody). The table is built for that even when the ACL is off. The
+//! restart window above stays open for it too; the netmap, which withholds
+//! the cross-zone key from an honest client, is the first line.
 
 use bson::oid::ObjectId;
 use dashmap::DashMap;
@@ -41,6 +50,7 @@ use std::sync::Arc;
 
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use roomler_ai_remote_control::models::OverlayNode;
+use roomler_core::business_authority::BusinessZone;
 use tunnel_core::policy::{OverlayPeerRef, evaluate_overlay};
 
 use crate::NetworkState;
@@ -54,12 +64,19 @@ pub struct DerpAllowTable {
     /// the same evidence-first cutover the netmap shaping uses.
     enforcing: bool,
     allow: HashMap<DerpPubKey, HashSet<DerpPubKey>>,
+    /// #21 `enforce`: each node's zone; `None` when isolation is not enforced.
+    zones: Option<HashMap<DerpPubKey, BusinessZone>>,
 }
 
 impl DerpAllowTable {
-    /// May `src` relay a frame to `dst`? Always `true` when not enforcing.
+    /// May `src` relay a frame to `dst`? Always `true` when neither the ACL
+    /// nor the isolation is enforced.
     pub fn permits(&self, src: &DerpPubKey, dst: &DerpPubKey) -> bool {
-        !self.enforcing || self.allow.get(src).is_some_and(|s| s.contains(dst))
+        (!self.enforcing || self.allow.get(src).is_some_and(|s| s.contains(dst)))
+            && self
+                .zones
+                .as_ref()
+                .is_none_or(|z| matches!((z.get(src), z.get(dst)), (Some(a), Some(b)) if a == b))
     }
 
     /// `true` when a denial should actually drop the frame (vs. only be logged).
@@ -77,7 +94,20 @@ impl DerpAllowTable {
         for (s, d) in pairs {
             allow.entry(*s).or_default().insert(*d);
         }
-        Self { enforcing, allow }
+        Self {
+            enforcing,
+            allow,
+            zones: None,
+        }
+    }
+
+    /// Test builder for the #21 zone gate (see [`Self::for_test`]).
+    #[doc(hidden)]
+    pub fn for_test_zones(zones: &[(DerpPubKey, BusinessZone)]) -> Self {
+        Self {
+            zones: Some(zones.iter().copied().collect()),
+            ..Self::default()
+        }
     }
 }
 
@@ -100,9 +130,11 @@ fn pubkey_of(node: &OverlayNode) -> Option<DerpPubKey> {
 /// which cannot change an ACL decision.
 pub async fn rebuild(state: &NetworkState, tenant_id: ObjectId, network_id: ObjectId) {
     let acl = super::overlay::load_acl(state, tenant_id).await;
+    let isolating =
+        super::business_isolation::mode(state) == super::business_isolation::Mode::Enforce;
     // `Off` needs no table: `permits` would allow everything anyway, and
     // dropping the entry keeps a disabled tenant's memory at zero.
-    if !acl.gating() {
+    if !acl.gating() && !isolating {
         state.derp_acl.remove(&network_id);
         return;
     }
@@ -121,10 +153,24 @@ pub async fn rebuild(state: &NetworkState, tenant_id: ObjectId, network_id: Obje
     };
 
     // One `OverlaySource` per node (owner + roles), resolved once and reused
-    // across the N² pair evaluation.
+    // across the N² pair evaluation. None when only the isolation gates: the
+    // pair loop below then has nothing to zip.
     let mut sources = Vec::with_capacity(nodes.len());
-    for n in &nodes {
+    for n in nodes.iter().filter(|_| acl.gating()) {
         sources.push(super::overlay::overlay_source_of(state, n).await);
+    }
+
+    let mut zones = isolating.then(HashMap::new);
+    if let Some(zones) = zones.as_mut() {
+        for n in &nodes {
+            let mode = super::business_isolation::Mode::Enforce;
+            if let (Some(pk), Some(zone)) = (
+                pubkey_of(n),
+                super::business_isolation::zone_of(state, mode, n).await,
+            ) {
+                zones.insert(pk, zone);
+            }
+        }
     }
 
     let mut allow: HashMap<DerpPubKey, HashSet<DerpPubKey>> = HashMap::new();
@@ -159,6 +205,7 @@ pub async fn rebuild(state: &NetworkState, tenant_id: ObjectId, network_id: Obje
         %tenant_id, %network_id,
         nodes = nodes.len(), pairs,
         enforcing = acl.enforcing(),
+        zoned = zones.as_ref().map(|z| z.len()),
         "derp acl: allow table rebuilt"
     );
     state.derp_acl.insert(
@@ -166,6 +213,7 @@ pub async fn rebuild(state: &NetworkState, tenant_id: ObjectId, network_id: Obje
         Arc::new(DerpAllowTable {
             enforcing: acl.enforcing(),
             allow,
+            zones,
         }),
     );
 }
@@ -211,5 +259,30 @@ mod tests {
         // network either.
         let t = DerpAllowTable::default();
         assert!(t.permits(&pk(1), &pk(2)));
+    }
+
+    #[test]
+    fn isolation_relays_only_inside_one_known_zone() {
+        use BusinessZone::{Mainland, NonMainland};
+        let t = DerpAllowTable::for_test_zones(&[
+            (pk(1), Mainland),
+            (pk(2), Mainland),
+            (pk(3), NonMainland),
+        ]);
+        assert!(t.permits(&pk(1), &pk(2)));
+        assert!(!t.permits(&pk(1), &pk(3)) && !t.permits(&pk(3), &pk(1)));
+        // No zone fails closed, both ways.
+        assert!(!t.permits(&pk(9), &pk(1)) && !t.permits(&pk(1), &pk(9)));
+    }
+
+    #[test]
+    fn isolation_applies_under_a_warn_acl_too() {
+        // The ACL only logs, but the zone gate still drops.
+        let mut t = DerpAllowTable::for_test_zones(&[
+            (pk(1), BusinessZone::Mainland),
+            (pk(2), BusinessZone::NonMainland),
+        ]);
+        t.allow.entry(pk(1)).or_default().insert(pk(2));
+        assert!(!t.enforcing() && !t.permits(&pk(1), &pk(2)));
     }
 }

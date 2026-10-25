@@ -16,7 +16,8 @@ use crate::agent_presence_tests::enroll;
 use crate::fixtures::seed::{SeededTenant, SeededUser};
 use crate::fixtures::test_app::TestApp;
 use crate::peer_relay_mint_tests::{
-    Ws, audit_rows, connect_from, join, node_id, put, recv_t, set_mode, wait_mint_row,
+    Ws, approve, audit_rows, connect_from, grant_relay, join, node_id, put, recv_t, set_mode,
+    wait_mint_row,
 };
 use bson::{doc, oid::ObjectId};
 use futures::SinkExt;
@@ -26,17 +27,17 @@ use std::time::Duration;
 use tokio_tungstenite::tungstenite::Message;
 
 /// Non-mainland in the fixture database (it maps 0.0.0.0/1 to US) and in DB-IP.
-const US_A: &str = "8.8.8.8";
-const US_B: &str = "8.8.4.4";
+pub(crate) const US_A: &str = "8.8.8.8";
+pub(crate) const US_B: &str = "8.8.4.4";
 const US_R: &str = "1.1.1.1";
 /// Mainland in the fixture database (it maps 128.0.0.0/1 to CN) and in DB-IP.
-const CN_A: &str = "223.5.5.5";
+pub(crate) const CN_A: &str = "223.5.5.5";
 
 /// A MaxMind DB (format 2.0) with ONE search-tree node: 0.0.0.0/1 →
 /// `{country: {iso_code: "US"}}` and 128.0.0.0/1 → `{country: {iso_code:
 /// "CN"}}`, laid out byte for byte as `user_analytics`'s own fixture, but
 /// stamped a minute ago so the zone evidence is never stale.
-fn fixture_mmdb() -> Vec<u8> {
+pub(crate) fn fixture_mmdb() -> Vec<u8> {
     fn text(out: &mut Vec<u8>, v: &str) {
         out.push(0x40 | v.len() as u8);
         out.extend_from_slice(v.as_bytes());
@@ -114,7 +115,7 @@ fn zone_of(ip: &str) -> &'static str {
 /// The fixture must actually place each connection, or every refusal test
 /// passes vacuously: assert the observation the server recorded for
 /// `agent_id` names `from` and its zone (a bare connection: no zone at all).
-async fn assert_observed(app: &TestApp, agent_id: &str, from: Option<&str>) {
+pub(crate) async fn assert_observed(app: &TestApp, agent_id: &str, from: Option<&str>) {
     let id = ObjectId::parse_str(agent_id).unwrap();
     let rows = app
         .db
@@ -140,7 +141,11 @@ async fn assert_observed(app: &TestApp, agent_id: &str, from: Option<&str>) {
 /// Admission is on for EVERY user once a central owner exists, so fixture
 /// users are written approved rather than registered (`register_user` cannot
 /// log a pending account in).
-async fn approved_user(app: &TestApp, name: &str, fixed: Option<ObjectId>) -> SeededUser {
+pub(crate) async fn approved_user(
+    app: &TestApp,
+    name: &str,
+    fixed: Option<ObjectId>,
+) -> SeededUser {
     let hash = app
         .state
         .auth
@@ -204,6 +209,11 @@ impl AutoRig {
     /// `from` = the address a, b and r each connect from through the trusted
     /// loopback proxy; `None` connects bare, which observes no zone at all.
     async fn up(slug: &str, from: [Option<&str>; 3]) -> Self {
+        Self::up_isolated(slug, from, "warn").await
+    }
+
+    /// [`Self::up`] under `app.business_isolation = isolation` (#21).
+    async fn up_isolated(slug: &str, from: [Option<&str>; 3], isolation: &'static str) -> Self {
         let geo = tempfile::tempdir().unwrap();
         let mmdb = geo.path().join("dbip-country-lite.mmdb");
         std::fs::write(&mmdb, fixture_mmdb()).unwrap();
@@ -217,6 +227,7 @@ impl AutoRig {
             // client. `Settings::load()` defaults to one further hop, under
             // which a single-entry header is a too-short (refused) chain.
             s.app.rate_limit_trusted_hops = 0;
+            s.app.business_isolation = isolation.into();
             s.stats.geoip_mmdb = Some(mmdb);
         })
         .await;
@@ -295,6 +306,17 @@ impl AutoRig {
     async fn arm(&self) {
         self.set_relay_role("server").await;
         set_mode(&self.app, &self.seeded, "auto").await;
+    }
+
+    /// An explicit grant instead: `on`, r approved to serve, and a policy
+    /// granting every node the relay.
+    async fn explicit(&self) {
+        set_mode(&self.app, &self.seeded, "on").await;
+        assert_eq!(
+            approve(&self.app, &self.seeded, &self.r_agent, true).await,
+            200
+        );
+        grant_relay(&self.app, &self.seeded, &self.r_node).await;
     }
 
     async fn request(&mut self) {
@@ -472,4 +494,54 @@ async fn a_party_disconnecting_revokes_implicit_sessions() {
     let vni = rig.expect_minted().await;
     rig.b.close(None).await.expect("close b");
     rig.expect_revoked(vni, false).await;
+}
+
+/// #21 control: under `warn` an explicit grant still carries a cross-zone
+/// pair (the rule only logs), so the refusals below are the rule's.
+#[tokio::test]
+async fn isolation_warn_leaves_an_explicit_cross_zone_grant_alone() {
+    let mut rig =
+        AutoRig::up_isolated("iso-x-warn", [Some(CN_A), Some(US_B), Some(US_R)], "warn").await;
+    rig.explicit().await;
+    rig.request().await;
+    rig.expect_minted().await;
+}
+
+/// #21 `enforce`: no explicit grant (`serve` plus a policy naming the relay)
+/// carries a pair across the mainland line.
+#[tokio::test]
+async fn isolation_enforce_refuses_an_explicit_cross_zone_grant() {
+    let mut rig =
+        AutoRig::up_isolated("iso-x-enf", [Some(CN_A), Some(US_B), Some(US_R)], "enforce").await;
+    rig.explicit().await;
+    rig.request().await;
+    rig.expect_refused("zone_denied").await;
+}
+
+/// #21 `enforce`: a same-zone pair is not carried through a relay in the
+/// other zone either.
+#[tokio::test]
+async fn isolation_enforce_skips_a_relay_outside_the_pairs_zone() {
+    let mut rig =
+        AutoRig::up_isolated("iso-r-enf", [Some(US_A), Some(US_B), Some(CN_A)], "enforce").await;
+    rig.explicit().await;
+    rig.request().await;
+    rig.expect_refused("zone_denied").await;
+}
+
+/// #21: the TURN grant is a carrier too. `warn` grants a cross-zone pair,
+/// `enforce` sends nothing.
+#[tokio::test]
+async fn isolation_enforce_refuses_a_cross_zone_turn_grant() {
+    for (isolation, granted) in [("warn", true), ("enforce", false)] {
+        let mut rig = AutoRig::up_isolated(
+            &format!("iso-turn-{isolation}"),
+            [Some(CN_A), Some(US_B), Some(US_R)],
+            isolation,
+        )
+        .await;
+        rig.request().await;
+        let grant = recv_t(&mut rig.a, "rc:overlay.relay_grant", Duration::from_secs(2)).await;
+        assert_eq!(grant.is_some(), granted, "{isolation}: {grant:?}");
+    }
 }

@@ -1246,6 +1246,15 @@ pub struct AppSettings {
     /// change the legacy analytics/rate-limit deployment's behavior.
     #[serde(default, deserialize_with = "deserialize_business_proxy_cidrs")]
     pub business_trusted_proxy_cidrs: Vec<String>,
+    /// MeshHarbor #21 — hard mainland/non-mainland isolation of business
+    /// discovery: a node's netmap shows only peers whose live connection was
+    /// observed in the node's own business zone. `off`; `warn` (the default:
+    /// log what would be withheld, withhold nothing); `enforce` (withhold,
+    /// with an unknown zone on either end withholding — fail closed). Any
+    /// other value reads as `enforce`. Management traffic to
+    /// `www.itachi.fans` is never subject to it.
+    #[serde(default = "default_business_isolation")]
+    pub business_isolation: String,
     /// Sustained auth-endpoint attempts per minute, per (client IP, account).
     /// Deliberately far stricter than the general `/api` limit: this is the
     /// brute-force gate, and it must not depend on starving the whole API.
@@ -1283,6 +1292,11 @@ fn default_rate_limit_per_sec() -> u64 {
 fn default_rate_limit_burst() -> u32 {
     60
 }
+
+fn default_business_isolation() -> String {
+    "warn".to_string()
+}
+
 fn default_rate_limit_trusted_hops() -> usize {
     1
 }
@@ -1632,6 +1646,7 @@ impl Settings {
             .set_default("app.rate_limit_burst", 60)?
             .set_default("app.rate_limit_trusted_hops", 1)?
             .set_default("app.business_trusted_proxy_cidrs", Vec::<String>::new())?
+            .set_default("app.business_isolation", "warn")?
             .set_default("app.auth_rate_limit_per_min", 10)?
             .set_default("app.auth_rate_limit_burst", 20)?
             .set_default("database.url", "mongodb://localhost:27019")?
@@ -1763,6 +1778,7 @@ mod rate_limit_tests {
             rate_limit_burst: 60,
             rate_limit_trusted_hops: 1,
             business_trusted_proxy_cidrs: vec![],
+            business_isolation: super::default_business_isolation(),
             auth_rate_limit_per_min: auth_per_min,
             auth_rate_limit_burst: 20,
         }

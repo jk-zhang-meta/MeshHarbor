@@ -154,7 +154,12 @@ pub(crate) async fn set_mode(app: &TestApp, seeded: &SeededTenant, mode: &str) {
     assert_eq!(s, 200, "set mode {mode}");
 }
 
-async fn approve(app: &TestApp, seeded: &SeededTenant, agent_id: &str, serve: bool) -> u16 {
+pub(crate) async fn approve(
+    app: &TestApp,
+    seeded: &SeededTenant,
+    agent_id: &str,
+    serve: bool,
+) -> u16 {
     let (s, _) = put(
         app,
         &url(seeded, &format!("/agent/{agent_id}/peer-relay-policy")),
@@ -167,7 +172,11 @@ async fn approve(app: &TestApp, seeded: &SeededTenant, agent_id: &str, serve: bo
 
 /// The gate-2 grant: every node may reach the relay node. `via` names the
 /// relay; the destination CIDR covers its overlay address.
-async fn grant_relay(app: &TestApp, seeded: &SeededTenant, relay_node_id: &str) -> String {
+pub(crate) async fn grant_relay(
+    app: &TestApp,
+    seeded: &SeededTenant,
+    relay_node_id: &str,
+) -> String {
     let resp = app
         .auth_post(&url(seeded, "/overlay-acl"), &seeded.admin.access_token)
         .json(&json!({

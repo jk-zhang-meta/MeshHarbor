@@ -663,7 +663,7 @@ fn forward_frame(
             %network_id,
             src = %pk8(src_pubkey),
             dst = %pk8(&dst),
-            "derp: dropped a frame the overlay ACL denies"
+            "derp: dropped a frame the overlay ACL or business isolation denies"
         );
         return;
     }

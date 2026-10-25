@@ -56,6 +56,7 @@ use tunnel_core::policy::{
 use roomler_core::turn::build_turn_config;
 
 use crate::NetworkState;
+use crate::business_isolation::{self, Zones};
 
 /// Which underlying host an overlay message arrived from, captured at
 /// the WS handler so the broker can resolve the node + route replies.
@@ -700,6 +701,10 @@ async fn handle_overlay_join(
     // FR-84 D5a — the shaping is `shape_full_netmap`, shared with the
     // device's own `/api/agent/self/devices` listing so that list can never
     // show a peer the netmap withholds.
+    // MeshHarbor #21 — under `enforce`, give the joiner's own observation a
+    // moment to land before shaping, or it is shown nobody until it rejoins.
+    let iso = business_isolation::mode(state);
+    let joiner_zone = business_isolation::joiner_zone(state, iso, &self_node).await;
     let ShapedNetmap {
         acl,
         self_src: joiner_src,
@@ -735,8 +740,9 @@ async fn handle_overlay_join(
     // join is when a NEW pubkey can enter the network, and the table is keyed by
     // pubkey, so it would otherwise stay stale (fail-open) for that node until
     // the next policy edit. Spawned: it re-reads every node, and the joiner must
-    // not wait on that to get its netmap.
-    if acl.gating() {
+    // not wait on that to get its netmap. #21 enforce needs the table for its
+    // zones even when the ACL is off.
+    if acl.gating() || iso == business_isolation::Mode::Enforce {
         let st = state.clone();
         tokio::spawn(async move {
             super::derp_acl::rebuild(&st, tenant_id, network_id).await;
@@ -822,14 +828,19 @@ async fn handle_overlay_join(
         let joiner_ingress = acl.enforcing().then_some(&joiner_src);
         // U2 — this recipient's edge is `peer → self_node` (the joiner).
         let verdict = server_relay_verdict(state, peer, &self_node);
-        let (upserts, removes) = match shape_peer(&acl, &peer_src, &self_node, joiner_ingress, true)
-        {
-            Some(mut u) => {
-                u.relay_strategy = verdict;
-                (vec![u], vec![])
-            }
-            None => (vec![], vec![self_node.id.unwrap_or_default()]),
+        let zones = Zones {
+            mode: iso,
+            recipient: business_isolation::zone_of(state, iso, peer).await,
+            peer: joiner_zone,
         };
+        let (upserts, removes) =
+            match shape_peer(&acl, &peer_src, &self_node, joiner_ingress, true, zones) {
+                Some(mut u) => {
+                    u.relay_strategy = verdict;
+                    (vec![u], vec![])
+                }
+                None => (vec![], vec![self_node.id.unwrap_or_default()]),
+            };
         send_to_node(
             state,
             peer,
@@ -1228,6 +1239,13 @@ async fn handle_overlay_relay_request(
     // cascade (P4) prefers Org when a session arrives, and a pair without
     // one keeps exactly the path it has today.
     crate::org_relay::maybe_mint(state, &self_node, &peer).await;
+
+    // #21 — no TURN or forced-DERP carrier across the mainland line, whatever
+    // the ACL says. After the org offer, whose planner refuses (and audits)
+    // the same pair on its own.
+    if business_isolation::refuses_pair(state, &self_node, &peer, "turn grant").await {
+        return;
+    }
 
     let pair_key = pair_key(self_id, peer_node_id);
 
@@ -1918,6 +1936,8 @@ async fn fan_upsert_shaped(state: &NetworkState, node: &OverlayNode, epoch: u64,
         }
     };
     let acl = load_acl(state, node.tenant_id).await;
+    let iso = business_isolation::mode(state);
+    let node_zone = business_isolation::zone_of(state, iso, node).await;
     // P4 — the fanned node is the SHAPED peer for every recipient, so its
     // identity is resolved once, not per recipient.
     let node_src = if acl.enforcing() {
@@ -1951,13 +1971,20 @@ async fn fan_upsert_shaped(state: &NetworkState, node: &OverlayNode, epoch: u64,
         // U2 — the edge is `recipient=peer → this fanned node`; both full
         // rows are in hand, so stamp the server verdict onto the shaped peer.
         let verdict = server_relay_verdict(state, peer, node);
-        let (upserts, removes) = match shape_peer(&acl, &src, node, node_src.as_ref(), reachable) {
-            Some(mut u) => {
-                u.relay_strategy = verdict;
-                (vec![u], vec![])
-            }
-            None => (vec![], vec![node.id.unwrap_or_default()]),
+        let peer_zone = business_isolation::zone_of(state, iso, peer).await;
+        let zones = Zones {
+            mode: iso,
+            recipient: peer_zone,
+            peer: node_zone,
         };
+        let (upserts, removes) =
+            match shape_peer(&acl, &src, node, node_src.as_ref(), reachable, zones) {
+                Some(mut u) => {
+                    u.relay_strategy = verdict;
+                    (vec![u], vec![])
+                }
+                None => (vec![], vec![node.id.unwrap_or_default()]),
+            };
         send_to_node(
             state,
             peer,
@@ -1975,12 +2002,18 @@ async fn fan_upsert_shaped(state: &NetworkState, node: &OverlayNode, epoch: u64,
         if let Some(rsrc) = node_recip_src.as_ref() {
             let rev_verdict = server_relay_verdict(state, node, peer);
             let peer_src_arg = if acl.enforcing() { Some(&src) } else { None };
+            let back = Zones {
+                mode: iso,
+                recipient: node_zone,
+                peer: peer_zone,
+            };
             if let Some(mut r) = shape_peer(
                 &acl,
                 rsrc,
                 peer,
                 peer_src_arg,
                 is_reachable(&peer_reach, peer),
+                back,
             ) {
                 r.relay_strategy = rev_verdict;
                 reverse_rows.push(r);
@@ -2026,6 +2059,11 @@ async fn fan_pair_verdicts(state: &NetworkState, a: &OverlayNode, b: &OverlayNod
     // snapshot so a dead peer's row does not read dialable.
     let b_reach = is_reachable(&reach, b);
     let enforcing = acl.enforcing();
+    let iso = business_isolation::mode(state);
+    let (a_zone, b_zone) = (
+        business_isolation::zone_of(state, iso, a).await,
+        business_isolation::zone_of(state, iso, b).await,
+    );
     if a.supports_server_relay_strategy
         && let Some(mut row) = shape_peer(
             &acl,
@@ -2033,6 +2071,11 @@ async fn fan_pair_verdicts(state: &NetworkState, a: &OverlayNode, b: &OverlayNod
             b,
             if enforcing { Some(&b_src) } else { None },
             b_reach,
+            Zones {
+                mode: iso,
+                recipient: a_zone,
+                peer: b_zone,
+            },
         )
     {
         row.relay_strategy = server_relay_verdict(state, a, b);
@@ -2054,6 +2097,11 @@ async fn fan_pair_verdicts(state: &NetworkState, a: &OverlayNode, b: &OverlayNod
             a,
             if enforcing { Some(&a_src) } else { None },
             true,
+            Zones {
+                mode: iso,
+                recipient: b_zone,
+                peer: a_zone,
+            },
         )
     {
         row.relay_strategy = server_relay_verdict(state, b, a);
@@ -2722,8 +2770,15 @@ pub async fn shape_full_netmap(
 ) -> ShapedNetmap {
     let acl = load_acl(state, self_node.tenant_id).await;
     let self_src = overlay_source_of(state, self_node).await;
+    let iso = business_isolation::mode(state);
+    let self_zone = business_isolation::zone_of(state, iso, self_node).await;
     let mut peers: Vec<NetmapPeer> = Vec::new();
     for n in all.iter().filter(|n| n.id != self_node.id) {
+        let zones = Zones {
+            mode: iso,
+            recipient: self_zone,
+            peer: business_isolation::zone_of(state, iso, n).await,
+        };
         // P4 — resolving the peer's own identity costs up to 2 reads, so do it
         // ONLY when the tenant is enforcing and the rules will actually ship.
         // An `off`/`warn` tenant's join path is unchanged.
@@ -2738,6 +2793,7 @@ pub async fn shape_full_netmap(
             n,
             peer_src.as_ref(),
             is_reachable(reach, n),
+            zones,
         ) {
             // U2 — the recipient's full-netmap edge is `self_node → n`.
             p.relay_strategy = server_relay_verdict(state, self_node, n);
@@ -2757,7 +2813,19 @@ fn shape_peer(
     peer: &OverlayNode,
     peer_src: Option<&OverlaySource>,
     reachable: bool,
+    zones: Zones,
 ) -> Option<NetmapPeer> {
+    // MeshHarbor #21 — the hard mainland/non-mainland rule comes BEFORE the
+    // ACL: no grant, share or relay can make a peer across it visible.
+    if zones.denies() {
+        if zones.withholds() {
+            debug!(source = %src.node_id, peer = %peer.name, ?zones,
+                "business isolation: WITHHOLD peer (zones differ or unknown)");
+            return None;
+        }
+        debug!(source = %src.node_id, peer = %peer.name, ?zones,
+            "business isolation [warn]: would WITHHOLD peer (zones differ or unknown)");
+    }
     if matches!(acl.mode, OverlayAclMode::Off) {
         return Some(to_netmap_peer(peer, reachable));
     }
@@ -3346,13 +3414,13 @@ mod tests {
         let mut router = node("router", "100.64.0.9");
         router.approved_routes = vec!["10.1.0.0/24".into()];
         router.advertised_routes = vec!["10.1.0.0/24".into()];
-        let shaped = shape_peer(&acl, &src, &router, None, true)
+        let shaped = shape_peer(&acl, &src, &router, None, true, Zones::OFF)
             .expect("visible through the subnet it offers");
         assert_eq!(shaped.routes, vec!["10.1.0.0/24".to_string()]);
 
         router.advertised_routes.clear();
         assert!(
-            shape_peer(&acl, &src, &router, None, true).is_none(),
+            shape_peer(&acl, &src, &router, None, true, Zones::OFF).is_none(),
             "an approval the device no longer offers grants nothing"
         );
     }

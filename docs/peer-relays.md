@@ -166,6 +166,9 @@ flowchart TD
   explicit ones.
 - **Ranking is unchanged.** Explicit and implicit candidates are ranked together by
   member-measured RTT.
+- **Explicit grants and zones.** `auto` checks zones only for its implicit grant. The
+  hard isolation of every grant, explicit included, is `app.business_isolation`; see
+  [business-isolation.md](business-isolation.md).
 
 ### An implicit session ends with what vouched for it
 
@@ -517,8 +520,6 @@ the capacity gained: the relay was in France and the members in Austria and Germ
 - **A dedicated `RELAY_DEVICE` permission bit.** It waits on the 64-bit mask migration
   (#888). Until then, an org cannot have relay approvers who may not also run root
   commands.
-- **MeshHarbor: zone on EXPLICIT grants.** `auto` checks zones only for its implicit
-  grant; regional enforcement on every path is a separate item.
 - **MeshHarbor: latency-weighted multi-hop.** The manual relay-to-relay backbone edges
   exist; choosing a path through them by measured latency does not.
 - **A per-session bitrate cap** on the relay. The session count is capped; per-session
