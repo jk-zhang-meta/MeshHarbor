@@ -70,6 +70,9 @@ pub mod orgrelay;
 pub(crate) mod path;
 /// FR-97 P1b — a Mac serves as an exit or subnet router through pf.
 pub(crate) mod pf;
+/// MeshHarbor §6 item 5 — UDP port mapping on the local gateway (PCP, then
+/// NAT-PMP). One exchange per call; the caller owns refresh and release.
+pub mod portmap;
 pub mod relay_link;
 pub mod router;
 pub mod runtime;
