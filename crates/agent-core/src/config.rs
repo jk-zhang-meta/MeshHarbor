@@ -774,6 +774,17 @@ pub struct AgentConfig {
     /// directly. Built-in default: on (`ROOMLERD_OVERLAY_PORTMAP`).
     #[serde(default)]
     pub overlay_portmap: Option<bool>,
+    /// §6 item 5 — netstack per-socket smoltcp receive buffer in bytes, the
+    /// window this stack advertises (`ROOMLERD_OVERLAY_NETSTACK_TCP_RX_BUF`,
+    /// 16384–16777216). Built-in default: 1 MiB.
+    #[serde(default)]
+    pub overlay_netstack_tcp_rx_buf: Option<u32>,
+    /// §6 item 5 — netstack per-socket smoltcp send buffer in bytes, which
+    /// bounds this stack's bytes in flight
+    /// (`ROOMLERD_OVERLAY_NETSTACK_TCP_TX_BUF`, 16384–16777216). Built-in
+    /// default: 128 KiB; 65536 restores the old bound for a shallow queue.
+    #[serde(default)]
+    pub overlay_netstack_tcp_tx_buf: Option<u32>,
     /// Track A stage 1 — spawn the session-independent network daemon
     /// (`roomlerd netd`) as a SECOND supervisor child. SCAFFOLD ONLY for
     /// now: netd heartbeats and hosts nothing; the network plane still
@@ -2809,6 +2820,8 @@ pub fn test_fixture() -> AgentConfig {
         overlay_quic_async: None,
         overlay_vpn_vantage: None,
         overlay_portmap: None,
+        overlay_netstack_tcp_rx_buf: None,
+        overlay_netstack_tcp_tx_buf: None,
         overlay_netd: None,
         overlay_pathmon: None,
         overlay_route_events: None,
@@ -3148,8 +3161,10 @@ pub fn env_bridge_bools(cfg: &AgentConfig) -> [(&'static str, Option<bool>); 91]
 
 /// rc.280 — numeric twin of [`env_bridge_bools`] (decimal strings on the
 /// same fallback map).
-pub fn env_bridge_numerics(cfg: &AgentConfig) -> [(&'static str, Option<u32>); 32] {
+pub fn env_bridge_numerics(cfg: &AgentConfig) -> [(&'static str, Option<u32>); 34] {
     [
+        ("OVERLAY_NETSTACK_TCP_RX_BUF", cfg.overlay_netstack_tcp_rx_buf),
+        ("OVERLAY_NETSTACK_TCP_TX_BUF", cfg.overlay_netstack_tcp_tx_buf),
         ("OVERLAY_IFACE_METRIC", cfg.overlay_iface_metric),
         ("RATE_FACTOR_H264", cfg.rate_factor_h264),
         ("RATE_FACTOR_HEVC", cfg.rate_factor_hevc),

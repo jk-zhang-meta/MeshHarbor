@@ -790,6 +790,25 @@ const KEYS: &[KeyMeta] = &[
         description: "R2: srflx gather falls back to the wildcard public-dial socket when every LAN-bound vantage is dead (full-tunnel VPN rescue — on AnyConnect-class clients the tunnel is the only path that passes UDP). Built-in default: on.",
     },
     KeyMeta {
+        key: "overlay_netstack_tcp_rx_buf",
+        group: Group::NetworkCarriers,
+        tier: Tier::Advanced,
+        live: false,
+        kind: "number",
+        description: "netstack per-socket TCP receive buffer in bytes, the window the stack advertises \
+         (16384-16777216). Built-in default: 1048576 (1 MiB).",
+    },
+    KeyMeta {
+        key: "overlay_netstack_tcp_tx_buf",
+        group: Group::NetworkCarriers,
+        tier: Tier::Advanced,
+        live: false,
+        kind: "number",
+        description: "netstack per-socket TCP send buffer in bytes; it bounds bytes in flight because \
+         smoltcp's congestion control does not (16384-16777216). Built-in default: 131072 (128 KiB); \
+         65536 restores the old bound for a shallow bottleneck queue.",
+    },
+    KeyMeta {
         key: "overlay_portmap",
         group: Group::NetworkCarriers,
         tier: Tier::Advanced,
@@ -2009,6 +2028,8 @@ fn current_value(cfg: &AgentConfig, key: &str) -> Option<String> {
         "overlay_quic_async" => cfg.overlay_quic_async.map(fmt_bool),
         "overlay_vpn_vantage" => cfg.overlay_vpn_vantage.map(fmt_bool),
         "overlay_portmap" => cfg.overlay_portmap.map(fmt_bool),
+        "overlay_netstack_tcp_rx_buf" => cfg.overlay_netstack_tcp_rx_buf.map(|v| v.to_string()),
+        "overlay_netstack_tcp_tx_buf" => cfg.overlay_netstack_tcp_tx_buf.map(|v| v.to_string()),
         "overlay_netd" => cfg.overlay_netd.map(fmt_bool),
         "overlay_pathmon" => cfg.overlay_pathmon.clone(),
         "overlay_demote" => cfg.overlay_demote.clone(),
@@ -2475,6 +2496,8 @@ pub fn apply(cfg: &mut AgentConfig, key: &str, value: Option<&str>) -> Result<()
         "overlay_quic_async" => cfg.overlay_quic_async = parse_tribool(value)?,
         "overlay_vpn_vantage" => cfg.overlay_vpn_vantage = parse_tribool(value)?,
         "overlay_portmap" => cfg.overlay_portmap = parse_tribool(value)?,
+        "overlay_netstack_tcp_rx_buf" => cfg.overlay_netstack_tcp_rx_buf = parse_tcp_buf(key, value)?,
+        "overlay_netstack_tcp_tx_buf" => cfg.overlay_netstack_tcp_tx_buf = parse_tcp_buf(key, value)?,
         "overlay_netd" => cfg.overlay_netd = parse_tribool(value)?,
         "overlay_pathmon" => {
             cfg.overlay_pathmon = match value.map(str::trim).filter(|s| !s.is_empty()) {
@@ -2986,6 +3009,23 @@ pub fn validate_fps_denylist(v: &str) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// A netstack TCP buffer size: bytes in the daemon's accepted range
+/// (`netstack.rs` `TCP_BUF_MIN..=TCP_BUF_MAX`); empty or `None` clears it.
+fn parse_tcp_buf(key: &str, value: Option<&str>) -> Result<Option<u32>, String> {
+    match value.map(str::trim).filter(|s| !s.is_empty()) {
+        None => Ok(None),
+        Some(v) => {
+            let n: u32 = v
+                .parse()
+                .map_err(|_| format!("{key} must be a number of bytes (got {v:?})"))?;
+            if !(16 * 1024..=16 * 1024 * 1024).contains(&n) {
+                return Err(format!("{key} must be between 16384 and 16777216 bytes"));
+            }
+            Ok(Some(n))
+        }
+    }
 }
 
 fn fmt_bool(b: bool) -> String {
@@ -4032,6 +4072,32 @@ mod tests {
                 .any(|(k, _)| *k == "OVERLAY_VPN_VANTAGE"),
             "key must be bridged to the daemon's env"
         );
+    }
+
+    /// §6 item 5 — the netstack TCP buffer keys: bytes in the daemon's
+    /// accepted range, default None (built-in), bridged to the daemon env.
+    #[test]
+    fn overlay_netstack_tcp_buf_keys_validate_and_bridge() {
+        let mut cfg = crate::config::test_fixture();
+        for (key, suffix) in [
+            ("overlay_netstack_tcp_rx_buf", "OVERLAY_NETSTACK_TCP_RX_BUF"),
+            ("overlay_netstack_tcp_tx_buf", "OVERLAY_NETSTACK_TCP_TX_BUF"),
+        ] {
+            assert_eq!(current_value(&cfg, key), None, "{key}: unset → built-in default");
+            apply(&mut cfg, key, Some("65536")).unwrap();
+            assert_eq!(current_value(&cfg, key).as_deref(), Some("65536"));
+            assert!(apply(&mut cfg, key, Some("1000")).is_err(), "{key}: below 16 KiB");
+            assert!(apply(&mut cfg, key, Some("33554432")).is_err(), "{key}: above 16 MiB");
+            assert!(apply(&mut cfg, key, Some("lots")).is_err(), "{key}: not a number");
+            assert!(
+                crate::config::env_bridge_numerics(&cfg)
+                    .iter()
+                    .any(|(k, v)| *k == suffix && *v == Some(65536)),
+                "{key} must be bridged to the daemon's env"
+            );
+            apply(&mut cfg, key, None).unwrap();
+            assert_eq!(current_value(&cfg, key), None, "{key}: clear → built-in default");
+        }
     }
 
     /// §6 item 5 — the gateway port-mapping key: tribool, default None
