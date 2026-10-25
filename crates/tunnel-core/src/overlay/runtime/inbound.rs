@@ -11,10 +11,14 @@ use super::*;
 /// Classify an authenticated inbound init's SOURCE into a direct tier: a
 /// public source matching the peer's advertised srflx is a hole-punch
 /// (Phase C), any other public source is a direct-to-public dial (Phase A),
-/// a private source is a same-LAN roam. Returns `(tier, is_public_src)` —
-/// the bool also gates the exit-exemption dst on install. Pure.
+/// a private source is a same-LAN roam. A global IPv6 source is public
+/// (§6 item 5: an IPv6 srflx candidate or dial). Returns `(tier,
+/// is_public_src)` — the bool also gates the exit-exemption dst on install. Pure.
 pub(super) fn classify_inbound_src(src: SocketAddr, peer_srflx: &[String]) -> (DirectTier, bool) {
-    let is_public = matches!(src, SocketAddr::V4(v4) if direct::is_public_v4(*v4.ip()));
+    let is_public = match src {
+        SocketAddr::V4(v4) => direct::is_public_v4(*v4.ip()),
+        SocketAddr::V6(v6) => direct::is_public_v6(*v6.ip()),
+    };
     let src_str = src.to_string();
     let tier = if is_public && peer_srflx.iter().any(|e| e.trim() == src_str) {
         DirectTier::Srflx
@@ -279,6 +283,18 @@ mod tests {
             &srflx(&[" 37.63.112.129:43649 "]),
         );
         assert_eq!(tier, DirectTier::Srflx);
+    }
+
+    #[test]
+    fn a_global_ipv6_source_is_public_and_a_punch_when_advertised() {
+        let src = "[2001:db8:7::5]:43648".parse().unwrap();
+        assert_eq!(
+            classify_inbound_src(src, &srflx(&["37.63.112.129:43649", "[2001:db8:7::5]:43648"])),
+            (DirectTier::Srflx, true)
+        );
+        assert_eq!(classify_inbound_src(src, &srflx(&[])), (DirectTier::Public, true));
+        let ula = "[fd7a:115c:a1e0::5]:43648".parse().unwrap();
+        assert_eq!(classify_inbound_src(ula, &srflx(&[])).0, DirectTier::Lan, "ULA is not public");
     }
 
     #[test]

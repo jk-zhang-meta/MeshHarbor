@@ -133,6 +133,10 @@ pub struct PlaneView {
     /// The advertised `ip:port` per LAN socket.
     pub endpoints: Vec<String>,
     pub my_ips: Vec<Ipv4Addr>,
+    /// §6 item 5 — the IPv6 direct socket and the global addresses it is
+    /// advertised under (`None` / empty without global IPv6).
+    pub v6: Option<Arc<UdpSocket>>,
+    pub my_v6: Vec<std::net::Ipv6Addr>,
 }
 
 struct PlaneBinds {
@@ -140,6 +144,8 @@ struct PlaneBinds {
     public_sock: Option<Arc<UdpSocket>>,
     endpoints: Vec<String>,
     my_ips: Vec<Ipv4Addr>,
+    v6: Option<Arc<UdpSocket>>,
+    my_v6: Vec<std::net::Ipv6Addr>,
     tasks: Vec<JoinHandle<()>>,
     /// PR-B1 — per-socket receive liveness, in lockstep with the recv loops
     /// (`socks` order first, then the public dialer). Snapshotted into
@@ -399,9 +405,11 @@ impl CarrierPlane {
         } else {
             None
         };
+        let (v6, my_v6) = super::runtime::bind_v6_direct(stable_port).await;
         info!(
             endpoints = ?endpoints,
             public_dial = public_sock.is_some(),
+            ipv6 = v6.is_some(),
             "carrier plane: direct sockets bound ONCE for every attached engine"
         );
         self.binds_performed.fetch_add(1, Ordering::Relaxed);
@@ -419,6 +427,15 @@ impl CarrierPlane {
                 .unwrap_or_else(|_| "public-dial".into());
             let stat = direct::SockStat::new(local);
             tasks.push(self.adopt_socket_with(p.clone(), Some(stat.clone())));
+            stats.push(stat);
+        }
+        if let Some(s6) = &v6 {
+            let local = s6
+                .local_addr()
+                .map(|a| format!("{a} (ipv6)"))
+                .unwrap_or_else(|_| "ipv6".into());
+            let stat = direct::SockStat::new(local);
+            tasks.push(self.adopt_socket_with(s6.clone(), Some(stat.clone())));
             stats.push(stat);
         }
         let mut st = self.lock();
@@ -443,6 +460,8 @@ impl CarrierPlane {
             public_sock,
             endpoints,
             my_ips,
+            v6,
+            my_v6,
             tasks,
             stats,
         });
@@ -469,6 +488,8 @@ impl CarrierPlane {
             public_sock: b.public_sock.clone(),
             endpoints: b.endpoints.clone(),
             my_ips: b.my_ips.clone(),
+            v6: b.v6.clone(),
+            my_v6: b.my_v6.clone(),
         })
     }
 
@@ -1629,6 +1650,10 @@ impl CarrierPlane {
             None
         };
         out.candidates = pairs.iter().map(|(e, _)| e.clone()).collect();
+        // §6 item 5 — after the IPv4 ones, so `[0]` stays the punch mapping
+        // the srflx task compares against.
+        out.candidates
+            .extend(super::runtime::v6_adverts(v.v6.as_ref(), &v.my_v6));
         out.punch = pairs.into_iter().next();
         out.my_nat = my_nat;
         info!(
@@ -2143,6 +2168,8 @@ mod tests {
                 public_sock: Some(public.clone()),
                 endpoints: vec!["127.0.0.1:0".into()],
                 my_ips: Vec::new(),
+                v6: None,
+                my_v6: Vec::new(),
                 tasks: vec![t_lan, t_pub],
                 stats: Vec::new(),
             });

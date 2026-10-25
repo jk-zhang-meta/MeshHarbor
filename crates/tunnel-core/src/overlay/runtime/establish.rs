@@ -59,6 +59,23 @@ pub(super) struct DirectCtx {
     /// against two STUN targets). `install_peers` reads it to skip a srflx punch
     /// only when BOTH ends are symmetric.
     pub(super) my_nat: Option<String>,
+    /// §6 item 5 — the IPv6 direct socket (`[::]:port`, V6ONLY) and the global
+    /// IPv6 addresses it is advertised under. `None` / empty when
+    /// `OVERLAY_IPV6` is off or the host has no global IPv6.
+    pub(super) v6: Option<Arc<UdpSocket>>,
+    pub(super) my_v6: Vec<std::net::Ipv6Addr>,
+}
+
+impl DirectCtx {
+    /// The socket a srflx-tier dial to `dst` rides: the IPv6 socket for an
+    /// IPv6 peer, else the punch socket (whose NAT mapping we advertised).
+    pub(super) fn srflx_sock(&self, dst: SocketAddr) -> Option<Arc<UdpSocket>> {
+        if dst.is_ipv6() {
+            self.v6.clone()
+        } else {
+            self.punch.as_ref().map(|(_, s)| s.clone())
+        }
+    }
 }
 
 /// rc.225 — did a netmap upsert change the peer's DIRECT-dial endpoints (its
@@ -153,7 +170,15 @@ pub(super) fn resolve_direct_candidates(
     // LAN candidate itself keeps being dialed — if the AP starts forwarding
     // again (mesh roam), its strikes clear and the premise is restored.
     let lan_usable = lan.is_some() && rot.lan < LAN_DEAD_STRIKES;
-    let srflx = direct_ctx.and_then(|ctx| {
+    // §6 item 5 — both ends with global IPv6: dial that first. No NAT, so no
+    // NAT-type or hairpin gate; after `V6_FIRST_STRIKES` failures (a stateful
+    // firewall that never opens) the IPv4 srflx below takes over.
+    let srflx_v6 = direct_ctx.and_then(|ctx| {
+        (direct::srflx_enabled() && ctx.v6.is_some() && rot.srflx < direct::V6_FIRST_STRIKES)
+            .then(|| direct::pick_v6_endpoint_rotated(&ctx.my_v6, &cfg.srflx_endpoints, rot.srflx))
+            .flatten()
+    });
+    let srflx = srflx_v6.or_else(|| direct_ctx.and_then(|ctx| {
         (direct::srflx_enabled()
             && ctx.punch.is_some()
             && direct::srflx_punch_worth_trying(ctx.my_nat.as_deref(), cfg.srflx_nat.as_deref())
@@ -164,7 +189,7 @@ pub(super) fn resolve_direct_candidates(
             ))
         .then(|| direct::pick_public_endpoint_rotated(&ctx.my_ips, &cfg.srflx_endpoints, rot.srflx))
         .flatten()
-    });
+    }));
     DirectCandidates { lan, public, srflx }
 }
 
@@ -1003,6 +1028,8 @@ impl OverlayRuntime {
                 public_sock: v.public_sock,
                 punch: None,
                 my_nat: None,
+                v6: v.v6,
+                my_v6: v.my_v6,
             });
         }
         let ifaces = direct::gather_lan_interfaces();
@@ -1095,6 +1122,7 @@ impl OverlayRuntime {
         } else {
             None
         };
+        let (v6, my_v6) = bind_v6_direct(stable_port).await;
         Some(DirectCtx {
             socks,
             my_ips,
@@ -1105,6 +1133,8 @@ impl OverlayRuntime {
             // NAT-type probe on it.
             punch: None,
             my_nat: None,
+            v6,
+            my_v6,
         })
     }
 
@@ -1557,7 +1587,7 @@ impl OverlayRuntime {
                             }
                             DirectTier::Srflx => {
                                 if let (Some(ctx), Some(dst)) = (direct_ctx, srflx_dst) {
-                                    ctx.punch.clone().map(|(_, s)| (s, dst))
+                                    ctx.srflx_sock(dst).map(|s| (s, dst))
                                 } else {
                                     None
                                 }
@@ -1645,7 +1675,7 @@ impl OverlayRuntime {
                                 }
                                 DirectTier::Srflx => {
                                     if let (Some(ctx), Some(dst)) = (direct_ctx, srflx_dst) {
-                                        ctx.punch.clone().map(|(_, s)| (s, dst))
+                                        ctx.srflx_sock(dst).map(|s| (s, dst))
                                     } else {
                                         None
                                     }
@@ -1715,7 +1745,7 @@ impl OverlayRuntime {
                                 .clone()
                                 .map(|s| (s, dst, DirectTier::Public))
                         } else if let (Some(ctx), Some(dst)) = (direct_ctx, srflx_dst) {
-                            ctx.punch.clone().map(|(_, s)| (s, dst, DirectTier::Srflx))
+                            ctx.srflx_sock(dst).map(|s| (s, dst, DirectTier::Srflx))
                         } else {
                             None
                         };
@@ -2474,8 +2504,8 @@ impl OverlayRuntime {
         cfg: &PeerConfig,
         dst: std::net::SocketAddr,
     ) {
-        let Some((_, sock)) = ctx.punch.clone() else {
-            warn!(peer = %node_id, "overlay: srflx punch requested but no punch socket; skipping");
+        let Some(sock) = ctx.srflx_sock(dst) else {
+            warn!(peer = %node_id, %dst, "overlay: srflx punch requested but no socket for its family; skipping");
             return;
         };
         // P3 PR-A — record the install (switch time).
@@ -3092,6 +3122,11 @@ impl OverlayRuntime {
             {
                 wg.retire_direct_socket(a);
             }
+            if let Some(s6) = &old.v6
+                && let Ok(a) = s6.local_addr()
+            {
+                wg.retire_direct_socket(a);
+            }
         }
         // 4. Fresh stun-events channel: the old receiver died with the
         //    keepalive task; retired loops keep the dead sender, and every
@@ -3109,6 +3144,9 @@ impl OverlayRuntime {
             }
             if let Some(ps) = &ctx.public_sock {
                 wg.ensure_direct_demux(ps.clone());
+            }
+            if let Some(s6) = &ctx.v6 {
+                wg.ensure_direct_demux(s6.clone());
             }
         }
         // 6. Every direct-tier measurement was made through sockets that no
@@ -3255,7 +3293,12 @@ impl OverlayRuntime {
                         ctx.punch = Some(first);
                         ctx.my_nat = my_nat.clone();
                     }
-                    let candidates: Vec<String> = pairs.into_iter().map(|(c, _)| c).collect();
+                    let mut candidates: Vec<String> = pairs.into_iter().map(|(c, _)| c).collect();
+                    // §6 item 5 — after the IPv4 ones, so `[0]` stays the
+                    // punch mapping the keepalive compares against.
+                    if let Some(ctx) = direct_ctx.as_ref() {
+                        candidates.extend(v6_adverts(ctx.v6.as_ref(), &ctx.my_v6));
+                    }
                     out.advertised = candidates.clone();
                     self.srflx_status = Some(crate::localapi::SrflxStatus {
                         candidates: candidates.clone(),
@@ -3299,6 +3342,42 @@ impl OverlayRuntime {
             }
         }
         out
+    }
+}
+
+/// §6 item 5 — bind the IPv6 direct socket when this host has a global IPv6
+/// and the srflx tier is on. Shared with the carrier plane's bind.
+pub(in crate::overlay) async fn bind_v6_direct(
+    port: u16,
+) -> (Option<Arc<UdpSocket>>, Vec<std::net::Ipv6Addr>) {
+    if !(direct::ipv6_enabled() && direct::srflx_enabled()) {
+        return (None, Vec::new());
+    }
+    let my_v6 = direct::gather_global_v6();
+    if my_v6.is_empty() {
+        return (None, my_v6);
+    }
+    match direct::bind_direct_socket_v6(port, "ipv6").await {
+        Some(s) => {
+            info!(addrs = ?my_v6, port = s.local_addr().map(|a| a.port()).unwrap_or(0),
+                "overlay: IPv6 direct socket ON — global addresses advertised as srflx candidates");
+            (Some(Arc::new(s)), my_v6)
+        }
+        None => {
+            warn!("overlay: IPv6 direct socket bind failed; IPv6 candidates off");
+            (None, Vec::new())
+        }
+    }
+}
+
+/// §6 item 5 — the srflx candidates for the IPv6 socket, if any.
+pub(in crate::overlay) fn v6_adverts(
+    v6: Option<&Arc<UdpSocket>>,
+    my_v6: &[std::net::Ipv6Addr],
+) -> Vec<String> {
+    match v6.and_then(|s| s.local_addr().ok()) {
+        Some(a) => direct::v6_candidates(my_v6, a.port()),
+        None => Vec::new(),
     }
 }
 
@@ -3362,7 +3441,36 @@ mod tests {
             public_sock: None,
             punch,
             my_nat: my_nat.map(|s| s.to_string()),
+            v6: None,
+            my_v6: vec![],
         }
+    }
+
+    /// §6 item 5 — both ends with global IPv6: the srflx tier dials IPv6
+    /// first, even when both IPv4 NATs are symmetric (no NAT on IPv6), and
+    /// falls back to the IPv4 rules after `V6_FIRST_STRIKES`.
+    #[tokio::test]
+    async fn srflx_dials_ipv6_first_and_falls_back_to_ipv4() {
+        let mut c = ctx(Some("94.130.141.98:43648"), Some("symmetric")).await;
+        let Ok(s6) = UdpSocket::bind("[::1]:0").await else {
+            return; // no IPv6 in this sandbox
+        };
+        c.v6 = Some(Arc::new(s6));
+        c.my_v6 = vec!["2001:db8::1".parse().unwrap()];
+        let p = peer(&[], &["37.63.112.129:43649", "[2001:db8::2]:45200"], Some("symmetric"));
+        let first = resolve_direct_candidates(Some(&c), &p, CandidateRotation::default());
+        assert_eq!(first.srflx, Some("[2001:db8::2]:45200".parse().unwrap()));
+        let rot = CandidateRotation { srflx: direct::V6_FIRST_STRIKES, ..Default::default() };
+        let after = resolve_direct_candidates(Some(&c), &p, rot);
+        assert_eq!(after.srflx, None, "then the IPv4 rules: both symmetric, no punch");
+        let cone = peer(&[], &["37.63.112.129:43649", "[2001:db8::2]:45200"], Some("cone"));
+        let after = resolve_direct_candidates(Some(&c), &cone, rot);
+        assert_eq!(after.srflx, Some("37.63.112.129:43649".parse().unwrap()));
+        let v4_only = peer(&[], &["37.63.112.129:43649"], Some("cone"));
+        let plain = resolve_direct_candidates(Some(&c), &v4_only, CandidateRotation::default());
+        assert_eq!(plain.srflx, Some("37.63.112.129:43649".parse().unwrap()), "an IPv4-only peer is unchanged");
+        assert!(c.srflx_sock("[2001:db8::2]:1".parse().unwrap()).unwrap().local_addr().unwrap().is_ipv6());
+        assert!(c.srflx_sock("37.63.112.129:1".parse().unwrap()).unwrap().local_addr().unwrap().is_ipv4());
     }
 
     #[tokio::test]

@@ -69,6 +69,8 @@ mod route_guard;
 mod failover_bench;
 
 use establish::*;
+// §6 item 5 — the carrier plane binds and advertises the IPv6 socket the same way.
+pub(in crate::overlay) use establish::{bind_v6_direct, v6_adverts};
 // Path-compat re-export: `tun.rs` purge names these as
 // `crate::overlay::runtime::SPLIT_DEFAULT_V4`/`_V6`.
 use route_guard::*;
@@ -2118,7 +2120,7 @@ impl OverlayRuntime {
             for pair in [
                 lan,
                 cands.public.zip(ctx.public_sock.clone()),
-                cands.srflx.zip(ctx.punch.clone().map(|(_, s)| s)),
+                cands.srflx.and_then(|d| ctx.srflx_sock(d).map(|s| (d, s))),
             ] {
                 let Some((dst, sock)) = pair else { continue };
                 let (nonce, frame) =
@@ -2676,6 +2678,9 @@ impl OverlayRuntime {
                 }
                 if let Some(ps) = &ctx.public_sock {
                     wg.ensure_direct_demux(ps.clone());
+                }
+                if let Some(s6) = &ctx.v6 {
+                    wg.ensure_direct_demux(s6.clone());
                 }
             }
             wg.take_direct_events()
@@ -5116,6 +5121,8 @@ mod tests {
             public_sock: None,
             punch: None,
             my_nat: None,
+            v6: None,
+            my_v6: vec![],
         };
         let mut relay: Option<RelayCoordinator> = None;
         let mut by_node = HashMap::new();
@@ -5194,6 +5201,8 @@ mod tests {
             public_sock: None,
             punch: None,
             my_nat: None,
+            v6: None,
+            my_v6: vec![],
         };
         let mut lan_peer = peer(&peer_kp, "100.64.0.7");
         lan_peer.lan_endpoints = vec!["10.1.2.3:1000".into()];
@@ -5251,6 +5260,8 @@ mod tests {
             public_sock: None,
             punch: None,
             my_nat: None,
+            v6: None,
+            my_v6: vec![],
         };
         let mut relay: Option<RelayCoordinator> = None;
         let mut by_node = HashMap::new();
@@ -7666,6 +7677,8 @@ mod tests {
             public_sock: None,
             punch: None,
             my_nat: None,
+            v6: None,
+            my_v6: vec![],
         };
         let dst: SocketAddr = "127.0.0.1:9".parse().unwrap();
 
@@ -7731,6 +7744,8 @@ mod tests {
             public_sock: None,
             punch: None,
             my_nat: None,
+            v6: None,
+            my_v6: vec![],
         };
         let mut relay: Option<RelayCoordinator> = None;
         let mut by_node = HashMap::new();
@@ -7812,6 +7827,8 @@ mod tests {
             public_sock: None,
             punch: Some(("93.184.216.90:5555".into(), punch_sock)),
             my_nat: None,
+            v6: None,
+            my_v6: vec![],
         };
         let mut relay: Option<RelayCoordinator> = None;
         let mut by_node = HashMap::new();
@@ -7893,6 +7910,8 @@ mod tests {
             public_sock: None,
             punch: None,
             my_nat: None,
+            v6: None,
+            my_v6: vec![],
         };
         let mut relay: Option<RelayCoordinator> = None;
         let mut by_node = HashMap::new();

@@ -19,7 +19,7 @@
 //! its peer is on the Wi-Fi). srflx hole-punch + an AP-isolation relay-fallback
 //! are later follow-ups. See `docs/overlay-wfp.md` siblings.
 
-use std::net::{Ipv4Addr, SocketAddr};
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV6};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -255,6 +255,84 @@ pub fn gather_lan_interfaces() -> Vec<(Ipv4Addr, Option<u32>)> {
         }
     }
     out
+}
+
+/// §6 item 5 — `OVERLAY_IPV6` (default on): bind an IPv6 direct socket and
+/// advertise this node's global IPv6 addresses among its srflx candidates, so
+/// two IPv6-capable peers go direct with no NAT in the way. Only a stateful
+/// firewall can stand between them, and the simultaneous dial of a srflx
+/// punch opens that the same way it opens a NAT's filter.
+pub fn ipv6_enabled() -> bool {
+    crate::env::flag("OVERLAY_IPV6", true)
+}
+
+/// A global-unicast IPv6 (`2000::/3`): routable across the internet. This
+/// excludes link-local, ULA (`fc00::/7`, which includes other mesh VPNs'
+/// ranges), loopback, multicast and the IPv4-mapped range.
+pub fn is_public_v6(ip: Ipv6Addr) -> bool {
+    (ip.segments()[0] & 0xe000) == 0x2000
+}
+
+/// This host's global IPv6 addresses, deduplicated, from the same interface
+/// hygiene as [`gather_lan_interfaces`] (no virtual, host-only or other-VPN
+/// interfaces; nothing under the WSL2 mirrored guard).
+pub fn gather_global_v6() -> Vec<Ipv6Addr> {
+    let mut out = Vec::new();
+    if wsl_mirrored_guard_enabled() && wsl2_mirrored_networking() {
+        return out;
+    }
+    let filter = lan_iface_filter_enabled();
+    if let Ok(addrs) = if_addrs::get_if_addrs() {
+        for a in addrs {
+            let std::net::IpAddr::V6(ip) = a.ip() else {
+                continue;
+            };
+            if !is_public_v6(ip) || out.contains(&ip) {
+                continue;
+            }
+            if filter {
+                let info = a.index.and_then(iface_info);
+                let desc = info.as_ref().map(|(d, _)| d.as_str()).unwrap_or_default();
+                if lan_iface_denied(&a.name, desc) || info.as_ref().map(|(_, h)| *h) == Some(false) {
+                    continue;
+                }
+            }
+            out.push(ip);
+        }
+    }
+    out
+}
+
+/// The srflx candidates for our IPv6 socket: `[addr]:port` per address.
+pub fn v6_candidates(addrs: &[Ipv6Addr], port: u16) -> Vec<String> {
+    addrs
+        .iter()
+        .map(|ip| SocketAddrV6::new(*ip, port, 0, 0).to_string())
+        .collect()
+}
+
+/// How many srflx-tier strikes the peer's IPv6 candidates get before the
+/// dialer falls back to its IPv4 ones (a success resets strikes, so IPv6 is
+/// tried first again).
+pub const V6_FIRST_STRIKES: u32 = 2;
+
+/// [`pick_public_endpoint_rotated`]'s IPv6 twin: the peer's global IPv6
+/// srflx candidates, never one of our own addresses.
+pub fn pick_v6_endpoint_rotated(
+    my_v6: &[Ipv6Addr],
+    candidates: &[String],
+    attempt: u32,
+) -> Option<SocketAddr> {
+    let viable: Vec<SocketAddr> = candidates
+        .iter()
+        .filter_map(|ep| match ep.trim().parse::<SocketAddr>() {
+            Ok(SocketAddr::V6(sa)) if is_public_v6(*sa.ip()) && !my_v6.contains(sa.ip()) => {
+                Some(SocketAddr::V6(sa))
+            }
+            _ => None,
+        })
+        .collect();
+    viable.get(attempt as usize % viable.len().max(1)).copied()
 }
 
 /// First `(ip, ifindex)` from the deny-listed LAN gather — the physical-uplink
@@ -1612,6 +1690,34 @@ pub(crate) async fn bind_direct_socket(
     Some(sock)
 }
 
+/// §6 item 5 — the IPv6 direct socket: `[::]:base` (any port when that is
+/// taken), IPV6_V6ONLY so it never collides with the IPv4 binds on the same
+/// port number.
+pub(crate) async fn bind_direct_socket_v6(base: u16, what: &'static str) -> Option<UdpSocket> {
+    for port in [base, 0] {
+        match bind_v6only(port) {
+            Ok(s) => {
+                super::sockbuf::tune_carrier(&s, what);
+                return Some(s);
+            }
+            Err(e) => tracing::debug!(port, %e, what, "overlay: IPv6 direct bind failed"),
+        }
+        if base == 0 {
+            break;
+        }
+    }
+    None
+}
+
+fn bind_v6only(port: u16) -> std::io::Result<UdpSocket> {
+    use socket2::{Domain, Protocol, Socket, Type};
+    let s = Socket::new(Domain::IPV6, Type::DGRAM, Some(Protocol::UDP))?;
+    s.set_only_v6(true)?;
+    s.set_nonblocking(true)?;
+    s.bind(&SocketAddr::from((Ipv6Addr::UNSPECIFIED, port)).into())?;
+    UdpSocket::from_std(s.into())
+}
+
 /// The stable-port policy itself (the three tiers above), unchanged by FR-110.
 async fn bind_on_band(ip: Ipv4Addr, base: u16, what: &'static str) -> Option<UdpSocket> {
     let mut candidates = direct_port_candidates(base);
@@ -1916,6 +2022,41 @@ mod tests {
     /// interface inventory: winhost-a's WSL vEthernet + Check Point adapter
     /// (whose friendly name is just "Ethernet" — only the DESCRIPTION gives
     /// it away) must be denied; every real physical NIC stays allowed.
+    /// §6 item 5 — IPv6 candidates: only global unicast counts, the v4 and v6
+    /// pickers each see their own family, and our own address is skipped.
+    #[test]
+    fn ipv6_candidates_are_global_only_and_family_separated() {
+        let v6 = |s: &str| s.parse::<Ipv6Addr>().unwrap();
+        assert!(is_public_v6(v6("2001:db8::1")) && is_public_v6(v6("240e:3a1::5")));
+        for not in ["fe80::1", "fd7a:115c:a1e0::1", "::1", "::ffff:1.2.3.4", "ff02::1", "::"] {
+            assert!(!is_public_v6(v6(not)), "{not}");
+        }
+        assert_eq!(v6_candidates(&[v6("2001:db8::5")], 45200), vec!["[2001:db8::5]:45200".to_string()]);
+        let cands: Vec<String> = ["203.0.113.7:1", "[2001:db8::5]:45200", "[fe80::1]:1", "[2001:db8::9]:7"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let at = |s: &str| Some(s.parse::<SocketAddr>().unwrap());
+        assert_eq!(pick_v6_endpoint_rotated(&[], &cands, 0), at("[2001:db8::5]:45200"));
+        assert_eq!(pick_v6_endpoint_rotated(&[], &cands, 1), at("[2001:db8::9]:7"), "rotated");
+        assert_eq!(pick_v6_endpoint_rotated(&[v6("2001:db8::5")], &cands, 0), at("[2001:db8::9]:7"), "own skipped");
+        assert_eq!(pick_public_endpoint(&[], &cands), at("203.0.113.7:1"), "the v4 picker ignores v6");
+        assert_eq!(pick_v6_endpoint_rotated(&[], &cands[..1], 0), None);
+    }
+
+    /// The IPv6 socket is V6ONLY, so it takes the same port number as an
+    /// IPv4 bind (both families on the stable direct port).
+    #[tokio::test]
+    async fn the_ipv6_socket_shares_the_port_number_with_ipv4() {
+        let v4 = UdpSocket::bind("0.0.0.0:0").await.unwrap();
+        let port = v4.local_addr().unwrap().port();
+        // `None` = no IPv6 in this sandbox; nothing to check then.
+        if let Some(s) = bind_direct_socket_v6(port, "test").await {
+            assert_eq!(s.local_addr().unwrap().port(), port);
+            assert!(s.local_addr().unwrap().is_ipv6());
+        }
+    }
+
     #[test]
     fn lan_iface_denied_matrix() {
         // (name, description, denied) — descriptions verbatim from the field.
