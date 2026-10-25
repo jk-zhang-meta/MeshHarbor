@@ -459,7 +459,7 @@ pub fn valid_static_endpoint(s: &str) -> bool {
 
 /// The business zone `agent`'s live connection on this pod was observed in
 /// when it opened. `None` (no live connection here, or no zone) refuses.
-fn agent_zone(state: &NetworkState, agent: &Agent) -> Option<BusinessZone> {
+pub(crate) fn agent_zone(state: &NetworkState, agent: &Agent) -> Option<BusinessZone> {
     let conn = state.org_relay.live_conn(agent.id?)?;
     let device = AuthenticatedDevice::from_agent(agent).ok()?;
     roomler_core::business_authority::connection_zone(&state.core, &device, &conn)

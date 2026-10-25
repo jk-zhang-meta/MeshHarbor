@@ -52,6 +52,7 @@ use tokio::sync::mpsc;
 pub mod agent_arms;
 pub mod agent_socket;
 pub mod business_isolation;
+pub mod managed_forward;
 pub mod net_inventory;
 pub mod derp;
 pub mod derp_acl;
@@ -69,6 +70,7 @@ pub mod turn_usage;
 pub mod routes {
     pub mod agent_ssh;
     pub mod business_authority;
+    pub mod managed_forward;
     pub mod net_inventory;
     pub mod overlay_block;
     pub mod overlay_key;
@@ -504,6 +506,19 @@ impl Module for NetworkState {
         let net_inventory = Router::new()
             .route("/", get(routes::net_inventory::list))
             .route("/{agent_id}", get(routes::net_inventory::get));
+        // MeshHarbor #20 slice 1 — managed forward intents and their dry run.
+        let managed_forward = Router::new()
+            .route(
+                "/",
+                get(routes::managed_forward::list).post(routes::managed_forward::create),
+            )
+            .route("/plan", post(routes::managed_forward::plan))
+            .route(
+                "/{id}",
+                get(routes::managed_forward::get)
+                    .put(routes::managed_forward::update)
+                    .delete(routes::managed_forward::delete),
+            );
         let overlay_policy = Router::new()
             .route(
                 "/",
@@ -596,6 +611,7 @@ impl Module for NetworkState {
             .nest("/tenant/{tenant_id}/overlay-node", overlay_node)
             .nest("/tenant/{tenant_id}/overlay-acl", overlay_policy)
             .nest("/tenant/{tenant_id}/net-inventory", net_inventory)
+            .nest("/tenant/{tenant_id}/managed-forward", managed_forward)
             .nest("/tenant/{tenant_id}/magic-dns", magic_dns)
             .nest("/tenant/{tenant_id}/overlay-block", overlay_block)
             .nest("/tenant/{tenant_id}/peer-relay", peer_relay)
@@ -686,6 +702,16 @@ impl Module for NetworkState {
             },
             // MeshHarbor #19 — one reported inventory row per agent (`_id`),
             // read per tenant; a node that stops reporting ages out.
+            IndexSet {
+                collection: crate::managed_forward::COLLECTION,
+                pre_ops: Vec::new(),
+                indexes: vec![index(bson::doc! { "tenant_id": 1, "deleted_at": 1 })],
+            },
+            IndexSet {
+                collection: crate::managed_forward::AUDIT_COLLECTION,
+                pre_ops: Vec::new(),
+                indexes: vec![index(bson::doc! { "tenant_id": 1, "forward_id": 1, "at": -1 })],
+            },
             IndexSet {
                 collection: crate::net_inventory::COLLECTION,
                 pre_ops: Vec::new(),
