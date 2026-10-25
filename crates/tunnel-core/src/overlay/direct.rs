@@ -242,9 +242,10 @@ pub fn gather_lan_interfaces() -> Vec<(Ipv4Addr, Option<u32>)> {
                     // relay still works), and `overlay_lan_iface_filter=0`
                     // restores the unfiltered gather. `None` (lookup failed /
                     // non-Windows) keeps the name-only checks as the deciders.
-                    if lan_iface_denied(&a.name, desc) || hardware == Some(false) {
+                    let tunnel = linux_tunnel_iface(&a.name);
+                    if lan_iface_denied(&a.name, desc) || hardware == Some(false) || tunnel {
                         tracing::debug!(
-                            iface = %a.name, %ip, desc = %desc, hardware = ?hardware,
+                            iface = %a.name, %ip, desc = %desc, hardware = ?hardware, tunnel,
                             "overlay: LAN gather — skipping virtual/host-only interface"
                         );
                         continue;
@@ -534,11 +535,42 @@ fn iface_info(ifindex: u32) -> Option<(String, bool)> {
     }
 }
 
-/// No-op off Windows — Linux/macOS interface NAMES already follow the
-/// conventions the prefix list catches (docker0, veth*, utun*, wg*…).
+/// No-op off Windows — Linux/macOS interface NAMES mostly follow the
+/// conventions the prefix list catches (docker0, veth*, utun*, wg*…); a Linux
+/// device that does not is caught by [`linux_tunnel_iface`].
 #[cfg(not(all(windows, feature = "overlay-l3")))]
 fn iface_info(_ifindex: u32) -> Option<(String, bool)> {
     None
+}
+
+/// Linux — `true` for a tunnel device of ANY name, the structural signal the
+/// name prefixes assume away: every TUN/TAP has `tun_flags` in sysfs, and an L3
+/// tunnel reports its link type (`ARPHRD_NONE` for WireGuard and an L3 TUN,
+/// PPP, IPIP, SIT, GRE). Field 2026-10-25: EasyTier names its TUN `etitachi0`,
+/// so its private address was gathered as a LAN endpoint and three nodes "went
+/// LAN" over the other mesh instead of the internet. Ethernet-type devices
+/// (a container's veth, a bridge) stay allowed: they are a pod's real network.
+#[cfg(target_os = "linux")]
+fn linux_tunnel_iface(name: &str) -> bool {
+    tunnel_iface_at(std::path::Path::new("/sys/class/net"), name)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn linux_tunnel_iface(_name: &str) -> bool {
+    false
+}
+
+/// [`linux_tunnel_iface`] against a given sysfs `class/net` root (tests).
+#[cfg_attr(not(any(target_os = "linux", test)), allow(dead_code))]
+fn tunnel_iface_at(sys_class_net: &std::path::Path, name: &str) -> bool {
+    // ARPHRD_PPP, _TUNNEL, _TUNNEL6, _SIT, _IPGRE, _IP6GRE, _NONE.
+    const TUNNEL_TYPES: &[u32] = &[512, 768, 769, 776, 778, 823, 65534];
+    let dir = sys_class_net.join(name);
+    dir.join("tun_flags").exists()
+        || std::fs::read_to_string(dir.join("type"))
+            .ok()
+            .and_then(|t| t.trim().parse::<u32>().ok())
+            .is_some_and(|t| TUNNEL_TYPES.contains(&t))
 }
 
 /// rc.144 — force outbound datagrams on `sock` out the interface with OS index
@@ -2108,6 +2140,44 @@ mod tests {
                 "name={name:?} desc={desc:?}"
             );
         }
+    }
+
+    /// A tunnel device is recognised by what sysfs says it is, not by its
+    /// name: a TUN/TAP of any name (`tun_flags`), WireGuard (`ARPHRD_NONE`),
+    /// PPP, IPIP, SIT, GRE. Ethernet-type devices stay allowed.
+    #[test]
+    fn tunnel_iface_is_structural_not_by_name() {
+        let root = std::env::temp_dir().join(format!("mh-sysnet-{}", std::process::id()));
+        let dev = |name: &str, kind: &str, tun: bool| {
+            let d = root.join(name);
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join("type"), format!("{kind}\n")).unwrap();
+            if tun {
+                std::fs::write(d.join("tun_flags"), "0x1001\n").unwrap();
+            }
+        };
+        dev("etitachi0", "65534", true); // EasyTier's TUN, field 2026-10-25
+        dev("mytap", "1", true); // a TAP is Ethernet-type but still a TUN/TAP
+        dev("office-wg", "65534", false); // kernel WireGuard
+        dev("sit1", "776", false);
+        dev("gre9", "778", false);
+        dev("pppoe-wan", "512", false);
+        dev("eth0", "1", false);
+        dev("veth9", "1", false); // a pod's own network
+        for (name, want) in [
+            ("etitachi0", true),
+            ("mytap", true),
+            ("office-wg", true),
+            ("sit1", true),
+            ("gre9", true),
+            ("pppoe-wan", true),
+            ("eth0", false),
+            ("veth9", false),
+            ("absent0", false),
+        ] {
+            assert_eq!(tunnel_iface_at(&root, name), want, "{name}");
+        }
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     /// rc.275 hygiene — the filter is DEFAULT-ON with an explicit kill-switch,
