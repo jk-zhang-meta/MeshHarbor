@@ -618,6 +618,49 @@ pub struct PeerStats {
     /// per [`RPF_LOG_THROTTLE_MS`] so neither a spoofing flood nor a
     /// misconfigured subnet router turns a per-packet check into a log flood.
     rpf_logged_at: AtomicU64,
+    /// Passive loss of the WG stream this peer sends us, from the counters of
+    /// the transport packets that authenticated ([`Self::note_rx_counter`]).
+    /// `rx_ctr_span` grows by how far a session's highest counter advanced,
+    /// `rx_ctr_accepted` by one per packet; boringtun's replay window accepts
+    /// each counter once, so a standby copy of a delivered packet never counts.
+    /// Written only under the peer's `Tunn` lock, read as deltas by the health
+    /// sweep ([`WgDevice::peer_rx_loss`]). Monotonic.
+    rx_ctr_session: AtomicU64,
+    rx_ctr_hi: AtomicU64,
+    rx_ctr_span: AtomicU64,
+    rx_ctr_accepted: AtomicU64,
+}
+
+impl PeerStats {
+    /// Book one authenticated datagram toward the passive loss counters if it
+    /// is a transport packet (type 4: data or keepalive, each one counter).
+    /// Its receiver index names the session (counters restart with each), its
+    /// counter its place there. A late, reordered packet adds to `accepted`
+    /// only, so a short window can read slightly negative; a session change
+    /// starts over without booking the gap as loss.
+    fn note_rx_counter(&self, datagram: &[u8]) {
+        if datagram.len() < 16 || datagram[..4] != [4, 0, 0, 0] {
+            return;
+        }
+        // The receiver index (+1, so 0 means no session yet), then the counter.
+        let mut b = [0u8; 8];
+        b[..4].copy_from_slice(&datagram[4..8]);
+        let session = u64::from_le_bytes(b) + 1;
+        b.copy_from_slice(&datagram[8..16]);
+        let ctr = u64::from_le_bytes(b);
+        self.rx_ctr_accepted.fetch_add(1, Ordering::Relaxed);
+        if self.rx_ctr_session.load(Ordering::Relaxed) != session {
+            self.rx_ctr_session.store(session, Ordering::Relaxed);
+            self.rx_ctr_hi.store(ctr, Ordering::Relaxed);
+            self.rx_ctr_span.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+        let hi = self.rx_ctr_hi.load(Ordering::Relaxed);
+        if ctr > hi {
+            self.rx_ctr_hi.store(ctr, Ordering::Relaxed);
+            self.rx_ctr_span.fetch_add(ctr - hi, Ordering::Relaxed);
+        }
+    }
 }
 
 /// P3 PR-B — process-monotonic epoch for [`PeerStats::handshake_at`] stamps.
@@ -3263,6 +3306,19 @@ impl WgDevice {
             .unwrap_or(0)
     }
 
+    /// The peer's passive WG loss counters ([`PeerStats::note_rx_counter`]):
+    /// `(counter span, packets accepted)`, both monotonic. Over an interval,
+    /// `span − accepted` is what the peer sent that never authenticated here.
+    /// `None` for an unknown peer.
+    pub fn peer_rx_loss(&self, peer_public: &[u8; 32]) -> Option<(u64, u64)> {
+        self.peers.get(peer_public).map(|p| {
+            (
+                p.stats.rx_ctr_span.load(Ordering::Relaxed),
+                p.stats.rx_ctr_accepted.load(Ordering::Relaxed),
+            )
+        })
+    }
+
     /// The subset of [`Self::peer_rx_denied`] whose reason was `Rpf(NoRoute)`:
     /// packets from a source NO installed peer owns, i.e. flows whose replies
     /// this node cannot route back — they fail silently even in `warn`. The
@@ -3625,6 +3681,8 @@ pub(crate) fn decap_standby(t: &mut Tunn, datagram: &[u8], ingress: &Ingress) ->
         TunnResult::WriteToTunnelV6(pkt, src) => (IpAddr::V6(src), pkt),
         _ => return None,
     };
+    // The packet arrived, whichever carrier delivered it: it is not loss.
+    ingress.stats.note_rx_counter(datagram);
     if !ingress.permits(src, pkt) {
         return None;
     }
@@ -3662,6 +3720,7 @@ pub(crate) fn decap_inbound(
     // packet, so it must not count as liveness. `Err` (replay / garbage) isn't.
     if authenticated {
         stats.rx_any.fetch_add(1, Ordering::Relaxed);
+        stats.note_rx_counter(&buf[..n]);
         // #22 — a HANDSHAKE INITIATION (type 1) from the peer: counted so
         // the sweep can spot re-init PRESSURE (a ~5 s retry cadence means
         // the peer cannot hear our responses — see `PeerStats::reinit_seen`).
@@ -4082,6 +4141,42 @@ mod tests {
     use super::*;
     use crate::overlay::WgKeypair;
     use std::time::Duration;
+
+    /// The passive loss counters read the gaps in a WG transport stream as
+    /// loss, and neither a reordered packet nor a new session.
+    #[test]
+    fn rx_counters_read_gaps_as_loss_not_reorder_or_a_new_session() {
+        let s = PeerStats::default();
+        let pkt = |session: u32, ctr: u64| {
+            let mut d = vec![4u8, 0, 0, 0];
+            d.extend_from_slice(&session.to_le_bytes());
+            d.extend_from_slice(&ctr.to_le_bytes());
+            d.extend_from_slice(&[0u8; 16]);
+            d
+        };
+        let read = |s: &PeerStats| {
+            (
+                s.rx_ctr_span.load(Ordering::Relaxed),
+                s.rx_ctr_accepted.load(Ordering::Relaxed),
+            )
+        };
+        // Counters 0..=9 of one session: 3 and 6 lost, 9 ahead of 8.
+        for c in [0, 1, 2, 4, 5, 7, 9, 8] {
+            s.note_rx_counter(&pkt(7, c));
+        }
+        let (span, acc) = read(&s);
+        assert_eq!((span, acc), (10, 8), "two of ten lost");
+        // A rekey: the next session starts again at 0.
+        for c in 0..5 {
+            s.note_rx_counter(&pkt(8, c));
+        }
+        let (span2, acc2) = read(&s);
+        assert_eq!(span2 - span, acc2 - acc, "a new session is no loss");
+        // Handshake messages and runts are not transport packets.
+        s.note_rx_counter(&[1, 0, 0, 0, 9, 9, 9, 9, 0, 0, 0, 0, 0, 0, 0, 0]);
+        s.note_rx_counter(&[4, 0, 0, 0]);
+        assert_eq!(read(&s), (span2, acc2));
+    }
 
     /// The mac1 pre-filter against boringtun ground truth: a genuine
     /// initiation's mac1 matches ONLY the responder static it is sealed

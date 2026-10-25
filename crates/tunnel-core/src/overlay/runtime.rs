@@ -65,6 +65,7 @@ pub use path_trial::test_support::{
     Harness as PathTrialTestHarness, Snapshot as PathTrialTestSnapshot,
 };
 mod route_guard;
+mod rx_loss;
 #[cfg(test)]
 mod failover_bench;
 
@@ -117,6 +118,8 @@ struct PathShadow {
     /// within [`SHADOW_HARM_WINDOW`], the refusal was harmful — the
     /// acceptance gate requires zero of these.
     refused: HashMap<(ObjectId, DirectTier), Instant>,
+    /// Passive per-carrier loss of the peers' WG streams ([`rx_loss`]).
+    rx_loss: rx_loss::RxLoss,
 }
 
 /// A monitor refusal contradicted by a legacy establishment within this
@@ -167,6 +170,7 @@ impl PathShadow {
             last_demote_log: HashMap::new(),
             last_summary: Instant::now(),
             refused: HashMap::new(),
+            rx_loss: rx_loss::RxLoss::default(),
         }
     }
 
@@ -298,6 +302,10 @@ impl PathShadow {
             rtt_samples = self.stats.rtt_samples,
             classes = %self.stats.classes_line(),
             "overlay pathmon: 10-min summary (soak gate: steady <0.1% diverged, harmful = 0)"
+        );
+        info!(
+            rx_loss = %self.rx_loss.summary(now),
+            "overlay pathmon: 10-min loss of the peers' WG streams, by the carrier our side rode"
         );
     }
 }

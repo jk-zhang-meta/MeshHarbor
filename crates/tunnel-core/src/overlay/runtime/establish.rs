@@ -507,6 +507,12 @@ impl OverlayRuntime {
             if heard {
                 e.last_rx_at = now;
             }
+            // Passive loss of the peer's stream, by what our side rides
+            // (measurement only, see `rx_loss`).
+            if let Some(counters) = wg.peer_rx_loss(&e.pubkey) {
+                let via = super::rx_loss::Via::of(e.is_direct, e.relay_kind);
+                self.shadow(|s| s.rx_loss.note(*nid, via, counters, now));
+            }
             // #22 — re-init pressure: accumulate the peer's authenticated
             // handshake INITIATIONS in a rolling window. Judged below when
             // arming revalidation; drained here so the counter can't grow
