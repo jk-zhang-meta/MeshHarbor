@@ -833,6 +833,14 @@ const KEYS: &[KeyMeta] = &[
         description: "netstack TCP SACK loss recovery: a loss resends only the holes the peer's SACK blocks reveal instead of the whole window after it (go-back-N). Built-in default: on (off is the kill switch). Env: ROOMLERD_OVERLAY_NETSTACK_TCP_SACK.",
     },
     KeyMeta {
+        key: "overlay_netstack_tcp_min_rto_ms",
+        group: Group::NetworkCarriers,
+        tier: Tier::Advanced,
+        live: false,
+        kind: "number",
+        description: "netstack TCP retransmission-timeout floor in milliseconds (10-1000). Built-in default: 200, as Linux and gVisor; 1000 restores RFC 6298's floor. Env: ROOMLERD_OVERLAY_NETSTACK_TCP_MIN_RTO_MS.",
+    },
+    KeyMeta {
         key: "net_inventory",
         group: Group::NetworkCarriers,
         tier: Tier::Advanced,
@@ -2075,6 +2083,9 @@ fn current_value(cfg: &AgentConfig, key: &str) -> Option<String> {
         "overlay_netstack_tcp_cc" => cfg.overlay_netstack_tcp_cc.clone(),
         "overlay_netstack_tcp_pacing" => cfg.overlay_netstack_tcp_pacing.map(fmt_bool),
         "overlay_netstack_tcp_sack" => cfg.overlay_netstack_tcp_sack.map(fmt_bool),
+        "overlay_netstack_tcp_min_rto_ms" => {
+            cfg.overlay_netstack_tcp_min_rto_ms.map(|v| v.to_string())
+        }
         "overlay_netd" => cfg.overlay_netd.map(fmt_bool),
         "overlay_pathmon" => cfg.overlay_pathmon.clone(),
         "overlay_demote" => cfg.overlay_demote.clone(),
@@ -2561,6 +2572,9 @@ pub fn apply(cfg: &mut AgentConfig, key: &str, value: Option<&str>) -> Result<()
         }
         "overlay_netstack_tcp_pacing" => cfg.overlay_netstack_tcp_pacing = parse_tribool(value)?,
         "overlay_netstack_tcp_sack" => cfg.overlay_netstack_tcp_sack = parse_tribool(value)?,
+        "overlay_netstack_tcp_min_rto_ms" => {
+            cfg.overlay_netstack_tcp_min_rto_ms = parse_min_rto_ms(key, value)?
+        }
         "overlay_netd" => cfg.overlay_netd = parse_tribool(value)?,
         "overlay_pathmon" => {
             cfg.overlay_pathmon = match value.map(str::trim).filter(|s| !s.is_empty()) {
@@ -3085,6 +3099,21 @@ fn parse_tcp_buf(key: &str, value: Option<&str>) -> Result<Option<u32>, String> 
                 .map_err(|_| format!("{key} must be a number of bytes (got {v:?})"))?;
             if !(16 * 1024..=16 * 1024 * 1024).contains(&n) {
                 return Err(format!("{key} must be between 16384 and 16777216 bytes"));
+            }
+            Ok(Some(n))
+        }
+    }
+}
+
+fn parse_min_rto_ms(key: &str, value: Option<&str>) -> Result<Option<u32>, String> {
+    match value.map(str::trim).filter(|s| !s.is_empty()) {
+        None => Ok(None),
+        Some(v) => {
+            let n: u32 = v
+                .parse()
+                .map_err(|_| format!("{key} must be a number of milliseconds (got {v:?})"))?;
+            if !(10..=1000).contains(&n) {
+                return Err(format!("{key} must be between 10 and 1000 ms"));
             }
             Ok(Some(n))
         }
@@ -4161,6 +4190,28 @@ mod tests {
             apply(&mut cfg, key, None).unwrap();
             assert_eq!(current_value(&cfg, key), None, "{key}: clear → built-in default");
         }
+    }
+
+    /// §6 item 5 — the netstack TCP RTO floor key: milliseconds in the
+    /// daemon's accepted range, default None (built-in 200), bridged.
+    #[test]
+    fn overlay_netstack_tcp_min_rto_ms_validates_and_bridges() {
+        let mut cfg = crate::config::test_fixture();
+        let key = "overlay_netstack_tcp_min_rto_ms";
+        assert_eq!(current_value(&cfg, key), None, "unset → built-in default");
+        apply(&mut cfg, key, Some("1000")).unwrap();
+        assert_eq!(current_value(&cfg, key).as_deref(), Some("1000"));
+        for bad in ["5", "1001", "soon"] {
+            assert!(apply(&mut cfg, key, Some(bad)).is_err(), "{bad} is refused");
+        }
+        assert!(
+            crate::config::env_bridge_numerics(&cfg)
+                .iter()
+                .any(|(k, v)| *k == "OVERLAY_NETSTACK_TCP_MIN_RTO_MS" && *v == Some(1000)),
+            "bridged to the daemon's env"
+        );
+        apply(&mut cfg, key, None).unwrap();
+        assert_eq!(current_value(&cfg, key), None, "cleared");
     }
 
     /// §6 item 5 — the IPv6 underlay key: tribool, default None (daemon

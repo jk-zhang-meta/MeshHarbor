@@ -98,6 +98,13 @@ const TCP_RX_BUF: usize = 2 * 1024 * 1024;
 const TCP_TX_BUF: usize = 2 * 1024 * 1024;
 const TCP_BUF_MIN: usize = 16 * 1024;
 const TCP_BUF_MAX: usize = 16 * 1024 * 1024;
+/// The floor under the netstack TCP retransmission timeout in ms (the
+/// vendored smoltcp's `set_min_rto`): Linux's `TCP_RTO_MIN` and gVisor's, not
+/// RFC 6298's 1 s, which idles a connection for 20 round trips on every
+/// timeout of a lossy 50 ms path. `OVERLAY_NETSTACK_TCP_MIN_RTO_MS` overrides
+/// it within [`TCP_MIN_RTO_RANGE`]; 1000 restores the RFC floor.
+const TCP_MIN_RTO_MS: u64 = 200;
+const TCP_MIN_RTO_RANGE: std::ops::RangeInclusive<u64> = 10..=1000;
 /// Max bytes moved between a smoltcp socket buffer and an app channel in one
 /// chunk — bounds per-copy allocation and keeps chunks SCTP-friendly.
 const CHUNK: usize = 16 * 1024;
@@ -629,6 +636,14 @@ fn tcp_sack() -> bool {
     crate::env::flag("OVERLAY_NETSTACK_TCP_SACK", true)
 }
 
+/// [`TCP_MIN_RTO_MS`], or `OVERLAY_NETSTACK_TCP_MIN_RTO_MS` when in range.
+fn tcp_min_rto_ms() -> u64 {
+    crate::env::node_env("OVERLAY_NETSTACK_TCP_MIN_RTO_MS")
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|ms| TCP_MIN_RTO_RANGE.contains(ms))
+        .unwrap_or(TCP_MIN_RTO_MS)
+}
+
 fn tcp_buf(name: &str, default: usize) -> usize {
     crate::env::node_env(name)
         .and_then(|v| v.trim().parse::<usize>().ok())
@@ -654,6 +669,7 @@ impl PollLoop {
             tcp_cc(),
             tcp_pacing(),
             tcp_sack(),
+            tcp_min_rto_ms(),
         )
     }
 
@@ -663,6 +679,7 @@ impl PollLoop {
         cc: tcp::CongestionControl,
         pacing: bool,
         sack: bool,
+        min_rto_ms: u64,
     ) -> tcp::Socket<'static> {
         // A buffer's pages are touched only as data flows through it, so an
         // idle socket stays cheap whatever the window.
@@ -676,6 +693,7 @@ impl PollLoop {
         sock.set_congestion_control(cc);
         sock.set_pacing_enabled(pacing);
         sock.set_sack_recovery_enabled(sack);
+        sock.set_min_rto(smoltcp::time::Duration::from_millis(min_rto_ms));
         sock
     }
 
@@ -1547,6 +1565,33 @@ mod tests {
     /// the data direction optionally policed at (Mbit/s, bucket bytes).
     #[allow(clippy::too_many_arguments)]
     fn sim_bulk_acks(
+        bufs: (usize, usize),
+        cc: (tcp::CongestionControl, bool, bool),
+        one_way_ms: i64,
+        queue_bytes: i64,
+        sim_ms: i64,
+        warm_ms: i64,
+        ack_batch_ms: i64,
+        police: Option<(i64, i64)>,
+    ) -> (f64, usize, f64) {
+        sim_bulk_with(
+            bufs,
+            cc,
+            one_way_ms,
+            queue_bytes,
+            sim_ms,
+            warm_ms,
+            ack_batch_ms,
+            police,
+            0,
+            TCP_MIN_RTO_MS,
+        )
+    }
+
+    /// [`sim_bulk_acks`] with random loss of `ack_loss_ppm` on the ACK
+    /// direction as well, and the sockets' RTO floor.
+    #[allow(clippy::too_many_arguments)]
+    fn sim_bulk_with(
         (rx, tx): (usize, usize),
         (cc, pacing, sack): (tcp::CongestionControl, bool, bool),
         one_way_ms: i64,
@@ -1555,6 +1600,8 @@ mod tests {
         warm_ms: i64,
         ack_batch_ms: i64,
         police: Option<(i64, i64)>,
+        ack_loss_ppm: u64,
+        min_rto_ms: u64,
     ) -> (f64, usize, f64) {
         fn node(ip: Ipv4Addr) -> (NetstackDevice, Interface, SocketSet<'static>,
             mpsc::UnboundedReceiver<Vec<u8>>)
@@ -1573,10 +1620,10 @@ mod tests {
         let b_ip = Ipv4Addr::new(100, 64, 0, 2);
         let (mut ad, mut ai, mut sockets_a, mut a_out) = node(a_ip);
         let (mut bd, mut bi, mut sockets_b, mut b_out) = node(b_ip);
-        let mut server = PollLoop::new_tcp_socket_with(rx, tx, cc, pacing, sack);
+        let mut server = PollLoop::new_tcp_socket_with(rx, tx, cc, pacing, sack, min_rto_ms);
         server.listen(2222).unwrap();
         let sh = sockets_b.add(server);
-        let mut client = PollLoop::new_tcp_socket_with(rx, tx, cc, pacing, sack);
+        let mut client = PollLoop::new_tcp_socket_with(rx, tx, cc, pacing, sack, min_rto_ms);
         client.connect(ai.context(), (IpAddress::from(b_ip), 2222), 49152).unwrap();
         let ch = sockets_a.add(client);
         // A 100 Mbit/s bottleneck both ways.
@@ -1584,6 +1631,9 @@ mod tests {
         let mut b_to_a = SimLink::new(one_way_ms, 100, queue_bytes);
         // a receives and acknowledges; b sends the bulk data.
         a_to_b.batch_ms = ack_batch_ms;
+        // Its own sequence, so the two directions do not lose the same packets.
+        a_to_b.loss_ppm = ack_loss_ppm;
+        a_to_b.rng = 0x2545_f491_4f6c_dd1d;
         if let Some((mbit, bucket)) = police {
             if mbit > 0 {
                 b_to_a.police = Some((mbit * 1000 / 8, bucket));
@@ -1988,6 +2038,64 @@ mod tests {
                 "cubic fills it: {cubic:.1} vs {reno:.1}"
             );
             assert!(amp < 1.1, "with little waste: {amp:.2}");
+        }
+    }
+
+    /// One bulk stream with the production defaults at an RTO floor: the data
+    /// direction behind `data`, `(0, ppm)` random loss or `(Mbit/s, bucket
+    /// bytes)` a policer, and `ack_ppm` random loss on the ACK direction.
+    /// (goodput Mbit/s, data drops, wire per delivered byte.)
+    fn sim_lossy(
+        one_way_ms: i64,
+        data: (i64, i64),
+        ack_ppm: u64,
+        floor_ms: u64,
+        sim_ms: i64,
+    ) -> (f64, usize, f64) {
+        sim_bulk_with(
+            (TCP_RX_BUF, TCP_TX_BUF),
+            (tcp_cc(), true, true),
+            one_way_ms,
+            256 * 1024,
+            sim_ms,
+            3_000,
+            0,
+            Some(data),
+            ack_ppm,
+            floor_ms,
+        )
+    }
+
+    #[test]
+    #[ignore = "lossy-path RTO matrix; run with --ignored --nocapture"]
+    fn netstack_tcp_lossy_rto_matrix() {
+        for one_way in [5i64, 25, 75] {
+            for data in [
+                (0i64, 10_000i64),
+                (0, 30_000),
+                (0, 80_000),
+                (10, 16 * 1024),
+                (10, 64 * 1024),
+                (40, 16 * 1024),
+            ] {
+                for ack in [0u64, 30_000] {
+                    for floor in [1000u64, TCP_MIN_RTO_MS] {
+                        let (mbps, drops, amp) = sim_lossy(one_way, data, ack, floor, 20_000);
+                        let path = match data {
+                            (0, ppm) => format!("random {}%", ppm as f64 / 10_000.0),
+                            (mbit, bucket) => {
+                                format!("policer {mbit} Mbit/s {} KiB", bucket / 1024)
+                            }
+                        };
+                        eprintln!(
+                            "OBSERVED {path} ack {}% rtt={}ms floor={floor}ms: \
+                             {mbps:.2} Mbit/s {drops} drops amp {amp:.2}",
+                            ack as f64 / 10_000.0,
+                            one_way * 2
+                        );
+                    }
+                }
+            }
         }
     }
 

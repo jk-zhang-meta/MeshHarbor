@@ -812,6 +812,11 @@ pub struct AgentConfig {
     /// (`ROOMLERD_OVERLAY_NETSTACK_TCP_SACK`). Built-in default: on.
     #[serde(default)]
     pub overlay_netstack_tcp_sack: Option<bool>,
+    /// §6 item 5 — netstack TCP retransmission-timeout floor in ms
+    /// (`ROOMLERD_OVERLAY_NETSTACK_TCP_MIN_RTO_MS`, 10–1000). Built-in
+    /// default: 200, Linux's and gVisor's; 1000 is RFC 6298's.
+    #[serde(default)]
+    pub overlay_netstack_tcp_min_rto_ms: Option<u32>,
     /// Track A stage 1 — spawn the session-independent network daemon
     /// (`roomlerd netd`) as a SECOND supervisor child. SCAFFOLD ONLY for
     /// now: netd heartbeats and hosts nothing; the network plane still
@@ -2854,6 +2859,7 @@ pub fn test_fixture() -> AgentConfig {
         overlay_netstack_tcp_cc: None,
         overlay_netstack_tcp_pacing: None,
         overlay_netstack_tcp_sack: None,
+        overlay_netstack_tcp_min_rto_ms: None,
         overlay_netd: None,
         overlay_pathmon: None,
         overlay_route_events: None,
@@ -3197,10 +3203,11 @@ pub fn env_bridge_bools(cfg: &AgentConfig) -> [(&'static str, Option<bool>); 95]
 
 /// rc.280 — numeric twin of [`env_bridge_bools`] (decimal strings on the
 /// same fallback map).
-pub fn env_bridge_numerics(cfg: &AgentConfig) -> [(&'static str, Option<u32>); 34] {
+pub fn env_bridge_numerics(cfg: &AgentConfig) -> [(&'static str, Option<u32>); 35] {
     [
         ("OVERLAY_NETSTACK_TCP_RX_BUF", cfg.overlay_netstack_tcp_rx_buf),
         ("OVERLAY_NETSTACK_TCP_TX_BUF", cfg.overlay_netstack_tcp_tx_buf),
+        ("OVERLAY_NETSTACK_TCP_MIN_RTO_MS", cfg.overlay_netstack_tcp_min_rto_ms),
         ("OVERLAY_IFACE_METRIC", cfg.overlay_iface_metric),
         ("RATE_FACTOR_H264", cfg.rate_factor_h264),
         ("RATE_FACTOR_HEVC", cfg.rate_factor_hevc),

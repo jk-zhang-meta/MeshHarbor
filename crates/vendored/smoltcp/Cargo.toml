@@ -16,6 +16,10 @@
 #     resent in place of go-back-N, `pipe` in place of bytes-sent for cwnd,
 #     and three SACK blocks per ACK on the receive side. Both are inert
 #     unless enabled; a timeout still resends go-back-N.
+#   - src/socket/tcp.rs: only an expired retransmission timer backs the RTO
+#     off (RFC 6298 5.5); upstream also doubled it on every fast retransmit,
+#     so steady loss climbed it to seconds. And `set_min_rto`, the floor under
+#     the computed RTO (default RFC 6298's 1 s; the netstack sets 200 ms).
 #   - this header. The tarball's Cargo.lock is not carried (its own
 #     .gitignore excludes it; the workspace lockfile governs).
 # MeshHarbor §6 item 5: the overlay netstack's TCP (tunnel-core

@@ -176,6 +176,9 @@ struct RttEstimator {
     timestamp: Option<(Instant, TcpSeqNumber)>,
     max_seq_sent: Option<TcpSeqNumber>,
     rto_count: u8,
+    /// ROOMLER PATCH: the floor `sample` clamps the RTO to (see
+    /// `Socket::set_min_rto`), RFC 6298's 1 s unless set.
+    min_rto: u32,
 }
 
 impl Default for RttEstimator {
@@ -188,6 +191,7 @@ impl Default for RttEstimator {
             timestamp: None,
             max_seq_sent: None,
             rto_count: 0,
+            min_rto: RTTE_MIN_RTO,
         }
     }
 }
@@ -212,7 +216,7 @@ impl RttEstimator {
 
         // RFC 6298 (2.2), (2.3)
         let margin = RTTE_MIN_MARGIN.max(self.rttvar * RTTE_K);
-        self.rto = (self.srtt + margin).clamp(RTTE_MIN_RTO, RTTE_MAX_RTO);
+        self.rto = (self.srtt + margin).clamp(self.min_rto, RTTE_MAX_RTO);
 
         self.rto_count = 0;
 
@@ -271,6 +275,20 @@ impl RttEstimator {
             self.have_measurement = false;
             tcp_trace!("rtte: too many retransmissions, clearing srtt, rttvar.");
         }
+    }
+
+    /// ROOMLER PATCH: a fast retransmit, or entering SACK recovery, is not a
+    /// timeout, and RFC 6298 (5.5) backs the timer off only when it expires.
+    /// Backing off on every loss event let the RTO climb 1 → 2 → 4 → 8 s
+    /// under steady loss, and the third event cleared SRTT, which stopped the
+    /// pacer as well. (The field's org-relay leg, 7–10% of data lost on
+    /// 2026-10-26, sat in 2.0, 4.8 and 7.9 s silences.) Only the sample in
+    /// flight is dropped, since it may time a resend (Karn's algorithm).
+    fn on_fast_retransmit(&mut self) {
+        if self.timestamp.is_some() {
+            tcp_trace!("rtte: abort sampling due to fast retransmit");
+        }
+        self.timestamp = None;
     }
 }
 
@@ -901,6 +919,15 @@ impl<'a> Socket<'a> {
         self.sack_clear();
     }
 
+    /// ROOMLER PATCH: the floor under the computed retransmission timeout.
+    /// Upstream keeps RFC 6298's 1 s (2.4, a SHOULD); Linux (`TCP_RTO_MIN`)
+    /// and gVisor use 200 ms. With 1 s every timeout on a lossy 50 ms path
+    /// idles the connection for 20 round trips. The RTO before the first RTT
+    /// sample stays 1 s (RFC 6298 2.1), and the floor survives a reset.
+    pub fn set_min_rto(&mut self, min: Duration) {
+        self.rtte.min_rto = (min.total_millis() as u32).clamp(1, RTTE_MAX_RTO);
+    }
+
     /// ROOMLER PATCH: whether SACK recovery applies to this connection.
     fn sack_on(&self) -> bool {
         self.sack_recovery && self.remote_has_sack
@@ -1085,7 +1112,7 @@ impl<'a> Socket<'a> {
             // The segment at SND.UNA is lost whatever the SACK blocks say.
             self.lost_edge =
                 high_sacked.max((self.local_seq_no + self.remote_mss).min(self.remote_last_seq));
-            self.rtte.on_retransmit();
+            self.rtte.on_fast_retransmit();
             self.congestion_controller
                 .inner_mut()
                 .on_fast_retransmit(now);
@@ -1205,7 +1232,11 @@ impl<'a> Socket<'a> {
 
         self.state = State::Closed;
         self.timer = Timer::new();
-        self.rtte = RttEstimator::default();
+        // ROOMLER PATCH: the RTO floor is configuration, not connection state.
+        self.rtte = RttEstimator {
+            min_rto: self.rtte.min_rto,
+            ..RttEstimator::default()
+        };
         self.assembler = Assembler::new();
         self.tx_buffer.clear();
         self.rx_buffer.clear();
@@ -2766,6 +2797,9 @@ impl<'a> Socket<'a> {
         } else if !self.seq_to_transmit(cx) && self.timer.should_retransmit(cx.now()) {
             // If a retransmit timer expired, we should resend data starting at the last ACK.
             net_debug!("retransmitting");
+            // ROOMLER PATCH: only an expired timer backs the RTO off, not
+            // three duplicate ACKs (see `RttEstimator::on_fast_retransmit`).
+            let timed_out = matches!(self.timer, Timer::Retransmit { .. });
 
             // Rewind "last sequence number sent", as if we never
             // had sent them. This will cause all data in the queue
@@ -2782,7 +2816,11 @@ impl<'a> Socket<'a> {
             self.timer.set_for_idle(cx.now(), self.keep_alive);
 
             // Inform RTTE, so that it can avoid bogus measurements.
-            self.rtte.on_retransmit();
+            if timed_out {
+                self.rtte.on_retransmit();
+            } else {
+                self.rtte.on_fast_retransmit();
+            }
 
             // Inform the congestion controller that we're retransmitting.
             self.congestion_controller
@@ -6980,6 +7018,56 @@ mod test {
         assert!(s.tx_buffer.is_empty());
     }
 
+    /// ROOMLER PATCH: a loss recovered from duplicate ACKs, by SACK recovery
+    /// or by the go-back-N fast retransmit, leaves the RTO and SRTT alone.
+    #[test]
+    fn test_loss_recovery_does_not_back_off_the_rto() {
+        let data = b"xxxxxxyyyyyywwwwwwzzzzzz";
+        for sack in [true, false] {
+            let mut s = socket_established();
+            s.remote_mss = 6;
+            s.remote_has_sack = sack;
+            s.set_sack_recovery_enabled(sack);
+            s.rtte.sample(100);
+            let rto = s.rtte.rto;
+            send!(s, time 0, TcpRepr {
+                seq_number: REMOTE_SEQ + 1,
+                ack_number: Some(LOCAL_SEQ + 1),
+                ..SEND_TEMPL
+            });
+            s.send_slice(data).unwrap();
+            for i in 0..4 {
+                recv!(s, time 1000, Ok(TcpRepr {
+                    seq_number: LOCAL_SEQ + 1 + 6 * i,
+                    ack_number: Some(REMOTE_SEQ + 1),
+                    payload:    &data[6 * i..6 * i + 6],
+                    ..RECV_TEMPL
+                }));
+            }
+            // x is lost; the peer acknowledges the rest three times.
+            let rest = Some(((LOCAL_SEQ + 1 + 6).0 as u32, (LOCAL_SEQ + 1 + 24).0 as u32));
+            for _ in 0..3 {
+                send!(s, time 1050, TcpRepr {
+                    seq_number: REMOTE_SEQ + 1,
+                    ack_number: Some(LOCAL_SEQ + 1),
+                    sack_ranges: [if sack { rest } else { None }, None, None],
+                    ..SEND_TEMPL
+                });
+            }
+            recv!(s, time 1060, Ok(TcpRepr {
+                seq_number: LOCAL_SEQ + 1,
+                ack_number: Some(REMOTE_SEQ + 1),
+                payload:    &b"xxxxxx"[..],
+                ..RECV_TEMPL
+            }));
+            assert_eq!(
+                s.rtte.rto, rto,
+                "sack={sack}: a fast retransmit is not a timeout"
+            );
+            assert!(s.rtte.have_measurement, "sack={sack}: SRTT survives");
+        }
+    }
+
     /// ROOMLER PATCH: a resent hole that is lost again is resent once data
     /// sent after it is SACKed, not left to the retransmission timeout.
     #[test]
@@ -9398,6 +9486,38 @@ mod test {
             r.sample(2000);
             assert_eq!(r.retransmission_timeout(), Duration::from_millis(rto));
         }
+    }
+
+    /// ROOMLER PATCH: only a timeout backs the RTO off; loss events that are
+    /// not timeouts keep it and SRTT.
+    #[test]
+    fn test_rtt_estimator_fast_retransmit_keeps_the_rto() {
+        let mut r = RttEstimator::default();
+        r.sample(2000);
+        for _ in 0..3 {
+            r.on_fast_retransmit();
+        }
+        assert_eq!(r.retransmission_timeout(), Duration::from_millis(6000));
+        assert!(r.have_measurement, "three loss events keep SRTT");
+        r.on_retransmit();
+        assert_eq!(r.retransmission_timeout(), Duration::from_millis(12000));
+    }
+
+    /// ROOMLER PATCH: `set_min_rto` lowers the floor under a computed RTO,
+    /// keeps 1 s before the first sample (RFC 6298 2.1), survives a reset.
+    #[test]
+    fn test_min_rto_floor() {
+        let mut s = socket_established();
+        s.set_min_rto(Duration::from_millis(200));
+        assert_eq!(s.rtte.retransmission_timeout(), Duration::from_millis(1000));
+        s.rtte.sample(50);
+        assert_eq!(s.rtte.retransmission_timeout(), Duration::from_millis(200));
+        s.reset();
+        s.rtte.sample(50);
+        assert_eq!(s.rtte.retransmission_timeout(), Duration::from_millis(200));
+        let mut d = socket_established();
+        d.rtte.sample(50);
+        assert_eq!(d.rtte.retransmission_timeout(), Duration::from_millis(1000));
     }
 
     #[test]
