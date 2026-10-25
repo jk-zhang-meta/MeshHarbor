@@ -227,6 +227,7 @@
           <v-list-item :to="`/tenant/${tenantId}/network/acl`" prepend-icon="mdi-shield-key" :title="$t('nav.tunnelAcl')" />
           <v-list-item :to="`/tenant/${tenantId}/network/subnet-routes`" prepend-icon="mdi-lan-connect" :title="$t('nav.subnetRoutes')" />
           <v-list-item :to="`/tenant/${tenantId}/network/dns`" prepend-icon="mdi-dns" :title="$t('nav.magicDns')" />
+          <v-list-item :to="`/tenant/${tenantId}/network/inventory`" prepend-icon="mdi-format-list-bulleted-type" :title="$t('nav.netInventory')" />
         </v-list-group>
         <!-- The old flat "Your rooms" list, as a collapsible group: server-
              searchable, first 20 + load-more. Rows keep the unread badges;

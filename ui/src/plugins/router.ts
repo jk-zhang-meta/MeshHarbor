@@ -308,6 +308,8 @@ const routes: RouteRecordRaw[] = [
               { path: 'subnet-routes',  name: 'network-subnet-routes',  props: true, component: () => import('@/components/admin/OverlaySubnetRoutesSection.vue') },
               { path: 'overlay-acl',    redirect: (to) => ({ name: 'network-acl', params: to.params, query: { tab: 'overlay' } }) },
               { path: 'dns',            name: 'network-dns',            props: true, component: () => import('@/components/admin/MagicDnsSection.vue') },
+              // MeshHarbor #19 — what each node reported reading from its kernel.
+              { path: 'inventory',      name: 'network-inventory',      props: true, component: () => import('@/components/admin/NetInventorySection.vue') },
             ],
           },
           {

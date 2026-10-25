@@ -58,6 +58,11 @@ raw conntrack. Every string is length-capped and every section item-capped
 `GET /api/tenant/{tenant_id}/net-inventory/{agent_id}` returns the whole
 snapshot. Both need `MANAGE_AGENTS` in that tenant, like the overlay ACL.
 
+In the UI: **Network → Network inventory** (`/tenant/{id}/network/inventory`,
+`ui/src/components/admin/NetInventorySection.vue`). One panel per node with its
+freshness and each section's state; opening it loads the full snapshot into
+per-section tables. Everything there is labelled reported configuration.
+
 ## Turning it off
 
 The agent config key `net_inventory = false` (env `ROOMLERD_NET_INVENTORY=0`)
@@ -67,6 +72,6 @@ and routes.
 
 ## Not built yet (v039)
 
-The UI view, observed flows, deltas instead of full snapshots, non-host
+Observed flows, deltas instead of full snapshots, non-host
 namespaces, native Windows and macOS adapters, and everything in §6 (managed
 forwards).

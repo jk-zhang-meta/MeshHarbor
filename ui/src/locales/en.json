@@ -108,6 +108,7 @@
     "tunnelAcl": "ACL",
     "subnetRoutes": "Overlay routes",
     "magicDns": "MagicDNS",
+    "netInventory": "Network inventory",
     "analytics": "Analytics",
     "observability": "Observability",
     "growth": "Growth",
