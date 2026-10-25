@@ -2539,6 +2539,9 @@ mod tests {
     async fn a_live_org_session_decides_the_strategy_only_with_the_flag_on() {
         let (tx, _rx) = tokio::sync::mpsc::channel(8);
         let mut coord = RelayCoordinator::new(tx, [0u8; 32], true, vec![], None);
+        // Explicitly off: the build default is on (MeshHarbor), and a host's
+        // `false` must still win over any pushed session.
+        coord.set_org_relay(false);
         let node = ObjectId::new();
         let peer = base_peer();
         coord.org_session_accept(node, org_session(7, 60));
