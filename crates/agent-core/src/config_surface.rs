@@ -804,9 +804,17 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "number",
-        description: "netstack per-socket TCP send buffer in bytes; it bounds bytes in flight because \
-         smoltcp's congestion control does not (16384-16777216). Built-in default: 131072 (128 KiB); \
-         65536 restores the old bound for a shallow bottleneck queue.",
+        description: "netstack per-socket TCP send buffer in bytes, the most the stack can have in flight; \
+         the congestion window (overlay_netstack_tcp_cc) paces below it (16384-16777216). Built-in default: \
+         524288 (512 KiB); 262144 suits a long path with a shallow bottleneck queue.",
+    },
+    KeyMeta {
+        key: "overlay_netstack_tcp_cc",
+        group: Group::NetworkCarriers,
+        tier: Tier::Advanced,
+        live: false,
+        kind: "string",
+        description: "netstack TCP congestion control: reno (built-in default; NewReno-lite, cwnd bounds bytes in flight) | none (kill switch: the send buffer alone bounds them). Env: ROOMLERD_OVERLAY_NETSTACK_TCP_CC.",
     },
     KeyMeta {
         key: "overlay_ipv6",
@@ -2039,6 +2047,7 @@ fn current_value(cfg: &AgentConfig, key: &str) -> Option<String> {
         "overlay_ipv6" => cfg.overlay_ipv6.map(fmt_bool),
         "overlay_netstack_tcp_rx_buf" => cfg.overlay_netstack_tcp_rx_buf.map(|v| v.to_string()),
         "overlay_netstack_tcp_tx_buf" => cfg.overlay_netstack_tcp_tx_buf.map(|v| v.to_string()),
+        "overlay_netstack_tcp_cc" => cfg.overlay_netstack_tcp_cc.clone(),
         "overlay_netd" => cfg.overlay_netd.map(fmt_bool),
         "overlay_pathmon" => cfg.overlay_pathmon.clone(),
         "overlay_demote" => cfg.overlay_demote.clone(),
@@ -2508,6 +2517,18 @@ pub fn apply(cfg: &mut AgentConfig, key: &str, value: Option<&str>) -> Result<()
         "overlay_ipv6" => cfg.overlay_ipv6 = parse_tribool(value)?,
         "overlay_netstack_tcp_rx_buf" => cfg.overlay_netstack_tcp_rx_buf = parse_tcp_buf(key, value)?,
         "overlay_netstack_tcp_tx_buf" => cfg.overlay_netstack_tcp_tx_buf = parse_tcp_buf(key, value)?,
+        "overlay_netstack_tcp_cc" => {
+            cfg.overlay_netstack_tcp_cc = match value.map(str::trim).filter(|s| !s.is_empty()) {
+                None => None,
+                Some(v) => {
+                    let cc = v.to_ascii_lowercase();
+                    if !matches!(cc.as_str(), "reno" | "none") {
+                        return Err("overlay_netstack_tcp_cc must be reno | none".to_string());
+                    }
+                    Some(cc)
+                }
+            }
+        }
         "overlay_netd" => cfg.overlay_netd = parse_tribool(value)?,
         "overlay_pathmon" => {
             cfg.overlay_pathmon = match value.map(str::trim).filter(|s| !s.is_empty()) {
@@ -4322,6 +4343,33 @@ mod tests {
     /// PR-D — the PathMonitor mode key: multi-state (on|shadow|off), so a
     /// validated string, not a tribool (per the every-new-env rule's
     /// enum-not-tribool clause). Case-normalized; empty/None clears.
+    #[test]
+    fn overlay_netstack_tcp_cc_set_echo_clear_and_validate() {
+        let mut cfg = crate::config::test_fixture();
+        assert_eq!(
+            current_value(&cfg, "overlay_netstack_tcp_cc"),
+            None,
+            "unset → built-in reno"
+        );
+        apply(&mut cfg, "overlay_netstack_tcp_cc", Some(" NONE ")).unwrap();
+        assert_eq!(cfg.overlay_netstack_tcp_cc.as_deref(), Some("none"));
+        assert_eq!(
+            crate::config::env_fallbacks(&cfg)
+                .get("OVERLAY_NETSTACK_TCP_CC")
+                .map(String::as_str),
+            Some("none"),
+            "bridged to the daemon's env"
+        );
+        apply(&mut cfg, "overlay_netstack_tcp_cc", Some("reno")).unwrap();
+        assert_eq!(
+            current_value(&cfg, "overlay_netstack_tcp_cc").as_deref(),
+            Some("reno")
+        );
+        assert!(apply(&mut cfg, "overlay_netstack_tcp_cc", Some("cubic")).is_err());
+        apply(&mut cfg, "overlay_netstack_tcp_cc", None).unwrap();
+        assert_eq!(cfg.overlay_netstack_tcp_cc, None);
+    }
+
     #[test]
     fn overlay_pathmon_set_echo_clear_and_validate() {
         let mut cfg = crate::config::test_fixture();

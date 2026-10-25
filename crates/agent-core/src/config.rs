@@ -785,12 +785,18 @@ pub struct AgentConfig {
     /// 16384–16777216). Built-in default: 1 MiB.
     #[serde(default)]
     pub overlay_netstack_tcp_rx_buf: Option<u32>,
-    /// §6 item 5 — netstack per-socket smoltcp send buffer in bytes, which
-    /// bounds this stack's bytes in flight
+    /// §6 item 5 — netstack per-socket smoltcp send buffer in bytes, the most
+    /// this stack can have in flight; the congestion window paces below it
     /// (`ROOMLERD_OVERLAY_NETSTACK_TCP_TX_BUF`, 16384–16777216). Built-in
-    /// default: 128 KiB; 65536 restores the old bound for a shallow queue.
+    /// default: 512 KiB; 262144 suits a long path with a shallow queue.
     #[serde(default)]
     pub overlay_netstack_tcp_tx_buf: Option<u32>,
+    /// §6 item 5 — netstack TCP congestion control
+    /// (`ROOMLERD_OVERLAY_NETSTACK_TCP_CC`): `reno` (the built-in default,
+    /// the vendored smoltcp's NewReno-lite) | `none` (the kill switch: the
+    /// send buffer alone bounds bytes in flight, as before).
+    #[serde(default)]
+    pub overlay_netstack_tcp_cc: Option<String>,
     /// Track A stage 1 — spawn the session-independent network daemon
     /// (`roomlerd netd`) as a SECOND supervisor child. SCAFFOLD ONLY for
     /// now: netd heartbeats and hosts nothing; the network plane still
@@ -2829,6 +2835,7 @@ pub fn test_fixture() -> AgentConfig {
         overlay_ipv6: None,
         overlay_netstack_tcp_rx_buf: None,
         overlay_netstack_tcp_tx_buf: None,
+        overlay_netstack_tcp_cc: None,
         overlay_netd: None,
         overlay_pathmon: None,
         overlay_route_events: None,
@@ -3257,6 +3264,10 @@ pub fn env_fallbacks(cfg: &AgentConfig) -> std::collections::HashMap<String, Str
     if let Some(mode) = &cfg.overlay_pathmon {
         fallbacks.insert("OVERLAY_PATHMON".to_string(), mode.clone());
     }
+    // §6 item 5 — overlay_netstack_tcp_cc (reno|none), same string ride.
+    if let Some(cc) = &cfg.overlay_netstack_tcp_cc {
+        fallbacks.insert("OVERLAY_NETSTACK_TCP_CC".to_string(), cc.clone());
+    }
     // B2 — overlay_demote (off|shadow|on), same string ride.
     if let Some(mode) = &cfg.overlay_demote {
         fallbacks.insert("OVERLAY_DEMOTE".to_string(), mode.clone());
@@ -3622,6 +3633,7 @@ mod tests {
         cfg.drm_capture = Some(true);
         cfg.uinput = Some(false);
         cfg.overlay_pathmon = Some("shadow".into());
+        cfg.overlay_netstack_tcp_cc = Some("none".into());
         cfg.encoder_cells_deny = Some("h264/nvenc".into());
         cfg.fps_deny = Some("hevc_qsv:120".into());
         let m = env_fallbacks(&cfg);
@@ -3634,6 +3646,7 @@ mod tests {
             "an explicit false is published, as 0"
         );
         assert_eq!(get("OVERLAY_PATHMON"), Some("shadow"));
+        assert_eq!(get("OVERLAY_NETSTACK_TCP_CC"), Some("none"));
         assert_eq!(get("ENCODER_CELLS_DENY"), Some("h264/nvenc"));
         assert_eq!(
             get("PORTAL_CAPTURE"),
