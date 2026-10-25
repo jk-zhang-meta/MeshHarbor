@@ -72,9 +72,25 @@ use tracing::{debug, trace};
 
 use super::tun::TunIo;
 
-/// Per-socket smoltcp ring-buffer size (each direction). 64 KiB gives a
-/// healthy TCP window over the ~1280-MTU overlay without being wasteful.
-const SOCK_BUF: usize = 64 * 1024;
+/// Per-socket smoltcp RECEIVE buffer: the window this stack advertises.
+/// smoltcp derives window scaling from it, and the old 64 KiB held every
+/// download to 64 KiB per round trip (about 10 Mbit/s at 50 ms). The sender on
+/// the far side is normally a kernel TCP with real congestion control, so a
+/// wide window is safe here: 1 MiB carries about 170 Mbit/s at 50 ms.
+/// `OVERLAY_NETSTACK_TCP_RX_BUF` overrides it ([`TCP_BUF_MIN`]..=[`TCP_BUF_MAX`]).
+const TCP_RX_BUF: usize = 1024 * 1024;
+/// Per-socket smoltcp SEND buffer, which bounds this stack's bytes in flight.
+/// It stays small on purpose. smoltcp 0.13's congestion controllers compare
+/// cwnd with the window space left, never with bytes in flight, so they do not
+/// pace a sender (measured: none/reno/cubic give identical goodput and drops).
+/// Its loss recovery is go-back-N, so every byte in flight past the bottleneck
+/// queue is sent again: a 1 MiB send window put 3.2x the delivered bytes on the
+/// wire in the 50 ms / 256 KiB-queue simulation. 128 KiB doubles the old
+/// goodput with zero extra loss there. `OVERLAY_NETSTACK_TCP_TX_BUF` overrides
+/// it.
+const TCP_TX_BUF: usize = 128 * 1024;
+const TCP_BUF_MIN: usize = 16 * 1024;
+const TCP_BUF_MAX: usize = 16 * 1024 * 1024;
 /// Max bytes moved between a smoltcp socket buffer and an app channel in one
 /// chunk — bounds per-copy allocation and keeps chunks SCTP-friendly.
 const CHUNK: usize = 16 * 1024;
@@ -559,6 +575,15 @@ struct PollLoop {
     self_v6: Ipv6Addr,
 }
 
+/// `name`'s byte count within the TCP buffer bounds; an unparseable or
+/// out-of-range value keeps `default`.
+fn tcp_buf(name: &str, default: usize) -> usize {
+    crate::env::node_env(name)
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .filter(|n| (TCP_BUF_MIN..=TCP_BUF_MAX).contains(n))
+        .unwrap_or(default)
+}
+
 impl PollLoop {
     fn now(&self) -> SmolInstant {
         SmolInstant::from_micros(self.base.elapsed().as_micros() as i64)
@@ -571,9 +596,18 @@ impl PollLoop {
     }
 
     fn new_tcp_socket() -> tcp::Socket<'static> {
+        Self::new_tcp_socket_with(
+            tcp_buf("OVERLAY_NETSTACK_TCP_RX_BUF", TCP_RX_BUF),
+            tcp_buf("OVERLAY_NETSTACK_TCP_TX_BUF", TCP_TX_BUF),
+        )
+    }
+
+    fn new_tcp_socket_with(rx: usize, tx: usize) -> tcp::Socket<'static> {
+        // A buffer's pages are touched only as data flows through it, so an
+        // idle socket stays cheap whatever the window.
         let mut sock = tcp::Socket::new(
-            tcp::SocketBuffer::new(vec![0u8; SOCK_BUF]),
-            tcp::SocketBuffer::new(vec![0u8; SOCK_BUF]),
+            tcp::SocketBuffer::new(vec![0u8; rx]),
+            tcp::SocketBuffer::new(vec![0u8; tx]),
         );
         // Small SSH/SOCKS writes must keep reaching a recovered path while
         // older data is in flight, allowing normal ACK-driven TCP recovery.
@@ -1348,6 +1382,158 @@ mod tests {
         assert!(duplicate_acks >= 3, "only real peer-generated duplicate ACKs accelerate recovery");
         assert!(first_after_recovery.is_some_and(|ms| ms <= 14_550),
             "small ongoing writes should recover shortly after the carrier, not wait for 20 s RTO: {first_after_recovery:?}");
+    }
+
+    /// One direction of a simulated carrier: serialization at `bytes_per_ms`
+    /// behind a drop-tail queue of `queue_bytes`, then `delay_ms` in flight.
+    struct SimLink {
+        delay_ms: i64,
+        bytes_per_ms: i64,
+        queue_bytes: i64,
+        busy_until_us: i64,
+        flight: VecDeque<(i64, Vec<u8>)>,
+        dropped: usize,
+    }
+
+    impl SimLink {
+        fn new(delay_ms: i64, mbit_per_s: i64, queue_bytes: i64) -> Self {
+            Self {
+                delay_ms,
+                bytes_per_ms: mbit_per_s * 1000 / 8,
+                queue_bytes,
+                busy_until_us: 0,
+                flight: VecDeque::new(),
+                dropped: 0,
+            }
+        }
+        fn send(&mut self, now_us: i64, pkt: Vec<u8>) {
+            let start = self.busy_until_us.max(now_us);
+            if (start - now_us) * self.bytes_per_ms / 1000 + pkt.len() as i64 > self.queue_bytes {
+                self.dropped += 1;
+                return;
+            }
+            self.busy_until_us = start + pkt.len() as i64 * 1000 / self.bytes_per_ms;
+            self.flight
+                .push_back((self.busy_until_us + self.delay_ms * 1000, pkt));
+        }
+        fn deliver(&mut self, now_us: i64, into: &mut VecDeque<Vec<u8>>) {
+            while self.flight.front().is_some_and(|(at, _)| *at <= now_us) {
+                into.push_back(self.flight.pop_front().unwrap().1);
+            }
+        }
+    }
+
+    /// One bulk TCP stream between two production-built smoltcp sockets over
+    /// a [`SimLink`] pair, in virtual time (deterministic, no wall clock):
+    /// (goodput Mbit/s after `warm_ms`, data-link drops, bytes the sender put
+    /// on the wire per byte delivered).
+    fn sim_bulk(
+        (rx, tx): (usize, usize),
+        one_way_ms: i64,
+        queue_bytes: i64,
+        sim_ms: i64,
+        warm_ms: i64,
+    ) -> (f64, usize, f64) {
+        fn node(ip: Ipv4Addr) -> (NetstackDevice, Interface, SocketSet<'static>,
+            mpsc::UnboundedReceiver<Vec<u8>>)
+        {
+            let (out_tx, out_rx) = mpsc::unbounded_channel();
+            let mut dev = NetstackDevice { rx: VecDeque::new(), out_tx, mtu: 1280 };
+            let mut cfg = Config::new(HardwareAddress::Ip);
+            cfg.random_seed = 7;
+            let mut iface = Interface::new(cfg, &mut dev, SmolInstant::from_millis(0));
+            iface.update_ip_addrs(|a| {
+                a.push(IpCidr::new(IpAddress::from(ip), 24)).unwrap();
+            });
+            (dev, iface, SocketSet::new(vec![]), out_rx)
+        }
+        let a_ip = Ipv4Addr::new(100, 64, 0, 1);
+        let b_ip = Ipv4Addr::new(100, 64, 0, 2);
+        let (mut ad, mut ai, mut sockets_a, mut a_out) = node(a_ip);
+        let (mut bd, mut bi, mut sockets_b, mut b_out) = node(b_ip);
+        let mut server = PollLoop::new_tcp_socket_with(rx, tx);
+        server.listen(2222).unwrap();
+        let sh = sockets_b.add(server);
+        let mut client = PollLoop::new_tcp_socket_with(rx, tx);
+        client.connect(ai.context(), (IpAddress::from(b_ip), 2222), 49152).unwrap();
+        let ch = sockets_a.add(client);
+        // A 100 Mbit/s bottleneck both ways.
+        let mut a_to_b = SimLink::new(one_way_ms, 100, queue_bytes);
+        let mut b_to_a = SimLink::new(one_way_ms, 100, queue_bytes);
+        let chunk = vec![0x5au8; 64 * 1024];
+        let (mut received, mut at_warm, mut wire) = (0usize, 0usize, 0usize);
+        for ms in 0..sim_ms {
+            let (now, now_us) = (SmolInstant::from_millis(ms), ms * 1000);
+            let sender = sockets_b.get_mut::<tcp::Socket>(sh);
+            while sender.can_send() {
+                if sender.send_slice(&chunk).unwrap() == 0 {
+                    break;
+                }
+            }
+            a_to_b.deliver(now_us, &mut bd.rx);
+            b_to_a.deliver(now_us, &mut ad.rx);
+            for _ in 0..256 {
+                let mut moved = false;
+                let _ = ai.poll(now, &mut ad, &mut sockets_a);
+                while let Ok(pkt) = a_out.try_recv() {
+                    a_to_b.send(now_us, pkt);
+                    moved = true;
+                }
+                let _ = bi.poll(now, &mut bd, &mut sockets_b);
+                while let Ok(pkt) = b_out.try_recv() {
+                    wire += pkt.len();
+                    b_to_a.send(now_us, pkt);
+                    moved = true;
+                }
+                if !moved && ad.rx.is_empty() && bd.rx.is_empty() {
+                    break;
+                }
+            }
+            let receiver = sockets_a.get_mut::<tcp::Socket>(ch);
+            while receiver.can_recv() {
+                received += receiver.recv(|b| (b.len(), b.len())).unwrap();
+            }
+            if ms == warm_ms {
+                at_warm = received;
+            }
+        }
+        (
+            (received - at_warm) as f64 * 8.0 / ((sim_ms - warm_ms) as f64 / 1000.0) / 1e6,
+            b_to_a.dropped,
+            wire as f64 / received.max(1) as f64,
+        )
+    }
+
+    /// MeshHarbor §6 item 5. On a 50 ms, 100 Mbit/s path behind a moderate
+    /// 256 KiB queue, the old 64 KiB buffers are window-bound near 9 Mbit/s;
+    /// the production defaults must at least double that with NO extra loss
+    /// (smoltcp's go-back-N recovery makes every drop expensive).
+    #[test]
+    fn the_default_buffers_double_a_50ms_path_without_extra_loss() {
+        let (old, old_drops, _) = sim_bulk((64 * 1024, 64 * 1024), 25, 256 * 1024, 6_000, 2_000);
+        let (new, drops, amp) = sim_bulk((TCP_RX_BUF, TCP_TX_BUF), 25, 256 * 1024, 6_000, 2_000);
+        eprintln!("OBSERVED netstack 50ms/100Mbit/256KiB-queue: old {old:.1} Mbit/s ({old_drops} drops), default {new:.1} Mbit/s ({drops} drops, wire/delivered {amp:.2})");
+        assert!(old < 12.0, "the old window is the bound: {old:.1}");
+        assert!(new > 1.8 * old, "the default must at least double it: {new:.1} vs {old:.1}");
+        assert_eq!(drops, 0, "and add no loss");
+        assert!(amp < 1.1, "nor retransmission waste: {amp:.2}");
+    }
+
+    /// The measurement behind the defaults: goodput, drops and wire
+    /// amplification per send bound, RTT and bottleneck queue depth.
+    #[test]
+    #[ignore = "netstack TCP buffer matrix; run with --ignored --nocapture"]
+    fn netstack_tcp_buffer_matrix() {
+        for one_way in [5i64, 25, 50] {
+            for queue in [64 * 1024i64, 256 * 1024, 1024 * 1024] {
+                for tx in [64 * 1024, 128 * 1024, 256 * 1024, 512 * 1024, 1024 * 1024] {
+                    let rx = if tx == 64 * 1024 { 64 * 1024 } else { TCP_RX_BUF };
+                    let (mbps, drops, amp) = sim_bulk((rx, tx), one_way, queue, 8_000, 3_000);
+                    eprintln!("OBSERVED rtt={}ms queue={}KiB rx={}KiB tx={}KiB goodput={mbps:.1} drops={drops} wire/delivered={amp:.2}",
+                        one_way * 2, queue / 1024, rx / 1024, tx / 1024);
+                }
+            }
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
