@@ -742,6 +742,14 @@ pub enum ClientMsg {
     /// stale snapshot is dropped; `page` of `pages` share one `seq`.
     ///
     /// Additive agent→server: a server that predates it ignores the frame.
+    /// MeshHarbor #20 — what the agent made of the last
+    /// [`ServerMsg::ManagedForwardSet`]: one entry per desired forward. The
+    /// server binds it to the authenticated agent and the exact revision.
+    #[serde(rename = "rc:forward.status")]
+    ManagedForwardStatus {
+        statuses: Vec<ManagedForwardStatusWire>,
+    },
+
     #[serde(rename = "rc:agent.net_inventory")]
     NetInventory {
         boot_id: String,
@@ -2711,6 +2719,7 @@ impl ClientMsg {
             ClientMsg::AgentHeartbeat { .. } => "rc:agent.heartbeat",
             ClientMsg::RelayProbeReport { .. } => "rc:relay.probe_report",
             ClientMsg::NetInventory { .. } => "rc:agent.net_inventory",
+            ClientMsg::ManagedForwardStatus { .. } => "rc:forward.status",
             ClientMsg::SessionStats { .. } => "rc:session.stats",
             ClientMsg::SharedSshConnect { .. } => "rc:share.ssh.connect",
             ClientMsg::SharedSshPrepared { .. } => "rc:share.ssh.prepared",
@@ -2844,6 +2853,7 @@ impl ClientMsg {
             | ClientMsg::SharedSshLeaseChallenge { .. }
             | ClientMsg::RelayProbeReport { .. }
             | ClientMsg::NetInventory { .. }
+            | ClientMsg::ManagedForwardStatus { .. }
             | ClientMsg::DerpTicketRequest { .. }
             | ClientMsg::SshRequest { .. }
             | ClientMsg::SshActivity { .. }
@@ -2930,6 +2940,8 @@ pub const CLIENT_MSG_OWNERS: &[(&str, Owner)] = &[
     ("rc:agent.hello", Owner::Fleet),
     ("rc:agent.heartbeat", Owner::Fleet),
     ("rc:relay.probe_report", Owner::Network),
+    ("rc:agent.net_inventory", Owner::Network),
+    ("rc:forward.status", Owner::Network),
     ("rc:session.stats", Owner::Remote),
     ("rc:recording.activity", Owner::Remote),
     ("rc:privacy.activity", Owner::Remote),
@@ -3649,6 +3661,17 @@ pub enum ServerMsg {
     /// carries on that org and rebuilds its overlay runtime.
     ///
     /// [`RpcCap::KeyRotate`]: crate::models::RpcCap::KeyRotate
+    /// MeshHarbor #20 — the WHOLE set of managed forwards this agent should
+    /// run (an empty set stops them all). Idempotent by `id` + `revision`;
+    /// the agent answers with [`ClientMsg::ManagedForwardStatus`]. Sent only
+    /// to a device advertising [`RpcCap::ManagedForward`].
+    ///
+    /// [`RpcCap::ManagedForward`]: crate::models::RpcCap::ManagedForward
+    #[serde(rename = "rc:forward.set")]
+    ManagedForwardSet {
+        forwards: Vec<ManagedForwardAssignment>,
+    },
+
     #[serde(rename = "rc:agent.key_rotate")]
     KeyRotate {
         /// Echoed in the report so an answer can be matched to THIS order.
@@ -12335,4 +12358,29 @@ mod org_fallback_wire_tests {
             }
         ));
     }
+}
+
+/// One forward of a [`ServerMsg::ManagedForwardSet`] (MeshHarbor #20): listen
+/// on `bind_addr:port`, admit `sources` (CIDRs), relay to
+/// `dest_addr:dest_port`, masquerading.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ManagedForwardAssignment {
+    pub id: String,
+    pub revision: u64,
+    pub bind_addr: String,
+    pub port: u16,
+    pub proto: crate::net_inventory::L4,
+    pub sources: Vec<String>,
+    pub dest_addr: String,
+    pub dest_port: u16,
+}
+
+/// One forward's state in a [`ClientMsg::ManagedForwardStatus`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ManagedForwardStatusWire {
+    pub id: String,
+    pub revision: u64,
+    pub listening: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }

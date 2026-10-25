@@ -1244,6 +1244,10 @@ pub enum RpcCap {
     SharedSessionLease,
     /// Typed single-use embedded SSH stream, no generic forwarding.
     SharedSshStream,
+    /// MeshHarbor #20 — `rc:forward.set`: the agent runs managed forwards on
+    /// its userspace backend and answers with `rc:forward.status`. The
+    /// server pushes a forward set only to a device that advertises this.
+    ManagedForward,
 }
 
 impl RpcCap {
@@ -1262,6 +1266,7 @@ impl RpcCap {
             Self::Config => "config",
             Self::ConfigReport => "config-report",
             Self::RelayServer => "relay-server",
+            Self::ManagedForward => "managed-forward",
             Self::KeyRotate => "key-rotate",
             Self::SshGrantAck => "ssh-grant-ack",
             Self::Hive => "hive",
@@ -1299,7 +1304,7 @@ impl RpcCap {
     }
 
     /// Every verb THIS build knows about.
-    pub const ALL: [RpcCap; 40] = [
+    pub const ALL: [RpcCap; 41] = [
         Self::Exec,
         Self::Originate,
         Self::Ssh,
@@ -1340,6 +1345,7 @@ impl RpcCap {
         Self::PeerAuth,
         Self::SharedSessionLease,
         Self::SharedSshStream,
+        Self::ManagedForward,
     ];
 
     /// Parse a wire verb. `None` for anything unrecognised — see

@@ -9,6 +9,10 @@
       "methods": "GET,HEAD"
     },
     {
+      "path": "/api/admin/business-authority/{kind}/{tenant_id}/{device_id}",
+      "methods": "GET,HEAD,PUT"
+    },
+    {
       "path": "/api/admin/growth/alerts",
       "methods": "GET,HEAD"
     },
@@ -713,6 +717,18 @@
       "methods": "GET,HEAD,PUT"
     },
     {
+      "path": "/api/tenant/{tenant_id}/managed-forward",
+      "methods": "GET,HEAD,POST"
+    },
+    {
+      "path": "/api/tenant/{tenant_id}/managed-forward/plan",
+      "methods": "POST"
+    },
+    {
+      "path": "/api/tenant/{tenant_id}/managed-forward/{id}",
+      "methods": "DELETE,GET,HEAD,PUT"
+    },
+    {
       "path": "/api/tenant/{tenant_id}/member",
       "methods": "GET,HEAD,POST"
     },
@@ -723,6 +739,14 @@
     {
       "path": "/api/tenant/{tenant_id}/member/{user_id}",
       "methods": "DELETE"
+    },
+    {
+      "path": "/api/tenant/{tenant_id}/net-inventory",
+      "methods": "GET,HEAD"
+    },
+    {
+      "path": "/api/tenant/{tenant_id}/net-inventory/{agent_id}",
+      "methods": "GET,HEAD"
     },
     {
       "path": "/api/tenant/{tenant_id}/overlay-acl",
@@ -1386,6 +1410,28 @@
         ]
       },
       {
+        "collection": "business_connection_observations",
+        "indexes": [
+          {
+            "key": {
+              "expires_at": 1
+            },
+            "expireAfterSeconds": 0
+          }
+        ]
+      },
+      {
+        "collection": "business_connection_observations",
+        "indexes": [
+          {
+            "key": {
+              "expires_at": 1
+            },
+            "expireAfterSeconds": 0
+          }
+        ]
+      },
+      {
         "collection": "call_sessions",
         "indexes": [
           {
@@ -1965,6 +2011,29 @@
         ]
       },
       {
+        "collection": "managed_forward_audit",
+        "indexes": [
+          {
+            "key": {
+              "tenant_id": 1,
+              "forward_id": 1,
+              "at": -1
+            }
+          }
+        ]
+      },
+      {
+        "collection": "managed_forwards",
+        "indexes": [
+          {
+            "key": {
+              "tenant_id": 1,
+              "deleted_at": 1
+            }
+          }
+        ]
+      },
+      {
         "collection": "messages",
         "indexes": [
           {
@@ -2035,6 +2104,23 @@
               "issue_id": 1,
               "status": 1
             }
+          }
+        ]
+      },
+      {
+        "collection": "node_net_inventory",
+        "indexes": [
+          {
+            "key": {
+              "tenant_id": 1,
+              "received_at": -1
+            }
+          },
+          {
+            "key": {
+              "expires_at": 1
+            },
+            "expireAfterSeconds": 0
           }
         ]
       },
@@ -3614,6 +3700,28 @@
         ]
       },
       {
+        "collection": "business_connection_observations",
+        "indexes": [
+          {
+            "key": {
+              "expires_at": 1
+            },
+            "expireAfterSeconds": 0
+          }
+        ]
+      },
+      {
+        "collection": "business_connection_observations",
+        "indexes": [
+          {
+            "key": {
+              "expires_at": 1
+            },
+            "expireAfterSeconds": 0
+          }
+        ]
+      },
+      {
         "collection": "call_sessions",
         "indexes": [
           {
@@ -4193,6 +4301,29 @@
         ]
       },
       {
+        "collection": "managed_forward_audit",
+        "indexes": [
+          {
+            "key": {
+              "tenant_id": 1,
+              "forward_id": 1,
+              "at": -1
+            }
+          }
+        ]
+      },
+      {
+        "collection": "managed_forwards",
+        "indexes": [
+          {
+            "key": {
+              "tenant_id": 1,
+              "deleted_at": 1
+            }
+          }
+        ]
+      },
+      {
         "collection": "messages",
         "indexes": [
           {
@@ -4263,6 +4394,23 @@
               "issue_id": 1,
               "status": 1
             }
+          }
+        ]
+      },
+      {
+        "collection": "node_net_inventory",
+        "indexes": [
+          {
+            "key": {
+              "tenant_id": 1,
+              "received_at": -1
+            }
+          },
+          {
+            "key": {
+              "expires_at": 1
+            },
+            "expireAfterSeconds": 0
           }
         ]
       },
@@ -5601,6 +5749,8 @@
     "rc:agent.hello",
     "rc:agent.heartbeat",
     "rc:relay.probe_report",
+    "rc:forward.status",
+    "rc:agent.net_inventory",
     "rc:session.stats",
     "rc:relay.derp_ticket_request",
     "rc:rpc.result",
@@ -5705,6 +5855,7 @@
     "rc:goodbye",
     "rc:agent.update",
     "rc:agent.config",
+    "rc:forward.set",
     "rc:agent.key_rotate",
     "rc:agent.keep_busy_policy",
     "rc:agent.join_org",
@@ -5797,6 +5948,7 @@
     "rc:agent.heartbeat": "fleet",
     "rc:agent.hello": "fleet",
     "rc:agent.key_rotated": "network",
+    "rc:agent.net_inventory": "network",
     "rc:consent": "fleet",
     "rc:consent.pending": "fleet",
     "rc:extauth.finish": "remote",
@@ -5804,6 +5956,7 @@
     "rc:extauth.outcome": "remote",
     "rc:extauth.session": "remote",
     "rc:extauth.start": "remote",
+    "rc:forward.status": "network",
     "rc:hive.adopt": "hive",
     "rc:hive.approval": "hive",
     "rc:hive.drained": "hive",

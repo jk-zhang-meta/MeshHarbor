@@ -18,8 +18,11 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use roomler_ai_remote_control::net_inventory::L4;
+use roomler_ai_remote_control::signaling::{
+    ClientMsg, ManagedForwardAssignment, ManagedForwardStatusWire,
+};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
-use tokio::sync::Semaphore;
+use tokio::sync::{Semaphore, mpsc};
 use tokio::task::JoinHandle;
 use tracing::{debug, warn};
 
@@ -281,6 +284,103 @@ async fn serve_udp(a: Assignment, sock: Arc<UdpSocket>) {
     }
 }
 
+/// This connection's forward runner: send it each `rc:forward.set`; it
+/// reconciles and answers `rc:forward.status` on `outbound`. When the
+/// connection ends its sender drops, the runner exits, and every forward
+/// stops: a device the server can no longer reach (revoked, removed) keeps
+/// no listener it was given.
+pub fn spawn_agent(
+    outbound: mpsc::Sender<ClientMsg>,
+) -> mpsc::Sender<Vec<ManagedForwardAssignment>> {
+    let (tx, mut rx) = mpsc::channel::<Vec<ManagedForwardAssignment>>(4);
+    tokio::spawn(async move {
+        let mut forwarders = Forwarders::default();
+        while let Some(set) = rx.recv().await {
+            let (want, mut statuses) = to_assignments(set);
+            for s in forwarders.reconcile(want).await {
+                statuses.push(match s.state {
+                    State::Listening => ManagedForwardStatusWire {
+                        id: s.id,
+                        revision: s.revision,
+                        listening: true,
+                        error: None,
+                    },
+                    State::Failed(e) => ManagedForwardStatusWire {
+                        id: s.id,
+                        revision: s.revision,
+                        listening: false,
+                        error: Some(e),
+                    },
+                });
+            }
+            if outbound
+                .send(ClientMsg::ManagedForwardStatus { statuses })
+                .await
+                .is_err()
+            {
+                break;
+            }
+        }
+    });
+    tx
+}
+
+/// Parse the wire set; an entry that does not parse is reported failed,
+/// never run with a guessed meaning.
+pub fn to_assignments(
+    set: Vec<ManagedForwardAssignment>,
+) -> (Vec<Assignment>, Vec<ManagedForwardStatusWire>) {
+    let (mut ok, mut bad) = (Vec::new(), Vec::new());
+    for w in set {
+        let bind = w
+            .bind_addr
+            .parse::<IpAddr>()
+            .ok()
+            .map(|ip| SocketAddr::new(ip, w.port));
+        let dest = w
+            .dest_addr
+            .parse::<IpAddr>()
+            .ok()
+            .map(|ip| SocketAddr::new(ip, w.dest_port));
+        let sources: Option<Vec<(IpAddr, u8)>> = w
+            .sources
+            .iter()
+            .map(|s| {
+                let (ip, len) = s.split_once('/').unwrap_or((s, ""));
+                let ip: IpAddr = ip.parse().ok()?;
+                let max = if ip.is_ipv4() { 32 } else { 128 };
+                let len = if len.is_empty() {
+                    max
+                } else {
+                    len.parse().ok().filter(|l| *l <= max)?
+                };
+                Some((ip, len))
+            })
+            .collect();
+        match (bind, dest, sources) {
+            (Some(bind), Some(dest), Some(sources))
+                if !sources.is_empty() && w.port != 0 && w.dest_port != 0 =>
+            {
+                ok.push(Assignment {
+                    id: w.id,
+                    revision: w.revision,
+                    bind,
+                    proto: w.proto,
+                    sources,
+                    dest,
+                });
+            }
+            _ => bad.push(ManagedForwardStatusWire {
+                id: w.id,
+                revision: w.revision,
+                listening: false,
+                error: Some("malformed assignment".into()),
+            }),
+        }
+    }
+    (ok, bad)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -346,6 +446,29 @@ mod tests {
             sources: sources.iter().map(|s| net(s)).collect(),
             dest,
         }
+    }
+
+    #[test]
+    fn a_malformed_wire_entry_is_reported_failed_not_run() {
+        let w = |bind: &str, srcs: &[&str]| ManagedForwardAssignment {
+            id: "x".into(),
+            revision: 3,
+            bind_addr: bind.into(),
+            port: 1000,
+            proto: L4::Tcp,
+            sources: srcs.iter().map(|s| s.to_string()).collect(),
+            dest_addr: "127.0.0.1".into(),
+            dest_port: 2000,
+        };
+        let (ok, bad) = to_assignments(vec![
+            w("127.0.0.1", &["127.0.0.0/8"]),
+            w("nope", &["127.0.0.0/8"]),
+            w("127.0.0.1", &[]),
+        ]);
+        assert_eq!(ok.len(), 1);
+        assert_eq!(ok[0].sources, vec![("127.0.0.0".parse().unwrap(), 8)]);
+        assert_eq!(bad.len(), 2);
+        assert!(bad.iter().all(|b| !b.listening && b.revision == 3));
     }
 
     #[test]

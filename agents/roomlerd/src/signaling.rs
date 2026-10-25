@@ -1628,6 +1628,9 @@ async fn connect_once(
     // MeshHarbor #19 — the host's read-only network inventory, from the
     // primary enrollment of a single-org device only; it exits with the
     // connection, like the re-prober.
+    // MeshHarbor #20 — this connection's managed-forward runner; its
+    // forwards stop with the connection.
+    let managed_forward_tx = crate::managed_forward::spawn_agent(outbound_tx.clone());
     let _ = crate::net_inventory::spawn_reporter(
         outbound_tx.clone(),
         ctx.is_primary,
@@ -2716,6 +2719,15 @@ async fn connect_once(
                                 ctx.pump,
                                 format!("ws.text:{}", server_msg_tag(&text).unwrap_or("?")),
                             );
+                            let parsed = match parsed {
+                                ServerMsg::ManagedForwardSet { forwards } => {
+                                    if managed_forward_tx.try_send(forwards).is_err() {
+                                        warn!("managed forward: runner busy; this set is dropped, the next push supersedes it");
+                                    }
+                                    continue;
+                                }
+                                other => other,
+                            };
                             // Phase 3b: route `rc:overlay.*` to the node
                             // runtime; everything else falls through to the
                             // normal dispatch below.

@@ -158,6 +158,11 @@ impl AgentMsgHandler for NetworkAgentSocket {
                 crate::net_inventory::receive(state, ctx, inventory, page).await;
                 None
             }
+            ClientMsg::ManagedForwardStatus { statuses } => {
+                crate::managed_forward::record_status(state, ctx.tenant_id, ctx.agent_id, statuses)
+                    .await;
+                None
+            }
             ClientMsg::DerpTicketRequest {} => {
                 handle_derp_ticket_request(state, ctx.agent_id, &ctx.tx).await;
                 None
@@ -258,6 +263,15 @@ impl AgentMsgHandler for NetworkAgentSocket {
 #[async_trait]
 impl AgentSocketLifecycle for NetworkAgentSocket {
     async fn hello(&self, ctx: &AgentCtx) {
+        // MeshHarbor #20 — the forwards this agent should run, on every
+        // (re)connect; its caps land with the hello, so give them a moment.
+        {
+            let (state, tid, aid) = (self.state.clone(), ctx.tenant_id, ctx.agent_id);
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                crate::managed_forward::push_to(&state, tid, aid).await;
+            });
+        }
         let orig = Originator {
             principal: tunnel_core::policy::Principal::Agent(ctx.agent_id),
             tenant_id: ctx.tenant_id,

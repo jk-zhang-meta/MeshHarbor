@@ -25,7 +25,11 @@
 use std::net::IpAddr;
 
 use bson::{DateTime, doc, oid::ObjectId};
-use roomler_ai_remote_control::net_inventory::L4;
+use roomler_ai_remote_control::models::RpcCap;
+use roomler_ai_remote_control::net_inventory::{L4, truncate_str};
+use roomler_ai_remote_control::signaling::{
+    ManagedForwardAssignment, ManagedForwardStatusWire, ServerMsg,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::NetworkState;
@@ -87,6 +91,19 @@ pub struct ManagedForward {
     pub updated_at: DateTime,
     #[serde(default)]
     pub deleted_at: Option<DateTime>,
+    /// The applied layer, written only from the ingress agent's own ack.
+    #[serde(default)]
+    pub applied: Option<Applied>,
+}
+
+/// What the ingress agent reported for one revision.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct Applied {
+    pub revision: u64,
+    pub listening: bool,
+    #[serde(default)]
+    pub error: Option<String>,
+    pub at: DateTime,
 }
 
 #[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -513,6 +530,102 @@ pub async fn audit(
         .await
     {
         tracing::warn!(%forward_id, %e, "managed forward: audit write failed");
+    }
+}
+
+/// Push `agent_id` the whole set it should run, when it is online and
+/// advertises [`RpcCap::ManagedForward`]. The hard region gate is checked
+/// again at every push: a zone that changed since the forward was planned
+/// withdraws it (fails closed under `enforce`).
+pub async fn push_to(state: &NetworkState, tenant_id: ObjectId, agent_id: ObjectId) {
+    let Ok(agent) = state
+        .fleet
+        .agents
+        .find_live_in_tenant(tenant_id, agent_id)
+        .await
+    else {
+        return;
+    };
+    if !agent.capabilities.has_rpc(RpcCap::ManagedForward)
+        || !state.fleet.rc_hub.is_agent_online(agent_id)
+    {
+        return;
+    }
+    let Ok(all) = list(state, tenant_id).await else {
+        return;
+    };
+    let (hex, now) = (agent_id.to_hex(), DateTime::now().timestamp_millis());
+    let mut forwards = Vec::new();
+    for f in all.iter().filter(|f| {
+        f.spec.ingress_agent_id == hex
+            && f.spec.desired == Desired::Enabled
+            && f.spec.expires_at_ms.is_none_or(|e| e > now)
+    }) {
+        let p = plan(state, tenant_id, &f.spec, Some(f.id)).await;
+        if p.checks
+            .iter()
+            .any(|c| c.name == "region" && c.verdict == Verdict::Fail)
+        {
+            tracing::warn!(forward = %f.id, "managed forward: region gate failed at push; withheld");
+            continue;
+        }
+        forwards.push(ManagedForwardAssignment {
+            id: f.id.to_hex(),
+            revision: f.revision,
+            bind_addr: f.spec.bind_addr.clone(),
+            port: f.spec.port,
+            proto: f.spec.proto,
+            sources: f.spec.sources.clone(),
+            dest_addr: f.spec.dest_addr.clone(),
+            dest_port: f.spec.dest_port,
+        });
+    }
+    if let Err(e) = state
+        .fleet
+        .rc_hub
+        .send_to_agent(agent_id, ServerMsg::ManagedForwardSet { forwards })
+    {
+        tracing::debug!(%agent_id, %e, "managed forward: push failed");
+    }
+}
+
+/// Record the agent's ack. Each entry lands only on a forward of THIS
+/// tenant whose ingress is THIS agent and whose revision is the one acked.
+pub async fn record_status(
+    state: &NetworkState,
+    tenant_id: ObjectId,
+    agent_id: ObjectId,
+    statuses: Vec<ManagedForwardStatusWire>,
+) {
+    let rows = state.core.db.collection::<ManagedForward>(COLLECTION);
+    let hex = agent_id.to_hex();
+    for s in statuses.into_iter().take(1000) {
+        let Ok(id) = ObjectId::parse_str(&s.id) else {
+            continue;
+        };
+        let mut error = s.error;
+        if let Some(e) = error.as_mut() {
+            truncate_str(e, 200);
+        }
+        let applied = Applied {
+            revision: s.revision,
+            listening: s.listening,
+            error,
+            at: DateTime::now(),
+        };
+        let Ok(applied) = bson::to_bson(&applied) else {
+            continue;
+        };
+        let filter = doc! {
+            "_id": id, "tenant_id": tenant_id, "spec.ingress_agent_id": &hex,
+            "revision": s.revision as i64, "deleted_at": null,
+        };
+        if let Err(e) = rows
+            .update_one(filter, doc! { "$set": { "applied": applied } })
+            .await
+        {
+            tracing::warn!(forward = %id, %e, "managed forward: status write failed");
+        }
     }
 }
 

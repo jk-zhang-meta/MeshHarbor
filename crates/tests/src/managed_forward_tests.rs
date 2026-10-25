@@ -8,7 +8,7 @@
 
 use crate::agent_presence_tests::enroll;
 use crate::fixtures::test_app::TestApp;
-use crate::peer_relay_mint_tests::{Ws, connect_from};
+use crate::peer_relay_mint_tests::{Ws, connect_from, recv_t};
 use futures::SinkExt;
 use roomler_ai_remote_control::net_inventory::{L4, Listener, NetInventory, Section};
 use serde_json::{Value, json};
@@ -133,7 +133,7 @@ async fn collisions_revisions_and_permissions() {
     assert_eq!(f["revision"], json!(1));
     assert_eq!(
         f["status"],
-        json!({ "desired": "enabled", "applied": "not_applied", "verified": "unverified" })
+        json!({ "desired": "enabled", "applied": "pending", "verified": "unverified" })
     );
     assert_eq!(
         verdict(&body["plan"], "region"),
@@ -237,5 +237,109 @@ async fn enforce_fails_a_forward_whose_zones_are_unknown() {
         verdict(&body["plan"], "port collision"),
         "pass",
         "only the region fails"
+    );
+}
+
+async fn status(ws: &mut Ws, id: &str, revision: u64, listening: bool) {
+    let m = json!({ "t": "rc:forward.status", "statuses": [{ "id": id, "revision": revision, "listening": listening }] });
+    ws.send(Message::Text(m.to_string().into())).await.unwrap();
+}
+
+async fn applied(app: &TestApp, tid: &str, tok: &str, id: &str, want: &str) -> Value {
+    let mut last = Value::Null;
+    for _ in 0..30 {
+        let r = app
+            .auth_get(&format!("/api/tenant/{tid}/managed-forward/{id}"), tok)
+            .send()
+            .await
+            .unwrap();
+        last = r.json().await.unwrap();
+        if last["status"]["applied"] == json!(want) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    last
+}
+
+#[tokio::test]
+async fn a_capable_agent_gets_its_set_and_only_its_own_ack_counts() {
+    let app = TestApp::spawn().await;
+    let seeded = app.seed_tenant("mf-push").await;
+    let (a, a_tok) = enroll(&app, &seeded, "mf-push-a").await;
+    let (_b, b_tok) = enroll(&app, &seeded, "mf-push-b").await;
+    let mut ws = connect_from(&app, &a_tok, &["managed-forward"], None).await;
+    let mut other = connect_from(&app, &b_tok, &["managed-forward"], None).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let (tid, tok) = (&seeded.tenant_id, &seeded.admin.access_token);
+    report_listener(&app, &mut ws, tid, tok, &a, 22).await;
+    // The hello push (an empty set) may still be on its way: drain it.
+    let _ = recv_t(&mut ws, "rc:forward.set", Duration::from_millis(1500)).await;
+
+    let (s, body) = post(
+        &app,
+        &format!("/api/tenant/{tid}/managed-forward"),
+        tok,
+        &spec(&a, 15432),
+    )
+    .await;
+    assert_eq!(s, 201, "{body}");
+    let id = body["forward"]["id"].as_str().unwrap().to_string();
+    assert_eq!(body["forward"]["status"]["applied"], json!("pending"));
+
+    let set = recv_t(&mut ws, "rc:forward.set", Duration::from_secs(3))
+        .await
+        .expect("the ingress agent gets its set");
+    let f = &set["forwards"][0];
+    assert_eq!(
+        (f["id"].as_str(), f["revision"].as_u64(), f["port"].as_u64()),
+        (Some(id.as_str()), Some(1), Some(15432))
+    );
+    assert_eq!(f["sources"], json!(["100.64.0.0/10"]));
+
+    // Another agent's ack, and an ack of a revision that does not exist, count for nothing.
+    status(&mut other, &id, 1, true).await;
+    status(&mut ws, &id, 7, true).await;
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    let v = applied(&app, tid, tok, &id, "pending").await;
+    assert_eq!(v["status"]["applied"], json!("pending"), "{v}");
+
+    // The ingress agent's own ack of revision 1.
+    status(&mut ws, &id, 1, true).await;
+    let v = applied(&app, tid, tok, &id, "applied").await;
+    assert_eq!(v["status"]["applied"], json!("applied"), "{v}");
+    assert_eq!(v["status"]["verified"], json!("unverified"));
+
+    // A bind failure reads as failed, with the agent's reason.
+    let m = json!({ "t": "rc:forward.status", "statuses": [{ "id": id, "revision": 1, "listening": false, "error": "Address in use" }] });
+    ws.send(Message::Text(m.to_string().into())).await.unwrap();
+    let v = applied(&app, tid, tok, &id, "failed").await;
+    assert_eq!(
+        (v["status"]["applied"].clone(), v["status"]["error"].clone()),
+        (json!("failed"), json!("Address in use"))
+    );
+}
+
+#[tokio::test]
+async fn an_agent_without_the_capability_is_never_pushed() {
+    let app = TestApp::spawn().await;
+    let seeded = app.seed_tenant("mf-nocap").await;
+    let (a, a_tok) = enroll(&app, &seeded, "mf-nocap-a").await;
+    let mut ws = connect_from(&app, &a_tok, &[], None).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let (tid, tok) = (&seeded.tenant_id, &seeded.admin.access_token);
+    report_listener(&app, &mut ws, tid, tok, &a, 22).await;
+    let (s, _) = post(
+        &app,
+        &format!("/api/tenant/{tid}/managed-forward"),
+        tok,
+        &spec(&a, 15432),
+    )
+    .await;
+    assert_eq!(s, 201);
+    assert!(
+        recv_t(&mut ws, "rc:forward.set", Duration::from_secs(2))
+            .await
+            .is_none()
     );
 }
