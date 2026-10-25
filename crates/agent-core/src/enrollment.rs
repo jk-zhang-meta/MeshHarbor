@@ -333,6 +333,7 @@ pub async fn enroll(inputs: EnrollInputs<'_>) -> Result<AgentConfig> {
         overlay_netstack_tcp_tx_buf: None,
         overlay_netstack_tcp_cc: None,
         overlay_netstack_tcp_pacing: None,
+        overlay_netstack_tcp_sack: None,
         overlay_netd: None,
         overlay_pathmon: None,
         overlay_route_events: None,

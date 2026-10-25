@@ -825,6 +825,14 @@ const KEYS: &[KeyMeta] = &[
         description: "netstack TCP send pacing: data leaves at gain × cwnd / srtt instead of a window at a time, so compressed ACKs do not release whole bursts into a shallow queue. Built-in default: off (opt-in). Env: ROOMLERD_OVERLAY_NETSTACK_TCP_PACING.",
     },
     KeyMeta {
+        key: "overlay_netstack_tcp_sack",
+        group: Group::NetworkCarriers,
+        tier: Tier::Advanced,
+        live: false,
+        kind: "tribool",
+        description: "netstack TCP SACK loss recovery: a loss resends only the holes the peer's SACK blocks reveal instead of the whole window after it (go-back-N). Built-in default: on (off is the kill switch). Env: ROOMLERD_OVERLAY_NETSTACK_TCP_SACK.",
+    },
+    KeyMeta {
         key: "net_inventory",
         group: Group::NetworkCarriers,
         tier: Tier::Advanced,
@@ -2066,6 +2074,7 @@ fn current_value(cfg: &AgentConfig, key: &str) -> Option<String> {
         "overlay_netstack_tcp_tx_buf" => cfg.overlay_netstack_tcp_tx_buf.map(|v| v.to_string()),
         "overlay_netstack_tcp_cc" => cfg.overlay_netstack_tcp_cc.clone(),
         "overlay_netstack_tcp_pacing" => cfg.overlay_netstack_tcp_pacing.map(fmt_bool),
+        "overlay_netstack_tcp_sack" => cfg.overlay_netstack_tcp_sack.map(fmt_bool),
         "overlay_netd" => cfg.overlay_netd.map(fmt_bool),
         "overlay_pathmon" => cfg.overlay_pathmon.clone(),
         "overlay_demote" => cfg.overlay_demote.clone(),
@@ -2549,6 +2558,7 @@ pub fn apply(cfg: &mut AgentConfig, key: &str, value: Option<&str>) -> Result<()
             }
         }
         "overlay_netstack_tcp_pacing" => cfg.overlay_netstack_tcp_pacing = parse_tribool(value)?,
+        "overlay_netstack_tcp_sack" => cfg.overlay_netstack_tcp_sack = parse_tribool(value)?,
         "overlay_netd" => cfg.overlay_netd = parse_tribool(value)?,
         "overlay_pathmon" => {
             cfg.overlay_pathmon = match value.map(str::trim).filter(|s| !s.is_empty()) {
@@ -4225,6 +4235,34 @@ mod tests {
             crate::config::env_bridge_bools(&cfg)
                 .iter()
                 .any(|(k, _)| *k == "OVERLAY_NETSTACK_TCP_PACING"),
+            "key must be bridged to the daemon's env"
+        );
+    }
+
+    /// §6 item 5 — the netstack TCP SACK recovery key: tribool, default None
+    /// (daemon built-in on), bridged to the daemon env.
+    #[test]
+    fn overlay_netstack_tcp_sack_set_echo_clear() {
+        let mut cfg = crate::config::test_fixture();
+        assert_eq!(
+            cfg.overlay_netstack_tcp_sack, None,
+            "unset → daemon default (on)"
+        );
+        apply(&mut cfg, "overlay_netstack_tcp_sack", Some("off")).unwrap();
+        assert_eq!(cfg.overlay_netstack_tcp_sack, Some(false));
+        assert_eq!(
+            current_value(&cfg, "overlay_netstack_tcp_sack").as_deref(),
+            Some("false")
+        );
+        apply(&mut cfg, "overlay_netstack_tcp_sack", None).unwrap();
+        assert_eq!(
+            cfg.overlay_netstack_tcp_sack, None,
+            "clear → built-in default"
+        );
+        assert!(
+            crate::config::env_bridge_bools(&cfg)
+                .iter()
+                .any(|(k, _)| *k == "OVERLAY_NETSTACK_TCP_SACK"),
             "key must be bridged to the daemon's env"
         );
     }

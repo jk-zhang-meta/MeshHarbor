@@ -24,6 +24,12 @@ pub(super) trait Controller {
 
     fn on_duplicate_ack(&mut self, now: Instant) {}
 
+    /// ROOMLER PATCH: SACK recovery (`tcp.rs`) found a loss, possibly before
+    /// three duplicate ACKs arrived; react as to a fast retransmit.
+    fn on_fast_retransmit(&mut self, now: Instant) {
+        self.on_retransmit(now)
+    }
+
     fn pre_transmit(&mut self, now: Instant) {}
 
     fn post_transmit(&mut self, now: Instant, len: usize) {}

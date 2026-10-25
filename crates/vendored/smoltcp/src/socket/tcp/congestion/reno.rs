@@ -132,6 +132,11 @@ impl Controller for Reno {
         }
     }
 
+    fn on_fast_retransmit(&mut self, now: Instant) {
+        self.dup_acks = self.dup_acks.max(DUP_ACK_THRESHOLD);
+        self.on_retransmit(now);
+    }
+
     fn set_mss(&mut self, mss: usize) {
         self.mss = mss.max(1);
         if self.initial {

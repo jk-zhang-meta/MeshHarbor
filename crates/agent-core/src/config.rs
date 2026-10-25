@@ -807,6 +807,11 @@ pub struct AgentConfig {
     /// Built-in default: off (opt-in until the field shows a gain).
     #[serde(default)]
     pub overlay_netstack_tcp_pacing: Option<bool>,
+    /// §6 item 5 — netstack TCP SACK loss recovery: a loss resends only the
+    /// holes the peer's SACK blocks reveal, not the whole window after it
+    /// (`ROOMLERD_OVERLAY_NETSTACK_TCP_SACK`). Built-in default: on.
+    #[serde(default)]
+    pub overlay_netstack_tcp_sack: Option<bool>,
     /// Track A stage 1 — spawn the session-independent network daemon
     /// (`roomlerd netd`) as a SECOND supervisor child. SCAFFOLD ONLY for
     /// now: netd heartbeats and hosts nothing; the network plane still
@@ -2848,6 +2853,7 @@ pub fn test_fixture() -> AgentConfig {
         overlay_netstack_tcp_tx_buf: None,
         overlay_netstack_tcp_cc: None,
         overlay_netstack_tcp_pacing: None,
+        overlay_netstack_tcp_sack: None,
         overlay_netd: None,
         overlay_pathmon: None,
         overlay_route_events: None,
@@ -3077,7 +3083,7 @@ mod derived_port_tests {
     }
 }
 
-pub fn env_bridge_bools(cfg: &AgentConfig) -> [(&'static str, Option<bool>); 94] {
+pub fn env_bridge_bools(cfg: &AgentConfig) -> [(&'static str, Option<bool>); 95] {
     [
         ("SHARED_ENCODER", cfg.shared_encoder),
         ("AREA_MIN_BITRATE", cfg.area_min_bitrate),
@@ -3147,6 +3153,7 @@ pub fn env_bridge_bools(cfg: &AgentConfig) -> [(&'static str, Option<bool>); 94]
         ("OVERLAY_VPN_VANTAGE", cfg.overlay_vpn_vantage),
         ("OVERLAY_PORTMAP", cfg.overlay_portmap),
         ("OVERLAY_NETSTACK_TCP_PACING", cfg.overlay_netstack_tcp_pacing),
+        ("OVERLAY_NETSTACK_TCP_SACK", cfg.overlay_netstack_tcp_sack),
         ("OVERLAY_IPV6", cfg.overlay_ipv6),
         ("NET_INVENTORY", cfg.net_inventory),
         ("OVERLAY_ROUTE_EVENTS", cfg.overlay_route_events),

@@ -10,6 +10,12 @@
 #     IW10, RFC 3465 byte counting) in place of upstream's Reno, which
 #     started at 2 KiB, never cut cwnd on duplicate ACKs and fell back to
 #     one MSS on every ACK in congestion avoidance.
+#   - src/socket/tcp.rs: optional send pacing (`set_pacing_enabled`, off by
+#     default) and optional SACK loss recovery (`set_sack_recovery_enabled`,
+#     RFC 6675 simplified): a scoreboard of the peer's SACK blocks, holes
+#     resent in place of go-back-N, `pipe` in place of bytes-sent for cwnd,
+#     and three SACK blocks per ACK on the receive side. Both are inert
+#     unless enabled; a timeout still resends go-back-N.
 #   - this header. The tarball's Cargo.lock is not carried (its own
 #     .gitignore excludes it; the workspace lockfile governs).
 # MeshHarbor §6 item 5: the overlay netstack's TCP (tunnel-core
