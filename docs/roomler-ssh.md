@@ -963,6 +963,28 @@ reaches that server, which offers passwords too. A "Permission denied
 (publickey,password,keyboard-interactive)" is that `sshd` answering, not
 roomler. The first P4b run dialled 22 and met exactly that.
 
+### Bulk throughput: the channel window
+
+Every channel offers a **16 MiB** receive window (`ROOMLERD_SSH_WINDOW_SIZE`,
+bytes, 256 KiB–64 MiB; `sshd::channel_window` in `agents/roomlerd/src/ssh.rs`).
+russh's own default is 2 MiB, re-opened at half. One upload can have no more than
+the window in flight, and the bytes still waiting in the client's own socket
+buffers count against it, so a long round trip held the upload at window / RTT:
+
+| HK → Tokyo over the netstack, 43 ms (field, 2026-10-26) | upload (Mbit/s) | download (Mbit/s) |
+|---|---|---|
+| 2 MiB (russh's default) | 167, 167 | 224, 243 |
+| 16 MiB (the default now) | 249, 244 | 225, 186 |
+| 64 MiB | 240 | 246 |
+
+- **Download is the client's window** (OpenSSH's own), so it does not move with
+  this setting.
+- **Past 16 MiB nothing improves.** The upload then runs level with the download,
+  bounded by something else on the path.
+- **Memory stays bounded whatever the window.** russh hands each data packet to a
+  100-message channel and waits, so a slow consumer backs the reader into TCP flow
+  control instead of buffering the window.
+
 ### Port forwarding — `-L`, `-J`, `-W` (P7b — shipped)
 
 `ssh -L 5432:db.intranet:5432 <node>`, `ssh -J <node> <target>` and

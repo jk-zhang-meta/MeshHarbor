@@ -540,6 +540,26 @@ pub(crate) mod sshd {
 
     use super::{ActivitySink, Asker};
 
+    /// The receive window each channel offers; russh re-opens it at half.
+    /// One channel can have at most this much unacknowledged data in flight,
+    /// and the bytes still sitting in the client's own socket buffers count
+    /// against it, so a long round trip bounds a bulk upload near
+    /// window / RTT. Field, 2026-10-26 (HK↔Tokyo over the netstack, 43 ms):
+    /// uploads held at 167 Mbit/s with russh's 2 MiB default, 243–249 with
+    /// 16 MiB, and 64 MiB was no faster. Memory stays bounded whatever the
+    /// window: russh hands each data packet to a 100-message channel and
+    /// waits, so a slow consumer backs the reader into TCP flow control.
+    /// `ROOMLERD_SSH_WINDOW_SIZE` overrides, in bytes.
+    const WINDOW_DEFAULT: u32 = 16 * 1024 * 1024;
+    const WINDOW_RANGE: std::ops::RangeInclusive<u32> = 256 * 1024..=64 * 1024 * 1024;
+
+    fn channel_window() -> u32 {
+        tunnel_core::env::node_env("SSH_WINDOW_SIZE")
+            .and_then(|v| v.trim().parse::<u32>().ok())
+            .filter(|n| WINDOW_RANGE.contains(n))
+            .unwrap_or(WINDOW_DEFAULT)
+    }
+
     /// Everything a session needs, resolved once when the overlay device is
     /// built rather than per connection.
     pub struct Ctx {
@@ -658,6 +678,7 @@ pub(crate) mod sshd {
                 auth_rejection_time: Duration::from_secs(2),
                 auth_rejection_time_initial: Some(Duration::from_secs(0)),
                 keys: vec![host_key],
+                window_size: channel_window(),
                 ..Default::default()
             };
 
@@ -744,6 +765,7 @@ pub(crate) mod sshd {
                 auth_rejection_time: Duration::from_secs(2),
                 auth_rejection_time_initial: Some(Duration::from_secs(0)),
                 keys: vec![host_key],
+                window_size: channel_window(),
                 ..Default::default()
             };
             info!(%fingerprint, ?ceiling, "ssh-service: serving a connection");
