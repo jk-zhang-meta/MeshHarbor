@@ -229,6 +229,49 @@ quiet mesh would never re-attempt direct after a fallback. A re-upgrade tick
 retrying a tier whose penalty has decayed back under the eligibility bar and
 driving punch convergence at large install skew.
 
+### 6. Map the punch port on the gateway (PCP, then NAT-PMP)
+
+A punch needs one end whose NAT accepts any remote. A gateway port mapping
+gives exactly that, so a symmetric↔symmetric pair still goes direct when one
+side's gateway grants a mapping. This is the step 4 case that otherwise falls
+to relay. Reference: Tailscale's portmapper. UPnP IGD is not implemented yet,
+and mainland ISP gateways mostly speak only UPnP.
+
+- **Who asks:** the srflx keepalive owner. That is the plane srflx task in
+  plane mode (the default), or the legacy `run_srflx_keepalive`. It asks
+  once at start, after the STUN advert is already out, so a gateway that never
+  answers (most cloud VMs) delays nothing. The cost is at most 2 ×
+  `portmap::WAIT` = 1 s in that task, after which a host with no mapper sends
+  no further probes.
+- **What it asks:** a mapping of the punch socket's own port, with the gateway
+  taken from the default route's next hop (`netstate::default_gateway_v4`).
+  PCP is tried first, then NAT-PMP.
+- **When it is used:** only when the external IP is one STUN saw. A
+  different IP means the gateway is not the NAT peers would reach (a second
+  NAT); `portmap::map_udp` already refuses a private or CGNAT external address.
+- **What peers see:** the external address goes FIRST among the srflx
+  candidates (peers dial index 0 first) and the advertised NAT becomes
+  `cone`, so the both-symmetric skip does not fire. The keepalive's own
+  STUN state stays STUN-only, because `[0]` is still the punch mapping it
+  compares against.
+- **Lifetime:**
+  - The mapping is refreshed at half its granted lifetime, and at once when
+    the STUN mapping moves.
+  - A lost mapping is re-advertised without the candidate and asked for again
+    after 5 min.
+  - The legacy task releases the mapping on a clean exit. An aborted task (a
+    plane rebuild) leaves the mapping to expire.
+- **Why the PCP nonce is keyed:** the nonce is HMAC(node secret, local IP,
+  port), not random. The direct port is stable across restarts, and a gateway
+  refuses a MAP for a port it already maps under another nonce
+  (`NOT_AUTHORIZED`, for the rest of the old lifetime). With the same nonce, a
+  restart or rebuild re-requesting the port is a refresh. In plane mode the
+  first org runtime's key wins, like the gather.
+- **Visibility:** `roomler status` shows `gateway pcp <ip:port>` on the srflx
+  line, in plane mode. Legacy mode logs the grant (`gateway port mapping
+  granted`) but its status keeps the startup snapshot.
+- **Kill switch:** `ROOMLERD_OVERLAY_PORTMAP=0`, config key `overlay_portmap`.
+
 ### The accept side
 
 Both A and C rely on the exit/peer *accepting* an inbound INIT from a source it
