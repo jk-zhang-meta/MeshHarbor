@@ -254,6 +254,11 @@ jobs:
       - name: Vendored webrtc-sctp drift check
         run: bash scripts/revendor-webrtc-sctp.sh --check
 
+      # Same invariant for the smoltcp fork (cwnd bounds bytes in flight, and
+      # a NewReno-lite; see crates/vendored/smoltcp/Cargo.toml).
+      - name: Vendored smoltcp drift check
+        run: bash scripts/revendor-smoltcp.sh --check
+
       # The GTK/WebKit set (workspace clippy, the tray and wizard crates) and
       # the libvpx / xcb / alsa / cmake / libclang set (vp9-444, capture,
       # audio, bindgen), from cache-apt-pkgs-action with the guards against

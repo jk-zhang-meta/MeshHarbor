@@ -162,6 +162,7 @@ is documented at the top of the root `Cargo.toml`):
 | `crates/vendored/webrtc-ice` | TURNS-over-TLS-over-TCP relay candidates (upstream closed NOT_PLANNED) — corp networks that block all UDP |
 | `crates/vendored/webrtc` | exposes SCTP `a_rwnd` so native⇄native DataChannels advertise 8 MiB and stay link-bound at high BDP; `TrackLocalStaticSample::write_sample_after_gap` (#2284), which advances the RTP clock by the gap before a sample and stamps it with its own time, where upstream advances after it |
 | `crates/vendored/wintun-bindings` | keeps the Windows NetworkList registry entry on drop |
+| `crates/vendored/smoltcp` | the overlay netstack's TCP: the congestion window bounds bytes in flight (upstream it never did), and Reno is a NewReno-lite |
 
 ## Modular monolith — the shipped shape (FR-69)
 

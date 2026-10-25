@@ -162,6 +162,10 @@ smoltcp = { version = "0.13", optional = true, default-features = false, feature
     # a netstack host is `roomler ping`-able like a normal host (no app socket
     # needed to reply). The `ping` verb itself is `socket-icmp` (above).
     "auto-icmp-echo-reply",
+    # The congestion controller the netstack selects (the vendored smoltcp's
+    # NewReno-lite; see crates/vendored/smoltcp/Cargo.toml). Cubic stays off:
+    # upstream's works in bytes and resets cwnd from a 2 KiB w_max.
+    "socket-tcp-reno",
 ] }
 
 # Windows bindings (Win32). Always compiled on Windows (NOT optional) because

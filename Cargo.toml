@@ -69,6 +69,9 @@ exclude = [
     # Vendored upstream with the FORWARD-TSN bundled-chunk parse fix —
     # see the webrtc-sctp patch note below [patch.crates-io].
     "crates/vendored/webrtc-sctp",
+    # Vendored upstream with TCP congestion control that actually bounds
+    # bytes in flight — see the smoltcp patch note below [patch.crates-io].
+    "crates/vendored/smoltcp",
 ]
 
 # Patch webrtc-rs's rtp-0.12.0 dependency with our local vendored copy
@@ -149,11 +152,23 @@ exclude = [
 # session; ours drops the packet and lets SCTP retransmit it. One
 # canonical diff: crates/vendored/webrtc-sctp.patch
 # (scripts/revendor-webrtc-sctp.sh).
+#
+# smoltcp-0.13.1 (MeshHarbor §6 item 5, the overlay netstack): upstream's
+# congestion window never bounded bytes in flight — `seq_to_transmit` clipped
+# only the space the remote window left, and `dispatch` sized segments by the
+# remote window alone — so every controller let a sender fill the whole
+# remote window, and smoltcp's go-back-N recovery resent all of it on a loss.
+# The vendored copy makes cwnd bound the bytes in flight in both places and
+# replaces Reno with a NewReno-lite (IW10, byte-counted slow start, one
+# decrease per RTT on fast retransmit, one segment after a timeout); tunnel-core
+# selects it explicitly. Canonical diff: crates/vendored/smoltcp.patch
+# (scripts/revendor-smoltcp.sh).
 [patch.crates-io]
 rtp = { path = "crates/vendored/rtp" }
 webrtc-ice = { path = "crates/vendored/webrtc-ice" }
 webrtc = { path = "crates/vendored/webrtc" }
 webrtc-sctp = { path = "crates/vendored/webrtc-sctp" }
+smoltcp = { path = "crates/vendored/smoltcp" }
 wintun-bindings = { path = "crates/vendored/wintun-bindings" }
 scrap = { path = "crates/vendored/scrap" }
 

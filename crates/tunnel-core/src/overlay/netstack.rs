@@ -79,16 +79,19 @@ use super::tun::TunIo;
 /// wide window is safe here: 1 MiB carries about 170 Mbit/s at 50 ms.
 /// `OVERLAY_NETSTACK_TCP_RX_BUF` overrides it ([`TCP_BUF_MIN`]..=[`TCP_BUF_MAX`]).
 const TCP_RX_BUF: usize = 1024 * 1024;
-/// Per-socket smoltcp SEND buffer, which bounds this stack's bytes in flight.
-/// It stays small on purpose. smoltcp 0.13's congestion controllers compare
-/// cwnd with the window space left, never with bytes in flight, so they do not
-/// pace a sender (measured: none/reno/cubic give identical goodput and drops).
-/// Its loss recovery is go-back-N, so every byte in flight past the bottleneck
-/// queue is sent again: a 1 MiB send window put 3.2x the delivered bytes on the
-/// wire in the 50 ms / 256 KiB-queue simulation. 128 KiB doubles the old
-/// goodput with zero extra loss there. `OVERLAY_NETSTACK_TCP_TX_BUF` overrides
-/// it.
-const TCP_TX_BUF: usize = 128 * 1024;
+/// Per-socket smoltcp SEND buffer: the most this stack can have in flight.
+/// The congestion window ([`tcp_cc`], the vendored smoltcp's NewReno-lite, whose
+/// cwnd really bounds bytes in flight) is what paces a sender below it. Upstream
+/// smoltcp's never did, and its go-back-N recovery resent everything past the
+/// bottleneck queue: a 1 MiB send window put 3.2x the delivered bytes on the
+/// wire at 50 ms behind a 256 KiB queue, so this was held at 128 KiB. With the
+/// controller, 512 KiB (`netstack_tcp_buffer_matrix`, 10/50/100 ms x 64 KiB/
+/// 256 KiB/1 MiB queues) beats that old default in every cell, at most 1.18x
+/// wire per delivered byte even behind a 64 KiB queue; it reaches 79 Mbit/s at
+/// 50 ms (was 20) and loses only to 256 KiB on a long, shallow path (100 ms /
+/// 64 KiB queue: 7.6 vs 20 Mbit/s, still above the old 4). `OVERLAY_NETSTACK_TCP_TX_BUF`
+/// overrides it.
+const TCP_TX_BUF: usize = 512 * 1024;
 const TCP_BUF_MIN: usize = 16 * 1024;
 const TCP_BUF_MAX: usize = 16 * 1024 * 1024;
 /// Max bytes moved between a smoltcp socket buffer and an app channel in one
@@ -577,6 +580,19 @@ struct PollLoop {
 
 /// `name`'s byte count within the TCP buffer bounds; an unparseable or
 /// out-of-range value keeps `default`.
+/// The netstack TCP congestion controller: the vendored smoltcp's NewReno-lite,
+/// unless `OVERLAY_NETSTACK_TCP_CC=none` (the kill switch) turns it off, which
+/// leaves the send buffer as the only bound on bytes in flight.
+fn tcp_cc() -> tcp::CongestionControl {
+    match crate::env::node_env("OVERLAY_NETSTACK_TCP_CC")
+        .as_deref()
+        .map(str::trim)
+    {
+        Some(v) if v.eq_ignore_ascii_case("none") => tcp::CongestionControl::None,
+        _ => tcp::CongestionControl::Reno,
+    }
+}
+
 fn tcp_buf(name: &str, default: usize) -> usize {
     crate::env::node_env(name)
         .and_then(|v| v.trim().parse::<usize>().ok())
@@ -599,10 +615,15 @@ impl PollLoop {
         Self::new_tcp_socket_with(
             tcp_buf("OVERLAY_NETSTACK_TCP_RX_BUF", TCP_RX_BUF),
             tcp_buf("OVERLAY_NETSTACK_TCP_TX_BUF", TCP_TX_BUF),
+            tcp_cc(),
         )
     }
 
-    fn new_tcp_socket_with(rx: usize, tx: usize) -> tcp::Socket<'static> {
+    fn new_tcp_socket_with(
+        rx: usize,
+        tx: usize,
+        cc: tcp::CongestionControl,
+    ) -> tcp::Socket<'static> {
         // A buffer's pages are touched only as data flows through it, so an
         // idle socket stays cheap whatever the window.
         let mut sock = tcp::Socket::new(
@@ -612,6 +633,7 @@ impl PollLoop {
         // Small SSH/SOCKS writes must keep reaching a recovered path while
         // older data is in flight, allowing normal ACK-driven TCP recovery.
         sock.set_nagle_enabled(false);
+        sock.set_congestion_control(cc);
         sock
     }
 
@@ -1429,6 +1451,7 @@ mod tests {
     /// on the wire per byte delivered).
     fn sim_bulk(
         (rx, tx): (usize, usize),
+        cc: tcp::CongestionControl,
         one_way_ms: i64,
         queue_bytes: i64,
         sim_ms: i64,
@@ -1451,10 +1474,10 @@ mod tests {
         let b_ip = Ipv4Addr::new(100, 64, 0, 2);
         let (mut ad, mut ai, mut sockets_a, mut a_out) = node(a_ip);
         let (mut bd, mut bi, mut sockets_b, mut b_out) = node(b_ip);
-        let mut server = PollLoop::new_tcp_socket_with(rx, tx);
+        let mut server = PollLoop::new_tcp_socket_with(rx, tx, cc);
         server.listen(2222).unwrap();
         let sh = sockets_b.add(server);
-        let mut client = PollLoop::new_tcp_socket_with(rx, tx);
+        let mut client = PollLoop::new_tcp_socket_with(rx, tx, cc);
         client.connect(ai.context(), (IpAddress::from(b_ip), 2222), 49152).unwrap();
         let ch = sockets_a.add(client);
         // A 100 Mbit/s bottleneck both ways.
@@ -1506,31 +1529,112 @@ mod tests {
 
     /// MeshHarbor §6 item 5. On a 50 ms, 100 Mbit/s path behind a moderate
     /// 256 KiB queue, the old 64 KiB buffers are window-bound near 9 Mbit/s;
-    /// the production defaults must at least double that with NO extra loss
-    /// (smoltcp's go-back-N recovery makes every drop expensive).
+    /// the production defaults (with their congestion control) must at least
+    /// double that with NO extra loss (smoltcp's go-back-N recovery makes every
+    /// drop expensive).
     #[test]
     fn the_default_buffers_double_a_50ms_path_without_extra_loss() {
-        let (old, old_drops, _) = sim_bulk((64 * 1024, 64 * 1024), 25, 256 * 1024, 6_000, 2_000);
-        let (new, drops, amp) = sim_bulk((TCP_RX_BUF, TCP_TX_BUF), 25, 256 * 1024, 6_000, 2_000);
-        eprintln!("OBSERVED netstack 50ms/100Mbit/256KiB-queue: old {old:.1} Mbit/s ({old_drops} drops), default {new:.1} Mbit/s ({drops} drops, wire/delivered {amp:.2})");
+        use tcp::CongestionControl::{None as NoCc, Reno};
+        let (old, old_drops, _) =
+            sim_bulk((64 * 1024, 64 * 1024), NoCc, 25, 256 * 1024, 6_000, 2_000);
+        let (new, drops, amp) =
+            sim_bulk((TCP_RX_BUF, TCP_TX_BUF), Reno, 25, 256 * 1024, 6_000, 2_000);
+        eprintln!(
+            "OBSERVED netstack 50ms/100Mbit/256KiB-queue: old {old:.1} Mbit/s ({old_drops} drops), default {new:.1} Mbit/s ({drops} drops, wire/delivered {amp:.2})"
+        );
         assert!(old < 12.0, "the old window is the bound: {old:.1}");
         assert!(new > 1.8 * old, "the default must at least double it: {new:.1} vs {old:.1}");
         assert_eq!(drops, 0, "and add no loss");
         assert!(amp < 1.1, "nor retransmission waste: {amp:.2}");
     }
 
+    /// The vendored smoltcp's cwnd bounds bytes in flight. A send window far
+    /// past the path (1 MiB at 50 ms behind a 256 KiB queue) floods the queue
+    /// with no controller and is resent go-back-N; Reno keeps the waste small.
+    /// A shallow 64 KiB queue at the production default stays bounded too.
+    #[test]
+    fn reno_bounds_bytes_in_flight_where_none_floods_the_queue() {
+        use tcp::CongestionControl::{None as NoCc, Reno};
+        let (_, none_drops, none_amp) = sim_bulk(
+            (TCP_RX_BUF, 1024 * 1024),
+            NoCc,
+            25,
+            256 * 1024,
+            6_000,
+            2_000,
+        );
+        let (reno, reno_drops, reno_amp) = sim_bulk(
+            (TCP_RX_BUF, 1024 * 1024),
+            Reno,
+            25,
+            256 * 1024,
+            6_000,
+            2_000,
+        );
+        eprintln!(
+            "OBSERVED 1MiB send window: none {none_drops} drops amp {none_amp:.2}; reno {reno:.1} Mbit/s {reno_drops} drops amp {reno_amp:.2}"
+        );
+        assert!(
+            none_amp > 2.5,
+            "without cwnd the window floods the queue: {none_amp:.2}"
+        );
+        assert!(reno_amp < 1.2, "reno resends little: {reno_amp:.2}");
+        assert!(
+            reno_drops * 10 < none_drops,
+            "and drops a tenth as much: {reno_drops} vs {none_drops}"
+        );
+        for one_way in [5i64, 25] {
+            let (mbps, _, amp) = sim_bulk(
+                (TCP_RX_BUF, TCP_TX_BUF),
+                Reno,
+                one_way,
+                64 * 1024,
+                6_000,
+                2_000,
+            );
+            eprintln!(
+                "OBSERVED default, {}ms behind a 64 KiB queue: {mbps:.1} Mbit/s amp {amp:.2}",
+                one_way * 2
+            );
+            assert!(
+                amp < 1.15,
+                "a shallow queue costs little at the default: {amp:.2}"
+            );
+        }
+    }
+
     /// The measurement behind the defaults: goodput, drops and wire
-    /// amplification per send bound, RTT and bottleneck queue depth.
+    /// amplification per congestion controller, send bound, RTT and
+    /// bottleneck queue depth.
     #[test]
     #[ignore = "netstack TCP buffer matrix; run with --ignored --nocapture"]
     fn netstack_tcp_buffer_matrix() {
-        for one_way in [5i64, 25, 50] {
-            for queue in [64 * 1024i64, 256 * 1024, 1024 * 1024] {
-                for tx in [64 * 1024, 128 * 1024, 256 * 1024, 512 * 1024, 1024 * 1024] {
-                    let rx = if tx == 64 * 1024 { 64 * 1024 } else { TCP_RX_BUF };
-                    let (mbps, drops, amp) = sim_bulk((rx, tx), one_way, queue, 8_000, 3_000);
-                    eprintln!("OBSERVED rtt={}ms queue={}KiB rx={}KiB tx={}KiB goodput={mbps:.1} drops={drops} wire/delivered={amp:.2}",
-                        one_way * 2, queue / 1024, rx / 1024, tx / 1024);
+        for cc in [tcp::CongestionControl::None, tcp::CongestionControl::Reno] {
+            for one_way in [5i64, 25, 50] {
+                for queue in [64 * 1024i64, 256 * 1024, 1024 * 1024] {
+                    for tx in [
+                        64 * 1024,
+                        128 * 1024,
+                        256 * 1024,
+                        512 * 1024,
+                        1024 * 1024,
+                        4096 * 1024,
+                    ] {
+                        let rx = if tx == 64 * 1024 {
+                            64 * 1024
+                        } else {
+                            TCP_RX_BUF.max(tx)
+                        };
+                        let (mbps, drops, amp) =
+                            sim_bulk((rx, tx), cc, one_way, queue, 8_000, 3_000);
+                        eprintln!(
+                            "OBSERVED cc={cc:?} rtt={}ms queue={}KiB rx={}KiB tx={}KiB goodput={mbps:.1} drops={drops} wire/delivered={amp:.2}",
+                            one_way * 2,
+                            queue / 1024,
+                            rx / 1024,
+                            tx / 1024
+                        );
+                    }
                 }
             }
         }
