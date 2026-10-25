@@ -343,3 +343,63 @@ async fn an_agent_without_the_capability_is_never_pushed() {
             .is_none()
     );
 }
+
+/// Once applied, the forward's own listener shows in the next inventory as
+/// roomlerd's: an update on the same port is not a collision with itself.
+#[tokio::test]
+async fn an_applied_forwards_own_listener_is_not_a_collision() {
+    let app = TestApp::spawn().await;
+    let seeded = app.seed_tenant("mf-own").await;
+    let (a, a_tok) = enroll(&app, &seeded, "mf-own-a").await;
+    let mut ws = connect_from(&app, &a_tok, &[], None).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let (tid, tok) = (&seeded.tenant_id, &seeded.admin.access_token);
+    report_listener(&app, &mut ws, tid, tok, &a, 22).await;
+    let base = format!("/api/tenant/{tid}/managed-forward");
+    let (s, body) = post(&app, &base, tok, &spec(&a, 15432)).await;
+    assert_eq!(s, 201, "{body}");
+    let id = body["forward"]["id"].as_str().unwrap().to_string();
+    // The node now reports roomlerd on 15432 (seq 2 of the same boot).
+    let inv = NetInventory {
+        os: "linux".into(),
+        namespaces: "host_only".into(),
+        listeners: Section::capped(
+            vec![
+                Listener {
+                    proto: L4::Tcp,
+                    addr: "100.64.0.2".into(),
+                    port: 15432,
+                    process: Some("roomlerd".into()),
+                },
+                Listener {
+                    proto: L4::Tcp,
+                    addr: "0.0.0.0".into(),
+                    port: 22,
+                    process: Some("sshd".into()),
+                },
+            ],
+            10,
+        ),
+        ..Default::default()
+    };
+    let frame = json!({ "t": "rc:agent.net_inventory", "boot_id": "b1", "seq": 2, "page": 0, "pages": 1,
+        "observed_at_ms": 2, "inventory": inv });
+    ws.send(Message::Text(frame.to_string().into()))
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let mut upd = spec(&a, 15432);
+    upd["name"] = json!("db renamed");
+    let r = app
+        .client
+        .put(app.url(&format!("{base}/{id}")))
+        .bearer_auth(tok)
+        .json(&json!({ "expected_revision": 1, "spec": upd }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status().as_u16(), 200, "{}", r.text().await.unwrap());
+    // A different, unmanaged process on another port still collides.
+    let (s, body) = post(&app, &format!("{base}/plan"), tok, &spec(&a, 22)).await;
+    assert_eq!((s, body["ok"].clone()), (200, json!(false)), "{body}");
+}

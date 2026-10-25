@@ -308,11 +308,24 @@ pub async fn plan(
     }
     if let Some(id) = ingress.filter(|_| ingress_agent.is_some()) {
         let bind: Option<IpAddr> = spec.bind_addr.trim().parse().ok();
+        // The ports this node's managed forwards hold: once applied, their
+        // own listeners show in the inventory as roomlerd's, and are not
+        // foreign (another forward on the same port fails `managed overlap`).
+        let managed_ports: Vec<(L4, u16)> = list(state, tenant_id)
+            .await
+            .unwrap_or_default()
+            .iter()
+            .filter(|f| f.spec.ingress_agent_id == spec.ingress_agent_id)
+            .map(|f| (f.spec.proto, f.spec.port))
+            .collect();
         match crate::net_inventory::get(state, tenant_id, id).await {
             Ok(Some(row)) if row.fresh(DateTime::now()) => {
                 let l = &row.inventory.listeners;
                 let clash = l.items.iter().find(|x| {
-                    x.proto == spec.proto
+                    let ours = x.process.as_deref() == Some("roomlerd")
+                        && managed_ports.contains(&(x.proto, x.port));
+                    !ours
+                        && x.proto == spec.proto
                         && x.port == spec.port
                         && x.addr.parse::<IpAddr>().is_ok_and(|a| {
                             a.is_unspecified() || bind.is_some_and(|b| b.is_unspecified() || b == a)
