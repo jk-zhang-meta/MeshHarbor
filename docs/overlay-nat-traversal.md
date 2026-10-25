@@ -229,23 +229,41 @@ quiet mesh would never re-attempt direct after a fallback. A re-upgrade tick
 retrying a tier whose penalty has decayed back under the eligibility bar and
 driving punch convergence at large install skew.
 
-### 6. Map the punch port on the gateway (PCP, then NAT-PMP)
+### 6. Map the punch port on the gateway (PCP, NAT-PMP, then UPnP IGD)
 
 A punch needs one end whose NAT accepts any remote. A gateway port mapping
 gives exactly that, so a symmetric↔symmetric pair still goes direct when one
 side's gateway grants a mapping. This is the step 4 case that otherwise falls
-to relay. Reference: Tailscale's portmapper. UPnP IGD is not implemented yet,
-and mainland ISP gateways mostly speak only UPnP.
+to relay. Reference: Tailscale's portmapper, which tries the same three
+protocols. Mainland ISP gateways mostly speak only UPnP.
 
 - **Who asks:** the srflx keepalive owner. That is the plane srflx task in
   plane mode (the default), or the legacy `run_srflx_keepalive`. It asks
   once at start, after the STUN advert is already out, so a gateway that never
-  answers (most cloud VMs) delays nothing. The cost is at most 2 ×
-  `portmap::WAIT` = 1 s in that task, after which a host with no mapper sends
-  no further probes.
+  answers (most cloud VMs) delays nothing. The cost is at most 3 ×
+  `portmap::WAIT` = 1.5 s in that task (PCP, NAT-PMP, SSDP), after which a
+  host with no mapper sends no further probes.
 - **What it asks:** a mapping of the punch socket's own port, with the gateway
   taken from the default route's next hop (`netstate::default_gateway_v4`).
-  PCP is tried first, then NAT-PMP.
+  PCP is tried first, then NAT-PMP, then UPnP IGD (`portmap/upnp.rs`).
+- **UPnP IGD:**
+  - **Discovery:** an SSDP `M-SEARCH` for `InternetGatewayDevice:1` and `:2`,
+    sent to the gateway's `:1900` and to the multicast group.
+  - **Device description:** fetched over HTTP; the client looks for a
+    `WANIPConnection:2`, `WANIPConnection:1` or `WANPPPConnection:1` control
+    URL.
+  - **SOAP actions:** `GetExternalIPAddress`, `AddPortMapping` and
+    `DeletePortMapping`, over a minimal HTTP/1.1 client (offline builds have
+    no HTTP or XML crate).
+  - **Trust:** only the gateway. The SSDP reply must come from it, and the
+    description and control URLs must point at it.
+  - **Retries:** a permanent-only router (725) is asked again with lease 0, and
+    a taken external port (718) moves to a random one.
+  - **Fallback order:** UPnP is tried only on a fresh ask. A PCP or NAT-PMP
+    mapping that fails to refresh counts as a loss, and the retry tries all
+    three protocols again.
+  - **Cost:** a silent network costs at most about 1.5 s, once, in the
+    background.
 - **When it is used:** only when the external IP is one STUN saw. A
   different IP means the gateway is not the NAT peers would reach (a second
   NAT); `portmap::map_udp` already refuses a private or CGNAT external address.

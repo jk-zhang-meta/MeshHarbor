@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (C) 2026 G ROX EOOD
 //! MeshHarbor §6 item 5 — UDP port mapping on the local gateway: PCP
-//! (RFC 6887) first, NAT-PMP (RFC 6886) as the fallback.
+//! (RFC 6887) first, NAT-PMP (RFC 6886) next, UPnP IGD ([`upnp`]) last.
 //!
 //! A mapped port is an inbound-reachable `public_ip:port` for one of this
 //! node's direct sockets. Hole punching needs one end whose NAT does not care
 //! which remote it talks to; a mapping is exactly that by construction, so a
 //! peer behind a symmetric NAT can still reach this node directly. The
-//! reference is Tailscale's portmapper; UPnP IGD is not implemented here.
+//! reference is Tailscale's portmapper, which tries the same three.
 //!
 //! Scope: the two wire protocols, one request/response exchange each, the
 //! checks that make a result safe to advertise, and [`PortMapper`], the
@@ -39,6 +39,8 @@ use tokio::net::UdpSocket;
 use tracing::{debug, info};
 
 use super::direct::is_public_v4;
+
+mod upnp;
 
 /// The gateway port both protocols listen on.
 pub const SERVER_PORT: u16 = 5351;
@@ -87,6 +89,7 @@ const MAX_REPLY: usize = 1100;
 pub enum Proto {
     Pcp,
     NatPmp,
+    Upnp,
 }
 
 /// A granted mapping: `external` on the gateway forwards to `internal_port`
@@ -99,8 +102,10 @@ pub struct Mapping {
     pub external: SocketAddrV4,
     pub lifetime: Duration,
     /// PCP ties a mapping to its nonce: a refresh or a delete must repeat it
-    /// (RFC 6887 §11.2, §15). Zero for NAT-PMP.
+    /// (RFC 6887 §11.2, §15). Zero for NAT-PMP and UPnP.
     nonce: [u8; 12],
+    /// UPnP: the IGD service that holds it (refresh and delete go there).
+    upnp: Option<upnp::Ctl>,
 }
 
 /// Map `internal_port` (a UDP socket this host bound on `local`) on
@@ -141,6 +146,9 @@ pub async fn map_udp(
 /// Release `m` (a lifetime-0 request). Best effort: a lost release only leaves
 /// the gateway to expire the mapping at the end of its lifetime.
 pub async fn unmap_udp(gateway: SocketAddrV4, local: Ipv4Addr, m: &Mapping, wait: Duration) -> bool {
+    if m.proto == Proto::Upnp {
+        return upnp::unmap(m).await;
+    }
     match gateway_socket(gateway, local).await {
         Some((sock, client)) => unmap_on(&sock, client, m, wait).await,
         None => false,
@@ -153,6 +161,7 @@ pub async fn unmap_udp(gateway: SocketAddrV4, local: Ipv4Addr, m: &Mapping, wait
 /// mapper and pays no further probes.
 pub struct PortMapper {
     gateway: SocketAddrV4,
+    ssdp: upnp::Ssdp,
     local: Ipv4Addr,
     port: u16,
     nonce: [u8; 12],
@@ -175,11 +184,16 @@ impl PortMapper {
             .await
             .ok()
             .flatten()?;
-        Self::start_at(SocketAddrV4::new(gw, SERVER_PORT), sock, srflx, key).await
+        let ssdp = upnp::Ssdp {
+            to: SocketAddrV4::new(gw, upnp::SSDP_PORT),
+            multicast: true,
+        };
+        Self::start_at(SocketAddrV4::new(gw, SERVER_PORT), ssdp, sock, srflx, key).await
     }
 
     async fn start_at(
         gateway: SocketAddrV4,
+        ssdp: upnp::Ssdp,
         sock: &UdpSocket,
         srflx: &[String],
         key: &[u8],
@@ -189,6 +203,7 @@ impl PortMapper {
         };
         let mut pm = PortMapper {
             gateway,
+            ssdp,
             local: *at.ip(),
             port: at.port(),
             nonce: nonce_for(key, *at.ip(), at.port()),
@@ -213,6 +228,7 @@ impl PortMapper {
             let p = match m.proto {
                 Proto::Pcp => "pcp",
                 Proto::NatPmp => "nat-pmp",
+                Proto::Upnp => "upnp",
             };
             format!("{p} {}", m.external)
         })
@@ -232,16 +248,29 @@ impl PortMapper {
             return false;
         }
         let before = self.external();
-        let got = map_udp(
-            self.gateway,
-            self.local,
-            self.port,
-            self.mapping.as_ref(),
-            Some(self.nonce),
-            DEFAULT_LIFETIME_SECS,
-            WAIT,
-        )
-        .await;
+        let prev = self.mapping.as_ref();
+        let got = if prev.is_some_and(|m| m.proto == Proto::Upnp) {
+            upnp::map(self.ssdp, self.local, self.port, prev, DEFAULT_LIFETIME_SECS, WAIT).await
+        } else {
+            let pmp = map_udp(
+                self.gateway,
+                self.local,
+                self.port,
+                prev,
+                Some(self.nonce),
+                DEFAULT_LIFETIME_SECS,
+                WAIT,
+            )
+            .await;
+            match pmp {
+                // UPnP only on a fresh ask: a PCP/NAT-PMP mapping that fails
+                // to refresh is a loss, and the retry walks all three.
+                None if prev.is_none() => {
+                    upnp::map(self.ssdp, self.local, self.port, None, DEFAULT_LIFETIME_SECS, WAIT).await
+                }
+                other => other,
+            }
+        };
         self.mapping = match got {
             Some(m) if srflx_ip(srflx, *m.external.ip()) => {
                 self.next = Instant::now() + m.lifetime / 2;
@@ -290,7 +319,11 @@ impl Source {
             Source::Off => None,
             Source::DefaultGateway(key) => PortMapper::start(sock, srflx, key).await,
             #[cfg(test)]
-            Source::At(gw, key) => PortMapper::start_at(*gw, sock, srflx, key).await,
+            Source::At(gw, key) => {
+                // The fake PCP gateway ignores SSDP: no UPnP in these tests.
+                let ssdp = upnp::Ssdp { to: *gw, multicast: false };
+                PortMapper::start_at(*gw, ssdp, sock, srflx, key).await
+            }
         }
     }
 }
@@ -371,6 +404,7 @@ async fn pcp_map(
             external,
             lifetime: Duration::from_secs(lifetime.into()),
             nonce,
+            upnp: None,
         }),
         PcpReply::TryNatPmp => None,
         PcpReply::Refused(code) => {
@@ -399,6 +433,7 @@ async fn natpmp_map(
         external: SocketAddrV4::new(ip, port),
         lifetime: Duration::from_secs(granted.into()),
         nonce: [0; 12],
+        upnp: None,
     })
 }
 
@@ -420,6 +455,7 @@ async fn unmap_on(sock: &UdpSocket, client: Ipv4Addr, m: &Mapping, wait: Duratio
                 .await
                 .is_some()
         }
+        Proto::Upnp => upnp::unmap(m).await,
     }
 }
 
@@ -727,6 +763,25 @@ mod tests {
 
     const KEY: &[u8] = b"node-secret-for-tests";
 
+    /// SSDP aimed at the fake PCP gateway, which ignores it: no UPnP.
+    fn no_igd(gw: SocketAddrV4) -> upnp::Ssdp {
+        upnp::Ssdp { to: gw, multicast: false }
+    }
+
+    #[tokio::test]
+    async fn a_mapper_falls_back_to_upnp_when_pcp_and_natpmp_are_silent() {
+        let (gw, _) = gateway(Gw::Silent).await;
+        let (ssdp, seen) = upnp::tests::igd(upnp::tests::Igd::Grants).await;
+        let sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let stun = stun_at(upnp::tests::EXTERNAL);
+        let mut pm = PortMapper::start_at(gw, ssdp, &sock, &stun, KEY).await.expect("mapped by UPnP");
+        let port = sock.local_addr().unwrap().port();
+        assert_eq!(pm.describe(), Some(format!("upnp {}:{port}", upnp::tests::EXTERNAL)));
+        assert_eq!(advert(&stun, Some(&pm))[0], format!("{}:{port}", upnp::tests::EXTERNAL));
+        pm.release().await;
+        assert!(seen.lock().unwrap().last().unwrap().contains("#DeletePortMapping"));
+    }
+
     fn stun_at(ip: Ipv4Addr) -> Vec<String> {
         vec![SocketAddrV4::new(ip, 5000).to_string()]
     }
@@ -744,7 +799,7 @@ mod tests {
         let (gw, seen) = gateway(Gw::Pcp(PUBLIC)).await;
         let sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let stun = stun_at(*PUBLIC.ip());
-        let pm = PortMapper::start_at(gw, &sock, &stun, KEY).await.expect("mapped");
+        let pm = PortMapper::start_at(gw, no_igd(gw), &sock, &stun, KEY).await.expect("mapped");
         assert_eq!(pm.external(), Some(PUBLIC));
         assert_eq!(pm.describe().as_deref(), Some("pcp 203.0.113.7:41641"));
         let port = sock.local_addr().unwrap().port();
@@ -762,7 +817,7 @@ mod tests {
         let (gw, seen) = gateway(Gw::Pcp(PUBLIC)).await;
         let sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let other = stun_at(Ipv4Addr::new(198, 51, 100, 9));
-        assert!(PortMapper::start_at(gw, &sock, &other, KEY).await.is_none());
+        assert!(PortMapper::start_at(gw, no_igd(gw), &sock, &other, KEY).await.is_none());
         let seen = seen.lock().unwrap();
         assert_eq!(seen.len(), 2, "the map, then its release");
         assert_eq!(&seen[1][4..8], &[0, 0, 0, 0]);
@@ -772,7 +827,7 @@ mod tests {
     async fn a_silent_gateway_yields_no_mapper() {
         let (gw, _) = gateway(Gw::Silent).await;
         let sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-        assert!(PortMapper::start_at(gw, &sock, &stun_at(*PUBLIC.ip()), KEY).await.is_none());
+        assert!(PortMapper::start_at(gw, no_igd(gw), &sock, &stun_at(*PUBLIC.ip()), KEY).await.is_none());
     }
 
     #[tokio::test]
@@ -780,7 +835,7 @@ mod tests {
         let (gw, seen) = gateway(Gw::Pcp(PUBLIC)).await;
         let sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let stun = stun_at(*PUBLIC.ip());
-        let mut pm = PortMapper::start_at(gw, &sock, &stun, KEY).await.unwrap();
+        let mut pm = PortMapper::start_at(gw, no_igd(gw), &sock, &stun, KEY).await.unwrap();
         assert!(pm.next > Instant::now() + Duration::from_secs(3500), "refresh at half of 7200 s");
         assert!(!pm.poll(&stun).await, "not due: no change");
         assert_eq!(seen.lock().unwrap().len(), 1, "and no request");
