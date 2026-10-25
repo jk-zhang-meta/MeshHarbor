@@ -79,6 +79,10 @@ impl Controller for Reno {
         self.cwnd
     }
 
+    fn in_slow_start(&self) -> bool {
+        self.cwnd < self.ssthresh
+    }
+
     fn on_ack(&mut self, _now: Instant, len: usize, rtt: &RttEstimator) {
         if rtt.have_measurement {
             self.srtt = Duration::from_millis(rtt.srtt.into());

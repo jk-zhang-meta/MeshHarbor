@@ -533,6 +533,12 @@ pub struct Socket<'a> {
     /// The congestion control algorithm.
     congestion_controller: congestion::AnyController,
 
+    /// ROOMLER PATCH: send pacing (see `pacing_rate`). Off unless set.
+    pacing: bool,
+    /// Bytes the pacer may let out at `pace_at`, refilled at the pacing rate.
+    pace_credit: usize,
+    pace_at: Option<Instant>,
+
     /// tsval generator - if some, tcp timestamp is enabled
     tsval_generator: Option<TcpTimestampGenerator>,
 
@@ -605,6 +611,9 @@ impl<'a> Socket<'a> {
             tsval_generator: None,
             last_remote_tsval: 0,
             congestion_controller: congestion::AnyController::new(),
+            pacing: false,
+            pace_credit: 0,
+            pace_at: None,
 
             #[cfg(feature = "async")]
             rx_waker: WakerRegistration::new(),
@@ -806,6 +815,56 @@ impl<'a> Socket<'a> {
         self.nagle = enabled
     }
 
+    /// ROOMLER PATCH: pace data segments at gain × cwnd / srtt instead of
+    /// sending each window in one burst. Off by default. Without a congestion
+    /// controller there is no rate to pace at, so nothing is paced.
+    pub fn set_pacing_enabled(&mut self, enabled: bool) {
+        self.pacing = enabled
+    }
+
+    /// ROOMLER PATCH: the pacing rate in bytes per second, `None` when nothing
+    /// is paced (pacing off, no RTT sample yet, or no congestion window). The
+    /// gain follows Linux (`tcp_update_pacing_rate`): 200% in slow start so the
+    /// window can still double per round trip, then 125% (Linux: 120%).
+    fn pacing_rate(&self) -> Option<u64> {
+        if !self.pacing || !self.rtte.have_measurement {
+            return None;
+        }
+        let cc = self.congestion_controller.inner();
+        let cwnd = cc.window();
+        if cwnd >= 1 << 32 {
+            return None; // `CongestionControl::None`: the window is unbounded
+        }
+        let gain_pct: u64 = if cc.in_slow_start() { 200 } else { 125 };
+        let srtt_us = u64::from(self.rtte.srtt.max(1)) * 1000;
+        Some((cwnd as u64 * gain_pct * 10_000 / srtt_us).max(1))
+    }
+
+    /// ROOMLER PATCH: the pacer's credit at `now`. It refills at `rate` up to
+    /// two segments or 2 ms of the rate, whichever is more: the netstack's poll
+    /// loop wakes on a millisecond timer, so a smaller cap would idle the path.
+    fn pace_credit_at(&self, now: Instant, rate: u64) -> usize {
+        let cap = (2 * self.remote_mss).max((rate / 500) as usize);
+        let refill = match self.pace_at {
+            None => cap,
+            Some(at) if now > at => {
+                (rate.saturating_mul((now - at).total_micros()) / 1_000_000) as usize
+            }
+            Some(_) => 0,
+        };
+        self.pace_credit.saturating_add(refill).min(cap)
+    }
+
+    /// ROOMLER PATCH: when the pacer lets a `seg`-byte segment out, if not now.
+    fn pace_wait(&self, now: Instant, seg: usize) -> Option<Instant> {
+        let rate = self.pacing_rate()?;
+        let credit = self.pace_credit_at(now, rate);
+        (credit < seg).then(|| {
+            let need = (seg - credit) as u64;
+            now + Duration::from_micros((need * 1_000_000).div_ceil(rate).max(1))
+        })
+    }
+
     /// Return the keep-alive interval.
     ///
     /// See also the [set_keep_alive](#method.set_keep_alive) method.
@@ -910,6 +969,8 @@ impl<'a> Socket<'a> {
         self.remote_last_ts = None;
         self.ack_delay_timer = AckDelayTimer::Idle;
         self.challenge_ack_timer = Instant::from_secs(0);
+        self.pace_credit = 0;
+        self.pace_at = None;
 
         #[cfg(feature = "async")]
         {
@@ -2286,6 +2347,11 @@ impl<'a> Socket<'a> {
             can_send = false;
         }
 
+        // ROOMLER PATCH: and the pacer must have credit for the next segment.
+        if can_send && self.pace_wait(cx.now(), max_send.min(effective_mss)).is_some() {
+            can_send = false;
+        }
+
         // Can we actually send the FIN? We can send it if:
         // 1. We have unsent data that fits in the remote window.
         // 2. We have no unsent data.
@@ -2548,6 +2614,19 @@ impl<'a> Socket<'a> {
                     let in_flight = self.remote_last_seq - self.local_seq_no;
                     let cwnd = self.congestion_controller.inner().window();
                     win_limit = win_limit.min(cwnd.saturating_sub(in_flight));
+                    // ROOMLER PATCH: and the pacer's credit. Short of the next
+                    // segment it lets no data out, so an ACK sent meanwhile
+                    // carries no tinygram. A go-back-N resend is paced too.
+                    let unsent = self.tx_buffer.len().saturating_sub(in_flight);
+                    let mss = self
+                        .remote_mss
+                        .min(cx.ip_mtu() - ip_repr.header_len() - TCP_HEADER_LEN);
+                    if self
+                        .pace_wait(cx.now(), win_limit.min(mss).min(unsent))
+                        .is_some()
+                    {
+                        win_limit = 0;
+                    }
                 }
 
                 // Maximum size we're allowed to send. This can be limited by 3 factors:
@@ -2665,6 +2744,16 @@ impl<'a> Socket<'a> {
         self.remote_last_ack = repr.ack_number;
         self.remote_last_win = repr.window_len;
 
+        // ROOMLER PATCH: the segment spent the pacer's credit.
+        if !repr.payload.is_empty()
+            && let Some(rate) = self.pacing_rate()
+        {
+            self.pace_credit = self
+                .pace_credit_at(cx.now(), rate)
+                .saturating_sub(repr.payload.len());
+            self.pace_at = Some(cx.now());
+        }
+
         if repr.segment_len() > 0 {
             self.rtte
                 .on_send(cx.now(), repr.seq_number + repr.segment_len());
@@ -2730,11 +2819,28 @@ impl<'a> Socket<'a> {
                 (_, _) => PollAt::Ingress,
             };
 
+            // ROOMLER PATCH: unsent data the pacer holds goes when it has credit.
+            let pace_poll_at = if self.pacing_rate().is_some() {
+                let in_flight = self.remote_last_seq - self.local_seq_no;
+                let unsent = self.tx_buffer.len().saturating_sub(in_flight);
+                match self.pace_wait(cx.now(), unsent.min(self.remote_mss)) {
+                    Some(at) => PollAt::Time(at),
+                    None => PollAt::Ingress,
+                }
+            } else {
+                PollAt::Ingress
+            };
+
             // We wait for the earliest of our timers to fire.
-            *[self.timer.poll_at(), timeout_poll_at, delayed_ack_poll_at]
-                .iter()
-                .min()
-                .unwrap_or(&PollAt::Ingress)
+            *[
+                self.timer.poll_at(),
+                timeout_poll_at,
+                delayed_ack_poll_at,
+                pace_poll_at,
+            ]
+            .iter()
+            .min()
+            .unwrap_or(&PollAt::Ingress)
         }
     }
 }

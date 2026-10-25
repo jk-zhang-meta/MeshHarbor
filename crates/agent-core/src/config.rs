@@ -802,6 +802,11 @@ pub struct AgentConfig {
     /// send buffer alone bounds bytes in flight, as before).
     #[serde(default)]
     pub overlay_netstack_tcp_cc: Option<String>,
+    /// §6 item 5 — netstack TCP send pacing: data leaves at gain × cwnd / srtt
+    /// instead of a window at a time (`ROOMLERD_OVERLAY_NETSTACK_TCP_PACING`).
+    /// Built-in default: off (opt-in until the field shows a gain).
+    #[serde(default)]
+    pub overlay_netstack_tcp_pacing: Option<bool>,
     /// Track A stage 1 — spawn the session-independent network daemon
     /// (`roomlerd netd`) as a SECOND supervisor child. SCAFFOLD ONLY for
     /// now: netd heartbeats and hosts nothing; the network plane still
@@ -2842,6 +2847,7 @@ pub fn test_fixture() -> AgentConfig {
         overlay_netstack_tcp_rx_buf: None,
         overlay_netstack_tcp_tx_buf: None,
         overlay_netstack_tcp_cc: None,
+        overlay_netstack_tcp_pacing: None,
         overlay_netd: None,
         overlay_pathmon: None,
         overlay_route_events: None,
@@ -3071,7 +3077,7 @@ mod derived_port_tests {
     }
 }
 
-pub fn env_bridge_bools(cfg: &AgentConfig) -> [(&'static str, Option<bool>); 93] {
+pub fn env_bridge_bools(cfg: &AgentConfig) -> [(&'static str, Option<bool>); 94] {
     [
         ("SHARED_ENCODER", cfg.shared_encoder),
         ("AREA_MIN_BITRATE", cfg.area_min_bitrate),
@@ -3140,6 +3146,7 @@ pub fn env_bridge_bools(cfg: &AgentConfig) -> [(&'static str, Option<bool>); 93]
         ("OVERLAY_QUIC_ASYNC", cfg.overlay_quic_async),
         ("OVERLAY_VPN_VANTAGE", cfg.overlay_vpn_vantage),
         ("OVERLAY_PORTMAP", cfg.overlay_portmap),
+        ("OVERLAY_NETSTACK_TCP_PACING", cfg.overlay_netstack_tcp_pacing),
         ("OVERLAY_IPV6", cfg.overlay_ipv6),
         ("NET_INVENTORY", cfg.net_inventory),
         ("OVERLAY_ROUTE_EVENTS", cfg.overlay_route_events),

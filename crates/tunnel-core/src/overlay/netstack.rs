@@ -593,6 +593,17 @@ fn tcp_cc() -> tcp::CongestionControl {
     }
 }
 
+/// The netstack TCP sender's pacing (the vendored smoltcp's
+/// `set_pacing_enabled`): data leaves at gain × cwnd / srtt instead of a whole
+/// window at once. OFF unless `OVERLAY_NETSTACK_TCP_PACING=1`: in simulation it
+/// lifts goodput 2.5–2.7× under compressed ACKs but costs ~11% on a smooth ACK
+/// clock, and the field (2026-10-25) showed no gain yet. On a relay leg policed
+/// near 50 Mbit/s a 4 MiB window delivered 2.2–3.1 Mbit/s paced or not: the
+/// window overshoots the policer and go-back-N recovery (no SACK) collapses.
+fn tcp_pacing() -> bool {
+    crate::env::flag("OVERLAY_NETSTACK_TCP_PACING", false)
+}
+
 fn tcp_buf(name: &str, default: usize) -> usize {
     crate::env::node_env(name)
         .and_then(|v| v.trim().parse::<usize>().ok())
@@ -616,6 +627,7 @@ impl PollLoop {
             tcp_buf("OVERLAY_NETSTACK_TCP_RX_BUF", TCP_RX_BUF),
             tcp_buf("OVERLAY_NETSTACK_TCP_TX_BUF", TCP_TX_BUF),
             tcp_cc(),
+            tcp_pacing(),
         )
     }
 
@@ -623,6 +635,7 @@ impl PollLoop {
         rx: usize,
         tx: usize,
         cc: tcp::CongestionControl,
+        pacing: bool,
     ) -> tcp::Socket<'static> {
         // A buffer's pages are touched only as data flows through it, so an
         // idle socket stays cheap whatever the window.
@@ -634,6 +647,7 @@ impl PollLoop {
         // older data is in flight, allowing normal ACK-driven TCP recovery.
         sock.set_nagle_enabled(false);
         sock.set_congestion_control(cc);
+        sock.set_pacing_enabled(pacing);
         sock
     }
 
@@ -1408,6 +1422,8 @@ mod tests {
 
     /// One direction of a simulated carrier: serialization at `bytes_per_ms`
     /// behind a drop-tail queue of `queue_bytes`, then `delay_ms` in flight.
+    /// `batch_ms > 0` releases arrivals only on that period (ACK compression:
+    /// a relay, a WG batch or a poll loop handing a burst of ACKs over at once).
     struct SimLink {
         delay_ms: i64,
         bytes_per_ms: i64,
@@ -1415,6 +1431,7 @@ mod tests {
         busy_until_us: i64,
         flight: VecDeque<(i64, Vec<u8>)>,
         dropped: usize,
+        batch_ms: i64,
     }
 
     impl SimLink {
@@ -1426,6 +1443,7 @@ mod tests {
                 busy_until_us: 0,
                 flight: VecDeque::new(),
                 dropped: 0,
+                batch_ms: 0,
             }
         }
         fn send(&mut self, now_us: i64, pkt: Vec<u8>) {
@@ -1439,6 +1457,9 @@ mod tests {
                 .push_back((self.busy_until_us + self.delay_ms * 1000, pkt));
         }
         fn deliver(&mut self, now_us: i64, into: &mut VecDeque<Vec<u8>>) {
+            if self.batch_ms > 0 && (now_us / 1000) % self.batch_ms != 0 {
+                return;
+            }
             while self.flight.front().is_some_and(|(at, _)| *at <= now_us) {
                 into.push_back(self.flight.pop_front().unwrap().1);
             }
@@ -1450,12 +1471,25 @@ mod tests {
     /// (goodput Mbit/s after `warm_ms`, data-link drops, bytes the sender put
     /// on the wire per byte delivered).
     fn sim_bulk(
-        (rx, tx): (usize, usize),
-        cc: tcp::CongestionControl,
+        bufs: (usize, usize),
+        cc: (tcp::CongestionControl, bool),
         one_way_ms: i64,
         queue_bytes: i64,
         sim_ms: i64,
         warm_ms: i64,
+    ) -> (f64, usize, f64) {
+        sim_bulk_acks(bufs, cc, one_way_ms, queue_bytes, sim_ms, warm_ms, 0)
+    }
+
+    /// [`sim_bulk`] with the ACK direction released every `ack_batch_ms`.
+    fn sim_bulk_acks(
+        (rx, tx): (usize, usize),
+        (cc, pacing): (tcp::CongestionControl, bool),
+        one_way_ms: i64,
+        queue_bytes: i64,
+        sim_ms: i64,
+        warm_ms: i64,
+        ack_batch_ms: i64,
     ) -> (f64, usize, f64) {
         fn node(ip: Ipv4Addr) -> (NetstackDevice, Interface, SocketSet<'static>,
             mpsc::UnboundedReceiver<Vec<u8>>)
@@ -1474,15 +1508,17 @@ mod tests {
         let b_ip = Ipv4Addr::new(100, 64, 0, 2);
         let (mut ad, mut ai, mut sockets_a, mut a_out) = node(a_ip);
         let (mut bd, mut bi, mut sockets_b, mut b_out) = node(b_ip);
-        let mut server = PollLoop::new_tcp_socket_with(rx, tx, cc);
+        let mut server = PollLoop::new_tcp_socket_with(rx, tx, cc, pacing);
         server.listen(2222).unwrap();
         let sh = sockets_b.add(server);
-        let mut client = PollLoop::new_tcp_socket_with(rx, tx, cc);
+        let mut client = PollLoop::new_tcp_socket_with(rx, tx, cc, pacing);
         client.connect(ai.context(), (IpAddress::from(b_ip), 2222), 49152).unwrap();
         let ch = sockets_a.add(client);
         // A 100 Mbit/s bottleneck both ways.
         let mut a_to_b = SimLink::new(one_way_ms, 100, queue_bytes);
         let mut b_to_a = SimLink::new(one_way_ms, 100, queue_bytes);
+        // a receives and acknowledges; b sends the bulk data.
+        a_to_b.batch_ms = ack_batch_ms;
         let chunk = vec![0x5au8; 64 * 1024];
         let (mut received, mut at_warm, mut wire) = (0usize, 0usize, 0usize);
         for ms in 0..sim_ms {
@@ -1536,9 +1572,9 @@ mod tests {
     fn the_default_buffers_double_a_50ms_path_without_extra_loss() {
         use tcp::CongestionControl::{None as NoCc, Reno};
         let (old, old_drops, _) =
-            sim_bulk((64 * 1024, 64 * 1024), NoCc, 25, 256 * 1024, 6_000, 2_000);
+            sim_bulk((64 * 1024, 64 * 1024), (NoCc, false), 25, 256 * 1024, 6_000, 2_000);
         let (new, drops, amp) =
-            sim_bulk((TCP_RX_BUF, TCP_TX_BUF), Reno, 25, 256 * 1024, 6_000, 2_000);
+            sim_bulk((TCP_RX_BUF, TCP_TX_BUF), (Reno, false), 25, 256 * 1024, 6_000, 2_000);
         eprintln!(
             "OBSERVED netstack 50ms/100Mbit/256KiB-queue: old {old:.1} Mbit/s ({old_drops} drops), default {new:.1} Mbit/s ({drops} drops, wire/delivered {amp:.2})"
         );
@@ -1557,7 +1593,7 @@ mod tests {
         use tcp::CongestionControl::{None as NoCc, Reno};
         let (_, none_drops, none_amp) = sim_bulk(
             (TCP_RX_BUF, 1024 * 1024),
-            NoCc,
+            (NoCc, false),
             25,
             256 * 1024,
             6_000,
@@ -1565,7 +1601,7 @@ mod tests {
         );
         let (reno, reno_drops, reno_amp) = sim_bulk(
             (TCP_RX_BUF, 1024 * 1024),
-            Reno,
+            (Reno, false),
             25,
             256 * 1024,
             6_000,
@@ -1586,7 +1622,7 @@ mod tests {
         for one_way in [5i64, 25] {
             let (mbps, _, amp) = sim_bulk(
                 (TCP_RX_BUF, TCP_TX_BUF),
-                Reno,
+                (Reno, false),
                 one_way,
                 64 * 1024,
                 6_000,
@@ -1603,13 +1639,43 @@ mod tests {
         }
     }
 
+    /// Pacing: a window far past a shallow bottleneck queue (the field's
+    /// policed relay leg, 2.5 Mbit/s unpaced) goes out at gain × cwnd / srtt.
+    /// Measured here: with ACKs released every 5/10 ms, 24.0/20.7 Mbit/s
+    /// unpaced vs 64.4/52.0 paced; on a smooth ACK clock 24.7 vs 22.0.
+    #[test]
+    fn pacing_lets_a_big_window_ride_a_shallow_queue() {
+        use tcp::CongestionControl::Reno;
+        let big = (4096 * 1024, 4096 * 1024);
+        for batch in [0i64, 5, 10] {
+            let (burst, burst_drops, burst_amp) =
+                sim_bulk_acks(big, (Reno, false), 25, 64 * 1024, 8_000, 3_000, batch);
+            let (paced, paced_drops, paced_amp) =
+                sim_bulk_acks(big, (Reno, true), 25, 64 * 1024, 8_000, 3_000, batch);
+            eprintln!(
+                "OBSERVED 4MiB window, 50ms behind a 64 KiB queue, ACKs every {batch}ms: unpaced {burst:.1} Mbit/s {burst_drops} drops amp {burst_amp:.2}; paced {paced:.1} Mbit/s {paced_drops} drops amp {paced_amp:.2}"
+            );
+            if batch == 0 {
+                // A perfectly smooth ACK clock already spaces the sender.
+                assert!(paced >= 0.85 * burst, "pacing costs little: {paced:.1} vs {burst:.1}");
+            } else {
+                // Compressed ACKs release a window-sized burst; pacing spreads it.
+                assert!(paced >= 1.8 * burst, "pacing rides it: {paced:.1} vs {burst:.1}");
+            }
+        }
+    }
+
     /// The measurement behind the defaults: goodput, drops and wire
     /// amplification per congestion controller, send bound, RTT and
     /// bottleneck queue depth.
     #[test]
     #[ignore = "netstack TCP buffer matrix; run with --ignored --nocapture"]
     fn netstack_tcp_buffer_matrix() {
-        for cc in [tcp::CongestionControl::None, tcp::CongestionControl::Reno] {
+        for (cc, pacing) in [
+            (tcp::CongestionControl::None, false),
+            (tcp::CongestionControl::Reno, false),
+            (tcp::CongestionControl::Reno, true),
+        ] {
             for one_way in [5i64, 25, 50] {
                 for queue in [64 * 1024i64, 256 * 1024, 1024 * 1024] {
                     for tx in [
@@ -1626,9 +1692,9 @@ mod tests {
                             TCP_RX_BUF.max(tx)
                         };
                         let (mbps, drops, amp) =
-                            sim_bulk((rx, tx), cc, one_way, queue, 8_000, 3_000);
+                            sim_bulk((rx, tx), (cc, pacing), one_way, queue, 8_000, 3_000);
                         eprintln!(
-                            "OBSERVED cc={cc:?} rtt={}ms queue={}KiB rx={}KiB tx={}KiB goodput={mbps:.1} drops={drops} wire/delivered={amp:.2}",
+                            "OBSERVED cc={cc:?} pacing={pacing} rtt={}ms queue={}KiB rx={}KiB tx={}KiB goodput={mbps:.1} drops={drops} wire/delivered={amp:.2}",
                             one_way * 2,
                             queue / 1024,
                             rx / 1024,

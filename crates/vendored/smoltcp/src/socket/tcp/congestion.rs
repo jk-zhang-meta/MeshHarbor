@@ -30,6 +30,12 @@ pub(super) trait Controller {
 
     /// Set the maximum segment size.
     fn set_mss(&mut self, mss: usize) {}
+
+    /// ROOMLER PATCH: whether the window is in slow start, which sets the
+    /// pacing gain (the window doubles per round trip there).
+    fn in_slow_start(&self) -> bool {
+        false
+    }
 }
 
 #[derive(Debug)]
