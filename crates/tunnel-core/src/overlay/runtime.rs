@@ -70,7 +70,7 @@ mod failover_bench;
 
 use establish::*;
 // §6 item 5 — the carrier plane binds and advertises the IPv6 socket the same way.
-pub(in crate::overlay) use establish::{bind_v6_direct, v6_adverts};
+pub(in crate::overlay) use establish::{bind_v6_direct, refresh_v6_adverts, v6_adverts};
 // Path-compat re-export: `tun.rs` purge names these as
 // `crate::overlay::runtime::SPLIT_DEFAULT_V4`/`_V6`.
 use route_guard::*;
@@ -1243,6 +1243,9 @@ async fn run_srflx_keepalive(
     mut reattach_rx: tokio::sync::watch::Receiver<u64>,
     // §6 item 5 — where the gateway port mapping comes from.
     portmap: super::portmap::Source,
+    // §6 item 5 — the IPv6 direct socket, whose advert tracks the host's
+    // current global addresses (`refresh_v6_adverts`).
+    v6: Option<Arc<UdpSocket>>,
 ) {
     const RERESOLVE_AFTER: u32 = 3;
     let mut failures: u32 = 0;
@@ -1354,6 +1357,10 @@ async fn run_srflx_keepalive(
                 {
                     resend_pending = true;
                 }
+                if refresh_v6_adverts(&mut advertised, v6.as_ref()) {
+                    info!(?advertised, "overlay: IPv6 address set changed — re-advertising");
+                    resend_pending = true;
+                }
             }
             changed = reattach_rx.changed() => {
                 if changed.is_err() {
@@ -1416,6 +1423,7 @@ fn spawn_srflx_keepalive(
                 Duration::from_secs(secs),
                 reattach_rx,
                 super::portmap::Source::DefaultGateway(portmap_key),
+                direct_ctx.as_ref().and_then(|c| c.v6.clone()),
             )))
         }
         // NEVER return None silently. An org with no re-advert task keeps
@@ -8009,6 +8017,7 @@ mod tests {
             Duration::from_millis(60),
             reattach_rx,
             crate::overlay::portmap::Source::Off,
+            None,
         ));
 
         // First tick: mapping == advert → NO trickle. Second tick: changed to
@@ -8062,6 +8071,7 @@ mod tests {
             Duration::from_secs(60),
             reattach_rx,
             crate::overlay::portmap::Source::At(gw, b"node-secret".to_vec()),
+            None,
         ));
         let msg = tokio::time::timeout(Duration::from_secs(3), out_rx.recv())
             .await
@@ -8106,6 +8116,7 @@ mod tests {
             Duration::from_millis(30),
             reattach_rx,
             crate::overlay::portmap::Source::Off,
+            None,
         ));
         assert!(
             tokio::time::timeout(Duration::from_millis(500), out_rx.recv())
@@ -8161,6 +8172,7 @@ mod tests {
             Duration::from_millis(40),
             reattach_rx,
             crate::overlay::portmap::Source::Off,
+            None,
         ));
 
         // Give it a few ticks: the mapping change lands, its send fails

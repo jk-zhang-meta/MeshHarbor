@@ -353,9 +353,13 @@ direct.
     The F0 cut and heal on that path stalled 1.8 s and returned in 4.6 s.
   - **With `ROOMLERD_OVERLAY_IPV6=0`:** the pair "never settled on direct
     within 120 s" and stayed on relay.
+- **Address changes** (privacy-address rotation, or a new prefix after a
+  PPPoE redial): both keepalive owners re-derive the IPv6 candidates from the
+  host's current addresses every tick (`refresh_v6_adverts`) and re-advertise
+  on a change, with no plane rebuild, because the socket is bound to `[::]`.
+  - **Lab check:** B's address moved from `::2` to `::3` mid-run; A received
+    `[2001:db8:b::3]` and the pair formed a new ASSURED direct flow to it.
 - **Not done:**
-  - an address change (privacy-address rotation, or a new prefix after a
-    PPPoE redial) is picked up only at the next re-gather or rebuild;
   - a host whose IPv4 STUN gather fails advertises no IPv6 either (the
     candidates ride the IPv4 gather);
   - legacy mode's socket wiring is unit-covered only; the lab ran plane mode.

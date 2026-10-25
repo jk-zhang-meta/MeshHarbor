@@ -3381,6 +3381,31 @@ pub(in crate::overlay) fn v6_adverts(
     }
 }
 
+/// §6 item 5 — re-derive the IPv6 part of a srflx advert from the host's
+/// CURRENT global addresses, keeping the IPv4 entries (and `[0]`). A
+/// privacy-address rotation or a PPPoE prefix change then reaches peers within
+/// one keepalive tick, without a plane rebuild: the socket is bound to `[::]`,
+/// so only the advert moves. `true` when it changed.
+pub(in crate::overlay) fn refresh_v6_adverts(
+    cands: &mut Vec<String>,
+    v6: Option<&Arc<UdpSocket>>,
+) -> bool {
+    if v6.is_none() {
+        return false;
+    }
+    replace_v6_tail(cands, v6_adverts(v6, &direct::gather_global_v6()))
+}
+
+fn replace_v6_tail(cands: &mut Vec<String>, fresh: Vec<String>) -> bool {
+    let is_v6 = |c: &String| c.trim_start().starts_with('[');
+    if cands.iter().filter(|c| is_v6(c)).eq(fresh.iter()) {
+        return false;
+    }
+    cands.retain(|c| !is_v6(c));
+    cands.extend(fresh);
+    true
+}
+
 /// R1 — outcome of one [`gather_and_advertise_srflx`] pass: the pinned STUN
 /// server, the advertised candidates, and the probed NAT class — exactly the
 /// three loop locals `run()` used to fill inline. The keepalive task and the
@@ -3449,6 +3474,19 @@ mod tests {
     /// §6 item 5 — both ends with global IPv6: the srflx tier dials IPv6
     /// first, even when both IPv4 NATs are symmetric (no NAT on IPv6), and
     /// falls back to the IPv4 rules after `V6_FIRST_STRIKES`.
+    /// §6 item 5 — an address change rewrites only the IPv6 tail; the IPv4
+    /// entries, `[0]` among them, stay put, and no change is no re-advert.
+    #[test]
+    fn a_v6_address_change_rewrites_only_the_v6_tail() {
+        let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<String>>();
+        let mut c = s(&["203.0.113.7:1111", "198.51.100.2:9", "[2001:db8:1::5]:45200"]);
+        assert!(!replace_v6_tail(&mut c, s(&["[2001:db8:1::5]:45200"])), "unchanged");
+        assert!(replace_v6_tail(&mut c, s(&["[2001:db8:2::5]:45200", "[2001:db8:2::6]:45200"])));
+        assert_eq!(c, s(&["203.0.113.7:1111", "198.51.100.2:9", "[2001:db8:2::5]:45200", "[2001:db8:2::6]:45200"]));
+        assert!(replace_v6_tail(&mut c, Vec::new()), "IPv6 gone");
+        assert_eq!(c, s(&["203.0.113.7:1111", "198.51.100.2:9"]));
+    }
+
     #[tokio::test]
     async fn srflx_dials_ipv6_first_and_falls_back_to_ipv4() {
         let mut c = ctx(Some("94.130.141.98:43648"), Some("symmetric")).await;

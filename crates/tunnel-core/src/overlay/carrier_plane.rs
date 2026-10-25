@@ -1917,6 +1917,11 @@ impl CarrierPlane {
                 {
                     publish = true;
                 }
+                let v6 = plane.view().and_then(|v| v.v6);
+                if super::runtime::refresh_v6_adverts(&mut state.candidates, v6.as_ref()) {
+                    info!(candidates = ?state.candidates, "carrier plane: IPv6 address set changed — every org re-advertises");
+                    publish = true;
+                }
                 if publish {
                     state.generation += 1;
                     plane.lock().srflx_watch.send_replace(state.published(pm.as_ref()));
