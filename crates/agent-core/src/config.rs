@@ -774,6 +774,12 @@ pub struct AgentConfig {
     /// directly. Built-in default: on (`ROOMLERD_OVERLAY_PORTMAP`).
     #[serde(default)]
     pub overlay_portmap: Option<bool>,
+    /// §6 item 5 — bind an IPv6 direct socket and advertise this host's
+    /// global IPv6 addresses as srflx candidates, so two IPv6-capable peers go
+    /// direct with no NAT in the way. Built-in default: on
+    /// (`ROOMLERD_OVERLAY_IPV6`).
+    #[serde(default)]
+    pub overlay_ipv6: Option<bool>,
     /// §6 item 5 — netstack per-socket smoltcp receive buffer in bytes, the
     /// window this stack advertises (`ROOMLERD_OVERLAY_NETSTACK_TCP_RX_BUF`,
     /// 16384–16777216). Built-in default: 1 MiB.
@@ -2820,6 +2826,7 @@ pub fn test_fixture() -> AgentConfig {
         overlay_quic_async: None,
         overlay_vpn_vantage: None,
         overlay_portmap: None,
+        overlay_ipv6: None,
         overlay_netstack_tcp_rx_buf: None,
         overlay_netstack_tcp_tx_buf: None,
         overlay_netd: None,
@@ -3051,7 +3058,7 @@ mod derived_port_tests {
     }
 }
 
-pub fn env_bridge_bools(cfg: &AgentConfig) -> [(&'static str, Option<bool>); 91] {
+pub fn env_bridge_bools(cfg: &AgentConfig) -> [(&'static str, Option<bool>); 92] {
     [
         ("SHARED_ENCODER", cfg.shared_encoder),
         ("AREA_MIN_BITRATE", cfg.area_min_bitrate),
@@ -3120,6 +3127,7 @@ pub fn env_bridge_bools(cfg: &AgentConfig) -> [(&'static str, Option<bool>); 91]
         ("OVERLAY_QUIC_ASYNC", cfg.overlay_quic_async),
         ("OVERLAY_VPN_VANTAGE", cfg.overlay_vpn_vantage),
         ("OVERLAY_PORTMAP", cfg.overlay_portmap),
+        ("OVERLAY_IPV6", cfg.overlay_ipv6),
         ("OVERLAY_ROUTE_EVENTS", cfg.overlay_route_events),
         ("OVERLAY_NETMON", cfg.overlay_netmon),
         ("OVERLAY_RELAY_TLS", cfg.overlay_relay_tls),

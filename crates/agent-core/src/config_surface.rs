@@ -809,6 +809,14 @@ const KEYS: &[KeyMeta] = &[
          65536 restores the old bound for a shallow bottleneck queue.",
     },
     KeyMeta {
+        key: "overlay_ipv6",
+        group: Group::NetworkCarriers,
+        tier: Tier::Advanced,
+        live: false,
+        kind: "tribool",
+        description: "Bind an IPv6 direct socket and advertise this host's global IPv6 addresses as srflx candidates, so two IPv6-capable peers go direct with no NAT in the way (dialed first, IPv4 after two failures). Built-in default: on.",
+    },
+    KeyMeta {
         key: "overlay_portmap",
         group: Group::NetworkCarriers,
         tier: Tier::Advanced,
@@ -2028,6 +2036,7 @@ fn current_value(cfg: &AgentConfig, key: &str) -> Option<String> {
         "overlay_quic_async" => cfg.overlay_quic_async.map(fmt_bool),
         "overlay_vpn_vantage" => cfg.overlay_vpn_vantage.map(fmt_bool),
         "overlay_portmap" => cfg.overlay_portmap.map(fmt_bool),
+        "overlay_ipv6" => cfg.overlay_ipv6.map(fmt_bool),
         "overlay_netstack_tcp_rx_buf" => cfg.overlay_netstack_tcp_rx_buf.map(|v| v.to_string()),
         "overlay_netstack_tcp_tx_buf" => cfg.overlay_netstack_tcp_tx_buf.map(|v| v.to_string()),
         "overlay_netd" => cfg.overlay_netd.map(fmt_bool),
@@ -2496,6 +2505,7 @@ pub fn apply(cfg: &mut AgentConfig, key: &str, value: Option<&str>) -> Result<()
         "overlay_quic_async" => cfg.overlay_quic_async = parse_tribool(value)?,
         "overlay_vpn_vantage" => cfg.overlay_vpn_vantage = parse_tribool(value)?,
         "overlay_portmap" => cfg.overlay_portmap = parse_tribool(value)?,
+        "overlay_ipv6" => cfg.overlay_ipv6 = parse_tribool(value)?,
         "overlay_netstack_tcp_rx_buf" => cfg.overlay_netstack_tcp_rx_buf = parse_tcp_buf(key, value)?,
         "overlay_netstack_tcp_tx_buf" => cfg.overlay_netstack_tcp_tx_buf = parse_tcp_buf(key, value)?,
         "overlay_netd" => cfg.overlay_netd = parse_tribool(value)?,
@@ -4098,6 +4108,24 @@ mod tests {
             apply(&mut cfg, key, None).unwrap();
             assert_eq!(current_value(&cfg, key), None, "{key}: clear → built-in default");
         }
+    }
+
+    /// §6 item 5 — the IPv6 underlay key: tribool, default None (daemon
+    /// built-in ON), bridged to the daemon env.
+    #[test]
+    fn overlay_ipv6_set_echo_clear() {
+        let mut cfg = crate::config::test_fixture();
+        assert_eq!(cfg.overlay_ipv6, None, "unset → daemon default (on)");
+        apply(&mut cfg, "overlay_ipv6", Some("off")).unwrap();
+        assert_eq!(current_value(&cfg, "overlay_ipv6").as_deref(), Some("false"));
+        assert!(
+            crate::config::env_bridge_bools(&cfg)
+                .iter()
+                .any(|(k, v)| *k == "OVERLAY_IPV6" && *v == Some(false)),
+            "key must be bridged to the daemon's env"
+        );
+        apply(&mut cfg, "overlay_ipv6", None).unwrap();
+        assert_eq!(cfg.overlay_ipv6, None, "clear → built-in default");
     }
 
     /// §6 item 5 — the gateway port-mapping key: tribool, default None

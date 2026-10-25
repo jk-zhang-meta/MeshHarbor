@@ -327,6 +327,7 @@ pub async fn enroll(inputs: EnrollInputs<'_>) -> Result<AgentConfig> {
         overlay_quic_async: None,
         overlay_vpn_vantage: None,
         overlay_portmap: None,
+        overlay_ipv6: None,
         overlay_netstack_tcp_rx_buf: None,
         overlay_netstack_tcp_tx_buf: None,
         overlay_netd: None,
