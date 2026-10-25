@@ -312,6 +312,54 @@ protocols. Mainland ISP gateways mostly speak only UPnP.
     serves PCP and NAT-PMP under one switch), which is covered by the unit
     tests, and a real ISP gateway.
 
+### 7. IPv6 candidates: direct without NAT
+
+Mainland home broadband and mobile mostly hand out global IPv6. Between two
+such hosts there is no NAT, only a stateful firewall, and the simultaneous
+dial of a punch opens that the same way it opens a NAT's filter. So a pair
+whose IPv4 NATs are both symmetric, which step 4 sends to relay, can still go
+direct.
+
+- **Socket:** one `[::]:<direct port>` socket, IPV6_V6ONLY so it shares the
+  port number with the IPv4 binds (`direct::bind_direct_socket_v6`). It is
+  bound in the carrier plane, and in legacy `setup_direct`, only when the
+  host has a global address (`2000::/3`, `direct::gather_global_v6`, with
+  the same interface hygiene as the LAN gather). The plane gives it its own
+  recv loop.
+- **Advert:** `[addr]:port` per global address, appended AFTER the IPv4
+  srflx candidates, so `[0]` stays the punch mapping both keepalives compare
+  against. The server stores candidates verbatim and old clients' pickers keep
+  only public IPv4, so no server change and no compatibility break.
+- **Dial:** when the peer advertises a global IPv6 and we have the socket,
+  the srflx tier dials IPv6 first (`direct::pick_v6_endpoint_rotated`). There
+  is no NAT-type gate and no hairpin gate, because there is no NAT. After
+  `direct::V6_FIRST_STRIKES` (2) failures, for example a firewall that never
+  opens, the IPv4 rules take over. `DirectCtx::srflx_sock` picks the socket
+  by the destination's family.
+- **Accept:** an authenticated init from a global IPv6 source classifies as
+  Srflx or Public, like a public IPv4 one.
+- **Exit nodes:** while an exit is active, IPv6 is captured too (`::/1` +
+  `8000::/1`, fail-closed). So an IPv6 carrier's destination goes into the
+  exemption set like an IPv4 one and is pinned through the IPv6 uplink.
+- **Kill switch:** `ROOMLERD_OVERLAY_IPV6=0`.
+- **Lab-verified** (five network namespaces):
+  - **Setup:** two nodes, each behind a router with a symmetric IPv4 NAT
+    (`masquerade random,fully-random`) and a stateful IPv6 firewall
+    (forward policy drop; `ct state established,related` and LAN-outbound
+    accepted). STUN runs on two vantages and the control plane is a TCP
+    splice.
+  - **With IPv6:** the pair went direct 3.5 s after start, and router A's
+    conntrack showed the ASSURED `2001:db8:a::2 ↔ 2001:db8:b::2` UDP flow.
+    The F0 cut and heal on that path stalled 1.8 s and returned in 4.6 s.
+  - **With `ROOMLERD_OVERLAY_IPV6=0`:** the pair "never settled on direct
+    within 120 s" and stayed on relay.
+- **Not done:**
+  - an address change (privacy-address rotation, or a new prefix after a
+    PPPoE redial) is picked up only at the next re-gather or rebuild;
+  - a host whose IPv4 STUN gather fails advertises no IPv6 either (the
+    candidates ride the IPv4 gather);
+  - legacy mode's socket wiring is unit-covered only; the lab ran plane mode.
+
 ### The accept side
 
 Both A and C rely on the exit/peer *accepting* an inbound INIT from a source it
