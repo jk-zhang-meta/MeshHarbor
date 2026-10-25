@@ -787,13 +787,13 @@ pub struct AgentConfig {
     pub net_inventory: Option<bool>,
     /// §6 item 5 — netstack per-socket smoltcp receive buffer in bytes, the
     /// window this stack advertises (`ROOMLERD_OVERLAY_NETSTACK_TCP_RX_BUF`,
-    /// 16384–16777216). Built-in default: 2 MiB.
+    /// 16384–16777216). Built-in default: 8 MiB.
     #[serde(default)]
     pub overlay_netstack_tcp_rx_buf: Option<u32>,
     /// §6 item 5 — netstack per-socket smoltcp send buffer in bytes, the most
     /// this stack can have in flight; the congestion window paces below it
     /// (`ROOMLERD_OVERLAY_NETSTACK_TCP_TX_BUF`, 16384–16777216). Built-in
-    /// default: 2 MiB (sized for paced SACK recovery).
+    /// default: 8 MiB (sized for paced SACK recovery).
     #[serde(default)]
     pub overlay_netstack_tcp_tx_buf: Option<u32>,
     /// §6 item 5 — netstack TCP congestion control

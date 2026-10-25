@@ -796,7 +796,7 @@ const KEYS: &[KeyMeta] = &[
         live: false,
         kind: "number",
         description: "netstack per-socket TCP receive buffer in bytes, the window the stack advertises \
-         (16384-16777216). Built-in default: 2097152 (2 MiB).",
+         (16384-16777216). Built-in default: 8388608 (8 MiB).",
     },
     KeyMeta {
         key: "overlay_netstack_tcp_tx_buf",
@@ -806,7 +806,7 @@ const KEYS: &[KeyMeta] = &[
         kind: "number",
         description: "netstack per-socket TCP send buffer in bytes, the most the stack can have in flight; \
          the congestion window (overlay_netstack_tcp_cc) paces below it (16384-16777216). Built-in default: \
-         2097152 (2 MiB), sized for paced SACK recovery (overlay_netstack_tcp_pacing, overlay_netstack_tcp_sack).",
+         8388608 (8 MiB), sized for paced SACK recovery (overlay_netstack_tcp_pacing, overlay_netstack_tcp_sack).",
     },
     KeyMeta {
         key: "overlay_netstack_tcp_cc",

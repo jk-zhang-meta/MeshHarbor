@@ -76,10 +76,15 @@ use super::tun::TunIo;
 /// smoltcp derives window scaling from it, and the old 64 KiB held every
 /// download to 64 KiB per round trip (about 10 Mbit/s at 50 ms). The sender on
 /// the far side is normally a kernel TCP with real congestion control, so a
-/// wide window is safe here: 2 MiB carries about 330 Mbit/s at 50 ms. Pages
-/// are touched only as data flows, so an idle socket stays cheap.
+/// wide window is safe here. Pages are touched only as data flows, so an idle
+/// socket stays cheap; a socket that carries bulk data for long enough holds
+/// the whole buffer. The size is set together with [`TCP_TX_BUF`]: field,
+/// 2026-10-26, HK→Tokyo over the netstack (43 ms), once the SSH channel window
+/// stopped binding, uploads with both at 2 MiB ran 261/296 Mbit/s, at 4 MiB
+/// 279–393 (mean 330), at 8 MiB 303–430 (mean 374, median 389), at 16 MiB 350;
+/// raising only one of the two gained nothing (233 and 278).
 /// `OVERLAY_NETSTACK_TCP_RX_BUF` overrides it ([`TCP_BUF_MIN`]..=[`TCP_BUF_MAX`]).
-const TCP_RX_BUF: usize = 2 * 1024 * 1024;
+const TCP_RX_BUF: usize = 8 * 1024 * 1024;
 /// Per-socket smoltcp SEND buffer: the most this stack can have in flight.
 /// The congestion window ([`tcp_cc`], CUBIC in the vendored smoltcp, whose
 /// cwnd really bounds bytes in flight) is what paces a sender below it. Upstream
@@ -94,8 +99,11 @@ const TCP_RX_BUF: usize = 2 * 1024 * 1024;
 /// and pacing (both on by default) a bigger window no longer costs a resend
 /// of it: paced+SACK at 1–4 MiB is never below 512 KiB in that matrix, and on
 /// the real HK↔Tokyo path (43 ms) 512 KiB is the cap (~89 Mbit/s) where 4 MiB
-/// carried 179–268. Hence 2 MiB. `OVERLAY_NETSTACK_TCP_TX_BUF` overrides it.
-const TCP_TX_BUF: usize = 2 * 1024 * 1024;
+/// carried 179–268. Hence 2 MiB, until the SSH channel window that every one
+/// of those field runs went through was raised (roomlerd `c9e11e19`). With it
+/// out of the way, 8 MiB on both sides carried the most (see [`TCP_RX_BUF`]).
+/// `OVERLAY_NETSTACK_TCP_TX_BUF` overrides it.
+const TCP_TX_BUF: usize = 8 * 1024 * 1024;
 const TCP_BUF_MIN: usize = 16 * 1024;
 const TCP_BUF_MAX: usize = 16 * 1024 * 1024;
 /// The floor under the netstack TCP retransmission timeout in ms (the
@@ -2149,6 +2157,7 @@ mod tests {
                         512 * 1024,
                         1024 * 1024,
                         4096 * 1024,
+                        8192 * 1024,
                     ] {
                         let rx = if tx == 64 * 1024 {
                             64 * 1024
