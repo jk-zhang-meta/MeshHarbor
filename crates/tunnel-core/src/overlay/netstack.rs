@@ -81,7 +81,7 @@ use super::tun::TunIo;
 /// `OVERLAY_NETSTACK_TCP_RX_BUF` overrides it ([`TCP_BUF_MIN`]..=[`TCP_BUF_MAX`]).
 const TCP_RX_BUF: usize = 2 * 1024 * 1024;
 /// Per-socket smoltcp SEND buffer: the most this stack can have in flight.
-/// The congestion window ([`tcp_cc`], the vendored smoltcp's NewReno-lite, whose
+/// The congestion window ([`tcp_cc`], CUBIC in the vendored smoltcp, whose
 /// cwnd really bounds bytes in flight) is what paces a sender below it. Upstream
 /// smoltcp's never did, and its go-back-N recovery resent everything past the
 /// bottleneck queue: a 1 MiB send window put 3.2x the delivered bytes on the
@@ -584,22 +584,23 @@ struct PollLoop {
 
 /// `name`'s byte count within the TCP buffer bounds; an unparseable or
 /// out-of-range value keeps `default`.
-/// The netstack TCP congestion controller: the vendored smoltcp's
-/// NewReno-lite, unless `OVERLAY_NETSTACK_TCP_CC` says `cubic` (RFC 9438,
-/// rewritten there) or `none` (the kill switch: the send buffer alone bounds
-/// bytes in flight). CUBIC won every simulated matrix cell (behind a 64 KiB
-/// queue 82 → 96 Mbit/s at 10 ms, 46 → 79 at 100 ms) but on the real
-/// HK↔Tokyo path (2026-10-25, paced SACK, 2 MiB) Tokyo's sender delivered
-/// 8.8–8.9 Mbit/s with CUBIC against 198–205 with NewReno-lite (HK's sender:
-/// 180 both). Until that is understood CUBIC stays opt-in.
+/// The netstack TCP congestion controller: CUBIC (RFC 9438, rewritten in the
+/// vendored smoltcp), unless `OVERLAY_NETSTACK_TCP_CC` says `reno` (its
+/// NewReno-lite) or `none` (the kill switch: the send buffer alone bounds bytes
+/// in flight). CUBIC won every simulated matrix cell (behind a 64 KiB queue
+/// 82 → 96 Mbit/s at 10 ms, 46 → 79 at 100 ms). On the real HK↔Tokyo path
+/// (2026-10-26, paced SACK, 2 MiB, 128 MB per run) Tokyo's sender delivers
+/// 241–249 Mbit/s with CUBIC against 175–183 with NewReno-lite, HK's 169 with
+/// both. Before the vendored sender stopped sending sub-segment slivers into a
+/// byte-granular cwnd, CUBIC collapsed there to 8.8.
 fn tcp_cc() -> tcp::CongestionControl {
     match crate::env::node_env("OVERLAY_NETSTACK_TCP_CC")
         .as_deref()
         .map(str::trim)
     {
         Some(v) if v.eq_ignore_ascii_case("none") => tcp::CongestionControl::None,
-        Some(v) if v.eq_ignore_ascii_case("cubic") => tcp::CongestionControl::Cubic,
-        _ => tcp::CongestionControl::Reno,
+        Some(v) if v.eq_ignore_ascii_case("reno") => tcp::CongestionControl::Reno,
+        _ => tcp::CongestionControl::Cubic,
     }
 }
 

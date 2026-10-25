@@ -797,9 +797,9 @@ pub struct AgentConfig {
     #[serde(default)]
     pub overlay_netstack_tcp_tx_buf: Option<u32>,
     /// §6 item 5 — netstack TCP congestion control
-    /// (`ROOMLERD_OVERLAY_NETSTACK_TCP_CC`): `reno` (the built-in default,
-    /// the vendored smoltcp's NewReno-lite) | `cubic` (RFC 9438, opt-in) |
-    /// `none` (the kill switch: the send buffer alone bounds bytes in flight).
+    /// (`ROOMLERD_OVERLAY_NETSTACK_TCP_CC`): `cubic` (the built-in default,
+    /// RFC 9438 in the vendored smoltcp) | `reno` (its NewReno-lite) | `none`
+    /// (the kill switch: the send buffer alone bounds bytes in flight).
     #[serde(default)]
     pub overlay_netstack_tcp_cc: Option<String>,
     /// §6 item 5 — netstack TCP send pacing: data leaves at gain × cwnd / srtt

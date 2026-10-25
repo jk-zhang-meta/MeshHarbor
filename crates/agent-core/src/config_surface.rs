@@ -814,7 +814,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "string",
-        description: "netstack TCP congestion control: reno (built-in default; NewReno-lite) | cubic (RFC 9438; opt-in until a field regression is understood) | none (kill switch: the send buffer alone bounds bytes in flight). Env: ROOMLERD_OVERLAY_NETSTACK_TCP_CC.",
+        description: "netstack TCP congestion control: cubic (built-in default; RFC 9438) | reno (NewReno-lite) | none (kill switch: the send buffer alone bounds bytes in flight). Env: ROOMLERD_OVERLAY_NETSTACK_TCP_CC.",
     },
     KeyMeta {
         key: "overlay_netstack_tcp_pacing",
@@ -4453,7 +4453,7 @@ mod tests {
         assert_eq!(
             current_value(&cfg, "overlay_netstack_tcp_cc"),
             None,
-            "unset → built-in reno"
+            "unset → built-in cubic"
         );
         apply(&mut cfg, "overlay_netstack_tcp_cc", Some(" NONE ")).unwrap();
         assert_eq!(cfg.overlay_netstack_tcp_cc.as_deref(), Some("none"));
