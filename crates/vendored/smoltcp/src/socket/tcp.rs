@@ -2634,6 +2634,22 @@ impl<'a> Socket<'a> {
             can_send = false;
         }
 
+        // ROOMLER PATCH: sender-side silly-window avoidance against the
+        // congestion window (RFC 9293 §3.8.6.2.1). With data in flight a
+        // window with less than a segment of room waits for the next ACK
+        // rather than sending the sliver, unless the sliver is all there is.
+        // A byte-granular cwnd (CUBIC) otherwise sent a full segment plus a
+        // few-byte one per ACK, multiplying the packet rate.
+        if can_send && data_in_flight && !can_send_full {
+            let unsent = self
+                .tx_buffer
+                .len()
+                .saturating_sub(self.remote_last_seq - self.local_seq_no);
+            if unsent > max_send {
+                can_send = false;
+            }
+        }
+
         // ROOMLER PATCH: and the pacer must have credit for the next segment.
         if can_send && self.pace_wait(cx.now(), max_send.min(effective_mss)).is_some() {
             can_send = false;
@@ -2939,6 +2955,10 @@ impl<'a> Socket<'a> {
                         .pace_wait(cx.now(), win_limit.min(mss).min(unsent))
                         .is_some()
                     {
+                        win_limit = 0;
+                    }
+                    // ROOMLER PATCH: and no sliver (see `seq_to_transmit`).
+                    if in_flight > 0 && win_limit < mss && unsent > win_limit {
                         win_limit = 0;
                     }
                 }
@@ -6722,6 +6742,50 @@ mod test {
             seq_number: LOCAL_SEQ + 1 + 6 + 6,
             ack_number: Some(REMOTE_SEQ + 1),
             payload:    &b"ABCDEF"[..],
+            ..RECV_TEMPL
+        }));
+    }
+
+    /// ROOMLER PATCH: with data in flight, a window with less than a segment
+    /// of room sends nothing until the next ACK, unless the sliver is all
+    /// that is left to send. Nagle is off, so it is not what holds it.
+    #[test]
+    fn test_no_sliver_while_data_is_in_flight() {
+        let mut s = socket_established();
+        s.remote_mss = 6;
+        s.set_nagle_enabled(false);
+        send!(s, time 0, TcpRepr {
+            seq_number: REMOTE_SEQ + 1,
+            ack_number: Some(LOCAL_SEQ + 1),
+            window_len: 9,
+            ..SEND_TEMPL
+        });
+        s.send_slice(b"xxxxxxyyyyyyzzz").unwrap();
+        recv!(s, time 1000, Ok(TcpRepr {
+            seq_number: LOCAL_SEQ + 1,
+            ack_number: Some(REMOTE_SEQ + 1),
+            payload:    &b"xxxxxx"[..],
+            ..RECV_TEMPL
+        }));
+        // 3 bytes of room, 9 unsent: no 3-byte segment.
+        recv_nothing!(s, time 1000);
+        send!(s, time 1050, TcpRepr {
+            seq_number: REMOTE_SEQ + 1,
+            ack_number: Some(LOCAL_SEQ + 1 + 6),
+            window_len: 9,
+            ..SEND_TEMPL
+        });
+        recv!(s, time 1050, Ok(TcpRepr {
+            seq_number: LOCAL_SEQ + 1 + 6,
+            ack_number: Some(REMOTE_SEQ + 1),
+            payload:    &b"yyyyyy"[..],
+            ..RECV_TEMPL
+        }));
+        // 3 bytes of room, 3 unsent: the tail goes.
+        recv!(s, time 1050, Ok(TcpRepr {
+            seq_number: LOCAL_SEQ + 1 + 12,
+            ack_number: Some(REMOTE_SEQ + 1),
+            payload:    &b"zzz"[..],
             ..RECV_TEMPL
         }));
     }
