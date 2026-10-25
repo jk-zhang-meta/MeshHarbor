@@ -584,16 +584,21 @@ struct PollLoop {
 
 /// `name`'s byte count within the TCP buffer bounds; an unparseable or
 /// out-of-range value keeps `default`.
-/// The netstack TCP congestion controller: the vendored smoltcp's NewReno-lite,
-/// unless `OVERLAY_NETSTACK_TCP_CC=none` (the kill switch) turns it off, which
-/// leaves the send buffer as the only bound on bytes in flight.
+/// The netstack TCP congestion controller: CUBIC (RFC 9438, rewritten in the
+/// vendored smoltcp), unless `OVERLAY_NETSTACK_TCP_CC` says `reno` (its
+/// NewReno-lite) or `none` (the kill switch: the send buffer alone bounds bytes
+/// in flight). Paced with SACK, CUBIC beat NewReno-lite in 9 matrix cells and
+/// lost none (`netstack_tcp_buffer_matrix`): behind a 64 KiB queue 82 → 96
+/// Mbit/s at 10 ms, 62 → 86 at 50 ms, 46 → 79 at 100 ms; behind the 40 Mbit/s
+/// policer 27.6 → 30.0.
 fn tcp_cc() -> tcp::CongestionControl {
     match crate::env::node_env("OVERLAY_NETSTACK_TCP_CC")
         .as_deref()
         .map(str::trim)
     {
         Some(v) if v.eq_ignore_ascii_case("none") => tcp::CongestionControl::None,
-        _ => tcp::CongestionControl::Reno,
+        Some(v) if v.eq_ignore_ascii_case("reno") => tcp::CongestionControl::Reno,
+        _ => tcp::CongestionControl::Cubic,
     }
 }
 
@@ -1616,7 +1621,7 @@ mod tests {
     /// pacing) must reach far past that with little resend waste.
     #[test]
     fn the_default_buffers_lift_a_50ms_path_with_little_waste() {
-        use tcp::CongestionControl::{None as NoCc, Reno};
+        use tcp::CongestionControl::None as NoCc;
         let (old, old_drops, _) = sim_bulk(
             (64 * 1024, 64 * 1024),
             (NoCc, false, false),
@@ -1627,7 +1632,7 @@ mod tests {
         );
         let (new, drops, amp) = sim_bulk(
             (TCP_RX_BUF, TCP_TX_BUF),
-            (Reno, true, true),
+            (tcp_cc(), true, true),
             25,
             256 * 1024,
             6_000,
@@ -1663,7 +1668,7 @@ mod tests {
                 );
                 let (new, _, amp) = sim_bulk(
                     (TCP_RX_BUF, TCP_TX_BUF),
-                    (Reno, true, true),
+                    (tcp_cc(), true, true),
                     one_way,
                     queue,
                     6_000,
@@ -1914,10 +1919,16 @@ mod tests {
         use tcp::CongestionControl::Reno;
         for bufs in [(TCP_RX_BUF, TCP_TX_BUF), (4096 * 1024, 4096 * 1024)] {
             for bucket in [16 * 1024i64, 64 * 1024] {
-                for (pacing, sack) in [(false, false), (false, true), (true, false), (true, true)] {
+                for (cc, pacing, sack) in [
+                    (Reno, false, false),
+                    (Reno, false, true),
+                    (Reno, true, false),
+                    (Reno, true, true),
+                    (tcp::CongestionControl::Cubic, true, true),
+                ] {
                     let (mbps, drops, amp) = sim_bulk_acks(
                         bufs,
-                        (Reno, pacing, sack),
+                        (cc, pacing, sack),
                         25,
                         1024 * 1024,
                         10_000,
@@ -1926,12 +1937,35 @@ mod tests {
                         Some((40, bucket)),
                     );
                     eprintln!(
-                        "OBSERVED policer 40 Mbit/s bucket {}KiB tx={}KiB pacing={pacing} sack={sack}: {mbps:.1} Mbit/s {drops} drops amp {amp:.2}",
+                        "OBSERVED policer 40 Mbit/s bucket {}KiB tx={}KiB cc={cc:?} pacing={pacing} sack={sack}: {mbps:.1} Mbit/s {drops} drops amp {amp:.2}",
                         bucket / 1024,
                         bufs.1 / 1024
                     );
                 }
             }
+        }
+    }
+
+    /// CUBIC against NewReno-lite, both paced with SACK, where Reno's halving
+    /// and linear regrowth leave a long path behind a shallow queue idle:
+    /// 100 ms behind a 64 KiB queue, and 50 ms behind one.
+    #[test]
+    fn cubic_fills_a_long_shallow_path_reno_leaves_idle() {
+        use tcp::CongestionControl::{Cubic, Reno};
+        let d = (TCP_RX_BUF, TCP_TX_BUF);
+        for one_way in [25i64, 50] {
+            let (reno, _, _) = sim_bulk(d, (Reno, true, true), one_way, 64 * 1024, 8_000, 3_000);
+            let (cubic, _, amp) =
+                sim_bulk(d, (Cubic, true, true), one_way, 64 * 1024, 8_000, 3_000);
+            eprintln!(
+                "OBSERVED {}ms behind a 64 KiB queue, paced SACK: reno {reno:.1} Mbit/s, cubic {cubic:.1} amp {amp:.2}",
+                one_way * 2
+            );
+            assert!(
+                cubic >= 1.25 * reno,
+                "cubic fills it: {cubic:.1} vs {reno:.1}"
+            );
+            assert!(amp < 1.1, "with little waste: {amp:.2}");
         }
     }
 
@@ -1947,6 +1981,7 @@ mod tests {
             (tcp::CongestionControl::Reno, true, false),
             (tcp::CongestionControl::Reno, false, true),
             (tcp::CongestionControl::Reno, true, true),
+            (tcp::CongestionControl::Cubic, true, true),
         ] {
             for one_way in [5i64, 25, 50] {
                 for queue in [64 * 1024i64, 256 * 1024, 1024 * 1024] {

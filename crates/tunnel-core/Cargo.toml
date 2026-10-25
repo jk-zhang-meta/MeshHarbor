@@ -166,6 +166,9 @@ smoltcp = { version = "0.13", optional = true, default-features = false, feature
     # NewReno-lite; see crates/vendored/smoltcp/Cargo.toml). Cubic stays off:
     # upstream's works in bytes and resets cwnd from a 2 KiB w_max.
     "socket-tcp-reno",
+    # CUBIC (RFC 9438), rewritten in the vendored smoltcp; selectable with
+    # OVERLAY_NETSTACK_TCP_CC=cubic (see `tcp_cc` in overlay/netstack.rs).
+    "socket-tcp-cubic",
     # Out-of-order ranges a TCP receiver queues (upstream default 4). A
     # segment that would open one more is dropped unacknowledged, so after a
     # burst loss most of the window had to come again even with SACK.

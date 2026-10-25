@@ -796,7 +796,7 @@ const KEYS: &[KeyMeta] = &[
         live: false,
         kind: "number",
         description: "netstack per-socket TCP receive buffer in bytes, the window the stack advertises \
-         (16384-16777216). Built-in default: 1048576 (1 MiB).",
+         (16384-16777216). Built-in default: 2097152 (2 MiB).",
     },
     KeyMeta {
         key: "overlay_netstack_tcp_tx_buf",
@@ -806,7 +806,7 @@ const KEYS: &[KeyMeta] = &[
         kind: "number",
         description: "netstack per-socket TCP send buffer in bytes, the most the stack can have in flight; \
          the congestion window (overlay_netstack_tcp_cc) paces below it (16384-16777216). Built-in default: \
-         524288 (512 KiB); 262144 suits a long path with a shallow bottleneck queue.",
+         2097152 (2 MiB), sized for paced SACK recovery (overlay_netstack_tcp_pacing, overlay_netstack_tcp_sack).",
     },
     KeyMeta {
         key: "overlay_netstack_tcp_cc",
@@ -814,7 +814,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "string",
-        description: "netstack TCP congestion control: reno (built-in default; NewReno-lite, cwnd bounds bytes in flight) | none (kill switch: the send buffer alone bounds them). Env: ROOMLERD_OVERLAY_NETSTACK_TCP_CC.",
+        description: "netstack TCP congestion control: cubic (built-in default; RFC 9438) | reno (NewReno-lite) | none (kill switch: the send buffer alone bounds bytes in flight). Env: ROOMLERD_OVERLAY_NETSTACK_TCP_CC.",
     },
     KeyMeta {
         key: "overlay_netstack_tcp_pacing",
@@ -2550,8 +2550,10 @@ pub fn apply(cfg: &mut AgentConfig, key: &str, value: Option<&str>) -> Result<()
                 None => None,
                 Some(v) => {
                     let cc = v.to_ascii_lowercase();
-                    if !matches!(cc.as_str(), "reno" | "none") {
-                        return Err("overlay_netstack_tcp_cc must be reno | none".to_string());
+                    if !matches!(cc.as_str(), "cubic" | "reno" | "none") {
+                        return Err(
+                            "overlay_netstack_tcp_cc must be cubic | reno | none".to_string()
+                        );
                     }
                     Some(cc)
                 }
@@ -4451,7 +4453,7 @@ mod tests {
         assert_eq!(
             current_value(&cfg, "overlay_netstack_tcp_cc"),
             None,
-            "unset → built-in reno"
+            "unset → built-in cubic"
         );
         apply(&mut cfg, "overlay_netstack_tcp_cc", Some(" NONE ")).unwrap();
         assert_eq!(cfg.overlay_netstack_tcp_cc.as_deref(), Some("none"));
@@ -4467,7 +4469,9 @@ mod tests {
             current_value(&cfg, "overlay_netstack_tcp_cc").as_deref(),
             Some("reno")
         );
-        assert!(apply(&mut cfg, "overlay_netstack_tcp_cc", Some("cubic")).is_err());
+        apply(&mut cfg, "overlay_netstack_tcp_cc", Some("Cubic")).unwrap();
+        assert_eq!(cfg.overlay_netstack_tcp_cc.as_deref(), Some("cubic"));
+        assert!(apply(&mut cfg, "overlay_netstack_tcp_cc", Some("bbr")).is_err());
         apply(&mut cfg, "overlay_netstack_tcp_cc", None).unwrap();
         assert_eq!(cfg.overlay_netstack_tcp_cc, None);
     }

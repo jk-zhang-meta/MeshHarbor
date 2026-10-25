@@ -787,19 +787,19 @@ pub struct AgentConfig {
     pub net_inventory: Option<bool>,
     /// §6 item 5 — netstack per-socket smoltcp receive buffer in bytes, the
     /// window this stack advertises (`ROOMLERD_OVERLAY_NETSTACK_TCP_RX_BUF`,
-    /// 16384–16777216). Built-in default: 1 MiB.
+    /// 16384–16777216). Built-in default: 2 MiB.
     #[serde(default)]
     pub overlay_netstack_tcp_rx_buf: Option<u32>,
     /// §6 item 5 — netstack per-socket smoltcp send buffer in bytes, the most
     /// this stack can have in flight; the congestion window paces below it
     /// (`ROOMLERD_OVERLAY_NETSTACK_TCP_TX_BUF`, 16384–16777216). Built-in
-    /// default: 512 KiB; 262144 suits a long path with a shallow queue.
+    /// default: 2 MiB (sized for paced SACK recovery).
     #[serde(default)]
     pub overlay_netstack_tcp_tx_buf: Option<u32>,
     /// §6 item 5 — netstack TCP congestion control
-    /// (`ROOMLERD_OVERLAY_NETSTACK_TCP_CC`): `reno` (the built-in default,
-    /// the vendored smoltcp's NewReno-lite) | `none` (the kill switch: the
-    /// send buffer alone bounds bytes in flight, as before).
+    /// (`ROOMLERD_OVERLAY_NETSTACK_TCP_CC`): `cubic` (the built-in default,
+    /// RFC 9438 in the vendored smoltcp) | `reno` (its NewReno-lite) | `none`
+    /// (the kill switch: the send buffer alone bounds bytes in flight).
     #[serde(default)]
     pub overlay_netstack_tcp_cc: Option<String>,
     /// §6 item 5 — netstack TCP send pacing: data leaves at gain × cwnd / srtt
