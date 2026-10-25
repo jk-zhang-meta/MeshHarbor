@@ -1239,6 +1239,8 @@ async fn run_srflx_keepalive(
     // the evolving advert (the runtime's copy is a startup snapshot), so the
     // restore must come from here.
     mut reattach_rx: tokio::sync::watch::Receiver<u64>,
+    // §6 item 5 — where the gateway port mapping comes from.
+    portmap: super::portmap::Source,
 ) {
     const RERESOLVE_AFTER: u32 = 3;
     let mut failures: u32 = 0;
@@ -1254,7 +1256,35 @@ async fn run_srflx_keepalive(
     // committed `advertised[0]` before sending — a mapping change during an
     // outage was lost forever.)
     let mut resend_pending = false;
+    // §6 item 5 — map the punch port on the gateway. Here, not in the
+    // gather: the STUN advert is already out, so a silent gateway (most
+    // cloud hosts; ≤ 2 × `portmap::WAIT`) delays nothing, and a grant
+    // re-advertises with the mapping first.
+    let mut pm = portmap.start(&punch_sock, &advertised).await;
+    if pm.is_some() {
+        resend_pending = true;
+    }
     loop {
+        // At the TOP, so a mapping granted before the first tick goes out
+        // now, not one interval later; otherwise the same as sending right
+        // after the previous iteration's select.
+        if resend_pending {
+            resend_pending = outbound
+                .send(ClientMsg::OverlaySrflx {
+                    // `advertised` stays STUN-only (`[0]` is the punch
+                    // mapping compared below); the gateway mapping goes first.
+                    candidates: super::portmap::advert(&advertised, pm.as_ref()),
+                    // Re-send our NAT type with every advert so the server
+                    // never clears it.
+                    nat: super::portmap::advert_nat(nat.clone(), pm.as_ref()),
+                    udp_dialer_ok: Some(crate::overlay::dialer::advertised_dialer_ok()),
+                })
+                .await
+                .is_err();
+            if resend_pending {
+                debug!("overlay: srflx advert send failed (detached) — retrying next tick");
+            }
+        }
         // Small jitter (≤25% of the interval) so a fleet doesn't STUN in
         // lockstep; scaled to the interval so short test intervals stay quick.
         let jitter =
@@ -1286,6 +1316,10 @@ async fn run_srflx_keepalive(
                             }
                             info!(new_srflx = %ep, "overlay: srflx mapping changed — re-advertising (Phase C keepalive)");
                             resend_pending = true;
+                            // The gateway's external address may have moved too.
+                            if let Some(p) = pm.as_mut() {
+                                p.recheck();
+                            }
                         }
                     }
                     Err(e) => {
@@ -1311,31 +1345,27 @@ async fn run_srflx_keepalive(
                         }
                     }
                 }
+                // Refresh the gateway mapping when due (half its lifetime),
+                // or ask again after a loss.
+                if let Some(p) = pm.as_mut()
+                    && p.poll(&advertised).await
+                {
+                    resend_pending = true;
+                }
             }
             changed = reattach_rx.changed() => {
                 if changed.is_err() {
-                    // The runtime dropped its sender = it exited; end with it.
+                    // The runtime dropped its sender = it exited; end with it,
+                    // handing the gateway its port back.
+                    if let Some(p) = pm.as_mut() {
+                        p.release().await;
+                    }
                     break;
                 }
                 if !advertised.is_empty() {
                     debug!("overlay: reattach — restoring the current srflx advert");
                     resend_pending = true;
                 }
-            }
-        }
-        if resend_pending {
-            resend_pending = outbound
-                .send(ClientMsg::OverlaySrflx {
-                    candidates: advertised.clone(),
-                    // Re-send our NAT type with every advert so the server
-                    // never clears it.
-                    nat: nat.clone(),
-                    udp_dialer_ok: Some(crate::overlay::dialer::advertised_dialer_ok()),
-                })
-                .await
-                .is_err();
-            if resend_pending {
-                debug!("overlay: srflx advert send failed (detached) — retrying next tick");
             }
         }
     }
@@ -1358,6 +1388,7 @@ fn spawn_srflx_keepalive(
     my_nat: &Option<String>,
     outbound: ControlTx,
     reattach_rx: tokio::sync::watch::Receiver<u64>,
+    portmap_key: Vec<u8>,
 ) -> Option<tokio::task::JoinHandle<()>> {
     let secs = direct::srflx_keepalive_secs();
     match (
@@ -1382,6 +1413,7 @@ fn spawn_srflx_keepalive(
                 outbound,
                 Duration::from_secs(secs),
                 reattach_rx,
+                super::portmap::Source::DefaultGateway(portmap_key),
             )))
         }
         // NEVER return None silently. An org with no re-advert task keeps
@@ -2702,6 +2734,7 @@ impl OverlayRuntime {
                 &srflx_my_nat,
                 self.outbound.clone(),
                 srflx_reattach_rx,
+                self.keypair.secret.to_bytes().to_vec(),
             )
         };
         if srflx_keepalive.is_none() {
@@ -3647,6 +3680,7 @@ impl OverlayRuntime {
                                     &srflx_my_nat,
                                     self.outbound.clone(),
                                     srflx_reattach_tx.subscribe(),
+                                    self.keypair.secret.to_bytes().to_vec(),
                                 )
                             };
                             let peers_now: Vec<NetmapPeer> =
@@ -4065,6 +4099,7 @@ impl OverlayRuntime {
                             nat: s.my_nat.clone(),
                             via_public_dial: s.via_public_dial,
                             error: s.error.clone(),
+                            portmap: s.portmap.clone(),
                         });
                         info!(
                             candidates = ?s.candidates,
@@ -7954,6 +7989,7 @@ mod tests {
             out_tx.into(),
             Duration::from_millis(60),
             reattach_rx,
+            crate::overlay::portmap::Source::Off,
         ));
 
         // First tick: mapping == advert → NO trickle. Second tick: changed to
@@ -7983,6 +8019,52 @@ mod tests {
         task.abort();
     }
 
+    /// §6 item 5 — a gateway that grants a mapping makes the keepalive
+    /// re-advertise with that mapping FIRST and the NAT as `cone` (a
+    /// symmetric peer can reach a mapped port), keeping the STUN candidate
+    /// after it; the runtime's exit ends the task (which releases it).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn srflx_keepalive_advertises_a_gateway_mapping_first() {
+        let punch = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let (_sink_tx, sink_rx) = mpsc::channel::<crate::transport::stun::StunInbound>(1);
+        let (out_tx, mut out_rx) = mpsc::channel::<ClientMsg>(4);
+        let (reattach_tx, reattach_rx) = tokio::sync::watch::channel(0u64);
+        let external = std::net::SocketAddrV4::new(Ipv4Addr::new(203, 0, 113, 7), 41641);
+        let gw = crate::overlay::portmap::fake_pcp_gateway(external).await;
+        let task = tokio::spawn(run_srflx_keepalive(
+            punch,
+            sink_rx,
+            "127.0.0.1:9".parse().unwrap(),
+            vec![],
+            vec![],
+            vec!["203.0.113.7:1111".to_string()],
+            Some("symmetric".into()),
+            out_tx.into(),
+            Duration::from_secs(60),
+            reattach_rx,
+            crate::overlay::portmap::Source::At(gw, b"node-secret".to_vec()),
+        ));
+        let msg = tokio::time::timeout(Duration::from_secs(3), out_rx.recv())
+            .await
+            .expect("expected an advert with the mapping")
+            .expect("channel closed");
+        match msg {
+            ClientMsg::OverlaySrflx { candidates, nat, .. } => {
+                assert_eq!(
+                    candidates,
+                    vec![external.to_string(), "203.0.113.7:1111".to_string()]
+                );
+                assert_eq!(nat.as_deref(), Some("cone"));
+            }
+            other => panic!("expected OverlaySrflx, got {other:?}"),
+        }
+        drop(reattach_tx);
+        tokio::time::timeout(Duration::from_secs(3), task)
+            .await
+            .expect("the runtime's exit ends the keepalive")
+            .unwrap();
+    }
+
     /// Phase C (D5) — a STUN outage must NOT strip a working advert: with no
     /// reply arriving, the keepalive retains the last-known srflx (no trickle).
     #[tokio::test(flavor = "multi_thread")]
@@ -8004,6 +8086,7 @@ mod tests {
             out_tx.into(),
             Duration::from_millis(30),
             reattach_rx,
+            crate::overlay::portmap::Source::Off,
         ));
         assert!(
             tokio::time::timeout(Duration::from_millis(500), out_rx.recv())
@@ -8058,6 +8141,7 @@ mod tests {
             ctl.clone(),
             Duration::from_millis(40),
             reattach_rx,
+            crate::overlay::portmap::Source::Off,
         ));
 
         // Give it a few ticks: the mapping change lands, its send fails

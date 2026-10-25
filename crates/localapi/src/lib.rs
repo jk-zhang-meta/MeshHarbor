@@ -560,6 +560,11 @@ pub struct SrflxStatus {
     /// success. Rendered verbatim by `roomler status`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// §6 item 5 — the gateway port mapping advertised first among
+    /// `candidates` (`"pcp ip:port"` / `"nat-pmp ip:port"`). `None` = no
+    /// gateway granted one (or `OVERLAY_PORTMAP` is off).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub portmap: Option<String>,
 }
 
 impl SrflxStatus {

@@ -768,6 +768,12 @@ pub struct AgentConfig {
     /// (`ROOMLERD_OVERLAY_VPN_VANTAGE`).
     #[serde(default)]
     pub overlay_vpn_vantage: Option<bool>,
+    /// §6 item 5 — ask the gateway (PCP, then NAT-PMP) to map the punch
+    /// socket's port and advertise the mapping first among the srflx
+    /// candidates, so a peer behind a symmetric NAT can still reach this node
+    /// directly. Built-in default: on (`ROOMLERD_OVERLAY_PORTMAP`).
+    #[serde(default)]
+    pub overlay_portmap: Option<bool>,
     /// Track A stage 1 — spawn the session-independent network daemon
     /// (`roomlerd netd`) as a SECOND supervisor child. SCAFFOLD ONLY for
     /// now: netd heartbeats and hosts nothing; the network plane still
@@ -2802,6 +2808,7 @@ pub fn test_fixture() -> AgentConfig {
         overlay_warm_relay: None,
         overlay_quic_async: None,
         overlay_vpn_vantage: None,
+        overlay_portmap: None,
         overlay_netd: None,
         overlay_pathmon: None,
         overlay_route_events: None,
@@ -3031,7 +3038,7 @@ mod derived_port_tests {
     }
 }
 
-pub fn env_bridge_bools(cfg: &AgentConfig) -> [(&'static str, Option<bool>); 90] {
+pub fn env_bridge_bools(cfg: &AgentConfig) -> [(&'static str, Option<bool>); 91] {
     [
         ("SHARED_ENCODER", cfg.shared_encoder),
         ("AREA_MIN_BITRATE", cfg.area_min_bitrate),
@@ -3099,6 +3106,7 @@ pub fn env_bridge_bools(cfg: &AgentConfig) -> [(&'static str, Option<bool>); 90]
         ("OVERLAY_WARM_RELAY", cfg.overlay_warm_relay),
         ("OVERLAY_QUIC_ASYNC", cfg.overlay_quic_async),
         ("OVERLAY_VPN_VANTAGE", cfg.overlay_vpn_vantage),
+        ("OVERLAY_PORTMAP", cfg.overlay_portmap),
         ("OVERLAY_ROUTE_EVENTS", cfg.overlay_route_events),
         ("OVERLAY_NETMON", cfg.overlay_netmon),
         ("OVERLAY_RELAY_TLS", cfg.overlay_relay_tls),

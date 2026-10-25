@@ -3150,7 +3150,9 @@ impl OverlayRuntime {
         // advertises on ITS OWN control WS, after ITS OWN join — preserving
         // the server-side join-clears-srflx ordering contract per org.
         if let Some(plane) = self.carrier_plane.clone() {
-            let shared = plane.ensure_srflx(stun_urls).await;
+            let shared = plane
+                .ensure_srflx(stun_urls, &self.keypair.secret.to_bytes())
+                .await;
             if let Some(ctx) = direct_ctx.as_mut() {
                 ctx.punch = shared.punch.clone();
                 ctx.my_nat = shared.my_nat.clone();
@@ -3161,6 +3163,7 @@ impl OverlayRuntime {
                 nat: shared.my_nat.clone(),
                 via_public_dial: shared.via_public_dial,
                 error: shared.error.clone(),
+                portmap: shared.portmap.clone(),
             });
             if !shared.candidates.is_empty() {
                 let _ = self
@@ -3226,6 +3229,7 @@ impl OverlayRuntime {
                              ({} socket(s) probed)",
                             socks.len()
                         )),
+                        portmap: None,
                     });
                 } else {
                     // The FIRST pair is the punch socket: its candidate is
@@ -3259,6 +3263,9 @@ impl OverlayRuntime {
                         nat: my_nat.clone(),
                         via_public_dial: false,
                         error: None,
+                        // The keepalive maps the gateway port later; legacy
+                        // mode's status keeps this startup snapshot.
+                        portmap: None,
                     });
                     info!(?candidates, ?my_nat, %stun_server, "overlay: advertising srflx candidates (NAT-traversal Phase B/C)");
                     let _ = self
@@ -3287,6 +3294,7 @@ impl OverlayRuntime {
                     nat: None,
                     via_public_dial: false,
                     error: Some(format!("no resolvable STUN server among {stun_urls:?}")),
+                    portmap: None,
                 });
             }
         }

@@ -790,6 +790,14 @@ const KEYS: &[KeyMeta] = &[
         description: "R2: srflx gather falls back to the wildcard public-dial socket when every LAN-bound vantage is dead (full-tunnel VPN rescue — on AnyConnect-class clients the tunnel is the only path that passes UDP). Built-in default: on.",
     },
     KeyMeta {
+        key: "overlay_portmap",
+        group: Group::NetworkCarriers,
+        tier: Tier::Advanced,
+        live: false,
+        kind: "tribool",
+        description: "Ask the gateway (PCP, then NAT-PMP) to map the direct punch port and advertise the mapping first, so a peer behind a symmetric NAT can still reach this node directly. Built-in default: on.",
+    },
+    KeyMeta {
         key: "overlay_netd",
         group: Group::NetworkCarriers,
         tier: Tier::Advanced,
@@ -2000,6 +2008,7 @@ fn current_value(cfg: &AgentConfig, key: &str) -> Option<String> {
         "overlay_warm_relay" => cfg.overlay_warm_relay.map(fmt_bool),
         "overlay_quic_async" => cfg.overlay_quic_async.map(fmt_bool),
         "overlay_vpn_vantage" => cfg.overlay_vpn_vantage.map(fmt_bool),
+        "overlay_portmap" => cfg.overlay_portmap.map(fmt_bool),
         "overlay_netd" => cfg.overlay_netd.map(fmt_bool),
         "overlay_pathmon" => cfg.overlay_pathmon.clone(),
         "overlay_demote" => cfg.overlay_demote.clone(),
@@ -2465,6 +2474,7 @@ pub fn apply(cfg: &mut AgentConfig, key: &str, value: Option<&str>) -> Result<()
         "overlay_warm_relay" => cfg.overlay_warm_relay = parse_tribool(value)?,
         "overlay_quic_async" => cfg.overlay_quic_async = parse_tribool(value)?,
         "overlay_vpn_vantage" => cfg.overlay_vpn_vantage = parse_tribool(value)?,
+        "overlay_portmap" => cfg.overlay_portmap = parse_tribool(value)?,
         "overlay_netd" => cfg.overlay_netd = parse_tribool(value)?,
         "overlay_pathmon" => {
             cfg.overlay_pathmon = match value.map(str::trim).filter(|s| !s.is_empty()) {
@@ -4020,6 +4030,25 @@ mod tests {
             crate::config::env_bridge_bools(&cfg)
                 .iter()
                 .any(|(k, _)| *k == "OVERLAY_VPN_VANTAGE"),
+            "key must be bridged to the daemon's env"
+        );
+    }
+
+    /// §6 item 5 — the gateway port-mapping key: tribool, default None
+    /// (daemon built-in ON), bridged to the daemon env.
+    #[test]
+    fn overlay_portmap_set_echo_clear() {
+        let mut cfg = crate::config::test_fixture();
+        assert_eq!(cfg.overlay_portmap, None, "unset → daemon default (on)");
+        apply(&mut cfg, "overlay_portmap", Some("off")).unwrap();
+        assert_eq!(cfg.overlay_portmap, Some(false));
+        assert_eq!(current_value(&cfg, "overlay_portmap").as_deref(), Some("false"));
+        apply(&mut cfg, "overlay_portmap", None).unwrap();
+        assert_eq!(cfg.overlay_portmap, None, "clear → built-in default");
+        assert!(
+            crate::config::env_bridge_bools(&cfg)
+                .iter()
+                .any(|(k, _)| *k == "OVERLAY_PORTMAP"),
             "key must be bridged to the daemon's env"
         );
     }

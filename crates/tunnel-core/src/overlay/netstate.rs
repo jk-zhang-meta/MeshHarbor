@@ -774,6 +774,16 @@ fn default_route(v6: bool) -> Option<DefaultRoute> {
     route_lookup(far_destination(v6))
 }
 
+/// The IPv4 next hop toward the internet, for port mapping
+/// ([`super::portmap`]). `None` on an on-link default route, a v6 next hop,
+/// or a default route through a tunnel. Blocking (it may run `ip route get`).
+pub(crate) fn default_gateway_v4() -> Option<std::net::Ipv4Addr> {
+    match default_route(false)?.gateway? {
+        IpAddr::V4(g) => Some(g),
+        IpAddr::V6(_) => None,
+    }
+}
+
 /// Where a packet to `dest` would leave: a route LOOKUP (never a send), the
 /// instrument behind both the default-route sample and the FR-33 capture probe.
 #[cfg(windows)]

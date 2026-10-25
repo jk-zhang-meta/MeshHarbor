@@ -1344,7 +1344,25 @@ pub struct SrflxShared {
     pub via_public_dial: bool,
     /// What the LocalAPI shows when the tier is off/empty this run.
     pub error: Option<String>,
+    /// §6 item 5 — the gateway port mapping on the punch socket's port
+    /// ([`super::portmap::PortMapper::describe`]). While one is held, the
+    /// PUBLISHED value carries its external address at `candidates[0]` and
+    /// `my_nat = "cone"`; the srflx task's own state never does.
+    pub portmap: Option<String>,
     pub generation: u64,
+}
+
+impl SrflxShared {
+    /// What the watch publishes: `self` (the STUN-only state the srflx task
+    /// keeps) with the held mapping, if any, merged in.
+    fn published(&self, pm: Option<&super::portmap::PortMapper>) -> SrflxShared {
+        SrflxShared {
+            candidates: super::portmap::advert(&self.candidates, pm),
+            my_nat: super::portmap::advert_nat(self.my_nat.clone(), pm),
+            portmap: pm.and_then(super::portmap::PortMapper::describe),
+            ..self.clone()
+        }
+    }
 }
 
 impl CarrierPlane {
@@ -1360,7 +1378,15 @@ impl CarrierPlane {
     /// keepalive, which holds the mapping open and re-publishes on change.
     /// P1-d re-gathers per rebuild epoch; until then the result is
     /// process-lifetime, like the plane's binds.
-    pub async fn ensure_srflx(self: &Arc<Self>, stun_urls: &[String]) -> SrflxShared {
+    ///
+    /// `portmap_key` keys the gateway mapping's PCP nonce
+    /// ([`super::portmap::nonce_for`]); the first caller's key wins, like the
+    /// gather itself.
+    pub async fn ensure_srflx(
+        self: &Arc<Self>,
+        stun_urls: &[String],
+        portmap_key: &[u8],
+    ) -> SrflxShared {
         let mut done = self.srflx_gate.lock().await;
         if *done {
             return self.lock().srflx_watch.borrow().clone();
@@ -1385,7 +1411,7 @@ impl CarrierPlane {
         // value unconditionally, so late subscribers see the candidate.
         self.lock().srflx_watch.send_replace(shared.clone());
         if let Some(rx) = sink {
-            self.spawn_srflx_task(rx, stun_urls.to_vec(), &shared);
+            self.spawn_srflx_task(rx, stun_urls.to_vec(), &shared, portmap_key.to_vec());
         }
         *done = true;
         shared
@@ -1643,6 +1669,7 @@ impl CarrierPlane {
         rx: mpsc::Receiver<StunInbound>,
         stun_urls: Vec<String>,
         seed: &SrflxShared,
+        portmap_key: Vec<u8>,
     ) {
         let secs = direct::srflx_keepalive_secs();
         if !direct::srflx_enabled() || secs == 0 {
@@ -1747,6 +1774,16 @@ impl CarrierPlane {
             tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             // The interval's immediate first tick — the gather just ran.
             tick.tick().await;
+            // §6 item 5 — ask the gateway to map the punch port. Here, not in
+            // the gather: the STUN advert is already out, so a silent gateway
+            // (most cloud hosts; ≤ 2 × `portmap::WAIT`) delays nothing, and a
+            // grant re-publishes with the mapping first.
+            let mut pm =
+                super::portmap::PortMapper::start(&punch, &state.candidates, &portmap_key).await;
+            if pm.is_some() {
+                state.generation += 1;
+                plane.lock().srflx_watch.send_replace(state.published(pm.as_ref()));
+            }
             // W6 — poke-storm floor (see SEEKING): a poked query here is only
             // an ACCELERATION of the ≤`secs` tick, so under an interface-event
             // storm a too-soon poke is skipped outright — the regular
@@ -1766,6 +1803,7 @@ impl CarrierPlane {
                     continue;
                 }
                 last_query = Some(std::time::Instant::now());
+                let mut publish = false;
                 match crate::transport::stun::srflx_query_via_sink(
                     &punch,
                     &mut rx,
@@ -1777,7 +1815,6 @@ impl CarrierPlane {
                     Ok(cur) => {
                         failures = 0;
                         watchdog_fails = 0;
-                        let mut publish = false;
                         if warned {
                             warned = false;
                             state.error = None;
@@ -1792,14 +1829,14 @@ impl CarrierPlane {
                                 state.candidates[0] = ep.clone();
                             }
                             publish = true;
+                            // The gateway's external address may have moved too.
+                            if let Some(p) = pm.as_mut() {
+                                p.recheck();
+                            }
                             info!(
                                 new_srflx = %ep,
                                 "carrier plane: srflx mapping changed — every org re-advertises"
                             );
-                        }
-                        if publish {
-                            state.generation += 1;
-                            plane.lock().srflx_watch.send_replace(state.clone());
                         }
                     }
                     Err(e) => {
@@ -1831,8 +1868,7 @@ impl CarrierPlane {
                             );
                             state.error =
                                 Some(format!("srflx keepalive failing ({failures} consecutive)"));
-                            state.generation += 1;
-                            plane.lock().srflx_watch.send_replace(state.clone());
+                            publish = true;
                         } else {
                             debug!(
                                 %e, failures,
@@ -1848,6 +1884,17 @@ impl CarrierPlane {
                             failures = 0;
                         }
                     }
+                }
+                // Refresh the gateway mapping when due (half its lifetime),
+                // or ask again after a loss.
+                if let Some(p) = pm.as_mut()
+                    && p.poll(&state.candidates).await
+                {
+                    publish = true;
+                }
+                if publish {
+                    state.generation += 1;
+                    plane.lock().srflx_watch.send_replace(state.published(pm.as_ref()));
                 }
             }
         });
@@ -2600,7 +2647,7 @@ mod tests {
         plane.lock().srflx_watch.send_replace(good.clone());
 
         let got = plane
-            .ensure_srflx(&["stun:example.invalid:3478".into()])
+            .ensure_srflx(&["stun:example.invalid:3478".into()], b"test-key")
             .await;
         assert_eq!(got.candidates, good.candidates);
         assert_eq!(got.generation, 7);
@@ -2653,6 +2700,37 @@ mod tests {
     /// value when there are no receivers (the plane keeps none), which left
     /// every forwarder reading `[]` and relay-locked the gather-gate loser
     /// (field 2026-08-10). `send_replace` stores unconditionally.
+    /// §6 item 5 — what the watch publishes carries a held gateway mapping
+    /// first, as `cone`, with its description for the LocalAPI; the srflx
+    /// task's own state stays STUN-only (its `[0]` is the punch mapping the
+    /// keepalive compares against).
+    #[tokio::test]
+    async fn a_held_gateway_mapping_is_published_first_and_the_state_stays_stun_only() {
+        let external = std::net::SocketAddrV4::new(Ipv4Addr::new(203, 0, 113, 7), 41641);
+        let gw = super::super::portmap::fake_pcp_gateway(external).await;
+        let sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let state = SrflxShared {
+            candidates: vec!["203.0.113.7:1111".into()],
+            my_nat: Some("symmetric".into()),
+            ..Default::default()
+        };
+        let pm = super::super::portmap::Source::At(gw, b"node-secret".to_vec())
+            .start(&sock, &state.candidates)
+            .await
+            .expect("mapped");
+        let p = state.published(Some(&pm));
+        assert_eq!(
+            p.candidates,
+            vec![external.to_string(), "203.0.113.7:1111".to_string()]
+        );
+        assert_eq!(p.my_nat.as_deref(), Some("cone"));
+        assert_eq!(p.portmap.as_deref(), Some("pcp 203.0.113.7:41641"));
+        assert_eq!(state.candidates, vec!["203.0.113.7:1111".to_string()], "state untouched");
+        let none = state.published(None);
+        assert_eq!(none.candidates, state.candidates);
+        assert_eq!((none.my_nat, none.portmap), (state.my_nat.clone(), None));
+    }
+
     #[tokio::test]
     async fn srflx_watch_persists_value_sent_before_any_subscriber() {
         let plane = CarrierPlane::new();

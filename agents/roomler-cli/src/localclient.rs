@@ -2504,8 +2504,14 @@ fn print_status(s: &NodeStatus) {
             } else {
                 ""
             };
+            // §6 item 5 — a gateway port mapping is the first candidate.
+            let mapped = srflx
+                .portmap
+                .as_deref()
+                .map(|p| format!(", gateway {p}"))
+                .unwrap_or_default();
             println!(
-                "  srflx       {} ({nat}{via}{vantage})",
+                "  srflx       {} ({nat}{via}{vantage}{mapped})",
                 srflx.candidates.join(", ")
             );
         }
