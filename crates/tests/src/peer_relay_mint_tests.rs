@@ -21,9 +21,12 @@ use bson::{doc, oid::ObjectId};
 use futures::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use std::time::Duration;
-use tokio_tungstenite::{connect_async, tungstenite::Message};
+use tokio_tungstenite::{
+    connect_async,
+    tungstenite::{Message, client::IntoClientRequest},
+};
 
-type Ws =
+pub(crate) type Ws =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
 fn urlencode(s: &str) -> String {
@@ -40,8 +43,20 @@ fn url(seeded: &SeededTenant, tail: &str) -> String {
 /// relay's `relay-server` capability rides here, exactly as a real daemon
 /// advertises it.
 async fn connect(app: &TestApp, token: &str, rpc: &[&str]) -> Ws {
+    connect_from(app, token, rpc, None).await
+}
+
+/// [`connect`] through a trusted loopback proxy: `xff` is the client address
+/// the `X-Forwarded-For` header claims, which is what the server's business
+/// observation records for this connection (`None` = a bare loopback peer).
+pub(crate) async fn connect_from(app: &TestApp, token: &str, rpc: &[&str], xff: Option<&str>) -> Ws {
     let ws_url = format!("ws://{}/ws?token={}&role=agent", app.addr, urlencode(token));
-    let (mut ws, _) = connect_async(&ws_url).await.expect("ws connect");
+    let mut req = ws_url.into_client_request().expect("ws request");
+    if let Some(ip) = xff {
+        req.headers_mut()
+            .insert("x-forwarded-for", ip.parse().expect("xff header"));
+    }
+    let (mut ws, _) = connect_async(req).await.expect("ws connect");
     let hello = json!({
         "t": "rc:agent.hello",
         "machine_name": "relay mint box",
@@ -65,7 +80,7 @@ async fn connect(app: &TestApp, token: &str, rpc: &[&str]) -> Ws {
 }
 
 /// Read frames until one with `t == want` arrives, or give up.
-async fn recv_t(ws: &mut Ws, want: &str, wait: Duration) -> Option<Value> {
+pub(crate) async fn recv_t(ws: &mut Ws, want: &str, wait: Duration) -> Option<Value> {
     let deadline = tokio::time::Instant::now() + wait;
     loop {
         let left = deadline.saturating_duration_since(tokio::time::Instant::now());
@@ -90,7 +105,7 @@ async fn recv_t(ws: &mut Ws, want: &str, wait: Duration) -> Option<Value> {
 /// Join the overlay as a node that understands org relays. `seed` makes the
 /// WG key distinct per node; `endpoint` is the public address the relay
 /// candidate is reachable at.
-async fn join(ws: &mut Ws, seed: u8, org_primary: Option<bool>, endpoint: &str) -> Value {
+pub(crate) async fn join(ws: &mut Ws, seed: u8, org_primary: Option<bool>, endpoint: &str) -> Value {
     let key = BASE64.encode([seed; 32]);
     let mut msg = json!({
         "t": "rc:overlay.join",
@@ -112,7 +127,7 @@ async fn join(ws: &mut Ws, seed: u8, org_primary: Option<bool>, endpoint: &str) 
         .expect("a netmap answers the join")
 }
 
-async fn put(app: &TestApp, path: &str, token: &str, body: Value) -> (u16, Value) {
+pub(crate) async fn put(app: &TestApp, path: &str, token: &str, body: Value) -> (u16, Value) {
     let resp = app.auth_put(path, token).json(&body).send().await.unwrap();
     let status = resp.status().as_u16();
     (status, resp.json().await.unwrap_or(Value::Null))
@@ -128,7 +143,7 @@ async fn get(app: &TestApp, path: &str, token: &str) -> Value {
         .unwrap_or(Value::Null)
 }
 
-async fn set_mode(app: &TestApp, seeded: &SeededTenant, mode: &str) {
+pub(crate) async fn set_mode(app: &TestApp, seeded: &SeededTenant, mode: &str) {
     let (s, _) = put(
         app,
         &url(seeded, "/peer-relay"),
@@ -173,7 +188,7 @@ async fn grant_relay(app: &TestApp, seeded: &SeededTenant, relay_node_id: &str) 
     v["id"].as_str().unwrap().to_string()
 }
 
-async fn node_id(app: &TestApp, seeded: &SeededTenant, machine_id: &str) -> String {
+pub(crate) async fn node_id(app: &TestApp, seeded: &SeededTenant, machine_id: &str) -> String {
     let tid = ObjectId::parse_str(&seeded.tenant_id).unwrap();
     app.state
         .network()
@@ -187,7 +202,7 @@ async fn node_id(app: &TestApp, seeded: &SeededTenant, machine_id: &str) -> Stri
         .to_hex()
 }
 
-async fn audit_rows(app: &TestApp, seeded: &SeededTenant) -> Vec<Value> {
+pub(crate) async fn audit_rows(app: &TestApp, seeded: &SeededTenant) -> Vec<Value> {
     get(
         app,
         &url(seeded, "/peer-relay-audit"),
@@ -200,7 +215,7 @@ async fn audit_rows(app: &TestApp, seeded: &SeededTenant) -> Vec<Value> {
 }
 
 /// Wait for the newest audit row to be a `mint` row, then return it.
-async fn wait_mint_row(app: &TestApp, seeded: &SeededTenant) -> Value {
+pub(crate) async fn wait_mint_row(app: &TestApp, seeded: &SeededTenant) -> Value {
     for _ in 0..40 {
         let rows = audit_rows(app, seeded).await;
         if let Some(r) = rows.first()
