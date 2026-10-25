@@ -923,7 +923,7 @@ impl RelayCoordinator {
                 .get(&node_id)
                 .map(String::as_str)
                 .unwrap_or("central"),
-            "overlay relay: pair force-pinned to DERP (server escalation — TURN churn)"
+            "overlay relay: pair force-pinned to DERP (server escalation: TURN churn or a lossy ORG carrier)"
         );
         // If this pin lands right after WE moved the pair off DERP, the churn
         // it is reacting to is ours — back off before trying that again.
