@@ -76,9 +76,10 @@ use super::tun::TunIo;
 /// smoltcp derives window scaling from it, and the old 64 KiB held every
 /// download to 64 KiB per round trip (about 10 Mbit/s at 50 ms). The sender on
 /// the far side is normally a kernel TCP with real congestion control, so a
-/// wide window is safe here: 1 MiB carries about 170 Mbit/s at 50 ms.
+/// wide window is safe here: 2 MiB carries about 330 Mbit/s at 50 ms. Pages
+/// are touched only as data flows, so an idle socket stays cheap.
 /// `OVERLAY_NETSTACK_TCP_RX_BUF` overrides it ([`TCP_BUF_MIN`]..=[`TCP_BUF_MAX`]).
-const TCP_RX_BUF: usize = 1024 * 1024;
+const TCP_RX_BUF: usize = 2 * 1024 * 1024;
 /// Per-socket smoltcp SEND buffer: the most this stack can have in flight.
 /// The congestion window ([`tcp_cc`], the vendored smoltcp's NewReno-lite, whose
 /// cwnd really bounds bytes in flight) is what paces a sender below it. Upstream
@@ -89,9 +90,12 @@ const TCP_RX_BUF: usize = 1024 * 1024;
 /// 256 KiB/1 MiB queues) beats that old default in every cell, at most 1.18x
 /// wire per delivered byte even behind a 64 KiB queue; it reaches 79 Mbit/s at
 /// 50 ms (was 20) and loses only to 256 KiB on a long, shallow path (100 ms /
-/// 64 KiB queue: 7.6 vs 20 Mbit/s, still above the old 4). `OVERLAY_NETSTACK_TCP_TX_BUF`
-/// overrides it.
-const TCP_TX_BUF: usize = 512 * 1024;
+/// 64 KiB queue: 7.6 vs 20 Mbit/s, still above the old 4). With SACK recovery
+/// and pacing (both on by default) a bigger window no longer costs a resend
+/// of it: paced+SACK at 1–4 MiB is never below 512 KiB in that matrix, and on
+/// the real HK↔Tokyo path (43 ms) 512 KiB is the cap (~89 Mbit/s) where 4 MiB
+/// carried 179–268. Hence 2 MiB. `OVERLAY_NETSTACK_TCP_TX_BUF` overrides it.
+const TCP_TX_BUF: usize = 2 * 1024 * 1024;
 const TCP_BUF_MIN: usize = 16 * 1024;
 const TCP_BUF_MAX: usize = 16 * 1024 * 1024;
 /// Max bytes moved between a smoltcp socket buffer and an app channel in one
@@ -1608,11 +1612,10 @@ mod tests {
 
     /// MeshHarbor §6 item 5. On a 50 ms, 100 Mbit/s path behind a moderate
     /// 256 KiB queue, the old 64 KiB buffers are window-bound near 9 Mbit/s;
-    /// the production defaults (with their congestion control) must at least
-    /// double that with NO extra loss (smoltcp's go-back-N recovery makes every
-    /// drop expensive).
+    /// the production defaults (buffers, congestion control, SACK recovery and
+    /// pacing) must reach far past that with little resend waste.
     #[test]
-    fn the_default_buffers_double_a_50ms_path_without_extra_loss() {
+    fn the_default_buffers_lift_a_50ms_path_with_little_waste() {
         use tcp::CongestionControl::{None as NoCc, Reno};
         let (old, old_drops, _) = sim_bulk(
             (64 * 1024, 64 * 1024),
@@ -1624,7 +1627,7 @@ mod tests {
         );
         let (new, drops, amp) = sim_bulk(
             (TCP_RX_BUF, TCP_TX_BUF),
-            (Reno, false, false),
+            (Reno, true, true),
             25,
             256 * 1024,
             6_000,
@@ -1634,9 +1637,47 @@ mod tests {
             "OBSERVED netstack 50ms/100Mbit/256KiB-queue: old {old:.1} Mbit/s ({old_drops} drops), default {new:.1} Mbit/s ({drops} drops, wire/delivered {amp:.2})"
         );
         assert!(old < 12.0, "the old window is the bound: {old:.1}");
-        assert!(new > 1.8 * old, "the default must at least double it: {new:.1} vs {old:.1}");
-        assert_eq!(drops, 0, "and add no loss");
-        assert!(amp < 1.1, "nor retransmission waste: {amp:.2}");
+        assert!(
+            new > 5.0 * old,
+            "the defaults lift it: {new:.1} vs {old:.1}"
+        );
+        assert!(amp < 1.1, "with little resend waste: {amp:.2}");
+    }
+
+    /// The 2 MiB defaults with paced SACK against the previous defaults (1 MiB
+    /// receive, 512 KiB send, unpaced go-back-N) at 10/50/100 ms behind a
+    /// 64 KiB and a 256 KiB queue: never worse, so the bigger window is only a
+    /// gain. (Without pacing and SACK it is not: 50 ms / 256 KiB fell 79 → 50.)
+    #[test]
+    fn the_defaults_never_lose_to_the_previous_defaults() {
+        use tcp::CongestionControl::Reno;
+        for one_way in [5i64, 25, 50] {
+            for queue in [64 * 1024i64, 256 * 1024] {
+                let (old, _, _) = sim_bulk(
+                    (1024 * 1024, 512 * 1024),
+                    (Reno, false, false),
+                    one_way,
+                    queue,
+                    6_000,
+                    2_000,
+                );
+                let (new, _, amp) = sim_bulk(
+                    (TCP_RX_BUF, TCP_TX_BUF),
+                    (Reno, true, true),
+                    one_way,
+                    queue,
+                    6_000,
+                    2_000,
+                );
+                eprintln!(
+                    "OBSERVED defaults {}ms behind a {} KiB queue: previous {old:.1} Mbit/s, now {new:.1} amp {amp:.2}",
+                    one_way * 2,
+                    queue / 1024
+                );
+                assert!(new >= 0.95 * old, "never worse: {new:.1} vs {old:.1}");
+                assert!(amp < 1.12, "little waste: {amp:.2}");
+            }
+        }
     }
 
     /// The vendored smoltcp's cwnd bounds bytes in flight. A send window far
