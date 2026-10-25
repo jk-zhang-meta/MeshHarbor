@@ -199,6 +199,8 @@ mod business_isolation_tests;
 #[cfg(test)]
 mod peer_relay_auto_tests;
 #[cfg(test)]
+mod net_inventory_tests;
+#[cfg(test)]
 mod peer_relay_mint_tests;
 #[cfg(test)]
 mod peer_relay_tests;

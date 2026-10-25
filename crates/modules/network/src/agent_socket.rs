@@ -48,6 +48,8 @@ struct NetConn {
     sessions: HashMap<ObjectId, TunnelSession>,
     transports: Vec<String>,
     last_probe_persist: Option<std::time::Instant>,
+    /// MeshHarbor #19 — the inventory snapshot this connection is sending.
+    inventory: crate::net_inventory::Assembly,
 }
 
 /// `network`'s half of the agent socket, over the host's tunnel, overlay,
@@ -117,6 +119,7 @@ impl AgentMsgHandler for NetworkAgentSocket {
             sessions,
             transports,
             last_probe_persist,
+            inventory,
         } = &mut *conn;
         // P3b-2 — this agent as a tunnel ORIGINATOR (declared routes).
         let msg =
@@ -134,6 +137,25 @@ impl AgentMsgHandler for NetworkAgentSocket {
         match msg {
             ClientMsg::RelayProbeReport { results } => {
                 handle_relay_probe_report(state, ctx.agent_id, &results, last_probe_persist).await;
+                None
+            }
+            ClientMsg::NetInventory {
+                boot_id,
+                seq,
+                page,
+                pages,
+                observed_at_ms,
+                inventory: body,
+            } => {
+                let page = crate::net_inventory::Page {
+                    boot_id,
+                    seq,
+                    page,
+                    pages,
+                    observed_at_ms,
+                    inventory: *body,
+                };
+                crate::net_inventory::receive(state, ctx, inventory, page).await;
                 None
             }
             ClientMsg::DerpTicketRequest {} => {
@@ -253,6 +275,7 @@ impl AgentSocketLifecycle for NetworkAgentSocket {
                 sessions: HashMap::new(),
                 transports: Vec::new(),
                 last_probe_persist: None,
+                inventory: Default::default(),
             })),
         );
         // MeshHarbor `auto`: this connection's opening observation is the
@@ -346,6 +369,7 @@ impl AgentSocketLifecycle for NetworkAgentSocket {
                         sessions: std::mem::take(&mut guard.sessions),
                         transports: std::mem::take(&mut guard.transports),
                         last_probe_persist: guard.last_probe_persist.take(),
+                        inventory: Default::default(),
                     }
                 }
             };

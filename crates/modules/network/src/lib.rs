@@ -52,6 +52,7 @@ use tokio::sync::mpsc;
 pub mod agent_arms;
 pub mod agent_socket;
 pub mod business_isolation;
+pub mod net_inventory;
 pub mod derp;
 pub mod derp_acl;
 pub mod derp_cluster;
@@ -68,6 +69,7 @@ pub mod turn_usage;
 pub mod routes {
     pub mod agent_ssh;
     pub mod business_authority;
+    pub mod net_inventory;
     pub mod overlay_block;
     pub mod overlay_key;
     pub mod overlay_policy;
@@ -498,6 +500,10 @@ impl Module for NetworkState {
         // Overlay L3 ACL — shapes the netmap each node receives. `/mode`
         // carries the tenant-wide posture (off | warn | enforce); it is `off`
         // by default so deploying the feature can never black-hole a live mesh.
+        // MeshHarbor #19 — the nodes' reported network inventory, read-only.
+        let net_inventory = Router::new()
+            .route("/", get(routes::net_inventory::list))
+            .route("/{agent_id}", get(routes::net_inventory::get));
         let overlay_policy = Router::new()
             .route(
                 "/",
@@ -589,6 +595,7 @@ impl Module for NetworkState {
             .nest("/tenant/{tenant_id}/tunnel-policy", tunnel_policy)
             .nest("/tenant/{tenant_id}/overlay-node", overlay_node)
             .nest("/tenant/{tenant_id}/overlay-acl", overlay_policy)
+            .nest("/tenant/{tenant_id}/net-inventory", net_inventory)
             .nest("/tenant/{tenant_id}/magic-dns", magic_dns)
             .nest("/tenant/{tenant_id}/overlay-block", overlay_block)
             .nest("/tenant/{tenant_id}/peer-relay", peer_relay)
@@ -676,6 +683,16 @@ impl Module for NetworkState {
                 collection: roomler_core::business_authority::OBSERVATIONS_COLLECTION,
                 pre_ops: Vec::new(),
                 indexes: vec![index_ttl(bson::doc! { "expires_at": 1 }, 0)],
+            },
+            // MeshHarbor #19 — one reported inventory row per agent (`_id`),
+            // read per tenant; a node that stops reporting ages out.
+            IndexSet {
+                collection: crate::net_inventory::COLLECTION,
+                pre_ops: Vec::new(),
+                indexes: vec![
+                    index(bson::doc! { "tenant_id": 1, "received_at": -1 }),
+                    index_ttl(bson::doc! { "expires_at": 1 }, 0),
+                ],
             },
             // tunnel clients — same uniqueness contract as agents
             // (re-enroll-on-same-machine rehydrates the soft-deleted row in

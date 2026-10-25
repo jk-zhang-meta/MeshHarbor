@@ -44,6 +44,7 @@ pub mod derp_ticket;
 pub mod error;
 pub mod hive;
 pub mod models;
+pub mod net_inventory;
 pub mod permissions;
 pub mod serde_helpers;
 /// FR-101 P1b — how an agent or the CLI reaches its server: over TLS.

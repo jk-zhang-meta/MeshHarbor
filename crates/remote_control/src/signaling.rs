@@ -735,6 +735,25 @@ pub enum ClientMsg {
     #[serde(rename = "rc:relay.probe_report")]
     RelayProbeReport { results: Vec<RelayRegionRtt> },
 
+    /// MeshHarbor #19 — one page of the node's read-only network inventory
+    /// ([`crate::net_inventory`]). The server binds it to the authenticated
+    /// connection's agent, never to anything in the body. `boot_id` is
+    /// random per agent process and `seq` rises within it, so a replayed or
+    /// stale snapshot is dropped; `page` of `pages` share one `seq`.
+    ///
+    /// Additive agent→server: a server that predates it ignores the frame.
+    #[serde(rename = "rc:agent.net_inventory")]
+    NetInventory {
+        boot_id: String,
+        seq: u64,
+        page: u16,
+        pages: u16,
+        /// When the node read it (Unix ms, the node's clock: shown, never
+        /// trusted for freshness).
+        observed_at_ms: i64,
+        inventory: Box<crate::net_inventory::NetInventory>,
+    },
+
     /// Live remote-control session telemetry (wave 2). Sent by the agent
     /// every ~15 s while a session is active; the server folds it into
     /// `remote_sessions.stats`, which was declared-but-never-written
@@ -2691,6 +2710,7 @@ impl ClientMsg {
             ClientMsg::AgentHello { .. } => "rc:agent.hello",
             ClientMsg::AgentHeartbeat { .. } => "rc:agent.heartbeat",
             ClientMsg::RelayProbeReport { .. } => "rc:relay.probe_report",
+            ClientMsg::NetInventory { .. } => "rc:agent.net_inventory",
             ClientMsg::SessionStats { .. } => "rc:session.stats",
             ClientMsg::SharedSshConnect { .. } => "rc:share.ssh.connect",
             ClientMsg::SharedSshPrepared { .. } => "rc:share.ssh.prepared",
@@ -2823,6 +2843,7 @@ impl ClientMsg {
             | ClientMsg::SharedSshPrepared { .. }
             | ClientMsg::SharedSshLeaseChallenge { .. }
             | ClientMsg::RelayProbeReport { .. }
+            | ClientMsg::NetInventory { .. }
             | ClientMsg::DerpTicketRequest { .. }
             | ClientMsg::SshRequest { .. }
             | ClientMsg::SshActivity { .. }
