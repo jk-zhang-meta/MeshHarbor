@@ -417,7 +417,7 @@ pub struct RelayCoordinator {
     /// Binds `request` decided on but the runtime has not spawned yet —
     /// drained by `take_org_jobs` on the runtime's next pass.
     org_jobs: Vec<OrgBindJob>,
-    /// `overlay_org_relay` — the client half of FR-19, default OFF.
+    /// `overlay_org_relay` — the client half of FR-19, default ON (MeshHarbor).
     org_relay: bool,
     /// Multi-region DERP — lazily-opened muxes for REGIONAL relays, keyed by
     /// their `derp_url`. A pair force-pinned with a `derp_url` builds its

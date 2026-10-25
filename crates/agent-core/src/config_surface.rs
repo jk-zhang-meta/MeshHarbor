@@ -660,7 +660,7 @@ const KEYS: &[KeyMeta] = &[
         description: "FR-19 P4b - ride a tenant-owned ORG RELAY when the server mints a session for a \
          pair (org switch on, an ACL rule granting each member the relay node, an approved \
          and serving relay). Advertised on the join as supports_org_relay; the serving half \
-         is relay_server_enabled. Built-in default: OFF.",
+         is relay_server_enabled. Built-in default: ON (MeshHarbor); false opts this host out.",
     },
     KeyMeta {
         key: "relay_server_enabled",

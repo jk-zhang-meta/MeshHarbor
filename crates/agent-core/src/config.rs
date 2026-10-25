@@ -658,7 +658,8 @@ pub struct AgentConfig {
     #[serde(default)]
     pub overlay_derp_floor: Option<bool>,
     /// FR-19 P4b — ride tenant-owned org relays (tunnel-core
-    /// `OVERLAY_ORG_RELAY`). Opt-in; `None` = off.
+    /// `OVERLAY_ORG_RELAY`). Built-in default: **on** (MeshHarbor §6 item
+    /// 4c); explicit `false` is the per-host off-switch.
     pub overlay_org_relay: Option<bool>,
     /// Phase B (overlay v3) — netcheck: measure egress capabilities (relay-band
     /// probe, STUN/NAT, /derp health) every ~20 min and publish the CapVector

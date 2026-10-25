@@ -889,11 +889,13 @@ pub fn server_relay_strategy_enabled() -> bool {
 /// for a pair (`docs/fr/FR-19-peer-relays.md`). Advertised on the join as
 /// `supports_org_relay`, so a build with this off is never pushed a session.
 ///
-/// **Opt-in**: only `1|true|yes|on` enables it. The client half of a new
-/// carrier kind ships dark and is switched on per host during the field
-/// program, exactly as `relay_server_enabled` (its serving half) does.
+/// **MeshHarbor: on by default** (§6 item 4c). A member rides only a session
+/// the server minted under its org's own mode and gates 1–4, through a relay
+/// that sees ciphertext only, so riding is not where the consent lives:
+/// serving is, and `relay_server_enabled` (gate 4) stays opt-in. Only
+/// `0|false|no|off` opts this host out, and that stays its last word.
 pub fn org_relay_enabled() -> bool {
-    crate::env::flag("OVERLAY_ORG_RELAY", false)
+    crate::env::flag("OVERLAY_ORG_RELAY", true)
 }
 
 /// Phase A (overlay v3) — DERP always-on floor: open this node's central
