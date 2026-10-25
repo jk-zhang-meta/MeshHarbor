@@ -853,4 +853,62 @@ mod tests {
         assert_eq!((pm.external(), advert(&stun, Some(&pm))), (None, stun.clone()));
         assert!(pm.next > Instant::now() + Duration::from_secs(250), "retry later, not every tick");
     }
+
+    /// Field check against the REAL default gateway (a miniupnpd lab, or a
+    /// home router): map a fresh socket's port, print the result, wait for
+    /// one datagram sent from outside to the external address, then release.
+    /// `MH_PM_EXPECT_IP` is the gateway's external IP (it stands in for the
+    /// STUN-seen srflx IP).
+    #[tokio::test]
+    #[ignore]
+    async fn portmap_live_gateway() {
+        let ip: Ipv4Addr = std::env::var("MH_PM_EXPECT_IP").expect("MH_PM_EXPECT_IP").parse().unwrap();
+        let sock = UdpSocket::bind("0.0.0.0:0").await.unwrap();
+        let t = Instant::now();
+        let pm = PortMapper::start(&sock, &[format!("{ip}:1")], b"live-test").await;
+        let took = t.elapsed().as_millis();
+        let Some(mut pm) = pm else {
+            println!("PORTMAP-LIVE none after {took} ms");
+            return;
+        };
+        println!("PORTMAP-LIVE mapped {} after {took} ms", pm.describe().unwrap());
+        let mut buf = [0u8; 256];
+        match tokio::time::timeout(Duration::from_secs(10), sock.recv_from(&mut buf)).await {
+            Ok(Ok((n, from))) => println!(
+                "PORTMAP-LIVE inbound {n} bytes from {from}: {}",
+                String::from_utf8_lossy(&buf[..n])
+            ),
+            other => println!("PORTMAP-LIVE no inbound datagram ({other:?})"),
+        }
+        if std::env::var("MH_PM_RESTART").is_ok() {
+            // A crash: no release. The restarted node binds the same port
+            // and asks with the same keyed nonce (a refresh), while a random
+            // nonce for that port is the case the key exists to avoid.
+            let port = sock.local_addr().unwrap().port();
+            drop((pm, sock));
+            let sock = UdpSocket::bind(("0.0.0.0", port)).await.unwrap();
+            let again = PortMapper::start(&sock, &[format!("{ip}:1")], b"live-test").await;
+            println!("PORTMAP-LIVE restart same key: {:?}", again.as_ref().and_then(PortMapper::describe));
+            let gw = SocketAddrV4::new(crate::overlay::netstate::default_gateway_v4().unwrap(), SERVER_PORT);
+            let local = Ipv4Addr::UNSPECIFIED;
+            let random = map_udp(gw, local, port, None, None, DEFAULT_LIFETIME_SECS, WAIT).await;
+            println!("PORTMAP-LIVE restart random nonce: {:?}", random.as_ref().map(|m| (m.proto, m.external)));
+            // miniupnpd 2.3.9 lets the random nonce take the mapping over and
+            // then refuses a delete under any other nonce, so release with it.
+            let released = match &random {
+                Some(m) => unmap_udp(gw, local, m, WAIT).await,
+                None => match again {
+                    Some(mut pm) => {
+                        pm.release().await;
+                        true
+                    }
+                    None => false,
+                },
+            };
+            println!("PORTMAP-LIVE released {released}");
+            return;
+        }
+        pm.release().await;
+        println!("PORTMAP-LIVE released");
+    }
 }
