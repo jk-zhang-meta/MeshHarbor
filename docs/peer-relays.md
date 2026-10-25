@@ -462,8 +462,13 @@ the capacity gained: the relay was in France and the members in Austria and Germ
 1. The central owner approves the relay's role:
    `PUT /api/admin/business-authority/agent/{tid}/{agent_id}` `{"role": "server",
    "reason": "..."}`. Account approval must be enabled with an `owner_user_id`.
-2. Locally on the relay: `relay_server_enabled = true`, then a restart (gate 4 is never
-   pushed).
+2. Locally on the relay, gate 4 (never pushed). Either install the server with
+   `install.sh --role daemon --system --relay-server` (Linux; implies `--overlay`), or
+   enroll it with `roomlerd enroll … --relay-server`. Both write `relay_server_enabled =
+   true` with the enrolled config, so the first start already serves. On a device that is
+   already enrolled, set `relay_server_enabled = true` and restart. `--relay-server`
+   applies to the PRIMARY enrollment only: the listener is host-global
+   ([`org_join.rs`](../agents/roomlerd/src/org_join.rs), `apply_relay_server_flag`).
 3. The org switch: `{"mode": "auto"}`. A `zone_denied` row means a party had no zone, or
    the three were not in one zone. The fleet's agents must reach the server through the
    configured `business_trusted_proxy_cidrs` chain, or no connection has a zone at all.
@@ -512,8 +517,6 @@ the capacity gained: the relay was in France and the members in Austria and Germ
 - **A dedicated `RELAY_DEVICE` permission bit.** It waits on the 64-bit mask migration
   (#888). Until then, an org cannot have relay approvers who may not also run root
   commands.
-- **MeshHarbor: the server-role install setting `relay_server_enabled`.** Gate 4 is
-  still set by hand on each server.
 - **MeshHarbor: zone on EXPLICIT grants.** `auto` checks zones only for its implicit
   grant; regional enforcement on every path is a separate item.
 - **MeshHarbor: latency-weighted multi-hop.** The manual relay-to-relay backbone edges
