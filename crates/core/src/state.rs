@@ -93,6 +93,9 @@ pub struct Core {
     /// client IP is resolved at connect time and DROPPED; no address is
     /// ever stored. Absent database ⇒ every session reads `unknown`.
     pub geoip: Arc<GeoIp>,
+    /// MeshHarbor — the business zone each live connection on this process
+    /// was observed in (`business_authority::connection_zone`).
+    pub business_zones: crate::business_authority::LiveZones,
 
     // C-1 — cluster foundation (None without Redis; consumers fail soft).
     /// Stable pod identity + process epoch.

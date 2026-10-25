@@ -3657,6 +3657,12 @@ pub enum PeerRelayMode {
     Warn,
     /// Mint.
     On,
+    /// MeshHarbor: mint as [`Self::On`] does, and additionally let a device
+    /// whose CENTRAL `server` role is current serve any two members whose
+    /// live connections were observed in the same business zone as its own,
+    /// with no `serve` approval and no overlay policy naming it. An unknown
+    /// zone anywhere refuses ([`PeerRelayDenyReason::ZoneDenied`]).
+    Auto,
 }
 
 /// An administrator-approved directional backbone edge. This does not grant
@@ -3790,6 +3796,11 @@ pub enum PeerRelayDenyReason {
     /// Per-(requesting node, relay node) ceiling
     /// ([`peer_relay_limits::MINT_RATE_LIMIT_PER_MINUTE`]).
     RateLimited,
+    /// [`PeerRelayMode::Auto`] — a Server-role relay's implicit grant needs
+    /// the requester, the peer and the relay each observed in ONE business
+    /// zone on their live connections; a zone that differs or is unknown
+    /// refuses (hard mainland / non-mainland isolation, failing closed).
+    ZoneDenied,
 }
 
 impl PeerRelayDenyReason {
@@ -3814,6 +3825,9 @@ impl PeerRelayDenyReason {
             Self::NonRoutableEndpoint => "the relay's endpoint is not a public address",
             Self::SecondaryOrg => "org relays serve the device's primary organization only",
             Self::RateLimited => "too many relay requests through this relay; try again shortly",
+            Self::ZoneDenied => {
+                "the relay and both members were not all observed in one business zone"
+            }
         }
     }
 }

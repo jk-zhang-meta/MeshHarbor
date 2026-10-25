@@ -174,6 +174,16 @@ pub async fn set_mode(
         if n > 0 {
             warn!(tenant = %tenant_id, revoked = n, "peer-relay: live sessions revoked by the org switch");
         }
+    } else if body.mode != PeerRelayMode::Auto {
+        // MeshHarbor: leaving `auto` withdraws the implicit grant itself;
+        // what an overlay policy grants stays.
+        let n = crate::org_relay::revoke_where(&state, "mode_not_auto", |s| {
+            s.tenant_id == tid && s.implicit
+        })
+        .await;
+        if n > 0 {
+            warn!(tenant = %tenant_id, revoked = n, "peer-relay: implicit sessions revoked by leaving auto");
+        }
     }
     warn!(
         tenant = %tenant_id, admin = %auth.user_id, mode = ?body.mode,

@@ -13,8 +13,8 @@ use roomler_ai_config::AccountApprovalSettings;
 use roomler_core::{
     ApiError,
     business_authority::{
-        AuthenticatedDevice, DeviceAuthorityView, DeviceUseRole, RoleApproval, approve_device_role,
-        get_device_authority,
+        AuthenticatedDevice, DeviceAuthorityView, DeviceKind, DeviceUseRole, RoleApproval,
+        approve_device_role, get_device_authority,
     },
     extractors::auth::AuthUser,
 };
@@ -88,9 +88,21 @@ pub async fn approve(
 ) -> Result<Json<RoleApproval>, ApiError> {
     require_review_owner(&state.settings.auth.account_approval, auth.user_id)?;
     let identity = current_device(&state, &kind, &tenant, &device).await?;
-    Ok(Json(
-        approve_device_role(&state.core, &auth, &identity, body.role, &body.reason).await?,
-    ))
+    let approval =
+        approve_device_role(&state.core, &auth, &identity, body.role, &body.reason).await?;
+    // MeshHarbor `auto`: the Server role IS an implicit relay's grant. Any
+    // change fences in-flight mints, and losing it ends what it minted.
+    if approval.identity.kind == DeviceKind::Agent {
+        state.org_relay.invalidate_eligibility();
+        if approval.role != DeviceUseRole::Server {
+            let agent_id = approval.identity.device_id;
+            crate::org_relay::revoke_where(&state, "role_revoked", |s| {
+                s.implicit && s.relay_agent_id == agent_id
+            })
+            .await;
+        }
+    }
+    Ok(Json(approval))
 }
 
 #[cfg(test)]

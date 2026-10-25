@@ -49,8 +49,8 @@ use dashmap::DashMap;
 use rand::RngCore;
 use roomler_ai_remote_control::{
     models::{
-        NodeRef, OverlayNode, PeerRelayAuditAction, PeerRelayAuditEvent, PeerRelayDenyReason,
-        PeerRelayMode, RpcCap, peer_relay_limits as limits,
+        Agent, NodeRef, OverlayNode, PeerRelayAuditAction, PeerRelayAuditEvent,
+        PeerRelayDenyReason, PeerRelayMode, RpcCap, peer_relay_limits as limits,
     },
     signaling::{OrgRelayCandidateWire, OrgRelayDiscoveryCursorWire, RelayMemberWire, ServerMsg},
 };
@@ -62,6 +62,7 @@ use crate::overlay::{
     NodeIdentity, PolicyLoad, current_node, pair_key, send_to_node, send_to_node_ref, try_load_acl,
     try_overlay_source_of,
 };
+use roomler_core::business_authority::{AuthenticatedDevice, BusinessZone};
 use roomler_core::net::is_global_unicast;
 
 mod trial;
@@ -119,6 +120,12 @@ pub struct OrgRelaySession {
     pub relay: SessionParty,
     /// The relay's backing agent — the device an audit row is ABOUT.
     pub relay_agent_id: ObjectId,
+    /// MeshHarbor `auto`: granted by the relay's central Server role and one
+    /// shared business zone, not by an overlay policy. It rests on the three
+    /// live connections that zone was observed on, so it ends with any of
+    /// them, with the role and with `auto`; a policy edit neither grants nor
+    /// revokes it.
+    pub implicit: bool,
     pub members: [SessionMember; 2],
     pub endpoints: Vec<String>,
     pub expires_at: Instant,
@@ -130,6 +137,10 @@ impl OrgRelaySession {
     }
     fn involves(&self, node_id: ObjectId) -> bool {
         self.relay.node_id == node_id || self.member_index(node_id).is_some()
+    }
+    fn involves_agent(&self, agent_id: ObjectId) -> bool {
+        let is = |n: &NodeRef| matches!(n, NodeRef::Agent { agent_id: id } if *id == agent_id);
+        is(&self.relay.node_ref) || self.members.iter().any(|m| is(&m.party.node_ref))
     }
 }
 
@@ -162,6 +173,10 @@ pub struct OrgRelayState {
     join_extras: DashMap<ObjectId, JoinExtras>,
     probes: DashMap<(ObjectId, ObjectId), Vec<ProbeRecord>>,
     mode_cache: DashMap<ObjectId, (PeerRelayMode, Instant)>,
+    /// MeshHarbor `auto`: each agent's live connection on this pod, whose
+    /// opening observation is its zone evidence (`hello` binds, `closing`
+    /// unbinds).
+    live_conns: DashMap<ObjectId, String>,
     trials: trial::PathTrials,
     // Conservative generation for membership/policy decisions spanning async IO.
     eligibility_epoch: AtomicU64,
@@ -177,6 +192,31 @@ impl OrgRelayState {
     }
     fn eligibility_generation(&self) -> u64 {
         self.eligibility_epoch.load(Ordering::Acquire)
+    }
+
+    /// Bind `agent_id`'s live connection; returns the one it displaced.
+    pub fn bind_live_conn(&self, agent_id: ObjectId, conn_id: &str) -> Option<String> {
+        self.invalidate_eligibility();
+        self.live_conns
+            .insert(agent_id, conn_id.to_owned())
+            .filter(|old| old != conn_id)
+    }
+
+    /// Unbind only while the binding still names `conn_id`: a displaced
+    /// connection's late teardown must not unbind its replacement.
+    pub fn unbind_live_conn(&self, agent_id: ObjectId, conn_id: &str) -> bool {
+        let gone = self
+            .live_conns
+            .remove_if(&agent_id, |_, bound| bound == conn_id)
+            .is_some();
+        if gone {
+            self.invalidate_eligibility();
+        }
+        gone
+    }
+
+    fn live_conn(&self, agent_id: ObjectId) -> Option<String> {
+        self.live_conns.get(&agent_id).map(|c| c.value().clone())
     }
 
     /// Record what a join said beyond the row. Overwrites on every rejoin so a
@@ -363,6 +403,8 @@ struct Plan {
     relay_agent_id: ObjectId,
     endpoints: Vec<String>,
     backbone_edges: Vec<roomler_ai_remote_control::models::PeerRelayBackboneEdge>,
+    /// Granted by role and zone (`auto`), not by an overlay policy.
+    implicit: bool,
 }
 
 /// The relay's dialable `ip:port`s: its own public addresses (srflx first —
@@ -412,6 +454,29 @@ pub fn valid_static_endpoint(s: &str) -> bool {
     s.parse::<SocketAddr>()
         .map(|sa| sa.port() != 0 && is_global_unicast(&sa.ip()))
         .unwrap_or(false)
+}
+
+/// The business zone `agent`'s live connection on this pod was observed in
+/// when it opened. `None` (no live connection here, or no zone) refuses.
+fn agent_zone(state: &NetworkState, agent: &Agent) -> Option<BusinessZone> {
+    let conn = state.org_relay.live_conn(agent.id?)?;
+    let device = AuthenticatedDevice::from_agent(agent).ok()?;
+    roomler_core::business_authority::connection_zone(&state.core, &device, &conn)
+}
+
+/// [`agent_zone`] of the agent behind an overlay node; no other node kind
+/// carries zone evidence here.
+async fn node_zone(state: &NetworkState, node: &OverlayNode) -> Option<BusinessZone> {
+    let NodeRef::Agent { agent_id } = &node.node_ref else {
+        return None;
+    };
+    let agent = state
+        .fleet
+        .agents
+        .find_live_in_tenant(node.tenant_id, *agent_id)
+        .await
+        .ok()?;
+    agent_zone(state, &agent)
 }
 
 /// Shared candidate authorization (gates 2–4). Discovery only returns metadata;
@@ -478,7 +543,7 @@ async fn plan_mint_candidates_reusing(
         warn!(%tenant_id, node = %peer_id, %e, "org-relay: peer identity unreadable; refusing");
         D::PolicyUnreadable
     })?;
-    let approved = state
+    let mut relays = state
         .fleet
         .agents
         .list_relay_approved(tenant_id)
@@ -487,12 +552,41 @@ async fn plan_mint_candidates_reusing(
             warn!(%tenant_id, %e, "org-relay: approved-relay list unreadable; refusing");
             D::PolicyUnreadable
         })?;
+    // MeshHarbor `auto`: a device whose central Server role is current is a
+    // candidate without gate 3, and stands in for gate 2 only inside one
+    // business zone (below). An unreadable role list can only withhold an
+    // implicit grant, never widen one.
+    let mut servers: Vec<ObjectId> = Vec::new();
+    let mut servers_unreadable = false;
+    if peer_relay_mode(state, tenant_id).await == PeerRelayMode::Auto {
+        match roomler_core::business_authority::current_server_agents(&state.core, tenant_id)
+            .await
+        {
+            Ok(agents) => {
+                for agent in agents {
+                    let Some(id) = agent.id else { continue };
+                    servers.push(id);
+                    if !relays.iter().any(|r| r.id == Some(id)) {
+                        relays.push(agent);
+                    }
+                }
+            }
+            Err(e) => {
+                warn!(%tenant_id, %e, "org-relay: server roles unreadable; no implicit grant");
+                servers_unreadable = true;
+            }
+        }
+    }
+    // The zone both members share, read once and only when an implicit grant
+    // is in play: `Some(None)` = they share none.
+    let mut member_zone: Option<Option<BusinessZone>> = None;
 
     let now = Instant::now();
     let mut candidates: Vec<Plan> = Vec::new();
     let mut acl_denied = 0usize;
+    let mut zone_denied = 0usize;
     let mut bad_static = false;
-    for agent in approved {
+    for agent in relays {
         let Some(agent_id) = agent.id else { continue };
         // Gate 4 as the device last advertised it, and liveness on this pod.
         if !agent.capabilities.has_rpc(RpcCap::RelayServer)
@@ -529,10 +623,26 @@ async fn plan_mint_candidates_reusing(
             overlay_ip: &node.overlay_ip,
             approved_routes: &relay_routes,
         };
-        if !(evaluate_overlay(&acl.policies, &req_src, relay_ref).visible
-            && evaluate_overlay(&acl.policies, &peer_src, relay_ref).visible)
-        {
-            acl_denied += 1;
+        let granted = agent.peer_relay_policy.serve
+            && evaluate_overlay(&acl.policies, &req_src, relay_ref).visible
+            && evaluate_overlay(&acl.policies, &peer_src, relay_ref).visible;
+        // `auto`: requester, peer and relay all observed in ONE zone on their
+        // live connections; unknown anywhere refuses (hard isolation).
+        let implicit = !granted && servers.contains(&agent_id) && {
+            if member_zone.is_none() {
+                let a = node_zone(state, requester).await;
+                let b = node_zone(state, peer).await;
+                member_zone = Some(a.filter(|_| a == b));
+            }
+            let relay_zone = agent_zone(state, &agent);
+            relay_zone.is_some() && member_zone == Some(relay_zone)
+        };
+        if !granted && !implicit {
+            if agent.peer_relay_policy.serve {
+                acl_denied += 1;
+            } else {
+                zone_denied += 1;
+            }
             continue;
         }
         let port = extras.relay_port.unwrap_or(limits::DEFAULT_RELAY_PORT);
@@ -553,6 +663,7 @@ async fn plan_mint_candidates_reusing(
             relay_agent_id: agent_id,
             endpoints,
             backbone_edges: agent.peer_relay_policy.approved_backbone_edges,
+            implicit,
         });
     }
     if candidates.is_empty() {
@@ -560,6 +671,10 @@ async fn plan_mint_candidates_reusing(
             D::NonRoutableEndpoint
         } else if acl_denied > 0 {
             D::AclDenied
+        } else if zone_denied > 0 {
+            D::ZoneDenied
+        } else if servers_unreadable {
+            D::PolicyUnreadable
         } else {
             D::NoRelay
         });
@@ -750,7 +865,10 @@ pub async fn discover(
         extras.supports_org_relay_multi_candidate && extras.supports_org_relay_discovery_cursor;
     let mut next_cursor = None;
     let mut backbone_cidr = None;
-    let enabled = peer_relay_mode(state, requester.tenant_id).await == PeerRelayMode::On;
+    let enabled = matches!(
+        peer_relay_mode(state, requester.tenant_id).await,
+        PeerRelayMode::On | PeerRelayMode::Auto
+    );
     if enabled {
         let path_caps = requester
             .id
@@ -976,13 +1094,17 @@ pub async fn maybe_mint(state: &NetworkState, requester: &OverlayNode, peer: &Ov
         return;
     }
 
+    // An implicit plan rests on live connections, so it mints under the
+    // eligibility fence, whose claim also spends its rate budget (once).
+    let epoch = state.org_relay.eligibility_generation();
     let verdict = plan_mint(state, requester, peer).await.and_then(|plan| {
         let relay_id = plan.relay.id.unwrap_or_default();
         // Gate 5 belongs to minting, not metadata discovery. Preserve its
         // existing requester->relay ceiling and audited refusal behavior.
-        if state
-            .relay_rate_limiter
-            .check(req_id, relay_id, limits::MINT_RATE_LIMIT_PER_MINUTE)
+        if plan.implicit
+            || state
+                .relay_rate_limiter
+                .check(req_id, relay_id, limits::MINT_RATE_LIMIT_PER_MINUTE)
         {
             Ok(plan)
         } else {
@@ -1007,7 +1129,8 @@ pub async fn maybe_mint(state: &NetworkState, requester: &OverlayNode, peer: &Ov
             return;
         }
     };
-    mint_plan(state, requester, peer, plan, warn_only, None).await;
+    let fence = plan.implicit.then_some(epoch);
+    mint_plan(state, requester, peer, plan, warn_only, fence).await;
 }
 
 /// A fallback query reauthorizes cached leases, and never allocates TURN.
@@ -1030,6 +1153,7 @@ pub async fn maybe_mint_fallback(state: &NetworkState, requester: &OverlayNode, 
                 && plan.relay_agent_id == session.relay_agent_id
                 && plan.relay.node_ref == session.relay.node_ref
                 && plan.endpoints == session.endpoints
+                && plan.implicit == session.implicit
                 && [(req_id, requester), (peer_id, peer)].iter().all(|(id, node)| {
                     session.member_index(*id).is_some_and(|i| {
                         session.members[i].wg_public_key == node.wg_public_key
@@ -1101,6 +1225,7 @@ async fn mint_plan(
             node_ref: plan.relay.node_ref.clone(),
         },
         relay_agent_id: plan.relay_agent_id,
+        implicit: plan.implicit,
         members: [
             SessionMember {
                 party: SessionParty {
@@ -1163,7 +1288,7 @@ async fn mint_plan(
                 // A concurrent winner may have used a different authorization
                 // snapshot. Only this freshly authorized exact lease is reused.
                 if current.relay.node_id == relay_id && current.relay.node_ref == plan.relay.node_ref
-                    && current.endpoints == plan.endpoints
+                    && current.endpoints == plan.endpoints && current.implicit == plan.implicit
                     && [(req_id, requester), (peer_id, peer)].iter().all(|(id,node)| {
                         current.member_index(*id).is_some_and(|i| current.members[i].wg_public_key == node.wg_public_key
                             && current.members[i].party.node_ref == node.node_ref)
@@ -1355,15 +1480,8 @@ pub fn revoke_agent_sync(
     agent_id: ObjectId,
     reason: &str,
 ) -> Vec<PeerRelayAuditEvent> {
-    let is_agent =
-        |node: &NodeRef| matches!(node, NodeRef::Agent { agent_id: id } if *id == agent_id);
     revoke_matching_sync(state, reason, |session| {
-        session.tenant_id == tenant_id
-            && (is_agent(&session.relay.node_ref)
-                || session
-                    .members
-                    .iter()
-                    .any(|member| is_agent(&member.party.node_ref)))
+        session.tenant_id == tenant_id && session.involves_agent(agent_id)
     })
 }
 
@@ -1405,6 +1523,17 @@ pub async fn revoke_relay_agent(
     .await
 }
 
+/// MeshHarbor `auto`: an implicit session rests on the zone each party's live
+/// connection was observed in, so that connection closing or being displaced
+/// ends it.
+pub async fn revoke_implicit_for_agent(
+    state: &NetworkState,
+    agent_id: ObjectId,
+    reason: &str,
+) -> usize {
+    revoke_where(state, reason, |s| s.implicit && s.involves_agent(agent_id)).await
+}
+
 /// Trigger 4 — a party (member or relay) was removed from the overlay.
 pub async fn revoke_node(state: &NetworkState, node_id: ObjectId, reason: &str) -> usize {
     state.org_relay.forget_node(node_id);
@@ -1435,6 +1564,10 @@ pub async fn reconcile_acl(state: &NetworkState, tenant_id: ObjectId) {
         .collect();
     live.extend(state.org_relay.trials.sessions_for_tenant(tenant_id));
     for s in live {
+        // Granted by role and zone, not by a policy: an edit cannot touch it.
+        if s.implicit {
+            continue;
+        }
         let Ok(relay) = state.overlay_nodes.base.find_by_id(s.relay.node_id).await else {
             continue;
         };
@@ -1587,6 +1720,7 @@ mod tests {
                 generation: 1,
                 relay: party(relay),
                 relay_agent_id: relay,
+                implicit: false,
                 members: [
                     SessionMember {
                         party: party(a),

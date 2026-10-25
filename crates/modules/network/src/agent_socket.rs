@@ -255,6 +255,22 @@ impl AgentSocketLifecycle for NetworkAgentSocket {
                 last_probe_persist: None,
             })),
         );
+        // MeshHarbor `auto`: this connection's opening observation is the
+        // agent's zone evidence from now on; an implicit session vouched for
+        // by the connection it displaced does not carry over.
+        if self
+            .state
+            .org_relay
+            .bind_live_conn(ctx.agent_id, &ctx.conn_id)
+            .is_some()
+        {
+            crate::org_relay::revoke_implicit_for_agent(
+                &self.state,
+                ctx.agent_id,
+                "connection_displaced",
+            )
+            .await;
+        }
     }
 
     /// The device's warm-relay choice mirrored onto its overlay node.
@@ -304,6 +320,19 @@ impl AgentSocketLifecycle for NetworkAgentSocket {
     /// and every session targeting the agent is unrecoverable on a new
     /// connection instance (P7 flap resilience).
     async fn closing(&self, ctx: &AgentCtx) {
+        // MeshHarbor `auto`: what this connection's zone vouched for ends here.
+        if self
+            .state
+            .org_relay
+            .unbind_live_conn(ctx.agent_id, &ctx.conn_id)
+        {
+            crate::org_relay::revoke_implicit_for_agent(
+                &self.state,
+                ctx.agent_id,
+                "connection_closed",
+            )
+            .await;
+        }
         if let Some((_, conn)) = self.conns.remove(&ctx.conn_id) {
             let conn = match Arc::try_unwrap(conn) {
                 Ok(m) => m.into_inner(),

@@ -6,6 +6,7 @@
 //! authenticated connection, revocation/generation and complete actual path.
 
 use bson::{DateTime, doc, oid::ObjectId};
+use futures::TryStreamExt;
 use mongodb::options::ReturnDocument;
 use roomler_ai_remote_control::models::{Agent, AgentStatus, TunnelClient};
 use serde::{Deserialize, Serialize};
@@ -231,6 +232,24 @@ impl ConnectionObservation {
     }
 }
 
+/// The zone each live connection was observed in when it opened, keyed like
+/// its observation row and held by THIS process. The row itself is deleted
+/// 60 s after capture (TTL index on `expires_at`), while what it observed
+/// stays true for the connection's life: a transport connection cannot change
+/// its source address. Written only after the row is persisted, and dropped
+/// when that connection's observation is closed.
+#[derive(Clone, Default)]
+pub struct LiveZones(std::sync::Arc<dashmap::DashMap<String, (DeviceIdentity, BusinessZone)>>);
+
+impl LiveZones {
+    fn get(&self, key: &str, device: &AuthenticatedDevice) -> Option<BusinessZone> {
+        self.0
+            .get(key)
+            .filter(|e| e.0 == device.identity)
+            .map(|e| e.1)
+    }
+}
+
 /// Private operator surface only; never return this through ordinary/shared
 /// device JSON. "Current" describes a bounded source observation, not access.
 #[derive(Debug, Clone, Serialize)]
@@ -450,7 +469,28 @@ pub async fn record_connection_observation(
         .insert_one(&row)
         .await
         .map_err(storage_error)?;
+    if let Some(zone) = row
+        .zone
+        .filter(|_| row.is_current_for(device, connection_id, DateTime::now()))
+    {
+        core.business_zones
+            .0
+            .insert(row.id.clone(), (device.identity.clone(), zone));
+    }
     Ok(row)
+}
+
+/// The business zone `connection_id` was observed in when it opened, while
+/// that connection's observation is open on THIS process. The caller must
+/// hold `connection_id` as the device's live connection. `None` (unknown)
+/// refuses wherever a zone gates anything.
+pub fn connection_zone(
+    core: &Core,
+    device: &AuthenticatedDevice,
+    connection_id: &str,
+) -> Option<BusinessZone> {
+    core.business_zones
+        .get(&observation_key(device, connection_id), device)
 }
 
 /// A connection's observation recorder, run beside (not before) the socket's
@@ -496,6 +536,9 @@ pub async fn close_connection_observation(
             "Invalid server connection identity".into(),
         ));
     }
+    core.business_zones
+        .0
+        .remove(&observation_key(device, connection_id));
     let identity = bson::to_bson(&device.identity)
         .map_err(|_| ApiError::Internal("Device identity serialization failed".into()))?;
     let now = DateTime::now();
@@ -538,6 +581,57 @@ pub async fn approve_device_role(
             "$inc": { "revision": 1_i64 }
         }).upsert(true).return_document(ReturnDocument::After).await.map_err(storage_error)?
         .ok_or_else(|| ApiError::ServiceUnavailable("Role approval was not confirmed".into()))
+}
+
+/// Agents of `tenant_id` whose central-owner Server role is current right now,
+/// each re-checked against its live registration (identity and token
+/// generation, quarantine, the owner's admission), never the stored row alone.
+/// One direction only: serving as a relay never makes a device a Server.
+pub async fn current_server_agents(
+    core: &Core,
+    tenant_id: ObjectId,
+) -> Result<Vec<Agent>, ApiError> {
+    let Some(owner) = current_owner(core)? else {
+        return Ok(Vec::new());
+    };
+    let approvals: Vec<RoleApproval> = core
+        .db
+        .collection::<RoleApproval>(ROLE_APPROVALS_COLLECTION)
+        .find(doc! {
+            "identity.kind": "agent", "identity.tenant_id": tenant_id,
+            "role": "server", "revoked": false, "approved_by": owner
+        })
+        .await
+        .map_err(storage_error)?
+        .try_collect()
+        .await
+        .map_err(storage_error)?;
+    let now = DateTime::now();
+    let mut out = Vec::new();
+    for approval in approvals {
+        let Some(agent) = core
+            .db
+            .collection::<Agent>(Agent::COLLECTION)
+            .find_one(doc! { "_id": approval.identity.device_id, "tenant_id": tenant_id, "deleted_at": bson::Bson::Null })
+            .await
+            .map_err(storage_error)?
+        else {
+            continue;
+        };
+        let Ok(device) = AuthenticatedDevice::from_agent(&agent) else {
+            continue;
+        };
+        if effective_role(Some(&approval), &device, Some(owner), now) != DeviceUseRole::Server
+            || matches!(agent.status, AgentStatus::Quarantined)
+            || crate::admission::authorize_user_id(core, agent.owner_user_id, None)
+                .await
+                .is_err()
+        {
+            continue;
+        }
+        out.push(agent);
+    }
+    Ok(out)
 }
 
 /// Private operator diagnostics. The caller must enforce the central-owner gate

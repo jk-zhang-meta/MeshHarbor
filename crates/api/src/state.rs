@@ -285,6 +285,7 @@ impl AppState {
             stats: stats.clone(),
             platform_admins: platform_admins.clone(),
             geoip: geoip.clone(),
+            business_zones: Default::default(),
             pod: pod.clone(),
             cluster_directory: cluster_directory.clone(),
             session_slots: session_slots.clone(),

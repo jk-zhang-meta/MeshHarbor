@@ -438,6 +438,7 @@ pub async fn request(
                         node_ref: plan.relay.node_ref,
                     },
                     relay_agent_id: plan.relay_agent_id,
+                    implicit: plan.implicit,
                     members: [
                         SessionMember {
                             party: SessionParty {
@@ -1089,6 +1090,7 @@ mod tests {
                     node_ref: NodeRef::Agent { agent_id: relay },
                 },
                 relay_agent_id: relay,
+                implicit: false,
                 members: [
                     SessionMember {
                         party: SessionParty {
