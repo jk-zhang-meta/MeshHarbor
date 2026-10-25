@@ -106,6 +106,37 @@ fn fixture_mmdb() -> Vec<u8> {
     db
 }
 
+/// The zone the fixture database places `ip` in, as the observation stores it.
+fn zone_of(ip: &str) -> &'static str {
+    if ip == CN_A { "mainland" } else { "non_mainland" }
+}
+
+/// The fixture must actually place each connection, or every refusal test
+/// passes vacuously: assert the observation the server recorded for
+/// `agent_id` names `from` and its zone (a bare connection: no zone at all).
+async fn assert_observed(app: &TestApp, agent_id: &str, from: Option<&str>) {
+    let id = ObjectId::parse_str(agent_id).unwrap();
+    let rows = app
+        .db
+        .collection::<bson::Document>(roomler_core::business_authority::OBSERVATIONS_COLLECTION);
+    let mut row = None;
+    for _ in 0..30 {
+        row = rows.find_one(doc! { "identity.device_id": id }).await.unwrap();
+        if row.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let row = row.unwrap_or_else(|| panic!("no observation recorded for {agent_id}"));
+    match from {
+        Some(ip) => {
+            assert_eq!(row.get_str("client_ip").ok(), Some(ip), "{row}");
+            assert_eq!(row.get_str("zone").ok(), Some(zone_of(ip)), "{row}");
+        }
+        None => assert!(row.get_str("zone").is_err(), "{row}"),
+    }
+}
+
 /// Admission is on for EVERY user once a central owner exists, so fixture
 /// users are written approved rather than registered (`register_user` cannot
 /// log a pending account in).
@@ -208,14 +239,17 @@ impl AutoRig {
             member,
             rooms: Vec::new(),
         };
-        let (_, a_tok) = enroll(&app, &seeded, &format!("{slug}-a")).await;
-        let (_, b_tok) = enroll(&app, &seeded, &format!("{slug}-b")).await;
+        let (a_agent, a_tok) = enroll(&app, &seeded, &format!("{slug}-a")).await;
+        let (b_agent, b_tok) = enroll(&app, &seeded, &format!("{slug}-b")).await;
         let (r_agent, r_tok) = enroll(&app, &seeded, &format!("{slug}-r")).await;
         let mut a = connect_from(&app, &a_tok, &[], from[0]).await;
         let mut b = connect_from(&app, &b_tok, &[], from[1]).await;
         let mut r = connect_from(&app, &r_tok, &["relay-server"], from[2]).await;
         // Let the hellos, and each connection's observation, land.
         tokio::time::sleep(Duration::from_millis(300)).await;
+        for (agent, ip) in [(&a_agent, from[0]), (&b_agent, from[1]), (&r_agent, from[2])] {
+            assert_observed(&app, agent, ip).await;
+        }
         join(&mut r, 3, Some(true), "8.8.8.8:41641").await;
         join(&mut a, 1, Some(true), "203.0.113.10:41641").await;
         join(&mut b, 2, Some(true), "203.0.113.11:41641").await;
