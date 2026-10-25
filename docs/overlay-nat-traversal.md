@@ -289,6 +289,28 @@ protocols. Mainland ISP gateways mostly speak only UPnP.
   line, in plane mode. Legacy mode logs the grant (`gateway port mapping
   granted`) but its status keeps the startup snapshot.
 - **Kill switch:** `ROOMLERD_OVERLAY_PORTMAP=0`, config key `overlay_portmap`.
+- **Lab-verified against miniupnpd 2.3.9** (nftables backend), using three
+  network namespaces: LAN client, router and WAN. The ignored test
+  `portmap::tests::portmap_live_gateway` runs the real `PortMapper` against
+  the default gateway and waits for one datagram from outside.
+
+  | path | map time | datagram from the WAN side | after release |
+  |---|---|---|---|
+  | PCP | 3–4 ms | delivered via the DNAT rule | rule removed |
+  | UPnP IGD (`WANIPConnection:2`), NAT-PMP/PCP off | 55 ms | delivered | `DeletePortMapping` removed it |
+
+  - **Restarting without a release:** the same keyed nonce maps the same
+    port again.
+  - **A random nonce:** miniupnpd also accepts it, taking the mapping over;
+    it does not check the nonce on MAP, as the IETF draft that dropped that
+    check proposes.
+  - **But a delete under any other nonce is refused** ("Unauthorized to
+    remove PCP mapping"). So the keyed nonce is what lets a restarted node
+    release its previous run's mapping. It also covers servers that do refuse
+    the MAP.
+  - **Not covered by the lab:** the NAT-PMP path on its own (miniupnpd
+    serves PCP and NAT-PMP under one switch), which is covered by the unit
+    tests, and a real ISP gateway.
 
 ### The accept side
 
