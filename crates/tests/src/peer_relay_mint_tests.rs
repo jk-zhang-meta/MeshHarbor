@@ -3059,6 +3059,104 @@ async fn org_only_fallback_preserves_forced_derp_pin_without_churn_or_mint() {
     assert!(audit_rows(&rig.app,&rig.seeded).await.iter().all(|r|r["action"] != "mint"));
 }
 
+/// [`join`] as a member that can ride DERP and honours the server's pin.
+async fn derp_join(ws: &mut Ws, seed: u8, endpoint: &str) -> Value {
+    let msg = json!({
+        "t": "rc:overlay.join", "wg_public_key": BASE64.encode([seed; 32]), "mtu": 1280,
+        "endpoints": [endpoint], "supports_org_relay": true,
+        "supports_server_relay_strategy": true, "relay_port": 3478, "org_primary": true,
+        "supports_derp": true, "supports_forced_derp": true,
+    });
+    ws.send(Message::Text(msg.to_string().into())).await.expect("send join");
+    recv_t(ws, "rc:overlay.netmap", Duration::from_secs(5)).await.expect("a netmap answers the join")
+}
+
+async fn report_loss(ws: &mut Ws, peer: &str, vni: u64, packets: u64, lost: u64) {
+    ws.send(Message::Text(json!({
+        "t": "rc:overlay.org_relay_loss", "peer_node_id": peer, "vni": vni,
+        "packets": packets, "lost": lost,
+    }).to_string().into())).await.expect("send loss report");
+}
+
+/// Nothing that would move the pair reaches `ws` for a moment.
+async fn assert_pair_unmoved(ws: &mut Ws) {
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(400);
+    while let Ok(Some(Ok(frame))) = tokio::time::timeout_at(deadline, ws.next()).await {
+        if let Message::Text(text) = frame {
+            let value: Value = serde_json::from_str(&text).unwrap();
+            assert!(!["rc:overlay.force_derp", "rc:overlay.relay_revoke"]
+                .contains(&value["t"].as_str().unwrap_or_default()), "unexpected: {}", value["t"]);
+        }
+    }
+}
+
+/// Field, 2026-10-26: an org relay whose ingress lost 7–10% carried ~2 Mbit/s
+/// while DERP through the same host carried 23–33, and the ladder kept the
+/// pair on ORG. A member's report of a lossy window now pins the pair to DERP
+/// on both ends, revokes the session on all three parties with an audited
+/// reason, and the pin refuses an ORG re-mint. A report under the threshold,
+/// about another VNI, or from a node that is not a member moves nothing.
+#[tokio::test]
+async fn org_loss_report_pins_the_pair_to_derp_and_revokes_the_session() {
+    let mut rig = Rig::up("org-loss", true, Some(true)).await;
+    rig.arm().await;
+    let map = derp_join(&mut rig.a, 1, "203.0.113.10:41641").await;
+    assert_eq!(map["network"]["org_relay_loss_v1"], json!(true));
+    derp_join(&mut rig.b, 2, "203.0.113.11:41641").await;
+    request_org_only(&mut rig, 1).await;
+    let sa = recv_org_only_session(&mut rig.a).await;
+    recv_org_only_session(&mut rig.b).await;
+    recv_t(&mut rig.r, "rc:overlay.relay_serve", Duration::from_secs(5)).await.unwrap();
+    let vni = sa["vni"].as_u64().unwrap();
+    let pk = roomler_ai_mod_network::overlay::pair_key(
+        ObjectId::parse_str(&rig.a_node).unwrap(), ObjectId::parse_str(&rig.b_node).unwrap());
+
+    report_loss(&mut rig.a, &rig.b_node, vni, 3000, 60).await; // 2%
+    report_loss(&mut rig.a, &rig.b_node, vni + 1, 3000, 240).await; // another VNI
+    report_loss(&mut rig.r, &rig.b_node, vni, 3000, 240).await; // not a member
+    assert_pair_unmoved(&mut rig.a).await;
+    assert_pair_unmoved(&mut rig.b).await;
+    assert_pair_unmoved(&mut rig.r).await;
+    assert!(rig.app.state.network().org_relay.active_session(&pk).is_some());
+
+    // One member's report is enough: 8% of the stream b receives from a.
+    report_loss(&mut rig.b, &rig.a_node, vni, 3000, 240).await;
+    let wait = Duration::from_secs(5);
+    let fa = recv_t(&mut rig.a, "rc:overlay.force_derp", wait).await.expect("a is pinned");
+    let fb = recv_t(&mut rig.b, "rc:overlay.force_derp", wait).await.expect("b is pinned");
+    assert_eq!(fa["peer_node_id"], json!(rig.b_node));
+    assert_eq!(fb["peer_node_id"], json!(rig.a_node));
+    let ttl = fa["ttl_ms"].as_u64().unwrap();
+    assert!((590_000..=600_000).contains(&ttl), "a 10-minute pin: {ttl}");
+    assert_eq!(fb["ttl_ms"], fa["ttl_ms"]);
+    rig.expect_revoked(vni).await;
+    let mut audited = false;
+    for _ in 0..40 {
+        audited = audit_rows(&rig.app, &rig.seeded).await.iter().any(|r| {
+            r["action"] == "revoke" && r["vni"] == json!(vni) && r["reason"] == "org_relay_lossy"
+        });
+        if audited { break; }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(audited, "the revoke is audited with its reason");
+
+    assert!(rig.app.state.network().org_relay.active_session(&pk).is_none());
+    request_org_only(&mut rig, 2).await;
+    assert!(
+        recv_t(&mut rig.a, "rc:overlay.relay_session", Duration::from_millis(600)).await.is_none(),
+        "the pin refuses an ORG re-mint"
+    );
+    // Nor does a ladder climb mint one; it gets the pin again, with what is left of it.
+    rig.request().await;
+    let again = recv_t(&mut rig.a, "rc:overlay.force_derp", wait).await.expect("the pin is re-pushed");
+    assert!(again["ttl_ms"].as_u64().unwrap() <= ttl);
+    assert!(
+        recv_t(&mut rig.a, "rc:overlay.relay_session", Duration::from_millis(600)).await.is_none(),
+        "a relay_request under the pin mints no ORG session"
+    );
+    assert!(rig.app.state.network().org_relay.active_session(&pk).is_none());
+}
+
 #[tokio::test]
 async fn org_only_fallback_reauthorizes_stale_cached_relay_and_mints_alternate() {
     let (mut rig,mut extra,extra_agent,extra_node,_,_)=alternate_onehop_fixture("org-only-stale").await;

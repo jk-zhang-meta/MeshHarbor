@@ -1,8 +1,10 @@
 //! Passive loss of the WG stream each peer sends us, per health sweep, from
-//! the counters the data plane books ([`WgDevice::peer_rx_loss`]). Two
-//! outputs: a 10-minute "loss by carrier" summary line, and a shadow verdict
-//! when an ORG carrier loses heavily. Measurement only: nothing here moves a
-//! carrier.
+//! the counters the data plane books ([`WgDevice::peer_rx_loss`]). Three
+//! outputs: a 10-minute "loss by carrier" summary line, a shadow verdict when
+//! an ORG carrier loses heavily, and the closed ORG windows that lost at
+//! least [`REPORT_PCT`], which the runtime reports to the server
+//! (`rc:overlay.org_relay_loss`). Nothing here moves a carrier: the server
+//! judges the reports, and a failed pair is pinned to DERP from there.
 //!
 //! Why: on the field's org-relay leg (2026-10-26, HK↔Tokyo through the Isvoro
 //! relay) 7–10% of the packets were lost on the way into the relay and the pair
@@ -22,10 +24,21 @@ const MIN_PACKETS: u64 = 1000;
 /// 50 ms path is held near 1.4 Mbit/s at 3% and 0.7 Mbit/s at 8% (Mathis;
 /// `netstack_tcp_lossy_rto_matrix`), so 5% is already a crippled carrier.
 const LOSSY_PCT: f64 = 5.0;
+/// The loss at which a closed ORG window is reported. Below the server's own
+/// threshold on purpose, so that threshold can move without a client roll.
+const REPORT_PCT: f64 = 1.0;
+/// Reports held between two drains; the oldest go first.
+const MAX_REPORTS: usize = 64;
 /// Per-peer spacing of the shadow verdict's log line.
 const LOG_EVERY: Duration = Duration::from_secs(60);
 /// A peer not read for this long is forgotten.
 const FORGET_AFTER: Duration = Duration::from_secs(600);
+
+/// `OVERLAY_ORG_LOSS_REPORT=0|false|no|off` stops the reports; the summary
+/// line and the shadow verdict stay. Default ON.
+pub(super) fn report_enabled() -> bool {
+    crate::env::flag("OVERLAY_ORG_LOSS_REPORT", true)
+}
 
 /// What carries our side of a pair, for the summary's buckets.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -76,6 +89,8 @@ pub(super) struct RxLoss {
     /// ORG windows judged lossy since the last summary.
     lossy: u64,
     last_log: HashMap<ObjectId, Instant>,
+    /// Closed ORG windows to report, `(peer, packets, lost)`.
+    reports: Vec<(ObjectId, u64, u64)>,
 }
 
 impl RxLoss {
@@ -110,6 +125,12 @@ impl RxLoss {
             return None;
         }
         let (ws, wa, _) = std::mem::take(w);
+        if loss_pct(ws, wa).is_some_and(|p| p >= REPORT_PCT) {
+            if self.reports.len() == MAX_REPORTS {
+                self.reports.remove(0);
+            }
+            self.reports.push((peer, ws, ws.saturating_sub(wa)));
+        }
         let pct = loss_pct(ws, wa).filter(|p| *p >= LOSSY_PCT)?;
         self.lossy += 1;
         if self
@@ -122,10 +143,16 @@ impl RxLoss {
                 peer = %peer, loss_pct = format!("{pct:.1}"), packets = ws,
                 "overlay relay[loss-shadow]: the ORG carrier lost this share of the peer's \
                  packets over ~30 s, a lossy relay path where DERP may carry the pair better \
-                 (measurement only; rate-limited 1/min/peer)"
+                 (reported for the server to judge; rate-limited 1/min/peer)"
             );
         }
         Some(pct)
+    }
+
+    /// The ORG windows closed since the last call that lost at least
+    /// [`REPORT_PCT`], as `(peer, packets, lost)`.
+    pub(super) fn take_reports(&mut self) -> Vec<(ObjectId, u64, u64)> {
+        std::mem::take(&mut self.reports)
     }
 
     /// The period's summary, `direct 0.10% of 52000, org 7.40% of 31000
@@ -229,6 +256,25 @@ mod tests {
             "only ORG gets a verdict"
         );
         assert!(l.summary(t0).starts_with("derp 20.00% of 3000"));
+    }
+
+    #[test]
+    fn closed_org_windows_from_one_percent_are_queued_for_the_server() {
+        let t0 = Instant::now();
+        let mut l = RxLoss::default();
+        assert_eq!(feed(&mut l, Via::Org, 6, 500, 490, t0), None, "2% is no verdict");
+        assert_eq!(l.take_reports(), vec![(peer(), 3000, 60)], "but it is reported");
+        assert!(l.take_reports().is_empty(), "drained");
+        for (via, sweeps, sent, got, why) in [
+            (Via::Org, 6, 500, 497, "0.6% is not reported"),
+            (Via::Org, 5, 500, 400, "the window is still open"),
+            (Via::Org, 6, 100, 50, "600 packets: too few to judge"),
+            (Via::Derp, 6, 500, 400, "only ORG windows are reported"),
+        ] {
+            let mut l = RxLoss::default();
+            feed(&mut l, via, sweeps, sent, got, t0);
+            assert!(l.take_reports().is_empty(), "{why}");
+        }
     }
 
     #[test]

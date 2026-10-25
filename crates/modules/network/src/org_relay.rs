@@ -1133,6 +1133,11 @@ pub async fn maybe_mint(state: &NetworkState, requester: &OverlayNode, peer: &Ov
     };
     let warn_only = mode == PeerRelayMode::Warn;
     let pk = pair_key(req_id, peer_id);
+    // A pair pinned to DERP (TURN churn, or a lossy ORG carrier) rides DERP
+    // whatever is minted, so a session now would never bind.
+    if crate::overlay::org_fallback_forced_derp(state, &pk) {
+        return;
+    }
 
     // Idempotent per pair: a live session is re-pushed to the ASKER only —
     // the peer and the relay already hold it. Not audited: nothing was
@@ -1693,6 +1698,19 @@ pub async fn handle_relay_probe(
             .record_probe(node_id, relay_node_id, endpoint.clone(), reachable, rtt_ms);
     debug!(reporter = %node_id, relay = %relay_node_id, %endpoint, reachable, ?rtt_ms, accepted,
         "org-relay: reachability report");
+}
+
+/// The live session a member's loss report names: the reporter's own pair
+/// with `peer`, under the VNI it rides. `None` for anything else (a stale
+/// VNI, a session it is not a member of), and the report is dropped.
+pub(crate) fn reported_session(
+    state: &NetworkState,
+    reporter: ObjectId,
+    peer: ObjectId,
+    vni: u32,
+) -> Option<OrgRelaySession> {
+    let s = state.org_relay.active_session(&pair_key(reporter, peer))?;
+    (s.vni == vni && s.member_index(reporter).is_some()).then_some(s)
 }
 
 #[cfg(test)]

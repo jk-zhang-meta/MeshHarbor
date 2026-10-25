@@ -37,7 +37,7 @@ use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use bson::{DateTime, oid::ObjectId};
 use roomler_ai_remote_control::models::{OverlayAclMode, OverlayPolicy};
 use roomler_ai_remote_control::{
-    models::{AgentStatus, NodeRef, OverlayNode},
+    models::{AgentStatus, NodeRef, OverlayNode, PeerRelayMode},
     signaling::{
         ClientMsg, IceServer, NetmapPeer, OverlayJoinRefusal, OverlayNetworkInfo,
         RelayStrategyWire, ServerMsg,
@@ -180,6 +180,10 @@ pub async fn relay_overlay_msg_from_node(
         }
         ClientMsg::OverlayOrgRelayFallbackRequest { peer_node_id, request_id } => {
             handle_org_relay_fallback_request(state, ident, peer_node_id, request_id).await;
+            None
+        }
+        ClientMsg::OverlayOrgRelayLoss { peer_node_id, vni, packets, lost } => {
+            handle_org_relay_loss(state, ident, peer_node_id, vni, packets, lost).await;
             None
         }
         ClientMsg::OverlayPathTrialRequest {
@@ -798,6 +802,7 @@ async fn handle_overlay_join(
                     .to_string(),
                 cidrs: join_blocks.cidrs().to_vec(),
                 org_relay_fallback_v1: true,
+                org_relay_loss_v1: true,
                 mtu: network.mtu,
                 magic_domain,
                 nameservers,
@@ -1280,26 +1285,7 @@ async fn handle_overlay_relay_request(
         && peer.supports_forced_derp
         && peer.supports_derp;
     if pair_supports_forced_derp && note_relay_request(state, &pair_key) {
-        // Multi-region DERP: pick the pair's regional relay from the same
-        // sticky region the TURN grants use (symmetric — the server computes
-        // once and pushes the SAME url to both ends); store it on the churn
-        // entry so every repush during this pin reuses it. `None` = central.
-        let derp_url = sticky_pair_region(
-            &state.turn_map,
-            &state.relay_load,
-            &pair_key,
-            self_node.relay_home.as_deref(),
-            peer.relay_home.as_deref(),
-            needs_tls_relay(&self_node) || needs_tls_relay(&peer),
-        )
-        .and_then(|region| {
-            state
-                .turn_map
-                .specs
-                .iter()
-                .find(|s| s.id == region)
-                .and_then(|s| s.derp_url.clone())
-        });
+        let derp_url = pair_derp_url(state, &self_node, &peer, &pair_key);
         tracing::info!(
             %pair_key, requester = %self_id, peer = %peer_node_id,
             replacing = evidence.current_kind.as_deref().unwrap_or("-"),
@@ -1307,53 +1293,14 @@ async fn handle_overlay_relay_request(
             relay = derp_url.as_deref().unwrap_or("central"),
             "overlay relay: TURN churn threshold — escalating pair to forced DERP"
         );
-        // U1 — a mid-pin re-push must carry the REMAINING TTL, not restart
-        // the clock: the escalation path re-pushed the full window on every
-        // mid-pin re-request while the server's own `forced_until` stood
-        // still, so the two ends' pins ratcheted apart (the join re-push
-        // already used remaining; now both do). A FRESH escalation just set
-        // `forced_until = now + FORCED_DERP_TTL`, so the same read yields
-        // the full window there.
-        let ttl_ms = state
-            .relay_pair_churn
-            .get(&pair_key)
-            .and_then(|pc| pc.forced_until)
-            .map(|until| until.saturating_duration_since(Instant::now()))
-            .filter(|d| !d.is_zero())
-            .unwrap_or(FORCED_DERP_TTL)
-            .as_millis() as u64;
-        if let Some(mut pc) = state.relay_pair_churn.get_mut(&pair_key) {
-            pc.forced_derp_url = derp_url.clone();
-        }
-        send_to_node(
+        push_pair_pin(
             state,
-            &self_node,
-            ServerMsg::OverlayForceDerp {
-                peer_node_id: peer.id.unwrap_or(peer_node_id),
-                ttl_ms,
-                derp_url: derp_url.clone(),
-            },
+            (&self_node, self_id),
+            (&peer, peer.id.unwrap_or(peer_node_id)),
+            &pair_key,
+            derp_url,
         )
         .await;
-        send_to_node(
-            state,
-            &peer,
-            ServerMsg::OverlayForceDerp {
-                peer_node_id: self_id,
-                ttl_ms,
-                derp_url,
-            },
-        )
-        .await;
-        // D2 (overlay v3) — the pin through the VERDICT channel too: both
-        // ends get the other's row re-stamped NOW (`pinned` resolves to
-        // verdict=Derp inside `server_relay_verdict`), so a D1 consumer
-        // flips tiers off the stamp at escalation time instead of waiting
-        // for the next incidental trickle to re-fan it. `OverlayForceDerp`
-        // above stays for wire compat (pre-D1 nodes) and as the TTL
-        // carrier; when the pin lapses the next fan re-stamps the
-        // capability-derived verdict and the pair regrades per Phase C.
-        fan_pair_verdicts(state, &self_node, &peer).await;
         return;
     }
 
@@ -1596,6 +1543,215 @@ async fn repush_forced_pairs_on_join(state: &NetworkState, node: &OverlayNode) {
         )
         .await;
     }
+}
+
+/// Multi-region DERP: the pair's regional relay, from the same sticky region
+/// the TURN grants use (symmetric — the server computes once and pushes the
+/// SAME url to both ends). `None` = central.
+fn pair_derp_url(
+    state: &NetworkState,
+    a: &OverlayNode,
+    b: &OverlayNode,
+    pair_key: &str,
+) -> Option<String> {
+    sticky_pair_region(
+        &state.turn_map,
+        &state.relay_load,
+        pair_key,
+        a.relay_home.as_deref(),
+        b.relay_home.as_deref(),
+        needs_tls_relay(a) || needs_tls_relay(b),
+    )
+    .and_then(|region| {
+        state
+            .turn_map
+            .specs
+            .iter()
+            .find(|s| s.id == region)
+            .and_then(|s| s.derp_url.clone())
+    })
+}
+
+/// P7 — push the pair's standing pin to BOTH ends and re-stamp their
+/// verdicts. `derp_url` is stored on the churn entry so every repush during
+/// this pin reuses it.
+async fn push_pair_pin(
+    state: &NetworkState,
+    (a, a_id): (&OverlayNode, ObjectId),
+    (b, b_id): (&OverlayNode, ObjectId),
+    pair_key: &str,
+    derp_url: Option<String>,
+) {
+    // U1 — a mid-pin re-push must carry the REMAINING TTL, not restart
+    // the clock: the escalation path re-pushed the full window on every
+    // mid-pin re-request while the server's own `forced_until` stood
+    // still, so the two ends' pins ratcheted apart (the join re-push
+    // already used remaining; now both do). A FRESH escalation just set
+    // `forced_until = now + FORCED_DERP_TTL`, so the same read yields
+    // the full window there.
+    let ttl_ms = state
+        .relay_pair_churn
+        .get(pair_key)
+        .and_then(|pc| pc.forced_until)
+        .map(|until| until.saturating_duration_since(Instant::now()))
+        .filter(|d| !d.is_zero())
+        .unwrap_or(FORCED_DERP_TTL)
+        .as_millis() as u64;
+    if let Some(mut pc) = state.relay_pair_churn.get_mut(pair_key) {
+        pc.forced_derp_url = derp_url.clone();
+    }
+    send_to_node(
+        state,
+        a,
+        ServerMsg::OverlayForceDerp {
+            peer_node_id: b_id,
+            ttl_ms,
+            derp_url: derp_url.clone(),
+        },
+    )
+    .await;
+    send_to_node(
+        state,
+        b,
+        ServerMsg::OverlayForceDerp {
+            peer_node_id: a_id,
+            ttl_ms,
+            derp_url,
+        },
+    )
+    .await;
+    // D2 (overlay v3) — the pin through the VERDICT channel too: both
+    // ends get the other's row re-stamped NOW (`pinned` resolves to
+    // verdict=Derp inside `server_relay_verdict`), so a D1 consumer
+    // flips tiers off the stamp at escalation time instead of waiting
+    // for the next incidental trickle to re-fan it. `OverlayForceDerp`
+    // above stays for wire compat (pre-D1 nodes) and as the TTL
+    // carrier; when the pin lapses the next fan re-stamps the
+    // capability-derived verdict and the pair regrades per Phase C.
+    fan_pair_verdicts(state, a, b).await;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ORG loss — a lossy org-relay carrier fails the pair's relay tier
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// A window must span this many of the peer's packets to be judged.
+const ORG_LOSS_MIN_PACKETS: u64 = 1000;
+/// The share of a window's packets (percent) whose loss fails the pair's ORG
+/// carrier. Loss-based TCP over a 50 ms path is held near 1.4 Mbit/s at 3%
+/// loss and 0.7 Mbit/s at 8% (Mathis). Field, 2026-10-26: an org relay whose
+/// ingress lost 7–10% carried ~2 Mbit/s, while DERP through the same host
+/// carried 23–33.
+const ORG_LOSS_FAIL_PCT: u64 = 5;
+/// How long a failed pair stays pinned to DERP: a third of the churn pin,
+/// because a relay's ingress loss follows its load. The members' ladder then
+/// measures ORG again, at the cost of one ~30 s window on it.
+const ORG_LOSS_PIN_TTL: Duration = Duration::from_secs(600);
+
+/// Pure: does a window of `packets` with `lost` of them missing fail the
+/// pair's ORG carrier?
+pub fn org_loss_fails(packets: u64, lost: u64) -> bool {
+    packets >= ORG_LOSS_MIN_PACKETS
+        && lost.min(packets).saturating_mul(100) >= packets.saturating_mul(ORG_LOSS_FAIL_PCT)
+}
+
+/// Pure: pin a pair for an ORG loss verdict. Never shortens a pin already
+/// standing, such as a churn pin's 30 minutes.
+pub fn org_loss_pin(pc: &mut PairChurn, now: Instant) {
+    let until = now + ORG_LOSS_PIN_TTL;
+    if pc.forced_until.is_none_or(|t| t < until) {
+        pc.forced_until = Some(until);
+    }
+}
+
+/// Kill switch: `ROOMLER__OVERLAY__ORG_LOSS_PIN=0|false|off` keeps every ORG
+/// carrier whatever it loses; reports are then logged only. Default ON. The
+/// pin also needs [`forced_derp_enabled`] and both ends' DERP capability.
+fn org_loss_pin_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        !matches!(
+            std::env::var("ROOMLER__OVERLAY__ORG_LOSS_PIN").as_deref(),
+            Ok("0") | Ok("false") | Ok("off")
+        )
+    })
+}
+
+/// A member's ORG loss report (`rc:overlay.org_relay_loss`): one closed
+/// window of the stream its peer sends over their session. A window that
+/// [`org_loss_fails`] fails the pair's relay tier the way TURN churn does
+/// (P7): both ends are pinned to DERP for [`ORG_LOSS_PIN_TTL`], the session
+/// is revoked (audited `org_relay_lossy`), and every mint path refuses the
+/// pair until the pin lapses. Then the members' ladder climbs back to ORG
+/// and the next windows measure it again. Direct re-upgrade is untouched.
+///
+/// The server decides, over the measured counts. A report counts only for
+/// the reporter's own live session (anything else is dropped), and one
+/// member's report is enough: the loss is in its peer's direction, and one
+/// crippled direction cripples the pair's TCP both ways, through its ACKs.
+/// A member can fail only its own pair's ORG tier, which it could already
+/// do by dropping packets.
+async fn handle_org_relay_loss(
+    state: &NetworkState,
+    ident: NodeIdentity,
+    peer_node_id: ObjectId,
+    vni: u32,
+    packets: u64,
+    lost: u64,
+) {
+    let Some(reporter) = current_node(state, ident).await else { return };
+    let Some(reporter_id) = reporter.id else { return };
+    let loss_pct = format!("{:.1}", lost.min(packets) as f64 * 100.0 / packets.max(1) as f64);
+    let Some(session) = crate::org_relay::reported_session(state, reporter_id, peer_node_id, vni)
+    else {
+        debug!(reporter = %reporter_id, peer = %peer_node_id, vni, packets, %loss_pct,
+            "org-relay: loss report names no live session of the reporter; dropped");
+        return;
+    };
+    if !org_loss_fails(packets, lost) {
+        debug!(reporter = %reporter_id, peer = %peer_node_id, vni, packets, %loss_pct,
+            "org-relay: loss report under the threshold; the carrier stays");
+        return;
+    }
+    if !matches!(
+        crate::org_relay::peer_relay_mode(state, reporter.tenant_id).await,
+        PeerRelayMode::On | PeerRelayMode::Auto
+    ) {
+        return;
+    }
+    let peer = match state.overlay_nodes.base.find_by_id(peer_node_id).await {
+        Ok(p) if p.tenant_id == reporter.tenant_id && p.deleted_at.is_none() => p,
+        _ => return,
+    };
+    let pk = session.pair_key.clone();
+    if !(org_loss_pin_enabled()
+        && forced_derp_enabled()
+        && reporter.supports_forced_derp
+        && reporter.supports_derp
+        && peer.supports_forced_derp
+        && peer.supports_derp)
+    {
+        tracing::info!(%pk, reporter = %reporter_id, peer = %peer_node_id, vni, packets, %loss_pct,
+            "overlay relay: ORG carrier lossy, kept: the pin is switched off or an end cannot ride DERP");
+        return;
+    }
+    // Pin first, so each member moves straight to DERP on the pin; the
+    // revoke that follows then finds its session already gone, and frees
+    // the relay's.
+    org_loss_pin(
+        state.relay_pair_churn.entry(pk.clone()).or_default().value_mut(),
+        Instant::now(),
+    );
+    let derp_url = pair_derp_url(state, &reporter, &peer, &pk);
+    tracing::info!(%pk, reporter = %reporter_id, peer = %peer_node_id, vni, packets, %loss_pct,
+        relay = derp_url.as_deref().unwrap_or("central"),
+        "overlay relay: ORG carrier lossy, pinning the pair to DERP for {}s",
+        ORG_LOSS_PIN_TTL.as_secs());
+    push_pair_pin(state, (&reporter, reporter_id), (&peer, peer_node_id), &pk, derp_url).await;
+    crate::org_relay::revoke_where(state, "org_relay_lossy", |s| {
+        s.pair_key == pk && s.vni == session.vni && s.generation == session.generation
+    })
+    .await;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -3985,6 +4141,50 @@ mod tests {
         let after = t0 + Duration::from_secs(110) + FORCED_DERP_TTL + Duration::from_secs(1);
         assert!(!churn_note_request(&mut pc, after));
         assert_eq!(pc.cycles, 0);
+    }
+
+    /// ORG loss — a window fails the carrier at 5% of at least 1000
+    /// packets; a lost count above the span (a malformed report) is capped.
+    #[test]
+    fn org_loss_fails_at_five_percent_of_a_judgeable_window() {
+        assert!(org_loss_fails(31_000, 2_294), "7.4%, the field's relay");
+        assert!(org_loss_fails(1_000, 50), "exactly 5%");
+        assert!(!org_loss_fails(1_000, 49));
+        assert!(!org_loss_fails(999, 999), "too few packets to judge");
+        assert!(!org_loss_fails(0, 0));
+        assert!(org_loss_fails(2_000, u64::MAX), "capped at the span");
+        assert!(!org_loss_fails(u64::MAX, 0), "no overflow");
+    }
+
+    /// ORG loss — the verdict pins the pair for 10 minutes, after which the
+    /// churn arithmetic counts afresh, and never shortens a longer pin.
+    #[test]
+    fn org_loss_pins_the_pair_and_keeps_a_longer_pin() {
+        let t0 = Instant::now();
+        let mut pc = PairChurn::default();
+        org_loss_pin(&mut pc, t0);
+        assert_eq!(pc.forced_until, Some(t0 + ORG_LOSS_PIN_TTL));
+        assert!(forced_active(&pc, t0 + ORG_LOSS_PIN_TTL - Duration::from_secs(1)));
+        assert!(
+            churn_note_request(&mut pc, t0 + Duration::from_secs(60)),
+            "a TURN request inside the pin is re-escalated, not granted"
+        );
+        assert!(!forced_active(&pc, t0 + ORG_LOSS_PIN_TTL));
+        assert!(!churn_note_request(&mut pc, t0 + ORG_LOSS_PIN_TTL));
+        assert_eq!(pc.forced_until, None, "the lapsed pin is cleared");
+
+        let mut churned = PairChurn {
+            forced_until: Some(t0 + FORCED_DERP_TTL),
+            ..Default::default()
+        };
+        org_loss_pin(&mut churned, t0);
+        assert_eq!(churned.forced_until, Some(t0 + FORCED_DERP_TTL));
+        org_loss_pin(&mut churned, t0 + FORCED_DERP_TTL);
+        assert_eq!(
+            churned.forced_until,
+            Some(t0 + FORCED_DERP_TTL + ORG_LOSS_PIN_TTL),
+            "a later verdict extends it"
+        );
     }
 
     /// U1 — the burst-starvation lock: two ends alternating request→grant

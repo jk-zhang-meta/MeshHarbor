@@ -2532,6 +2532,21 @@ pub enum ClientMsg {
         request_id: u64,
     },
 
+    /// ORG loss report: one closed window of the stream `peer_node_id` sends
+    /// this member over their ORG session `vni`, read from the peer's WG
+    /// transport counters. `packets` is how far the counters advanced, and
+    /// `lost` how many of those never arrived. The server decides what a
+    /// lossy window means for the pair. Sent only after the server's
+    /// [`OverlayNetworkInfo::org_relay_loss_v1`].
+    #[serde(rename = "rc:overlay.org_relay_loss")]
+    OverlayOrgRelayLoss {
+        #[serde(with = "oid_hex")]
+        peer_node_id: ObjectId,
+        vni: u32,
+        packets: u64,
+        lost: u64,
+    },
+
     /// C4 stage 1 — pair-less coturn credentials for the node's standing
     /// WARM allocation (one TURN/UDP allocation established while UDP
     /// works and kept alive so corp-VPN flow-grandfathering preserves a
@@ -2799,6 +2814,7 @@ impl ClientMsg {
             ClientMsg::OverlayOrgRelayFallbackRequest { .. } => {
                 "rc:overlay.org_relay_fallback_request"
             }
+            ClientMsg::OverlayOrgRelayLoss { .. } => "rc:overlay.org_relay_loss",
             ClientMsg::OverlayPathTrialRequest { .. } => "rc:overlay.path_trial_request",
             ClientMsg::OverlayPathTrialReady { .. } => "rc:overlay.path_trial_ready",
             ClientMsg::OverlayPathTrialCommitted { .. } => "rc:overlay.path_trial_committed",
@@ -2885,6 +2901,7 @@ impl ClientMsg {
             | ClientMsg::OverlayRelayRequest { .. }
             | ClientMsg::OverlayOrgRelayDiscover { .. }
             | ClientMsg::OverlayOrgRelayFallbackRequest { .. }
+            | ClientMsg::OverlayOrgRelayLoss { .. }
             | ClientMsg::OverlayPathTrialRequest { .. }
             | ClientMsg::OverlayPathTrialReady { .. }
             | ClientMsg::OverlayPathTrialCommitted { .. }
@@ -3015,6 +3032,7 @@ pub const CLIENT_MSG_OWNERS: &[(&str, Owner)] = &[
     ("rc:overlay.relay_request", Owner::Network),
     ("rc:overlay.org_relay_discover", Owner::Network),
     ("rc:overlay.org_relay_fallback_request", Owner::Network),
+    ("rc:overlay.org_relay_loss", Owner::Network),
     ("rc:overlay.path_trial_request", Owner::Network),
     ("rc:overlay.path_trial_ready", Owner::Network),
     ("rc:overlay.path_trial_committed", Owner::Network),
@@ -3117,6 +3135,12 @@ mod namespace_tests {
             ClientMsg::OverlayOrgRelayFallbackRequest {
                 peer_node_id: ObjectId::new(),
                 request_id: 1,
+            },
+            ClientMsg::OverlayOrgRelayLoss {
+                peer_node_id: ObjectId::new(),
+                vni: 7,
+                packets: 3000,
+                lost: 240,
             },
             ClientMsg::TunnelTerminate {
                 session_id: ObjectId::new(),
@@ -5845,6 +5869,11 @@ pub struct OverlayNetworkInfo {
     /// omit it, so a new client must not send the new request to them.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub org_relay_fallback_v1: bool,
+    /// Explicit support for the ORG loss report
+    /// ([`ClientMsg::OverlayOrgRelayLoss`]). Old servers omit it, so a new
+    /// client must not send the report to them.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub org_relay_loss_v1: bool,
     /// The block containing **this recipient's own** overlay address.
     ///
     /// FR-47 P5d — this used to be the network's single CIDR, and for every
@@ -10425,6 +10454,7 @@ mod tests {
         // deployment that exists today.
         let net = OverlayNetworkInfo {
             org_relay_fallback_v1: false,
+            org_relay_loss_v1: false,
             cidr: "100.65.0.0/22".into(),
             cidrs: vec!["100.65.0.0/22".into()],
             mtu: 1280,
@@ -10485,6 +10515,7 @@ mod tests {
             self_ip: "100.65.8.1".into(),
             network: OverlayNetworkInfo {
                 org_relay_fallback_v1: false,
+                org_relay_loss_v1: false,
                 cidr: "100.65.8.0/22".into(),
                 cidrs: vec!["100.65.4.0/22".into(), "100.65.8.0/22".into()],
                 mtu: 1280,
@@ -11313,6 +11344,7 @@ mod tests {
             self_ip: "100.64.0.3".into(),
             network: OverlayNetworkInfo {
                 org_relay_fallback_v1: false,
+                org_relay_loss_v1: false,
                 cidr: "100.64.0.0/10".into(),
                 cidrs: vec![],
                 mtu: 1280,
@@ -12357,6 +12389,41 @@ mod org_fallback_wire_tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn org_loss_wire_support_defaults_closed_and_the_report_round_trips() {
+        let old = r#"{"cidr":"100.64.0.0/10","mtu":1280,"org_relay_fallback_v1":true}"#;
+        let mut network: OverlayNetworkInfo = serde_json::from_str(old).unwrap();
+        assert!(!network.org_relay_loss_v1, "an old server never said it");
+        assert!(
+            !serde_json::to_string(&network)
+                .unwrap()
+                .contains("org_relay_loss_v1")
+        );
+        network.org_relay_loss_v1 = true;
+        assert!(
+            serde_json::from_value::<OverlayNetworkInfo>(serde_json::to_value(network).unwrap())
+                .unwrap()
+                .org_relay_loss_v1
+        );
+        let id = ObjectId::new();
+        let value = serde_json::to_value(ClientMsg::OverlayOrgRelayLoss {
+            peer_node_id: id,
+            vni: 42,
+            packets: 31_000,
+            lost: 2_294,
+        })
+        .unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({"t":"rc:overlay.org_relay_loss","peer_node_id":id.to_hex(),
+                "vni":42,"packets":31_000,"lost":2_294})
+        );
+        let parsed: ClientMsg = serde_json::from_value(value).unwrap();
+        assert!(matches!(parsed, ClientMsg::OverlayOrgRelayLoss {
+            peer_node_id, vni: 42, packets: 31_000, lost: 2_294 } if peer_node_id == id));
+        assert!(matches!(parsed.namespace(), Owner::Network));
     }
 }
 

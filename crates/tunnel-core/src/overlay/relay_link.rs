@@ -1440,6 +1440,32 @@ impl RelayCoordinator {
         self.forced_derp_active(peer)
     }
 
+    /// Report one closed window of the stream `peer` sends us over its ORG
+    /// session (`rx_loss`) for the server to judge. `false` when no session
+    /// is held for the peer, or the control channel did not take it.
+    pub(crate) async fn report_org_loss(&self, peer: ObjectId, packets: u64, lost: u64) -> bool {
+        let Some(vni) = self.org_sessions.get(&peer).map(|s| s.vni) else {
+            return false;
+        };
+        let sent = matches!(
+            tokio::time::timeout(
+                Duration::from_millis(10),
+                self.outbound.send(ClientMsg::OverlayOrgRelayLoss {
+                    peer_node_id: peer,
+                    vni,
+                    packets,
+                    lost
+                })
+            )
+            .await,
+            Ok(Ok(()))
+        );
+        if sent {
+            info!(%peer, vni, packets, lost, "overlay relay: ORG loss window reported to the server");
+        }
+        sent
+    }
+
     /// Kick off a relay link. The strategy decides the mechanics:
     ///
     /// - **single-relay DIALER** (larger-pubkey / UDP-capable-vs-blocked-peer):
@@ -4705,6 +4731,20 @@ mod tests {
             !c.org_sessions.contains_key(&node),
             "old failed carrier lease must not suppress its restoration reply"
         );
+    }
+    #[tokio::test]
+    async fn an_org_loss_report_names_the_session_the_peer_rides() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        let mut c = RelayCoordinator::new(tx, [0; 32], false, vec![], None);
+        c.set_org_relay(true);
+        let node = ObjectId::new();
+        assert!(!c.report_org_loss(node, 3000, 240).await, "no session, no report");
+        assert!(rx.try_recv().is_err());
+        c.org_session_accept(node, org_session(9, 60));
+        assert!(c.report_org_loss(node, 3000, 240).await);
+        assert!(matches!(rx.try_recv(), Ok(ClientMsg::OverlayOrgRelayLoss {
+            peer_node_id, vni: 9, packets: 3000, lost: 240 }) if peer_node_id == node));
+        assert!(c.org_sessions.contains_key(&node), "a report never drops the session");
     }
     #[tokio::test]
     async fn org_fallback_fixed_peer_order_rotates_without_breaking_cooldowns() {

@@ -2532,6 +2532,7 @@ impl OverlayRuntime {
         };
 
         let mut server_org_fallback = network.org_relay_fallback_v1;
+        let mut server_org_loss = network.org_relay_loss_v1;
 
         let Ok(self_v4) = self_ip.parse::<Ipv4Addr>() else {
             warn!(%self_ip, "overlay: server sent a non-IPv4 self_ip; aborting runtime");
@@ -3756,6 +3757,17 @@ impl OverlayRuntime {
                         &mut wg, &mut by_node, &current_peers, &mut relay,
                         &mut org_q, &mut alloc_q, &mut relay_bq, Instant::now(),
                     ).await;
+                    // The sweep's closed ORG windows that lost enough to report;
+                    // the server judges them (`rx_loss`).
+                    let org_losses = self.shadow(|s| s.rx_loss.take_reports()).unwrap_or_default();
+                    if self.org_primary && super::direct::org_relay_enabled() && server_org_loss
+                        && rx_loss::report_enabled()
+                        && let Some(r) = relay.as_ref()
+                    {
+                        for (peer, packets, lost) in org_losses {
+                            r.report_org_loss(peer, packets, lost).await;
+                        }
+                    }
                     // D8 — periodic direct re-upgrade (~every 6th tick ≈ 30 s).
                     // A lapsed cooldown only takes effect on the next netmap
                     // otherwise; a quiet mesh would never re-attempt direct after
@@ -4364,6 +4376,7 @@ impl OverlayRuntime {
                         server_path_trial_v1 = false;
                         server_org_discovery = false; // await explicit support on the NEW full netmap
                         server_org_fallback = false;
+                        server_org_loss = false;
                         org_discovery.invalidate(); // old WS replies cannot refresh metadata
                         self.outbound.swap(outbound);
                         // Join-send failure = the new session died within ms.
@@ -4457,6 +4470,7 @@ impl OverlayRuntime {
                         server_path_trial_v1 = path_trial_v1;
                         server_org_discovery = org_relay_discovery;
                         server_org_fallback = new_network.org_relay_fallback_v1;
+                        server_org_loss = new_network.org_relay_loss_v1;
                         org_discovery.invalidate(); // authoritative membership / key / ACL reconciliation
                         let old_peers = std::mem::take(&mut current_peers);
                         current_peers = peers.iter().map(|p| (p.node_id, p.clone())).collect();
@@ -8461,6 +8475,7 @@ mod tests {
     pub(super) fn net() -> OverlayNetworkInfo {
         OverlayNetworkInfo {
             org_relay_fallback_v1: false,
+            org_relay_loss_v1: false,
             cidr: "100.64.0.0/10".into(),
             cidrs: vec![],
             mtu: 1280,

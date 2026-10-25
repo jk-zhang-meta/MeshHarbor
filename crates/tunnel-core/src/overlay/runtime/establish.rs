@@ -508,7 +508,7 @@ impl OverlayRuntime {
                 e.last_rx_at = now;
             }
             // Passive loss of the peer's stream, by what our side rides
-            // (measurement only, see `rx_loss`).
+            // (`rx_loss`; the runtime reports closed ORG windows).
             if let Some(counters) = wg.peer_rx_loss(&e.pubkey) {
                 let via = super::rx_loss::Via::of(e.is_direct, e.relay_kind);
                 self.shadow(|s| s.rx_loss.note(*nid, via, counters, now));

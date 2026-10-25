@@ -376,6 +376,7 @@ the relay and both members, and each one writes a `revoke` row:
 | a policy edit no longer grants a member the relay | `acl_revoked` | `reconcile_acl` ([`org_relay.rs:815`](../crates/modules/network/src/org_relay.rs#L815)) |
 | the relay's approval was cleared | `policy_revoked` | `revoke_relay_agent` |
 | a party was removed from the overlay | `device_removed` / `device_left` | `revoke_node` |
+| a member measured the session losing ≥ 5% (below) | `org_relay_lossy` | `handle_org_relay_loss` ([`overlay.rs:1694`](../crates/modules/network/src/overlay.rs#L1694)) |
 
 ⚠️ **`reconcile_acl` does NOTHING on a read failure.** Refusing a *new* mint on a blip
 costs one session. Tearing down every *live* session on a blip is exactly the
@@ -391,6 +392,65 @@ costs one session. Tearing down every *live* session on a blip is exactly the
   was on `relay:derp/tcp` after **26 s**, connected throughout.
 - **Never ratchet.** When the relay came back, the pair **re-upgraded** to
   `relay:org/udp` on the next ladder climb.
+
+## A lossy relay hands the pair to DERP
+
+An org relay can be up and still be the worst carrier the pair has. Field, 2026-10-26
+(HK ↔ Tokyo through the Isvoro relay): 7–10% of the data packets and ~2.8% of the ACKs
+were lost on the way **into** the relay host, in multi-second blackouts, while the relay
+itself dropped nothing. One TCP stream carried **2.0–2.5 Mbit/s**. DERP through the same
+host carried **23–33 Mbit/s**, because its kernel TCP recovers the loss on the ~3 ms
+node ↔ relay-host leg, where the org relay leaves recovery to the end-to-end TCP over
+~50 ms. Nothing measured a carrier's loss, so the ladder kept the pair on the org relay.
+
+Now each member measures the stream its peer sends over the session, from the WireGuard
+transport counters it already authenticates (`PeerStats::note_rx_counter`, `wg.rs`).
+Every closed ~30 s window that lost at least 1% is reported, and the **server** decides:
+
+```mermaid
+sequenceDiagram
+    participant A as member A
+    participant S as server (tenant's pod)
+    participant R as org relay
+    participant B as member B
+
+    Note over B: a 30 s window of A's stream:<br/>8% of 3000 packets lost
+    B->>S: rc:overlay.org_relay_loss {peer A, vni, packets, lost}
+    Note over S: only B's own live session, matched by VNI ·<br/>≥ 5% of ≥ 1000 packets · mode on or auto ·<br/>both ends support DERP and the pin
+    S->>S: pin the pair to DERP for 10 min (the P7 pin)
+    S->>A: rc:overlay.force_derp {peer B, ttl_ms, region}
+    S->>B: rc:overlay.force_derp {peer A, ttl_ms, region}
+    S->>R: rc:overlay.relay_revoke {vni}
+    S->>A: rc:overlay.relay_revoke {vni}
+    S->>B: rc:overlay.relay_revoke {vni}
+    S->>S: audit: revoke, reason org_relay_lossy
+    Note over A,B: both ride DERP; every ORG mint path refuses the pair while pinned
+    Note over A,B: the pin lapses · the ladder climbs back to the org relay · the next windows measure it again
+```
+
+- **It reuses the TURN-churn pin** (P7, `relay_pair_churn`). That pin already reaches
+  both ends with the pair's sticky DERP region, is re-pushed on rejoin, makes
+  `maybe_mint_fallback` and `mint_plan` refuse the pair, and is cleared by a member that
+  reports its `/derp` mux failed. A loss pin is 10 minutes (`ORG_LOSS_PIN_TTL`); it
+  never shortens a longer churn pin.
+- **One member's report is enough.** Its inbound is the peer's direction, and one
+  crippled direction cripples the pair's TCP both ways, through its ACKs. A member can
+  fail only its own pair's org-relay tier, which it could already do by dropping
+  packets. A report about any other session, or under the threshold, is dropped.
+- **The threshold is the server's** (`org_loss_fails`,
+  [`overlay.rs:1653`](../crates/modules/network/src/overlay.rs#L1653)): 5% of at least
+  1000 packets. Loss-based TCP over 50 ms is held near 1.4 Mbit/s at 3% and 0.7 at 8%.
+  The client reports from 1% (`REPORT_PCT`), so the server's threshold can move without
+  a client roll.
+- **Old peers are safe.** A client reports only when the netmap carries
+  `org_relay_loss_v1`, and the server pins only a pair whose ends both advertised
+  `supports_forced_derp` and `supports_derp`; otherwise it logs the verdict and keeps
+  the carrier.
+- **Direct is untouched.** The pin governs the relay tier only, so a pair that can go
+  direct still re-upgrades.
+- **Kill switches:** `ROOMLER__OVERLAY__ORG_LOSS_PIN=0` on the server keeps every org
+  carrier (reports are logged only), and `OVERLAY_ORG_LOSS_REPORT=0` on a member stops
+  its reports.
 
 ## What the relay operator can see — tell customers this
 
@@ -510,6 +570,8 @@ the capacity gained: the relay was in France and the members in Austria and Germ
 | the relay server + counters | [`orgrelay/server.rs`](../crates/tunnel-core/src/overlay/orgrelay/server.rs), [`agents/roomlerd/src/relay_server.rs`](../agents/roomlerd/src/relay_server.rs) |
 | the member: bind + `OrgRelayConn` | [`orgrelay/client.rs`](../crates/tunnel-core/src/overlay/orgrelay/client.rs) |
 | the member's coordinator | [`relay_link.rs`](../crates/tunnel-core/src/overlay/relay_link.rs) — `relay_strategy` `:1052`, `org_request_bind` `:1946`, `commit_org_bind` `:1972` |
+| loss: the member's measure and report | [`runtime/rx_loss.rs`](../crates/tunnel-core/src/overlay/runtime/rx_loss.rs) (windows, `take_reports` `:154`), [`relay_link.rs:1446`](../crates/tunnel-core/src/overlay/relay_link.rs#L1446) `report_org_loss` |
+| loss: the server's verdict and pin | [`overlay.rs`](../crates/modules/network/src/overlay.rs) — `push_pair_pin` `:1578`, `org_loss_fails` `:1653`, `handle_org_relay_loss` `:1694`; `reported_session` [`org_relay.rs:1706`](../crates/modules/network/src/org_relay.rs#L1706) |
 | `auto`: role listing, per-connection zone | [`business_authority.rs`](../crates/core/src/business_authority.rs) — `LiveZones` `:242`, `connection_zone` `:487`, `current_server_agents` `:590` |
 | `auto`: the implicit grant and its revocations | [`org_relay.rs`](../crates/modules/network/src/org_relay.rs) — candidates `:504`, the zone check `:631`, `revoke_implicit_for_agent` `:1530` |
 | `auto`: TestApp tests | [`crates/tests/src/peer_relay_auto_tests.rs`](../crates/tests/src/peer_relay_auto_tests.rs) |
@@ -526,4 +588,10 @@ the capacity gained: the relay was in France and the members in Austria and Germ
   bandwidth is not.
 - **A separate tier for the org relay.** If measurement ever shows the selector
   mis-ranking an org relay against TURN or DERP, the tier surgery above is the
-  follow-up, opened with that evidence.
+  follow-up, opened with that evidence. The first such evidence (2026-10-26, DERP 10×
+  the org relay on a lossy relay host) is answered by the loss pin above, not by a tier.
+- **Choosing another relay instead of DERP.** A lossy relay pins the whole pair to DERP;
+  marking only that (pair, relay) in the planner would let a second relay in the zone
+  carry it.
+- **Measuring DERP's goodput too.** The pin compares the org relay's measured loss with
+  a threshold, not with DERP's measured performance.
