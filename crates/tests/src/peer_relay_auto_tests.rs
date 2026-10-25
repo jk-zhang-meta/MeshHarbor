@@ -16,7 +16,7 @@ use crate::agent_presence_tests::enroll;
 use crate::fixtures::seed::{SeededTenant, SeededUser};
 use crate::fixtures::test_app::TestApp;
 use crate::peer_relay_mint_tests::{
-    Ws, connect_from, join, node_id, put, recv_t, set_mode, wait_mint_row,
+    Ws, audit_rows, connect_from, join, node_id, put, recv_t, set_mode, wait_mint_row,
 };
 use bson::{doc, oid::ObjectId};
 use futures::SinkExt;
@@ -163,6 +163,7 @@ struct AutoRig {
     a: Ws,
     b: Ws,
     r: Ws,
+    b_tok: String,
     b_node: String,
     r_node: String,
     r_agent: String,
@@ -228,6 +229,7 @@ impl AutoRig {
             a,
             b,
             r,
+            b_tok,
             b_node,
             r_node,
             r_agent,
@@ -271,9 +273,12 @@ impl AutoRig {
     /// The three frames of a mint; returns the session's VNI.
     async fn expect_minted(&mut self) -> u64 {
         let wait = Duration::from_secs(5);
-        let serve = recv_t(&mut self.r, "rc:overlay.relay_serve", wait)
-            .await
-            .expect("the relay receives relay_serve");
+        let Some(serve) = recv_t(&mut self.r, "rc:overlay.relay_serve", wait).await else {
+            panic!(
+                "the relay receives relay_serve; audit: {:?}",
+                audit_rows(&self.app, &self.seeded).await
+            );
+        };
         let sa = recv_t(&mut self.a, "rc:overlay.relay_session", wait)
             .await
             .expect("member a receives relay_session");
@@ -400,6 +405,23 @@ async fn leaving_auto_revokes_implicit_sessions() {
     let vni = rig.expect_minted().await;
     set_mode(&rig.app, &rig.seeded, "on").await;
     rig.expect_revoked(vni, true).await;
+}
+
+/// A connection that displaces the first (the old socket still open, so no
+/// overlay leave runs) carries its OWN zone evidence: what the first vouched
+/// for is revoked at the new hello, and the next mint reads the new zone.
+#[tokio::test]
+async fn a_displacing_connection_revokes_and_brings_its_own_zone() {
+    let mut rig = AutoRig::up("auto-swap", [Some(US_A), Some(US_B), Some(US_R)]).await;
+    rig.arm().await;
+    rig.request().await;
+    let vni = rig.expect_minted().await;
+    let b_tok = rig.b_tok.clone();
+    let mut b2 = connect_from(&rig.app, &b_tok, &[], Some(CN_A)).await;
+    rig.expect_revoked(vni, false).await;
+    join(&mut b2, 2, Some(true), "203.0.113.11:41641").await;
+    rig.request().await;
+    rig.expect_refused("zone_denied").await;
 }
 
 /// And the evidence: each zone was observed on ONE connection, and what that

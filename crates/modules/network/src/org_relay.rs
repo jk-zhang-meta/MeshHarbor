@@ -635,6 +635,7 @@ async fn plan_mint_candidates_reusing(
                 member_zone = Some(a.filter(|_| a == b));
             }
             let relay_zone = agent_zone(state, &agent);
+            debug!(%tenant_id, relay = %relay_id, ?relay_zone, ?member_zone, "org-relay: implicit grant zones");
             relay_zone.is_some() && member_zone == Some(relay_zone)
         };
         if !granted && !implicit {
