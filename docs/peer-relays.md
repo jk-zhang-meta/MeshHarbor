@@ -74,11 +74,11 @@ actor can turn one device into the org's traffic chokepoint.
 
 | # | gate | owner | default | where |
 |---|---|---|---|---|
-| 1 | org switch `peer_relay_mode` — `off` · `warn` · `on` | the org owner (`MANAGE_TENANT`) | `off` | [`models.rs:2636`](../crates/remote_control/src/models.rs#L2636) |
+| 1 | org switch `peer_relay_mode` — `off` · `warn` · `on` · `auto` (MeshHarbor, [below](#auto--a-central-server-role-inside-one-business-zone-meshharbor)) | the org owner (`MANAGE_TENANT`) | `off` | [`models.rs:2636`](../crates/remote_control/src/models.rs#L2636) |
 | 2 | overlay ACL grants **each** member the relay node | the policy author | no grant | [`org_relay.rs:377`](../crates/modules/network/src/org_relay.rs#L377) |
 | 3 | per-device approval `peer_relay_policy.serve` | the fleet admin (`MANAGE_AGENTS` **and** `EXEC_DEVICE`) | `false` | [`routes/peer_relay.rs:53`](../crates/modules/network/src/routes/peer_relay.rs#L53) |
 | 4 | the relay device's own `relay_server_enabled` | the relay host's owner, **locally** | off | [`orgrelay/mod.rs:36`](../crates/tunnel-core/src/overlay/orgrelay/mod.rs#L36) |
-| 5 | each member's own `overlay_org_relay` | each member's owner | off | [`direct.rs:862`](../crates/tunnel-core/src/overlay/direct.rs#L862) |
+| 5 | each member's own `overlay_org_relay` | each member's owner | **on** in MeshHarbor ([below](#members-ride-by-default)) | [`direct.rs:897`](../crates/tunnel-core/src/overlay/direct.rs#L897) |
 
 ⚠️ **Gate 2 is evaluated regardless of `acl_mode`.** The overlay ACL's own default is
 `off`, which permits everything, and nothing has yet run under `enforce` in the field.
@@ -109,6 +109,97 @@ secondary org's admin must not be able to mint sessions onto the device owner's
 listener. The server refuses (`SecondaryOrg`), and the device independently drops all
 three relay frames when they arrive on a secondary org's socket
 ([`agents/roomlerd/src/overlay.rs:1026`](../agents/roomlerd/src/overlay.rs#L1026)).
+
+## `auto` — a central Server role inside one business zone (MeshHarbor)
+
+FR-19 makes an org relay an explicit decision twice over: an admin approves the device
+(gate 3) and a policy author names it for every member (gate 2). MeshHarbor wants the
+opposite default for the devices its central owner has already classified as
+**servers**: a deployed server relays for the clients near it with no further step, and
+never across the mainland / non-mainland line, which is a hard isolation boundary that
+fails closed.
+
+`peer_relay_mode = auto` ([`models.rs:3665`](../crates/remote_control/src/models.rs#L3665)) is that, a fourth mode the org
+owner sets like the other three. It is `on` plus ONE implicit grant:
+
+| gate | `on` | `auto`, for a relay whose central role is `server` |
+|---|---|---|
+| 1 org switch | `on` | `auto` |
+| 2 per-member grant | an overlay policy names the relay for each member | requester, peer **and** relay each observed in **one** business zone, on their live connections |
+| 3 device approval | `peer_relay_policy.serve` (`MANAGE_AGENTS` + `EXEC_DEVICE`) | the central account-approval owner's `server` role, still current |
+| 4 local serving switch | `relay_server_enabled` | unchanged: still the device's own |
+| 5 member's switch | `overlay_org_relay` | unchanged |
+
+```mermaid
+flowchart TD
+    C[candidate relay, online here,<br/>advertising relay-server] --> S{serve-approved AND an overlay<br/>policy names it for both members?}
+    S -- yes --> E[explicit grant, exactly as on]
+    S -- no --> A{mode auto AND its central<br/>server role is current?}
+    A -- no --> X1[skipped: acl_denied / no_relay]
+    A -- yes --> Z{requester, peer, relay: one zone each<br/>on their live connections, all equal?}
+    Z -- no, or unknown --> X2[skipped: zone_denied]
+    Z -- yes --> I[implicit grant, session.implicit = true]
+```
+
+- **The role, not a tag or a capability.** Candidates come from
+  `current_server_agents` ([`business_authority.rs:590`](../crates/core/src/business_authority.rs#L590)): role approvals the
+  *current* central owner wrote, each re-checked against the live registration
+  (identity and token generation, quarantine, the owner's admission). Serving as a relay
+  never makes a device a server; this reads the other direction only.
+- **Zone evidence belongs to one connection.** The zone a connection was observed in
+  when it opened is held per connection on the process that holds it (`LiveZones`,
+  [`business_authority.rs:242`](../crates/core/src/business_authority.rs#L242)), written only after the observation row
+  persists and dropped when that connection's observation closes. The network module
+  binds each agent's live connection at `hello` and unbinds it at `closing`
+  ([`org_relay.rs:198`](../crates/modules/network/src/org_relay.rs#L198)), and the mint reads a party's zone through that
+  binding ([`agent_zone`/`node_zone`, `org_relay.rs:461`](../crates/modules/network/src/org_relay.rs#L461)).
+- ⚠️ **Never read the observation row at mint time.** It is TTL-deleted 60 s after
+  capture (`index_ttl(expires_at, 0)`, declared by both `fleet` and `network`), and
+  `is_current_for` calls it stale after 60 s too, so a grant that read it would refuse
+  every pair connected for more than a minute. A transport connection cannot change its
+  source address, so what its opening observation saw stays true for its life.
+  `auto_zone_evidence_outlives_the_expiring_observation_row` deletes the rows and still
+  mints.
+- ⚠️ **Unknown is a refusal.** A connection with no trusted proxy chain, a tunnel-client
+  node, a GeoIP dataset past the 120-day rule, an unreadable role list: none of them
+  grants anything. An unreadable role list adds no candidate but does not refuse the
+  explicit ones.
+- **Ranking is unchanged.** Explicit and implicit candidates are ranked together by
+  member-measured RTT.
+
+### An implicit session ends with what vouched for it
+
+| trigger | where | audit reason |
+|---|---|---|
+| the relay's role is set to anything but `server` | [`routes/business_authority.rs:99`](../crates/modules/network/src/routes/business_authority.rs#L99) | `role_revoked` |
+| the org leaves `auto` (to `on`/`warn`; `off` revokes everything) | [`routes/peer_relay.rs:180`](../crates/modules/network/src/routes/peer_relay.rs#L180) | `mode_not_auto` |
+| a newer connection displaces a party's live one | [`agent_socket.rs:264`](../crates/modules/network/src/agent_socket.rs#L264) | `connection_displaced` |
+| a party's connection closes | [`agent_socket.rs:327`](../crates/modules/network/src/agent_socket.rs#L327) | `connection_closed` |
+| the ORG-only fallback re-query no longer authorizes it | `maybe_mint_fallback` | `org-fallback-reauthorization` |
+
+⚠️ **Displacement is the case that needed its own trigger.** A closing connection
+whose Hub removal was its own runs the overlay leave, which already revokes everything
+the node is in (`device_left`). A displaced connection does not, so without the `hello`
+revoke a session vouched for by a Shanghai connection would have survived the device
+reconnecting from Hong Kong. `a_displacing_connection_revokes_and_brings_its_own_zone`
+locks it.
+
+- `reconcile_acl` skips implicit sessions ([`org_relay.rs:1569`](../crates/modules/network/src/org_relay.rs#L1569)): a policy
+  edit neither granted nor can revoke them.
+- An implicit plan mints under the eligibility fence
+  ([`org_relay.rs:1133`](../crates/modules/network/src/org_relay.rs#L1133)), so a close that lands mid-mint cannot be
+  outlived. Every `hello`, `closing` and role change bumps the fence.
+- ⚠️ **Path trials stay `on`-only**
+  ([`trial.rs:335`](../crates/modules/network/src/org_relay/trial.rs#L335)). Under
+  `auto` a pair gets the ranked mint, not a trial.
+
+### Members ride by default
+
+In MeshHarbor gate 5 defaults **on**
+([`direct.rs:897`](../crates/tunnel-core/src/overlay/direct.rs#L897)). A member rides
+only a session the server minted under its org's own mode and gates 1–4, through a
+relay that sees ciphertext only, so riding is not where the consent lives. Serving is:
+gate 4 stays opt-in, and only `0|false|no|off` opts a member out.
 
 ## The mint — what the server decides
 
@@ -322,6 +413,10 @@ selectively.
 That is why gate 5 exists: `overlay_org_relay = false` on a member is that device's own
 last word, whatever the org decides.
 
+⚠️ **MeshHarbor turns gate 5 on by default**, where the relay operator is the network
+owner itself rather than an employer. The table above still holds for its servers, so it
+belongs in the MeshHarbor customer documentation as written.
+
 ## Measured on the fleet
 
 | what | result | build · date |
@@ -362,10 +457,22 @@ the capacity gained: the relay was in France and the members in Austria and Germ
 6. **On each member**: `overlay_org_relay = true`, then a restart.
 7. **The org switch**: `warn` first, read the audit, then `on`.
 
+**MeshHarbor `auto`**, instead of steps 3, 4 and 6:
+
+1. The central owner approves the relay's role:
+   `PUT /api/admin/business-authority/agent/{tid}/{agent_id}` `{"role": "server",
+   "reason": "..."}`. Account approval must be enabled with an `owner_user_id`.
+2. Locally on the relay: `relay_server_enabled = true`, then a restart (gate 4 is never
+   pushed).
+3. The org switch: `{"mode": "auto"}`. A `zone_denied` row means a party had no zone, or
+   the three were not in one zone. The fleet's agents must reach the server through the
+   configured `business_trusted_proxy_cidrs` chain, or no connection has a zone at all.
+
 | route | permission |
 |---|---|
 | `GET /api/tenant/{tid}/peer-relay` — mode + approved relays, each with `serving` | `MANAGE_AGENTS` |
-| `PUT /api/tenant/{tid}/peer-relay` `{"mode": "off" \| "warn" \| "on"}` | `MANAGE_TENANT` |
+| `PUT /api/tenant/{tid}/peer-relay` `{"mode": "off" \| "warn" \| "on" \| "auto"}` | `MANAGE_TENANT` |
+| `PUT /api/admin/business-authority/agent/{tid}/{agent_id}` `{"role", "reason"}` | the central account-approval owner only |
 | `PUT /api/tenant/{tid}/agent/{agent_id}/peer-relay-policy` | `MANAGE_AGENTS`, plus `EXEC_DEVICE` to turn `serve` on |
 | `GET /api/tenant/{tid}/peer-relay-audit` | `VIEW_EXEC_AUDIT` |
 
@@ -395,6 +502,9 @@ the capacity gained: the relay was in France and the members in Austria and Germ
 | the relay server + counters | [`orgrelay/server.rs`](../crates/tunnel-core/src/overlay/orgrelay/server.rs), [`agents/roomlerd/src/relay_server.rs`](../agents/roomlerd/src/relay_server.rs) |
 | the member: bind + `OrgRelayConn` | [`orgrelay/client.rs`](../crates/tunnel-core/src/overlay/orgrelay/client.rs) |
 | the member's coordinator | [`relay_link.rs`](../crates/tunnel-core/src/overlay/relay_link.rs) — `relay_strategy` `:1052`, `org_request_bind` `:1946`, `commit_org_bind` `:1972` |
+| `auto`: role listing, per-connection zone | [`business_authority.rs`](../crates/core/src/business_authority.rs) — `LiveZones` `:242`, `connection_zone` `:487`, `current_server_agents` `:590` |
+| `auto`: the implicit grant and its revocations | [`org_relay.rs`](../crates/modules/network/src/org_relay.rs) — candidates `:504`, the zone check `:631`, `revoke_implicit_for_agent` `:1530` |
+| `auto`: TestApp tests | [`crates/tests/src/peer_relay_auto_tests.rs`](../crates/tests/src/peer_relay_auto_tests.rs) |
 | pod-offload metric | `derp_bytes_relayed_total`, [`crates/api/src/cluster/metrics.rs:62`](../crates/api/src/cluster/metrics.rs#L62) |
 
 ## Not built
@@ -402,6 +512,12 @@ the capacity gained: the relay was in France and the members in Austria and Germ
 - **A dedicated `RELAY_DEVICE` permission bit.** It waits on the 64-bit mask migration
   (#888). Until then, an org cannot have relay approvers who may not also run root
   commands.
+- **MeshHarbor: the server-role install setting `relay_server_enabled`.** Gate 4 is
+  still set by hand on each server.
+- **MeshHarbor: zone on EXPLICIT grants.** `auto` checks zones only for its implicit
+  grant; regional enforcement on every path is a separate item.
+- **MeshHarbor: latency-weighted multi-hop.** The manual relay-to-relay backbone edges
+  exist; choosing a path through them by measured latency does not.
 - **A per-session bitrate cap** on the relay. The session count is capped; per-session
   bandwidth is not.
 - **A separate tier for the org relay.** If measurement ever shows the selector
