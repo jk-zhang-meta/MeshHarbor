@@ -624,6 +624,39 @@ pub fn apply_overlay_flag(
     }
 }
 
+/// MeshHarbor §6 item 4b — `enroll --relay-server`: gate 4
+/// (`relay_server_enabled`) from the first start, given by whoever installs
+/// the host, so a server the central owner approves as a `server` role relays
+/// under `peer_relay_mode = auto` with no second visit.
+///
+/// ⚠️ Primary org only. The relay listener is host-global and serving is
+/// primary-only (FR-19), so a secondary enrollment must not switch it on for
+/// the device's primary org as a side effect: it is left unchanged with a
+/// warning (the server-side enrollment already happened, so refusing here
+/// would strand a device without its saved config). Returns whether it
+/// applied.
+pub fn apply_relay_server_flag(
+    cfg: &mut crate::config::AgentConfig,
+    outcome: &crate::enrollment::EnrollOutcome,
+) -> bool {
+    use crate::enrollment::EnrollOutcome;
+    match outcome {
+        EnrollOutcome::RefreshedOrg { label } | EnrollOutcome::AppendedOrg { label } => {
+            tracing::warn!(
+                org = %label,
+                "--relay-server ignored: serving is the primary organization's, and this \
+                 enrollment joined a secondary one (set relay_server_enabled yourself)"
+            );
+            false
+        }
+        _ => {
+            cfg.relay_server_enabled = Some(true);
+            tracing::info!("org relay serving enabled by --relay-server (relay_server_enabled)");
+            true
+        }
+    }
+}
+
 /// FR-49 — `roomlerd org overlay <label> <off|netstack|tun>`.
 pub fn set_org_overlay(
     cfg: &mut crate::config::AgentConfig,
@@ -737,6 +770,40 @@ mod fr49_tests {
             netstack_socks_port: None,
         });
         cfg
+    }
+
+    /// `--relay-server` on a primary enrollment is gate 4, on from the
+    /// first start.
+    #[test]
+    fn relay_server_flag_switches_gate_4_on_for_a_primary() {
+        for outcome in [
+            crate::enrollment::EnrollOutcome::FreshPrimary,
+            crate::enrollment::EnrollOutcome::RefreshedPrimary,
+            crate::enrollment::EnrollOutcome::ReplacedPrimary,
+        ] {
+            let mut cfg = two_org_cfg();
+            cfg.relay_server_enabled = Some(false);
+            assert!(apply_relay_server_flag(&mut cfg, &outcome));
+            assert_eq!(cfg.relay_server_enabled, Some(true));
+        }
+    }
+
+    /// A secondary enrollment must not turn the host-global listener on for
+    /// the PRIMARY org — the `--overlay` bug below, in its serving form.
+    #[test]
+    fn relay_server_flag_never_serves_for_a_secondary_enrollment() {
+        for outcome in [
+            crate::enrollment::EnrollOutcome::AppendedOrg {
+                label: "acme".into(),
+            },
+            crate::enrollment::EnrollOutcome::RefreshedOrg {
+                label: "acme".into(),
+            },
+        ] {
+            let mut cfg = two_org_cfg();
+            assert!(!apply_relay_server_flag(&mut cfg, &outcome));
+            assert_eq!(cfg.relay_server_enabled, None, "left to the device owner");
+        }
     }
 
     /// THE regression lock. `--overlay` used to set the PRIMARY's flag no

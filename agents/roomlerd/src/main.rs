@@ -114,6 +114,13 @@ enum Command {
         /// something privileged enough to bring up a TUN.
         #[arg(long)]
         overlay: bool,
+        /// MeshHarbor — offer this device as an org relay from the first
+        /// start (gate 4, `relay_server_enabled`), for a server the central
+        /// owner approves as a `server` role. Primary enrollment only: the
+        /// listener is host-global. Consent given by whoever installs the
+        /// host; the server can never push it.
+        #[arg(long)]
+        relay_server: bool,
         /// FR-90 P2h-1 — enroll as an archive replica of the organization, as
         /// the archive image does: it holds copies of the org's sessions and
         /// offers itself as an archive (`hive_replica`, `hive_archive`), runs
@@ -1554,6 +1561,7 @@ async fn daemon_main() -> Result<()> {
             replace,
             ephemeral,
             overlay,
+            relay_server,
             archive_replica,
             install_method,
             install_scope,
@@ -1569,6 +1577,7 @@ async fn daemon_main() -> Result<()> {
                     replace,
                     ephemeral,
                     overlay,
+                    relay_server,
                     archive_replica,
                     install_method: install_method.as_deref(),
                     install_scope: install_scope.as_deref(),
@@ -2398,6 +2407,7 @@ struct EnrollOptions<'a> {
     /// server's response (not this flag) decides what the CONFIG records.
     ephemeral: bool,
     overlay: bool,
+    relay_server: bool,
     /// FR-90 P2h-1 — the archive replica's posture ([`roomlerd::archive_replica`]).
     archive_replica: bool,
     /// FR-102 P3 — the install trace, flag-first; `None` falls back to the
@@ -2416,6 +2426,7 @@ async fn enroll_cmd(config_path: &Path, opts: EnrollOptions<'_>) -> Result<()> {
         replace,
         ephemeral,
         overlay,
+        relay_server,
         archive_replica,
         install_method,
         install_scope,
@@ -2564,6 +2575,9 @@ async fn enroll_cmd(config_path: &Path, opts: EnrollOptions<'_>) -> Result<()> {
     // no privilege. Anything else is the explicit `org overlay` verb.
     if overlay {
         roomlerd::org_join::apply_overlay_flag(&mut cfg, &outcome);
+    }
+    if relay_server {
+        roomlerd::org_join::apply_relay_server_flag(&mut cfg, &outcome);
     }
     // FR-90 P2h-1 — the archive replica's posture, before the first save. The
     // preflight made this a fresh primary enrollment.

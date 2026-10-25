@@ -32,6 +32,10 @@
 #                     nothing else (safe on any box).
 #   --no-enroll       install without enrolling (no token needed); prints the
 #                     enroll command to run later.
+#   --relay-server    MeshHarbor, Linux daemon only: offer this machine as an org
+#                     relay from its first start (gate 4, relay_server_enabled),
+#                     for a server the central owner approves as a `server`
+#                     role. Primary enrollment only; the server never pushes it.
 #
 # The desktop companion (roomler-desktop) rides IN the macOS .pkg. On Linux it
 # is a SEPARATE .deb (FR-27), or .rpm on Fedora, the RHEL family and openSUSE
@@ -93,6 +97,7 @@ MACOS_DAEMON_CONFIG="/etc/roomler/config.toml"
 MACOS_DAEMON_MARKER="/etc/roomler/enable-daemon"
 DAEMON_TOKEN=""
 NO_ENROLL=0
+RELAY_SERVER=0
 # FR-27 — the Linux desktop companion. Empty = decide by probing for a
 # graphical session; --desktop / --no-desktop force it either way.
 DESKTOP=""
@@ -105,6 +110,7 @@ usage() {
     sed -n '2,32p' "$0" 2>/dev/null || true
     echo "usage: install.sh --role daemon|tunnel [--server URL] [--token JWT] [--name NAME]"
     echo "                  [--daemon-token JWT] [--system] [--download-only] [--no-enroll]"
+    echo "                  [--relay-server] (daemon only)"
     echo "                  [--desktop|--no-desktop]"
     echo "                  [--local-package PATH --local-package-sha256 HEX"
     echo "                   --local-cli PATH --local-cli-sha256 HEX] (daemon only; no downloads)"
@@ -149,6 +155,7 @@ while [ $# -gt 0 ]; do
         --local-cli) LOCAL_CLI="$2"; shift 2 ;;
         --local-cli-sha256) LOCAL_CLI_SHA="$2"; shift 2 ;;
         --no-enroll) NO_ENROLL=1; shift ;;
+        --relay-server) RELAY_SERVER=1; shift ;;
         --desktop) DESKTOP=1; shift ;;
         --no-desktop) DESKTOP=0; shift ;;
         --uninstall) UNINSTALL=1; shift ;;
@@ -175,7 +182,7 @@ if [ "$UNINSTALL" = 1 ]; then
     # "only this part" and remove more than was asked: refuse it, with the rest
     # of the install options.
     if [ -n "$ROLE" ] || [ -n "$TOKEN" ] || [ -n "$DAEMON_TOKEN" ] || [ "$SYSTEM" = 1 ] ||
-        [ "$DOWNLOAD_ONLY" = 1 ] || [ "$NO_ENROLL" = 1 ] || [ -n "$DESKTOP" ] ||
+        [ "$DOWNLOAD_ONLY" = 1 ] || [ "$NO_ENROLL" = 1 ] || [ -n "$DESKTOP" ] || [ "$RELAY_SERVER" = 1 ] ||
         [ -n "$LOCAL_PACKAGE$LOCAL_PACKAGE_SHA$LOCAL_CLI$LOCAL_CLI_SHA" ]; then
         echo "error: --uninstall removes every Roomler part on this machine and takes no install options (only --keep-config)" >&2
         exit 1
@@ -190,13 +197,25 @@ else
         "") echo "error: --role daemon|tunnel is required" >&2; usage ;;
         *) echo "error: unknown role '$ROLE' (expected daemon|tunnel)" >&2; exit 1 ;;
     esac
+    if [ "$RELAY_SERVER" = 1 ] && { [ "$ROLE" != daemon ] || [ "$SYSTEM" != 1 ]; }; then
+        echo "error: --relay-server needs --role daemon --system: a relay is the root daemon's overlay node" >&2
+        exit 1
+    fi
 fi
+# A relay is a mesh node, so it joins the overlay from its first start too.
+RELAY_ARG=""
+[ "$RELAY_SERVER" = 1 ] && RELAY_ARG="--overlay --relay-server"
 
 OS="$(uname -s)"
 case "$OS" in
     Linux|Darwin) ;;
     *) echo "error: unsupported OS '$OS' — use install.ps1 on Windows" >&2; exit 1 ;;
 esac
+# A Mac runs TWO enrolled processes, and both would bind the relay port.
+if [ "$RELAY_SERVER" = 1 ] && [ "$OS" != Linux ]; then
+    echo "error: --relay-server is for Linux servers" >&2
+    exit 1
+fi
 
 if [ "$SYSTEM" = 1 ] && { [ "$ROLE" != daemon ] || [ "$OS" != Linux ]; }; then
     echo "error: --system applies to '--role daemon' on Linux only (on macOS use --daemon-token for the privileged half; the tunnel role installs a CLI, not a service)" >&2
@@ -532,7 +551,7 @@ install_daemon_linux() {
             say "download-only: would run: sudo tar -xzf $deb --strip-components=1 -C /"
         fi
         if [ "$SYSTEM" = 1 ]; then
-            say "download-only: would run: sudo roomlerd --config $SYSTEM_CONFIG enroll --server $SERVER --token <token> --name $NAME"
+            say "download-only: would run: sudo roomlerd --config $SYSTEM_CONFIG enroll --server $SERVER --token <token> --name $NAME $RELAY_ARG"
             say "download-only: would run: sudo systemctl disable --now roomler-update.timer roomler-update.path (only if a per-user install left them enabled)"
             say "download-only: would run: sudo systemctl enable --now roomlerd.service"
         else
@@ -791,7 +810,7 @@ enroll_daemon() {
     fi
     if [ "$NO_ENROLL" = 1 ] || [ -z "$TOKEN" ]; then
         [ "$NO_ENROLL" = 1 ] || warn "no --token given — skipping enrollment"
-        say "enroll later with: $enroll_sudo $enroll_bin enroll --server $SERVER --token <agent-enrollment-jwt> --name \"$NAME\""
+        say "enroll later with: $enroll_sudo $enroll_bin enroll --server $SERVER --token <agent-enrollment-jwt> --name \"$NAME\" $RELAY_ARG"
         return 0
     fi
     say "enrolling this machine as '$NAME' against $SERVER (token is single-use, never echoed)"
@@ -801,9 +820,9 @@ enroll_daemon() {
     # shellcheck disable=SC2086
     if [ "$LOCAL_MODE" = 1 ]; then LOCAL_PHASE=enrollment; LOCAL_ENROLL_STATE=attempted; fi
     if [ "$LOCAL_MODE" = 1 ] && [ "$SYSTEM" = 1 ]; then
-        $enroll_sudo $enroll_trace $enroll_bin enroll --server "$SERVER" --token "$TOKEN" --name "$NAME" --overlay
+        $enroll_sudo $enroll_trace $enroll_bin enroll --server "$SERVER" --token "$TOKEN" --name "$NAME" --overlay ${RELAY_ARG:+--relay-server}
     else
-        $enroll_sudo $enroll_trace $enroll_bin enroll --server "$SERVER" --token "$TOKEN" --name "$NAME"
+        $enroll_sudo $enroll_trace $enroll_bin enroll --server "$SERVER" --token "$TOKEN" --name "$NAME" $RELAY_ARG
     fi
     if [ "$LOCAL_MODE" = 1 ]; then LOCAL_ENROLL_STATE=user-command-succeeded; fi
 }
