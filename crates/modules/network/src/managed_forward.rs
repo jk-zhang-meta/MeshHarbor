@@ -546,6 +546,42 @@ pub async fn plan(
     }
 }
 
+/// The table the agent's nft backend owns (roomlerd's
+/// `managed_forward_nft::TABLE`; the inventory names it).
+pub const NFT_TABLE: &str = "meshharbor_fwd";
+
+/// Is `r`, from the ingress's inventory, `spec`'s DNAT rule in the owned
+/// table: its address and port, to its destination?
+pub fn is_nft_rule_of(
+    r: &roomler_ai_remote_control::net_inventory::FirewallRule,
+    spec: &ForwardSpec,
+) -> bool {
+    let words: Vec<&str> = r.matches.split_whitespace().collect();
+    let has = |seq: &[&str]| words.windows(seq.len()).any(|w| w == seq);
+    let port = spec.port.to_string();
+    let proto = match spec.proto {
+        L4::Tcp => "tcp",
+        L4::Udp => "udp",
+    };
+    let dest: Option<IpAddr> = spec.dest_addr.trim().parse().ok();
+    let target_ok = r.target.as_deref().is_some_and(|t| {
+        t.parse::<std::net::SocketAddr>()
+            .ok()
+            .map(|s| (s.ip(), s.port()))
+            == dest.map(|d| (d, spec.dest_port))
+            || t.rsplit_once(':').is_some_and(|(a, p)| {
+                a.trim_matches(['[', ']']).parse::<IpAddr>().ok() == dest
+                    && p.parse::<u16>().ok() == Some(spec.dest_port)
+            })
+    });
+    r.table == NFT_TABLE
+        && r.chain == "prerouting"
+        && r.verdict == "dnat"
+        && target_ok
+        && has(&["daddr", spec.bind_addr.trim()])
+        && has(&[proto, "dport", &port])
+}
+
 /// Is `ip` inside `net/len` (both of one family)?
 fn in_net(ip: IpAddr, (net, len): (IpAddr, u8)) -> bool {
     match (ip, net) {
@@ -952,6 +988,49 @@ mod tests {
         s.backend = ForwardBackend::Nft;
         s.sources = vec!["fd00::/8".into()];
         assert_eq!(failed(&s), vec!["address family"]);
+    }
+
+    #[test]
+    fn an_nft_rule_is_recognised_by_address_port_and_destination() {
+        use roomler_ai_remote_control::net_inventory::{FirewallOwner, FirewallRule};
+        let mut s = spec();
+        s.backend = ForwardBackend::Nft;
+        let rule = |matches: &str, target: &str| FirewallRule {
+            backend: "nftables".into(),
+            family: "inet".into(),
+            table: NFT_TABLE.into(),
+            chain: "prerouting".into(),
+            handle: Some(4),
+            matches: matches.into(),
+            verdict: "dnat".into(),
+            target: Some(target.into()),
+            packets: None,
+            bytes: None,
+            owner: FirewallOwner::Meshharbor,
+        };
+        let m = "ip daddr 100.64.0.2 tcp dport 15432 ip saddr {100.64.0.0/10}";
+        assert!(is_nft_rule_of(&rule(m, "10.0.0.5:5432"), &s));
+        assert!(
+            !is_nft_rule_of(&rule(m, "10.0.0.5:5433"), &s),
+            "another destination"
+        );
+        assert!(!is_nft_rule_of(
+            &rule("ip daddr 100.64.0.2 tcp dport 154320", "10.0.0.5:5432"),
+            &s
+        ));
+        assert!(!is_nft_rule_of(
+            &rule("ip daddr 100.64.0.2 udp dport 15432", "10.0.0.5:5432"),
+            &s
+        ));
+        let mut foreign = rule(m, "10.0.0.5:5432");
+        foreign.table = "nat".into();
+        assert!(!is_nft_rule_of(&foreign, &s), "only the owned table counts");
+        s.bind_addr = "fd00::2".into();
+        s.dest_addr = "fd00::5".into();
+        assert!(is_nft_rule_of(
+            &rule("ip6 daddr fd00::2 tcp dport 15432", "[fd00::5]:5432"),
+            &s
+        ));
     }
 
     #[test]

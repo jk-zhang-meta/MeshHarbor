@@ -642,6 +642,61 @@ async fn the_nft_backend_is_gated_on_the_ingress_and_its_changes_are_confirmed()
         .await
         .expect("confirmed");
     assert_eq!(c["generation"], json!(7));
+    // In effect when the ingress's next inventory shows the owned table's
+    // DNAT rule for it; drift when that complete rule list lacks it.
+    let get = |id: String| {
+        let (app, tok) = (&app, tok.clone());
+        let path = format!("/api/tenant/{tid}/managed-forward/{id}");
+        async move {
+            let r = app.auth_get(&path, &tok).send().await.unwrap();
+            r.json::<Value>().await.unwrap()
+        }
+    };
+    let with_rule = |dport: u16| {
+        let mut i = inv(Some(true), false);
+        i.firewall_rules = Section::capped(
+            vec![roomler_ai_remote_control::net_inventory::FirewallRule {
+                backend: "nftables".into(),
+                family: "inet".into(),
+                table: "meshharbor_fwd".into(),
+                chain: "prerouting".into(),
+                handle: Some(4),
+                matches: format!("ip daddr 100.64.0.2 tcp dport {dport} ip saddr 100.64.0.0/10"),
+                verdict: "dnat".into(),
+                target: Some("10.0.0.5:5432".into()),
+                packets: None,
+                bytes: None,
+                owner: FirewallOwner::Meshharbor,
+            }],
+            10,
+        );
+        i
+    };
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    wb.send(Message::Text(send_inv(4, with_rule(15432)).into()))
+        .await
+        .unwrap();
+    let mut verified = Value::Null;
+    for _ in 0..30 {
+        verified = get(id.to_string()).await["status"]["verified"].clone();
+        if verified == json!("verified") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(verified, json!("verified"));
+    wb.send(Message::Text(send_inv(5, with_rule(9)).into()))
+        .await
+        .unwrap();
+    for _ in 0..30 {
+        verified = get(id.to_string()).await["status"]["verified"].clone();
+        if verified == json!("drift") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(verified, json!("drift"));
+
     // A status without one asks for nothing.
     let m = json!({ "t": "rc:forward.status",
         "statuses": [{ "id": id, "revision": 1, "listening": true }] });

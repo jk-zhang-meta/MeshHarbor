@@ -100,9 +100,12 @@ pub struct MutationResponse {
 }
 
 /// v039's verified layer, from the ingress node's own report: `verified`
-/// when a fresh inventory received AFTER the ack shows a listener on the
-/// forward's bind address and port, `drift` when that inventory lacks it,
-/// `unverified` otherwise (no ack, no newer fresh inventory).
+/// when a fresh inventory received AFTER the ack shows the forward in effect,
+/// `drift` when that inventory lacks it, `unverified` otherwise (no ack, no
+/// newer fresh inventory, or an nft rule list that is not complete). In
+/// effect means a listener on the bind address and port (userspace), or the
+/// owned table's DNAT rule for that address and port to the destination
+/// (nft).
 fn verify(
     view: &mut ForwardView,
     f: &ManagedForward,
@@ -119,13 +122,30 @@ fn verify(
         return;
     };
     let bind: Option<std::net::IpAddr> = f.spec.bind_addr.parse().ok();
-    let seen = row.inventory.listeners.items.iter().any(|l| {
-        l.proto == f.spec.proto
-            && l.port == f.spec.port
-            && l.addr
-                .parse::<std::net::IpAddr>()
-                .is_ok_and(|x| x.is_unspecified() || Some(x) == bind)
-    });
+    let seen = match f.spec.backend {
+        crate::managed_forward::ForwardBackend::Userspace => {
+            row.inventory.listeners.items.iter().any(|l| {
+                l.proto == f.spec.proto
+                    && l.port == f.spec.port
+                    && l.addr
+                        .parse::<std::net::IpAddr>()
+                        .is_ok_and(|x| x.is_unspecified() || Some(x) == bind)
+            })
+        }
+        crate::managed_forward::ForwardBackend::Nft => {
+            let rules = &row.inventory.firewall_rules;
+            let seen = rules
+                .items
+                .iter()
+                .any(|r| crate::managed_forward::is_nft_rule_of(r, &f.spec));
+            if !seen
+                && rules.state != roomler_ai_remote_control::net_inventory::SectionState::Complete
+            {
+                return;
+            }
+            seen
+        }
+    };
     view.status.verified = if seen { "verified" } else { "drift" };
 }
 

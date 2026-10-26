@@ -48,6 +48,10 @@ pub const CONFIRM_WINDOW: Duration = Duration::from_secs(30);
 /// Every rollback timer's unit name starts with this.
 pub const UNIT_PREFIX: &str = "roomlerd-mf-rollback-";
 const CMD_TIMEOUT: Duration = Duration::from_secs(10);
+/// Change generations are unique per process: each connection's backend
+/// names its rollback timer after one, and a reconnect must not reuse a
+/// name.
+static GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NatForward {
@@ -423,7 +427,7 @@ impl NftBackend {
             {
                 Self::disarm(&u).await;
             }
-            self.generation += 1;
+            self.generation = GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
             let unit = match self.arm().await {
                 Ok(u) => u,
                 Err(e) => {
