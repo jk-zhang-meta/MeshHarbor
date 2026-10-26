@@ -169,10 +169,29 @@ holds such a peer as `PeerConfig::backbone_only`, and:
 - dials it on no direct tier, whatever a candidate list says (`resolve_direct_candidates`,
   [`establish.rs:158`](../crates/tunnel-core/src/overlay/runtime/establish.rs#L158));
 - never answers a direct handshake from it ([`inbound.rs:81`](../crates/tunnel-core/src/overlay/runtime/inbound.rs#L81));
-- ignores a server DERP pin for it ([`runtime.rs:4826`](../crates/tunnel-core/src/overlay/runtime.rs#L4826)).
+- ignores a server DERP pin for it ([`runtime.rs:4826`](../crates/tunnel-core/src/overlay/runtime.rs#L4826));
+- builds no DERP floor toward it, whatever its flags say (`build_floor`, [`relay_link.rs`](../crates/tunnel-core/src/overlay/relay_link.rs)).
 
 The rest is the existing ladder: a peer with no endpoint falls through to a relay
 request, and the org session the server mints is bound like any other.
+
+### Field-verified (2026-10-26)
+
+A TEST rig: center on Isvoro with `enforce` and peer relays `on`; every node a real
+`roomlerd` in netstack mode (`46ee8946`). The mainland member is a workstation in
+Henan, the ingress relay po0 GZ, the line the po0 private interconnect to po0 HK
+(`10.42.2.114`), the exit relay po0 HK, and the non-mainland member Hyonix Tokyo.
+
+| step | result |
+|---|---|
+| no `cross_border` edge | the cross-zone peer is withheld; overlay SSH from the mainland member to Tokyo: no answer in 12 s |
+| the edge flagged | each member is shown the other `backbone_only`; the line is minted with two `cross_border_line` rows; the mainland member binds po0 GZ, Tokyo binds po0 HK; overlay SSH answers across the line; 2 MB each way at 11.0 / 10.7 Mbit/s, SSH setup 0.95 s |
+| a member and the far side's relay | refused `zone_denied` (no line carries that pair) |
+| the flag cleared | all four parties revoked within one second, audited `backbone_edge_revoked`; overlay SSH: no answer, and no fallback to DERP, TURN or direct |
+
+Restarting a member re-minted the line twice within seconds (`connection_closed`), as
+designed: a line rests on each party's live connection. The rig changed no firewall or
+route on any host and sent only a few MB through the po0 hosts.
 
 ## Known limits
 

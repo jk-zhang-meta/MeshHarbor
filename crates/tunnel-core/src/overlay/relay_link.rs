@@ -2170,6 +2170,13 @@ impl RelayCoordinator {
     /// and corp middleboxes split them, so pair formation must never couple
     /// to `/derp` health.
     pub fn build_floor(&mut self, node_id: ObjectId, peer: &PeerConfig) -> Option<ReadyLink> {
+        // MeshHarbor #21 — a cross-border peer rides its line alone: DERP is
+        // refused across the line whatever the peer's flags say, so there is
+        // no floor to withhold (and no warning: nothing is missing). The
+        // line's own state is the server's `cross_border_line` audit.
+        if peer.backbone_only {
+            return None;
+        }
         // rc.413 (#25) — every withhold reason is REPORTED, throttled to one
         // line per peer per reason-change (or per 5 min).
         //
@@ -4121,6 +4128,15 @@ mod tests {
             ..peer.clone()
         };
         assert!(coord.build_floor(node, &pre_floor).is_none());
+
+        // (3b) MeshHarbor #21 — a backbone-only peer never floors, whatever
+        // its flags say: DERP is refused across the line.
+        let line_only = PeerConfig {
+            backbone_only: true,
+            ..peer.clone()
+        };
+        assert!(coord.build_floor(node, &line_only).is_none());
+        assert!(!coord.is_floored(&node));
 
         // (1) both-capable + live mux ⇒ immediate derp link, tracked as
         // floored but NOT as strategy state.
