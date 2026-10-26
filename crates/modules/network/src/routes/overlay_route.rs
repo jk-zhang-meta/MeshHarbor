@@ -302,6 +302,9 @@ pub async fn set_approved_routes(
                     .into(),
             ));
         }
+        if let Some(why) = route_problem(r) {
+            return Err(ApiError::BadRequest(format!("route {r} {why}")));
+        }
         if !node.advertised_routes.contains(r) {
             return Err(ApiError::BadRequest(format!(
                 "route {r} is not advertised by this node"
@@ -322,15 +325,19 @@ pub async fn set_approved_routes(
     // and compared as literal CIDR strings on this whole surface. Exit-node
     // `/0`s are exempt by construction: they are rejected from `approved`
     // above (plural exit nodes are by design — clients CHOOSE their exit).
+    // Not only an equal CIDR: an OVERLAPPING one (10.0.0.0/16 against
+    // 10.0.1.0/24) splits one site between two routers by longest prefix,
+    // the same confusion with a quieter signature.
     for r in &approved {
-        if let Some(holder) = nodes
-            .iter()
-            .filter(|n| n.id != Some(nid))
-            .find(|n| n.approved_routes.iter().any(|a| a == r))
-        {
+        if let Some((holder, held)) = nodes.iter().filter(|n| n.id != Some(nid)).find_map(|n| {
+            n.approved_routes
+                .iter()
+                .find(|a| a.as_str() != DEFAULT_ROUTE_V4 && cidrs_overlap(a, r))
+                .map(|a| (n, a))
+        }) {
             return Err(ApiError::Conflict(format!(
-                "route {r} is already approved on live node \"{}\" ({}) — \
-                 revoke it there first (one live subnet router per CIDR)",
+                "route {r} overlaps {held}, already approved on live node \"{}\" ({}) — \
+                 revoke it there first (one live subnet router per network)",
                 holder.name,
                 holder.id.map(|i| i.to_hex()).unwrap_or_default(),
             )));
@@ -349,6 +356,48 @@ pub async fn set_approved_routes(
     // Push the change to peers now, not on their next join.
     crate::overlay::refan_node(&state, &updated).await;
     Ok(Json(single_node_response(&state, updated).await))
+}
+
+/// Why `r` can never be a subnet route, or `None`. A subnet route names a
+/// real site network: canonical (no host bits, so two spellings of one
+/// network cannot dodge the one-router rule), not a default-route half (that
+/// is the exit-node toggle), and not an address space that is never a site:
+/// loopback, link-local, multicast, reserved, "this network", or the
+/// overlay's own `100.64.0.0/10`, where a route would capture peers' traffic.
+fn route_problem(r: &str) -> Option<String> {
+    let Ok(net) = r.parse::<ipnet::IpNet>() else {
+        return Some("is not a CIDR (a bare address needs a prefix, e.g. 10.0.0.5/32)".into());
+    };
+    if net != net.trunc() {
+        return Some(format!("has host bits set; the network is {}", net.trunc()));
+    }
+    if net.prefix_len() <= 1 {
+        return Some("is (half of) a default route; use the exit-node toggle".into());
+    }
+    let never: &[&str] = match net {
+        ipnet::IpNet::V4(_) => &[
+            "0.0.0.0/8",
+            "127.0.0.0/8",
+            "169.254.0.0/16",
+            "224.0.0.0/4",
+            "240.0.0.0/4",
+            "100.64.0.0/10",
+        ],
+        ipnet::IpNet::V6(_) => &["::/127", "fe80::/10", "ff00::/8"],
+    };
+    never
+        .iter()
+        .find(|s| cidrs_overlap(s, r))
+        .map(|s| format!("overlaps {s}, which is never a site network"))
+}
+
+/// Whether two CIDRs share any address. Unparseable input overlaps nothing
+/// (it is refused before it gets here).
+fn cidrs_overlap(a: &str, b: &str) -> bool {
+    match (a.parse::<ipnet::IpNet>(), b.parse::<ipnet::IpNet>()) {
+        (Ok(a), Ok(b)) => a.contains(&b.network()) || b.contains(&a.network()),
+        _ => false,
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -615,4 +664,48 @@ pub async fn set_magic_dns(
         magic_dns_domain: tenant.settings.magic_dns_domain,
         magic_dns_nameservers: tenant.settings.magic_dns_nameservers,
     }))
+}
+
+#[cfg(test)]
+mod route_rule_tests {
+    use super::*;
+
+    #[test]
+    fn only_a_canonical_site_network_can_be_a_subnet_route() {
+        for ok in [
+            "10.0.0.0/24",
+            "192.168.1.0/24",
+            "172.16.0.0/12",
+            "10.0.0.5/32",
+            "fd00:1::/64",
+        ] {
+            assert_eq!(route_problem(ok), None, "{ok}");
+        }
+        for bad in [
+            "10.0.0.5/24",
+            "10.0.0.5",
+            "0.0.0.0/1",
+            "128.0.0.0/1",
+            "127.0.0.0/8",
+            "169.254.1.0/24",
+            "224.0.0.0/8",
+            "100.64.0.0/10",
+            "100.65.0.0/22",
+            "100.0.0.0/8",
+            "0.0.0.0/8",
+            "fe80::/64",
+            "ff02::/16",
+        ] {
+            assert!(route_problem(bad).is_some(), "{bad} must be refused");
+        }
+    }
+
+    #[test]
+    fn overlap_is_any_shared_address() {
+        assert!(cidrs_overlap("10.0.0.0/16", "10.0.1.0/24"));
+        assert!(cidrs_overlap("10.0.1.0/24", "10.0.0.0/16"));
+        assert!(cidrs_overlap("10.0.1.0/24", "10.0.1.0/24"));
+        assert!(!cidrs_overlap("10.0.1.0/24", "10.0.2.0/24"));
+        assert!(!cidrs_overlap("10.0.0.0/8", "fd00::/8"));
+    }
 }

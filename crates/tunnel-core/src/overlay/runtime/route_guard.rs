@@ -509,6 +509,41 @@ pub(super) fn warn_subnet_conflicts(
     }
 }
 
+/// The subnet routes a peer offers that this host may install, and why each
+/// other one may not: a default route (exit-node routing is opt-in — a /0 is
+/// never auto-installed), one overlapping a network this host is directly
+/// connected to (the local network always wins: an equal or more specific
+/// route would cut the host off from it), or one overlapping the overlay's own
+/// `100.64.0.0/10` (it would capture traffic to peers).
+pub(super) fn screen_subnets(
+    subnets: &[crate::overlay::router::Cidr],
+    local: &[crate::overlay::router::Cidr],
+) -> (
+    Vec<crate::overlay::router::Cidr>,
+    Vec<(crate::overlay::router::Cidr, &'static str)>,
+) {
+    use crate::overlay::router::Cidr;
+    let overlay = Cidr::parse("100.64.0.0/10").expect("a CIDR");
+    let mut keep = Vec::new();
+    let mut dropped = Vec::new();
+    for &c in subnets {
+        let why = if c.is_default_route() {
+            Some("a default route (exit-node routing is opt-in)")
+        } else if c.overlaps(&overlay) {
+            Some("overlaps the overlay range 100.64.0.0/10")
+        } else if local.iter().any(|l| l.overlaps(&c)) {
+            Some("overlaps a network this host is connected to; the local network wins")
+        } else {
+            None
+        };
+        match why {
+            Some(w) => dropped.push((c, w)),
+            None => keep.push(c),
+        }
+    }
+    (keep, dropped)
+}
+
 impl OverlayRuntime {
     /// Phase 1 — register a peer's approved subnet routes in the crypto-router
     /// (so packets to those CIDRs encapsulate to it) and install the matching OS
@@ -529,17 +564,9 @@ impl OverlayRuntime {
         // routing toward a CHOSEN exit node is a separate, opt-in path
         // (split-default `/1`s + carrier-endpoint exemptions) that never flows
         // through this generic installer.
-        let filtered: Vec<crate::overlay::router::Cidr> = subnets
-            .iter()
-            .copied()
-            .filter(|c| !c.is_default_route())
-            .collect();
-        if filtered.len() != subnets.len() {
-            warn!(
-                peer = %node_id,
-                "overlay: dropped advertised default route(s) from a peer's subnets \
-                 (exit-node routing is opt-in — a /0 is never auto-installed)"
-            );
+        let (filtered, dropped) = screen_subnets(subnets, &super::super::direct::local_lan_cidrs());
+        for (cidr, why) in dropped {
+            warn!(peer = %node_id, %cidr, why, "overlay: a peer's subnet route was not installed");
         }
         let conflicts = wg.set_peer_subnets(pubkey, &filtered);
         warn_subnet_conflicts(node_id, &conflicts);
@@ -863,5 +890,30 @@ mod cadence_tests {
                 "input {bad:?} must fall back, never disable the guard"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod subnet_screen_tests {
+    use super::*;
+    use crate::overlay::router::Cidr;
+
+    #[test]
+    fn a_peer_subnet_never_shadows_a_local_network_or_the_overlay() {
+        let c = |s: &str| Cidr::parse(s).unwrap();
+        let local = [c("192.168.1.0/24"), c("10.20.0.0/16")];
+        let offered = [
+            c("10.0.0.0/24"),      // a remote site: kept
+            c("192.168.1.0/24"),   // the host's own LAN
+            c("192.168.1.128/25"), // more specific than the LAN
+            c("192.168.0.0/16"),   // covers the LAN
+            c("10.20.5.0/24"),     // inside the other local network
+            c("100.65.0.0/24"),    // the overlay's own space
+            c("0.0.0.0/0"),        // a default route
+            c("172.16.0.0/12"),    // kept
+        ];
+        let (keep, dropped) = screen_subnets(&offered, &local);
+        assert_eq!(keep, vec![c("10.0.0.0/24"), c("172.16.0.0/12")]);
+        assert_eq!(dropped.len(), 6, "{dropped:?}");
     }
 }

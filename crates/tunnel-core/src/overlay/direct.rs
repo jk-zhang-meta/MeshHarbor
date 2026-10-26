@@ -185,6 +185,33 @@ pub const MAX_DIRECT_PORT_BASE: u16 =
 /// Excludes loopback / link-local / CGNAT (`100.64.0.0/10` — the overlay's own
 /// range + some cellular carriers). Order is `get_if_addrs`' (stable enough);
 /// dups removed. Empty if enumeration fails (→ relay only, as before).
+/// Every IPv4 network directly connected to this host (each interface's
+/// address and netmask, masked), loopback and the overlay's own CGNAT space
+/// excluded. Unlike [`gather_lan_interfaces`] nothing is filtered as virtual:
+/// a subnet route over ANY connected network would cut the host off from it.
+pub fn local_lan_cidrs() -> Vec<crate::overlay::router::Cidr> {
+    let mut out = Vec::new();
+    let Ok(addrs) = if_addrs::get_if_addrs() else {
+        return out;
+    };
+    for a in addrs {
+        let if_addrs::IfAddr::V4(v4) = a.addr else {
+            continue;
+        };
+        let o = v4.ip.octets();
+        if v4.ip.is_loopback() || (o[0] == 100 && (o[1] & 0xc0) == 0x40) {
+            continue;
+        }
+        let prefix = u32::from(v4.netmask).leading_ones();
+        if let Some(c) = crate::overlay::router::Cidr::parse(&format!("{}/{prefix}", v4.ip))
+            && !out.contains(&c)
+        {
+            out.push(c);
+        }
+    }
+    out
+}
+
 pub fn gather_lan_ips() -> Vec<Ipv4Addr> {
     gather_lan_interfaces()
         .into_iter()

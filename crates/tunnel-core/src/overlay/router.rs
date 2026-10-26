@@ -292,6 +292,12 @@ impl Cidr {
     pub fn is_default_route(&self) -> bool {
         self.prefix <= 1
     }
+
+    /// Do the two CIDRs share any address (one contains the other)?
+    pub fn overlaps(&self, other: &Cidr) -> bool {
+        let m = Self::mask(self.prefix.min(other.prefix));
+        self.base & m == other.base & m
+    }
 }
 
 impl std::fmt::Display for Cidr {

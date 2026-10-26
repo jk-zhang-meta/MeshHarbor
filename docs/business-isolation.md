@@ -287,11 +287,11 @@ overlay SSH banner from the mainland member to Tokyo):
   from its own netmap, which under `enforce` holds no cross-zone key, except a
   line-only peer's, and the client never answers a direct handshake from that peer.
 
-- **Sessions with a person on one end are not gated.** Remote desktop
-  (`rc:session.request`, TURN for a browser), the hive viewer and shared SSH
-  (a device-share recipient's CLI) pair a user with a device, and a user has no zone:
-  only devices' connections are observed. Gating them needs a decision on what a
-  user's zone is (the browser connection's own observation is the obvious candidate).
+- **Sessions with a person on one end are not gated, by product decision
+  (2026-10-26).** Remote desktop (`rc:session.request`, TURN for a browser), the hive
+  viewer and shared SSH (a device-share recipient's CLI) pair a person with a device.
+  They are a person operating a device, treated like management, not business traffic
+  between devices, so a person in one zone may operate a device in the other.
 - **Hive replica streams** (member device ↔ source device, `hive/src/stream.rs`) pair
   two zoned devices but live in the hive module, outside these gates.
 
