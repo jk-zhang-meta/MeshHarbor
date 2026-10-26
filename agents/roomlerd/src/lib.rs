@@ -164,6 +164,8 @@ pub mod rc_transport;
 #[cfg(feature = "recording")]
 pub mod recording;
 pub mod managed_forward;
+#[cfg(target_os = "linux")]
+pub mod managed_forward_nft;
 pub mod net_inventory;
 pub mod relay_probe;
 /// FR-19 P1d — the org-relay reachability responder (process-wide, opt-in).
