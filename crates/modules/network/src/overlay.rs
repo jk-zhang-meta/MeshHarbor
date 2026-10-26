@@ -718,6 +718,15 @@ async fn handle_overlay_join(
     // moment to land before shaping, or it is shown nobody until it rejoins.
     let iso = business_isolation::mode(state);
     let joiner_zone = business_isolation::joiner_zone(state, iso, &self_node).await;
+    // GEO-05 — a device that roamed into the other zone ends here, on its
+    // rejoin: its sessions that no longer fit are revoked at once rather
+    // than at expiry. Under `warn` only once its zone is known, so a late
+    // observation is not logged as a refusal.
+    if (iso == business_isolation::Mode::Enforce || joiner_zone.is_some())
+        && let NodeRef::Agent { agent_id } = &self_node.node_ref
+    {
+        crate::org_relay::recheck_zones(state, *agent_id, "zone_changed").await;
+    }
     let lines = business_isolation::lines(state, iso, self_node.tenant_id).await;
     let ShapedNetmap {
         acl,

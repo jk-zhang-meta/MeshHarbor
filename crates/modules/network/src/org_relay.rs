@@ -2535,21 +2535,33 @@ pub async fn connection_ended(state: &NetworkState, agent_id: ObjectId, reason: 
     let state = state.clone();
     tokio::spawn(async move {
         tokio::time::sleep(LINE_RECONNECT_GRACE).await;
-        recheck_lines(&state, agent_id, reason).await;
+        recheck_zones(&state, agent_id, reason).await;
     });
 }
 
-/// End `agent_id`'s lines whose parties' zones no longer fit them.
-async fn recheck_lines(state: &NetworkState, agent_id: ObjectId, reason: &str) {
-    let lines: Vec<OrgRelaySession> = state
+/// MeshHarbor GEO-05 — end `agent_id`'s sessions whose parties' zones no
+/// longer fit them: a device that roamed into the other zone reconnects, and
+/// its rejoin calls this once its new observation is in (and
+/// [`connection_ended`] once more after [`LINE_RECONNECT_GRACE`]). Lines
+/// always; every other session only under #21 `enforce`, where it was minted
+/// on one shared zone (under `warn` the refusal is logged).
+pub(crate) async fn recheck_zones(state: &NetworkState, agent_id: ObjectId, reason: &str) {
+    use crate::business_isolation::{self as iso, Mode};
+    let mode = iso::mode(state);
+    let sessions: Vec<OrgRelaySession> = state
         .org_relay
         .sessions
         .iter()
-        .filter(|e| e.line.is_some() && e.involves_agent(agent_id))
+        .filter(|e| e.involves_agent(agent_id) && (e.line.is_some() || mode != Mode::Off))
         .map(|e| e.value().clone())
         .collect();
-    for s in lines {
-        if line_zones_fit(state, &s).await {
+    for s in sessions {
+        if session_zones_fit(state, &s).await {
+            continue;
+        }
+        if s.line.is_none() && mode != Mode::Enforce {
+            info!(pair = %s.pair_key, vni = s.vni, reason,
+                "org-relay [isolation warn]: would end a session whose parties no longer share one zone");
             continue;
         }
         revoke_where(state, reason, |c| {
@@ -2557,6 +2569,24 @@ async fn recheck_lines(state: &NetworkState, agent_id: ObjectId, reason: &str) {
         })
         .await;
     }
+}
+
+/// Whether session `s` fits the zones its parties are connected in now: a
+/// line by [`line_zones_fit`], any other by one known zone both members and
+/// the relay share.
+async fn session_zones_fit(state: &NetworkState, s: &OrgRelaySession) -> bool {
+    if s.line.is_some() {
+        return line_zones_fit(state, s).await;
+    }
+    let zone = |r| party_zone(state, s.tenant_id, r);
+    let (Some(a), Some(b), Some(r)) = (
+        zone(&s.members[0].party.node_ref).await,
+        zone(&s.members[1].party.node_ref).await,
+        zone(&s.relay.node_ref).await,
+    ) else {
+        return false;
+    };
+    a == b && b == r
 }
 
 /// Every party of line `s` is connected here, `members[0]` in the ingress

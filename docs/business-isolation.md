@@ -6,6 +6,21 @@ server hop overrides it, and a node whose zone is unknown, untrusted or expired 
 treated as being in neither zone. Management traffic (`www.itachi.fans`) is not
 business traffic and never passes through this gate.
 
+## A device that roams (GEO-05)
+
+A zone holds for one connection, so a device that moves into the other zone
+reconnects from there, and its rejoin reshapes everything: its full netmap and every
+peer's delta are shaped on the new zone, the `/derp` table is rebuilt, and (new) every
+org-relay session it takes part in, as a member or as a relay, is re-read once its new
+observation is in (`org_relay::recheck_zones`, after `JOIN_ZONE_WAIT`). A session
+whose members and relay no longer share one known zone is revoked at once under
+`enforce`, audited `zone_changed`, and only logged under `warn`; before, an explicitly
+granted session survived the roam until its hourly expiry. A reconnect from the same
+zone keeps it. A party that does not come back is rechecked once more after
+`LINE_RECONNECT_GRACE` and, with no live connection, no longer fits. Detection is the
+reconnect itself: a roam that keeps the old TCP connection alive (one NAT egress for
+both networks) is not a roam this observation can see.
+
 ## Management is exempt, business over the center is not (#22)
 
 A device's own connection to the center (`www.itachi.fans`: enrollment, login, the
@@ -279,7 +294,7 @@ overlay SSH banner from the mainland member to Tokyo):
 | netmap TestApp tests | [`business_isolation_tests.rs`](../crates/tests/src/business_isolation_tests.rs) |
 | the cross-border line: planner, mint, audit, revocation | `plan_line`, `maybe_mint_line`, `mint_line`, `audit_line`, `revoke_line_node_sync` in [`org_relay.rs`](../crates/modules/network/src/org_relay.rs) |
 | the line's netmap shaping | `Lines`, `rides_lines`, `Zones::line_only` in [`business_isolation.rs`](../crates/modules/network/src/business_isolation.rs); `line_only` in [`overlay.rs`](../crates/modules/network/src/overlay.rs) |
-| the line's resilience | `connection_ended`, `recheck_lines`, `line_zones_fit` in [`org_relay.rs`](../crates/modules/network/src/org_relay.rs); `stamp_verdict` in [`overlay.rs`](../crates/modules/network/src/overlay.rs) |
+| the line's resilience, and roaming (GEO-05) | `connection_ended`, `recheck_zones`, `session_zones_fit`, `line_zones_fit` in [`org_relay.rs`](../crates/modules/network/src/org_relay.rs); `stamp_verdict` in [`overlay.rs`](../crates/modules/network/src/overlay.rs) |
 | the line's TestApp tests | `a_cross_border_pair_rides_only_its_approved_line`, `a_line_ends_with_its_edge_and_with_either_relay`, `a_line_outlives_a_reconnect_from_its_zone_only` in [`business_isolation_tests.rs`](../crates/tests/src/business_isolation_tests.rs) |
 | relay and TURN TestApp tests | `isolation_*` in [`peer_relay_auto_tests.rs`](../crates/tests/src/peer_relay_auto_tests.rs) |
 | tunnel gate (#22) | `refuses_parties` in [`business_isolation.rs`](../crates/modules/network/src/business_isolation.rs), step 3d of `handle_tunnel_open` in [`tunnel.rs`](../crates/modules/network/src/tunnel.rs); test `a_center_brokered_tunnel_stays_in_one_zone` in [`business_isolation_tests.rs`](../crates/tests/src/business_isolation_tests.rs) |

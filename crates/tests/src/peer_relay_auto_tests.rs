@@ -516,6 +516,58 @@ async fn a_party_disconnecting_revokes_implicit_sessions() {
     rig.expect_revoked(vni, false).await;
 }
 
+/// GEO-05 — a member that roams into the other zone (it reconnects from
+/// there) ends its explicitly granted session on its rejoin, not at the
+/// session's expiry; a reconnect from the same zone keeps it, and `warn` only
+/// logs.
+#[tokio::test]
+async fn a_member_roaming_into_the_other_zone_ends_its_session_on_rejoin() {
+    for (mode, ends) in [("enforce", true), ("warn", false)] {
+        let mut rig = AutoRig::up_isolated(
+            &format!("geo05-{mode}"),
+            [Some(US_A), Some(US_B), Some(US_R)],
+            mode,
+        )
+        .await;
+        rig.explicit().await;
+        rig.request().await;
+        let vni = rig.expect_minted().await;
+        let b_tok = rig.b_tok.clone();
+
+        let mut same = connect_from(&rig.app, &b_tok, &[], Some(US_B)).await;
+        join(&mut same, 2, Some(true), "203.0.113.11:41641").await;
+        assert!(
+            recv_t(
+                &mut rig.r,
+                "rc:overlay.relay_revoke",
+                Duration::from_secs(2)
+            )
+            .await
+            .is_none(),
+            "{mode}: a reconnect from the same zone keeps the session"
+        );
+
+        let mut roamed = connect_from(&rig.app, &b_tok, &[], Some(CN_A)).await;
+        join(&mut roamed, 2, Some(true), "203.0.113.11:41641").await;
+        let revoke = recv_t(
+            &mut rig.r,
+            "rc:overlay.relay_revoke",
+            Duration::from_secs(3),
+        )
+        .await;
+        assert_eq!(revoke.is_some(), ends, "{mode}: {revoke:?}");
+        if ends {
+            assert_eq!(revoke.unwrap()["vni"], json!(vni));
+            let rows = audit_rows(&rig.app, &rig.seeded).await;
+            assert!(
+                rows.iter()
+                    .any(|r| r["action"] == "revoke" && r["reason"] == "zone_changed"),
+                "{rows:?}"
+            );
+        }
+    }
+}
+
 /// #21 control: under `warn` an explicit grant still carries a cross-zone
 /// pair (the rule only logs), so the refusals below are the rule's.
 #[tokio::test]
