@@ -272,6 +272,11 @@ struct Allocated {
 const ORG_FALLBACK_GAP: Duration = Duration::from_secs(60);
 const ORG_FALLBACK_RETENTION: Duration = Duration::from_secs(120);
 const ORG_FALLBACK_MAX_PEERS: usize = 64;
+/// How long before its session ends a line peer's line is renewed. The
+/// server revokes a line past its bind window and mints its successor in one
+/// step (`maybe_mint_line`), so the pair is dark only for the re-bind, not
+/// until the expiry is noticed (field, 2026-10-26: 5.1 s at the hourly end).
+const LINE_RENEW_AHEAD: Duration = Duration::from_secs(60);
 
 pub struct RelayCoordinator {
     /// rc.307 (B) — swappable: the runtime outlives control-WS sessions and
@@ -1415,6 +1420,49 @@ impl RelayCoordinator {
             // may rebind the same immutable lease without extending its TTL.
             self.drop_org_session(&peer);
             info!(peer=%peer,request_id,"overlay relay: ORG-only fallback requested while retaining DERP");
+        }
+        sent
+    }
+
+    /// #21 — ask for a fresh line ahead of the end of each line peer's
+    /// session, riding the live one meanwhile. Paced like a fallback: once
+    /// per peer per gap. Returns the peers asked for.
+    pub(crate) async fn renew_expiring_lines(
+        &mut self,
+        line_peers: &[ObjectId],
+        now: Instant,
+    ) -> Vec<ObjectId> {
+        let mut sent = Vec::new();
+        if !self.org_relay {
+            return sent;
+        }
+        for &peer in line_peers {
+            let due = self.org_sessions.get(&peer).is_some_and(|s| {
+                s.is_live(now) && s.expires_at.saturating_duration_since(now) < LINE_RENEW_AHEAD
+            });
+            let paced = self
+                .org_fallback_last
+                .get(&peer)
+                .is_some_and(|at| now.saturating_duration_since(*at) < ORG_FALLBACK_GAP);
+            if !due || paced || self.org_binding.contains(&peer) {
+                continue;
+            }
+            let Some(request_id) = self.org_fallback_serial.checked_add(1) else {
+                break;
+            };
+            let msg = ClientMsg::OverlayOrgRelayFallbackRequest {
+                peer_node_id: peer,
+                request_id,
+            };
+            if matches!(
+                tokio::time::timeout(Duration::from_millis(10), self.outbound.send(msg)).await,
+                Ok(Ok(()))
+            ) {
+                self.org_fallback_serial = request_id;
+                self.org_fallback_last.insert(peer, now);
+                info!(%peer, request_id, "overlay relay: renewing a line ahead of its session's end");
+                sent.push(peer);
+            }
         }
         sent
     }
@@ -4749,6 +4797,35 @@ mod tests {
             "old failed carrier lease must not suppress its restoration reply"
         );
     }
+    #[tokio::test]
+    async fn a_line_is_renewed_ahead_of_its_end_and_its_session_kept() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        let mut c = RelayCoordinator::new(tx, [0; 32], false, vec![], None);
+        c.set_org_relay(true);
+        let (fresh, ending) = (ObjectId::new(), ObjectId::new());
+        c.org_session_accept(fresh, org_session(9, 600));
+        c.org_session_accept(ending, org_session(10, 30));
+        let now = Instant::now();
+        assert_eq!(
+            c.renew_expiring_lines(&[fresh, ending], now).await,
+            vec![ending]
+        );
+        assert!(
+            matches!(rx.try_recv(), Ok(ClientMsg::OverlayOrgRelayFallbackRequest { peer_node_id, .. }) if peer_node_id == ending)
+        );
+        assert!(
+            c.org_sessions.contains_key(&ending),
+            "the live session carries the pair until its successor"
+        );
+        assert!(
+            c.renew_expiring_lines(&[ending], now + Duration::from_secs(5))
+                .await
+                .is_empty(),
+            "paced"
+        );
+        assert!(rx.try_recv().is_err());
+    }
+
     #[tokio::test]
     async fn an_org_loss_report_names_the_session_the_peer_rides() {
         let (tx, mut rx) = tokio::sync::mpsc::channel(4);

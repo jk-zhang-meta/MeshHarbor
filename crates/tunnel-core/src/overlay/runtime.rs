@@ -619,6 +619,12 @@ async fn request_org_fallbacks(
             })
             .map(|(id, _)| *id),
     );
+    let lines: Vec<ObjectId> = peers
+        .iter()
+        .filter(|(_, p)| p.backbone_only)
+        .map(|(id, _)| *id)
+        .collect();
+    relay.renew_expiring_lines(&lines, now).await;
     relay.request_org_fallback_batch(candidates, now).await
 }
 
