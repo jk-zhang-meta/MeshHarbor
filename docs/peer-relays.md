@@ -456,6 +456,24 @@ sequenceDiagram
   carrier (reports are logged only), and `OVERLAY_ORG_LOSS_REPORT=0` on a member stops
   its reports.
 
+## A cross-border line is two org sessions and a bridge (MeshHarbor #21)
+
+Business isolation never lets a mainland and a non-mainland node share a relay. The one
+exception is a line an administrator approves between two of the tenant's relays, one
+in each zone (a backbone edge flagged `cross_border`, e.g. the po0 GZ → HK private
+interconnect). The server mints it as **one org-relay session per side**: the mainland
+member binds the mainland relay, the other member the other relay, and the mainland
+relay's bridge (`OverlayRelayBridgeServe`) carries the ciphertext between the two
+sessions over the private line, rewriting only the VNI. Each member sees an ordinary
+one-hop session and is never told the private endpoint.
+
+- It is stored as one `OrgRelaySession` with a `line` leg, so every revocation,
+  VNI allocation, session count, probe, ACL reconcile and loss report sees both relays.
+- A pair on a line has no other carrier by rule, so a lossy line is **kept**: the loss
+  verdict above neither moves it nor pins it to DERP.
+- Rules, gates, the mint sequence and what ends a line:
+  [business-isolation.md](business-isolation.md#the-one-exception-an-approved-cross-border-line).
+
 ## What the relay operator can see — tell customers this
 
 The relay cannot read the traffic. That is true and incomplete, and the missing half
@@ -579,6 +597,8 @@ the capacity gained: the relay was in France and the members in Austria and Germ
 | `auto`: role listing, per-connection zone | [`business_authority.rs`](../crates/core/src/business_authority.rs) — `LiveZones` `:242`, `connection_zone` `:487`, `current_server_agents` `:590` |
 | `auto`: the implicit grant and its revocations | [`org_relay.rs`](../crates/modules/network/src/org_relay.rs) — candidates `:504`, the zone check `:631`, `revoke_implicit_for_agent` `:1530` |
 | `auto`: TestApp tests | [`crates/tests/src/peer_relay_auto_tests.rs`](../crates/tests/src/peer_relay_auto_tests.rs) |
+| the cross-border line: plan, mint, push, audit | [`org_relay.rs`](../crates/modules/network/src/org_relay.rs) — `LineLeg` `:147`, `plan_line` `:1116`, `maybe_mint_line` `:1198`, `mint_line` `:1238`, `push_member` `:2063` |
+| the relays' two-leg bridge | [`orgrelay/backbone.rs:223`](../crates/tunnel-core/src/overlay/orgrelay/backbone.rs#L223) `start_authorized_bridge`, [`relay_server.rs:338`](../agents/roomlerd/src/relay_server.rs#L338) `install_bridge_from_wire` |
 | pod-offload metric | `derp_bytes_relayed_total`, [`crates/api/src/cluster/metrics.rs:62`](../crates/api/src/cluster/metrics.rs#L62) |
 
 ## Not built
@@ -587,7 +607,8 @@ the capacity gained: the relay was in France and the members in Austria and Germ
   (#888). Until then, an org cannot have relay approvers who may not also run root
   commands.
 - **MeshHarbor: latency-weighted multi-hop.** The manual relay-to-relay backbone edges
-  exist; choosing a path through them by measured latency does not.
+  exist, and a `cross_border` edge carries a cross-zone pair (above); choosing a path
+  through them by measured latency does not.
 - **A per-session bitrate cap** on the relay. The session count is capped; per-session
   bandwidth is not.
 - **A separate tier for the org relay.** If measurement ever shows the selector

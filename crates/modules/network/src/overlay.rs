@@ -664,13 +664,18 @@ async fn handle_overlay_join(
                 supports_backbone_only_v1,
             },
         );
-        let withdrawn = crate::org_relay::revoke_backbone_node_sync(
+        let mut withdrawn = crate::org_relay::revoke_backbone_node_sync(
             state,
             tenant_id,
             id,
             previous.supports_path_backbone_v1 && !supports_path_backbone_v1,
             previous.relay_backbone_ready && !relay_backbone_ready,
         );
+        if (previous.supports_backbone_only_v1 && !supports_backbone_only_v1)
+            || (previous.relay_backbone_ready && !relay_backbone_ready)
+        {
+            withdrawn.extend(crate::org_relay::revoke_line_node_sync(state, tenant_id, id));
+        }
         if listener_changed && let NodeRef::Agent { agent_id } = &self_node.node_ref {
             // The authenticated node withdrew or replaced its actual listener.
             // Retire only sessions it SERVES, never its healthy direct peers.
@@ -1723,6 +1728,13 @@ async fn handle_org_relay_loss(
     if !org_loss_fails(packets, lost) {
         debug!(reporter = %reporter_id, peer = %peer_node_id, vni, packets, %loss_pct,
             "org-relay: loss report under the threshold; the carrier stays");
+        return;
+    }
+    // #21 — a cross-border pair has no other carrier to move to: DERP, TURN
+    // and a one-hop relay are refused across the line by rule.
+    if session.line.is_some() {
+        tracing::info!(reporter = %reporter_id, peer = %peer_node_id, vni, packets, %loss_pct,
+            "overlay relay: cross-border line lossy, kept: nothing else may carry the pair");
         return;
     }
     if !matches!(

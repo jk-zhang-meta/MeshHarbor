@@ -102,6 +102,11 @@ pub struct PeerConfig {
     /// relay advert hasn't landed (or can't — its control WS is captured);
     /// validated against the coturn worker set like any anchor advert.
     pub warm_relay_endpoint: Option<String>,
+    /// MeshHarbor #21 — the peer is in the other business zone and rides its
+    /// cross-border line alone: no direct dial or inbound direct adoption, no
+    /// DERP (a server pin included), no TURN. The server mints the line as an
+    /// org-relay session on our side of it.
+    pub backbone_only: bool,
 }
 
 /// Decode a netmap peer. `None` if the pubkey isn't valid base64/length
@@ -134,6 +139,7 @@ pub fn peer_config_from_netmap(peer: &NetmapPeer) -> Option<PeerConfig> {
         relay_strategy: peer.relay_strategy,
         relay_home: peer.relay_home.clone(),
         warm_relay_endpoint: peer.warm_relay_endpoint.clone(),
+        backbone_only: peer.backbone_only,
     })
 }
 

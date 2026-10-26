@@ -155,6 +155,9 @@ pub(super) fn resolve_direct_candidates(
     cfg: &PeerConfig,
     rot: CandidateRotation,
 ) -> DirectCandidates {
+    // MeshHarbor #21 — a cross-border peer is never dialed directly, whatever
+    // a candidate list might say.
+    let direct_ctx = direct_ctx.filter(|_| !cfg.backbone_only);
     let lan = direct_ctx
         .and_then(|ctx| direct::pick_same_subnet_endpoint(&ctx.my_ips, &cfg.lan_endpoints));
     let public = direct_ctx.and_then(|ctx| {
@@ -3454,6 +3457,7 @@ mod tests {
             relay_strategy: None,
             relay_home: None,
             warm_relay_endpoint: None,
+            backbone_only: false,
         }
     }
 
@@ -3684,5 +3688,18 @@ mod tests {
             CandidateRotation::default(),
         );
         assert!(off_link.lan.is_none());
+    }
+
+    /// MeshHarbor #21 — a backbone-only peer is never dialed, even with
+    /// candidates that would be dialed for any other peer.
+    #[tokio::test]
+    async fn a_backbone_only_peer_has_no_direct_candidate() {
+        let c = ctx(Some("5.5.5.5:1"), Some("cone")).await;
+        let mut p = peer(&["192.168.68.4:43648"], &["37.63.112.129:43649"], Some("cone"));
+        let open = resolve_direct_candidates(Some(&c), &p, CandidateRotation::default());
+        assert!(open.lan.is_some() && open.srflx.is_some(), "control: both tiers dial");
+        p.backbone_only = true;
+        let line = resolve_direct_candidates(Some(&c), &p, CandidateRotation::default());
+        assert!(line.lan.is_none() && line.public.is_none() && line.srflx.is_none());
     }
 }

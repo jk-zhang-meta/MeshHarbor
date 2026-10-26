@@ -16,11 +16,16 @@ use crate::fixtures::test_app::TestApp;
 use crate::peer_relay_auto_tests::{
     CN_A, US_A, US_B, approved_user, assert_observed, fixture_mmdb,
 };
-use crate::peer_relay_mint_tests::{Ws, connect_from, join, node_id, recv_t};
+use crate::peer_relay_mint_tests::{
+    Ws, approve, audit_rows, connect_from, grant_relay, join, node_id, put, recv_t, set_mode,
+};
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use bson::oid::ObjectId;
-use serde_json::Value;
+use futures::SinkExt;
+use serde_json::{Value, json};
 use std::collections::BTreeSet;
 use std::time::Duration;
+use tokio_tungstenite::tungstenite::Message;
 
 struct Rig {
     app: TestApp,
@@ -191,4 +196,305 @@ async fn warn_withholds_nothing() {
     let cn_a_id = rig.node("iso-w-cn-a").await;
     let (up, _) = deltas(&mut us_a, Duration::from_millis(600)).await;
     assert!(up.contains(&cn_a_id), "{up:?}");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The cross-border line (#21 rules 1–5)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Mainland and non-mainland relay addresses in the fixture database.
+const CN_R: &str = "223.6.6.6";
+const US_R: &str = "1.1.1.1";
+/// The exit relay's address on the private line (the approved edge's).
+const LINE: &str = "10.42.2.114:3478";
+
+/// A mainland member `cn`, a non-mainland member `us`, a mainland relay `gz`
+/// and a non-mainland relay `hk`, with `gz → hk` approved as a backbone
+/// edge (`cross_border` as given). Both relays serve and are granted to
+/// every node; `gz` is backbone-ready; both members ride line-only peers.
+struct LineRig {
+    rig: Rig,
+    cn: Ws,
+    us: Ws,
+    gz: Ws,
+    hk: Ws,
+    cn_node: String,
+    us_node: String,
+    gz_node: String,
+    hk_node: String,
+    gz_agent: String,
+    hk_agent: String,
+}
+
+async fn line_join(ws: &mut Ws, seed: u8, endpoint: &str, extra: Value) -> Value {
+    let mut msg = json!({
+        "t": "rc:overlay.join", "wg_public_key": BASE64.encode([seed; 32]), "mtu": 1280,
+        "endpoints": [endpoint], "supports_org_relay": true,
+        "supports_server_relay_strategy": true, "relay_port": 3478, "org_primary": true,
+        "supports_derp": true, "supports_forced_derp": true,
+    });
+    for (k, v) in extra.as_object().unwrap() {
+        msg[k] = v.clone();
+    }
+    ws.send(Message::Text(msg.to_string().into())).await.unwrap();
+    recv_t(ws, "rc:overlay.netmap", Duration::from_secs(5))
+        .await
+        .expect("a netmap answers the join")
+}
+
+async fn relay_request(ws: &mut Ws, peer: &str) {
+    ws.send(Message::Text(
+        json!({ "t": "rc:overlay.relay_request", "peer_node_id": peer })
+            .to_string()
+            .into(),
+    ))
+    .await
+    .unwrap();
+}
+
+impl LineRig {
+    async fn up(slug: &str, cross_border: bool) -> Self {
+        let rig = Rig::up(slug, "enforce").await;
+        let relay = |name: String, from: &'static str| {
+            let rig = &rig;
+            async move {
+                let (agent, tok) = enroll(&rig.app, &rig.seeded, &name).await;
+                let ws = connect_from(&rig.app, &tok, &["relay-server"], Some(from)).await;
+                assert_observed(&rig.app, &agent, Some(from)).await;
+                (agent, ws)
+            }
+        };
+        let (gz_agent, mut gz) = relay(format!("{slug}-gz"), CN_R).await;
+        let (hk_agent, mut hk) = relay(format!("{slug}-hk"), US_R).await;
+        let mut cn = rig.device(&format!("{slug}-cn"), Some(CN_A)).await;
+        let mut us = rig.device(&format!("{slug}-us"), Some(US_A)).await;
+        line_join(&mut gz, 3, "223.6.6.6:41641", json!({ "relay_backbone_ready": true })).await;
+        line_join(&mut hk, 4, "1.1.1.1:41641", json!({})).await;
+        let flag = json!({ "supports_backbone_only_v1": true });
+        line_join(&mut cn, 1, "223.5.5.5:41641", flag.clone()).await;
+        line_join(&mut us, 2, "8.8.8.8:41641", flag).await;
+        let (app, seeded) = (&rig.app, &rig.seeded);
+        set_mode(app, seeded, "on").await;
+        assert_eq!(approve(app, seeded, &gz_agent, true).await, 200);
+        assert_eq!(approve(app, seeded, &hk_agent, true).await, 200);
+        let gz_node = rig.node(&format!("{slug}-gz")).await;
+        let hk_node = rig.node(&format!("{slug}-hk")).await;
+        grant_relay(app, seeded, &gz_node).await;
+        grant_relay(app, seeded, &hk_node).await;
+        let mut line = Self {
+            cn_node: rig.node(&format!("{slug}-cn")).await,
+            us_node: rig.node(&format!("{slug}-us")).await,
+            rig,
+            cn,
+            us,
+            gz,
+            hk,
+            gz_node,
+            hk_node,
+            gz_agent,
+            hk_agent,
+        };
+        line.set_edge(cross_border).await;
+        line
+    }
+
+    async fn set_edge(&mut self, cross_border: bool) {
+        let path = format!(
+            "/api/tenant/{}/agent/{}/peer-relay-policy",
+            self.rig.seeded.tenant_id, self.gz_agent
+        );
+        let body = json!({ "serve": true, "approved_backbone_edges": [
+            { "relay_agent_id": self.hk_agent, "endpoint": LINE, "cross_border": cross_border },
+        ]});
+        let (status, v) = put(&self.rig.app, &path, &self.rig.seeded.admin.access_token, body).await;
+        assert_eq!(status, 200, "{v}");
+    }
+
+    /// Every frame of a line mint: (gz serve, bridge, hk serve, cn session,
+    /// us session).
+    async fn expect_line(&mut self) -> (Value, Value, Value, Value, Value) {
+        let wait = Duration::from_secs(5);
+        let gz = recv_t(&mut self.gz, "rc:overlay.relay_serve", wait).await.expect("gz serves");
+        let bridge = recv_t(&mut self.gz, "rc:overlay.relay_bridge_serve", wait)
+            .await
+            .expect("gz bridges")["bridge"]
+            .clone();
+        let hk = recv_t(&mut self.hk, "rc:overlay.relay_serve", wait).await.expect("hk serves");
+        let cn = recv_t(&mut self.cn, "rc:overlay.relay_session", wait).await.expect("cn session");
+        let us = recv_t(&mut self.us, "rc:overlay.relay_session", wait).await.expect("us session");
+        (gz, bridge, hk, cn, us)
+    }
+
+    async fn expect_line_revoked(&mut self, cn_vni: &Value, us_vni: &Value) {
+        let wait = Duration::from_secs(5);
+        for (name, ws, vni) in [
+            ("gz", &mut self.gz, cn_vni),
+            ("cn", &mut self.cn, cn_vni),
+            ("hk", &mut self.hk, us_vni),
+            ("us", &mut self.us, us_vni),
+        ] {
+            let v = recv_t(ws, "rc:overlay.relay_revoke", wait)
+                .await
+                .unwrap_or_else(|| panic!("{name} receives relay_revoke"));
+            assert_eq!(&v["vni"], vni, "{name}: its own leg's VNI");
+        }
+        recv_t(&mut self.gz, "rc:overlay.relay_bridge_revoke", wait)
+            .await
+            .expect("gz's bridge is revoked");
+    }
+
+    async fn audit_reasons(&self, action: &str) -> Vec<(String, String)> {
+        audit_rows(&self.rig.app, &self.rig.seeded)
+            .await
+            .iter()
+            .filter(|r| r["action"] == action)
+            .map(|r| {
+                let s = |k: &str| r[k].as_str().unwrap_or_default().to_owned();
+                (s("reason"), s("relay_node_id"))
+            })
+            .collect()
+    }
+}
+
+/// Rules 1–5 end to end. Without a `cross_border` edge the cross-zone peer
+/// stays withheld and a relay request mints nothing. With one, a member that
+/// rides line-only peers is shown the other side `backbone_only` and bare,
+/// and a relay request mints one org-relay session per side: each member
+/// binds a relay in its own zone, and the mainland relay's bridge joins the
+/// two over the private line, which no member is told. No TURN grant is
+/// issued, both legs are audited `cross_border_line`, a re-request re-pushes
+/// the asker's own leg, and a lossy line is kept rather than pinned to DERP.
+#[tokio::test]
+async fn a_cross_border_pair_rides_only_its_approved_line() {
+    let mut l = LineRig::up("iso-line", false).await;
+    let flag = json!({ "supports_backbone_only_v1": true });
+
+    // An ordinary edge is not a line.
+    let map = line_join(&mut l.cn, 1, "223.5.5.5:41641", flag.clone()).await;
+    assert!(!peer_ids(&map).contains(&l.us_node), "withheld without a line");
+    relay_request(&mut l.cn, &l.us_node).await;
+    assert!(
+        recv_t(&mut l.gz, "rc:overlay.relay_serve", Duration::from_millis(600)).await.is_none(),
+        "no line, no mint"
+    );
+
+    l.set_edge(true).await;
+    // A member without the flag still sees nothing across the line.
+    let mut old = l.rig.device("iso-line-old", Some(CN_A)).await;
+    let old_map = line_join(&mut old, 5, "223.5.5.7:41641", json!({})).await;
+    assert!(!peer_ids(&old_map).contains(&l.us_node), "rule 4: an old client sees nothing");
+    let map = line_join(&mut l.cn, 1, "223.5.5.5:41641", flag.clone()).await;
+    let us = map["peers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["node_id"] == json!(l.us_node))
+        .expect("the line shows the cross-zone peer")
+        .clone();
+    assert_eq!(us["backbone_only"], json!(true), "{us}");
+    assert!(us["endpoints"].as_array().is_none_or(|e| e.is_empty()), "{us}");
+    assert_ne!(us["supports_derp"], json!(true), "{us}");
+    assert_ne!(us["supports_derp_floor"], json!(true), "{us}");
+
+    relay_request(&mut l.cn, &l.us_node).await;
+    let (gz, bridge, hk, cn, us) = l.expect_line().await;
+    assert_eq!(cn["relay_node_id"], json!(l.gz_node), "cn binds the mainland relay");
+    assert_eq!(us["relay_node_id"], json!(l.hk_node), "us binds the non-mainland relay");
+    assert_eq!(cn["peer_node_id"], json!(l.us_node));
+    assert_eq!(us["peer_node_id"], json!(l.cn_node));
+    assert_eq!(gz["vni"], cn["vni"]);
+    assert_eq!(hk["vni"], us["vni"]);
+    let secret = |v: &Value, i: usize| v["members"][i]["bind_secret"].clone();
+    assert_eq!(secret(&gz, 0), cn["bind_secret"]);
+    assert_eq!(secret(&hk, 1), us["bind_secret"]);
+    assert_eq!(bridge["local_vni"], gz["vni"]);
+    assert_eq!(bridge["local_bind_secret"], secret(&gz, 1), "the bridge holds us's slot on gz");
+    assert_eq!(bridge["remote_vni"], hk["vni"]);
+    assert_eq!(bridge["remote_bind_secret"], secret(&hk, 0), "and cn's on hk");
+    assert_eq!(bridge["remote_endpoint"], json!(LINE));
+    for (name, s) in [("cn", &cn), ("us", &us)] {
+        assert!(!s.to_string().contains("10.42.2.114"), "{name} is never told the line: {s}");
+    }
+    assert!(
+        recv_t(&mut l.cn, "rc:overlay.relay_grant", Duration::from_millis(400)).await.is_none(),
+        "rule 3: no TURN across the line"
+    );
+    let mut minted = Vec::new();
+    for _ in 0..40 {
+        minted = l.audit_reasons("mint").await;
+        if minted.iter().filter(|(r, _)| r == "cross_border_line").count() >= 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    for relay in [&l.gz_node, &l.hk_node] {
+        assert!(
+            minted.contains(&("cross_border_line".into(), relay.clone())),
+            "rule 5: both legs audited: {minted:?}"
+        );
+    }
+
+    // The other member asking re-pushes its own leg; nothing new is minted.
+    relay_request(&mut l.us, &l.cn_node).await;
+    let again = recv_t(&mut l.us, "rc:overlay.relay_session", Duration::from_secs(5))
+        .await
+        .expect("us's leg is re-pushed");
+    assert_eq!(again["vni"], us["vni"]);
+    assert_eq!(again["relay_node_id"], json!(l.hk_node));
+    assert!(
+        recv_t(&mut l.gz, "rc:overlay.relay_serve", Duration::from_millis(400)).await.is_none(),
+        "no second mint"
+    );
+
+    // 8% loss on the line: both ends could ride DERP, but nothing else may
+    // carry this pair, so the line stays.
+    l.us.send(Message::Text(
+        json!({ "t": "rc:overlay.org_relay_loss", "peer_node_id": l.cn_node,
+            "vni": us["vni"], "packets": 3000, "lost": 240 })
+        .to_string()
+        .into(),
+    ))
+    .await
+    .unwrap();
+    for (name, ws) in [("cn", &mut l.cn), ("us", &mut l.us)] {
+        assert!(
+            recv_t(ws, "rc:overlay.force_derp", Duration::from_millis(600)).await.is_none(),
+            "{name}: a lossy line is not pinned to DERP"
+        );
+    }
+    let pk = roomler_ai_mod_network::overlay::pair_key(
+        ObjectId::parse_str(&l.cn_node).unwrap(),
+        ObjectId::parse_str(&l.us_node).unwrap(),
+    );
+    assert!(l.rig.app.state.network().org_relay.active_session(&pk).is_some());
+}
+
+/// A line ends with its edge's `cross_border` flag and with either relay's
+/// approval, on all four parties, each told its own VNI, and the bridge with
+/// it. Whichever member asks, the mainland member binds the mainland relay.
+#[tokio::test]
+async fn a_line_ends_with_its_edge_and_with_either_relay() {
+    let mut l = LineRig::up("iso-line-end", true).await;
+    relay_request(&mut l.cn, &l.us_node).await;
+    let (_, _, _, cn, us) = l.expect_line().await;
+    l.set_edge(false).await;
+    l.expect_line_revoked(&cn["vni"], &us["vni"]).await;
+    let mut revoked = Vec::new();
+    for _ in 0..40 {
+        revoked = l.audit_reasons("revoke").await;
+        if revoked.iter().any(|(r, _)| r == "backbone_edge_revoked") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(revoked.iter().any(|(r, _)| r == "backbone_edge_revoked"), "{revoked:?}");
+
+    // The non-mainland member asks this time; the line keeps its sides.
+    l.set_edge(true).await;
+    relay_request(&mut l.us, &l.cn_node).await;
+    let (_, _, _, cn, us) = l.expect_line().await;
+    assert_eq!(cn["relay_node_id"], json!(l.gz_node));
+    assert_eq!(us["relay_node_id"], json!(l.hk_node));
+    assert_eq!(approve(&l.rig.app, &l.rig.seeded, &l.hk_agent, false).await, 200);
+    l.expect_line_revoked(&cn["vni"], &us["vni"]).await;
 }

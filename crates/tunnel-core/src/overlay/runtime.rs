@@ -2411,9 +2411,16 @@ impl OverlayRuntime {
             supports_join_refusal: true,
             org_primary: Some(self.org_primary),
             supports_path_trial_v1: path_trial::enabled() && self.org_primary,
-            // The client does not honour `backbone_only` yet, so it never sees a
-            // cross-zone peer (business isolation rule 4).
-            supports_backbone_only_v1: false,
+            // MeshHarbor #21 — rides a cross-border peer over its line alone
+            // (`PeerConfig::backbone_only`). The line arrives as an ordinary
+            // org-relay session, so this needs the org-relay carrier, the
+            // primary org and an MTU the relays' bridge carries. Without the
+            // flag such a peer stays withheld (rule 4).
+            // `OVERLAY_BACKBONE_ONLY=0` opts out.
+            supports_backbone_only_v1: super::direct::org_relay_enabled()
+                && self.org_primary
+                && self.mtu <= roomler_ai_remote_control::models::peer_relay_limits::BACKBONE_MAX_OVERLAY_MTU
+                && crate::env::flag("OVERLAY_BACKBONE_ONLY", true),
             supports_path_backbone_v1: path_trial::enabled()
                 && self.org_primary
                 && self.mtu <= roomler_ai_remote_control::models::peer_relay_limits::BACKBONE_MAX_OVERLAY_MTU
@@ -4809,6 +4816,14 @@ impl OverlayRuntime {
                             cancel_org_upgrade_candidate(&peer, &mut wg, &mut by_node);
                             info!(%peer, vni, "overlay relay: org-relay session revoked by the server — the sweep re-coordinates the pair");
                         }
+                    }
+                    // MeshHarbor #21 — a cross-border peer rides its line
+                    // alone: a DERP pin for it is never honoured.
+                    Some(OverlayEvent::ForceDerp { peer_node_id, .. })
+                        if current_peers.get(&peer_node_id).is_some_and(|p| p.backbone_only) =>
+                    {
+                        warn!(peer = %peer_node_id,
+                            "overlay relay: force-derp for a backbone-only peer refused (cross-border line only)");
                     }
                     Some(OverlayEvent::ForceDerp { peer_node_id, ttl_ms, derp_url }) => {
                         let t_arm = Instant::now();

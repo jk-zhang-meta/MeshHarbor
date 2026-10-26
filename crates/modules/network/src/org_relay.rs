@@ -136,6 +136,36 @@ pub struct OrgRelaySession {
     /// this instant a re-push can no longer bind, so a fallback re-request
     /// mints a fresh session instead (`maybe_mint_fallback`).
     pub bind_by: Instant,
+    /// MeshHarbor #21 — a cross-border line: `relay` serves `members[0]` in
+    /// its zone, this leg's relay serves `members[1]` in the other, and
+    /// `relay`'s bridge joins the two over the approved private line.
+    pub line: Option<LineLeg>,
+}
+
+/// The exit half of a cross-border line session (`mint_line`).
+#[derive(Clone)]
+pub struct LineLeg {
+    pub relay: SessionParty,
+    pub relay_agent_id: ObjectId,
+    pub vni: u32,
+    pub generation: u64,
+    /// The exit relay's public endpoints, for `members[1]`.
+    pub endpoints: Vec<String>,
+    /// The exit relay's address on the private line (the approved edge's).
+    pub private_endpoint: String,
+    /// Keys the ingress relay's bridge (`rc:overlay.relay_bridge_*`).
+    pub bridge_id: ObjectId,
+    /// The bridge's bind secrets: `members[1]`'s slot on the ingress session
+    /// and `members[0]`'s on the exit session. No member ever holds them.
+    pub bridge_secrets: [String; 2],
+}
+
+/// What one member binds: its relay, VNI and endpoints.
+struct MemberLeg<'a> {
+    relay_node_id: ObjectId,
+    vni: u32,
+    generation: u64,
+    endpoints: &'a [String],
 }
 
 impl OrgRelaySession {
@@ -143,11 +173,53 @@ impl OrgRelaySession {
         self.members.iter().position(|m| m.party.node_id == node_id)
     }
     fn involves(&self, node_id: ObjectId) -> bool {
-        self.relay.node_id == node_id || self.member_index(node_id).is_some()
+        self.relay.node_id == node_id
+            || self.member_index(node_id).is_some()
+            || self.line.as_ref().is_some_and(|l| l.relay.node_id == node_id)
     }
     fn involves_agent(&self, agent_id: ObjectId) -> bool {
         let is = |n: &NodeRef| matches!(n, NodeRef::Agent { agent_id: id } if *id == agent_id);
-        is(&self.relay.node_ref) || self.members.iter().any(|m| is(&m.party.node_ref))
+        is(&self.relay.node_ref)
+            || self.members.iter().any(|m| is(&m.party.node_ref))
+            || self.line.as_ref().is_some_and(|l| is(&l.relay.node_ref))
+    }
+    /// Whether `agent_id` relays this session (either leg of a line).
+    fn relayed_by_agent(&self, agent_id: ObjectId) -> bool {
+        self.relay_agent_id == agent_id
+            || self.line.as_ref().is_some_and(|l| l.relay_agent_id == agent_id)
+    }
+    /// The relay nodes, one or (a line) two.
+    fn relay_nodes(&self) -> impl Iterator<Item = ObjectId> + '_ {
+        std::iter::once(self.relay.node_id).chain(self.line.as_ref().map(|l| l.relay.node_id))
+    }
+    /// The VNIs held on `relay_node_id`.
+    fn vnis_on(&self, relay_node_id: ObjectId) -> impl Iterator<Item = u32> + '_ {
+        (self.relay.node_id == relay_node_id)
+            .then_some(self.vni)
+            .into_iter()
+            .chain(
+                self.line
+                    .as_ref()
+                    .filter(|l| l.relay.node_id == relay_node_id)
+                    .map(|l| l.vni),
+            )
+    }
+    /// What member `i` binds: on a line, `members[1]` binds the exit leg.
+    fn member_leg(&self, i: usize) -> MemberLeg<'_> {
+        match self.line.as_ref() {
+            Some(l) if i == 1 => MemberLeg {
+                relay_node_id: l.relay.node_id,
+                vni: l.vni,
+                generation: l.generation,
+                endpoints: &l.endpoints,
+            },
+            _ => MemberLeg {
+                relay_node_id: self.relay.node_id,
+                vni: self.vni,
+                generation: self.generation,
+                endpoints: &self.endpoints,
+            },
+        }
     }
 }
 
@@ -308,7 +380,7 @@ impl OrgRelayState {
         let now = Instant::now();
         self.sessions
             .iter()
-            .filter(|e| e.relay.node_id == relay_node_id && e.expires_at > now)
+            .filter(|e| e.relay_nodes().any(|r| r == relay_node_id) && e.expires_at > now)
             .count()
             + self.trials.sessions_on_relay(relay_node_id, now)
     }
@@ -328,8 +400,7 @@ impl OrgRelayState {
         let mut in_use: Vec<u32> = self
             .sessions
             .iter()
-            .filter(|e| e.relay.node_id == relay_node_id)
-            .map(|e| e.vni)
+            .flat_map(|e| e.vnis_on(relay_node_id).collect::<Vec<_>>())
             .collect();
         in_use.extend_from_slice(reserved);
         let mut cursor = self.next_vni.entry(relay_node_id).or_insert(1);
@@ -365,9 +436,10 @@ impl OrgRelayState {
         rtt_ms: Option<u32>,
     ) -> bool {
         let minted_for_it = self.sessions.iter().any(|e| {
-            e.relay.node_id == relay_node_id
-                && e.member_index(reporter).is_some()
-                && e.endpoints.contains(&endpoint)
+            e.member_index(reporter).is_some_and(|i| {
+                let leg = e.member_leg(i);
+                leg.relay_node_id == relay_node_id && leg.endpoints.contains(&endpoint)
+            })
         });
         if !minted_for_it {
             return false;
@@ -438,6 +510,7 @@ pub async fn peer_relay_mode(state: &NetworkState, tenant_id: ObjectId) -> PeerR
 }
 
 /// A relay chosen for a pair, with everything the frames need.
+#[derive(Clone)]
 struct Plan {
     relay: OverlayNode,
     relay_agent_id: ObjectId,
@@ -825,13 +898,39 @@ pub fn revoke_backbone_node_sync(
     trial::revoke_backbone_node(state, tenant, node, member_withdrawn, ingress_withdrawn)
 }
 
+/// #21 — `node` stopped riding line-only peers, or (as an ingress relay)
+/// stopped being backbone-ready: the lines it takes part in end.
+pub fn revoke_line_node_sync(
+    state: &NetworkState,
+    tenant: ObjectId,
+    node: ObjectId,
+) -> Vec<PeerRelayAuditEvent> {
+    revoke_matching_sync(state, "backbone_capability_withdrawn", |s| {
+        s.tenant_id == tenant && s.line.is_some() && s.involves(node)
+    })
+}
+
+/// `source`'s approved edges changed: the two-leg trials and the lines over
+/// an edge that is gone (or no longer `cross_border`) end.
 pub fn revoke_removed_backbone_edges_sync(
     state: &NetworkState,
     tenant: ObjectId,
     source: ObjectId,
     approved: &[roomler_ai_remote_control::models::PeerRelayBackboneEdge],
 ) -> Vec<PeerRelayAuditEvent> {
-    trial::revoke_removed_backbone_edges(state, tenant, source, approved)
+    let mut events = trial::revoke_removed_backbone_edges(state, tenant, source, approved);
+    events.extend(revoke_matching_sync(state, "backbone_edge_revoked", |s| {
+        s.tenant_id == tenant
+            && s.relay_agent_id == source
+            && s.line.as_ref().is_some_and(|l| {
+                !approved.iter().any(|e| {
+                    e.cross_border
+                        && e.endpoint == l.private_endpoint
+                        && ObjectId::parse_str(&e.relay_agent_id).ok() == Some(l.relay_agent_id)
+                })
+            })
+    }));
+    events
 }
 
 struct BackbonePlan {
@@ -999,6 +1098,317 @@ async fn cross_border_zones(
         iso::zone_of(state, mode, peer).await?,
     );
     (za != zb).then_some((za, zb))
+}
+
+/// A cross-border line for a pair (#21 rule 2): an approved relay in one
+/// member's zone with an approved `cross_border` edge to an approved relay in
+/// the other's, each granted to both members (explicit grants only, as in
+/// [`plan_backbone`]). The edge's source holds the bridge, so whichever
+/// member asked, the member in the source's zone binds there.
+struct LinePlan {
+    ingress: Plan,
+    exit: Plan,
+    private_endpoint: String,
+    /// The member in the ingress relay's zone is the peer, not the requester.
+    flipped: bool,
+}
+
+async fn plan_line(
+    state: &NetworkState,
+    requester: &OverlayNode,
+    peer: &OverlayNode,
+    (za, zb): (BusinessZone, BusinessZone),
+) -> Result<LinePlan, PeerRelayDenyReason> {
+    use PeerRelayDenyReason as D;
+    let (Some(a), Some(b)) = (requester.id, peer.id) else {
+        return Err(D::RequesterUnsupported);
+    };
+    // The exception applies only where a line connects the two zones, toward
+    // members that both ride line-only peers (rule 4: a line to a member
+    // that cannot would be a session nobody binds). Anywhere else the zone
+    // rule's own refusal stands.
+    let connected = cross_border_lines(state, requester.tenant_id)
+        .await
+        .iter()
+        .any(|&line| line == (za, zb) || line == (zb, za));
+    if !connected
+        || !state.org_relay.join_extras(a).supports_backbone_only_v1
+        || !state.org_relay.join_extras(b).supports_backbone_only_v1
+    {
+        return Err(D::ZoneDenied);
+    }
+    let network = state
+        .overlay_networks
+        .get_or_create(requester.tenant_id)
+        .await
+        .map_err(|_| D::PolicyUnreadable)?;
+    if network.mtu > limits::BACKBONE_MAX_OVERLAY_MTU {
+        return Err(D::ZoneDenied);
+    }
+    let side_a = plan_mint_candidates_reusing(state, requester, peer, None, ZoneScope::Side(za)).await;
+    let side_b = plan_mint_candidates_reusing(state, requester, peer, None, ZoneScope::Side(zb)).await;
+    for (ingresses, exits, flipped) in [(&side_a, &side_b, false), (&side_b, &side_a, true)] {
+        let (Ok(ingresses), Ok(exits)) = (ingresses, exits) else {
+            continue;
+        };
+        for ingress in ingresses {
+            let Some(ingress_id) = ingress.relay.id else { continue };
+            if !state.org_relay.join_extras(ingress_id).relay_backbone_ready {
+                continue;
+            }
+            for edge in ingress
+                .backbone_edges
+                .iter()
+                .take(roomler_ai_remote_control::models::MAX_PEER_RELAY_BACKBONE_EDGES)
+                .filter(|e| e.cross_border)
+            {
+                if !crate::routes::peer_relay::valid_backbone_endpoint(&edge.endpoint)
+                    || !crate::routes::peer_relay::backbone_endpoint_outside_overlay(
+                        &edge.endpoint,
+                        &network.cidr,
+                    )
+                {
+                    continue;
+                }
+                let Ok(target) = ObjectId::parse_str(&edge.relay_agent_id) else { continue };
+                if let Some(exit) = exits.iter().find(|p| p.relay_agent_id == target) {
+                    return Ok(LinePlan {
+                        ingress: ingress.clone(),
+                        exit: exit.clone(),
+                        private_endpoint: edge.endpoint.clone(),
+                        flipped,
+                    });
+                }
+            }
+        }
+    }
+    // A side's own refusal names its gate; two usable sides with no line
+    // between them are what the zone rule refuses.
+    match (side_a, side_b) {
+        (Err(e), _) | (_, Err(e)) => Err(e),
+        _ => Err(D::ZoneDenied),
+    }
+}
+
+/// `relay_request` / fallback for a pair only a line may carry: re-push the
+/// live line to the asker while it can still bind, else mint one (or audit
+/// the refusal). A member asks only while it has no working carrier, so a
+/// line past its bind window is revoked and minted afresh, as a fallback
+/// does for a one-hop session.
+async fn maybe_mint_line(
+    state: &NetworkState,
+    requester: &OverlayNode,
+    peer: &OverlayNode,
+    zones: (BusinessZone, BusinessZone),
+    warn_only: bool,
+) {
+    let tenant_id = requester.tenant_id;
+    let (Some(req_id), Some(peer_id)) = (requester.id, peer.id) else { return };
+    let pk = pair_key(req_id, peer_id);
+    if !warn_only && let Some(s) = state.org_relay.active_session(&pk) {
+        let Some(i) = s.member_index(req_id) else { return };
+        if s.line.is_some() && Instant::now() + BIND_REUSE_MARGIN < s.bind_by {
+            push_member(state, &s, i).await;
+            debug!(%tenant_id, %pk, vni = s.member_leg(i).vni,
+                "org-relay: re-pushed the live line to a re-requesting member");
+            return;
+        }
+        revoke_where(state, "org-line-rebind", |c| {
+            c.pair_key == pk && c.vni == s.vni && c.generation == s.generation
+        })
+        .await;
+    }
+    match plan_line(state, requester, peer, zones).await {
+        Ok(plan) => mint_line(state, requester, peer, plan, warn_only).await,
+        Err(reason) => {
+            info!(%tenant_id, requester = %req_id, peer = %peer_id, ?reason, warn_only,
+                "org-relay: cross-border line refused");
+            audit_mint(state, tenant_id, req_id, peer_id, None, None, warn_only, Some(reason))
+                .await;
+        }
+    }
+}
+
+/// Mint a cross-border line (#21): the ingress relay serves `members[0]` and
+/// the bridge, the exit relay serves the bridge and `members[1]`, and the
+/// ingress relay's bridge joins the two sessions over the private line. Each
+/// member is pushed only its own relay and rides it as an ordinary org-relay
+/// session; WireGuard stays end to end, the relays see ciphertext. Both legs
+/// are audited `cross_border_line` (rule 5).
+async fn mint_line(
+    state: &NetworkState,
+    requester: &OverlayNode,
+    peer: &OverlayNode,
+    plan: LinePlan,
+    warn_only: bool,
+) {
+    let tenant_id = requester.tenant_id;
+    let (Some(req_id), Some(peer_id)) = (requester.id, peer.id) else { return };
+    let pk = pair_key(req_id, peer_id);
+    let (Some(ingress_id), Some(exit_id)) = (plan.ingress.relay.id, plan.exit.relay.id) else {
+        return;
+    };
+    let refuse = |reason| audit_mint(state, tenant_id, req_id, peer_id, None, None, warn_only, Some(reason));
+    if !warn_only
+        && !state
+            .relay_rate_limiter
+            .check(req_id, ingress_id, limits::MINT_RATE_LIMIT_PER_MINUTE)
+    {
+        refuse(PeerRelayDenyReason::RateLimited).await;
+        return;
+    }
+    let (Some(vni), Some(exit_vni)) = (
+        state.org_relay.alloc_vni(ingress_id),
+        state.org_relay.alloc_vni(exit_id),
+    ) else {
+        refuse(PeerRelayDenyReason::NoRelay).await;
+        return;
+    };
+    let (m0, m1) = if plan.flipped { (peer, requester) } else { (requester, peer) };
+    let member = |n: &OverlayNode| SessionMember {
+        party: SessionParty {
+            node_id: n.id.unwrap_or_default(),
+            node_ref: n.node_ref.clone(),
+        },
+        wg_public_key: n.wg_public_key.clone(),
+        bind_secret: random_secret(),
+    };
+    let now = Instant::now();
+    let generation = state.org_relay.lamport.fetch_add(1, Ordering::Relaxed) + 1;
+    let exit_generation = state.org_relay.lamport.fetch_add(1, Ordering::Relaxed) + 1;
+    let session = OrgRelaySession {
+        tenant_id,
+        pair_key: pk.clone(),
+        vni,
+        generation,
+        relay: SessionParty {
+            node_id: ingress_id,
+            node_ref: plan.ingress.relay.node_ref.clone(),
+        },
+        relay_agent_id: plan.ingress.relay_agent_id,
+        implicit: false,
+        members: [member(m0), member(m1)],
+        endpoints: plan.ingress.endpoints.clone(),
+        expires_at: now + Duration::from_secs(u64::from(limits::MAX_LIFETIME_SECS)),
+        bind_by: now + Duration::from_secs(u64::from(limits::BIND_SECS)),
+        line: Some(LineLeg {
+            relay: SessionParty {
+                node_id: exit_id,
+                node_ref: plan.exit.relay.node_ref.clone(),
+            },
+            relay_agent_id: plan.exit.relay_agent_id,
+            vni: exit_vni,
+            generation: exit_generation,
+            endpoints: plan.exit.endpoints.clone(),
+            private_endpoint: plan.private_endpoint.clone(),
+            bridge_id: ObjectId::new(),
+            bridge_secrets: [random_secret(), random_secret()],
+        }),
+    };
+    audit_line(state, &session, warn_only).await;
+    if warn_only {
+        info!(%tenant_id, requester = %req_id, peer = %peer_id, ingress = %ingress_id,
+            exit = %exit_id, "org-relay [warn]: would mint a cross-border line; pushing nothing");
+        return;
+    }
+    // One live session per pair: a concurrent winner is re-pushed instead.
+    let current = match state.org_relay.sessions.entry(pk.clone()) {
+        dashmap::mapref::entry::Entry::Occupied(e) if e.get().expires_at > Instant::now() => {
+            Some(e.get().clone())
+        }
+        dashmap::mapref::entry::Entry::Occupied(mut e) => {
+            e.insert(session.clone());
+            None
+        }
+        dashmap::mapref::entry::Entry::Vacant(e) => {
+            e.insert(session.clone());
+            None
+        }
+    };
+    if let Some(current) = current {
+        if let Some(i) = current.member_index(req_id) {
+            push_member(state, &current, i).await;
+        }
+        return;
+    }
+    let Some(line) = session.line.as_ref() else { return };
+    info!(%tenant_id, requester = %req_id, peer = %peer_id, ingress = %ingress_id, vni,
+        exit = %exit_id, exit_vni, line = %line.private_endpoint,
+        "org-relay: a cross-border pair rides its approved line");
+    let serve = |vni, generation, secrets: [&String; 2]| ServerMsg::OverlayRelayServe {
+        vni,
+        generation,
+        members: session
+            .members
+            .iter()
+            .zip(secrets)
+            .map(|(m, secret)| RelayMemberWire {
+                wg_public_key: m.wg_public_key.clone(),
+                bind_secret: secret.clone(),
+            })
+            .collect(),
+        bind_secs: limits::BIND_SECS,
+        idle_secs: limits::IDLE_SECS,
+        max_lifetime_secs: limits::MAX_LIFETIME_SECS,
+    };
+    // Both relays first, then the bridge, so its binds find both sessions
+    // (it retries within its own budget), then each member.
+    let [m0_secret, m1_secret] = [&session.members[0].bind_secret, &session.members[1].bind_secret];
+    send_to_node(state, &plan.ingress.relay, serve(vni, generation, [m0_secret, &line.bridge_secrets[0]])).await;
+    send_to_node(state, &plan.exit.relay, serve(exit_vni, exit_generation, [&line.bridge_secrets[1], m1_secret])).await;
+    send_to_node(
+        state,
+        &plan.ingress.relay,
+        ServerMsg::OverlayRelayBridgeServe {
+            bridge: roomler_ai_remote_control::signaling::RelayBridgeWire {
+                trial_id: line.bridge_id,
+                generation,
+                source_agent_id: session.relay_agent_id,
+                target_agent_id: line.relay_agent_id,
+                local_vni: vni,
+                local_generation: generation,
+                local_bind_secret: line.bridge_secrets[0].clone(),
+                remote_endpoint: line.private_endpoint.clone(),
+                remote_vni: exit_vni,
+                remote_generation: exit_generation,
+                remote_bind_secret: line.bridge_secrets[1].clone(),
+                max_lifetime_secs: limits::MAX_LIFETIME_SECS,
+            },
+        },
+    )
+    .await;
+    push_member(state, &session, 0).await;
+    push_member(state, &session, 1).await;
+}
+
+/// Rule 5: one `mint` row per leg of a line, each naming its relay and VNI,
+/// with reason `cross_border_line`.
+async fn audit_line(state: &NetworkState, s: &OrgRelaySession, warn_only: bool) {
+    let Some(line) = s.line.as_ref() else { return };
+    for (agent_id, relay_node_id, vni) in [
+        (s.relay_agent_id, s.relay.node_id, s.vni),
+        (line.relay_agent_id, line.relay.node_id, line.vni),
+    ] {
+        let event = PeerRelayAuditEvent {
+            id: None,
+            tenant_id: s.tenant_id,
+            action: PeerRelayAuditAction::Mint,
+            agent_id: Some(agent_id),
+            user_id: None,
+            requester_node_id: Some(s.members[0].party.node_id),
+            peer_node_id: Some(s.members[1].party.node_id),
+            relay_node_id: Some(relay_node_id),
+            serve: None,
+            vni: Some(vni),
+            warn_only,
+            at: DateTime::now(),
+            denied: None,
+            reason: Some(CROSS_BORDER_REASON.into()),
+        };
+        if let Err(e) = state.peer_relay_audit.record(event).await {
+            warn!(%e, "org-relay: cross-border audit write failed");
+        }
+    }
 }
 
 /// Discovery hints for a cross-border pair: each ingress relay in the
@@ -1356,6 +1766,11 @@ pub async fn maybe_mint(state: &NetworkState, requester: &OverlayNode, peer: &Ov
     if crate::overlay::org_fallback_forced_derp(state, &pk) {
         return;
     }
+    // #21 — a pair in two zones rides a cross-border line or nothing.
+    if let Some(zones) = cross_border_zones(state, requester, peer).await {
+        maybe_mint_line(state, requester, peer, zones, warn_only).await;
+        return;
+    }
 
     // Idempotent per pair: a live session is re-pushed to the ASKER only —
     // the peer and the relay already hold it. Not audited: nothing was
@@ -1420,6 +1835,10 @@ pub async fn maybe_mint_fallback(state: &NetworkState, requester: &OverlayNode, 
     let (Some(req_id), Some(peer_id)) = (requester.id, peer.id) else { return };
     let pk = pair_key(req_id, peer_id);
     if crate::overlay::org_fallback_forced_derp(state, &pk) { return; }
+    if let Some(zones) = cross_border_zones(state, requester, peer).await {
+        maybe_mint_line(state, requester, peer, zones, mode == PeerRelayMode::Warn).await;
+        return;
+    }
     let cached = state.org_relay.active_session(&pk);
     let mut epoch = state.org_relay.eligibility_generation();
     let mut verdict =
@@ -1542,6 +1961,7 @@ async fn mint_plan(
         endpoints: plan.endpoints.clone(),
         expires_at: Instant::now() + Duration::from_secs(u64::from(limits::MAX_LIFETIME_SECS)),
         bind_by: Instant::now() + Duration::from_secs(u64::from(limits::BIND_SECS)),
+        line: None,
     };
     // Legacy ordering stays intact; fallback audits only its winning claim.
     if fallback_epoch.is_none() || warn_only {
@@ -1638,22 +2058,24 @@ async fn mint_plan(
 }
 
 /// `rc:overlay.relay_session` to member `i`, naming the OTHER member as its
-/// peer and carrying only its own secret.
+/// peer and carrying only its own secret and its own relay (on a line, each
+/// member's is in its own zone).
 async fn push_member(state: &NetworkState, s: &OrgRelaySession, i: usize) {
     let remaining = s.expires_at.saturating_duration_since(Instant::now()).as_secs()
         .min(u64::from(limits::MAX_LIFETIME_SECS)) as u32;
     if remaining == 0 { return; }
     let me = &s.members[i];
     let other = &s.members[1 - i];
+    let leg = s.member_leg(i);
     send_to_node_ref(
         state,
         &me.party.node_ref,
         ServerMsg::OverlayRelaySession {
-            vni: s.vni,
-            generation: s.generation,
+            vni: leg.vni,
+            generation: leg.generation,
             peer_node_id: other.party.node_id,
-            relay_node_id: s.relay.node_id,
-            relay_endpoints: s.endpoints.clone(),
+            relay_node_id: leg.relay_node_id,
+            relay_endpoints: leg.endpoints.to_vec(),
             bind_secret: me.bind_secret.clone(),
             bind_secs: limits::BIND_SECS,
             max_lifetime_secs: remaining,
@@ -1741,10 +2163,22 @@ fn revoke_matching_sync(
         {
             continue;
         }
-        let message = ServerMsg::OverlayRelayRevoke { vni: session.vni };
-        push_control(state, &session.relay.node_ref, message.clone());
-        for member in &session.members {
-            push_control(state, &member.party.node_ref, message.clone());
+        let revoke = |vni| ServerMsg::OverlayRelayRevoke { vni };
+        push_control(state, &session.relay.node_ref, revoke(session.vni));
+        for (i, member) in session.members.iter().enumerate() {
+            push_control(state, &member.party.node_ref, revoke(session.member_leg(i).vni));
+        }
+        // A line also holds the exit relay's session and the ingress bridge.
+        if let Some(line) = session.line.as_ref() {
+            push_control(state, &line.relay.node_ref, revoke(line.vni));
+            push_control(
+                state,
+                &session.relay.node_ref,
+                ServerMsg::OverlayRelayBridgeRevoke {
+                    trial_id: line.bridge_id,
+                    generation: session.generation,
+                },
+            );
         }
         events.push(PeerRelayAuditEvent {
             id: None,
@@ -1806,7 +2240,7 @@ pub async fn revoke_tenant(state: &NetworkState, tenant_id: ObjectId, reason: &s
     revoke_where(state, reason, |s| s.tenant_id == tenant_id).await
 }
 
-/// Trigger 3 — a relay's approval was cleared.
+/// Trigger 3 — a relay's approval was cleared (either leg of a line).
 pub async fn revoke_relay_agent(
     state: &NetworkState,
     tenant_id: ObjectId,
@@ -1814,20 +2248,23 @@ pub async fn revoke_relay_agent(
     reason: &str,
 ) -> usize {
     revoke_where(state, reason, |s| {
-        s.tenant_id == tenant_id && s.relay_agent_id == agent_id
+        s.tenant_id == tenant_id && s.relayed_by_agent(agent_id)
     })
     .await
 }
 
-/// MeshHarbor `auto`: an implicit session rests on the zone each party's live
-/// connection was observed in, so that connection closing or being displaced
-/// ends it.
+/// MeshHarbor `auto` and #21: an implicit session and a cross-border line
+/// rest on the zone each party's live connection was observed in, so that
+/// connection closing or being displaced ends them.
 pub async fn revoke_implicit_for_agent(
     state: &NetworkState,
     agent_id: ObjectId,
     reason: &str,
 ) -> usize {
-    revoke_where(state, reason, |s| s.implicit && s.involves_agent(agent_id)).await
+    revoke_where(state, reason, |s| {
+        (s.implicit || s.line.is_some()) && s.involves_agent(agent_id)
+    })
+    .await
 }
 
 /// Trigger 4 — a party (member or relay) was removed from the overlay.
@@ -1864,29 +2301,33 @@ pub async fn reconcile_acl(state: &NetworkState, tenant_id: ObjectId) {
         if s.implicit {
             continue;
         }
-        let Ok(relay) = state.overlay_nodes.base.find_by_id(s.relay.node_id).await else {
-            continue;
-        };
-        // FR-97 P0b — granted from the routes the relay OFFERS.
-        let relay_routes = relay.effective_routes();
-        let relay_ref = OverlayPeerRef {
-            node_id: s.relay.node_id,
-            overlay_ip: &relay.overlay_ip,
-            approved_routes: &relay_routes,
-        };
+        // Both members must still be granted every relay of the session (a
+        // line's two, as its planner requires).
         let mut granted = true;
-        for m in &s.members {
-            let Ok(node) = state.overlay_nodes.base.find_by_id(m.party.node_id).await else {
-                granted = false;
-                break;
+        'relays: for relay_id in s.relay_nodes() {
+            let Ok(relay) = state.overlay_nodes.base.find_by_id(relay_id).await else {
+                continue;
             };
-            let src: OverlaySource = match try_overlay_source_of(state, &node).await {
-                Ok(src) => src,
-                Err(_) => continue, // unreadable identity: not evidence of revocation
+            // FR-97 P0b — granted from the routes the relay OFFERS.
+            let relay_routes = relay.effective_routes();
+            let relay_ref = OverlayPeerRef {
+                node_id: relay_id,
+                overlay_ip: &relay.overlay_ip,
+                approved_routes: &relay_routes,
             };
-            if !evaluate_overlay(&acl.policies, &src, relay_ref).visible {
-                granted = false;
-                break;
+            for m in &s.members {
+                let Ok(node) = state.overlay_nodes.base.find_by_id(m.party.node_id).await else {
+                    granted = false;
+                    break 'relays;
+                };
+                let src: OverlaySource = match try_overlay_source_of(state, &node).await {
+                    Ok(src) => src,
+                    Err(_) => continue, // unreadable identity: not evidence of revocation
+                };
+                if !evaluate_overlay(&acl.policies, &src, relay_ref).visible {
+                    granted = false;
+                    break 'relays;
+                }
             }
         }
         if !granted {
@@ -1929,7 +2370,8 @@ pub(crate) fn reported_session(
     vni: u32,
 ) -> Option<OrgRelaySession> {
     let s = state.org_relay.active_session(&pair_key(reporter, peer))?;
-    (s.vni == vni && s.member_index(reporter).is_some()).then_some(s)
+    let i = s.member_index(reporter)?;
+    (s.member_leg(i).vni == vni).then_some(s)
 }
 
 #[cfg(test)]
@@ -2045,6 +2487,7 @@ mod tests {
                 endpoints: vec!["8.8.8.8:3478".into()],
                 expires_at: Instant::now() + Duration::from_secs(60),
                 bind_by: Instant::now() + Duration::from_secs(30),
+                line: None,
             },
         );
         assert!(st.record_probe(a, relay, "8.8.8.8:3478".into(), true, Some(12)));

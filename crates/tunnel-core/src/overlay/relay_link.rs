@@ -2851,6 +2851,7 @@ mod tests {
             relay_strategy: None,
             relay_home: None,
             warm_relay_endpoint: None,
+            backbone_only: false,
         }
     }
 

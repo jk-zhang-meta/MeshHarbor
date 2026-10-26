@@ -107,9 +107,11 @@ pub(crate) fn fixture_mmdb() -> Vec<u8> {
     db
 }
 
-/// The zone the fixture database places `ip` in, as the observation stores it.
+/// The zone the fixture database places `ip` in, as the observation stores it
+/// (128.0.0.0/1 is CN).
 fn zone_of(ip: &str) -> &'static str {
-    if ip == CN_A { "mainland" } else { "non_mainland" }
+    let first = ip.split('.').next().and_then(|o| o.parse::<u8>().ok());
+    if first.is_some_and(|o| o >= 128) { "mainland" } else { "non_mainland" }
 }
 
 /// The fixture must actually place each connection, or every refusal test

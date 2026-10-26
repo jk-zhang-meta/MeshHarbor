@@ -460,6 +460,7 @@ pub async fn request(
                     endpoints: plan.endpoints.into_iter().take(4).collect(),
                     expires_at: now + Duration::from_secs(u64::from(limits::MAX_LIFETIME_SECS)),
                     bind_by: now + Duration::from_secs(u64::from(limits::BIND_SECS)),
+                    line: None,
                 };
                 let backbone = if let Some((exit, private_endpoint)) = backbone_plan {
                     let exit_id = exit.relay.id?;
@@ -1115,6 +1116,7 @@ mod tests {
                 endpoints: vec!["8.8.8.8:3478".into()],
                 expires_at: now + Duration::from_secs(60),
                 bind_by: now + Duration::from_secs(30),
+                line: None,
             },
         }
     }

@@ -74,6 +74,13 @@ impl OverlayRuntime {
             return;
         };
         let node_id = np.node_id;
+        // MeshHarbor #21 — a cross-border peer rides its line alone: a direct
+        // init from it is never answered, so no direct carrier can form.
+        if cfg.backbone_only {
+            debug!(peer = %node_id, src = %inb.src,
+                "overlay: direct init from a backbone-only peer refused (cross-border line only)");
+            return;
+        }
 
         // Already direct on THIS exact source → nothing to change; just answer
         // the init (it may be a keepalive-driven rehandshake). Re-assert the
