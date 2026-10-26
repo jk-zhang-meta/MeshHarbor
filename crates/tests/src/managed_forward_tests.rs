@@ -15,7 +15,14 @@ use serde_json::{Value, json};
 use std::time::Duration;
 use tokio_tungstenite::tungstenite::Message;
 
-async fn report_listener(app: &TestApp, ws: &mut Ws, tid: &str, tok: &str, agent: &str, port: u16) {
+pub(crate) async fn report_listener(
+    app: &TestApp,
+    ws: &mut Ws,
+    tid: &str,
+    tok: &str,
+    agent: &str,
+    port: u16,
+) {
     let inv = NetInventory {
         os: "linux".into(),
         namespaces: "host_only".into(),
@@ -49,7 +56,7 @@ async fn report_listener(app: &TestApp, ws: &mut Ws, tid: &str, tok: &str, agent
     panic!("inventory never landed");
 }
 
-fn spec(ingress: &str, port: u16) -> Value {
+pub(crate) fn spec(ingress: &str, port: u16) -> Value {
     json!({
         "name": "db", "ingress_agent_id": ingress, "bind_addr": "100.64.0.2", "port": port,
         "proto": "tcp", "sources": ["100.64.0.0/10"], "dest_addr": "10.0.0.5", "dest_port": 5432,
@@ -57,13 +64,13 @@ fn spec(ingress: &str, port: u16) -> Value {
     })
 }
 
-async fn post(app: &TestApp, path: &str, tok: &str, body: &Value) -> (u16, Value) {
+pub(crate) async fn post(app: &TestApp, path: &str, tok: &str, body: &Value) -> (u16, Value) {
     let r = app.auth_post(path, tok).json(body).send().await.unwrap();
     let s = r.status().as_u16();
     (s, r.json().await.unwrap_or(Value::Null))
 }
 
-fn verdict(plan: &Value, name: &str) -> String {
+pub(crate) fn verdict(plan: &Value, name: &str) -> String {
     plan["checks"]
         .as_array()
         .unwrap()

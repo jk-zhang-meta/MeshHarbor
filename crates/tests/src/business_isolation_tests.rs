@@ -925,3 +925,123 @@ async fn a_cross_border_pair_rides_its_fastest_line() {
         "the slower line's exit serves nothing"
     );
 }
+
+/// v039 GEO-03: a subnet route rides its router peer, so under `enforce` a
+/// mainland router's approved LAN reaches a mainland client and never a
+/// non-mainland one: no peer, no route, no `allowed_ips` for it. (An exit
+/// node is the same peer carrying `0.0.0.0/0`.)
+#[tokio::test]
+async fn a_subnet_route_stays_in_its_routers_zone() {
+    const LAN: &str = "10.77.0.0/24";
+    let rig = Rig::up("iso-route", "enforce").await;
+    let mut router = rig.device("iso-route-r", Some(CN_A)).await;
+    let mut cn = rig.device("iso-route-cn", Some("223.5.5.6")).await;
+    let mut us = rig.device("iso-route-us", Some(US_A)).await;
+    line_join(
+        &mut router,
+        70,
+        "223.5.5.5:41641",
+        json!({ "advertised_routes": [LAN] }),
+    )
+    .await;
+    let r_node = rig.node("iso-route-r").await;
+    let (status, v) = put(
+        &rig.app,
+        &format!(
+            "/api/tenant/{}/overlay-node/{r_node}/approved-routes",
+            rig.seeded.tenant_id
+        ),
+        &rig.seeded.admin.access_token,
+        json!({ "approved_routes": [LAN] }),
+    )
+    .await;
+    assert_eq!(status, 200, "{v}");
+    let routes_of = |map: &Value| -> Vec<String> {
+        map["peers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|p| p["routes"].as_array().cloned().unwrap_or_default())
+            .filter_map(|r| r.as_str().map(str::to_owned))
+            .collect()
+    };
+    let cn_map = line_join(&mut cn, 71, "223.5.5.6:41641", json!({})).await;
+    assert!(peer_ids(&cn_map).contains(&r_node), "{cn_map}");
+    assert_eq!(
+        routes_of(&cn_map),
+        vec![LAN.to_owned()],
+        "same zone: the LAN is routed"
+    );
+    let us_map = line_join(&mut us, 72, "8.8.8.8:41641", json!({})).await;
+    assert!(!peer_ids(&us_map).contains(&r_node), "{us_map}");
+    assert!(
+        routes_of(&us_map).is_empty(),
+        "other zone: no route at all: {us_map}"
+    );
+    assert!(
+        !us_map.to_string().contains(LAN),
+        "not even named: {us_map}"
+    );
+}
+
+/// v039 GEO-03: a managed forward must not launder an origin. Ingress and
+/// destination are both mainland, so "region" passes; but a non-mainland
+/// node among its sources would reach the mainland destination behind the
+/// ingress's address, so "source region" fails it under `enforce`, while a
+/// mainland source passes.
+#[tokio::test]
+async fn a_forward_cannot_carry_a_source_across_zones() {
+    use crate::managed_forward_tests::{post as mf_post, report_listener, spec, verdict};
+    let rig = Rig::up("iso-fwd", "enforce").await;
+    let (app, seeded) = (&rig.app, &rig.seeded);
+    let (tid, tok) = (&seeded.tenant_id, &seeded.admin.access_token);
+    let (a, a_tok) = enroll(app, seeded, "iso-fwd-a").await;
+    let mut wa = connect_from(app, &a_tok, &["managed-forward"], Some(CN_A)).await;
+    assert_observed(app, &a, Some(CN_A)).await;
+    let mut wb = rig.device("iso-fwd-b", Some("223.5.5.6")).await;
+    let mut wd = rig.device("iso-fwd-d", Some("223.5.5.7")).await;
+    let mut wc = rig.device("iso-fwd-c", Some(US_A)).await;
+    line_join(&mut wa, 80, "223.5.5.5:41641", json!({})).await;
+    line_join(&mut wb, 81, "223.5.5.6:41641", json!({})).await;
+    line_join(&mut wd, 82, "223.5.5.7:41641", json!({})).await;
+    line_join(&mut wc, 83, "8.8.8.8:41641", json!({})).await;
+    report_listener(app, &mut wa, tid, tok, &a, 22).await;
+    let ip = |name: &'static str| {
+        let app = &rig.app;
+        let tid = ObjectId::parse_str(tid).unwrap();
+        async move {
+            app.state
+                .network()
+                .overlay_nodes
+                .find_live_by_tenant_and_machine(tid, name)
+                .await
+                .unwrap()
+                .unwrap()
+                .overlay_ip
+        }
+    };
+    let (ip_b, ip_c, ip_d) = (
+        ip("iso-fwd-b").await,
+        ip("iso-fwd-c").await,
+        ip("iso-fwd-d").await,
+    );
+    let plan_path = format!("/api/tenant/{tid}/managed-forward/plan");
+    let body = |source: &str| {
+        let mut s = spec(&a, 15432);
+        s["dest_addr"] = json!(ip_b);
+        s["sources"] = json!([format!("{source}/32")]);
+        s
+    };
+
+    let (_, plan) = mf_post(app, &plan_path, tok, &body(&ip_c)).await;
+    assert_eq!(
+        verdict(&plan, "region"),
+        "pass",
+        "ingress and destination share a zone: {plan}"
+    );
+    assert_eq!(verdict(&plan, "source region"), "fail", "{plan}");
+    assert!(plan.to_string().contains(&ip_c), "names the source: {plan}");
+
+    let (_, plan) = mf_post(app, &plan_path, tok, &body(&ip_d)).await;
+    assert_eq!(verdict(&plan, "source region"), "pass", "{plan}");
+}

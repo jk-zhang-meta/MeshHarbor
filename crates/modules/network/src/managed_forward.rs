@@ -684,6 +684,7 @@ async fn overlay_path(
         Verdict::Pass,
         format!("dialled through the ingress's overlay: {where_}"),
     );
+    source_region(state, tenant_id, &nodes, &ingress, &dest_node, spec, checks).await;
 
     let acl =
         match crate::overlay::try_load_acl(state, tenant_id, crate::overlay::PolicyLoad::Always)
@@ -804,6 +805,73 @@ async fn overlay_path(
         );
     }
     Some(dest_node)
+}
+
+/// v039 GEO-03: a forward must not launder an origin across the zone rule.
+/// The destination sees the ingress, so a source the rule keeps from the
+/// destination (another zone, no server link) is refused here as the ingress
+/// itself is by "region", whatever the overlay ACL's mode.
+async fn source_region(
+    state: &NetworkState,
+    tenant_id: ObjectId,
+    nodes: &[roomler_ai_remote_control::models::OverlayNode],
+    ingress: &roomler_ai_remote_control::models::OverlayNode,
+    dest_node: &roomler_ai_remote_control::models::OverlayNode,
+    spec: &ForwardSpec,
+    checks: &mut Vec<Check>,
+) {
+    let mode = business_isolation::mode(state);
+    if mode == Mode::Off {
+        return;
+    }
+    let sources: Vec<(IpAddr, u8)> = spec.sources.iter().filter_map(|s| parse_cidr(s)).collect();
+    let mut crossing = Vec::new();
+    for n in nodes
+        .iter()
+        .filter(|n| n.id != ingress.id && n.id != dest_node.id)
+    {
+        let Ok(ip) = n.overlay_ip.parse::<IpAddr>() else {
+            continue;
+        };
+        if !sources.iter().any(|c| in_net(ip, *c)) {
+            continue;
+        }
+        let permit = business_isolation::permit_refs(
+            state,
+            mode,
+            tenant_id,
+            &n.node_ref,
+            &dest_node.node_ref,
+        )
+        .await;
+        if permit == business_isolation::Permit::Denied {
+            crossing.push(format!("{} ({})", n.name, n.overlay_ip));
+        }
+    }
+    let fail = if mode == Mode::Enforce {
+        Verdict::Fail
+    } else {
+        Verdict::Warn
+    };
+    if crossing.is_empty() {
+        check(
+            checks,
+            "source region",
+            Verdict::Pass,
+            "every overlay node the sources admit shares the destination's zone or server link",
+        );
+    } else {
+        crossing.truncate(5);
+        check(
+            checks,
+            "source region",
+            fail,
+            format!(
+                "{} may not reach the destination's zone; the forward would carry them across it",
+                crossing.join(", ")
+            ),
+        );
+    }
 }
 
 /// The table the agent's nft backend owns (roomlerd's
@@ -1098,7 +1166,7 @@ pub async fn push_to(state: &NetworkState, tenant_id: ObjectId, agent_id: Object
         if let Some(c) = p.checks.iter().find(|c| {
             matches!(
                 c.name,
-                "region" | "native backend" | "overlay acl" | "source principals"
+                "region" | "native backend" | "overlay acl" | "source principals" | "source region"
             ) && c.verdict == Verdict::Fail
         }) {
             tracing::warn!(forward = %f.id, check = c.name, "managed forward: gate failed at push; withheld");
