@@ -3689,7 +3689,8 @@ pub struct PeerRelayBackboneEdge {
     /// Exact UDP ip:port, never DNS. Private unicast is allowed ONLY here.
     pub endpoint: String,
     /// MeshHarbor #21 exception: this edge is an approved cross-border line
-    /// (the po0 private interconnect). A pair whose business zones differ
+    /// (any private path between the two relays: an interconnect, an IPLC,
+    /// or any UDP route the operator vouches for). A pair whose business zones differ
     /// may ride it, the ingress relay in the requester's zone and the exit
     /// in the peer's; nothing else carries a pair across zones.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]

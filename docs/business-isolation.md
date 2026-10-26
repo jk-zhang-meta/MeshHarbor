@@ -157,7 +157,15 @@ revoke to the ingress relay, and one `revoke` row (`revoke_matching_sync`,
 | either relay's approval is cleared | `policy_revoked` |
 | a policy edit no longer grants a member either relay | `acl_revoked` |
 | a member stops advertising `supports_backbone_only_v1`, or the ingress stops being backbone-ready | `backbone_capability_withdrawn` |
-| any party's live connection closes or is displaced (its zone evidence) | `connection_closed` / `connection_displaced` |
+| a party goes offline (its control connection closes and the hub marks it offline) | `device_left` |
+| a party's connection closes or is displaced, and `LINE_RECONNECT_GRACE` (20 s) later its parties' zones no longer fit the line (`line_zones_fit`: every party connected, `members[0]` in the ingress relay's zone, `members[1]` in the exit relay's, the two zones different) | `connection_closed` / `connection_displaced` |
+
+A line needs no control plane to carry traffic, so the connection triggers wait out the
+grace instead of revoking at once (`connection_ended`,
+[`org_relay.rs`](../crates/modules/network/src/org_relay.rs)): a reconnect from the same
+zone keeps the line, and a center restart, whose pending checks die with the process,
+leaves every line running. Revoking at once used to tear a line down on one relay only
+while a restarting center closed its connections, and the members kept the dead half.
 | a party is removed, or the org switches peer relays off | `device_removed` / `mode_off` |
 
 ### The client's half
@@ -170,7 +178,21 @@ holds such a peer as `PeerConfig::backbone_only`, and:
   [`establish.rs:158`](../crates/tunnel-core/src/overlay/runtime/establish.rs#L158));
 - never answers a direct handshake from it ([`inbound.rs:81`](../crates/tunnel-core/src/overlay/runtime/inbound.rs#L81));
 - ignores a server DERP pin for it ([`runtime.rs:4826`](../crates/tunnel-core/src/overlay/runtime.rs#L4826));
-- builds no DERP floor toward it, whatever its flags say (`build_floor`, [`relay_link.rs`](../crates/tunnel-core/src/overlay/relay_link.rs)).
+- builds no DERP floor toward it, whatever its flags say (`build_floor`, [`relay_link.rs`](../crates/tunnel-core/src/overlay/relay_link.rs));
+- asks the server for its line again when the line's carrier dies, rather than
+  re-binding the dead session it holds (the death handler in
+  [`establish.rs`](../crates/tunnel-core/src/overlay/runtime/establish.rs) sends
+  `request_org_fallback`; the server re-mints a line past its bind window);
+- renews a line `LINE_RENEW_AHEAD` (60 s) before its session ends, riding the live one
+  meanwhile (`renew_expiring_lines`, [`relay_link.rs`](../crates/tunnel-core/src/overlay/relay_link.rs)):
+  the server revokes a line past its bind window and mints the next in one step;
+- asks for the line of a line peer it holds no carrier for, every fallback gap
+  (`request_org_fallbacks`, [`runtime.rs`](../crates/tunnel-core/src/overlay/runtime.rs)):
+  DERP never carries such a peer, so nothing else would.
+
+The server never stamps a relay tier on a line peer (`stamp_verdict`,
+[`overlay.rs`](../crates/modules/network/src/overlay.rs)); a D0 re-stamp used to tell a
+member DERP toward its line peer, which `/derp` then dropped.
 
 The rest is the existing ladder: a peer with no endpoint falls through to a relay
 request, and the org session the server mints is bound like any other.
@@ -193,7 +215,24 @@ Restarting a member re-minted the line twice within seconds (`connection_closed`
 designed: a line rests on each party's live connection. The rig changed no firewall or
 route on any host and sent only a few MB through the po0 hosts.
 
+**Resilience** (rig `2c364a4f481c`, the same hosts; a one-second probe of the
+overlay SSH banner from the mainland member to Tokyo):
+
+| event | before (`46ee8946`) | after (`569e2c7d`) |
+|---|---|---|
+| the center restarts | dark until the line's hourly expiry (1194 s observed, then healed by a member restart) | 0 s dark, twice |
+| a member restarts | 3.2 s | not re-measured |
+| a member's control connection drops | — | `device_left` ends the line at once; it is minted again about 1 s after the member is back, with no DERP attempt |
+| the session's hourly end | 5.1 s (4 s to notice the expiry, 110 ms to mint and bind the next) | no outage on the probe (`b4aea968`): a member renews 60 s ahead, the old line is revoked and the next one is ready 98 ms later |
+
 ## Known limits
+
+- **A line outlives the center instance that minted it.** Like every org-relay
+  session, a line lives on the relays until its hourly expiry; a restarted center does
+  not know it, so revoking its edge in that window does not reach it. The members ask
+  the new center for a line once the old one expires or dies.
+- **A member that goes offline darkens its line** until it reconnects: no other carrier
+  may carry a cross-zone pair.
 
 - **The DERP restart window.** The `/derp` table is rebuilt on every join and policy
   change. After a server restart, a network has no table until its first join, and a
@@ -220,5 +259,6 @@ route on any host and sent only a few MB through the po0 hosts.
 | netmap TestApp tests | [`business_isolation_tests.rs`](../crates/tests/src/business_isolation_tests.rs) |
 | the cross-border line: planner, mint, audit, revocation | `plan_line`, `maybe_mint_line`, `mint_line`, `audit_line`, `revoke_line_node_sync` in [`org_relay.rs`](../crates/modules/network/src/org_relay.rs) |
 | the line's netmap shaping | `Lines`, `rides_lines`, `Zones::line_only` in [`business_isolation.rs`](../crates/modules/network/src/business_isolation.rs); `line_only` in [`overlay.rs`](../crates/modules/network/src/overlay.rs) |
-| the line's TestApp tests | `a_cross_border_pair_rides_only_its_approved_line`, `a_line_ends_with_its_edge_and_with_either_relay` in [`business_isolation_tests.rs`](../crates/tests/src/business_isolation_tests.rs) |
+| the line's resilience | `connection_ended`, `recheck_lines`, `line_zones_fit` in [`org_relay.rs`](../crates/modules/network/src/org_relay.rs); `stamp_verdict` in [`overlay.rs`](../crates/modules/network/src/overlay.rs) |
+| the line's TestApp tests | `a_cross_border_pair_rides_only_its_approved_line`, `a_line_ends_with_its_edge_and_with_either_relay`, `a_line_outlives_a_reconnect_from_its_zone_only` in [`business_isolation_tests.rs`](../crates/tests/src/business_isolation_tests.rs) |
 | relay and TURN TestApp tests | `isolation_*` in [`peer_relay_auto_tests.rs`](../crates/tests/src/peer_relay_auto_tests.rs) |
