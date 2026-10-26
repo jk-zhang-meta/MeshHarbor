@@ -590,7 +590,7 @@ pub(crate) async fn node_zone(state: &NetworkState, node: &OverlayNode) -> Optio
 }
 
 /// [`node_zone`] for a session party, known by its tenant and reference.
-async fn party_zone(
+pub(crate) async fn party_zone(
     state: &NetworkState,
     tenant_id: ObjectId,
     node_ref: &NodeRef,

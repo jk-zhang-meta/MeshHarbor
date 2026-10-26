@@ -544,3 +544,64 @@ async fn a_line_outlives_a_reconnect_from_its_zone_only() {
     }
     drop((again, moved));
 }
+
+/// Open a center-brokered tunnel from `ws` (an agent driving the tunnel-client
+/// role) to `target`, and return the server's answer: `rc:tunnel.opened` or
+/// the `rc:error` code.
+async fn tunnel_open(ws: &mut Ws, target: &str) -> String {
+    for m in [
+        json!({ "t": "rc:tunnel.hello", "role": "client", "version": "0.3.0",
+                "supported_transports": ["webrtc-dc-v1"] }),
+        json!({ "t": "rc:tunnel.open", "agent_id": target, "transport": "webrtc-dc-v1" }),
+    ] {
+        ws.send(Message::Text(m.to_string().into())).await.unwrap();
+    }
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while let Some(left) = deadline.checked_duration_since(tokio::time::Instant::now()) {
+        let Ok(Some(Ok(Message::Text(txt)))) =
+            tokio::time::timeout(left, futures::StreamExt::next(ws)).await
+        else {
+            continue;
+        };
+        let v: Value = serde_json::from_str(&txt).unwrap_or_default();
+        match v["t"].as_str() {
+            Some("rc:tunnel.opened") => return "opened".into(),
+            Some("rc:error") => return v["code"].as_str().unwrap_or("?").into(),
+            _ => {}
+        }
+    }
+    "no answer".into()
+}
+
+/// #22 — a tunnel the center brokers carries business bytes, so it obeys the
+/// zones too; the devices' own management connections (the hello the zones
+/// were observed on) are never refused.
+#[tokio::test]
+async fn a_center_brokered_tunnel_stays_in_one_zone() {
+    for (mode, across) in [("enforce", "business_isolation"), ("warn", "opened")] {
+        let rig = Rig::up(&format!("iso-tunnel-{mode}"), mode).await;
+        let mut devices = Vec::new();
+        for (name, from) in [
+            ("iso-tun-us-a", US_A),
+            ("iso-tun-cn-a", CN_A),
+            ("iso-tun-us-b", US_B),
+        ] {
+            let (id, tok) = enroll(&rig.app, &rig.seeded, name).await;
+            let ws = connect_from(&rig.app, &tok, &[], Some(from)).await;
+            assert_observed(&rig.app, &id, Some(from)).await;
+            devices.push((id, ws));
+        }
+        let [(_, mut us_a), (cn_id, _cn_a), (us_b_id, _us_b)] =
+            <[_; 3]>::try_from(devices).ok().unwrap();
+        assert_eq!(
+            tunnel_open(&mut us_a, &cn_id).await,
+            across,
+            "{mode}: across the zones"
+        );
+        assert_eq!(
+            tunnel_open(&mut us_a, &us_b_id).await,
+            "opened",
+            "{mode}: within one zone"
+        );
+    }
+}

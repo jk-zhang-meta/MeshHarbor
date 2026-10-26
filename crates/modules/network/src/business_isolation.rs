@@ -31,7 +31,8 @@
 
 use std::time::Duration;
 
-use roomler_ai_remote_control::models::OverlayNode;
+use bson::oid::ObjectId;
+use roomler_ai_remote_control::models::{NodeRef, OverlayNode};
 use roomler_core::business_authority::BusinessZone;
 
 use tracing::{info, warn};
@@ -190,16 +191,53 @@ pub async fn refuses_pair(
     b: &OverlayNode,
     what: &str,
 ) -> bool {
+    refuses_parties(
+        state,
+        (a.tenant_id, &a.node_ref),
+        (b.tenant_id, &b.node_ref),
+        what,
+    )
+    .await
+}
+
+/// [`refuses_pair`] for two devices known by tenant and reference: a carrier
+/// the center brokers outside the overlay (a tunnel, #22) names devices, not
+/// overlay nodes.
+pub async fn refuses_parties(
+    state: &NetworkState,
+    a: (ObjectId, &NodeRef),
+    b: (ObjectId, &NodeRef),
+    what: &str,
+) -> bool {
     let mode = mode(state);
-    if mode == Mode::Off || pair_zone(state, mode, a, b).await.is_some() {
+    if mode == Mode::Off {
         return false;
     }
-    let (a, b) = (a.id.unwrap_or_default(), b.id.unwrap_or_default());
+    let zones = Zones {
+        mode,
+        recipient: crate::org_relay::party_zone(state, a.0, a.1).await,
+        peer: crate::org_relay::party_zone(state, b.0, b.1).await,
+        line: false,
+    };
+    if zones.same() {
+        return false;
+    }
+    let (a, b) = (a.1, b.1);
     if mode == Mode::Enforce {
-        warn!(%a, %b, what, "business isolation: pair not in one zone; refusing");
+        warn!(
+            ?a,
+            ?b,
+            what,
+            "business isolation: pair not in one zone; refusing"
+        );
         return true;
     }
-    info!(%a, %b, what, "business isolation [warn]: would refuse a pair not in one zone");
+    info!(
+        ?a,
+        ?b,
+        what,
+        "business isolation [warn]: would refuse a pair not in one zone"
+    );
     false
 }
 

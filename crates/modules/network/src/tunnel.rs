@@ -34,7 +34,7 @@ use axum::extract::ws::{Message, WebSocket};
 use bson::{DateTime, oid::ObjectId};
 use futures::{SinkExt, StreamExt, stream::SplitSink};
 use roomler_ai_remote_control::{
-    models::{AgentStatus, OsKind, RelayMode, TunnelAuditEvent, TunnelAuditKind},
+    models::{AgentStatus, NodeRef, OsKind, RelayMode, TunnelAuditEvent, TunnelAuditKind},
     signaling::{
         ClientMsg, CloseReason, REJECT_REASON_NO_SESSION, REJECT_REASON_SESSION_MISMATCH,
         RejectKind, ServerMsg,
@@ -943,6 +943,40 @@ async fn handle_tunnel_open(
             }
         },
     };
+
+    // 3d. MeshHarbor #22 — the center brokers this tunnel's business bytes
+    // (its TURN relay or `/derp`), so it is business traffic like any overlay
+    // carrier: the two devices must be in one zone (#21). Only management
+    // traffic to the center itself is exempt. No cross-border line applies: a
+    // line is an overlay org-relay session, which this tunnel never rides.
+    let origin_ref = match orig.principal {
+        Principal::TunnelClient(id) => NodeRef::TunnelClient {
+            tunnel_client_id: id,
+        },
+        Principal::Agent(id) | Principal::Session { agent_id: id, .. } => {
+            NodeRef::Agent { agent_id: id }
+        }
+    };
+    if crate::business_isolation::refuses_parties(
+        state,
+        (orig.tenant_id, &origin_ref),
+        (agent.tenant_id, &NodeRef::Agent { agent_id }),
+        "tunnel",
+    )
+    .await
+    {
+        send_msg(
+            &orig.outbound_tx,
+            ServerMsg::Error {
+                session_id: None,
+                code: "business_isolation".into(),
+                message: "the two devices are not in one business zone".into(),
+                open_nonce: open_nonce.clone(),
+            },
+        )
+        .await;
+        return None;
+    }
 
     // Transport negotiation (Phase 1c + Phase 4 agent-version gate).
     // Negotiate quic-v1 only when the client requested it, advertised it

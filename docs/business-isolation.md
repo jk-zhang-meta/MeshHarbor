@@ -6,6 +6,17 @@ server hop overrides it, and a node whose zone is unknown, untrusted or expired 
 treated as being in neither zone. Management traffic (`www.itachi.fans`) is not
 business traffic and never passes through this gate.
 
+## Management is exempt, business over the center is not (#22)
+
+A device's own connection to the center (`www.itachi.fans`: enrollment, login, the
+agent WebSocket's hello, heartbeat, configuration and policy pushes, forward
+control) is management traffic. No gate here ever refuses it, whatever the zones:
+it is the connection the zone is observed on, and a mainland device must stay
+manageable. What the center *brokers between two devices* is business traffic, even
+though it starts on the same WebSocket: a tunnel whose bytes cross the center's TURN
+relay or `/derp` is gated like any overlay carrier. There is no line exception for
+it: a line is an overlay org-relay session, which a tunnel never rides.
+
 ## Where a node's zone comes from
 
 The zone is the one observed on the node's **live connection** when that connection
@@ -46,9 +57,10 @@ refusals you expect.
 | org relay mint, discovery, fallback, backbone | `org_relay::plan_mint_candidates_reusing` | the pair must share a zone (`zone_denied`, audited), and each candidate relay must be in that zone, explicit grants included; the one exception is an approved cross-border line (below) |
 | TURN grant and forced-DERP escalation | `overlay::handle_overlay_relay_request`, after the org offer | no grant is sent |
 | `/derp` forwarding | `derp_acl` table: each node's zone beside the ACL allow set | a frame passes only between two nodes with the same known zone, whatever the ACL mode |
+| center-brokered tunnel (`rc:tunnel.open`, from a tunnel client or an agent) | `tunnel::handle_tunnel_open`, step 3d, before any TURN credential or QUIC token is minted | `rc:error` `business_isolation`; no session (#22) |
 
 The netmap is the first line: an honest client never learns a withheld peer's key or
-endpoints. The other three close the paths a stale or modified client could take with
+endpoints. The others close the paths a stale or modified client could take with
 a key or node id it already holds.
 
 A joiner under `enforce` waits up to `JOIN_ZONE_WAIT` (2 s) for its own observation to
@@ -248,6 +260,14 @@ overlay SSH banner from the mainland member to Tokyo):
   from its own netmap, which under `enforce` holds no cross-zone key, except a
   line-only peer's, and the client never answers a direct handshake from that peer.
 
+- **Sessions with a person on one end are not gated.** Remote desktop
+  (`rc:session.request`, TURN for a browser), the hive viewer and shared SSH
+  (a device-share recipient's CLI) pair a user with a device, and a user has no zone:
+  only devices' connections are observed. Gating them needs a decision on what a
+  user's zone is (the browser connection's own observation is the obvious candidate).
+- **Hive replica streams** (member device ↔ source device, `hive/src/stream.rs`) pair
+  two zoned devices but live in the hive module, outside these gates.
+
 ## Code and tests
 
 | piece | where |
@@ -262,3 +282,4 @@ overlay SSH banner from the mainland member to Tokyo):
 | the line's resilience | `connection_ended`, `recheck_lines`, `line_zones_fit` in [`org_relay.rs`](../crates/modules/network/src/org_relay.rs); `stamp_verdict` in [`overlay.rs`](../crates/modules/network/src/overlay.rs) |
 | the line's TestApp tests | `a_cross_border_pair_rides_only_its_approved_line`, `a_line_ends_with_its_edge_and_with_either_relay`, `a_line_outlives_a_reconnect_from_its_zone_only` in [`business_isolation_tests.rs`](../crates/tests/src/business_isolation_tests.rs) |
 | relay and TURN TestApp tests | `isolation_*` in [`peer_relay_auto_tests.rs`](../crates/tests/src/peer_relay_auto_tests.rs) |
+| tunnel gate (#22) | `refuses_parties` in [`business_isolation.rs`](../crates/modules/network/src/business_isolation.rs), step 3d of `handle_tunnel_open` in [`tunnel.rs`](../crates/modules/network/src/tunnel.rs); test `a_center_brokered_tunnel_stays_in_one_zone` in [`business_isolation_tests.rs`](../crates/tests/src/business_isolation_tests.rs) |
