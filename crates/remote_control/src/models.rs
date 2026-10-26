@@ -3916,7 +3916,8 @@ pub struct PeerRelayAuditEvent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub denied: Option<PeerRelayDenyReason>,
     /// `revoke` — which of the four triggers fired (`mode_off` |
-    /// `acl_revoked` | `policy_revoked` | `device_removed` | `device_left`).
+    /// `acl_revoked` | `policy_revoked` | `device_removed` | `device_left`);
+    /// `mint` — `cross_border_line` when the pair crossed business zones.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
 }

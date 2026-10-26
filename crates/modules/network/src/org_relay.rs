@@ -840,6 +840,9 @@ struct BackbonePlan {
     private_endpoint: String,
 }
 
+/// The audit `reason` of a mint planned over a cross-border line (#21).
+pub const CROSS_BORDER_REASON: &str = "cross_border_line";
+
 async fn plan_backbone(
     state: &NetworkState,
     requester: &OverlayNode,
@@ -908,12 +911,32 @@ async fn plan_backbone(
         })
         .map(|e| e.endpoint.clone())
         .ok_or(if line.is_some() { D::ZoneDenied } else { D::NoRelay })?;
-    if line.is_some() {
-        info!(tenant_id = %requester.tenant_id, requester = %a, peer = %b, ingress = %ingress_id,
-            exit = %exit_id, "org-relay: a cross-border pair rides its approved line");
-    }
     if !crate::routes::peer_relay::backbone_endpoint_outside_overlay(&endpoint, &network.cidr) {
         return Err(D::NonRoutableEndpoint);
+    }
+    if line.is_some() {
+        // #21 rule 5: every crossing is audited, on top of the trial's own rows.
+        info!(tenant_id = %requester.tenant_id, requester = %a, peer = %b, ingress = %ingress_id,
+            exit = %exit_id, "org-relay: a cross-border pair rides its approved line");
+        let event = PeerRelayAuditEvent {
+            id: None,
+            tenant_id: requester.tenant_id,
+            action: PeerRelayAuditAction::Mint,
+            agent_id: Some(ingress.relay_agent_id),
+            user_id: None,
+            requester_node_id: Some(a),
+            peer_node_id: Some(b),
+            relay_node_id: Some(ingress_id),
+            serve: None,
+            vni: None,
+            warn_only: false,
+            at: DateTime::now(),
+            denied: None,
+            reason: Some(CROSS_BORDER_REASON.into()),
+        };
+        if let Err(e) = state.peer_relay_audit.record(event).await {
+            warn!(%e, "org-relay: cross-border audit write failed");
+        }
     }
     Ok(BackbonePlan {
         ingress,
