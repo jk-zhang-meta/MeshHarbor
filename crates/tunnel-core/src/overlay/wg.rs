@@ -3423,9 +3423,20 @@ impl WgDevice {
             table.insert(pk, Arc::new(rules.clone()));
         }
         let mut g = self.send.0.write().unwrap();
-        if g.ingress_acls.len() != table.len() {
+        // Any change, not only a count change: a narrowed or widened grant
+        // keeps the count, and is exactly what an operator needs to see land.
+        let changed = table
+            .iter()
+            .filter(|(k, v)| g.ingress_acls.get(*k) != Some(*v))
+            .count()
+            + g.ingress_acls
+                .keys()
+                .filter(|k| !table.contains_key(*k))
+                .count();
+        if changed > 0 {
             tracing::info!(
                 peers_with_rules = table.len(),
+                changed_peers = changed,
                 "overlay: per-source ingress rules updated"
             );
         }
