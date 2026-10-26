@@ -590,6 +590,29 @@ async fn isolation_enforce_refuses_an_explicit_cross_zone_grant() {
     rig.expect_refused("zone_denied").await;
 }
 
+/// ACL-02 — an explicit grant under an ACL in `warn` (which only logs) still
+/// does not carry a pair across the line.
+#[tokio::test]
+async fn isolation_enforce_refuses_a_cross_zone_grant_under_a_warn_acl() {
+    let mut rig = AutoRig::up_isolated(
+        "iso-x-aclw",
+        [Some(CN_A), Some(US_B), Some(US_R)],
+        "enforce",
+    )
+    .await;
+    rig.explicit().await;
+    let (s, v) = put(
+        &rig.app,
+        &format!("/api/tenant/{}/overlay-acl/mode", rig.seeded.tenant_id),
+        &rig.seeded.admin.access_token,
+        json!({ "mode": "warn" }),
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    rig.request().await;
+    rig.expect_refused("zone_denied").await;
+}
+
 /// #21 `enforce`: a same-zone pair is not carried through a relay in the
 /// other zone either.
 #[tokio::test]

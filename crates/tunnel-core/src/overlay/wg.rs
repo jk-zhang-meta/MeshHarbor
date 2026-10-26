@@ -4779,6 +4779,55 @@ mod tests {
     }
 
     /// A TCP segment with real flags, or a UDP datagram, for the #18 tests.
+    /// GEO-02 (#21) — a peer the netmap withdrew cannot reach us through the
+    /// endpoint it cached: the removal drops its WireGuard peer, so neither its
+    /// old session nor a fresh handshake to the same address gets through.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_withdrawn_peer_cannot_reach_us_through_its_cached_endpoint() {
+        let a = WgKeypair::generate();
+        let b = WgKeypair::generate();
+        let sock_a = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let sock_b = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let (addr_a, addr_b) = (sock_a.local_addr().unwrap(), sock_b.local_addr().unwrap());
+        let (mut dev_a, _rx_a) = WgDevice::new(a.secret.clone());
+        let (mut dev_b, mut rx_b) = WgDevice::new(b.secret.clone());
+        let (pk_a, pk_b) = (a.public.to_bytes(), b.public.to_bytes());
+        dev_a.add_peer(pk_b, IP_B, Carrier::direct(sock_a.clone(), addr_b), true);
+        dev_b.add_peer(pk_a, IP_A, Carrier::direct(sock_b.clone(), addr_a), false);
+        wait_connected(&dev_a, &pk_b).await;
+        let pkt = synthetic_l4(IP_A, IP_B, true, (5000, 6000), 0);
+        send_until_ok(&dev_a, &pk_b, &pkt).await;
+        assert!(
+            tokio::time::timeout(Duration::from_secs(2), rx_b.recv())
+                .await
+                .is_ok(),
+            "the control: delivered before the withdrawal"
+        );
+
+        dev_b.remove_peer(&pk_a).await;
+        for _ in 0..5 {
+            let _ = dev_a.send_to_peer(&pk_b, &pkt).await;
+        }
+        assert!(
+            tokio::time::timeout(Duration::from_millis(800), rx_b.recv())
+                .await
+                .is_err(),
+            "the old session delivers nothing"
+        );
+        // A forgets its session and dials the cached endpoint afresh.
+        dev_a.remove_peer(&pk_b).await;
+        dev_a.add_peer(pk_b, IP_B, Carrier::direct(sock_a.clone(), addr_b), true);
+        for _ in 0..20 {
+            let _ = dev_a.send_to_peer(&pk_b, &pkt).await;
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(
+            !dev_a.is_connected(&pk_b).await,
+            "a fresh handshake is never answered"
+        );
+        assert!(rx_b.try_recv().is_err(), "and nothing was delivered");
+    }
+
     fn synthetic_l4(
         src: Ipv4Addr,
         dst: Ipv4Addr,

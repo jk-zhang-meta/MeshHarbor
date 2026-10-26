@@ -959,6 +959,13 @@ async fn handle_overlay_srflx(
     updated.udp_dialer_ok = udp_dialer_ok;
     let epoch = next_epoch();
     fan_upsert_shaped(state, &updated, epoch, true).await;
+    // GEO-04 — a trickled address can contradict the zone the node's
+    // sessions were minted on.
+    if business_isolation::mode(state) == business_isolation::Mode::Enforce
+        && let NodeRef::Agent { agent_id } = &updated.node_ref
+    {
+        crate::org_relay::recheck_zones(state, *agent_id, "zone_conflict").await;
+    }
 }
 
 /// Phase B (overlay v3) — store a node's measured capability vector and fan

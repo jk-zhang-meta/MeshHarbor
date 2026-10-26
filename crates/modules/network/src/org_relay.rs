@@ -605,8 +605,12 @@ pub(crate) fn agent_zone(state: &NetworkState, agent: &Agent) -> Option<Business
 /// connection's opening observation on this pod. `None` (no live connection
 /// here, or no zone) refuses wherever a zone gates anything — the auto relay
 /// gate here, and the #21 isolation in netmap shaping.
+///
+/// GEO-04 — a zone the node's own advertised public addresses contradict is
+/// no zone ([`addresses_agree`]).
 pub(crate) async fn node_zone(state: &NetworkState, node: &OverlayNode) -> Option<BusinessZone> {
-    party_zone(state, node.tenant_id, &node.node_ref).await
+    let (zone, _) = observed_zone(state, node.tenant_id, &node.node_ref).await?;
+    addresses_agree(state, node, zone).then_some(zone)
 }
 
 /// [`node_zone`] for a session party, known by its tenant and reference.
@@ -615,6 +619,24 @@ pub(crate) async fn party_zone(
     tenant_id: ObjectId,
     node_ref: &NodeRef,
 ) -> Option<BusinessZone> {
+    let (zone, machine_id) = observed_zone(state, tenant_id, node_ref).await?;
+    match state
+        .overlay_nodes
+        .find_live_by_tenant_and_machine(tenant_id, &machine_id)
+        .await
+    {
+        Ok(Some(node)) => addresses_agree(state, &node, zone).then_some(zone),
+        // Not in the overlay: it advertised nothing to contradict the zone.
+        _ => Some(zone),
+    }
+}
+
+/// The zone a device's live connection was observed in, and its machine id.
+async fn observed_zone(
+    state: &NetworkState,
+    tenant_id: ObjectId,
+    node_ref: &NodeRef,
+) -> Option<(BusinessZone, String)> {
     match node_ref {
         NodeRef::Agent { agent_id } => {
             let agent = state
@@ -623,7 +645,7 @@ pub(crate) async fn party_zone(
                 .find_live_in_tenant(tenant_id, *agent_id)
                 .await
                 .ok()?;
-            agent_zone(state, &agent)
+            Some((agent_zone(state, &agent)?, agent.machine_id))
         }
         NodeRef::TunnelClient { tunnel_client_id } => {
             let client = state
@@ -633,9 +655,51 @@ pub(crate) async fn party_zone(
                 .ok()?;
             let conn = state.org_relay.live_conn(*tunnel_client_id)?;
             let device = AuthenticatedDevice::from_tunnel_client(&client).ok()?;
-            roomler_core::business_authority::connection_zone(&state.core, &device, &conn)
+            let zone =
+                roomler_core::business_authority::connection_zone(&state.core, &device, &conn)?;
+            Some((zone, client.machine_id))
         }
     }
+}
+
+/// How often one node's conflicting addresses are logged.
+const CONFLICT_LOG_GAP: Duration = Duration::from_secs(600);
+static CONFLICT_LOGGED: std::sync::LazyLock<DashMap<ObjectId, Instant>> =
+    std::sync::LazyLock::new(DashMap::new);
+
+/// GEO-04 — whether every public address `node` advertised for its data
+/// plane (its STUN-observed srflx candidates and its NIC's global addresses,
+/// IPv4 and IPv6) geolocates to `zone` or to nothing known. A control
+/// connection observed in one zone while the node's traffic leaves from the
+/// other (a proxied control path, or a dual-stack host whose IPv6 exits
+/// elsewhere) is conflicting evidence, and conflicting evidence is no zone.
+fn addresses_agree(state: &NetworkState, node: &OverlayNode, zone: BusinessZone) -> bool {
+    let conflict = node
+        .srflx_endpoints
+        .iter()
+        .chain(&node.lan_endpoints)
+        .filter_map(|e| e.parse::<SocketAddr>().ok())
+        .map(|sa| sa.ip())
+        .filter(is_global_unicast)
+        .find(|ip| {
+            roomler_core::business_authority::address_zone(&state.core, *ip)
+                .is_some_and(|z| z != zone)
+        });
+    let Some(ip) = conflict else {
+        return true;
+    };
+    if let Some(id) = node.id {
+        let now = Instant::now();
+        let quiet = CONFLICT_LOGGED
+            .get(&id)
+            .is_some_and(|t| now.duration_since(*t) < CONFLICT_LOG_GAP);
+        if !quiet {
+            CONFLICT_LOGGED.insert(id, now);
+            warn!(node = %id, ?zone, %ip,
+                "business isolation: the node's control connection and an address it advertised are in different zones; it has no zone");
+        }
+    }
+    false
 }
 
 /// At most this many relays are offered to one member to probe.
@@ -741,7 +805,7 @@ async fn probe_targets_inner(
             overlay_ip: &node.overlay_ip,
             approved_routes: &relay_routes,
         };
-        let relay_zone = agent_zone(state, &agent);
+        let relay_zone = agent_zone(state, &agent).filter(|z| addresses_agree(state, &node, *z));
         let granted = agent.peer_relay_policy.serve
             && evaluate_overlay(&acl.policies, &src, relay_ref).visible;
         let implicit = !granted
@@ -968,13 +1032,15 @@ async fn plan_mint_candidates_reusing(
             && evaluate_overlay(&acl.policies, &peer_src, relay_ref).visible;
         // `auto`: requester, peer and relay all observed in ONE zone on their
         // live connections; unknown anywhere refuses (hard isolation).
+        // GEO-04 — a relay is judged like any node: its own addresses can
+        // contradict its connection's zone.
+        let relay_zone = agent_zone(state, &agent).filter(|z| addresses_agree(state, &node, *z));
         let implicit = !granted && scope == ZoneScope::Pair && servers.contains(&agent_id) && {
             if member_zone.is_none() {
                 let a = node_zone(state, requester).await;
                 let b = node_zone(state, peer).await;
                 member_zone = Some(a.filter(|_| a == b));
             }
-            let relay_zone = agent_zone(state, &agent);
             debug!(%tenant_id, relay = %relay_id, ?relay_zone, ?member_zone, "org-relay: implicit grant zones");
             relay_zone.is_some() && member_zone == Some(relay_zone)
         };
@@ -986,7 +1052,7 @@ async fn plan_mint_candidates_reusing(
             }
             continue;
         }
-        if iso_mode != Mode::Off && (iso_zone.is_none() || agent_zone(state, &agent) != iso_zone) {
+        if iso_mode != Mode::Off && (iso_zone.is_none() || relay_zone != iso_zone) {
             if iso_mode == Mode::Enforce {
                 zone_denied += 1;
                 continue;

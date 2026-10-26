@@ -353,6 +353,30 @@ fn valid_connection_id(value: &str) -> bool {
             .all(|v| v.is_ascii_alphanumeric() || b"-_:.".contains(&v))
 }
 
+/// Metadata is a database-defined version, not a content signature. A future,
+/// empty or stale build identity cannot support the security classification.
+fn dataset_current(geo: &GeoIpSecurityLookup, now_secs: u64) -> bool {
+    geo.dataset.as_ref().is_some_and(|d| {
+        !d.database_type.is_empty()
+            && d.build_epoch > 0
+            && d.build_epoch <= now_secs
+            && now_secs - d.build_epoch <= MAX_GEOIP_DATASET_AGE_SECS
+    })
+}
+
+/// GEO-04 — the zone one address geolocates to, under the observation's
+/// dataset rule (a stale or future dataset answers nothing). For evidence that
+/// CONFLICTS with a connection's zone only: an address a device advertised is
+/// its own claim, so it may withdraw a zone but never grant one.
+pub fn address_zone(core: &Core, ip: std::net::IpAddr) -> Option<BusinessZone> {
+    let geo = core.geoip.security_lookup(ip);
+    let now_secs = DateTime::now().timestamp_millis().max(0) as u64 / 1000;
+    if !dataset_current(&geo, now_secs) {
+        return None;
+    }
+    known_zone(geo.country_code.as_deref())
+}
+
 fn known_zone(code: Option<&str>) -> Option<BusinessZone> {
     match code {
         Some("CN") => Some(BusinessZone::Mainland),
@@ -392,13 +416,7 @@ fn observation(
     // Metadata is a database-defined version, not a content signature. A future,
     // empty or stale build identity cannot support the security classification.
     let now_secs = now.timestamp_millis().max(0) as u64 / 1000;
-    let dataset_current = geo.dataset.as_ref().is_some_and(|d| {
-        !d.database_type.is_empty()
-            && d.build_epoch > 0
-            && d.build_epoch <= now_secs
-            && now_secs - d.build_epoch <= MAX_GEOIP_DATASET_AGE_SECS
-    });
-    let country_code = if source_current && dataset_current {
+    let country_code = if source_current && dataset_current(&geo, now_secs) {
         geo.country_code
     } else {
         None

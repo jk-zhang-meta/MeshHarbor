@@ -48,6 +48,18 @@ No trusted proxy chain, no GeoIP database, a stale dataset, or no live connectio
 this pod all mean **no zone**, and no zone matches nothing, not even another node
 with no zone.
 
+**Conflicting evidence is no zone either (GEO-04).** The control connection is one
+egress; a node's data plane may leave through another. Every public address the node
+advertised for its traffic (its STUN-observed srflx candidates and its NIC's global
+addresses, IPv4 and IPv6) is geolocated under the same dataset rule
+(`business_authority::address_zone`), and if any lands in the other zone the node has
+no zone (`org_relay::addresses_agree`): a control path proxied out of one zone while
+traffic leaves the other, or a dual-stack host whose IPv6 exits elsewhere, is refused
+rather than trusted. An address with no known zone is not a conflict. These addresses
+are the node's own claims, so they can only withdraw a zone, never grant one. A
+trickle that brings a conflict reshapes the node's peers at once and, under
+`enforce`, ends its sessions (`zone_conflict`). Relays are judged the same way.
+
 ## The setting
 
 `app.business_isolation` (`ROOMLER__APP__BUSINESS_ISOLATION`):

@@ -184,6 +184,67 @@ async fn enforce_withholds_a_node_without_a_zone_from_everyone() {
     assert_ne!(us_a_id, bare_id);
 }
 
+/// ACL-02 — the tenant's ACL posture never lifts the isolation: with the ACL
+/// in `warn` (which only logs) the cross-zone peer is still withheld.
+#[tokio::test]
+async fn an_acl_in_warn_does_not_lift_the_isolation() {
+    let rig = Rig::up("iso-acl-warn", "enforce").await;
+    let (s, v) = put(
+        &rig.app,
+        &format!("/api/tenant/{}/overlay-acl/mode", rig.seeded.tenant_id),
+        &rig.seeded.admin.access_token,
+        json!({ "mode": "warn" }),
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    let mut us_a = rig.device("iso-aw-us-a", Some(US_A)).await;
+    let mut cn_a = rig.device("iso-aw-cn-a", Some(CN_A)).await;
+    join(&mut us_a, 1, Some(true), "203.0.113.10:41641").await;
+    assert!(peer_ids(&join(&mut cn_a, 2, Some(true), "203.0.113.11:41641").await).is_empty());
+    let cn_a_id = rig.node("iso-aw-cn-a").await;
+    let (up, rm) = deltas(&mut us_a, Duration::from_millis(600)).await;
+    assert!(
+        !up.contains(&cn_a_id) && rm.contains(&cn_a_id),
+        "us-a: up {up:?} rm {rm:?}"
+    );
+}
+
+/// GEO-04 — a node whose control connection was observed in one zone but
+/// whose traffic leaves from the other (its trickled srflx address) has no
+/// zone, and under `enforce` is withdrawn from its peers; an address in its
+/// own zone changes nothing.
+#[tokio::test]
+async fn an_address_in_the_other_zone_withdraws_the_nodes_zone() {
+    let rig = Rig::up("iso-conflict", "enforce").await;
+    let mut us_a = rig.device("iso-c-us-a", Some(US_A)).await;
+    let mut us_b = rig.device("iso-c-us-b", Some(US_B)).await;
+    join(&mut us_a, 1, Some(true), "203.0.113.10:41641").await;
+    let a_sees = peer_ids(&join(&mut us_b, 2, Some(true), "203.0.113.11:41641").await);
+    let us_b_id = rig.node("iso-c-us-b").await;
+    assert_eq!(a_sees.len(), 1, "the control: one zone, visible");
+    let _ = deltas(&mut us_a, Duration::from_millis(600)).await;
+
+    let srflx =
+        |ip: &str| json!({ "t": "rc:overlay.srflx", "candidates": [format!("{ip}:41641")] });
+    us_b.send(Message::Text(srflx(US_B).to_string().into()))
+        .await
+        .unwrap();
+    let (_, rm) = deltas(&mut us_a, Duration::from_millis(800)).await;
+    assert!(
+        !rm.contains(&us_b_id),
+        "an address in its own zone keeps it: rm {rm:?}"
+    );
+
+    us_b.send(Message::Text(srflx(CN_A).to_string().into()))
+        .await
+        .unwrap();
+    let (up, rm) = deltas(&mut us_a, Duration::from_millis(800)).await;
+    assert!(
+        !up.contains(&us_b_id) && rm.contains(&us_b_id),
+        "a CN address withdraws it: up {up:?} rm {rm:?}"
+    );
+}
+
 #[tokio::test]
 async fn warn_withholds_nothing() {
     let rig = Rig::up("iso-warn", "warn").await;
