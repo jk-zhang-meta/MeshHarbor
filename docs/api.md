@@ -328,7 +328,7 @@ before it leaves the host.
 | DELETE | `…/overlay-node/{nid}` | Evict from the mesh + release the address back to the pool |
 | GET/POST | `…/overlay-acl` | Overlay L3 ACL policies |
 | GET/PUT | `…/overlay-acl/mode` | Tenant posture: `off` (default) \| `warn` \| `enforce` |
-| GET/PUT | `…/server-link` | Server topology: `GET` lists the current servers and links; `PUT {a, b, enabled}` (agent ids, `ADMINISTRATOR`) adds, enables or disables the link between two servers |
+| GET/PUT | `…/server-link` | Server topology: `GET` lists the current servers (with the `country` and `zone` of each one's last observed connection, for the map) and links; `PUT {a, b, enabled}` (agent ids, `ADMINISTRATOR`) adds, enables or disables the link between two servers |
 | DELETE | `…/server-link/{a}/{b}` | Remove a server link (`ADMINISTRATOR`) |
 | GET/PUT/DELETE | `…/overlay-acl/{pid}` | ACL policy CRUD. A deleted policy is a **404 on all three** (GET, PUT, repeat DELETE), exactly as it is absent from the listing and from the netmap compiler's set — it is never served, edited (in particular never re-`enabled`) or compiled again, and a repeat DELETE re-fans nobody |
 | GET/PUT | `…/magic-dns` | Tenant MagicDNS domain + upstream resolvers |

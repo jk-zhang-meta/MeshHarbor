@@ -338,6 +338,34 @@ async fn servers_meet_by_link_alone_whatever_their_zones() {
         rm.contains(cn_s),
         "disabled: us-s is told to remove cn-s: {rm:?}"
     );
+
+    // The topology the map draws: every server with where it was seen, and
+    // the (now disabled) edge.
+    let topo: Value = rig
+        .app
+        .auth_get(
+            &format!("/api/tenant/{}/server-link", rig.seeded.tenant_id),
+            &rig.seeded.admin.access_token,
+        )
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let servers = topo["servers"].as_array().unwrap();
+    assert_eq!(servers.len(), 3, "{topo}");
+    let cn = servers
+        .iter()
+        .find(|s| s["agent_id"] == devs[1].0.as_str())
+        .unwrap();
+    assert_eq!(
+        (cn["country"].as_str(), cn["zone"].as_str()),
+        (Some("CN"), Some("mainland")),
+        "{topo}"
+    );
+    assert_eq!(topo["links"].as_array().unwrap().len(), 1, "{topo}");
+    assert_eq!(topo["links"][0]["enabled"], false, "{topo}");
 }
 
 #[tokio::test]

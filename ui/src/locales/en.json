@@ -110,6 +110,7 @@
     "magicDns": "MagicDNS",
     "netInventory": "Network inventory",
     "managedForwards": "Managed forwards",
+    "serverTopology": "Server topology",
     "analytics": "Analytics",
     "observability": "Observability",
     "growth": "Growth",

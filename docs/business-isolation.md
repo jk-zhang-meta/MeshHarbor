@@ -30,6 +30,13 @@ sessions it no longer allows (`server_link_changed`). The rule follows
 missing link would separate (put the links in place, then switch), `off` ignores it.
 One permission check (`business_isolation::permit_refs`) serves every gate.
 
+The admin page **Network → Server topology** draws this on a world map: each server
+at its country (the country of its last observed connection, so GeoIP precision:
+several servers in one country share a small ring), coloured by zone, each link as
+the great circle between its two servers (solid on, dashed off). Click one server,
+then another, to add a link; click a link to switch it or remove it. The same links
+are listed under the map as rows.
+
 ## A device that roams (GEO-05)
 
 A zone holds for one connection, so a device that moves into the other zone

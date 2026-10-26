@@ -312,6 +312,8 @@ const routes: RouteRecordRaw[] = [
               { path: 'inventory',      name: 'network-inventory',      props: true, component: () => import('@/components/admin/NetInventorySection.vue') },
               // MeshHarbor #20 — declared forwards, planned before any effect.
               { path: 'forwards',       name: 'network-forwards',       props: true, component: () => import('@/components/admin/ManagedForwardSection.vue') },
+              // Server topology: which servers connect, drawn on a world map.
+              { path: 'servers',        name: 'network-servers',        props: true, component: () => import('@/components/admin/ServerTopologySection.vue') },
             ],
           },
           {

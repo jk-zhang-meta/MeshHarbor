@@ -25,6 +25,7 @@ use roomler_ai_db::models::role::permissions;
 use roomler_ai_remote_control::models::ServerLink;
 use serde::{Deserialize, Serialize};
 
+use roomler_core::business_authority::{self, AuthenticatedDevice, BusinessZone};
 use roomler_core::guards::require_permission;
 use roomler_core::{ApiError, extractors::auth::AuthUser};
 
@@ -35,6 +36,10 @@ pub struct ServerView {
     pub agent_id: String,
     pub name: String,
     pub online: bool,
+    /// ISO country of the device's last observed connection (GeoIP), for
+    /// placing it on the map; `None` when it has none or the lookup failed.
+    pub country: Option<String>,
+    pub zone: Option<BusinessZone>,
 }
 
 #[derive(Debug, Serialize)]
@@ -87,18 +92,24 @@ pub async fn list(
         "MANAGE_AGENTS",
     )
     .await?;
-    let servers = roomler_core::business_authority::current_server_agents(&state.core, tid)
-        .await?
-        .into_iter()
-        .filter_map(|a| {
-            let id = a.id?;
-            Some(ServerView {
-                agent_id: id.to_hex(),
-                name: a.name,
-                online: state.fleet.rc_hub.is_agent_online(id),
-            })
-        })
-        .collect();
+    let mut servers = Vec::new();
+    for a in business_authority::current_server_agents(&state.core, tid).await? {
+        let Some(id) = a.id else { continue };
+        let seen = match AuthenticatedDevice::from_agent(&a) {
+            Ok(device) => business_authority::get_device_authority(&state.core, &device)
+                .await
+                .ok()
+                .and_then(|v| v.last_observation),
+            Err(_) => None,
+        };
+        servers.push(ServerView {
+            agent_id: id.to_hex(),
+            name: a.name,
+            online: state.fleet.rc_hub.is_agent_online(id),
+            country: seen.as_ref().and_then(|o| o.country_code.clone()),
+            zone: seen.and_then(|o| o.zone),
+        });
+    }
     let links = state
         .overlay_networks
         .get_or_create(tid)
@@ -135,7 +146,7 @@ pub async fn set(
         ));
     }
     let servers: Vec<ObjectId> =
-        roomler_core::business_authority::current_server_agents(&state.core, tid)
+        business_authority::current_server_agents(&state.core, tid)
             .await?
             .into_iter()
             .filter_map(|s| s.id)
