@@ -708,3 +708,129 @@ async fn the_nft_backend_is_gated_on_the_ingress_and_its_changes_are_confirmed()
     );
     drop(wa);
 }
+
+/// FWD-02: a destination behind the overlay (another node's overlay
+/// address) is dialled through it. The overlay ACL applies to the ingress,
+/// and to every overlay node the forward's sources admit: a forward must not
+/// carry a node past its own ACL. UDP into the overlay is refused.
+#[tokio::test]
+async fn an_overlay_destination_is_gated_by_the_acl_for_the_ingress_and_its_sources() {
+    use crate::peer_relay_mint_tests::join;
+    let app = TestApp::spawn().await;
+    let seeded = app.seed_tenant("mf-ovl").await;
+    let (tid, tok) = (&seeded.tenant_id, &seeded.admin.access_token);
+    let (a, a_tok) = enroll(&app, &seeded, "mf-ovl-a").await;
+    let (_, b_tok) = enroll(&app, &seeded, "mf-ovl-b").await;
+    let (_, c_tok) = enroll(&app, &seeded, "mf-ovl-c").await;
+    let mut wa = connect_from(&app, &a_tok, &["managed-forward"], None).await;
+    let mut wb = connect_from(&app, &b_tok, &[], None).await;
+    let mut wc = connect_from(&app, &c_tok, &[], None).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    join(&mut wa, 1, Some(true), "203.0.113.1:41641").await;
+    join(&mut wb, 2, Some(true), "203.0.113.2:41641").await;
+    join(&mut wc, 3, Some(true), "203.0.113.3:41641").await;
+    report_listener(&app, &mut wa, tid, tok, &a, 22).await;
+    let node = |machine: &'static str| {
+        let app = &app;
+        let tid = bson::oid::ObjectId::parse_str(tid).unwrap();
+        async move {
+            let n = app
+                .state
+                .network()
+                .overlay_nodes
+                .find_live_by_tenant_and_machine(tid, machine)
+                .await
+                .unwrap()
+                .unwrap();
+            (n.id.unwrap().to_hex(), n.overlay_ip)
+        }
+    };
+    let (na, _) = node("mf-ovl-a").await;
+    let (_, ip_b) = node("mf-ovl-b").await;
+    let (nc, ip_c) = node("mf-ovl-c").await;
+    let plan_path = format!("/api/tenant/{tid}/managed-forward/plan");
+    let body = |proto: &str| {
+        let mut s = spec(&a, 15432);
+        s["dest_addr"] = json!(ip_b);
+        s["proto"] = json!(proto);
+        s["sources"] = json!([format!("{ip_c}/32")]);
+        s
+    };
+    let acl_mode = |mode: &'static str| {
+        let (app, tok) = (&app, tok.clone());
+        let path = format!("/api/tenant/{tid}/overlay-acl/mode");
+        async move {
+            let r = app
+                .auth_put(&path, &tok)
+                .json(&json!({ "mode": mode }))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(r.status().as_u16(), 200, "acl mode {mode}");
+        }
+    };
+    let grant = |from: String, cidr: String| {
+        let (app, tok) = (&app, tok.clone());
+        let path = format!("/api/tenant/{tid}/overlay-acl");
+        async move {
+            let r = app
+                .auth_post(&path, &tok)
+                .json(&json!({ "name": format!("{from} to {cidr}"),
+                    "sources": [{ "kind": "node_id", "id": from }], "via": [{ "kind": "all_nodes" }],
+                    "destinations": [{ "cidr": cidr }] }))
+                .send()
+                .await
+                .unwrap();
+            assert!(r.status().is_success(), "policy: {}", r.status());
+        }
+    };
+
+    // The ACL off: every node already reaches it.
+    let (_, plan) = post(&app, &plan_path, tok, &body("tcp")).await;
+    assert_eq!(verdict(&plan, "overlay path"), "pass", "{plan}");
+    assert_eq!(verdict(&plan, "overlay acl"), "pass");
+    assert_eq!(plan["via_overlay"], json!(true));
+    assert!(
+        plan.to_string().contains(&format!("({ip_b})")),
+        "names the node: {plan}"
+    );
+
+    // UDP into the overlay: refused.
+    let (_, plan) = post(&app, &plan_path, tok, &body("udp")).await;
+    assert_eq!(verdict(&plan, "overlay path"), "fail");
+
+    // Enforced with no grant: the ingress may not reach it.
+    acl_mode("enforce").await;
+    let (_, plan) = post(&app, &plan_path, tok, &body("tcp")).await;
+    assert_eq!(verdict(&plan, "overlay acl"), "fail", "{plan}");
+    assert_eq!(plan["ok"], json!(false));
+
+    // The ingress granted, but c (admitted by the sources) is not.
+    grant(na, format!("{ip_b}/32")).await;
+    let (_, plan) = post(&app, &plan_path, tok, &body("tcp")).await;
+    assert_eq!(verdict(&plan, "overlay acl"), "pass", "{plan}");
+    assert_eq!(verdict(&plan, "source principals"), "fail");
+    assert!(
+        plan.to_string().contains(&format!("({ip_c})")),
+        "names who would be carried: {plan}"
+    );
+
+    // Both granted: it passes, and the push says to dial through the overlay.
+    grant(nc, format!("{ip_b}/32")).await;
+    let _ = recv_t(&mut wa, "rc:forward.set", Duration::from_millis(1500)).await;
+    let (s, created) = post(
+        &app,
+        &format!("/api/tenant/{tid}/managed-forward"),
+        tok,
+        &body("tcp"),
+    )
+    .await;
+    assert_eq!(s, 201, "{created}");
+    assert_eq!(verdict(&created["plan"], "source principals"), "pass");
+    let set = recv_t(&mut wa, "rc:forward.set", Duration::from_secs(3))
+        .await
+        .expect("pushed");
+    assert_eq!(set["forwards"][0]["via_overlay"], json!(true), "{set}");
+    assert_eq!(set["forwards"][0]["dest_addr"], json!(ip_b));
+    drop((wb, wc));
+}

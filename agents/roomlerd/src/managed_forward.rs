@@ -6,6 +6,12 @@
 //! sees this node). It never touches routes, the firewall or the node's own
 //! control connection.
 //!
+//! A forward whose destination is behind the overlay (`via_overlay`: a
+//! node's overlay address, or a subnet a node routes) dials it through this
+//! node's overlay: its userspace stack on a netstack node ([`OverlayDial`]),
+//! the host's routes on a node with a TUN. TCP only; the server refuses UDP
+//! into the overlay, and so does this end.
+//!
 //! A forward the server marks `nft` runs on the owned nftables table
 //! instead (`managed_forward_nft`, Linux, root, primary enrollment only: the
 //! table is host-wide); anywhere else it is reported failed, never relayed
@@ -47,6 +53,20 @@ pub struct Assignment {
     /// `(network, prefix length)`; the source must fall in one.
     pub sources: Vec<(IpAddr, u8)>,
     pub dest: SocketAddr,
+    /// Dial `dest` through the overlay ([`OverlayDial`]).
+    pub via_overlay: bool,
+}
+
+/// A byte stream a forward relays to.
+pub trait Io: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send {}
+impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send> Io for T {}
+
+/// How a forward reaches a destination behind the overlay on a netstack
+/// node: that org's userspace stack. A node with a TUN has none; its routes
+/// already carry overlay addresses.
+#[async_trait::async_trait]
+pub trait OverlayDial: Send + Sync {
+    async fn tcp(&self, dst: SocketAddr) -> std::io::Result<Box<dyn Io>>;
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -104,9 +124,21 @@ pub struct Forwarders {
     failed: HashMap<String, (u64, String)>,
     /// Listeners started over this value's life (tests check idempotence).
     starts: u64,
+    /// The overlay dialer for `via_overlay` forwards, if this node has one.
+    pub overlay: Option<Arc<dyn OverlayDial>>,
 }
 
 impl Forwarders {
+    /// Forwards whose overlay destinations dial through `overlay`.
+    pub fn with_overlay(overlay: Option<Arc<dyn OverlayDial>>) -> Self {
+        Self {
+            running: HashMap::new(),
+            failed: HashMap::new(),
+            starts: 0,
+            overlay,
+        }
+    }
+
     /// Make the running set equal `want`; report every desired forward.
     pub async fn reconcile(&mut self, want: Vec<Assignment>) -> Vec<Status> {
         let keep: std::collections::HashSet<&str> = want.iter().map(|a| a.id.as_str()).collect();
@@ -146,7 +178,7 @@ impl Forwarders {
                 let _ = old.task.await;
             }
             self.starts += 1;
-            match start(a.clone()).await {
+            match start(a.clone(), self.overlay.clone()).await {
                 Ok(task) => {
                     self.failed.remove(&a.id);
                     self.running.insert(
@@ -190,12 +222,16 @@ impl Drop for Forwarders {
     }
 }
 
-async fn start(a: Assignment) -> Result<JoinHandle<()>, String> {
+async fn start(
+    a: Assignment,
+    overlay: Option<Arc<dyn OverlayDial>>,
+) -> Result<JoinHandle<()>, String> {
     match a.proto {
         L4::Tcp => {
             let l = TcpListener::bind(a.bind).await.map_err(|e| e.to_string())?;
-            Ok(tokio::spawn(serve_tcp(a, l)))
+            Ok(tokio::spawn(serve_tcp(a, l, overlay)))
         }
+        L4::Udp if a.via_overlay => Err("UDP into the overlay is not supported".into()),
         L4::Udp => {
             let s = UdpSocket::bind(a.bind).await.map_err(|e| e.to_string())?;
             Ok(tokio::spawn(serve_udp(a, Arc::new(s))))
@@ -203,7 +239,17 @@ async fn start(a: Assignment) -> Result<JoinHandle<()>, String> {
     }
 }
 
-async fn serve_tcp(a: Assignment, l: TcpListener) {
+async fn dial(
+    a: &Assignment,
+    overlay: Option<&Arc<dyn OverlayDial>>,
+) -> std::io::Result<Box<dyn Io>> {
+    match overlay.filter(|_| a.via_overlay) {
+        Some(d) => d.tcp(a.dest).await,
+        None => Ok(Box::new(TcpStream::connect(a.dest).await?)),
+    }
+}
+
+async fn serve_tcp(a: Assignment, l: TcpListener, overlay: Option<Arc<dyn OverlayDial>>) {
     let slots = Arc::new(Semaphore::new(MAX_TCP_CONNS));
     let a = Arc::new(a);
     loop {
@@ -219,10 +265,10 @@ async fn serve_tcp(a: Assignment, l: TcpListener) {
             debug!(forward = %a.id, "managed forward: connection cap reached");
             continue;
         };
-        let a = a.clone();
+        let (a, overlay) = (a.clone(), overlay.clone());
         tokio::spawn(async move {
             let _permit = permit;
-            match tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(a.dest)).await {
+            match tokio::time::timeout(CONNECT_TIMEOUT, dial(&a, overlay.as_ref())).await {
                 Ok(Ok(mut up)) => {
                     let _ = tokio::io::copy_bidirectional(&mut client, &mut up).await;
                 }
@@ -320,10 +366,14 @@ pub enum Cmd {
 /// stops: a device the server can no longer reach (revoked, removed) keeps
 /// no listener or nft rule it was given. `native` lets this connection run
 /// the nft backend (the primary enrollment: the table is host-wide).
-pub fn spawn_agent(outbound: mpsc::Sender<ClientMsg>, native: bool) -> mpsc::Sender<Cmd> {
+pub fn spawn_agent(
+    outbound: mpsc::Sender<ClientMsg>,
+    native: bool,
+    overlay: Option<Arc<dyn OverlayDial>>,
+) -> mpsc::Sender<Cmd> {
     let (tx, mut rx) = mpsc::channel::<Cmd>(4);
     tokio::spawn(async move {
-        let mut forwarders = Forwarders::default();
+        let mut forwarders = Forwarders::with_overlay(overlay);
         #[cfg(target_os = "linux")]
         let mut nft = (native && crate::managed_forward_nft::available())
             .then(crate::managed_forward_nft::NftBackend::system);
@@ -512,6 +562,7 @@ pub fn to_assignments(
                     proto: w.proto,
                     sources,
                     dest,
+                    via_overlay: w.via_overlay,
                 });
             }
             _ => bad.push(ManagedForwardStatusWire {
@@ -589,6 +640,7 @@ mod tests {
             proto,
             sources: sources.iter().map(|s| net(s)).collect(),
             dest,
+            via_overlay: false,
         }
     }
 
@@ -605,6 +657,7 @@ mod tests {
             dest_port: 2000,
             backend: ForwardBackend::Userspace,
             preserve_source: false,
+            via_overlay: false,
         };
         let (ok, bad) = to_assignments(vec![
             w("127.0.0.1", &["127.0.0.0/8"]),
@@ -695,6 +748,58 @@ mod tests {
             .unwrap()
             .unwrap_or(0);
         assert_eq!(n, 0, "a source outside the CIDRs is closed, not relayed");
+    }
+
+    /// A dialer that records where it was asked to go and connects to a
+    /// local stand-in for the overlay destination.
+    struct FakeOverlay {
+        asked: std::sync::Mutex<Vec<SocketAddr>>,
+        real: SocketAddr,
+    }
+
+    #[async_trait::async_trait]
+    impl OverlayDial for FakeOverlay {
+        async fn tcp(&self, dst: SocketAddr) -> std::io::Result<Box<dyn Io>> {
+            self.asked.lock().unwrap().push(dst);
+            Ok(Box::new(TcpStream::connect(self.real).await?))
+        }
+    }
+
+    #[tokio::test]
+    async fn an_overlay_destination_is_dialled_through_the_overlay() {
+        let echo = tcp_echo().await;
+        let port = free_port().await;
+        let fake = Arc::new(FakeOverlay {
+            asked: Default::default(),
+            real: echo,
+        });
+        let mut f = Forwarders::with_overlay(Some(fake.clone()));
+        let behind: SocketAddr = "100.64.0.7:5432".parse().unwrap();
+        let mut a = assignment("o", 1, port, L4::Tcp, &["127.0.0.0/8"], behind);
+        a.via_overlay = true;
+        assert_eq!(
+            f.reconcile(vec![a.clone()]).await[0].state,
+            State::Listening
+        );
+        let mut c = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        c.write_all(b"hi").await.unwrap();
+        let mut b = [0u8; 2];
+        c.read_exact(&mut b).await.unwrap();
+        assert_eq!(&b, b"hi");
+        assert_eq!(
+            *fake.asked.lock().unwrap(),
+            vec![behind],
+            "dialled the overlay address"
+        );
+
+        // UDP into the overlay is refused here too, never relayed elsewhere.
+        let mut u = assignment("u", 1, free_port().await, L4::Udp, &["127.0.0.0/8"], behind);
+        u.via_overlay = true;
+        let st = f.reconcile(vec![a, u]).await;
+        assert!(
+            matches!(&st[1].state, State::Failed(e) if e.contains("overlay")),
+            "{st:?}"
+        );
     }
 
     #[tokio::test]

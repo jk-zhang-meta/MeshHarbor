@@ -12477,6 +12477,11 @@ pub struct ManagedForwardAssignment {
     pub backend: ForwardBackend,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub preserve_source: bool,
+    /// The destination is behind the overlay (a node's overlay address, or
+    /// inside a subnet a node routes): dial it through the node's overlay
+    /// data plane, not the host's own routes. TCP and userspace only.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub via_overlay: bool,
 }
 
 /// One forward's state in a [`ClientMsg::ManagedForwardStatus`].

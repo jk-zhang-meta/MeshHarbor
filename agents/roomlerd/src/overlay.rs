@@ -887,6 +887,46 @@ pub fn netstack_pinger(
     }))
 }
 
+/// MeshHarbor #20 FWD-02 — how a managed forward dials a destination behind
+/// the overlay on a netstack node: this org's own stack. `None` unless this
+/// node is in netstack mode: an OS-TUN node's routes carry overlay addresses.
+#[cfg(feature = "overlay-netstack")]
+pub fn managed_forward_dialer(
+    cfg: &AgentConfig,
+) -> Option<Arc<dyn crate::managed_forward::OverlayDial>> {
+    use tunnel_core::overlay::netstack::NetstackHandle;
+
+    netstack_socks_port(cfg)?;
+
+    struct NsDial {
+        handle: watch::Receiver<Option<NetstackHandle>>,
+    }
+    #[async_trait::async_trait]
+    impl crate::managed_forward::OverlayDial for NsDial {
+        async fn tcp(
+            &self,
+            dst: std::net::SocketAddr,
+        ) -> std::io::Result<Box<dyn crate::managed_forward::Io>> {
+            let handle =
+                self.handle.borrow().clone().ok_or_else(|| {
+                    std::io::Error::other("netstack not up yet (mesh not joined)")
+                })?;
+            Ok(Box::new(handle.connect(dst).await?))
+        }
+    }
+
+    Some(Arc::new(NsDial {
+        handle: ns_handle_tx(&cfg.tenant_id).subscribe(),
+    }))
+}
+
+#[cfg(not(feature = "overlay-netstack"))]
+pub fn managed_forward_dialer(
+    _cfg: &AgentConfig,
+) -> Option<Arc<dyn crate::managed_forward::OverlayDial>> {
+    None
+}
+
 /// FR-90 P3-8-2b — the netstack dialer for this daemon's own SSH client
 /// ([`crate::ssh_client`]), watching the primary's handle channel, where
 /// agent sessions run. `None` unless this node is in netstack mode: an

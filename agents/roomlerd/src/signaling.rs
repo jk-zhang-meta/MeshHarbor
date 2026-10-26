@@ -1630,8 +1630,15 @@ async fn connect_once(
     // connection, like the re-prober.
     // MeshHarbor #20 — this connection's managed-forward runner; its
     // forwards stop with the connection.
-    let managed_forward_tx =
-        crate::managed_forward::spawn_agent(outbound_tx.clone(), ctx.is_primary);
+    #[cfg(any(feature = "overlay-l3", feature = "overlay-netstack"))]
+    let managed_forward_dial = crate::overlay::managed_forward_dialer(cfg);
+    #[cfg(not(any(feature = "overlay-l3", feature = "overlay-netstack")))]
+    let managed_forward_dial = None;
+    let managed_forward_tx = crate::managed_forward::spawn_agent(
+        outbound_tx.clone(),
+        ctx.is_primary,
+        managed_forward_dial,
+    );
     let _ = crate::net_inventory::spawn_reporter(
         outbound_tx.clone(),
         ctx.is_primary,

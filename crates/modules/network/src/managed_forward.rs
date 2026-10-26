@@ -22,6 +22,13 @@
 //!   hooks only inbound flows to the forward's own address and port, and
 //!   its change rolls back unless this server confirms it still hears the
 //!   node. Recorded as a check.
+//! - **Overlay destinations** (FWD-02). A destination that is a node's
+//!   overlay address, or inside a subnet a node routes (an approved route),
+//!   is dialled through the ingress's overlay, so the overlay ACL applies: the
+//!   ingress must be allowed that address, port and protocol, and so must
+//!   every overlay node the forward's sources admit, or the forward would
+//!   carry it past its own ACL. The destination node's zone is the
+//!   destination's for the region gate. TCP on the userspace backend only.
 //! - **Native preconditions** (nft only), from the ingress's advertised
 //!   capability and fresh inventory: forwarding on for the family, no
 //!   foreign forward chain that drops by default, and for preserve-source a
@@ -143,6 +150,9 @@ pub struct Plan {
     pub checks: Vec<Check>,
     /// The backend this plan targets.
     pub backend: &'static str,
+    /// The destination is behind the overlay: dialled through it.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub via_overlay: bool,
 }
 
 fn check(checks: &mut Vec<Check>, name: &'static str, verdict: Verdict, detail: impl Into<String>) {
@@ -453,6 +463,11 @@ pub async fn plan(
         native_checks(state, tenant_id, id, agent, spec, &mut checks).await;
     }
 
+    let path = match (ingress, ingress_agent.as_ref()) {
+        (Some(id), Some(_)) => overlay_path(state, tenant_id, id, spec, &mut checks).await,
+        _ => None,
+    };
+
     // Loops.
     let same_node = spec
         .dest_agent_id
@@ -492,9 +507,12 @@ pub async fn plan(
             crate::org_relay::agent_zone(state, &agent)
         };
         let a = zone(ingress).await;
-        let b = match spec.dest_agent_id.as_deref() {
-            Some(d) => zone(oid(d)).await,
-            None => None,
+        let b = match (spec.dest_agent_id.as_deref(), &path) {
+            (Some(d), _) => zone(oid(d)).await,
+            // Behind the overlay: the node that holds the address or routes
+            // the subnet is where the traffic lands.
+            (None, Some(node)) => crate::org_relay::node_zone(state, node).await,
+            (None, None) => None,
         };
         let (verdict, detail) = match (a, b) {
             (Some(x), Some(y)) if x == y => (Verdict::Pass, format!("both in {x:?}")),
@@ -502,7 +520,7 @@ pub async fn plan(
                 Verdict::Fail,
                 "ingress and destination are in different zones".to_string(),
             ),
-            _ if spec.dest_agent_id.is_none() => (
+            _ if spec.dest_agent_id.is_none() && path.is_none() => (
                 Verdict::Fail,
                 "an unenrolled destination has no verified zone attachment".to_string(),
             ),
@@ -543,7 +561,252 @@ pub async fn plan(
             ForwardBackend::Userspace => "userspace",
             ForwardBackend::Nft => "nft",
         },
+        via_overlay: path.is_some(),
     }
+}
+
+/// Does one of `rules` (a source's grants into a node) cover `ip`, `port`
+/// and `proto`?
+pub fn rules_allow(
+    rules: &[roomler_ai_remote_control::models::OverlayRule],
+    ip: IpAddr,
+    port: u16,
+    proto: L4,
+) -> bool {
+    use roomler_ai_remote_control::models::ProtocolKind;
+    rules.iter().any(|r| {
+        parse_cidr(&r.cidr).is_some_and(|n| in_net(ip, n))
+            && (r.port_range.low..=r.port_range.high).contains(&port)
+            && match r.proto {
+                ProtocolKind::Any => true,
+                ProtocolKind::Tcp => proto == L4::Tcp,
+                ProtocolKind::Udp => proto == L4::Udp,
+            }
+    })
+}
+
+/// FWD-02: is the destination behind the overlay, and may the forward reach
+/// it there? The destination node is the one whose overlay address it is,
+/// or the one routing an approved subnet that holds it (an exit node's `/0`
+/// does not count, nor does a subnet the ingress routes itself: that is its
+/// own LAN). Records the path, ACL and source-principal checks, and returns
+/// the destination node; `None` for a destination that is not behind the
+/// overlay (no check is added then).
+async fn overlay_path(
+    state: &NetworkState,
+    tenant_id: ObjectId,
+    ingress_agent: ObjectId,
+    spec: &ForwardSpec,
+    checks: &mut Vec<Check>,
+) -> Option<roomler_ai_remote_control::models::OverlayNode> {
+    use roomler_ai_remote_control::models::{OverlayAclMode, OverlayNode};
+    let dest: IpAddr = spec.dest_addr.trim().parse().ok()?;
+    let ingress = state
+        .overlay_nodes
+        .find_live_by_agent(tenant_id, ingress_agent)
+        .await
+        .ok()
+        .flatten();
+    let network_id = match &ingress {
+        Some(n) => n.network_id,
+        None => {
+            state
+                .overlay_networks
+                .get_or_create(tenant_id)
+                .await
+                .ok()?
+                .id?
+        }
+    };
+    let nodes = match state
+        .overlay_nodes
+        .list_active_in_network(tenant_id, network_id)
+        .await
+    {
+        Ok(v) => v,
+        Err(e) => {
+            check(
+                checks,
+                "overlay path",
+                Verdict::Unknown,
+                format!("overlay nodes unreadable: {e}"),
+            );
+            return None;
+        }
+    };
+    let routed = |n: &OverlayNode| {
+        n.effective_routes()
+            .into_iter()
+            .find(|r| parse_cidr(r).is_some_and(|(net, len)| len > 0 && in_net(dest, (net, len))))
+    };
+    let (dest_node, route) = nodes
+        .iter()
+        .find(|n| n.overlay_ip.parse::<IpAddr>().ok() == Some(dest))
+        .map(|n| (n.clone(), None))
+        .or_else(|| {
+            nodes
+                .iter()
+                .find_map(|n| routed(n).map(|r| (n.clone(), Some(r))))
+        })?;
+    if ingress.as_ref().is_some_and(|i| i.id == dest_node.id) {
+        return None;
+    }
+    let where_ = match &route {
+        Some(r) => format!(
+            "via {} ({}), which routes {r}",
+            dest_node.name, dest_node.overlay_ip
+        ),
+        None => format!(
+            "{} ({}) on the overlay",
+            dest_node.name, dest_node.overlay_ip
+        ),
+    };
+    let Some(ingress) = ingress else {
+        check(
+            checks,
+            "overlay path",
+            Verdict::Fail,
+            format!("the destination is {where_}, and the ingress is not on the overlay"),
+        );
+        return Some(dest_node);
+    };
+    if spec.backend == ForwardBackend::Nft || spec.proto != L4::Tcp {
+        check(
+            checks,
+            "overlay path",
+            Verdict::Fail,
+            format!(
+                "the destination is {where_}; a forward into the overlay is TCP on the userspace backend only"
+            ),
+        );
+        return Some(dest_node);
+    }
+    check(
+        checks,
+        "overlay path",
+        Verdict::Pass,
+        format!("dialled through the ingress's overlay: {where_}"),
+    );
+
+    let acl =
+        match crate::overlay::try_load_acl(state, tenant_id, crate::overlay::PolicyLoad::Always)
+            .await
+        {
+            Ok(a) => a,
+            Err(e) => {
+                check(
+                    checks,
+                    "overlay acl",
+                    Verdict::Unknown,
+                    format!("overlay policies unreadable: {e}"),
+                );
+                return Some(dest_node);
+            }
+        };
+    if acl.mode == OverlayAclMode::Off {
+        check(
+            checks,
+            "overlay acl",
+            Verdict::Pass,
+            "the overlay ACL is off: every node already reaches it",
+        );
+        return Some(dest_node);
+    }
+    let soft = |ok: bool| match (ok, acl.mode) {
+        (true, _) => Verdict::Pass,
+        (false, OverlayAclMode::Warn) => Verdict::Warn,
+        (false, _) => Verdict::Fail,
+    };
+    let Some(dest_id) = dest_node.id else {
+        return Some(dest_node);
+    };
+    let allows = |src: &tunnel_core::policy::OverlaySource| {
+        rules_allow(
+            &tunnel_core::policy::evaluate_overlay_ingress(&acl.policies, src, dest_id),
+            dest,
+            spec.dest_port,
+            spec.proto,
+        )
+    };
+    let proto = match spec.proto {
+        L4::Tcp => "tcp",
+        L4::Udp => "udp",
+    };
+    match crate::overlay::try_overlay_source_of(state, &ingress).await {
+        Ok(src) => {
+            let ok = allows(&src);
+            check(
+                checks,
+                "overlay acl",
+                soft(ok),
+                if ok {
+                    format!(
+                        "the ingress may reach {}:{}/{proto}",
+                        spec.dest_addr, spec.dest_port
+                    )
+                } else {
+                    format!(
+                        "the overlay ACL does not let the ingress reach {}:{}/{proto}",
+                        spec.dest_addr, spec.dest_port
+                    )
+                },
+            );
+        }
+        Err(e) => check(
+            checks,
+            "overlay acl",
+            Verdict::Unknown,
+            format!("the ingress's identity is unreadable: {e}"),
+        ),
+    }
+    // The forward's own clients: every overlay node its sources admit must
+    // be allowed the destination itself.
+    let sources: Vec<(IpAddr, u8)> = spec.sources.iter().filter_map(|s| parse_cidr(s)).collect();
+    let mut denied = Vec::new();
+    let mut unreadable = false;
+    for n in nodes
+        .iter()
+        .filter(|n| n.id != ingress.id && n.id != dest_node.id)
+    {
+        let Ok(ip) = n.overlay_ip.parse::<IpAddr>() else {
+            continue;
+        };
+        if !sources.iter().any(|c| in_net(ip, *c)) {
+            continue;
+        }
+        match crate::overlay::try_overlay_source_of(state, n).await {
+            Ok(src) if allows(&src) => {}
+            Ok(_) => denied.push(format!("{} ({})", n.name, n.overlay_ip)),
+            Err(_) => unreadable = true,
+        }
+    }
+    if !denied.is_empty() {
+        denied.truncate(5);
+        check(
+            checks,
+            "source principals",
+            soft(false),
+            format!(
+                "{} may not reach the destination themselves; the forward would carry them past the overlay ACL",
+                denied.join(", ")
+            ),
+        );
+    } else if unreadable {
+        check(
+            checks,
+            "source principals",
+            Verdict::Unknown,
+            "an admitted node's identity is unreadable",
+        );
+    } else {
+        check(
+            checks,
+            "source principals",
+            Verdict::Pass,
+            "every overlay node the sources admit may reach the destination",
+        );
+    }
+    Some(dest_node)
 }
 
 /// The table the agent's nft backend owns (roomlerd's
@@ -832,11 +1095,15 @@ pub async fn push_to(state: &NetworkState, tenant_id: ObjectId, agent_id: Object
             && f.spec.expires_at_ms.is_none_or(|e| e > now)
     }) {
         let p = plan(state, tenant_id, &f.spec, Some(f.id)).await;
-        if let Some(c) = p
-            .checks
-            .iter()
-            .find(|c| matches!(c.name, "region" | "native backend") && c.verdict == Verdict::Fail)
-        {
+        // The gates a later change can close: zones, the native backend's
+        // capability, and the overlay ACL (a policy edit withdraws a forward
+        // that would now carry someone past it).
+        if let Some(c) = p.checks.iter().find(|c| {
+            matches!(
+                c.name,
+                "region" | "native backend" | "overlay acl" | "source principals"
+            ) && c.verdict == Verdict::Fail
+        }) {
             tracing::warn!(forward = %f.id, check = c.name, "managed forward: gate failed at push; withheld");
             continue;
         }
@@ -851,6 +1118,7 @@ pub async fn push_to(state: &NetworkState, tenant_id: ObjectId, agent_id: Object
             dest_port: f.spec.dest_port,
             backend: f.spec.backend,
             preserve_source: f.spec.nat == NatMode::PreserveSource,
+            via_overlay: p.via_overlay,
         });
     }
     if let Err(e) = state
@@ -1031,6 +1299,33 @@ mod tests {
             &rule("ip6 daddr fd00::2 tcp dport 15432", "[fd00::5]:5432"),
             &s
         ));
+    }
+
+    #[test]
+    fn overlay_rules_match_address_port_and_protocol() {
+        use roomler_ai_remote_control::models::{OverlayRule, PortRange, ProtocolKind};
+        let rule = |cidr: &str, low: u16, high: u16, proto: ProtocolKind| OverlayRule {
+            cidr: cidr.into(),
+            port_range: PortRange { low, high },
+            proto,
+        };
+        let ip: IpAddr = "10.84.6.9".parse().unwrap();
+        let tcp = [rule("10.84.6.0/24", 5432, 5432, ProtocolKind::Tcp)];
+        assert!(rules_allow(&tcp, ip, 5432, L4::Tcp));
+        assert!(!rules_allow(&tcp, ip, 5433, L4::Tcp), "another port");
+        assert!(!rules_allow(&tcp, ip, 5432, L4::Udp), "another protocol");
+        assert!(
+            !rules_allow(&tcp, "10.84.7.9".parse().unwrap(), 5432, L4::Tcp),
+            "outside the prefix"
+        );
+        let any = [rule("100.64.0.7/32", 1, u16::MAX, ProtocolKind::Any)];
+        assert!(rules_allow(
+            &any,
+            "100.64.0.7".parse().unwrap(),
+            22,
+            L4::Udp
+        ));
+        assert!(!rules_allow(&[], ip, 5432, L4::Tcp), "no grant is a denial");
     }
 
     #[test]
