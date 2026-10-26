@@ -67,6 +67,15 @@ pub fn decide_approval(
     {
         return Err(PeerRelayDenyReason::CannotGrantRelay);
     }
+    // MeshHarbor #21 — a cross-border line is the one exception to the hard
+    // zone isolation: only an administrator opens one.
+    let opens_line = requested
+        .approved_backbone_edges
+        .iter()
+        .any(|e| e.cross_border && !current.approved_backbone_edges.contains(e));
+    if opens_line && !permissions::has(caller_permissions, permissions::ADMINISTRATOR) {
+        return Err(PeerRelayDenyReason::CannotGrantRelay);
+    }
     Ok(())
 }
 
@@ -564,6 +573,7 @@ mod tests {
             roomler_ai_remote_control::models::PeerRelayBackboneEdge {
                 relay_agent_id: ObjectId::new().to_hex(),
                 endpoint: "10.20.30.40:3478".into(),
+                cross_border: false,
             },
         );
         assert_eq!(
@@ -576,6 +586,31 @@ mod tests {
         );
         old = requested;
         assert_eq!(decide_approval(DEFAULT_ADMIN, &old, &p(true)), Ok(()));
+    }
+
+    #[test]
+    fn only_an_administrator_opens_a_cross_border_line() {
+        let mut old = p(true);
+        old.approved_backbone_edges.push(
+            roomler_ai_remote_control::models::PeerRelayBackboneEdge {
+                relay_agent_id: ObjectId::new().to_hex(),
+                endpoint: "172.31.8.41:3478".into(),
+                cross_border: false,
+            },
+        );
+        let mut line = old.clone();
+        line.approved_backbone_edges[0].cross_border = true;
+        assert_eq!(
+            decide_approval(DEFAULT_ADMIN | EXEC_DEVICE, &old, &line),
+            Err(PeerRelayDenyReason::CannotGrantRelay),
+            "flagging an existing edge is opening a line"
+        );
+        assert_eq!(decide_approval(ADMINISTRATOR, &old, &line), Ok(()));
+        assert_eq!(
+            decide_approval(DEFAULT_ADMIN, &line, &p(true)),
+            Ok(()),
+            "removing a line needs no more than editing"
+        );
     }
     #[test]
     fn backbone_endpoint_is_exact_unicast_but_not_the_client_public_policy() {

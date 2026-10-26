@@ -4437,6 +4437,7 @@ mod tests {
             routes: vec![],
             agent_id: None,
             ingress_rules: None,
+            backbone_only: false,
         }
     }
 

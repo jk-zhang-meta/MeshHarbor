@@ -2317,6 +2317,11 @@ pub enum ClientMsg {
         supports_path_backbone_v1: bool,
         #[serde(default)]
         relay_backbone_ready: bool,
+        /// MeshHarbor #21 — this node rides a [`NetmapPeer::backbone_only`]
+        /// peer over its cross-border line alone (no direct, DERP or TURN).
+        /// Absent ⇒ such a peer stays withheld from it.
+        #[serde(default)]
+        supports_backbone_only_v1: bool,
         /// FR-47 — this node understands [`ServerMsg::OverlayJoinRefused`], so
         /// a join the server cannot complete comes back as a stated reason
         /// instead of silence. Absent from an older node ⇒ `false`, and such a
@@ -5821,6 +5826,13 @@ pub struct NetmapPeer {
         skip_serializing_if = "Option::is_none"
     )]
     pub relay_strategy: Option<RelayStrategyWire>,
+    /// MeshHarbor #21 — this peer is in the other business zone and an
+    /// approved cross-border line connects the two: reach it ONLY through a
+    /// backbone path trial over that line. It carries no endpoints, and
+    /// direct, DERP and TURN are refused for it. Sent only to a node that
+    /// joined with `supports_backbone_only_v1`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub backbone_only: bool,
     /// Data-probe — this peer's overlay engine answers the overlay-native
     /// echo probe inline. The prober uses the engine echo toward such peers
     /// (guaranteed responder, netstack included) and the ICMP probe toward
@@ -10643,6 +10655,7 @@ mod tests {
             supports_org_relay_discovery_cursor: false,
             supports_path_trial_v1: false,
             supports_path_backbone_v1: false,
+            supports_backbone_only_v1: false,
             relay_backbone_ready: false,
             supports_join_refusal: true,
             org_primary: None,
@@ -11390,6 +11403,7 @@ mod tests {
                 routes: vec!["10.0.0.0/24".into()],
                 agent_id: Some(agent_id),
                 ingress_rules: None,
+                backbone_only: false,
             }],
             epoch: 7,
         };

@@ -3688,6 +3688,12 @@ pub struct PeerRelayBackboneEdge {
     pub relay_agent_id: String,
     /// Exact UDP ip:port, never DNS. Private unicast is allowed ONLY here.
     pub endpoint: String,
+    /// MeshHarbor #21 exception: this edge is an approved cross-border line
+    /// (the po0 private interconnect). A pair whose business zones differ
+    /// may ride it, the ingress relay in the requester's zone and the exit
+    /// in the peer's; nothing else carries a pair across zones.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub cross_border: bool,
 }
 
 pub const MAX_PEER_RELAY_BACKBONE_EDGES: usize = 8;
@@ -10047,6 +10053,7 @@ mod backbone_policy_tests {
             approved_backbone_edges: vec![PeerRelayBackboneEdge {
                 relay_agent_id: ObjectId::new().to_hex(),
                 endpoint: "10.20.0.2:3478".into(),
+                cross_border: false,
             }],
         };
         let encoded = bson::to_bson(&policy).unwrap();

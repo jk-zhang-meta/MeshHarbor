@@ -2411,6 +2411,9 @@ impl OverlayRuntime {
             supports_join_refusal: true,
             org_primary: Some(self.org_primary),
             supports_path_trial_v1: path_trial::enabled() && self.org_primary,
+            // The client does not honour `backbone_only` yet, so it never sees a
+            // cross-zone peer (business isolation rule 4).
+            supports_backbone_only_v1: false,
             supports_path_backbone_v1: path_trial::enabled()
                 && self.org_primary
                 && self.mtu <= roomler_ai_remote_control::models::peer_relay_limits::BACKBONE_MAX_OVERLAY_MTU
@@ -5450,6 +5453,7 @@ mod tests {
             routes: vec![],
             agent_id: None,
             ingress_rules: None,
+            backbone_only: false,
         };
         let base = mk(
             &["192.168.68.126:51573"],
@@ -5863,6 +5867,7 @@ mod tests {
             routes: vec![],
             agent_id: None,
             ingress_rules: None,
+            backbone_only: false,
         }
     }
 
@@ -6061,6 +6066,7 @@ mod tests {
                 routes: vec![],
                 agent_id: None,
                 ingress_rules: None,
+                backbone_only: false,
             },
         );
 
@@ -8262,6 +8268,7 @@ mod tests {
                 routes: vec![],
                 agent_id: None,
                 ingress_rules: None,
+                backbone_only: false,
             }
         }
         fn installed(
@@ -8511,6 +8518,7 @@ mod tests {
             routes: vec![],
             agent_id: None,
             ingress_rules: None,
+            backbone_only: false,
         }
     }
 
@@ -9095,6 +9103,7 @@ mod tests {
             routes,
             agent_id: None,
             ingress_rules: None,
+            backbone_only: false,
         }
     }
 
@@ -9270,6 +9279,7 @@ mod tests {
             routes: vec!["192.168.5.0/24".into(), "0.0.0.0/0".into()],
             agent_id: None,
             ingress_rules: None,
+            backbone_only: false,
         };
         let strs: Vec<String> = exit_peer_allowed_ips(&exit)
             .iter()
@@ -10390,6 +10400,7 @@ mod org_upgrade_tests {
             routes: vec![],
             agent_id: None,
             ingress_rules: None,
+            backbone_only: false,
         }
     }
 

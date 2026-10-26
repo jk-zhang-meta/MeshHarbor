@@ -94,6 +94,8 @@ pub struct JoinExtras {
     pub supports_path_trial_v1: bool,
     pub supports_path_backbone_v1: bool,
     pub relay_backbone_ready: bool,
+    /// MeshHarbor #21 — rides a cross-zone peer over its line alone.
+    pub supports_backbone_only_v1: bool,
 }
 
 #[derive(Clone)]
@@ -530,6 +532,16 @@ pub(crate) async fn node_zone(state: &NetworkState, node: &OverlayNode) -> Optio
     }
 }
 
+/// Which zone a plan's relays must be in under #21 isolation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ZoneScope {
+    /// The zone the pair shares (the rule).
+    Pair,
+    /// One side of a cross-border line: relays in this zone, explicit
+    /// grants only (an implicit `auto` grant rests on one shared zone).
+    Side(BusinessZone),
+}
+
 /// Shared candidate authorization (gates 2–4). Discovery only returns metadata;
 /// the mint caller additionally applies gate 5 and audits its verdict.
 async fn plan_mint(
@@ -549,7 +561,7 @@ async fn plan_mint_candidates(
     requester: &OverlayNode,
     peer: &OverlayNode,
 ) -> Result<Vec<Plan>, PeerRelayDenyReason> {
-    plan_mint_candidates_reusing(state, requester, peer, None).await
+    plan_mint_candidates_reusing(state, requester, peer, None, ZoneScope::Pair).await
 }
 
 /// The relay the planner would mint the pair on now, if any; a relay marked
@@ -573,6 +585,7 @@ async fn plan_mint_candidates_reusing(
     requester: &OverlayNode,
     peer: &OverlayNode,
     reuse: Option<&OrgRelaySession>,
+    scope: ZoneScope,
 ) -> Result<Vec<Plan>, PeerRelayDenyReason> {
     use PeerRelayDenyReason as D;
     let tenant_id = requester.tenant_id;
@@ -598,8 +611,9 @@ async fn plan_mint_candidates_reusing(
     // the mainland line. Under `warn` both are only logged.
     use crate::business_isolation::{self as iso, Mode};
     let iso_mode = iso::mode(state);
-    let iso_zone = match iso_mode {
-        Mode::Off => None,
+    let iso_zone = match (iso_mode, scope) {
+        (Mode::Off, _) => None,
+        (_, ZoneScope::Side(z)) => Some(z),
         _ => iso::pair_zone(state, iso_mode, requester, peer).await,
     };
     if iso_mode != Mode::Off && iso_zone.is_none() {
@@ -716,7 +730,7 @@ async fn plan_mint_candidates_reusing(
             && evaluate_overlay(&acl.policies, &peer_src, relay_ref).visible;
         // `auto`: requester, peer and relay all observed in ONE zone on their
         // live connections; unknown anywhere refuses (hard isolation).
-        let implicit = !granted && servers.contains(&agent_id) && {
+        let implicit = !granted && scope == ZoneScope::Pair && servers.contains(&agent_id) && {
             if member_zone.is_none() {
                 let a = node_zone(state, requester).await;
                 let b = node_zone(state, peer).await;
@@ -852,15 +866,37 @@ async fn plan_backbone(
     if network.mtu > limits::BACKBONE_MAX_OVERLAY_MTU {
         return Err(D::RequesterUnsupported);
     }
-    let mut plans = plan_mint_candidates(state, requester, peer).await?;
-    let Some(exit_index) = plans.iter().position(|p| p.relay.id == Some(exit_id)) else {
-        return Err(D::NoRelay);
+    // #21: a pair in two zones may ride only a cross-border line, each relay
+    // in its own member's zone.
+    let line = cross_border_zones(state, requester, peer).await;
+    let (ingress, exit) = match line {
+        None => {
+            let mut plans = plan_mint_candidates(state, requester, peer).await?;
+            let Some(exit_index) = plans.iter().position(|p| p.relay.id == Some(exit_id)) else {
+                return Err(D::NoRelay);
+            };
+            let exit = plans.remove(exit_index);
+            let Some(ingress_index) = plans.iter().position(|p| p.relay.id == Some(ingress_id))
+            else {
+                return Err(D::NoRelay);
+            };
+            (plans.remove(ingress_index), exit)
+        }
+        Some((za, zb)) => {
+            let pick = |plans: Vec<Plan>, id: ObjectId| plans.into_iter().find(|p| p.relay.id == Some(id));
+            let ingress = pick(
+                plan_mint_candidates_reusing(state, requester, peer, None, ZoneScope::Side(za)).await?,
+                ingress_id,
+            )
+            .ok_or(D::ZoneDenied)?;
+            let exit = pick(
+                plan_mint_candidates_reusing(state, requester, peer, None, ZoneScope::Side(zb)).await?,
+                exit_id,
+            )
+            .ok_or(D::ZoneDenied)?;
+            (ingress, exit)
+        }
     };
-    let exit = plans.remove(exit_index);
-    let Some(ingress_index) = plans.iter().position(|p| p.relay.id == Some(ingress_id)) else {
-        return Err(D::NoRelay);
-    };
-    let ingress = plans.remove(ingress_index);
     let endpoint = ingress
         .backbone_edges
         .iter()
@@ -868,9 +904,14 @@ async fn plan_backbone(
         .find(|edge| {
             ObjectId::parse_str(&edge.relay_agent_id).ok() == Some(exit.relay_agent_id)
                 && crate::routes::peer_relay::valid_backbone_endpoint(&edge.endpoint)
+                && (line.is_none() || edge.cross_border)
         })
         .map(|e| e.endpoint.clone())
-        .ok_or(D::NoRelay)?;
+        .ok_or(if line.is_some() { D::ZoneDenied } else { D::NoRelay })?;
+    if line.is_some() {
+        info!(tenant_id = %requester.tenant_id, requester = %a, peer = %b, ingress = %ingress_id,
+            exit = %exit_id, "org-relay: a cross-border pair rides its approved line");
+    }
     if !crate::routes::peer_relay::backbone_endpoint_outside_overlay(&endpoint, &network.cidr) {
         return Err(D::NonRoutableEndpoint);
     }
@@ -879,6 +920,111 @@ async fn plan_backbone(
         exit,
         private_endpoint: endpoint,
     })
+}
+
+/// The zone pairs the tenant's approved cross-border lines connect: an
+/// approved relay with a `cross_border` edge to another approved relay, both
+/// live here with a known zone, and the zones different.
+pub(crate) async fn cross_border_lines(
+    state: &NetworkState,
+    tenant_id: ObjectId,
+) -> Vec<(BusinessZone, BusinessZone)> {
+    let Ok(relays) = state.fleet.agents.list_relay_approved(tenant_id).await else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for r in &relays {
+        let mut edges = r
+            .peer_relay_policy
+            .approved_backbone_edges
+            .iter()
+            .filter(|e| e.cross_border)
+            .peekable();
+        if edges.peek().is_none() {
+            continue;
+        }
+        let Some(from) = agent_zone(state, r) else { continue };
+        for e in edges {
+            let Ok(t) = ObjectId::parse_str(&e.relay_agent_id) else { continue };
+            let Some(to) = relays.iter().find(|x| x.id == Some(t)).and_then(|x| agent_zone(state, x))
+            else {
+                continue;
+            };
+            if from != to && !out.contains(&(from, to)) {
+                out.push((from, to));
+            }
+        }
+    }
+    out
+}
+
+/// The two zones of a pair that only a cross-border line may carry: both
+/// known, different, and the rule enforced. `None` means the ordinary rule
+/// applies (one zone, or `warn`/`off`, which refuse nothing).
+async fn cross_border_zones(
+    state: &NetworkState,
+    requester: &OverlayNode,
+    peer: &OverlayNode,
+) -> Option<(BusinessZone, BusinessZone)> {
+    use crate::business_isolation as iso;
+    let mode = iso::mode(state);
+    if mode != iso::Mode::Enforce {
+        return None;
+    }
+    let (za, zb) = (
+        iso::zone_of(state, mode, requester).await?,
+        iso::zone_of(state, mode, peer).await?,
+    );
+    (za != zb).then_some((za, zb))
+}
+
+/// Discovery hints for a cross-border pair: each ingress relay in the
+/// requester's zone with an approved `cross_border` edge to an exit relay in
+/// the peer's zone, both authorized for the pair. At most two.
+async fn cross_border_hints(
+    state: &NetworkState,
+    requester: &OverlayNode,
+    peer: &OverlayNode,
+    overlay_cidr: &str,
+) -> Vec<OrgRelayCandidateWire> {
+    let Some((za, zb)) = cross_border_zones(state, requester, peer).await else {
+        return Vec::new();
+    };
+    let Ok(ingresses) =
+        plan_mint_candidates_reusing(state, requester, peer, None, ZoneScope::Side(za)).await
+    else {
+        return Vec::new();
+    };
+    let Ok(exits) =
+        plan_mint_candidates_reusing(state, requester, peer, None, ZoneScope::Side(zb)).await
+    else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for ingress in &ingresses {
+        let Some(ingress_id) = ingress.relay.id else { continue };
+        if !state.org_relay.join_extras(ingress_id).relay_backbone_ready {
+            continue;
+        }
+        for edge in ingress.backbone_edges.iter().take(8).filter(|e| e.cross_border) {
+            if !crate::routes::peer_relay::backbone_endpoint_outside_overlay(&edge.endpoint, overlay_cidr) {
+                continue;
+            }
+            let Ok(target) = ObjectId::parse_str(&edge.relay_agent_id) else { continue };
+            let Some(exit) = exits.iter().find(|p| p.relay_agent_id == target) else {
+                continue;
+            };
+            out.push(OrgRelayCandidateWire {
+                relay_node_id: ingress_id,
+                endpoints: ingress.endpoints.iter().take(4).cloned().collect(),
+                exit_relay_node_id: exit.relay.id,
+            });
+            if out.len() >= 2 {
+                return out;
+            }
+        }
+    }
+    out
 }
 
 fn discovery_key(c: &OrgRelayCandidateWire) -> (ObjectId, Option<ObjectId>) {
@@ -983,6 +1129,10 @@ pub async fn discover(
         } else {
             None
         };
+        if let Some(path_network) = path_network.as_ref() {
+            // A cross-border pair gets only its line's hints.
+            candidates.extend(cross_border_hints(state, requester, peer, &path_network.cidr).await);
+        }
         if let Some(path_network) = path_network {
             backbone_cidr = Some(path_network.cidr.clone());
             if let Ok(plans) = plan_mint_candidates(state, requester, peer).await {
@@ -1249,7 +1399,8 @@ pub async fn maybe_mint_fallback(state: &NetworkState, requester: &OverlayNode, 
     if crate::overlay::org_fallback_forced_derp(state, &pk) { return; }
     let cached = state.org_relay.active_session(&pk);
     let mut epoch = state.org_relay.eligibility_generation();
-    let mut verdict = plan_mint_candidates_reusing(state, requester, peer, cached.as_ref()).await;
+    let mut verdict =
+        plan_mint_candidates_reusing(state, requester, peer, cached.as_ref(), ZoneScope::Pair).await;
     if epoch != state.org_relay.eligibility_generation()
         || crate::overlay::org_fallback_forced_derp(state, &pk) { return; }
     if let Some(session) = cached {
@@ -1926,6 +2077,7 @@ mod tests {
             supports_path_trial_v1: false,
             supports_path_backbone_v1: false,
             relay_backbone_ready: false,
+            supports_backbone_only_v1: false,
         };
         assert!(!state.note_join(node, extras(None)));
         assert!(

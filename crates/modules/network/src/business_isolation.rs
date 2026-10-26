@@ -68,6 +68,9 @@ pub struct Zones {
     pub mode: Mode,
     pub recipient: Option<BusinessZone>,
     pub peer: Option<BusinessZone>,
+    /// An approved cross-border line connects the two zones, and the
+    /// recipient can ride a peer over it alone ([`Lines`]).
+    pub line: bool,
 }
 
 impl Zones {
@@ -75,6 +78,7 @@ impl Zones {
         mode: Mode::Off,
         recipient: None,
         peer: None,
+        line: false,
     };
 
     /// Both zones known and equal.
@@ -90,8 +94,44 @@ impl Zones {
 
     /// Withhold the peer from the recipient (only under `enforce`).
     pub fn withholds(&self) -> bool {
-        self.mode == Mode::Enforce && self.denies()
+        self.mode == Mode::Enforce && self.denies() && !self.line_only()
     }
+
+    /// The one exception (the user's 2026-10-26 rule): two known, different
+    /// zones an approved cross-border line connects, toward a recipient that
+    /// rides such a peer over the line alone. Shown as `backbone_only`.
+    pub fn line_only(&self) -> bool {
+        self.mode == Mode::Enforce
+            && self.line
+            && matches!((self.recipient, self.peer), (Some(a), Some(b)) if a != b)
+    }
+}
+
+/// The zone pairs that approved cross-border lines connect in a tenant
+/// ([`crate::org_relay::cross_border_lines`]). Empty unless the rule is
+/// enforced: under `warn` and `off` nothing is withheld to begin with.
+#[derive(Clone, Debug, Default)]
+pub struct Lines(pub Vec<(BusinessZone, BusinessZone)>);
+
+impl Lines {
+    pub fn connects(&self, a: Option<BusinessZone>, b: Option<BusinessZone>) -> bool {
+        matches!((a, b), (Some(a), Some(b)) if a != b
+            && self.0.iter().any(|&(x, y)| (x, y) == (a, b) || (x, y) == (b, a)))
+    }
+}
+
+pub async fn lines(state: &NetworkState, mode: Mode, tenant_id: bson::oid::ObjectId) -> Lines {
+    if mode != Mode::Enforce {
+        return Lines::default();
+    }
+    Lines(crate::org_relay::cross_border_lines(state, tenant_id).await)
+}
+
+/// Whether `recipient` joined able to ride a line-only peer.
+pub fn rides_lines(state: &NetworkState, recipient: &OverlayNode) -> bool {
+    recipient
+        .id
+        .is_some_and(|id| state.org_relay.join_extras(id).supports_backbone_only_v1)
 }
 
 /// A node's zone, looked up only when the rule is on (each lookup reads the
@@ -137,6 +177,7 @@ pub async fn pair_zone(
         mode,
         recipient: zone_of(state, mode, a).await,
         peer: zone_of(state, mode, b).await,
+        line: false,
     };
     zones.same().then_some(zones.recipient).flatten()
 }
@@ -172,7 +213,34 @@ mod tests {
             mode,
             recipient,
             peer,
+            line: false,
         }
+    }
+
+    #[test]
+    fn a_line_shows_only_a_known_cross_zone_peer_and_only_under_enforce() {
+        let line = |mode, r, p| Zones {
+            line: true,
+            ..z(mode, r, p)
+        };
+        let cross = line(Mode::Enforce, Some(Mainland), Some(NonMainland));
+        assert!(cross.line_only() && !cross.withholds());
+        assert!(
+            !z(Mode::Enforce, Some(Mainland), Some(NonMainland)).line_only(),
+            "no line"
+        );
+        assert!(
+            line(Mode::Enforce, Some(Mainland), None).withholds(),
+            "unknown still fails closed"
+        );
+        assert!(!line(Mode::Warn, Some(Mainland), Some(NonMainland)).line_only());
+        let lines = Lines(vec![(Mainland, NonMainland)]);
+        assert!(
+            lines.connects(Some(NonMainland), Some(Mainland)),
+            "either direction"
+        );
+        assert!(!lines.connects(Some(Mainland), Some(Mainland)));
+        assert!(!lines.connects(None, Some(Mainland)));
     }
 
     #[test]
