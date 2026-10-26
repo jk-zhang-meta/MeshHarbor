@@ -3137,6 +3137,15 @@ impl OverlayRuntime {
         // FR-19 P4b — off-loop org-relay binds, the same shape as the TURN
         // allocate queue right below.
         let (org_tx, mut org_rx) = mpsc::channel::<OrgBindDone>(16);
+        // MeshHarbor #5 — our RTT to every relay the netmap offers, measured
+        // off-loop and reported below so the center's first mint for a pair
+        // already ranks relays by latency.
+        let (probe_targets_tx, probe_targets_rx) = watch::channel(
+            super::orgrelay::prober::targets_from_wire(&network.relay_probe_targets),
+        );
+        let (probe_res_tx, mut probe_res_rx) =
+            mpsc::channel::<Vec<super::orgrelay::prober::Outcome>>(4);
+        let _relay_prober = super::orgrelay::prober::spawn(probe_targets_rx, probe_res_tx);
         let mut org_q = OrgBindQueue {
             in_flight: HashMap::new(),
             epoch: 0,
@@ -3505,6 +3514,29 @@ impl OverlayRuntime {
                             debug!(peer = %done.node_id, "overlay: dropping stale off-loop allocate (peer superseded mid-allocate)");
                         }
                         warn_if_slow("arm:relay_alloc_commit", t_arm);
+                    }
+                },
+                // MeshHarbor #5 — one prober round: a report per endpoint, the
+                // same row a bind writes.
+                Some(round) = probe_res_rx.recv() => {
+                    let rtts: Vec<String> = round
+                        .iter()
+                        .map(|o| match o.rtt {
+                            Some(d) => format!("{}@{}={}ms", o.relay_node_id, o.endpoint, d.as_millis()),
+                            None => format!("{}@{}=unreachable", o.relay_node_id, o.endpoint),
+                        })
+                        .collect();
+                    info!(?rtts, "overlay relay: measured our RTT to the relays the netmap offers");
+                    for o in round {
+                        let _ = self
+                            .outbound
+                            .send(ClientMsg::OverlayRelayProbe {
+                                relay_node_id: o.relay_node_id,
+                                endpoint: o.endpoint.to_string(),
+                                reachable: o.rtt.is_some(),
+                                rtt_ms: o.rtt.map(|d| u32::try_from(d.as_millis()).unwrap_or(u32::MAX)),
+                            })
+                            .await;
                     }
                 },
                 // FR-19 P4b — an off-loop org-relay bind finished: report what
@@ -4500,6 +4532,9 @@ impl OverlayRuntime {
                         server_org_discovery = org_relay_discovery;
                         server_org_fallback = new_network.org_relay_fallback_v1;
                         server_org_loss = new_network.org_relay_loss_v1;
+                        probe_targets_tx.send_replace(super::orgrelay::prober::targets_from_wire(
+                            &new_network.relay_probe_targets,
+                        ));
                         org_discovery.invalidate(); // authoritative membership / key / ACL reconciliation
                         let old_peers = std::mem::take(&mut current_peers);
                         current_peers = peers.iter().map(|p| (p.node_id, p.clone())).collect();
@@ -8524,6 +8559,7 @@ mod tests {
             nameservers: vec![],
             self_name: None,
             stun_urls: vec![],
+            relay_probe_targets: vec![],
         }
     }
     pub(super) fn peer(kp: &WgKeypair, ip: &str) -> NetmapPeer {

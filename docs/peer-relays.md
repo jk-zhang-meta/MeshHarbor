@@ -238,6 +238,18 @@ sequenceDiagram
 - **Ranking**: a relay both members measured reachable wins, by summed RTT. One never
   measured comes next. One a member measured *unreachable* comes **last, not
   excluded**, because a stale negative must not starve the only relay.
+- **Where the RTT comes from (MeshHarbor #5)**: every member measures its RTT to the
+  relays it may use **before any session exists**. Its full netmap lists them
+  (`network.relay_probe_targets`, at most 16 relays with 4 endpoints each: the member's
+  half of the gates above, so it learns only endpoints it could be minted onto), and
+  the runtime sends each endpoint three of the relay's unauthenticated probe echoes
+  ([`orgrelay/prober.rs`](../crates/tunnel-core/src/overlay/orgrelay/prober.rs)), on
+  receipt and every 240 s, reporting the minimum as an ordinary `rc:overlay.relay_probe`
+  row. The center accepts a row only about a relay it offered that member or minted
+  for it. Before this, the only RTT on file came from binding a relay already minted,
+  so a pair's first session went to an unmeasured relay (ties fell to load, then
+  approval order). A node without UDP measures every relay unreachable, which ranks
+  them all alike for its pairs.
 - **Endpoints**: the relay's srflx, LAN and trickled addresses, each only if globally
   routable, paired with its relay port (default **3478**), then the admin's
   `static_endpoints`

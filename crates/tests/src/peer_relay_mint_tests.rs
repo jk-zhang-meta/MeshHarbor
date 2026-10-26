@@ -20,6 +20,7 @@ use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use bson::{doc, oid::ObjectId};
 use futures::{SinkExt, StreamExt};
 use serde_json::{Value, json};
+use std::collections::BTreeSet;
 use std::time::Duration;
 use tokio_tungstenite::{
     connect_async,
@@ -346,6 +347,116 @@ impl Rig {
             "no session must reach a"
         );
     }
+}
+
+/// MeshHarbor #5 — a member's full netmap names the relays it may use, and
+/// its RTT to one it was only OFFERED (never minted) ranks the pair's first
+/// mint. Without the offer the reports were refused and the tie fell to the
+/// approval order, so the slower relay won.
+#[tokio::test]
+async fn the_first_mint_goes_to_the_relay_both_members_measured_fastest() {
+    let slug = "mint-probe-rank";
+    let app = TestApp::spawn().await;
+    let seeded = app.seed_tenant(slug).await;
+    let mut relays = Vec::new();
+    for (i, name) in ["r1", "r2"].into_iter().enumerate() {
+        let (agent, tok) = enroll(&app, &seeded, &format!("{slug}-{name}")).await;
+        let mut ws = connect(&app, &tok, &["relay-server"]).await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        join(
+            &mut ws,
+            10 + i as u8,
+            Some(true),
+            &format!("8.8.8.{}:41641", 8 + i),
+        )
+        .await;
+        relays.push((
+            agent,
+            node_id(&app, &seeded, &format!("{slug}-{name}")).await,
+            ws,
+        ));
+    }
+    set_mode(&app, &seeded, "on").await;
+    for (agent, node, _) in &relays {
+        assert_eq!(approve(&app, &seeded, agent, true).await, 200);
+        grant_relay(&app, &seeded, node).await;
+    }
+
+    let mut members = Vec::new();
+    for (i, name) in ["a", "b"].into_iter().enumerate() {
+        let (_, tok) = enroll(&app, &seeded, &format!("{slug}-{name}")).await;
+        let mut ws = connect(&app, &tok, &[]).await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let map = join(
+            &mut ws,
+            1 + i as u8,
+            Some(true),
+            &format!("203.0.113.{}:41641", 10 + i),
+        )
+        .await;
+        let targets = map["network"]["relay_probe_targets"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        let named: BTreeSet<&str> = targets
+            .iter()
+            .filter_map(|t| t["relay_node_id"].as_str())
+            .collect();
+        assert_eq!(
+            named,
+            relays.iter().map(|(_, n, _)| n.as_str()).collect(),
+            "{name} is offered both relays: {targets:?}"
+        );
+        // r1 slow, r2 fast, measured by this member toward the endpoint it was offered.
+        for target in &targets {
+            let rtt = if target["relay_node_id"] == json!(relays[0].1) {
+                180
+            } else {
+                12
+            };
+            let probe = json!({
+                "t": "rc:overlay.relay_probe",
+                "relay_node_id": target["relay_node_id"],
+                "endpoint": target["endpoints"][0],
+                "reachable": true,
+                "rtt_ms": rtt,
+            });
+            ws.send(Message::Text(probe.to_string().into()))
+                .await
+                .unwrap();
+        }
+        members.push(ws);
+    }
+    let b_node = node_id(&app, &seeded, &format!("{slug}-b")).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    members[0]
+        .send(Message::Text(
+            json!({ "t": "rc:overlay.relay_request", "peer_node_id": b_node })
+                .to_string()
+                .into(),
+        ))
+        .await
+        .unwrap();
+    assert!(
+        recv_t(
+            &mut relays[1].2,
+            "rc:overlay.relay_serve",
+            Duration::from_secs(5)
+        )
+        .await
+        .is_some(),
+        "the fast relay serves the pair"
+    );
+    assert!(
+        recv_t(
+            &mut relays[0].2,
+            "rc:overlay.relay_serve",
+            Duration::from_millis(500)
+        )
+        .await
+        .is_none(),
+        "the slow relay does not"
+    );
 }
 
 /// The happy path, and what a live session changes: three frames with one

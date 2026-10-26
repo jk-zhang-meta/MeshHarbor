@@ -13,6 +13,7 @@ pub mod bind;
 pub mod client;
 pub(crate) mod discovery;
 pub mod member;
+pub mod prober;
 pub mod responder;
 pub mod server;
 pub mod session;

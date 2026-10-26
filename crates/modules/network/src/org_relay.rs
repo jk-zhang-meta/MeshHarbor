@@ -52,7 +52,10 @@ use roomler_ai_remote_control::{
         Agent, NodeRef, OverlayNode, PeerRelayAuditAction, PeerRelayAuditEvent,
         PeerRelayDenyReason, PeerRelayMode, RpcCap, peer_relay_limits as limits,
     },
-    signaling::{OrgRelayCandidateWire, OrgRelayDiscoveryCursorWire, RelayMemberWire, ServerMsg},
+    signaling::{
+        OrgRelayCandidateWire, OrgRelayDiscoveryCursorWire, RelayMemberWire, RelayProbeTargetWire,
+        ServerMsg,
+    },
 };
 use tracing::{debug, info, warn};
 use tunnel_core::policy::{OverlayPeerRef, OverlaySource, evaluate_overlay};
@@ -251,6 +254,9 @@ pub struct OrgRelayState {
     lamport: AtomicU64,
     join_extras: DashMap<ObjectId, JoinExtras>,
     probes: DashMap<(ObjectId, ObjectId), Vec<ProbeRecord>>,
+    /// MeshHarbor #5 — the (relay, endpoint)s each member's last full netmap
+    /// offered it to probe ([`probe_targets`]). Replaced on every join.
+    probe_offers: DashMap<ObjectId, Vec<(ObjectId, String)>>,
     mode_cache: DashMap<ObjectId, (PeerRelayMode, Instant)>,
     /// MeshHarbor `auto` and #21: each agent's (`hello` binds, `closing`
     /// unbinds) and each tunnel client's (its WS binds and unbinds) live
@@ -428,9 +434,18 @@ impl OrgRelayState {
         None
     }
 
+    /// Remember what a member's netmap offered it to probe (#5).
+    pub(crate) fn offer_probes(&self, member: ObjectId, targets: &[RelayProbeTargetWire]) {
+        let offers = targets
+            .iter()
+            .flat_map(|t| t.endpoints.iter().map(|e| (t.relay_node_id, e.clone())))
+            .collect();
+        self.probe_offers.insert(member, offers);
+    }
+
     /// Accept a reachability report ONLY about a relay + endpoint the server
-    /// minted for that node: a device cannot inject claims about arbitrary
-    /// targets, and the server never asked it to probe anything else.
+    /// minted for that node or offered it to probe ([`probe_targets`]): a
+    /// device cannot inject claims about arbitrary targets.
     pub fn record_probe(
         &self,
         reporter: ObjectId,
@@ -445,7 +460,12 @@ impl OrgRelayState {
                 leg.relay_node_id == relay_node_id && leg.endpoints.contains(&endpoint)
             })
         });
-        if !minted_for_it {
+        let offered = || {
+            self.probe_offers
+                .get(&reporter)
+                .is_some_and(|o| o.iter().any(|(r, e)| *r == relay_node_id && *e == endpoint))
+        };
+        if !minted_for_it && !offered() {
             return false;
         }
         let mut v = self.probes.entry((reporter, relay_node_id)).or_default();
@@ -616,6 +636,138 @@ pub(crate) async fn party_zone(
             roomler_core::business_authority::connection_zone(&state.core, &device, &conn)
         }
     }
+}
+
+/// At most this many relays are offered to one member to probe.
+const MAX_PROBE_TARGETS: usize = 16;
+
+/// MeshHarbor #5 — the relays `member` may bind to, offered in its full
+/// netmap so it measures its RTT to each before any session exists; the mint
+/// then ranks a pair's relays by both members' RTT from the very first
+/// session (until now it knew RTT only to relays it had minted for a member).
+///
+/// The member's half of [`plan_mint_candidates_reusing`]'s gates: the relay
+/// serves, is online and primary, the member is granted it (explicitly, or
+/// implicitly under `auto` inside the member's zone), and under `enforce` it
+/// is in the member's zone. A pair's gates are re-checked at mint time; this
+/// only decides which endpoints the member may learn and measure.
+pub(crate) async fn probe_targets(
+    state: &NetworkState,
+    member: &OverlayNode,
+) -> Vec<RelayProbeTargetWire> {
+    let targets = probe_targets_inner(state, member).await;
+    if let Some(id) = member.id {
+        state.org_relay.offer_probes(id, &targets);
+    }
+    targets
+}
+
+async fn probe_targets_inner(
+    state: &NetworkState,
+    member: &OverlayNode,
+) -> Vec<RelayProbeTargetWire> {
+    use crate::business_isolation::{self as iso, Mode};
+    let tenant_id = member.tenant_id;
+    let Some(member_id) = member.id else {
+        return Vec::new();
+    };
+    if !member.supports_org_relay
+        || state.org_relay.join_extras(member_id).org_primary != Some(true)
+    {
+        return Vec::new();
+    }
+    let mode = peer_relay_mode(state, tenant_id).await;
+    if !matches!(mode, PeerRelayMode::On | PeerRelayMode::Auto) {
+        return Vec::new();
+    }
+    // Every read fails closed: nothing offered.
+    let Ok(acl) = try_load_acl(state, tenant_id, PolicyLoad::Always).await else {
+        return Vec::new();
+    };
+    let Ok(src) = try_overlay_source_of(state, member).await else {
+        return Vec::new();
+    };
+    let Ok(mut relays) = state.fleet.agents.list_relay_approved(tenant_id).await else {
+        return Vec::new();
+    };
+    let mut servers: Vec<ObjectId> = Vec::new();
+    if mode == PeerRelayMode::Auto
+        && let Ok(agents) =
+            roomler_core::business_authority::current_server_agents(&state.core, tenant_id).await
+    {
+        for agent in agents {
+            let Some(id) = agent.id else { continue };
+            servers.push(id);
+            if !relays.iter().any(|r| r.id == Some(id)) {
+                relays.push(agent);
+            }
+        }
+    }
+    let iso_mode = iso::mode(state);
+    let member_zone = if iso_mode != Mode::Off || !servers.is_empty() {
+        node_zone(state, member).await
+    } else {
+        None
+    };
+    let mut out = Vec::new();
+    for agent in relays {
+        if out.len() >= MAX_PROBE_TARGETS {
+            break;
+        }
+        let Some(agent_id) = agent.id else { continue };
+        if !agent.capabilities.has_rpc(RpcCap::RelayServer)
+            || !state.fleet.rc_hub.is_agent_online(agent_id)
+        {
+            continue;
+        }
+        let Ok(Some(node)) = state
+            .overlay_nodes
+            .find_live_by_tenant_and_machine(tenant_id, &agent.machine_id)
+            .await
+        else {
+            continue;
+        };
+        let Some(relay_id) = node.id else { continue };
+        if relay_id == member_id {
+            continue;
+        }
+        let extras = state.org_relay.join_extras(relay_id);
+        if extras.org_primary != Some(true) || extras.relay_withdrawn {
+            continue;
+        }
+        let relay_routes = node.effective_routes();
+        let relay_ref = OverlayPeerRef {
+            node_id: relay_id,
+            overlay_ip: &node.overlay_ip,
+            approved_routes: &relay_routes,
+        };
+        let relay_zone = agent_zone(state, &agent);
+        let granted = agent.peer_relay_policy.serve
+            && evaluate_overlay(&acl.policies, &src, relay_ref).visible;
+        let implicit = !granted
+            && servers.contains(&agent_id)
+            && relay_zone.is_some()
+            && relay_zone == member_zone;
+        if !granted && !implicit {
+            continue;
+        }
+        if iso_mode == Mode::Enforce && (member_zone.is_none() || relay_zone != member_zone) {
+            continue;
+        }
+        let port = extras.relay_port.unwrap_or(limits::DEFAULT_RELAY_PORT);
+        let Ok(endpoints) = relay_endpoints(&node, port, &agent.peer_relay_policy.static_endpoints)
+        else {
+            continue;
+        };
+        if endpoints.is_empty() {
+            continue;
+        }
+        out.push(RelayProbeTargetWire {
+            relay_node_id: relay_id,
+            endpoints: endpoints.into_iter().take(4).collect(),
+        });
+    }
+    out
 }
 
 /// Which zone a plan's relays must be in under #21 isolation.

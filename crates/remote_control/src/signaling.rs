@@ -5952,6 +5952,23 @@ pub struct OverlayNetworkInfo {
     /// or STUN disabled). `#[serde(default)]` for back-compat.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub stun_urls: Vec<String>,
+    /// MeshHarbor #5 — the org relays this node may bind to, for it to measure
+    /// its RTT to each before any session exists (the relay's unauthenticated
+    /// probe echo). The center ranks a pair's relays by the sum of both
+    /// members' RTT and accepts a report only about a relay it offered here or
+    /// minted. Empty from an older server, or when nothing may serve the node.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub relay_probe_targets: Vec<RelayProbeTargetWire>,
+}
+
+/// One relay [`OverlayNetworkInfo::relay_probe_targets`] names: what to probe,
+/// never a grant (the mint re-checks every gate).
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct RelayProbeTargetWire {
+    #[serde(with = "oid_hex")]
+    pub relay_node_id: ObjectId,
+    /// At most four public `ip:port` endpoints.
+    pub endpoints: Vec<String>,
 }
 
 #[cfg(test)]
@@ -10486,6 +10503,7 @@ mod tests {
             nameservers: vec![],
             self_name: None,
             stun_urls: vec![],
+            relay_probe_targets: vec![],
         };
         let s = serde_json::to_string(&net).unwrap();
         let back: OverlayNetworkInfo = serde_json::from_str(&s).unwrap();
@@ -10547,6 +10565,7 @@ mod tests {
                 nameservers: vec![],
                 self_name: None,
                 stun_urls: vec![],
+                relay_probe_targets: vec![],
             },
             peers: vec![],
             epoch: 7,
@@ -11377,6 +11396,7 @@ mod tests {
                 nameservers: vec!["1.1.1.1".into()],
                 self_name: None,
                 stun_urls: vec!["stun:5.9.157.221:3478".into()],
+                relay_probe_targets: vec![],
             },
             peers: vec![NetmapPeer {
                 node_id,
