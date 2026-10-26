@@ -261,6 +261,10 @@ pub struct OrgRelayState {
     /// (pair key, relay node) a member measured lossy, until when: the
     /// planner skips that relay for that pair (see [`Self::mark_lossy`]).
     lossy: DashMap<(String, ObjectId), Instant>,
+    /// Each pair's last mint row (its refusal, if any, and whether `warn`),
+    /// and when it was written: a repeat of it is not written again within
+    /// [`REPEAT_REFUSAL_AUDIT_GAP`] (see [`audit_mint`]).
+    last_mint_audit: DashMap<String, ((Option<PeerRelayDenyReason>, bool), Instant)>,
     // Conservative generation for membership/policy decisions spanning async IO.
     eligibility_epoch: AtomicU64,
 }
@@ -2093,6 +2097,12 @@ async fn push_member(state: &NetworkState, s: &OrgRelaySession, i: usize) {
     .await;
 }
 
+/// How long consecutive identical refusals of one pair collapse into the
+/// first row (field, 2026-10-26: a member on DERP asks for an ORG fallback
+/// every 60 s, and a pair no relay may carry wrote a `zone_denied` row each
+/// time). Any other decision for the pair is written and starts afresh.
+const REPEAT_REFUSAL_AUDIT_GAP: Duration = Duration::from_secs(600);
+
 #[allow(clippy::too_many_arguments)]
 async fn audit_mint(
     state: &NetworkState,
@@ -2104,6 +2114,23 @@ async fn audit_mint(
     warn_only: bool,
     denied: Option<PeerRelayDenyReason>,
 ) {
+    let now = Instant::now();
+    let kind = (denied, warn_only);
+    let repeat = state
+        .org_relay
+        .last_mint_audit
+        .get(&pair_key(requester, peer))
+        .is_some_and(|e| {
+            denied.is_some() && e.0 == kind && now.duration_since(e.1) < REPEAT_REFUSAL_AUDIT_GAP
+        });
+    if repeat {
+        return;
+    }
+    let audits = &state.org_relay.last_mint_audit;
+    if audits.len() >= 4096 {
+        audits.retain(|_, e| now.duration_since(e.1) < REPEAT_REFUSAL_AUDIT_GAP);
+    }
+    audits.insert(pair_key(requester, peer), (kind, now));
     let event = PeerRelayAuditEvent {
         id: None,
         tenant_id,

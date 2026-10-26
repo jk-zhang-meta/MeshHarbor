@@ -428,6 +428,24 @@ async fn auto_refuses_a_pair_that_crosses_zones() {
     rig.expect_refused("zone_denied").await;
 }
 
+/// The same refusal again is not written again: a member on DERP asks
+/// every minute, and the first row stands for the repeats.
+#[tokio::test]
+async fn a_repeated_identical_refusal_is_audited_once() {
+    let mut rig = AutoRig::up("auto-cross-repeat", [Some(CN_A), Some(US_B), Some(US_R)]).await;
+    rig.arm().await;
+    rig.request().await;
+    rig.expect_refused("zone_denied").await;
+    rig.request().await;
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    let mints = audit_rows(&rig.app, &rig.seeded)
+        .await
+        .into_iter()
+        .filter(|r| r["action"] == json!("mint"))
+        .count();
+    assert_eq!(mints, 1, "one row for two identical refusals");
+}
+
 /// Fail closed: a connection with no observed zone grants nothing.
 #[tokio::test]
 async fn auto_refuses_a_member_whose_zone_is_unknown() {
