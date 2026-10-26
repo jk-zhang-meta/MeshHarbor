@@ -109,6 +109,7 @@
     "subnetRoutes": "Overlay routes",
     "magicDns": "MagicDNS",
     "netInventory": "Network inventory",
+    "managedForwards": "Managed forwards",
     "analytics": "Analytics",
     "observability": "Observability",
     "growth": "Growth",
