@@ -89,8 +89,9 @@ the relay node for the member.
 ⚠️ **An unreadable policy set is a refusal, never a grant.** The mint reads policies
 through `try_load_acl`
 ([`overlay.rs:2076`](../crates/modules/network/src/overlay.rs#L2076)), which returns
-`Result`. The older `load_acl` fails open, byte-identical to "no ACL configured", and a
-gate written against it would have granted on a Mongo blip. `PolicyUnreadable` is its
+`Result`. The netmap loader `load_acl` instead keeps the tenant's last good ACL on a read
+failure (and fails closed, `enforce` with no policies, when it has none), but a stale
+answer is still not a grant decision. `PolicyUnreadable` is its
 own deny reason, so a blip is never mistaken for a policy decision.
 
 ⚠️ **Approval needs `EXEC_DEVICE` because there is no permission bit left.** The UI
@@ -380,7 +381,7 @@ the relay and both members, and each one writes a `revoke` row:
 
 ⚠️ **`reconcile_acl` does NOTHING on a read failure.** Refusing a *new* mint on a blip
 costs one session. Tearing down every *live* session on a blip is exactly the
-"a spurious deny takes the mesh down" failure the old `load_acl` fails open to avoid.
+"a spurious deny takes the mesh down" failure `load_acl`'s last-good fallback avoids.
 
 ## Never self-wedge, never remove the floor
 

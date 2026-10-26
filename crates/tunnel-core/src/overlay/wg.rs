@@ -731,27 +731,39 @@ impl Ingress {
     /// Counts and throttled-logs every failure; returns `false` (drop) ONLY in
     /// [`RpfMode::Enforce`].
     fn permits(&self, src: IpAddr, packet: &[u8]) -> bool {
-        if self.mode == RpfMode::Off {
-            return true;
-        }
-        // ONE tight sync block for both checks. `SendState`'s guard is a std
+        // ONE tight sync block for every check. `SendState`'s guard is a std
         // (!Send) one, so the compiler rejects holding it across the
         // `tun_tx.send().await` below.
         let routing_dst = Router::dst_of_ip_packet(packet);
-        let (verdict, in_scope, to_self, rules) = {
+        let off = self.mode == RpfMode::Off;
+        let (verdict, in_scope, rules, reply) = {
             let g = self.send.0.read().unwrap();
+            let rules = g.ingress_acls.get(&self.peer).cloned();
+            if off && rules.is_none() {
+                return true;
+            }
+            // #18 — a packet addressed to THIS node is judged by the rules too,
+            // unless it belongs to a flow already admitted (a reply).
+            let reply = rules.is_some()
+                && g.scope.is_self_dst(routing_dst)
+                && super::ingress::admitted_reply(packet, &g.flows, mono_ms_now());
             (
-                g.router.rpf_check(&self.peer, src),
-                g.scope.permits_dst(routing_dst),
-                g.scope.is_self_dst(routing_dst),
-                g.ingress_acls.get(&self.peer).cloned(),
+                if off {
+                    RpfVerdict::Allow
+                } else {
+                    g.router.rpf_check(&self.peer, src)
+                },
+                off || g.scope.permits_dst(routing_dst),
+                rules,
+                reply,
             )
         };
-        // Per-source rules govern what a peer may reach THROUGH us; talking TO
-        // us is already governed by netmap visibility. Parsing is deferred to
-        // here so the common in-scope, no-ACL packet never touches the L4 path.
+        // Per-source rules govern what a peer may reach through us AND on us
+        // (#18: the tenant's ACL narrows node-to-node traffic by protocol and
+        // port, not only by visibility). Parsing is deferred to here so the
+        // common in-scope, no-ACL packet never touches the L4 path.
         let rule_denied = match rules {
-            Some(rules) if in_scope && !to_self => {
+            Some(rules) if in_scope && !reply => {
                 let dst = dst_ip_of(packet);
                 match dst {
                     Some(dst) => !rules_permit(&rules, dst, parse_l4(packet).as_ref()),
@@ -779,6 +791,10 @@ impl Ingress {
         if noroute {
             self.stats.rx_denied_noroute.fetch_add(1, Ordering::Relaxed);
         }
+        // The tenant's ACL is enforced whatever `overlay_rpf` says: the server
+        // ships rules only when the tenant enforces it. The reverse-path and
+        // scope checks keep their own warn/enforce switch.
+        let drop = matches!(reason, IngressDeny::NotPermitted) || self.mode == RpfMode::Enforce;
         let denied = self.stats.rx_denied.fetch_add(1, Ordering::Relaxed) + 1;
         let now = mono_ms_now();
         let last = self.stats.rpf_logged_at.load(Ordering::Relaxed);
@@ -793,9 +809,10 @@ impl Ingress {
                 .is_ok()
         {
             let peer = short_key(&self.peer);
-            if self.mode == RpfMode::Enforce {
+            if drop {
+                let (dst, l4) = (dst_ip_of(packet), parse_l4(packet));
                 warn!(
-                    %src, ?reason, %peer, denied,
+                    %src, ?dst, ?l4, ?reason, %peer, denied,
                     "overlay: DROPPED an inbound packet the sending peer is not entitled to send"
                 );
             } else if noroute {
@@ -818,7 +835,7 @@ impl Ingress {
                 );
             }
         }
-        self.mode != RpfMode::Enforce
+        !drop
     }
 }
 
@@ -949,6 +966,9 @@ struct SendState {
     /// ACL compiled nothing for that peer and only [`scope`](Self::scope)
     /// applies. `Arc` so the per-packet path clones a pointer, not the rules.
     ingress_acls: HashMap<[u8; 32], Arc<Vec<OverlayRule>>>,
+    /// #18 — the UDP flows and ICMP echoes this node sent toward peers in
+    /// `ingress_acls`, so their replies pass those peers' rules.
+    flows: super::ingress::ReplyFlows,
     /// Mirror of `WgDevice::peers`' send triples, maintained at the same
     /// mutation choke points ([`WgDevice::send_install`] /
     /// [`WgDevice::send_uninstall`]). Key-set equality with `peers` is
@@ -1039,6 +1059,7 @@ impl WgSender {
             router: Router::new(),
             scope: LocalScope::default(),
             ingress_acls: HashMap::new(),
+            flows: Default::default(),
             peers: HashMap::new(),
         })))
     }
@@ -1054,7 +1075,10 @@ impl WgSender {
         // guard is dropped before any await (enforced by !Send — see above).
         let sp = {
             let g = self.0.read().unwrap();
-            Self::route(&g, packet).and_then(|pk| g.peers.get(&pk).cloned())
+            Self::route(&g, packet).and_then(|pk| {
+                g.note_outbound(&pk, packet);
+                g.peers.get(&pk).cloned()
+            })
         };
         match sp {
             Some(sp) => sp.send(packet).await,
@@ -1085,9 +1109,11 @@ impl WgSender {
         {
             let g = self.0.read().unwrap();
             for (i, p) in packets.iter().enumerate() {
-                let Some(sp) = Self::route(&g, p).and_then(|pk| g.peers.get(&pk)) else {
+                let Some(pk) = Self::route(&g, p) else {
                     continue;
                 };
+                let Some(sp) = g.peers.get(&pk) else { continue };
+                g.note_outbound(&pk, p);
                 match groups.iter_mut().find(|(s, _)| Arc::ptr_eq(&s.tunn, &sp.tunn)) {
                     Some((_, idxs)) => idxs.push(i),
                     None => groups.push((sp.clone(), vec![i])),
@@ -1105,10 +1131,24 @@ impl WgSender {
     /// unknown, the handshake hasn't completed (boringtun queues the packet
     /// and emits a handshake initiation instead), or the carrier send failed.
     pub async fn send_to_peer(&self, peer_public: &[u8; 32], packet: &[u8]) -> bool {
-        let sp = { self.0.read().unwrap().peers.get(peer_public).cloned() };
+        let sp = {
+            let g = self.0.read().unwrap();
+            g.note_outbound(peer_public, packet);
+            g.peers.get(peer_public).cloned()
+        };
         match sp {
             Some(sp) => sp.send(packet).await,
             None => false,
+        }
+    }
+}
+
+impl SendState {
+    /// #18 — remember a flow this node starts toward a peer whose ingress the
+    /// tenant's ACL governs, so that peer's replies pass its rules.
+    fn note_outbound(&self, peer: &[u8; 32], packet: &[u8]) {
+        if self.ingress_acls.contains_key(peer) {
+            self.flows.note_outbound(packet, mono_ms_now());
         }
     }
 }
@@ -4727,14 +4767,147 @@ mod tests {
             "a port the ACL did not grant must not reach the TUN"
         );
 
-        // Traffic addressed to B ITSELF stays reachable: per-source rules govern
-        // what you reach THROUGH us, not whether you may talk TO us.
+        // #18 — traffic addressed to B ITSELF is narrowed too: the grant covers
+        // only the LAN, so a new flow to B's own address is refused.
         send_until_ok(&dev_a, &pk_b, &synthetic_tcp(IP_A, IP_B, 443, b"self")).await;
-        let got = tokio::time::timeout(Duration::from_secs(5), rx_b.recv())
-            .await
-            .expect("the node's own address is never gated by per-source rules")
-            .unwrap();
-        assert_eq!(&got[24..], b"self");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(500), rx_b.recv())
+                .await
+                .is_err(),
+            "a new flow to the node's own address is judged by the rules"
+        );
+    }
+
+    /// A TCP segment with real flags, or a UDP datagram, for the #18 tests.
+    fn synthetic_l4(
+        src: Ipv4Addr,
+        dst: Ipv4Addr,
+        udp: bool,
+        ports: (u16, u16),
+        flags: u8,
+    ) -> Vec<u8> {
+        let hl = if udp { 8 } else { 20 };
+        let mut p = vec![0u8; 20 + hl];
+        p[0] = 0x45;
+        p[2..4].copy_from_slice(&((20 + hl) as u16).to_be_bytes());
+        p[8] = 64;
+        p[9] = if udp { 17 } else { 6 };
+        p[12..16].copy_from_slice(&src.octets());
+        p[16..20].copy_from_slice(&dst.octets());
+        p[20..22].copy_from_slice(&ports.0.to_be_bytes());
+        p[22..24].copy_from_slice(&ports.1.to_be_bytes());
+        if !udp {
+            p[32] = 0x50;
+            p[33] = flags;
+        }
+        p
+    }
+
+    /// #18 — the tenant's rules decide whatever `overlay_rpf` says (here its
+    /// default, warn), and they narrow traffic to the node itself statefully:
+    /// a new connection or datagram is judged, a reply to a flow the node
+    /// started is not.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_acl_narrows_traffic_to_the_node_itself_and_admits_its_replies() {
+        use roomler_ai_remote_control::models::{PortRange, ProtocolKind};
+
+        let a = WgKeypair::generate();
+        let b = WgKeypair::generate();
+        let sock_a = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let sock_b = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let addr_a = sock_a.local_addr().unwrap();
+        let addr_b = sock_b.local_addr().unwrap();
+        let (mut dev_a, _rx_a) = WgDevice::new(a.secret.clone());
+        let (mut dev_b, mut rx_b) = WgDevice::new(b.secret.clone());
+        assert_eq!(dev_b.rpf_mode(), RpfMode::Warn, "the default posture");
+        dev_b.set_local_scope(Some(IP_B), &[]);
+        // The server granted A only TCP/22 on B.
+        let mut np = netmap_peer_for(&a, IP_A);
+        np.ingress_rules = Some(vec![OverlayRule {
+            cidr: format!("{IP_B}/32"),
+            port_range: PortRange { low: 22, high: 22 },
+            proto: ProtocolKind::Tcp,
+        }]);
+        let mut peers = HashMap::new();
+        peers.insert(np.node_id, np);
+        dev_b.sync_peer_ingress(&peers);
+        dev_a.add_peer(
+            b.public.to_bytes(),
+            IP_B,
+            Carrier::direct(sock_a.clone(), addr_b),
+            true,
+        );
+        dev_b.add_peer(
+            a.public.to_bytes(),
+            IP_A,
+            Carrier::direct(sock_b.clone(), addr_a),
+            false,
+        );
+        wait_connected(&dev_a, &b.public.to_bytes()).await;
+        let (pk_a, pk_b) = (a.public.to_bytes(), dev_b.public().to_bytes());
+        async fn delivered(rx: &mut mpsc::Receiver<Vec<u8>>) -> Option<Vec<u8>> {
+            tokio::time::timeout(Duration::from_millis(600), rx.recv())
+                .await
+                .ok()
+                .flatten()
+        }
+
+        send_until_ok(
+            &dev_a,
+            &pk_b,
+            &synthetic_l4(IP_A, IP_B, false, (40000, 22), 0x02),
+        )
+        .await;
+        assert!(delivered(&mut rx_b).await.is_some(), "a granted SYN");
+        send_until_ok(
+            &dev_a,
+            &pk_b,
+            &synthetic_l4(IP_A, IP_B, false, (40001, 443), 0x02),
+        )
+        .await;
+        assert!(
+            delivered(&mut rx_b).await.is_none(),
+            "a SYN to a port not granted, under warn"
+        );
+        send_until_ok(
+            &dev_a,
+            &pk_b,
+            &synthetic_l4(IP_A, IP_B, true, (5353, 4000), 0),
+        )
+        .await;
+        assert!(
+            delivered(&mut rx_b).await.is_none(),
+            "an unsolicited datagram"
+        );
+
+        // B starts a UDP flow to A; A's answer is a reply, not new traffic.
+        send_until_ok(
+            &dev_b,
+            &pk_a,
+            &synthetic_l4(IP_B, IP_A, true, (4000, 5353), 0),
+        )
+        .await;
+        send_until_ok(
+            &dev_a,
+            &pk_b,
+            &synthetic_l4(IP_A, IP_B, true, (5353, 4000), 0),
+        )
+        .await;
+        assert!(
+            delivered(&mut rx_b).await.is_some(),
+            "the reply to B's own flow"
+        );
+        // An established TCP segment (B's own connection to A:443).
+        send_until_ok(
+            &dev_a,
+            &pk_b,
+            &synthetic_l4(IP_A, IP_B, false, (443, 40002), 0x10),
+        )
+        .await;
+        assert!(
+            delivered(&mut rx_b).await.is_some(),
+            "an ACK segment of an established connection"
+        );
     }
 
     /// A peer with NO compiled rules keeps the pre-P4 behaviour: only the coarse

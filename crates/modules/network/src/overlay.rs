@@ -2599,6 +2599,7 @@ fn is_reachable(reach: &HashMap<ObjectId, bool>, node: &OverlayNode) -> bool {
 /// Cheap to build and short-lived on purpose: netmap events are joins, leaves,
 /// endpoint trickles and admin edits — orders of magnitude rarer than the
 /// per-flow tunnel gate, so there is nothing to cache yet.
+#[derive(Clone)]
 pub struct AclCtx {
     pub mode: OverlayAclMode,
     pub policies: Vec<OverlayPolicy>,
@@ -2666,21 +2667,43 @@ pub async fn try_load_acl(
 
 /// Load the tenant's ACL posture and rules for NETMAP shaping.
 ///
-/// **Fails OPEN, deliberately.** The tunnel gate defaults to deny because a
-/// denied flow is one broken connection; here a spurious deny would withhold
-/// every peer and tear down the tenant's whole mesh on a transient Mongo blip.
-/// The same reasoning already governs `reachability()` above ("failing open").
-/// A load failure is logged at ERROR so it is never silent — and the posture
-/// is an explicit `unwrap_or_else` at the one call site that decides it, not a
-/// hidden branch inside the loader, so a reader can see which callers fail
-/// open (this one) and which do not (the relay mint).
+/// A read failure never becomes "ACL off" (#18, v039 ACL-02: an unavailable
+/// policy must not turn into allow-all). It shapes with the last policy this
+/// process read for the tenant, which keeps the mesh as it was instead of
+/// tearing it down on a transient Mongo blip; with none read yet it fails
+/// CLOSED. Logged at ERROR either way. The relay mint refuses outright
+/// instead ([`try_load_acl`]).
 pub async fn load_acl(state: &NetworkState, tenant_id: ObjectId) -> AclCtx {
-    try_load_acl(state, tenant_id, PolicyLoad::WhenGating)
-        .await
-        .unwrap_or_else(|e| {
-            tracing::error!(%tenant_id, %e, "overlay acl: read failed; failing OPEN (netmap shaping)");
-            AclCtx::off()
-        })
+    settle_acl(
+        tenant_id,
+        try_load_acl(state, tenant_id, PolicyLoad::WhenGating).await,
+    )
+}
+
+/// The last ACL each tenant's netmap was shaped with, in this process.
+static LAST_GOOD_ACL: std::sync::LazyLock<dashmap::DashMap<ObjectId, AclCtx>> =
+    std::sync::LazyLock::new(dashmap::DashMap::new);
+
+fn settle_acl<E: std::fmt::Display>(tenant_id: ObjectId, read: Result<AclCtx, E>) -> AclCtx {
+    match read {
+        Ok(acl) => {
+            LAST_GOOD_ACL.insert(tenant_id, acl.clone());
+            acl
+        }
+        Err(e) => match LAST_GOOD_ACL.get(&tenant_id) {
+            Some(last) => {
+                tracing::error!(%tenant_id, %e, "overlay acl: read failed; shaping with the last policy read");
+                last.clone()
+            }
+            None => {
+                tracing::error!(%tenant_id, %e, "overlay acl: read failed and none read yet; failing CLOSED");
+                AclCtx {
+                    mode: OverlayAclMode::Enforce,
+                    policies: Vec::new(),
+                }
+            }
+        },
+    }
 }
 
 /// Resolve the identity a decision is being made FOR: the node itself, plus
@@ -3699,6 +3722,23 @@ mod tests {
         let mut line = line_only(to_netmap_peer(&n, true));
         stamp_verdict(&mut line, Some(RelayStrategyWire::Derp));
         assert_eq!(line.relay_strategy, None);
+    }
+
+    /// #18 — an unreadable policy never shapes as "ACL off": the last one read
+    /// stands in, and with none read yet the netmap fails closed.
+    #[test]
+    fn an_unreadable_acl_is_never_allow_all() {
+        let tenant = ObjectId::new();
+        let closed = settle_acl(tenant, Err::<AclCtx, _>("mongo down"));
+        assert!(
+            closed.enforcing() && closed.policies.is_empty(),
+            "none read yet: closed"
+        );
+        settle_acl::<&str>(tenant, Ok(AclCtx::off()));
+        assert!(
+            !settle_acl(tenant, Err::<AclCtx, _>("blip")).gating(),
+            "the last read stands"
+        );
     }
 
     /// Guards the join path against regressing to a blanket `true`: presence

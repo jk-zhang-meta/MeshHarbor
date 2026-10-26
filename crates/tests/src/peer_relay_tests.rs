@@ -258,13 +258,13 @@ async fn approval_needs_manage_agents_and_exec_device_and_audits_both_arms() {
     assert_eq!(body["total"], json!(6));
 }
 
-/// The loader the P3c mint will stand on. `load_acl` fails OPEN by design (a
-/// spurious deny there would withhold a tenant's whole mesh on a Mongo blip);
-/// a relay grant must instead be REFUSED and audited when the rules cannot be
-/// read, which needs an error the caller can see. Both postures, side by side,
-/// on the same unreadable row.
+/// The loader the P3c mint will stand on. A relay grant must be REFUSED and
+/// audited when the rules cannot be read, which needs an error the caller can
+/// see. The netmap loader `load_acl` never opens up on a read failure either:
+/// it keeps the tenant's last good ACL (so a Mongo blip neither withholds the
+/// mesh nor widens it). Both postures, side by side, on the same unreadable row.
 #[tokio::test]
-async fn try_load_acl_fails_closed_where_load_acl_fails_open() {
+async fn try_load_acl_errors_where_load_acl_keeps_the_last_good_acl() {
     let app = TestApp::spawn().await;
     let seeded = app.seed_tenant("relayacl").await;
     let tid = ObjectId::parse_str(&seeded.tenant_id).unwrap();
@@ -285,6 +285,10 @@ async fn try_load_acl_fails_closed_where_load_acl_fails_open() {
     )
     .await;
     assert_eq!(s, 200);
+    assert_eq!(
+        load_acl(app.state.network(), tid).await.mode,
+        OverlayAclMode::Warn
+    );
 
     // ...then make them unreadable: a document that matches the live filter
     // but cannot deserialise into an `OverlayPolicy`.
@@ -312,9 +316,9 @@ async fn try_load_acl_fails_closed_where_load_acl_fails_open() {
         "an unreadable policy set must be an error, not an empty ACL"
     );
 
-    // The netmap loader keeps its posture: OPEN, exactly as before.
+    // The netmap loader keeps the last ACL it read, never `off`.
     let ctx = load_acl(app.state.network(), tid).await;
-    assert_eq!(ctx.mode, OverlayAclMode::Off);
+    assert_eq!(ctx.mode, OverlayAclMode::Warn);
     assert!(ctx.policies.is_empty());
 }
 

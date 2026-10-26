@@ -3613,13 +3613,15 @@ pub enum OverlayTarget {
 
 /// One destination grant: a CIDR plus an optional port/protocol narrowing.
 ///
-/// ⚠️ `port_range` / `proto` are **stored and distributed but do not affect
-/// netmap shaping**, because peer visibility and route lists are the only
-/// primitives the netmap wire format can express — there is no port dimension
-/// in [`crate::signaling::NetmapPeer`]. They take effect only once the
-/// node-side ingress filter consumes them. Until then a port-narrowed rule
-/// grants the whole peer at L3, so the admin UI must say so rather than imply
-/// a narrowing that is not enforced.
+/// ⚠️ `port_range` / `proto` **do not affect netmap shaping**: peer visibility
+/// and route lists are the only primitives the netmap can express, so a
+/// port-narrowed rule still makes the whole peer visible. Under `enforce` the
+/// server ships them per source as `ingress_rules`, and the RECEIVING node's
+/// ingress filter enforces them on every carrier (direct, DERP, org relay),
+/// for traffic to the node itself and to the subnets it routes (#18). The
+/// filter is stateful: only a new TCP connection (bare SYN), an unsolicited
+/// UDP datagram or a fragment is judged; replies to flows the node opened,
+/// ICMP errors and echo requests to the node itself always pass.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct OverlayRule {
     /// Destination prefix, e.g. `"10.84.6.0/24"` or a peer's `"100.64.0.7/32"`.

@@ -74,16 +74,16 @@
       </div>
 
       <v-alert
-        v-if="store.mode !== 'off' && narrowedRules > 0"
+        v-if="store.mode === 'warn' && narrowedRules > 0"
         type="info"
         variant="tonal"
         density="compact"
         class="mb-4"
       >
-        {{ narrowedRules }} rule(s) narrow ports or protocol. Those fields are
-        stored and distributed, but <strong>not enforced yet</strong> — the
-        netmap can only express peer visibility and route lists, so a
-        port-narrowed rule currently grants the whole peer at L3.
+        {{ narrowedRules }} rule(s) narrow ports or protocol. Each node enforces
+        those on the traffic it receives only under <code>enforce</code>; in
+        <code>warn</code> they are <strong>not checked</strong>. Either way a
+        port-narrowed rule makes the whole peer visible.
       </v-alert>
 
       <p v-if="!store.loading && store.policies.length === 0" class="text-medium-emphasis">
