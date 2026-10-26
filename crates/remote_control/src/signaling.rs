@@ -745,9 +745,14 @@ pub enum ClientMsg {
     /// MeshHarbor #20 — what the agent made of the last
     /// [`ServerMsg::ManagedForwardSet`]: one entry per desired forward. The
     /// server binds it to the authenticated agent and the exact revision.
+    ///
+    /// `confirm` is the nft backend's change generation awaiting
+    /// [`ServerMsg::ManagedForwardConfirm`]; absent when nothing waits.
     #[serde(rename = "rc:forward.status")]
     ManagedForwardStatus {
         statuses: Vec<ManagedForwardStatusWire>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        confirm: Option<u64>,
     },
 
     #[serde(rename = "rc:agent.net_inventory")]
@@ -3695,6 +3700,13 @@ pub enum ServerMsg {
     ManagedForwardSet {
         forwards: Vec<ManagedForwardAssignment>,
     },
+
+    /// MeshHarbor #20 — the server heard the agent's
+    /// [`ClientMsg::ManagedForwardStatus`] carrying `confirm: generation`:
+    /// its nft change kept the control path, so the agent keeps it. Without
+    /// this in time the agent's watchdog restores the last confirmed table.
+    #[serde(rename = "rc:forward.confirm")]
+    ManagedForwardConfirm { generation: u64 },
 
     #[serde(rename = "rc:agent.key_rotate")]
     KeyRotate {
@@ -12427,9 +12439,30 @@ mod org_fallback_wire_tests {
     }
 }
 
+/// Which engine runs a managed forward (MeshHarbor #20).
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ForwardBackend {
+    /// The agent's userspace TCP/UDP relay; always masquerades.
+    #[default]
+    Userspace,
+    /// The agent's owned nftables table (DNAT), Linux only, under
+    /// commit-confirm. Sent only to a device advertising
+    /// [`RpcCap::ManagedForwardNft`].
+    ///
+    /// [`RpcCap::ManagedForwardNft`]: crate::models::RpcCap::ManagedForwardNft
+    Nft,
+}
+
+impl ForwardBackend {
+    pub fn is_userspace(&self) -> bool {
+        *self == ForwardBackend::Userspace
+    }
+}
+
 /// One forward of a [`ServerMsg::ManagedForwardSet`] (MeshHarbor #20): listen
 /// on `bind_addr:port`, admit `sources` (CIDRs), relay to
-/// `dest_addr:dest_port`, masquerading.
+/// `dest_addr:dest_port`, masquerading unless `preserve_source` (nft only).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ManagedForwardAssignment {
     pub id: String,
@@ -12440,6 +12473,10 @@ pub struct ManagedForwardAssignment {
     pub sources: Vec<String>,
     pub dest_addr: String,
     pub dest_port: u16,
+    #[serde(default, skip_serializing_if = "ForwardBackend::is_userspace")]
+    pub backend: ForwardBackend,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub preserve_source: bool,
 }
 
 /// One forward's state in a [`ClientMsg::ManagedForwardStatus`].

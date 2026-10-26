@@ -1984,6 +1984,11 @@ fn rpc_caps() -> Vec<String> {
     caps.push(RpcCap::KeyRotate);
     // MeshHarbor #20 — every build runs managed forwards (userspace backend).
     caps.push(RpcCap::ManagedForward);
+    // ... and on its owned nftables table: Linux, as root, with `nft`.
+    #[cfg(target_os = "linux")]
+    if crate::managed_forward_nft::available() {
+        caps.push(RpcCap::ManagedForwardNft);
+    }
     // FR-90 — a build that runs agent sessions answers `rc:hive.start` and
     // reports with `rc:hive.state`. A property of the BUILD, like `ssh`: the
     // device still refuses unless its owner switched `hive_enabled` on, and

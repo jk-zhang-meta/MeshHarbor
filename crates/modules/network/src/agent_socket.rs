@@ -158,9 +158,19 @@ impl AgentMsgHandler for NetworkAgentSocket {
                 crate::net_inventory::receive(state, ctx, inventory, page).await;
                 None
             }
-            ClientMsg::ManagedForwardStatus { statuses } => {
+            ClientMsg::ManagedForwardStatus { statuses, confirm } => {
                 crate::managed_forward::record_status(state, ctx.tenant_id, ctx.agent_id, statuses)
                     .await;
+                // The status arrived over this connection after the nft
+                // change: the control path survived it. Say so on the same
+                // connection, so the agent's watchdog keeps the change.
+                if let Some(generation) = confirm {
+                    let _ = ctx.tx.try_send(
+                        roomler_ai_remote_control::signaling::ServerMsg::ManagedForwardConfirm {
+                            generation,
+                        },
+                    );
+                }
                 None
             }
             ClientMsg::DerpTicketRequest {} => {

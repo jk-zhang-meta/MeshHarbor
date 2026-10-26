@@ -1630,7 +1630,8 @@ async fn connect_once(
     // connection, like the re-prober.
     // MeshHarbor #20 — this connection's managed-forward runner; its
     // forwards stop with the connection.
-    let managed_forward_tx = crate::managed_forward::spawn_agent(outbound_tx.clone());
+    let managed_forward_tx =
+        crate::managed_forward::spawn_agent(outbound_tx.clone(), ctx.is_primary);
     let _ = crate::net_inventory::spawn_reporter(
         outbound_tx.clone(),
         ctx.is_primary,
@@ -2721,9 +2722,20 @@ async fn connect_once(
                             );
                             let parsed = match parsed {
                                 ServerMsg::ManagedForwardSet { forwards } => {
-                                    if managed_forward_tx.try_send(forwards).is_err() {
+                                    if managed_forward_tx
+                                        .try_send(crate::managed_forward::Cmd::Set(forwards))
+                                        .is_err()
+                                    {
                                         warn!("managed forward: runner busy; this set is dropped, the next push supersedes it");
                                     }
+                                    continue;
+                                }
+                                ServerMsg::ManagedForwardConfirm { generation } => {
+                                    // Awaited, not dropped: a lost confirm
+                                    // would roll a good change back.
+                                    let _ = managed_forward_tx
+                                        .send(crate::managed_forward::Cmd::Confirm(generation))
+                                        .await;
                                     continue;
                                 }
                                 other => other,

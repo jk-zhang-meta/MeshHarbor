@@ -454,3 +454,202 @@ async fn an_applied_forwards_own_listener_is_not_a_collision() {
     let (s, body) = post(&app, &format!("{base}/plan"), tok, &spec(&a, 22)).await;
     assert_eq!((s, body["ok"].clone()), (200, json!(false)), "{body}");
 }
+
+/// Slice 4b: an nft forward. The ingress must advertise the backend, its
+/// fresh inventory must show forwarding on and no foreign forward chain that
+/// drops by default (reported, never changed), preserve-source needs an
+/// on-link destination, the push carries the backend, and a status with
+/// `confirm` is answered with `rc:forward.confirm` on the same connection.
+#[tokio::test]
+async fn the_nft_backend_is_gated_on_the_ingress_and_its_changes_are_confirmed() {
+    use roomler_ai_remote_control::net_inventory::{
+        FirewallChain, FirewallOwner, Forwarding, Interface,
+    };
+    let inv = |fwd: Option<bool>, drop_chain: bool| NetInventory {
+        os: "linux".into(),
+        namespaces: "host_only".into(),
+        forwarding: Forwarding {
+            ipv4: fwd,
+            ipv6: None,
+        },
+        interfaces: Section::capped(
+            vec![Interface {
+                name: "eth1".into(),
+                index: 2,
+                kind: None,
+                up: true,
+                mtu: Some(1500),
+                addrs: vec!["10.0.0.1/24".into()],
+            }],
+            10,
+        ),
+        listeners: Section::capped(vec![], 10),
+        firewall_chains: Section::capped(
+            if drop_chain {
+                vec![FirewallChain {
+                    backend: "nftables".into(),
+                    family: "ip".into(),
+                    table: "filter".into(),
+                    name: "FORWARD".into(),
+                    hook: Some("forward".into()),
+                    chain_type: Some("filter".into()),
+                    priority: Some(0),
+                    policy: Some("drop".into()),
+                    owner: FirewallOwner::Docker,
+                }]
+            } else {
+                vec![]
+            },
+            10,
+        ),
+        ..Default::default()
+    };
+    let send_inv = |seq: u64, inv: NetInventory| {
+        json!({ "t": "rc:agent.net_inventory", "boot_id": "b1", "seq": seq, "page": 0, "pages": 1,
+            "observed_at_ms": seq, "inventory": inv })
+        .to_string()
+    };
+    let app = TestApp::spawn().await;
+    let seeded = app.seed_tenant("mf-nft").await;
+    let (tid, tok) = (&seeded.tenant_id, &seeded.admin.access_token);
+    let plan_path = format!("/api/tenant/{tid}/managed-forward/plan");
+    let nft_spec = |ingress: &str, nat: &str, dest: &str| {
+        let mut s = spec(ingress, 15432);
+        s["backend"] = json!("nft");
+        s["nat"] = json!(nat);
+        s["dest_addr"] = json!(dest);
+        s
+    };
+    // Poll the plan until `name` reads `want` (an inventory lands async).
+    let until = |body: Value, name: &'static str, want: &'static str| {
+        let (app, plan_path, tok) = (&app, plan_path.clone(), tok.clone());
+        async move {
+            let mut last = Value::Null;
+            for _ in 0..30 {
+                let (_, plan) = post(app, &plan_path, &tok, &body).await;
+                if plan["checks"]
+                    .as_array()
+                    .is_some_and(|c| c.iter().any(|c| c["name"] == name && c["verdict"] == want))
+                {
+                    return plan;
+                }
+                last = plan;
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            panic!("{name} never read {want}: {last}");
+        }
+    };
+
+    // A device without the capability: refused, not run in userspace.
+    let (a, a_tok) = enroll(&app, &seeded, "mf-nft-a").await;
+    let mut wa = connect_from(&app, &a_tok, &["managed-forward"], None).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    wa.send(Message::Text(send_inv(1, inv(Some(true), false)).into()))
+        .await
+        .unwrap();
+    let plan = until(
+        nft_spec(&a, "masquerade", "10.0.0.5"),
+        "native backend",
+        "fail",
+    )
+    .await;
+    assert_eq!(plan["ok"], json!(false));
+    assert_eq!(plan["backend"], json!("nft"));
+
+    // A capable device: forwarding off, then a foreign forward chain that
+    // drops, then a clean host.
+    let (b, b_tok) = enroll(&app, &seeded, "mf-nft-b").await;
+    let mut wb = connect_from(
+        &app,
+        &b_tok,
+        &["managed-forward", "managed-forward-nft"],
+        None,
+    )
+    .await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    wb.send(Message::Text(send_inv(1, inv(Some(false), false)).into()))
+        .await
+        .unwrap();
+    let plan = until(
+        nft_spec(&b, "masquerade", "10.0.0.5"),
+        "ip forwarding",
+        "fail",
+    )
+    .await;
+    assert_eq!(verdict(&plan, "native backend"), "pass");
+    assert!(plan.to_string().contains("does not change it"), "{plan}");
+    wb.send(Message::Text(send_inv(2, inv(Some(true), true)).into()))
+        .await
+        .unwrap();
+    let plan = until(
+        nft_spec(&b, "masquerade", "10.0.0.5"),
+        "foreign forward policy",
+        "fail",
+    )
+    .await;
+    assert!(
+        plan.to_string().contains("filter/FORWARD"),
+        "names the chain: {plan}"
+    );
+    wb.send(Message::Text(send_inv(3, inv(Some(true), false)).into()))
+        .await
+        .unwrap();
+    until(
+        nft_spec(&b, "masquerade", "10.0.0.5"),
+        "foreign forward policy",
+        "pass",
+    )
+    .await;
+
+    // Preserve-source: on-link passes, off-link fails.
+    let plan = until(
+        nft_spec(&b, "preserve_source", "10.0.0.5"),
+        "return path",
+        "pass",
+    )
+    .await;
+    assert_eq!(plan["ok"], json!(true), "{plan}");
+    until(
+        nft_spec(&b, "preserve_source", "10.9.9.9"),
+        "return path",
+        "fail",
+    )
+    .await;
+
+    // Created, pushed with its backend.
+    let _ = recv_t(&mut wb, "rc:forward.set", Duration::from_millis(1500)).await;
+    let (s, body) = post(
+        &app,
+        &format!("/api/tenant/{tid}/managed-forward"),
+        tok,
+        &nft_spec(&b, "preserve_source", "10.0.0.5"),
+    )
+    .await;
+    assert_eq!(s, 201, "{body}");
+    let set = recv_t(&mut wb, "rc:forward.set", Duration::from_secs(3))
+        .await
+        .expect("pushed");
+    let f = &set["forwards"][0];
+    assert_eq!(f["backend"], json!("nft"), "{set}");
+    assert_eq!(f["preserve_source"], json!(true), "{set}");
+
+    // The agent's status carries the change's generation: confirmed.
+    let id = f["id"].as_str().unwrap();
+    let m = json!({ "t": "rc:forward.status", "confirm": 7,
+        "statuses": [{ "id": id, "revision": 1, "listening": true }] });
+    wb.send(Message::Text(m.to_string().into())).await.unwrap();
+    let c = recv_t(&mut wb, "rc:forward.confirm", Duration::from_secs(3))
+        .await
+        .expect("confirmed");
+    assert_eq!(c["generation"], json!(7));
+    // A status without one asks for nothing.
+    let m = json!({ "t": "rc:forward.status",
+        "statuses": [{ "id": id, "revision": 1, "listening": true }] });
+    wb.send(Message::Text(m.to_string().into())).await.unwrap();
+    assert!(
+        recv_t(&mut wb, "rc:forward.confirm", Duration::from_millis(800))
+            .await
+            .is_none()
+    );
+    drop(wa);
+}

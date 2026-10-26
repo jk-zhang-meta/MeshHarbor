@@ -6,6 +6,11 @@
 //! sees this node). It never touches routes, the firewall or the node's own
 //! control connection.
 //!
+//! A forward the server marks `nft` runs on the owned nftables table
+//! instead (`managed_forward_nft`, Linux, root, primary enrollment only: the
+//! table is host-wide); anywhere else it is reported failed, never relayed
+//! in userspace with a different meaning.
+//!
 //! [`Forwarders::reconcile`] takes the whole desired set and is idempotent:
 //! a forward already running at the same revision is left alone, a changed
 //! revision is restarted, a forward no longer desired is stopped. Each
@@ -19,7 +24,7 @@ use std::time::{Duration, Instant};
 
 use roomler_ai_remote_control::net_inventory::L4;
 use roomler_ai_remote_control::signaling::{
-    ClientMsg, ManagedForwardAssignment, ManagedForwardStatusWire,
+    ClientMsg, ForwardBackend, ManagedForwardAssignment, ManagedForwardStatusWire,
 };
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::sync::{Semaphore, mpsc};
@@ -284,45 +289,184 @@ async fn serve_udp(a: Assignment, sock: Arc<UdpSocket>) {
     }
 }
 
+fn wire(s: Status) -> ManagedForwardStatusWire {
+    match s.state {
+        State::Listening => ManagedForwardStatusWire {
+            id: s.id,
+            revision: s.revision,
+            listening: true,
+            error: None,
+        },
+        State::Failed(e) => ManagedForwardStatusWire {
+            id: s.id,
+            revision: s.revision,
+            listening: false,
+            error: Some(e),
+        },
+    }
+}
+
+/// What the connection hands its runner.
+pub enum Cmd {
+    /// `rc:forward.set`: the whole desired set.
+    Set(Vec<ManagedForwardAssignment>),
+    /// `rc:forward.confirm`: keep that nft change.
+    Confirm(u64),
+}
+
 /// This connection's forward runner: send it each `rc:forward.set`; it
 /// reconciles and answers `rc:forward.status` on `outbound`. When the
 /// connection ends its sender drops, the runner exits, and every forward
 /// stops: a device the server can no longer reach (revoked, removed) keeps
-/// no listener it was given.
-pub fn spawn_agent(
-    outbound: mpsc::Sender<ClientMsg>,
-) -> mpsc::Sender<Vec<ManagedForwardAssignment>> {
-    let (tx, mut rx) = mpsc::channel::<Vec<ManagedForwardAssignment>>(4);
+/// no listener or nft rule it was given. `native` lets this connection run
+/// the nft backend (the primary enrollment: the table is host-wide).
+pub fn spawn_agent(outbound: mpsc::Sender<ClientMsg>, native: bool) -> mpsc::Sender<Cmd> {
+    let (tx, mut rx) = mpsc::channel::<Cmd>(4);
     tokio::spawn(async move {
         let mut forwarders = Forwarders::default();
-        while let Some(set) = rx.recv().await {
-            let (want, mut statuses) = to_assignments(set);
+        #[cfg(target_os = "linux")]
+        let mut nft = (native && crate::managed_forward_nft::available())
+            .then(crate::managed_forward_nft::NftBackend::system);
+        #[cfg(not(target_os = "linux"))]
+        let _ = native;
+        // A table a crashed process left behind is not this connection's.
+        #[cfg(target_os = "linux")]
+        if let Some(b) = nft.as_mut()
+            && let Err(e) = b.clear().await
+        {
+            warn!(%e, "managed forward: could not clear a stale nft table");
+        }
+        #[cfg(target_os = "linux")]
+        let mut native_set: Vec<crate::managed_forward_nft::NatForward> = Vec::new();
+        let mut tick = tokio::time::interval(Duration::from_secs(1));
+        loop {
+            let cmd = tokio::select! {
+                cmd = rx.recv() => match cmd {
+                    Some(c) => c,
+                    None => break,
+                },
+                _ = tick.tick() => {
+                    #[cfg(target_os = "linux")]
+                    if let Some(b) = nft.as_mut()
+                        && b.expire().await
+                    {
+                        let statuses = native_set
+                            .iter()
+                            .map(|f| ManagedForwardStatusWire {
+                                id: f.id.clone(),
+                                revision: f.revision,
+                                listening: false,
+                                error: Some("rolled back: the server did not confirm the change in time".into()),
+                            })
+                            .collect();
+                        native_set.clear();
+                        let _ = outbound
+                            .send(ClientMsg::ManagedForwardStatus { statuses, confirm: None })
+                            .await;
+                    }
+                    continue;
+                }
+            };
+            let set = match cmd {
+                Cmd::Confirm(_generation) => {
+                    #[cfg(target_os = "linux")]
+                    if let Some(b) = nft.as_mut() {
+                        b.confirm(_generation).await;
+                    }
+                    continue;
+                }
+                Cmd::Set(set) => set,
+            };
+            let (want, _native_want, mut statuses) = split(set);
             for s in forwarders.reconcile(want).await {
-                statuses.push(match s.state {
-                    State::Listening => ManagedForwardStatusWire {
-                        id: s.id,
-                        revision: s.revision,
-                        listening: true,
-                        error: None,
-                    },
-                    State::Failed(e) => ManagedForwardStatusWire {
-                        id: s.id,
-                        revision: s.revision,
-                        listening: false,
-                        error: Some(e),
-                    },
-                });
+                statuses.push(wire(s));
             }
+            let mut confirm = None;
+            #[cfg(target_os = "linux")]
+            if let Some(b) = nft.as_mut() {
+                let set: Vec<_> = _native_want
+                    .into_iter()
+                    .map(|(a, preserve)| crate::managed_forward_nft::NatForward {
+                        id: a.id,
+                        revision: a.revision,
+                        bind: a.bind,
+                        proto: a.proto,
+                        sources: a.sources,
+                        dest: a.dest,
+                        masquerade: !preserve,
+                    })
+                    .collect();
+                let (st, g) = b.apply(&set).await;
+                statuses.extend(st.into_iter().map(wire));
+                confirm = g;
+                native_set = set;
+            } else {
+                statuses.extend(_native_want.into_iter().map(|(a, _)| no_native(a)));
+            }
+            #[cfg(not(target_os = "linux"))]
+            statuses.extend(_native_want.into_iter().map(|(a, _)| no_native(a)));
             if outbound
-                .send(ClientMsg::ManagedForwardStatus { statuses })
+                .send(ClientMsg::ManagedForwardStatus { statuses, confirm })
                 .await
                 .is_err()
             {
                 break;
             }
         }
+        forwarders.stop_all();
+        #[cfg(target_os = "linux")]
+        if let Some(b) = nft.as_mut()
+            && let Err(e) = b.clear().await
+        {
+            warn!(%e, "managed forward: could not remove the nft table at disconnect");
+        }
     });
     tx
+}
+
+fn no_native(a: Assignment) -> ManagedForwardStatusWire {
+    ManagedForwardStatusWire {
+        id: a.id,
+        revision: a.revision,
+        listening: false,
+        error: Some("no nft backend on this connection (Linux, root, primary enrollment)".into()),
+    }
+}
+
+/// Split the wire set by backend: userspace forwards, nft forwards with
+/// their preserve-source flag, and the entries that fail as sent (a
+/// malformed one, or preserve-source asked of the userspace relay).
+pub fn split(
+    set: Vec<ManagedForwardAssignment>,
+) -> (
+    Vec<Assignment>,
+    Vec<(Assignment, bool)>,
+    Vec<ManagedForwardStatusWire>,
+) {
+    let mut native = Vec::new();
+    let mut user = Vec::new();
+    let mut bad = Vec::new();
+    for w in set {
+        match (w.backend, w.preserve_source) {
+            (ForwardBackend::Nft, preserve) => {
+                let (ok, b) = to_assignments(vec![w]);
+                native.extend(ok.into_iter().map(|a| (a, preserve)));
+                bad.extend(b);
+            }
+            (ForwardBackend::Userspace, true) => bad.push(ManagedForwardStatusWire {
+                id: w.id,
+                revision: w.revision,
+                listening: false,
+                error: Some(
+                    "preserve_source needs the nft backend; not masqueraded instead".into(),
+                ),
+            }),
+            (ForwardBackend::Userspace, false) => user.push(w),
+        }
+    }
+    let (ok, b) = to_assignments(user);
+    bad.extend(b);
+    (ok, native, bad)
 }
 
 /// Parse the wire set; an entry that does not parse is reported failed,
@@ -459,6 +603,8 @@ mod tests {
             sources: srcs.iter().map(|s| s.to_string()).collect(),
             dest_addr: "127.0.0.1".into(),
             dest_port: 2000,
+            backend: ForwardBackend::Userspace,
+            preserve_source: false,
         };
         let (ok, bad) = to_assignments(vec![
             w("127.0.0.1", &["127.0.0.0/8"]),
@@ -469,6 +615,19 @@ mod tests {
         assert_eq!(ok[0].sources, vec![("127.0.0.0".parse().unwrap(), 8)]);
         assert_eq!(bad.len(), 2);
         assert!(bad.iter().all(|b| !b.listening && b.revision == 3));
+
+        // By backend: preserve-source is never masqueraded in userspace.
+        let mut nft = w("127.0.0.1", &["127.0.0.0/8"]);
+        nft.backend = ForwardBackend::Nft;
+        nft.preserve_source = true;
+        let mut user_preserve = w("127.0.0.1", &["127.0.0.0/8"]);
+        user_preserve.preserve_source = true;
+        let (user, native, bad) = split(vec![w("127.0.0.1", &["127.0.0.0/8"]), nft, user_preserve]);
+        assert_eq!(user.len(), 1);
+        assert_eq!(native.len(), 1);
+        assert!(native[0].1, "preserve flag kept");
+        assert_eq!(bad.len(), 1);
+        assert!(bad[0].error.as_deref().unwrap().contains("nft backend"));
     }
 
     #[test]

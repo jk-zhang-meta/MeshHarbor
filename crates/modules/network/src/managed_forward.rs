@@ -18,7 +18,15 @@
 //!   restriction, so a server hop cannot launder it. An unenrolled
 //!   destination has no verified attachment and fails under `enforce`.
 //! - **Management.** The userspace backend only listens; it never alters a
-//!   node's outbound control path to `www.itachi.fans`. Recorded as a check.
+//!   node's outbound control path to `www.itachi.fans`. The nft backend
+//!   hooks only inbound flows to the forward's own address and port, and
+//!   its change rolls back unless this server confirms it still hears the
+//!   node. Recorded as a check.
+//! - **Native preconditions** (nft only), from the ingress's advertised
+//!   capability and fresh inventory: forwarding on for the family, no
+//!   foreign forward chain that drops by default, and for preserve-source a
+//!   destination on a subnet the ingress connects. A blocking host setting
+//!   is reported, never changed.
 //! - **Revisions.** An update names the revision it read; a stale one is
 //!   refused (the route returns 409).
 
@@ -26,7 +34,8 @@ use std::net::IpAddr;
 
 use bson::{DateTime, doc, oid::ObjectId};
 use roomler_ai_remote_control::models::RpcCap;
-use roomler_ai_remote_control::net_inventory::{L4, truncate_str};
+use roomler_ai_remote_control::net_inventory::{FirewallOwner, L4, SectionState, truncate_str};
+pub use roomler_ai_remote_control::signaling::ForwardBackend;
 use roomler_ai_remote_control::signaling::{
     ManagedForwardAssignment, ManagedForwardStatusWire, ServerMsg,
 };
@@ -71,6 +80,9 @@ pub struct ForwardSpec {
     pub dest_addr: String,
     pub dest_port: u16,
     pub nat: NatMode,
+    /// The engine on the ingress; `userspace` when absent.
+    #[serde(default)]
+    pub backend: ForwardBackend,
     pub desired: Desired,
     /// Required to bind a wildcard address.
     #[serde(default)]
@@ -240,7 +252,19 @@ pub fn check_input(spec: &ForwardSpec, checks: &mut Vec<Check>) {
         },
         "dest_addr is an address",
     );
-    let backend_ok = spec.nat == NatMode::Masquerade;
+    let (backend_ok, detail) = match (spec.backend, spec.nat) {
+        (ForwardBackend::Userspace, NatMode::Masquerade) => {
+            (true, "userspace TCP/UDP relay, masquerading")
+        }
+        (ForwardBackend::Userspace, NatMode::PreserveSource) => (
+            false,
+            "preserve_source needs the nft backend; refused rather than masqueraded",
+        ),
+        (ForwardBackend::Nft, NatMode::Masquerade) => (true, "nft DNAT, masquerading"),
+        (ForwardBackend::Nft, NatMode::PreserveSource) => {
+            (true, "nft DNAT, the client's source address preserved")
+        }
+    };
     check(
         checks,
         "backend capability",
@@ -249,12 +273,36 @@ pub fn check_input(spec: &ForwardSpec, checks: &mut Vec<Check>) {
         } else {
             Verdict::Fail
         },
-        if backend_ok {
-            "userspace TCP/UDP relay, masquerading"
-        } else {
-            "preserve_source needs a native NAT backend, which is not built; refused rather than masqueraded"
-        },
+        detail,
     );
+    if spec.backend == ForwardBackend::Nft {
+        let dest: Option<IpAddr> = spec.dest_addr.trim().parse().ok();
+        let same = bind
+            .zip(dest)
+            .is_none_or(|(b, d)| b.is_ipv4() == d.is_ipv4());
+        let in_family = bind.is_none_or(|b| {
+            sources
+                .iter()
+                .flatten()
+                .any(|(ip, _)| ip.is_ipv4() == b.is_ipv4())
+        });
+        check(
+            checks,
+            "address family",
+            if same && in_family {
+                Verdict::Pass
+            } else {
+                Verdict::Fail
+            },
+            if !same {
+                "nft does not translate between IPv4 and IPv6"
+            } else if !in_family {
+                "no source CIDR in the ingress address's family"
+            } else {
+                "one family end to end"
+            },
+        );
+    }
     if let Some(at) = spec.expires_at_ms {
         let future = at > DateTime::now().timestamp_millis();
         check(
@@ -399,6 +447,12 @@ pub async fn plan(
         }
     }
 
+    if spec.backend == ForwardBackend::Nft
+        && let (Some(id), Some(agent)) = (ingress, ingress_agent.as_ref())
+    {
+        native_checks(state, tenant_id, id, agent, spec, &mut checks).await;
+    }
+
     // Loops.
     let same_node = spec
         .dest_agent_id
@@ -469,7 +523,14 @@ pub async fn plan(
         &mut checks,
         "management",
         Verdict::Pass,
-        "the userspace backend only listens; the node's control connection to www.itachi.fans is untouched",
+        match spec.backend {
+            ForwardBackend::Userspace => {
+                "the userspace backend only listens; the node's control connection to www.itachi.fans is untouched"
+            }
+            ForwardBackend::Nft => {
+                "nft hooks only inbound flows to this address and port; the change rolls back within 30 s unless this server confirms it still hears the node"
+            }
+        },
     );
 
     let ok = checks
@@ -478,7 +539,167 @@ pub async fn plan(
     Plan {
         ok,
         checks,
-        backend: "userspace",
+        backend: match spec.backend {
+            ForwardBackend::Userspace => "userspace",
+            ForwardBackend::Nft => "nft",
+        },
+    }
+}
+
+/// Is `ip` inside `net/len` (both of one family)?
+fn in_net(ip: IpAddr, (net, len): (IpAddr, u8)) -> bool {
+    match (ip, net) {
+        (IpAddr::V4(a), IpAddr::V4(n)) => {
+            let len = u32::from(len.min(32));
+            let mask = if len == 0 { 0 } else { u32::MAX << (32 - len) };
+            u32::from(a) & mask == u32::from(n) & mask
+        }
+        (IpAddr::V6(a), IpAddr::V6(n)) => {
+            let len = u32::from(len.min(128));
+            let mask = if len == 0 {
+                0
+            } else {
+                u128::MAX << (128 - len)
+            };
+            u128::from(a) & mask == u128::from(n) & mask
+        }
+        _ => false,
+    }
+}
+
+/// The nft backend's preconditions on the ingress: its advertised
+/// capability, then its fresh inventory. A host setting that blocks the
+/// forward fails the plan with its name; MeshHarbor never changes it.
+async fn native_checks(
+    state: &NetworkState,
+    tenant_id: ObjectId,
+    id: ObjectId,
+    agent: &roomler_ai_remote_control::models::Agent,
+    spec: &ForwardSpec,
+    checks: &mut Vec<Check>,
+) {
+    let cap = agent.capabilities.has_rpc(RpcCap::ManagedForwardNft);
+    check(
+        checks,
+        "native backend",
+        if cap { Verdict::Pass } else { Verdict::Fail },
+        if cap {
+            "the ingress runs the nft backend"
+        } else {
+            "the ingress does not advertise the nft backend (Linux, root, nft); refused rather than run in userspace"
+        },
+    );
+    let inv = match crate::net_inventory::get(state, tenant_id, id).await {
+        Ok(Some(row)) if row.fresh(DateTime::now()) => row.inventory,
+        _ => {
+            check(
+                checks,
+                "ip forwarding",
+                Verdict::Unknown,
+                "the ingress has no fresh inventory",
+            );
+            return;
+        }
+    };
+    let bind: Option<IpAddr> = spec.bind_addr.trim().parse().ok();
+    let dest: Option<IpAddr> = spec.dest_addr.trim().parse().ok();
+    let v4 = bind.is_none_or(|b| b.is_ipv4());
+    let nets: Vec<(IpAddr, u8)> = inv
+        .interfaces
+        .items
+        .iter()
+        .filter(|i| i.up)
+        .flat_map(|i| i.addrs.iter())
+        .filter_map(|a| parse_cidr(a))
+        .collect();
+    let local = dest.is_some_and(|d| nets.iter().any(|(ip, _)| *ip == d));
+    if local {
+        check(
+            checks,
+            "ip forwarding",
+            Verdict::Pass,
+            "the destination is an address of the ingress; nothing is forwarded",
+        );
+    } else {
+        let (on, knob) = if v4 {
+            (inv.forwarding.ipv4, "net.ipv4.ip_forward")
+        } else {
+            (inv.forwarding.ipv6, "net.ipv6.conf.all.forwarding")
+        };
+        match on {
+            Some(true) => check(
+                checks,
+                "ip forwarding",
+                Verdict::Pass,
+                format!("{knob} is on"),
+            ),
+            Some(false) => check(
+                checks,
+                "ip forwarding",
+                Verdict::Fail,
+                format!(
+                    "{knob} is off on the ingress; MeshHarbor reports it and does not change it"
+                ),
+            ),
+            None => check(
+                checks,
+                "ip forwarding",
+                Verdict::Unknown,
+                format!("the ingress did not report {knob}"),
+            ),
+        }
+        let fams: &[&str] = if v4 {
+            &["ip", "inet"]
+        } else {
+            &["ip6", "inet"]
+        };
+        let chains = &inv.firewall_chains;
+        let dropping = chains.items.iter().find(|c| {
+            c.owner != FirewallOwner::Meshharbor
+                && c.hook.as_deref() == Some("forward")
+                && c.policy.as_deref() == Some("drop")
+                && fams.contains(&c.family.as_str())
+        });
+        match (chains.state, dropping) {
+            (_, Some(c)) => check(
+                checks,
+                "foreign forward policy",
+                Verdict::Fail,
+                format!(
+                    "{} {} {}/{} ({:?}) drops forwarded traffic by default; MeshHarbor does not edit foreign tables",
+                    c.backend, c.family, c.table, c.name, c.owner
+                ),
+            ),
+            (SectionState::Complete, None) => check(
+                checks,
+                "foreign forward policy",
+                Verdict::Pass,
+                "no foreign forward chain drops by default",
+            ),
+            (s, None) => check(
+                checks,
+                "foreign forward policy",
+                Verdict::Unknown,
+                format!("the ingress's firewall chain list is {s:?}"),
+            ),
+        }
+    }
+    if spec.nat == NatMode::PreserveSource {
+        let on_link = dest.is_some_and(|d| nets.iter().any(|n| in_net(d, *n)));
+        check(
+            checks,
+            "return path",
+            if on_link {
+                Verdict::Pass
+            } else {
+                Verdict::Fail
+            },
+            if on_link {
+                "the destination is on a subnet the ingress connects; it must route these clients' replies via the ingress"
+            } else {
+                "preserve_source needs the destination's replies to come back through the ingress, and the destination is on no subnet the ingress connects"
+            },
+        );
     }
 }
 
@@ -575,11 +796,12 @@ pub async fn push_to(state: &NetworkState, tenant_id: ObjectId, agent_id: Object
             && f.spec.expires_at_ms.is_none_or(|e| e > now)
     }) {
         let p = plan(state, tenant_id, &f.spec, Some(f.id)).await;
-        if p.checks
+        if let Some(c) = p
+            .checks
             .iter()
-            .any(|c| c.name == "region" && c.verdict == Verdict::Fail)
+            .find(|c| matches!(c.name, "region" | "native backend") && c.verdict == Verdict::Fail)
         {
-            tracing::warn!(forward = %f.id, "managed forward: region gate failed at push; withheld");
+            tracing::warn!(forward = %f.id, check = c.name, "managed forward: gate failed at push; withheld");
             continue;
         }
         forwards.push(ManagedForwardAssignment {
@@ -591,6 +813,8 @@ pub async fn push_to(state: &NetworkState, tenant_id: ObjectId, agent_id: Object
             sources: f.spec.sources.clone(),
             dest_addr: f.spec.dest_addr.clone(),
             dest_port: f.spec.dest_port,
+            backend: f.spec.backend,
+            preserve_source: f.spec.nat == NatMode::PreserveSource,
         });
     }
     if let Err(e) = state
@@ -658,6 +882,7 @@ mod tests {
             dest_addr: "10.0.0.5".into(),
             dest_port: 5432,
             nat: NatMode::Masquerade,
+            backend: ForwardBackend::Userspace,
             desired: Desired::Enabled,
             public_listener: false,
             expires_at_ms: None,
@@ -713,5 +938,28 @@ mod tests {
         let mut s = spec();
         s.sources = vec!["10.0.0.0/33".into()];
         assert_eq!(failed(&s), vec!["sources"]);
+    }
+
+    #[test]
+    fn nft_takes_preserve_source_but_one_family_end_to_end() {
+        let mut s = spec();
+        s.backend = ForwardBackend::Nft;
+        s.nat = NatMode::PreserveSource;
+        assert!(failed(&s).is_empty(), "{:?}", failed(&s));
+        s.dest_addr = "fd00::5".into();
+        assert_eq!(failed(&s), vec!["address family"]);
+        let mut s = spec();
+        s.backend = ForwardBackend::Nft;
+        s.sources = vec!["fd00::/8".into()];
+        assert_eq!(failed(&s), vec!["address family"]);
+    }
+
+    #[test]
+    fn in_net_masks_both_families() {
+        let n = |s: &str| parse_cidr(s).unwrap();
+        assert!(in_net("10.0.3.9".parse().unwrap(), n("10.0.3.1/24")));
+        assert!(!in_net("10.0.4.9".parse().unwrap(), n("10.0.3.1/24")));
+        assert!(in_net("fd00::9".parse().unwrap(), n("fd00::1/64")));
+        assert!(!in_net("10.0.3.9".parse().unwrap(), n("fd00::1/64")));
     }
 }

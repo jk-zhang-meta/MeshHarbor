@@ -1248,6 +1248,12 @@ pub enum RpcCap {
     /// its userspace backend and answers with `rc:forward.status`. The
     /// server pushes a forward set only to a device that advertises this.
     ManagedForward,
+    /// MeshHarbor #20 — and on its owned nftables backend (DNAT, optional
+    /// source preservation) under commit-confirm: it answers
+    /// `rc:forward.status` with the change's `confirm` generation, and rolls
+    /// the change back unless `rc:forward.confirm` comes back in time. A
+    /// device without it is never sent an `nft` forward.
+    ManagedForwardNft,
 }
 
 impl RpcCap {
@@ -1267,6 +1273,7 @@ impl RpcCap {
             Self::ConfigReport => "config-report",
             Self::RelayServer => "relay-server",
             Self::ManagedForward => "managed-forward",
+            Self::ManagedForwardNft => "managed-forward-nft",
             Self::KeyRotate => "key-rotate",
             Self::SshGrantAck => "ssh-grant-ack",
             Self::Hive => "hive",
@@ -1304,7 +1311,7 @@ impl RpcCap {
     }
 
     /// Every verb THIS build knows about.
-    pub const ALL: [RpcCap; 41] = [
+    pub const ALL: [RpcCap; 42] = [
         Self::Exec,
         Self::Originate,
         Self::Ssh,
@@ -1346,6 +1353,7 @@ impl RpcCap {
         Self::SharedSessionLease,
         Self::SharedSshStream,
         Self::ManagedForward,
+        Self::ManagedForwardNft,
     ];
 
     /// Parse a wire verb. `None` for anything unrecognised — see
@@ -7589,6 +7597,7 @@ mod tests {
         assert_eq!(RpcCap::Config.wire(), "config");
         assert_eq!(RpcCap::ConfigReport.wire(), "config-report");
         assert_eq!(RpcCap::KeyRotate.wire(), "key-rotate");
+        assert_eq!(RpcCap::ManagedForwardNft.wire(), "managed-forward-nft");
         assert_eq!(RpcCap::SshGrantAck.wire(), "ssh-grant-ack");
         assert_eq!(RpcCap::Hive.wire(), "hive");
         assert_eq!(RpcCap::HiveView.wire(), "hive-view");
@@ -7756,9 +7765,13 @@ mod tests {
     /// right on the devices that already exist.
     #[test]
     fn the_only_prefix_related_verbs_are_the_deliberate_ones() {
-        const KNOWN: [(RpcCap, RpcCap); 23] = [
+        const KNOWN: [(RpcCap, RpcCap); 24] = [
             (RpcCap::Ssh, RpcCap::SshConsent),
             (RpcCap::Config, RpcCap::ConfigReport),
+            // MeshHarbor #20 — "runs managed forwards in userspace" is not
+            // "runs them on an owned nft table". Locked by
+            // `managed_forward_does_not_imply_managed_forward_nft`.
+            (RpcCap::ManagedForward, RpcCap::ManagedForwardNft),
             // FR-83 — the third, and the same idea again: "runs an SSH
             // server" is not "confirms a grant". Locked by
             // `ssh_does_not_imply_ssh_grant_ack`.
@@ -8203,6 +8216,24 @@ mod tests {
     /// the server wait out its full bound on every grant to every one of them
     /// and then refuse the session as unconfirmed — turning an intermittent
     /// race into a fleet-wide outage of roomler SSH.
+    #[test]
+    fn managed_forward_does_not_imply_managed_forward_nft() {
+        let userspace = AgentCaps {
+            rpc: vec!["managed-forward".into()],
+            ..Default::default()
+        };
+        assert!(userspace.has_rpc(RpcCap::ManagedForward));
+        assert!(
+            !userspace.has_rpc(RpcCap::ManagedForwardNft),
+            "a userspace-only agent must NOT read as running the nft backend"
+        );
+        let native = AgentCaps {
+            rpc: vec!["managed-forward".into(), "managed-forward-nft".into()],
+            ..Default::default()
+        };
+        assert!(native.has_rpc(RpcCap::ManagedForwardNft));
+    }
+
     #[test]
     fn ssh_does_not_imply_ssh_grant_ack() {
         let pre_ack = AgentCaps {

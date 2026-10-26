@@ -5857,6 +5857,7 @@
     "rc:agent.update",
     "rc:agent.config",
     "rc:forward.set",
+    "rc:forward.confirm",
     "rc:agent.key_rotate",
     "rc:agent.keep_busy_policy",
     "rc:agent.join_org",

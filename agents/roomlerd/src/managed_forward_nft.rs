@@ -61,6 +61,13 @@ pub struct NatForward {
     pub masquerade: bool,
 }
 
+/// This process can run the backend: root, and an `nft` binary.
+pub fn available() -> bool {
+    // SAFETY: `geteuid` reads the caller's own credentials; it cannot fail.
+    let root = unsafe { libc::geteuid() == 0 };
+    root && std::path::Path::new(&Nft::system().argv[0]).is_absolute()
+}
+
 /// The comment tagging each rule with its forward and revision.
 fn tag(f: &NatForward) -> String {
     format!("mf:{}:{}", f.id, f.revision)
