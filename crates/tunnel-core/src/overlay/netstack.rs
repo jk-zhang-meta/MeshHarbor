@@ -441,6 +441,14 @@ pub struct NsTcpStream {
     peer: SocketAddr,
 }
 
+impl Drop for NsTcpStream {
+    /// The stack aborts a stream its app dropped; nudge it to do so now
+    /// rather than at the next unrelated event.
+    fn drop(&mut self) {
+        self.wake.notify_one();
+    }
+}
+
 impl NsTcpStream {
     /// The overlay address this stream is connected to (or accepted from).
     pub fn peer_addr(&self) -> SocketAddr {
@@ -1033,8 +1041,16 @@ impl PollLoop {
                 progressed = true;
             }
 
-            // Fully closed both ways ⇒ reap.
-            if matches!(sock.state(), tcp::State::Closed) && !sock.is_active() {
+            // Fully closed both ways ⇒ reap. An aborted socket keeps its
+            // remote until the stack has sent the RST (smoltcp forgets it
+            // after that one segment); reaping it sooner dropped the RST, so
+            // the peer never learned of the reset (field, 2026-10-26: every
+            // SOCKS client that reset left the remote SSH session to its
+            // 10-minute idle timeout, ~0.4 MB each, until an OOM kill).
+            if matches!(sock.state(), tcp::State::Closed)
+                && !sock.is_active()
+                && sock.remote_endpoint().is_none()
+            {
                 dead.push(h);
             }
         }
@@ -2220,6 +2236,47 @@ mod tests {
         )
         .await
         .expect("round trip in time");
+    }
+
+    /// An app that drops an established stream without closing it resets
+    /// the connection, and the peer hears of it: its reader ends.
+    #[tokio::test]
+    async fn a_dropped_stream_resets_the_peer() {
+        let a_ip = Ipv4Addr::new(10, 9, 1, 1);
+        let b_ip = Ipv4Addr::new(10, 9, 1, 2);
+        let a = Netstack::start(a_ip, 24, 1280);
+        let b = Netstack::start(b_ip, 24, 1280);
+        for (from, to) in [
+            (a.tun.clone(), b.tun.clone()),
+            (b.tun.clone(), a.tun.clone()),
+        ] {
+            tokio::spawn(async move {
+                while let Ok(pkt) = from.read_packet().await {
+                    if to.write_packet(&pkt).await.is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+        let mut listener = b.handle.listen(9001).await.unwrap();
+        let (ended_tx, ended_rx) = oneshot::channel();
+        tokio::spawn(async move {
+            let mut s = listener.accept().await.expect("accepted");
+            let mut buf = [0u8; 16];
+            let _ = ended_tx.send(s.read(&mut buf).await.map_err(|e| e.kind()));
+        });
+        let s = a
+            .handle
+            .connect(SocketAddr::from((b_ip, 9001)))
+            .await
+            .expect("connect");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        drop(s);
+        let read = tokio::time::timeout(Duration::from_secs(5), ended_rx)
+            .await
+            .expect("the peer's reader learns of the reset")
+            .unwrap();
+        assert!(!matches!(read, Ok(n) if n > 0), "{read:?}");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

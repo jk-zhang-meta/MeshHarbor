@@ -1253,6 +1253,8 @@ fn main() -> Result<()> {
 /// exit (an auto-update, a SIGTERM) already gets. Nothing else changes.
 #[cfg(not(all(target_os = "macos", feature = "viewer-indicator-macos")))]
 fn main() -> Result<()> {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    pin_mmap_threshold();
     // The runtime is a temporary: it is dropped at the end of this statement,
     // cancelling every task still running and waiting on blocking work.
     let res = tokio::runtime::Builder::new_multi_thread()
@@ -1267,6 +1269,21 @@ fn main() -> Result<()> {
         exit_for_requested_restart();
     }
     res
+}
+
+/// Pin glibc's mmap threshold. The overlay netstack gives each TCP socket
+/// multi-MiB buffers that cost nothing until data flows, which holds only
+/// while glibc maps them fresh. Its default threshold rises to the size of
+/// any mapped block that is freed, so after the first closed socket every
+/// later buffer came from the heap, was zeroed in full and stayed resident
+/// after free (field, 2026-10-26: one connection a second took a node to its
+/// 512 MB cap in about 20 minutes; with the threshold pinned it held 12 MB).
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn pin_mmap_threshold() {
+    // SAFETY: the first call in `main`, before any other thread exists.
+    unsafe {
+        libc::mallopt(libc::M_MMAP_THRESHOLD, 1 << 20);
+    }
 }
 
 async fn daemon_main() -> Result<()> {
