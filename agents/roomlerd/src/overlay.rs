@@ -913,6 +913,46 @@ pub fn managed_forward_dialer(
                 })?;
             Ok(Box::new(handle.connect(dst).await?))
         }
+        async fn udp(
+            &self,
+            dst: std::net::SocketAddr,
+        ) -> std::io::Result<Box<dyn crate::managed_forward::UdpSession>> {
+            let handle =
+                self.handle.borrow().clone().ok_or_else(|| {
+                    std::io::Error::other("netstack not up yet (mesh not joined)")
+                })?;
+            let sock = handle.udp_bind().await?;
+            Ok(Box::new(NsUdp {
+                tx: sock.sender(),
+                rx: tokio::sync::Mutex::new(sock),
+                dst,
+            }))
+        }
+    }
+
+    /// A client's UDP session on the netstack: its own socket, talking to
+    /// `dst` only (a datagram from anyone else is dropped).
+    struct NsUdp {
+        tx: tunnel_core::overlay::netstack::NsUdpSender,
+        rx: tokio::sync::Mutex<tunnel_core::overlay::netstack::NsUdpSocket>,
+        dst: std::net::SocketAddr,
+    }
+    #[async_trait::async_trait]
+    impl crate::managed_forward::UdpSession for NsUdp {
+        async fn send(&self, data: &[u8]) -> std::io::Result<()> {
+            self.tx.send_to(data, self.dst).await
+        }
+        async fn recv(&self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let mut rx = self.rx.lock().await;
+            loop {
+                let (data, from) = rx.recv_from().await?;
+                if from == self.dst {
+                    let n = data.len().min(buf.len());
+                    buf[..n].copy_from_slice(&data[..n]);
+                    return Ok(n);
+                }
+            }
+        }
     }
 
     Some(Arc::new(NsDial {

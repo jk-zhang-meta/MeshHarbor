@@ -670,13 +670,13 @@ async fn overlay_path(
         );
         return Some(dest_node);
     };
-    if spec.backend == ForwardBackend::Nft || spec.proto != L4::Tcp {
+    if spec.backend == ForwardBackend::Nft {
         check(
             checks,
             "overlay path",
             Verdict::Fail,
             format!(
-                "the destination is {where_}; a forward into the overlay is TCP on the userspace backend only"
+                "the destination is {where_}; a forward into the overlay runs on the userspace backend only"
             ),
         );
         return Some(dest_node);

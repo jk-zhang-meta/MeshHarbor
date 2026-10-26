@@ -9,8 +9,8 @@
 //! A forward whose destination is behind the overlay (`via_overlay`: a
 //! node's overlay address, or a subnet a node routes) dials it through this
 //! node's overlay: its userspace stack on a netstack node ([`OverlayDial`]),
-//! the host's routes on a node with a TUN. TCP only; the server refuses UDP
-//! into the overlay, and so does this end.
+//! the host's routes on a node with a TUN. A UDP forward keeps one overlay
+//! socket per client, so replies find their way back.
 //!
 //! A forward the server marks `nft` runs on the owned nftables table
 //! instead (`managed_forward_nft`, Linux, root, primary enrollment only: the
@@ -67,6 +67,38 @@ impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send> Io for T {}
 #[async_trait::async_trait]
 pub trait OverlayDial: Send + Sync {
     async fn tcp(&self, dst: SocketAddr) -> std::io::Result<Box<dyn Io>>;
+    /// A UDP socket of its own that talks to `dst` only.
+    async fn udp(&self, dst: SocketAddr) -> std::io::Result<Box<dyn UdpSession>>;
+}
+
+/// One client's UDP session toward a forward's destination.
+#[async_trait::async_trait]
+pub trait UdpSession: Send + Sync {
+    async fn send(&self, data: &[u8]) -> std::io::Result<()>;
+    /// The next datagram from the destination.
+    async fn recv(&self, buf: &mut [u8]) -> std::io::Result<usize>;
+}
+
+/// The host's own UDP socket, connected to the destination.
+struct KernelUdp(UdpSocket);
+
+#[async_trait::async_trait]
+impl UdpSession for KernelUdp {
+    async fn send(&self, data: &[u8]) -> std::io::Result<()> {
+        self.0.send(data).await.map(|_| ())
+    }
+    async fn recv(&self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.0.recv(buf).await
+    }
+}
+
+async fn kernel_udp(dst: SocketAddr) -> std::io::Result<Box<dyn UdpSession>> {
+    let local: SocketAddr = if dst.is_ipv4() { "0.0.0.0:0" } else { "[::]:0" }
+        .parse()
+        .expect("a literal");
+    let s = UdpSocket::bind(local).await?;
+    s.connect(dst).await?;
+    Ok(Box::new(KernelUdp(s)))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -231,10 +263,9 @@ async fn start(
             let l = TcpListener::bind(a.bind).await.map_err(|e| e.to_string())?;
             Ok(tokio::spawn(serve_tcp(a, l, overlay)))
         }
-        L4::Udp if a.via_overlay => Err("UDP into the overlay is not supported".into()),
         L4::Udp => {
             let s = UdpSocket::bind(a.bind).await.map_err(|e| e.to_string())?;
-            Ok(tokio::spawn(serve_udp(a, Arc::new(s))))
+            Ok(tokio::spawn(serve_udp(a, Arc::new(s), overlay)))
         }
     }
 }
@@ -279,8 +310,8 @@ async fn serve_tcp(a: Assignment, l: TcpListener, overlay: Option<Arc<dyn Overla
     }
 }
 
-async fn serve_udp(a: Assignment, sock: Arc<UdpSocket>) {
-    let mut sessions: HashMap<SocketAddr, (Arc<UdpSocket>, Instant, JoinHandle<()>)> =
+async fn serve_udp(a: Assignment, sock: Arc<UdpSocket>, overlay: Option<Arc<dyn OverlayDial>>) {
+    let mut sessions: HashMap<SocketAddr, (Arc<dyn UdpSession>, Instant, JoinHandle<()>)> =
         HashMap::new();
     let mut buf = vec![0u8; 65535];
     loop {
@@ -302,20 +333,14 @@ async fn serve_udp(a: Assignment, sock: Arc<UdpSocket>) {
             if sessions.len() >= MAX_UDP_SESSIONS {
                 continue;
             }
-            let local: SocketAddr = if a.dest.is_ipv4() {
-                "0.0.0.0:0"
-            } else {
-                "[::]:0"
-            }
-            .parse()
-            .unwrap();
-            let Ok(up) = UdpSocket::bind(local).await else {
+            let up = match overlay.as_ref().filter(|_| a.via_overlay) {
+                Some(d) => d.udp(a.dest).await,
+                None => kernel_udp(a.dest).await,
+            };
+            let Ok(up) = up else {
                 continue;
             };
-            if up.connect(a.dest).await.is_err() {
-                continue;
-            }
-            let up = Arc::new(up);
+            let up: Arc<dyn UdpSession> = Arc::from(up);
             let (back, reply_to, id) = (sock.clone(), peer, a.id.clone());
             let reader = up.clone();
             let task = tokio::spawn(async move {
@@ -755,6 +780,7 @@ mod tests {
     struct FakeOverlay {
         asked: std::sync::Mutex<Vec<SocketAddr>>,
         real: SocketAddr,
+        real_udp: Option<SocketAddr>,
     }
 
     #[async_trait::async_trait]
@@ -762,6 +788,10 @@ mod tests {
         async fn tcp(&self, dst: SocketAddr) -> std::io::Result<Box<dyn Io>> {
             self.asked.lock().unwrap().push(dst);
             Ok(Box::new(TcpStream::connect(self.real).await?))
+        }
+        async fn udp(&self, dst: SocketAddr) -> std::io::Result<Box<dyn UdpSession>> {
+            self.asked.lock().unwrap().push(dst);
+            kernel_udp(self.real_udp.expect("a UDP stand-in")).await
         }
     }
 
@@ -772,6 +802,7 @@ mod tests {
         let fake = Arc::new(FakeOverlay {
             asked: Default::default(),
             real: echo,
+            real_udp: Some(udp_echo().await),
         });
         let mut f = Forwarders::with_overlay(Some(fake.clone()));
         let behind: SocketAddr = "100.64.0.7:5432".parse().unwrap();
@@ -792,14 +823,22 @@ mod tests {
             "dialled the overlay address"
         );
 
-        // UDP into the overlay is refused here too, never relayed elsewhere.
-        let mut u = assignment("u", 1, free_port().await, L4::Udp, &["127.0.0.0/8"], behind);
+        // UDP too: one overlay socket per client, boundaries kept.
+        let uport = free_port().await;
+        let mut u = assignment("u", 1, uport, L4::Udp, &["127.0.0.0/8"], behind);
         u.via_overlay = true;
         let st = f.reconcile(vec![a, u]).await;
-        assert!(
-            matches!(&st[1].state, State::Failed(e) if e.contains("overlay")),
-            "{st:?}"
-        );
+        assert_eq!(st[1].state, State::Listening, "{st:?}");
+        let c = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        c.connect(("127.0.0.1", uport)).await.unwrap();
+        c.send(b"ping").await.unwrap();
+        let mut b = [0u8; 16];
+        let n = tokio::time::timeout(Duration::from_secs(2), c.recv(&mut b))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(&b[..n], b"ping");
+        assert_eq!(*fake.asked.lock().unwrap(), vec![behind, behind]);
     }
 
     #[tokio::test]

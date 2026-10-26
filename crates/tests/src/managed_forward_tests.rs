@@ -795,8 +795,12 @@ async fn an_overlay_destination_is_gated_by_the_acl_for_the_ingress_and_its_sour
         "names the node: {plan}"
     );
 
-    // UDP into the overlay: refused.
+    // UDP into the overlay too; the nft backend is refused.
     let (_, plan) = post(&app, &plan_path, tok, &body("udp")).await;
+    assert_eq!(verdict(&plan, "overlay path"), "pass", "{plan}");
+    let mut nft = body("tcp");
+    nft["backend"] = json!("nft");
+    let (_, plan) = post(&app, &plan_path, tok, &nft).await;
     assert_eq!(verdict(&plan, "overlay path"), "fail");
 
     // Enforced with no grant: the ingress may not reach it.
