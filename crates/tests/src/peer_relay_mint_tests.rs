@@ -349,113 +349,170 @@ impl Rig {
     }
 }
 
-/// MeshHarbor #5 — a member's full netmap names the relays it may use, and
-/// its RTT to one it was only OFFERED (never minted) ranks the pair's first
-/// mint. Without the offer the reports were refused and the tie fell to the
-/// approval order, so the slower relay won.
-#[tokio::test]
-async fn the_first_mint_goes_to_the_relay_both_members_measured_fastest() {
-    let slug = "mint-probe-rank";
-    let app = TestApp::spawn().await;
-    let seeded = app.seed_tenant(slug).await;
-    let mut relays = Vec::new();
-    for (i, name) in ["r1", "r2"].into_iter().enumerate() {
-        let (agent, tok) = enroll(&app, &seeded, &format!("{slug}-{name}")).await;
-        let mut ws = connect(&app, &tok, &["relay-server"]).await;
-        tokio::time::sleep(Duration::from_millis(300)).await;
-        join(
-            &mut ws,
-            10 + i as u8,
-            Some(true),
-            &format!("8.8.8.{}:41641", 8 + i),
-        )
-        .await;
-        relays.push((
-            agent,
-            node_id(&app, &seeded, &format!("{slug}-{name}")).await,
-            ws,
-        ));
-    }
-    set_mode(&app, &seeded, "on").await;
-    for (agent, node, _) in &relays {
-        assert_eq!(approve(&app, &seeded, agent, true).await, 200);
-        grant_relay(&app, &seeded, node).await;
+/// MeshHarbor #5 — two approved, granted relays and two members that joined
+/// after them, so each member's full netmap offers both.
+struct TwoRelays {
+    app: TestApp,
+    seeded: SeededTenant,
+    /// (node id, WS) of r1, r2.
+    relays: Vec<(String, Ws)>,
+    /// (WS, offered targets) of a, b.
+    members: Vec<(Ws, Vec<Value>)>,
+    b_node: String,
+}
+
+impl TwoRelays {
+    async fn up(slug: &str) -> Self {
+        let app = TestApp::spawn().await;
+        let seeded = app.seed_tenant(slug).await;
+        let mut relays = Vec::new();
+        let mut agents = Vec::new();
+        for (i, name) in ["r1", "r2"].into_iter().enumerate() {
+            let (agent, tok) = enroll(&app, &seeded, &format!("{slug}-{name}")).await;
+            let mut ws = connect(&app, &tok, &["relay-server"]).await;
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            join(
+                &mut ws,
+                10 + i as u8,
+                Some(true),
+                &format!("8.8.8.{}:41641", 8 + i),
+            )
+            .await;
+            relays.push((node_id(&app, &seeded, &format!("{slug}-{name}")).await, ws));
+            agents.push(agent);
+        }
+        set_mode(&app, &seeded, "on").await;
+        for (agent, (node, _)) in agents.iter().zip(&relays) {
+            assert_eq!(approve(&app, &seeded, agent, true).await, 200);
+            grant_relay(&app, &seeded, node).await;
+        }
+        let mut members = Vec::new();
+        for (i, name) in ["a", "b"].into_iter().enumerate() {
+            let (_, tok) = enroll(&app, &seeded, &format!("{slug}-{name}")).await;
+            let mut ws = connect(&app, &tok, &[]).await;
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            let map = join(
+                &mut ws,
+                1 + i as u8,
+                Some(true),
+                &format!("203.0.113.{}:41641", 10 + i),
+            )
+            .await;
+            let targets = map["network"]["relay_probe_targets"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
+            let named: BTreeSet<&str> = targets
+                .iter()
+                .filter_map(|t| t["relay_node_id"].as_str())
+                .collect();
+            assert_eq!(
+                named,
+                relays.iter().map(|(n, _)| n.as_str()).collect(),
+                "{name} is offered both relays: {targets:?}"
+            );
+            members.push((ws, targets));
+        }
+        let b_node = node_id(&app, &seeded, &format!("{slug}-b")).await;
+        Self {
+            app,
+            seeded,
+            relays,
+            members,
+            b_node,
+        }
     }
 
-    let mut members = Vec::new();
-    for (i, name) in ["a", "b"].into_iter().enumerate() {
-        let (_, tok) = enroll(&app, &seeded, &format!("{slug}-{name}")).await;
-        let mut ws = connect(&app, &tok, &[]).await;
-        tokio::time::sleep(Duration::from_millis(300)).await;
-        let map = join(
-            &mut ws,
-            1 + i as u8,
-            Some(true),
-            &format!("203.0.113.{}:41641", 10 + i),
-        )
-        .await;
-        let targets = map["network"]["relay_probe_targets"]
-            .as_array()
-            .cloned()
-            .unwrap_or_default();
-        let named: BTreeSet<&str> = targets
-            .iter()
-            .filter_map(|t| t["relay_node_id"].as_str())
-            .collect();
-        assert_eq!(
-            named,
-            relays.iter().map(|(_, n, _)| n.as_str()).collect(),
-            "{name} is offered both relays: {targets:?}"
-        );
-        // r1 slow, r2 fast, measured by this member toward the endpoint it was offered.
-        for target in &targets {
-            let rtt = if target["relay_node_id"] == json!(relays[0].1) {
-                180
-            } else {
-                12
-            };
-            let probe = json!({
-                "t": "rc:overlay.relay_probe",
-                "relay_node_id": target["relay_node_id"],
-                "endpoint": target["endpoints"][0],
-                "reachable": true,
-                "rtt_ms": rtt,
-            });
-            ws.send(Message::Text(probe.to_string().into()))
-                .await
-                .unwrap();
+    /// Every member reports r1 slow and r2 fast, toward the endpoint it was offered.
+    async fn report_r2_fastest(&mut self) {
+        let r1 = json!(self.relays[0].0);
+        for (ws, targets) in &mut self.members {
+            for target in targets.iter() {
+                let rtt = if target["relay_node_id"] == r1 {
+                    180
+                } else {
+                    12
+                };
+                let probe = json!({
+                    "t": "rc:overlay.relay_probe",
+                    "relay_node_id": target["relay_node_id"],
+                    "endpoint": target["endpoints"][0],
+                    "reachable": true,
+                    "rtt_ms": rtt,
+                });
+                ws.send(Message::Text(probe.to_string().into()))
+                    .await
+                    .unwrap();
+            }
         }
-        members.push(ws);
+        tokio::time::sleep(Duration::from_millis(300)).await;
     }
-    let b_node = node_id(&app, &seeded, &format!("{slug}-b")).await;
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    members[0]
-        .send(Message::Text(
-            json!({ "t": "rc:overlay.relay_request", "peer_node_id": b_node })
-                .to_string()
-                .into(),
-        ))
-        .await
-        .unwrap();
+
+    async fn request(&mut self) {
+        let msg = json!({ "t": "rc:overlay.relay_request", "peer_node_id": self.b_node });
+        self.members[0]
+            .0
+            .send(Message::Text(msg.to_string().into()))
+            .await
+            .unwrap();
+    }
+
+    /// Whether relay `i` is told to serve the pair within `wait`.
+    async fn serves(&mut self, i: usize, wait: Duration) -> bool {
+        recv_t(&mut self.relays[i].1, "rc:overlay.relay_serve", wait)
+            .await
+            .is_some()
+    }
+}
+
+/// MeshHarbor #5 — a member's RTT to a relay it was only OFFERED (never
+/// minted) ranks the pair's first mint. Without the offer the reports were
+/// refused and the tie fell to the approval order, so the slower relay won.
+#[tokio::test]
+async fn the_first_mint_goes_to_the_relay_both_members_measured_fastest() {
+    let mut rig = TwoRelays::up("mint-probe-rank").await;
+    rig.report_r2_fastest().await;
+    rig.request().await;
+    assert!(
+        rig.serves(1, Duration::from_secs(5)).await,
+        "the fast relay serves the pair"
+    );
+    assert!(
+        !rig.serves(0, Duration::from_millis(500)).await,
+        "the slow relay does not"
+    );
+}
+
+/// MeshHarbor #5 — a pair minted before its members' measurements (blind,
+/// so on r1) moves once they land, while its session is still unbound.
+#[tokio::test]
+async fn a_young_pair_moves_to_the_relay_its_first_measurements_rank_fastest() {
+    let mut rig = TwoRelays::up("mint-probe-rerank").await;
+    rig.request().await;
+    assert!(
+        rig.serves(0, Duration::from_secs(5)).await,
+        "unmeasured, the tie goes to r1"
+    );
+    rig.report_r2_fastest().await;
     assert!(
         recv_t(
-            &mut relays[1].2,
-            "rc:overlay.relay_serve",
+            &mut rig.relays[0].1,
+            "rc:overlay.relay_revoke",
             Duration::from_secs(5)
         )
         .await
         .is_some(),
-        "the fast relay serves the pair"
+        "r1's young session is revoked"
     );
     assert!(
-        recv_t(
-            &mut relays[0].2,
-            "rc:overlay.relay_serve",
-            Duration::from_millis(500)
-        )
-        .await
-        .is_none(),
-        "the slow relay does not"
+        rig.serves(1, Duration::from_secs(5)).await,
+        "and the pair is minted on r2"
+    );
+    let rows = audit_rows(&rig.app, &rig.seeded).await;
+    assert!(
+        rows.iter()
+            .any(|r| r["action"] == "revoke" && r["reason"] == "org_relay_rerank"),
+        "the move is audited: {rows:?}"
     );
 }
 

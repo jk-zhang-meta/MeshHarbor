@@ -1033,24 +1033,100 @@ async fn plan_mint_candidates_reusing(
     // excluded, because a stale negative must not starve the only relay.
     candidates.sort_by_key(|c| {
         let relay_id = c.relay.id.unwrap_or_default();
-        let a = state.org_relay.probe_verdict(req_id, relay_id, now);
-        let b = state.org_relay.probe_verdict(peer_id, relay_id, now);
-        let class = match (a, b) {
-            (ProbeVerdict::Unreachable, _) | (_, ProbeVerdict::Unreachable) => 2u8,
-            (ProbeVerdict::Reachable(_), ProbeVerdict::Reachable(_)) => 0,
-            _ => 1,
-        };
-        let rtt = |v: ProbeVerdict| match v {
-            ProbeVerdict::Reachable(r) => r,
-            _ => 0,
-        };
-        (
-            class,
-            rtt(a) + rtt(b),
-            state.org_relay.sessions_on_relay(relay_id),
-        )
+        let (class, rtt) = rank_key(state, req_id, peer_id, relay_id, now);
+        (class, rtt, state.org_relay.sessions_on_relay(relay_id))
     });
     Ok(candidates)
+}
+
+/// A relay's rank for the pair `a`–`b`: its class (0 both measured it
+/// reachable, 1 unmeasured, 2 someone measured it unreachable) and the
+/// members' summed RTT.
+fn rank_key(
+    state: &NetworkState,
+    a: ObjectId,
+    b: ObjectId,
+    relay_id: ObjectId,
+    now: Instant,
+) -> (u8, u32) {
+    let a = state.org_relay.probe_verdict(a, relay_id, now);
+    let b = state.org_relay.probe_verdict(b, relay_id, now);
+    let class = match (a, b) {
+        (ProbeVerdict::Unreachable, _) | (_, ProbeVerdict::Unreachable) => 2u8,
+        (ProbeVerdict::Reachable(_), ProbeVerdict::Reachable(_)) => 0,
+        _ => 1,
+    };
+    let rtt = |v: ProbeVerdict| match v {
+        ProbeVerdict::Reachable(r) => r,
+        _ => 0,
+    };
+    (class, rtt(a) + rtt(b))
+}
+
+/// Whether `best` beats `current` by enough to move a live pair: both
+/// members measured `best` reachable, and `current` unreachable, or both
+/// measured it too and `best` is at least 20% and 10 ms faster. An unmeasured
+/// `current` stays: half a round of reports is not a comparison.
+fn clearly_better(best: (u8, u32), current: (u8, u32)) -> bool {
+    best.0 == 0
+        && (current.0 == 2
+            || (current.0 == 0
+                && u64::from(best.1) * 5 < u64::from(current.1) * 4
+                && current.1 - best.1 >= 10))
+}
+
+/// MeshHarbor #5 — a pair minted before its members' probes landed (a member
+/// that needs a relay right after its join asks before its first round is
+/// back) went to an unmeasured relay. When a member's measurements arrive,
+/// each of its pairs still inside the session's bind window moves to the
+/// relay the planner now ranks [`clearly_better`]. A bound session is never
+/// moved: past the bind window, choosing is the next mint's business.
+async fn rerank_young(state: &NetworkState, reporter: &OverlayNode) {
+    let Some(reporter_id) = reporter.id else {
+        return;
+    };
+    let now = Instant::now();
+    let young: Vec<OrgRelaySession> = state
+        .org_relay
+        .sessions
+        .iter()
+        .filter(|e| e.line.is_none() && now < e.bind_by && e.member_index(reporter_id).is_some())
+        .map(|e| e.value().clone())
+        .collect();
+    for session in young {
+        let Some(peer_id) = session
+            .members
+            .iter()
+            .map(|m| m.party.node_id)
+            .find(|id| *id != reporter_id)
+        else {
+            continue;
+        };
+        let peer = match state.overlay_nodes.base.find_by_id(peer_id).await {
+            Ok(p) if p.tenant_id == reporter.tenant_id && p.deleted_at.is_none() => p,
+            _ => continue,
+        };
+        let Some(best) = next_relay(state, reporter, &peer).await else {
+            continue;
+        };
+        let current_relay = session.relay.node_id;
+        let (to, from) = (
+            rank_key(state, reporter_id, peer_id, best, now),
+            rank_key(state, reporter_id, peer_id, current_relay, now),
+        );
+        if best == current_relay || !clearly_better(to, from) {
+            continue;
+        }
+        info!(pair = %session.pair_key, from_relay = %current_relay, ?from, to_relay = %best, ?to,
+            "org-relay: the members' first measurements rank another relay clearly faster; moving the young pair");
+        revoke_where(state, "org_relay_rerank", |s| {
+            s.pair_key == session.pair_key
+                && s.vni == session.vni
+                && s.generation == session.generation
+        })
+        .await;
+        maybe_mint(state, reporter, &peer).await;
+    }
 }
 
 pub fn revoke_backbone_node_sync(
@@ -2592,6 +2668,9 @@ pub async fn handle_relay_probe(
             .record_probe(node_id, relay_node_id, endpoint.clone(), reachable, rtt_ms);
     debug!(reporter = %node_id, relay = %relay_node_id, %endpoint, reachable, ?rtt_ms, accepted,
         "org-relay: reachability report");
+    if accepted {
+        rerank_young(state, &node).await;
+    }
 }
 
 /// The live session a member's loss report names: the reporter's own pair
@@ -2762,6 +2841,25 @@ mod tests {
         assert!(state.join_extras(node).supports_org_relay_multi_candidate);
         state.note_join(node, JoinExtras::default());
         assert!(!state.join_extras(node).supports_org_relay_multi_candidate);
+    }
+
+    #[test]
+    fn a_young_pair_moves_only_for_a_clear_measured_win() {
+        assert!(clearly_better((0, 48), (0, 91)), "measured, 47% faster");
+        assert!(
+            clearly_better((0, 300), (2, 0)),
+            "the current relay was measured unreachable"
+        );
+        assert!(
+            !clearly_better((0, 48), (1, 0)),
+            "half a round is not a comparison"
+        );
+        assert!(!clearly_better((0, 85), (0, 91)), "under 20%");
+        assert!(!clearly_better((0, 4), (0, 12)), "under 10 ms");
+        assert!(
+            !clearly_better((1, 0), (0, 91)),
+            "the target is not measured by both"
+        );
     }
 
     #[test]

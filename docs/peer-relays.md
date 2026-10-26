@@ -250,6 +250,17 @@ sequenceDiagram
   so a pair's first session went to an unmeasured relay (ties fell to load, then
   approval order). A node without UDP measures every relay unreachable, which ranks
   them all alike for its pairs.
+- **A pair minted before its measurements moves once they land.** A member that needs
+  a relay right after its join asks before its first round is back (field: the mint
+  came 100 ms ahead of the round), and the mint handlers run inline on its WebSocket,
+  so waiting there would also hold back the very reports it waits for. Instead, each
+  accepted report re-ranks the reporter's pairs whose session is still inside its
+  30-s bind window, and moves a pair when both members measured the new relay and it
+  is at least 20% and 10 ms faster, or the current relay was measured unreachable
+  (`rerank_young`, audited as `org_relay_rerank`). A bound session is never moved.
+  Field (rig `b7a851fbd306`, relays Hyonix HK and Tokyo, members Isvoro and po0 HK):
+  a blind mint on Tokyo (summed RTT 90 ms) moved to HK (48 ms) 160 ms later, and with
+  direct blocked the pair's fallback was minted on HK directly.
 - **Endpoints**: the relay's srflx, LAN and trickled addresses, each only if globally
   routable, paired with its relay port (default **3478**), then the admin's
   `static_endpoints`
