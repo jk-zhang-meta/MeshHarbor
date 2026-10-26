@@ -6678,8 +6678,33 @@ pub struct OverlayNetwork {
     /// is [`PeerRelayMode::Off`] so nothing is minted until an admin opts in.
     #[serde(default)]
     pub peer_relay_mode: PeerRelayMode,
+    /// MeshHarbor — the tenant's server topology: two devices whose central
+    /// role is Server are connected exactly when an ENABLED link names them,
+    /// whatever their zones (business isolation `warn` logs, `enforce`
+    /// applies). Edited from the topology view.
+    #[serde(default)]
+    pub server_links: Vec<ServerLink>,
     pub created_at: DateTime,
     pub updated_at: DateTime,
+}
+
+/// One edge of the server topology, between two agents. Stored with
+/// `a < b`, so one pair has one row.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct ServerLink {
+    pub a: ObjectId,
+    pub b: ObjectId,
+    pub enabled: bool,
+}
+
+impl ServerLink {
+    /// At most this many links per tenant.
+    pub const MAX_PER_TENANT: usize = 4096;
+
+    /// The pair in stored order.
+    pub fn ordered(x: ObjectId, y: ObjectId) -> (ObjectId, ObjectId) {
+        if x < y { (x, y) } else { (y, x) }
+    }
 }
 
 impl OverlayNetwork {

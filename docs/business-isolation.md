@@ -6,6 +6,30 @@ server hop overrides it, and a node whose zone is unknown, untrusted or expired 
 treated as being in neither zone. Management traffic (`www.itachi.fans`) is not
 business traffic and never passes through this gate.
 
+## Servers: the topology decides, not the zones
+
+Two devices whose central role is **Server** (approved by the central owner, never
+self-declared) are judged by the tenant's **server topology** instead of their zones:
+an enabled link between them connects them, whatever their zones; no link, or a
+disabled one, separates them, even inside one zone. So the topology view shows every
+server connection there is. A pair with any other device (a client, or a device with
+no current role) keeps the zone rule above.
+
+| pair | rule |
+|---|---|
+| server and server | connected exactly when an enabled link names them; then every carrier (direct, DERP, an org relay in either server's zone, TURN, center tunnels, forwards) and every port, both ways, bypassing the ACL |
+| anything else | one known shared zone (or an approved cross-border line), then the ACL |
+
+Links live on the tenant's overlay network (`server_links`, at most 4096) and are
+edited through `GET/PUT /api/tenant/{tid}/server-link` and
+`DELETE /api/tenant/{tid}/server-link/{a}/{b}` (agent ids; editing needs
+`ADMINISTRATOR`, since a link can join the two zones; both ends must be current
+servers). An edit re-fans both servers, rebuilds the DERP allow table and ends the
+sessions it no longer allows (`server_link_changed`). The rule follows
+`app.business_isolation`: `enforce` applies it, `warn` only logs the server pairs a
+missing link would separate (put the links in place, then switch), `off` ignores it.
+One permission check (`business_isolation::permit_refs`) serves every gate.
+
 ## A device that roams (GEO-05)
 
 A zone holds for one connection, so a device that moves into the other zone

@@ -77,6 +77,7 @@ pub mod routes {
     pub mod overlay_policy;
     pub mod overlay_route;
     pub mod peer_relay;
+    pub mod server_link;
     pub mod tunnel;
 }
 
@@ -519,6 +520,13 @@ impl Module for NetworkState {
                     .put(routes::managed_forward::update)
                     .delete(routes::managed_forward::delete),
             );
+        // MeshHarbor — the server topology (which servers connect).
+        let server_link = Router::new()
+            .route(
+                "/",
+                get(routes::server_link::list).put(routes::server_link::set),
+            )
+            .route("/{a}/{b}", delete(routes::server_link::delete));
         let overlay_policy = Router::new()
             .route(
                 "/",
@@ -610,6 +618,7 @@ impl Module for NetworkState {
             .nest("/tenant/{tenant_id}/tunnel-policy", tunnel_policy)
             .nest("/tenant/{tenant_id}/overlay-node", overlay_node)
             .nest("/tenant/{tenant_id}/overlay-acl", overlay_policy)
+            .nest("/tenant/{tenant_id}/server-link", server_link)
             .nest("/tenant/{tenant_id}/net-inventory", net_inventory)
             .nest("/tenant/{tenant_id}/managed-forward", managed_forward)
             .nest("/tenant/{tenant_id}/magic-dns", magic_dns)

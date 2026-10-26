@@ -66,12 +66,19 @@ pub struct DerpAllowTable {
     allow: HashMap<DerpPubKey, HashSet<DerpPubKey>>,
     /// #21 `enforce`: each node's zone; `None` when isolation is not enforced.
     zones: Option<HashMap<DerpPubKey, BusinessZone>>,
+    /// Under `enforce`, the servers' keys and the linked pairs (stored in
+    /// both orders): two servers relay to each other exactly when linked.
+    servers: HashSet<DerpPubKey>,
+    links: HashSet<(DerpPubKey, DerpPubKey)>,
 }
 
 impl DerpAllowTable {
     /// May `src` relay a frame to `dst`? Always `true` when neither the ACL
     /// nor the isolation is enforced.
     pub fn permits(&self, src: &DerpPubKey, dst: &DerpPubKey) -> bool {
+        if self.zones.is_some() && self.servers.contains(src) && self.servers.contains(dst) {
+            return self.links.contains(&(*src, *dst));
+        }
         (!self.enforcing || self.allow.get(src).is_some_and(|s| s.contains(dst)))
             && self
                 .zones
@@ -97,7 +104,22 @@ impl DerpAllowTable {
         Self {
             enforcing,
             allow,
-            zones: None,
+            ..Self::default()
+        }
+    }
+
+    /// Test builder for the server topology (see [`Self::for_test`]).
+    #[doc(hidden)]
+    pub fn for_test_servers(
+        zones: &[(DerpPubKey, BusinessZone)],
+        servers: &[DerpPubKey],
+        links: &[(DerpPubKey, DerpPubKey)],
+    ) -> Self {
+        Self {
+            zones: Some(zones.iter().copied().collect()),
+            servers: servers.iter().copied().collect(),
+            links: links.iter().flat_map(|&(a, b)| [(a, b), (b, a)]).collect(),
+            ..Self::default()
         }
     }
 
@@ -200,6 +222,34 @@ pub async fn rebuild(state: &NetworkState, tenant_id: ObjectId, network_id: Obje
         }
     }
 
+    // The server topology: which keys are servers, and which server pairs are
+    // linked (both orders, so `permits` needs one lookup).
+    let mut servers = HashSet::new();
+    let mut links = HashSet::new();
+    if isolating {
+        let topo = super::business_isolation::lines(
+            state,
+            super::business_isolation::Mode::Enforce,
+            tenant_id,
+        )
+        .await;
+        let keyed: Vec<(&OverlayNode, DerpPubKey)> = nodes
+            .iter()
+            .filter_map(|n| Some((n, pubkey_of(n)?)))
+            .collect();
+        for (x, xk) in &keyed {
+            for (y, yk) in &keyed {
+                if let Some(linked) = topo.server_pair(x, y) {
+                    servers.insert(*xk);
+                    servers.insert(*yk);
+                    if linked {
+                        links.insert((*xk, *yk));
+                    }
+                }
+            }
+        }
+    }
+
     let pairs: usize = allow.values().map(|s| s.len()).sum();
     tracing::info!(
         %tenant_id, %network_id,
@@ -214,6 +264,8 @@ pub async fn rebuild(state: &NetworkState, tenant_id: ObjectId, network_id: Obje
             enforcing: acl.enforcing(),
             allow,
             zones,
+            servers,
+            links,
         }),
     );
 }
@@ -228,6 +280,29 @@ mod tests {
 
     fn table(enforcing: bool, pairs: &[(DerpPubKey, DerpPubKey)]) -> DerpAllowTable {
         DerpAllowTable::for_test(enforcing, pairs)
+    }
+
+    #[test]
+    fn servers_relay_to_each_other_by_link_alone() {
+        use BusinessZone::{Mainland, NonMainland};
+        let (cn, us, us2, client) = (pk(1), pk(2), pk(3), pk(4));
+        let t = DerpAllowTable::for_test_servers(
+            &[
+                (cn, Mainland),
+                (us, NonMainland),
+                (us2, NonMainland),
+                (client, NonMainland),
+            ],
+            &[cn, us, us2],
+            &[(cn, us)],
+        );
+        assert!(
+            t.permits(&cn, &us) && t.permits(&us, &cn),
+            "linked across the line"
+        );
+        assert!(!t.permits(&us, &us2), "unlinked inside one zone");
+        assert!(t.permits(&client, &us), "a client keeps the zone rule");
+        assert!(!t.permits(&client, &cn));
     }
 
     #[test]

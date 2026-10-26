@@ -22,6 +22,13 @@
 //! in the pair's zone), and the DERP allow table carries each node's zone
 //! (`derp_acl`).
 //!
+//! Servers: two devices whose central role is Server are judged by the
+//! tenant's server topology instead of their zones — an enabled
+//! [`ServerLink`](roomler_ai_remote_control::models::ServerLink) between them
+//! connects them, whatever their zones; none (or a disabled one) separates
+//! them, even inside one zone. A pair with any other device (a client, or a
+//! device with no current role) keeps the zone rule.
+//!
 //! Management traffic (`www.itachi.fans`) never passes through here.
 //!
 //! The setting is `app.business_isolation`: `off` | `warn` | `enforce`.
@@ -72,6 +79,9 @@ pub struct Zones {
     /// An approved cross-border line connects the two zones, and the
     /// recipient can ride a peer over it alone ([`Lines`]).
     pub line: bool,
+    /// Both are servers: `Some(linked)`, and the server topology alone
+    /// decides ([`Lines::server_pair`]). `None` for any other pair.
+    pub servers: Option<bool>,
 }
 
 impl Zones {
@@ -80,11 +90,15 @@ impl Zones {
         recipient: None,
         peer: None,
         line: false,
+        servers: None,
     };
 
-    /// Both zones known and equal.
+    /// The pair may meet: two linked servers, or both zones known and equal.
     pub fn same(&self) -> bool {
-        matches!((self.recipient, self.peer), (Some(a), Some(b)) if a == b)
+        match self.servers {
+            Some(linked) => linked,
+            None => matches!((self.recipient, self.peer), (Some(a), Some(b)) if a == b),
+        }
     }
 
     /// The rule says no: zones differ or one is unknown. Under `off` the
@@ -104,6 +118,7 @@ impl Zones {
     pub fn line_only(&self) -> bool {
         self.mode == Mode::Enforce
             && self.line
+            && self.servers.is_none()
             && matches!((self.recipient, self.peer), (Some(a), Some(b)) if a != b)
     }
 }
@@ -111,21 +126,121 @@ impl Zones {
 /// The zone pairs that approved cross-border lines connect in a tenant
 /// ([`crate::org_relay::cross_border_lines`]). Empty unless the rule is
 /// enforced: under `warn` and `off` nothing is withheld to begin with.
+///
+/// Also the tenant's server topology: the agents whose central role is
+/// Server, and the enabled links between them (read under `warn` and
+/// `enforce`, so `warn` logs what a missing link would cut).
 #[derive(Clone, Debug, Default)]
-pub struct Lines(pub Vec<(BusinessZone, BusinessZone)>);
+pub struct Lines {
+    pub lines: Vec<(BusinessZone, BusinessZone)>,
+    pub servers: std::collections::HashSet<ObjectId>,
+    pub links: std::collections::HashSet<(ObjectId, ObjectId)>,
+}
 
 impl Lines {
     pub fn connects(&self, a: Option<BusinessZone>, b: Option<BusinessZone>) -> bool {
         matches!((a, b), (Some(a), Some(b)) if a != b
-            && self.0.iter().any(|&(x, y)| (x, y) == (a, b) || (x, y) == (b, a)))
+            && self.lines.iter().any(|&(x, y)| (x, y) == (a, b) || (x, y) == (b, a)))
+    }
+
+    /// Both are servers: whether an enabled link joins them. `None` when
+    /// either is not a server (the zone rule applies).
+    pub fn server_pair(&self, a: &OverlayNode, b: &OverlayNode) -> Option<bool> {
+        self.server_refs(&a.node_ref, &b.node_ref)
+    }
+
+    /// [`Self::server_pair`] by reference.
+    pub fn server_refs(&self, a: &NodeRef, b: &NodeRef) -> Option<bool> {
+        let (NodeRef::Agent { agent_id: x }, NodeRef::Agent { agent_id: y }) = (a, b) else {
+            return None;
+        };
+        (self.servers.contains(x) && self.servers.contains(y)).then(|| {
+            self.links
+                .contains(&roomler_ai_remote_control::models::ServerLink::ordered(
+                    *x, *y,
+                ))
+        })
     }
 }
 
-pub async fn lines(state: &NetworkState, mode: Mode, tenant_id: bson::oid::ObjectId) -> Lines {
-    if mode != Mode::Enforce {
+pub async fn lines(state: &NetworkState, mode: Mode, tenant_id: ObjectId) -> Lines {
+    if mode == Mode::Off {
         return Lines::default();
     }
-    Lines(crate::org_relay::cross_border_lines(state, tenant_id).await)
+    // Every read fails closed: no role read means no servers (the zone rule
+    // then applies to everyone), no network read means no links.
+    let servers = roomler_core::business_authority::current_server_agents(&state.core, tenant_id)
+        .await
+        .map(|agents| agents.into_iter().filter_map(|a| a.id).collect())
+        .unwrap_or_default();
+    let links = state
+        .overlay_networks
+        .find_for_tenant(tenant_id)
+        .await
+        .ok()
+        .flatten()
+        .map(|n| {
+            n.server_links
+                .into_iter()
+                .filter(|l| l.enabled)
+                .map(|l| (l.a, l.b))
+                .collect()
+        })
+        .unwrap_or_default();
+    let lines = if mode == Mode::Enforce {
+        crate::org_relay::cross_border_lines(state, tenant_id).await
+    } else {
+        Vec::new()
+    };
+    Lines {
+        lines,
+        servers,
+        links,
+    }
+}
+
+/// What may carry a pair: one shared zone, a server link (the relay may sit
+/// in either server's zone), or nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Permit {
+    Zone(BusinessZone),
+    Linked(Option<BusinessZone>, Option<BusinessZone>),
+    Denied,
+}
+
+impl Permit {
+    /// The zones a relay carrying the pair may be in.
+    pub fn relay_zones(&self) -> Vec<BusinessZone> {
+        match *self {
+            Permit::Zone(z) => vec![z],
+            Permit::Linked(a, b) => a.into_iter().chain(b).collect(),
+            Permit::Denied => Vec::new(),
+        }
+    }
+}
+
+/// The [`Permit`] for two devices of one tenant, known by reference. Only
+/// meaningful when `mode` is not `Off` (no lookups are made then).
+pub async fn permit_refs(
+    state: &NetworkState,
+    mode: Mode,
+    tenant_id: ObjectId,
+    a: &NodeRef,
+    b: &NodeRef,
+) -> Permit {
+    if mode == Mode::Off {
+        return Permit::Denied;
+    }
+    let za = crate::org_relay::party_zone(state, tenant_id, a).await;
+    let zb = crate::org_relay::party_zone(state, tenant_id, b).await;
+    match lines(state, mode, tenant_id).await.server_refs(a, b) {
+        Some(true) => Permit::Linked(za, zb),
+        Some(false) => Permit::Denied,
+        None => match (za, zb) {
+            (Some(x), Some(y)) if x == y => Permit::Zone(x),
+            _ => Permit::Denied,
+        },
+    }
 }
 
 /// Whether `recipient` joined able to ride a line-only peer.
@@ -166,21 +281,14 @@ pub async fn joiner_zone(
     }
 }
 
-/// The zone `a` and `b` share, `None` when they differ or either is unknown.
-/// Only meaningful when `mode` is not `Off` (no lookups are made then).
-pub async fn pair_zone(
+/// The [`Permit`] for two overlay nodes.
+pub async fn pair_permit(
     state: &NetworkState,
     mode: Mode,
     a: &OverlayNode,
     b: &OverlayNode,
-) -> Option<BusinessZone> {
-    let zones = Zones {
-        mode,
-        recipient: zone_of(state, mode, a).await,
-        peer: zone_of(state, mode, b).await,
-        line: false,
-    };
-    zones.same().then_some(zones.recipient).flatten()
+) -> Permit {
+    permit_refs(state, mode, a.tenant_id, &a.node_ref, &b.node_ref).await
 }
 
 /// Whether a carrier (`what`) between `a` and `b` must be refused: `true`
@@ -213,13 +321,7 @@ pub async fn refuses_parties(
     if mode == Mode::Off {
         return false;
     }
-    let zones = Zones {
-        mode,
-        recipient: crate::org_relay::party_zone(state, a.0, a.1).await,
-        peer: crate::org_relay::party_zone(state, b.0, b.1).await,
-        line: false,
-    };
-    if zones.same() {
+    if a.0 == b.0 && permit_refs(state, mode, a.0, a.1, b.1).await != Permit::Denied {
         return false;
     }
     let (a, b) = (a.1, b.1);
@@ -228,7 +330,7 @@ pub async fn refuses_parties(
             ?a,
             ?b,
             what,
-            "business isolation: pair not in one zone; refusing"
+            "business isolation: pair not in one zone (or servers without a link); refusing"
         );
         return true;
     }
@@ -236,7 +338,7 @@ pub async fn refuses_parties(
         ?a,
         ?b,
         what,
-        "business isolation [warn]: would refuse a pair not in one zone"
+        "business isolation [warn]: would refuse a pair not in one zone (or servers without a link)"
     );
     false
 }
@@ -252,7 +354,36 @@ mod tests {
             recipient,
             peer,
             line: false,
+            servers: None,
         }
+    }
+
+    #[test]
+    fn servers_meet_by_link_alone() {
+        let s = |mode, r, p, linked| Zones {
+            servers: Some(linked),
+            ..z(mode, r, p)
+        };
+        // Linked across the line: met; unlinked inside one zone: withheld.
+        assert!(!s(Mode::Enforce, Some(Mainland), Some(NonMainland), true).withholds());
+        assert!(s(Mode::Enforce, Some(Mainland), Some(Mainland), false).withholds());
+        assert!(
+            !s(Mode::Enforce, None, None, true).withholds(),
+            "a link needs no zone"
+        );
+        assert!(!s(Mode::Warn, Some(Mainland), Some(Mainland), false).withholds());
+        assert!(
+            s(Mode::Warn, Some(Mainland), Some(Mainland), false).denies(),
+            "warn logs it"
+        );
+        let line_too = Zones {
+            line: true,
+            ..s(Mode::Enforce, Some(Mainland), Some(NonMainland), false)
+        };
+        assert!(
+            !line_too.line_only() && line_too.withholds(),
+            "a line is for clients"
+        );
     }
 
     #[test]
@@ -272,7 +403,10 @@ mod tests {
             "unknown still fails closed"
         );
         assert!(!line(Mode::Warn, Some(Mainland), Some(NonMainland)).line_only());
-        let lines = Lines(vec![(Mainland, NonMainland)]);
+        let lines = Lines {
+            lines: vec![(Mainland, NonMainland)],
+            ..Lines::default()
+        };
         assert!(
             lines.connects(Some(NonMainland), Some(Mainland)),
             "either direction"

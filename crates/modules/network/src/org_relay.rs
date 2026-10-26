@@ -913,12 +913,16 @@ async fn plan_mint_candidates_reusing(
     // the mainland line. Under `warn` both are only logged.
     use crate::business_isolation::{self as iso, Mode};
     let iso_mode = iso::mode(state);
-    let iso_zone = match (iso_mode, scope) {
-        (Mode::Off, _) => None,
-        (_, ZoneScope::Side(z)) => Some(z),
-        _ => iso::pair_zone(state, iso_mode, requester, peer).await,
+    // Servers meet by their topology link instead; a linked pair may ride a
+    // relay in either server's zone.
+    let iso_zones: Vec<BusinessZone> = match (iso_mode, scope) {
+        (Mode::Off, _) => Vec::new(),
+        (_, ZoneScope::Side(z)) => vec![z],
+        _ => iso::pair_permit(state, iso_mode, requester, peer)
+            .await
+            .relay_zones(),
     };
-    if iso_mode != Mode::Off && iso_zone.is_none() {
+    if iso_mode != Mode::Off && iso_zones.is_empty() {
         if iso_mode == Mode::Enforce {
             warn!(%tenant_id, requester = %req_id, peer = %peer_id, "org-relay: pair not in one business zone; refusing");
             return Err(D::ZoneDenied);
@@ -1052,7 +1056,7 @@ async fn plan_mint_candidates_reusing(
             }
             continue;
         }
-        if iso_mode != Mode::Off && (iso_zone.is_none() || relay_zone != iso_zone) {
+        if iso_mode != Mode::Off && !relay_zone.is_some_and(|z| iso_zones.contains(&z)) {
             if iso_mode == Mode::Enforce {
                 zone_denied += 1;
                 continue;
@@ -2638,21 +2642,26 @@ pub(crate) async fn recheck_zones(state: &NetworkState, agent_id: ObjectId, reas
 }
 
 /// Whether session `s` fits the zones its parties are connected in now: a
-/// line by [`line_zones_fit`], any other by one known zone both members and
-/// the relay share.
+/// line by [`line_zones_fit`], any other by its members' [`Permit`] (one
+/// shared zone, or a server link) with the relay in a zone it allows.
+///
+/// [`Permit`]: crate::business_isolation::Permit
 async fn session_zones_fit(state: &NetworkState, s: &OrgRelaySession) -> bool {
     if s.line.is_some() {
         return line_zones_fit(state, s).await;
     }
-    let zone = |r| party_zone(state, s.tenant_id, r);
-    let (Some(a), Some(b), Some(r)) = (
-        zone(&s.members[0].party.node_ref).await,
-        zone(&s.members[1].party.node_ref).await,
-        zone(&s.relay.node_ref).await,
-    ) else {
-        return false;
-    };
-    a == b && b == r
+    use crate::business_isolation as iso;
+    let permit = iso::permit_refs(
+        state,
+        iso::mode(state),
+        s.tenant_id,
+        &s.members[0].party.node_ref,
+        &s.members[1].party.node_ref,
+    )
+    .await;
+    party_zone(state, s.tenant_id, &s.relay.node_ref)
+        .await
+        .is_some_and(|r| permit.relay_zones().contains(&r))
 }
 
 /// Every party of line `s` is connected here, `members[0]` in the ingress

@@ -30,6 +30,7 @@ use tokio_tungstenite::tungstenite::Message;
 struct Rig {
     app: TestApp,
     seeded: SeededTenant,
+    owner_token: String,
     _geo: tempfile::TempDir,
 }
 
@@ -49,7 +50,7 @@ impl Rig {
             s.stats.geoip_mmdb = Some(mmdb);
         })
         .await;
-        approved_user(&app, &format!("{slug}_owner"), Some(owner_id)).await;
+        let owner = approved_user(&app, &format!("{slug}_owner"), Some(owner_id)).await;
         let admin = approved_user(&app, &format!("{slug}_admin"), None).await;
         let member = approved_user(&app, &format!("{slug}_member"), None).await;
         let tenant_id = app
@@ -75,8 +76,37 @@ impl Rig {
         Self {
             app,
             seeded,
+            owner_token: owner.access_token,
             _geo: geo,
         }
+    }
+
+    /// The central owner approves `agent`'s business role (`server`).
+    async fn set_role(&self, agent: &str, role: &str) {
+        let path = format!(
+            "/api/admin/business-authority/agent/{}/{agent}",
+            self.seeded.tenant_id
+        );
+        let (s, v) = put(
+            &self.app,
+            &path,
+            &self.owner_token,
+            json!({ "role": role, "reason": "server topology fixture" }),
+        )
+        .await;
+        assert_eq!(s, 200, "set role {role}: {v}");
+    }
+
+    /// The admin enables or disables the server link `a`—`b`.
+    async fn link(&self, a: &str, b: &str, enabled: bool) {
+        let (s, v) = put(
+            &self.app,
+            &format!("/api/tenant/{}/server-link", self.seeded.tenant_id),
+            &self.seeded.admin.access_token,
+            json!({ "a": a, "b": b, "enabled": enabled }),
+        )
+        .await;
+        assert_eq!(s, 200, "link: {v}");
     }
 
     /// Enroll and connect `name` from `from` (`None`: a bare connection, no
@@ -242,6 +272,71 @@ async fn an_address_in_the_other_zone_withdraws_the_nodes_zone() {
     assert!(
         !up.contains(&us_b_id) && rm.contains(&us_b_id),
         "a CN address withdraws it: up {up:?} rm {rm:?}"
+    );
+}
+
+/// The server topology: two servers meet exactly when an enabled link names
+/// them, across the zones or inside one; a client keeps the zone rule.
+#[tokio::test]
+async fn servers_meet_by_link_alone_whatever_their_zones() {
+    let rig = Rig::up("iso-links", "enforce").await;
+    let mut devs = Vec::new();
+    for (name, from) in [
+        ("iso-l-us-s", US_A),
+        ("iso-l-cn-s", CN_A),
+        ("iso-l-us-s2", US_B),
+        ("iso-l-us-c", US_R),
+    ] {
+        let (agent, tok) = enroll(&rig.app, &rig.seeded, name).await;
+        let ws = connect_from(&rig.app, &tok, &[], Some(from)).await;
+        assert_observed(&rig.app, &agent, Some(from)).await;
+        devs.push((agent, ws));
+    }
+    for (agent, _) in &devs[..3] {
+        rig.set_role(agent, "server").await;
+    }
+    for (i, (_, ws)) in devs.iter_mut().enumerate() {
+        join(
+            ws,
+            60 + i as u8,
+            Some(true),
+            &format!("203.0.113.{}:41641", 60 + i),
+        )
+        .await;
+    }
+    let ids: Vec<String> = futures::future::join_all(
+        ["iso-l-us-s", "iso-l-cn-s", "iso-l-us-s2", "iso-l-us-c"].map(|n| rig.node(n)),
+    )
+    .await;
+    let (us_s, cn_s, us_s2, us_c) = (&ids[0], &ids[1], &ids[2], &ids[3]);
+    // No links: a server sees no other server, not even in its own zone, and
+    // still sees the client in its zone.
+    let full = peer_ids(&join(&mut devs[0].1, 60, Some(true), "203.0.113.60:41641").await);
+    assert_eq!(
+        full,
+        set(&[us_c]),
+        "unlinked servers are separate: {full:?}"
+    );
+
+    // A link across the line connects the two servers, and only them.
+    let _ = deltas(&mut devs[0].1, Duration::from_millis(600)).await;
+    rig.link(&devs[0].0, &devs[1].0, true).await;
+    let (up, _) = deltas(&mut devs[0].1, Duration::from_millis(800)).await;
+    assert!(up.contains(cn_s), "linked: us-s is offered cn-s: {up:?}");
+    let full = peer_ids(&join(&mut devs[1].1, 61, Some(true), "203.0.113.61:41641").await);
+    assert_eq!(
+        full,
+        set(&[us_s]),
+        "cn-s sees exactly its linked server: {full:?}"
+    );
+    assert!(!full.contains(us_s2.as_str()));
+
+    // Disabled, the edge separates them again.
+    rig.link(&devs[0].0, &devs[1].0, false).await;
+    let (_, rm) = deltas(&mut devs[0].1, Duration::from_millis(800)).await;
+    assert!(
+        rm.contains(cn_s),
+        "disabled: us-s is told to remove cn-s: {rm:?}"
     );
 }
 

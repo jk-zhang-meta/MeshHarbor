@@ -40,7 +40,7 @@
 use std::net::IpAddr;
 
 use bson::{DateTime, doc, oid::ObjectId};
-use roomler_ai_remote_control::models::RpcCap;
+use roomler_ai_remote_control::models::{NodeRef, RpcCap};
 use roomler_ai_remote_control::net_inventory::{FirewallOwner, L4, SectionState, truncate_str};
 pub use roomler_ai_remote_control::signaling::ForwardBackend;
 use roomler_ai_remote_control::signaling::{
@@ -496,37 +496,34 @@ pub async fn plan(
             "business_isolation is off",
         );
     } else {
-        let zone = |id: Option<ObjectId>| async move {
-            let id = id?;
-            let agent = state
-                .fleet
-                .agents
-                .find_live_in_tenant(tenant_id, id)
-                .await
-                .ok()?;
-            crate::org_relay::agent_zone(state, &agent)
-        };
-        let a = zone(ingress).await;
-        let b = match (spec.dest_agent_id.as_deref(), &path) {
-            (Some(d), _) => zone(oid(d)).await,
+        // Two servers meet by their topology link, any other pair by one zone
+        // (`business_isolation::permit_refs`).
+        let ingress_ref = ingress.map(|agent_id| NodeRef::Agent { agent_id });
+        let dest_ref = match (spec.dest_agent_id.as_deref(), &path) {
+            (Some(d), _) => oid(d).map(|agent_id| NodeRef::Agent { agent_id }),
             // Behind the overlay: the node that holds the address or routes
             // the subnet is where the traffic lands.
-            (None, Some(node)) => crate::org_relay::node_zone(state, node).await,
+            (None, Some(node)) => Some(node.node_ref.clone()),
             (None, None) => None,
         };
-        let (verdict, detail) = match (a, b) {
-            (Some(x), Some(y)) if x == y => (Verdict::Pass, format!("both in {x:?}")),
-            (Some(_), Some(_)) => (
-                Verdict::Fail,
-                "ingress and destination are in different zones".to_string(),
-            ),
-            _ if spec.dest_agent_id.is_none() && path.is_none() => (
+        let permit = match (&ingress_ref, &dest_ref) {
+            (Some(a), Some(b)) => {
+                business_isolation::permit_refs(state, mode, tenant_id, a, b).await
+            }
+            _ => business_isolation::Permit::Denied,
+        };
+        let (verdict, detail) = match permit {
+            business_isolation::Permit::Zone(z) => (Verdict::Pass, format!("both in {z:?}")),
+            business_isolation::Permit::Linked(..) => {
+                (Verdict::Pass, "a server link joins them".to_string())
+            }
+            business_isolation::Permit::Denied if dest_ref.is_none() => (
                 Verdict::Fail,
                 "an unenrolled destination has no verified zone attachment".to_string(),
             ),
-            _ => (
+            business_isolation::Permit::Denied => (
                 Verdict::Fail,
-                "a zone is unknown (no live connection or no evidence)".to_string(),
+                "not in one known zone, and no server link joins them".to_string(),
             ),
         };
         let verdict = if verdict == Verdict::Fail && mode == Mode::Warn {

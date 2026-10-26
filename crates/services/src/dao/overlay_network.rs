@@ -115,6 +115,7 @@ impl OverlayNetworkDao {
             // so that turning the feature on can never black-hole a live mesh.
             acl_mode: OverlayAclMode::default(),
             peer_relay_mode: Default::default(),
+            server_links: Vec::new(),
             created_at: now,
             updated_at: now,
         };
@@ -241,6 +242,37 @@ impl OverlayNetworkDao {
     ///
     /// Creates the network row if the tenant has never joined the overlay, so
     /// an admin can stage the posture before the first node appears.
+    /// Add, enable or disable the server link between agents `x` and `y`
+    /// (replacing any row for the pair), or remove it (`enabled: None`).
+    pub async fn set_server_link(
+        &self,
+        tenant_id: ObjectId,
+        x: ObjectId,
+        y: ObjectId,
+        enabled: Option<bool>,
+    ) -> DaoResult<bool> {
+        let (a, b) = roomler_ai_remote_control::models::ServerLink::ordered(x, y);
+        self.get_or_create(tenant_id).await?;
+        self.base
+            .update_one(
+                doc! { "tenant_id": tenant_id },
+                doc! { "$pull": { "server_links": { "a": a, "b": b } } },
+            )
+            .await?;
+        let Some(enabled) = enabled else {
+            return Ok(true);
+        };
+        self.base
+            .update_one(
+                doc! { "tenant_id": tenant_id },
+                doc! {
+                    "$push": { "server_links": { "a": a, "b": b, "enabled": enabled } },
+                    "$set": { "updated_at": DateTime::now() },
+                },
+            )
+            .await
+    }
+
     pub async fn set_acl_mode(&self, tenant_id: ObjectId, mode: OverlayAclMode) -> DaoResult<bool> {
         self.get_or_create(tenant_id).await?;
         self.base
