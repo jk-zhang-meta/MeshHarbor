@@ -184,6 +184,9 @@ pub struct OrgRelayState {
     /// evidence. Keyed by the device's ObjectId, unique across both kinds.
     live_conns: DashMap<ObjectId, String>,
     trials: trial::PathTrials,
+    /// (pair key, relay node) a member measured lossy, until when: the
+    /// planner skips that relay for that pair (see [`Self::mark_lossy`]).
+    lossy: DashMap<(String, ObjectId), Instant>,
     // Conservative generation for membership/policy decisions spanning async IO.
     eligibility_epoch: AtomicU64,
 }
@@ -275,6 +278,27 @@ impl OrgRelayState {
     pub fn age_past_bind_window(&self, pair_key: &str) {
         if let Some(mut s) = self.sessions.get_mut(pair_key) {
             s.bind_by = Instant::now() - Duration::from_secs(1);
+        }
+    }
+
+    /// A member measured `relay_node_id` lossy for the pair `pair_key`: the
+    /// planner skips that relay for that pair until `until`, so the pair
+    /// moves to another relay in its zone, and to DERP only when none is
+    /// left. Other pairs keep the relay.
+    pub fn mark_lossy(&self, pair_key: &str, relay_node_id: ObjectId, until: Instant) {
+        self.lossy
+            .insert((pair_key.to_string(), relay_node_id), until);
+    }
+
+    pub fn is_lossy(&self, pair_key: &str, relay_node_id: ObjectId, now: Instant) -> bool {
+        let key = (pair_key.to_string(), relay_node_id);
+        match self.lossy.get(&key).map(|u| *u) {
+            Some(until) if until > now => true,
+            Some(_) => {
+                self.lossy.remove(&key);
+                false
+            }
+            None => false,
         }
     }
 
@@ -528,6 +552,22 @@ async fn plan_mint_candidates(
     plan_mint_candidates_reusing(state, requester, peer, None).await
 }
 
+/// The relay the planner would mint the pair on now, if any; a relay marked
+/// lossy for the pair is not among the candidates.
+pub(crate) async fn next_relay(
+    state: &NetworkState,
+    requester: &OverlayNode,
+    peer: &OverlayNode,
+) -> Option<ObjectId> {
+    plan_mint_candidates(state, requester, peer)
+        .await
+        .ok()?
+        .into_iter()
+        .next()?
+        .relay
+        .id
+}
+
 async fn plan_mint_candidates_reusing(
     state: &NetworkState,
     requester: &OverlayNode,
@@ -625,6 +665,7 @@ async fn plan_mint_candidates_reusing(
     let mut member_zone: Option<Option<BusinessZone>> = None;
 
     let now = Instant::now();
+    let pk = pair_key(req_id, peer_id);
     let mut candidates: Vec<Plan> = Vec::new();
     let mut acl_denied = 0usize;
     let mut zone_denied = 0usize;
@@ -646,6 +687,10 @@ async fn plan_mint_candidates_reusing(
         };
         let Some(relay_id) = node.id else { continue };
         if relay_id == req_id || relay_id == peer_id {
+            continue;
+        }
+        // A relay a member measured lossy for this pair sits out its pin.
+        if state.org_relay.is_lossy(&pk, relay_id, now) {
             continue;
         }
         let extras = state.org_relay.join_extras(relay_id);

@@ -376,7 +376,7 @@ the relay and both members, and each one writes a `revoke` row:
 | a policy edit no longer grants a member the relay | `acl_revoked` | `reconcile_acl` ([`org_relay.rs:815`](../crates/modules/network/src/org_relay.rs#L815)) |
 | the relay's approval was cleared | `policy_revoked` | `revoke_relay_agent` |
 | a party was removed from the overlay | `device_removed` / `device_left` | `revoke_node` |
-| a member measured the session losing ≥ 5% (below) | `org_relay_lossy` | `handle_org_relay_loss` ([`overlay.rs:1694`](../crates/modules/network/src/overlay.rs#L1694)) |
+| a member measured the session losing ≥ 5% (below) | `org_relay_lossy` | `handle_org_relay_loss` ([`overlay.rs:1698`](../crates/modules/network/src/overlay.rs#L1698)) |
 
 ⚠️ **`reconcile_acl` does NOTHING on a read failure.** Refusing a *new* mint on a blip
 costs one session. Tearing down every *live* session on a blip is exactly the
@@ -393,7 +393,7 @@ costs one session. Tearing down every *live* session on a blip is exactly the
 - **Never ratchet.** When the relay came back, the pair **re-upgraded** to
   `relay:org/udp` on the next ladder climb.
 
-## A lossy relay hands the pair to DERP
+## A lossy relay moves the pair to another relay, else to DERP
 
 An org relay can be up and still be the worst carrier the pair has. Field, 2026-10-26
 (HK ↔ Tokyo through the Isvoro relay): 7–10% of the data packets and ~2.8% of the ACKs
@@ -405,7 +405,11 @@ node ↔ relay-host leg, where the org relay leaves recovery to the end-to-end T
 
 Now each member measures the stream its peer sends over the session, from the WireGuard
 transport counters it already authenticates (`PeerStats::note_rx_counter`, `wg.rs`).
-Every closed ~30 s window that lost at least 1% is reported, and the **server** decides:
+Every closed ~30 s window that lost at least 1% is reported, and the **server** decides.
+It first marks that relay lossy **for that pair** for 10 minutes (`mark_lossy`; other
+pairs keep the relay) and revokes the session, audited `org_relay_lossy`. If the planner
+still finds a relay for the pair (granted, live, in its zone), the pair is minted there
+at once, with no DERP pin. Only when no relay is left is the pair pinned to DERP:
 
 ```mermaid
 sequenceDiagram
@@ -571,7 +575,7 @@ the capacity gained: the relay was in France and the members in Austria and Germ
 | the member: bind + `OrgRelayConn` | [`orgrelay/client.rs`](../crates/tunnel-core/src/overlay/orgrelay/client.rs) |
 | the member's coordinator | [`relay_link.rs`](../crates/tunnel-core/src/overlay/relay_link.rs) — `relay_strategy` `:1052`, `org_request_bind` `:1946`, `commit_org_bind` `:1972` |
 | loss: the member's measure and report | [`runtime/rx_loss.rs`](../crates/tunnel-core/src/overlay/runtime/rx_loss.rs) (windows, `take_reports` `:154`), [`relay_link.rs:1446`](../crates/tunnel-core/src/overlay/relay_link.rs#L1446) `report_org_loss` |
-| loss: the server's verdict and pin | [`overlay.rs`](../crates/modules/network/src/overlay.rs) — `push_pair_pin` `:1578`, `org_loss_fails` `:1653`, `handle_org_relay_loss` `:1694`; `reported_session` [`org_relay.rs:1706`](../crates/modules/network/src/org_relay.rs#L1706) |
+| loss: the server's verdict and pin | [`overlay.rs`](../crates/modules/network/src/overlay.rs) — `push_pair_pin` `:1578`, `org_loss_fails` `:1653`, `handle_org_relay_loss` `:1698`; `reported_session` [`org_relay.rs:1706`](../crates/modules/network/src/org_relay.rs#L1706) |
 | `auto`: role listing, per-connection zone | [`business_authority.rs`](../crates/core/src/business_authority.rs) — `LiveZones` `:242`, `connection_zone` `:487`, `current_server_agents` `:590` |
 | `auto`: the implicit grant and its revocations | [`org_relay.rs`](../crates/modules/network/src/org_relay.rs) — candidates `:504`, the zone check `:631`, `revoke_implicit_for_agent` `:1530` |
 | `auto`: TestApp tests | [`crates/tests/src/peer_relay_auto_tests.rs`](../crates/tests/src/peer_relay_auto_tests.rs) |
@@ -590,8 +594,5 @@ the capacity gained: the relay was in France and the members in Austria and Germ
   mis-ranking an org relay against TURN or DERP, the tier surgery above is the
   follow-up, opened with that evidence. The first such evidence (2026-10-26, DERP 10×
   the org relay on a lossy relay host) is answered by the loss pin above, not by a tier.
-- **Choosing another relay instead of DERP.** A lossy relay pins the whole pair to DERP;
-  marking only that (pair, relay) in the planner would let a second relay in the zone
-  carry it.
 - **Measuring DERP's goodput too.** The pin compares the org relay's measured loss with
   a threshold, not with DERP's measured performance.

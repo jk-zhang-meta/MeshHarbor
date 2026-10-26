@@ -1679,11 +1679,15 @@ fn org_loss_pin_enabled() -> bool {
 
 /// A member's ORG loss report (`rc:overlay.org_relay_loss`): one closed
 /// window of the stream its peer sends over their session. A window that
-/// [`org_loss_fails`] fails the pair's relay tier the way TURN churn does
-/// (P7): both ends are pinned to DERP for [`ORG_LOSS_PIN_TTL`], the session
-/// is revoked (audited `org_relay_lossy`), and every mint path refuses the
-/// pair until the pin lapses. Then the members' ladder climbs back to ORG
-/// and the next windows measure it again. Direct re-upgrade is untouched.
+/// [`org_loss_fails`] marks that relay lossy for the pair for
+/// [`ORG_LOSS_PIN_TTL`], and the session is revoked (audited
+/// `org_relay_lossy`). If the planner still finds a relay for the pair (in
+/// its zone, granted, live), the pair is minted there at once. Only when none
+/// is left does it fail the pair's relay tier the way TURN churn does (P7):
+/// both ends are pinned to DERP for the same TTL, and every mint path
+/// refuses the pair until the pin lapses. Then the members' ladder climbs
+/// back to ORG and the next windows measure it again. Direct re-upgrade is
+/// untouched.
 ///
 /// The server decides, over the measured counts. A report counts only for
 /// the reporter's own live session (anything else is dropped), and one
@@ -1724,15 +1728,39 @@ async fn handle_org_relay_loss(
         _ => return,
     };
     let pk = session.pair_key.clone();
-    if !(org_loss_pin_enabled()
-        && forced_derp_enabled()
+    if !org_loss_pin_enabled() {
+        tracing::info!(%pk, reporter = %reporter_id, peer = %peer_node_id, vni, packets, %loss_pct,
+            "overlay relay: ORG carrier lossy, kept: the loss pin is switched off");
+        return;
+    }
+    // Another relay in the zone first. This one sits out the pin for the
+    // pair; if the planner still finds a relay, the pair moves there rather
+    // than to DERP. The revoke frees the lossy relay's session first, so the
+    // mint is the pair's only live one.
+    let lossy_relay = session.relay.node_id;
+    state
+        .org_relay
+        .mark_lossy(&pk, lossy_relay, Instant::now() + ORG_LOSS_PIN_TTL);
+    if let Some(next) = crate::org_relay::next_relay(state, &reporter, &peer).await {
+        tracing::info!(%pk, reporter = %reporter_id, peer = %peer_node_id, vni, packets, %loss_pct,
+            %lossy_relay, next_relay = %next,
+            "overlay relay: ORG carrier lossy, moving the pair to another relay for {}s",
+            ORG_LOSS_PIN_TTL.as_secs());
+        crate::org_relay::revoke_where(state, "org_relay_lossy", |s| {
+            s.pair_key == pk && s.vni == session.vni && s.generation == session.generation
+        })
+        .await;
+        crate::org_relay::maybe_mint(state, &reporter, &peer).await;
+        return;
+    }
+    if !(forced_derp_enabled()
         && reporter.supports_forced_derp
         && reporter.supports_derp
         && peer.supports_forced_derp
         && peer.supports_derp)
     {
         tracing::info!(%pk, reporter = %reporter_id, peer = %peer_node_id, vni, packets, %loss_pct,
-            "overlay relay: ORG carrier lossy, kept: the pin is switched off or an end cannot ride DERP");
+            "overlay relay: ORG carrier lossy, kept: no other relay, and an end cannot ride DERP");
         return;
     }
     // Pin first, so each member moves straight to DERP on the pin; the

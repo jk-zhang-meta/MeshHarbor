@@ -3157,6 +3157,73 @@ async fn org_loss_report_pins_the_pair_to_derp_and_revokes_the_session() {
     assert!(rig.app.state.network().org_relay.active_session(&pk).is_none());
 }
 
+/// With a second relay in the zone, a lossy relay moves the pair there, not
+/// to DERP: the lossy session is revoked (audited), a new one is minted on
+/// the other relay at once, nothing is pinned, and the lossy relay sits out
+/// for this pair: the next fallback request mints on the other relay again.
+#[tokio::test]
+async fn a_lossy_relay_moves_the_pair_to_another_relay_in_the_zone() {
+    let (mut rig, extra, _extra_agent, extra_node, _, _) =
+        alternate_onehop_fixture("org-loss-move").await;
+    request_org_only(&mut rig, 1).await;
+    let old = recv_org_only_session(&mut rig.a).await;
+    recv_org_only_session(&mut rig.b).await;
+    let (old_relay, other) = if old["relay_node_id"] == json!(rig.r_node) {
+        (rig.r_node.clone(), extra_node.clone())
+    } else {
+        (extra_node.clone(), rig.r_node.clone())
+    };
+    let vni = old["vni"].as_u64().unwrap();
+    let pk = roomler_ai_mod_network::overlay::pair_key(
+        ObjectId::parse_str(&rig.a_node).unwrap(),
+        ObjectId::parse_str(&rig.b_node).unwrap(),
+    );
+
+    report_loss(&mut rig.b, &rig.a_node, vni, 3000, 240).await; // 8%
+    // recv_org_only_session fails on any force_derp: the pair is not pinned.
+    let fresh = recv_org_only_session(&mut rig.a).await;
+    recv_org_only_session(&mut rig.b).await;
+    assert_eq!(
+        fresh["relay_node_id"],
+        json!(other),
+        "minted on the other relay"
+    );
+    // VNIs are per relay; the generation is the server-wide clock.
+    assert!(fresh["generation"].as_u64().unwrap() > old["generation"].as_u64().unwrap());
+    let mut audited = false;
+    for _ in 0..40 {
+        audited = audit_rows(&rig.app, &rig.seeded).await.iter().any(|r| {
+            r["action"] == "revoke" && r["vni"] == json!(vni) && r["reason"] == "org_relay_lossy"
+        });
+        if audited {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(
+        audited,
+        "the lossy session's revoke is audited with its reason"
+    );
+    assert!(
+        rig.app.state.network().relay_pair_churn.is_empty(),
+        "no DERP pin"
+    );
+    let live = rig
+        .app
+        .state
+        .network()
+        .org_relay
+        .active_session(&pk)
+        .expect("a live session");
+    assert_eq!(live.relay.node_id.to_hex(), other);
+    assert!(rig.app.state.network().org_relay.is_lossy(
+        &pk,
+        ObjectId::parse_str(&old_relay).unwrap(),
+        std::time::Instant::now()
+    ));
+    drop(extra);
+}
+
 #[tokio::test]
 async fn org_only_fallback_reauthorizes_stale_cached_relay_and_mints_alternate() {
     let (mut rig,mut extra,extra_agent,extra_node,_,_)=alternate_onehop_fixture("org-only-stale").await;
