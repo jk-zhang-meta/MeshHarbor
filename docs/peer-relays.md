@@ -497,6 +497,18 @@ one-hop session and is never told the private endpoint.
   verdict above neither moves it nor pins it to DERP.
 - Rules, gates, the mint sequence and what ends a line:
   [business-isolation.md](business-isolation.md#the-one-exception-an-approved-cross-border-line).
+- **The fastest line wins** (#5 step B). Where several lines could carry a pair, each
+  is ranked by the path a packet rides: the member in the ingress relay's zone to that
+  relay, the line itself, and the exit relay to the other member. The members' legs come
+  from their relay probes (above). The line's own RTT is measured by the ingress relay:
+  its full netmap names the lines it may carry (`network.backbone_probe_targets`: each
+  exit relay at the edge's private endpoint), and it probes those only on its backbone
+  interface, from a socket pinned to it, where its local backbone policy
+  (`RELAY_BACKBONE_*`) permits the endpoint. Without that policy it measures none, so a
+  line is never timed over the public path. A report is filed as the line's RTT only for
+  a line that relay was offered. Ranking classes as for one relay: all three legs
+  measured first, then partly measured, then any measured unreachable (last, never
+  excluded); then summed RTT; then both relays' load. An older relay ignores the field.
 
 ## What the relay operator can see — tell customers this
 
@@ -630,9 +642,10 @@ the capacity gained: the relay was in France and the members in Austria and Germ
 - **A dedicated `RELAY_DEVICE` permission bit.** It waits on the 64-bit mask migration
   (#888). Until then, an org cannot have relay approvers who may not also run root
   commands.
-- **MeshHarbor: latency-weighted multi-hop.** The manual relay-to-relay backbone edges
-  exist, and a `cross_border` edge carries a cross-zone pair (above); choosing a path
-  through them by measured latency does not.
+- **MeshHarbor: latency-chosen multi-hop beyond lines.** A cross-border pair's line is
+  chosen by measured latency (above). A same-zone pair still rides one relay; a
+  two-relay path for it only comes from a member's path trial, and chains of more than
+  two relays need a wire change (one exit field, one bridge leg).
 - **A per-session bitrate cap** on the relay. The session count is capped; per-session
   bandwidth is not.
 - **A separate tier for the org relay.** If measurement ever shows the selector

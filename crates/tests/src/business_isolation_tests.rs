@@ -789,3 +789,139 @@ async fn a_center_brokered_tunnel_stays_in_one_zone() {
         );
     }
 }
+
+/// MeshHarbor #5 step B: of two lines a cross-border pair could ride, the
+/// planner takes the one whose whole path is fastest, the line's own RTT
+/// included. gz (mainland) has a line to hk and one to hk2. Measured: cn→gz
+/// 5 ms; the gz→hk line 150 ms and gz→hk2 30 ms (gz's own reports, on the
+/// private endpoints its netmap offered it); us→hk 10 ms, us→hk2 20 ms. By
+/// the members alone hk wins (15 vs 25); by the path, hk2 does (55 vs 165).
+#[tokio::test]
+async fn a_cross_border_pair_rides_its_fastest_line() {
+    const LINE2: &str = "10.42.2.115:3478";
+    let mut l = LineRig::up("iso-fast", true).await;
+    let (hk2_agent, hk2_tok) = enroll(&l.rig.app, &l.rig.seeded, "iso-fast-hk2").await;
+    let mut hk2 = connect_from(&l.rig.app, &hk2_tok, &["relay-server"], Some("1.0.0.1")).await;
+    assert_observed(&l.rig.app, &hk2_agent, Some("1.0.0.1")).await;
+    line_join(&mut hk2, 6, "1.0.0.1:41641", json!({})).await;
+    let (app, seeded) = (&l.rig.app, &l.rig.seeded);
+    assert_eq!(approve(app, seeded, &hk2_agent, true).await, 200);
+    let hk2_node = l.rig.node("iso-fast-hk2").await;
+    grant_relay(app, seeded, &hk2_node).await;
+    let path = format!(
+        "/api/tenant/{}/agent/{}/peer-relay-policy",
+        seeded.tenant_id, l.gz_agent
+    );
+    let body = json!({ "serve": true, "approved_backbone_edges": [
+        { "relay_agent_id": l.hk_agent, "endpoint": LINE, "cross_border": true },
+        { "relay_agent_id": hk2_agent, "endpoint": LINE2, "cross_border": true },
+    ]});
+    let (status, v) = put(app, &path, &seeded.admin.access_token, body).await;
+    assert_eq!(status, 200, "{v}");
+
+    // gz is offered both lines to measure, at their private endpoints; the
+    // members are offered no line at all.
+    let gz_map = line_join(
+        &mut l.gz,
+        3,
+        "223.6.6.6:41641",
+        json!({ "relay_backbone_ready": true }),
+    )
+    .await;
+    let lines = gz_map["network"]["backbone_probe_targets"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let offered: BTreeSet<(String, String)> = lines
+        .iter()
+        .map(|t| {
+            (
+                t["relay_node_id"].as_str().unwrap().to_owned(),
+                t["endpoints"][0].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        offered,
+        BTreeSet::from([
+            (l.hk_node.clone(), LINE.to_owned()),
+            (hk2_node.clone(), LINE2.to_owned())
+        ]),
+        "{gz_map}"
+    );
+    let flag = json!({ "supports_backbone_only_v1": true });
+    let cn_map = line_join(&mut l.cn, 1, "223.5.5.5:41641", flag.clone()).await;
+    let us_map = line_join(&mut l.us, 2, "8.8.8.8:41641", flag).await;
+    for m in [&cn_map, &us_map] {
+        assert!(
+            m["network"]["backbone_probe_targets"]
+                .as_array()
+                .is_none_or(|t| t.is_empty()),
+            "{m}"
+        );
+    }
+
+    let report = |relay: &str, endpoint: &Value, rtt: u32| {
+        json!({ "t": "rc:overlay.relay_probe", "relay_node_id": relay,
+            "endpoint": endpoint, "reachable": true, "rtt_ms": rtt })
+        .to_string()
+    };
+    let offered_endpoint = |map: &Value, relay: &str| {
+        map["network"]["relay_probe_targets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["relay_node_id"] == json!(relay))
+            .unwrap_or_else(|| panic!("{relay} offered: {map}"))["endpoints"][0]
+            .clone()
+    };
+    for (relay, endpoint, rtt) in [(&l.hk_node, LINE, 150), (&hk2_node, LINE2, 30)] {
+        l.gz.send(Message::Text(report(relay, &json!(endpoint), rtt).into()))
+            .await
+            .unwrap();
+    }
+    let gz_ep = offered_endpoint(&cn_map, &l.gz_node);
+    l.cn.send(Message::Text(report(&l.gz_node, &gz_ep, 5).into()))
+        .await
+        .unwrap();
+    for (relay, rtt) in [(&l.hk_node, 10), (&hk2_node, 20)] {
+        let ep = offered_endpoint(&us_map, relay);
+        l.us.send(Message::Text(report(relay, &ep, rtt).into()))
+            .await
+            .unwrap();
+    }
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    relay_request(&mut l.cn, &l.us_node).await;
+    let wait = Duration::from_secs(5);
+    let bridge = recv_t(&mut l.gz, "rc:overlay.relay_bridge_serve", wait)
+        .await
+        .expect("gz bridges")["bridge"]
+        .clone();
+    assert_eq!(
+        bridge["remote_endpoint"],
+        json!(LINE2),
+        "the faster line: {bridge}"
+    );
+    recv_t(&mut hk2, "rc:overlay.relay_serve", wait)
+        .await
+        .expect("hk2 serves");
+    let us = recv_t(&mut l.us, "rc:overlay.relay_session", wait)
+        .await
+        .expect("us session");
+    assert_eq!(
+        us["relay_node_id"],
+        json!(hk2_node),
+        "us binds the faster line's exit"
+    );
+    assert!(
+        recv_t(
+            &mut l.hk,
+            "rc:overlay.relay_serve",
+            Duration::from_millis(300)
+        )
+        .await
+        .is_none(),
+        "the slower line's exit serves nothing"
+    );
+}

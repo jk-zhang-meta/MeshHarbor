@@ -10,6 +10,13 @@
 //! measures each and the runtime reports the results as ordinary
 //! `rc:overlay.relay_probe` rows.
 //!
+//! #5 step B: a backbone-ready relay is also offered the LINES it may carry a
+//! pair over (`backbone_probe_targets`: the exit relay at the edge's private
+//! endpoint). Those are probed only on the backbone interface, from a socket
+//! pinned to it, and only where the local backbone policy permits the
+//! endpoint; with no such policy they are not probed at all, so a line is
+//! never measured over the public path.
+//!
 //! A probe is the relay's unauthenticated echo ([`build_probe`], answered byte
 //! for byte by the relay's responder), so it needs no session, secret or VNI,
 //! and it cannot amplify. [`SAMPLES`] per endpoint stays inside the
@@ -40,6 +47,8 @@ const PROBE_VNI: u32 = 1;
 pub struct Target {
     pub relay_node_id: ObjectId,
     pub endpoints: Vec<SocketAddr>,
+    /// The backbone interface a line is probed on; `None` = the default route.
+    pub via: Option<String>,
 }
 
 /// One endpoint's measurement: `None` when no echo came back.
@@ -51,28 +60,55 @@ pub struct Outcome {
 }
 
 /// The netmap's targets as this module takes them; an endpoint that does not
-/// parse is dropped.
+/// parse is dropped. The lines (`backbone`) are kept only where `policy`, the
+/// device's own backbone opt-in, permits the endpoint, and carry its
+/// interface.
 pub fn targets_from_wire(
-    wire: &[roomler_ai_remote_control::signaling::RelayProbeTargetWire],
+    relays: &[roomler_ai_remote_control::signaling::RelayProbeTargetWire],
+    backbone: &[roomler_ai_remote_control::signaling::RelayProbeTargetWire],
+    policy: Option<&super::backbone::LocalBackbonePolicy>,
 ) -> Vec<Target> {
-    wire.iter()
-        .map(|t| Target {
+    let parse = |t: &roomler_ai_remote_control::signaling::RelayProbeTargetWire| {
+        t.endpoints
+            .iter()
+            .filter_map(|e| e.parse().ok())
+            .collect::<Vec<SocketAddr>>()
+    };
+    let own = relays.iter().map(|t| Target {
+        relay_node_id: t.relay_node_id,
+        endpoints: parse(t),
+        via: None,
+    });
+    let lines = policy.into_iter().flat_map(|p| {
+        backbone.iter().map(move |t| Target {
             relay_node_id: t.relay_node_id,
-            endpoints: t.endpoints.iter().filter_map(|e| e.parse().ok()).collect(),
+            endpoints: parse(t).into_iter().filter(|e| p.permits(*e)).collect(),
+            via: Some(p.interface.clone()),
         })
+    });
+    own.chain(lines)
         .filter(|t| !t.endpoints.is_empty())
         .collect()
 }
 
 /// The minimum echo RTT to `endpoint` over [`SAMPLES`] probes, on a socket of
-/// its own (so concurrent endpoints never share a responder budget).
-pub async fn probe_rtt(endpoint: SocketAddr) -> Option<Duration> {
+/// its own (so concurrent endpoints never share a responder budget), pinned
+/// to interface `via` when given.
+pub async fn probe_rtt(endpoint: SocketAddr, via: Option<&str>) -> Option<Duration> {
     let bind: SocketAddr = if endpoint.is_ipv4() {
         "0.0.0.0:0".parse().ok()?
     } else {
         "[::]:0".parse().ok()?
     };
-    let sock = UdpSocket::bind(bind).await.ok()?;
+    let sock = match via {
+        None => UdpSocket::bind(bind).await.ok()?,
+        Some(interface) => {
+            let std = std::net::UdpSocket::bind(bind).ok()?;
+            super::backbone::pin_interface(&socket2::SockRef::from(&std), interface).ok()?;
+            std.set_nonblocking(true).ok()?;
+            UdpSocket::from_std(std).ok()?
+        }
+    };
     let mut best: Option<Duration> = None;
     let mut buf = [0u8; 256];
     for _ in 0..SAMPLES {
@@ -111,7 +147,7 @@ pub async fn probe_all(targets: &[Target]) -> Vec<Outcome> {
             Outcome {
                 relay_node_id: t.relay_node_id,
                 endpoint,
-                rtt: probe_rtt(endpoint).await,
+                rtt: probe_rtt(endpoint, t.via.as_deref()).await,
             }
         })
     });
@@ -170,6 +206,7 @@ mod tests {
         let out = probe_all(&[Target {
             relay_node_id: id,
             endpoints: vec![relay, silent_ep],
+            via: None,
         }])
         .await;
         assert_eq!(out.len(), 2);
@@ -201,6 +238,7 @@ mod tests {
         tx.send_replace(vec![Target {
             relay_node_id: id,
             endpoints: vec![relay],
+            via: None,
         }]);
         let round = timeout(Duration::from_secs(5), res_rx.recv())
             .await
@@ -214,5 +252,48 @@ mod tests {
             .await
             .expect("the task ends with its runtime")
             .unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_line_is_probed_only_where_the_backbone_policy_permits_it() {
+        use roomler_ai_remote_control::signaling::RelayProbeTargetWire;
+        let (relay, exit) = (ObjectId::new(), ObjectId::new());
+        let own = [RelayProbeTargetWire {
+            relay_node_id: relay,
+            endpoints: vec!["203.0.113.7:3478".into()],
+        }];
+        let lines = [RelayProbeTargetWire {
+            relay_node_id: exit,
+            endpoints: vec!["10.42.2.114:3478".into(), "192.0.2.9:3478".into()],
+        }];
+        // No local opt-in: a line is never measured, least of all over the
+        // public path.
+        let none = targets_from_wire(&own, &lines, None);
+        assert_eq!(none.len(), 1);
+        assert_eq!(
+            (none[0].relay_node_id, none[0].via.as_deref()),
+            (relay, None)
+        );
+
+        let policy = super::super::backbone::LocalBackbonePolicy {
+            enabled: true,
+            interface: "eth1".into(),
+            allowed_cidrs: vec!["10.42.0.0/16".parse().unwrap()],
+            overlay_cidrs: vec!["100.64.0.0/10".parse().unwrap()],
+        };
+        let with = targets_from_wire(&own, &lines, Some(&policy));
+        assert_eq!(with.len(), 2);
+        let line = with.iter().find(|t| t.relay_node_id == exit).unwrap();
+        assert_eq!(
+            line.via.as_deref(),
+            Some("eth1"),
+            "pinned to the backbone NIC"
+        );
+        assert_eq!(
+            line.endpoints,
+            vec!["10.42.2.114:3478".parse::<SocketAddr>().unwrap()],
+            "an endpoint outside the allowed CIDRs is dropped"
+        );
     }
 }

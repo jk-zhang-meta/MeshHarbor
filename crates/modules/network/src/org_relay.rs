@@ -257,6 +257,13 @@ pub struct OrgRelayState {
     /// MeshHarbor #5 — the (relay, endpoint)s each member's last full netmap
     /// offered it to probe ([`probe_targets`]). Replaced on every join.
     probe_offers: DashMap<ObjectId, Vec<(ObjectId, String)>>,
+    /// MeshHarbor #5 step B — a relay's RTT to another relay over their
+    /// private line, keyed (ingress relay node, exit relay node): measured by
+    /// the ingress relay on its backbone interface, never the public path.
+    backbone_probes: DashMap<(ObjectId, ObjectId), Vec<ProbeRecord>>,
+    /// The (exit relay, private endpoint)s each relay's last full netmap
+    /// offered it to measure ([`backbone_probe_targets`]).
+    backbone_offers: DashMap<ObjectId, Vec<(ObjectId, String)>>,
     mode_cache: DashMap<ObjectId, (PeerRelayMode, Instant)>,
     /// MeshHarbor `auto` and #21: each agent's (`hello` binds, `closing`
     /// unbinds) and each tunnel client's (its WS binds and unbinds) live
@@ -443,9 +450,20 @@ impl OrgRelayState {
         self.probe_offers.insert(member, offers);
     }
 
+    /// Remember which lines a relay's netmap offered it to measure (#5 B).
+    pub(crate) fn offer_backbone_probes(&self, relay: ObjectId, targets: &[RelayProbeTargetWire]) {
+        let offers = targets
+            .iter()
+            .flat_map(|t| t.endpoints.iter().map(|e| (t.relay_node_id, e.clone())))
+            .collect();
+        self.backbone_offers.insert(relay, offers);
+    }
+
     /// Accept a reachability report ONLY about a relay + endpoint the server
     /// minted for that node or offered it to probe ([`probe_targets`]): a
-    /// device cannot inject claims about arbitrary targets.
+    /// device cannot inject claims about arbitrary targets. A report about a
+    /// line the node was offered ([`backbone_probe_targets`]) is filed apart:
+    /// it is that line's RTT, not the node's own path to the relay.
     pub fn record_probe(
         &self,
         reporter: ObjectId,
@@ -460,26 +478,34 @@ impl OrgRelayState {
                 leg.relay_node_id == relay_node_id && leg.endpoints.contains(&endpoint)
             })
         });
-        let offered = || {
-            self.probe_offers
+        let offered = |offers: &DashMap<ObjectId, Vec<(ObjectId, String)>>| {
+            offers
                 .get(&reporter)
                 .is_some_and(|o| o.iter().any(|(r, e)| *r == relay_node_id && *e == endpoint))
         };
-        if !minted_for_it && !offered() {
-            return false;
-        }
-        let mut v = self.probes.entry((reporter, relay_node_id)).or_default();
-        v.push(ProbeRecord {
+        let line = offered(&self.backbone_offers);
+        let own = minted_for_it || offered(&self.probe_offers);
+        let record = ProbeRecord {
             endpoint,
             reachable,
             rtt_ms,
             at: Instant::now(),
-        });
-        if v.len() > PROBES_PER_KEY {
-            let excess = v.len() - PROBES_PER_KEY;
-            v.drain(..excess);
+        };
+        let push = |map: &DashMap<(ObjectId, ObjectId), Vec<ProbeRecord>>| {
+            let mut v = map.entry((reporter, relay_node_id)).or_default();
+            v.push(record.clone());
+            if v.len() > PROBES_PER_KEY {
+                let excess = v.len() - PROBES_PER_KEY;
+                v.drain(..excess);
+            }
+        };
+        if line {
+            push(&self.backbone_probes);
         }
-        true
+        if own {
+            push(&self.probes);
+        }
+        line || own
     }
 
     fn probe_verdict(
@@ -488,26 +514,40 @@ impl OrgRelayState {
         relay_node_id: ObjectId,
         now: Instant,
     ) -> ProbeVerdict {
-        let Some(v) = self.probes.get(&(reporter, relay_node_id)) else {
-            return ProbeVerdict::Unknown;
-        };
-        let ttl = Duration::from_secs(limits::PROBE_TTL_SECS);
-        let fresh: Vec<&ProbeRecord> = v
-            .iter()
-            .filter(|p| now.duration_since(p.at) < ttl)
-            .collect();
-        if fresh.is_empty() {
-            return ProbeVerdict::Unknown;
-        }
-        let best = fresh
-            .iter()
-            .filter(|p| p.reachable)
-            .map(|p| p.rtt_ms.unwrap_or(0))
-            .min();
-        match best {
-            Some(rtt) => ProbeVerdict::Reachable(rtt),
-            None => ProbeVerdict::Unreachable,
-        }
+        verdict_of(&self.probes, reporter, relay_node_id, now)
+    }
+
+    /// The line from relay `ingress` to relay `exit`, as `ingress` measured it.
+    fn backbone_verdict(&self, ingress: ObjectId, exit: ObjectId, now: Instant) -> ProbeVerdict {
+        verdict_of(&self.backbone_probes, ingress, exit, now)
+    }
+}
+
+fn verdict_of(
+    map: &DashMap<(ObjectId, ObjectId), Vec<ProbeRecord>>,
+    reporter: ObjectId,
+    relay_node_id: ObjectId,
+    now: Instant,
+) -> ProbeVerdict {
+    let Some(v) = map.get(&(reporter, relay_node_id)) else {
+        return ProbeVerdict::Unknown;
+    };
+    let ttl = Duration::from_secs(limits::PROBE_TTL_SECS);
+    let fresh: Vec<&ProbeRecord> = v
+        .iter()
+        .filter(|p| now.duration_since(p.at) < ttl)
+        .collect();
+    if fresh.is_empty() {
+        return ProbeVerdict::Unknown;
+    }
+    let best = fresh
+        .iter()
+        .filter(|p| p.reachable)
+        .map(|p| p.rtt_ms.unwrap_or(0))
+        .min();
+    match best {
+        Some(rtt) => ProbeVerdict::Reachable(rtt),
+        None => ProbeVerdict::Unreachable,
     }
 }
 
@@ -829,6 +869,92 @@ async fn probe_targets_inner(
         out.push(RelayProbeTargetWire {
             relay_node_id: relay_id,
             endpoints: endpoints.into_iter().take(4).collect(),
+        });
+    }
+    out
+}
+
+/// MeshHarbor #5 step B — the lines `relay` may carry a pair over, offered in
+/// its full netmap so it measures each one's RTT on its backbone interface:
+/// every approved backbone edge (at most [`MAX_PROBE_TARGETS`]) whose target
+/// relay is approved and live here, at the edge's private endpoint. A relay
+/// that is not backbone-ready gets none. Only what is offered here is
+/// accepted back as a line's RTT ([`OrgRelayState::record_probe`]).
+pub(crate) async fn backbone_probe_targets(
+    state: &NetworkState,
+    relay: &OverlayNode,
+) -> Vec<RelayProbeTargetWire> {
+    let targets = backbone_probe_targets_inner(state, relay).await;
+    if let Some(id) = relay.id {
+        state.org_relay.offer_backbone_probes(id, &targets);
+    }
+    targets
+}
+
+async fn backbone_probe_targets_inner(
+    state: &NetworkState,
+    relay: &OverlayNode,
+) -> Vec<RelayProbeTargetWire> {
+    let Some(relay_id) = relay.id else {
+        return Vec::new();
+    };
+    if !state.org_relay.join_extras(relay_id).relay_backbone_ready {
+        return Vec::new();
+    }
+    let Ok(relays) = state
+        .fleet
+        .agents
+        .list_relay_approved(relay.tenant_id)
+        .await
+    else {
+        return Vec::new();
+    };
+    let Some(own) = relays.iter().find(|a| a.machine_id == relay.machine_id) else {
+        return Vec::new();
+    };
+    let Ok(network) = state.overlay_networks.get_or_create(relay.tenant_id).await else {
+        return Vec::new();
+    };
+    let mut out: Vec<RelayProbeTargetWire> = Vec::new();
+    for edge in own
+        .peer_relay_policy
+        .approved_backbone_edges
+        .iter()
+        .take(roomler_ai_remote_control::models::MAX_PEER_RELAY_BACKBONE_EDGES)
+    {
+        if out.len() >= MAX_PROBE_TARGETS {
+            break;
+        }
+        if !crate::routes::peer_relay::valid_backbone_endpoint(&edge.endpoint)
+            || !crate::routes::peer_relay::backbone_endpoint_outside_overlay(
+                &edge.endpoint,
+                &network.cidr,
+            )
+        {
+            continue;
+        }
+        let Ok(target) = ObjectId::parse_str(&edge.relay_agent_id) else {
+            continue;
+        };
+        let Some(exit) = relays.iter().find(|a| a.id == Some(target)) else {
+            continue;
+        };
+        let Ok(Some(exit_node)) = state
+            .overlay_nodes
+            .find_live_by_tenant_and_machine(relay.tenant_id, &exit.machine_id)
+            .await
+        else {
+            continue;
+        };
+        let Some(exit_id) = exit_node.id else {
+            continue;
+        };
+        if exit_id == relay_id || out.iter().any(|t| t.relay_node_id == exit_id) {
+            continue;
+        }
+        out.push(RelayProbeTargetWire {
+            relay_node_id: exit_id,
+            endpoints: vec![edge.endpoint.clone()],
         });
     }
     out
@@ -1458,6 +1584,8 @@ async fn plan_line(
     }
     let side_a = plan_mint_candidates_reusing(state, requester, peer, None, ZoneScope::Side(za)).await;
     let side_b = plan_mint_candidates_reusing(state, requester, peer, None, ZoneScope::Side(zb)).await;
+    // #5 step B: every usable line, ranked by the path a packet rides.
+    let mut found: Vec<LinePlan> = Vec::new();
     for (ingresses, exits, flipped) in [(&side_a, &side_b, false), (&side_b, &side_a, true)] {
         let (Ok(ingresses), Ok(exits)) = (ingresses, exits) else {
             continue;
@@ -1483,7 +1611,7 @@ async fn plan_line(
                 }
                 let Ok(target) = ObjectId::parse_str(&edge.relay_agent_id) else { continue };
                 if let Some(exit) = exits.iter().find(|p| p.relay_agent_id == target) {
-                    return Ok(LinePlan {
+                    found.push(LinePlan {
                         ingress: ingress.clone(),
                         exit: exit.clone(),
                         private_endpoint: edge.endpoint.clone(),
@@ -1493,12 +1621,70 @@ async fn plan_line(
             }
         }
     }
+    let now = Instant::now();
+    if let Some(best) = found
+        .into_iter()
+        .enumerate()
+        .min_by_key(|(i, plan)| (line_rank_key(state, a, b, plan, now), *i))
+        .map(|(_, plan)| plan)
+    {
+        return Ok(best);
+    }
     // A side's own refusal names its gate; two usable sides with no line
     // between them are what the zone rule refuses.
     match (side_a, side_b) {
         (Err(e), _) | (_, Err(e)) => Err(e),
         _ => Err(D::ZoneDenied),
     }
+}
+
+/// A line's rank for the pair `requester`–`peer` (#5 step B), over the three
+/// legs a packet rides: the member in the ingress relay's zone to that relay,
+/// the line itself (as the ingress relay measured it on its backbone
+/// interface), and the exit relay to the other member. Class 0 when all three
+/// were measured reachable, 1 when one is unmeasured, 2 when one was measured
+/// unreachable (last, not excluded: a stale negative must not strand a pair
+/// whose only line it is); then the summed RTT, then both relays' load.
+fn line_rank_key(
+    state: &NetworkState,
+    requester: ObjectId,
+    peer: ObjectId,
+    plan: &LinePlan,
+    now: Instant,
+) -> (u8, u32, usize) {
+    let (Some(ingress), Some(exit)) = (plan.ingress.relay.id, plan.exit.relay.id) else {
+        return (2, u32::MAX, usize::MAX);
+    };
+    let (near, far) = if plan.flipped {
+        (peer, requester)
+    } else {
+        (requester, peer)
+    };
+    let o = &state.org_relay;
+    let legs = [
+        o.probe_verdict(near, ingress, now),
+        o.backbone_verdict(ingress, exit, now),
+        o.probe_verdict(far, exit, now),
+    ];
+    let class = if legs.contains(&ProbeVerdict::Unreachable) {
+        2
+    } else if legs.contains(&ProbeVerdict::Unknown) {
+        1
+    } else {
+        0
+    };
+    let rtt = legs
+        .iter()
+        .map(|v| match v {
+            ProbeVerdict::Reachable(r) => *r,
+            _ => 0,
+        })
+        .fold(0u32, u32::saturating_add);
+    (
+        class,
+        rtt,
+        o.sessions_on_relay(ingress) + o.sessions_on_relay(exit),
+    )
 }
 
 /// `relay_request` / fallback for a pair only a line may carry: re-push the

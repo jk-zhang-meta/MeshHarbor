@@ -835,6 +835,8 @@ async fn handle_overlay_join(
                 // STUN Binding). Empty when TURN is unconfigured → srflx inert.
                 stun_urls: stun_urls_from_turn(state),
                 relay_probe_targets: crate::org_relay::probe_targets(state, &self_node).await,
+                backbone_probe_targets: crate::org_relay::backbone_probe_targets(state, &self_node)
+                    .await,
             },
             peers,
             epoch,

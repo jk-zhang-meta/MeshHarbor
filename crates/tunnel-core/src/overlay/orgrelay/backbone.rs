@@ -111,7 +111,7 @@ fn valid_interface(name: &str) -> bool {
 }
 
 #[cfg(target_os = "linux")]
-fn pin_interface(socket: &socket2::SockRef<'_>, name: &str) -> io::Result<()> {
+pub(crate) fn pin_interface(socket: &socket2::SockRef<'_>, name: &str) -> io::Result<()> {
     if !valid_interface(name) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -128,7 +128,7 @@ fn pin_interface(socket: &socket2::SockRef<'_>, name: &str) -> io::Result<()> {
     Ok(())
 }
 #[cfg(not(target_os = "linux"))]
-fn pin_interface(_socket: &socket2::SockRef<'_>, _name: &str) -> io::Result<()> {
+pub(crate) fn pin_interface(_socket: &socket2::SockRef<'_>, _name: &str) -> io::Result<()> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "native backbone bridging currently requires Linux interface pinning",

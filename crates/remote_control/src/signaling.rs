@@ -5959,6 +5959,15 @@ pub struct OverlayNetworkInfo {
     /// minted. Empty from an older server, or when nothing may serve the node.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub relay_probe_targets: Vec<RelayProbeTargetWire>,
+    /// MeshHarbor #5 step B — for a backbone-ready relay: the lines it may
+    /// carry a pair over, each the exit relay and that edge's PRIVATE
+    /// endpoint, measured on the backbone interface only (never the default
+    /// route) and reported as ordinary relay-probe rows. The center files
+    /// those apart as the line's RTT and ranks a cross-border pair's lines by
+    /// it. A separate field so an older relay, which ignores it, never
+    /// measures a private endpoint over its public path.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub backbone_probe_targets: Vec<RelayProbeTargetWire>,
 }
 
 /// One relay [`OverlayNetworkInfo::relay_probe_targets`] names: what to probe,
@@ -10504,6 +10513,7 @@ mod tests {
             self_name: None,
             stun_urls: vec![],
             relay_probe_targets: vec![],
+            backbone_probe_targets: vec![],
         };
         let s = serde_json::to_string(&net).unwrap();
         let back: OverlayNetworkInfo = serde_json::from_str(&s).unwrap();
@@ -10566,6 +10576,7 @@ mod tests {
                 self_name: None,
                 stun_urls: vec![],
                 relay_probe_targets: vec![],
+                backbone_probe_targets: vec![],
             },
             peers: vec![],
             epoch: 7,
@@ -11397,6 +11408,7 @@ mod tests {
                 self_name: None,
                 stun_urls: vec!["stun:5.9.157.221:3478".into()],
                 relay_probe_targets: vec![],
+                backbone_probe_targets: vec![],
             },
             peers: vec![NetmapPeer {
                 node_id,

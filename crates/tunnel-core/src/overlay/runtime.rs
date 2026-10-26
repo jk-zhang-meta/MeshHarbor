@@ -3140,8 +3140,15 @@ impl OverlayRuntime {
         // MeshHarbor #5 — our RTT to every relay the netmap offers, measured
         // off-loop and reported below so the center's first mint for a pair
         // already ranks relays by latency.
+        // #5 step B — the device's own backbone opt-in decides which offered
+        // lines it may measure, and on which interface.
+        let backbone_policy = super::orgrelay::backbone::configured_local_policy();
         let (probe_targets_tx, probe_targets_rx) = watch::channel(
-            super::orgrelay::prober::targets_from_wire(&network.relay_probe_targets),
+            super::orgrelay::prober::targets_from_wire(
+                &network.relay_probe_targets,
+                &network.backbone_probe_targets,
+                backbone_policy.as_ref(),
+            ),
         );
         let (probe_res_tx, mut probe_res_rx) =
             mpsc::channel::<Vec<super::orgrelay::prober::Outcome>>(4);
@@ -4534,6 +4541,8 @@ impl OverlayRuntime {
                         server_org_loss = new_network.org_relay_loss_v1;
                         probe_targets_tx.send_replace(super::orgrelay::prober::targets_from_wire(
                             &new_network.relay_probe_targets,
+                            &new_network.backbone_probe_targets,
+                            backbone_policy.as_ref(),
                         ));
                         org_discovery.invalidate(); // authoritative membership / key / ACL reconciliation
                         let old_peers = std::mem::take(&mut current_peers);
@@ -8560,6 +8569,7 @@ mod tests {
             self_name: None,
             stun_urls: vec![],
             relay_probe_targets: vec![],
+            backbone_probe_targets: vec![],
         }
     }
     pub(super) fn peer(kp: &WgKeypair, ip: &str) -> NetmapPeer {
