@@ -311,12 +311,8 @@ impl AgentSocketLifecycle for NetworkAgentSocket {
             .bind_live_conn(ctx.agent_id, &ctx.conn_id)
             .is_some()
         {
-            crate::org_relay::revoke_implicit_for_agent(
-                &self.state,
-                ctx.agent_id,
-                "connection_displaced",
-            )
-            .await;
+            crate::org_relay::connection_ended(&self.state, ctx.agent_id, "connection_displaced")
+                .await;
         }
     }
 
@@ -373,12 +369,8 @@ impl AgentSocketLifecycle for NetworkAgentSocket {
             .org_relay
             .unbind_live_conn(ctx.agent_id, &ctx.conn_id)
         {
-            crate::org_relay::revoke_implicit_for_agent(
-                &self.state,
-                ctx.agent_id,
-                "connection_closed",
-            )
-            .await;
+            crate::org_relay::connection_ended(&self.state, ctx.agent_id, "connection_closed")
+                .await;
         }
         if let Some((_, conn)) = self.conns.remove(&ctx.conn_id) {
             let conn = match Arc::try_unwrap(conn) {

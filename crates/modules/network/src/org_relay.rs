@@ -582,12 +582,21 @@ pub(crate) fn agent_zone(state: &NetworkState, agent: &Agent) -> Option<Business
 /// here, or no zone) refuses wherever a zone gates anything — the auto relay
 /// gate here, and the #21 isolation in netmap shaping.
 pub(crate) async fn node_zone(state: &NetworkState, node: &OverlayNode) -> Option<BusinessZone> {
-    match &node.node_ref {
+    party_zone(state, node.tenant_id, &node.node_ref).await
+}
+
+/// [`node_zone`] for a session party, known by its tenant and reference.
+async fn party_zone(
+    state: &NetworkState,
+    tenant_id: ObjectId,
+    node_ref: &NodeRef,
+) -> Option<BusinessZone> {
+    match node_ref {
         NodeRef::Agent { agent_id } => {
             let agent = state
                 .fleet
                 .agents
-                .find_live_in_tenant(node.tenant_id, *agent_id)
+                .find_live_in_tenant(tenant_id, *agent_id)
                 .await
                 .ok()?;
             agent_zone(state, &agent)
@@ -595,7 +604,7 @@ pub(crate) async fn node_zone(state: &NetworkState, node: &OverlayNode) -> Optio
         NodeRef::TunnelClient { tunnel_client_id } => {
             let client = state
                 .tunnel_clients
-                .find_live_in_tenant(node.tenant_id, *tunnel_client_id)
+                .find_live_in_tenant(tenant_id, *tunnel_client_id)
                 .await
                 .ok()?;
             let conn = state.org_relay.live_conn(*tunnel_client_id)?;
@@ -2253,18 +2262,64 @@ pub async fn revoke_relay_agent(
     .await
 }
 
+/// How long a cross-border line outlives one party's closed or displaced
+/// control connection. A line carries its traffic without the control plane,
+/// so a reconnect inside the grace, or a center restart, keeps it; once the
+/// grace has passed the parties' zones are read again ([`line_zones_fit`]).
+pub const LINE_RECONNECT_GRACE: Duration = Duration::from_secs(20);
+
 /// MeshHarbor `auto` and #21: an implicit session and a cross-border line
-/// rest on the zone each party's live connection was observed in, so that
-/// connection closing or being displaced ends them.
-pub async fn revoke_implicit_for_agent(
-    state: &NetworkState,
-    agent_id: ObjectId,
-    reason: &str,
-) -> usize {
-    revoke_where(state, reason, |s| {
-        (s.implicit || s.line.is_some()) && s.involves_agent(agent_id)
-    })
-    .await
+/// rest on the zone each party's live connection was observed in. That
+/// connection closing or being displaced ends an implicit session at once,
+/// and a line after [`LINE_RECONNECT_GRACE`] unless every party is connected
+/// again in a zone that still fits it (field, 2026-10-26: revoking at once
+/// tore a line down on one relay only while a restarting center closed its
+/// connections, and the members kept the dead half).
+pub async fn connection_ended(state: &NetworkState, agent_id: ObjectId, reason: &'static str) {
+    revoke_where(state, reason, |s| s.implicit && s.involves_agent(agent_id)).await;
+    let state = state.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(LINE_RECONNECT_GRACE).await;
+        recheck_lines(&state, agent_id, reason).await;
+    });
+}
+
+/// End `agent_id`'s lines whose parties' zones no longer fit them.
+async fn recheck_lines(state: &NetworkState, agent_id: ObjectId, reason: &str) {
+    let lines: Vec<OrgRelaySession> = state
+        .org_relay
+        .sessions
+        .iter()
+        .filter(|e| e.line.is_some() && e.involves_agent(agent_id))
+        .map(|e| e.value().clone())
+        .collect();
+    for s in lines {
+        if line_zones_fit(state, &s).await {
+            continue;
+        }
+        revoke_where(state, reason, |c| {
+            c.pair_key == s.pair_key && c.vni == s.vni && c.generation == s.generation
+        })
+        .await;
+    }
+}
+
+/// Every party of line `s` is connected here, `members[0]` in the ingress
+/// relay's zone, `members[1]` in the exit relay's, and the two zones differ.
+async fn line_zones_fit(state: &NetworkState, s: &OrgRelaySession) -> bool {
+    let Some(line) = s.line.as_ref() else {
+        return false;
+    };
+    let zone = |r| party_zone(state, s.tenant_id, r);
+    let (Some(m0), Some(m1), Some(r0), Some(r1)) = (
+        zone(&s.members[0].party.node_ref).await,
+        zone(&s.members[1].party.node_ref).await,
+        zone(&s.relay.node_ref).await,
+        zone(&line.relay.node_ref).await,
+    ) else {
+        return false;
+    };
+    m0 == r0 && m1 == r1 && m0 != m1
 }
 
 /// Trigger 4 — a party (member or relay) was removed from the overlay.

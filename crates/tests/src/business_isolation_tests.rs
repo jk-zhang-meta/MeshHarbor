@@ -224,6 +224,8 @@ struct LineRig {
     hk_node: String,
     gz_agent: String,
     hk_agent: String,
+    /// `us`'s agent token, to reconnect it.
+    us_tok: String,
 }
 
 async fn line_join(ws: &mut Ws, seed: u8, endpoint: &str, extra: Value) -> Value {
@@ -267,7 +269,9 @@ impl LineRig {
         let (gz_agent, mut gz) = relay(format!("{slug}-gz"), CN_R).await;
         let (hk_agent, mut hk) = relay(format!("{slug}-hk"), US_R).await;
         let mut cn = rig.device(&format!("{slug}-cn"), Some(CN_A)).await;
-        let mut us = rig.device(&format!("{slug}-us"), Some(US_A)).await;
+        let (us_agent, us_tok) = enroll(&rig.app, &rig.seeded, &format!("{slug}-us")).await;
+        let mut us = connect_from(&rig.app, &us_tok, &[], Some(US_A)).await;
+        assert_observed(&rig.app, &us_agent, Some(US_A)).await;
         line_join(&mut gz, 3, "223.6.6.6:41641", json!({ "relay_backbone_ready": true })).await;
         line_join(&mut hk, 4, "1.1.1.1:41641", json!({})).await;
         let flag = json!({ "supports_backbone_only_v1": true });
@@ -293,6 +297,7 @@ impl LineRig {
             hk_node,
             gz_agent,
             hk_agent,
+            us_tok,
         };
         line.set_edge(cross_border).await;
         line
@@ -497,4 +502,45 @@ async fn a_line_ends_with_its_edge_and_with_either_relay() {
     assert_eq!(us["relay_node_id"], json!(l.hk_node));
     assert_eq!(approve(&l.rig.app, &l.rig.seeded, &l.hk_agent, false).await, 200);
     l.expect_line_revoked(&cn["vni"], &us["vni"]).await;
+}
+
+/// A line outlives a party's displaced control connection for
+/// `LINE_RECONNECT_GRACE`, since it carries traffic without the control
+/// plane: a member that reconnects from its own zone keeps the line, and one
+/// that reconnects from the other zone loses it once the grace has passed.
+/// (A member that goes offline loses it at once, as `device_left`.) Field,
+/// 2026-10-26: revoking at every closed connection tore a line down on one
+/// relay only while a restarting center closed its connections.
+#[tokio::test]
+async fn a_line_outlives_a_reconnect_from_its_zone_only() {
+    use roomler_ai_mod_network::org_relay::LINE_RECONNECT_GRACE;
+    let mut l = LineRig::up("iso-line-reconnect", true).await;
+    relay_request(&mut l.cn, &l.us_node).await;
+    let (_, _, _, cn, us) = l.expect_line().await;
+    let flag = json!({ "supports_backbone_only_v1": true });
+
+    let mut again = connect_from(&l.rig.app, &l.us_tok, &[], Some(US_B)).await;
+    line_join(&mut again, 2, "8.8.8.8:41641", flag.clone()).await;
+    let past = LINE_RECONNECT_GRACE + Duration::from_secs(3);
+    assert!(
+        recv_t(&mut l.hk, "rc:overlay.relay_revoke", past)
+            .await
+            .is_none(),
+        "a reconnect from the same zone keeps the line"
+    );
+
+    let mut moved = connect_from(&l.rig.app, &l.us_tok, &[], Some(CN_A)).await;
+    line_join(&mut moved, 2, "8.8.8.8:41641", flag).await;
+    let wait = LINE_RECONNECT_GRACE + Duration::from_secs(5);
+    for (name, ws, vni) in [
+        ("hk", &mut l.hk, &us["vni"]),
+        ("gz", &mut l.gz, &cn["vni"]),
+        ("cn", &mut l.cn, &cn["vni"]),
+    ] {
+        let v = recv_t(ws, "rc:overlay.relay_revoke", wait)
+            .await
+            .unwrap_or_else(|| panic!("{name}: a member that moved zones ends the line"));
+        assert_eq!(&v["vni"], vni, "{name}: its own leg's VNI");
+    }
+    drop((again, moved));
 }

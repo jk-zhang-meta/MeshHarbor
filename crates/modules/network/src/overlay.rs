@@ -854,7 +854,7 @@ async fn handle_overlay_join(
         let (upserts, removes) =
             match shape_peer(&acl, &peer_src, &self_node, joiner_ingress, true, zones) {
                 Some(mut u) => {
-                    u.relay_strategy = verdict;
+                    stamp_verdict(&mut u, verdict);
                     (vec![u], vec![])
                 }
                 None => (vec![], vec![self_node.id.unwrap_or_default()]),
@@ -2187,7 +2187,7 @@ async fn fan_upsert_shaped(state: &NetworkState, node: &OverlayNode, epoch: u64,
         let (upserts, removes) =
             match shape_peer(&acl, &src, node, node_src.as_ref(), reachable, zones) {
                 Some(mut u) => {
-                    u.relay_strategy = verdict;
+                    stamp_verdict(&mut u, verdict);
                     (vec![u], vec![])
                 }
                 None => (vec![], vec![node.id.unwrap_or_default()]),
@@ -2224,7 +2224,7 @@ async fn fan_upsert_shaped(state: &NetworkState, node: &OverlayNode, epoch: u64,
                 is_reachable(&peer_reach, peer),
                 back,
             ) {
-                r.relay_strategy = rev_verdict;
+                stamp_verdict(&mut r, rev_verdict);
                 reverse_rows.push(r);
             }
         }
@@ -2289,7 +2289,7 @@ async fn fan_pair_verdicts(state: &NetworkState, a: &OverlayNode, b: &OverlayNod
             },
         )
     {
-        row.relay_strategy = server_relay_verdict(state, a, b);
+        stamp_verdict(&mut row, server_relay_verdict(state, a, b));
         send_to_node(
             state,
             a,
@@ -2316,7 +2316,7 @@ async fn fan_pair_verdicts(state: &NetworkState, a: &OverlayNode, b: &OverlayNod
             },
         )
     {
-        row.relay_strategy = server_relay_verdict(state, b, a);
+        stamp_verdict(&mut row, server_relay_verdict(state, b, a));
         send_to_node(
             state,
             b,
@@ -3012,7 +3012,7 @@ pub async fn shape_full_netmap(
             zones,
         ) {
             // U2 — the recipient's full-netmap edge is `self_node → n`.
-            p.relay_strategy = server_relay_verdict(state, self_node, n);
+            stamp_verdict(&mut p, server_relay_verdict(state, self_node, n));
             peers.push(p);
         }
     }
@@ -3040,6 +3040,16 @@ fn shape_peer(
         return shape_peer_zoned(acl, src, peer, peer_src, reachable, Zones::OFF).map(line_only);
     }
     shape_peer_zoned(acl, src, peer, peer_src, reachable, zones)
+}
+
+/// Stamp the server's relay verdict (U2) onto a shaped row. A line peer
+/// rides its line alone, so it is never told a tier (field, 2026-10-26: a
+/// D0 re-stamp told a member DERP toward its line peer; `/derp` dropped the
+/// frames, but the member wasted its first carrier on it).
+fn stamp_verdict(p: &mut NetmapPeer, verdict: Option<RelayStrategyWire>) {
+    if !p.backbone_only {
+        p.relay_strategy = verdict;
+    }
 }
 
 /// A peer as a recipient may reach it only over a cross-border line.
@@ -3676,6 +3686,19 @@ mod tests {
             shape_peer(&acl, &src, &router, None, true, Zones::OFF).is_none(),
             "an approval the device no longer offers grants nothing"
         );
+    }
+
+    /// A line peer is never told a relay tier: every stamping site goes
+    /// through `stamp_verdict`, which leaves the line's cleared verdict alone.
+    #[test]
+    fn a_line_peer_is_never_stamped_a_relay_tier() {
+        let n = node("member", "100.64.0.15");
+        let mut plain = to_netmap_peer(&n, true);
+        stamp_verdict(&mut plain, Some(RelayStrategyWire::Derp));
+        assert_eq!(plain.relay_strategy, Some(RelayStrategyWire::Derp));
+        let mut line = line_only(to_netmap_peer(&n, true));
+        stamp_verdict(&mut line, Some(RelayStrategyWire::Derp));
+        assert_eq!(line.relay_strategy, None);
     }
 
     /// Guards the join path against regressing to a blanket `true`: presence

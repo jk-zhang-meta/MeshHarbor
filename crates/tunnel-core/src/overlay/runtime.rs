@@ -606,6 +606,19 @@ async fn request_org_fallbacks(
         }
         candidates.push(*id);
     }
+    // #21 — DERP never carries a line peer, so one with no carrier at all
+    // asks for its line here (the fallback's own gap paces it).
+    candidates.extend(
+        peers
+            .iter()
+            .filter(|(id, p)| {
+                p.backbone_only
+                    && p.supports_org_relay
+                    && p.reachable
+                    && !installed.contains_key(id)
+            })
+            .map(|(id, _)| *id),
+    );
     relay.request_org_fallback_batch(candidates, now).await
 }
 
@@ -10340,6 +10353,35 @@ mod org_fallback_tests {
             assert!(rx.try_recv().is_err(), "unsafe request at gate {gate}");
         }
     }
+    #[tokio::test]
+    async fn org_fallback_runtime_asks_for_the_line_of_a_line_peer_with_no_carrier() {
+        let (id, mut installed, mut peers, _discovery, mut relay, mut rx, now) = fixture().await;
+        installed.remove(&id);
+        request_org_fallbacks(true, &installed, &peers, &mut relay, now).await;
+        assert!(
+            rx.try_recv().is_err(),
+            "an ordinary peer with no carrier belongs to the establish ladder"
+        );
+        peers.get_mut(&id).unwrap().backbone_only = true;
+        request_org_fallbacks(true, &installed, &peers, &mut relay, now).await;
+        assert!(
+            matches!(rx.try_recv(), Ok(ClientMsg::OverlayOrgRelayFallbackRequest { peer_node_id, .. }) if peer_node_id == id),
+            "DERP never carries a line peer, so one with no carrier asks for its line"
+        );
+        request_org_fallbacks(
+            true,
+            &installed,
+            &peers,
+            &mut relay,
+            now + Duration::from_secs(1),
+        )
+        .await;
+        assert!(
+            rx.try_recv().is_err(),
+            "the fallback's own gap paces the line request"
+        );
+    }
+
     #[tokio::test]
     async fn org_fallback_runtime_quality_cooldown_does_not_block_real_carrier_loss() {
         let (id, installed, peers, mut discovery, mut relay, mut rx, now) = fixture().await;

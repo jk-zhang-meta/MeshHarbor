@@ -1007,7 +1007,15 @@ impl OverlayRuntime {
                 // + the typed reason, so the server's churn escalation can
                 // log/act on WHAT died instead of inferring from timing.
                 coord.note_refresh_context(nid, e.relay_kind, reason.as_str());
-                coord.request(nid, cfg).await;
+                // #21 — a line peer has no other carrier, and its cached
+                // session is the dead one (re-binding it is a no-op while its
+                // conn is held): ask the server for the line again, which
+                // re-mints one past its bind window.
+                let line = cfg.backbone_only
+                    && e.relay_kind == Some(crate::overlay::relay_link::RelayKind::Org);
+                if !(line && coord.request_org_fallback(nid, now).await) {
+                    coord.request(nid, cfg).await;
+                }
             }
         }
         // P3 PR-A — the 10-min shadow summary rides the 5 s sweep cadence.
