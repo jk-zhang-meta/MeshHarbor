@@ -429,7 +429,9 @@ node ↔ relay-host leg, where the org relay leaves recovery to the end-to-end T
 
 Now each member measures the stream its peer sends over the session, from the WireGuard
 transport counters it already authenticates (`PeerStats::note_rx_counter`, `wg.rs`).
-Every closed ~30 s window that lost at least 1% is reported, and the **server** decides.
+Every closed window that lost at least 1% is reported, and the **server** decides. A
+window closes after ~30 s once it holds 1000 packets; a light stream keeps it open until
+it does, up to 10 minutes (`MAX_WINDOW_SWEEPS`), so ~5 packets/s is judged in ~3.3 min.
 It first marks that relay lossy **for that pair** for 10 minutes (`mark_lossy`; other
 pairs keep the relay) and revokes the session, audited `org_relay_lossy`. If the planner
 still finds a relay for the pair (granted, live, in its zone), the pair is minted there
@@ -461,6 +463,12 @@ sequenceDiagram
   `maybe_mint_fallback` and `mint_plan` refuse the pair, and is cleared by a member that
   reports its `/derp` mux failed. A loss pin is 10 minutes (`ORG_LOSS_PIN_TTL`); it
   never shortens a longer churn pin.
+- **Only a died TURN carrier counts toward the churn pin.** A relay request that names
+  the ORG carrier it replaces (`current_kind = "org"`) counts no cycle: the server ended
+  that session itself or its relay left, and this section already judged it. A node
+  that rejoins under a new process `instance` (a restart, not a reconnect) has its
+  pairs' armed grants and counted cycles forgotten, keeping any standing pin. Field
+  2026-10-27: both had pinned pairs to DERP for 30 min with no TURN carrier dying.
 - **One member's report is enough.** Its inbound is the peer's direction, and one
   crippled direction cripples the pair's TCP both ways, through its ACKs. A member can
   fail only its own pair's org-relay tier, which it could already do by dropping

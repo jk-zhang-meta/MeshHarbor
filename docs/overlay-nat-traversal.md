@@ -395,7 +395,12 @@ cascade's guarantees while replacing its reactive counters:
   relay carried every packet, so a healed path is retried about once a minute
   however long the outage ran (only a carrier that died climbs to 900 s;
   field 2026-10-27, a 10 min block had left the healed direct path untried
-  for ~12 min). A tier is
+  for ~12 min). And a relayed peer's public or srflx candidate that answers
+  disco again after two or more silent rounds lifts that tier's penalty at
+  once and walks that tick (`Prober::take_revived`, `on_path_revived`), so the
+  probe follows the heal within one 5 s round; only a silence-to-answer edge
+  counts, so a box that drops WireGuard but passes disco cannot make it probe
+  every round. A tier is
   probe-eligible iff `B − P ≥ B_relay`, and because penalties always decay to
   zero, **every tier retries eventually — lockout is impossible by
   construction**. Penalties are keyed per-(peer, tier), so CC1 — a routinely
