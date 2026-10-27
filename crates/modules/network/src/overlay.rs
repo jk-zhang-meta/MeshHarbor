@@ -1802,7 +1802,7 @@ async fn handle_org_relay_loss(
     }
     // #21 — a cross-border pair has no other carrier to move to: DERP, TURN
     // and a one-hop relay are refused across the line by rule.
-    if session.line.is_some() {
+    if !session.hops.is_empty() {
         tracing::info!(reporter = %reporter_id, peer = %peer_node_id, vni, packets, %loss_pct,
             "overlay relay: cross-border line lossy, kept: nothing else may carry the pair");
         return;
