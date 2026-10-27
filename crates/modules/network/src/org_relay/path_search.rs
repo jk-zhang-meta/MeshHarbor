@@ -32,27 +32,52 @@ pub(super) struct SearchPath {
     pub class: u8,
     pub rtt: u128,
     pub load: u128,
+    pub unknown_legs: u128,
+    pub unreachable_legs: u128,
 }
 
 #[derive(Debug, PartialEq, Eq)]
 pub(super) struct InvalidGraph;
 
-/// Search without a fixed hop limit. Every relay and edge passed here must
-/// already satisfy the caller's authorization and zone rules. An invalid edge
-/// rejects the whole graph instead of silently changing the candidate set.
+/// Search without a fixed hop limit over relays and edges authorized by the
+/// caller. Invalid edge indexes reject the whole graph.
 ///
-/// A single lexicographic Dijkstra label for `(worst class, RTT)` is unsound:
-/// a later unknown/unreachable leg can equalize different prefix classes.
-/// Instead search separately for each allowed class, first reachable then
-/// unknown then unreachable. Within one class bound all costs are nonnegative,
-/// so ordinary Dijkstra is valid. Hops break equal-cost ties and rule out cycles.
-/// Sums use u128 rather than saturating u32/usize: saturation can equalize
-/// prefixes later and invalidate the single-label property. Integration must
-/// reconcile this exact scoring with the legacy u32-saturating rank policy.
+/// Paths first minimize the worst leg class. With all legs measured reachable,
+/// prefer RTT, load, then relay count. If any leg is unknown or unreachable,
+/// prefer fewer unreachable legs, then fewer relays, fewer unknown legs,
+/// known RTT, and load. This conservatively avoids rewarding longer paths for
+/// unmeasured/down links having zero measured RTT. Legacy production ranking
+/// differs; this staged policy must not be enabled until integration review.
+///
+/// Class thresholds are searched separately: a later worse leg can equalize
+/// prefix classes. Inside a threshold every cost component adds non-negative
+/// exact amounts, so Dijkstra's single-label ordering is valid. Relay count
+/// strictly increases along edges, ruling out cycles. Wide sums avoid saturation
+/// equalizing prefix scores and invalidating the ordering.
 pub(super) fn shortest(
     relays: &[SearchRelay],
     edges: &[SearchEdge],
 ) -> Result<Option<SearchPath>, InvalidGraph> {
+    type Cost = (u128, u128, u128, u128, u128);
+    fn step(threshold: u8, verdict: ProbeVerdict, relay_load: Option<usize>) -> Cost {
+        let (class, rtt) = rank_legs([verdict]);
+        let hops = u128::from(relay_load.is_some());
+        let load = relay_load.unwrap_or_default() as u128;
+        if threshold == 0 {
+            (u128::from(rtt), load, hops, 0, 0)
+        } else {
+            (
+                u128::from(class == 2),
+                hops,
+                u128::from(class == 1),
+                u128::from(rtt),
+                load,
+            )
+        }
+    }
+    fn add(a: Cost, b: Cost) -> Cost {
+        (a.0 + b.0, a.1 + b.1, a.2 + b.2, a.3 + b.3, a.4 + b.4)
+    }
     let mut adjacency = vec![Vec::new(); relays.len()];
     for (index, edge) in edges.iter().enumerate() {
         if edge.from >= relays.len() || edge.to >= relays.len() {
@@ -60,8 +85,6 @@ pub(super) fn shortest(
         }
         adjacency[edge.from].push(index);
     }
-    // Cost: total known RTT, total relay load, number of relays.
-    type Cost = (u128, u128, usize);
     for threshold in 0..=2 {
         let mut costs: Vec<Option<Cost>> = vec![None; relays.len()];
         let mut previous: Vec<Option<(usize, usize)>> = vec![None; relays.len()];
@@ -70,9 +93,8 @@ pub(super) fn shortest(
             let Some(verdict) = relay.ingress else {
                 continue;
             };
-            let (class, rtt) = rank_legs([verdict]);
-            if class <= threshold {
-                let cost = (u128::from(rtt), relay.load as u128, 1);
+            if rank_legs([verdict]).0 <= threshold {
+                let cost = step(threshold, verdict, Some(relay.load));
                 costs[i] = Some(cost);
                 queue.push(Reverse((cost, i)));
             }
@@ -82,25 +104,22 @@ pub(super) fn shortest(
             if costs[node] != Some(cost) {
                 continue;
             }
-            if let Some(verdict) = relays[node].exit {
-                let (class, rtt) = rank_legs([verdict]);
-                if class <= threshold {
-                    let candidate = ((cost.0 + u128::from(rtt), cost.1, cost.2), node);
-                    if best.is_none_or(|current| candidate < current) {
-                        best = Some(candidate);
-                    }
+            if let Some(verdict) = relays[node].exit
+                && rank_legs([verdict]).0 <= threshold
+            {
+                let candidate = (add(cost, step(threshold, verdict, None)), node);
+                if best.is_none_or(|current| candidate < current) {
+                    best = Some(candidate);
                 }
             }
             for &edge_index in &adjacency[node] {
                 let edge = &edges[edge_index];
-                let (class, rtt) = rank_legs([edge.verdict]);
-                if class > threshold {
+                if rank_legs([edge.verdict]).0 > threshold {
                     continue;
                 }
-                let next = (
-                    cost.0 + u128::from(rtt),
-                    cost.1 + relays[edge.to].load as u128,
-                    cost.2.saturating_add(1),
+                let next = add(
+                    cost,
+                    step(threshold, edge.verdict, Some(relays[edge.to].load)),
                 );
                 if costs[edge.to].is_none_or(|old| next < old) {
                     costs[edge.to] = Some(next);
@@ -109,7 +128,7 @@ pub(super) fn shortest(
                 }
             }
         }
-        if let Some(((rtt, load, _), mut node)) = best {
+        if let Some((cost, mut node)) = best {
             let mut path = vec![node];
             let mut used_edges = Vec::new();
             while let Some((prev, edge_index)) = previous[node] {
@@ -119,12 +138,19 @@ pub(super) fn shortest(
             }
             path.reverse();
             used_edges.reverse();
+            let (rtt, load, unknown_legs, unreachable_legs) = if threshold == 0 {
+                (cost.0, cost.1, 0, 0)
+            } else {
+                (cost.3, cost.4, cost.2, cost.0)
+            };
             return Ok(Some(SearchPath {
                 relays: path,
                 edges: used_edges,
                 class: threshold,
                 rtt,
                 load,
+                unknown_legs,
+                unreachable_legs,
             }));
         }
     }
@@ -152,16 +178,38 @@ mod tests {
     }
 
     #[test]
-    fn later_unknown_equalizes_prefix_classes_without_losing_the_best_path() {
+    fn later_unknown_equalizes_prefix_classes_without_losing_shorter_path() {
         let nodes = [
             relay(Some(R(100)), None, 0),
             relay(Some(U), None, 0),
+            relay(None, None, 0),
             relay(None, Some(U), 0),
         ];
-        let edges = [edge(0, 2, R(0)), edge(1, 2, R(0))];
+        let edges = [edge(0, 2, R(0)), edge(2, 3, R(0)), edge(1, 3, R(0))];
         let result = shortest(&nodes, &edges).unwrap().unwrap();
-        assert_eq!(result.relays, [1, 2]);
+        assert_eq!(result.relays, [1, 3]);
         assert_eq!((result.class, result.rtt), (1, 0));
+    }
+
+    #[test]
+    fn uncertain_paths_prefer_fewer_failures_then_hops() {
+        let nodes = [
+            relay(Some(U), Some(U), 100),
+            relay(Some(U), None, 0),
+            relay(None, None, 0),
+            relay(None, Some(U), 0),
+        ];
+        let edges = [edge(1, 2, U), edge(2, 3, U)];
+        assert_eq!(shortest(&nodes, &edges).unwrap().unwrap().relays, [0]);
+        let nodes = [
+            relay(Some(X), None, 0),
+            relay(None, Some(R(0)), 0),
+            relay(None, Some(R(0)), 0),
+        ];
+        let edges = [edge(0, 1, R(500)), edge(0, 2, X)];
+        let path = shortest(&nodes, &edges).unwrap().unwrap();
+        assert_eq!(path.relays, [0, 1]);
+        assert_eq!(path.unreachable_legs, 1);
     }
 
     #[test]
@@ -227,60 +275,7 @@ mod tests {
                     edge(a, b, verdict)
                 })
                 .collect();
-            let mut expected: Option<(u8, u128, u128, usize)> = None;
-            fn walk(
-                node: usize,
-                visited: u64,
-                score: (u8, u128, u128, usize),
-                nodes: &[SearchRelay],
-                edges: &[SearchEdge],
-                best: &mut Option<(u8, u128, u128, usize)>,
-            ) {
-                let (class, rtt, load, hops) = score;
-                if let Some(v) = nodes[node].exit {
-                    let (c, r) = rank_legs([v]);
-                    let candidate = (class.max(c), rtt + u128::from(r), load, hops);
-                    if best.is_none_or(|old| candidate < old) {
-                        *best = Some(candidate);
-                    }
-                }
-                for edge in edges
-                    .iter()
-                    .filter(|e| e.from == node && visited & (1 << e.to) == 0)
-                {
-                    let (c, r) = rank_legs([edge.verdict]);
-                    walk(
-                        edge.to,
-                        visited | (1 << edge.to),
-                        (
-                            class.max(c),
-                            rtt + u128::from(r),
-                            load + nodes[edge.to].load as u128,
-                            hops + 1,
-                        ),
-                        nodes,
-                        edges,
-                        best,
-                    );
-                }
-            }
-            for (i, n) in nodes.iter().enumerate() {
-                if let Some(v) = n.ingress {
-                    let (c, r) = rank_legs([v]);
-                    walk(
-                        i,
-                        1 << i,
-                        (c, u128::from(r), n.load as u128, 1),
-                        &nodes,
-                        &edges,
-                        &mut expected,
-                    );
-                }
-            }
-            let found = shortest(&nodes, &edges)
-                .unwrap()
-                .map(|p| (p.class, p.rtt, p.load, p.relays.len()));
-            assert_eq!(found, expected);
+            check_against_oracle(&nodes, &edges);
         }
     }
 
@@ -294,52 +289,122 @@ mod tests {
         assert_eq!(path.rtt, 1);
     }
 
-    #[test]
-    fn varied_graphs_match_independent_oracle_and_reconstructed_route() {
-        type Score = (u8, u128, u128, usize);
-        fn metric(v: ProbeVerdict) -> (u8, u128) {
-            match v {
-                R(ms) => (0, u128::from(ms)),
-                U => (1, 0),
-                X => (2, 0),
-            }
+    // This oracle enumerates simple paths and scores them only after a path
+    // ends; it does not share the production queue or incremental cost code.
+    type Score = (u8, u128, u128, u128, u128, u128);
+    fn oracle_key(legs: &[ProbeVerdict], load: u128, hops: usize) -> Score {
+        let down = legs.iter().filter(|v| matches!(v, X)).count() as u128;
+        let unknown = legs.iter().filter(|v| matches!(v, U)).count() as u128;
+        let rtt: u128 = legs
+            .iter()
+            .map(|v| match v {
+                R(ms) => u128::from(*ms),
+                _ => 0,
+            })
+            .sum();
+        if down > 0 {
+            (2, down, hops as u128, unknown, rtt, load)
+        } else if unknown > 0 {
+            (1, 0, hops as u128, unknown, rtt, load)
+        } else {
+            (0, rtt, load, hops as u128, 0, 0)
         }
-        fn walk(
-            node: usize,
-            seen: u64,
-            score: Score,
-            nodes: &[SearchRelay],
-            edges: &[SearchEdge],
-            best: &mut Option<Score>,
-        ) {
-            let (class, rtt, load, hops) = score;
-            if let Some(v) = nodes[node].exit {
-                let (c, r) = metric(v);
-                let candidate = (class.max(c), rtt + r, load, hops);
-                if best.is_none_or(|old| candidate < old) {
-                    *best = Some(candidate);
-                }
+    }
+    fn brute(
+        node: usize,
+        seen: u64,
+        nodes: &[SearchRelay],
+        edges: &[SearchEdge],
+        legs: &mut Vec<ProbeVerdict>,
+        load: u128,
+        best: &mut Option<Score>,
+    ) {
+        if let Some(exit) = nodes[node].exit {
+            legs.push(exit);
+            let candidate = oracle_key(legs, load, seen.count_ones() as usize);
+            if best.is_none_or(|old| candidate < old) {
+                *best = Some(candidate);
             }
-            for e in edges
-                .iter()
-                .filter(|e| e.from == node && seen & (1 << e.to) == 0)
-            {
-                let (c, r) = metric(e.verdict);
-                walk(
-                    e.to,
-                    seen | (1 << e.to),
-                    (
-                        class.max(c),
-                        rtt + r,
-                        load + nodes[e.to].load as u128,
-                        hops + 1,
-                    ),
+            legs.pop();
+        }
+        for e in edges
+            .iter()
+            .filter(|e| e.from == node && seen & (1 << e.to) == 0)
+        {
+            legs.push(e.verdict);
+            brute(
+                e.to,
+                seen | (1 << e.to),
+                nodes,
+                edges,
+                legs,
+                load + nodes[e.to].load as u128,
+                best,
+            );
+            legs.pop();
+        }
+    }
+    fn check_against_oracle(nodes: &[SearchRelay], edges: &[SearchEdge]) -> Option<SearchPath> {
+        let mut expected = None;
+        for (i, node) in nodes.iter().enumerate() {
+            if let Some(ingress) = node.ingress {
+                brute(
+                    i,
+                    1 << i,
                     nodes,
                     edges,
-                    best,
+                    &mut vec![ingress],
+                    node.load as u128,
+                    &mut expected,
                 );
             }
         }
+        let result = shortest(nodes, edges).unwrap();
+        if let Some(path) = &result {
+            assert!(!path.relays.is_empty());
+            assert_eq!(path.edges.len() + 1, path.relays.len());
+            let mut seen = 0u64;
+            let mut legs = vec![nodes[path.relays[0]].ingress.unwrap()];
+            let mut load = 0u128;
+            for (i, &node) in path.relays.iter().enumerate() {
+                assert_eq!(seen & (1 << node), 0, "relay repeats");
+                seen |= 1 << node;
+                load += nodes[node].load as u128;
+                if i > 0 {
+                    let e = edges[path.edges[i - 1]];
+                    assert_eq!((e.from, e.to), (path.relays[i - 1], node));
+                    legs.push(e.verdict);
+                }
+            }
+            legs.push(nodes[*path.relays.last().unwrap()].exit.unwrap());
+            let actual = oracle_key(&legs, load, path.relays.len());
+            assert_eq!(Some(actual), expected, "nodes={nodes:?} edges={edges:?}");
+            let down = legs.iter().filter(|v| matches!(v, X)).count() as u128;
+            let unknown = legs.iter().filter(|v| matches!(v, U)).count() as u128;
+            let rtt: u128 = legs
+                .iter()
+                .map(|v| match v {
+                    R(ms) => u128::from(*ms),
+                    _ => 0,
+                })
+                .sum();
+            assert_eq!(
+                (
+                    path.class,
+                    path.unreachable_legs,
+                    path.unknown_legs,
+                    path.rtt,
+                    path.load
+                ),
+                (actual.0, down, unknown, rtt, load)
+            );
+        } else {
+            assert_eq!(expected, None, "nodes={nodes:?} edges={edges:?}");
+        }
+        result
+    }
+    #[test]
+    fn varied_graphs_match_independent_oracle_and_reconstructed_route() {
         fn next(state: &mut u64) -> u64 {
             *state ^= *state << 13;
             *state ^= *state >> 7;
@@ -357,16 +422,22 @@ mod tests {
             }
         }
         let mut state = 0x9e3779b97f4a7c15;
+        let mut classes = [0usize; 3];
+        let mut missing = 0;
+        let mut zero_load = 0;
         for _ in 0..1024 {
             let n = 1 + (next(&mut state) % 5) as usize;
             let mut nodes = Vec::new();
             for _ in 0..n {
                 let ingress = (!next(&mut state).is_multiple_of(3)).then(|| pick(&mut state));
                 let exit = (!next(&mut state).is_multiple_of(3)).then(|| pick(&mut state));
-                let load = match next(&mut state) % 4 {
+                let load = match next(&mut state) % 5 {
                     0 => usize::MAX,
-                    n => n as usize,
+                    n => (n - 1) as usize,
                 };
+                if load == 0 {
+                    zero_load += 1;
+                }
                 nodes.push(relay(ingress, exit, load));
             }
             let edge_count = (next(&mut state) % 13) as usize;
@@ -376,53 +447,25 @@ mod tests {
                 let to = (next(&mut state) % n as u64) as usize;
                 edges.push(edge(from, to, pick(&mut state)));
             }
-            let mut expected: Option<Score> = None;
-            for (i, node) in nodes.iter().enumerate() {
-                if let Some(v) = node.ingress {
-                    let (c, r) = metric(v);
-                    walk(
-                        i,
-                        1 << i,
-                        (c, r, node.load as u128, 1),
-                        &nodes,
-                        &edges,
-                        &mut expected,
-                    );
-                }
-            }
-            let result = shortest(&nodes, &edges).unwrap();
-            assert_eq!(
-                result
-                    .as_ref()
-                    .map(|p| (p.class, p.rtt, p.load, p.relays.len())),
-                expected
-            );
-            if let Some(path) = result {
-                assert!(!path.relays.is_empty());
-                assert_eq!(path.edges.len() + 1, path.relays.len());
-                let mut seen = 0u64;
-                let start = path.relays[0];
-                let (mut class, mut rtt) = metric(nodes[start].ingress.unwrap());
-                let mut load = 0u128;
-                for (i, &node) in path.relays.iter().enumerate() {
-                    assert_eq!(seen & (1 << node), 0, "relay repeats");
-                    seen |= 1 << node;
-                    load += nodes[node].load as u128;
-                    if i > 0 {
-                        let e = edges[path.edges[i - 1]];
-                        assert_eq!((e.from, e.to), (path.relays[i - 1], node));
-                        let (c, r) = metric(e.verdict);
-                        class = class.max(c);
-                        rtt += r;
-                    }
-                }
-                let (c, r) = metric(nodes[*path.relays.last().unwrap()].exit.unwrap());
-                assert_eq!(
-                    (class.max(c), rtt + r, load, path.relays.len()),
-                    (path.class, path.rtt, path.load, path.relays.len())
-                );
+            match check_against_oracle(&nodes, &edges) {
+                Some(path) => classes[path.class as usize] += 1,
+                None => missing += 1,
             }
         }
+        assert!(classes.iter().all(|n| *n > 0), "classes: {classes:?}");
+        assert!(missing > 0 && zero_load > 0);
+    }
+    #[test]
+    fn zero_cost_cycle_and_parallel_classes_are_handled() {
+        let nodes = [relay(Some(R(0)), None, 0), relay(None, Some(R(0)), 0)];
+        let edges = [
+            edge(0, 1, U),
+            edge(0, 1, R(5)),
+            edge(1, 0, R(0)),
+            edge(0, 0, R(0)),
+        ];
+        let path = check_against_oracle(&nodes, &edges).unwrap();
+        assert_eq!(path.edges, [1]);
     }
 
     #[test]
