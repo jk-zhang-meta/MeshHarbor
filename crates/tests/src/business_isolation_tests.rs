@@ -724,6 +724,11 @@ async fn staged_graph_tracks_three_relay_chain_and_each_acl() {
     ]));
     let chosen = roomler_ai_mod_network::org_relay::candidate_test_support::select_path(l.rig.app.state.network(), cn, us, false).await.unwrap().unwrap();
     assert_eq!(chosen, (vec![gz, mid_id, hk], false));
+    // A rejoin invalidates the old direct-to-middle measurement even when
+    // its endpoint string happens to stay unchanged.
+    line_join(&mut mid, 6, "223.6.6.7:41641", json!({ "relay_backbone_ready": true })).await;
+    let after_rejoin = roomler_ai_mod_network::org_relay::candidate_test_support::select_path(l.rig.app.state.network(), cn, us, false).await.unwrap().unwrap();
+    assert_eq!(after_rejoin, (vec![mid_id, hk], false));
     let path = format!("/api/tenant/{}/overlay-acl/{}", l.rig.seeded.tenant_id, mid_acl);
     let status = l.rig.app.client.delete(l.rig.app.url(&path)).bearer_auth(&l.rig.seeded.admin.access_token)
         .send().await.unwrap().status().as_u16();

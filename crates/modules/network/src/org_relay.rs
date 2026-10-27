@@ -351,6 +351,8 @@ pub struct OrgRelayState {
     /// monotonic across every (pair, relay), so it is monotonic per one too.
     lamport: AtomicU64,
     join_extras: DashMap<ObjectId, JoinExtras>,
+    /// Current overlay join start, used to reject pre-rejoin path probes.
+    probe_join_at: DashMap<ObjectId, Instant>,
     probes: DashMap<(ObjectId, ObjectId), Vec<ProbeRecord>>,
     /// MeshHarbor #5 — the (relay, endpoint)s each member's last full netmap
     /// offered it to probe ([`probe_targets`]). Replaced on every join.
@@ -421,6 +423,7 @@ impl OrgRelayState {
     /// build that stops advertising a port, or an org that stops being
     /// primary, is not remembered as it was.
     pub fn note_join(&self, node_id: ObjectId, mut extras: JoinExtras) -> bool {
+        self.probe_join_at.insert(node_id, Instant::now());
         self.invalidate_eligibility();
         let mut entry = self.join_extras.entry(node_id).or_default();
         let previous = *entry;
@@ -435,6 +438,7 @@ impl OrgRelayState {
     pub fn forget_node(&self, node_id: ObjectId) {
         self.invalidate_eligibility();
         self.join_extras.remove(&node_id);
+        self.probe_join_at.remove(&node_id);
         self.probes.retain(|(reporter, _), _| *reporter != node_id);
     }
 
@@ -646,6 +650,50 @@ fn verdict_of(
     match best {
         Some(rtt) => ProbeVerdict::Reachable(rtt),
         None => ProbeVerdict::Unreachable,
+    }
+}
+
+/// A staged path can only use measurements made against its current approved
+/// endpoints. A successful report without an RTT is unknown, not 0 ms.
+fn scoped_probe_verdict(
+    map: &DashMap<(ObjectId, ObjectId), Vec<ProbeRecord>>,
+    reporter: ObjectId,
+    relay: ObjectId,
+    endpoints: &[String],
+    not_before: Option<Instant>,
+    now: Instant,
+) -> ProbeVerdict {
+    let Some(not_before) = not_before else {
+        return ProbeVerdict::Unknown;
+    };
+    let Some(records) = map.get(&(reporter, relay)) else {
+        return ProbeVerdict::Unknown;
+    };
+    let ttl = Duration::from_secs(limits::PROBE_TTL_SECS);
+    let mut measured: Option<u32> = None;
+    let mut missing_rtt = false;
+    let mut failed = false;
+    for record in records.iter().filter(|r| {
+        endpoints.contains(&r.endpoint)
+            && r.at >= not_before
+            && now
+                .checked_duration_since(r.at)
+                .is_some_and(|age| age < ttl)
+    }) {
+        match (record.reachable, record.rtt_ms) {
+            (true, Some(ms)) => measured = Some(measured.map_or(ms, |old| old.min(ms))),
+            (true, None) => missing_rtt = true,
+            (false, _) => failed = true,
+        }
+    }
+    if let Some(rtt) = measured {
+        ProbeVerdict::Reachable(rtt)
+    } else if missing_rtt {
+        ProbeVerdict::Unknown
+    } else if failed {
+        ProbeVerdict::Unreachable
+    } else {
+        ProbeVerdict::Unknown
     }
 }
 
@@ -3252,6 +3300,28 @@ mod tests {
             st.probe_verdict(b, relay, Instant::now()),
             ProbeVerdict::Unreachable
         );
+    }
+
+    #[test]
+    fn scoped_probe_uses_only_current_endpoint_and_never_invents_zero_rtt() {
+        let map = DashMap::new(); let reporter = ObjectId::new(); let relay = ObjectId::new();
+        let now = Instant::now(); let active = vec!["10.0.0.2:3478".to_string()];
+        let record = |endpoint: &str, reachable, rtt_ms, at| ProbeRecord {
+            endpoint: endpoint.into(), reachable, rtt_ms, at,
+        };
+        map.insert((reporter, relay), vec![
+            record("10.0.0.1:3478", true, Some(1), now),
+            record("10.0.0.2:3478", false, None, now),
+            record("10.0.0.2:3478", true, None, now),
+        ]);
+        assert_eq!(scoped_probe_verdict(&map, reporter, relay, &active, Some(now), now), ProbeVerdict::Unknown);
+        map.get_mut(&(reporter,relay)).unwrap().push(record("10.0.0.2:3478", true, Some(34), now));
+        assert_eq!(scoped_probe_verdict(&map, reporter, relay, &active, Some(now), now), ProbeVerdict::Reachable(34));
+        let stale = now + Duration::from_secs(limits::PROBE_TTL_SECS);
+        assert_eq!(scoped_probe_verdict(&map, reporter, relay, &active, Some(now), stale), ProbeVerdict::Unknown);
+        assert_eq!(scoped_probe_verdict(&map, reporter, relay, &[], Some(now), now), ProbeVerdict::Unknown);
+        assert_eq!(scoped_probe_verdict(&map, reporter, relay, &active, None, now), ProbeVerdict::Unknown);
+        assert_eq!(scoped_probe_verdict(&map, reporter, relay, &active, Some(now + Duration::from_nanos(1)), now), ProbeVerdict::Unknown);
     }
 
     #[test]

@@ -29,11 +29,36 @@ pub(super) fn select(
     let now = Instant::now();
     let a = prepared.requester_id;
     let b = prepared.peer_id;
+    // Both the reporting node and target must have joined before the
+    // measurement. Missing join evidence is conservatively unknown.
+    let cutoff = |reporter, target| {
+        let a = state.org_relay.probe_join_at.get(&reporter).map(|at| *at);
+        let b = state.org_relay.probe_join_at.get(&target).map(|at| *at);
+        a.zip(b).map(|(a, b)| a.max(b))
+    };
     let mut forward = Vec::with_capacity(prepared.graph.relays.len());
     let mut reverse = Vec::with_capacity(prepared.graph.relays.len());
     for relay in &prepared.graph.relays {
-        let a_probe = state.org_relay.probe_verdict(a, relay.node_id, now);
-        let b_probe = state.org_relay.probe_verdict(b, relay.node_id, now);
+        let plan = prepared
+            .plans
+            .get(&relay.node_id)
+            .ok_or(Deny::PolicyUnreadable)?;
+        let a_probe = super::scoped_probe_verdict(
+            &state.org_relay.probes,
+            a,
+            relay.node_id,
+            &plan.endpoints,
+            cutoff(a, relay.node_id),
+            now,
+        );
+        let b_probe = super::scoped_probe_verdict(
+            &state.org_relay.probes,
+            b,
+            relay.node_id,
+            &plan.endpoints,
+            cutoff(b, relay.node_id),
+            now,
+        );
         let load = state.org_relay.sessions_on_relay(relay.node_id);
         forward.push(SearchRelay {
             node_id: relay.node_id,
@@ -55,9 +80,15 @@ pub(super) fn select(
         .map(|edge| SearchEdge {
             from: edge.from,
             to: edge.to,
-            verdict: state.org_relay.backbone_verdict(
+            verdict: super::scoped_probe_verdict(
+                &state.org_relay.backbone_probes,
                 prepared.graph.relays[edge.from].node_id,
                 prepared.graph.relays[edge.to].node_id,
+                std::slice::from_ref(&edge.endpoint),
+                cutoff(
+                    prepared.graph.relays[edge.from].node_id,
+                    prepared.graph.relays[edge.to].node_id,
+                ),
                 now,
             ),
         })
