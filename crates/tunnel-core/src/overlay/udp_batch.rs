@@ -21,6 +21,18 @@ pub(crate) fn max_send_segments() -> usize {
     1
 }
 
+/// No GSO here: [`max_send_segments`] is 1, so no caller ever hands this a
+/// run; it exists so the batched send path compiles off Linux.
+#[cfg(not(target_os = "linux"))]
+pub(crate) async fn send_segments(
+    _sock: &tokio::net::UdpSocket,
+    _dst: std::net::SocketAddr,
+    _buf: &[u8],
+    _seg: usize,
+) -> std::io::Result<()> {
+    Err(std::io::ErrorKind::Unsupported.into())
+}
+
 #[cfg(target_os = "linux")]
 mod linux {
     use std::io::{self, IoSliceMut};

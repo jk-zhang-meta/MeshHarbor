@@ -5,9 +5,10 @@
 //! Linux reads `ip -j` (interfaces, routes, policy rules), `/proc/net`
 //! (listeners, with the owning process's short name when visible),
 //! `/proc/sys` (forwarding) and `nft -j list ruleset`; iptables-legacy
-//! rules, which nft cannot show, are counted and marked, not parsed. Other
-//! platforms report every section `unsupported` until they get native
-//! adapters. Only the host network namespace is read.
+//! rules, which nft cannot show, are counted and marked, not parsed. Windows
+//! reads its listeners from the IP Helper tables; every other Windows
+//! section, and every section elsewhere, reports `unsupported` until it gets
+//! a native adapter. Only the host network namespace is read.
 //!
 //! Nothing is uploaded that the topology does not need: no command lines,
 //! environment, rule comments, keys or payloads, and every section is
@@ -100,17 +101,192 @@ pub async fn collect() -> NetInventory {
     #[cfg(not(target_os = "linux"))]
     {
         let none = || "no adapter for this platform yet";
+        #[cfg(target_os = "windows")]
+        let listeners = match tokio::task::spawn_blocking(windows::listeners).await {
+            Ok(Some(l)) => {
+                Section::capped(l, roomler_ai_remote_control::net_inventory::MAX_LISTENERS)
+            }
+            _ => Section::absent(
+                SectionState::Error,
+                "the IP Helper socket tables could not be read",
+            ),
+        };
+        #[cfg(not(target_os = "windows"))]
+        let listeners = Section::absent(SectionState::Unsupported, none());
         NetInventory {
             os: std::env::consts::OS.into(),
             namespaces: "host_only".into(),
             interfaces: Section::absent(SectionState::Unsupported, none()),
             routes: Section::absent(SectionState::Unsupported, none()),
             rules: Section::absent(SectionState::Unsupported, none()),
-            listeners: Section::absent(SectionState::Unsupported, none()),
+            listeners,
             firewall_chains: Section::absent(SectionState::Unsupported, none()),
             firewall_rules: Section::absent(SectionState::Unsupported, none()),
             ..Default::default()
         }
+    }
+}
+
+/// MeshHarbor v039 OS-01 — Windows reports what it can read today: its
+/// listening TCP sockets and bound UDP sockets, each with its owner's image
+/// name, from the IP Helper tables (the same `GetExtendedTcpTable` read the
+/// tunnel's port-holder check uses). Every other section stays `unsupported`
+/// until it has an adapter of its own, so nothing here claims parity.
+#[cfg(target_os = "windows")]
+mod windows {
+    use std::collections::HashMap;
+    use std::net::{Ipv4Addr, Ipv6Addr};
+
+    use roomler_ai_remote_control::net_inventory::{L4, Listener, truncate_str};
+    use windows_sys::Win32::NetworkManagement::IpHelper::{
+        GetExtendedTcpTable, GetExtendedUdpTable, MIB_TCP6ROW_OWNER_PID, MIB_TCPROW_OWNER_PID,
+        MIB_UDP6ROW_OWNER_PID, MIB_UDPROW_OWNER_PID, TCP_TABLE_OWNER_PID_LISTENER,
+        UDP_TABLE_OWNER_PID,
+    };
+
+    const AF_INET: u32 = 2;
+    const AF_INET6: u32 = 23;
+    const ERROR_INSUFFICIENT_BUFFER: u32 = 122;
+
+    /// One table read into u32-aligned storage (every row field is a u32 or
+    /// a byte array). `None` when the table cannot be read.
+    fn table(udp: bool, af: u32) -> Option<Vec<u32>> {
+        let mut size = 0u32;
+        // The table grows between the size it reports and the read: asked
+        // again with the room it then says it needs.
+        for _ in 0..4 {
+            let mut buf = vec![0u32; (size as usize).div_ceil(4) + 1];
+            let mut len = (buf.len() * 4) as u32;
+            // SAFETY: `buf` holds `len` bytes, aligned for the rows' fields.
+            let rc = unsafe {
+                if udp {
+                    GetExtendedUdpTable(
+                        buf.as_mut_ptr().cast(),
+                        &mut len,
+                        0,
+                        af,
+                        UDP_TABLE_OWNER_PID,
+                        0,
+                    )
+                } else {
+                    GetExtendedTcpTable(
+                        buf.as_mut_ptr().cast(),
+                        &mut len,
+                        0,
+                        af,
+                        TCP_TABLE_OWNER_PID_LISTENER,
+                        0,
+                    )
+                }
+            };
+            if rc == ERROR_INSUFFICIENT_BUFFER {
+                size = len;
+                continue;
+            }
+            return (rc == 0).then_some(buf);
+        }
+        None
+    }
+
+    /// The rows of a table read by [`table`]: `dwNumEntries`, then that many
+    /// rows, bounded by the room the buffer has.
+    fn rows<R>(buf: &[u32]) -> &[R] {
+        let room = (buf.len() - 1) * 4 / std::mem::size_of::<R>();
+        let n = (buf[0] as usize).min(room);
+        // SAFETY: the API wrote `dwNumEntries` rows after the count, and `n`
+        // never exceeds what `buf` holds.
+        unsafe { std::slice::from_raw_parts(buf.as_ptr().add(1).cast::<R>(), n) }
+    }
+
+    /// A port as a row holds it: network order, in the low word.
+    fn port(raw: u32) -> u16 {
+        u16::from_be((raw & 0xffff) as u16)
+    }
+
+    /// The image file name (`sshd.exe`) of a process, when this account may
+    /// query it; never its path or command line.
+    fn image(pid: u32) -> Option<String> {
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+            QueryFullProcessImageNameW,
+        };
+        if pid == 0 || pid == 4 {
+            return Some("System".into());
+        }
+        // SAFETY: a plain open by pid; the handle is closed below.
+        let h = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        if h.is_null() {
+            return None;
+        }
+        let mut buf = [0u16; 1024];
+        let mut len = buf.len() as u32;
+        // SAFETY: a live handle and a buffer of `len` UTF-16 units.
+        let ok = unsafe {
+            QueryFullProcessImageNameW(h, PROCESS_NAME_WIN32, buf.as_mut_ptr(), &mut len)
+        } != 0;
+        // SAFETY: the handle OpenProcess gave us, closed once.
+        unsafe { CloseHandle(h) };
+        if !ok {
+            return None;
+        }
+        let path = String::from_utf16_lossy(&buf[..len as usize]);
+        let mut name = path.rsplit(['\\', '/']).next()?.to_string();
+        truncate_str(&mut name, 64);
+        (!name.is_empty()).then_some(name)
+    }
+
+    /// Every listening TCP and bound UDP socket, v4 and v6. `None` when no
+    /// table could be read at all.
+    pub(super) fn listeners() -> Option<Vec<Listener>> {
+        let mut found: Vec<(L4, String, u16, u32)> = Vec::new();
+        let mut read_any = false;
+        for (udp, proto) in [(false, L4::Tcp), (true, L4::Udp)] {
+            if let Some(buf) = table(udp, AF_INET) {
+                read_any = true;
+                if udp {
+                    for r in rows::<MIB_UDPROW_OWNER_PID>(&buf) {
+                        let ip = Ipv4Addr::from(r.dwLocalAddr.to_ne_bytes());
+                        found.push((proto, ip.to_string(), port(r.dwLocalPort), r.dwOwningPid));
+                    }
+                } else {
+                    for r in rows::<MIB_TCPROW_OWNER_PID>(&buf) {
+                        let ip = Ipv4Addr::from(r.dwLocalAddr.to_ne_bytes());
+                        found.push((proto, ip.to_string(), port(r.dwLocalPort), r.dwOwningPid));
+                    }
+                }
+            }
+            if let Some(buf) = table(udp, AF_INET6) {
+                read_any = true;
+                if udp {
+                    for r in rows::<MIB_UDP6ROW_OWNER_PID>(&buf) {
+                        let ip = Ipv6Addr::from(r.ucLocalAddr);
+                        found.push((proto, ip.to_string(), port(r.dwLocalPort), r.dwOwningPid));
+                    }
+                } else {
+                    for r in rows::<MIB_TCP6ROW_OWNER_PID>(&buf) {
+                        let ip = Ipv6Addr::from(r.ucLocalAddr);
+                        found.push((proto, ip.to_string(), port(r.dwLocalPort), r.dwOwningPid));
+                    }
+                }
+            }
+        }
+        if !read_any {
+            return None;
+        }
+        let mut names: HashMap<u32, Option<String>> = HashMap::new();
+        let mut out: Vec<Listener> = found
+            .into_iter()
+            .map(|(proto, addr, port, pid)| Listener {
+                proto,
+                addr,
+                port,
+                process: names.entry(pid).or_insert_with(|| image(pid)).clone(),
+            })
+            .collect();
+        out.sort_by(|a, b| (a.port, &a.addr).cmp(&(b.port, &b.addr)));
+        out.dedup_by(|a, b| a.proto == b.proto && a.addr == b.addr && a.port == b.port);
+        Some(out)
     }
 }
 
