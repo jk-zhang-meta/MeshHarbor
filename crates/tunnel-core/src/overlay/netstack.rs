@@ -920,17 +920,30 @@ impl PollLoop {
             }
         }
 
-        // Listens.
+        // Listens. Past SYN-RECEIVED a listener carries a connection, even
+        // one the peer's FIN completed: with the handshake's last ACK lost,
+        // one segment takes it SYN-RECEIVED → ESTABLISHED → CLOSE-WAIT
+        // before this runs, and waiting for ESTABLISHED alone never re-armed
+        // the port (field 2026-10-27, rf-a728a26325a1: after a lossy phase
+        // every new connect to it was refused). One back at CLOSED is re-armed.
         let ready: Vec<SocketHandle> = self
             .pending_listen
             .iter()
             .filter(|(h, _)| {
-                self.sockets.get::<tcp::Socket>(**h).state() == tcp::State::Established
+                !matches!(
+                    self.sockets.get::<tcp::Socket>(**h).state(),
+                    tcp::State::Listen | tcp::State::SynReceived
+                )
             })
             .map(|(h, _)| *h)
             .collect();
         for h in ready {
             let pl = self.pending_listen.remove(&h).unwrap();
+            if self.sockets.get::<tcp::Socket>(h).state() == tcp::State::Closed {
+                self.sockets.remove(h);
+                self.arm_listener(pl.port, pl.accepted);
+                continue;
+            }
             let peer = self
                 .sockets
                 .get::<tcp::Socket>(h)
@@ -2236,6 +2249,69 @@ mod tests {
         )
         .await
         .expect("round trip in time");
+    }
+
+    /// A listener whose handshake the peer's FIN completes still re-arms its
+    /// port. With the client's pure ACK (the handshake's third segment) lost,
+    /// its FIN carries that ACK, and one segment takes the listening socket
+    /// SYN-RECEIVED → ESTABLISHED → CLOSE-WAIT. Field 2026-10-27
+    /// (rf-a728a26325a1): after a 10%-loss phase every new connect to the
+    /// port was refused for the rest of the run, while live sessions worked.
+    #[tokio::test]
+    async fn a_listener_completed_by_a_fin_still_rearms() {
+        fn is_pure_ack(pkt: &[u8]) -> bool {
+            if pkt.len() < 20 || pkt[0] >> 4 != 4 || pkt[9] != 6 {
+                return false;
+            }
+            let ihl = usize::from(pkt[0] & 0x0f) * 4;
+            let total = usize::from(u16::from_be_bytes([pkt[2], pkt[3]]));
+            let Some(tcp) = pkt.get(ihl..total) else {
+                return false;
+            };
+            tcp.len() >= 20 && tcp[13] == 0x10 && tcp.len() == usize::from(tcp[12] >> 4) * 4
+        }
+        let a_ip = Ipv4Addr::new(10, 9, 2, 1);
+        let b_ip = Ipv4Addr::new(10, 9, 2, 2);
+        let a = Netstack::start(a_ip, 24, 1280);
+        let b = Netstack::start(b_ip, 24, 1280);
+        let (from, to) = (a.tun.clone(), b.tun.clone());
+        tokio::spawn(async move {
+            let mut dropped = false;
+            while let Ok(pkt) = from.read_packet().await {
+                if !dropped && is_pure_ack(&pkt) {
+                    dropped = true;
+                    continue;
+                }
+                if to.write_packet(&pkt).await.is_err() {
+                    break;
+                }
+            }
+        });
+        let (from, to) = (b.tun.clone(), a.tun.clone());
+        tokio::spawn(async move {
+            while let Ok(pkt) = from.read_packet().await {
+                if to.write_packet(&pkt).await.is_err() {
+                    break;
+                }
+            }
+        });
+        let mut listener = b.handle.listen(9002).await.unwrap();
+        tokio::spawn(async move {
+            while let Some(s) = listener.accept().await {
+                tokio::spawn(echo(s));
+            }
+        });
+        let dst = SocketAddr::from((b_ip, 9002));
+        let mut s = a.handle.connect(dst).await.expect("connect");
+        s.shutdown().await.unwrap();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        drop(s);
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            round_trip(&a.handle, dst, b"after-the-fin"),
+        )
+        .await
+        .expect("the port still accepts");
     }
 
     /// An app that drops an established stream without closing it resets
