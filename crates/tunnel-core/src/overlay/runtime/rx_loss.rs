@@ -18,6 +18,9 @@ use super::*;
 
 /// Health sweeps per ORG verdict window (the sweep runs every 5 s).
 const WINDOW_SWEEPS: u8 = 6;
+/// A window short of [`MIN_PACKETS`] stays open up to this many sweeps
+/// (10 min), so a light stream is judged too: ~3.3 min at 5 packets/s.
+const MAX_WINDOW_SWEEPS: u8 = 120;
 /// Packets the peer must have sent in a window before its loss is judged.
 const MIN_PACKETS: u64 = 1000;
 /// The loss at which an ORG window counts as lossy. Loss-based TCP over a
@@ -121,7 +124,7 @@ impl RxLoss {
         w.0 += ds;
         w.1 += da;
         w.2 += 1;
-        if w.2 < WINDOW_SWEEPS {
+        if w.2 < WINDOW_SWEEPS || (w.0 < MIN_PACKETS && w.2 < MAX_WINDOW_SWEEPS) {
             return None;
         }
         let (ws, wa, _) = std::mem::take(w);
@@ -142,7 +145,8 @@ impl RxLoss {
             info!(
                 peer = %peer, loss_pct = format!("{pct:.1}"), packets = ws,
                 "overlay relay[loss-shadow]: the ORG carrier lost this share of the peer's \
-                 packets over ~30 s, a lossy relay path where DERP may carry the pair better \
+                 packets over ~30 s (longer for a light stream), a lossy relay path where DERP \
+                 may carry the pair better \
                  (reported for the server to judge; rate-limited 1/min/peer)"
             );
         }
@@ -275,6 +279,36 @@ mod tests {
             feed(&mut l, via, sweeps, sent, got, t0);
             assert!(l.take_reports().is_empty(), "{why}");
         }
+    }
+
+    /// Field 2026-10-27 (rf-84f661a5a7e3, finding 3): at ~5 packets/s a 30 s
+    /// window never held the 1000 packets a verdict needs, so a relay losing
+    /// 10% of a light stream was never judged. Under that count the window
+    /// stays open, up to [`MAX_WINDOW_SWEEPS`]; a full one still closes
+    /// after six sweeps.
+    #[test]
+    fn a_light_stream_keeps_its_window_open_until_it_can_be_judged() {
+        let t0 = Instant::now();
+        let mut l = RxLoss::default();
+        assert_eq!(
+            feed(&mut l, Via::Org, 39, 25, 23, t0),
+            None,
+            "975 packets: still open"
+        );
+        let mut l = RxLoss::default();
+        let pct = feed(&mut l, Via::Org, 40, 25, 23, t0).expect("8% over 1000 packets");
+        assert!((pct - 8.0).abs() < 1e-9, "{pct}");
+        assert_eq!(l.take_reports(), vec![(peer(), 1000, 80)]);
+
+        // Too light to judge even then: the window closes unjudged at the
+        // cap, and the next one starts empty.
+        let mut l = RxLoss::default();
+        assert_eq!(feed(&mut l, Via::Org, MAX_WINDOW_SWEEPS, 5, 4, t0), None);
+        assert!(l.take_reports().is_empty());
+        assert!(
+            l.win.get(&peer()).is_some_and(|w| *w == (0, 0, 0)),
+            "a fresh window"
+        );
     }
 
     #[test]
