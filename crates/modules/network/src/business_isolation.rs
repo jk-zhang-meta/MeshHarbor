@@ -250,6 +250,15 @@ pub fn rides_lines(state: &NetworkState, recipient: &OverlayNode) -> bool {
         .is_some_and(|id| state.org_relay.join_extras(id).supports_backbone_only_v1)
 }
 
+/// v039 GEO-06 — how a zone is stored on a route approval
+/// (`OverlayNode::routes_zone`): its serde name.
+pub fn zone_tag(zone: BusinessZone) -> &'static str {
+    match zone {
+        BusinessZone::Mainland => "mainland",
+        BusinessZone::NonMainland => "non_mainland",
+    }
+}
+
 /// A node's zone, looked up only when the rule is on (each lookup reads the
 /// device row).
 pub async fn zone_of(state: &NetworkState, mode: Mode, node: &OverlayNode) -> Option<BusinessZone> {

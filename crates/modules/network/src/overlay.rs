@@ -3122,6 +3122,14 @@ fn shape_peer(
     reachable: bool,
     zones: Zones,
 ) -> Option<NetmapPeer> {
+    let unbound;
+    let peer = match routes_outside_their_zone(peer, zones) {
+        Some(p) => {
+            unbound = p;
+            &unbound
+        }
+        None => peer,
+    };
     // MeshHarbor #21 exception — a cross-zone peer an approved line connects
     // is shaped like any other (the ACL still decides), then stripped to the
     // line: no address to dial, no DERP or TURN to try.
@@ -3131,6 +3139,21 @@ fn shape_peer(
         return shape_peer_zoned(acl, src, peer, peer_src, reachable, Zones::OFF).map(line_only);
     }
     shape_peer_zoned(acl, src, peer, peer_src, reachable, zones)
+}
+
+/// v039 GEO-06 — `peer` without its routes, when its route approval is bound
+/// to a zone it is not observed in under `enforce`: a router that roamed (or
+/// whose zone evidence is gone) keeps its peer entry but offers nothing, so
+/// it never claims a private CIDR another zone's router serves.
+fn routes_outside_their_zone(peer: &OverlayNode, zones: Zones) -> Option<OverlayNode> {
+    let bound = peer.routes_zone.as_deref()?;
+    (zones.mode == business_isolation::Mode::Enforce
+        && !peer.approved_routes.is_empty()
+        && zones.peer.map(business_isolation::zone_tag) != Some(bound))
+    .then(|| OverlayNode {
+        approved_routes: Vec::new(),
+        ..peer.clone()
+    })
 }
 
 /// Stamp the server's relay verdict (U2) onto a shaped row. A line peer
@@ -3671,6 +3694,7 @@ mod tests {
             advertised_routes: vec![],
             approved_routes: vec![],
             is_exit_node: false,
+            routes_zone: None,
             route_offer_withheld: None,
             status: AgentStatus::Online,
             last_seen_at: now,

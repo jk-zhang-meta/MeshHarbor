@@ -118,6 +118,7 @@ refusals you expect.
 | center-brokered tunnel (`rc:tunnel.open`, from a tunnel client or an agent) | `tunnel::handle_tunnel_open`, step 3d, before any TURN credential or QUIC token is minted | `rc:error` `business_isolation`; no session (#22) |
 | managed forward (#20) | `managed_forward::plan`: `region` over ingress and destination, and `source region` over every overlay node its sources admit (GEO-03), whatever the overlay ACL's mode | the plan fails and nothing is pushed; an applied forward whose gate later fails is withheld at the next push. A source in the other zone would otherwise reach the destination behind the ingress's address |
 | subnet route and exit node | ride their router peer (the netmap row above) | a router in the other zone is withheld, so its LAN and `0.0.0.0/0` are never offered (`a_subnet_route_stays_in_its_routers_zone`) |
+| subnet-route approval (GEO-06) | `routes::overlay_route::set_approved_routes` binds the approval to the router's zone (`OverlayNode::routes_zone`); `overlay::shape_peer` offers the routes only while the router is observed in that zone | two routers in different known zones may hold the same private CIDR (one per zone; an unknown zone keeps the one-router 409). A router seen outside its bound zone keeps its peer row but offers no route, so it never claims the other zone's site (`identical_private_prefixes_in_two_zones_stay_distinct`) |
 
 The netmap is the first line: an honest client never learns a withheld peer's key or
 endpoints. The others close the paths a stale or modified client could take with

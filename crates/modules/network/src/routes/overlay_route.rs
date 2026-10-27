@@ -328,13 +328,43 @@ pub async fn set_approved_routes(
     // Not only an equal CIDR: an OVERLAPPING one (10.0.0.0/16 against
     // 10.0.1.0/24) splits one site between two routers by longest prefix,
     // the same confusion with a quieter signature.
+    //
+    // v039 GEO-06 — under `enforce` the approval binds to the router's zone,
+    // so two routers in DIFFERENT known zones may hold the same private CIDR:
+    // isolation lets no client meet both, and a router seen outside its bound
+    // zone offers none of its routes (`overlay::shape_peer`). An unknown zone
+    // on either side keeps the one-router rule.
+    let iso = crate::business_isolation::mode(&state);
+    let zone_now = if iso == crate::business_isolation::Mode::Enforce {
+        crate::business_isolation::zone_of(&state, iso, &node)
+            .await
+            .map(crate::business_isolation::zone_tag)
+    } else {
+        None
+    };
     for r in &approved {
-        if let Some((holder, held)) = nodes.iter().filter(|n| n.id != Some(nid)).find_map(|n| {
-            n.approved_routes
-                .iter()
-                .find(|a| a.as_str() != DEFAULT_ROUTE_V4 && cidrs_overlap(a, r))
-                .map(|a| (n, a))
-        }) {
+        let overlapping: Vec<_> = nodes
+            .iter()
+            .filter(|n| n.id != Some(nid))
+            .filter_map(|n| {
+                n.approved_routes
+                    .iter()
+                    .find(|a| a.as_str() != DEFAULT_ROUTE_V4 && cidrs_overlap(a, r))
+                    .map(|a| (n, a))
+            })
+            .collect();
+        for (holder, held) in overlapping {
+            if let Some(mine) = zone_now {
+                let theirs = match holder.routes_zone.clone() {
+                    Some(z) => Some(z),
+                    None => crate::business_isolation::zone_of(&state, iso, holder)
+                        .await
+                        .map(|z| crate::business_isolation::zone_tag(z).to_owned()),
+                };
+                if theirs.is_some_and(|t| t != mine) {
+                    continue;
+                }
+            }
             return Err(ApiError::Conflict(format!(
                 "route {r} overlaps {held}, already approved on live node \"{}\" ({}) — \
                  revoke it there first (one live subnet router per network)",
@@ -351,7 +381,7 @@ pub async fn set_approved_routes(
 
     let updated = state
         .overlay_nodes
-        .set_approved_routes(nid, &approved)
+        .set_approved_routes(nid, &approved, zone_now.or(node.routes_zone.as_deref()))
         .await?;
     // Push the change to peers now, not on their next join.
     crate::overlay::refan_node(&state, &updated).await;

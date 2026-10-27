@@ -1045,3 +1045,77 @@ async fn a_forward_cannot_carry_a_source_across_zones() {
     let (_, plan) = mf_post(app, &plan_path, tok, &body(&ip_d)).await;
     assert_eq!(verdict(&plan, "source region"), "pass", "{plan}");
 }
+
+/// v039 GEO-06: identical private prefixes in two zones stay distinct. Under
+/// `enforce` a mainland and a non-mainland router may hold the same approved
+/// LAN, each client seeing only its own zone's. The approval binds to the
+/// router's zone, so a router that roams into the other zone keeps its peer
+/// entry there but offers none of its routes: it cannot claim that zone's
+/// site of the same CIDR.
+#[tokio::test]
+async fn identical_private_prefixes_in_two_zones_stay_distinct() {
+    use std::collections::BTreeMap;
+    const LAN: &str = "10.78.0.0/24";
+    let rig = Rig::up("iso-geo6", "enforce").await;
+    let tid = rig.seeded.tenant_id.clone();
+    let (cn_agent, cn_tok) = enroll(&rig.app, &rig.seeded, "iso-geo6-cn").await;
+    let mut cn_r = connect_from(&rig.app, &cn_tok, &[], Some(CN_A)).await;
+    assert_observed(&rig.app, &cn_agent, Some(CN_A)).await;
+    let mut us_r = rig.device("iso-geo6-us", Some(US_A)).await;
+    let lan = json!({ "advertised_routes": [LAN] });
+    line_join(&mut cn_r, 100, "223.5.5.5:41641", lan.clone()).await;
+    line_join(&mut us_r, 101, "8.8.8.8:41641", lan.clone()).await;
+    let cn_node = rig.node("iso-geo6-cn").await;
+    let us_node = rig.node("iso-geo6-us").await;
+    for node in [&cn_node, &us_node] {
+        let (status, v) = put(
+            &rig.app,
+            &format!("/api/tenant/{tid}/overlay-node/{node}/approved-routes"),
+            &rig.seeded.admin.access_token,
+            json!({ "approved_routes": [LAN] }),
+        )
+        .await;
+        assert_eq!(status, 200, "one CIDR per zone: {v}");
+    }
+    let routes_by = |map: &Value| -> BTreeMap<String, Vec<String>> {
+        map["peers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|p| {
+                let routes: Vec<String> = p["routes"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default()
+                    .iter()
+                    .filter_map(|r| r.as_str().map(str::to_owned))
+                    .collect();
+                (!routes.is_empty()).then(|| (p["node_id"].as_str().unwrap().to_owned(), routes))
+            })
+            .collect()
+    };
+    let only = |node: &str| BTreeMap::from([(node.to_owned(), vec![LAN.to_owned()])]);
+    let mut cn_c = rig.device("iso-geo6-cnc", Some("223.5.5.6")).await;
+    let cn_map = line_join(&mut cn_c, 102, "223.5.5.6:41641", json!({})).await;
+    assert_eq!(routes_by(&cn_map), only(&cn_node), "{cn_map}");
+    let mut us_c = rig.device("iso-geo6-usc", Some(US_B)).await;
+    let us_map = line_join(&mut us_c, 103, "8.8.4.4:41641", json!({})).await;
+    assert_eq!(routes_by(&us_map), only(&us_node), "{us_map}");
+
+    // The mainland router roams: it reconnects from a non-mainland address.
+    drop(cn_r);
+    let mut cn_r = connect_from(&rig.app, &cn_tok, &[], Some("8.8.8.9")).await;
+    assert_observed(&rig.app, &cn_agent, Some("8.8.8.9")).await;
+    line_join(&mut cn_r, 100, "8.8.8.9:41641", lan).await;
+    let mut us_c2 = rig.device("iso-geo6-usc2", Some("8.8.4.5")).await;
+    let us_map = line_join(&mut us_c2, 104, "8.8.4.5:41641", json!({})).await;
+    assert!(
+        peer_ids(&us_map).contains(&cn_node),
+        "a same-zone peer now: {us_map}"
+    );
+    assert_eq!(
+        routes_by(&us_map),
+        only(&us_node),
+        "outside its bound zone it offers no route: {us_map}"
+    );
+}

@@ -117,14 +117,20 @@ fn zone_of(ip: &str) -> &'static str {
 /// The fixture must actually place each connection, or every refusal test
 /// passes vacuously: assert the observation the server recorded for
 /// `agent_id` names `from` and its zone (a bare connection: no zone at all).
+/// A device that reconnected from elsewhere has a row per connection, so
+/// `from` selects the one under test.
 pub(crate) async fn assert_observed(app: &TestApp, agent_id: &str, from: Option<&str>) {
     let id = ObjectId::parse_str(agent_id).unwrap();
     let rows = app
         .db
         .collection::<bson::Document>(roomler_core::business_authority::OBSERVATIONS_COLLECTION);
+    let mut filter = doc! { "identity.device_id": id };
+    if let Some(ip) = from {
+        filter.insert("client_ip", ip);
+    }
     let mut row = None;
     for _ in 0..30 {
-        row = rows.find_one(doc! { "identity.device_id": id }).await.unwrap();
+        row = rows.find_one(filter.clone()).await.unwrap();
         if row.is_some() {
             break;
         }

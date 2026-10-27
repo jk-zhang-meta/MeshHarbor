@@ -6576,6 +6576,13 @@ pub struct OverlayNode {
     /// route the whole internet with a mis-clicked checkbox.
     #[serde(default)]
     pub approved_routes: Vec<String>,
+    /// v039 GEO-06 — the business zone the route approval is bound to
+    /// (`mainland` / `non_mainland`), set when it is approved under
+    /// `business_isolation = enforce`. While set, the node offers its routes
+    /// only while it is observed in that zone. `None` = unbound (an older
+    /// row, or approved with the rule off or the zone unknown).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routes_zone: Option<String>,
     /// P5 — admin has designated this node as an exit node (routes
     /// `0.0.0.0/0` for opted-in clients). Kept as an explicit flag for the
     /// admin UI + approval semantics; the DATA-PLANE signal a client keys

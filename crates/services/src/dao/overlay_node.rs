@@ -193,6 +193,7 @@ impl OverlayNodeDao {
             approved_routes: Vec::new(),
             // P5 — never an exit node until an admin toggles it on.
             is_exit_node: false,
+            routes_zone: None,
             route_offer_withheld,
             status: AgentStatus::Online,
             last_seen_at: now,
@@ -601,12 +602,14 @@ impl OverlayNodeDao {
         &self,
         node_id: ObjectId,
         approved_routes: &[String],
+        routes_zone: Option<&str>,
     ) -> DaoResult<OverlayNode> {
         self.base
             .update_by_id(
                 node_id,
                 doc! { "$set": {
                     "approved_routes": approved_routes,
+                    "routes_zone": routes_zone,
                     "updated_at": DateTime::now(),
                 } },
             )
