@@ -881,6 +881,9 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 # FR-90 P3-5b — a TLS upstream for the vault proxies' tests: a certificate made
 # per test run (ring, as the tree; already in the lockfile).
 rcgen = { version = "0.13", default-features = false, features = ["ring", "pem"] }
+# v039 CTRL-03 — the TLS servers of tests/control_dns_tls.rs (the vault's
+# optional dependency, as a dev-dependency so the test needs no feature).
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
 
 # ---------------------------------------------------------------------------
 # Packaging metadata
