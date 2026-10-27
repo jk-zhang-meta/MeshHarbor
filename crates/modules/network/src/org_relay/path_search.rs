@@ -7,11 +7,14 @@
 //! backbone policy, and approved edges. Search alone grants no authority.
 
 use super::{ProbeVerdict, rank_legs};
+use bson::oid::ObjectId;
 use std::cmp::Reverse;
-use std::collections::BinaryHeap;
+use std::collections::{BinaryHeap, HashSet};
 
 #[derive(Clone, Copy, Debug)]
 pub(super) struct SearchRelay {
+    /// Stable overlay identity, matching the authorized graph index.
+    pub node_id: ObjectId,
     pub ingress: Option<ProbeVerdict>,
     pub exit: Option<ProbeVerdict>,
     pub load: usize,
@@ -34,6 +37,71 @@ pub(super) struct SearchPath {
     pub load: u128,
     pub unknown_legs: u128,
     pub unreachable_legs: u128,
+}
+
+/// A common ordering for forward and reverse searches. `flipped` means the
+/// second member is the ingress. A tie keeps the forward orientation.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) struct OrientedPath {
+    pub flipped: bool,
+    pub path: SearchPath,
+}
+
+impl SearchPath {
+    fn rank_key(&self) -> (u8, u128, u128, u128, u128, u128) {
+        let hops = self.relays.len() as u128;
+        if self.class == 0 {
+            (0, self.rtt, self.load, hops, 0, 0)
+        } else {
+            (
+                self.class,
+                self.unreachable_legs,
+                hops,
+                self.unknown_legs,
+                self.rtt,
+                self.load,
+            )
+        }
+    }
+}
+
+/// Both inputs must describe the same relays in the same order; only the
+/// member-to-relay probe legs may differ. Directed backbone edges do not
+/// reverse merely because the requesting member changes.
+pub(super) fn shortest_either_direction(
+    forward: &[SearchRelay],
+    reverse: &[SearchRelay],
+    edges: &[SearchEdge],
+) -> Result<Option<OrientedPath>, InvalidGraph> {
+    if forward.len() != reverse.len()
+        || forward
+            .iter()
+            .zip(reverse)
+            .any(|(a, b)| a.node_id != b.node_id || a.load != b.load)
+    {
+        return Err(InvalidGraph);
+    }
+    let a = shortest(forward, edges)?;
+    let b = shortest(reverse, edges)?;
+    Ok(match (a, b) {
+        (None, None) => None,
+        (Some(path), None) => Some(OrientedPath {
+            flipped: false,
+            path,
+        }),
+        (None, Some(path)) => Some(OrientedPath {
+            flipped: true,
+            path,
+        }),
+        (Some(a), Some(b)) if a.rank_key() <= b.rank_key() => Some(OrientedPath {
+            flipped: false,
+            path: a,
+        }),
+        (Some(_), Some(b)) => Some(OrientedPath {
+            flipped: true,
+            path: b,
+        }),
+    })
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -77,6 +145,10 @@ pub(super) fn shortest(
     }
     fn add(a: Cost, b: Cost) -> Cost {
         (a.0 + b.0, a.1 + b.1, a.2 + b.2, a.3 + b.3, a.4 + b.4)
+    }
+    let mut identities = HashSet::new();
+    if relays.iter().any(|relay| !identities.insert(relay.node_id)) {
+        return Err(InvalidGraph);
     }
     let mut adjacency = vec![Vec::new(); relays.len()];
     for (index, edge) in edges.iter().enumerate() {
@@ -168,6 +240,7 @@ mod tests {
         load: usize,
     ) -> SearchRelay {
         SearchRelay {
+            node_id: ObjectId::new(),
             ingress,
             exit,
             load,
@@ -214,7 +287,7 @@ mod tests {
 
     #[test]
     fn long_directed_chain_and_cycle_preserve_order_and_never_repeat() {
-        let mut nodes = vec![relay(None, None, 1); 7];
+        let mut nodes: Vec<_> = (0..7).map(|_| relay(None, None, 1)).collect();
         nodes[0].ingress = Some(R(1));
         nodes[6].exit = Some(R(1));
         let mut edges: Vec<_> = (0..6).map(|i| edge(i, i + 1, R(2))).collect();
@@ -469,8 +542,94 @@ mod tests {
     }
 
     #[test]
+    fn both_directions_compare_the_same_policy_and_keep_edge_direction() {
+        let forward = [relay(Some(R(15)), None, 1), relay(None, Some(R(15)), 2)];
+        let mut reverse = [relay(None, Some(R(5)), 1), relay(Some(R(5)), None, 2)];
+        for (a, b) in forward.iter().zip(&mut reverse) {
+            b.node_id = a.node_id;
+        }
+        let edges = [edge(0, 1, R(10)), edge(1, 0, R(10))];
+        let chosen = shortest_either_direction(&forward, &reverse, &edges)
+            .unwrap()
+            .unwrap();
+        assert!(chosen.flipped);
+        assert_eq!(chosen.path.relays, [1, 0]);
+        assert_eq!(chosen.path.edges, [1]);
+        assert_eq!(chosen.path.rtt, 20);
+        let chosen = shortest_either_direction(&forward, &reverse, &edges[..1])
+            .unwrap()
+            .unwrap();
+        assert!(!chosen.flipped);
+        assert_eq!(chosen.path.relays, [0, 1]);
+    }
+
+    #[test]
+    fn direction_ties_are_stable_and_mismatched_inputs_fail_closed() {
+        let forward = [relay(Some(R(1)), Some(R(1)), 3)];
+        let mut reverse = [relay(Some(R(1)), Some(R(1)), 3)];
+        reverse[0].node_id = forward[0].node_id;
+        let chosen = shortest_either_direction(&forward, &reverse, &[])
+            .unwrap()
+            .unwrap();
+        assert!(!chosen.flipped);
+        assert!(shortest_either_direction(&forward, &[], &[]).is_err());
+        let mut bad_load = reverse;
+        bad_load[0].load = 4;
+        assert!(shortest_either_direction(&forward, &bad_load, &[]).is_err());
+        assert!(
+            shortest_either_direction(&forward, &[relay(Some(R(1)), Some(R(1)), 3)], &[]).is_err()
+        );
+        assert!(shortest_either_direction(&[], &[], &[]).unwrap().is_none());
+        assert!(shortest_either_direction(&forward, &reverse, &[edge(0, 1, R(0))]).is_err());
+    }
+
+    #[test]
+    fn direction_comparison_uses_failure_count_and_hops_before_unknown_rtt() {
+        let a = SearchPath {
+            relays: vec![0],
+            edges: vec![],
+            class: 1,
+            rtt: 100,
+            load: 99,
+            unknown_legs: 1,
+            unreachable_legs: 0,
+        };
+        let b = SearchPath {
+            relays: vec![0, 1],
+            edges: vec![0],
+            class: 1,
+            rtt: 0,
+            load: 0,
+            unknown_legs: 1,
+            unreachable_legs: 0,
+        };
+        assert!(a.rank_key() < b.rank_key());
+        let c = SearchPath {
+            relays: vec![0, 1],
+            edges: vec![0],
+            class: 2,
+            rtt: 500,
+            load: 0,
+            unknown_legs: 0,
+            unreachable_legs: 1,
+        };
+        let d = SearchPath {
+            relays: vec![0],
+            edges: vec![],
+            class: 2,
+            rtt: 0,
+            load: 0,
+            unknown_legs: 0,
+            unreachable_legs: 2,
+        };
+        assert!(c.rank_key() < d.rank_key());
+    }
+
+    #[test]
     fn invalid_or_empty_graph_is_not_a_zero_cost_route() {
         assert_eq!(shortest(&[], &[]).unwrap(), None);
+        let repeated = relay(Some(R(0)), Some(R(0)), 0);
+        assert_eq!(shortest(&[repeated, repeated], &[]), Err(InvalidGraph));
         assert_eq!(shortest(&[], &[edge(0, 0, R(0))]), Err(InvalidGraph));
         assert_eq!(
             shortest(&[relay(None, None, 0)], &[edge(0, 2, R(0))]),
