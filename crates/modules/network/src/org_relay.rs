@@ -100,6 +100,46 @@ pub mod candidate_test_support {
         reports.iter().all(|(relay, endpoint, reachable, rtt)|
             state.org_relay.record_probe(member, *relay, endpoint.clone(), *reachable, *rtt))
     }
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    use tokio::sync::oneshot;
+    struct ProbePause {
+        reached: oneshot::Sender<()>,
+        resume: oneshot::Receiver<()>,
+        finished: oneshot::Sender<bool>,
+    }
+    fn pauses() -> &'static Mutex<HashMap<ObjectId, ProbePause>> {
+        static PAUSES: OnceLock<Mutex<HashMap<ObjectId, ProbePause>>> = OnceLock::new();
+        PAUSES.get_or_init(|| Mutex::new(HashMap::new()))
+    }
+    /// Pause one selected identity after node lookup to force the actual
+    /// displaced-connection race in an isolated integration fixture.
+    pub fn pause_next_probe(identity: ObjectId) -> (oneshot::Receiver<()>, oneshot::Sender<()>, oneshot::Receiver<bool>) {
+        let (reached_tx, reached_rx) = oneshot::channel();
+        let (resume_tx, resume_rx) = oneshot::channel();
+        let (finished_tx, finished_rx) = oneshot::channel();
+        let old = pauses().lock().unwrap().insert(identity, ProbePause {
+            reached: reached_tx, resume: resume_rx, finished: finished_tx,
+        });
+        assert!(old.is_none(), "duplicate probe pause fixture");
+        (reached_rx, resume_tx, finished_rx)
+    }
+    pub(super) async fn pause_probe(identity: ObjectId) -> Option<oneshot::Sender<bool>> {
+        let entry = pauses().lock().unwrap().remove(&identity);
+        let ProbePause { reached, resume, finished } = entry?;
+        let _ = reached.send(());
+        let _ = resume.await;
+        Some(finished)
+    }
+    pub fn current_connection_id(state: &NetworkState, identity: ObjectId) -> Option<String> {
+        state.org_relay.live_conn(identity)
+    }
+    /// Read back only fixture probe RTTs; no production route exposes this.
+    pub fn probe_rtts(state: &NetworkState, reporter: ObjectId, relay: ObjectId) -> Vec<Option<u32>> {
+        state.org_relay.probes.get(&(reporter, relay))
+            .map(|records| records.iter().map(|record| record.rtt_ms).collect())
+            .unwrap_or_default()
+    }
     pub async fn select_path(
         state: &NetworkState,
         requester: ObjectId,
@@ -353,6 +393,9 @@ pub struct OrgRelayState {
     join_extras: DashMap<ObjectId, JoinExtras>,
     /// Current overlay join start, used to reject pre-rejoin path probes.
     probe_join_at: DashMap<ObjectId, Instant>,
+    /// Staged path ranking rejects measurements predating endpoint or policy changes.
+    probe_endpoint_at: DashMap<ObjectId, Instant>,
+    probe_policy_at: DashMap<ObjectId, Instant>,
     probes: DashMap<(ObjectId, ObjectId), Vec<ProbeRecord>>,
     /// MeshHarbor #5 — the (relay, endpoint)s each member's last full netmap
     /// offered it to probe ([`probe_targets`]). Replaced on every join.
@@ -369,7 +412,7 @@ pub struct OrgRelayState {
     /// unbinds) and each tunnel client's (its WS binds and unbinds) live
     /// connection on this pod, whose opening observation is its zone
     /// evidence. Keyed by the device's ObjectId, unique across both kinds.
-    live_conns: DashMap<ObjectId, String>,
+    live_conns: DashMap<ObjectId, LiveConnection>,
     trials: trial::PathTrials,
     /// (pair key, relay node) a member measured lossy, until when: the
     /// planner skips that relay for that pair (see [`Self::mark_lossy`]).
@@ -380,6 +423,12 @@ pub struct OrgRelayState {
     last_mint_audit: DashMap<String, ((Option<PeerRelayDenyReason>, bool), Instant)>,
     // Conservative generation for membership/policy decisions spanning async IO.
     eligibility_epoch: AtomicU64,
+}
+
+struct LiveConnection {
+    id: String,
+    /// Taken while the map entry is locked, after any previous report finishes.
+    bound_at: Instant,
 }
 
 impl OrgRelayState {
@@ -397,26 +446,72 @@ impl OrgRelayState {
     /// Bind `agent_id`'s live connection; returns the one it displaced.
     pub fn bind_live_conn(&self, agent_id: ObjectId, conn_id: &str) -> Option<String> {
         self.invalidate_eligibility();
-        self.live_conns
-            .insert(agent_id, conn_id.to_owned())
-            .filter(|old| old != conn_id)
+        let previous = match self.live_conns.entry(agent_id) {
+            dashmap::mapref::entry::Entry::Occupied(mut entry) => {
+                let old = entry.insert(LiveConnection { id: conn_id.to_owned(), bound_at: Instant::now() });
+                Some(old.id)
+            }
+            dashmap::mapref::entry::Entry::Vacant(entry) => {
+                entry.insert(LiveConnection { id: conn_id.to_owned(), bound_at: Instant::now() });
+                None
+            }
+        };
+        self.invalidate_eligibility();
+        previous.filter(|old| old != conn_id)
     }
 
     /// Unbind only while the binding still names `conn_id`: a displaced
     /// connection's late teardown must not unbind its replacement.
     pub fn unbind_live_conn(&self, agent_id: ObjectId, conn_id: &str) -> bool {
-        let gone = self
-            .live_conns
-            .remove_if(&agent_id, |_, bound| bound == conn_id)
-            .is_some();
-        if gone {
-            self.invalidate_eligibility();
-        }
+        let gone = self.live_conns.remove_if(&agent_id, |_, bound| bound.id == conn_id).is_some();
+        if gone { self.invalidate_eligibility(); }
         gone
     }
 
     fn live_conn(&self, agent_id: ObjectId) -> Option<String> {
-        self.live_conns.get(&agent_id).map(|c| c.value().clone())
+        self.live_conns.get(&agent_id).map(|c| c.id.clone())
+    }
+
+    /// Keep the ownership guard until the report has been recorded. A newly
+    /// bound connection cannot overtake an accepted report's timestamp, and a
+    /// displaced socket cannot inject reports after replacement.
+    fn record_probe_from_connection(
+        &self,
+        owner: (ObjectId, &str),
+        reporter: ObjectId,
+        relay: ObjectId,
+        endpoint: String,
+        reachable: bool,
+        rtt_ms: Option<u32>,
+    ) -> bool {
+        let Some(current) = self.live_conns.get(&owner.0) else { return false };
+        if current.id != owner.1 { return false; }
+        let accepted = self.record_probe(reporter, relay, endpoint, reachable, rtt_ms);
+        drop(current);
+        accepted
+    }
+
+    pub(crate) fn note_probe_endpoint_change(&self, node_id: ObjectId) {
+        self.probe_endpoint_at.insert(node_id, Instant::now());
+        self.invalidate_eligibility();
+    }
+
+    pub(crate) fn note_probe_policy_change(&self, agent_id: ObjectId) {
+        self.probe_policy_at.insert(agent_id, Instant::now());
+        self.invalidate_eligibility();
+    }
+
+    /// A join is usable as measurement provenance only when it belongs to the
+    /// connection currently owning this identity. Hold the ownership guard
+    /// across the synchronous state update so a replacement cannot interleave.
+    pub(crate) fn note_join_from_connection(
+        &self, identity: ObjectId, connection_id: &str, node_id: ObjectId, extras: JoinExtras,
+    ) -> Option<bool> {
+        let owner = self.live_conns.get(&identity)?;
+        if owner.id != connection_id { return None; }
+        let changed = self.note_join(node_id, extras);
+        drop(owner);
+        Some(changed)
     }
 
     /// Record what a join said beyond the row. Overwrites on every rejoin so a
@@ -439,6 +534,7 @@ impl OrgRelayState {
         self.invalidate_eligibility();
         self.join_extras.remove(&node_id);
         self.probe_join_at.remove(&node_id);
+        self.probe_endpoint_at.remove(&node_id);
         self.probes.retain(|(reporter, _), _| *reporter != node_id);
     }
 
@@ -3066,6 +3162,7 @@ pub async fn reconcile_acl(state: &NetworkState, tenant_id: ObjectId) {
 pub async fn handle_relay_probe(
     state: &NetworkState,
     ident: NodeIdentity,
+    connection_id: &str,
     relay_node_id: ObjectId,
     endpoint: String,
     reachable: bool,
@@ -3075,10 +3172,15 @@ pub async fn handle_relay_probe(
         return;
     };
     let Some(node_id) = node.id else { return };
-    let accepted =
-        state
-            .org_relay
-            .record_probe(node_id, relay_node_id, endpoint.clone(), reachable, rtt_ms);
+    if node.node_ref != ident.node_ref() { return; }
+    let identity_id = ident.connection_key();
+    #[cfg(feature = "path-planner-test-support")]
+    let finished = candidate_test_support::pause_probe(identity_id).await;
+    let accepted = state.org_relay.record_probe_from_connection(
+        (identity_id, connection_id), node_id, relay_node_id, endpoint.clone(), reachable, rtt_ms,
+    );
+    #[cfg(feature = "path-planner-test-support")]
+    if let Some(finished) = finished { let _ = finished.send(accepted); }
     debug!(reporter = %node_id, relay = %relay_node_id, %endpoint, reachable, ?rtt_ms, accepted,
         "org-relay: reachability report");
     if accepted {
@@ -3322,6 +3424,30 @@ mod tests {
         assert_eq!(scoped_probe_verdict(&map, reporter, relay, &[], Some(now), now), ProbeVerdict::Unknown);
         assert_eq!(scoped_probe_verdict(&map, reporter, relay, &active, None, now), ProbeVerdict::Unknown);
         assert_eq!(scoped_probe_verdict(&map, reporter, relay, &active, Some(now + Duration::from_nanos(1)), now), ProbeVerdict::Unknown);
+    }
+
+    #[test]
+    fn displaced_connection_cannot_record_a_late_probe() {
+        let state = OrgRelayState::new();
+        let identity = ObjectId::new();
+        let reporter = ObjectId::new();
+        let relay = ObjectId::new();
+        let endpoint = "8.8.8.8:3478".to_string();
+        state.offer_probes(reporter, &[RelayProbeTargetWire { relay_node_id: relay, endpoints: vec![endpoint.clone()] }]);
+        assert!(state.bind_live_conn(identity, "old").is_none());
+        assert!(state.record_probe_from_connection((identity, "old"), reporter, relay, endpoint.clone(), true, Some(4)));
+        let first = state.live_conns.get(&identity).unwrap().bound_at;
+        assert_eq!(state.bind_live_conn(identity, "new"), Some("old".to_string()));
+        assert!(state.note_join_from_connection(identity, "old", reporter, JoinExtras::default()).is_none());
+        assert!(state.note_join_from_connection(identity, "new", reporter, JoinExtras::default()).is_some());
+        let second = state.live_conns.get(&identity).unwrap().bound_at;
+        assert!(second >= first);
+        assert!(!state.record_probe_from_connection((identity, "old"), reporter, relay, endpoint.clone(), true, Some(1)));
+        assert_eq!(state.probes.get(&(reporter, relay)).unwrap().len(), 1);
+        assert!(!state.unbind_live_conn(identity, "old"));
+        assert!(state.record_probe_from_connection((identity, "new"), reporter, relay, endpoint.clone(), true, Some(7)));
+        assert!(state.unbind_live_conn(identity, "new"));
+        assert!(!state.record_probe_from_connection((identity, "new"), reporter, relay, endpoint, true, Some(1)));
     }
 
     #[test]

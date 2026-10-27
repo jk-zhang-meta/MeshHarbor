@@ -19,6 +19,8 @@ pub(super) struct PreparedGraph {
     pub graph: path_graph::EdgeGraph,
     pub requester_id: ObjectId,
     pub peer_id: ObjectId,
+    pub requester_identity: ObjectId,
+    pub peer_identity: ObjectId,
     pub plans: HashMap<ObjectId, Plan>,
     pub requester_zone: BusinessZone,
     pub peer_zone: BusinessZone,
@@ -158,6 +160,14 @@ pub(super) async fn prepare(
         graph,
         requester_id: a,
         peer_id: b,
+        requester_identity: match &requester.node_ref {
+            NodeRef::Agent { agent_id } => *agent_id,
+            NodeRef::TunnelClient { tunnel_client_id } => *tunnel_client_id,
+        },
+        peer_identity: match &peer.node_ref {
+            NodeRef::Agent { agent_id } => *agent_id,
+            NodeRef::TunnelClient { tunnel_client_id } => *tunnel_client_id,
+        },
         plans,
         requester_zone: za,
         peer_zone: zb,

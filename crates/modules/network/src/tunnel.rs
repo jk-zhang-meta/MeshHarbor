@@ -281,6 +281,7 @@ pub async fn handle_tunnel_client_socket(
         let Some(parsed) = crate::overlay::relay_overlay_msg_from_node(
             &state,
             crate::overlay::NodeIdentity::TunnelClient(tunnel_client_id),
+            &connection_id,
             parsed,
         )
         .await

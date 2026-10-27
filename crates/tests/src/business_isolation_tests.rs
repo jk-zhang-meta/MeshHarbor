@@ -21,7 +21,7 @@ use crate::peer_relay_mint_tests::{
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use bson::oid::ObjectId;
-use futures::SinkExt;
+use futures::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
 use std::time::Duration;
@@ -724,6 +724,34 @@ async fn staged_graph_tracks_three_relay_chain_and_each_acl() {
     ]));
     let chosen = roomler_ai_mod_network::org_relay::candidate_test_support::select_path(l.rig.app.state.network(), cn, us, false).await.unwrap().unwrap();
     assert_eq!(chosen, (vec![gz, mid_id, hk], false));
+    // A real endpoint update away and back must not resurrect an old probe.
+    async fn endpoint_update(ws: &mut Ws, endpoint: &str) {
+        ws.send(Message::Text(json!({"t":"rc:overlay.endpoints", "candidates":[endpoint]}).to_string().into())).await.unwrap();
+        ws.send(Message::Ping(b"endpoint-barrier".to_vec().into())).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while let Some(frame) = ws.next().await {
+                if matches!(frame, Ok(Message::Pong(ref p)) if p.as_ref() == b"endpoint-barrier") { return; }
+            }
+            panic!("socket closed before endpoint barrier");
+        }).await.expect("endpoint barrier timed out");
+    }
+    endpoint_update(&mut mid, "223.6.6.8:41641").await;
+    endpoint_update(&mut mid, "223.6.6.7:41641").await;
+    let after_endpoint_revert = roomler_ai_mod_network::org_relay::candidate_test_support::select_path(net, cn, us, false).await.unwrap().unwrap();
+    assert_eq!(after_endpoint_revert, (vec![mid_id, hk], false));
+    let negative = [(mid_node_id, "223.6.6.7:3478".into(), false, None)];
+    assert!(roomler_ai_mod_network::org_relay::candidate_test_support::record_member_probe_fixture(net, cn, &negative));
+    assert_eq!(roomler_ai_mod_network::org_relay::candidate_test_support::select_path(net, cn, us, false).await.unwrap().unwrap(), (vec![gz, mid_id, hk], false));
+    // The actual policy route also invalidates a probe across A→B→A.
+    let mid_policy_path = format!("/api/tenant/{}/agent/{}/peer-relay-policy", l.rig.seeded.tenant_id, mid_agent);
+    for edges in [json!([]), json!([{ "relay_agent_id": l.hk_agent, "endpoint": LINE, "cross_border": true }])] {
+        let (status, value) = put(&l.rig.app, &mid_policy_path, &l.rig.seeded.admin.access_token,
+            json!({ "serve": true, "approved_backbone_edges": edges })).await;
+        assert_eq!(status, 200, "{value}");
+    }
+    assert_eq!(roomler_ai_mod_network::org_relay::candidate_test_support::select_path(net, cn, us, false).await.unwrap().unwrap(), (vec![mid_id, hk], false));
+    assert!(roomler_ai_mod_network::org_relay::candidate_test_support::record_member_probe_fixture(net, cn, &negative));
+    assert_eq!(roomler_ai_mod_network::org_relay::candidate_test_support::select_path(net, cn, us, false).await.unwrap().unwrap(), (vec![gz, mid_id, hk], false));
     // A rejoin invalidates the old direct-to-middle measurement even when
     // its endpoint string happens to stay unchanged.
     line_join(&mut mid, 6, "223.6.6.7:41641", json!({ "relay_backbone_ready": true })).await;
@@ -736,6 +764,53 @@ async fn staged_graph_tracks_three_relay_chain_and_each_acl() {
     let edges = roomler_ai_mod_network::org_relay::candidate_test_support::prepare_edges(l.rig.app.state.network(), cn, us, false).await.unwrap();
     assert!(edges.is_empty(), "no edge may use the no-longer-granted middle relay");
     assert!(roomler_ai_mod_network::org_relay::candidate_test_support::select_path(l.rig.app.state.network(), cn, us, false).await.unwrap().is_none());
+}
+
+/// A displaced agent WS can stay open. Its late report must not be accepted
+/// after a replacement has bound; the replacement's own report still works.
+#[tokio::test]
+async fn staged_graph_rejects_probe_from_displaced_agent_socket() {
+    let mut l = LineRig::up("iso-probe-owner", true).await;
+    let us = ObjectId::parse_str(&l.us_node).unwrap();
+    let hk = ObjectId::parse_str(&l.hk_node).unwrap();
+    let endpoint = "1.1.1.1:3478";
+    let net = l.rig.app.state.network();
+    assert!(roomler_ai_mod_network::org_relay::candidate_test_support::record_member_probe_fixture(
+        net, us, &[(hk, endpoint.into(), true, Some(30))]));
+    let node = net.overlay_nodes.base.find_by_id(us).await.unwrap();
+    let identity = match node.node_ref {
+        roomler_ai_remote_control::models::NodeRef::Agent { agent_id } => agent_id,
+        _ => panic!("fixture must be an agent"),
+    };
+    let old_connection = roomler_ai_mod_network::org_relay::candidate_test_support::current_connection_id(net, identity).unwrap();
+    let (reached, release, finished) = roomler_ai_mod_network::org_relay::candidate_test_support::pause_next_probe(identity);
+    let report = |rtt| Message::Text(json!({"t":"rc:overlay.relay_probe", "relay_node_id":hk.to_hex(),
+        "endpoint":endpoint, "reachable":true, "rtt_ms":rtt}).to_string().into());
+    l.us.send(report(1)).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(5), reached).await.unwrap().unwrap();
+    let mut replacement = connect_from(&l.rig.app, &l.us_tok, &[], Some(US_A)).await;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if roomler_ai_mod_network::org_relay::candidate_test_support::current_connection_id(net, identity)
+                .is_some_and(|id| id != old_connection) { break; }
+            tokio::task::yield_now().await;
+        }
+    }).await.expect("replacement was not bound");
+    release.send(()).unwrap();
+    assert!(!tokio::time::timeout(Duration::from_secs(5), finished).await.unwrap().unwrap());
+    assert_eq!(roomler_ai_mod_network::org_relay::candidate_test_support::probe_rtts(net, us, hk), vec![Some(30)]);
+    async fn barrier(ws: &mut Ws, nonce: &'static [u8]) {
+        ws.send(Message::Ping(nonce.to_vec().into())).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while let Some(frame) = ws.next().await {
+                if matches!(frame, Ok(Message::Pong(ref payload)) if payload.as_ref() == nonce) { return; }
+            }
+            panic!("socket closed before ping barrier");
+        }).await.expect("ping barrier timed out");
+    }
+    replacement.send(report(20)).await.unwrap();
+    barrier(&mut replacement, b"new-probe-barrier").await;
+    assert_eq!(roomler_ai_mod_network::org_relay::candidate_test_support::probe_rtts(net, us, hk), vec![Some(30), Some(20)]);
 }
 
 /// A line ends with its edge's `cross_border` flag and with either relay's

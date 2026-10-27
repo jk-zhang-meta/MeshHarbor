@@ -29,12 +29,57 @@ pub(super) fn select(
     let now = Instant::now();
     let a = prepared.requester_id;
     let b = prepared.peer_id;
-    // Both the reporting node and target must have joined before the
-    // measurement. Missing join evidence is conservatively unknown.
-    let cutoff = |reporter, target| {
-        let a = state.org_relay.probe_join_at.get(&reporter).map(|at| *at);
-        let b = state.org_relay.probe_join_at.get(&target).map(|at| *at);
-        a.zip(b).map(|(a, b)| a.max(b))
+    // Both nodes must have current live connections and have joined. A
+    // replacement connection invalidates earlier observations even before
+    // its own overlay join; the final mint still must revalidate atomically.
+    let cutoff = |reporter, reporter_identity, target, target_identity| {
+        let r_join = state.org_relay.probe_join_at.get(&reporter).map(|at| *at)?;
+        let t_join = state.org_relay.probe_join_at.get(&target).map(|at| *at)?;
+        let r_bind = state
+            .org_relay
+            .live_conns
+            .get(&reporter_identity)
+            .map(|c| c.bound_at)?;
+        let t_bind = state
+            .org_relay
+            .live_conns
+            .get(&target_identity)
+            .map(|c| c.bound_at)?;
+        if r_join < r_bind || t_join < t_bind {
+            return None;
+        }
+        let r_endpoint = state
+            .org_relay
+            .probe_endpoint_at
+            .get(&reporter)
+            .map(|at| *at)
+            .unwrap_or(r_join);
+        let t_endpoint = state
+            .org_relay
+            .probe_endpoint_at
+            .get(&target)
+            .map(|at| *at)
+            .unwrap_or(t_join);
+        let r_policy = state
+            .org_relay
+            .probe_policy_at
+            .get(&reporter_identity)
+            .map(|at| *at)
+            .unwrap_or(r_bind);
+        let t_policy = state
+            .org_relay
+            .probe_policy_at
+            .get(&target_identity)
+            .map(|at| *at)
+            .unwrap_or(t_bind);
+        Some(
+            r_join
+                .max(t_join)
+                .max(r_endpoint)
+                .max(t_endpoint)
+                .max(r_policy)
+                .max(t_policy),
+        )
     };
     let mut forward = Vec::with_capacity(prepared.graph.relays.len());
     let mut reverse = Vec::with_capacity(prepared.graph.relays.len());
@@ -48,7 +93,12 @@ pub(super) fn select(
             a,
             relay.node_id,
             &plan.endpoints,
-            cutoff(a, relay.node_id),
+            cutoff(
+                a,
+                prepared.requester_identity,
+                relay.node_id,
+                relay.agent_id,
+            ),
             now,
         );
         let b_probe = super::scoped_probe_verdict(
@@ -56,7 +106,7 @@ pub(super) fn select(
             b,
             relay.node_id,
             &plan.endpoints,
-            cutoff(b, relay.node_id),
+            cutoff(b, prepared.peer_identity, relay.node_id, relay.agent_id),
             now,
         );
         let load = state.org_relay.sessions_on_relay(relay.node_id);
@@ -87,7 +137,9 @@ pub(super) fn select(
                 std::slice::from_ref(&edge.endpoint),
                 cutoff(
                     prepared.graph.relays[edge.from].node_id,
+                    prepared.graph.relays[edge.from].agent_id,
                     prepared.graph.relays[edge.to].node_id,
+                    prepared.graph.relays[edge.to].agent_id,
                 ),
                 now,
             ),

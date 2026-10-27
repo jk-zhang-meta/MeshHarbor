@@ -307,7 +307,7 @@ pub async fn set_policy(
         .agents
         .update_peer_relay_policy(tid, aid, &requested)
         .await?;
-    state.org_relay.invalidate_eligibility();
+    state.org_relay.note_probe_policy_change(aid);
     // Remove all affected live two-leg trials synchronously before audit IO;
     // adding an unrelated edge leaves existing paths and direct peers alone.
     let revoked = crate::org_relay::revoke_removed_backbone_edges_sync(

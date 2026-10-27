@@ -131,6 +131,7 @@ impl AgentMsgHandler for NetworkAgentSocket {
         let msg = crate::overlay::relay_overlay_msg_from_node(
             state,
             NodeIdentity::Agent(ctx.agent_id),
+            &ctx.conn_id,
             msg,
         )
         .await?;

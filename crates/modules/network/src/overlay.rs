@@ -67,7 +67,11 @@ pub enum NodeIdentity {
 }
 
 impl NodeIdentity {
-    fn node_ref(self) -> NodeRef {
+    pub(crate) fn connection_key(self) -> ObjectId {
+        match self { Self::Agent(id) | Self::TunnelClient(id) => id }
+    }
+
+    pub(crate) fn node_ref(self) -> NodeRef {
         match self {
             NodeIdentity::Agent(id) => NodeRef::Agent { agent_id: id },
             NodeIdentity::TunnelClient(id) => NodeRef::TunnelClient {
@@ -84,6 +88,7 @@ impl NodeIdentity {
 pub async fn relay_overlay_msg_from_node(
     state: &NetworkState,
     ident: NodeIdentity,
+    connection_id: &str,
     parsed: ClientMsg,
 ) -> Option<ClientMsg> {
     match parsed {
@@ -116,6 +121,7 @@ pub async fn relay_overlay_msg_from_node(
             handle_overlay_join(
                 state,
                 ident,
+                connection_id,
                 wg_public_key,
                 key_epoch,
                 instance,
@@ -314,6 +320,7 @@ pub async fn relay_overlay_msg_from_node(
             crate::org_relay::handle_relay_probe(
                 state,
                 ident,
+                connection_id,
                 relay_node_id,
                 endpoint,
                 reachable,
@@ -370,6 +377,7 @@ async fn handle_overlay_warm_relay_request(state: &NetworkState, ident: NodeIden
 async fn handle_overlay_join(
     state: &NetworkState,
     ident: NodeIdentity,
+    connection_id: &str,
     wg_public_key: String,
     key_epoch: u32,
     instance: Option<String>,
@@ -653,8 +661,8 @@ async fn handle_overlay_join(
     // build or an org that stopped saying it.
     if let Some(id) = self_node.id {
         let previous = state.org_relay.join_extras(id);
-        let listener_changed = state.org_relay.note_join(
-            id,
+        let Some(listener_changed) = state.org_relay.note_join_from_connection(
+            ident.connection_key(), connection_id, id,
             crate::org_relay::JoinExtras {
                 org_primary,
                 relay_port,
@@ -666,7 +674,10 @@ async fn handle_overlay_join(
                 relay_backbone_ready,
                 supports_backbone_only_v1,
             },
-        );
+        ) else {
+            debug!(?ident, "overlay: stale connection's join discarded");
+            return;
+        };
         let mut withdrawn = crate::org_relay::revoke_backbone_node_sync(
             state,
             tenant_id,
@@ -918,6 +929,9 @@ async fn handle_overlay_endpoints(
         return;
     }
 
+    // Every successful write advances provenance, including repeated values:
+    // concurrent A→B→A writes may have read the same old A.
+    state.org_relay.note_probe_endpoint_change(self_id);
     let mut updated = self_node;
     updated.endpoints = candidates;
     let epoch = next_epoch();
@@ -961,6 +975,9 @@ async fn handle_overlay_srflx(
         return;
     }
 
+    // Every successful write advances provenance, including repeated values:
+    // concurrent A→B→A writes may have read the same old A.
+    state.org_relay.note_probe_endpoint_change(self_id);
     let mut updated = self_node;
     updated.srflx_endpoints = candidates;
     updated.srflx_nat = nat;
