@@ -1317,7 +1317,9 @@ async fn handle_overlay_relay_request(
         && self_node.supports_derp
         && peer.supports_forced_derp
         && peer.supports_derp;
-    if pair_supports_forced_derp && note_relay_request(state, &pair_key) {
+    if pair_supports_forced_derp
+        && note_relay_request(state, &pair_key, evidence.current_kind.as_deref())
+    {
         let derp_url = pair_derp_url(state, &self_node, &peer, &pair_key);
         tracing::info!(
             %pair_key, requester = %self_id, peer = %peer_node_id,
@@ -1463,6 +1465,18 @@ pub fn churn_note_request(pc: &mut PairChurn, now: Instant) -> bool {
     false
 }
 
+/// P7 — [`churn_note_request`] for a request that names the carrier it
+/// replaces. An ORG carrier is not TURN: its session ended because the server
+/// revoked it or its relay left, and the ORG planner has already judged that
+/// (loss pin, next relay). So such a request counts no cycle and consumes no
+/// grant; a standing pin still answers it.
+pub fn churn_note_replacement(pc: &mut PairChurn, now: Instant, replacing: Option<&str>) -> bool {
+    if replacing == Some("org") {
+        return forced_active(pc, now);
+    }
+    churn_note_request(pc, now)
+}
+
 /// P7 — kill-switch: `ROOMLER__OVERLAY__FORCED_DERP=0|false` disables the
 /// escalation entirely (default ON — it is additionally gated on both ends'
 /// advertised capability and the churn threshold).
@@ -1477,8 +1491,8 @@ fn forced_derp_enabled() -> bool {
 }
 
 /// P7 — record + decide for a live request (the impure wrapper around
-/// [`churn_note_request`]), with the size-capped stale sweep.
-fn note_relay_request(state: &NetworkState, pair_key: &str) -> bool {
+/// [`churn_note_replacement`]), with the size-capped stale sweep.
+fn note_relay_request(state: &NetworkState, pair_key: &str, replacing: Option<&str>) -> bool {
     let now = Instant::now();
     if state.relay_pair_churn.len() > CHURN_MAP_CAP {
         state.relay_pair_churn.retain(|_, pc| {
@@ -1495,7 +1509,7 @@ fn note_relay_request(state: &NetworkState, pair_key: &str) -> bool {
         .relay_pair_churn
         .entry(pair_key.to_string())
         .or_default();
-    churn_note_request(entry.value_mut(), now)
+    churn_note_replacement(entry.value_mut(), now, replacing)
 }
 
 /// U1 — pure arming rule: stamp `last_grant_at` ONLY when unarmed.
@@ -4332,6 +4346,52 @@ mod tests {
         let after = t0 + Duration::from_secs(110) + FORCED_DERP_TTL + Duration::from_secs(1);
         assert!(!churn_note_request(&mut pc, after));
         assert_eq!(pc.cycles, 0);
+    }
+
+    /// Field 2026-10-27 (rf-84f661a5a7e3): a request that replaces an ORG
+    /// carrier is no TURN churn. The pair's three ORG sessions ended (a relay
+    /// stopped, a lossy relay revoked, the relay stopped again) and each
+    /// re-request counted a cycle, so the pair was pinned to DERP for 30 min
+    /// with no TURN carrier ever dying, and stayed there after a relay came
+    /// back. Such a request counts nothing and consumes no grant; a standing
+    /// pin still answers it.
+    #[test]
+    fn an_org_replacement_is_not_turn_churn() {
+        let t0 = Instant::now();
+        let mut pc = PairChurn::default();
+        for n in 1..=5u64 {
+            pc.last_grant_at = Some(t0 + Duration::from_secs(60 * (n - 1)));
+            assert!(
+                !churn_note_replacement(
+                    &mut pc,
+                    t0 + Duration::from_secs(60 * n - 30),
+                    Some("org")
+                ),
+                "ORG replacement #{n} must not escalate"
+            );
+            assert_eq!(pc.cycles, 0);
+            assert!(
+                pc.last_grant_at.is_some(),
+                "the grant stays armed for a TURN death"
+            );
+        }
+        assert!(pc.forced_until.is_none());
+
+        // A TURN (or DERP) replacement still counts, through the same entry.
+        let mut pc = PairChurn::default();
+        for (n, kind) in [(1u64, Some("turn")), (2, Some("derp")), (3, None)] {
+            pc.last_grant_at = Some(t0 + Duration::from_secs(30 * (n - 1)));
+            let escalated =
+                churn_note_replacement(&mut pc, t0 + Duration::from_secs(30 * n - 10), kind);
+            assert_eq!(escalated, n == 3, "{kind:?}");
+        }
+
+        // A standing pin answers an ORG replacement (a restarted end).
+        assert!(churn_note_replacement(
+            &mut pc,
+            t0 + Duration::from_secs(100),
+            Some("org")
+        ));
     }
 
     /// ORG loss — a window fails the carrier at 5% of at least 1000
