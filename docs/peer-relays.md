@@ -524,6 +524,40 @@ one-hop session and is never told the private endpoint.
   measured first, then partly measured, then any measured unreachable (last, never
   excluded); then summed RTT; then both relays' load. An older relay ignores the field.
 
+## A slow direct path moves to a relay: path trials
+
+A pair that is direct but slow can move onto an org relay that is faster, and back once
+direct is no slower. This is latency-first routing (EasyTier's `--latency-first`);
+Tailscale never leaves a working direct path. It is **off by default**: the member
+needs `ROOMLERD_PATH_TRIAL=1`, and the tenant's peer-relay mode must be `on` (an
+`auto` tenant gets the ranked mint, not trials).
+
+1. A member with a direct peer asks the server for a trial on a relay that discovery
+   offers ([`path_trial.rs`](../crates/tunnel-core/src/overlay/runtime/path_trial.rs),
+   at most one request a minute). The server re-runs every mint gate and starts the
+   trial on **both** members ([`trial.rs`](../crates/modules/network/src/org_relay/trial.rs)).
+2. Each member binds the relay and sends paired authenticated echoes, one over direct
+   and one over the relay, every 0.5 s.
+3. A member is ready when three consecutive windows of three rounds each show the
+   relay at most 0.75× direct **and** at least 20 ms faster. The server commits only
+   when both are ready; both ends switch in the same instant, and direct stays warm.
+4. Once direct is again within 1.10× of the relay, the pair returns the same way.
+
+The gap between 0.75× and 1.10× is the hysteresis: a pair does not flap between two
+paths of about the same RTT.
+
+**Lab, 2026-10-27 (houston, `ptlab`).** The lab used real `roomlerd`,
+`roomler-ai-api`, mongod and redis, each in its own network namespace. netem added
+60 ms each way to m1↔m2 only, and the relay was next to both. The pair went direct
+first (public tier). Its trial was requested 0.3 s later. 8 s later it was ready
+(direct 120.2 ms, relay 0.26 ms), and both ends committed in the same millisecond.
+After netem was removed, both returned to direct 7.4 s later, in the same millisecond
+(direct 0.21 ms, relay 0.22 ms). Nothing else moved the pair while it was committed.
+
+**Not shown yet:** a field pair; the business stall during a switch (make-before-break,
+not measured); a trial over a two-relay path; and chains of more than two relays, which
+need a wire change.
+
 ## What the relay operator can see — tell customers this
 
 The relay cannot read the traffic. That is true and incomplete, and the missing half

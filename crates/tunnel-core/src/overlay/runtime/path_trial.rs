@@ -151,6 +151,18 @@ impl Measurements {
         self.good = if good { 3 } else { 0 };
         self.fresh_good = (good || direct_good).then(|| self.windows[0].2);
     }
+    /// Median RTT (ms) of the direct and relay echoes over the open windows,
+    /// for the trial's log lines.
+    fn medians(&self) -> (Option<f64>, Option<f64>) {
+        let med = |mut v: Vec<f64>| {
+            v.sort_by(f64::total_cmp);
+            v.get(v.len() / 2).copied()
+        };
+        (
+            med(self.windows.iter().filter_map(|w| w.0).collect()),
+            med(self.windows.iter().filter_map(|w| w.1).collect()),
+        )
+    }
     fn return_ready(&self, now: Instant) -> bool {
         self.direct_good >= 3
             && self
@@ -266,6 +278,7 @@ impl Engine {
         let Some(t) = self.trials.remove(&id) else {
             return;
         };
+        info!(trial = %id, peer = %t.peer_id, notify, "overlay path-trial: cancelled");
         if matches!(t.phase, Phase::Binding | Phase::Measuring | Phase::Ready) {
             if let Some(requested) = t.requested.clone() {
                 if self.failed_requests.len() >= MAX_TRIALS {
@@ -367,6 +380,8 @@ impl Engine {
                 if self.trials.contains_key(&trial_id) || self.retired.contains(&trial_id) {
                     return;
                 }
+                info!(trial = %trial_id, peer = %peer_node_id, relay = %relay_node_id,
+                    "overlay path-trial: started by the server — binding the relay, then measuring it against direct");
                 let allowed = local_enabled
                     && ctx.org_primary
                     && supported
@@ -541,6 +556,9 @@ impl Engine {
                 );
                 t.committed_since = Some(now);
                 t.phase = Phase::Committed;
+                let (d, r) = t.measurements.medians();
+                info!(trial = %trial_id, peer = %t.peer_id, direct_ms = ?d, relay_ms = ?r,
+                    "overlay path-trial: committed — the pair rides the org relay, direct kept warm to return to");
                 t.last_control = now;
                 ctx.path_trial_managed
                     .lock()
@@ -652,6 +670,9 @@ impl Engine {
                     installed.insert(t.peer_id, direct);
                     t.committed_since = Some(now);
                     t.phase = Phase::Returned;
+                    let (d, r) = t.measurements.medians();
+                    info!(trial = %trial_id, peer = %t.peer_id, direct_ms = ?d, relay_ms = ?r,
+                        "overlay path-trial: returned to direct — it is no slower than the relay again");
                 }
                 t.last_control = Instant::now();
                 Self::send(
@@ -932,6 +953,9 @@ impl Engine {
                         .await
                     {
                         t.phase = Phase::Ready;
+                        let (d, r) = t.measurements.medians();
+                        info!(trial = %id, peer = %t.peer_id, direct_ms = ?d, relay_ms = ?r,
+                            "overlay path-trial: the relay measured faster than direct — ready to commit");
                     }
                 } else if t.phase == Phase::Ready {
                     self.cancel(id, ctx, wg, peers, installed, true).await;
@@ -1079,6 +1103,8 @@ impl Engine {
             .await
             {
                 discovery.note_attempt(peers, peer, &candidate, now);
+                info!(%peer, relay = %candidate.relay_node_id, exit = ?candidate.exit_relay_node_id,
+                    "overlay path-trial: requested a relay trial for a direct peer");
                 self.pending_request = Some(RequestedCandidate {
                     peer_id: peer,
                     request_id: serial,
