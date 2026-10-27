@@ -3557,3 +3557,87 @@ async fn org_only_fallback_multi_peer_query_budget_allows_128_and_bounds_129() {
     let rows=audit_rows(&rig.app,&rig.seeded).await;
     assert_eq!(rows.iter().filter(|r|r["action"]=="mint" && r["denied"].is_null()).count(),3);
 }
+
+/// `join` from `a`'s socket under a given process instance (`None` = an
+/// older node that sends none).
+async fn rejoin_as(ws: &mut Ws, seed: u8, instance: Option<&str>) {
+    let mut msg = json!({
+        "t": "rc:overlay.join",
+        "wg_public_key": BASE64.encode([seed; 32]),
+        "mtu": 1280,
+        "endpoints": ["203.0.113.10:41641"],
+        "supports_org_relay": true,
+        "supports_server_relay_strategy": true,
+        "relay_port": 3478,
+        "org_primary": true,
+    });
+    if let Some(i) = instance {
+        msg["instance"] = json!(i);
+    }
+    ws.send(Message::Text(msg.to_string().into()))
+        .await
+        .expect("send join");
+    recv_t(ws, "rc:overlay.netmap", Duration::from_secs(5))
+        .await
+        .expect("a netmap answers the join");
+}
+
+/// Field 2026-10-27 (rf-e17c20cfdb71): a relay restarted twice, its fresh
+/// requests counted against the grants from before each restart, and its
+/// three pairs were pinned to DERP for 30 min. A join under a new process
+/// instance forgets the node's armed grants and counted cycles, keeping a
+/// standing pin; a reconnect under the same instance, or a join without
+/// one, changes nothing.
+#[tokio::test]
+async fn a_restarted_node_starts_its_churn_count_afresh() {
+    use roomler_ai_mod_network::overlay::{
+        PairChurn, arm_grant, churn_note_request, org_loss_pin, pair_key,
+    };
+    let mut rig = Rig::up("restart-churn", true, Some(true)).await;
+    let pk = pair_key(
+        ObjectId::parse_str(&rig.a_node).unwrap(),
+        ObjectId::parse_str(&rig.b_node).unwrap(),
+    );
+    let now = std::time::Instant::now();
+    let t = now - Duration::from_secs(60);
+    let mut churn = PairChurn::default();
+    arm_grant(&mut churn, t);
+    assert!(!churn_note_request(&mut churn, t + Duration::from_secs(10)));
+    arm_grant(&mut churn, t + Duration::from_secs(20));
+    org_loss_pin(&mut churn, now);
+    let before = format!("{churn:?}");
+    let mut fresh = PairChurn::default();
+    org_loss_pin(&mut fresh, now);
+    let forgotten = format!("{fresh:?}");
+    assert_ne!(before, forgotten);
+    rig.app
+        .state
+        .network()
+        .relay_pair_churn
+        .insert(pk.clone(), churn);
+    let state = |rig: &Rig| {
+        format!(
+            "{:?}",
+            rig.app
+                .state
+                .network()
+                .relay_pair_churn
+                .get(&pk)
+                .unwrap()
+                .value()
+        )
+    };
+
+    rejoin_as(&mut rig.a, 1, Some("one")).await;
+    assert_eq!(state(&rig), before, "a first-seen instance is no restart");
+    rejoin_as(&mut rig.a, 1, Some("one")).await;
+    assert_eq!(state(&rig), before, "a reconnect keeps the count");
+    rejoin_as(&mut rig.a, 1, None).await;
+    assert_eq!(state(&rig), before, "an older node keeps the count");
+    rejoin_as(&mut rig.a, 1, Some("two")).await;
+    assert_eq!(
+        state(&rig),
+        forgotten,
+        "a restart forgets grants, keeps the pin"
+    );
+}

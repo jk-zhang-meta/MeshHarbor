@@ -90,6 +90,7 @@ pub async fn relay_overlay_msg_from_node(
         ClientMsg::OverlayJoin {
             wg_public_key,
             key_epoch,
+            instance,
             endpoints,
             supports_quic,
             supports_relay_single,
@@ -117,6 +118,7 @@ pub async fn relay_overlay_msg_from_node(
                 ident,
                 wg_public_key,
                 key_epoch,
+                instance,
                 endpoints,
                 supports_quic,
                 supports_relay_single,
@@ -370,6 +372,7 @@ async fn handle_overlay_join(
     ident: NodeIdentity,
     wg_public_key: String,
     key_epoch: u32,
+    instance: Option<String>,
     endpoints: Vec<String>,
     supports_quic: bool,
     supports_relay_single: bool,
@@ -793,6 +796,8 @@ async fn handle_overlay_join(
 
     if let Some(id) = self_node.id {
         state.admission_nodes.insert(id, self_node.clone());
+        // Before the netmap, so the node's first requests already count afresh.
+        forget_restarted_grants(state, id, instance.as_deref());
     }
 
     // Full netmap → joiner.
@@ -1540,6 +1545,30 @@ fn note_grant_sent(state: &NetworkState, pair_key: &str) {
                 ..Default::default()
             },
         );
+    }
+}
+
+/// P7 — a join under a new process instance is a restart: the node's armed
+/// TURN grants were for carriers that died with the old process, so its
+/// fresh requests must not count as churn against them (field 2026-10-27,
+/// rf-e17c20cfdb71: a relay restarted twice and its three pairs were pinned
+/// to DERP for 30 min). Its pairs keep only a standing pin, which the rejoin
+/// re-push re-delivers. A reconnect (same instance), a first-seen instance
+/// and an older node (none) change nothing.
+fn forget_restarted_grants(state: &NetworkState, node_id: ObjectId, instance: Option<&str>) {
+    let Some(instance) = instance else { return };
+    let previous = state.node_instances.insert(node_id, instance.to_owned());
+    if previous.is_none_or(|p| p == instance) {
+        return;
+    }
+    let hex = node_id.to_hex();
+    for mut e in state.relay_pair_churn.iter_mut() {
+        if e.key().split(':').any(|k| k == hex) {
+            let pc = e.value_mut();
+            pc.last_grant_at = None;
+            pc.cycles = 0;
+            pc.window_start = None;
+        }
     }
 }
 

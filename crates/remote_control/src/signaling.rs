@@ -2229,6 +2229,11 @@ pub enum ClientMsg {
         wg_public_key: String,
         #[serde(default)]
         key_epoch: u32,
+        /// P7 — this process's random id, fixed for its life: a join under a
+        /// new one is a restart, not a reconnect, so the server forgets the
+        /// node's armed TURN grants. Absent from older nodes.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        instance: Option<String>,
         /// Transports the node speaks (`["wireguard-v1", ...]`).
         #[serde(default)]
         supported: Vec<String>,
@@ -10672,6 +10677,7 @@ mod tests {
             network_hint: None,
             wg_public_key: "cHVia2V5".into(),
             key_epoch: 0,
+            instance: Some("0f1e2d3c4b5a6978".into()),
             supported: vec!["wireguard-v1".into(), "quic-v1".into()],
             mtu: 1280,
             endpoints: vec!["203.0.113.5:51820".into()],
@@ -10697,6 +10703,7 @@ mod tests {
         };
         let s = serde_json::to_string(&m).unwrap();
         assert!(s.contains(r#""t":"rc:overlay.join""#));
+        assert!(s.contains(r#""instance":"0f1e2d3c4b5a6978""#));
         match serde_json::from_str::<ClientMsg>(&s).unwrap() {
             ClientMsg::OverlayJoin {
                 wg_public_key,

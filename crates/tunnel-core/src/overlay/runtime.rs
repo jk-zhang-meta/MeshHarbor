@@ -957,6 +957,12 @@ fn cancel_org_upgrade_candidate(
     }
 }
 
+/// P7 — this process's join instance (`ClientMsg::OverlayJoin::instance`).
+fn process_instance() -> &'static str {
+    static ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    ID.get_or_init(|| format!("{:016x}", rand::random::<u64>()))
+}
+
 fn org_peer_identity(peer: &NetmapPeer) -> Option<([u8; 32], Ipv4Addr)> {
     peer_config_from_netmap(peer).map(|p| (p.public_key, p.overlay_ip))
 }
@@ -2382,6 +2388,7 @@ impl OverlayRuntime {
             network_hint: None,
             wg_public_key: self.keypair.public_base64(),
             key_epoch: self.key_epoch,
+            instance: Some(process_instance().to_owned()),
             supported: vec!["wireguard-v1".to_string()],
             mtu: self.mtu,
             endpoints,

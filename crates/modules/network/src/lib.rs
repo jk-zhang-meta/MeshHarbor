@@ -128,6 +128,9 @@ pub struct NetworkState {
     /// keyed by the symmetric `pair_key`. Manual TTL (checked on access) +
     /// a size-capped retain sweep — see [`overlay::PairChurn`].
     pub relay_pair_churn: Arc<DashMap<String, overlay::PairChurn>>,
+    /// P7 — each node's last joined process instance, so a restart (a new
+    /// one) is told from a reconnect. Pod-local like `relay_pair_churn`.
+    pub node_instances: Arc<DashMap<ObjectId, String>>,
     /// FR-19 — the org-relay mint's pod-local state: minted sessions (keyed
     /// by pair), per-relay VNI cursors, the server-wide generation clock,
     /// join extras (primary-org flag, relay port) and reachability reports.
@@ -307,6 +310,7 @@ impl Module for NetworkState {
             derp_acl: Arc::new(DashMap::new()),
             derp_cancels: Arc::new(DashMap::new()),
             relay_pair_churn: Arc::new(DashMap::new()),
+            node_instances: Arc::new(DashMap::new()),
             org_relay: Arc::new(org_relay::OrgRelayState::new()),
             overlay_ctrl_tx,
             ssh_audit: Arc::new(SshAuditDao::new(db)),
