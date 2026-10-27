@@ -1274,3 +1274,51 @@ async fn identical_private_prefixes_in_two_zones_stay_distinct() {
         "outside its bound zone it offers no route: {us_map}"
     );
 }
+
+#[tokio::test]
+async fn staged_graph_tunnel_displaced_probe_is_rejected() {
+    let rig = Rig::up("iso-tunnel-probe-owner", "enforce").await;
+    let et: Value = rig.app.auth_post(
+        &format!("/api/tenant/{}/tunnel-client/enroll-token", rig.seeded.tenant_id),
+        &rig.seeded.admin.access_token,
+    ).send().await.unwrap().json().await.unwrap();
+    let enrolled: Value = rig.app.client.post(rig.app.url("/api/tunnel-client/enroll"))
+        .json(&json!({"enrollment_token":et["enrollment_token"], "machine_id":"mach-tunnel-probe-owner",
+            "machine_name":"tunnel-probe-owner", "os":"linux", "client_version":"0.3.0-test"}))
+        .send().await.unwrap().json().await.unwrap();
+    let identity = ObjectId::parse_str(enrolled["tunnel_client_id"].as_str().unwrap()).unwrap();
+    let token = enrolled["tunnel_client_token"].as_str().unwrap();
+    let url = format!("ws://{}/ws?token={}&role=tunnel-client", rig.app.addr,
+        token.replace('+', "%2B").replace('/', "%2F").replace('=', "%3D"));
+    let (mut old, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+    line_join(&mut old, 31, "223.6.6.6:41641", json!({})).await;
+    let net = rig.app.state.network();
+    let node = roomler_ai_mod_network::overlay::current_node(net,
+        roomler_ai_mod_network::overlay::NodeIdentity::TunnelClient(identity)).await.unwrap().id.unwrap();
+    let relay = ObjectId::new();
+    let endpoint = "1.1.1.1:3478";
+    assert!(roomler_ai_mod_network::org_relay::candidate_test_support::record_member_probe_fixture(
+        net, node, &[(relay, endpoint.into(), true, Some(30))]));
+    let old_conn = roomler_ai_mod_network::org_relay::candidate_test_support::current_connection_id(net, identity).unwrap();
+    let (reached, release, finished) = roomler_ai_mod_network::org_relay::candidate_test_support::pause_next_probe(identity);
+    let report = |rtt| Message::Text(json!({"t":"rc:overlay.relay_probe", "relay_node_id":relay.to_hex(),
+        "endpoint":endpoint, "reachable":true, "rtt_ms":rtt}).to_string().into());
+    old.send(report(1)).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(5), reached).await.unwrap().unwrap();
+    let (mut replacement, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+    line_join(&mut replacement, 31, "223.6.6.6:41641", json!({})).await;
+    assert_ne!(roomler_ai_mod_network::org_relay::candidate_test_support::current_connection_id(net, identity).unwrap(), old_conn);
+    release.send(()).unwrap();
+    assert!(!tokio::time::timeout(Duration::from_secs(5), finished).await.unwrap().unwrap());
+    assert_eq!(roomler_ai_mod_network::org_relay::candidate_test_support::probe_rtts(net, node, relay), vec![Some(30)]);
+    assert!(roomler_ai_mod_network::org_relay::candidate_test_support::record_member_probe_fixture(
+        net, node, &[(relay, endpoint.into(), true, Some(30))]));
+    replacement.send(report(20)).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let rtts = roomler_ai_mod_network::org_relay::candidate_test_support::probe_rtts(net, node, relay);
+            if rtts == vec![Some(30), Some(30), Some(20)] { break; }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }).await.expect("current tunnel report must be accepted");
+}
