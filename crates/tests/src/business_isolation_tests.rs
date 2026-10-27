@@ -1308,11 +1308,13 @@ async fn staged_graph_tunnel_displaced_probe_is_rejected() {
     let (mut replacement, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
     line_join(&mut replacement, 31, "223.6.6.6:41641", json!({})).await;
     assert_ne!(roomler_ai_mod_network::org_relay::candidate_test_support::current_connection_id(net, identity).unwrap(), old_conn);
-    release.send(()).unwrap();
-    assert!(!tokio::time::timeout(Duration::from_secs(5), finished).await.unwrap().unwrap());
-    assert_eq!(roomler_ai_mod_network::org_relay::candidate_test_support::probe_rtts(net, node, relay), vec![Some(30)]);
+    // Re-offer the same endpoint before the old report resumes, so offer
+    // withdrawal cannot accidentally hide a missing ownership check.
     assert!(roomler_ai_mod_network::org_relay::candidate_test_support::record_member_probe_fixture(
         net, node, &[(relay, endpoint.into(), true, Some(30))]));
+    release.send(()).unwrap();
+    assert!(!tokio::time::timeout(Duration::from_secs(5), finished).await.unwrap().unwrap());
+    assert_eq!(roomler_ai_mod_network::org_relay::candidate_test_support::probe_rtts(net, node, relay), vec![Some(30), Some(30)]);
     replacement.send(report(20)).await.unwrap();
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
