@@ -390,7 +390,12 @@ cascade's guarantees while replacing its reactive counters:
   failure books a decaying penalty `W = 2×(B − B_relay)` (400/260/120) with
   half-life **60 s** ordinarily and **900 s** after repeated failures
   (2 strikes for LAN/public, 3 for srflx) — reproducing the old 60 s cooldown
-  and 15 min escalated deny bit-for-bit at the decision boundaries. A tier is
+  and 15 min escalated deny bit-for-bit at the decision boundaries. Under
+  make-before-break a probe that expires without latching never escalates: the
+  relay carried every packet, so a healed path is retried about once a minute
+  however long the outage ran (only a carrier that died climbs to 900 s;
+  field 2026-10-27, a 10 min block had left the healed direct path untried
+  for ~12 min). A tier is
   probe-eligible iff `B − P ≥ B_relay`, and because penalties always decay to
   zero, **every tier retries eventually — lockout is impossible by
   construction**. Penalties are keyed per-(peer, tier), so CC1 — a routinely

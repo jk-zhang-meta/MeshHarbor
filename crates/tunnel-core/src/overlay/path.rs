@@ -181,7 +181,8 @@ pub(crate) const B_RELAY: f64 = 200.0;
 /// Ordinary suppression half-life ≡ the legacy `DIRECT_COOLDOWN` (60 s).
 pub(crate) const H_ORDINARY: Duration = Duration::from_secs(60);
 /// Escalated suppression half-life ≡ the legacy `DIRECT_DENY_COOLDOWN` /
-/// `SRFLX_DENY_COOLDOWN` (both 15 min since rc.225).
+/// `SRFLX_DENY_COOLDOWN` (both 15 min since rc.225). Reached by carrier
+/// deaths, and by probe expiries only without make-before-break.
 pub(crate) const H_ESCALATED: Duration = Duration::from_secs(15 * 60);
 /// #30 — how long a peer that is RELAYING to us holds every direct tier
 /// ineligible (see [`PathMonitor::on_peer_relayed_instead`]). Must comfortably
@@ -616,8 +617,16 @@ impl PathMonitor {
     /// A direct-tier attempt FAILED (carrier death on that tier, or a probe
     /// expiry): book the strike + the suppression penalty. `mbb` is the
     /// make-before-break env state at failure time (the legacy escalation
-    /// table reads it at the same moment).
-    fn book_failure(&mut self, peer: &ObjectId, tier: DirectTier, mbb: bool, now: Instant) {
+    /// table reads it at the same moment). `shadow`: the failure is a probe
+    /// that never latched, so under make-before-break nothing was disrupted.
+    fn book_failure(
+        &mut self,
+        peer: &ObjectId,
+        tier: DirectTier,
+        mbb: bool,
+        shadow: bool,
+        now: Instant,
+    ) {
         let Some(idx) = tier_idx(tier) else { return };
         let lane_tier = matches!(tier, DirectTier::Public | DirectTier::Srflx)
             || (tier == DirectTier::Lan && !self.fast_return_lan_off);
@@ -644,9 +653,18 @@ impl PathMonitor {
         }
         let t = &mut p.tiers[idx];
         t.fails += 1;
+        // A shadow probe cost nothing (the relay carried throughout), so it
+        // never climbs the ladder: a healed path is retried about once a
+        // minute however long the outage ran. Its strike still rotates the
+        // dial candidate.
+        let half_life = if shadow && mbb {
+            H_ORDINARY
+        } else {
+            suppression_half_life(tier, t.fails, mbb)
+        };
         t.penalty = Some(Penalty {
             w: weight(tier),
-            half_life: suppression_half_life(tier, t.fails, mbb),
+            half_life,
             at: now,
         });
     }
@@ -689,7 +707,7 @@ impl PathMonitor {
             return;
         }
         if tier.is_direct() {
-            self.book_failure(peer, tier, mbb, now);
+            self.book_failure(peer, tier, mbb, false, now);
         }
         let p = self.peers.entry(*peer).or_default();
         match tier_idx(tier) {
@@ -725,7 +743,7 @@ impl PathMonitor {
         now: Instant,
     ) {
         if tier.is_direct() {
-            self.book_failure(peer, tier, mbb, now);
+            self.book_failure(peer, tier, mbb, false, now);
         }
         let p = self.peers.entry(*peer).or_default();
         // #30 — a hard window on top of the penalty. The penalty ALONE does not
@@ -821,8 +839,9 @@ impl PathMonitor {
 
     /// A probe settled. Latched: Q credit + tier strikes clear (≡ the legacy
     /// promote's `*_fails.remove`) + switch recorded (the promote IS the
-    /// switch). Expired: the tier failure books (strike + penalty), and — F1
-    /// — NO Q event.
+    /// switch). Expired: the tier failure books (strike + penalty; under
+    /// make-before-break never past the ordinary half-life), and — F1 — NO
+    /// Q event.
     pub(crate) fn on_probe_result(
         &mut self,
         peer: &ObjectId,
@@ -851,7 +870,7 @@ impl PathMonitor {
                 p.fast_return_until = None;
             }
             ProbeOutcome::Expired => {
-                self.book_failure(peer, tier, mbb, now);
+                self.book_failure(peer, tier, mbb, true, now);
             }
         }
     }
@@ -1871,6 +1890,59 @@ mod tests {
         m.on_probe_result(&a, DirectTier::Srflx, ProbeOutcome::Expired, true, t0);
         assert_eq!(m.strikes(&a, DirectTier::Srflx), 1);
         assert!(!m.eligible(&a, DirectTier::Srflx, t0 + past_short));
+    }
+
+    /// A make-before-break probe that never latched cost the pair nothing:
+    /// the relay carried every packet. So however long an outage outlasts
+    /// the fast-return lane, its expiries keep the ordinary half-life and
+    /// the tier is retried about once a minute (strikes still count, for
+    /// candidate rotation). Field 2026-10-27 (rf-84f661a5a7e3): a 10 min
+    /// direct block escalated srflx to 15 min on both ends, so the healed
+    /// direct path was not retried for ~12 min. A carrier that DIED still
+    /// climbs the ladder, as does any expiry without make-before-break.
+    #[test]
+    fn a_shadow_probe_expiry_never_escalates() {
+        let a = oid(1);
+        let after_ordinary = H_ORDINARY + Duration::from_secs(1);
+        for tier in [DirectTier::Srflx, DirectTier::Public] {
+            let mut m = PathMonitor::default();
+            let mut t = Instant::now();
+            for n in 1..=6 {
+                m.on_probe_started(&a, tier, t);
+                t += Duration::from_secs(15);
+                m.on_probe_result(&a, tier, ProbeOutcome::Expired, true, t);
+                assert_eq!(m.strikes(&a, tier), n, "{tier:?} strikes still count");
+                assert!(!m.eligible(&a, tier, t + Duration::from_secs(30)));
+                assert!(
+                    m.eligible(&a, tier, t + after_ordinary),
+                    "{tier:?} expiry #{n} must keep the ordinary half-life"
+                );
+                t += after_ordinary;
+            }
+
+            let mut m = PathMonitor::default();
+            let mut t = Instant::now();
+            for _ in 0..3 {
+                m.on_death(&a, tier, DeathReason::HandshakeDeadline, true, t);
+                t += after_ordinary;
+            }
+            assert!(
+                !m.eligible(&a, tier, t + after_ordinary),
+                "{tier:?} deaths still escalate"
+            );
+
+            let mut m = PathMonitor::default();
+            let mut t = Instant::now();
+            for _ in 0..3 {
+                m.on_probe_started(&a, tier, t);
+                m.on_probe_result(&a, tier, ProbeOutcome::Expired, false, t);
+                t += after_ordinary;
+            }
+            assert!(
+                !m.eligible(&a, tier, t + after_ordinary),
+                "{tier:?} legacy ladder without MBB"
+            );
+        }
     }
 
     /// F — `explain` must never contradict the selector it describes. The
