@@ -19,7 +19,9 @@ use super::*;
 /// Health sweeps per ORG verdict window (the sweep runs every 5 s).
 const WINDOW_SWEEPS: u8 = 6;
 /// A window short of [`MIN_PACKETS`] stays open up to this many sweeps
-/// (10 min), so a light stream is judged too: ~3.3 min at 5 packets/s.
+/// (10 min), so a light stream is judged too: ~3.3 min at 5 packets/s. A run
+/// of its latest sweeps that clearly loses ([`clearly_lossy`]) is judged
+/// before that, on its own.
 const MAX_WINDOW_SWEEPS: u8 = 120;
 /// Packets the peer must have sent in a window before its loss is judged.
 const MIN_PACKETS: u64 = 1000;
@@ -74,6 +76,22 @@ impl Via {
     }
 }
 
+/// The latest run of at least [`WINDOW_SWEEPS`] sweeps in `window` whose loss
+/// is clearly over [`LOSSY_PCT`], as `(span, accepted)`: the shortest such
+/// run, so the clean sweeps before a relay turned lossy do not dilute it.
+fn clearly_lossy(window: &std::collections::VecDeque<(u64, u64)>) -> Option<(u64, u64)> {
+    let (mut s, mut a) = (0u64, 0u64);
+    for (i, (ds, da)) in window.iter().rev().enumerate() {
+        (s, a) = (s + ds, a + da);
+        if i + 1 >= usize::from(WINDOW_SWEEPS)
+            && crate::loss::loss_clearly_at_least(s, s.saturating_sub(a), LOSSY_PCT)
+        {
+            return Some((s, a));
+        }
+    }
+    None
+}
+
 /// The share of `span` packets that never arrived, once `span` is big enough
 /// to judge. A window can read slightly negative (a late packet of the last
 /// one); that is no loss.
@@ -85,8 +103,8 @@ pub(super) fn loss_pct(span: u64, accepted: u64) -> Option<f64> {
 pub(super) struct RxLoss {
     /// Each peer's last cumulative `(span, accepted)` and when it was read.
     prev: HashMap<ObjectId, (u64, u64, Instant)>,
-    /// The open ORG verdict window per peer: `(span, accepted, sweeps)`.
-    win: HashMap<ObjectId, (u64, u64, u8)>,
+    /// The open ORG verdict window per peer: each sweep's `(span, accepted)`.
+    win: HashMap<ObjectId, std::collections::VecDeque<(u64, u64)>>,
     /// `(span, accepted)` per [`Via`] since the last summary.
     by: [(u64, u64); 4],
     /// ORG windows judged lossy since the last summary.
@@ -121,20 +139,26 @@ impl RxLoss {
             return None;
         }
         let w = self.win.entry(peer).or_default();
-        w.0 += ds;
-        w.1 += da;
-        w.2 += 1;
-        if w.2 < WINDOW_SWEEPS || (w.0 < MIN_PACKETS && w.2 < MAX_WINDOW_SWEEPS) {
+        w.push_back((ds, da));
+        if w.len() < usize::from(WINDOW_SWEEPS) {
             return None;
         }
-        let (ws, wa, _) = std::mem::take(w);
-        if loss_pct(ws, wa).is_some_and(|p| p >= REPORT_PCT) {
+        let (ts, ta) = w.iter().fold((0, 0), |(s, a), (ds, da)| (s + ds, a + da));
+        let early = clearly_lossy(w);
+        if early.is_none() && ts < MIN_PACKETS && w.len() < usize::from(MAX_WINDOW_SWEEPS) {
+            return None;
+        }
+        w.clear();
+        let (ws, wa) = early.unwrap_or((ts, ta));
+        let judged = loss_pct(ws, wa)
+            .or_else(|| early.map(|_| ws.saturating_sub(wa) as f64 * 100.0 / ws as f64));
+        if judged.is_some_and(|p| p >= REPORT_PCT) {
             if self.reports.len() == MAX_REPORTS {
                 self.reports.remove(0);
             }
             self.reports.push((peer, ws, ws.saturating_sub(wa)));
         }
-        let pct = loss_pct(ws, wa).filter(|p| *p >= LOSSY_PCT)?;
+        let pct = judged.filter(|p| *p >= LOSSY_PCT)?;
         self.lossy += 1;
         if self
             .last_log
@@ -243,9 +267,9 @@ mod tests {
         );
         let mut l = RxLoss::default();
         assert_eq!(
-            feed(&mut l, Via::Org, 6, 100, 50, t0),
+            feed(&mut l, Via::Org, 6, 100, 93, t0),
             None,
-            "600 packets: too few to judge"
+            "7% of 600 packets: too few to judge, not clearly over 5%"
         );
         let mut l = RxLoss::default();
         assert_eq!(
@@ -272,7 +296,7 @@ mod tests {
         for (via, sweeps, sent, got, why) in [
             (Via::Org, 6, 500, 497, "0.6% is not reported"),
             (Via::Org, 5, 500, 400, "the window is still open"),
-            (Via::Org, 6, 100, 50, "600 packets: too few to judge"),
+            (Via::Org, 6, 100, 93, "7% of 600 packets: too few to judge"),
             (Via::Derp, 6, 500, 400, "only ORG windows are reported"),
         ] {
             let mut l = RxLoss::default();
@@ -291,24 +315,71 @@ mod tests {
         let t0 = Instant::now();
         let mut l = RxLoss::default();
         assert_eq!(
-            feed(&mut l, Via::Org, 39, 25, 23, t0),
+            feed(&mut l, Via::Org, 39, 25, 24, t0),
             None,
             "975 packets: still open"
         );
+        assert!(l.take_reports().is_empty(), "nothing closed yet");
         let mut l = RxLoss::default();
-        let pct = feed(&mut l, Via::Org, 40, 25, 23, t0).expect("8% over 1000 packets");
-        assert!((pct - 8.0).abs() < 1e-9, "{pct}");
-        assert_eq!(l.take_reports(), vec![(peer(), 1000, 80)]);
+        assert_eq!(
+            feed(&mut l, Via::Org, 40, 25, 24, t0),
+            None,
+            "4% is no verdict"
+        );
+        assert_eq!(l.take_reports(), vec![(peer(), 1000, 40)], "judged at 1000");
 
         // Too light to judge even then: the window closes unjudged at the
         // cap, and the next one starts empty.
         let mut l = RxLoss::default();
-        assert_eq!(feed(&mut l, Via::Org, MAX_WINDOW_SWEEPS, 5, 4, t0), None);
+        assert_eq!(feed(&mut l, Via::Org, MAX_WINDOW_SWEEPS, 5, 5, t0), None);
         assert!(l.take_reports().is_empty());
         assert!(
-            l.win.get(&peer()).is_some_and(|w| *w == (0, 0, 0)),
+            l.win.get(&peer()).is_some_and(|w| w.is_empty()),
             "a fresh window"
         );
+    }
+
+    /// Field 2026-10-27 (rf-a728a26325a1): a light stream (~2.4 packets/s)
+    /// needs ~7 min for 1000 packets, so the window that saw a relay start
+    /// losing 10% reached back to before it and read 4.6%. A run of recent
+    /// sweeps whose loss is clearly over [`LOSSY_PCT`] is judged on its own,
+    /// within about 200 lossy packets, and at its own loss.
+    #[test]
+    fn a_light_stream_turning_lossy_is_judged_on_its_recent_sweeps() {
+        let t0 = Instant::now();
+        let mut l = RxLoss::default();
+        let at = |i: u64| t0 + Duration::from_secs(5 * i);
+        let (mut s, mut a) = (10, 10);
+        l.note(peer(), Via::Org, (s, a), t0);
+        for i in 1..=60 {
+            (s, a) = (s + 10, a + 10);
+            assert_eq!(l.note(peer(), Via::Org, (s, a), at(i)), None, "clean");
+        }
+        let mut verdict = None;
+        for i in 61..=90 {
+            (s, a) = (s + 10, a + 9);
+            if let Some(pct) = l.note(peer(), Via::Org, (s, a), at(i)) {
+                verdict = Some((i - 60, pct));
+                break;
+            }
+        }
+        let (after, pct) = verdict.expect("judged within 30 sweeps of the onset");
+        assert!((pct - 10.0).abs() < 1e-9, "its own loss, undiluted: {pct}");
+        let reports = l.take_reports();
+        assert_eq!(
+            reports,
+            vec![(peer(), after * 10, after)],
+            "reported as judged"
+        );
+
+        // A light stream that steadily loses 4% is never judged lossy early.
+        let mut l = RxLoss::default();
+        let (mut s, mut a) = (10, 10);
+        l.note(peer(), Via::Org, (s, a), t0);
+        for i in 1..=u64::from(MAX_WINDOW_SWEEPS) {
+            (s, a) = (s + 25, a + 24);
+            assert_eq!(l.note(peer(), Via::Org, (s, a), at(i)), None, "sweep {i}");
+        }
     }
 
     #[test]

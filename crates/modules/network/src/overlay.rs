@@ -1725,10 +1725,17 @@ const ORG_LOSS_FAIL_PCT: u64 = 5;
 const ORG_LOSS_PIN_TTL: Duration = Duration::from_secs(600);
 
 /// Pure: does a window of `packets` with `lost` of them missing fail the
-/// pair's ORG carrier?
+/// pair's ORG carrier? A smaller window fails too when its loss is clearly
+/// over the line (`tunnel_core::loss::loss_clearly_at_least`): a member closes one
+/// early for a light stream, which needs minutes for 1000 packets.
 pub fn org_loss_fails(packets: u64, lost: u64) -> bool {
-    packets >= ORG_LOSS_MIN_PACKETS
-        && lost.min(packets).saturating_mul(100) >= packets.saturating_mul(ORG_LOSS_FAIL_PCT)
+    (packets >= ORG_LOSS_MIN_PACKETS
+        && lost.min(packets).saturating_mul(100) >= packets.saturating_mul(ORG_LOSS_FAIL_PCT))
+        || tunnel_core::loss::loss_clearly_at_least(
+            packets,
+            lost,
+            ORG_LOSS_FAIL_PCT as f64,
+        )
 }
 
 /// Pure: pin a pair for an ORG loss verdict. Never shortens a pin already
@@ -4454,7 +4461,15 @@ mod tests {
         assert!(org_loss_fails(31_000, 2_294), "7.4%, the field's relay");
         assert!(org_loss_fails(1_000, 50), "exactly 5%");
         assert!(!org_loss_fails(1_000, 49));
-        assert!(!org_loss_fails(999, 999), "too few packets to judge");
+        assert!(
+            !org_loss_fails(999, 60),
+            "6% of 999: too few, not clearly over"
+        );
+        assert!(
+            org_loss_fails(200, 20),
+            "10% of a light stream's 200: clearly over"
+        );
+        assert!(!org_loss_fails(99, 99), "under the early floor");
         assert!(!org_loss_fails(0, 0));
         assert!(org_loss_fails(2_000, u64::MAX), "capped at the span");
         assert!(!org_loss_fails(u64::MAX, 0), "no overflow");

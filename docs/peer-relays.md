@@ -432,6 +432,11 @@ transport counters it already authenticates (`PeerStats::note_rx_counter`, `wg.r
 Every closed window that lost at least 1% is reported, and the **server** decides. A
 window closes after ~30 s once it holds 1000 packets; a light stream keeps it open until
 it does, up to 10 minutes (`MAX_WINDOW_SWEEPS`), so ~5 packets/s is judged in ~3.3 min.
+A run of the window's latest sweeps (≥ 30 s) whose loss is **clearly** over 5% closes it
+early, judged on that run alone (`tunnel_core::loss::loss_clearly_at_least`: the Wilson
+lower bound at z = 3, from 100 packets). Field 2026-10-27 (rf-a728a26325a1): at ~2.4
+packets/s a 1000-packet window took ~7 min and reached back to before a relay started
+losing 10%, so it read 4.6%; a 10% relay is now judged at ~200 packets, at its own loss.
 It first marks that relay lossy **for that pair** for 10 minutes (`mark_lossy`; other
 pairs keep the relay) and revokes the session, audited `org_relay_lossy`. If the planner
 still finds a relay for the pair (granted, live, in its zone), the pair is minted there
@@ -446,7 +451,7 @@ sequenceDiagram
 
     Note over B: a 30 s window of A's stream:<br/>8% of 3000 packets lost
     B->>S: rc:overlay.org_relay_loss {peer A, vni, packets, lost}
-    Note over S: only B's own live session, matched by VNI ·<br/>≥ 5% of ≥ 1000 packets · mode on or auto ·<br/>both ends support DERP and the pin
+    Note over S: only B's own live session, matched by VNI ·<br/>≥ 5% of ≥ 1000 packets, or clearly over 5% · mode on or auto ·<br/>both ends support DERP and the pin
     S->>S: pin the pair to DERP for 10 min (the P7 pin)
     S->>A: rc:overlay.force_derp {peer B, ttl_ms, region}
     S->>B: rc:overlay.force_derp {peer A, ttl_ms, region}
@@ -475,7 +480,8 @@ sequenceDiagram
   packets. A report about any other session, or under the threshold, is dropped.
 - **The threshold is the server's** (`org_loss_fails`,
   [`overlay.rs:1653`](../crates/modules/network/src/overlay.rs#L1653)): 5% of at least
-  1000 packets. Loss-based TCP over 50 ms is held near 1.4 Mbit/s at 3% and 0.7 at 8%.
+  1000 packets, or a smaller window (from 100) whose loss is clearly over 5%. Loss-based
+  TCP over 50 ms is held near 1.4 Mbit/s at 3% and 0.7 at 8%.
   The client reports from 1% (`REPORT_PCT`), so the server's threshold can move without
   a client roll.
 - **Old peers are safe.** A client reports only when the netmap carries

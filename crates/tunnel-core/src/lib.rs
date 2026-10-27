@@ -53,6 +53,8 @@ pub mod forward;
 /// compiling this crate's data plane — webrtc, quinn, turn and rustls are
 /// non-optional here, 285 crates in the default graph.
 pub use roomler_localapi as localapi;
+/// v039 — the ORG loss-window test shared by member and server.
+pub mod loss;
 pub mod mux;
 /// Overlay L3 data plane (userspace WireGuard mesh) — feature `overlay`.
 #[cfg(feature = "overlay")]
