@@ -1278,18 +1278,21 @@ fn rank_key(
     relay_id: ObjectId,
     now: Instant,
 ) -> (u8, u32) {
-    let a = state.org_relay.probe_verdict(a, relay_id, now);
-    let b = state.org_relay.probe_verdict(b, relay_id, now);
-    let class = match (a, b) {
-        (ProbeVerdict::Unreachable, _) | (_, ProbeVerdict::Unreachable) => 2u8,
-        (ProbeVerdict::Reachable(_), ProbeVerdict::Reachable(_)) => 0,
-        _ => 1,
-    };
-    let rtt = |v: ProbeVerdict| match v {
-        ProbeVerdict::Reachable(r) => r,
-        _ => 0,
-    };
-    (class, rtt(a) + rtt(b))
+    rank_legs([
+        state.org_relay.probe_verdict(a, relay_id, now),
+        state.org_relay.probe_verdict(b, relay_id, now),
+    ])
+}
+
+/// Rank any number of measured legs using the worst reachability class,
+/// followed by the sum of known RTTs. Unknown/unreachable legs add no RTT,
+/// matching the existing one- and two-relay ranking policy.
+fn rank_legs(legs: impl IntoIterator<Item = ProbeVerdict>) -> (u8, u32) {
+    legs.into_iter().fold((0, 0u32), |(class, rtt), leg| match leg {
+        ProbeVerdict::Reachable(ms) => (class, rtt.saturating_add(ms)),
+        ProbeVerdict::Unknown => (class.max(1), rtt),
+        ProbeVerdict::Unreachable => (2, rtt),
+    })
 }
 
 /// Whether `best` beats `current` by enough to move a live pair: both
@@ -1691,20 +1694,7 @@ fn line_rank_key(
         o.backbone_verdict(ingress, exit, now),
         o.probe_verdict(far, exit, now),
     ];
-    let class = if legs.contains(&ProbeVerdict::Unreachable) {
-        2
-    } else if legs.contains(&ProbeVerdict::Unknown) {
-        1
-    } else {
-        0
-    };
-    let rtt = legs
-        .iter()
-        .map(|v| match v {
-            ProbeVerdict::Reachable(r) => *r,
-            _ => 0,
-        })
-        .fold(0u32, u32::saturating_add);
+    let (class, rtt) = rank_legs(legs);
     (
         class,
         rtt,
@@ -1827,6 +1817,9 @@ async fn mint_line(
             bridge_secrets: [random_secret(), random_secret()],
         }],
     };
+    // Until N-hop minting is implemented, never publish an unsupported
+    // session shape: an entry without serve messages would strand the pair.
+    let [line] = session.hops.as_slice() else { return };
     audit_line(state, &session, warn_only).await;
     if warn_only {
         info!(%tenant_id, requester = %req_id, peer = %peer_id, ingress = %ingress_id,
@@ -1853,7 +1846,6 @@ async fn mint_line(
         }
         return;
     }
-    let [line] = session.hops.as_slice() else { return };
     info!(%tenant_id, requester = %req_id, peer = %peer_id, ingress = %ingress_id, vni,
         exit = %exit_id, exit_vni, line = %line.private_endpoint,
         "org-relay: a cross-border pair rides its approved line");
@@ -3071,6 +3063,18 @@ mod tests {
         assert_eq!(st.alloc_vni(relay), Some(1));
         // Another relay has its own space.
         assert_eq!(st.alloc_vni(ObjectId::new()), Some(1));
+    }
+
+    #[test]
+    fn path_rank_uses_worst_class_and_saturating_known_rtt_for_any_length() {
+        use ProbeVerdict::{Reachable as R, Unknown as U, Unreachable as X};
+        assert_eq!(rank_legs([R(5), R(9)]), (0, 14));
+        assert_eq!(rank_legs([R(5), U, R(7), U, R(9)]), (1, 21));
+        assert_eq!(rank_legs([R(5), X, U, R(9)]), (2, 14));
+        assert_eq!(rank_legs([R(u32::MAX), R(1)]), (0, u32::MAX));
+        // A later unknown edge can equalize earlier classes, so a search may
+        // not discard the lower-RTT unknown prefix using one Dijkstra label.
+        assert!(rank_legs([R(100), U]) > rank_legs([U, U]));
     }
 
     #[test]
