@@ -962,6 +962,17 @@ impl PathMonitor {
         p.relay_q = Ewma::default();
     }
 
+    /// A disco round heard `tier`'s candidate answer again after it went
+    /// silent: the path is back. Lift the tier's suppression so the next walk
+    /// probes it at once (Tailscale upgrades on a disco pong the same way);
+    /// traffic still moves only when that probe latches. The relayed-instead
+    /// window (#30) stays: it is a selection fact, not a path one.
+    pub(crate) fn on_path_revived(&mut self, peer: &ObjectId, tier: DirectTier) {
+        if let (Some(idx), Some(p)) = (tier_idx(tier), self.peers.get_mut(peer)) {
+            p.tiers[idx].penalty = None;
+        }
+    }
+
     /// FR-33 P2 — the runtime's verdict on whether THIS host can reach the
     /// peer's LAN candidate at all: `true` while the candidate sits in a
     /// prefix the host's own route lookup hands to another interface. A hard
@@ -1943,6 +1954,37 @@ mod tests {
                 "{tier:?} legacy ladder without MBB"
             );
         }
+    }
+
+    /// A revived path lifts its tier's suppression at once, whatever the
+    /// ladder booked; the relayed-instead window stays.
+    #[test]
+    fn a_revived_path_is_eligible_at_once() {
+        let a = oid(1);
+        let mut m = PathMonitor::default();
+        let mut t = Instant::now();
+        for _ in 0..3 {
+            m.on_death(
+                &a,
+                DirectTier::Srflx,
+                DeathReason::HandshakeDeadline,
+                true,
+                t,
+            );
+            t += Duration::from_secs(1);
+        }
+        assert!(!m.eligible(&a, DirectTier::Srflx, t));
+        m.on_path_revived(&a, DirectTier::Srflx);
+        assert!(
+            m.eligible(&a, DirectTier::Srflx, t),
+            "the path answered again"
+        );
+        m.on_peer_relayed_instead(&a, DirectTier::Public, true, t);
+        m.on_path_revived(&a, DirectTier::Public);
+        assert!(
+            !m.eligible(&a, DirectTier::Public, t),
+            "a peer relaying to us still holds it"
+        );
     }
 
     /// F — `explain` must never contradict the selector it describes. The

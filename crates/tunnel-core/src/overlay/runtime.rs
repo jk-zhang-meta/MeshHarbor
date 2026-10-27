@@ -554,6 +554,9 @@ const RELAY_REFRESH_COOLDOWN: Duration = Duration::from_secs(30);
 /// How often the carrier-health sweep runs. Cheap (lock-free atomic reads), so
 /// a tighter cadence is fine and makes detection quicker.
 const FALLBACK_TICK: Duration = Duration::from_secs(5);
+/// How long the walk runs every tick after a direct candidate revives (two
+/// ticks: the probe starts on the first, the second catches a late pong).
+const PATH_REVIVED_WALK: Duration = Duration::from_secs(10);
 /// F2 — how often each direct peer hears our `STANDBY_HELLO`.
 const STANDBY_HELLO_EVERY: Duration = Duration::from_secs(20);
 /// F2 — a proof unanswered this long starts standby copies: longer than a
@@ -2089,9 +2092,10 @@ impl OverlayRuntime {
         by_node: &HashMap<ObjectId, Installed>,
         current_peers: &HashMap<ObjectId, NetmapPeer>,
         direct_ctx: Option<&super::runtime::establish::DirectCtx>,
-    ) {
+    ) -> Vec<(ObjectId, DirectTier)> {
+        let mut back = Vec::new();
         if !crate::overlay::direct::disco_probe_enabled() {
-            return;
+            return back;
         }
         // Absorb replies first so this round's verdicts reflect the last one.
         if let Some(rx) = rx.as_mut() {
@@ -2100,6 +2104,7 @@ impl OverlayRuntime {
                 prober.on_pong(&p);
             }
         }
+        let revived = prober.take_revived();
         // Everything probed this round, per peer — the keep-set for pruning
         // below. A peer contributes either its live carrier path or its
         // candidate set, never both, but collecting them uniformly means the
@@ -2158,12 +2163,23 @@ impl OverlayRuntime {
                 }
                 None => None,
             };
-            for pair in [
-                lan,
-                cands.public.zip(ctx.public_sock.clone()),
-                cands.srflx.and_then(|d| ctx.srflx_sock(d).map(|s| (d, s))),
+            for (tier, pair) in [
+                (DirectTier::Lan, lan),
+                (
+                    DirectTier::Public,
+                    cands.public.zip(ctx.public_sock.clone()),
+                ),
+                (
+                    DirectTier::Srflx,
+                    cands.srflx.and_then(|d| ctx.srflx_sock(d).map(|s| (d, s))),
+                ),
             ] {
                 let Some((dst, sock)) = pair else { continue };
+                // A relayed peer's public/srflx candidate answering again is
+                // the cue to probe it now (LAN keeps its own spacing, P8).
+                if tier != DirectTier::Lan && revived.contains(&(cfg.public_key, dst)) {
+                    back.push((*nid, tier));
+                }
                 let (nonce, frame) =
                     prober.next_ping(&cfg.public_key, &self.keypair.secret, &self.keypair.public);
                 let sent_at = Instant::now();
@@ -2211,6 +2227,7 @@ impl OverlayRuntime {
                 prober.forget(&s.peer);
             }
         }
+        back
     }
 
     fn publish_view(
@@ -3816,7 +3833,18 @@ impl OverlayRuntime {
                     // replies. MEASUREMENT ONLY — nothing below reads the
                     // table to make a routing decision (that is C3/C6, behind
                     // their own flags). Default OFF.
-                    self.disco_round(&mut disco, &mut path_trials, &mut disco_rx, &wg, &by_node, &current_peers, direct_ctx.as_ref()).await;
+                    let revived = self.disco_round(&mut disco, &mut path_trials, &mut disco_rx, &wg, &by_node, &current_peers, direct_ctx.as_ref()).await;
+                    // A relayed peer's direct candidate answers disco again:
+                    // lift its suppression and walk this very tick, so the
+                    // make-before-break probe starts now instead of up to a
+                    // minute after the heal.
+                    if !revived.is_empty() {
+                        for (nid, tier) in &revived {
+                            info!(peer = %nid, ?tier, "overlay: a direct candidate answers disco again after going silent — probing it now (relay held)");
+                            self.shadow(|s| s.mon.on_path_revived(nid, *tier));
+                        }
+                        fast_reupgrade_until = Some(Instant::now() + PATH_REVIVED_WALK);
+                    }
                     // rc.208 — make-before-break: promote any upgrade probe whose
                     // handshake latched (cut over to direct, drop the relay) and
                     // expire any that missed its deadline (keep the relay). Inert

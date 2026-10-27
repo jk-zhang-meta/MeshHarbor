@@ -340,6 +340,10 @@ pub struct DiscoInbound {
 /// cadence that is ~8 minutes of history; at the 5 s discovery cadence, ~80 s.
 pub(crate) const LOSS_WINDOW: u32 = 16;
 
+/// Unanswered rounds in a row after which a pong reports the path revived
+/// (one miss is jitter).
+pub(crate) const REVIVE_AFTER_MISSES: u32 = 2;
+
 /// One measured path to one peer.
 ///
 /// `allow(dead_code)`: the prober that drives this lands in the NEXT commit
@@ -362,6 +366,8 @@ pub(crate) struct PathStats {
     recent_rtts: std::collections::VecDeque<f64>,
     /// The nonce of the round currently outstanding, if any.
     pending: Option<[u8; 8]>,
+    /// Rounds in a row that went unanswered; a matching pong resets it.
+    misses: u32,
 }
 
 impl PathStats {
@@ -375,16 +381,22 @@ impl PathStats {
             self.sent = self.sent.div_ceil(2);
             self.answered = self.answered.div_ceil(2);
         }
+        if self.pending.is_some() {
+            self.misses = self.misses.saturating_add(1);
+        }
         self.pending = Some(nonce);
     }
 
     /// Record a pong. Only a MATCHING nonce counts — a late pong from an
     /// earlier round is ignored rather than credited to the current one.
-    pub(crate) fn on_pong(&mut self, nonce: [u8; 8], rtt_ms: f64) {
+    /// `true` when it ends a silence of [`REVIVE_AFTER_MISSES`] rounds or more.
+    pub(crate) fn on_pong(&mut self, nonce: [u8; 8], rtt_ms: f64) -> bool {
         if self.pending != Some(nonce) {
-            return;
+            return false;
         }
         self.pending = None;
+        let revived = self.misses >= REVIVE_AFTER_MISSES;
+        self.misses = 0;
         self.answered = (self.answered + 1).min(self.sent);
         // EWMA, α = 0.3 — fast enough to track a real path change, slow
         // enough that one scheduling hiccup doesn't dominate.
@@ -396,6 +408,7 @@ impl PathStats {
         if self.recent_rtts.len() > LOSS_WINDOW as usize {
             self.recent_rtts.pop_front();
         }
+        revived
     }
 
     /// W6 — the tail of the windowed RTT distribution: `(p95, max)` over
@@ -458,6 +471,10 @@ pub(crate) struct Prober {
     /// engine.s round validates against the other.s pending entry and yields
     /// a garbage RTT. Field 2026-08-12: `rtt=5000ms` on a 40 ms path.
     seq: u64,
+    /// Paths that answered again after going silent, since the last
+    /// [`take_revived`](Self::take_revived). Pongs are absorbed on two
+    /// cadences, so the report waits here for the disco round.
+    revived: Vec<([u8; 32], SocketAddr)>,
 }
 
 impl Prober {
@@ -528,9 +545,17 @@ impl Prober {
         // drained once per round, so `at.elapsed()` would charge every sample
         // the full distance to the next tick. See `DiscoInbound::at`.
         let rtt = p.at.saturating_duration_since(at).as_secs_f64() * 1000.0;
-        if let Some(s) = self.table.get_mut(&(peer, dst)) {
-            s.on_pong(p.nonce, rtt);
+        if let Some(s) = self.table.get_mut(&(peer, dst))
+            && s.on_pong(p.nonce, rtt)
+            && !self.revived.contains(&(peer, dst))
+        {
+            self.revived.push((peer, dst));
         }
+    }
+
+    /// The paths that answered again after going silent, once each.
+    pub(crate) fn take_revived(&mut self) -> Vec<([u8; 32], SocketAddr)> {
+        std::mem::take(&mut self.revived)
     }
 
     /// Every measured path.
@@ -634,6 +659,50 @@ impl Prober {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A path that went silent and answers again is reported once, the
+    /// moment it comes back; a path that never stopped answering, or missed
+    /// only one round, is never reported (a DPI box that drops WG but passes
+    /// disco must not turn into a probe every round).
+    #[test]
+    fn a_path_that_answers_again_is_reported_once() {
+        let peer = [7u8; 32];
+        let dst: SocketAddr = "203.0.113.7:45210".parse().unwrap();
+        let mut p = Prober::new();
+        let mut n = 0u64;
+        let mut round = |p: &mut Prober, answer: bool| {
+            n += 1;
+            let nonce = n.to_be_bytes();
+            p.sent(peer, dst, nonce);
+            if answer {
+                let at = std::time::Instant::now();
+                p.on_pong(&DiscoInbound {
+                    sender: peer,
+                    nonce,
+                    src: dst,
+                    at,
+                });
+            }
+        };
+        for _ in 0..3 {
+            round(&mut p, true);
+        }
+        assert!(p.take_revived().is_empty(), "never silent");
+        round(&mut p, false);
+        round(&mut p, true);
+        assert!(p.take_revived().is_empty(), "one miss is jitter");
+        round(&mut p, false);
+        round(&mut p, false);
+        round(&mut p, false);
+        round(&mut p, true);
+        assert_eq!(
+            p.take_revived(),
+            vec![(peer, dst)],
+            "back after going silent"
+        );
+        round(&mut p, true);
+        assert!(p.take_revived().is_empty(), "reported once");
+    }
     use crate::transport::stun::has_stun_cookie;
 
     fn kp() -> (StaticSecret, PublicKey) {
