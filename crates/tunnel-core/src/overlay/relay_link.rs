@@ -2078,6 +2078,13 @@ impl RelayCoordinator {
     /// carrier so the dead latch fires and the sweep re-coordinates the pair
     /// onto TURN/DERP (the strategy no longer answers `OrgRelay`). Returns
     /// the peer it belonged to.
+    /// Does `peer` still hold an org-relay session? An installed ORG carrier
+    /// without one is dead: the server revoked it, it expired, or its bind
+    /// failed.
+    pub(crate) fn holds_org_session(&self, peer: &ObjectId) -> bool {
+        self.org_sessions.contains_key(peer)
+    }
+
     pub fn org_session_revoke(&mut self, vni: u32) -> Option<ObjectId> {
         let peer = *self.org_sessions.iter().find(|(_, s)| s.vni == vni)?.0;
         self.drop_org_session(&peer);

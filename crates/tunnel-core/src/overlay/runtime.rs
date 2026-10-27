@@ -4885,6 +4885,10 @@ impl OverlayRuntime {
                             org_q.invalidate(&peer);
                             cancel_org_upgrade_candidate(&peer, &mut wg, &mut by_node);
                             info!(%peer, vni, "overlay relay: org-relay session revoked by the server — the sweep re-coordinates the pair");
+                            // Sweep now: the revoked carrier is convicted at
+                            // once and the pair sends on DERP, instead of
+                            // waiting up to a tick with no send carrier.
+                            fallback.reset_immediately();
                         }
                     }
                     // MeshHarbor #21 — a cross-border peer rides its line
@@ -6330,6 +6334,69 @@ mod tests {
             "the re-arm must restamp the clock — judging a 2 s window against a \
              5 s-old initiation would convict on stale evidence"
         );
+    }
+
+    /// An installed ORG carrier lives only as long as its session. Once the
+    /// server revoked it, the very next sweep convicts the carrier, with no
+    /// send needed to trip the latch first. Field 2026-10-27 (rf-84f661a5a7e3,
+    /// finding 4): a revoke left the pair with no send carrier for 2.8 s and
+    /// 4.5 s, until a send failed and the next 5 s tick saw it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn sweep_convicts_an_org_carrier_whose_session_is_gone() {
+        for (kind, lost) in [(RelayKind::Derp, false), (RelayKind::Org, true)] {
+            let kp = WgKeypair::generate();
+            let peer_kp = WgKeypair::generate();
+            let (out_tx, _out_rx) = mpsc::channel::<ClientMsg>(16);
+            let (tun_mock, _inj, _del) = MockTun::new();
+            let tf: TunFactory = {
+                let m = tun_mock.clone();
+                Box::new(move |_, _, _| Ok(m.clone() as Arc<dyn TunIo>))
+            };
+            let rt = OverlayRuntime::new_relay(kp.clone(), out_tx.clone(), tf, 1280);
+            let mut relay = Some(RelayCoordinator::new(
+                out_tx,
+                kp.public.to_bytes(),
+                true,
+                vec![],
+                None,
+            ));
+            let (mut wg, _tun_rx) = WgDevice::new(kp.secret.clone());
+            let sock = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+            wg.ensure_direct_demux(sock.clone());
+            let ip = Ipv4Addr::new(100, 64, 0, 5);
+            let pk = peer_kp.public.to_bytes();
+            wg.add_direct_peer(sock, pk, ip, "127.0.0.1:9".parse().unwrap(), true)
+                .await;
+            wg.test_latch_handshake_done(&pk);
+            let nid = ObjectId::from_bytes([75, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+            let mut by_node = HashMap::new();
+            by_node.insert(
+                nid,
+                Installed {
+                    since: Instant::now().checked_sub(Duration::from_secs(20)).unwrap(),
+                    last_rx_at: Instant::now(),
+                    relay_kind: Some(kind),
+                    ..Installed::base(pk, ip, DirectTier::Relay, Instant::now())
+                },
+            );
+            let tun: Arc<dyn TunIo> = tun_mock;
+            let mut refresh = HashMap::new();
+            let peers = HashMap::new();
+            assert_eq!(
+                rt.sweep_carrier_health(
+                    &mut wg,
+                    &mut by_node,
+                    &mut relay,
+                    &tun,
+                    &mut refresh,
+                    &peers,
+                    ForcedPoke::No
+                )
+                .await,
+                lost,
+                "{kind:?} carrier with no org session"
+            );
+        }
     }
 
     #[tokio::test(flavor = "multi_thread")]

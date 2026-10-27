@@ -568,7 +568,12 @@ impl OverlayRuntime {
                 business_poke_window: super::business_poke_window(),
                 tier: e.tier,
                 is_direct: e.is_direct,
-                hard_dead: wg.peer_carrier_dead(&e.pubkey).unwrap_or(false),
+                // An ORG carrier lives only as long as its session: once the
+                // server revoked it (or it expired), it is dead before any
+                // send trips the latch.
+                hard_dead: wg.peer_carrier_dead(&e.pubkey).unwrap_or(false)
+                    || (e.relay_kind == Some(RelayKind::Org)
+                        && relay.as_ref().is_some_and(|r| !r.holds_org_session(nid))),
                 handshake_done,
                 since_install: e.since.elapsed(),
                 since_last_rx,
