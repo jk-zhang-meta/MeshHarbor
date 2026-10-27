@@ -554,9 +554,30 @@ first (public tier). Its trial was requested 0.3 s later. 8 s later it was ready
 After netem was removed, both returned to direct 7.4 s later, in the same millisecond
 (direct 0.21 ms, relay 0.22 ms). Nothing else moved the pair while it was committed.
 
-**Not shown yet:** a field pair; the business stall during a switch (make-before-break,
-not measured); a trial over a two-relay path; and chains of more than two relays, which
-need a wire change.
+**Business stall, lab, 2026-10-27 (houston, `ptlab2.sh`).** An echo stream ran m1→m2
+through the overlay for the whole run: one line every 20 ms over SSH (netstack SOCKS →
+the daemon's own SSH server → `cat`), 8 430 echoes. Each arrival was logged, so a stall
+shows as a gap between arrivals.
+
+| Switch | Longest gap | RTT before → after |
+|---|---|---|
+| direct (60 ms netem each way) → relay, committed | 202 ms, once, at the commit | 137 → 0.3 ms |
+| relay → direct, after netem was removed | 20 ms (the send interval: no stall) | 0.3 → 0.2 ms |
+
+The 202 ms is reordering, not loss of the path. The packets still in flight on the slow
+path arrive after the first ones over the relay, and TCP delivers in order. It is about
+one slow-path RTT, and there was no other gap. The commit came 7.7 s after the trial
+started, and the return 38 s after the heal, both ends in the same millisecond each
+time.
+
+Seen in the same run: 0.17 s after the return, the member requested a new trial. While
+direct is fast, a trial is requested about every 80 s and cancelled after 30 s. The
+hysteresis keeps that from moving the pair, but every direct pair with a relay offered
+keeps a relay leg measuring. That cost at scale is not measured.
+
+**Not shown yet:** a field pair (the slow direct path needs netem on a host, which the
+field hosts are not ours to change); a trial over a two-relay path; and chains of more
+than two relays, which need a wire change.
 
 ## What the relay operator can see — tell customers this
 
