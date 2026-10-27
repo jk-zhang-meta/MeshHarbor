@@ -17,6 +17,8 @@ pub(super) struct EligibleRelay {
     pub agent_id: ObjectId,
     pub zone: BusinessZone,
     pub bridge_ready: bool,
+    /// True when eligibility depends on the same-zone implicit server role.
+    pub implicit: bool,
     pub approved_edges: Vec<PeerRelayBackboneEdge>,
 }
 #[derive(Debug, PartialEq, Eq)]
@@ -24,6 +26,8 @@ pub(super) struct GraphEdge {
     pub from: usize,
     pub to: usize,
     pub endpoint: String,
+    /// Exact approval bit, retained for per-edge revalidation and audit.
+    pub cross_border: bool,
 }
 #[derive(Debug)]
 pub(super) struct EdgeGraph {
@@ -76,7 +80,8 @@ pub(super) fn build(
             };
             if from == to
                 || !relay.bridge_ready
-                || (relay.zone != relays[to].zone && !approved.cross_border)
+                || (relay.zone != relays[to].zone
+                    && (!approved.cross_border || relay.implicit || relays[to].implicit))
                 || !crate::routes::peer_relay::backbone_endpoint_outside_overlay(
                     &approved.endpoint,
                     overlay_cidr,
@@ -88,6 +93,7 @@ pub(super) fn build(
                 from,
                 to,
                 endpoint: approved.endpoint.clone(),
+                cross_border: approved.cross_border,
             });
         }
     }
@@ -105,6 +111,7 @@ mod tests {
             agent_id: agent,
             zone,
             bridge_ready: true,
+            implicit: false,
             approved_edges: vec![],
         }
     }
@@ -152,6 +159,15 @@ mod tests {
             .bridge_ready = false;
         let graph = build(disabled, "100.64.0.0/10").unwrap();
         assert_eq!(graph.edges.len(), 1);
+        let only = &graph.edges[0];
+        assert_eq!(
+            (
+                graph.relays[only.from].agent_id,
+                graph.relays[only.to].agent_id
+            ),
+            (ids[0], ids[1])
+        );
+        assert!(!only.cross_border);
     }
     #[test]
     fn rejects_duplicate_identities_and_approval_table_duplicates() {
@@ -184,7 +200,60 @@ mod tests {
         ));
     }
     #[test]
+    fn cross_zone_requires_explicit_grants_on_both_relays() {
+        let a_id = ObjectId::new();
+        let b_id = ObjectId::new();
+        let mut a = relay(a_id, M);
+        let b = relay(b_id, N);
+        a.approved_edges = vec![edge(b_id, "10.0.0.2:3478", true)];
+        let allowed = build(vec![a.clone(), b.clone()], "100.64.0.0/10").unwrap();
+        assert_eq!(allowed.edges.len(), 1);
+        assert!(allowed.edges[0].cross_border);
+        let mut implicit_source = a.clone();
+        implicit_source.implicit = true;
+        assert!(
+            build(vec![implicit_source, b.clone()], "100.64.0.0/10")
+                .unwrap()
+                .edges
+                .is_empty()
+        );
+        let mut implicit_target = b;
+        implicit_target.implicit = true;
+        assert!(
+            build(vec![a, implicit_target], "100.64.0.0/10")
+                .unwrap()
+                .edges
+                .is_empty()
+        );
+    }
+    #[test]
+    fn self_edges_bad_ids_and_non_unicast_endpoints_are_not_offered() {
+        let ids: Vec<_> = (0..6).map(|_| ObjectId::new()).collect();
+        let mut a = relay(ids[0], M);
+        a.approved_edges = vec![
+            edge(ids[0], "10.0.0.1:3478", false),
+            edge(ids[1], "127.0.0.1:3478", false),
+            edge(ids[2], "10.0.0.2:0", false),
+            edge(ids[3], "localhost:3478", false),
+            edge(ids[4], "[::ffff:10.0.0.4]:3478", false),
+            PeerRelayBackboneEdge {
+                relay_agent_id: "bad-id".into(),
+                endpoint: "10.0.0.5:3478".into(),
+                cross_border: false,
+            },
+        ];
+        let mut all = vec![a];
+        all.extend(ids[1..].iter().map(|id| relay(*id, M)));
+        assert!(build(all, "100.64.0.0/10").unwrap().edges.is_empty());
+    }
+
+    #[test]
     fn rejects_oversized_tables_and_is_deterministic() {
+        let mut exact = relay(ObjectId::new(), M);
+        exact.approved_edges = (0..MAX_PEER_RELAY_BACKBONE_EDGES)
+            .map(|_| edge(ObjectId::new(), "10.0.0.1:3478", false))
+            .collect();
+        assert!(build(vec![exact], "100.64.0.0/10").is_ok());
         let mut a = relay(ObjectId::new(), M);
         a.approved_edges = (0..=MAX_PEER_RELAY_BACKBONE_EDGES)
             .map(|_| edge(ObjectId::new(), "10.0.0.1:3478", false))
@@ -194,11 +263,18 @@ mod tests {
             Err(GraphError::TooManyEdges)
         ));
         let mut b = relay(ObjectId::new(), M);
-        let c = relay(ObjectId::new(), M);
-        b.approved_edges
-            .push(edge(c.agent_id, "10.0.0.3:3478", false));
-        let forward = build(vec![b.clone(), c.clone()], "100.64.0.0/10").unwrap();
-        let reverse = build(vec![c, b], "100.64.0.0/10").unwrap();
+        let mut c = relay(ObjectId::new(), M);
+        let d = relay(ObjectId::new(), M);
+        b.approved_edges = vec![
+            edge(d.agent_id, "10.0.0.4:3478", false),
+            edge(c.agent_id, "10.0.0.3:3478", false),
+        ];
+        c.approved_edges
+            .push(edge(d.agent_id, "10.0.0.5:3478", false));
+        let forward = build(vec![b.clone(), c.clone(), d.clone()], "100.64.0.0/10").unwrap();
+        b.approved_edges.reverse();
+        let reverse = build(vec![d, c, b], "100.64.0.0/10").unwrap();
+        assert_eq!(forward.edges.len(), 3);
         assert_eq!(
             forward
                 .relays
