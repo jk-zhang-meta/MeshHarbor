@@ -121,7 +121,7 @@ const MAX_MESSAGE: usize = 16 * 1024 * 1024;
 /// Progress while an approval waits, so no idle timer on the harness's side
 /// takes a person thinking for a server that died.
 const PROGRESS_EVERY: Duration = Duration::from_secs(60);
-/// The relay's subcommand: `roomlerd hive-mcp <socket>`.
+/// The relay's subcommand: `meshharbord hive-mcp <socket>`.
 pub const RELAY_SUBCOMMAND: &str = "hive-mcp";
 #[cfg(unix)]
 const SOCKET: &str = "toolbelt.sock";
@@ -1614,7 +1614,7 @@ async fn run_approval(
 
 // ─── The relay: what Claude Code starts as the session's MCP server ─────────
 
-/// `roomlerd hive-mcp <socket>` → the socket, or `None` for every other
+/// `meshharbord hive-mcp <socket>` → the socket, or `None` for every other
 /// invocation. Read from raw argv, like the embedded CLI, so the relay runs
 /// none of the daemon's start-up: it is started by Claude Code, as the
 /// session's account, once per session.

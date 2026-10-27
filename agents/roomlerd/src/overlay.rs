@@ -424,7 +424,7 @@ pub async fn maybe_start(
         // set (receiver-index demux) instead of racing the port band.
         .with_carrier_plane(shared_carrier_plane())
         // Unification P1 — publish the live mesh view for the LocalAPI so
-        // `roomler status` / `peers` see per-device connection types.
+        // `meshharbor status` / `peers` see per-device connection types.
         .with_peer_view(peer_view)
         .with_org_primary(!cfg.derived_org)
         .with_relay_listener_readiness(crate::relay_server::readiness());
@@ -720,7 +720,7 @@ fn release_per_org_tun(_org_key: &str) {}
 /// Multi-org — one netstack handle channel PER ORG.
 ///
 /// This used to be a single `OnceLock` channel, and that was the bug: the
-/// SOCKS front and the `roomler ping` backend both read it, so a second org
+/// SOCKS front and the `meshharbor ping` backend both read it, so a second org
 /// publishing its stack did not join the mesh twice — it REPLACED the first
 /// org's stack underneath a front that kept answering on the same port, and
 /// a caller dialing for org A was silently routed by org B.
@@ -849,7 +849,7 @@ fn netstack_tun_factory(
 static SOCKS_BOUND: std::sync::Mutex<Option<std::collections::BTreeSet<u16>>> =
     std::sync::Mutex::new(None);
 
-/// The netstack ICMP backend for the `roomler ping` LocalAPI verb, watching the
+/// The netstack ICMP backend for the `meshharbor ping` LocalAPI verb, watching the
 /// shared handle channel. `None` unless this node is in netstack mode
 /// (`ROOMLERD_OVERLAY_NETSTACK_SOCKS` set) — an OS-TUN node has no OS-free
 /// ICMP path (the OS `ping` works there).
@@ -862,7 +862,7 @@ pub fn netstack_pinger(
     use tunnel_core::overlay::netstack::NetstackHandle;
 
     // Only meaningful in netstack mode; `?` short-circuits to `None`
-    // otherwise. Scoped to THIS config's org: `roomler ping` is a
+    // otherwise. Scoped to THIS config's org: `meshharbor ping` is a
     // process-wide verb, so it answers for the primary — a secondary's
     // stack is reachable through that org's own SOCKS front.
     netstack_socks_port(cfg)?;
@@ -1380,7 +1380,7 @@ mod netstack_claim_tests {
 // FR-47 — the last join the server refused
 // ───────────────────────────────────────────────────────────────────────────
 
-/// The most recent [`ServerMsg::OverlayJoinRefused`], for `roomler status`.
+/// The most recent [`ServerMsg::OverlayJoinRefused`], for `meshharbor status`.
 ///
 /// A process-global rather than runtime state, and deliberately so: a refusal
 /// means the overlay runtime never came up, so there is no runtime to hold it.

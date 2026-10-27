@@ -509,7 +509,7 @@ mod store {
 }
 
 /// On Linux and macOS, a file in a directory only root may create:
-/// `/var/lib/roomler` or `/var/db/roomler`. It is believed only while both
+/// `/var/lib/meshharbor` or `/var/db/roomler`. It is believed only while both
 /// the directory and the file are root's and nobody else may write them (a
 /// directory someone loosened, or a symlink, is not this daemon's record).
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -518,7 +518,7 @@ mod store {
     use std::path::{Path, PathBuf};
 
     #[cfg(target_os = "linux")]
-    const DIR: &str = "/var/lib/roomler";
+    const DIR: &str = "/var/lib/meshharbor";
     #[cfg(target_os = "macos")]
     const DIR: &str = "/var/db/roomler";
     const FILE: &str = "overlay-host-ledger.json";

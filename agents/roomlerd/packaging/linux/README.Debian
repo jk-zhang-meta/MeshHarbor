@@ -1,7 +1,7 @@
 roomlerd for Debian/Ubuntu
 ==========================
 
-The daemon binary is /usr/bin/roomlerd.
+The daemon binary is /usr/bin/meshharbord.
 
 Which unit do I want?
 ---------------------
@@ -9,10 +9,10 @@ Which unit do I want?
 The package ships TWO units. Pick ONE — running both enrolls the same host
 twice and they fight over the same identity.
 
-  roomler.service   (systemd --user, runs as YOU)   -> desktop host
-  roomlerd.service  (systemd system, runs as root)  -> headless / server / WSL
+  meshharbor.service   (systemd --user, runs as YOU)   -> desktop host
+  meshharbord.service  (systemd system, runs as root)  -> headless / server / WSL
 
-                            | roomler.service | roomlerd.service
+                            | meshharbor.service | meshharbord.service
   --------------------------+-----------------+------------------
   screen capture + input    | yes             | the person on screen, else opt-in
   overlay mesh (roomler0)   | no              | yes (TUN needs CAP_NET_ADMIN)
@@ -27,39 +27,39 @@ Desktop host (systemd --user)
 
   # 1. Generate an enrollment JWT at https://roomler.ai/ (Admin -> Agents).
   # 2. Enroll as your normal user, NOT root:
-  roomlerd enroll --server https://roomler.ai \
+  meshharbord enroll --server https://roomler.ai \
                   --token <paste-enrollment-jwt> \
                   --name "$(hostname)"
 
   # 3. Optional smoke test — needs an active graphical session (X11, or
   #    Wayland since 0.4.130); a tty login won't capture anything.
-  RUST_LOG=roomlerd=debug,webrtc=info roomlerd run
+  RUST_LOG=roomlerd=debug,webrtc=info meshharbord run
 
   # 4. Updates (FR-96): this daemon runs as you and cannot write /usr, so a
   #    ROOT helper installs them for it. Installing this package turned it on
-  #    (roomler-update.timer + .path); check with:
-  systemctl is-enabled roomler-update.timer roomler-update.path
+  #    (meshharbor-update.timer + .path); check with:
+  systemctl is-enabled meshharbor-update.timer meshharbor-update.path
 
   systemctl --user daemon-reload
-  systemctl --user enable --now roomler.service
-  journalctl --user -u roomler.service -f
+  systemctl --user enable --now meshharbor.service
+  journalctl --user -u meshharbor.service -f
 
   # A headless host additionally needs lingering, or the user manager
   # (and the agent with it) exits when you log out:
   sudo loginctl enable-linger "$USER"
 
 Self-update note: with the helper on (step 4), each update installs
-unattended as root (`journalctl -u roomler-update.service`), and the daemon
+unattended as root (`journalctl -u meshharbor-update.service`), and the daemon
 restarts onto the new binary once nothing it serves would be cut. Opt out
-with `sudo touch /etc/roomler/disable-auto-update`. If you disable the helper
-(`sudo systemctl disable --now roomler-update.timer roomler-update.path`), a
+with `sudo touch /etc/meshharbor/disable-auto-update`. If you disable the helper
+(`sudo systemctl disable --now meshharbor-update.timer meshharbor-update.path`), a
 reinstall or an upgrade of this package leaves it disabled. Without the
 helper the daemon installs nothing: its unit's NoNewPrivileges stops pkexec
 and sudo. It logs the command that turns updates on, and hands its updates
 to the helper as soon as it is on, with no restart. A daemon from before
 0.4.137 does not restart onto a new binary by itself: after installing this
 package over one, log out and back in, or run
-`systemctl --user restart roomler.service`.
+`systemctl --user restart meshharbor.service`.
 
 Headless / server / WSL (systemd system)
 ----------------------------------------
@@ -69,21 +69,21 @@ unit starts at boot before any login. Enroll against the SAME path you run
 with — `enroll` creates the directory and writes the file 0600 (it holds a
 bearer token):
 
-  sudo roomlerd --config /etc/roomler/config.toml \
+  sudo roomlerd --config /etc/meshharbor/config.toml \
        enroll --server https://roomler.ai \
               --token <paste-enrollment-jwt> \
               --name "$(hostname)"
 
   sudo systemctl daemon-reload
-  sudo systemctl enable --now roomlerd.service
-  sudo journalctl -u roomlerd.service -f
+  sudo systemctl enable --now meshharbord.service
+  sudo journalctl -u meshharbord.service -f
 
-For a different config path, drop ROOMLERD_CONFIG=/path/to/config.toml into
-/etc/default/roomlerd.
+For a different config path, drop MESHHARBORD_CONFIG=/path/to/config.toml into
+/etc/default/meshharbord.
 
 With the system unit, the root daemon installs its own updates. The update
-helper this package turned on (roomler-update.timer + .path) sees
-roomlerd.service enabled and steps aside, so two updaters never race;
+helper this package turned on (meshharbor-update.timer + .path) sees
+meshharbord.service enabled and steps aside, so two updaters never race;
 `install.sh --system` turns it off outright.
 
 Both flows above are what `install.sh --role daemon [--system]` automates.
@@ -96,8 +96,8 @@ root-level key, so do not append it at the end of the file, where it would
 land inside a [table] — then restart the daemon. The node generates and
 persists its WireGuard key on the first overlay-enabled start.
 
-The OS TUN needs CAP_NET_ADMIN, so this works under roomlerd.service (root)
-and not under roomler.service. On a host that cannot run as root, set
+The OS TUN needs CAP_NET_ADMIN, so this works under meshharbord.service (root)
+and not under meshharbor.service. On a host that cannot run as root, set
 ROOMLERD_OVERLAY_NETSTACK_SOCKS=<port> for the userspace netstack
 instead: outbound mesh access through a loopback SOCKS5 proxy, no TUN and no
 routes — but other nodes cannot reach services on this host.
@@ -130,9 +130,9 @@ it off. Anything else (the login screen, a desktop that cannot tell anyone)
 needs both of these keys, which read the screen and inject input into whatever
 has focus, the login screen included, so nothing sets them for you:
 
-  sudo roomler config set drm_capture true
-  sudo roomler config set uinput true
-  sudo systemctl restart roomlerd.service
+  sudo meshharbor config set drm_capture true
+  sudo meshharbor config set uinput true
+  sudo systemctl restart meshharbord.service
 
 Until then the viewer names what is missing and these two commands. It never
 shows a black screen or calls a desktop host headless.

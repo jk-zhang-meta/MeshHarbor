@@ -129,7 +129,7 @@ pub fn relay_stats() -> Option<RelayCounts> {
 }
 
 /// The bound address and probe counters, or `None` when not serving. Feeds
-/// `NodeStatus::org_relay`, so `roomler status` answers "is it working?"
+/// `NodeStatus::org_relay`, so `meshharbor status` answers "is it working?"
 /// immediately instead of waiting out the report loop's 300 s window.
 pub fn status() -> Option<(String, ResponderCounts)> {
     active_running().map(|r| (r.listening.clone(), r.stats.snapshot().probe))
@@ -141,7 +141,7 @@ pub fn handle() -> Option<RelayHandle> {
     active_running().map(|r| r.handle.clone())
 }
 
-/// How often the counters are summarised into the log. `roomler status` is
+/// How often the counters are summarised into the log. `meshharbor status` is
 /// the immediate reader; this is the historical one.
 const REPORT_EVERY: std::time::Duration = std::time::Duration::from_secs(300);
 

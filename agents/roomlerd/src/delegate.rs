@@ -72,13 +72,13 @@ const SECRET_BYTES: usize = 32;
 
 /// Directory holding the delegation socket.
 ///
-/// Deliberately NOT the LocalAPI directory. `/var/run/roomler` is `0700 root`
+/// Deliberately NOT the LocalAPI directory. `/var/run/meshharbor` is `0700 root`
 /// so that nothing unprivileged can even reach the control socket, and that is
 /// worth keeping exactly as it is: the worker needs to traverse ITS directory,
 /// and widening the control socket's would trade a real protection for an
 /// unrelated feature.
 #[cfg(unix)]
-const DELEGATE_DIR: &str = "/var/run/roomler-delegate";
+const DELEGATE_DIR: &str = "/var/run/meshharbor-delegate";
 
 /// One frame on the delegation channel.
 ///
@@ -144,7 +144,7 @@ pub enum DelegateFrame {
         v4_nets: Vec<(std::net::Ipv4Addr, u8)>,
     },
     /// FR-92 — daemon → worker: a `roomler keep-busy status|off` that reached
-    /// the DAEMON's LocalAPI. A root caller — `roomler exec <mac> roomler
+    /// the DAEMON's LocalAPI. A root caller — `meshharbor exec <mac> roomler
     /// keep-busy off` — never sees the worker's per-user socket, while on a
     /// supervised Mac it is the worker that runs keep busy. So the daemon
     /// asks; `off` stops it first. The answer is
@@ -1432,7 +1432,7 @@ mod tests {
         }
     }
 
-    /// FR-92 — `roomler exec <mac> roomler keep-busy off` reaches the ROOT
+    /// FR-92 — `meshharbor exec <mac> roomler keep-busy off` reaches the ROOT
     /// daemon, while on a supervised Mac keep busy runs in the WORKER. The
     /// daemon asks the worker and answers with what it says. Field, 0.4.126:
     /// it answered for its own engine — "off" — while the worker kept moving

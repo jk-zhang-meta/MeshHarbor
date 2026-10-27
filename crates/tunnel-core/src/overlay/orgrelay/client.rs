@@ -303,7 +303,7 @@ pub struct OrgRelayConn {
     /// carrier discards it on recv — a session is one peer by construction —
     /// so it only has to be consistent and valid, the DERP convention.
     synth_peer: SocketAddr,
-    /// Operator-facing name of the relay node, for `roomler peers`'
+    /// Operator-facing name of the relay node, for `meshharbor peers`'
     /// `relay_via`.
     label: String,
     alive: AtomicBool,

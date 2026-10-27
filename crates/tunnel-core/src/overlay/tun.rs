@@ -5233,7 +5233,7 @@ mod system {
         /// exemption was pinned when none was, and it would then route the WS,
         /// coturn and the exit's own endpoint into the device that carries
         /// them: the self-wedge the exemption gate exists to stop. An `Err`
-        /// makes the gate WITHHOLD, and `roomler status` says why.
+        /// makes the gate WITHHOLD, and `meshharbor status` says why.
         #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
         async fn add_host_exemption(&self, ip: std::net::IpAddr) -> std::io::Result<()> {
             Err(std::io::Error::new(
@@ -6088,7 +6088,7 @@ mod system {
 
     /// FR-97 P1a — one `route` write for a host exemption: `Err` carries the
     /// tool's own words (its first stderr line), which end up in the gate's
-    /// WARN and in `roomler status`.
+    /// WARN and in `meshharbor status`.
     #[cfg(target_os = "macos")]
     async fn bsd_route_write(args: Vec<String>) -> Result<(), String> {
         tokio::task::spawn_blocking(move || {
@@ -6141,7 +6141,7 @@ mod system {
 
     /// FR-97 P1a — `ROOMLERD_EXIT_CLIENT_MACOS=0` puts the macOS exit client
     /// back where P0a left it: every exemption is refused, so the exit is
-    /// withheld and `roomler status` says why. Default ON.
+    /// withheld and `meshharbor status` says why. Default ON.
     #[cfg(target_os = "macos")]
     fn exit_client_macos_enabled() -> bool {
         crate::env::flag("EXIT_CLIENT_MACOS", true)

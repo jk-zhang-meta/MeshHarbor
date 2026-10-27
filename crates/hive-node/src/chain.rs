@@ -27,7 +27,7 @@ pub const GENESIS: [u8; 32] = [0; 32];
 
 /// Domain separation for the event hash; bump the version if the hashed fields
 /// ever change, so an old and a new member cannot agree on a hash by accident.
-const HASH_CONTEXT: &str = "roomler hive transcript event v1";
+const HASH_CONTEXT: &str = "meshharbor hive transcript event v1";
 
 /// One event as it is stored and replicated.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

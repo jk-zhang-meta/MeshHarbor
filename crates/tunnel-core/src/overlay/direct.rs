@@ -1796,7 +1796,7 @@ async fn bind_on_band(ip: Ipv4Addr, base: u16, what: &'static str) -> Option<Udp
                 // PR-B1 tripwire — on a host with a stable port this walk is
                 // either an external squatter or a second in-process binder
                 // colliding with leaked sockets (the 2026-08-10 ensure_bound
-                // race). Counted so `roomler status` shows it as a number.
+                // race). Counted so `meshharbor status` shows it as a number.
                 crate::evidence::DIRECT_BIND_WALKS
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 tracing::warn!(
@@ -1826,7 +1826,7 @@ async fn bind_on_band(ip: Ipv4Addr, base: u16, what: &'static str) -> Option<Udp
 /// owns the socket (plane or per-device demux) and snapshotted into
 /// `NodeStatus.direct_socks`. Exists so a bound-but-reader-less socket (the
 /// 2026-08-10 ensure_bound-race wedge: advertised endpoint, Recv-Q pegged at
-/// rmem, zero reads) is visible in `roomler status` instead of only in
+/// rmem, zero reads) is visible in `meshharbor status` instead of only in
 /// `ss -uanp` queue depths.
 pub(crate) struct SockStat {
     pub local: String,

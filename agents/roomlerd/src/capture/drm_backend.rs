@@ -222,7 +222,7 @@ fn maps(mapped: Option<(BufferId, usize)>, id: BufferId, len: usize) -> bool {
 }
 
 /// `DRM_CLOEXEC` for the PRIME export: the exported fd must not leak into a
-/// child the daemon spawns meanwhile (a helper, a `roomler exec` command),
+/// child the daemon spawns meanwhile (a helper, a `meshharbor exec` command),
 /// where it would hold the screen's buffer.
 const DRM_CLOEXEC: u32 = libc::O_CLOEXEC as u32;
 
@@ -1144,7 +1144,7 @@ fn modifier_is_linear(info: &drm::control::framebuffer::PlanarInfo) -> bool {
 fn unreadable(buffers: [Option<drm::buffer::Handle>; 4]) -> Option<&'static str> {
     buffers[0].is_none().then_some(
         "reading the scanout needs CAP_SYS_ADMIN (root), which this daemon lacks: on a per-user \
-         install run roomler config clear drm_capture",
+         install run meshharbor config clear drm_capture",
     )
 }
 
@@ -1968,7 +1968,7 @@ mod tests {
     fn a_scanout_without_its_handle_is_refused_at_open() {
         let why = unreadable([None; 4]).expect("refused");
         assert!(why.contains("CAP_SYS_ADMIN"), "{why}");
-        assert!(why.contains("roomler config clear drm_capture"), "{why}");
+        assert!(why.contains("meshharbor config clear drm_capture"), "{why}");
         assert_eq!(unreadable([Some(handle(7)), None, None, None]), None);
         // What the viewer is shown, the cascade's prefix included, fits FR-80's
         // cap whole: the fix is at the end, where a cap cuts first.

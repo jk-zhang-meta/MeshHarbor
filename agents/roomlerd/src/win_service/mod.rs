@@ -149,7 +149,7 @@ pub fn default_log_dir() -> Option<PathBuf> {
 /// earlier install/repair), we open it and (re)start it rather than fail.
 ///
 /// Requires elevation (admin token). The MSI's custom action is the
-/// natural caller; manual install via `roomlerd service install
+/// natural caller; manual install via `meshharbord service install
 /// --as-service` will surface `Access is denied (os error 5)` from a
 /// filtered token.
 pub fn install(exe_path: &std::path::Path) -> Result<()> {
@@ -620,7 +620,7 @@ fn run_host(sup_rx: mpsc::Receiver<supervisor::SupervisorEvent>) -> HostOutcome 
 /// about to make for `RestartDaemon` will be answered by
 /// `supervisor::decide_exit_reaction` — a bare `run` reads as an orphan in
 /// `supervision::detect` and refuses to restart, which is the right answer
-/// for a hand-started `roomlerd run` and the wrong one for ours.
+/// for a hand-started `meshharbord run` and the wrong one for ours.
 pub fn worker_args() -> Vec<String> {
     vec![
         "run".to_string(),

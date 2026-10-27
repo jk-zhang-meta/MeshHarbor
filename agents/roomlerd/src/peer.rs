@@ -2253,7 +2253,7 @@ async fn current_pair_is_relay(
 /// still EGRESSES over the overlay carrier, so it must clamp when that
 /// carrier is relay-tier.
 ///
-/// Asks the local daemon over LocalAPI (`Request::Peers`, the `roomler peers`
+/// Asks the local daemon over LocalAPI (`Request::Peers`, the `meshharbor peers`
 /// verb) which tier currently carries the peer that owns the remote address.
 /// Anything other than a live `Direct` carrier counts as constrained —
 /// `Relay`/`Tunnel` are capped paths, `Blocked`/`Offline` mean the carrier is

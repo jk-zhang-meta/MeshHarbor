@@ -21,7 +21,7 @@ pub use roomler_node_core::{
 pub mod apps;
 /// FR-97 P0d — the machine's native CPU architecture, for the hello.
 pub(crate) mod arch;
-/// FR-90 P2h-1 — `roomlerd enroll --archive-replica`: an archive replica's
+/// FR-90 P2h-1 — `meshharbord enroll --archive-replica`: an archive replica's
 /// posture, written with the enrolled config.
 pub mod archive_replica;
 pub mod artifact_version;
@@ -314,7 +314,7 @@ pub fn purge_exit_routes() {
 }
 
 /// #1690 — [`purge_exit_routes`] for a process that may NOT own the overlay
-/// adapter: `roomlerd self-update` run by hand or through `roomler exec`.
+/// adapter: `roomlerd self-update` run by hand or through `meshharbor exec`.
 /// While a daemon is running (it answers the LocalAPI), the routes, the
 /// exit split-default and the DNS steer are that daemon's: its route guard
 /// would re-add the routes within seconds, but nothing re-asserts the DNS

@@ -669,7 +669,7 @@ pub fn shared() -> &'static ExecEngine {
 
 // ─── Outbound leg: commands THIS device asks other devices to run ────────
 //
-// `roomler exec <device> …` goes CLI → LocalAPI → this daemon's agent WS →
+// `meshharbor exec <device> …` goes CLI → LocalAPI → this daemon's agent WS →
 // server → target. The answer arrives asynchronously on the WS receive path,
 // which has no way back to the parked LocalAPI call — hence this registry.
 

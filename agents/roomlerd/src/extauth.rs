@@ -647,7 +647,7 @@ mod imp {
                 panic!("expected a KE2");
             };
 
-            // The owner runs `roomler config set external_access_enabled false`.
+            // The owner runs `meshharbor config set external_access_enabled false`.
             let path = dir.path().join("config.toml");
             let mut cfg = crate::config::load(&path).unwrap();
             cfg.external_access_enabled = false;

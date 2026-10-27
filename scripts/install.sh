@@ -1,5 +1,5 @@
 #!/bin/sh
-# roomler install.sh — terminal-driven install of the Roomler node stack
+# meshharbor install.sh — terminal-driven install of the Roomler node stack
 # (Linux + macOS), replicating the roomler-setup wizard's steps without a
 # GUI: resolve via the roomler.ai proxy → download → sha256-verify →
 # install → enroll → autostart.
@@ -22,10 +22,10 @@
 #                     for a headless / server / WSL node: root is what lets
 #                     the overlay bring up its TUN. It shows the person's
 #                     GNOME or KDE desktop while it is on screen (FR-95/113).
-#                     Config goes to /etc/roomler/config.toml. Both kinds
+#                     Config goes to /etc/meshharbor/config.toml. Both kinds
 #                     update unattended: a system install's root daemon
 #                     installs its own updates, and a per-user install gets a
-#                     root update helper (roomler-update.timer + .path, FR-96)
+#                     root update helper (meshharbor-update.timer + .path, FR-96)
 #                     that installs them for it.
 #
 #   --download-only   resolve + download + verify, print what WOULD run, touch
@@ -85,16 +85,16 @@ SYSTEM=0
 # Machine-global config for the --system (root) flow. The system unit starts
 # at boot before any login, so a $HOME-derived path would be unreachable —
 # and as root $HOME is /root, where the agent's appdirs resolver would look
-# in the wrong tree entirely. Must match roomlerd.service's ROOMLERD_CONFIG.
-SYSTEM_CONFIG="/etc/roomler/config.toml"
+# in the wrong tree entirely. Must match meshharbord.service's MESHHARBORD_CONFIG.
+SYSTEM_CONFIG="/etc/meshharbor/config.toml"
 # macOS's privileged half has its OWN path, and it is NOT $SYSTEM_CONFIG above:
 # com.roomler.daemon.plist passes it explicitly as `--config`, and the agent's
 # root-aware config ladder is Linux-only. Reusing one variable for both would
 # enroll into a file nothing reads.
 # FR-46 P5a moved this off the retired name; the .pkg postinstall migrates an
 # existing Mac and both gates it guards dual-read during the changeover.
-MACOS_DAEMON_CONFIG="/etc/roomler/config.toml"
-MACOS_DAEMON_MARKER="/etc/roomler/enable-daemon"
+MACOS_DAEMON_CONFIG="/etc/meshharbor/config.toml"
+MACOS_DAEMON_MARKER="/etc/meshharbor/enable-daemon"
 DAEMON_TOKEN=""
 NO_ENROLL=0
 RELAY_SERVER=0
@@ -377,11 +377,11 @@ packaged_mode() {
 
 repair_tarball_owners() {
     skip=""
-    # RETIRED-NAME-ANCHOR(4): usr/lib/roomler-agent is the binary's RPATH and
-    # usr/share/doc/roomler-agent the payload's doc dir: what the tarball puts.
-    for d in /usr /usr/bin /usr/lib /usr/lib/roomler-agent /usr/lib/systemd \
+    # RETIRED-NAME-ANCHOR(4): usr/lib/meshharbor is the binary's RPATH and
+    # usr/share/doc/meshharbor the payload's doc dir: what the tarball puts.
+    for d in /usr /usr/bin /usr/lib /usr/lib/meshharbor /usr/lib/systemd \
              /usr/lib/systemd/system /usr/lib/systemd/user /usr/share \
-             /usr/share/doc /usr/share/doc/roomler-agent; do
+             /usr/share/doc /usr/share/doc/meshharbor; do
         for s in $skip; do case "$d" in "$s"/*) continue 2 ;; esac; done
         if [ -L "$d" ] || { [ -e "$d" ] && [ ! -d "$d" ]; }; then
             warn "$d is not a plain directory; leaving it and everything below it"
@@ -400,9 +400,9 @@ repair_tarball_owners() {
         fi
     done
     # RETIRED-NAME-ANCHOR(3): the same two payload dirs, for the files in them.
-    for f in /usr/bin/roomlerd /usr/bin/roomler /usr/lib/roomler-agent/* \
-             /usr/lib/systemd/system/roomlerd.service /usr/lib/systemd/user/roomler.service \
-             /usr/share/doc/roomler-agent/README.Debian; do
+    for f in /usr/bin/meshharbord /usr/bin/meshharbor /usr/lib/meshharbor/* \
+             /usr/lib/systemd/system/meshharbord.service /usr/lib/systemd/user/meshharbor.service \
+             /usr/share/doc/meshharbor/README.Debian; do
         { [ -f "$f" ] && [ ! -L "$f" ]; } || continue
         owner="$(stat -c %u:%g "$f")" || continue
         [ "$owner" = "0:0" ] && continue
@@ -413,8 +413,8 @@ repair_tarball_owners() {
 
 # FR-96 — the update half of a per-user install. A per-user daemon runs as the
 # user and cannot write /usr, so its updates come from a ROOT one-shot helper
-# the package ships disabled: roomler-update.service, woken by
-# roomler-update.timer (boot + every 6 h) and roomler-update.path (the file a
+# the package ships disabled: meshharbor-update.service, woken by
+# meshharbor-update.timer (boot + every 6 h) and meshharbor-update.path (the file a
 # pushed update touches). Enabled ONLY when this release's daemon steps aside
 # for it (`update-helper --capabilities` lists `step-aside`): beside a daemon
 # that still installs its own updates, two updaters would race. The words are
@@ -422,25 +422,25 @@ repair_tarball_owners() {
 # ⚠️ Every branch here ends in a construct that returns 0: under `set -e` a
 # function whose last command fails would abort the whole install.
 enable_update_helper() {
-    if ! /usr/bin/roomlerd update-helper --capabilities 2>/dev/null | grep -qx 'step-aside'; then
+    if ! /usr/bin/meshharbord update-helper --capabilities 2>/dev/null | grep -qx 'step-aside'; then
         say "NOTE: this release's daemon cannot hand its updates to the root helper yet, and a per-user daemon cannot install them itself (writing /usr needs root). Re-run this script after the next release, or use --system."
         return 0
     fi
-    say "enabling the root update helper (roomler-update.timer + .path — sudo): this daemon's updates install unattended, as root"
+    say "enabling the root update helper (meshharbor-update.timer + .path — sudo): this daemon's updates install unattended, as root"
     sudo systemctl daemon-reload || true
-    if sudo systemctl enable --now roomler-update.timer roomler-update.path; then
-        if [ -e /etc/roomler/disable-auto-update ]; then
-            say "NOTE: /etc/roomler/disable-auto-update is set: the helper honours it and installs nothing until it is removed"
+    if sudo systemctl enable --now meshharbor-update.timer meshharbor-update.path; then
+        if [ -e /etc/meshharbor/disable-auto-update ]; then
+            say "NOTE: /etc/meshharbor/disable-auto-update is set: the helper honours it and installs nothing until it is removed"
         fi
     else
-        warn "could not enable roomler-update.timer/.path; this daemon's updates stay manual"
+        warn "could not enable meshharbor-update.timer/.path; this daemon's updates stay manual"
     fi
 }
 
 # A system install's root daemon installs its own updates, so a helper left
 # enabled by an earlier per-user install would race it: one updater per host.
 disable_update_helper() {
-    for u in roomler-update.timer roomler-update.path; do
+    for u in meshharbor-update.timer meshharbor-update.path; do
         if systemctl is-enabled --quiet "$u" 2>/dev/null; then
             say "disabling $u: this system install's root daemon installs its own updates"
             sudo systemctl disable --now "$u" || warn "could not disable $u"
@@ -452,10 +452,10 @@ disable_update_helper() {
 # leads to a unit file (`UPDATE_HELPER_ENABLE_LINKS` in updater.rs; a unit test
 # pins the list, so the two cannot disagree about who installs).
 helper_on() {
-    for l in /etc/systemd/system/paths.target.wants/roomler-update.path \
-             /etc/systemd/system/timers.target.wants/roomler-update.timer \
-             /run/systemd/system/paths.target.wants/roomler-update.path \
-             /run/systemd/system/timers.target.wants/roomler-update.timer; do
+    for l in /etc/systemd/system/paths.target.wants/meshharbor-update.path \
+             /etc/systemd/system/timers.target.wants/meshharbor-update.timer \
+             /run/systemd/system/paths.target.wants/meshharbor-update.path \
+             /run/systemd/system/timers.target.wants/meshharbor-update.timer; do
         [ -e "$l" ] && return 0
     done
     return 1
@@ -476,9 +476,9 @@ helper_on() {
 restart_old_user_daemon() {
     pid="$1"; helper_changed="$2"
     case "$pid" in ''|0) return 0 ;; esac
-    installed="$(/usr/bin/roomlerd --version 2>/dev/null || true)"
+    installed="$(/usr/bin/meshharbord --version 2>/dev/null || true)"
     if [ -z "$installed" ]; then
-        warn "/usr/bin/roomlerd --version did not answer; leaving the running daemon (pid $pid) as it is"
+        warn "/usr/bin/meshharbord --version did not answer; leaving the running daemon (pid $pid) as it is"
         return 0
     fi
     running="$("/proc/$pid/exe" --version 2>/dev/null || true)"
@@ -496,7 +496,7 @@ restart_old_user_daemon() {
         why="it runs ${rv:-an unknown version}, which cannot restart onto a new binary by itself"
     fi
     say "restarting the running daemon (pid $pid): $why (a remote or SSH session to this device drops for a few seconds)"
-    systemctl --user restart roomler.service || warn "could not restart roomler.service; it runs the new binary from its next start"
+    systemctl --user restart meshharbor.service || warn "could not restart meshharbor.service; it runs the new binary from its next start"
 }
 
 install_daemon_linux() {
@@ -552,12 +552,12 @@ install_daemon_linux() {
         fi
         if [ "$SYSTEM" = 1 ]; then
             say "download-only: would run: sudo roomlerd --config $SYSTEM_CONFIG enroll --server $SERVER --token <token> --name $NAME $RELAY_ARG"
-            say "download-only: would run: sudo systemctl disable --now roomler-update.timer roomler-update.path (only if a per-user install left them enabled)"
-            say "download-only: would run: sudo systemctl enable --now roomlerd.service"
+            say "download-only: would run: sudo systemctl disable --now meshharbor-update.timer meshharbor-update.path (only if a per-user install left them enabled)"
+            say "download-only: would run: sudo systemctl enable --now meshharbord.service"
         else
-            say "download-only: would run: roomlerd enroll --server $SERVER --token <token> --name $NAME"
-            say "download-only: would run: sudo systemctl enable --now roomler-update.timer roomler-update.path (when the release's daemon lists step-aside)"
-            say "download-only: would run: systemctl --user enable --now roomler.service"
+            say "download-only: would run: meshharbord enroll --server $SERVER --token <token> --name $NAME"
+            say "download-only: would run: sudo systemctl enable --now meshharbor-update.timer meshharbor-update.path (when the release's daemon lists step-aside)"
+            say "download-only: would run: systemctl --user enable --now meshharbor.service"
         fi
         return 0
     fi
@@ -574,9 +574,9 @@ install_daemon_linux() {
     else
         say "installing the roomlerd daemon (tarball — sudo required)"
         # --strip-components=1 drops the versioned prefix dir so the payload
-# RETIRED-NAME-ANCHOR: usr/lib/roomler-agent is baked into the binary as an
+# RETIRED-NAME-ANCHOR: usr/lib/meshharbor is baked into the binary as an
 # RPATH — the directory name cannot move without a relink.
-        # lands at /usr/bin, /usr/lib/roomler-agent, /usr/lib/systemd/…
+        # lands at /usr/bin, /usr/lib/meshharbor, /usr/lib/systemd/…
         # (identical to what the .deb installs). On a FIRST install there are
         # no operator-edited units to protect, so unpacking wholesale is fine;
         # the agent's own updater is the path that preserves them on upgrade.
@@ -587,25 +587,25 @@ install_daemon_linux() {
         # builder's uid (1001), so this one line made /usr, /usr/bin and
         # /usr/lib the property of whichever local account held that uid.
         sudo tar --no-same-owner --no-overwrite-dir -xzf "$deb" --strip-components=1 -C /
-        sudo test -x /usr/bin/roomlerd || { echo "error: tarball did not install /usr/bin/roomlerd" >&2; exit 1; }
+        sudo test -x /usr/bin/meshharbord || { echo "error: tarball did not install /usr/bin/meshharbord" >&2; exit 1; }
         repair_tarball_owners
     fi
 
     [ "$LOCAL_MODE" != 1 ] || check_local_cli_after_package
-    enroll_daemon /usr/bin/roomlerd
+    enroll_daemon /usr/bin/meshharbord
 
     if [ "$SYSTEM" = 1 ]; then
         disable_update_helper
         say "enabling the systemd SYSTEM unit (root: self-update, the overlay TUN, and the desktop of the person on screen)"
         sudo systemctl daemon-reload || true
         if [ "$LOCAL_MODE" = 1 ]; then LOCAL_PHASE=systemd-start; LOCAL_STARTUP_STATE=attempted; fi
-        sudo systemctl enable --now roomlerd.service
+        sudo systemctl enable --now meshharbord.service
         if [ "$LOCAL_MODE" = 1 ]; then
-            sudo systemctl is-active --quiet roomlerd.service
+            sudo systemctl is-active --quiet meshharbord.service
             LOCAL_STARTUP_STATE=command-succeeded
         fi
-        say "daemon status: $(sudo systemctl is-active roomlerd.service || true)"
-        say "logs: sudo journalctl -u roomlerd.service -f"
+        say "daemon status: $(sudo systemctl is-active meshharbord.service || true)"
+        say "logs: sudo journalctl -u meshharbord.service -f"
     else
         # FR-96 — the helper FIRST: the daemon decides once, at its start,
         # whether it or the helper installs its updates.
@@ -614,11 +614,11 @@ install_daemon_linux() {
         helper_after=0; helper_on && helper_after=1
         helper_changed=0; [ "$helper_before" = "$helper_after" ] || helper_changed=1
         say "enabling the systemd user unit (autostart, this login session's user)"
-        old_pid="$(systemctl --user show -p MainPID --value roomler.service 2>/dev/null || true)"
+        old_pid="$(systemctl --user show -p MainPID --value meshharbor.service 2>/dev/null || true)"
         systemctl --user daemon-reload || true
-        systemctl --user enable --now roomler.service
+        systemctl --user enable --now meshharbor.service
         restart_old_user_daemon "$old_pid" "$helper_changed"
-        say "daemon status: $(systemctl --user is-active roomler.service || true)"
+        say "daemon status: $(systemctl --user is-active meshharbor.service || true)"
         # `id -un`, not $USER: nothing sets USER in a container or a service,
         # and under `set -u` this last line then failed an install that had
         # worked (found by the FR-97 P6d cells).
@@ -905,7 +905,7 @@ require_tunnel_cli() {
         echo "error: the roomler CLI did not install: no working \`roomler\` on PATH" >&2
         exit 1
     fi
-    say "installed: $(roomler --version 2>/dev/null | head -n 1)"
+    say "installed: $(meshharbor --version 2>/dev/null | head -n 1)"
 }
 
 install_tunnel_tarball() {
@@ -1186,9 +1186,9 @@ account_config_paths() {
         echo "$h/Library/Application Support/ai.roomler.roomler-tunnel"
         echo "$h/Library/Application Support/live.roomler.roomler-agent"
     else
-        echo "$h/.config/roomler"
-        echo "$h/.local/share/roomler"
-        echo "$h/.local/state/roomler"
+        echo "$h/.config/meshharbor"
+        echo "$h/.local/share/meshharbor"
+        echo "$h/.local/state/meshharbor"
         # RETIRED-NAME-ANCHOR(3): as above — the tunnel CLI's current config
         # segment, then the two pre-rename daemon trees.
         echo "$h/.config/roomler-tunnel"
@@ -1367,19 +1367,19 @@ uninstall_stop_linux() {
     # The update half first, so nothing begins an install under us; then let
     # a helper run already in flight finish, because killing it mid-install
     # would leave dpkg holding a half-installed package for step 2.
-    stop_unit system roomler-update.timer
-    stop_unit system roomler-update.path
+    stop_unit system meshharbor-update.timer
+    stop_unit system meshharbor-update.path
     n=0
-    while [ "$(systemctl show -p SubState --value roomler-update.service 2>/dev/null || true)" = start ]; do
-        [ "$n" = 0 ] && say "waiting for roomler-update.service to finish: it is installing an update"
+    while [ "$(systemctl show -p SubState --value meshharbor-update.service 2>/dev/null || true)" = start ]; do
+        [ "$n" = 0 ] && say "waiting for meshharbor-update.service to finish: it is installing an update"
         n=$((n + 1))
-        [ "$n" -ge 300 ] && { warn "roomler-update.service still runs after 300 s; stopping it"; break; }
+        [ "$n" -ge 300 ] && { warn "meshharbor-update.service still runs after 300 s; stopping it"; break; }
         sleep 1
     done
-    stop_unit system roomler-update.service
-    stop_unit system roomlerd.service
+    stop_unit system meshharbor-update.service
+    stop_unit system meshharbord.service
     for acct in $(accounts_with_a_user_manager); do
-        stop_unit "$acct" roomler.service
+        stop_unit "$acct" meshharbor.service
     done
 }
 
@@ -1421,10 +1421,10 @@ remove_tarball_linux() {
     # RETIRED-NAME-ANCHOR(5): the tarball's lib dir is the binary's RPATH and
     # its doc dir the payload's (as in repair_tarball_owners); roomler-tunnel
     # is the CLI's legacy-name symlink, which install_tunnel_tarball creates.
-    for f in /usr/bin/roomlerd /usr/bin/roomler /usr/lib/roomler-agent \
-             /usr/lib/systemd/system/roomlerd.service /usr/lib/systemd/user/roomler.service \
-             /usr/lib/systemd/system/roomler-update.service /usr/lib/systemd/system/roomler-update.timer \
-             /usr/lib/systemd/system/roomler-update.path /usr/share/doc/roomler-agent \
+    for f in /usr/bin/meshharbord /usr/bin/meshharbor /usr/lib/meshharbor \
+             /usr/lib/systemd/system/meshharbord.service /usr/lib/systemd/user/meshharbor.service \
+             /usr/lib/systemd/system/meshharbor-update.service /usr/lib/systemd/system/meshharbor-update.timer \
+             /usr/lib/systemd/system/meshharbor-update.path /usr/share/doc/meshharbor \
              /usr/local/bin/roomler /usr/local/bin/roomler-tunnel; do
         { [ -L "$f" ] || [ -e "$f" ]; } || continue
         owner=""
@@ -1452,8 +1452,8 @@ remove_registrations_linux() {
     while read -r name home; do
         case "$home" in ''|/) continue ;; esac
         links="$links
-$home/.config/systemd/user/default.target.wants/roomler.service
-$home/.config/systemd/user/graphical-session.target.wants/roomler.service"
+$home/.config/systemd/user/default.target.wants/meshharbor.service
+$home/.config/systemd/user/graphical-session.target.wants/meshharbor.service"
         entries="$entries
 $home/.config/autostart/roomler-desktop.desktop"
     done <<EOF
@@ -1489,19 +1489,19 @@ uninstall_linux() {
     remove_tarball_linux
     remove_registrations_linux
     # The wake file the update helper watches (FR-96): runtime, never config.
-    remove_paths /var/tmp/roomler-update-check
+    remove_paths /var/tmp/meshharbor-update-check
     if [ "$KEEP_CONFIG" = 1 ]; then
         say "keeping the config (--keep-config)"
         return 0
     fi
     accounts="$(uninstall_accounts)"
     list="$(for a in $accounts root; do account_config_paths "$(home_of "$a")"; done)"
-    # The system config (/etc/roomler holds a system install's credential),
+    # The system config (/etc/meshharbor holds a system install's credential),
     # the system unit's environment file and an administrator's drop-ins.
     # RETIRED-NAME-ANCHOR: the pre-rename system config dir; a host that never
     # migrated holds its enrolled credential there.
-    remove_paths /etc/roomler /etc/roomler-agent /etc/default/roomlerd \
-        /etc/systemd/system/roomlerd.service.d
+    remove_paths /etc/meshharbor /etc/roomler-agent /etc/default/meshharbord \
+        /etc/systemd/system/meshharbord.service.d
     remove_listed "$list"
     report_other_config "$accounts"
 }
@@ -1580,7 +1580,7 @@ EOF
         /Library/LaunchAgents/com.roomler.desktop.plist /Library/Roomler \
         /Applications/Roomler.app /Applications/roomler-agent.app \
         /usr/local/bin/roomler /usr/local/bin/roomlerd /usr/local/bin/roomler-tunnel \
-        /private/var/tmp/roomler-update-check /var/run/roomler
+        /private/var/tmp/meshharbor-update-check /var/run/meshharbor
     remove_listed "$agents"
     for id in $(pkgutil --pkgs 2>/dev/null | grep '^com\.roomler\.' || true); do
         if as_root pkgutil --forget "$id" >/dev/null 2>&1; then
@@ -1595,10 +1595,10 @@ EOF
     fi
     accounts="$(uninstall_accounts)"
     list="$(for a in $accounts root; do account_config_paths "$(home_of "$a")"; done)"
-    # /etc/roomler holds the root half's credential; the logs follow it.
+    # /etc/meshharbor holds the root half's credential; the logs follow it.
     # RETIRED-NAME-ANCHOR: the pre-rename system config and log dirs, which
     # the .pkg postinstall migrates but never deletes.
-    remove_paths /etc/roomler /etc/roomler-agent /var/log/roomler /var/log/roomler-agent \
+    remove_paths /etc/meshharbor /etc/roomler-agent /var/log/roomler /var/log/roomler-agent \
         /tmp/roomlerd.out.log /tmp/roomlerd.err.log \
         /tmp/roomler-desktop.out.log /tmp/roomler-desktop.err.log
     remove_listed "$list"
@@ -1627,7 +1627,7 @@ uninstall_finish() {
 # ─── main ───────────────────────────────────────────────────────────────────
 
 if [ "$UNINSTALL" = 1 ]; then
-    say "roomler install.sh — uninstall os=$OS"
+    say "meshharbor install.sh — uninstall os=$OS"
     case "$OS" in
         Linux) uninstall_linux ;;
         Darwin) uninstall_macos ;;
@@ -1636,12 +1636,12 @@ if [ "$UNINSTALL" = 1 ]; then
 fi
 
 local_fresh_install_only() {
-    for parent in /etc/roomler /etc/roomler-agent; do
+    for parent in /etc/meshharbor /etc/roomler-agent; do
         [ ! -d "$parent" ] || { [ -r "$parent" ] && [ -x "$parent" ]; } || {
             echo "error: existing daemon configuration scope is inaccessible; refusing local bootstrap" >&2; exit 1;
         }
     done
-    for existing in /usr/local/bin/roomler /usr/local/bin/roomler-tunnel /usr/local/bin/roomlerd /etc/roomler/config.toml /etc/roomler-agent/config.toml /etc/default/roomlerd; do
+    for existing in /usr/local/bin/roomler /usr/local/bin/roomler-tunnel /usr/local/bin/roomlerd /etc/meshharbor/config.toml /etc/roomler-agent/config.toml /etc/default/meshharbord; do
         [ ! -e "$existing" ] && [ ! -L "$existing" ] || {
             echo "error: local bootstrap preserves existing Roomler state; reviewed migration required" >&2; exit 1;
         }
@@ -1656,12 +1656,12 @@ local_fresh_install_only() {
                 [ "$inventory_exit" = 1 ] || { echo "error: package inventory unavailable; refusing local bootstrap" >&2; exit 1; }
             fi
         done
-        for unit in roomlerd.service roomler.service roomler-agent.service roomler-update.service roomler-update.timer roomler-update.path; do
+        for unit in meshharbord.service meshharbor.service roomler-agent.service meshharbor-update.service meshharbor-update.timer meshharbor-update.path; do
             for base in /etc/systemd/system /usr/lib/systemd/system /lib/systemd/system /etc/systemd/user /usr/lib/systemd/user "${HOME}/.config/systemd/user"; do
                 [ ! -e "$base/$unit" ] && [ ! -L "$base/$unit" ] || { echo "error: existing Roomler service state is preserved" >&2; exit 1; }
             done
         done
-        for existing in /usr/bin/roomlerd /usr/bin/roomler /usr/bin/roomler-tunnel /usr/bin/roomler-agent /usr/bin/roomler-desktop /usr/lib/roomler-agent; do
+        for existing in /usr/bin/meshharbord /usr/bin/meshharbor /usr/bin/roomler-tunnel /usr/bin/roomler-agent /usr/bin/roomler-desktop /usr/lib/meshharbor; do
             [ ! -e "$existing" ] && [ ! -L "$existing" ] || { echo "error: existing Linux daemon must be migrated explicitly" >&2; exit 1; }
         done
     else
@@ -1724,7 +1724,7 @@ install_local_cli() {
 
 [ "$LOCAL_MODE" != 1 ] || prepare_local_artifacts
 
-say "roomler install.sh — role=$ROLE os=$OS server=$SERVER"
+say "meshharbor install.sh — role=$ROLE os=$OS server=$SERVER"
 
 case "$ROLE/$OS" in
     # FR-27 — the companion AFTER the daemon: it depends on `roomlerd` (the

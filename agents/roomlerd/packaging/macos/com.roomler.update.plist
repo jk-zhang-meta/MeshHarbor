@@ -60,7 +60,7 @@
 
     <key>WatchPaths</key>
     <array>
-        <string>/private/var/tmp/roomler-update-check</string>
+        <string>/private/var/tmp/meshharbor-update-check</string>
     </array>
 
     <key>ThrottleInterval</key>

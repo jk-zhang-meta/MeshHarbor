@@ -26,7 +26,7 @@
 //! The log DIR is resolved by `appdirs` (new-then-old segment). On a fresh
 //! Windows install that's `%LOCALAPPDATA%\roomler\roomler\data\logs\`; a
 //! pre-rename host keeps `...\roomler\roomler-agent\data\logs\`. Linux:
-//! `~/.local/share/roomler/logs/` (or `.../roomler-agent/logs/` on an upgraded
+//! `~/.local/share/meshharbor/logs/` (or `.../roomler-agent/logs/` on an upgraded
 //! host). macOS: `~/Library/Application Support/live.roomler.roomler/logs/`.
 //!
 //! A process-wide panic hook captures the message + backtrace and writes
@@ -83,7 +83,7 @@ const KEEP_DAYS: u64 = 14;
 /// live at once) never contend for one rolling file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ServiceLogRole {
-    /// The SCM service host process (`roomlerd service-run`).
+    /// The SCM service host process (`meshharbord service-run`).
     Host,
     /// The SystemContext (LocalSystem) worker.
     Worker,
@@ -668,7 +668,7 @@ mod tests {
 
     #[test]
     fn legacy_log_target_is_mirrored_onto_the_new_one() {
-        // Exactly what packaging/linux/roomlerd.service ships today.
+        // Exactly what packaging/linux/meshharbord.service ships today.
         assert_eq!(
             mirror_legacy_log_target("roomler_agent=info,warn"),
             "roomler_agent=info,roomlerd=info,warn"

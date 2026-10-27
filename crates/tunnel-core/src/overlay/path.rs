@@ -1517,7 +1517,7 @@ pub(crate) enum BlockedBy {
     /// FR-33 P2 — THIS host's own routing hands the peer's LAN prefix to
     /// another interface (a corporate VPN client's split-prefix capture), so
     /// a LAN dial cannot work whatever the path's history says. A fact about
-    /// this host, not the path: `roomler status` names the capturing
+    /// this host, not the path: `meshharbor status` names the capturing
     /// adapter, and the fix lives in the VPN profile.
     LanCaptured,
     /// The tier's own penalty has pushed `base − penalty` below the relay

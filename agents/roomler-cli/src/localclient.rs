@@ -2,7 +2,7 @@
 // Copyright (C) 2026 G ROX EOOD
 // RETIRED-NAME-ANCHOR(2): this line EXISTS to explain the retired spelling, so it must
 // contain it.
-//! `roomler status | peers | flows` — the thin-client read verbs.
+//! `meshharbor status | peers | flows` — the thin-client read verbs.
 //!
 //! These connect to the **local** daemon's LocalAPI (the ACL-gated named pipe /
 //! unix socket the daemon binds — see `tunnel_core::localapi`) and render its
@@ -36,7 +36,7 @@ const DASH: &str = "—";
 // Command handlers
 // ---------------------------------------------------------------------------
 
-/// `roomler status` — the local node's own state (id, version, mode, overlay
+/// `meshharbor status` — the local node's own state (id, version, mode, overlay
 /// IP, server connection). Renders [`NodeStatus`] ONLY: `status --json` is
 /// exactly that struct, never a peers fan-out.
 pub async fn status(json: bool) -> Result<()> {
@@ -73,7 +73,7 @@ async fn print_other_daemon_hint() {
     }
 }
 
-/// `roomler logs` — surface the S2 `TailLog` verb on the CLI.
+/// `meshharbor logs` — surface the S2 `TailLog` verb on the CLI.
 ///
 /// The verb and the daemon side already existed; without a command in front of
 /// them the only way to read a remote agent's log was to guess its path through
@@ -85,7 +85,7 @@ async fn print_other_daemon_hint() {
 /// wrong "the agent's logging is dead" conclusion.
 ///
 /// The daemon opened the file, so it is the only thing that reliably knows.
-/// Composes with Fleet RPC: `roomler exec <host> -- roomler logs --grep ICE`.
+/// Composes with Fleet RPC: `meshharbor exec <host> -- meshharbor logs --grep ICE`.
 /// The resolved path is always printed — remotely, that IS half the answer.
 pub async fn logs(
     source: String,
@@ -179,7 +179,7 @@ pub async fn netcheck(json: bool) -> Result<()> {
     Ok(())
 }
 
-/// The flags of `roomler peers`.
+/// The flags of `meshharbor peers`.
 #[derive(Debug, Clone, Default)]
 pub struct PeersArgs {
     /// FR-49 — one enrollment label; `None` = every org.
@@ -192,7 +192,7 @@ pub struct PeersArgs {
     pub json: bool,
 }
 
-/// `roomler peers` — every peer this node sees, with its live connection type.
+/// `meshharbor peers` — every peer this node sees, with its live connection type.
 ///
 /// FR-49 — `org` scopes the output to ONE enrollment. Not only ergonomics: on a
 /// device in a customer org and a personal one this prints every org's node
@@ -261,7 +261,7 @@ pub async fn peers(args: PeersArgs) -> Result<()> {
             eprintln!("warning: no peer named {miss:?}");
         }
         if kept.is_empty() {
-            bail!("none of the given names matches a peer — `roomler peers` lists them");
+            bail!("none of the given names matches a peer — `meshharbor peers` lists them");
         }
         kept
     };
@@ -494,7 +494,7 @@ pub struct DevicesArgs {
 /// OS, version, presence, MagicDNS), with this node's live carrier merged in
 /// from `peers`.
 ///
-/// Different from `roomler peers` on purpose: `peers` is what the overlay
+/// Different from `meshharbor peers` on purpose: `peers` is what the overlay
 /// engine currently holds (the netmap's names, carriers, RTTs); this is the
 /// org's own record of the same set, asked by the daemon with the org's agent
 /// token. Search, sort and paging run on the server. `--json` is the page
@@ -542,11 +542,11 @@ fn explain_directory_error(e: localapi::DirectoryError) -> anyhow::Error {
         "daemon_unreachable" => anyhow!("roomler daemon not running (is the service started?)"),
         "unsupported_daemon" => anyhow!(
             "the roomler daemon on this machine predates `roomler devices` — update it \
-             (`roomler peers` lists what its mesh carries)"
+             (`meshharbor peers` lists what its mesh carries)"
         ),
         "unsupported_server" => anyhow!(
             "this device's server predates the device list (HTTP 404) — update the server; \
-             `roomler peers` lists what this device's mesh carries"
+             `meshharbor peers` lists what this device's mesh carries"
         ),
         "unknown_org" | "org_disabled" | "unsupported" => anyhow!("{}", upstream_message(&e)),
         code => match e.status() {
@@ -599,7 +599,7 @@ pub async fn why(peer: &str, json: bool) -> Result<()> {
         [one] => *one,
         [] => {
             anyhow::bail!(
-                "no peer matches {peer:?} — `roomler peers` lists them by name, overlay IP and node id"
+                "no peer matches {peer:?} — `meshharbor peers` lists them by name, overlay IP and node id"
             )
         }
         many => {
@@ -744,7 +744,7 @@ fn print_why(p: &PeerInfo) {
         println!(
             "  CAPTURED  this host's own LAN prefix is routed through another adapter (a\n\
              \x20           VPN client's split-prefix capture), so a LAN dial cannot work and\n\
-             \x20           is not attempted — `roomler status` names the adapter. The fix is\n\
+             \x20           is not attempted — `meshharbor status` names the adapter. The fix is\n\
              \x20           in the VPN profile (local-LAN access / split-exclude), not here."
         );
     }
@@ -807,7 +807,7 @@ pub async fn rename(name: &str) -> Result<()> {
     Ok(())
 }
 
-/// `roomler ping <target> [-6] [--timeout-ms N]` — ICMP-ping an overlay peer (by
+/// `meshharbor ping <target> [-6] [--timeout-ms N]` — ICMP-ping an overlay peer (by
 /// name or IP) over the userspace netstack: the OS-free reachability probe for a
 /// locked-down host with no OS route to the mesh. Meaningful on a netstack node;
 /// other daemons reply "not supported". The daemon's own error (unknown peer /
@@ -835,7 +835,7 @@ pub async fn ping(target: &str, timeout_ms: u64, prefer_v6: bool, json: bool) ->
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-// Fleet RPC — `roomler exec` / `roomler diag`
+// Fleet RPC — `meshharbor exec` / `meshharbor diag`
 // ────────────────────────────────────────────────────────────────────────────
 
 /// One remote command's result, in the shape the printers want.
@@ -998,7 +998,7 @@ pub async fn ssh_session(node: &str, public_key: &str, session_secs: u64) -> Res
     }
 }
 
-/// `roomler exec <device> -- <command…>`
+/// `meshharbor exec <device> -- <command…>`
 ///
 /// Exit status mirrors the remote command's, so this composes in a script:
 /// a refused or failed command is a non-zero exit here too, never a silent 0.
@@ -1123,11 +1123,11 @@ const UNIX_BUNDLE: &[BundleSection] = &[
     },
     BundleSection {
         title: "overlay peers",
-        command: "roomler peers 2>&1 || /usr/bin/roomler peers 2>&1",
+        command: "meshharbor peers 2>&1 || /usr/bin/meshharbor peers 2>&1",
     },
     BundleSection {
         title: "node status",
-        command: "roomler status 2>&1 || /usr/bin/roomler status 2>&1",
+        command: "meshharbor status 2>&1 || /usr/bin/meshharbor status 2>&1",
     },
     BundleSection {
         title: "recent overlay log lines",
@@ -1154,7 +1154,7 @@ async fn detect_windows(node: &str, label: &str) -> Result<bool> {
     Ok(run.stdout.contains("Windows_NT"))
 }
 
-/// `roomler diag host|pair` — run the canned bundle on each device and print
+/// `meshharbor diag host|pair` — run the canned bundle on each device and print
 /// the sections.
 ///
 /// The bundle lives HERE, in the CLI, not in the agent: a new probe is then a
@@ -1259,7 +1259,7 @@ fn split_sections(out: &str) -> Vec<(String, String)> {
     sections
 }
 
-/// `roomler forward --daemon --agent <node> --local L --remote R` — ask the
+/// `meshharbor forward --daemon --agent <node> --local L --remote R` — ask the
 /// LOCAL daemon to open + supervise a static forward over its OWN agent WS
 /// (identity model b: no separate tunnel-client token — the pipe/socket ACL is
 /// the trust boundary). Returns as soon as the daemon registers the flow; the
@@ -1502,7 +1502,7 @@ pub async fn route_set_enabled(id: &str, enabled: bool) -> Result<()> {
     Ok(())
 }
 
-/// `roomler config ls` — the S2 editable config surface: key, current
+/// `meshharbor config ls` — the S2 editable config surface: key, current
 /// value, type, and whether a change applies live or on restart. The
 /// daemon reads its own config file, so pending not-yet-restarted edits
 /// show. FR-84 D2: the daemon lists the surface grouped, in display order,
@@ -1542,12 +1542,12 @@ pub async fn config_ls(json: bool) -> Result<()> {
     }
     println!(
         "\n`restart` keys take effect on the next daemon restart, `live` keys at once — \
-         `roomler config set <key> <value>`"
+         `meshharbor config set <key> <value>`"
     );
     Ok(())
 }
 
-/// `roomler config set <key> <value>` / `config clear <key>` — the
+/// `meshharbor config set <key> <value>` / `config clear <key>` — the
 /// daemon validates per key + persists; the echoed entry confirms the
 /// stored value. Validation errors come back verbatim.
 pub async fn config_set(key: &str, value: Option<&str>) -> Result<()> {
@@ -1582,12 +1582,12 @@ const RESTART_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
 /// `roomler restart` — FR-84 D3. Ask the daemon to restart itself through its
 /// supervisor; the daemon decides, and a refusal exits non-zero with its
 /// reason. Then wait for the NEW daemon (a different pid) to answer, running
-/// `roomlerd service start` along the way when the answer says the relaunch
+/// `meshharbord service start` along the way when the answer says the relaunch
 /// is ours (`restart_by: caller` — the Windows Scheduled Task).
 ///
-/// ⚠️ Through Fleet RPC (`roomler exec <host> -- roomler restart`) the daemon
+/// ⚠️ Through Fleet RPC (`meshharbor exec <host> -- roomler restart`) the daemon
 /// relaying the command is the one restarting, so the caller sees "no answer"
-/// even though it ran; `roomler exec <host> -- roomler status` afterwards
+/// even though it ran; `meshharbor exec <host> -- meshharbor status` afterwards
 /// shows the new pid and version.
 pub async fn restart(
     reason: &str,
@@ -1660,7 +1660,7 @@ pub async fn restart(
     }
 }
 
-/// `roomlerd service start`, the caller half of a restart under the Windows
+/// `meshharbord service start`, the caller half of a restart under the Windows
 /// Scheduled Task. The daemon it starts is spawned by the scheduler, never as
 /// a child of this process.
 async fn start_daemon_service(exe: Option<std::path::PathBuf>) -> Result<(), String> {
@@ -1830,7 +1830,7 @@ pub async fn keep_busy_status(json: bool) -> Result<()> {
 pub type KeepBusyStart = localapi::KeepBusyStartOpts;
 
 /// `roomler keep-busy on` — FR-92 P10. Only the person at this computer may:
-/// the daemon refuses root, services and `roomler exec`, and checks every
+/// the daemon refuses root, services and `meshharbor exec`, and checks every
 /// value with the viewer's own parser.
 pub async fn keep_busy_on(opts: KeepBusyStart, json: bool) -> Result<()> {
     let mut client = localapi::connect().await.map_err(daemon_err)?;
@@ -2078,7 +2078,7 @@ fn external_verb_err(e: std::io::Error) -> anyhow::Error {
     if raw.contains("unknown variant") {
         return anyhow!(
             "this daemon does not know the external-access verbs, so it is older than this \
-             CLI — update the daemon (`roomler status` shows its version).\n  raw: {raw}"
+             CLI — update the daemon (`meshharbor status` shows its version).\n  raw: {raw}"
         );
     }
     anyhow!("{raw}")
@@ -2100,7 +2100,7 @@ fn print_password_next_steps(state: &localapi::ExternalPasswordState) {
         println!("  → `roomler rc password set` to set one");
     }
     if !state.enabled {
-        println!("  → `roomler config set external_access_enabled true` to open gate 3");
+        println!("  → `meshharbor config set external_access_enabled true` to open gate 3");
     }
     if state.password_set && state.enabled {
         println!("  → this device is ready; an admin must also approve it for external access");
@@ -2268,7 +2268,7 @@ fn fmt_peer_row(p: &PeerInfo, now_ms: u64) -> String {
 }
 
 /// The NAME column's width when nothing widens it — the table's shape since
-/// the first `roomler peers`, which the diag bundle and older readers parse.
+/// the first `meshharbor peers`, which the diag bundle and older readers parse.
 const PEER_NAME_W: usize = 20;
 
 /// One `peers` table row with `name` in a NAME cell `name_w` wide.
@@ -2688,7 +2688,7 @@ fn print_status(s: &NodeStatus) {
     }
 }
 
-/// FR-103 — an agent token's expiry as `roomler status` says it: relative,
+/// FR-103 — an agent token's expiry as `meshharbor status` says it: relative,
 /// because "in 172 days" is the fact an operator acts on and needs no
 /// calendar. A device renews its own token well before this, so an expiry
 /// that keeps approaching is the thing to notice.
@@ -2715,7 +2715,7 @@ fn credential_expiry(expires_at: i64, now_unix: i64) -> String {
     }
 }
 
-/// P5/S4 — the state half of `roomler status`'s exit-node line. While active
+/// P5/S4 — the state half of `meshharbor status`'s exit-node line. While active
 /// it says whether global IPv6 rides the exit or is fail-closed (S3b), and
 /// whether DNS is steered through it, since NOT steered is a DNS leak the
 /// operator should see (S4b).
@@ -2780,7 +2780,7 @@ fn unix_now() -> i64 {
         .unwrap_or(0)
 }
 
-/// FR-49 — the per-enrollment block in `roomler status`.
+/// FR-49 — the per-enrollment block in `meshharbor status`.
 ///
 /// `NodeStatus.orgs` has been on the wire since multi-org P1 and was rendered
 /// by NOTHING but `--json`, so on a device in two orgs the human output said
@@ -3040,7 +3040,7 @@ fn devices_hint(page: &localapi::DevicesPage, searched: bool) -> Option<&'static
     match page.overlay.as_str() {
         "no_node" => Some(
             "this device is not on the private network (overlay off), so it lists only \
-             itself — `roomler config set overlay_enabled true` and restart the service",
+             itself — `meshharbor config set overlay_enabled true` and restart the service",
         ),
         "no_network" => {
             Some("the organization has no private network yet — only this device is listed")
@@ -3059,7 +3059,7 @@ fn devices_hint(page: &localapi::DevicesPage, searched: bool) -> Option<&'static
 /// the primary's mesh first, then each secondary). `None` as the group key
 /// means "print no header": that is the single-org case, where every row has
 /// an empty `org` and the output must stay byte-identical to the flat table
-/// older CLIs — and the diag bundle, which shells out to `roomler peers` —
+/// older CLIs — and the diag bundle, which shells out to `meshharbor peers` —
 /// already expect. Rows with no org alongside labelled ones (mixed daemon
 /// shapes) are kept in a trailing `(unlabelled)` group rather than dropped.
 #[cfg(test)]
@@ -3388,7 +3388,7 @@ mod tests {
 
     /// FR-49 — an org with no mesh and an org with no peers must not render
     /// identically. Before this, an overlay-off org produced no section at all
-    /// in `roomler peers`, which is exactly what an org whose peers happen to
+    /// in `meshharbor peers`, which is exactly what an org whose peers happen to
     /// be offline produces.
     /// FR-97 P0c-3 — a netstack node's exit line says the exit carries only its
     /// SOCKS5 front, never "v6 on" or a DNS clause about a host it does not

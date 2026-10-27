@@ -891,7 +891,7 @@ async fn place_desktop_companion(
 }
 
 /// FR-84 D6 — start the per-user daemon now instead of at the next logon,
-/// best-effort, through the same `roomlerd service start` FR-84 D3's Apply
+/// best-effort, through the same `meshharbord service start` FR-84 D3's Apply
 /// now uses (the Scheduled Task, legacy name included).
 #[cfg(target_os = "windows")]
 fn start_user_task() {

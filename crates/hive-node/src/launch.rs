@@ -487,7 +487,7 @@ mod tests {
         if cfg!(windows) {
             PathBuf::from(r"C:\hive")
         } else {
-            PathBuf::from("/var/lib/roomler/hive")
+            PathBuf::from("/var/lib/meshharbor/hive")
         }
     }
 
@@ -629,10 +629,10 @@ mod tests {
     #[test]
     fn the_toolbelt_config_is_one_stdio_server_with_its_own_timeout() {
         let doc = toolbelt_mcp_config(
-            "/usr/bin/roomlerd",
+            "/usr/bin/meshharbord",
             &[
                 "hive-mcp".into(),
-                "/run/roomler-hive/s/toolbelt.sock".into(),
+                "/run/meshharbor-hive/s/toolbelt.sock".into(),
             ],
             1_800_000,
         );
@@ -640,7 +640,7 @@ mod tests {
         assert_eq!(servers.len(), 1);
         let s = &servers[TOOLBELT_SERVER];
         assert_eq!(s["type"], "stdio");
-        assert_eq!(s["command"], "/usr/bin/roomlerd");
+        assert_eq!(s["command"], "/usr/bin/meshharbord");
         assert_eq!(s["args"][0], "hive-mcp");
         assert_eq!(s["timeout"], 1_800_000);
         assert!(APPROVE_TOOL.starts_with(&format!("mcp__{TOOLBELT_SERVER}__")));
@@ -752,14 +752,14 @@ mod tests {
     #[test]
     fn settings_deny_proc_and_carry_the_helper_memory_dir_and_sandbox() {
         let doc = SettingsSpec {
-            api_key_helper: Some("roomler hive token --session 6f1c".into()),
+            api_key_helper: Some("meshharbor hive token --session 6f1c".into()),
             auto_memory_directory: Some(root().join("memory")),
             sandbox_proxy: Some(SandboxProxy {
                 http_port: 47001,
                 socks_port: 47002,
             }),
-            extra_read_denies: vec!["Read(//var/lib/roomler/hive/secrets/**)".into()],
-            session_start_hook: Some("'/usr/bin/roomlerd' hive-resume-note '/run/n'".into()),
+            extra_read_denies: vec!["Read(//var/lib/meshharbor/hive/secrets/**)".into()],
+            session_start_hook: Some("'/usr/bin/meshharbord' hive-resume-note '/run/n'".into()),
             allow_tools: vec!["mcp__roomler__vault_list".into()],
             ask_tools: vec!["mcp__roomler__vault_exec".into()],
         }
@@ -781,15 +781,15 @@ mod tests {
             json!({"SessionStart": [{
                 "matcher": "resume",
                 "hooks": [{"type": "command",
-                           "command": "'/usr/bin/roomlerd' hive-resume-note '/run/n'"}],
+                           "command": "'/usr/bin/meshharbord' hive-resume-note '/run/n'"}],
             }, {
                 "matcher": "fork",
                 "hooks": [{"type": "command",
-                           "command": "'/usr/bin/roomlerd' hive-resume-note '/run/n'"}],
+                           "command": "'/usr/bin/meshharbord' hive-resume-note '/run/n'"}],
             }]}),
             "the hook runs on a resume and a fork, never a first start"
         );
-        assert_eq!(doc["apiKeyHelper"], "roomler hive token --session 6f1c");
+        assert_eq!(doc["apiKeyHelper"], "meshharbor hive token --session 6f1c");
         let deny = doc["permissions"]["deny"].as_array().unwrap();
         assert!(deny.iter().any(|d| d == "Read(//proc/**)"));
         assert_eq!(deny.len(), 2);

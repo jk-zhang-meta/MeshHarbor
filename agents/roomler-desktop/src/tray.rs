@@ -571,7 +571,7 @@ fn check_updates<R: Runtime>(app: &AppHandle<R>) {
             if let Some(window) = app.get_webview_window("main") {
                 let payload = serde_json::json!({ "check": stdout }).to_string();
                 let _ = window.eval(format!(
-                    "window.__roomler_check_update_result = {payload}; window.dispatchEvent(new Event('roomler-update-check'))"
+                    "window.__roomler_check_update_result = {payload}; window.dispatchEvent(new Event('meshharbor-update-check'))"
                 ));
                 let _ = window.show();
                 let _ = window.set_focus();

@@ -2,7 +2,7 @@
 // Copyright (C) 2026 G ROX EOOD
 //! Daemon-originated tunnel-**client** flows (unification P3b-2 PR-C).
 //!
-//! Lets the roomler daemon act as a tunnel *client* — `roomler forward` /
+//! Lets the roomler daemon act as a tunnel *client* — `meshharbor forward` /
 //! `roomler socks5` over the LocalAPI — by driving
 //! [`tunnel_core::driver::run_tunnel_session`] over the daemon's **existing
 //! agent WebSocket** (agent JWT, `Principal::Agent` server-side) instead of a
@@ -311,7 +311,7 @@ impl TunnelClientHub {
     ///
     /// Flow supervisors `subscribe()` and wait; the Fleet-RPC LocalAPI verb
     /// instead needs a one-shot answer, because "the daemon isn't connected to
-    /// the server right now" is a real result for `roomler exec` and telling
+    /// the server right now" is a real result for `meshharbor exec` and telling
     /// the operator that beats blocking until it reconnects.
     pub fn sink_now(&self) -> Option<mpsc::Sender<ClientMsg>> {
         self.inner.sink_tx.borrow().clone()

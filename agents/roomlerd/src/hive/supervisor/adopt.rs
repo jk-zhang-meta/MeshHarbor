@@ -540,7 +540,7 @@ impl Supervisor {
 
     /// With adopting off: the socket a predecessor left when it was on.
     /// Nothing listens on it now, and its being there must not say otherwise
-    /// (`roomler hive adopt` read it as "this device adopts", P1j-5's field
+    /// (`meshharbor hive adopt` read it as "this device adopts", P1j-5's field
     /// run). A socket only: anything else at that path is left alone.
     #[cfg(unix)]
     pub(crate) fn adopt_remove_stale_socket(&self) {
@@ -1943,7 +1943,7 @@ mod tests {
         );
     }
 
-    /// P1j-3 — the hook client (`roomler hive hook`) and the daemon speak the
+    /// P1j-3 — the hook client (`meshharbor hive hook`) and the daemon speak the
     /// same protocol: the real client mirrors a real transcript file through
     /// the real socket, a `Stop` ends the turn, and the next run sends only
     /// what is new.

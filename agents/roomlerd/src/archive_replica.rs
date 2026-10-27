@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (C) 2026 G ROX EOOD
-//! FR-90 P2h-1 — `roomlerd enroll --archive-replica`: an archive replica of
+//! FR-90 P2h-1 — `meshharbord enroll --archive-replica`: an archive replica of
 //! the organization, as the archive image enrolls one (spec §3b, "The image").
 //!
 //! An archive replica is an always-on device that holds copies of the org's

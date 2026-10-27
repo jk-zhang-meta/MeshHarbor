@@ -6,7 +6,7 @@
 //!
 //! Three facts shape this module, all about where a name lives:
 //!
-//! * The NAME `roomler peers` prints is [`PeerInfo::name`]: the MagicDNS label
+//! * The NAME `meshharbor peers` prints is [`PeerInfo::name`]: the MagicDNS label
 //!   the netmap carries, derived from the fleet name. The dashboard's
 //!   `display_name` deliberately never enters the netmap
 //!   (`docs/device-naming.md`), so the only place a CLI can learn it is the
@@ -115,7 +115,7 @@ pub fn name_peers<'a>(
         .collect()
 }
 
-/// `roomler peers NAME…` — keep the peers whose mesh name OR display name is
+/// `meshharbor peers NAME…` — keep the peers whose mesh name OR display name is
 /// one of `wanted` (case-insensitive), **in the order of the arguments**:
 /// every peer the first argument names (in list order — the same host can
 /// appear once per shared org), then the next argument's. A peer two
@@ -232,7 +232,7 @@ pub fn resolve_selector<'a>(
     }
 }
 
-/// The address `roomler ping` sends for a display-name-resolved device: its
+/// The address `meshharbor ping` sends for a display-name-resolved device: its
 /// overlay IPv4, or with `prefer_v6` the derived IPv6 the local peer view
 /// publishes for it — falling back to the v4 when no v6 is published, exactly
 /// as the daemon does for a name. `None` when the device has no address.

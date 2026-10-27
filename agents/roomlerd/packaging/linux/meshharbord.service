@@ -1,6 +1,6 @@
 [Unit]
 # Opt-in SYSTEM unit for headless nodes (servers, WSL, containers-on-metal).
-# The default install uses the per-user unit `roomler.service` instead — see
+# The default install uses the per-user unit `meshharbor.service` instead — see
 # README.Debian for which one you want. Nothing enables this automatically.
 #
 # Why a root unit exists at all:
@@ -11,9 +11,9 @@
 #   * overlay mesh — bringing up the `roomler0` TUN and its routes needs
 #     CAP_NET_ADMIN.
 # What you give up: screen capture and input injection, which need the
-# logged-in user's X session. A remote-desktop host wants roomler.service.
-Description=Roomler Daemon (system) — headless mesh node
-Documentation=https://roomler.ai/
+# logged-in user's X session. A remote-desktop host wants meshharbor.service.
+Description=MeshHarbor Daemon (system) — headless mesh node
+Documentation=https://www.itachi.fans/meshharbor
 After=network-online.target
 Wants=network-online.target
 
@@ -26,7 +26,7 @@ User=root
 # root, $HOME is /root and the agent's appdirs resolver would look in the
 # wrong tree entirely). Enroll against the SAME path:
 #
-#   sudo roomlerd --config /etc/roomler/config.toml \
+#   sudo roomlerd --config /etc/meshharbor/config.toml \
 #        enroll --server https://roomler.ai --token <jwt> --name "$(hostname)"
 #
 # `enroll` creates the directory and writes the file 0600 (it holds a bearer
@@ -35,17 +35,17 @@ User=root
 # sees `--config`.
 #
 # Since rc.435 the DAEMON agrees with this path on its own: running as root on
-# Linux it resolves `/etc/roomler/config.toml` by default, and it migrates a
-# legacy `/root/.config/roomler/config.toml` here once at startup. That closes
+# Linux it resolves `/etc/meshharbor/config.toml` by default, and it migrates a
+# legacy `/root/.config/meshharbor/config.toml` here once at startup. That closes
 # the gap that made this unit dangerous — a host enrolled before the convention
 # ran happily on an orphan `roomlerd run` (profile path) and then died
 # `no config found` the first time systemd started it, with `Restart=always`
 # turning that into a crash-loop. Hit on buildhost, fleet-host-2 and the WSL sibling; the
 # last one needed nothing but a `dpkg -i`. Explicit `--config` is now
 # belt-and-braces rather than the only thing holding the two in agreement.
-Environment=ROOMLERD_CONFIG=/etc/roomler/config.toml
-EnvironmentFile=-/etc/default/roomlerd
-ExecStart=/usr/bin/roomlerd --config ${ROOMLERD_CONFIG} run
+Environment=MESHHARBORD_CONFIG=/etc/meshharbor/config.toml
+EnvironmentFile=-/etc/default/meshharbord
+ExecStart=/usr/bin/meshharbord --config ${MESHHARBORD_CONFIG} run
 
 # RETIRED-NAME-ANCHOR: `roomler_agent` is the pre-FR-21 tracing target. Kept
 # alongside the new one so this unit reads correctly on a daemon from either

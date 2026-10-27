@@ -166,7 +166,7 @@ pub enum RelayKind {
 }
 
 impl RelayKind {
-    /// The stable LocalAPI label (`roomler peers --json` → `relay_kind`).
+    /// The stable LocalAPI label (`meshharbor peers --json` → `relay_kind`).
     /// Wire-visible: keep these strings as-is.
     pub fn as_str(self) -> &'static str {
         match self {

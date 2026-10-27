@@ -580,7 +580,7 @@ enum WakeConsumed {
     Stuck(std::io::Error),
 }
 
-/// Consume the wake file so `roomler-update.path`'s `PathExists=` turns false
+/// Consume the wake file so `meshharbor-update.path`'s `PathExists=` turns false
 /// and the unit returns to waiting.
 ///
 /// `remove_file` never follows a symlink, so a planted link is unlinked, not
@@ -605,7 +605,7 @@ fn consume_wake(wake: &std::path::Path) -> WakeConsumed {
         .parent()
         .unwrap_or_else(|| std::path::Path::new("/var/tmp"));
     let aside = match tempfile::Builder::new()
-        .prefix(".roomler-update-check.aside.")
+        .prefix(".meshharbor-update-check.aside.")
         .tempdir_in(parent)
     {
         Ok(d) => d,
@@ -1025,7 +1025,11 @@ fn host_has_debian_tooling() -> bool {
 // finds its own `.deb` through it. Deletable once no such release is a candidate.
 // Locked by `pick_linux_asset_takes_the_renamed_daemon_deb`. docs/fr/FR-46
 fn is_daemon_asset(lower_name: &str) -> bool {
-    lower_name.starts_with("roomler-agent") || lower_name.starts_with("roomlerd")
+    // MeshHarbor: `meshharbor-<version>-…`, never `meshharbor-desktop-…`.
+    let meshharbor = lower_name
+        .strip_prefix("meshharbor-")
+        .is_some_and(|rest| rest.starts_with(|c: char| c.is_ascii_digit()));
+    meshharbor || lower_name.starts_with("roomler-agent") || lower_name.starts_with("roomlerd")
 }
 
 /// Choose the Linux asset: the right ARCH always, and the format this host
@@ -2094,7 +2098,7 @@ pub fn spawn_installer_inner(installer_path: &std::path::Path) -> Result<Install
 /// `ENABLE_SYSTEM_CONTEXT` property defaults to `'0'` and the
 /// CA is conditioned on `ENABLE_SYSTEM_CONTEXT="0" AND NOT
 /// (REMOVE="ALL")` (see `wix-perMachine/main.wxs:344-346`).
-/// The CA runs `roomlerd disable-system-context` which
+/// The CA runs `meshharbord disable-system-context` which
 /// strips `ROOMLERD_ENABLE_SYSTEM_SWAP` from the SCM
 /// Environment block and restarts the service. After auto-update
 /// the supervisor sees env-var-off, doesn't perform the M3 A1
@@ -2116,7 +2120,7 @@ pub fn spawn_installer_inner(installer_path: &std::path::Path) -> Result<Install
 ///
 /// #1727: the MSI itself no longer defaults the property to `'0'`. With
 /// nothing passed it keeps the mode the machine was last switched to
-/// (`roomlerd keep-system-context`, from the product's record of the last
+/// (`meshharbord keep-system-context`, from the product's record of the last
 /// enable/disable), which is what saves a person running `msiexec` by
 /// hand. This branch stays: the live Environment it reads is better
 /// evidence than that record.
@@ -2327,7 +2331,7 @@ fn linux_install_candidates(euid: u32, path: &str) -> Vec<(&'static str, Vec<Str
 /// first one that exits 0.
 ///
 /// Deliberately WAITS on each child instead of firing and forgetting:
-/// dpkg replacing a running `/usr/bin/roomlerd` is safe on Linux (it
+/// dpkg replacing a running `/usr/bin/meshharbord` is safe on Linux (it
 /// unlinks and recreates) and takes seconds, and waiting is the only way
 /// to know the install actually happened. The returned pid belongs to an
 /// already-exited process, which is what the post-install watcher expects
@@ -2342,7 +2346,7 @@ fn linux_install_candidates(euid: u32, path: &str) -> Vec<(&'static str, Vec<Str
 /// Asserted before anything installed is touched — a truncated download that
 /// cleared the size floor must not half-install a host.
 #[cfg(target_os = "linux")]
-const TARBALL_REQUIRED: &[&str] = &["usr/bin/roomlerd", "usr/bin/roomler"];
+const TARBALL_REQUIRED: &[&str] = &["usr/bin/meshharbord", "usr/bin/meshharbor"];
 
 /// Units ship in the tarball but are only written when ABSENT. An upgrade
 /// must never revert a unit the operator edited — the field host carries a
@@ -2351,15 +2355,15 @@ const TARBALL_REQUIRED: &[&str] = &["usr/bin/roomlerd", "usr/bin/roomler"];
 /// clobber modified conffiles either.
 #[cfg(target_os = "linux")]
 const TARBALL_INSTALL_IF_ABSENT: &[&str] = &[
-    "usr/lib/systemd/system/roomlerd.service",
-    "usr/lib/systemd/user/roomler.service",
+    "usr/lib/systemd/system/meshharbord.service",
+    "usr/lib/systemd/user/meshharbor.service",
     // FR-96 — the update half of a per-user install.
-    "usr/lib/systemd/system/roomler-update.service",
-    "usr/lib/systemd/system/roomler-update.timer",
-    "usr/lib/systemd/system/roomler-update.path",
+    "usr/lib/systemd/system/meshharbor-update.service",
+    "usr/lib/systemd/system/meshharbor-update.timer",
+    "usr/lib/systemd/system/meshharbor-update.path",
     // RETIRED-NAME-ANCHOR: a path INSIDE the shipped .deb; moving it needs the
     // package layout to move with it. docs/fr/FR-21
-    "usr/share/doc/roomler-agent/README.Debian",
+    "usr/share/doc/meshharbor/README.Debian",
 ];
 
 /// Install the universal tarball — the path for hosts with no dpkg/apt.
@@ -2368,7 +2372,7 @@ const TARBALL_INSTALL_IF_ABSENT: &[&str] = &[
 /// place. Replacing a RUNNING executable is safe on Linux when done by
 /// rename-over: the running process keeps its inode and only new execs see
 /// the new file. That is what dpkg does, and why the .deb path has always
-/// been able to replace a live `/usr/bin/roomlerd`.
+/// been able to replace a live `/usr/bin/meshharbord`.
 ///
 /// Returns a pid to match `run_linux_install_candidates`' contract; the work
 /// is synchronous, so it reports our own.
@@ -2465,7 +2469,7 @@ fn install_tarball_linux(euid: u32, tarball: &std::path::Path) -> Result<u32> {
     // linkage is trimmed.
     // RETIRED-NAME-ANCHOR: RPATH-bound — the binary resolves its bundled FFmpeg from
     // this directory, so the name cannot move without relinking. docs/fr/FR-21
-    let libdir = prefix.join("usr/lib/roomler-agent");
+    let libdir = prefix.join("usr/lib/meshharbor");
     if libdir.is_dir() {
         for entry in std::fs::read_dir(&libdir).context("reading the bundled libs")? {
             let entry = entry?;
@@ -2474,7 +2478,7 @@ fn install_tarball_linux(euid: u32, tarball: &std::path::Path) -> Result<u32> {
                     // RETIRED-NAME-ANCHOR(2): the bundled-library directory is
                     // baked into the binary as an RPATH. It cannot move without
                     // a relink, so the updater must stage into the same name.
-                    "usr/lib/roomler-agent/{}",
+                    "usr/lib/meshharbor/{}",
                     entry.file_name().to_string_lossy()
                 );
                 if place(&rel, false)? {
@@ -2530,7 +2534,7 @@ fn run_linux_install_candidates(euid: u32, path: &str) -> Result<u32> {
     }
     bail!(
         "no usable way to install the .deb as uid {euid} (tried {}). \
-         Run the daemon as root via the packaged `roomlerd.service` system \
+         Run the daemon as root via the packaged `meshharbord.service` system \
          unit, or install manually: sudo dpkg -i {path}",
         attempts.join("; ")
     )
@@ -2769,8 +2773,8 @@ fn install_path_before_rename(exe: &std::path::Path) -> Option<PathBuf> {
 /// `" (deleted)"` marker.
 ///
 /// ⚠️ This is why the `.deb` path has never had a post-install watcher. `apt`
-/// replaces `/usr/bin/roomlerd`, which unlinks the running image, so from that
-/// moment `current_exe()` reads `/usr/bin/roomlerd (deleted)` — a path that does
+/// replaces `/usr/bin/meshharbord`, which unlinks the running image, so from that
+/// moment `current_exe()` reads `/usr/bin/meshharbord (deleted)` — a path that does
 /// not exist. `Command::spawn` on it fails ENOENT and the watcher is never born.
 /// Field-measured 2026-09-06: **21 `post-install watcher spawn failed` in 7 days
 /// and zero `post-install watcher started`**, with `last-install.json` frozen
@@ -3115,7 +3119,7 @@ pub async fn run_periodic(
     if cfg!(target_os = "macos") {
         return forward_triggers(shutdown, trigger_rx).await;
     }
-    // FR-96 P2a — Linux has the same root half, `roomler-update.service`, on a
+    // FR-96 P2a — Linux has the same root half, `meshharbor-update.service`, on a
     // host whose installer enabled it (P3: a per-user install). There a
     // per-user daemon installs nothing either: it cannot write /usr, which is
     // the whole of #2046. Decided once, here, at the daemon's start; a change
@@ -3131,7 +3135,7 @@ pub async fn run_periodic(
             UpdateOwner::Helper(link) => {
                 tracing::info!(
                     enabled_by = %link.display(),
-                    "auto-updater: the root update helper (roomler-update.service) owns updates \
+                    "auto-updater: the root update helper (meshharbor-update.service) owns updates \
                      on this host — forwarding rc:agent.update to its wake file, installing nothing here"
                 );
                 // FR-117 P1 — the helper moves the companion package too, but on
@@ -3384,12 +3388,12 @@ fn schedule_transport_retry(
 /// unprivileged writer make root install a GENUINE-BUT-OLD release (the
 /// exact downgrade class `artifact_version` closed on Windows). Whoever
 /// writes it can cause an update CHECK, never choose what gets installed.
-pub const MACOS_UPDATE_TRIGGER: &str = "/private/var/tmp/roomler-update-check";
+pub const MACOS_UPDATE_TRIGGER: &str = "/private/var/tmp/meshharbor-update-check";
 
 /// FR-96 — the Linux twin of [`MACOS_UPDATE_TRIGGER`], watched by
-/// `roomler-update.path`. The same rules for the same reasons: a WAKE whose
+/// `meshharbor-update.path`. The same rules for the same reasons: a WAKE whose
 /// content is never read.
-pub const LINUX_UPDATE_TRIGGER: &str = "/var/tmp/roomler-update-check";
+pub const LINUX_UPDATE_TRIGGER: &str = "/var/tmp/meshharbor-update-check";
 
 /// The wake file this platform's root update helper watches.
 pub fn update_trigger_path() -> &'static str {
@@ -3409,10 +3413,10 @@ pub fn update_trigger_path() -> &'static str {
 /// no child process, and it reads the same under the per-user unit's sandbox.
 #[cfg(target_os = "linux")]
 const UPDATE_HELPER_ENABLE_LINKS: [&str; 4] = [
-    "/etc/systemd/system/paths.target.wants/roomler-update.path",
-    "/etc/systemd/system/timers.target.wants/roomler-update.timer",
-    "/run/systemd/system/paths.target.wants/roomler-update.path",
-    "/run/systemd/system/timers.target.wants/roomler-update.timer",
+    "/etc/systemd/system/paths.target.wants/meshharbor-update.path",
+    "/etc/systemd/system/timers.target.wants/meshharbor-update.timer",
+    "/run/systemd/system/paths.target.wants/meshharbor-update.path",
+    "/run/systemd/system/timers.target.wants/meshharbor-update.timer",
 ];
 
 /// The first of `links` that leads to a unit file, if any — a host whose root
@@ -3426,14 +3430,14 @@ fn helper_enable_link_in(links: &[&std::path::Path]) -> Option<PathBuf> {
     links.iter().find(|l| l.exists()).map(|l| l.to_path_buf())
 }
 
-/// FR-96 P5 — a system install: `roomlerd.service` (`WantedBy=multi-user.target`)
+/// FR-96 P5 — a system install: `meshharbord.service` (`WantedBy=multi-user.target`)
 /// enabled, read by link as [`UPDATE_HELPER_ENABLE_LINKS`] reads the helper's.
 /// The helper steps aside there, because that root daemon installs its own
 /// updates. Locked to the unit by `the_system_daemon_links_are_its_install_target`.
 #[cfg(target_os = "linux")]
 const SYSTEM_DAEMON_ENABLE_LINKS: [&str; 2] = [
-    "/etc/systemd/system/multi-user.target.wants/roomlerd.service",
-    "/run/systemd/system/multi-user.target.wants/roomlerd.service",
+    "/etc/systemd/system/multi-user.target.wants/meshharbord.service",
+    "/run/systemd/system/multi-user.target.wants/meshharbord.service",
 ];
 
 /// FR-96 P5 — does this process run with `no_new_privs`? A per-user daemon
@@ -3463,7 +3467,7 @@ const HELPER_RECHECK: Duration = Duration::from_secs(10 * 60);
 
 /// What turns updates on for a daemon that cannot install them itself.
 #[cfg(target_os = "linux")]
-const ENABLE_THE_HELPER: &str = "sudo systemctl enable --now roomler-update.timer roomler-update.path \
+const ENABLE_THE_HELPER: &str = "sudo systemctl enable --now meshharbor-update.timer meshharbor-update.path \
     (or reinstall the .deb, or re-run install.sh)";
 
 /// FR-96 P5 — the [`run_periodic`] body of a per-user daemon that cannot install
@@ -3538,8 +3542,8 @@ async fn wait_for_the_helper_with(
             match queue_update_check_at(wake) {
                 Ok(()) => tracing::info!(
                     trigger = %wake.display(),
-                    "rc:agent.update queued for the root update helper (roomler-update.service); \
-                     watch `journalctl -u roomler-update.service`"
+                    "rc:agent.update queued for the root update helper (meshharbor-update.service); \
+                     watch `journalctl -u meshharbor-update.service`"
                 ),
                 Err(e) => tracing::warn!(error = %e, "could not write the update-helper wake file"),
             }
@@ -3591,7 +3595,7 @@ fn decide_update_owner(euid: u32, helper_switch: bool, enabled_by: Option<PathBu
     match enabled_by {
         Some(link) => UpdateOwner::Helper(link),
         None => UpdateOwner::InProcess(
-            "the root update helper is not enabled on this host (roomler-update.path / .timer)",
+            "the root update helper is not enabled on this host (meshharbor-update.path / .timer)",
         ),
     }
 }
@@ -3628,7 +3632,7 @@ pub(crate) fn queue_update_check_at(path: &std::path::Path) -> std::io::Result<(
 /// The [`run_periodic`] body wherever a root update helper owns updates:
 /// forward every `rc:agent.update` trigger to the wake file and do nothing
 /// else. The periodic cadence lives in the helper's own schedule (the plist's
-/// `StartInterval` on macOS, `roomler-update.timer` on Linux) — ONE owner of
+/// `StartInterval` on macOS, `meshharbor-update.timer` on Linux) — ONE owner of
 /// "check+download+verify+install", zero in-process installs.
 ///
 /// Taken by every macOS agent, and from FR-96 P2a by a Linux per-user daemon
@@ -3676,14 +3680,14 @@ async fn forward_triggers_to(
                         tracing::warn!(
                             %tag,
                             "rc:agent.update pin ignored — the root update helper \
-                             (roomler-update.service) installs the latest release; a pinned \
+                             (meshharbor-update.service) installs the latest release; a pinned \
                              install is manual (sudo apt-get install ./<deb>, or the tarball)"
                         );
                     }
                 }
                 // RETIRED-NAME-ANCHOR(2): the anchor now covers only this comment's own
                 // mention of the legacy paths. FR-46 P5a moved the live strings below to
-                // /var/log/roomler and /etc/roomler; the legacy /var/log/roomler-agent and
+                // /var/log/roomler and /etc/meshharbor; the legacy /var/log/roomler-agent and
                 // /etc/roomler-agent are migrated by the .pkg postinstall. docs/fr/FR-46
                 match queue_update_check_at(wake) {
                     Ok(()) if cfg!(target_os = "macos") => tracing::info!(
@@ -3693,16 +3697,16 @@ async fn forward_triggers_to(
                     ),
                     Ok(()) => tracing::info!(
                         trigger = %wake.display(),
-                        "rc:agent.update queued for the root update helper (roomler-update.service); \
-                         watch `journalctl -u roomler-update.service`"
+                        "rc:agent.update queued for the root update helper (meshharbor-update.service); \
+                         watch `journalctl -u meshharbor-update.service`"
                     ),
                     Err(e) if cfg!(target_os = "macos") => tracing::warn!(
                         error = %e,
                         "could not write the update-helper wake file — if this Mac has \
-                         /etc/roomler/disable-auto-update set, updates are manual"
+                         /etc/meshharbor/disable-auto-update set, updates are manual"
                     ),
                     // FR-96 P2a — on Linux the likely cause is the unit's own
-                    // sandbox: a `roomler.service` from before P2a has no
+                    // sandbox: a `meshharbor.service` from before P2a has no
                     // `ReadWritePaths=-/var/tmp`, and ProtectSystem=strict makes
                     // /var/tmp read-only (EROFS) wherever the user manager
                     // applies it (Fedora). Nothing is lost but latency.
@@ -3767,8 +3771,8 @@ pub(crate) async fn hold_daemon_for_install(socket: PathBuf, ceiling: Duration) 
     }
 }
 
-/// `roomlerd update-helper` — the body of `com.roomler.update` on macOS, and
-/// of `roomler-update.service` on Linux (FR-96).
+/// `meshharbord update-helper` — the body of `com.roomler.update` on macOS, and
+/// of `meshharbor-update.service` on Linux (FR-96).
 ///
 /// Root-only, single-shot: consume the wake file, honour the opt-out marker
 /// and the install-storm cooldown, then check → download → verify → install,
@@ -3789,8 +3793,8 @@ pub async fn run_update_helper() -> anyhow::Result<()> {
     if euid != 0 {
         bail!(
             "update-helper must run as root (launchd's system domain on macOS, \
-             roomler-update.service on Linux); euid={euid}. It is the body of that \
-             unit, not meant to be run by hand except as `sudo roomlerd update-helper`."
+             meshharbor-update.service on Linux); euid={euid}. It is the body of that \
+             unit, not meant to be run by hand except as `sudo meshharbord update-helper`."
         );
     }
 
@@ -3864,7 +3868,7 @@ pub async fn run_update_helper() -> anyhow::Result<()> {
         {
             tracing::info!(
                 enabled_by = %link.display(),
-                "update-helper: a system install — its root daemon (roomlerd.service) installs its \
+                "update-helper: a system install — its root daemon (meshharbord.service) installs its \
                  own updates; stepping aside"
             );
             return Ok(());
@@ -3884,7 +3888,7 @@ pub async fn run_update_helper() -> anyhow::Result<()> {
     // RETIRED-NAME-ANCHOR(6): the legacy opt-out marker, honoured as a fallback.
     // Deletable once no Mac can still have one. docs/fr/FR-46
     const OPT_OUT: [&str; 2] = [
-        "/etc/roomler/disable-auto-update",
+        "/etc/meshharbor/disable-auto-update",
         "/etc/roomler-agent/disable-auto-update",
     ];
     if let Some(marker) = OPT_OUT.iter().find(|p| std::path::Path::new(p).exists()) {
@@ -3893,7 +3897,7 @@ pub async fn run_update_helper() -> anyhow::Result<()> {
     }
 
     // FR-117 P1 — the companion package follows the INSTALLED daemon, which is
-    // this binary (the unit runs /usr/bin/roomlerd). Before the install
+    // this binary (the unit runs /usr/bin/meshharbord). Before the install
     // cooldown, which guards the DAEMON's install: the run a per-user daemon's
     // restart wakes right after an update is exactly the one that must move
     // the companion, and it always falls inside that cooldown. If this run then
@@ -4023,7 +4027,7 @@ async fn install_from_helper(
         bail!("installing {latest} failed: {e:#}; this machine stays on {current}");
     }
     // What a per-user daemon will run next: the installed binary itself.
-    let version = std::process::Command::new("/usr/bin/roomlerd")
+    let version = std::process::Command::new("/usr/bin/meshharbord")
         .arg("--version")
         .output()
         .ok()
@@ -4039,7 +4043,7 @@ async fn install_from_helper(
         other => tracing::warn!(
             %latest,
             installed = ?other,
-            "update-helper: installed, but /usr/bin/roomlerd does not report the release it was given"
+            "update-helper: installed, but /usr/bin/meshharbord does not report the release it was given"
         ),
     }
     Ok(())
@@ -4047,7 +4051,7 @@ async fn install_from_helper(
 
 /// FR-96 P3 — what this binary's update half can do, one word per line, for
 /// an installer to read before it enables a per-user install's root helper
-/// (`roomlerd update-helper --capabilities`, which any user may run):
+/// (`meshharbord update-helper --capabilities`, which any user may run):
 ///
 /// - `wake-file`: the root helper exists and consumes the wake file (P1).
 /// - `step-aside`: a per-user daemon on a host whose helper is enabled
@@ -4069,7 +4073,7 @@ pub const UPDATE_HELPER_CAPABILITIES: &[&str] = &["wake-file", "step-aside"];
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub const UPDATE_HELPER_CAPABILITIES: &[&str] = &[];
 
-/// FR-96 P3 — is this command line exactly `roomlerd update-helper
+/// FR-96 P3 — is this command line exactly `meshharbord update-helper
 /// --capabilities`? `install.sh` runs that form and no other, so nothing else
 /// is answered before the command line is parsed.
 pub fn is_capabilities_query<I, S>(args: I) -> bool
@@ -4255,14 +4259,14 @@ mod tests {
     /// which is the entire reason the check exists.
     ///
     /// ⚠️ The first assertion is the load-bearing one: it is the exact input
-    /// observed in the field (`/usr/bin/roomlerd.prev`, expected 0.4.48,
+    /// observed in the field (`/usr/bin/meshharbord.prev`, expected 0.4.48,
     /// reported 0.4.45). The second guards the inverse — a path that was NOT
     /// renamed must yield `None` so the caller's existing behaviour is
     /// untouched on every other platform and flow.
     /// FR-67 P2 — the `.deb` path had no watcher at all, and this is why.
     ///
-    /// `apt` replaces `/usr/bin/roomlerd`, unlinking the running image, so from
-    /// that instant `current_exe()` reads `/usr/bin/roomlerd (deleted)`.
+    /// `apt` replaces `/usr/bin/meshharbord`, unlinking the running image, so from
+    /// that instant `current_exe()` reads `/usr/bin/meshharbord (deleted)`.
     /// `Command::spawn` on that path fails ENOENT and the watcher is never born.
     ///
     /// Field-measured on a cluster node, 2026-09-06: **21 `post-install watcher
@@ -4284,13 +4288,13 @@ mod tests {
         use std::path::{Path, PathBuf};
 
         assert_eq!(
-            strip_deleted_suffix(Path::new("/usr/bin/roomlerd (deleted)")),
-            Some(PathBuf::from("/usr/bin/roomlerd")),
+            strip_deleted_suffix(Path::new("/usr/bin/meshharbord (deleted)")),
+            Some(PathBuf::from("/usr/bin/meshharbord")),
             "the field case: apt replaced the image, so /proc/self/exe carries the marker"
         );
 
         assert_eq!(
-            strip_deleted_suffix(Path::new("/usr/bin/roomlerd")),
+            strip_deleted_suffix(Path::new("/usr/bin/meshharbord")),
             None,
             "an ordinary path has nothing to strip and must be left alone"
         );
@@ -4302,7 +4306,7 @@ mod tests {
         );
 
         assert_eq!(
-            strip_deleted_suffix(Path::new("/usr/bin/roomlerd(deleted)")),
+            strip_deleted_suffix(Path::new("/usr/bin/meshharbord(deleted)")),
             None,
             "without the separating space this is a legitimate filename, not a marker"
         );
@@ -4322,20 +4326,20 @@ mod tests {
 
         // The field case.
         assert_eq!(
-            install_path_before_rename(Path::new("/usr/bin/roomlerd.prev")),
-            Some(PathBuf::from("/usr/bin/roomlerd")),
+            install_path_before_rename(Path::new("/usr/bin/meshharbord.prev")),
+            Some(PathBuf::from("/usr/bin/meshharbord")),
             "a `.prev` watcher path must resolve to the binary the installer wrote"
         );
 
         // Not renamed => nothing to correct.
         assert_eq!(
-            install_path_before_rename(Path::new("/usr/bin/roomlerd")),
+            install_path_before_rename(Path::new("/usr/bin/meshharbord")),
             None,
             "a non-`.prev` path must be left alone rather than mangled"
         );
 
         // The inverse of the installer's own rename, so the two cannot drift.
-        let dst = Path::new("/usr/bin/roomlerd");
+        let dst = Path::new("/usr/bin/meshharbord");
         let renamed = dst.with_extension("prev");
         assert_eq!(
             install_path_before_rename(&renamed).as_deref(),
@@ -4736,24 +4740,24 @@ mod tests {
     #[test]
     fn the_update_units_watch_the_helper_wake_file() {
         assert_eq!(update_trigger_path(), LINUX_UPDATE_TRIGGER);
-        let path_unit = include_str!("../packaging/linux/roomler-update.path");
+        let path_unit = include_str!("../packaging/linux/meshharbor-update.path");
         let watch = format!("PathExists={LINUX_UPDATE_TRIGGER}");
         assert!(
             path_unit.lines().any(|l| l.trim() == watch.as_str()),
-            "roomler-update.path must watch {LINUX_UPDATE_TRIGGER}"
+            "meshharbor-update.path must watch {LINUX_UPDATE_TRIGGER}"
         );
         assert!(
             path_unit
                 .lines()
-                .any(|l| l.trim() == "Unit=roomler-update.service")
+                .any(|l| l.trim() == "Unit=meshharbor-update.service")
         );
-        let service = include_str!("../packaging/linux/roomler-update.service");
+        let service = include_str!("../packaging/linux/meshharbor-update.service");
         assert!(service.lines().any(|l| l.trim() == "Type=oneshot"));
         assert!(
             service
                 .lines()
-                .any(|l| l.trim() == "ExecStart=/usr/bin/roomlerd update-helper"),
-            "roomler-update.service must run the helper"
+                .any(|l| l.trim() == "ExecStart=/usr/bin/meshharbord update-helper"),
+            "meshharbor-update.service must run the helper"
         );
         // Woken by its timer and its path, never enabled on its own.
         assert!(!service.contains("[Install]"));
@@ -4778,7 +4782,7 @@ mod tests {
             "PrivateTmp as a directive would hide /var/tmp; the wake could never be consumed \
              (the comment naming it is fine)"
         );
-        let timer = include_str!("../packaging/linux/roomler-update.timer");
+        let timer = include_str!("../packaging/linux/meshharbor-update.timer");
         assert!(timer.lines().any(|l| l.trim() == "OnUnitActiveSec=6h"));
         assert!(
             timer.lines().any(|l| l.trim() == "OnBootSec=5min"),
@@ -4799,13 +4803,13 @@ mod tests {
         // The stage script installs all three in one loop line — assert once,
         // not per unit (it does not vary with `unit`).
         assert!(
-            stage.contains("roomler-update.service roomler-update.timer roomler-update.path"),
+            stage.contains("meshharbor-update.service meshharbor-update.timer meshharbor-update.path"),
             "the tarball stage must ship the three update units"
         );
         for unit in [
-            "roomler-update.service",
-            "roomler-update.timer",
-            "roomler-update.path",
+            "meshharbor-update.service",
+            "meshharbor-update.timer",
+            "meshharbor-update.path",
         ] {
             let dest = format!("usr/lib/systemd/system/{unit}");
             assert!(
@@ -4930,7 +4934,7 @@ mod tests {
         assert!(other.exists(), "a dir that is not ours is left alone");
 
         // A path whose parent is not a staging dir at all: a no-op, no panic.
-        discard_staging(std::path::Path::new("/usr/bin/roomlerd"));
+        discard_staging(std::path::Path::new("/usr/bin/meshharbord"));
     }
 
     // ── GHSA-r3xj-4wh9-xh2v: the Windows private staging dir ──────────
@@ -5407,7 +5411,7 @@ mod tests {
             .filter(|e| {
                 e.file_name()
                     .to_string_lossy()
-                    .starts_with(".roomler-update-check.aside.")
+                    .starts_with(".meshharbor-update-check.aside.")
             })
             .count();
         assert_eq!(leftovers, 0, "no aside dir left behind");
@@ -5481,7 +5485,7 @@ mod tests {
     #[test]
     fn helper_enable_link_follows_the_link_to_the_unit() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let unit = tmp.path().join("roomler-update.path");
+        let unit = tmp.path().join("meshharbor-update.path");
         let live = tmp.path().join("paths.target.wants-roomler-update.path");
         let dangling = tmp.path().join("timers.target.wants-roomler-update.timer");
         let absent = tmp.path().join("never-made");
@@ -5513,12 +5517,12 @@ mod tests {
         let mut want = Vec::new();
         for (unit, text) in [
             (
-                "roomler-update.path",
-                include_str!("../packaging/linux/roomler-update.path"),
+                "meshharbor-update.path",
+                include_str!("../packaging/linux/meshharbor-update.path"),
             ),
             (
-                "roomler-update.timer",
-                include_str!("../packaging/linux/roomler-update.timer"),
+                "meshharbor-update.timer",
+                include_str!("../packaging/linux/meshharbor-update.timer"),
             ),
         ] {
             let target = text
@@ -5544,7 +5548,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn the_user_unit_lets_the_daemon_write_the_wake_file() {
-        let unit = include_str!("../packaging/linux/roomler.service");
+        let unit = include_str!("../packaging/linux/meshharbor.service");
         let dir = std::path::Path::new(LINUX_UPDATE_TRIGGER)
             .parent()
             .expect("the wake file has a directory");
@@ -5556,7 +5560,7 @@ mod tests {
             .any(|p| std::path::Path::new(p) == dir);
         assert!(
             granted,
-            "roomler.service must carry ReadWritePaths= for {}",
+            "meshharbor.service must carry ReadWritePaths= for {}",
             dir.display()
         );
     }
@@ -5579,19 +5583,19 @@ mod tests {
     }
 
     /// FR-96 P5 — the helper's step-aside reads the links that `systemctl
-    /// enable roomlerd.service` makes.
+    /// enable meshharbord.service` makes.
     #[cfg(target_os = "linux")]
     #[test]
     fn the_system_daemon_links_are_its_install_target() {
-        let unit = include_str!("../packaging/linux/roomlerd.service");
+        let unit = include_str!("../packaging/linux/meshharbord.service");
         assert!(
             unit.lines()
                 .any(|l| l.trim() == "WantedBy=multi-user.target"),
-            "roomlerd.service's install target moved: update SYSTEM_DAEMON_ENABLE_LINKS"
+            "meshharbord.service's install target moved: update SYSTEM_DAEMON_ENABLE_LINKS"
         );
         for link in SYSTEM_DAEMON_ENABLE_LINKS {
             assert!(
-                link.ends_with("/multi-user.target.wants/roomlerd.service"),
+                link.ends_with("/multi-user.target.wants/meshharbord.service"),
                 "{link}"
             );
         }
@@ -5627,7 +5631,7 @@ mod tests {
     #[tokio::test]
     async fn a_daemon_waiting_for_the_helper_hands_over_once_it_is_enabled() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let wake = tmp.path().join("roomler-update-check");
+        let wake = tmp.path().join("meshharbor-update-check");
         let on = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
         let (trigger_tx, trigger_rx) = tokio::sync::mpsc::channel(4);
@@ -5635,7 +5639,7 @@ mod tests {
         let task = tokio::spawn(async move {
             let probe = move || {
                 o.load(std::sync::atomic::Ordering::SeqCst).then(|| {
-                    PathBuf::from("/etc/systemd/system/paths.target.wants/roomler-update.path")
+                    PathBuf::from("/etc/systemd/system/paths.target.wants/meshharbor-update.path")
                 })
             };
             wait_for_the_helper_with(
@@ -5677,14 +5681,14 @@ mod tests {
     #[tokio::test]
     async fn a_daemon_waiting_for_the_helper_hands_over_on_its_recheck_too() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let wake = tmp.path().join("roomler-update-check");
+        let wake = tmp.path().join("meshharbor-update-check");
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
         let (trigger_tx, trigger_rx) = tokio::sync::mpsc::channel(4);
         let w = wake.clone();
         let task = tokio::spawn(async move {
             let probe = || {
                 Some(PathBuf::from(
-                    "/etc/systemd/system/timers.target.wants/roomler-update.timer",
+                    "/etc/systemd/system/timers.target.wants/meshharbor-update.timer",
                 ))
             };
             wait_for_the_helper_with(
@@ -5718,7 +5722,7 @@ mod tests {
     #[tokio::test]
     async fn a_forwarded_push_writes_the_wake_file_and_nothing_else() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let wake = tmp.path().join("roomler-update-check");
+        let wake = tmp.path().join("meshharbor-update-check");
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
         let (trigger_tx, trigger_rx) = tokio::sync::mpsc::channel(4);
         let w = wake.clone();
@@ -6558,7 +6562,7 @@ mod tests {
         // SCM read error (e.g. service masked or missing): fall back to
         // pre-rc.56 behaviour rather than blocking the auto-update.
         // Operator can re-enable SystemContext manually via
-        // `roomlerd enable-system-context` if needed.
+        // `meshharbord enable-system-context` if needed.
         assert_eq!(
             preserve_system_context_property_for(
                 WindowsInstallFlavour::PerMachine,

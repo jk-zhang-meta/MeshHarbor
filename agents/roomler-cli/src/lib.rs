@@ -11,20 +11,20 @@
 /// The whole `roomler` command surface (clap definitions + dispatch).
 ///
 /// Lives in the LIB, not in `main.rs`, so it has two callers: the
-/// standalone `roomler` binary (tunnel-only hosts) and `roomlerd cli`
+/// standalone `roomler` binary (tunnel-only hosts) and `meshharbord cli`
 /// (daemon hosts, via the `roomler` shim). Before P3e lever D the MSI
 /// shipped a second full binary for the latter — 22 MiB of which ~92 %
 /// duplicated crates the daemon already contains.
 pub mod cli;
 pub mod config;
-/// FR-90 P3-9-2b — `roomler connect`: a vault secret's upstream through a
+/// FR-90 P3-9-2b — `meshharbor connect`: a vault secret's upstream through a
 /// local endpoint the daemon serves, held in the foreground.
 pub mod connectcmd;
 /// FR-103 — the tunnel client renews its own token, and the renewal rule
 /// `roomlerd` shares.
 pub mod credential;
 pub mod forward;
-/// FR-90 P1j-3 — `roomler hive adopt | unadopt | hook`.
+/// FR-90 P1j-3 — `meshharbor hive adopt | unadopt | hook`.
 pub mod hive_hooks;
 /// Thin-client read verbs (`status`/`peers`/`flows`) over the daemon LocalAPI.
 pub mod localclient;

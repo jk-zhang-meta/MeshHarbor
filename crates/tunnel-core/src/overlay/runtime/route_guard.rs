@@ -372,7 +372,7 @@ pub(super) fn dns_steer_allowed(state: &ExitRoutingState) -> bool {
 /// reason change (dedup on `state.withheld_reason`), so a persistently-withheld
 /// exit config doesn't spam the log every reconcile while still surfacing each
 /// distinct cause. The live reason is also exposed via [`ExitNodeStatus`] for
-/// `roomler status`.
+/// `meshharbor status`.
 pub(super) fn note_withheld(state: &mut ExitRoutingState, selector: &str, reason: &str) {
     if state.withheld_reason.as_deref() != Some(reason) {
         warn!(
@@ -412,7 +412,7 @@ pub(super) fn note_exemption_failure(state: &mut ExitRoutingState, ip: IpAddr, e
 
 /// FR-97 P1a — the withheld reason when a v4 exemption cannot be pinned: the
 /// device's own cause for the lowest such address. Lowest, so the reason (the
-/// withhold WARN's dedup key, and what `roomler status` prints) is the same on
+/// withhold WARN's dedup key, and what `meshharbor status` prints) is the same on
 /// every reconcile rather than following a hash set's order. Pure.
 pub(super) fn exemption_withheld_reason(
     want: &HashSet<IpAddr>,
@@ -603,7 +603,7 @@ impl OverlayRuntime {
 
         // The chosen exit must be present, reachable-with-a-live-carrier, AND an
         // admin-approved exit node. Any miss → withdraw the capture, record the
-        // (distinct) split-tunnel reason for `roomler status`, and wait.
+        // (distinct) split-tunnel reason for `meshharbor status`, and wait.
         let (exit_id, exit_np, exit_pubkey) = match exit_readiness(selector, current_peers, by_node)
         {
             Ok(v) => v,
@@ -738,7 +738,7 @@ impl OverlayRuntime {
             // all v4 egress is black-holed until a restart. Field (tart Mac
             // exit clients, 0.4.134 and a candidate): twice, each right after
             // `dropped advertised default route(s) … peer=<the exit>`, with
-            // `roomler status` still saying `active`. Re-asserted on every
+            // `meshharbor status` still saying `active`. Re-asserted on every
             // reconcile, as `v6_exit` is below (MAJOR-3).
             let allowed = exit_peer_allowed_ips(&exit_np);
             warn_subnet_conflicts(exit_id, &wg.set_peer_subnets(exit_pubkey, &allowed));
@@ -774,7 +774,7 @@ impl OverlayRuntime {
         // When MagicDNS is on, gated on a live local resolver (`dns_bound`, known
         // before the first reconcile) — steering "." at a dead :53 would blackhole
         // ALL DNS. A not-bound resolver is left unsteered (working local DNS beats a
-        // blackhole) and surfaced via `dns_steered=false` in `roomler status`.
+        // blackhole) and surfaced via `dns_steered=false` in `meshharbor status`.
         // FR-97 P0c-3 — and never from a netstack node ([`dns_steer_allowed`]).
         if dns_steer_allowed(state)
             && let Some(target) = state.dns_target

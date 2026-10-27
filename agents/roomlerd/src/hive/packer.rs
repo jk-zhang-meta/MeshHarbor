@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (C) 2026 G ROX EOOD
-//! FR-90 P2f-2a — `roomlerd hive-pack <request>`: git's have and want for a
+//! FR-90 P2f-2a — `meshharbord hive-pack <request>`: git's have and want for a
 //! session's workspace, AS THE SESSION'S ACCOUNT.
 //!
 //! A teleport's target with a clone of the session's repository needs only
@@ -15,7 +15,7 @@
 //! | `pack {commit, haves}` | the device a copy comes from | the pack that brings `commit` into a repository holding `haves`: thin against the ones its own repository holds too, whole against none ([`workspace::pack_against`]) |
 //!
 //! The daemon writes the [`Request`] into the session's runtime directory and
-//! starts `roomlerd hive-pack <request>` as the account, as `hive-checkpoint`
+//! starts `meshharbord hive-pack <request>` as the account, as `hive-checkpoint`
 //! runs (P2b-3a), and reads what it writes:
 //!
 //! ```text
@@ -40,7 +40,7 @@ use serde::{Deserialize, Serialize};
 use super::checkpointer::Runner;
 use super::workspace::{self, Git};
 
-/// The hidden subcommand: `roomlerd hive-pack <request>`.
+/// The hidden subcommand: `meshharbord hive-pack <request>`.
 pub const PACK_SUBCOMMAND: &str = "hive-pack";
 
 /// The first bytes of what the child writes.
@@ -404,7 +404,7 @@ pub(crate) async fn run_as_console_user(
     Ok(answer)
 }
 
-/// Whether this process was started as `roomlerd hive-pack`, its request on
+/// Whether this process was started as `meshharbord hive-pack`, its request on
 /// stdin.
 pub fn pack_args() -> bool {
     let mut args = std::env::args_os().skip(1);

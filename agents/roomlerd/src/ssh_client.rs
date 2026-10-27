@@ -45,7 +45,7 @@ pub const MAX_TIMEOUT_SECS: u64 = 300;
 /// (`consent.rs`'s window), on top of the command's own time.
 pub const PROMPT_SECS: u64 = 30;
 /// How long the server has to answer the request: a gate decision, one push
-/// to the target and its acknowledgement (FR-83), as for `roomler ssh`.
+/// to the target and its acknowledgement (FR-83), as for `meshharbor ssh`.
 pub const ASK_WAIT: Duration = Duration::from_secs(30);
 
 /// What one call ran to.
@@ -132,7 +132,7 @@ pub fn check_command(command: &str) -> Result<(), RunError> {
     Ok(())
 }
 
-/// The call's key: ed25519, seeded from the OS CSPRNG, as `roomler ssh`
+/// The call's key: ed25519, seeded from the OS CSPRNG, as `meshharbor ssh`
 /// mints one (`agents/roomler-cli/src/sshcmd.rs`), under a comment of its own.
 /// Its private half never leaves this process.
 pub fn mint_key() -> PrivateKey {

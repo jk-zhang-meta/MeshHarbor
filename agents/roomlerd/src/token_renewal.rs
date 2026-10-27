@@ -143,7 +143,7 @@ pub fn due(token: &str, now_unix: i64, horizon: Option<Duration>) -> Due {
 }
 
 /// The token's `exp` (unix seconds), read without verifying it. For
-/// display: `roomler status` shows when each enrollment's credential lapses.
+/// display: `meshharbor status` shows when each enrollment's credential lapses.
 pub fn expires_at(token: &str) -> Option<i64> {
     crate::jwt_introspect::parse_unverified(token)
         .ok()?

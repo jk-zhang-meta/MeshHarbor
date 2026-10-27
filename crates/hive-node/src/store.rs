@@ -2392,7 +2392,7 @@ mod tests {
         let w = WorkplaceRecord {
             account: "dev".into(),
             folder: "/srv/app".into(),
-            state_dir: "/var/lib/roomler/hive/s1".into(),
+            state_dir: "/var/lib/meshharbor/hive/s1".into(),
         };
         assert_eq!(s.workplace("s1").unwrap(), None);
         s.put_workplace("s1", &w).unwrap();

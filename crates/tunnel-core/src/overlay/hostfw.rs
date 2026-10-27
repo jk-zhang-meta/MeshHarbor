@@ -15,7 +15,7 @@
 //! The daemon does not change the firewall. It belongs to the host's owner,
 //! and trusting the adapter would open every service on the host to every
 //! peer the overlay ACL admits. Instead it says what governs the adapter, so a
-//! refusal in `roomler status` has a cause. Roomler's own services do not need
+//! refusal in `meshharbor status` has a cause. Roomler's own services do not need
 //! it: roomler SSH is intercepted below the OS, and exec, remote control and
 //! tunnels ride the daemon's own connections.
 //!

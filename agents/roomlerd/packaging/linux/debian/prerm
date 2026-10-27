@@ -1,12 +1,12 @@
 #!/bin/sh
 # FR-96 P5 — on removal, stop the package's update half (the timer and the
 # path that postinst turned on). Never on upgrade: the update helper may be the
-# very process upgrading this package (roomler-update.service runs apt-get).
+# very process upgrading this package (meshharbor-update.service runs apt-get).
 # The daemon units are never touched here, as in postinst.
 set -e
 
 if [ -d /run/systemd/system ] && [ "$1" = remove ] && command -v deb-systemd-invoke >/dev/null 2>&1; then
-    deb-systemd-invoke stop roomler-update.timer roomler-update.path >/dev/null 2>&1 || true
+    deb-systemd-invoke stop meshharbor-update.timer meshharbor-update.path >/dev/null 2>&1 || true
 fi
 
 exit 0

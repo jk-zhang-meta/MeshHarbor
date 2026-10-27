@@ -383,7 +383,7 @@ pub struct DnsOsGuard {
 
 impl DnsOsGuard {
     /// S2 — did the OS split-DNS steer actually take? (Rendered in the
-    /// desktop's DNS section + `roomler status`.)
+    /// desktop's DNS section + `meshharbor status`.)
     pub fn active(&self) -> bool {
         self.active
     }
@@ -833,7 +833,7 @@ pub fn purge_exit_dns() {
 /// - `SupplementalMatchDomainsNoSearch = 1` keeps the zone out of the search
 ///   list, as `~zone` does on Linux.
 ///
-/// `ROOMLERD_MACOS_DNS_STEER=0` turns all of it off (`roomler status` then
+/// `ROOMLERD_MACOS_DNS_STEER=0` turns all of it off (`meshharbor status` then
 /// says `DNS NOT steered`, as before).
 #[cfg(target_os = "macos")]
 mod scdns {

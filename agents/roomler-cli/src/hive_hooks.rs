@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (C) 2026 G ROX EOOD
-//! FR-90 P1j-3 — `roomler hive adopt | unadopt | hook`: a person adopts the
+//! FR-90 P1j-3 — `meshharbor hive adopt | unadopt | hook`: a person adopts the
 //! Claude Code sessions they run in a terminal (decision 11, spec §3h).
 //!
 //! `adopt` puts three hooks in the person's OWN user-level Claude Code
 //! settings, and nobody else's. `unadopt` takes out exactly those three.
-//! Claude Code then runs `roomler hive hook` as the person at each hook. The
+//! Claude Code then runs `meshharbor hive hook` as the person at each hook. The
 //! hook reads the transcript's new lines, as the person, and hands them to
 //! the daemon's adopt socket (`tunnel_core::localapi::hive_adopt`).
 //!
@@ -58,8 +58,8 @@ pub struct HookCommand {
 }
 
 impl HookCommand {
-    /// The running binary. Embedded in the daemon (`roomlerd cli`, which the
-    /// installed `roomler` shim re-execs) the entry runs `roomlerd cli hive
+    /// The running binary. Embedded in the daemon (`meshharbord cli`, which the
+    /// installed `roomler` shim re-execs) the entry runs `meshharbord cli hive
     /// hook` directly, without the shim's hop. On Windows, [`Self::on_path`].
     pub fn this_binary(embedded: bool) -> Result<Self> {
         if cfg!(windows) {
@@ -154,7 +154,7 @@ pub fn ours(handler: &Value) -> bool {
         .and_then(|s| s.to_str())
         .unwrap_or("");
     let rest: Vec<&str> = rest.split_whitespace().collect();
-    matches!(stem, "roomler" | "roomlerd" | "roomler-shim")
+    matches!(stem, "meshharbor" | "meshharbord" | "roomler" | "roomlerd" | "roomler-shim")
         && (rest == ["hive", "hook"] || rest == ["cli", "hive", "hook"])
 }
 
@@ -385,7 +385,7 @@ fn device_adopts() -> bool {
     false
 }
 
-/// `roomler hive adopt`.
+/// `meshharbor hive adopt`.
 pub fn adopt(explicit: Option<PathBuf>, embedded: bool) -> Result<()> {
     let path = settings_path(explicit)?;
     let previous = match std::fs::read(&path) {
@@ -420,7 +420,7 @@ pub fn adopt(explicit: Option<PathBuf>, embedded: bool) -> Result<()> {
     Ok(())
 }
 
-/// `roomler hive unadopt`.
+/// `meshharbor hive unadopt`.
 pub fn unadopt(explicit: Option<PathBuf>) -> Result<()> {
     let path = settings_path(explicit)?;
     let previous = match std::fs::read(&path) {
@@ -538,7 +538,7 @@ pub fn next_chunk(
     }
 }
 
-/// `roomler hive hook`: what Claude Code runs. Never fails and prints
+/// `meshharbor hive hook`: what Claude Code runs. Never fails and prints
 /// nothing: an adopt that cannot happen now happens at the next hook, or not
 /// at all, and the person's session goes on either way.
 pub async fn hook() {
@@ -684,7 +684,7 @@ mod tests {
     use super::*;
 
     fn hook() -> HookCommand {
-        HookCommand::for_binary("/usr/bin/roomler", false)
+        HookCommand::for_binary("/usr/bin/meshharbor", false)
     }
 
     /// A settings file as this dev box keeps it: someone else's hooks (FR-8's
@@ -741,7 +741,7 @@ mod tests {
                 .filter(|h| ours(h))
                 .collect();
             assert_eq!(mine.len(), 1, "{event}: {out}");
-            assert_eq!(mine[0]["command"], json!("'/usr/bin/roomler' hive hook"));
+            assert_eq!(mine[0]["command"], json!("'/usr/bin/meshharbor' hive hook"));
             assert_eq!(mine[0].get("async").is_some(), background, "{event}");
         }
         // Top-level keys stay in their order.
@@ -861,21 +861,21 @@ mod tests {
     #[test]
     fn only_a_roomler_hive_hook_is_ours() {
         let c = |s: &str| json!({ "type": "command", "command": s });
-        assert!(ours(&c("'/usr/bin/roomler' hive hook")));
-        assert!(ours(&c("'/usr/bin/roomlerd' cli hive hook")));
+        assert!(ours(&c("'/usr/bin/meshharbor' hive hook")));
+        assert!(ours(&c("'/usr/bin/meshharbord' cli hive hook")));
         assert!(ours(&c("/usr/local/bin/roomler hive hook")));
         assert!(
             ours(&c("'/opt/my apps/roomler' hive hook")),
             "a path with a space"
         );
-        assert!(!ours(&c("'/usr/bin/roomler' peers")));
+        assert!(!ours(&c("'/usr/bin/meshharbor' peers")));
         assert!(!ours(&c("'/usr/bin/other' hive hook")));
         assert!(
-            !ours(&c("'/usr/bin/roomler' hive hook; rm -rf ~")),
+            !ours(&c("'/usr/bin/meshharbor' hive hook; rm -rf ~")),
             "anything more is someone else's"
         );
         assert!(
-            !ours(&json!({"command": "/usr/bin/roomler", "args": ["hive", "hook"]})),
+            !ours(&json!({"command": "/usr/bin/meshharbor", "args": ["hive", "hook"]})),
             "exec form was never written"
         );
     }

@@ -20,7 +20,7 @@
 //! - Enrollment goes through `roomler_node_core::enrollment::enroll` as a
 //!   direct lib call (no subprocess).
 //! - Service control / self-update shell out to the daemon CLI
-//!   (`roomlerd service install`, `roomlerd self-update`).
+//!   (`meshharbord service install`, `roomlerd self-update`).
 //! - Closing the window HIDES it (close-to-hide below) — the tray icon
 //!   and the consent watcher must outlive the window, since surfacing
 //!   consent prompts is this app's safety-relevant job.

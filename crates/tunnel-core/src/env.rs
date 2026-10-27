@@ -170,7 +170,7 @@ pub mod test_env {
 // RETIRED-NAME-ANCHOR(4): arms 2 and 3 are the reason a rename here costs
 // nothing in the field. Both spellings are set on real hosts today — mars,
 // jupiter and zeus each carry four `ROOMLER_AGENT_*` entries in an
-// operator-authored `/etc/systemd/system/roomlerd.service.d/` drop-in, which a
+// operator-authored `/etc/systemd/system/meshharbord.service.d/` drop-in, which a
 // package upgrade never rewrites. Dropping either arm silently un-configures
 // those hosts: the daemon starts fine and simply ignores what it was told.
 /// Read a Roomler node env var by suffix. Precedence, highest first:
@@ -194,7 +194,8 @@ pub mod test_env {
 /// asserts a default is not hermetic — an inherited value under another
 /// spelling silently decides the assertion — so `test_env` clears from this
 /// list AND from [`RETIRED_PREFIXES`].
-pub const PREFIXES: [&str; 2] = ["ROOMLERD_", "ROOMLER_NODE_"];
+/// MeshHarbor: `MESHHARBORD_` is the spelling to use; the Roomler ones still read.
+pub const PREFIXES: [&str; 3] = ["MESHHARBORD_", "ROOMLERD_", "ROOMLER_NODE_"];
 
 /// Prefixes that are no longer READ, but are still LOOKED FOR.
 ///
@@ -206,7 +207,7 @@ pub const PREFIXES: [&str; 2] = ["ROOMLERD_", "ROOMLER_NODE_"];
 /// runbook).
 ///
 /// So the prefix is retired from the chain and kept in the SEARCH: every host
-/// that sets one is told, loudly, at startup and on `roomler status`, naming
+/// that sets one is told, loudly, at startup and on `meshharbor status`, naming
 /// the current spelling to use. A dormant device that wakes up months from now
 /// announces itself instead of quietly losing a setting.
 ///
@@ -332,7 +333,7 @@ fn note_legacy_use(prefix: &str, suffix: &str) {
 ///
 /// Hoisted out of [`legacy_use_is_new`] by FR-46 (#1051) so the set can be
 /// READ, not only warned about. The warning alone was write-only: it fires once
-/// near startup, so a `roomler logs` tail on a long-running daemon cannot find
+/// near startup, so a `meshharbor logs` tail on a long-running daemon cannot find
 /// it, and answering "does any host still depend on a retired name?" meant
 /// sweeping env vars and registries by hand — which under-reported twice.
 static LEGACY_SEEN: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
@@ -712,7 +713,7 @@ mod tests {
     /// still depend on a retired name?", so it must be readable, not only
     /// warnable. Before this the set was a local static inside
     /// `legacy_use_is_new` and the only trace of a legacy read was one WARN
-    /// line near startup — unreachable from a `roomler logs` tail on a
+    /// line near startup — unreachable from a `meshharbor logs` tail on a
     /// long-running daemon, which is exactly when the question gets asked.
     #[test]
     fn legacy_uses_are_readable_and_exclude_the_current_spelling() {

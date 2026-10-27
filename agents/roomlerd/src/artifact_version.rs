@@ -217,7 +217,9 @@ fn deb_upstream_version(v: &str) -> String {
 /// (`roomlerd-0.3.0-rc.458-…` → `0.3.0-rc.458`). `None` for any other shape.
 #[cfg(any(unix, test))]
 fn tarball_version(top: &str) -> Option<String> {
-    let rest = top.strip_prefix("roomlerd-")?;
+    let rest = top
+        .strip_prefix("meshharbor-")
+        .or_else(|| top.strip_prefix("roomlerd-"))?;
     let mut parts = rest.split('-');
     let fields = numeric_fields(parts.next()?)?;
     match parts.next()? {

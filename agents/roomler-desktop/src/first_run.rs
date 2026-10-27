@@ -181,7 +181,7 @@ pub fn cmd_desktop_state() -> DesktopStateView {
         } else {
             "linux"
         },
-        // The plist is world-readable; `/etc/roomler` (0700) is not.
+        // The plist is world-readable; `/etc/meshharbor` (0700) is not.
         macos_privileged_half: cfg!(target_os = "macos")
             && std::path::Path::new("/Library/LaunchDaemons/com.roomler.daemon.plist").exists(),
     }

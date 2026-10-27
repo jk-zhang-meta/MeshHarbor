@@ -3,7 +3,7 @@
 //! FR-90 P2b-2 — a session's workspace, checkpointed through the account's own
 //! `git` (decision 14), never a git built into the daemon.
 //!
-//! Runs AS THE SESSION'S ACCOUNT, inside `roomlerd hive-checkpoint` (P2b-3): the
+//! Runs AS THE SESSION'S ACCOUNT, inside `meshharbord hive-checkpoint` (P2b-3): the
 //! daemon never opens a path in the account's tree. Plumbing only, through a
 //! temporary index, so the person's index, branches and work tree stay as they
 //! were (design §6.3):

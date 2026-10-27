@@ -88,7 +88,7 @@ migrate_legacy_dir() {
   fi
 }
 
-migrate_legacy_dir /etc/roomler-agent     /etc/roomler
+migrate_legacy_dir /etc/roomler-agent     /etc/meshharbor
 migrate_legacy_dir /var/log/roomler-agent /var/log/roomler
 
 # If the move could not happen (a partially-migrated host, a dest that already
@@ -96,12 +96,12 @@ migrate_legacy_dir /var/log/roomler-agent /var/log/roomler
 # copy the enrolled config across rather than letting the daemon start with
 # none and re-enrol as a stranger. A copy, never a move: the legacy original
 # stays until something is known to be working.
-if [ -f /etc/roomler-agent/config.toml ] && [ ! -f /etc/roomler/config.toml ]; then
-  mkdir -p /etc/roomler 2>/dev/null || true
-  if cp -p /etc/roomler-agent/config.toml /etc/roomler/config.toml 2>/dev/null; then
-    echo "copied the enrolled config forward to /etc/roomler/config.toml"
+if [ -f /etc/roomler-agent/config.toml ] && [ ! -f /etc/meshharbor/config.toml ]; then
+  mkdir -p /etc/meshharbor 2>/dev/null || true
+  if cp -p /etc/roomler-agent/config.toml /etc/meshharbor/config.toml 2>/dev/null; then
+    echo "copied the enrolled config forward to /etc/meshharbor/config.toml"
   else
-    echo "WARNING: /etc/roomler/config.toml is missing and could not be copied"
+    echo "WARNING: /etc/meshharbor/config.toml is missing and could not be copied"
   fi
 fi
 
@@ -179,7 +179,7 @@ replace_launchd_service() {
 # then installs no daemon either — no capture, no input, nothing to supervise.
 # RETIRED-NAME-ANCHOR(2): the legacy marker path, read as a fallback only.
 daemon_is_enabled() {
-  [ -f /etc/roomler/enable-daemon ] || [ -f /etc/roomler-agent/enable-daemon ]
+  [ -f /etc/meshharbor/enable-daemon ] || [ -f /etc/roomler-agent/enable-daemon ]
 }
 
 # FR-43 P2 — does the root daemon own the GUI-session worker on this Mac?
@@ -208,9 +208,9 @@ daemon_is_enabled() {
 # without it would remove the LaunchAgent and leave the Mac with NO GUI worker.
 daemon_supervises_gui_worker() {
   daemon_is_enabled || return 1
-  [ -f /etc/roomler/config.toml ] || return 1
+  [ -f /etc/meshharbor/config.toml ] || return 1
   grep -qE '^[[:space:]]*macos_supervise_gui_worker[[:space:]]*=[[:space:]]*true' \
-    /etc/roomler/config.toml
+    /etc/meshharbor/config.toml
 }
 
 LAUNCH_AGENTS_DIR="$CONSOLE_HOME/Library/LaunchAgents"
@@ -231,7 +231,7 @@ if daemon_supervises_gui_worker; then
   rm -f "$PLIST_TARGET"
   echo "roomlerd installed for $CONSOLE_USER (uid=$CONSOLE_UID); the GUI worker"
   echo "  is owned by the ROOT DAEMON (macos_supervise_gui_worker = true in"
-  echo "  /etc/roomler/config.toml), so the per-user LaunchAgent was NOT loaded."
+  echo "  /etc/meshharbor/config.toml), so the per-user LaunchAgent was NOT loaded."
   echo "  The daemon spawns and babysits the worker itself; one device row both"
   echo "  holds the enrollment and serves the screen."
   echo "  To go back to the per-user LaunchAgent, set that key false (or remove"
@@ -363,7 +363,7 @@ echo "(the Roomler menu-bar app shows which of the two is missing, with a button
 # effect of installing a remote-control agent.
 #
 # Enable it by creating the marker, then (re-)running the installer:
-#   sudo mkdir -p /etc/roomler && sudo touch /etc/roomler/enable-daemon
+#   sudo mkdir -p /etc/meshharbor && sudo touch /etc/meshharbor/enable-daemon
 # `install.sh --daemon-token` does exactly that before it runs the pkg.
 #
 # ⚠️ There is NO environment-variable form, and there cannot be. This script
@@ -375,7 +375,7 @@ echo "(the Roomler menu-bar app shows which of the two is missing, with a button
 # the daemon ones, i.e. the condition was simply false. It was removed rather
 # than left as a documented option that silently does nothing.
 #
-# The daemon gets its OWN config at /etc/roomler/config.toml. It must
+# The daemon gets its OWN config at /etc/meshharbor/config.toml. It must
 # not share the user's: two processes on one enrollment identity would fight
 # over the control WS (the hub keys on agent_id — the second connection
 # displaces the first), so they are separate enrollments by construction.
@@ -390,7 +390,7 @@ if daemon_is_enabled; then
   if [ ! -f "$DAEMON_PLIST_SOURCE" ]; then
     echo "WARNING: daemon requested but $DAEMON_PLIST_SOURCE is missing; skipping"
   else
-    mkdir -p /etc/roomler /var/log/roomler
+    mkdir -p /etc/meshharbor /var/log/roomler
     cp "$DAEMON_PLIST_SOURCE" "$DAEMON_PLIST_TARGET"
     chown root:wheel "$DAEMON_PLIST_TARGET"
     chmod 644 "$DAEMON_PLIST_TARGET"
@@ -405,14 +405,14 @@ if daemon_is_enabled; then
     rm -f /tmp/roomler-bootstrap.err
 
     echo "roomler system daemon installed (overlay/tunnel run as root)."
-    if [ ! -f /etc/roomler/config.toml ]; then
+    if [ ! -f /etc/meshharbor/config.toml ]; then
       echo "  NOT ENROLLED YET — the daemon needs its own enrollment:"
       echo "    sudo /Library/Roomler/roomlerd.app/Contents/MacOS/roomlerd \\"
-      echo "      --config /etc/roomler/config.toml \\"
+      echo "      --config /etc/meshharbor/config.toml \\"
       echo "      enroll --server <url> --token <enrollment-jwt> --name <label>"
       echo "    sudo launchctl kickstart -k system/com.roomler.daemon"
     fi
-    echo "  Its LocalAPI lives at /var/run/roomler/roomler.sock — reach it with"
+    echo "  Its LocalAPI lives at /var/run/meshharbor/meshharbor.sock — reach it with"
     echo "  'sudo roomler …' (an unprivileged 'roomler' finds the user agent)."
   fi
 else
@@ -421,14 +421,14 @@ else
   if [ -f "$DAEMON_PLIST_TARGET" ]; then
     launchctl bootout system/com.roomler.daemon 2>/dev/null || true
     rm -f "$DAEMON_PLIST_TARGET"
-    echo "roomler system daemon REMOVED — no /etc/roomler/enable-daemon marker."
+    echo "roomler system daemon REMOVED — no /etc/meshharbor/enable-daemon marker."
     echo "  The overlay AND the SSH server live in this daemon, so both are now"
     echo "  gone. Nothing else reports this: 'roomler ssh' will say the device"
     echo "  'has not published an SSH host key', which describes the symptom and"
     echo "  not the cause."
     echo "  If you did not intend to opt out, restore the marker and re-install:"
-    echo "    sudo mkdir -p /etc/roomler"
-    echo "    sudo touch /etc/roomler/enable-daemon"
+    echo "    sudo mkdir -p /etc/meshharbor"
+    echo "    sudo touch /etc/meshharbor/enable-daemon"
   fi
 fi
 
@@ -441,12 +441,12 @@ fi
 # refuses, which is safe and permanently stale). This tiny root unit is the
 # missing half of updating and nothing else: no enrollment, no network
 # identity — it polls the public release feed, verifies, installs, exits.
-# The agents signal it by touching /private/var/tmp/roomler-update-check.
+# The agents signal it by touching /private/var/tmp/meshharbor-update-check.
 #
 # Default ON because this pkg is only ever installed BY root — the operator
 # consented to root code at install time, and an updater that runs as the
 # installer's identity is how system packages update everywhere. Opt out:
-#   sudo mkdir -p /etc/roomler && sudo touch /etc/roomler/disable-auto-update
+#   sudo mkdir -p /etc/meshharbor && sudo touch /etc/meshharbor/disable-auto-update
 # then re-run the installer (same absence-removes semantics as the daemon
 # marker — the opposite polarity, because the default is the opposite).
 #
@@ -462,7 +462,7 @@ UPDATE_PLIST_TARGET="/Library/LaunchDaemons/com.roomler.update.plist"
 # current path would install the auto-update helper on a Mac whose operator
 # opted out under the legacy one — silently doing the thing they declined.
 # RETIRED-NAME-ANCHOR(2): the legacy opt-out marker, honoured as a fallback.
-if [ ! -f /etc/roomler/disable-auto-update ] && [ ! -f /etc/roomler-agent/disable-auto-update ]; then
+if [ ! -f /etc/meshharbor/disable-auto-update ] && [ ! -f /etc/roomler-agent/disable-auto-update ]; then
   if [ ! -f "$UPDATE_PLIST_SOURCE" ]; then
     echo "WARNING: $UPDATE_PLIST_SOURCE missing — auto-update helper not installed"
   else
@@ -532,7 +532,7 @@ else
     done
     if [ "$helper_idle" -eq 1 ]; then
       launchctl bootout system/com.roomler.update 2>/dev/null || true
-      echo "roomler update helper REMOVED — /etc/roomler/disable-auto-update is set."
+      echo "roomler update helper REMOVED — /etc/meshharbor/disable-auto-update is set."
     else
       echo "roomler update helper opt-out recorded; the loaded job unloads at next boot"
       echo "  (still running after 10s — an update is in flight and the job is our ancestor)"
@@ -540,7 +540,7 @@ else
     echo "  This Mac will no longer self-update; new releases must be installed by hand:"
     echo "    curl -fsSL https://roomler.ai/api/setup/install.sh | sh -s -- --role daemon …"
   else
-    echo "auto-update opted out (/etc/roomler/disable-auto-update) — helper not installed"
+    echo "auto-update opted out (/etc/meshharbor/disable-auto-update) — helper not installed"
   fi
 fi
 

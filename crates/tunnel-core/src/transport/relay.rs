@@ -67,7 +67,7 @@ pub trait RelayConn: Send + Sync + 'static {
 
     /// How this relay leg is reached — operator-facing.
     ///
-    /// `roomler peers` printed a bare `relay` for every relayed carrier, so a
+    /// `meshharbor peers` printed a bare `relay` for every relayed carrier, so a
     /// 52 ms coturn/UDP hop and a 175 ms DERP/TCP hop were indistinguishable.
     /// The relay *kind* is an overlay-layer decision and already exists as
     /// [`crate::overlay::relay_link::RelayKind`]; only the transport is a
@@ -324,7 +324,7 @@ impl AsyncUdpSocket for RelayUdpSocket {
 /// allocation down.
 pub struct TurnRelayConn {
     /// How this allocation was reached (udp `turn:` vs tcp/tls `turns:`) and
-    /// which PoP served it — surfaced in `roomler peers` so a dead relay is
+    /// which PoP served it — surfaced in `meshharbor peers` so a dead relay is
     /// distinguishable from a healthy one.
     transport: RelayTransport,
     server: String,

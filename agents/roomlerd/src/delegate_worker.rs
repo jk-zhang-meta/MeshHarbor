@@ -33,7 +33,7 @@
 //! ## Why a DEDICATED socket, and not the LocalAPI one
 //!
 //! Because an unprivileged worker cannot open the control socket, and must not
-//! be able to: `/var/run/roomler/roomler.sock` is `0600 root` inside a `0700
+//! be able to: `/var/run/meshharbor/meshharbor.sock` is `0600 root` inside a `0700
 //! root` directory, and it carries `config set`, `route add` and the rest. The
 //! first shape of this code dialled it and failed in the field with
 //! `Permission denied (os error 13)`.
@@ -131,7 +131,7 @@ async fn gates_changed(w: &mut GateWatch) {
 ///
 /// Returns immediately unless this process was started as `run --supervised`,
 /// which is every case except a worker the supervisor itself spawned:
-/// launchd-owned workers, a hand-run `roomlerd run`, and the daemon.
+/// launchd-owned workers, a hand-run `meshharbord run`, and the daemon.
 pub async fn run(
     supervised: bool,
     // FR-43 P2b-2 — the signalling loop's two ends: delegated messages go IN,

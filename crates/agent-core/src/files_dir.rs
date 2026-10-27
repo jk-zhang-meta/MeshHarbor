@@ -774,7 +774,7 @@ mod tests {
         assert!(resolve(r"C:\Program Filesx\drops", &alice(), &win()).is_ok());
 
         for bad in [
-            "/etc/roomler",
+            "/etc/meshharbor",
             "/usr/local/drops",
             "/System/x",
             "/Library/x",
@@ -1049,7 +1049,7 @@ mod tests {
         // them too — the surface never stores a value the daemon would
         // refuse for a reason it could already see.
         assert!(check_shape(r"C:\Windows\Temp", &win()).is_err());
-        assert!(check_shape("/etc/roomler", &nix()).is_err());
+        assert!(check_shape("/etc/meshharbor", &nix()).is_err());
     }
 
     #[test]

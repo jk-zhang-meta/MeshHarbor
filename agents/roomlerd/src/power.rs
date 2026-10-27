@@ -862,7 +862,7 @@ mod tests {
         assert_eq!(PowerPolicy::parse("yes"), PowerPolicy::Never);
     }
 
-    /// The config value round-trips, so `roomler config get` shows back what
+    /// The config value round-trips, so `meshharbor config get` shows back what
     /// was set rather than a normalised surprise.
     #[test]
     fn the_policy_round_trips_through_its_config_string() {

@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (C) 2026 G ROX EOOD
-//! Cross-platform single-instance lock for `roomlerd run`.
+//! Cross-platform single-instance lock for `meshharbord run`.
 //!
-//! Prevents an interactive `roomlerd run` from racing the
+//! Prevents an interactive `meshharbord run` from racing the
 //! Scheduled-Task / systemd-launched copy in the same user session.
 //! Two simultaneous agents would compete for the same agent JWT and
 //! stomp each other every ~25 s as one's keepalive forces the
@@ -14,7 +14,7 @@
 // only knows the old name, so dropping it would let two daemons run at once
 // across an upgrade — the exact thing this module exists to prevent.
 //!   `Local\Roomler-<sha>` (post-P3D-rename) AND `Local\RoomlerAgent-<sha>`
-//!   (pre-rename). Acquiring both means an OLD `roomlerd run` and a
+//!   (pre-rename). Acquiring both means an OLD `meshharbord run` and a
 //!   NEW one can't both run during the rename window — either one already
 //!   holding either name blocks the other. The `Local\` namespace scopes
 //!   each mutex to one Terminal Services session, so on a multi-user host
@@ -87,7 +87,7 @@ pub fn acquire(config_path: &Path) -> Result<AcquireOutcome> {
 
 /// The daemon instance a config path names: the fingerprint this lock is
 /// keyed by. FR-97 P4d keys a per-user daemon's stop event by it too, so
-/// `roomlerd service stop` reaches the daemon of the config it resolved, as
+/// `meshharbord service stop` reaches the daemon of the config it resolved, as
 /// a second `run` would collide with that daemon and no other.
 pub fn instance_id(config_path: &Path) -> String {
     lock_id(config_path)

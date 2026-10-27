@@ -31,7 +31,7 @@ const X11_UNIX_DIR: &str = "/tmp/.X11-unix";
 /// virtual desktop is no consent surface) and the recorder (FR-85: a virtual
 /// desktop is no login screen) all ask this. Two hand-rolled copies once
 /// disagreed: one skipped `node_env`'s config fallback, so a knob set through
-/// `roomler config` was seen by one and not the other.
+/// `meshharbor config` was seen by one and not the other.
 pub fn requested() -> bool {
     tunnel_core::env::node_env("VIRTUAL_DESKTOP")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))

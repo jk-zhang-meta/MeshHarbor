@@ -1391,7 +1391,7 @@ pub async fn cmd_restart_daemon(reason: String) -> Result<RestartReport, String>
 /// FR-84 D3 — wait (≤ 60 s) until a daemon process other than the one that
 /// accepted (`old_pid` + `old_started_at_ms`, from [`RestartReport`]) answers,
 /// returning its pid. When the relaunch is ours (`restart_by = "caller"`, the
-/// Windows Scheduled Task), run `roomlerd service start` whenever nothing
+/// Windows Scheduled Task), run `meshharbord service start` whenever nothing
 /// answers, again every few seconds until something does — the task's
 /// `IgnoreNew` drops a start that lands while the old instance is still
 /// exiting (`localapi::wait_for_restart`).
@@ -1422,7 +1422,7 @@ pub async fn cmd_restart_wait(
     .inspect_err(|why| tracing::warn!(%why, "restart: the device service did not come back"))
 }
 
-/// `roomlerd service start`, the caller half of a restart under the Scheduled
+/// `meshharbord service start`, the caller half of a restart under the Scheduled
 /// Task. Blocking; bounded at 20 s.
 fn run_service_start() -> Result<(), String> {
     let exe = agent_exe_path()?;
@@ -1431,7 +1431,7 @@ fn run_service_start() -> Result<(), String> {
         match spawn_no_inherit_and_wait(&exe, "service start", std::time::Duration::from_secs(20))?
         {
             0 => Ok(()),
-            code => Err(format!("`roomlerd service start` exited {code}")),
+            code => Err(format!("`meshharbord service start` exited {code}")),
         }
     }
     #[cfg(not(windows))]
@@ -2483,7 +2483,7 @@ fn probe_service_state() -> (String, bool) {
     classify_service_state(task.as_deref(), scm.as_deref())
 }
 
-/// What `roomlerd service status --as-service` answered: its
+/// What `meshharbord service status --as-service` answered: its
 /// `Roomler: <InstalledStatus:?>` line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ScmAnswer {
@@ -2626,7 +2626,7 @@ fn installed_daemon_candidates() -> Vec<PathBuf> {
         // The .deb installs to /usr/bin; a tarball install lands in
         // /usr/local/bin.
         vec![
-            PathBuf::from("/usr/bin/roomlerd"),
+            PathBuf::from("/usr/bin/meshharbord"),
             PathBuf::from("/usr/local/bin/roomlerd"),
         ]
     }
@@ -2750,7 +2750,7 @@ mod tests {
         assert_eq!(r.server_url.as_deref(), Some("https://file.example"));
     }
 
-    // #1681 — stdout as `roomlerd service status [--as-service]` really prints
+    // #1681 — stdout as `meshharbord service status [--as-service]` really prints
     // it: tracing INFO lines (ANSI and all) on STDOUT, the answer last. The
     // noise line is the one every probe carries while this companion runs.
     const NOISE: &str = "\u{1b}[2m2026-09-26T08:23:47.814093Z\u{1b}[0m \u{1b}[32m INFO\u{1b}[0m \

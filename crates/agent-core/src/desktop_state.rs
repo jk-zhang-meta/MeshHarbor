@@ -5,7 +5,7 @@
 //! off for their account.
 //!
 //! It lives here rather than in the companion because TWO processes read it:
-//! the companion, which owns it, and `roomlerd service install` on a per-user
+//! the companion, which owns it, and `meshharbord service install` on a per-user
 //! Windows install, which registers the login start and must not put it back
 //! for someone who turned it off.
 //!

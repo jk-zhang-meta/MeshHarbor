@@ -102,7 +102,7 @@ const MAX_WAITING: usize = INPUT_QUEUE / 2;
 /// resume keeps what the session has (its own edits included). A copy that
 /// fails is skipped: memory never stops a session.
 ///
-/// P1i-2 — on Windows `roomlerd hive-prep` does this, run as the console user
+/// P1i-2 — on Windows `meshharbord hive-prep` does this, run as the console user
 /// ([`crate::hive_win::prep`]); the harness's folder is its working directory.
 #[cfg(unix)]
 const WRAPPER: &str = r#"umask 077 && mkdir -p -- "$1" && { if [ -n "$3" ]; then if [ -f "$3/CLAUDE.md" ] && [ ! -e "$1/CLAUDE.md" ] && [ ! -L "$1/CLAUDE.md" ]; then cp -- "$3/CLAUDE.md" "$1/CLAUDE.md" 2>/dev/null; fi; if [ -f "$3/MEMORY.md" ] && [ ! -e "$4/MEMORY.md" ] && [ ! -L "$4/MEMORY.md" ]; then mkdir -p -- "$4" 2>/dev/null && cp -- "$3/MEMORY.md" "$4/MEMORY.md" 2>/dev/null; fi; fi; true; } && cd -- "$2" && shift 4 && exec "$@""#;

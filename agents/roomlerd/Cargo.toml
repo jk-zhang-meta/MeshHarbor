@@ -21,7 +21,9 @@ path = "src/lib.rs"
 # desktop companion's spawn fallback, so the alias is a compatibility
 # surface, not a leftover. See wix/main.wxs `AgentExeAlias` +
 # release-agent.yml Copy-Item.
-name = "roomlerd"
+# MeshHarbor: the installed daemon is `meshharbord` (the crate and the lib stay
+# `roomlerd`, an internal name no user sees).
+name = "meshharbord"
 path = "src/main.rs"
 
 [[example]]
@@ -889,151 +891,64 @@ tokio-rustls = { version = "0.26", default-features = false, features = ["ring",
 # Packaging metadata
 # ---------------------------------------------------------------------------
 
-# cargo-deb (Linux .deb)
-#   cargo deb -p roomlerd --no-build
-# Produces target/debian/roomlerd_<version>_amd64.deb
+# cargo-deb (Linux .deb), MeshHarbor
+#   cargo deb -p roomlerd --no-build --variant headless   overlay + SSH, no capture
+#   cargo deb -p roomlerd --no-build                      full; needs vendor-ffmpeg/
+# Produces target/debian/meshharbor_<version>_<arch>.deb. A clean break from the
+# upstream Roomler packages (other name, paths and units), so it conflicts with
+# them instead of taking their files over: a host moves by reinstalling.
 [package.metadata.deb]
-maintainer = "G ROX LTD <goran.jovanov@gmail.com>"
+name = "meshharbor"
+maintainer = "MeshHarbor <jesuskun0527@gmail.com>"
 copyright = "2026, G ROX LTD"
 license-file = ["../../LICENSE", "0"]
 extended-description = """\
-Roomler Daemon — keeps this device on your private Roomler mesh network \
+MeshHarbor daemon — keeps this device on your private MeshHarbor mesh network \
 and available for secure remote control. Media and input flow directly \
 peer-to-peer; the server never sees raw pixels or keystrokes."""
-# RETIRED-NAME-ANCHOR-BEGIN
-# Frozen zone. Every retired name from here to the wix block is LOAD-BEARING:
-#   * usr/lib/roomler-agent is baked into the binary as an RPATH; renaming the
-#     directory without relinking makes the .deb fail to load its own FFmpeg.
-#   * usr/share/doc/roomler-agent is dpkg-visible and moves with the doc dir,
-#     not with the package name.
-#   * provides/replaces name the REAL predecessor packages — a rename here is
-#     a silently broken takeover, not a typo.
-#   * the .msi filename is a PUBLISHED release asset (updater matches on the
-#     -permachine- infix, never the prefix).
-# INVARIANT: a name in this zone must match something dpkg, the linker or a
-# release URL already refers to. docs/fr/FR-21
-# The agent binary is built on ubuntu-22.04 (glibc 2.34) and links libvpx.so.7.
-# The CI "Bundle FFmpeg" step ships FFmpeg 9.0.1's libav* AND libvpx.so.7 inside
-# usr/lib/roomler-agent (binary RPATH + $ORIGIN), so the .deb is self-contained
-# and runs on BOTH Ubuntu 22.04 (native libvpx.so.7) and 24.04 (which ships only
-# libvpx.so.9 — the bundled .so.7 is exactly what makes 24.04 work). Hence NO
-# libvpx dep and no raised glibc floor: `libvpx9` was a lie (the binary needs
-# .so.7, not .so.9) and `libc6 (>= 2.39)` wrongly blocked 22.04 (binary is glibc
-# 2.34). `libasound2` backs the Opus system-audio capture track; libxcb* are the
-# always-present X11 client libs.
-# FR-77 P4 — VAAPI adds NO `depends`: libva/libva-drm/libdrm ride in the bundle
-# with the libav* (a `Depends: libva2` is unsatisfiable on the updater's offline
-# `dpkg --install` path, which replaces the binary BEFORE the dependency
-# failure — a host that cannot start its daemon on the next restart). The VA
-# DRIVER stays the host's, and it is a `suggests`, not `recommends`: apt
-# installs recommends by default, and Mesa's VA driver drags LLVM (~100 MB)
-# onto every headless server on the next agent update.
-depends = "libc6 (>= 2.35), libxcb1, libxcb-shm0, libxcb-randr0, libasound2, libssl3, libstdc++6, libgcc-s1"
-# `ip` (iproute2) is how a Linux node gives its TUN the overlay IPv6; without it
-# the node stays v4-only and an exit cannot serve IPv6 (FR-97 §8, 2026-10-16: a
-# minimal container). A `recommends`, NOT a `depends`, for the reason above: the
-# updater's offline `dpkg --install` replaces the binary before it would fail on a
-# missing dependency. apt installs recommends by default, so a fresh install pulls
-# it in, and every full distro already has it.
+# The full build bundles FFmpeg 9.0.1 + libvpx.so.7 in usr/lib/meshharbor (the
+# binary's RPATH), so it depends on no system FFmpeg or libvpx.
+depends = "libc6 (>= 2.35), libxcb1, libxcb-shm0, libxcb-randr0, libasound2, libssl3 | libssl3t64, libstdc++6, libgcc-s1"
 recommends = "iproute2"
 suggests = "mesa-va-drivers, intel-media-va-driver"
 section = "net"
 priority = "optional"
-# `postinst` runs `systemctl daemon-reload`. Without it systemd keeps
-# enforcing its CACHED copy of the units below, so any unit edit we ship is
-# inert until the host reboots — rc.439's `RestartPreventExitStatus=7 8`
-# landed on disk and did nothing. NOT cargo-deb's `systemd-units`
-# integration: that would also enable/start the daemon's services, and
-# deciding what runs on the host stays the operator's call. The one
-# exception is the update half (FR-96 P5): `postinst` enables
-# roomler-update.timer + .path the Debian way, so an administrator's
-# disable holds; `prerm`/`postrm` stop and mask them on remove. Nothing
-# here touches roomler.service or roomlerd.service.
 maintainer-scripts = "packaging/linux/debian"
-# `/usr/bin/roomler` was owned by the legacy standalone `roomler-tunnel` .deb.
-# Shipping the CLI from this package (see the assets below) therefore collides
-# with it, and dpkg refuses the whole upgrade:
-#
-#   dpkg: trying to overwrite '/usr/bin/roomler', which is also in package
-#         roomler-tunnel 0.3.0~rc.205-1
-#
-# Field-caught on fleet-host-1, 2026-08-06 — rc.312 would not install anywhere the
-# old tunnel package was present, which is exactly the set of hosts carrying
-# the stale CLI this change exists to fix.
-#
-# `replaces` is the Debian mechanism for taking a file over from another
-# package: dpkg allows the overwrite and transfers ownership, so later removing
-# `roomler-tunnel` does NOT delete the CLI. Deliberately WITHOUT a matching
-# `breaks` — that would demand the old package be removed first, which plain
-# `dpkg -i` (the self-updater's fallback) cannot do, turning a clean upgrade
-# into a manual one on every affected host.
-#
-# FR-21 P2a: the crate renamed `roomler-agent` -> `roomlerd`, and cargo-deb
-# derives the Debian `Package:` field from the crate name — so without the two
-# lines below dpkg would see a BRAND NEW package. The old `roomler-agent` would
-# stay installed beside it owning the same paths, or the upgrade would abort on
-# a file conflict. On a self-updating fleet that is a fleet-wide broken upgrade,
-# and it would fail silently on the hosts that already work.
-#
-# `provides` keeps anything that depends on the old name satisfied; `replaces`
-# transfers file ownership exactly as it already does for `roomler-tunnel`
-# above. `name` is now stated EXPLICITLY rather than derived, so a future crate
-# rename cannot move the Debian package name again by accident — the thing that
-# made this hazard invisible in the first place.
-#
-# Deliberately WITHOUT `conflicts`, for the same reason `breaks` is absent
-# above: `conflicts` demands the old package be removed first, which the
-# self-updater's `dpkg --install` fallback cannot do. `apt-get install` (the
-# primary path, see updater.rs::linux_install_candidates) would handle it, but
-# the fallback exists precisely for hosts whose apt lists are unusable, and
-# those are the hosts least able to recover from a manual-intervention upgrade.
-# The cost of omitting it is a vestigial, file-less `roomler-agent` entry in
-# `dpkg -l` until a one-time `apt-get remove roomler-agent` sweep — which is
-# safe exactly because `replaces` already transferred every file.
-name = "roomlerd"
-provides = "roomler-agent"
-replaces = "roomler-tunnel, roomler-cli, roomler-agent"
+conflicts = "roomlerd, roomler-agent"
 assets = [
-    # P3d Slice B: installed binary is `roomlerd` (the [[bin]] output name).
-    ["target/release/roomlerd", "usr/bin/", "755"],
-    # The `roomler` command (P3e Phase 2: now the ~300 KB roomler-cli-shim,
-    # installed under the user-facing name — it re-execs `roomlerd cli`, the
-    # same lever-D mechanics as the Windows MSIs since rc.365).
-    #
-    # History that shapes this entry: `roomler` was MISSING from this list, so
-    # every .deb upgrade replaced the daemon and left whatever CLI the host
-    # happened to have. Field-caught 2026-08-06: fleet-host-2 and buildhost ran a rc.205
-    # CLI from Jul 22 against an rc.311 daemon — `roomler config set` did not
-    # exist and `roomler peers --json` silently misrendered newer fields. The
-    # shim RETIRES that failure class structurally: the command surface lives
-    # inside roomlerd, so it can never version-skew from the daemon again
-    # (a stale shim is harmless — it's a version-agnostic re-exec).
-    ["target/release/roomler-shim", "usr/bin/roomler", "755"],
-    # Bundled FFmpeg 9.0.1 (LGPL) for the ffmpeg-encoder HEVC backend. Populated
-    # by the "Bundle FFmpeg" CI step (SONAME-named real files, $ORIGIN RPATH) so
-    # the .deb is self-contained — stock Ubuntu ships an ABI-incompatible FFmpeg
-    # 6.1. This glob is CI-only (the Linux .deb is never built locally).
-    ["vendor-ffmpeg/*.so.*", "usr/lib/roomler-agent/", "644"],
-    # P3d Slice B: systemd unit renamed roomler-agent.service -> roomler.service
-    # (ExecStart drives /usr/bin/roomlerd). The install DIR (usr/lib/roomler-agent,
-    # usr/share/doc/roomler-agent) stays as-is — out of scope for the rename.
-    ["packaging/linux/roomler.service", "usr/lib/systemd/user/roomler.service", "644"],
-    # Opt-in SYSTEM unit for headless nodes (root: self-update + overlay TUN
-    # both need privileges the per-user unit doesn't have). Deliberately a
-    # DISTINCT filename from the user unit so `systemctl enable roomlerd` and
-    # `systemctl --user enable roomler` can never be confused for each other.
-    # Nothing enables it — no maintainer script touches it, so it is inert
-    # until an operator opts in (`install.sh --role daemon --system`).
-    ["packaging/linux/roomlerd.service", "usr/lib/systemd/system/roomlerd.service", "644"],
-    # FR-96 — the update half of a per-user install: a root, one-shot
-    # `roomlerd update-helper`, woken by its timer and by the wake file a
-    # per-user daemon touches. The package's `postinst` enables the timer
-    # and the path (FR-96 P5); on a system install the helper steps aside
-    # for roomlerd.service, which updates itself.
-    ["packaging/linux/roomler-update.service", "usr/lib/systemd/system/roomler-update.service", "644"],
-    ["packaging/linux/roomler-update.timer", "usr/lib/systemd/system/roomler-update.timer", "644"],
-    ["packaging/linux/roomler-update.path", "usr/lib/systemd/system/roomler-update.path", "644"],
-    ["packaging/linux/README.Debian", "usr/share/doc/roomler-agent/README.Debian", "644"],
+    ["target/release/meshharbord", "usr/bin/", "755"],
+    # The `meshharbor` command: the roomler-cli-shim under the user-facing name;
+    # it re-execs `meshharbord cli`, so it can never version-skew from the daemon.
+    ["target/release/roomler-shim", "usr/bin/meshharbor", "755"],
+    ["packaging/linux/meshharbor.service", "usr/lib/systemd/user/meshharbor.service", "644"],
+    # Opt-in SYSTEM unit for headless nodes; nothing enables it (install.sh
+    # --role daemon --system does).
+    ["packaging/linux/meshharbord.service", "usr/lib/systemd/system/meshharbord.service", "644"],
+    ["packaging/linux/meshharbor-update.service", "usr/lib/systemd/system/meshharbor-update.service", "644"],
+    ["packaging/linux/meshharbor-update.timer", "usr/lib/systemd/system/meshharbor-update.timer", "644"],
+    ["packaging/linux/meshharbor-update.path", "usr/lib/systemd/system/meshharbor-update.path", "644"],
+    ["packaging/linux/README.Debian", "usr/share/doc/meshharbor/README.Debian", "644"],
+    ["vendor-ffmpeg/*.so.*", "usr/lib/meshharbor/", "644"],
+]
+
+# A headless node (server, relay, router): overlay + SSH, no screen capture,
+# so no FFmpeg or X libraries. Built with `--features overlay-netstack,
+# overlay-l3,ssh-server`.
+[package.metadata.deb.variants.headless]
+depends = "libc6 (>= 2.34), libssl3 | libssl3t64, libgcc-s1, zlib1g, libzstd1"
+assets = [
+    ["target/release/meshharbord", "usr/bin/", "755"],
+    # The `meshharbor` command: the roomler-cli-shim under the user-facing name;
+    # it re-execs `meshharbord cli`, so it can never version-skew from the daemon.
+    ["target/release/roomler-shim", "usr/bin/meshharbor", "755"],
+    ["packaging/linux/meshharbor.service", "usr/lib/systemd/user/meshharbor.service", "644"],
+    # Opt-in SYSTEM unit for headless nodes; nothing enables it (install.sh
+    # --role daemon --system does).
+    ["packaging/linux/meshharbord.service", "usr/lib/systemd/system/meshharbord.service", "644"],
+    ["packaging/linux/meshharbor-update.service", "usr/lib/systemd/system/meshharbor-update.service", "644"],
+    ["packaging/linux/meshharbor-update.timer", "usr/lib/systemd/system/meshharbor-update.timer", "644"],
+    ["packaging/linux/meshharbor-update.path", "usr/lib/systemd/system/meshharbor-update.path", "644"],
+    ["packaging/linux/README.Debian", "usr/share/doc/meshharbor/README.Debian", "644"],
 ]
 
 # cargo-wix (Windows .msi)

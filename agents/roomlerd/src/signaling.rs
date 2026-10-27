@@ -668,7 +668,7 @@ impl Drop for SignalingPumpGuard {
 }
 
 /// Unification P1 — RAII flag that marks the daemon "connected to the
-/// coordination server" for the LocalAPI (`roomler status`) while a WS
+/// coordination server" for the LocalAPI (`meshharbor status`) while a WS
 /// connection is live, and clears it on EVERY exit path from `connect_once`
 /// (Ok, `?`-propagated Err, explicit return) — same discipline as
 /// [`SignalingPumpGuard`]. The `DaemonState` reads this flag; while it's false
@@ -1304,7 +1304,7 @@ fn write_replaced_sentinel(message: &str, displacements: usize) {
 /// [`is_secondary_goodbye`] — never by the text — and log it ONCE: before, a
 /// dead secondary org cost two ERRORs and a WARN on every daemon start, for a
 /// machine whose primary was perfectly healthy (field: a MacBook carried three
-/// such enrollments for a month). The text is also what `roomler status`
+/// such enrollments for a month). The text is also what `meshharbor status`
 /// shows for the org, so it names every way out.
 ///
 /// Nothing here removes the enrollment: `AgentDeleted` also covers a
@@ -5262,7 +5262,7 @@ async fn handle_server_msg(
                         duration_ms: 0,
                         error: Some(
                             "remote execution is disabled on this device \
-                             (`roomler config set exec_enabled true` to allow it)"
+                             (`meshharbor config set exec_enabled true` to allow it)"
                                 .to_string(),
                         ),
                     })
@@ -6207,7 +6207,7 @@ async fn handle_server_msg(
         }
 
         // Roomler SSH — the answer to a session THIS device asked for
-        // (`roomler ssh`). Handed to whichever LocalAPI call is parked on it;
+        // (`meshharbor ssh`). Handed to whichever LocalAPI call is parked on it;
         // an unknown id means that caller already gave up.
         ServerMsg::SshResponse {
             request_id,
@@ -6247,7 +6247,7 @@ async fn handle_server_msg(
         }
 
         // Fleet RPC — the answer to a command THIS device asked another device
-        // to run (`roomler exec`). Handed to whichever LocalAPI call is parked
+        // to run (`meshharbor exec`). Handed to whichever LocalAPI call is parked
         // on it; an unknown id means that caller already gave up.
         ServerMsg::RpcExecResponse {
             request_id,
@@ -6813,7 +6813,7 @@ static TUNNEL_QUIC_SURVIVAL: std::sync::LazyLock<
 const TUNNEL_QUIC_SURVIVAL_CAP: usize = 32;
 
 /// The R3 agent gate (`ROOMLERD_TUNNEL_PEERS_SURVIVE_REATTACH`, default
-/// off). Read per exit so a live `roomler config set` + restart flips it.
+/// off). Read per exit so a live `meshharbor config set` + restart flips it.
 fn tunnel_peers_survive_enabled() -> bool {
     tunnel_core::env::flag("TUNNEL_PEERS_SURVIVE_REATTACH", false)
 }
@@ -7686,7 +7686,7 @@ mod tests {
         }
     }
 
-    /// #1750 — what `roomler status` shows for a refused secondary org names
+    /// #1750 — what `meshharbor status` shows for a refused secondary org names
     /// every way out, with THAT org's label, and keeps the `server goodbye
     /// (<reason>)` prefix operators and docs already search for.
     #[test]

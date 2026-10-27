@@ -7,7 +7,7 @@
 //! input plumbing, but it is compiled only with the `system-context` feature.
 //! The `files_dir` placement rule — a SYSTEM writer stays inside the active
 //! user's profile — is a security control and must not depend on which
-//! features a build carries: a `roomlerd run` started under a SYSTEM token by
+//! features a build carries: a `meshharbord run` started under a SYSTEM token by
 //! any means (`psexec -s -i`, a scheduled task running as SYSTEM) writes
 //! dropped files as SYSTEM whether or not it can capture the lock screen. So
 //! the token read lives here, feature-free, reading the same bytes

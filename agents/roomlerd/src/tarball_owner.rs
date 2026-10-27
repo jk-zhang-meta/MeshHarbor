@@ -37,19 +37,19 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::path::{Path, PathBuf};
 
 /// The directories a tarball carried, PARENT BEFORE CHILD, relative to `/`.
-// RETIRED-NAME-ANCHOR(12): usr/lib/roomler-agent is the binary's RPATH and
-// usr/share/doc/roomler-agent the payload's doc dir: what the tarball installs.
+// RETIRED-NAME-ANCHOR(12): usr/lib/meshharbor is the binary's RPATH and
+// usr/share/doc/meshharbor the payload's doc dir: what the tarball installs.
 pub(crate) const TARBALL_DIRS: &[&str] = &[
     "usr",
     "usr/bin",
     "usr/lib",
-    "usr/lib/roomler-agent",
+    "usr/lib/meshharbor",
     "usr/lib/systemd",
     "usr/lib/systemd/system",
     "usr/lib/systemd/user",
     "usr/share",
     "usr/share/doc",
-    "usr/share/doc/roomler-agent",
+    "usr/share/doc/meshharbor",
 ];
 
 /// The files it carried that an update does not rewrite: the units and the
@@ -57,14 +57,14 @@ pub(crate) const TARBALL_DIRS: &[&str] = &[
 /// on them. The bundled libraries are found, not listed.
 // RETIRED-NAME-ANCHOR(6): the same payload dirs, for the files in them.
 pub(crate) const TARBALL_FILES: &[&str] = &[
-    "usr/bin/roomlerd",
-    "usr/bin/roomler",
-    "usr/lib/systemd/system/roomlerd.service",
-    "usr/lib/systemd/user/roomler.service",
-    "usr/share/doc/roomler-agent/README.Debian",
+    "usr/bin/meshharbord",
+    "usr/bin/meshharbor",
+    "usr/lib/systemd/system/meshharbord.service",
+    "usr/lib/systemd/user/meshharbor.service",
+    "usr/share/doc/meshharbor/README.Debian",
 ];
 // RETIRED-NAME-ANCHOR: the RPATH-bound library dir, scanned for its files.
-const TARBALL_LIB_DIR: &str = "usr/lib/roomler-agent";
+const TARBALL_LIB_DIR: &str = "usr/lib/meshharbor";
 
 /// What the walk did with one path.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -390,14 +390,14 @@ mod tests {
         let t = tree();
         std::fs::remove_dir_all(t.path().join("usr/share/doc")).expect("rm");
         std::fs::write(t.path().join("usr/share/doc"), b"not a dir").expect("write");
-        std::fs::remove_file(t.path().join("usr/bin/roomler")).expect("rm");
+        std::fs::remove_file(t.path().join("usr/bin/meshharbor")).expect("rm");
         let report = repair_under(t.path());
         assert!(matches!(
             outcome(&report, t.path(), "usr/share/doc"),
             Outcome::Refused(_)
         ));
         assert!(matches!(
-            outcome(&report, t.path(), "usr/bin/roomler"),
+            outcome(&report, t.path(), "usr/bin/meshharbor"),
             Outcome::Absent
         ));
     }

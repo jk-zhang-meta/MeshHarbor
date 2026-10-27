@@ -2,7 +2,7 @@
 // Copyright (C) 2026 G ROX EOOD
 //! FR-97 P4d — a per-user daemon's clean stop at sign-out and shutdown.
 //!
-//! A per-user daemon (the Scheduled Task install, or a hand-run `roomlerd run`)
+//! A per-user daemon (the Scheduled Task install, or a hand-run `meshharbord run`)
 //! is no service: Windows ends it with the rest of the session at sign-out and
 //! at shutdown, and nothing tells it first. A console program's control handler
 //! would hear `CTRL_LOGOFF_EVENT` / `CTRL_SHUTDOWN_EVENT`, but only while the

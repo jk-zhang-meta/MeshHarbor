@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (C) 2026 G ROX EOOD
-//! FR-90 P1j — the adopt socket's protocol: what `roomler hive hook`, run by
+//! FR-90 P1j — the adopt socket's protocol: what `meshharbor hive hook`, run by
 //! Claude Code as the person at a terminal, tells the daemon about that
 //! terminal's session (`docs/fr/FR-90-hive-agent-sessions.md` §3h).
 //!
@@ -313,9 +313,9 @@ fn token_user(
 }
 
 /// The daemon's Hive runtime directory on Linux (`/run` is cleared at boot).
-pub const RUNTIME_DIR_LINUX: &str = "/run/roomler-hive";
+pub const RUNTIME_DIR_LINUX: &str = "/run/meshharbor-hive";
 /// … and on macOS, which clears `/var/run` at boot.
-pub const RUNTIME_DIR_MACOS: &str = "/var/run/roomler-hive";
+pub const RUNTIME_DIR_MACOS: &str = "/var/run/meshharbor-hive";
 
 /// The daemon's answer to one [`Request`].
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default)]
@@ -349,7 +349,7 @@ impl Reply {
 }
 
 /// Every word [`Reply::refused`] carries. Locked by test: the hook's log and
-/// `roomler hive adopt`'s status read them.
+/// `meshharbor hive adopt`'s status read them.
 pub mod refusal {
     /// The device's owner has not allowed adopting (`hive_adopt` off).
     pub const ADOPT_DISABLED: &str = "adopt_disabled";
@@ -469,7 +469,7 @@ mod tests {
         );
     }
 
-    /// … and with nothing listening says so, for `roomler hive adopt` to tell
+    /// … and with nothing listening says so, for `meshharbor hive adopt` to tell
     /// the person.
     #[cfg(windows)]
     #[test]

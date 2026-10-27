@@ -4,7 +4,7 @@
 // find.
 //! Cross-platform auto-start-on-boot / login plumbing.
 //!
-//! `roomlerd service install` registers the agent so it launches
+//! `meshharbord service install` registers the agent so it launches
 //! automatically on the next interactive login:
 //!
 //!   - **Windows**: Scheduled Task named `Roomler` (pre-P3D-rename hosts
@@ -12,8 +12,8 @@
 //!     deletes), ONLOGON trigger, LIMITED run level (matches the agent's
 //!     un-elevated-by-design posture from `packaging/windows/README.txt`).
 //!   - **Linux**: systemd user unit. The .deb already drops the unit
-//!     file at `/usr/lib/systemd/user/roomler.service`; install
-//!     here means `systemctl --user enable --now roomler.service`.
+//!     file at `/usr/lib/systemd/user/meshharbor.service`; install
+//!     here means `systemctl --user enable --now meshharbor.service`.
 //!   - **macOS**: `launchctl load -w` the LaunchAgent plist. The .pkg
 //!     postinstall drops it at `~/Library/LaunchAgents/com.roomler.agent.plist`;
 //!     install here only needs to (re-)load it.
@@ -38,13 +38,13 @@ use std::path::Path;
 /// | macOS, the LaunchDaemon or the LaunchAgent | launchd, on any failed exit |
 ///
 /// Before #2293 both said "wait for the supervisor to relaunch", which on
-/// Linux never comes, and offered `roomlerd run`, which by hand starts an
+/// Linux never comes, and offered `meshharbord run`, which by hand starts an
 /// unmanaged orphan beside the unit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Install {
-    /// `roomlerd.service`: root, `/etc/roomler/config.toml`.
+    /// `meshharbord.service`: root, `/etc/meshharbor/config.toml`.
     LinuxSystem,
-    /// `roomler.service`, the person's user unit.
+    /// `meshharbor.service`, the person's user unit.
     LinuxUser,
     /// The `Roomler` SCM service, whose supervisor runs the worker. It owns
     /// attended installs too, whose config is the person's.
@@ -119,7 +119,7 @@ impl Install {
                  `sudo systemctl restart roomlerd` makes it use the new token now."
             }
             Self::LinuxUser => {
-                "Start the daemon: `roomlerd service start`. systemd does not restart \
+                "Start the daemon: `meshharbord service start`. systemd does not restart \
                  a daemon the server removed (exit 7). If it is still running, \
                  `roomler restart` makes it use the new token now."
             }
@@ -131,22 +131,22 @@ impl Install {
             Self::WindowsTask => {
                 "The agent's task starts it again within a minute, with the new token, \
                  but only ten times after a removal: if it is not back, start it with \
-                 `roomlerd service start`. If it is still running, `roomler restart` \
+                 `meshharbord service start`. If it is still running, `roomler restart` \
                  makes it use the new token now."
             }
             Self::MacOs => {
                 "launchd starts the agent again within seconds, with the new token. If \
                  it is still running, `roomler restart` makes it use the new token now."
             }
-            Self::Other => "Start the daemon again: `roomlerd run`, or your service manager.",
+            Self::Other => "Start the daemon again: `meshharbord run`, or your service manager.",
         }
     }
 
-    /// #2371 — what `roomlerd enroll` ends with. `secondary`: the enrollment
+    /// #2371 — what `meshharbord enroll` ends with. `secondary`: the enrollment
     /// added (or refreshed) an `[[orgs]]` entry, whose loop only a daemon
     /// restart starts. A fresh primary may land on a daemon that is stopped,
     /// waiting for its config, or running, so each step names a command that
-    /// connects it in every one of those states. `roomlerd run` comes last, for
+    /// connects it in every one of those states. `meshharbord run` comes last, for
     /// a host without the package: beside a service manager it is an orphan.
     pub fn after_enroll(self, secondary: bool) -> &'static str {
         if secondary {
@@ -163,20 +163,20 @@ impl Install {
             Self::LinuxSystem => {
                 "Start the daemon: `sudo systemctl restart roomlerd`, which starts it \
                  whether it was stopped, failed or running. On a host without the \
-                 package: `roomlerd run`."
+                 package: `meshharbord run`."
             }
             Self::LinuxUser => {
-                "Start the daemon: `roomlerd service start` (`roomlerd service install` \
+                "Start the daemon: `meshharbord service start` (`meshharbord service install` \
                  also starts it at every login). If it is running already, \
                  `roomler restart` connects it now. On a host without the package: \
-                 `roomlerd run`."
+                 `meshharbord run`."
             }
             Self::WindowsService => {
                 "The Roomler service starts the agent within a minute. If it is running \
                  already, `roomler restart` connects it now."
             }
             Self::WindowsTask => {
-                "Start the agent: `roomlerd service start` (`roomlerd service install` \
+                "Start the agent: `meshharbord service start` (`meshharbord service install` \
                  first, if this account has no task). If it is running already, \
                  `roomler restart` connects it now."
             }
@@ -184,7 +184,7 @@ impl Install {
                 "launchd starts the agent within seconds. If it is running already, \
                  `roomler restart` connects it now."
             }
-            Self::Other => "Start the daemon: `roomlerd run`, or your service manager.",
+            Self::Other => "Start the daemon: `meshharbord run`, or your service manager.",
         }
     }
 
@@ -197,7 +197,7 @@ impl Install {
                  (systemd does not restart a daemon the server removed)."
             }
             Self::LinuxUser => {
-                "then start it: roomlerd service start\n\
+                "then start it: meshharbord service start\n\
                  (systemd does not restart a daemon the server removed)."
             }
             Self::WindowsService => {
@@ -205,7 +205,7 @@ impl Install {
             }
             Self::WindowsTask => {
                 "and its task starts it again within a minute, but only ten times;\n\
-                 after that: roomlerd service start"
+                 after that: meshharbord service start"
             }
             Self::MacOs => "and launchd starts it again within seconds, with the new token.",
             Self::Other => "then start the daemon again.",
@@ -341,7 +341,7 @@ pub fn stop(config_path: &Path) -> Result<String> {
     {
         if Install::detect(config_path) == Install::LinuxSystem {
             bail!(
-                "this daemon is the system service, which runs as root: `sudo roomlerd service \
+                "this daemon is the system service, which runs as root: `sudo meshharbord service \
                  stop --as-service` stops it the same way, with a SIGTERM"
             );
         }
@@ -413,7 +413,7 @@ pub fn status() -> Result<AutostartStatus> {
 /// FR-97 P6c — `service <verb> --as-service` (alias `--system`) on Linux and
 /// macOS: the root daemon, under the OS's own service manager. It is the verb
 /// Windows has had for the SCM, and it registers what the package already
-/// ships: systemd's `roomlerd.service`, launchd's `com.roomler.daemon`.
+/// ships: systemd's `meshharbord.service`, launchd's `com.roomler.daemon`.
 ///
 /// The decisions live here, free of `cfg`, so the Linux test run proves the
 /// macOS ones too (CI only compiles macOS). The per-OS modules run the tools.
@@ -425,17 +425,17 @@ pub mod system {
         MacOs,
     }
 
-    /// The root daemon's config on both: the system unit's `ROOMLERD_CONFIG`
+    /// The root daemon's config on both: the system unit's `MESHHARBORD_CONFIG`
     /// and the LaunchDaemon's `--config` (pinned by tests against both).
-    pub const CONFIG: &str = "/etc/roomler/config.toml";
+    pub const CONFIG: &str = "/etc/meshharbor/config.toml";
     /// The system unit the `.deb` and the tarball ship.
-    pub const LINUX_UNIT: &str = "roomlerd.service";
+    pub const LINUX_UNIT: &str = "meshharbord.service";
     /// Where that unit file is, on a usr-merged host and a split one.
     pub const LINUX_UNIT_FILES: [&str; 2] = [
-        "/usr/lib/systemd/system/roomlerd.service",
-        "/lib/systemd/system/roomlerd.service",
+        "/usr/lib/systemd/system/meshharbord.service",
+        "/lib/systemd/system/meshharbord.service",
     ];
-    // FR-96's update helper (`roomler-update.timer` + `.path`) is left as it
+    // FR-96's update helper (`meshharbor-update.timer` + `.path`) is left as it
     // is, both ways: it steps aside by itself while this unit is enabled
     // (`SYSTEM_DAEMON_ENABLE_LINKS` in updater.rs) and serves again once it
     // is not, so one updater per host holds with no step here, and an
@@ -449,7 +449,7 @@ pub mod system {
     /// The postinstall's opt-in for the root half. Its ABSENCE makes the next
     /// package upgrade remove the LaunchDaemon, so install writes it and
     /// uninstall removes it: the verb and every later upgrade agree.
-    pub const MACOS_MARKER: &str = "/etc/roomler/enable-daemon";
+    pub const MACOS_MARKER: &str = "/etc/meshharbor/enable-daemon";
     const MACOS_DAEMON_BIN: &str = "/Library/Roomler/roomlerd.app/Contents/MacOS/roomlerd";
 
     /// Why `service install --as-service` cannot go ahead, or `None`. Asked
@@ -467,7 +467,7 @@ pub mod system {
     ) -> Option<String> {
         if !root {
             return Some(format!(
-                "registering the system service needs root: run `sudo roomlerd service install \
+                "registering the system service needs root: run `sudo meshharbord service install \
                  --as-service`. The {} runs as root.",
                 what(os)
             ));
@@ -499,7 +499,7 @@ pub mod system {
 
     fn what(os: Os) -> &'static str {
         match os {
-            Os::Linux => "system daemon (roomlerd.service)",
+            Os::Linux => "system daemon (meshharbord.service)",
             Os::MacOs => "root half (com.roomler.daemon)",
         }
     }
@@ -548,7 +548,7 @@ pub mod system {
     pub fn other_daemon_warning(pid: u32, uid: u32) -> String {
         format!(
             "another roomlerd runs as uid {uid} (pid {pid}). One daemon per machine: as that \
-             account, run `systemctl --user disable --now roomler.service`"
+             account, run `systemctl --user disable --now meshharbor.service`"
         )
     }
 }
@@ -753,7 +753,7 @@ mod windows {
             LEGACY_TASK_NAME
         } else {
             bail!(
-                "no auto-start task is registered (run `roomlerd service install` first, \
+                "no auto-start task is registered (run `meshharbord service install` first, \
                  or start the service from an elevated prompt)"
             );
         };
@@ -820,7 +820,7 @@ mod windows {
                         "This command runs in session 0 (a service or an SSH login), \
                                where a per-user daemon's stop event cannot be seen, so it \
                                ended the task (schtasks /End), a hard stop. For a clean \
-                               stop, run `roomlerd service stop` in the person's own session."
+                               stop, run `meshharbord service stop` in the person's own session."
                             .into(),
                     );
                 }
@@ -862,7 +862,7 @@ mod windows {
         } else {
             bail!(
                 "no per-user auto-start task is registered, so there is no task to end. A \
-                 device that runs as the Roomler service stops with `roomlerd service stop \
+                 device that runs as the Roomler service stops with `meshharbord service stop \
                  --as-service`, elevated"
             );
         };
@@ -1210,11 +1210,11 @@ mod linux {
     use std::process::Command;
 
     /// S1b — the canonical unit name, matching what the .deb ships
-    /// (`usr/lib/systemd/user/roomler.service`, ExecStart=/usr/bin/roomlerd).
-    /// Pre-S1b `roomlerd service install` only knew the legacy name below and
+    /// (`usr/lib/systemd/user/meshharbor.service`, ExecStart=/usr/bin/meshharbord).
+    /// Pre-S1b `meshharbord service install` only knew the legacy name below and
     /// couldn't SEE the packaged unit — so a .deb host that also ran
     /// `service install` ended up with TWO enabled units (double-start).
-    pub const UNIT: &str = "roomler.service";
+    pub const UNIT: &str = "meshharbor.service";
     /// Legacy unit name written by pre-S1b `service install` runs.
     // RETIRED-NAME-ANCHOR(2): the unit name on hosts installed before P3d
     // Slice B. Install/uninstall must still find it or an upgraded host ends
@@ -1275,7 +1275,7 @@ mod linux {
         ))
     }
 
-    // ── FR-97 P6c: the root daemon, `roomlerd.service` ──
+    // ── FR-97 P6c: the root daemon, `meshharbord.service` ──
 
     pub fn install_system() -> Result<String> {
         let shipped = system::LINUX_UNIT_FILES
@@ -1311,7 +1311,7 @@ mod linux {
     pub fn uninstall_system() -> Result<String> {
         if !crate::appdirs::running_as_root() {
             bail!(
-                "deregistering the system service needs root: run `sudo roomlerd service uninstall --as-service`"
+                "deregistering the system service needs root: run `sudo meshharbord service uninstall --as-service`"
             );
         }
         let mut done = Vec::new();
@@ -1387,7 +1387,7 @@ mod linux {
                 continue;
             };
             let comm = std::fs::read_to_string(entry.path().join("comm")).unwrap_or_default();
-            if comm.trim() != "roomlerd" {
+            if comm.trim() != "meshharbord" {
                 continue;
             }
             let status = std::fs::read_to_string(entry.path().join("status")).unwrap_or_default();
@@ -1697,8 +1697,8 @@ mod linux {
         /// both started again by it.
         #[test]
         fn both_per_user_units_are_wanted_by_the_session_they_stop_with() {
-            let packaged = include_str!("../packaging/linux/roomler.service");
-            let written = user_unit_text("/usr/bin/roomlerd");
+            let packaged = include_str!("../packaging/linux/meshharbor.service");
+            let written = user_unit_text("/usr/bin/meshharbord");
             for (name, unit) in [("packaged", packaged), ("written", written.as_str())] {
                 assert!(unit.contains("PartOf=graphical-session.target"), "{name}");
                 let wants = install_wanted_by(unit);
@@ -1778,7 +1778,7 @@ mod macos {
             let stderr = String::from_utf8_lossy(&output.stderr);
             bail!(
                 "launchctl kickstart {target} failed ({}): {} (is the LaunchAgent loaded? \
-                 `roomlerd service install` loads it)",
+                 `meshharbord service install` loads it)",
                 output.status,
                 stderr.trim()
             );
@@ -1839,7 +1839,7 @@ mod macos {
         }
         // The marker first: it is what keeps the job across the next .pkg
         // upgrade, whose postinstall removes the LaunchDaemon without it.
-        std::fs::create_dir_all("/etc/roomler").context("creating /etc/roomler")?;
+        std::fs::create_dir_all("/etc/meshharbor").context("creating /etc/meshharbor")?;
         if !std::path::Path::new(system::MACOS_MARKER).exists() {
             std::fs::write(system::MACOS_MARKER, b"")
                 .with_context(|| format!("writing {}", system::MACOS_MARKER))?;
@@ -1891,7 +1891,7 @@ mod macos {
     pub fn uninstall_system() -> Result<String> {
         if !running_as_root() {
             bail!(
-                "deregistering the system service needs root: run `sudo roomlerd service uninstall --as-service`"
+                "deregistering the system service needs root: run `sudo meshharbord service uninstall --as-service`"
             );
         }
         let was_loaded = job_state().is_some();
@@ -2008,7 +2008,7 @@ mod macos {
         sigterm_and_confirm(
             &format!("gui/{uid}/{PLIST}"),
             PLIST,
-            "at the next login or with `roomlerd service start`",
+            "at the next login or with `meshharbord service start`",
         )
     }
 
@@ -2016,7 +2016,7 @@ mod macos {
         sigterm_and_confirm(
             &target(),
             system::MACOS_LABEL,
-            "at the next boot or with `sudo roomlerd service start --as-service`",
+            "at the next boot or with `sudo meshharbord service start --as-service`",
         )
     }
 
@@ -2088,7 +2088,7 @@ mod tests {
     fn the_enroll_hint_writes_the_config_the_service_reads() {
         use system::{CONFIG, Os, enroll_hint};
         let linux = enroll_hint(Os::Linux);
-        assert!(linux.starts_with("sudo roomlerd --config /etc/roomler/config.toml enroll "));
+        assert!(linux.starts_with("sudo roomlerd --config /etc/meshharbor/config.toml enroll "));
         let mac = enroll_hint(Os::MacOs);
         assert!(mac.contains(&format!("--config {CONFIG} enroll ")), "{mac}");
         // The root half exists for the overlay, as `install.sh --daemon-token`.
@@ -2120,7 +2120,7 @@ mod tests {
         }
         assert_eq!(
             status_line(Os::Linux, "active", "enabled"),
-            "roomlerd.service: active, enabled"
+            "meshharbord.service: active, enabled"
         );
         assert_eq!(
             status_line(Os::MacOs, "running", "enabled"),
@@ -2141,10 +2141,10 @@ mod tests {
     /// them: a rename on either side fails here, not on a host.
     #[test]
     fn the_system_service_paths_are_the_packagings() {
-        let unit = include_str!("../packaging/linux/roomlerd.service");
+        let unit = include_str!("../packaging/linux/meshharbord.service");
         assert!(
-            unit.contains(&format!("Environment=ROOMLERD_CONFIG={}", system::CONFIG)),
-            "roomlerd.service's ROOMLERD_CONFIG moved"
+            unit.contains(&format!("Environment=MESHHARBORD_CONFIG={}", system::CONFIG)),
+            "meshharbord.service's MESHHARBORD_CONFIG moved"
         );
         // That the update helper steps aside by THIS unit's enable link is
         // updater.rs's own lock (`the_system_daemon_links_are_its_install_target`).
@@ -2225,14 +2225,14 @@ mod tests {
 
     #[test]
     fn a_service_managed_install_is_never_told_to_run_the_daemon_by_hand() {
-        // `roomlerd run` beside a unit, a task or launchd is an unmanaged
+        // `meshharbord run` beside a unit, a task or launchd is an unmanaged
         // orphan: the hint #2293 removed. Only a host with no service manager
         // may be told it.
         for i in EVERY {
             for primary in [true, false] {
                 let says = i.after_re_enroll(primary);
                 assert_eq!(
-                    says.contains("roomlerd run"),
+                    says.contains("meshharbord run"),
                     i == Install::Other && primary,
                     "{i:?} primary={primary}: {says}"
                 );
@@ -2251,7 +2251,7 @@ mod tests {
         let system = Install::LinuxSystem.after_re_enroll(true);
         assert!(system.contains("sudo systemctl start roomlerd"), "{system}");
         let user = Install::LinuxUser.after_re_enroll(true);
-        assert!(user.contains("roomlerd service start"), "{user}");
+        assert!(user.contains("meshharbord service start"), "{user}");
         assert!(!user.contains("sudo"), "a user unit needs no root: {user}");
         assert!(
             Install::LinuxSystem
@@ -2261,7 +2261,7 @@ mod tests {
         assert!(
             Install::LinuxUser
                 .after_removal()
-                .contains("roomlerd service start")
+                .contains("meshharbord service start")
         );
     }
 
@@ -2274,12 +2274,12 @@ mod tests {
             Install::WindowsTask.after_removal(),
         ] {
             assert!(says.contains("ten times"), "{says}");
-            assert!(says.contains("roomlerd service start"), "{says}");
+            assert!(says.contains("meshharbord service start"), "{says}");
         }
         assert!(
             !Install::WindowsService
                 .after_re_enroll(true)
-                .contains("roomlerd service start"),
+                .contains("meshharbord service start"),
             "the service's supervisor restarts the worker for good"
         );
     }
@@ -2314,13 +2314,13 @@ mod tests {
 
     #[test]
     fn an_enrollment_never_leads_with_roomlerd_run_beside_a_service_manager() {
-        // The same orphan #2293 removed from `re-enroll`: `roomlerd run` may
+        // The same orphan #2293 removed from `re-enroll`: `meshharbord run` may
         // only be the fallback, for a host without the package, and is first
         // only where this code knows no service manager.
         for i in EVERY {
             let says = i.after_enroll(false);
             assert_eq!(
-                first_command(says) == Some("roomlerd run"),
+                first_command(says) == Some("meshharbord run"),
                 i == Install::Other,
                 "{i:?}: {says}"
             );
@@ -2338,7 +2338,7 @@ mod tests {
         );
         assert_eq!(
             first_command(Install::LinuxUser.after_enroll(false)),
-            Some("roomlerd service start")
+            Some("meshharbord service start")
         );
         assert!(
             Install::LinuxUser
@@ -2353,7 +2353,7 @@ mod tests {
         for i in EVERY {
             let says = i.after_enroll(true);
             assert!(says.contains("restarts"), "{i:?}: {says}");
-            assert!(!says.contains("roomlerd run"), "{i:?}: {says}");
+            assert!(!says.contains("meshharbord run"), "{i:?}: {says}");
         }
         assert_eq!(
             first_command(Install::LinuxSystem.after_enroll(true)),

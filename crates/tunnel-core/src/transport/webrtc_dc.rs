@@ -4,7 +4,7 @@
 //!
 //! [`TunnelPeer`] wraps an `RTCPeerConnection` and pre-negotiates a
 //! fixed pool of 8 ordered + reliable DataChannels with deterministic
-//! stream IDs (100, 102, 104, … 114). Each `roomler forward`
+//! stream IDs (100, 102, 104, … 114). Each `meshharbor forward`
 //! invocation owns one `TunnelPeer`; multiple concurrent TCP flows
 //! multiplex onto the pool via [`crate::mux`]'s 4-byte `flow_id`
 //! prefix. Per plan §"What changed from v1" #1 (DC-per-flow was wrong;

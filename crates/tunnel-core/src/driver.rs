@@ -908,7 +908,7 @@ fn tune_local_socket(tcp: &tokio::net::TcpStream, peer_addr: std::net::SocketAdd
 /// Returns [`SessionOutcome::QuicSetupFailed`] (not an `Err`) when a QUIC
 /// session can't be established, so the caller can fall back to WebRTC.
 ///
-/// This is the standalone CLI's contract (`roomler forward` / `socks5`),
+/// This is the standalone CLI's contract (`meshharbor forward` / `socks5`),
 /// unchanged by FR-86 P1: it composes [`establish_tunnel_session`] with a
 /// private accept loop that binds after the data plane is ready (so a QUIC
 /// soft-fall never held the port) and runs until the carrier is [`dead`]

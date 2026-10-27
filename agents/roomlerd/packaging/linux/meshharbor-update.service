@@ -11,22 +11,22 @@
 # verifies what it downloads against the pinned release key, installs, and
 # exits.
 #
-# Woken by roomler-update.timer (boot, then every 6 h) and roomler-update.path
+# Woken by meshharbor-update.timer (boot, then every 6 h) and meshharbor-update.path
 # (the wake file a per-user daemon touches). Shipped DISABLED: install.sh
 # enables the timer and the path for a per-user install only. A system
 # install's root daemon updates itself, and a host has one updater.
 #
-# The operator's opt-out is the macOS one: /etc/roomler/disable-auto-update.
+# The operator's opt-out is the macOS one: /etc/meshharbor/disable-auto-update.
 # The helper itself honours it, so this unit needs no condition of its own.
-Description=Roomler update helper (root) — installs new releases for a per-user install
-Documentation=https://roomler.ai/
+Description=MeshHarbor update helper (root) — installs new releases for a per-user install
+Documentation=https://www.itachi.fans/meshharbor
 After=network-online.target
 Wants=network-online.target
 
-# No start limit. roomler-update.path's PathExists= is LEVEL-triggered, so a
+# No start limit. meshharbor-update.path's PathExists= is LEVEL-triggered, so a
 # wake that lands during a run restarts the service the instant it ends.
 # systemd's default start limit (5 starts in 10 s) is a CLIFF — measured on
-# systemd 255, six touches of the wake file in 10 s left roomler-update.path
+# systemd 255, six touches of the wake file in 10 s left meshharbor-update.path
 # `failed (unit-start-limit-hit)` until a reboot or `systemctl reset-failed`,
 # and a single `mkdir` at the wake path did the same in ~2 s. A local user
 # could wedge the updater that way. The helper spaces its own runs instead
@@ -36,7 +36,7 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/roomlerd update-helper
+ExecStart=/usr/bin/meshharbord update-helper
 Environment=RUST_LOG=info
 # The helper sleeps up to 60 s (its run-spacing gate) and may then download for
 # up to 10 min, so its start must not be read as a hang. A oneshot already
@@ -47,7 +47,7 @@ Environment=RUST_LOG=info
 TimeoutStartSec=infinity
 # A helper that fails BEFORE its gate (a binary that will not exec — 203/EXEC —
 # or a panic in startup) would otherwise re-trigger at job-queue speed and hit
-# roomler-update.path's OWN trigger limit (200 in 2 s), which also fails the
+# meshharbor-update.path's OWN trigger limit (200 in 2 s), which also fails the
 # path unit until a reboot. In auto-restart the service is not inactive, so the
 # path unit holds. A failed INSTALL retries once after 60 s, into the 5-min
 # install cooldown, and stops. Allowed for oneshot (only always/on-success are

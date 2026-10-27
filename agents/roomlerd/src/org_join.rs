@@ -3,7 +3,7 @@
 //! Multi-org — join an additional org from the admin UI
 //! (`rc:agent.join_org`), without touching the machine.
 //!
-//! The CLI path (`roomler enroll --label …`) needs someone at the keyboard,
+//! The CLI path (`meshharbor enroll --label …`) needs someone at the keyboard,
 //! which is exactly what a corp-managed box or a headless VM doesn't have.
 //! This module is the remote twin: the server pushes a single-use enrollment
 //! token for the TARGET tenant down the PRIMARY org's socket, and the agent
@@ -666,7 +666,7 @@ pub fn set_org_overlay(
     if label == crate::config::PRIMARY_ORG_LABEL {
         bail!(
             "the primary's overlay participation is `overlay_enabled`, not a per-org \
-             mode — set it with `roomler config set overlay_enabled true` (or \
+             mode — set it with `meshharbor config set overlay_enabled true` (or \
              `enroll --overlay`)"
         );
     }
@@ -725,7 +725,7 @@ pub fn set_org_overlay(
             println!(
                 "warning: `tun` for a secondary needs `overlay_multi_org = true` \
                  (it is currently false) — set it with \
-                 `roomler config set overlay_multi_org true`, or use `netstack`, \
+                 `meshharbor config set overlay_multi_org true`, or use `netstack`, \
                  which needs no OS privilege at all."
             );
         }

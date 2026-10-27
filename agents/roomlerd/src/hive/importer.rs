@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (C) 2026 G ROX EOOD
-//! FR-90 P2f-4a — `roomlerd hive-import`: an ended terminal session's history,
+//! FR-90 P2f-4a — `meshharbord hive-import`: an ended terminal session's history,
 //! put in place as a managed session's, AS THE TERMINAL'S ACCOUNT.
 //!
 //! An adopted session's store holds a mirror of the person's conversation
@@ -14,7 +14,7 @@
 //! session's checkpoints take it from there.
 //!
 //! The daemon never opens a path in an account's tree (spec §3b): it starts
-//! `roomlerd hive-import` as the account, as `hive-pack` runs (P2f-2a), feeds
+//! `meshharbord hive-import` as the account, as `hive-pack` runs (P2f-2a), feeds
 //! it the [`Request`] on stdin, and reads one line back,
 //! `{"files":N,"bytes":B,"skipped":S}`. The child reads only what the
 //! account could read itself.
@@ -49,7 +49,7 @@ use serde::{Deserialize, Serialize};
 
 use super::checkpointer::Runner;
 
-/// The hidden subcommand: `roomlerd hive-import`, its request on stdin.
+/// The hidden subcommand: `meshharbord hive-import`, its request on stdin.
 pub const IMPORT_SUBCOMMAND: &str = "hive-import";
 
 /// The most request bytes read: three paths and an id.
@@ -426,7 +426,7 @@ pub(crate) async fn run_as(
 
 // ─── the child's side ───────────────────────────────────────────────────────
 
-/// Whether this process was started as `roomlerd hive-import`, its request
+/// Whether this process was started as `meshharbord hive-import`, its request
 /// on stdin.
 pub fn import_args() -> bool {
     let mut args = std::env::args_os().skip(1);

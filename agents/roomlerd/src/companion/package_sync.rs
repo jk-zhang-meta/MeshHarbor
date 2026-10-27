@@ -674,7 +674,7 @@ mod tests {
         // Running the installed binary: nothing to restart.
         assert!(!is_replaced_companion("/usr/bin/roomler-desktop"));
         // Another program whose image was replaced is not ours to touch.
-        assert!(!is_replaced_companion("/usr/bin/roomlerd (deleted)"));
+        assert!(!is_replaced_companion("/usr/bin/meshharbord (deleted)"));
         assert!(!is_replaced_companion(
             "/usr/bin/roomler-desktop-helper (deleted)"
         ));

@@ -394,7 +394,7 @@ struct Installed {
     /// SILENTLY ONE-WAY: installed past the warm-up grace with either no
     /// completed WG handshake ever (the pre-handshake zombie whose tx/rx
     /// counters stay flat — winhost-a behind its corp VPN: every tier
-    /// "installed", zero handshakes, `roomler peers` said `direct`/`relay`
+    /// "installed", zero handshakes, `meshharbor peers` said `direct`/`relay`
     /// while 100% of pings died) or the rc.137 one-way strike counter
     /// accumulating. Surfaced through the LocalAPI peer view so the CLI can
     /// render `stalled` instead of a healthy-looking tier label. Verdict
@@ -403,7 +403,7 @@ struct Installed {
     /// P4 — inbound packets from this peer refused by the ingress ACL
     /// (`PeerStats::rx_denied`), snapshotted by the health sweep. Monotonic.
     /// Surfaced through the LocalAPI so a `warn`-mode fleet can be READ
-    /// (`roomler peers --json`) instead of grepped: the warning line is
+    /// (`meshharbor peers --json`) instead of grepped: the warning line is
     /// throttled to one per peer per minute, which is deliberately useless for
     /// measuring volume — and volume is exactly what decides whether `enforce`
     /// is safe to flip.
@@ -426,7 +426,7 @@ struct Installed {
     rx_denied_noroute: u64,
     /// Stats PR-5 — the prober's last RTT measurement for this peer (the
     /// B1 `RttSample` events previously fed only the path-monitor Q).
-    /// Published through [`build_overlay_view`] so `roomler peers` and the
+    /// Published through [`build_overlay_view`] so `meshharbor peers` and the
     /// agent's heartbeat telemetry get a real `rtt_ms` instead of the
     /// historical hardcoded `None`.
     last_rtt_ms: Option<u32>,
@@ -1632,7 +1632,7 @@ pub struct OverlayRuntime {
     /// FR-97 P0b — why this node offers no routes although it was configured
     /// to: the host cannot forward or NAT for the overlay ([`super::nat::gate_offer`],
     /// run at the top of [`Self::run`], before the first join). Sent in the
-    /// join and published for `roomler status`. `None` = offering as
+    /// join and published for `meshharbor status`. `None` = offering as
     /// configured.
     route_offer_withheld: Option<String>,
     /// Unification P1 — where to publish this node's live overlay view (self
@@ -1730,7 +1730,7 @@ pub type DerpMuxFactory = Box<dyn FnOnce() -> Arc<DerpMux> + Send + Sync>;
 pub type RegionalDerpFactory = Box<dyn Fn(&str) -> Option<Arc<DerpMux>> + Send + Sync>;
 
 /// Map the runtime's live carrier bookkeeping into the LocalAPI [`OverlayView`]
-/// — the daemon-internal shape the `roomler status` / `peers` verbs read. Pure
+/// — the daemon-internal shape the `meshharbor status` / `peers` verbs read. Pure
 /// (no I/O / no `self`) so the [`ConnectionType`] classification is unit-tested
 /// directly. `current_peers` (the netmap) is authoritative for membership;
 /// `by_node` tells us HOW we currently reach each one:
@@ -2027,7 +2027,7 @@ impl OverlayRuntime {
     /// FR-97 P0c-3 — this runtime runs over the userspace netstack, whose
     /// SOCKS5 front listens on `127.0.0.1:<port>`. A netstack node installs no
     /// OS routes, so an exit then carries only what the front dials:
-    /// `roomler status` says so, never claims IPv6 through it, and the host's
+    /// `meshharbor status` says so, never claims IPv6 through it, and the host's
     /// DNS is left alone. `None` (an OS TUN, tests) changes nothing.
     pub fn with_netstack_socks(mut self, port: Option<u16>) -> Self {
         self.netstack_socks = port;
@@ -2036,7 +2036,7 @@ impl OverlayRuntime {
 
     /// Unification P1 — publish this node's live overlay view (self IP + peers
     /// with connection type) on `tx` so the daemon's LocalAPI can answer
-    /// `roomler status` / `peers`. The runtime republishes on join and after
+    /// `meshharbor status` / `peers`. The runtime republishes on join and after
     /// every netmap / carrier-state change. Unset (test / direct mode) → the
     /// runtime publishes nothing.
     pub fn with_peer_view(mut self, tx: watch::Sender<OverlayView>) -> Self {
@@ -2894,7 +2894,7 @@ impl OverlayRuntime {
             //   WARN magicdns: bind failed; resolver off  … AddressAlreadyInUse
             //
             // The survivor still answered, from the DEAD session's name map, so
-            // every MagicDNS name NXDOMAIN'd while `roomler status` reported
+            // every MagicDNS name NXDOMAIN'd while `meshharbor status` reported
             // whichever runtime's flag it happened to read — `active` or
             // `resolver DOWN` on the same host hours apart. It reads as a
             // third-party `:53` squatter and is not one: we were colliding with
@@ -2961,7 +2961,7 @@ impl OverlayRuntime {
             None
         };
         // S2 — record the DNS bring-up outcome for the LocalAPI view
-        // (`roomler status` / the desktop's DNS section). `answer_aaaa`
+        // (`meshharbor status` / the desktop's DNS section). `answer_aaaa`
         // recomputes the same expression the resolver was configured with.
         self.dns_status = dns_magic.clone().map(|magic_domain| DnsStatus {
             magic_domain,
@@ -3224,7 +3224,7 @@ impl OverlayRuntime {
         self.reconcile_exit_routing(&mut wg, &tun, &by_node, &current_peers, &mut exit_state)
             .await;
 
-        // Unification P1 — first LocalAPI view, so `roomler status` right after
+        // Unification P1 — first LocalAPI view, so `meshharbor status` right after
         // join isn't empty until the first sweep (carries the exit-node status).
         self.publish_view(
             &self_ip,
@@ -9602,7 +9602,7 @@ mod tests {
     /// FR-97 P0c-3 — measured 2026-10-17 on a netstack exit client: its SOCKS5
     /// front carried IPv4 literals through the exit (a SYN from its overlay
     /// address on the exit's TUN, one new MASQUERADE flow) and refused IPv6
-    /// destinations, while `roomler status` said "active, v6 on" for the whole
+    /// destinations, while `meshharbor status` said "active, v6 on" for the whole
     /// host. The status now carries the front, never IPv6 through it.
     #[test]
     fn a_netstack_exit_reports_its_socks_front_and_never_v6() {

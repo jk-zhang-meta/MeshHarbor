@@ -14,7 +14,7 @@
 //! `overlay_wg_secret_key`), identity (`machine_id`; `machine_name` has
 //! its own `SetDeviceName` verb), `[[tunnel_routes]]` (the `Route*`
 //! verbs + Routes pane own those), `[[orgs]]` (multi-org P1 — identity +
-//! per-org secrets managed by `roomlerd enroll` / the `org` CLI
+//! per-org secrets managed by `meshharbord enroll` / the `org` CLI
 //! verbs, same policy as `tunnel_routes`; a future desktop org pane gets
 //! dedicated LocalAPI verbs, not surface keys), and the crash-bookkeeping
 //! fields.
@@ -48,7 +48,7 @@ const MAX_OVERLAY_DIRECT_PORT_BASE: u32 = 64_759;
 /// Where a key lives on the Settings page (FR-84 D2).
 ///
 /// The variant order is the DISPLAY order: [`entries`] emits the surface
-/// grouped this way, so a client (the desktop companion, `roomler config
+/// grouped this way, so a client (the desktop companion, `meshharbor config
 /// ls`) renders sections in the order they arrive and never needs an order
 /// table of its own. [`Group::wire`] ids are a compatibility surface — a
 /// renamed id makes every key of that group land in "unknown" on an older
@@ -205,7 +205,7 @@ pub struct KeyMeta {
 /// CONTRACT (rc.280): a key whose daemon read goes through
 /// `tunnel_core::env::node_env` must ALSO appear in
 /// [`crate::config::env_bridge_bools`] / `env_bridge_numerics`, else
-/// `roomler config set <key>` writes TOML the daemon ignores. The parity
+/// `meshharbor config set <key>` writes TOML the daemon ignores. The parity
 /// test `env_bridge_pairs_have_surface_parity` locks the mapping (and
 /// covers set/echo for every bridged key, replacing per-key boilerplate).
 const KEYS: &[KeyMeta] = &[
@@ -379,7 +379,7 @@ const KEYS: &[KeyMeta] = &[
         // for the very next "Apply now".
         live: true,
         kind: "bool",
-        description: "FR-84 - let a person at this device restart the service from the companion (Apply now) or `roomler restart`. The daemon restarts itself only under a service manager it can prove (a Windows service or scheduled task, systemd, launchd), and at most once every 30 s; a hand-started `roomlerd run` always refuses. Off = every such request is refused. Never settable by the server, which cannot restart a daemon at all. Default: on.",
+        description: "FR-84 - let a person at this device restart the service from the companion (Apply now) or `roomler restart`. The daemon restarts itself only under a service manager it can prove (a Windows service or scheduled task, systemd, launchd), and at most once every 30 s; a hand-started `meshharbord run` always refuses. Off = every such request is refused. Never settable by the server, which cannot restart a daemon at all. Default: on.",
     },
     // FR-90 — Hive. Every key is the DEVICE's: none is settable by the server
     // (they are absent from `DesiredConfig`), because which account runs a
@@ -463,7 +463,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "bool",
-        description: "FR-90 - let the people who use this device adopt the Claude Code sessions they run in a terminal (roomler hive adopt): mirrored into this device's store and shown to their owner alone, read-only. Each person still opts in, and their account must map in hive_accounts. Never settable by the server. Default: OFF.",
+        description: "FR-90 - let the people who use this device adopt the Claude Code sessions they run in a terminal (meshharbor hive adopt): mirrored into this device's store and shown to their owner alone, read-only. Each person still opts in, and their account must map in hive_accounts. Never settable by the server. Default: OFF.",
     },
     KeyMeta {
         key: "hive_allow_passwordless_sudo",
@@ -583,7 +583,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Advanced,
         live: false,
         kind: "bool",
-        description: "FR-89 - stream a one-shot command's output (`ssh <node> 'cmd'`) as it is produced: no 1 MiB ceiling, no 300 s wall clock, and the command lives exactly as long as the channel does (closing it kills the command and its process tree). Off = the buffered pre-FR-89 path, the kill switch. Fleet RPC (`roomler exec`) is unaffected either way. Default: on. Restart required.",
+        description: "FR-89 - stream a one-shot command's output (`ssh <node> 'cmd'`) as it is produced: no 1 MiB ceiling, no 300 s wall clock, and the command lives exactly as long as the channel does (closing it kills the command and its process tree). Off = the buffered pre-FR-89 path, the kill switch. Fleet RPC (`meshharbor exec`) is unaffected either way. Default: on. Restart required.",
     },
     // `ssh_host_key` is deliberately ABSENT from this surface: it is private
     // key material, and everything here is readable over the LocalAPI.
@@ -3469,7 +3469,7 @@ mod tests {
         let system_dir = if cfg!(windows) {
             r"C:\Windows\Temp"
         } else {
-            "/etc/roomler"
+            "/etc/meshharbor"
         };
         for bad in [
             "drops",
@@ -4050,7 +4050,7 @@ mod tests {
     /// The WSL2 mirrored-networking guard key set/echo/clear (per the
     /// every-new-env-gets-a-config-key rule). The kill switch matters here:
     /// the guard SUPPRESSES a guest's whole LAN gather, so a misdetection
-    /// must be recoverable with `roomler config set …` and no rebuild.
+    /// must be recoverable with `meshharbor config set …` and no rebuild.
     #[test]
     fn overlay_wsl_mirrored_guard_set_echo_clear() {
         let mut cfg = crate::config::test_fixture();
@@ -4360,7 +4360,7 @@ mod tests {
     /// The auth-first type-1 routing key set/echo/clear (per the
     /// every-new-env-gets-a-config-key rule). This is the kill switch for
     /// the dual-org lockout fix — it must be flippable per host with
-    /// `roomler config set …` and no rebuild.
+    /// `meshharbor config set …` and no rebuild.
     #[test]
     fn overlay_init_auth_first_set_echo_clear() {
         let mut cfg = crate::config::test_fixture();
@@ -4760,7 +4760,7 @@ mod tests {
 
     /// Fleet RPC gate 4 — set/echo/clear, and above all: clearing must land
     /// on OFF. This is the one refusal that survives a compromised control
-    /// plane, so a `roomler config set exec_enabled` with no value must never
+    /// plane, so a `meshharbor config set exec_enabled` with no value must never
     /// be a way to turn it on.
     #[test]
     fn exec_enabled_set_echo_clear() {

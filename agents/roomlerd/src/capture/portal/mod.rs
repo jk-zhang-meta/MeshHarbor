@@ -1395,7 +1395,7 @@ pub mod helper {
 
     /// ⚠️ "Dropping" to the account we already run as is NOT a no-op.
     /// `setgroups(2)` needs `CAP_SETGID` even to set the groups a process
-    /// already holds, so in a per-user daemon (`roomler.service`, the desktop
+    /// already holds, so in a per-user daemon (`meshharbor.service`, the desktop
     /// default) `drop_to_std`'s pre-exec hook failed `EPERM`, the helper never
     /// started, and the cascade fell through to XShm on Xwayland's empty root:
     /// a live black stream on every per-user install that set

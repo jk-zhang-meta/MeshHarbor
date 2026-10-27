@@ -13,7 +13,7 @@
 //! - [`Role::DaemonMachine`] — "be accessed, attended": plain
 //!   perMachine MSI (SCM service, no SystemContext; UAC once during
 //!   install). Windows-only.
-//! - [`Role::TunnelClient`] — "reach others only": the roomler tunnel
+//! - [`Role::TunnelClient`] — "reach others only": the meshharbor tunnel
 //!   CLI, delivered as an archive + PATH integration. The ONLY role
 //!   offered on non-Windows hosts.
 //!

@@ -380,7 +380,7 @@ pub async fn plan(
             Ok(Some(row)) if row.fresh(DateTime::now()) => {
                 let l = &row.inventory.listeners;
                 let clash = l.items.iter().find(|x| {
-                    let ours = x.process.as_deref() == Some("roomlerd")
+                    let ours = matches!(x.process.as_deref(), Some("meshharbord" | "roomlerd"))
                         && managed_ports.contains(&(x.proto, x.port));
                     !ours
                         && x.proto == spec.proto

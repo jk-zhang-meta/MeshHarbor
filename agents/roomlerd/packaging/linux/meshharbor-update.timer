@@ -1,14 +1,14 @@
 [Unit]
-# FR-96 — the periodic wake of roomler-update.service: the twin of the macOS
+# FR-96 — the periodic wake of meshharbor-update.service: the twin of the macOS
 # helper's RunAtLoad (OnBootSec) and StartInterval 21600 (OnUnitActiveSec).
 # The interval is the ceiling for a missed push; a pushed rc:agent.update
-# reaches the helper at once, through roomler-update.path.
+# reaches the helper at once, through meshharbor-update.path.
 #
 # A timer STARTED after boot (by the .deb's postinst, or install.sh) fires
 # too: an OnBootSec= already in the past elapses at once (systemd.timer(5);
 # measured on systemd 255, FR-96 §8). OnActiveSec= is not needed for it, and
 # would only add a second run 5 min later.
-Description=Roomler update helper — periodic check
+Description=MeshHarbor update helper — periodic check
 
 [Timer]
 OnBootSec=5min

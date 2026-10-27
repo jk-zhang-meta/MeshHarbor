@@ -272,7 +272,7 @@ async fn run_install_inner(
     diag.begin(Step::Enroll);
     check_cancel()?;
     emit(on_event, ProgressEvent::EnrollStarted);
-    // FR-101 P1b — the token travels over TLS, as `roomler enroll` sends it:
+    // FR-101 P1b — the token travels over TLS, as `meshharbor enroll` sends it:
     // a remote `http://` is posted to, and saved, as `https://`.
     let server = roomler_cli::config::enrollment_server_url(&server);
     // The wizard's own crate version is the closest stand-in for the

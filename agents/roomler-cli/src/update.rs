@@ -861,23 +861,23 @@ mod tests {
 
     #[test]
     fn dpkg_names_the_owner_or_nobody() {
-        let p = std::path::Path::new("/usr/bin/roomler");
+        let p = std::path::Path::new("/usr/bin/meshharbor");
         assert_eq!(
-            dpkg_owner("roomler-cli: /usr/bin/roomler\n", p).as_deref(),
+            dpkg_owner("roomler-cli: /usr/bin/meshharbor\n", p).as_deref(),
             Some("roomler-cli")
         );
         // Multiarch spelling, and a path shared by several packages.
         assert_eq!(
-            dpkg_owner("roomler-cli:arm64: /usr/bin/roomler\n", p).as_deref(),
+            dpkg_owner("roomler-cli:arm64: /usr/bin/meshharbor\n", p).as_deref(),
             Some("roomler-cli")
         );
         assert_eq!(
-            dpkg_owner("roomlerd, roomler-cli: /usr/bin/roomler\n", p).as_deref(),
+            dpkg_owner("roomlerd, roomler-cli: /usr/bin/meshharbor\n", p).as_deref(),
             Some("roomlerd")
         );
         // A diversion line names no owner; another path is not this one.
         assert_eq!(
-            dpkg_owner("diversion by foo from: /usr/bin/roomler\n", p),
+            dpkg_owner("diversion by foo from: /usr/bin/meshharbor\n", p),
             None
         );
         assert_eq!(dpkg_owner("roomler-cli: /usr/bin/other\n", p), None);
@@ -886,7 +886,7 @@ mod tests {
 
     #[test]
     fn our_package_under_either_name_takes_the_deb() {
-        let p = std::path::Path::new("/usr/bin/roomler");
+        let p = std::path::Path::new("/usr/bin/meshharbor");
         assert_eq!(kind_for_owner(Some(DEB_PACKAGE), p).unwrap(), Kind::Deb);
         // The pre-rename package: the new .deb `replaces` it.
         assert_eq!(

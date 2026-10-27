@@ -111,7 +111,7 @@ pub const AGENT_DELETED_EXIT_CODE: i32 = 7;
 ///     back. So a 0 here is indistinguishable from that, and systemd
 ///     re-launches the redundant process every `RestartSec` forever.
 ///     Field 2026-08-21: buildhost / fleet-host-2 / fleet-host-1 each had two units enabled
-///     (packaged `roomlerd.service` + a legacy `roomler-agent.service`),
+///     (packaged `meshharbord.service` + a legacy `roomler-agent.service`),
 ///     and the loser burned 1500+ restarts at 5 s intervals for weeks
 ///     while the winner served happily, so nothing looked wrong.
 ///     `RestartPreventExitStatus` in both units lists this code.
@@ -172,7 +172,7 @@ pub const ALREADY_RUNNING_EXIT_CODE: i32 = 8;
 ///   * **launchd** relaunches it (non-zero), throttled by
 ///     `ThrottleInterval`.
 ///   * **the FR-43 macOS supervisor** respawns any exit after ≥ 1 s.
-///   * **the Windows Scheduled Task**: the caller runs `roomlerd service
+///   * **the Windows Scheduled Task**: the caller runs `meshharbord service
 ///     start` once the old process is gone (`restart_by: caller`); the
 ///     task's own `<RestartOnFailure>` is at most a floor a minute later.
 ///   * **the Windows SCM supervisor** does NOT see it: an SCM worker exits
@@ -964,12 +964,12 @@ mod tests {
     fn shipped_linux_units_restart_the_restart_requested_sentinel() {
         for (name, unit) in [
             (
-                "roomlerd.service",
-                include_str!("../packaging/linux/roomlerd.service"),
+                "meshharbord.service",
+                include_str!("../packaging/linux/meshharbord.service"),
             ),
             (
-                "roomler.service",
-                include_str!("../packaging/linux/roomler.service"),
+                "meshharbor.service",
+                include_str!("../packaging/linux/meshharbor.service"),
             ),
         ] {
             let codes: Vec<i32> = unit
@@ -1004,12 +1004,12 @@ mod tests {
         // shipped units and the constants agree — in both directions.
         for (name, unit) in [
             (
-                "roomlerd.service",
-                include_str!("../packaging/linux/roomlerd.service"),
+                "meshharbord.service",
+                include_str!("../packaging/linux/meshharbord.service"),
             ),
             (
-                "roomler.service",
-                include_str!("../packaging/linux/roomler.service"),
+                "meshharbor.service",
+                include_str!("../packaging/linux/meshharbor.service"),
             ),
         ] {
             let line = unit
@@ -1080,7 +1080,7 @@ mod tests {
             .filter(|l| !l.is_empty() && !l.starts_with('#'))
             .collect();
         for line in &code {
-            for daemon in ["roomlerd.service", "roomler.service"] {
+            for daemon in ["meshharbord.service", "meshharbor.service"] {
                 assert!(
                     !line.contains(daemon),
                     "postinst must not act on the daemon unit `{daemon}`: {line}"
@@ -1102,7 +1102,7 @@ mod tests {
             }
         }
         assert!(
-            code.contains(&"HELPER_UNITS=\"roomler-update.timer roomler-update.path\""),
+            code.contains(&"HELPER_UNITS=\"meshharbor-update.timer meshharbor-update.path\""),
             "postinst turns on exactly the update helper's timer and path"
         );
         assert!(
@@ -1143,7 +1143,7 @@ mod tests {
                 "{name}: a plain /bin/sh shebang"
             );
             for line in s.lines().map(str::trim).filter(|l| !l.starts_with('#')) {
-                for daemon in ["roomlerd.service", "roomler.service"] {
+                for daemon in ["meshharbord.service", "meshharbor.service"] {
                     assert!(
                         !line.contains(daemon),
                         "{name} must not act on `{daemon}`: {line}"
@@ -1160,7 +1160,7 @@ mod tests {
             prerm.contains("[ \"$1\" = remove ]"),
             "prerm stops on removal only"
         );
-        assert!(prerm.contains("deb-systemd-invoke stop roomler-update.timer roomler-update.path"));
+        assert!(prerm.contains("deb-systemd-invoke stop meshharbor-update.timer meshharbor-update.path"));
         let postrm = include_str!("../packaging/linux/debian/postrm");
         assert!(postrm.contains("deb-systemd-helper mask \"$unit\""));
         assert!(postrm.contains("deb-systemd-helper purge \"$unit\""));

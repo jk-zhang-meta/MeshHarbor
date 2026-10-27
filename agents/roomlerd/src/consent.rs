@@ -1445,7 +1445,7 @@ mod cli_name_tests {
     /// been wrong twice: FR-21 retired `roomler-agent`, and the first repair
     /// swapped it for `roomler consent`, which the `roomler` CLI does not have
     /// (these subcommands live on the DAEMON's clap surface, alongside
-    /// `roomlerd enroll` / `roomlerd run`; `roomler` is the tunnel + fleet CLI
+    /// `meshharbord enroll` / `meshharbord run`; `roomler` is the tunnel + fleet CLI
     /// and its `Commands` enum has no `consent` arm). Caught by actually
     /// running it: `roomler consent --help` → `unrecognized subcommand`.
     ///

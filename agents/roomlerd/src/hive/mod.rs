@@ -45,7 +45,7 @@
 //! [`toolbelt`]: the session's `roomler` MCP server, whose `approve` is
 //! Claude Code's permission tool — every tool call that needs one waits for a
 //! driver, who answers over the viewer peer. Claude Code reaches it through
-//! `roomlerd hive-mcp <socket>` ([`relay`]), started as the session's
+//! `meshharbord hive-mcp <socket>` ([`relay`]), started as the session's
 //! account.
 //!
 //! # Updates (P1d-1)
@@ -92,7 +92,7 @@ mod materializer;
 #[cfg(feature = "vault")]
 mod net_tools;
 mod packer;
-/// FR-90 P3-9-2b — `roomler connect`'s endpoints, held for the LocalAPI
+/// FR-90 P3-9-2b — `meshharbor connect`'s endpoints, held for the LocalAPI
 /// connection that asked.
 #[cfg(feature = "vault")]
 pub(crate) mod person_connect;

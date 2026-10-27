@@ -3,7 +3,7 @@
 //! FR-27 P11 — the person-at-the-device socket of a Linux SYSTEM install;
 //! FR-97 P2g — and of a Mac's ROOT half.
 //!
-//! A root daemon's LocalAPI (`/var/run/roomler`, 0700 / 0600) is root-only,
+//! A root daemon's LocalAPI (`/var/run/meshharbor`, 0700 / 0600) is root-only,
 //! and rightly: it is the trust boundary for every administrative verb. But
 //! the person at the screen must still see who is viewing it, end that, and
 //! answer a consent prompt, and their companion runs as THEM. Before this, on

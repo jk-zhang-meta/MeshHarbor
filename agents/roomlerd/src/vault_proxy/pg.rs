@@ -317,7 +317,7 @@ pub(crate) async fn sign_in(up: &Upstream, database: &str) -> Result<TlsStream<T
         for (k, v) in [
             ("user", up.user.as_str()),
             ("database", database),
-            ("application_name", "roomlerd vault"),
+            ("application_name", "meshharbord vault"),
         ] {
             body.extend(k.as_bytes());
             body.push(0);
@@ -954,7 +954,7 @@ mod tests {
             Saw::Startup(vec![
                 ("user".into(), "app".into()),
                 ("database".into(), "orders".into()),
-                ("application_name".into(), "roomlerd vault".into()),
+                ("application_name".into(), "meshharbord vault".into()),
             ])
         );
         // This upstream answers each query as a command with no rows.

@@ -3,7 +3,7 @@
 //! One-shot enrollment exchange.
 //!
 //! Flow: admin issues an enrollment token in the Roomler UI and hands it to
-//! the machine operator. `roomlerd enroll --token <t>` posts it to
+//! the machine operator. `meshharbord enroll --token <t>` posts it to
 //! `POST /api/agent/enroll` with machine metadata, gets back a long-lived
 //! agent token, and persists everything to the config file.
 
@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::AgentConfig;
 
-/// Env fallbacks for the install trace (FR-102 P3): what `roomlerd enroll`
+/// Env fallbacks for the install trace (FR-102 P3): what `meshharbord enroll`
 /// reads when `--install-method` / `--install-scope` are not passed. The
 /// served install scripts set these rather than passing the flags, so an
 /// agent from before P3 — which has no such flag and would refuse it —
@@ -58,14 +58,14 @@ pub struct EnrollInputs<'a> {
     pub machine_name: &'a str,
     /// FR-102 P3 — how this install happened, when the caller knows: the
     /// wizard says `wizard`, the scripts say which script, a hand-typed
-    /// `roomlerd enroll` says `manual` ([`resolve_install`]). `None` sends
+    /// `meshharbord enroll` says `manual` ([`resolve_install`]). `None` sends
     /// nothing, which the server records as `unknown` on a new row and
     /// leaves alone on a re-enrolled one — the right answer for every
     /// re-enroll path, which knows nothing about how the binary got there.
     pub install: Option<InstallInfo>,
 }
 
-/// FR-102 P3 — what `roomlerd enroll` sends as its install trace, from the
+/// FR-102 P3 — what `meshharbord enroll` sends as its install trace, from the
 /// CLI flags first, the environment second, and `manual` when neither
 /// says: a person typed the command. The scope defaults to `unknown`.
 ///
@@ -567,7 +567,7 @@ pub enum EnrollOutcome {
 /// On append the top-level `machine_name` is kept as-is even when the
 /// operator passed a different `--name` (the new org's SERVER row got the
 /// name from the enroll POST; the machine-scoped local name stays until
-/// `roomler set-device-name` changes it everywhere).
+/// `meshharbor set-device-name` changes it everywhere).
 pub fn apply_enrollment(
     existing: Option<AgentConfig>,
     fresh: AgentConfig,

@@ -16,7 +16,7 @@
   logged in.
 
   Opt-in: the postinstall only loads this when the operator asks for it
-  (`/etc/roomler/enable-daemon` present — the marker is the ONLY
+  (`/etc/meshharbor/enable-daemon` present — the marker is the ONLY
   channel; PackageKit scripts inherit no environment, which is why the old
   ROOMLER_MACOS_DAEMON=1 form never worked and was removed). A root daemon
   on someone's Mac is a posture decision, not a side effect of installing a
@@ -35,7 +35,7 @@
     <array>
         <string>/Library/Roomler/roomlerd.app/Contents/MacOS/roomlerd</string>
         <string>--config</string>
-        <string>/etc/roomler/config.toml</string>
+        <string>/etc/meshharbor/config.toml</string>
         <string>run</string>
     </array>
 

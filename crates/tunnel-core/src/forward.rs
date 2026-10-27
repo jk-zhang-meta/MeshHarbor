@@ -189,7 +189,7 @@ impl FlowStats {
 }
 
 /// Session-level throughput aggregate for a daemon-originated tunnel
-/// (P3b-3). One per `roomler forward` / `socks5` flow, shared across
+/// (P3b-3). One per `meshharbor forward` / `socks5` flow, shared across
 /// its per-connection [`FlowStats`] and across WS-reconnect attempts
 /// (so `bytes_in`/`bytes_out` are cumulative for the forward's life).
 /// Read by the daemon's `flows` LocalAPI verb.

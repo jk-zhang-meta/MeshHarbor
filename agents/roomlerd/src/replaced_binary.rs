@@ -189,7 +189,7 @@ pub fn decide(pending: Option<&Pending>, now: Instant, busy: &Busy) -> Step {
     }
 }
 
-/// `roomlerd --version`'s answer, against the version this process runs.
+/// `meshharbord --version`'s answer, against the version this process runs.
 /// Pure. The answer must be clap's `roomlerd <version>` exactly: anything else
 /// at the exec path (another program, a truncated file that still runs) is not
 /// restarted onto.
@@ -687,8 +687,8 @@ mod tests {
         use std::path::PathBuf;
         let exe = Some(PathBuf::from("/usr/lib/roomler/roomlerd"));
         assert_eq!(
-            pick_exec_path(Some(OsStr::new("/usr/bin/roomlerd")), exe.clone()),
-            Some(PathBuf::from("/usr/bin/roomlerd"))
+            pick_exec_path(Some(OsStr::new("/usr/bin/meshharbord")), exe.clone()),
+            Some(PathBuf::from("/usr/bin/meshharbord"))
         );
         assert_eq!(
             pick_exec_path(Some(OsStr::new("roomlerd")), exe.clone()),

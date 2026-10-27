@@ -107,7 +107,7 @@ pub struct Attempt {
     /// Diagnostic stderr the failing helper produced. Empty on success.
     pub stderr: String,
     /// Operator-actionable hint composed by the composite subcommand
-    /// (e.g. "Close services.msc and run `roomlerd restart-service`
+    /// (e.g. "Close services.msc and run `meshharbord restart-service`
     /// again."). Empty on success.
     pub hint: String,
 }
@@ -223,7 +223,7 @@ mod tests {
             "enable-system-context",
             Stage::ServiceRestart,
             "timeout: service state StartPending, expected Running",
-            "Close services.msc and run `roomlerd restart-service` again.",
+            "Close services.msc and run `meshharbord restart-service` again.",
         );
         assert_eq!(a.stage, Stage::ServiceRestart);
         assert_eq!(a.exit_code, 1);

@@ -39,9 +39,9 @@ use std::sync::OnceLock;
 /// Windows/Linux ignore it). Historically "live" — preserved so existing
 /// macOS dirs aren't orphaned.
 const QUALIFIER: &str = "live";
-const ORG: &str = "roomler";
+const ORG: &str = "meshharbor";
 /// New app segment (post-rename, fresh installs).
-const NEW_APP: &str = "roomler";
+const NEW_APP: &str = "meshharbor";
 /// Legacy app segment (pre-rename installs already in the field).
 // RETIRED-NAME-ANCHOR: a pre-rename host resolves its ENROLLED config through this
 // segment. Renaming it orphans that config -- the device drops off the mesh and
@@ -273,13 +273,13 @@ fn migrate_dir(old: &Path, new: &Path) -> Option<String> {
     }
 }
 
-// ─── Linux: the system config lives in /etc/roomler ────────────────────────
+// ─── Linux: the system config lives in /etc/meshharbor ────────────────────────
 
-/// Canonical config for a Linux SYSTEM install (the `roomlerd.service` unit).
+/// Canonical config for a Linux SYSTEM install (the `meshharbord.service` unit).
 ///
-/// The packaged unit has run `roomlerd --config /etc/roomler/config.toml`
+/// The packaged unit has run `roomlerd --config /etc/meshharbor/config.toml`
 /// since rc.426, but hosts enrolled before that convention keep their config
-/// in root's profile (`/root/.config/roomler/config.toml`) — so the FIRST
+/// in root's profile (`/root/.config/meshharbor/config.toml`) — so the FIRST
 /// systemd-mediated start after the packaging change died `no config found`
 /// and `Restart=always` turned it into a crash-loop. Field-hit on three nodes
 /// (buildhost, fleet-host-2, and the WSL sibling, the last one from a plain `dpkg -i`, with
@@ -287,14 +287,14 @@ fn migrate_dir(old: &Path, new: &Path) -> Option<String> {
 ///
 /// One canonical location fixes that for good: [`migrate_system_config`] moves
 /// a legacy config here at startup, and [`crate::config::default_config_path`]
-/// resolves here for root, so an explicit `--config` and a bare `roomlerd run`
+/// resolves here for root, so an explicit `--config` and a bare `meshharbord run`
 /// can no longer disagree about where this host's identity lives.
 #[cfg(target_os = "linux")]
 pub fn system_config_path() -> PathBuf {
-    PathBuf::from("/etc/roomler/config.toml")
+    PathBuf::from("/etc/meshharbor/config.toml")
 }
 
-/// Is this process root? Only root may own `/etc/roomler`; a per-user Linux
+/// Is this process root? Only root may own `/etc/meshharbor`; a per-user Linux
 /// install keeps its profile config and must not be migrated anywhere.
 #[cfg(target_os = "linux")]
 pub fn running_as_root() -> bool {
@@ -302,7 +302,7 @@ pub fn running_as_root() -> bool {
     unsafe { libc::geteuid() == 0 }
 }
 
-/// One-shot migration of a legacy root-profile config into `/etc/roomler`.
+/// One-shot migration of a legacy root-profile config into `/etc/meshharbor`.
 ///
 /// Same rules as [`migrate_legacy_trees`], for the same reasons:
 ///   * `/etc` copy exists → leave the legacy one alone (NEW wins)
@@ -495,8 +495,8 @@ mod tests {
     }
 
     /// The invariant that retires the crash-loop class: for a Linux root
-    /// process, `/etc/roomler/config.toml` and the profile config resolve in a
-    /// fixed order, so the packaged unit's `--config` and a bare `roomlerd run`
+    /// process, `/etc/meshharbor/config.toml` and the profile config resolve in a
+    /// fixed order, so the packaged unit's `--config` and a bare `meshharbord run`
     /// can never disagree about where this host's identity lives.
     ///
     /// Same injected-predicate shape as the tree test above — asserting on
@@ -525,8 +525,8 @@ mod tests {
     #[test]
     fn the_prev_sibling_is_the_config_path_plus_prev() {
         assert_eq!(
-            with_prev(Path::new("/etc/roomler/config.toml")),
-            PathBuf::from("/etc/roomler/config.toml.prev")
+            with_prev(Path::new("/etc/meshharbor/config.toml")),
+            PathBuf::from("/etc/meshharbor/config.toml.prev")
         );
     }
 

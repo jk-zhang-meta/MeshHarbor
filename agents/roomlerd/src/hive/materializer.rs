@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (C) 2026 G ROX EOOD
-//! FR-90 P2b-4 — `roomlerd hive-materialize`: a checkpoint put back into a
+//! FR-90 P2b-4 — `meshharbord hive-materialize`: a checkpoint put back into a
 //! session's config directory (P2b-4a) and its folder (P2b-4b) AS THE TARGET'S
 //! ACCOUNT, from what the daemon streams to its stdin.
 //!
@@ -47,7 +47,7 @@ use serde::{Deserialize, Serialize};
 use super::checkpointer::{Runner, allowed};
 use super::workspace::{self, Git};
 
-/// The hidden subcommand: `roomlerd hive-materialize`, fed on its stdin.
+/// The hidden subcommand: `meshharbord hive-materialize`, fed on its stdin.
 pub const MATERIALIZE_SUBCOMMAND: &str = "hive-materialize";
 
 /// The first bytes the daemon writes.
@@ -691,7 +691,7 @@ pub(crate) async fn run_as_console_user(
 
 // ─── the child's side ───────────────────────────────────────────────────────
 
-/// Whether this process was started as `roomlerd hive-materialize`.
+/// Whether this process was started as `meshharbord hive-materialize`.
 pub fn materialize_args() -> bool {
     let mut args = std::env::args_os().skip(1);
     args.next().is_some_and(|a| a == MATERIALIZE_SUBCOMMAND) && args.next().is_none()

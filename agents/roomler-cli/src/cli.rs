@@ -9,12 +9,12 @@
 //!
 //! CLI surface:
 //!
-//!   roomler enroll --server <url> --token <enrollment-jwt> --name <label>
-//!   roomler forward --agent <agent_id> --local <port> --remote <host:port>
-//!   roomler run [--config <path>]
+//!   meshharbor enroll --server <url> --token <enrollment-jwt> --name <label>
+//!   meshharbor forward --agent <agent_id> --local <port> --remote <host:port>
+//!   meshharbor run [--config <path>]
 //!   roomler diagnose [--agent <agent_id>]
-//!   roomler status [--json]     # local daemon's node state (LocalAPI)
-//!   roomler peers  [--json] [--display-name] [NAME…]   # peers + connection types (LocalAPI)
+//!   meshharbor status [--json]     # local daemon's node state (LocalAPI)
+//!   meshharbor peers  [--json] [--display-name] [NAME…]   # peers + connection types (LocalAPI)
 //!   roomler devices [--json]    # the devices this one may see, server-listed (LocalAPI)
 //!   roomler flows  [--json]     # active forwards / SOCKS5 (LocalAPI)
 
@@ -60,7 +60,7 @@ impl CliTransport {
 }
 
 #[derive(Debug, Parser)]
-#[command(name = "roomler", version, about, long_about = None)]
+#[command(name = "meshharbor", version, about, long_about = None)]
 struct Cli {
     // RETIRED-NAME-ANCHOR(4): the config segment is frozen — it holds the
     // ENROLLED credential on tunnel-only hosts, and renaming it strands
@@ -102,7 +102,7 @@ enum Command {
     },
     /// Enroll this laptop against a Roomler server using an admin-issued
     /// tunnel-enrollment token. Writes the long-lived `TunnelClient` JWT
-    /// to the config file. Mirrors `roomlerd enroll`.
+    /// to the config file. Mirrors `meshharbord enroll`.
     Enroll {
         /// Base URL of the Roomler API (e.g. https://roomler.ai).
         #[arg(long)]
@@ -217,7 +217,7 @@ enum Command {
     },
     /// Tail a daemon log, resolved BY the daemon — the path differs per process
     /// and per platform, and two of the candidates on a Windows host are decoys.
-    /// Pairs with Fleet RPC: `roomler exec <host> -- roomler logs --grep ICE`.
+    /// Pairs with Fleet RPC: `meshharbor exec <host> -- meshharbor logs --grep ICE`.
     Logs {
         /// Which log: `daemon` (this process's rolling log — the one with the
         /// overlay/media events), `service` (the SCM host log), or `panic`
@@ -240,8 +240,8 @@ enum Command {
     /// List the peers the local daemon currently sees, with each peer's live
     /// connection type (direct / relay / tunnel / blocked / offline).
     ///
-    /// `roomler peers --display-name` puts the dashboard display names in
-    /// NAME; `roomler peers laptop "Office PC"` shows only those two, in
+    /// `meshharbor peers --display-name` puts the dashboard display names in
+    /// NAME; `meshharbor peers laptop "Office PC"` shows only those two, in
     /// that order — each a mesh name or a display name.
     Peers {
         /// FR-49 - show only this enrollment (`roomlerd org ls`; `primary` for
@@ -304,7 +304,7 @@ enum Command {
     /// a probe in flight).
     ///
     /// Accepts a device name (or a unique part of one), an overlay IP, or a
-    /// node id — whatever you can read out of `roomler peers`.
+    /// node id — whatever you can read out of `meshharbor peers`.
     Why {
         /// Peer to explain: name / name fragment / overlay IP / node id.
         peer: String,
@@ -344,7 +344,7 @@ enum Command {
         action: ConfigAction,
     },
     /// Record this device's screen to an HQ MP4 in the recordings folder
-    /// (FR-85). Change the folder with `roomler config set record_dir <path>`.
+    /// (FR-85). Change the folder with `meshharbor config set record_dir <path>`.
     /// The daemon runs the recorder; only the person at the console may
     /// start, stop or delete a recording.
     Record {
@@ -372,7 +372,7 @@ enum Command {
     ///
     /// The daemon decides, and this exits non-zero when it refuses: it
     /// restarts only under a supervisor it can prove (a Windows service or
-    /// scheduled task, systemd, launchd) — a hand-started `roomlerd run` is
+    /// scheduled task, systemd, launchd) — a hand-started `meshharbord run` is
     /// never taken offline — at most once every 30 s, and never while
     /// `local_restart_enabled` is off or a recording is running. Then waits
     /// (up to 60 s) until the NEW daemon answers, starting the scheduled task
@@ -398,8 +398,8 @@ enum Command {
     /// the OS-free reachability probe. Only meaningful when the local daemon runs
     /// in netstack mode (a locked-down host with no OS route to the mesh).
     ///
-    /// `roomler ping build-box` — or, by dashboard display name,
-    /// `roomler ping "Office PC"`.
+    /// `meshharbor ping build-box` — or, by dashboard display name,
+    /// `meshharbor ping "Office PC"`.
     Ping {
         /// Overlay peer to ping — a mesh name (e.g. `build-box`), a dashboard
         /// display name, or an overlay IP (either family;
@@ -432,8 +432,8 @@ enum Command {
     /// (the signed-in user on an attended install, SYSTEM in SystemContext
     /// mode). Every attempt is audited, with the identity that ran it.
     ///
-    /// `roomler exec build-box -- uptime` — or, by dashboard display name,
-    /// `roomler exec "Office PC" -- hostname`.
+    /// `meshharbor exec build-box -- uptime` — or, by dashboard display name,
+    /// `meshharbor exec "Office PC" -- hostname`.
     Exec {
         /// Target device — a device name (e.g. `build-box`), a dashboard
         /// display name, or a hex agent id. A display name is resolved from
@@ -451,7 +451,7 @@ enum Command {
         #[command(flatten)]
         fmt: OutputFmt,
         /// The command. Put it after `--` so its own flags aren't parsed
-        /// by roomler: `roomler exec winhost-a -- Get-NetRoute -AddressFamily IPv4`
+        /// by roomler: `meshharbor exec winhost-a -- Get-NetRoute -AddressFamily IPv4`
         #[arg(trailing_var_arg = true, required = true)]
         command: Vec<String>,
     },
@@ -465,10 +465,10 @@ enum Command {
     /// The host key is VERIFIED, never trusted on first use. If the server has
     /// no key for the device, this refuses to connect.
     ///
-    ///   roomler ssh winhost-a
-    ///   roomler ssh winhost-a -- uptime
+    ///   meshharbor ssh winhost-a
+    ///   meshharbor ssh winhost-a -- uptime
     ///
-    /// A dashboard display name works too: `roomler ssh "Office PC"`.
+    /// A dashboard display name works too: `meshharbor ssh "Office PC"`.
     Ssh {
         /// Target device — a device name (e.g. `build-box`), a dashboard
         /// display name, or a hex agent id. Resolved like `exec`'s: a display
@@ -479,7 +479,7 @@ enum Command {
         #[arg(long, default_value_t = 0)]
         session_secs: u64,
         /// Anything after `--` is passed to `ssh` verbatim — a remote command,
-        /// or extra client options: `roomler ssh box -- -v uptime`
+        /// or extra client options: `meshharbor ssh box -- -v uptime`
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
@@ -495,8 +495,8 @@ enum Command {
     /// It stays in the foreground: the endpoint lives while this runs, its
     /// leases renewed before they end. Ctrl-C closes it.
     ///
-    ///   sudo roomler connect db/orders --engine postgres --upstream db.internal:5432
-    ///   roomler connect ci/kube --engine kubernetes --upstream https://api.k8s.internal:6443 --auth bearer
+    ///   sudo meshharbor connect db/orders --engine postgres --upstream db.internal:5432
+    ///   meshharbor connect ci/kube --engine kubernetes --upstream https://api.k8s.internal:6443 --auth bearer
     Connect {
         /// The secret: its path, or this organization's RRN, with no `#field`.
         handle: String,
@@ -548,7 +548,7 @@ enum Command {
     /// Transport and name resolution only: `ProxyCommand` cannot supply an
     /// identity or a host key, so this uses keys YOU manage. For a
     /// grant-issued session with the account resolved by policy and the host
-    /// key verified for you, use `roomler ssh` instead.
+    /// key verified for you, use `meshharbor ssh` instead.
     Proxy {
         /// Device name (bare, <name>.roomler, or MagicDNS) or overlay address
         /// (OpenSSH passes `%h`).
@@ -570,7 +570,7 @@ enum Command {
     },
 }
 
-/// `roomler diag …` — remote evidence bundles over Fleet RPC.
+/// `meshharbor diag …` — remote evidence bundles over Fleet RPC.
 #[derive(Debug, Subcommand)]
 enum DiagAction {
     /// Bundle from one device.
@@ -600,7 +600,7 @@ struct OutputFmt {
     json: bool,
 }
 
-/// `roomler config …` — the S2 editable config surface. All verbs talk
+/// `meshharbor config …` — the S2 editable config surface. All verbs talk
 /// to the LOCAL daemon over the LocalAPI; secrets are excluded by
 /// construction, and the daemon says per key whether a change applies at
 /// once or on the next restart.
@@ -871,13 +871,13 @@ enum RouteAction {
 pub enum Origin {
     /// The standalone `roomler` binary on a tunnel-only host.
     Standalone,
-    /// Dispatched from `roomlerd cli` on a daemon host.
+    /// Dispatched from `meshharbord cli` on a daemon host.
     EmbeddedInDaemon,
 }
 
 /// FR-84 D3 — the `roomlerd` binary `roomler restart` runs `service start`
 /// with, when bringing the daemon back is the caller's job (the Windows
-/// Scheduled Task). Embedded in the daemon — `roomlerd cli`, which is what the
+/// Scheduled Task). Embedded in the daemon — `meshharbord cli`, which is what the
 /// installed `roomler` shim re-execs — that is this very executable;
 /// standalone, a sibling, else whatever `roomlerd` PATH finds.
 fn daemon_exe(origin: Origin) -> Option<PathBuf> {
@@ -907,7 +907,7 @@ pub async fn run() -> Result<()> {
     run_from(std::env::args_os(), Origin::Standalone).await
 }
 
-/// Entry point for an EMBEDDED caller (P3e lever D): `roomlerd cli -- <args>`
+/// Entry point for an EMBEDDED caller (P3e lever D): `meshharbord cli -- <args>`
 /// dispatches here so a daemon host ships ONE copy of this CLI's code instead
 /// of a second 22 MiB binary that is ~92 % the same crates. `args` follows the
 /// usual convention — element 0 is the program name.
@@ -922,9 +922,9 @@ where
     I: IntoIterator<Item = T>,
     T: Into<std::ffi::OsString> + Clone,
 {
-    // Rust starts with SIGPIPE ignored, so `roomler peers | head` PANICS with
+    // Rust starts with SIGPIPE ignored, so `meshharbor peers | head` PANICS with
     // "failed printing to stdout: Broken pipe" the moment `head` closes the
-    // pipe (field-hit on buildhost, rc.368, via `roomlerd cli`). Restore the
+    // pipe (field-hit on buildhost, rc.368, via `meshharbord cli`). Restore the
     // normal Unix CLI contract — die quietly on EPIPE — for BOTH callers:
     // this entry is only ever a CLI invocation (the daemon's `run` path never
     // comes through here), so the process-wide reset is exactly scoped.
@@ -1253,7 +1253,7 @@ where
             args,
         } => {
             // Mirror ssh's own exit status, the same way `exec` mirrors the
-            // remote command's — so `roomler ssh box -- false` composes in a
+            // remote command's — so `meshharbor ssh box -- false` composes in a
             // script instead of always looking successful.
             match crate::sshcmd::run(&device, session_secs, &args).await? {
                 0 => Ok(()),
@@ -1291,7 +1291,7 @@ where
     }
 }
 
-/// `roomler enroll` — exchange a tunnel-enrollment JWT for a
+/// `meshharbor enroll` — exchange a tunnel-enrollment JWT for a
 /// long-lived `TunnelClient` JWT via the server, then persist server
 /// URL + token to the local config file.
 async fn enroll_cmd(
@@ -1713,7 +1713,7 @@ mod tests {
         }
     }
 
-    /// FR-90 P3-9-2b — `roomler connect`: a handle, an engine and an
+    /// FR-90 P3-9-2b — `meshharbor connect`: a handle, an engine and an
     /// upstream are required; the rest are the daemon's to check, but an
     /// engine or an auth outside the words it knows is refused here first.
     #[test]

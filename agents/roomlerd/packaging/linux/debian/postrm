@@ -6,7 +6,7 @@
 set -e
 
 if command -v deb-systemd-helper >/dev/null 2>&1; then
-    for unit in roomler-update.timer roomler-update.path; do
+    for unit in meshharbor-update.timer meshharbor-update.path; do
         if [ "$1" = remove ]; then
             deb-systemd-helper mask "$unit" >/dev/null 2>&1 || true
         fi

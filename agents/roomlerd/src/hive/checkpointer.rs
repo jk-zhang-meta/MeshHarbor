@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (C) 2026 G ROX EOOD
-//! FR-90 P2b-3a — `roomlerd hive-checkpoint`: a session's checkpoint, taken AS
+//! FR-90 P2b-3a — `meshharbord hive-checkpoint`: a session's checkpoint, taken AS
 //! THE SESSION'S ACCOUNT and handed to the daemon on stdout.
 //!
 //! The daemon never opens a path in the account's tree (spec §3b). So it writes
 //! a [`Request`] (where the session's config directory, folder and state
 //! directory are, the checkpoint's number and turn, and the last checkpoint)
-//! into the session's runtime directory, starts `roomlerd hive-checkpoint
+//! into the session's runtime directory, starts `meshharbord hive-checkpoint
 //! <request>` as the account, as the Unix wrapper and Windows' `hive-prep` run,
 //! and reads what it writes:
 //!
@@ -36,7 +36,7 @@ use serde::{Deserialize, Serialize};
 
 use super::workspace::{self, Git};
 
-/// The hidden subcommand: `roomlerd hive-checkpoint <request>`.
+/// The hidden subcommand: `meshharbord hive-checkpoint <request>`.
 pub const CHECKPOINT_SUBCOMMAND: &str = "hive-checkpoint";
 
 /// The first bytes of what the child writes.
@@ -319,7 +319,7 @@ const _: () = assert!(workspace::STALE_LOCK.as_secs() > CHECKPOINT_TIMEOUT.as_se
 /// How the checkpoint's child is run.
 #[derive(Clone)]
 pub(crate) enum Runner {
-    /// `roomlerd hive-checkpoint`, as the account: what a device does.
+    /// `meshharbord hive-checkpoint`, as the account: what a device does.
     Subprocess,
     /// In this process, through the same frames and checks: tests, where the
     /// binary is the test harness and not `roomlerd`. Git's discovery stops at

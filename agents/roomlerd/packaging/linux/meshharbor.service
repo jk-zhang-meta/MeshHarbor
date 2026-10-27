@@ -1,6 +1,6 @@
 [Unit]
-Description=Roomler Daemon — keeps this device on your private Roomler mesh network and available for secure remote control
-Documentation=https://roomler.ai/
+Description=MeshHarbor Daemon — keeps this device on your private MeshHarbor mesh network and available for secure remote control
+Documentation=https://www.itachi.fans/meshharbor
 # An interactive user session is required for scrap capture (XShm needs a
 # display) and enigo input injection (both run on the user's X server).
 # This is a systemd *user* unit, not a system unit, for that reason.
@@ -11,7 +11,7 @@ PartOf=graphical-session.target
 Type=simple
 # RETIRED-NAME-ANCHOR(3): a "was X" line has to name X.
 # P3d Slice B: the daemon binary is now `roomlerd` (was `roomler-agent`).
-ExecStart=/usr/bin/roomlerd run
+ExecStart=/usr/bin/meshharbord run
 # `always`, not `on-failure`: a self-update exits 0 on purpose (the agent
 # hands off to the installer and shuts down cleanly), and `on-failure`
 # would leave the node stopped until the next login — a successful
@@ -22,7 +22,7 @@ ExecStart=/usr/bin/roomlerd run
 # (another process holds the single-instance lock) must NOT either — this
 # process is redundant by definition, and without the exception `always`
 # restarts it every 5 s forever. Especially reachable for THIS unit: a
-# per-user agent and the system `roomlerd.service` both target the same
+# per-user agent and the system `meshharbord.service` both target the same
 # config on a desktop that enabled both.
 Restart=always
 RestartSec=5
@@ -60,7 +60,7 @@ ProtectHome=read-only
 # no prefix on purpose: `roomlerd enroll` creates both (the config, and the
 # log folder), and a unit started before enrolling should fail naming the
 # missing folder rather than run with it read-only.
-ReadWritePaths=%h/.config/roomler %h/.local/share/roomler -%h/.config/roomler-agent -%h/.local/share/roomler-agent
+ReadWritePaths=%h/.config/meshharbor %h/.local/share/meshharbor -%h/.config/roomler-agent -%h/.local/share/roomler-agent
 # FR-85 P2c — the recorder's default folder (`~/Videos/Roomler`). Everything
 # else under home stays read-only: a folder chosen elsewhere is refused by the
 # recorder's test write, which falls back and names why in the Recordings
@@ -74,8 +74,8 @@ ReadWritePaths=-%h/Videos
 # "acquiring single-instance lock … Read-only file system (os error 30)".
 #   * `%t`, the runtime dir: ProtectSystem=strict leaves /run read-only, and
 #     /run/user/$UID with it. The single-instance lock (instance_lock.rs) and
-#     the LocalAPI socket ($XDG_RUNTIME_DIR/roomler.sock) both live there.
-#   * the state folder: the portal's restore token (~/.local/state/roomler,
+#     the LocalAPI socket ($XDG_RUNTIME_DIR/meshharbor.sock) both live there.
+#   * the state folder: the portal's restore token (~/.local/state/meshharbor,
 #     capture/portal/screencast.rs TokenStore). Read-only, the token cannot be
 #     renewed, so the person at the screen is asked again every session. A
 #     ReadWritePaths entry binds only a folder that EXISTS when the sandbox is
@@ -83,18 +83,18 @@ ReadWritePaths=-%h/Videos
 #     as TokenStore::save sets it. Its `-` matters as much: a folder that
 #     cannot be made costs one prompt per session, never the daemon's start.
 #     ⚠️ Not StateDirectory=: measured on systemd 255, it found
-#     ~/.config/roomler, took that for its own pre-XDG-state location, and
-#     symlinked ~/.local/state/roomler to it. Every enrolled host has that
+#     ~/.config/meshharbor, took that for its own pre-XDG-state location, and
+#     symlinked ~/.local/state/meshharbor to it. Every enrolled host has that
 #     folder, so the token would have moved into the config folder.
 #     A custom XDG_STATE_HOME is not covered and costs that prompt per session.
 #   * ~/Downloads, where incoming files land (files.rs default_download_dir).
 #     `-` and the localized-name caveat as for ~/Videos.
 ReadWritePaths=%t
-ExecStartPre=-+/bin/mkdir -p -m 0700 %h/.local/state/roomler
-ReadWritePaths=-%h/.local/state/roomler
+ExecStartPre=-+/bin/mkdir -p -m 0700 %h/.local/state/meshharbor
+ReadWritePaths=-%h/.local/state/meshharbor
 ReadWritePaths=-%h/Downloads
 # FR-96 P2a — /var/tmp, for ONE file: the wake the root update helper watches
-# (`roomler-update.path`, PathExists=/var/tmp/roomler-update-check). On a host
+# (`meshharbor-update.path`, PathExists=/var/tmp/meshharbor-update-check). On a host
 # whose installer enabled that helper, this daemon installs nothing itself; a
 # pushed update only touches the wake file. ProtectSystem=strict leaves /var/tmp
 # read-only wherever this sandbox applies (Fedora's user manager — the very

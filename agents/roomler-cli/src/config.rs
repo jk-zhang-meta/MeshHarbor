@@ -3,7 +3,7 @@
 //! On-disk config for `roomler`.
 //!
 //! Mirrors `roomlerd`'s pattern: TOML file at the platform-specific
-//! per-user config dir, populated by `roomler enroll` and read
+//! per-user config dir, populated by `meshharbor enroll` and read
 //! by `forward` / `run` / `diagnose`. Env vars `ROOMLER_TUNNEL_SERVER`
 //! and `ROOMLER_TUNNEL_TOKEN` override the file when both are set, so
 //! CI / smoke tests don't need to drop a real file.
@@ -63,7 +63,7 @@ impl TunnelConfig {
 /// FR-101 P1b — the server URL an enrollment posts its token to and saves:
 /// a remote `http://` is `https://`, as the agent's enrollment does, so the
 /// token travels over TLS; loopback is left alone, and there is no plaintext
-/// escape. Shared by `roomler enroll` and the setup wizard's tunnel role.
+/// escape. Shared by `meshharbor enroll` and the setup wizard's tunnel role.
 pub fn enrollment_server_url(raw: &str) -> String {
     let secured = roomler_ai_remote_control::server_url::secure(raw, false);
     if secured.promoted {
@@ -116,7 +116,7 @@ pub fn load(path: Option<PathBuf>) -> Result<TunnelConfig> {
     };
     if !resolved.exists() {
         bail!(
-            "tunnel-client config not found at {}. Run `roomler enroll --server <url> --token <jwt> --name <label>` first.",
+            "tunnel-client config not found at {}. Run `meshharbor enroll --server <url> --token <jwt> --name <label>` first.",
             resolved.display()
         );
     }
@@ -127,7 +127,7 @@ pub fn load(path: Option<PathBuf>) -> Result<TunnelConfig> {
     cfg.secure_server_url();
     if cfg.tunnel_client_token.is_empty() {
         bail!(
-            "tunnel-client config at {} has empty tunnel_client_token. Re-run `roomler enroll`.",
+            "tunnel-client config at {} has empty tunnel_client_token. Re-run `meshharbor enroll`.",
             resolved.display()
         );
     }
@@ -165,7 +165,7 @@ pub fn save(cfg: &TunnelConfig, path: Option<&Path>) -> Result<PathBuf> {
 
 /// FR-103 — save a renewed token, compare-and-swap: only while the file still
 /// holds `renewed_from`. A file holding a different token was re-enrolled
-/// meanwhile (`roomler enroll`), and its token wins: nothing is written and
+/// meanwhile (`meshharbor enroll`), and its token wins: nothing is written and
 /// an error says why. Every other field is kept as the FILE has it.
 pub fn save_renewed_token(
     cfg: &TunnelConfig,
@@ -384,7 +384,7 @@ mod tests {
         assert_eq!(lab.server_url, "http://lab.example:3000");
     }
 
-    /// FR-101 P1b — `roomler enroll` and the wizard's tunnel role post the
+    /// FR-101 P1b — `meshharbor enroll` and the wizard's tunnel role post the
     /// token over TLS, whatever the owner's escape says; loopback stays.
     #[test]
     fn an_enrollment_posts_its_token_over_tls() {
@@ -429,6 +429,6 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("nonexistent.toml");
         let err = load(Some(path)).unwrap_err();
-        assert!(err.to_string().contains("roomler enroll"));
+        assert!(err.to_string().contains("meshharbor enroll"));
     }
 }

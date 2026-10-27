@@ -331,7 +331,7 @@ impl NftBackend {
             Nft::system(),
             Watchdog::detect(),
             CONFIRM_WINDOW,
-            PathBuf::from("/run/roomlerd"),
+            PathBuf::from("/run/meshharbord"),
         )
     }
 

@@ -156,7 +156,7 @@ pub struct DaemonState {
     /// re-resolved path.
     consent: crate::consent::ConsentBroker,
     /// FR-51 P4 — the primary enrollment is ephemeral (from the loaded
-    /// config). Surfaces in `status()` so `roomler status` can say the device
+    /// config). Surfaces in `status()` so `meshharbor status` can say the device
     /// removes itself.
     ephemeral: bool,
     /// FR-27 — live remote-control sessions, written by every signalling
@@ -395,7 +395,7 @@ fn unix_now_ms() -> u64 {
 }
 
 /// Does this process run as root (unix) or LocalSystem (Windows)? This is what
-/// `roomler status` names beside the mode. Without it, the CLI printed
+/// `meshharbor status` names beside the mode. Without it, the CLI printed
 /// "service (SYSTEM)" for a per-user daemon too, because `mode` reads
 /// `Service` for every full node, whatever account it runs as.
 fn process_is_privileged() -> bool {
@@ -497,7 +497,7 @@ impl DaemonState {
     }
 
     /// FR-92 — answer the keep-busy verbs from the attached GUI worker of a
-    /// supervised Mac. ⚠️ A root caller (`roomler exec <mac> roomler keep-busy
+    /// supervised Mac. ⚠️ A root caller (`meshharbor exec <mac> roomler keep-busy
     /// off`) reaches THIS daemon, never the worker's per-user socket, and the
     /// daemon's own engine never runs there: before this, a root `off` stopped
     /// nothing and answered "off" while the worker kept moving the pointer
@@ -1016,9 +1016,9 @@ impl LocalApiState for DaemonState {
             // node pings peers with the system `ping` (the old message sent
             // operators chasing netstack when the overlay was simply off).
             return Response::Error {
-                message: "roomler ping uses the userspace netstack, which this node isn't \
+                message: "meshharbor ping uses the userspace netstack, which this node isn't \
                           running. On an OS-TUN node, use the system `ping <overlay-ip>` \
-                          instead (check `roomler status` / `roomler peers` for the IPs). If \
+                          instead (check `meshharbor status` / `meshharbor peers` for the IPs). If \
                           the overlay isn't up at all, set `overlay_enabled = true` in the \
                           node's config.toml and restart the daemon; for netstack mode, set \
                           ROOMLERD_OVERLAY_NETSTACK_SOCKS=<port>."
@@ -1298,7 +1298,7 @@ impl LocalApiState for DaemonState {
     /// outcome and nothing else. Not the password, not its length, not the
     /// record. The neighbouring `config_set` logs `value = ?entry.value` — which
     /// is right for it and would be a credential in the daemon's rolling log
-    /// here, a log `roomler logs` uploads to the server this gate exists to keep
+    /// here, a log `meshharbor logs` uploads to the server this gate exists to keep
     /// out.
     ///
     /// ⚠️ Deliberately does **not** touch `external_access_enabled`. Setting a
@@ -1516,7 +1516,7 @@ impl LocalApiState for DaemonState {
 
     /// FR-92 P10 — the person at the console turns keep busy on. The
     /// dispatcher has already refused root, services and other sessions —
-    /// but not a `roomler exec` on Windows, which runs in the console session
+    /// but not a `meshharbor exec` on Windows, which runs in the console session
     /// (FR-92 §3g).
     ///
     /// ⚠️ Never relayed to a supervised Mac's GUI worker: the person's own
@@ -1723,7 +1723,7 @@ impl LocalApiState for DaemonState {
         crate::updater::release_install_hold();
     }
 
-    /// FR-90 P3-9-2b — `roomler connect`: a person's endpoint, served to the
+    /// FR-90 P3-9-2b — `meshharbor connect`: a person's endpoint, served to the
     /// account the LocalAPI listener read, its leases asked for the device's
     /// owner and renewed while the asking connection stays open.
     #[cfg(all(hive_host, feature = "vault"))]
@@ -1777,7 +1777,7 @@ impl LocalApiState for DaemonState {
         let Some(sink) = self.tunnel_hub.sink_now() else {
             return Response::Error {
                 message: "not connected to the server — remote commands need the control \
-                          connection (check `roomler status`)"
+                          connection (check `meshharbor status`)"
                     .into(),
             };
         };
@@ -1845,7 +1845,7 @@ impl LocalApiState for DaemonState {
         let Some(sink) = self.tunnel_hub.sink_now() else {
             return Response::Error {
                 message: "not connected to the server — SSH grants need the control \
-                          connection (check `roomler status`)"
+                          connection (check `meshharbor status`)"
                     .into(),
             };
         };
@@ -2273,7 +2273,7 @@ mod tests {
     }
 
     /// `status` always names the account, and names the real one. Before
-    /// this, `roomler status` printed "service (SYSTEM)" for every daemon: a
+    /// this, `meshharbor status` printed "service (SYSTEM)" for every daemon: a
     /// per-user Fedora install read as a system one (FR-93's lab, 0.4.128).
     /// The test process is the daemon's stand-in: unprivileged in CI's lib
     /// lane, root under its sudo step.
@@ -2810,7 +2810,7 @@ mod tests {
         }
     }
 
-    /// The orphan `roomlerd run`: refused, nothing recorded, and even an
+    /// The orphan `meshharbord run`: refused, nothing recorded, and even an
     /// explicit commit starts no shutdown — nothing was accepted.
     #[tokio::test]
     async fn restart_refused_when_unsupervised() {
@@ -2936,12 +2936,12 @@ mod tests {
     async fn systemd_restart_is_refused_unless_systemd_confirms() {
         let dir = restart_dir("systemd", true);
         let unit = SystemdUnit {
-            name: "roomlerd.service",
+            name: "meshharbord.service",
             user: false,
         };
         let (st, restart, shutdown) = restart_state(&dir, Supervision::Systemd(unit));
         let why = refusal(st.restart_daemon("apply").await);
-        assert!(why.contains("roomlerd.service"), "{why}");
+        assert!(why.contains("meshharbord.service"), "{why}");
         assert!(!dir.join(RESTART_RECORD_FILE).exists());
         assert!(!*shutdown.borrow());
         assert_eq!(restart.accepted_exit_code(), None);
@@ -2955,7 +2955,7 @@ mod tests {
     #[tokio::test]
     async fn a_self_decided_restart_passes_the_verbs_gates() {
         let unit = SystemdUnit {
-            name: "roomler.service",
+            name: "meshharbor.service",
             user: true,
         };
         for (name, supervision, needle) in [
@@ -2967,7 +2967,7 @@ mod tests {
             (
                 "self-systemd",
                 Supervision::Systemd(unit),
-                "roomler.service",
+                "meshharbor.service",
             ),
         ] {
             let dir = restart_dir(name, true);

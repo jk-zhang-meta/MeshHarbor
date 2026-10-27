@@ -643,7 +643,7 @@ pub(crate) fn probe_tick(
 /// * **no completed WG handshake ever** — the pre-handshake zombie. Its
 ///   `tx`/`rx` counters stay flat (handshake packets touch neither), so the
 ///   rx-flat heuristic can't see it; only the handshake latch can. Field:
-///   winhost-a behind its corp VPN — every tier "installed", `roomler peers`
+///   winhost-a behind its corp VPN — every tier "installed", `meshharbor peers`
 ///   said `direct`/`relay` with fresh LAST SEEN (inbound worked!) while 100 %
 ///   of its own pings died for hours. This fn is what makes that visible.
 /// * **the rc.137 one-way strike counter** (`bad_sweeps`) — an established

@@ -10,7 +10,7 @@
 //! memory is left, and records it in the transcript. Claude Code reads it
 //! through a `SessionStart` hook (matchers `resume` and `fork`) in the daemon-owned
 //! `--settings`: the hook runs this binary as the session's account
-//! (`roomlerd hive-resume-note <file>`), which prints the file when it is
+//! (`meshharbord hive-resume-note <file>`), which prints the file when it is
 //! there. Every other launch removes it, so a restart's resume adds nothing,
 //! and each move's note stays in the conversation once: the history keeps it.
 //!
@@ -48,7 +48,7 @@ use std::path::{Path, PathBuf};
 
 use roomler_ai_remote_control::hive::{HivePlace, promote_limits::MAX_EARLIER_PLACES};
 
-/// `roomlerd hive-resume-note <file>`: the hook's printer.
+/// `meshharbord hive-resume-note <file>`: the hook's printer.
 pub const RESUME_NOTE_SUBCOMMAND: &str = "hive-resume-note";
 /// The note's file, in the session's runtime directory.
 pub const NOTE_FILE: &str = "resume-note.md";
@@ -250,7 +250,7 @@ pub(crate) fn hook_command(exe: &str, note: &Path) -> Option<String> {
     }
 }
 
-/// `roomlerd hive-resume-note <file>` → the file, or `None` for every other
+/// `meshharbord hive-resume-note <file>` → the file, or `None` for every other
 /// invocation. Read from raw argv, like the toolbelt's relay: it runs none of
 /// the daemon's start-up.
 pub fn note_args() -> Option<PathBuf> {
@@ -478,12 +478,12 @@ mod tests {
     fn the_hook_runs_this_binary_on_the_note_and_prints_nothing_without_one() {
         let dir = tempfile::tempdir().unwrap();
         let note = dir.path().join(NOTE_FILE);
-        let cmd = hook_command("/usr/bin/roomlerd", &note).expect("a command");
+        let cmd = hook_command("/usr/bin/meshharbord", &note).expect("a command");
         assert!(cmd.contains(RESUME_NOTE_SUBCOMMAND), "{cmd}");
         assert!(cmd.contains(note.to_str().unwrap()), "{cmd}");
         #[cfg(not(windows))]
         assert_eq!(
-            hook_command("/usr/bin/roomler'd", &note),
+            hook_command("/usr/bin/meshharbor'd", &note),
             None,
             "unquotable"
         );

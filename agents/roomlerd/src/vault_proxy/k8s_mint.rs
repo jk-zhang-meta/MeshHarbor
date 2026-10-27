@@ -497,7 +497,7 @@ async fn call(
             .uri(path)
             .header(HOST, authority.as_str())
             .header(ACCEPT, "application/json")
-            .header(USER_AGENT, "roomlerd vault");
+            .header(USER_AGENT, "meshharbord vault");
         if let SignIn::Bearer(token) = &issuer.sign_in {
             let value = Zeroizing::new(format!("Bearer {}", token.as_str()));
             let mut value = HeaderValue::from_str(&value)

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (C) 2026 G ROX EOOD
 //! The **originating** side of Roomler SSH — this device asking the server for
-//! a session on another one (`roomler ssh <device>`).
+//! a session on another one (`meshharbor ssh <device>`).
 //!
 //! Deliberately separate from [`crate::ssh`], which is the SERVING side. That
 //! module only exists in builds with an overlay feature (no overlay ⇒ no

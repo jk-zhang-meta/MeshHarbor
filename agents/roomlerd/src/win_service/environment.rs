@@ -319,7 +319,7 @@ pub fn restart_service(timeout: Duration) -> Result<()> {
 }
 
 /// FR-84 D3 — start the service if it is not running, and wait for `RUNNING`.
-/// The `--as-service` half of `roomlerd service start`; needs `SERVICE_START`
+/// The `--as-service` half of `meshharbord service start`; needs `SERVICE_START`
 /// on the service, i.e. elevation on a stock install. A service already
 /// running (or start-pending) is left alone and reported as success — the
 /// SCM supervisor respawns its own worker, so this is only ever needed when
@@ -347,7 +347,7 @@ pub fn start_service(timeout: Duration) -> Result<()> {
 }
 
 /// FR-97 P4d — stop the service if it is running, and wait for `STOPPED`. The
-/// `--as-service` half of `roomlerd service stop`, and the same Stop `sc stop`
+/// `--as-service` half of `meshharbord service stop`, and the same Stop `sc stop`
 /// sends: the host asks its worker to leave through the #1683 stop event, so
 /// an ephemeral device unenrolls. Needs `SERVICE_STOP` on the service, i.e.
 /// elevation on a stock install. A service already stopped is left alone and

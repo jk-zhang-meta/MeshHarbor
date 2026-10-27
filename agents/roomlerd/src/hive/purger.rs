@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (C) 2026 G ROX EOOD
-//! FR-90 P2g-1 — `roomlerd hive-purge`: what a purged session's account holds
+//! FR-90 P2g-1 — `meshharbord hive-purge`: what a purged session's account holds
 //! of it, deleted AS THE ACCOUNT.
 //!
 //! A session that ran on this device left two things under its account (spec
@@ -17,7 +17,7 @@
 //!
 //! The daemon feeds the [`Request`] on stdin: what this device's own record of
 //! the session's workplace says ([`super::store`]), never the server's word.
-//! It starts `roomlerd hive-purge` as the account, as `hive-pack` runs. The
+//! It starts `meshharbord hive-purge` as the account, as `hive-pack` runs. The
 //! child holds the request to the account's own home: a state directory that
 //! is not `$HOME/.roomler/hive/<sid>` exactly is refused, so a record that went
 //! wrong cannot make it delete anything else of the account's.
@@ -30,7 +30,7 @@ use serde::{Deserialize, Serialize};
 use super::checkpointer::Runner;
 use super::workspace::{self, Git};
 
-/// The hidden subcommand: `roomlerd hive-purge`, its request on stdin.
+/// The hidden subcommand: `meshharbord hive-purge`, its request on stdin.
 pub const PURGE_SUBCOMMAND: &str = "hive-purge";
 
 /// The most request bytes read.
@@ -257,7 +257,7 @@ pub(crate) async fn run_as_console_user(
     serde_json::from_slice(&out).map_err(|e| format!("the purge's answer: {e}"))
 }
 
-/// Whether this process was started as `roomlerd hive-purge`, its request on
+/// Whether this process was started as `meshharbord hive-purge`, its request on
 /// stdin.
 pub fn purge_args() -> bool {
     let mut args = std::env::args_os().skip(1);

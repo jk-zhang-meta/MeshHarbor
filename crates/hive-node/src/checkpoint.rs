@@ -7,7 +7,7 @@
 //! paths of Claude Code's config directory ([`allowlist`]; a fork's eight,
 //! [`allowlist_of`]), and later in P2b the workspace. The daemon never reads a
 //! path the session's account controls, so
-//! [`take`] runs AS THE ACCOUNT, in `roomlerd hive-checkpoint` (P2b-3). What it
+//! [`take`] runs AS THE ACCOUNT, in `meshharbord hive-checkpoint` (P2b-3). What it
 //! produces is a [`Checkpoint`], recorded in the chain as a `checkpoint` event
 //! (so two members at the same `(seq, hash)` hold the same files), and the
 //! blobs it names, each BLAKE3-named as the replica store keeps them.

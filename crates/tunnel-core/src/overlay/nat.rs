@@ -150,7 +150,7 @@ pub struct RouteOffer {
 /// approve the offer and every client that took it black-holed: a Mac, which
 /// has no NAT arm at all, and a Windows Home PC, which ships the `winnat`
 /// service without its management class (#2077). This asks first, so such a
-/// node advertises nothing and says why: in `roomler status`, and in its join.
+/// node advertises nothing and says why: in `meshharbor status`, and in its join.
 ///
 /// `ROOMLERD_ROUTE_OFFER_UNPROBED=1` skips the probe and offers as before.
 ///

@@ -2,7 +2,7 @@
 // Copyright (C) 2026 G ROX EOOD
 //! #2465 — the worker an earlier host of THIS service left running.
 //!
-//! The SCM worker (`roomlerd run --supervisor scm`) is in no job object and
+//! The SCM worker (`meshharbord run --supervisor scm`) is in no job object and
 //! waits only on its stop event (#1683), so a host that dies without a stop (a
 //! crash, a `TerminateProcess`) leaves its worker running: connected, holding
 //! the config's single-instance lock, and supervised by nobody. Every host the

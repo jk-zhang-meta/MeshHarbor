@@ -156,7 +156,7 @@ pub(crate) static FILES_DIR_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mut
 /// (`roomler_node_core::files_dir`).
 ///
 /// * Windows, `LocalSystem` — the winlogon-token worker in a user's session
-///   (`system_context`), or any `roomlerd run` started under a SYSTEM token,
+///   (`system_context`), or any `meshharbord run` started under a SYSTEM token,
 ///   feature or no feature. Privileged; the active user is the one signed in
 ///   to THIS process's session, and their profile comes from their token
 ///   (`win_identity::session_user_profile_dir`), never from their name. No
@@ -2113,12 +2113,19 @@ fn check_dest_placement(
 /// root worker can reach every user's.
 #[cfg(target_os = "windows")]
 const AGENT_STATE_RUNS: &[&[&str]] = &[
+    &["programdata", "meshharbor"],
+    &["appdata", "roaming", "meshharbor"],
+    &["appdata", "local", "meshharbor"],
     &["programdata", "roomler"],
     &["appdata", "roaming", "roomler"],
     &["appdata", "local", "roomler"],
 ];
 #[cfg(target_os = "macos")]
 const AGENT_STATE_RUNS: &[&[&str]] = &[
+    &["etc", "meshharbor"],
+    &["library", "application support", "live.meshharbor.meshharbor"],
+    &["library", "caches", "live.meshharbor.meshharbor"],
+    &["var", "log", "meshharbor"],
     &["etc", "roomler"],
     &["library", "application support", "live.roomler.roomler"],
     &["library", "caches", "live.roomler.roomler"],
@@ -2132,6 +2139,12 @@ const AGENT_STATE_RUNS: &[&[&str]] = &[
 ];
 #[cfg(all(unix, not(target_os = "macos")))]
 const AGENT_STATE_RUNS: &[&[&str]] = &[
+    &["etc", "meshharbor"],
+    &[".config", "meshharbor"],
+    &[".local", "share", "meshharbor"],
+    &[".local", "state", "meshharbor"],
+    &[".cache", "meshharbor"],
+    &["var", "log", "meshharbor"],
     &["etc", "roomler"],
     &[".config", "roomler"],
     &[".local", "share", "roomler"],
@@ -3377,10 +3390,10 @@ mod tests {
         #[cfg(unix)]
         {
             for p in [
-                "/etc/roomler/config.toml",
-                "/private/etc/roomler/config.toml",
-                "/home/u/.config/roomler/config.toml",
-                "/root/.local/share/roomler/logs/roomlerd.log",
+                "/etc/meshharbor/config.toml",
+                "/private/etc/meshharbor/config.toml",
+                "/home/u/.config/meshharbor/config.toml",
+                "/root/.local/share/meshharbor/logs/roomlerd.log",
             ] {
                 assert!(agent_state_run(Path::new(p)).is_some(), "{p}");
             }

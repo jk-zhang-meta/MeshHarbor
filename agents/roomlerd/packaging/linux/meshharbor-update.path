@@ -1,5 +1,5 @@
 [Unit]
-# FR-96 — the on-demand wake of roomler-update.service: the twin of the macOS
+# FR-96 — the on-demand wake of meshharbor-update.service: the twin of the macOS
 # helper's WatchPaths. A per-user daemon is not root, so it touches this file
 # instead of installing. /var/tmp is sticky and world-writable ON PURPOSE: the
 # file is a WAKE, and its content is never read. Whoever writes it can cause an
@@ -9,15 +9,15 @@
 # flood of touches costs at most one check a minute and never fails a unit. The
 # helper consumes the file first thing — unlinking a planted symlink without
 # following it, moving a planted directory aside — which re-arms this unit.
-Description=Roomler update helper — a check on demand
+Description=MeshHarbor update helper — a check on demand
 
 [Path]
 # PathExists= (level-triggered), NOT PathChanged=: a wake that arrives WHILE the
 # service runs is honoured after it ends (systemd stops watching a path while
 # the unit it triggers is running, so an edge would be missed). The helper's own
 # 60 s gate bounds how often that re-fire does real work.
-PathExists=/var/tmp/roomler-update-check
-Unit=roomler-update.service
+PathExists=/var/tmp/meshharbor-update-check
+Unit=meshharbor-update.service
 
 [Install]
 WantedBy=paths.target

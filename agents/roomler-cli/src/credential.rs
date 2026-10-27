@@ -5,7 +5,7 @@
 //!
 //! A tunnel-client token lives a year from enrollment. Until FR-103 nothing
 //! renewed it, and a tunnel-only host found out on its anniversary, when every
-//! `roomler forward` was refused. The server (FR-103 P1) answers
+//! `meshharbor forward` was refused. The server (FR-103 P1) answers
 //! `POST /api/tunnel-client/renew` with a fresh token for the same client:
 //! idempotent, no rotation (the old token stays valid until its own `exp`), and
 //! accepted up to 90 days past expiry so a laptop left in a drawer still comes
@@ -122,7 +122,7 @@ pub async fn renew_if_due(cfg: &mut TunnelConfig, path: Option<&Path>) -> Renewa
         Err(RequestError::Refused(status)) => {
             tracing::warn!(
                 status,
-                "tunnel-client token renewal refused: re-enroll this client (`roomler enroll`)"
+                "tunnel-client token renewal refused: re-enroll this client (`meshharbor enroll`)"
             );
             return Renewal::Refused;
         }

@@ -21,7 +21,7 @@
 //! falls back — the default folder, then `~/Roomler Recordings`, then its own
 //! data dir — and the Recordings view says why.
 //!
-//! FR-85 P2c — the Linux user unit (`roomler.service`) runs the daemon with
+//! FR-85 P2c — the Linux user unit (`meshharbor.service`) runs the daemon with
 //! `ProtectHome=read-only`; it lists `~/Videos` as writable, so the default
 //! folder works there, and a folder anywhere else is named as the sandbox's
 //! ([`sandboxed`]). Moving a finished file from the data dir into the chosen
@@ -140,7 +140,7 @@ pub fn resolve(configured: Option<&Path>) -> FolderChoice {
 /// FR-85 P2c — the words for a test write the SERVICE'S SANDBOX refused.
 ///
 /// A read-only file system on Linux is, in practice, the user unit's
-/// sandbox (`roomler.service`: `ProtectHome=read-only`, with only the
+/// sandbox (`meshharbor.service`: `ProtectHome=read-only`, with only the
 /// daemon's own folders and `~/Videos` writable), so the Recordings view
 /// names it as that rather than showing "Read-only file system (os error
 /// 30)", which tells nobody what to do. `None` for any other refusal, which

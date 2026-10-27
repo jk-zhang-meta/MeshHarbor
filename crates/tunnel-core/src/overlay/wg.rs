@@ -226,7 +226,7 @@ impl Carrier {
     /// `(transport, server)` — e.g. `(Udp, Some("5.9.157.221:3478"))`. The
     /// relay KIND (turn/derp) is an overlay decision already carried by
     /// `Installed::relay_kind`; this adds the transport-layer half so
-    /// `roomler peers` can print `relay:turn/udp` rather than a bare `relay`
+    /// `meshharbor peers` can print `relay:turn/udp` rather than a bare `relay`
     /// — a 52 ms coturn/UDP hop and a 175 ms DERP/TCP hop used to look
     /// identical, as did a healthy PoP and a dead one (2026-08-12: a coturn
     /// worker was down 90 min while this column said nothing).

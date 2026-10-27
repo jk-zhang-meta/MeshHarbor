@@ -518,7 +518,7 @@ mod host {
             .collect()
     }
 
-    /// Can this Mac serve? `Err` says why not, for the offer and `roomler status`.
+    /// Can this Mac serve? `Err` says why not, for the offer and `meshharbor status`.
     pub(crate) fn probe() -> Result<(), String> {
         if !crate::env::flag("PF_NAT", true) {
             return Err(

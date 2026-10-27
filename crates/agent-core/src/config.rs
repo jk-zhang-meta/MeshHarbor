@@ -5,7 +5,7 @@
 //! Agent on-disk configuration.
 //!
 //! Stored at `<user config dir>/roomler/config.toml`. On Linux that
-//! resolves to `$XDG_CONFIG_HOME/roomler/` or `~/.config/roomler/`. A host
+//! resolves to `$XDG_CONFIG_HOME/roomler/` or `~/.config/meshharbor/`. A host
 //! installed before the rename keeps its `roomler-agent` tree — see
 //! [`crate::appdirs`], whose `app_segment` picks the old segment only when
 //! that tree already exists.
@@ -272,7 +272,7 @@ pub struct AgentConfig {
     /// alone.
     ///
     /// ⚠️ **A secret.** Deliberately absent from the config SURFACE, so
-    /// `roomler config get` cannot print it and `roomler config set` cannot
+    /// `meshharbor config get` cannot print it and `meshharbor config set` cannot
     /// paste one in: a settable verifier would let anyone who can write the
     /// config choose the password, which is the property gate 4 exists to
     /// deny. It is written by `rc password set` and nothing else.
@@ -532,7 +532,7 @@ pub struct AgentConfig {
     #[serde(default)]
     pub hive_core_memory: bool,
     /// FR-90 P1j — let the people who use this device adopt the Claude Code
-    /// sessions they run in a terminal (`roomler hive adopt`): mirrored into
+    /// sessions they run in a terminal (`meshharbor hive adopt`): mirrored into
     /// this device's store and listed for their owner alone, read-only.
     /// Default OFF, and never pushable: a terminal session passed none of
     /// Hive's start gates, so whether this machine reports on its terminals
@@ -620,7 +620,7 @@ pub struct AgentConfig {
     /// Device-owned and never settable by the server: it grants nothing, but
     /// a control plane that could switch a device's data path from under its
     /// owner would be a precedent this surface has refused since
-    /// `remote_config_enabled`. Fleet RPC (`roomler exec`) is unaffected
+    /// `remote_config_enabled`. Fleet RPC (`meshharbor exec`) is unaffected
     /// either way.
     #[serde(default = "default_true")]
     pub ssh_exec_streaming: bool,
@@ -1864,7 +1864,7 @@ pub struct AgentConfig {
     ///
     /// Netstack mode used to be a process-wide singleton keyed off
     /// `ROOMLERD_OVERLAY_NETSTACK_SOCKS`: one stack, one port, one
-    /// `roomler ping` backend, none of it org-scoped. A second org did not
+    /// `meshharbor ping` backend, none of it org-scoped. A second org did not
     /// join twice — it replaced the first org's stack under a SOCKS front
     /// still answering on the same port, so a caller dialing for org A was
     /// silently routed by org B.
@@ -1985,7 +1985,7 @@ pub struct AgentConfig {
     /// machine-scoped and shared by every org (the server dedupes per tenant
     /// via the `agents.{tenant_id, machine_id}` unique index).
     ///
-    /// Managed by `roomlerd enroll` (appends when the enrollment
+    /// Managed by `meshharbord enroll` (appends when the enrollment
     /// resolves to a NEW (server, tenant) pair) and the `roomlerd org`
     /// verbs. Deliberately NOT on the S2 config surface — same policy as
     /// `[[tunnel_routes]]`: identity + secrets live behind dedicated verbs.
@@ -2081,7 +2081,7 @@ pub enum OrgOverlayMode {
 
 impl OrgOverlayMode {
     /// FR-49 — the ONE spelling, shared by the TOML (`#[serde(rename_all =
-    /// "lowercase")]`), `roomlerd org ls`, `roomler status` and the LocalAPI
+    /// "lowercase")]`), `roomlerd org ls`, `meshharbor status` and the LocalAPI
     /// `OrgStatus.overlay_mode`. The match is exhaustive, so a new variant
     /// cannot reach an operator surface without someone naming it.
     pub fn wire(self) -> &'static str {
@@ -3019,7 +3019,7 @@ pub fn test_fixture() -> AgentConfig {
 /// config-surface parity test (`env_bridge_pairs_have_surface_parity`) walks
 /// it against the editable key list. Before this the list was a literal in
 /// `main.rs` — a key added to the surface but missed there silently didn't
-/// bridge (`roomler config set` wrote TOML the daemon then ignored).
+/// bridge (`meshharbor config set` wrote TOML the daemon then ignored).
 /// Suffixes are the `ROOMLERD_…` env suffixes (uppercase surface key).
 /// Sibling-safe derived default for `overlay_direct_port` — constants
 /// mirror tunnel-core's `direct.rs` layout (locked by an agent-crate test;
@@ -3252,7 +3252,7 @@ pub fn env_bridge_numerics(cfg: &AgentConfig) -> [(&'static str, Option<u32>); 3
 /// S2 — the whole config→env fallback map (`tunnel_core::env`'s
 /// `register_config_fallbacks`), built in ONE place. The daemon publishes it
 /// at start, before anything reads a knob; FR-93 P1 has `capture-smoke` and
-/// `input-smoke` publish the same map, so a key set with `roomler config set`
+/// `input-smoke` publish the same map, so a key set with `meshharbor config set`
 /// is honoured by the smoke test that is meant to prove it. Before that they
 /// read env and built-in defaults only, and answered about a cascade the
 /// daemon was not running.
@@ -3340,10 +3340,10 @@ pub fn default_config_path() -> Result<PathBuf> {
         crate::appdirs::project_dirs().context("could not resolve a platform config directory")?;
     let profile = dirs.config_dir().join("config.toml");
 
-    // Linux SYSTEM installs resolve to `/etc/roomler/config.toml`, which is
-    // what the packaged `roomlerd.service` passes as `--config`. Keeping the
+    // Linux SYSTEM installs resolve to `/etc/meshharbor/config.toml`, which is
+    // what the packaged `meshharbord.service` passes as `--config`. Keeping the
     // two in agreement is the whole point: when they disagreed, a host could
-    // run happily for weeks on an orphan `roomlerd run` (profile path) and
+    // run happily for weeks on an orphan `meshharbord run` (profile path) and
     // then die `no config found` the first time systemd started it.
     //
     // The legacy profile path still wins while it is the ONLY one present, so

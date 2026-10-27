@@ -16,14 +16,14 @@
 # had no maintainer scripts at all, only .list and .md5sums.
 #
 # The DAEMON is never enabled, started, restarted or stopped here — neither
-# `roomlerd.service` (system) nor `roomler.service` (per-user): a package
+# `meshharbord.service` (system) nor `meshharbor.service` (per-user): a package
 # upgrade is not permission to change what is running on the host, and
 # restarting the daemon would fight the self-updater that invoked dpkg in the
 # first place.
 #
 # FR-96 P5 — the one thing this script does turn on is the package's update
-# half: `roomler-update.timer` and `roomler-update.path`, which wake the root
-# one-shot `roomler-update.service`. A per-user daemon runs under its unit's
+# half: `meshharbor-update.timer` and `meshharbor-update.path`, which wake the root
+# one-shot `meshharbor-update.service`. A per-user daemon runs under its unit's
 # NoNewPrivileges, so it can never install a release itself: pkexec and sudo
 # are both refused. Without the helper, a per-user install made any way but
 # install.sh (apt, the Software app, dpkg) never updates again. On a system
@@ -31,10 +31,10 @@
 # so enabling it everywhere keeps one updater per host. Enabled the Debian way,
 # through deb-systemd-helper: on the first configure of a version that ships
 # this, and never again over an administrator who disabled it. The opt-out
-# stays /etc/roomler/disable-auto-update.
+# stays /etc/meshharbor/disable-auto-update.
 set -e
 
-HELPER_UNITS="roomler-update.timer roomler-update.path"
+HELPER_UNITS="meshharbor-update.timer meshharbor-update.path"
 
 if [ "$1" = configure ] || [ "$1" = abort-upgrade ] || [ "$1" = abort-deconfigure ] || [ "$1" = abort-remove ]; then
     if command -v deb-systemd-helper >/dev/null 2>&1; then
@@ -69,7 +69,7 @@ if [ -d /run/systemd/system ]; then
     fi
 fi
 
-# NOTE: the per-user unit (`roomler.service`, systemd --user) cannot be
+# NOTE: the per-user unit (`meshharbor.service`, systemd --user) cannot be
 # reloaded from here — there is no user bus to talk to at dpkg time. Those
 # installs pick the change up on next login, or via an explicit
 # `systemctl --user daemon-reload` (see README.Debian).

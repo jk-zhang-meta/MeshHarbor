@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (C) 2026 G ROX EOOD
-//! `roomler ssh <device> [args…]` — open an SSH session to another device in
+//! `meshharbor ssh <device> [args…]` — open an SSH session to another device in
 //! this org over the overlay (P6b).
 //!
 //! ## Why this execs the system `ssh` instead of embedding a client
@@ -155,7 +155,7 @@ pub async fn run(device: &str, session_secs: u64, args: &[String]) -> Result<i32
 ///
 /// So: use this to reach a device **by name** with keys you already manage —
 /// a host running its own `sshd`, or a roomler-SSH device where your key is in
-/// `ssh_authorized_keys` (the break-glass path). Use `roomler ssh` when you
+/// `ssh_authorized_keys` (the break-glass path). Use `meshharbor ssh` when you
 /// want the grant, the policy-resolved account, and host-key verification
 /// handled for you.
 ///
@@ -175,7 +175,7 @@ pub async fn proxy(host: &str, port: u16) -> Result<()> {
             None => bail!(
                 "no device named {host:?} on this mesh (or it has no overlay address). \
                  A device is matched by its bare name, as <name>.roomler, or by its \
-                 MagicDNS name; `roomler peers` lists what is reachable."
+                 MagicDNS name; `meshharbor peers` lists what is reachable."
             ),
         }
     };

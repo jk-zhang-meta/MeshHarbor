@@ -159,7 +159,7 @@ mod client {
         pub ahead: bool,
     }
 
-    /// FR-90 P3-9-2 — what a person's endpoint asks for (`roomler connect`,
+    /// FR-90 P3-9-2 — what a person's endpoint asks for (`meshharbor connect`,
     /// `rc:vault.connect`): one field of a secret, toward the upstream the
     /// endpoint signs in to, for the device's owner. It names no person: the
     /// vault reads the owner from the device's row.

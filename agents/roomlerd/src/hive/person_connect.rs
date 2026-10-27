@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (C) 2026 G ROX EOOD
-//! FR-90 P3-9-2b — `roomler connect`'s endpoints, as this daemon holds them
+//! FR-90 P3-9-2b — `meshharbor connect`'s endpoints, as this daemon holds them
 //! for the LocalAPI connection that asked (`docs/vault.md` §23).
 //!
 //! The LocalAPI listener has read who asked from the OS and held them to
@@ -8,7 +8,7 @@
 //! An endpoint opens for that account ([`Asker`]), its leases asked for the
 //! device's owner (P3-9-1) and renewed while it is held (P3-9-2a). Its
 //! connection reads it by id and lets it go when it closes (decision 25:
-//! `roomler connect` in the foreground).
+//! `meshharbor connect` in the foreground).
 
 use std::collections::HashMap;
 use std::path::Path;

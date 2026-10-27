@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (C) 2026 G ROX EOOD
-//! `roomler forward` — open one TCP forward through an enrolled
+//! `meshharbor forward` — open one TCP forward through an enrolled
 //! agent. The TeamViewer-shaped flow:
 //!
 //! 1. WS-connect to `wss://<server>/ws?role=tunnel-client&token=<jwt>`.
@@ -148,7 +148,7 @@ impl TunnelSignalingSource for WsSource {
     }
 }
 
-/// `roomler forward` — one static local→remote TCP forward.
+/// `meshharbor forward` — one static local→remote TCP forward.
 pub async fn run(
     cfg: TunnelConfig,
     agent_hex: &str,
@@ -200,7 +200,7 @@ async fn run_forward(
         local,
         ?target,
         ?transport,
-        "roomler forward starting"
+        "meshharbor forward starting"
     );
 
     let mut backoff = RECONNECT_BACKOFF_MIN;

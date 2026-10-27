@@ -434,7 +434,7 @@ pub(crate) fn sweep(runtime_root: &std::path::Path) -> usize {
 pub(crate) use endpoint::Timing;
 #[cfg(unix)]
 pub(crate) use endpoint::person_dir;
-/// FR-90 P3-9-2 — a PERSON's endpoint (`roomler connect`): the endpoint a
+/// FR-90 P3-9-2 — a PERSON's endpoint (`meshharbor connect`): the endpoint a
 /// session's `vault_connect` gets, for the account this daemon was asked
 /// by, its leases asked for the device's owner and renewed while it is held.
 ///

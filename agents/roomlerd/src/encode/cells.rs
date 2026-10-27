@@ -66,7 +66,7 @@ pub(crate) const DEFAULT_DENIED_CELLS: &[&str] = &[
 
 /// The value that means "deny nothing". An EMPTY override means the same
 /// (the P1 env contract); the word exists because a config key cannot carry
-/// an empty string — `roomler config set encoder_cells_deny ""` CLEARS the
+/// an empty string — `meshharbor config set encoder_cells_deny ""` CLEARS the
 /// key back to the built-in default, so "nothing" needs a spelling.
 pub(crate) const DENY_NOTHING: &str = "none";
 

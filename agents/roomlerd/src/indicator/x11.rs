@@ -197,7 +197,7 @@ fn display_is_our_own_virtual_desktop() -> bool {
     // Two copies did disagree. A hand-rolled pair of env names here skipped
     // `node_env`'s middle arm (`ROOMLER_NODE_`) and, more importantly, its
     // config fallback — so the knob set through the S2 config surface
-    // (`roomler config`, the way an operator is told to set it) was visible to
+    // (`meshharbor config`, the way an operator is told to set it) was visible to
     // main.rs and invisible here.
     crate::virtual_desktop::requested()
 }

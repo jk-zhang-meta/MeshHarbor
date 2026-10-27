@@ -24,7 +24,7 @@
 //! |---|---|
 //! | `apply_run_as` to the mapped account | [`console_user`]'s token, after [`check_mapping`] |
 //! | `resolve_harness` | [`resolve_harness`], then [`harness_command_line`] |
-//! | the wrapper, run as the account | `roomlerd hive-prep` ([`prep`]), which [`run_prep`] runs as the console user |
+//! | the wrapper, run as the account | `meshharbord hive-prep` ([`prep`]), which [`run_prep`] runs as the console user |
 //! | the harness's process group | its Job Object ([`JobObject`], [`spawn_into_job`]) |
 //!
 //! The supervisor launches through them from P1i-2, which also brings the
@@ -72,7 +72,7 @@ use crate::win_service::supervisor::{
 };
 
 /// The hidden subcommand the daemon runs as the console user before a harness
-/// starts: `roomlerd hive-prep <config-dir> <folder> <memory-dir>
+/// starts: `meshharbord hive-prep <config-dir> <folder> <memory-dir>
 /// <auto-memory-dir>`, `<memory-dir>` empty for none.
 pub const PREP_SUBCOMMAND: &str = "hive-prep";
 
@@ -767,7 +767,7 @@ fn env_value(entries: &[Vec<u16>], name: &str) -> Option<OsString> {
     })
 }
 
-/// `roomlerd hive-prep`'s arguments.
+/// `meshharbord hive-prep`'s arguments.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PrepArgs {
     /// `CLAUDE_CONFIG_DIR`: made, as the user.
@@ -782,7 +782,7 @@ pub struct PrepArgs {
 }
 
 impl PrepArgs {
-    /// This process's own, when it was started as `roomlerd hive-prep`:
+    /// This process's own, when it was started as `meshharbord hive-prep`:
     /// `None` when it was not, and an error when it was, wrongly.
     pub fn from_env() -> Option<Result<Self, String>> {
         Self::parse(std::env::args_os().skip(1))
@@ -1241,7 +1241,7 @@ impl HarnessChild {
 
 // ─── FR-90 P2b-3a: a checkpoint, taken as the console user ──────────────────
 
-/// The command line that runs `roomlerd hive-checkpoint <request>`.
+/// The command line that runs `meshharbord hive-checkpoint <request>`.
 pub fn checkpoint_command_line(exe: &Path, request: &Path) -> Result<String, String> {
     Ok(format!(
         "{} {} {}",
@@ -1267,7 +1267,7 @@ pub unsafe fn run_checkpoint(
     unsafe { run_fed(who, cmdline, None, "the checkpoint", timeout, max) }
 }
 
-/// FR-90 P2f-2a — the command line that runs `roomlerd hive-pack`, which reads
+/// FR-90 P2f-2a — the command line that runs `meshharbord hive-pack`, which reads
 /// its request on stdin (P2f-2b), fed as [`run_fed`] feeds a materialize.
 pub fn pack_command_line(exe: &Path) -> Result<String, String> {
     Ok(format!(
@@ -1277,7 +1277,7 @@ pub fn pack_command_line(exe: &Path) -> Result<String, String> {
     ))
 }
 
-/// FR-90 P2g-1 — the command line that runs `roomlerd hive-purge`, which
+/// FR-90 P2g-1 — the command line that runs `meshharbord hive-purge`, which
 /// reads its request on stdin, fed as [`run_fed`] feeds a pack.
 pub fn purge_command_line(exe: &Path) -> Result<String, String> {
     Ok(format!(
@@ -1289,7 +1289,7 @@ pub fn purge_command_line(exe: &Path) -> Result<String, String> {
 
 // ─── FR-90 P2b-4a: a materialize, fed as the console user ───────────────────
 
-/// The command line that runs `roomlerd hive-materialize`, which reads its
+/// The command line that runs `meshharbord hive-materialize`, which reads its
 /// frames on stdin.
 pub fn materialize_command_line(exe: &Path) -> Result<String, String> {
     Ok(format!(
@@ -1775,11 +1775,11 @@ mod tests {
             );
             let e = run_prep(
                 SpawnAs::Daemon,
-                &cmd("echo roomlerd hive-prep: making X: denied 1>&2 & exit 1"),
+                &cmd("echo meshharbord hive-prep: making X: denied 1>&2 & exit 1"),
                 PREP_TIMEOUT,
             )
             .unwrap_err();
-            assert_eq!(e, "roomlerd hive-prep: making X: denied");
+            assert_eq!(e, "meshharbord hive-prep: making X: denied");
             let e = run_prep(SpawnAs::Daemon, &cmd("exit 3"), PREP_TIMEOUT).unwrap_err();
             assert!(e.contains("exit 3"), "{e}");
         }

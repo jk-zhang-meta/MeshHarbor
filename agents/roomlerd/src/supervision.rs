@@ -7,7 +7,7 @@
 //!
 //! The mechanism of that verb is "exit, and let the supervisor relaunch me",
 //! and that is only a restart if something *will* relaunch the process. An
-//! orphan `roomlerd run` — a hand-started process, a pre-rc.435 root daemon, a
+//! orphan `meshharbord run` — a hand-started process, a pre-rc.435 root daemon, a
 //! container's PID 1 — that exits on request is not restarted; it is **taken
 //! offline**, by the person who pressed a button expecting the opposite
 //! (`docs/remote-config.md` §7b). So the default answer is
@@ -17,7 +17,7 @@
 //! | variant | evidence | who relaunches, and on what |
 //! |---|---|---|
 //! | `WindowsScm` | the SCM host spawns its workers as `run --supervisor scm` (`win_service::worker_args`) | the in-process supervisor — exit **0** is `ExitReaction::Respawn`, no backoff |
-//! | `WindowsTask` | the per-user Scheduled Task's action is `run --supervisor task` (`service.rs`) | the **caller**: `<RestartOnFailure>` is a minute away at best, so whoever asked runs `roomlerd service start` once the old process is gone |
+//! | `WindowsTask` | the per-user Scheduled Task's action is `run --supervisor task` (`service.rs`) | the **caller**: `<RestartOnFailure>` is a minute away at best, so whoever asked runs `meshharbord service start` once the old process is gone |
 //! | `MacosSupervisor` | the FR-43 root daemon spawns `run --supervised` | the root daemon's poll loop, any exit, ≥ 1 s later |
 //! | `Launchd` | `XPC_SERVICE_NAME` is one of OUR labels (`com.roomler.*`) | launchd — `KeepAlive{SuccessfulExit:false}` relaunches a **non-zero** exit only |
 //! | `Systemd` | `INVOCATION_ID` is set AND this process sits in one of OUR units' cgroups | systemd — and at request time the unit's EFFECTIVE policy is read back (`systemctl show`) before anything exits |
@@ -30,7 +30,7 @@
 //! ⚠️ The two rows backed by the environment need more than the variable.
 //! `INVOCATION_ID` alone is inherited: on a GNOME desktop every terminal is a
 //! child of `gnome-terminal-server.service`, so a shell there carries a valid
-//! `INVOCATION_ID`, and a hand-run `roomlerd run` from it would have read as
+//! `INVOCATION_ID`, and a hand-run `meshharbord run` from it would have read as
 //! "systemd will restart me". The cgroup names the unit, and only our own unit
 //! names count, by exact name. That still says nothing about what a drop-in did
 //! to the unit's `Restart=`, nor whether this process is the unit's MAIN
@@ -86,22 +86,22 @@ pub enum Supervision {
 }
 
 /// The launchd label prefix every roomler job carries. A LaunchServices app's
-/// `XPC_SERVICE_NAME` never starts with it. Both jobs that run `roomlerd run`
+/// `XPC_SERVICE_NAME` never starts with it. Both jobs that run `meshharbord run`
 /// (`com.roomler.agent`, `com.roomler.daemon`) set
 /// `KeepAlive{SuccessfulExit:false}` — asserted against the packaged plists by
 /// `packaged_plists_relaunch_a_non_zero_exit`.
 pub const LAUNCHD_LABEL_PREFIX: &str = "com.roomler.";
 
 /// The systemd units a daemon may run under, by exact name: the packaged
-/// system unit (`packaging/linux/roomlerd.service`) and the per-user unit the
-/// .deb ships and `service install` enables (`roomler.service`). An exact
+/// system unit (`packaging/linux/meshharbord.service`) and the per-user unit the
+/// .deb ships and `service install` enables (`meshharbor.service`). An exact
 /// list on purpose — see the module doc.
 ///
 /// The pre-rename unit name is deliberately NOT here: FR-46 retires it, and a
 /// daemon still running under it is simply not recognised — it refuses a
 /// restart (the safe direction; it is never taken offline) until
-/// `roomlerd service install` moves it to the current unit.
-pub const SYSTEMD_UNITS: [&str; 2] = ["roomlerd.service", "roomler.service"];
+/// `meshharbord service install` moves it to the current unit.
+pub const SYSTEMD_UNITS: [&str; 2] = ["meshharbord.service", "meshharbor.service"];
 
 /// Environment variable systemd sets on the unit's own processes.
 pub const SYSTEMD_INVOCATION_ENV: &str = "INVOCATION_ID";
@@ -218,9 +218,9 @@ pub fn detect(
 /// The unit of [`SYSTEMD_UNITS`] that `/proc/self/cgroup` places this process
 /// in, if any.
 ///
-/// Handles both hierarchies: v2 is one line, `0::/system.slice/roomlerd.service`
-/// (or `…/user@1000.service/app.slice/roomler.service` for a user unit); v1 is
-/// one line per controller, `1:name=systemd:/system.slice/roomlerd.service`.
+/// Handles both hierarchies: v2 is one line, `0::/system.slice/meshharbord.service`
+/// (or `…/user@1000.service/app.slice/meshharbor.service` for a user unit); v1 is
+/// one line per controller, `1:name=systemd:/system.slice/meshharbord.service`.
 /// The path is everything after the second `:`, and the unit is its LAST
 /// component — a scope or sub-cgroup below the unit is not the unit. A path
 /// under a `user@<uid>.service` belongs to that user's manager.
@@ -622,12 +622,12 @@ mod tests {
         }
     }
 
-    const SYSTEM_UNIT_CGROUP: &str = "0::/system.slice/roomlerd.service\n";
+    const SYSTEM_UNIT_CGROUP: &str = "0::/system.slice/meshharbord.service\n";
     const USER_UNIT_CGROUP: &str =
-        "0::/user.slice/user-1000.slice/user@1000.service/app.slice/roomler.service\n";
-    const V1_CGROUP: &str = "12:pids:/system.slice/roomlerd.service\n\
-                             1:name=systemd:/system.slice/roomlerd.service\n\
-                             0::/system.slice/roomlerd.service\n";
+        "0::/user.slice/user-1000.slice/user@1000.service/app.slice/meshharbor.service\n";
+    const V1_CGROUP: &str = "12:pids:/system.slice/meshharbord.service\n\
+                             1:name=systemd:/system.slice/meshharbord.service\n\
+                             0::/system.slice/meshharbord.service\n";
     /// A shell under GNOME Terminal: a systemd child, with an INVOCATION_ID
     /// of its own, and nothing to do with us.
     const GNOME_TERMINAL_CGROUP: &str = "0::/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.gnome.Terminal.slice/vte-spawn-1234.scope\n";
@@ -635,7 +635,7 @@ mod tests {
     const TRANSIENT_CGROUP: &str = "0::/system.slice/roomler-manual.service\n";
 
     const SYSTEM: SystemdUnit = SystemdUnit {
-        name: "roomlerd.service",
+        name: "meshharbord.service",
         user: false,
     };
 
@@ -673,7 +673,7 @@ mod tests {
                 "{label}"
             );
         }
-        // A bare `roomlerd run` from Terminal.app / an unrelated job.
+        // A bare `meshharbord run` from Terminal.app / an unrelated job.
         for label in [
             "0",
             "application.com.apple.Terminal.12345",
@@ -693,7 +693,7 @@ mod tests {
             (
                 USER_UNIT_CGROUP,
                 SystemdUnit {
-                    name: "roomler.service",
+                    name: "meshharbor.service",
                     user: true,
                 },
             ),
@@ -733,7 +733,7 @@ mod tests {
             detect(None, false, &invoked, Some(TRANSIENT_CGROUP)),
             Supervision::None
         );
-        // Nothing at all: the orphan `roomlerd run`.
+        // Nothing at all: the orphan `meshharbord run`.
         assert_eq!(detect(None, false, &none, None), Supervision::None);
     }
 
@@ -743,35 +743,35 @@ mod tests {
         assert_eq!(
             systemd_unit_in_cgroup(USER_UNIT_CGROUP),
             Some(SystemdUnit {
-                name: "roomler.service",
+                name: "meshharbor.service",
                 user: true
             })
         );
         // An older user manager puts services straight under user@.
         assert_eq!(
             systemd_unit_in_cgroup(
-                "0::/user.slice/user-1000.slice/user@1000.service/roomler.service\n"
+                "0::/user.slice/user-1000.slice/user@1000.service/meshharbor.service\n"
             ),
             Some(SystemdUnit {
-                name: "roomler.service",
+                name: "meshharbor.service",
                 user: true
             })
         );
         assert_eq!(systemd_unit_in_cgroup(V1_CGROUP), Some(SYSTEM));
         // A trailing slash is tolerated; a prefix or suffix match is not.
         assert_eq!(
-            systemd_unit_in_cgroup("0::/system.slice/roomlerd.service/\n"),
+            systemd_unit_in_cgroup("0::/system.slice/meshharbord.service/\n"),
             Some(SYSTEM)
         );
         for not_ours in [
-            "0::/system.slice/roomlerd.service.d\n",
+            "0::/system.slice/meshharbord.service.d\n",
             "0::/system.slice/xroomlerd.service\n",
-            "0::/roomlerd.service.slice/foo.scope\n",
+            "0::/meshharbord.service.slice/foo.scope\n",
             "",
             "garbage without colons\n",
             // The unit name must be the LEAF: a service that spawned us into
             // a scope of its own is not the service.
-            "0::/system.slice/roomlerd.service/child.scope\n",
+            "0::/system.slice/meshharbord.service/child.scope\n",
         ] {
             assert_eq!(systemd_unit_in_cgroup(not_ours), None, "{not_ours:?}");
         }
@@ -782,15 +782,15 @@ mod tests {
     /// the names `service install` writes (`service.rs`, `UNIT`).
     #[test]
     fn the_unit_list_covers_the_shipped_units() {
-        for shipped in ["roomlerd.service", "roomler.service"] {
+        for shipped in ["meshharbord.service", "meshharbor.service"] {
             assert!(SYSTEMD_UNITS.contains(&shipped), "{shipped} missing");
         }
         // Both packaged unit files exist under the names the list carries.
-        let _ = include_str!("../packaging/linux/roomlerd.service");
-        let _ = include_str!("../packaging/linux/roomler.service");
+        let _ = include_str!("../packaging/linux/meshharbord.service");
+        let _ = include_str!("../packaging/linux/meshharbor.service");
     }
 
-    /// Both launchd jobs that run `roomlerd run` must relaunch a NON-zero
+    /// Both launchd jobs that run `meshharbord run` must relaunch a NON-zero
     /// exit — that is the only reason the sentinel, and not 0, is what a
     /// launchd-supervised daemon exits with. A plist that dropped the key (or
     /// flipped it to `true`, "relaunch only a clean exit") would turn "Apply
@@ -933,7 +933,7 @@ mod tests {
         }
     }
 
-    /// The orphan `roomlerd run` is never taken offline — whatever else is
+    /// The orphan `meshharbord run` is never taken offline — whatever else is
     /// true.
     #[test]
     fn restart_refused_when_unsupervised() {

@@ -321,14 +321,14 @@ pub async fn wait_for_stop_event(name: &str) -> io::Result<()> {
 // ── FR-97 P4d — a per-user daemon's own stop channel ──────────────────────
 
 /// FR-97 P4d — the stop event a per-user daemon (the Scheduled Task install, or
-/// a hand-run `roomlerd run`) creates for itself, named by the instance id of
+/// a hand-run `meshharbord run`) creates for itself, named by the instance id of
 /// its config ([`crate::instance_lock::instance_id`]). No service host stands
 /// between such a daemon and `schtasks /End`, which is a `TerminateProcess`:
 /// before P4d an ephemeral device installed that way never self-unenrolled on a
 /// stop, which an SCM install has done since #1683.
 ///
 /// `Local\`: the user's own session namespace, where the task runs (an
-/// interactive token) and where the same user's `roomlerd service stop` looks.
+/// interactive token) and where the same user's `meshharbord service stop` looks.
 /// Another session cannot even see it. Default security, which is the creating
 /// token's default DACL (this user and SYSTEM): the person who owns the daemon
 /// can stop it, which Task Manager already lets them do, and no other principal
@@ -399,7 +399,7 @@ impl UserStopEvent {
 /// What ended a per-user daemon's wait for a stop.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UserStop {
-    /// `roomlerd service stop` signaled the event.
+    /// `meshharbord service stop` signaled the event.
     Asked,
     /// Windows is ending the session ([`super::session_end`]).
     SessionEnd(super::session_end::SessionEnd),
@@ -443,7 +443,7 @@ pub fn user_stop_channel(instance_id: &str) -> &'static UserStopChannel {
     CHANNEL.get_or_init(|| UserStopChannel::new(user_stop_event_name(instance_id)))
 }
 
-/// Daemon side: resolve when `roomlerd service stop` signals the channel's
+/// Daemon side: resolve when `meshharbord service stop` signals the channel's
 /// event, or when `ending` reports Windows ending the session. It polls, as
 /// [`wait_for_stop_event`] does and for the same reason. An event that cannot
 /// be had or probed is never read as a stop: the wait says so once, keeps
@@ -471,7 +471,7 @@ pub async fn wait_for_user_stop(
                     tracing::warn!(
                         error = %e,
                         name = %channel.name,
-                        "no per-user stop event yet: until there is one, `roomlerd service stop` \
+                        "no per-user stop event yet: until there is one, `meshharbord service stop` \
                          ends this daemon with schtasks /End (retrying)"
                     );
                 }
@@ -481,7 +481,7 @@ pub async fn wait_for_user_stop(
     }
 }
 
-/// The `roomlerd service stop` side: ask the per-user daemon whose event is
+/// The `meshharbord service stop` side: ask the per-user daemon whose event is
 /// `name` to leave. `Ok(false)` when no daemon holds it: none is running, or it
 /// is from before P4d.
 pub fn signal_user_stop(name: &str) -> io::Result<bool> {
