@@ -1033,6 +1033,19 @@ pub fn intercept(
     evt_tx: &mpsc::Sender<OverlayEvent>,
     msg: ServerMsg,
     is_primary: bool,
+    local_agent_id: &str,
+) -> Option<ServerMsg> {
+    intercept_with_bridge_installer(evt_tx, msg, is_primary, local_agent_id, |bridge| {
+        crate::relay_server::install_bridge_from_wire(bridge)
+    })
+}
+
+fn intercept_with_bridge_installer(
+    evt_tx: &mpsc::Sender<OverlayEvent>,
+    msg: ServerMsg,
+    is_primary: bool,
+    local_agent_id: &str,
+    install: impl FnOnce(roomler_ai_remote_control::signaling::RelayBridgeWire),
 ) -> Option<ServerMsg> {
     let evt = match msg {
         ServerMsg::OverlayNetmap {
@@ -1166,7 +1179,11 @@ pub fn intercept(
         // The RELAY's copy: install into this node's relay server, if it is
         // serving. Never reaches the member runtime.
         ServerMsg::OverlayRelayBridgeServe { bridge } => {
-            crate::relay_server::install_bridge_from_wire(bridge);
+            if bridge_source_is_local(&bridge, local_agent_id) {
+                install(bridge);
+            } else {
+                warn!("overlay: bridge grant source does not match local agent; dropped");
+            }
             return None;
         }
         ServerMsg::OverlayRelayBridgeRevoke {
@@ -1410,6 +1427,16 @@ pub fn record_join_refusal(reason: signaling::OverlayJoinRefusal, detail: &str) 
     }
 }
 
+// The authenticated primary enrollment's identity is independent of the
+// grant. Reject malformed local identities and a grant for any other relay.
+fn bridge_source_is_local(
+    bridge: &roomler_ai_remote_control::signaling::RelayBridgeWire,
+    local_agent_id: &str,
+) -> bool {
+    bson::oid::ObjectId::parse_str(local_agent_id)
+        .is_ok_and(|local| local == bridge.source_agent_id)
+}
+
 /// The last refusal, if this daemon has seen one.
 pub fn last_join_refusal() -> Option<localapi::JoinRefusalStatus> {
     LAST_JOIN_REFUSAL.lock().ok().and_then(|s| s.clone())
@@ -1418,6 +1445,40 @@ pub fn last_join_refusal() -> Option<localapi::JoinRefusalStatus> {
 #[cfg(test)]
 mod org_relay_discovery_dispatch_tests {
     use super::*;
+    #[test]
+    fn bridge_dispatch_checks_primary_enrollment_and_local_source() {
+        let (tx, _) = mpsc::channel(2);
+        let local = bson::oid::ObjectId::new();
+        let make = || ServerMsg::OverlayRelayBridgeServe {
+            bridge: roomler_ai_remote_control::signaling::RelayBridgeWire {
+                trial_id: bson::oid::ObjectId::new(),
+                generation: 1,
+                source_agent_id: local,
+                target_agent_id: bson::oid::ObjectId::new(),
+                local_vni: 1,
+                local_generation: 1,
+                local_bind_secret: String::new(),
+                remote_endpoint: String::new(),
+                remote_vni: 2,
+                remote_generation: 1,
+                remote_bind_secret: String::new(),
+                max_lifetime_secs: 1,
+            },
+        };
+        for (primary, identity, expected) in [
+            (true, local.to_hex(), true),
+            (false, local.to_hex(), false),
+            (true, bson::oid::ObjectId::new().to_hex(), false),
+            (true, String::new(), false),
+            (true, "not-an-object-id".into(), false),
+        ] {
+            let installed = std::cell::Cell::new(false);
+            assert!(intercept_with_bridge_installer(&tx, make(), primary, &identity, |_| {
+                installed.set(true);
+            }).is_none());
+            assert_eq!(installed.get(), expected);
+        }
+    }
     #[tokio::test]
     async fn org_relay_discovery_old_netmap_capability_is_forwarded_as_false() {
         let (tx, mut rx) = mpsc::channel(2);
@@ -1426,7 +1487,7 @@ mod org_relay_discovery_dispatch_tests {
             "network":{"cidr":"100.64.0.0/10","mtu":1280}, "peers":[]
         }))
         .unwrap();
-        assert!(intercept(&tx, msg, true).is_none());
+        assert!(intercept(&tx, msg, true, "").is_none());
         assert!(matches!(
             rx.try_recv(),
             Ok(OverlayEvent::Netmap {
@@ -1446,9 +1507,9 @@ mod org_relay_discovery_dispatch_tests {
             ttl_secs: 0,
             next_cursor: None,
         };
-        assert!(intercept(&tx, msg(), false).is_none());
+        assert!(intercept(&tx, msg(), false, "").is_none());
         assert!(rx.try_recv().is_err());
-        assert!(intercept(&tx, msg(), true).is_none());
+        assert!(intercept(&tx, msg(), true, "").is_none());
         assert!(
             matches!(rx.try_recv(), Ok(OverlayEvent::OrgRelayCandidates {
             peer_node_id: id, request_id: 17, ttl_secs: 0, candidates, ..
