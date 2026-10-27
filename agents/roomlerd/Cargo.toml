@@ -535,6 +535,8 @@ windows-sys = { version = "0.59", features = [
     "Win32_System_IO",                   # OVERLAPPED, which ReadFile's signature references
     "Win32_UI_Shell",                    # ShellExecuteExW for UAC-elevated msiexec (rc.18 self-update fix); SHGetKnownFolderPath (FR-84 D6)
     "Win32_System_Com",                  # CoTaskMemFree — frees SHGetKnownFolderPath's buffer (FR-84 D6: the SCM host reads the console user's config)
+    "Win32_NetworkManagement_Ndis",      # IF_OPER_STATUS / NET_LUID in the adapter and route rows (MeshHarbor OS-01 inventory)
+    "Win32_Networking_WinSock",          # SOCKADDR_* in GetAdaptersAddresses / GetIpForwardTable2 (MeshHarbor OS-01 inventory)
     "Win32_NetworkManagement_IpHelper",  # GetExtendedTcpTable — who holds a port a route cannot bind (FR-84 D6 / #1035)
     "Win32_System_Registry",             # SHELLEXECUTEINFOW carries an HKEY field; struct gated on this
     "Win32_System_ApplicationInstallationAndServicing", # Msi* database reads — the self-updater binds an MSI's own ProductVersion to the release the manifest claimed it is (msi.dll ships in System32, so the installer-smoke import audit passes it)

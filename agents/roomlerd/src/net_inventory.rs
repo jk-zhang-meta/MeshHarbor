@@ -6,9 +6,9 @@
 //! (listeners, with the owning process's short name when visible),
 //! `/proc/sys` (forwarding) and `nft -j list ruleset`; iptables-legacy
 //! rules, which nft cannot show, are counted and marked, not parsed. Windows
-//! reads its listeners from the IP Helper tables; every other Windows
-//! section, and every section elsewhere, reports `unsupported` until it gets
-//! a native adapter. Only the host network namespace is read.
+//! reads its interfaces, routes and listeners from the IP Helper API; its
+//! policy rules and firewall, and every section elsewhere, report
+//! `unsupported` until they get a native adapter. Only the host network namespace is read.
 //!
 //! Nothing is uploaded that the topology does not need: no command lines,
 //! environment, rule comments, keys or payloads, and every section is
@@ -111,13 +111,38 @@ pub async fn collect() -> NetInventory {
                 "the IP Helper socket tables could not be read",
             ),
         };
+        #[cfg(target_os = "windows")]
+        let (interfaces, routes) = {
+            use roomler_ai_remote_control::net_inventory::{MAX_INTERFACES, MAX_ROUTES};
+            fn unreadable<T>(what: &str) -> Section<T> {
+                Section::absent(SectionState::Error, format!("{what} could not be read"))
+            }
+            match tokio::task::spawn_blocking(windows::interfaces).await {
+                Ok(Some((ifs, links))) => {
+                    let routes =
+                        match tokio::task::spawn_blocking(move || windows::routes(&links)).await {
+                            Ok(Some(r)) => Section::capped(r, MAX_ROUTES),
+                            _ => unreadable("the forwarding table"),
+                        };
+                    (Section::capped(ifs, MAX_INTERFACES), routes)
+                }
+                _ => (
+                    unreadable("the adapter list"),
+                    unreadable("the forwarding table"),
+                ),
+            }
+        };
         #[cfg(not(target_os = "windows"))]
-        let listeners = Section::absent(SectionState::Unsupported, none());
+        let (interfaces, routes, listeners) = (
+            Section::absent(SectionState::Unsupported, none()),
+            Section::absent(SectionState::Unsupported, none()),
+            Section::absent(SectionState::Unsupported, none()),
+        );
         NetInventory {
             os: std::env::consts::OS.into(),
             namespaces: "host_only".into(),
-            interfaces: Section::absent(SectionState::Unsupported, none()),
-            routes: Section::absent(SectionState::Unsupported, none()),
+            interfaces,
+            routes,
             rules: Section::absent(SectionState::Unsupported, none()),
             listeners,
             firewall_chains: Section::absent(SectionState::Unsupported, none()),
@@ -127,22 +152,27 @@ pub async fn collect() -> NetInventory {
     }
 }
 
-/// MeshHarbor v039 OS-01 — Windows reports what it can read today: its
-/// listening TCP sockets and bound UDP sockets, each with its owner's image
-/// name, from the IP Helper tables (the same `GetExtendedTcpTable` read the
-/// tunnel's port-holder check uses). Every other section stays `unsupported`
-/// until it has an adapter of its own, so nothing here claims parity.
+/// MeshHarbor v039 OS-01 — Windows reports what it can read: its adapters
+/// with their addresses (`GetAdaptersAddresses`), its IPv4/IPv6 forwarding
+/// table (`GetIpForwardTable2`), and its listening TCP and bound UDP sockets
+/// with each owner's image name (`GetExtended{Tcp,Udp}Table`, the read the
+/// tunnel's port-holder check uses). Policy rules, firewall chains and rules
+/// stay `unsupported` until each has an adapter, so nothing claims parity.
 #[cfg(target_os = "windows")]
 mod windows {
     use std::collections::HashMap;
-    use std::net::{Ipv4Addr, Ipv6Addr};
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
-    use roomler_ai_remote_control::net_inventory::{L4, Listener, truncate_str};
+    use roomler_ai_remote_control::net_inventory::{
+        Family, Interface, L4, Listener, MAX_ADDRS_PER_INTERFACE, MAX_INTERFACES, MAX_ROUTES,
+        MAX_STR, Route, truncate_str,
+    };
     use windows_sys::Win32::NetworkManagement::IpHelper::{
         GetExtendedTcpTable, GetExtendedUdpTable, MIB_TCP6ROW_OWNER_PID, MIB_TCPROW_OWNER_PID,
         MIB_UDP6ROW_OWNER_PID, MIB_UDPROW_OWNER_PID, TCP_TABLE_OWNER_PID_LISTENER,
         UDP_TABLE_OWNER_PID,
     };
+    use windows_sys::Win32::Networking::WinSock as ws;
 
     const AF_INET: u32 = 2;
     const AF_INET6: u32 = 23;
@@ -286,6 +316,234 @@ mod windows {
             .collect();
         out.sort_by(|a, b| (a.port, &a.addr).cmp(&(b.port, &b.addr)));
         out.dedup_by(|a, b| a.proto == b.proto && a.addr == b.addr && a.port == b.port);
+        Some(out)
+    }
+
+    /// The address a `SOCKADDR` holds; `None` for a null pointer or another
+    /// family.
+    ///
+    /// # Safety
+    /// `sa` is null or points at a live socket address of its family's size.
+    unsafe fn ip_of(sa: *const ws::SOCKADDR) -> Option<IpAddr> {
+        if sa.is_null() {
+            return None;
+        }
+        // SAFETY: the caller's contract; the family field leads every layout.
+        match unsafe { (*sa).sa_family } {
+            ws::AF_INET => {
+                // SAFETY: an AF_INET address is a SOCKADDR_IN.
+                let v4 = unsafe { &*sa.cast::<ws::SOCKADDR_IN>() };
+                // SAFETY: every member of the IN_ADDR union is the address.
+                Some(IpAddr::from(
+                    unsafe { v4.sin_addr.S_un.S_addr }.to_ne_bytes(),
+                ))
+            }
+            ws::AF_INET6 => {
+                // SAFETY: an AF_INET6 address is a SOCKADDR_IN6.
+                let v6 = unsafe { &*sa.cast::<ws::SOCKADDR_IN6>() };
+                // SAFETY: every member of the IN6_ADDR union is the address.
+                Some(IpAddr::from(unsafe { v6.sin6_addr.u.Byte }))
+            }
+            _ => None,
+        }
+    }
+
+    fn ip_of_inet(a: &ws::SOCKADDR_INET) -> Option<IpAddr> {
+        // SAFETY: a SOCKADDR_INET is a v4 or v6 address led by its family.
+        unsafe { ip_of(std::ptr::from_ref(a).cast()) }
+    }
+
+    /// A NUL-terminated UTF-16 string, as a bounded, printable `String`.
+    fn wide(p: *const u16) -> String {
+        if p.is_null() {
+            return String::new();
+        }
+        let mut n = 0;
+        // SAFETY: the API hands out NUL-terminated strings; bounded anyway.
+        while n < 1024 && unsafe { *p.add(n) } != 0 {
+            n += 1;
+        }
+        // SAFETY: `n` units were just read.
+        let mut s = String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(p, n) });
+        s.retain(|c| !c.is_control());
+        truncate_str(&mut s, MAX_STR);
+        s
+    }
+
+    /// The link kind, in the words the Linux adapter uses where one fits.
+    fn kind_of(if_type: u32, description: &str) -> Option<String> {
+        let k = match if_type {
+            6 => return None,
+            24 => "loopback",
+            71 => "wifi",
+            23 => "ppp",
+            131 => "tunnel",
+            53 if description.contains("WireGuard") => "wireguard",
+            53 if description.contains("Wintun") => "tun",
+            53 => "virtual",
+            t => return Some(format!("iftype-{t}")),
+        };
+        Some(k.into())
+    }
+
+    /// What the route table needs from an adapter: its name, whether it is
+    /// up, and its interface metrics (v4, v6), which Windows adds to a
+    /// route's own metric.
+    pub(super) struct Link {
+        pub name: String,
+        pub up: bool,
+        pub metric: (u32, u32),
+    }
+
+    /// Every adapter with its addresses (`ip/prefix`), and the [`Link`] of
+    /// each by index. `None` when the adapter list cannot be read.
+    pub(super) fn interfaces() -> Option<(Vec<Interface>, HashMap<u32, Link>)> {
+        use windows_sys::Win32::NetworkManagement::IpHelper::{
+            GAA_FLAG_SKIP_ANYCAST, GAA_FLAG_SKIP_DNS_SERVER, GAA_FLAG_SKIP_MULTICAST,
+            GetAdaptersAddresses, IP_ADAPTER_ADDRESSES_LH,
+        };
+        use windows_sys::Win32::NetworkManagement::Ndis::IfOperStatusUp;
+        const ERROR_BUFFER_OVERFLOW: u32 = 111;
+        let mut size: u32 = 16 * 1024;
+        for _ in 0..4 {
+            // u64 storage: the list's structs are 8-aligned.
+            let mut buf = vec![0u64; (size as usize).div_ceil(8)];
+            let mut len = (buf.len() * 8) as u32;
+            // SAFETY: `buf` holds `len` bytes, aligned for the list.
+            let rc = unsafe {
+                GetAdaptersAddresses(
+                    u32::from(ws::AF_UNSPEC),
+                    GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER,
+                    std::ptr::null(),
+                    buf.as_mut_ptr().cast(),
+                    &mut len,
+                )
+            };
+            if rc == ERROR_BUFFER_OVERFLOW {
+                size = len;
+                continue;
+            }
+            if rc != 0 {
+                return None;
+            }
+            let mut out = Vec::new();
+            let mut links = HashMap::new();
+            let mut a = buf.as_ptr().cast::<IP_ADAPTER_ADDRESSES_LH>();
+            while !a.is_null() && out.len() < MAX_INTERFACES {
+                // SAFETY: a node of the list the API wrote into `buf`.
+                let ad = unsafe { &*a };
+                // SAFETY: both union members carry the index in this layout.
+                let v4_index = unsafe { ad.Anonymous1.Anonymous.IfIndex };
+                let mut addrs = Vec::new();
+                let mut u = ad.FirstUnicastAddress;
+                while !u.is_null() && addrs.len() < MAX_ADDRS_PER_INTERFACE {
+                    // SAFETY: a node of the adapter's unicast list.
+                    let ua = unsafe { &*u };
+                    // SAFETY: the API's own socket address for this entry.
+                    if let Some(ip) = unsafe { ip_of(ua.Address.lpSockaddr) } {
+                        addrs.push(format!("{ip}/{}", ua.OnLinkPrefixLength));
+                    }
+                    u = ua.Next;
+                }
+                let name = wide(ad.FriendlyName);
+                let up = ad.OperStatus == IfOperStatusUp;
+                for index in [v4_index, ad.Ipv6IfIndex] {
+                    if index != 0 {
+                        links.insert(
+                            index,
+                            Link {
+                                name: name.clone(),
+                                up,
+                                metric: (ad.Ipv4Metric, ad.Ipv6Metric),
+                            },
+                        );
+                    }
+                }
+                out.push(Interface {
+                    name,
+                    index: if v4_index != 0 {
+                        v4_index
+                    } else {
+                        ad.Ipv6IfIndex
+                    },
+                    kind: kind_of(ad.IfType, &wide(ad.Description)),
+                    up,
+                    mtu: (ad.Mtu != u32::MAX).then_some(ad.Mtu),
+                    addrs,
+                });
+                a = ad.Next;
+            }
+            return Some((out, links));
+        }
+        None
+    }
+
+    fn protocol_name(p: i32) -> String {
+        match p {
+            1 => "other".into(),
+            2 => "local".into(),
+            3 => "netmgmt".into(),
+            4 => "icmp".into(),
+            10002 => "autostatic".into(),
+            10006 | 10007 => "static".into(),
+            p => p.to_string(),
+        }
+    }
+
+    /// The active IPv4 and IPv6 routes, as `route print` lists them: a route
+    /// on an adapter that is down is left out, and the metric is the
+    /// effective one (the route's plus its interface's). `None` when the
+    /// table cannot be read.
+    pub(super) fn routes(links: &HashMap<u32, Link>) -> Option<Vec<Route>> {
+        use windows_sys::Win32::NetworkManagement::IpHelper::{
+            FreeMibTable, GetIpForwardTable2, MIB_IPFORWARD_TABLE2,
+        };
+        let mut table: *mut MIB_IPFORWARD_TABLE2 = std::ptr::null_mut();
+        // SAFETY: a valid out-pointer; the table is freed below.
+        let rc = unsafe { GetIpForwardTable2(ws::AF_UNSPEC, &mut table) };
+        if rc != 0 || table.is_null() {
+            return None;
+        }
+        // SAFETY: the API wrote `NumEntries` rows into the table it returned.
+        let rows = unsafe {
+            std::slice::from_raw_parts((*table).Table.as_ptr(), (*table).NumEntries as usize)
+        };
+        let out = rows
+            .iter()
+            .take(MAX_ROUTES)
+            .filter_map(|r| {
+                let link = links.get(&r.InterfaceIndex).filter(|l| l.up)?;
+                let dst = ip_of_inet(&r.DestinationPrefix.Prefix)?;
+                let len = r.DestinationPrefix.PrefixLength;
+                let if_metric = if dst.is_ipv4() {
+                    link.metric.0
+                } else {
+                    link.metric.1
+                };
+                Some(Route {
+                    family: if dst.is_ipv4() {
+                        Family::V4
+                    } else {
+                        Family::V6
+                    },
+                    table: "main".into(),
+                    dst: if len == 0 {
+                        "default".into()
+                    } else {
+                        format!("{dst}/{len}")
+                    },
+                    kind: if r.Loopback != 0 { "local" } else { "unicast" }.into(),
+                    gateway: ip_of_inet(&r.NextHop)
+                        .filter(|g| !g.is_unspecified())
+                        .map(|g| g.to_string()),
+                    dev: Some(link.name.clone()),
+                    protocol: Some(protocol_name(r.Protocol)),
+                    metric: Some(r.Metric.saturating_add(if_metric)),
+                })
+            })
+            .collect();
+        // SAFETY: the table GetIpForwardTable2 allocated, freed once.
+        unsafe { FreeMibTable(table.cast_const().cast()) };
         Some(out)
     }
 }
@@ -1035,5 +1293,52 @@ mod tests {
             inv.clone().split(512).len()
         );
         assert!(!inv.interfaces.items.is_empty() && !inv.routes.items.is_empty());
+    }
+}
+
+/// OS-01: on a real Windows host the inventory is read, not stubbed, and
+/// passes the same bounds the server applies (`--nocapture` prints it).
+#[cfg(all(test, target_os = "windows"))]
+mod windows_tests {
+    use roomler_ai_remote_control::net_inventory::SectionState;
+
+    #[tokio::test]
+    async fn the_windows_inventory_is_read_and_validates() {
+        let inv = super::collect().await;
+        inv.validate().expect("the server would accept it");
+        for (what, state) in [
+            ("interfaces", inv.interfaces.state),
+            ("routes", inv.routes.state),
+            ("listeners", inv.listeners.state),
+        ] {
+            assert!(
+                matches!(state, SectionState::Complete | SectionState::Partial),
+                "{what}: {state:?}"
+            );
+        }
+        let lo = inv
+            .interfaces
+            .items
+            .iter()
+            .find(|i| i.kind.as_deref() == Some("loopback"))
+            .expect("the loopback pseudo-interface");
+        assert!(lo.addrs.iter().any(|a| a == "127.0.0.1/8"), "{lo:?}");
+        assert!(
+            inv.routes.items.iter().any(|r| r.dst == "127.0.0.0/8"),
+            "the loopback route"
+        );
+        assert_eq!(inv.rules.state, SectionState::Unsupported);
+        for i in &inv.interfaces.items {
+            println!(
+                "if {} #{} {:?} up={} mtu={:?} {:?}",
+                i.name, i.index, i.kind, i.up, i.mtu, i.addrs
+            );
+        }
+        for r in inv.routes.items.iter().filter(|r| r.kind == "unicast") {
+            println!(
+                "rt {} via {:?} dev {:?} {:?} metric {:?}",
+                r.dst, r.gateway, r.dev, r.protocol, r.metric
+            );
+        }
     }
 }
