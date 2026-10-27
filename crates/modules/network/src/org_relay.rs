@@ -74,7 +74,34 @@ mod path_search;
 // Staged until the authorized planner constructs this edge set.
 #[allow(dead_code)]
 mod path_graph;
+// Staged snapshot builder; no production caller yet.
+#[allow(dead_code)]
+mod path_candidate;
 mod trial;
+/// Test-only adapter for exercising the staged candidate builder against a
+/// real isolated server fixture. It returns metadata, never grants sessions.
+#[cfg(feature = "path-planner-test-support")]
+pub mod candidate_test_support {
+    use super::*;
+    pub async fn prepare_edges(
+        state: &NetworkState,
+        requester: ObjectId,
+        peer: ObjectId,
+        for_trial: bool,
+    ) -> Result<Vec<(ObjectId, ObjectId, String, bool)>, PeerRelayDenyReason> {
+        let a = state.overlay_nodes.base.find_by_id(requester).await
+            .map_err(|_| PeerRelayDenyReason::PolicyUnreadable)?;
+        let b = state.overlay_nodes.base.find_by_id(peer).await
+            .map_err(|_| PeerRelayDenyReason::PolicyUnreadable)?;
+        let prepared = path_candidate::prepare(state, &a, &b, for_trial).await?;
+        Ok(prepared.graph.edges.iter().map(|edge| (
+            prepared.graph.relays[edge.from].agent_id,
+            prepared.graph.relays[edge.to].agent_id,
+            edge.endpoint.clone(), edge.cross_border,
+        )).collect())
+    }
+}
+
 pub use trial::{
     PathTrialReturnUpdate, PathTrialUpdate, request as path_trial_request,
     return_update as path_trial_return_update, update as path_trial_update,

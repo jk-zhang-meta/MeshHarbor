@@ -16,6 +16,9 @@ path = "src/lib.rs"
 # (`overlay`, `org_relay`, `derp_acl`), the routes and the hooks; the sockets
 # (tunnel client, `/derp`, the agent-socket half) follow in P7b, which is why
 # the host still depends on this crate unconditionally until then.
+[features]
+path-planner-test-support = []
+
 [dependencies]
 roomler-core = { path = "../../core" }
 roomler-ai-config = { path = "../../config" }

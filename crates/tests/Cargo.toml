@@ -23,7 +23,7 @@ redis.workspace = true
 # (room manager, media claims) through `AppState::modules`.
 roomler-ai-mod-conference = { path = "../modules/conference" }
 roomler-ai-mod-fleet = { path = "../modules/fleet" }
-roomler-ai-mod-network = { path = "../modules/network" }
+roomler-ai-mod-network = { path = "../modules/network", features = ["path-planner-test-support"] }
 # FR-115 P3b — the external session's charge scope (`extauth::charge_scope`).
 roomler-ai-mod-remote = { path = "../modules/remote" }
 # FR-102 P6 — the purestat puller is the `saas` module's; its test drives

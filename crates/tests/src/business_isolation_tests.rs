@@ -658,6 +658,65 @@ async fn a_cross_border_pair_rides_only_its_approved_line() {
     assert!(l.rig.app.state.network().org_relay.active_session(&pk).is_some());
 }
 
+/// Exercise the staged graph builder against real live joins, ACLs and policy
+/// updates, without sending any relay session or touching production.
+#[tokio::test]
+async fn staged_graph_uses_live_gates_and_revoked_crossing_is_not_offered() {
+    let mut l = LineRig::up("iso-graph-stage", true).await;
+    let net = l.rig.app.state.network();
+    let cn = ObjectId::parse_str(&l.cn_node).unwrap();
+    let us = ObjectId::parse_str(&l.us_node).unwrap();
+    let gz = ObjectId::parse_str(&l.gz_agent).unwrap();
+    let hk = ObjectId::parse_str(&l.hk_agent).unwrap();
+    let edges = roomler_ai_mod_network::org_relay::candidate_test_support::prepare_edges(net, cn, us, false).await.unwrap();
+    assert!(roomler_ai_mod_network::org_relay::candidate_test_support::prepare_edges(net, cn, us, true).await.is_err(), "trial capability is required");
+    assert_eq!(edges, vec![(gz, hk, LINE.to_string(), true)]);
+    l.set_edge(false).await;
+    let edges = roomler_ai_mod_network::org_relay::candidate_test_support::prepare_edges(l.rig.app.state.network(), cn, us, false).await.unwrap();
+    assert!(edges.is_empty(), "a non-cross-border edge must not carry this pair");
+    assert_eq!(approve(&l.rig.app, &l.rig.seeded, &l.hk_agent, false).await, 200);
+    assert!(roomler_ai_mod_network::org_relay::candidate_test_support::prepare_edges(l.rig.app.state.network(), cn, us, false).await.is_err());
+}
+
+#[tokio::test]
+async fn staged_graph_tracks_three_relay_chain_and_each_acl() {
+    let l = LineRig::up("iso-graph-chain", true).await;
+    let (mid_agent, mid_token) = enroll(&l.rig.app, &l.rig.seeded, "iso-graph-chain-mid").await;
+    let mut mid = connect_from(&l.rig.app, &mid_token, &["relay-server"], Some(CN_R)).await;
+    assert_observed(&l.rig.app, &mid_agent, Some(CN_R)).await;
+    line_join(&mut mid, 6, "223.6.6.7:41641", json!({ "relay_backbone_ready": true })).await;
+    assert_eq!(approve(&l.rig.app, &l.rig.seeded, &mid_agent, true).await, 200);
+    let mid_node = l.rig.node("iso-graph-chain-mid").await;
+    let mid_acl = grant_relay(&l.rig.app, &l.rig.seeded, &mid_node).await;
+    for (source, target, endpoint, cross) in [
+        (&l.gz_agent, &mid_agent, "10.42.2.113:3478", false),
+        (&mid_agent, &l.hk_agent, LINE, true),
+    ] {
+        let path = format!("/api/tenant/{}/agent/{}/peer-relay-policy", l.rig.seeded.tenant_id, source);
+        let body = json!({ "serve": true, "approved_backbone_edges": [
+            { "relay_agent_id": target, "endpoint": endpoint, "cross_border": cross }
+        ]});
+        let (status, value) = put(&l.rig.app, &path, &l.rig.seeded.admin.access_token, body).await;
+        assert_eq!(status, 200, "{value}");
+    }
+    let cn = ObjectId::parse_str(&l.cn_node).unwrap();
+    let us = ObjectId::parse_str(&l.us_node).unwrap();
+    let gz = ObjectId::parse_str(&l.gz_agent).unwrap();
+    let mid_id = ObjectId::parse_str(&mid_agent).unwrap();
+    let hk = ObjectId::parse_str(&l.hk_agent).unwrap();
+    let edges = roomler_ai_mod_network::org_relay::candidate_test_support::prepare_edges(l.rig.app.state.network(), cn, us, false).await.unwrap();
+    let actual: BTreeSet<_> = edges.into_iter().collect();
+    let expected: BTreeSet<_> = [(gz, mid_id, "10.42.2.113:3478".into(), false),
+                                (mid_id, hk, LINE.into(), true)].into_iter().collect();
+    assert_eq!(actual, expected);
+    let path = format!("/api/tenant/{}/overlay-acl/{}", l.rig.seeded.tenant_id, mid_acl);
+    let status = l.rig.app.client.delete(l.rig.app.url(&path)).bearer_auth(&l.rig.seeded.admin.access_token)
+        .send().await.unwrap().status().as_u16();
+    assert_eq!(status, 200);
+    let edges = roomler_ai_mod_network::org_relay::candidate_test_support::prepare_edges(l.rig.app.state.network(), cn, us, false).await.unwrap();
+    assert!(edges.is_empty(), "no edge may use the no-longer-granted middle relay");
+}
+
 /// A line ends with its edge's `cross_border` flag and with either relay's
 /// approval, on all four parties, each told its own VNI, and the bridge with
 /// it. Whichever member asks, the mainland member binds the mainland relay.
