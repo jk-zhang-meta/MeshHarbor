@@ -709,12 +709,28 @@ async fn staged_graph_tracks_three_relay_chain_and_each_acl() {
     let expected: BTreeSet<_> = [(gz, mid_id, "10.42.2.113:3478".into(), false),
                                 (mid_id, hk, LINE.into(), true)].into_iter().collect();
     assert_eq!(actual, expected);
+    // Simulate the documented offered-probe path: the member can reach GZ,
+    // not the same-zone middle relay; the remote member can reach HK.
+    let gz_node = ObjectId::parse_str(&l.gz_node).unwrap();
+    let mid_node_id = ObjectId::parse_str(&mid_node).unwrap();
+    let hk_node = ObjectId::parse_str(&l.hk_node).unwrap();
+    let net = l.rig.app.state.network();
+    assert!(roomler_ai_mod_network::org_relay::candidate_test_support::record_member_probe_fixture(net, cn, &[
+        (gz_node, "223.6.6.6:3478".into(), true, Some(10)),
+        (mid_node_id, "223.6.6.7:3478".into(), false, None),
+    ]));
+    assert!(roomler_ai_mod_network::org_relay::candidate_test_support::record_member_probe_fixture(net, us, &[
+        (hk_node, "1.1.1.1:3478".into(), true, Some(10)),
+    ]));
+    let chosen = roomler_ai_mod_network::org_relay::candidate_test_support::select_path(l.rig.app.state.network(), cn, us, false).await.unwrap().unwrap();
+    assert_eq!(chosen, (vec![gz, mid_id, hk], false));
     let path = format!("/api/tenant/{}/overlay-acl/{}", l.rig.seeded.tenant_id, mid_acl);
     let status = l.rig.app.client.delete(l.rig.app.url(&path)).bearer_auth(&l.rig.seeded.admin.access_token)
         .send().await.unwrap().status().as_u16();
     assert_eq!(status, 200);
     let edges = roomler_ai_mod_network::org_relay::candidate_test_support::prepare_edges(l.rig.app.state.network(), cn, us, false).await.unwrap();
     assert!(edges.is_empty(), "no edge may use the no-longer-granted middle relay");
+    assert!(roomler_ai_mod_network::org_relay::candidate_test_support::select_path(l.rig.app.state.network(), cn, us, false).await.unwrap().is_none());
 }
 
 /// A line ends with its edge's `cross_border` flag and with either relay's

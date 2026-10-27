@@ -17,6 +17,8 @@ use std::collections::HashMap;
 
 pub(super) struct PreparedGraph {
     pub graph: path_graph::EdgeGraph,
+    pub requester_id: ObjectId,
+    pub peer_id: ObjectId,
     pub plans: HashMap<ObjectId, Plan>,
     pub requester_zone: BusinessZone,
     pub peer_zone: BusinessZone,
@@ -154,6 +156,8 @@ pub(super) async fn prepare(
     }
     Ok(PreparedGraph {
         graph,
+        requester_id: a,
+        peer_id: b,
         plans,
         requester_zone: za,
         peer_zone: zb,

@@ -77,12 +77,44 @@ mod path_graph;
 // Staged snapshot builder; no production caller yet.
 #[allow(dead_code)]
 mod path_candidate;
+// Staged search over an authorized snapshot; no production caller yet.
+#[allow(dead_code)]
+mod path_select;
 mod trial;
 /// Test-only adapter for exercising the staged candidate builder against a
 /// real isolated server fixture. It returns metadata, never grants sessions.
 #[cfg(feature = "path-planner-test-support")]
 pub mod candidate_test_support {
     use super::*;
+    /// Populate a test fixture through the same offer/report checks as the
+    /// normal probe receiver. Only compiled for integration tests.
+    pub fn record_member_probe_fixture(
+        state: &NetworkState,
+        member: ObjectId,
+        reports: &[(ObjectId, String, bool, Option<u32>)],
+    ) -> bool {
+        let targets: Vec<_> = reports.iter().map(|(relay, endpoint, _, _)| RelayProbeTargetWire {
+            relay_node_id: *relay, endpoints: vec![endpoint.clone()],
+        }).collect();
+        state.org_relay.offer_probes(member, &targets);
+        reports.iter().all(|(relay, endpoint, reachable, rtt)|
+            state.org_relay.record_probe(member, *relay, endpoint.clone(), *reachable, *rtt))
+    }
+    pub async fn select_path(
+        state: &NetworkState,
+        requester: ObjectId,
+        peer: ObjectId,
+        for_trial: bool,
+    ) -> Result<Option<(Vec<ObjectId>, bool)>, PeerRelayDenyReason> {
+        let a = state.overlay_nodes.base.find_by_id(requester).await
+            .map_err(|_| PeerRelayDenyReason::PolicyUnreadable)?;
+        let b = state.overlay_nodes.base.find_by_id(peer).await
+            .map_err(|_| PeerRelayDenyReason::PolicyUnreadable)?;
+        let prepared = path_candidate::prepare(state, &a, &b, for_trial).await?;
+        let selected = path_select::select(state, prepared)?;
+        Ok(selected.map(|s| (s.path.path.relays.iter()
+            .map(|&i| s.prepared.graph.relays[i].agent_id).collect(), s.path.flipped)))
+    }
     pub async fn prepare_edges(
         state: &NetworkState,
         requester: ObjectId,
