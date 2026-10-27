@@ -68,6 +68,9 @@ use crate::overlay::{
 use roomler_core::business_authority::{AuthenticatedDevice, BusinessZone};
 use roomler_core::net::is_global_unicast;
 
+// Staged until the authorized planner consumes this graph search.
+#[allow(dead_code)]
+mod path_search;
 mod trial;
 pub use trial::{
     PathTrialReturnUpdate, PathTrialUpdate, request as path_trial_request,
