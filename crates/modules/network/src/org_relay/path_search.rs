@@ -285,6 +285,147 @@ mod tests {
     }
 
     #[test]
+    fn later_cheaper_parallel_edge_is_returned() {
+        let nodes = [relay(Some(R(0)), None, 0), relay(None, Some(R(0)), 0)];
+        let edges = [edge(0, 1, R(10)), edge(0, 1, R(1)), edge(0, 0, R(0))];
+        let path = shortest(&nodes, &edges).unwrap().unwrap();
+        assert_eq!(path.relays, [0, 1]);
+        assert_eq!(path.edges, [1]);
+        assert_eq!(path.rtt, 1);
+    }
+
+    #[test]
+    fn varied_graphs_match_independent_oracle_and_reconstructed_route() {
+        type Score = (u8, u128, u128, usize);
+        fn metric(v: ProbeVerdict) -> (u8, u128) {
+            match v {
+                R(ms) => (0, u128::from(ms)),
+                U => (1, 0),
+                X => (2, 0),
+            }
+        }
+        fn walk(
+            node: usize,
+            seen: u64,
+            score: Score,
+            nodes: &[SearchRelay],
+            edges: &[SearchEdge],
+            best: &mut Option<Score>,
+        ) {
+            let (class, rtt, load, hops) = score;
+            if let Some(v) = nodes[node].exit {
+                let (c, r) = metric(v);
+                let candidate = (class.max(c), rtt + r, load, hops);
+                if best.is_none_or(|old| candidate < old) {
+                    *best = Some(candidate);
+                }
+            }
+            for e in edges
+                .iter()
+                .filter(|e| e.from == node && seen & (1 << e.to) == 0)
+            {
+                let (c, r) = metric(e.verdict);
+                walk(
+                    e.to,
+                    seen | (1 << e.to),
+                    (
+                        class.max(c),
+                        rtt + r,
+                        load + nodes[e.to].load as u128,
+                        hops + 1,
+                    ),
+                    nodes,
+                    edges,
+                    best,
+                );
+            }
+        }
+        fn next(state: &mut u64) -> u64 {
+            *state ^= *state << 13;
+            *state ^= *state >> 7;
+            *state ^= *state << 17;
+            *state
+        }
+        fn pick(state: &mut u64) -> ProbeVerdict {
+            match next(state) % 6 {
+                0 => R(0),
+                1 => R(1),
+                2 => R(20),
+                3 => R(u32::MAX),
+                4 => U,
+                _ => X,
+            }
+        }
+        let mut state = 0x9e3779b97f4a7c15;
+        for _ in 0..1024 {
+            let n = 1 + (next(&mut state) % 5) as usize;
+            let mut nodes = Vec::new();
+            for _ in 0..n {
+                let ingress = (!next(&mut state).is_multiple_of(3)).then(|| pick(&mut state));
+                let exit = (!next(&mut state).is_multiple_of(3)).then(|| pick(&mut state));
+                let load = match next(&mut state) % 4 {
+                    0 => usize::MAX,
+                    n => n as usize,
+                };
+                nodes.push(relay(ingress, exit, load));
+            }
+            let edge_count = (next(&mut state) % 13) as usize;
+            let mut edges = Vec::new();
+            for _ in 0..edge_count {
+                let from = (next(&mut state) % n as u64) as usize;
+                let to = (next(&mut state) % n as u64) as usize;
+                edges.push(edge(from, to, pick(&mut state)));
+            }
+            let mut expected: Option<Score> = None;
+            for (i, node) in nodes.iter().enumerate() {
+                if let Some(v) = node.ingress {
+                    let (c, r) = metric(v);
+                    walk(
+                        i,
+                        1 << i,
+                        (c, r, node.load as u128, 1),
+                        &nodes,
+                        &edges,
+                        &mut expected,
+                    );
+                }
+            }
+            let result = shortest(&nodes, &edges).unwrap();
+            assert_eq!(
+                result
+                    .as_ref()
+                    .map(|p| (p.class, p.rtt, p.load, p.relays.len())),
+                expected
+            );
+            if let Some(path) = result {
+                assert!(!path.relays.is_empty());
+                assert_eq!(path.edges.len() + 1, path.relays.len());
+                let mut seen = 0u64;
+                let start = path.relays[0];
+                let (mut class, mut rtt) = metric(nodes[start].ingress.unwrap());
+                let mut load = 0u128;
+                for (i, &node) in path.relays.iter().enumerate() {
+                    assert_eq!(seen & (1 << node), 0, "relay repeats");
+                    seen |= 1 << node;
+                    load += nodes[node].load as u128;
+                    if i > 0 {
+                        let e = edges[path.edges[i - 1]];
+                        assert_eq!((e.from, e.to), (path.relays[i - 1], node));
+                        let (c, r) = metric(e.verdict);
+                        class = class.max(c);
+                        rtt += r;
+                    }
+                }
+                let (c, r) = metric(nodes[*path.relays.last().unwrap()].exit.unwrap());
+                assert_eq!(
+                    (class.max(c), rtt + r, load, path.relays.len()),
+                    (path.class, path.rtt, path.load, path.relays.len())
+                );
+            }
+        }
+    }
+
+    #[test]
     fn invalid_or_empty_graph_is_not_a_zero_cost_route() {
         assert_eq!(shortest(&[], &[]).unwrap(), None);
         assert_eq!(shortest(&[], &[edge(0, 0, R(0))]), Err(InvalidGraph));
