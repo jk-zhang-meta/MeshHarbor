@@ -2285,6 +2285,139 @@ async fn staged_graph_long_path_capacity_race_falls_back_to_available_line() {
     assert!(recv_t(&mut l.gz, "rc:overlay.relay_serve", Duration::from_millis(500)).await.is_none());
 }
 
+/// Off/Warn business isolation permits explicitly approved cross-zone paths.
+/// Peer-relay Warn remains audit-only; actual On grants carry WG until revoke.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn staged_graph_off_warn_cross_zone_actual_wg_and_warn_only() {
+    use roomler_ai_mod_network::org_relay::candidate_test_support as support;
+    use roomler_ai_remote_control::signaling::ServerMsg;
+    use roomlerd::relay_server::backbone_test_support::{BindSecret, Carrier, NativeRelay, OrgRelayConn, WgDevice, WgKeypair, bind_member};
+    use std::{net::Ipv4Addr, sync::{Arc, atomic::AtomicBool}};
+    for (isolation, fallback) in [("off", false), ("off", true), ("warn", false), ("warn", true)] {
+        let slug = format!("iso-cross-wg-{isolation}-{}", if fallback {"fallback"} else {"normal"});
+        let native = [NativeRelay::start().await.unwrap(), NativeRelay::start().await.unwrap(), NativeRelay::start().await.unwrap()];
+        let key_a = WgKeypair::generate(); let key_b = WgKeypair::generate();
+        let rig = Rig::up(&slug, isolation).await;
+        let mut relays = Vec::new(); let mut agents = Vec::new(); let mut nodes = Vec::new();
+        let endpoints = ["223.6.6.6:41641", "223.6.6.7:41641", "1.1.1.1:41641"];
+        let public = ["223.6.6.6:3478", "223.6.6.7:3478", "1.1.1.1:3478"];
+        for i in 0..3 {
+            let name = format!("{slug}-r{i}"); let (agent, token) = enroll(&rig.app, &rig.seeded, &name).await;
+            let from = if i < 2 { CN_R } else { US_R };
+            let mut ws = connect_from(&rig.app, &token, &["relay-server"], Some(from)).await;
+            assert_observed(&rig.app, &agent, Some(from)).await;
+            line_join(&mut ws, 10 + i, endpoints[i as usize], json!({"relay_backbone_ready":true})).await;
+            assert_eq!(approve(&rig.app, &rig.seeded, &agent, true).await, 200);
+            let node = rig.node(&name).await; grant_relay(&rig.app, &rig.seeded, &node).await;
+            relays.push(ws); agents.push(agent); nodes.push(node);
+        }
+        let mut a = rig.device(&format!("{slug}-a"), Some(CN_A)).await;
+        let mut b = rig.device(&format!("{slug}-b"), Some(US_A)).await;
+        for (ws, key, endpoint) in [(&mut a, key_a.public_base64(), "223.5.5.5:41641"), (&mut b, key_b.public_base64(), "8.8.8.8:41641")] {
+            ws.send(Message::Text(json!({"t":"rc:overlay.join", "wg_public_key":key, "mtu":1280,
+                "endpoints":[endpoint], "supports_org_relay":true, "supports_backbone_only_v1":true,
+                "supports_server_relay_strategy":true, "org_primary":true}).to_string().into())).await.unwrap();
+            recv_t(ws, "rc:overlay.netmap", Duration::from_secs(5)).await.expect("member join");
+        }
+        let a_id = ObjectId::parse_str(rig.node(&format!("{slug}-a")).await).unwrap();
+        let b_id = ObjectId::parse_str(rig.node(&format!("{slug}-b")).await).unwrap();
+        let path = |agent: &str| format!("/api/tenant/{}/agent/{agent}/peer-relay-policy", rig.seeded.tenant_id);
+        for i in 0..2 {
+            let (status, body) = put(&rig.app, &path(&agents[i]), &rig.seeded.admin.access_token,
+                json!({"serve":true,"approved_backbone_edges":[{"relay_agent_id":agents[i+1],
+                    "endpoint":native[i+1].underlay_endpoint().to_string(),"cross_border":i == 1}]})).await;
+            assert_eq!(status, 200, "{body}");
+        }
+        let network = rig.app.state.network();
+        let ids: Vec<_> = nodes.iter().map(|n| ObjectId::parse_str(n).unwrap()).collect();
+        let record = || {
+            let ar: Vec<_> = (0..3).map(|i| (ids[i], public[i].into(), i == 0, (i == 0).then_some(10))).collect();
+            let br: Vec<_> = (0..3).map(|i| (ids[i], public[i].into(), i == 2, (i == 2).then_some(10))).collect();
+            assert!(support::record_member_probe_fixture(network, a_id, &ar));
+            assert!(support::record_member_probe_fixture(network, b_id, &br));
+            for i in 0..2 { assert!(support::record_backbone_probe_fixture(network, ids[i], &[(ids[i+1], native[i+1].underlay_endpoint().to_string(), true, Some(5))])); }
+        };
+        async fn request(ws: &mut Ws, peer: ObjectId, fallback: bool, serial: u64) {
+            if fallback { ws.send(Message::Text(json!({"t":"rc:overlay.org_relay_fallback_request","peer_node_id":peer.to_hex(),"request_id":serial}).to_string().into())).await.unwrap(); }
+            else { relay_request(ws, &peer.to_hex()).await; }
+        }
+        let pair = roomler_ai_mod_network::overlay::pair_key(a_id, b_id);
+        let reason = format!("cross_border_edge:{}", agents[2]);
+        set_mode(&rig.app, &rig.seeded, "warn").await;
+        record(); request(&mut a, b_id, fallback, 1).await;
+        assert!(recv_t(&mut a, "rc:overlay.relay_session", Duration::from_millis(600)).await.is_none(), "{slug}: warn emitted a grant");
+        for ws in &mut relays { assert!(recv_t(ws, "rc:overlay.relay_serve", Duration::from_millis(150)).await.is_none()); }
+        assert!(network.org_relay.active_session(&pair).is_none(), "warn allocated a session");
+        assert!(audit_rows(&rig.app, &rig.seeded).await.iter().any(|row| row["reason"] == reason && row["warn_only"] == true), "warn crossing audit missing: {slug}");
+        set_mode(&rig.app, &rig.seeded, "on").await;
+        record(); request(&mut a, b_id, fallback, 2).await;
+        let wait = Duration::from_secs(8);
+        let mut serves = Vec::new();
+        for ws in &mut relays { serves.push(recv_t(ws, "rc:overlay.relay_serve", wait).await.expect("relay serve")); }
+        let bridge0 = recv_t(&mut relays[0], "rc:overlay.relay_bridge_serve", wait).await.expect("first bridge");
+        let bridge1 = recv_t(&mut relays[1], "rc:overlay.relay_bridge_serve", wait).await.expect("crossing bridge");
+        let sa = recv_t(&mut a, "rc:overlay.relay_session", wait).await.expect("requester grant");
+        let sb = recv_t(&mut b, "rc:overlay.relay_session", wait).await.expect("peer grant");
+        assert_eq!(sa["vni"], serves[0]["vni"]); assert_eq!(sb["vni"], serves[2]["vni"]);
+        assert_eq!(bridge0["bridge"]["local_vni"], serves[0]["vni"]); assert_eq!(bridge0["bridge"]["remote_vni"], serves[1]["vni"]);
+        assert_eq!(bridge1["bridge"]["local_vni"], serves[1]["vni"]); assert_eq!(bridge1["bridge"]["remote_vni"], serves[2]["vni"]);
+        assert!(audit_rows(&rig.app, &rig.seeded).await.iter().any(|row| row["reason"] == reason && row["warn_only"] == false), "actual crossing audit missing: {slug}");
+        for (relay, frame) in native.iter().zip(serves.iter()) { relay.serve(serde_json::from_value::<ServerMsg>(frame.clone()).unwrap(), None); }
+        native[0].serve(serde_json::from_value(bridge0).unwrap(), Some(native[0].policy_to(&native[1])));
+        native[1].serve(serde_json::from_value(bridge1).unwrap(), Some(native[1].policy_to(&native[2])));
+        let socket_a = Arc::new(tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let socket_b = Arc::new(tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let secret = |frame: &Value| BindSecret::from_bytes(BASE64.decode(frame["bind_secret"].as_str().unwrap()).unwrap().try_into().unwrap());
+        let vni = |frame: &Value| frame["vni"].as_u64().unwrap() as u32;
+        let generation = |frame: &Value| frame["generation"].as_u64().unwrap();
+        bind_member(&socket_a, native[0].endpoint(), vni(&sa), generation(&sa), &secret(&sa), Duration::from_secs(5)).await.unwrap();
+        bind_member(&socket_b, native[2].endpoint(), vni(&sb), generation(&sb), &secret(&sb), Duration::from_secs(5)).await.unwrap();
+        let conn_a = Arc::new(OrgRelayConn::new(socket_a, native[0].endpoint(), vni(&sa), "off-warn-ingress".into()));
+        let conn_b = Arc::new(OrgRelayConn::new(socket_b, native[2].endpoint(), vni(&sb), "off-warn-exit".into()));
+        let ca = Arc::new(Carrier::Relay { dst: conn_a.synth_peer(), conn: conn_a, dead: AtomicBool::new(false) });
+        let cb = Arc::new(Carrier::Relay { dst: conn_b.synth_peer(), conn: conn_b, dead: AtomicBool::new(false) });
+        let ip_a: Ipv4Addr = network.overlay_nodes.base.find_by_id(a_id).await.unwrap().overlay_ip.parse().unwrap();
+        let ip_b: Ipv4Addr = network.overlay_nodes.base.find_by_id(b_id).await.unwrap().overlay_ip.parse().unwrap();
+        let (mut wg_a, mut received_a) = WgDevice::new(key_a.secret.clone());
+        let (mut wg_b, mut received_b) = WgDevice::new(key_b.secret.clone());
+        wg_a.add_peer(key_b.public.to_bytes(), ip_b, ca, true); wg_b.add_peer(key_a.public.to_bytes(), ip_a, cb, false);
+        let packet = |source: Ipv4Addr, target: Ipv4Addr, payload: &[u8]| {
+            let mut bytes = vec![0u8; 20 + payload.len()]; bytes[0] = 0x45; let len = bytes.len() as u16;
+            bytes[2..4].copy_from_slice(&len.to_be_bytes()); bytes[8] = 64; bytes[9] = 17;
+            bytes[12..16].copy_from_slice(&source.octets()); bytes[16..20].copy_from_slice(&target.octets()); bytes[20..].copy_from_slice(payload); bytes
+        };
+        let forward = packet(ip_a, ip_b, b"off-warn cross-zone WG forward");
+        tokio::time::timeout(Duration::from_secs(12), async { loop { wg_a.send_ip_packet(&forward).await;
+            if let Ok(Some(got)) = tokio::time::timeout(Duration::from_millis(150), received_b.recv()).await { if got == forward { break; } }
+        }}).await.expect("cross-zone forward WG");
+        let backward = packet(ip_b, ip_a, b"off-warn cross-zone WG reverse");
+        tokio::time::timeout(Duration::from_secs(8), async { loop { wg_b.send_ip_packet(&backward).await;
+            if let Ok(Some(got)) = tokio::time::timeout(Duration::from_millis(150), received_a.recv()).await { if got == backward { break; } }
+        }}).await.expect("cross-zone reverse WG");
+        let (status, body) = put(&rig.app, &path(&agents[1]), &rig.seeded.admin.access_token,
+            json!({"serve":true,"approved_backbone_edges":[{"relay_agent_id":agents[2], "endpoint":native[2].underlay_endpoint().to_string(), "cross_border":false}]})).await;
+        assert_eq!(status, 200, "{body}");
+        assert!(network.org_relay.active_session(&pair).is_none());
+        let mut revokes = Vec::new();
+        for (i, ws) in relays.iter_mut().enumerate() { let revoke = recv_t(ws, "rc:overlay.relay_revoke", wait).await.expect("relay revoke"); assert_eq!(revoke["vni"], serves[i]["vni"]); revokes.push(revoke); }
+        let revoke0 = recv_t(&mut relays[0], "rc:overlay.relay_bridge_revoke", wait).await.expect("first bridge revoke");
+        let revoke1 = recv_t(&mut relays[1], "rc:overlay.relay_bridge_revoke", wait).await.expect("crossing bridge revoke");
+        assert!(recv_t(&mut a, "rc:overlay.relay_revoke", wait).await.is_some()); assert!(recv_t(&mut b, "rc:overlay.relay_revoke", wait).await.is_some());
+        // Apply only the crossing bridge's server-issued revoke first.
+        native[1].serve(serde_json::from_value(revoke1).unwrap(), None);
+        while received_a.try_recv().is_ok() {} while received_b.try_recv().is_ok() {}
+        let blocked_a = packet(ip_a, ip_b, b"off-warn revoked crossing forward");
+        let blocked_b = packet(ip_b, ip_a, b"off-warn revoked crossing reverse");
+        for _ in 0..5 {
+            wg_a.send_ip_packet(&blocked_a).await; wg_b.send_ip_packet(&blocked_b).await;
+            if let Ok(Some(got)) = tokio::time::timeout(Duration::from_millis(120), received_b.recv()).await { assert_ne!(got, blocked_a, "forward passed revoked crossing"); }
+            if let Ok(Some(got)) = tokio::time::timeout(Duration::from_millis(120), received_a.recv()).await { assert_ne!(got, blocked_b, "reverse passed revoked crossing"); }
+        }
+        for (relay, frame) in native.iter().zip(revokes) { relay.serve(serde_json::from_value(frame).unwrap(), None); }
+        native[0].serve(serde_json::from_value(revoke0).unwrap(), None);
+    }
+}
+
 /// Off/Warn cross-zone paths require every crossing approval and audit, while
 /// an invalid long path still falls back through the established one-hop gate.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
