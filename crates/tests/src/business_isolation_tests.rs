@@ -3551,13 +3551,36 @@ async fn staged_nhop_trial_actual_wg_commit_and_bilateral_return() {
         let mut v=json!({"t":t,"trial_id":id});if let Some(r)=return_id {v["return_id"]=json!(r);}
         ws.send(Message::Text(v.to_string().into())).await.unwrap();
     }
+    async fn assert_no_control(ws:&mut Ws,forbidden:&[&str]) {
+        let deadline=tokio::time::Instant::now()+Duration::from_millis(150);
+        loop {
+            match tokio::time::timeout_at(deadline,ws.next()).await {
+                Err(_)=>break,
+                Ok(Some(Ok(Message::Text(txt))))=>{
+                    let msg:Value=serde_json::from_str(&txt).unwrap();
+                    assert!(!forbidden.contains(&msg["t"].as_str().unwrap_or_default()),"premature control frame: {msg}");
+                }
+                Ok(Some(Ok(_)))=>{},
+                _=>panic!("member control socket closed during barrier check"),
+            }
+        }
+    }
     let id=sa["trial_id"].clone();
+    let trial_oid=ObjectId::parse_str(id.as_str().unwrap()).unwrap();
     signal(&mut a,"rc:overlay.path_trial_ready",&id,None).await;
-    assert!(recv_t(&mut a,"rc:overlay.path_trial_commit",Duration::from_millis(100)).await.is_none(),"one Ready committed path");
+    tokio::time::timeout(wait,async {while support::trial_member_progress(network,trial_oid,a_id)!=Some((0,true)) {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }}).await.expect("first Ready processed without committing");
+    assert_eq!(support::trial_member_progress(network,trial_oid,b_id),Some((0,false)));
+    for ws in [&mut a,&mut b] {assert_no_control(ws,&["rc:overlay.path_trial_commit","rc:overlay.path_trial_finalize"]).await;}
     signal(&mut b,"rc:overlay.path_trial_ready",&id,None).await;
     for ws in [&mut a,&mut b] { assert_eq!(recv_t(ws,"rc:overlay.path_trial_commit",wait).await.unwrap()["trial_id"],id); }
     signal(&mut a,"rc:overlay.path_trial_committed",&id,None).await;
-    assert!(recv_t(&mut a,"rc:overlay.path_trial_finalize",Duration::from_millis(100)).await.is_none(),"one ACK finalized path");
+    tokio::time::timeout(wait,async {while support::trial_member_progress(network,trial_oid,a_id)!=Some((1,true)) {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }}).await.expect("first Committed processed without finalizing");
+    assert_eq!(support::trial_member_progress(network,trial_oid,b_id),Some((1,false)));
+    for ws in [&mut a,&mut b] {assert_no_control(ws,&["rc:overlay.path_trial_finalize"]).await;}
     signal(&mut b,"rc:overlay.path_trial_committed",&id,None).await;
     for ws in [&mut a,&mut b] { assert_eq!(recv_t(ws,"rc:overlay.path_trial_finalize",wait).await.unwrap()["trial_id"],id); }
     let committed_forward=packet(ip_a,ip_b,b"committed four relay WG forward");

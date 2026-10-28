@@ -707,6 +707,18 @@ pub(super) fn claim_mint(
 
 // This is a protocol rendezvous, not a server-side RTT score. Ready asserts
 // that the authenticated member's local same-metric/fresh-window check passed.
+#[cfg(feature = "path-planner-test-support")]
+pub(super) fn member_progress_fixture(state: &NetworkState, id: ObjectId, node: ObjectId) -> Option<(u8, bool)> {
+    let entries = state.org_relay.trials.entries.lock().unwrap_or_else(|e| e.into_inner());
+    let trial = entries.get(&id)?;
+    let member = trial.session.member_index(node)?;
+    Some(match &trial.phase {
+        Phase::Preparing(ready) => (0, ready[member].is_some()),
+        Phase::Committing(acked) => (1, acked[member]),
+        Phase::Finalized => (2, true),
+    })
+}
+
 fn advance(
     phase: &mut Phase,
     member: usize,

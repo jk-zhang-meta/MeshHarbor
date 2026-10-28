@@ -183,6 +183,10 @@ pub mod candidate_test_support {
     pub fn trial_slots_on_relay(state: &NetworkState, relay: ObjectId) -> usize {
         state.org_relay.trials.sessions_on_relay(relay, Instant::now())
     }
+    /// Fixture-only phase and member progress; no state is changed.
+    pub fn trial_member_progress(state: &NetworkState, id: ObjectId, node: ObjectId) -> Option<(u8, bool)> {
+        super::trial::member_progress_fixture(state, id, node)
+    }
     /// Insert a fixture-owned N-hop trial without emitting any grants. Used
     /// only to drive live zone changes and exact revoke frames in tests.
     pub fn insert_nhop_zone_trial_fixture(
