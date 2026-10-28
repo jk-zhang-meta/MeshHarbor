@@ -230,7 +230,7 @@ pub(super) async fn plan_reusing(
             agent_id: relay.agent_id,
             zone: relay.zone.ok_or(D::ZoneDenied)?,
             node_ref: plan.relay.node_ref.clone(),
-            endpoints: plan.endpoints.clone(),
+            endpoints: plan.endpoints.iter().take(4).cloned().collect(),
         });
     }
     let member_zones = if prepared.restrict_ends {

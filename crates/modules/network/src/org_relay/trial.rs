@@ -593,7 +593,7 @@ pub async fn request(
                 let (relay, relay_agent_id, endpoints, implicit) = if let Some(plan) = candidate.as_ref() {
                     let r = &plan.relays[0]; (SessionParty { node_id: r.node_id, node_ref: r.node_ref.clone() }, r.agent_id, r.endpoints.clone(), false)
                 } else {
-                    let p = single_plan.as_ref()?; (SessionParty { node_id: p.relay.id?, node_ref: p.relay.node_ref.clone() }, p.relay_agent_id, p.endpoints.clone(), p.implicit)
+                    let p = single_plan.as_ref()?; (SessionParty { node_id: p.relay.id?, node_ref: p.relay.node_ref.clone() }, p.relay_agent_id, p.endpoints.iter().take(4).cloned().collect(), p.implicit)
                 };
                 let mut session = OrgRelaySession { tenant_id: tenant, pair_key: pair.clone(), vni: vnis[0],
                     generation: state.org_relay.lamport.fetch_add(1, Ordering::Relaxed) + 1,
@@ -629,7 +629,7 @@ pub async fn request(
                     let session = &existing.session;
                     let matches = session.hops.is_empty() && existing.backbone.is_none()
                         && session.relay.node_id == nodes[0] && session.relay.node_ref == plan.relay.node_ref
-                        && session.relay_agent_id == plan.relay_agent_id && session.endpoints == plan.endpoints
+                        && session.relay_agent_id == plan.relay_agent_id && session.endpoints == plan.endpoints.iter().take(4).cloned().collect::<Vec<_>>()
                         && session.implicit == plan.implicit
                         && [(&requester, req_id), (&peer, peer_id)].iter().all(|(node, id)|
                             session.member_index(*id).is_some_and(|i| session.members[i].party.node_ref == node.node_ref
