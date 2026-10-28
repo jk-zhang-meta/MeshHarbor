@@ -3614,7 +3614,20 @@ async fn staged_nhop_trial_actual_wg_commit_and_bilateral_return() {
     }
     for node in &nodes {assert_eq!(support::trial_slots_on_relay(network,ObjectId::parse_str(node).unwrap()),0);}
     while received_a.try_recv().is_ok() {} while received_b.try_recv().is_ok() {}
-    let stopped=packet(ip_a,ip_b,b"returned four relay trial cannot carry data");
-    for _ in 0..4 {wg_a.send_ip_packet(&stopped).await;
-        if let Ok(Some(got))=tokio::time::timeout(Duration::from_millis(120),received_b.recv()).await {assert_ne!(got,stopped,"returned trial still carried data");}}
+    let stopped_forward=packet(ip_a,ip_b,b"returned four relay trial cannot carry forward data");
+    let stopped_reverse=packet(ip_b,ip_a,b"returned four relay trial cannot carry reverse data");
+    for _ in 0..4 {
+        wg_a.send_ip_packet(&stopped_forward).await;
+        match tokio::time::timeout(Duration::from_millis(120),received_b.recv()).await {
+            Ok(Some(got))=>assert_ne!(got,stopped_forward,"returned trial still carried forward data"),
+            Ok(None)=>panic!("reverse receiver closed during forward blocking check"),
+            Err(_)=>{},
+        }
+        wg_b.send_ip_packet(&stopped_reverse).await;
+        match tokio::time::timeout(Duration::from_millis(120),received_a.recv()).await {
+            Ok(Some(got))=>assert_ne!(got,stopped_reverse,"returned trial still carried reverse data"),
+            Ok(None)=>panic!("forward receiver closed during reverse blocking check"),
+            Err(_)=>{},
+        }
+    }
 }
