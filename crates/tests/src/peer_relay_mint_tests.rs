@@ -3674,10 +3674,10 @@ async fn nhop_delivery_three_native_relays_forward_and_revoke_middle_bridge() {
         hops: vec![
             LineLeg { relay: party(agent_ids[1]), relay_agent_id: agent_ids[1], vni: 200, generation: 202,
                 endpoints: vec![r1.endpoint().to_string()], private_endpoint: r1.underlay_endpoint().to_string(),
-                bridge_id: ObjectId::new(), bridge_secrets: [secret(21), secret(22)] },
+                requires_cross_border_approval: true, bridge_id: ObjectId::new(), bridge_secrets: [secret(21), secret(22)] },
             LineLeg { relay: party(agent_ids[2]), relay_agent_id: agent_ids[2], vni: 300, generation: 303,
                 endpoints: vec![r2.endpoint().to_string()], private_endpoint: r2.underlay_endpoint().to_string(),
-                bridge_id: ObjectId::new(), bridge_secrets: [secret(31), secret(32)] },
+                requires_cross_border_approval: true, bridge_id: ObjectId::new(), bridge_secrets: [secret(31), secret(32)] },
         ],
     };
     let frames = roomler_ai_mod_network::org_relay::candidate_test_support::delivery_frames_for_fixture(&s).unwrap();

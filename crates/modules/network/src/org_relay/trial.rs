@@ -1406,7 +1406,7 @@ mod tests {
             state.sessions.insert(format!("exit-{i}"), session);
         }
         new.pair_key = "new-pair".into();
-        new.hops.push(LineLeg { relay: SessionParty { node_id: exit, node_ref: NodeRef::Agent { agent_id: exit } }, relay_agent_id: exit, vni: 500, generation: 501, endpoints: vec!["exit".into()], private_endpoint: "10.0.0.2:3478".into(), bridge_id: ObjectId::new(), bridge_secrets: ["a".into(), "b".into()] });
+        new.hops.push(LineLeg { relay: SessionParty { node_id: exit, node_ref: NodeRef::Agent { agent_id: exit } }, relay_agent_id: exit, vni: 500, generation: 501, endpoints: vec!["exit".into()], private_endpoint: "10.0.0.2:3478".into(), requires_cross_border_approval: true, bridge_id: ObjectId::new(), bridge_secrets: ["a".into(), "b".into()] });
         assert!(matches!(claim_mint(&state, &mut new, |_| panic!("full second leg must not allocate")), MintClaim::Full));
         assert!(state.sessions.get("new-pair").is_none());
     }
@@ -1441,7 +1441,7 @@ mod tests {
             }
         }
         let mut new = fixture_trial(ObjectId::new(), ObjectId::new(), ObjectId::new(), ingress, 1, 700, 701).session;
-        new.hops.push(LineLeg { relay: SessionParty { node_id: exit, node_ref: NodeRef::Agent { agent_id: exit } }, relay_agent_id: exit, vni: 800, generation: 801, endpoints: vec!["exit".into()], private_endpoint: "10.0.0.2:3478".into(), bridge_id: ObjectId::new(), bridge_secrets: ["a".into(), "b".into()] });
+        new.hops.push(LineLeg { relay: SessionParty { node_id: exit, node_ref: NodeRef::Agent { agent_id: exit } }, relay_agent_id: exit, vni: 800, generation: 801, endpoints: vec!["exit".into()], private_endpoint: "10.0.0.2:3478".into(), requires_cross_border_approval: true, bridge_id: ObjectId::new(), bridge_secrets: ["a".into(), "b".into()] });
         assert!(matches!(claim_mint(&state, &mut new, |_| panic!("allocation must fail before validation")), MintClaim::Full));
         assert!(state.sessions.get(&new.pair_key).is_none());
         assert_eq!((new.vni, new.hops[0].vni), (700, 800));

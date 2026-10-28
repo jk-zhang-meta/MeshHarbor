@@ -92,6 +92,14 @@ mod trial;
 #[cfg(feature = "path-planner-test-support")]
 pub mod candidate_test_support {
     use super::*;
+    /// Insert a fixture-owned session without sending grants; integration
+    /// tests use it only to exercise the server's revocation entry point.
+    pub fn insert_session_fixture(state: &NetworkState, session: OrgRelaySession) -> bool {
+        match state.org_relay.sessions.entry(session.pair_key.clone()) {
+            dashmap::mapref::entry::Entry::Vacant(entry) => { entry.insert(session); true }
+            dashmap::mapref::entry::Entry::Occupied(_) => false,
+        }
+    }
     /// Populate a test fixture through the same offer/report checks as the
     /// normal probe receiver. Only compiled for integration tests.
     pub fn record_member_probe_fixture(
@@ -337,6 +345,9 @@ pub struct LineLeg {
     pub endpoints: Vec<String>,
     /// The exit relay's address on the private line (the approved edge's).
     pub private_endpoint: String,
+    /// Whether this particular edge requires explicit cross-border approval.
+    /// Callers must treat unknown zone relationships as requiring approval.
+    pub requires_cross_border_approval: bool,
     /// Keys the ingress relay's bridge (`rc:overlay.relay_bridge_*`).
     pub bridge_id: ObjectId,
     /// The bridge's bind secrets: `members[1]`'s slot on the ingress session
@@ -398,7 +409,7 @@ impl OrgRelaySession {
         self.hops.iter().enumerate().any(|(i, hop)| {
             let predecessor = if i == 0 { self.relay_agent_id } else { self.hops[i - 1].relay_agent_id };
             predecessor == source && !approved.iter().any(|edge| {
-                edge.cross_border
+                (!hop.requires_cross_border_approval || edge.cross_border)
                     && edge.endpoint == hop.private_endpoint
                     && ObjectId::parse_str(&edge.relay_agent_id).ok() == Some(hop.relay_agent_id)
             })
@@ -1678,8 +1689,8 @@ pub fn revoke_line_node_sync(
     })
 }
 
-/// `source`'s approved edges changed: the two-leg trials and the lines over
-/// an edge that is gone (or no longer `cross_border`) end.
+/// `source`'s approved edges changed: end affected lines and trials when an
+/// edge disappears or loses an approval required by that particular edge.
 pub fn revoke_removed_backbone_edges_sync(
     state: &NetworkState,
     tenant: ObjectId,
@@ -2110,6 +2121,7 @@ async fn mint_line(
             generation: exit_generation,
             endpoints: plan.exit.endpoints.clone(),
             private_endpoint: plan.private_endpoint.clone(),
+            requires_cross_border_approval: true,
             bridge_id: ObjectId::new(),
             bridge_secrets: [random_secret(), random_secret()],
         }],
@@ -3410,7 +3422,7 @@ mod tests {
         let hops: Vec<_> = (1..=3).map(|i| LineLeg {
             relay: party(ids[i]), relay_agent_id: ids[i], vni: 10 + i as u32,
             generation: 100 + i as u64, endpoints: vec![format!("relay{i}")],
-            private_endpoint: format!("10.0.0.{i}:1234"), bridge_id: ObjectId::new(),
+            private_endpoint: format!("10.0.0.{i}:1234"), requires_cross_border_approval: true, bridge_id: ObjectId::new(),
             bridge_secrets: ["a".into(), "b".into()],
         }).collect();
         let session = OrgRelaySession {
@@ -3436,10 +3448,19 @@ mod tests {
         assert!(session.has_removed_line_edge(ids[1], &[]));
         let mut changed = edge(1);
         changed.endpoint = "10.0.0.99:1234".into();
-        assert!(session.has_removed_line_edge(ids[1], &[changed]));
+        assert!(session.has_removed_line_edge(ids[1], &[changed.clone()]));
         let mut no_crossing = edge(1);
         no_crossing.cross_border = false;
-        assert!(session.has_removed_line_edge(ids[1], &[no_crossing]));
+        assert!(session.has_removed_line_edge(ids[1], &[no_crossing.clone()]));
+        let mut mixed = session.clone();
+        mixed.hops[1].requires_cross_border_approval = false;
+        assert!(!mixed.has_removed_line_edge(ids[1], &[no_crossing]));
+        assert!(!mixed.has_removed_line_edge(ids[1], &[edge(1)]), "additional approval is allowed");
+        assert!(mixed.has_removed_line_edge(ids[1], &[]), "ordinary edge removal revokes too");
+        assert!(mixed.has_removed_line_edge(ids[1], &[changed]), "ordinary edge endpoint must still match");
+        assert!(mixed.has_removed_line_edge(ids[0], &[roomler_ai_remote_control::models::PeerRelayBackboneEdge {
+            relay_agent_id: ids[1].to_hex(), endpoint: mixed.hops[0].private_endpoint.clone(), cross_border: false,
+        }]), "a different cross-border edge retains its own requirement");
         assert!(!session.has_removed_line_edge(ObjectId::new(), &[]));
         let messages = session.hop_revocations();
         assert_eq!(messages.len(), 6);

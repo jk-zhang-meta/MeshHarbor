@@ -248,6 +248,7 @@ mod tests {
                     generation: i as u64 + 10,
                     endpoints: vec!["8.8.8.8:3478".into()],
                     private_endpoint: "10.0.0.1:3478".into(),
+                    requires_cross_border_approval: false,
                     bridge_id: ObjectId::new(),
                     bridge_secrets: [secret(2 * i as u64 + 1), secret(2 * i as u64 + 2)],
                 }

@@ -1628,3 +1628,51 @@ async fn staged_graph_unknown_zone_parity_unlinked_servers_fail_closed() {
     let result = roomler_ai_mod_network::org_relay::candidate_test_support::prepare_edges(net, cn, us, false).await;
     assert!(matches!(result, Err(roomler_ai_remote_control::models::PeerRelayDenyReason::ZoneDenied)));
 }
+
+/// The server's real edge-withdrawal entry point must retain an approved
+/// ordinary edge, but revoke the full path when a required crossing loses its
+/// approval or when an ordinary edge disappears. The fixture inserts state
+/// only; it does not grant a live path or prove remote revoke delivery.
+#[tokio::test]
+async fn staged_graph_mixed_edge_approval_revokes_only_when_the_edge_requires_it() {
+    use roomler_ai_mod_network::org_relay::{
+        LineLeg, OrgRelaySession, SessionMember, SessionParty,
+        candidate_test_support::insert_session_fixture, revoke_removed_backbone_edges_sync,
+    };
+    use roomler_ai_remote_control::models::{NodeRef, PeerRelayBackboneEdge};
+    use std::time::Instant;
+    let app = TestApp::spawn().await;
+    let state = app.state.network();
+    let tenant = ObjectId::new();
+    let agents = [ObjectId::new(), ObjectId::new(), ObjectId::new()];
+    let party = |id| SessionParty { node_id: ObjectId::new(), node_ref: NodeRef::Agent { agent_id: id } };
+    let member = |id| SessionMember { party: party(id), wg_public_key: "fixture".into(), bind_secret: "fixture".into() };
+    let line = |index, required, endpoint: &str| LineLeg {
+        relay: party(agents[index]), relay_agent_id: agents[index], vni: index as u32 + 10,
+        generation: index as u64 + 20, endpoints: vec!["relay".into()],
+        private_endpoint: endpoint.into(), requires_cross_border_approval: required,
+        bridge_id: ObjectId::new(), bridge_secrets: ["a".into(), "b".into()],
+    };
+    let session = OrgRelaySession {
+        tenant_id: tenant, pair_key: "mixed-fixture".into(), vni: 9, generation: 19,
+        relay: party(agents[0]), relay_agent_id: agents[0], implicit: false,
+        members: [member(ObjectId::new()), member(ObjectId::new())], endpoints: vec!["relay".into()],
+        expires_at: Instant::now() + Duration::from_secs(60), bind_by: Instant::now() + Duration::from_secs(30),
+        hops: vec![line(1, false, "10.0.0.2:3478"), line(2, true, "10.0.0.3:3478")],
+    };
+    let edge = |target: ObjectId, endpoint: &str, cross_border| PeerRelayBackboneEdge {
+        relay_agent_id: target.to_hex(), endpoint: endpoint.into(), cross_border,
+    };
+    assert!(insert_session_fixture(state, session.clone()));
+    assert!(revoke_removed_backbone_edges_sync(state, tenant, agents[0], &[edge(agents[1], "10.0.0.2:3478", false)]).is_empty());
+    assert!(state.org_relay.active_session("mixed-fixture").is_some());
+    assert!(revoke_removed_backbone_edges_sync(state, tenant, agents[1], &[edge(agents[2], "10.0.0.3:3478", true)]).is_empty());
+    assert_eq!(revoke_removed_backbone_edges_sync(state, tenant, agents[1], &[edge(agents[2], "10.0.0.3:3478", false)]).len(), 1);
+    assert!(state.org_relay.active_session("mixed-fixture").is_none());
+    let mut another = session;
+    another.pair_key = "ordinary-edge-removed".into();
+    assert!(insert_session_fixture(state, another));
+    assert!(revoke_removed_backbone_edges_sync(state, ObjectId::new(), agents[0], &[]).is_empty());
+    assert_eq!(revoke_removed_backbone_edges_sync(state, tenant, agents[0], &[]).len(), 1);
+    assert!(state.org_relay.active_session("ordinary-edge-removed").is_none());
+}
