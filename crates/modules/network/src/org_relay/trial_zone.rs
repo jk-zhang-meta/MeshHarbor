@@ -149,23 +149,32 @@ fn capture(trial: &Trial) -> Option<TrialZoneSnapshot> {
     })
 }
 
-/// Return `Err` on storage failure or a fresh connection whose observation is
-/// pending. Confirmed unknown evidence is `Ok(None)` and ends the trial.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PartyZone {
+    Known(BusinessZone),
+    Unknown,
+    Invalid,
+}
+
+fn zone_fits(actual: PartyZone, issued: BusinessZone) -> bool {
+    match actual {
+        PartyZone::Known(zone) => zone == issued,
+        PartyZone::Unknown => true,
+        PartyZone::Invalid => false,
+    }
+}
+
+/// Unknown geography preserves an existing trial, unlike a confirmed invalid
+/// identity or a known conflicting region. Storage errors remain retryable.
 async fn current_party_zone(
     state: &NetworkState,
     tenant: ObjectId,
     node_id: ObjectId,
     node_ref: &NodeRef,
-) -> Result<Option<BusinessZone>, ()> {
+) -> Result<PartyZone, ()> {
     let identity = match node_ref {
         NodeRef::Agent { agent_id } => *agent_id,
         NodeRef::TunnelClient { tunnel_client_id } => *tunnel_client_id,
-    };
-    let (connection, bound_at) = {
-        let Some(live) = state.org_relay.live_conns.get(&identity) else {
-            return Ok(None);
-        };
-        (live.id.clone(), live.bound_at)
     };
     let node = state
         .overlay_nodes
@@ -174,7 +183,7 @@ async fn current_party_zone(
         .await
         .map_err(|_| ())?;
     if node.tenant_id != tenant || node.deleted_at.is_some() || &node.node_ref != node_ref {
-        return Ok(None);
+        return Ok(PartyZone::Invalid);
     }
     let device = match node_ref {
         NodeRef::Agent { agent_id } => {
@@ -185,7 +194,7 @@ async fn current_party_zone(
                 .await
                 .map_err(|_| ())?;
             let Ok(device) = AuthenticatedDevice::from_agent(&agent) else {
-                return Ok(None);
+                return Ok(PartyZone::Invalid);
             };
             device
         }
@@ -196,10 +205,16 @@ async fn current_party_zone(
                 .await
                 .map_err(|_| ())?;
             let Ok(device) = AuthenticatedDevice::from_tunnel_client(&client) else {
-                return Ok(None);
+                return Ok(PartyZone::Invalid);
             };
             device
         }
+    };
+    let (connection, bound_at) = {
+        let Some(live) = state.org_relay.live_conns.get(&identity) else {
+            return Ok(PartyZone::Unknown);
+        };
+        (live.id.clone(), live.bound_at)
     };
     let Some(zone) =
         roomler_core::business_authority::connection_zone(&state.core, &device, &connection)
@@ -207,9 +222,13 @@ async fn current_party_zone(
         if bound_at.elapsed() < crate::business_isolation::JOIN_ZONE_WAIT {
             return Err(());
         }
-        return Ok(None);
+        return Ok(PartyZone::Unknown);
     };
-    Ok(addresses_agree(state, &node, zone).then_some(zone))
+    Ok(if addresses_agree(state, &node, zone) {
+        PartyZone::Known(zone)
+    } else {
+        PartyZone::Invalid
+    })
 }
 
 /// `true` asks the caller to schedule a deduplicated retry. No I/O is awaited
@@ -235,9 +254,10 @@ pub(in crate::org_relay) async fn recheck_relay_zones(
     let mut retry = false;
     for snapshot in snapshots {
         let epoch = state.org_relay.eligibility_generation();
-        let mut fits = snapshot.shape_valid();
+        let shape_valid = snapshot.shape_valid();
+        let mut fits = shape_valid;
         let mut unavailable = false;
-        if fits {
+        if shape_valid {
             for (index, relay) in snapshot.relays.iter().enumerate() {
                 let zone = {
                     #[cfg(feature = "path-planner-test-support")]
@@ -268,16 +288,14 @@ pub(in crate::org_relay) async fn recheck_relay_zones(
                     }
                 };
                 match zone {
-                    Ok(actual) => fits &= actual == Some(snapshot.relay_zones[index]),
+                    Ok(actual) => fits &= zone_fits(actual, snapshot.relay_zones[index]),
                     Err(()) => {
                         unavailable = true;
-                        break;
                     }
                 }
             }
         }
-        if fits
-            && !unavailable
+        if shape_valid
             && let Some(zones) = snapshot.member_zones
         {
             for (index, member) in snapshot.members.iter().enumerate() {
@@ -310,10 +328,9 @@ pub(in crate::org_relay) async fn recheck_relay_zones(
                     }
                 };
                 match zone {
-                    Ok(actual) => fits &= actual == Some(zones[index]),
+                    Ok(actual) => fits &= zone_fits(actual, zones[index]),
                     Err(()) => {
                         unavailable = true;
-                        break;
                     }
                 }
             }
@@ -322,7 +339,7 @@ pub(in crate::org_relay) async fn recheck_relay_zones(
             retry = true;
             continue;
         }
-        if unavailable {
+        if unavailable && fits {
             retry = true;
             continue;
         }
@@ -410,6 +427,18 @@ pub(in crate::org_relay) fn insert_trial_fixture(
 mod tests {
     use super::*;
     use BusinessZone::{Mainland, NonMainland};
+
+    #[test]
+    fn unknown_preserves_trial_but_other_known_or_invalid_parties_still_fail() {
+        assert!(zone_fits(PartyZone::Unknown, Mainland));
+        assert!(zone_fits(PartyZone::Known(Mainland), Mainland));
+        assert!(!zone_fits(PartyZone::Known(NonMainland), Mainland));
+        assert!(!zone_fits(PartyZone::Invalid, Mainland));
+        let observations = [PartyZone::Unknown, PartyZone::Known(NonMainland)];
+        assert!(!observations.into_iter().fold(true, |fits, actual| {
+            fits & zone_fits(actual, Mainland)
+        }));
+    }
 
     fn fixture(length: usize) -> TrialZoneSnapshot {
         let relays: Vec<_> = (0..length)
