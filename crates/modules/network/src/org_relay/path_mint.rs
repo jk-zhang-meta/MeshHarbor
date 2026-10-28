@@ -473,7 +473,7 @@ pub(super) async fn reauthorize(
     let (Some(a), Some(b)) = (requester.id, peer.id) else {
         return Err(ReauthorizationError::Denied);
     };
-    if session.hops.len() < 2
+    if session.hops.is_empty()
         || session.implicit
         || session.tenant_id != requester.tenant_id
         || session.pair_key != pair_key(a, b)

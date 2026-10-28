@@ -2206,18 +2206,11 @@ async fn maybe_mint_line(
     let (Some(req_id), Some(peer_id)) = (requester.id, peer.id) else { return };
     let pk = pair_key(req_id, peer_id);
     if !warn_only && let Some(s) = state.org_relay.active_session(&pk) {
-        let Some(i) = s.member_index(req_id) else { return };
+        if s.member_index(req_id).is_none() { return; }
         if !s.hops.is_empty() && Instant::now() + BIND_REUSE_MARGIN < s.bind_by {
-            if s.hops.len() > 1 {
-                match path_mint::repush(state, requester, peer, &s).await {
-                    path_mint::RepushOutcome::Sent | path_mint::RepushOutcome::Unavailable => return,
-                    path_mint::RepushOutcome::Denied => {}
-                }
-            } else {
-                push_member(state, &s, i).await;
-                debug!(%tenant_id, %pk, vni = s.member_leg(i).vni,
-                    "org-relay: re-pushed the live line to a re-requesting member");
-                return;
+            match path_mint::repush(state, requester, peer, &s).await {
+                path_mint::RepushOutcome::Sent | path_mint::RepushOutcome::Unavailable => return,
+                path_mint::RepushOutcome::Denied => {}
             }
         }
         revoke_where(state, "org-line-rebind", |c| {
@@ -2360,7 +2353,7 @@ async fn mint_line(
         trial::MintClaim::Rejected => { refuse(PeerRelayDenyReason::PolicyUnreadable).await; return; },
     };
     if let Some(current) = current {
-        if current.hops.len() > 1 {
+        if !current.hops.is_empty() {
             reauthorize_concurrent_winner(state, requester, peer, &current).await;
             return;
         }
@@ -2807,7 +2800,7 @@ pub async fn maybe_mint(state: &NetworkState, requester: &OverlayNode, peer: &Ov
     // the peer and the relay already hold it. Not audited: nothing was
     // decided, and a retrying client must not fill the log.
     if !warn_only && let Some(s) = state.org_relay.active_session(&pk) {
-        if s.hops.len() > 1 {
+        if !s.hops.is_empty() {
             match path_mint::repush(state, requester, peer, &s).await {
                 path_mint::RepushOutcome::Sent | path_mint::RepushOutcome::Unavailable => return,
                 path_mint::RepushOutcome::Denied => {}
@@ -2887,7 +2880,7 @@ pub async fn maybe_mint_fallback(state: &NetworkState, requester: &OverlayNode, 
         return;
     }
     let mut cached = state.org_relay.active_session(&pk);
-    if mode != PeerRelayMode::Warn && cached.as_ref().is_some_and(|s| s.hops.len() > 1) {
+    if mode != PeerRelayMode::Warn && cached.as_ref().is_some_and(|s| !s.hops.is_empty()) {
         let session = cached.take().expect("checked above");
         match path_mint::repush(state, requester, peer, &session).await {
             path_mint::RepushOutcome::Sent | path_mint::RepushOutcome::Unavailable => return,
@@ -3048,7 +3041,7 @@ async fn mint_plan(
     });
     match claim {
         trial::MintClaim::Existing(current) => {
-            if current.hops.len() > 1 {
+            if !current.hops.is_empty() {
                 reauthorize_concurrent_winner(state, requester, peer, &current).await;
                 return;
             }

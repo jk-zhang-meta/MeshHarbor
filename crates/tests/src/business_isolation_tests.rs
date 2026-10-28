@@ -2285,6 +2285,76 @@ async fn staged_graph_long_path_capacity_race_falls_back_to_available_line() {
     assert!(recv_t(&mut l.gz, "rc:overlay.relay_serve", Duration::from_millis(500)).await.is_none());
 }
 
+/// Two-relay lines, including a concurrent claim winner, must go through the
+/// same complete, guarded reauthorization as longer multi-hop sessions.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn staged_graph_two_relay_repush_and_claim_reauthorize_every_edge() {
+    use roomler_ai_mod_network::org_relay::candidate_test_support as support;
+    async fn request(ws: &mut Ws, peer: &str, fallback: bool, serial: u64) {
+        if fallback { ws.send(Message::Text(json!({"t":"rc:overlay.org_relay_fallback_request", "peer_node_id":peer, "request_id":serial}).to_string().into())).await.unwrap(); }
+        else { relay_request(ws, peer).await; }
+    }
+    for fallback in [false, true] {
+        let slug = format!("iso-two-reauth-{}", if fallback {"fallback"} else {"normal"});
+        let mut l = LineRig::up(&slug, true).await;
+        let a = ObjectId::parse_str(&l.cn_node).unwrap(); let b = ObjectId::parse_str(&l.us_node).unwrap();
+        let pair = roomler_ai_mod_network::overlay::pair_key(a, b);
+        request(&mut l.cn, &l.us_node, fallback, 1).await;
+        let (_, _, _, cn, _) = l.expect_line().await;
+        let network = l.rig.app.state.network();
+        let original = network.org_relay.active_session(&pair).expect("two-relay session");
+        assert_eq!(original.hops.len(), 1);
+        assert!(support::reauthorize_nhop_fixture(network, a, b, &original).await, "current line must pass full authorization");
+        let mut bad_edge = original.clone(); bad_edge.hops[0].private_endpoint = "10.77.1.9:3478".into();
+        assert!(!support::reauthorize_nhop_fixture(network, a, b, &bad_edge).await, "changed edge address must fail");
+        let mut bad_cross = original.clone(); bad_cross.hops[0].requires_cross_border_approval = false;
+        assert!(!support::reauthorize_nhop_fixture(network, a, b, &bad_cross).await, "crossing bit cannot be cleared");
+        support::fail_next_nhop_reauth_fixture(pair.clone());
+        request(&mut l.cn, &l.us_node, fallback, 2).await;
+        assert!(recv_t(&mut l.cn, "rc:overlay.relay_session", Duration::from_millis(800)).await.is_none(), "unreadable line was re-pushed");
+        assert_eq!(network.org_relay.active_session(&pair).unwrap().generation, original.generation, "transient read failure should preserve current line");
+        request(&mut l.cn, &l.us_node, fallback, 3).await;
+        let retry = recv_t(&mut l.cn, "rc:overlay.relay_session", Duration::from_secs(8)).await.expect("healthy line re-push");
+        assert_eq!(retry["vni"], cn["vni"]);
+        // A stale key is a definite denial, not a read failure. The old
+        // generation must be revoked before any replacement is sent.
+        assert!(support::invalidate_session_member_key_fixture(network, &pair));
+        request(&mut l.cn, &l.us_node, fallback, 4).await;
+        let revoke = recv_t(&mut l.cn, "rc:overlay.relay_revoke", Duration::from_secs(8)).await.expect("invalid line revoked");
+        assert_eq!(revoke["vni"], cn["vni"]);
+        let replacement = recv_t(&mut l.cn, "rc:overlay.relay_session", Duration::from_secs(8)).await.expect("fresh line planned");
+        assert_ne!(replacement["vni"], cn["vni"], "old line key must never be re-pushed");
+    }
+    for unavailable in [false, true] {
+        let slug = format!("iso-two-claim-{}", if unavailable {"unavailable"} else {"invalid"});
+        let mut l = LineRig::up(&slug, true).await;
+        let a = ObjectId::parse_str(&l.cn_node).unwrap(); let b = ObjectId::parse_str(&l.us_node).unwrap();
+        let pair = roomler_ai_mod_network::overlay::pair_key(a, b);
+        let (reached, resume) = support::pause_line_preclaim_fixture(pair.clone());
+        relay_request(&mut l.cn, &l.us_node).await;
+        tokio::time::timeout(Duration::from_secs(10), reached).await.expect("losing line claim paused").unwrap();
+        relay_request(&mut l.us, &l.cn_node).await;
+        let (_, _, _, cn, _) = l.expect_line().await;
+        let network = l.rig.app.state.network();
+        let winner = network.org_relay.active_session(&pair).expect("winning two-relay line");
+        assert_eq!(winner.hops.len(), 1);
+        if unavailable {
+            support::fail_next_nhop_reauth_fixture(pair.clone()); resume.send(()).unwrap();
+            assert!(recv_t(&mut l.cn, "rc:overlay.relay_session", Duration::from_millis(800)).await.is_none(), "losing claim bypassed unreadable two-relay authorization");
+            assert_eq!(network.org_relay.active_session(&pair).unwrap().generation, winner.generation);
+            relay_request(&mut l.cn, &l.us_node).await;
+            let retry = recv_t(&mut l.cn, "rc:overlay.relay_session", Duration::from_secs(8)).await.expect("winning line re-push");
+            assert_eq!(retry["vni"], cn["vni"]);
+        } else {
+            assert!(support::invalidate_session_member_key_fixture(network, &pair)); resume.send(()).unwrap();
+            let revoke = recv_t(&mut l.cn, "rc:overlay.relay_revoke", Duration::from_secs(8)).await.expect("invalid concurrent winner revoked");
+            assert_eq!(revoke["vni"], cn["vni"]);
+            assert!(network.org_relay.active_session(&pair).is_none());
+            assert!(recv_t(&mut l.cn, "rc:overlay.relay_session", Duration::from_millis(500)).await.is_none(), "invalid concurrent winner re-pushed");
+        }
+    }
+}
+
 /// Off/Warn business isolation permits explicitly approved cross-zone paths.
 /// Peer-relay Warn remains audit-only; actual On grants carry WG until revoke.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
