@@ -164,6 +164,11 @@ fn zone_fits(actual: PartyZone, issued: BusinessZone) -> bool {
     }
 }
 
+fn observe_zone(actual: PartyZone, issued: BusinessZone, fits: &mut bool, unavailable: &mut bool) {
+    *unavailable |= actual == PartyZone::Unknown;
+    *fits &= zone_fits(actual, issued);
+}
+
 /// Unknown geography preserves an existing trial, unlike a confirmed invalid
 /// identity or a known conflicting region. Storage errors remain retryable.
 async fn current_party_zone(
@@ -288,7 +293,7 @@ pub(in crate::org_relay) async fn recheck_relay_zones(
                     }
                 };
                 match zone {
-                    Ok(actual) => fits &= zone_fits(actual, snapshot.relay_zones[index]),
+                    Ok(actual) => observe_zone(actual, snapshot.relay_zones[index], &mut fits, &mut unavailable),
                     Err(()) => {
                         unavailable = true;
                     }
@@ -328,7 +333,7 @@ pub(in crate::org_relay) async fn recheck_relay_zones(
                     }
                 };
                 match zone {
-                    Ok(actual) => fits &= zone_fits(actual, zones[index]),
+                    Ok(actual) => observe_zone(actual, zones[index], &mut fits, &mut unavailable),
                     Err(()) => {
                         unavailable = true;
                     }
@@ -438,6 +443,11 @@ mod tests {
         assert!(!observations.into_iter().fold(true, |fits, actual| {
             fits & zone_fits(actual, Mainland)
         }));
+        let (mut fits, mut unavailable) = (true, false);
+        observe_zone(PartyZone::Unknown, Mainland, &mut fits, &mut unavailable);
+        assert!(fits && unavailable, "unknown retains the trial and requests a retry");
+        observe_zone(PartyZone::Known(NonMainland), Mainland, &mut fits, &mut unavailable);
+        assert!(!fits && unavailable, "an unknown must not hide a later known violation");
     }
 
     fn fixture(length: usize) -> TrialZoneSnapshot {
