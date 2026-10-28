@@ -52,6 +52,7 @@ enum Phase {
 struct BackboneTrial {
     exit: OrgRelaySession,
     private_endpoint: String,
+    requires_cross_border_approval: bool,
 }
 
 struct Trial {
@@ -204,6 +205,7 @@ pub(super) fn revoke_removed_backbone_edges(
             let keep = approved.iter().any(|e| {
                 ObjectId::parse_str(&e.relay_agent_id).ok() == Some(path.exit.relay_agent_id)
                     && e.endpoint == path.private_endpoint
+                    && (!path.requires_cross_border_approval || e.cross_border)
             });
             (!keep).then_some(t.id)
         })
@@ -366,7 +368,7 @@ pub async fn request(
         let Ok(path) = plan_backbone(state, &requester, &peer, relay_id, exit_id).await else {
             return;
         };
-        (path.ingress, Some((path.exit, path.private_endpoint)))
+        (path.ingress, Some((path.exit, path.private_endpoint, path.requires_cross_border_approval)))
     } else {
         let Ok(plans) = plan_mint_candidates(state, &requester, &peer).await else {
             return;
@@ -413,9 +415,9 @@ pub async fn request(
         let reserved = reserved_for(relay_id);
         let exit_reserved = backbone_plan
             .as_ref()
-            .map(|(p, _)| reserved_for(p.relay.id.unwrap_or_default()));
+            .map(|(p, _, _)| reserved_for(p.relay.id.unwrap_or_default()));
         let mut relay_nodes = vec![relay_id];
-        if let Some((exit, _)) = backbone_plan.as_ref() {
+        if let Some((exit, _, _)) = backbone_plan.as_ref() {
             let Some(exit_id) = exit.relay.id else { return };
             relay_nodes.push(exit_id);
         }
@@ -469,7 +471,7 @@ pub async fn request(
                     bind_by: now + Duration::from_secs(u64::from(limits::BIND_SECS)),
                     hops: Vec::new(),
                 };
-                let backbone = if let Some((exit, private_endpoint)) = backbone_plan {
+                let backbone = if let Some((exit, private_endpoint, requires_cross_border_approval)) = backbone_plan {
                     let exit_id = exit.relay.id?;
                     let mut secondary = session.clone();
                     secondary.vni = state.org_relay.alloc_vni_with_reserved(
@@ -490,6 +492,7 @@ pub async fn request(
                     Some(BackboneTrial {
                         exit: secondary,
                         private_endpoint,
+                        requires_cross_border_approval,
                     })
                 } else {
                     None

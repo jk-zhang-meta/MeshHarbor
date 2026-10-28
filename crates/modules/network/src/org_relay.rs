@@ -1910,6 +1910,7 @@ struct BackbonePlan {
     ingress: Plan,
     exit: Plan,
     private_endpoint: String,
+    requires_cross_border_approval: bool,
 }
 
 /// The audit `reason` of a mint planned over a cross-border line (#21).
@@ -2040,6 +2041,7 @@ async fn plan_backbone(
         ingress,
         exit,
         private_endpoint: endpoint,
+        requires_cross_border_approval: crossing,
     })
 }
 
