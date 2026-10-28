@@ -22,8 +22,11 @@ pub(super) struct PreparedGraph {
     pub requester_identity: ObjectId,
     pub peer_identity: ObjectId,
     pub plans: HashMap<ObjectId, Plan>,
-    pub requester_zone: BusinessZone,
-    pub peer_zone: BusinessZone,
+    pub requester_zone: Option<BusinessZone>,
+    pub peer_zone: Option<BusinessZone>,
+    /// Ordinary enforced pairs bind path ends to the members' zones.
+    /// A topology-linked server pair may use either permitted relay zone.
+    pub restrict_ends: bool,
     pub eligibility_epoch: u64,
     pub warn_only: bool,
 }
@@ -35,7 +38,7 @@ fn eligible_from_plan(
     plan: &Plan,
     tenant: ObjectId,
     network: ObjectId,
-    zone: BusinessZone,
+    zone: Option<BusinessZone>,
     bridge_ready: bool,
 ) -> Result<path_graph::EligibleRelay, Deny> {
     let node_id = plan.relay.id.ok_or(Deny::PolicyUnreadable)?;
@@ -88,13 +91,68 @@ pub(super) async fn prepare(
     if for_trial && (!a_extra.supports_path_backbone_v1 || !b_extra.supports_path_backbone_v1) {
         return Err(Deny::RequesterUnsupported);
     }
-    let (Some(za), Some(zb)) = (
+    use crate::business_isolation::{self as iso, Mode};
+    let enforce_zone = iso::mode(state) == Mode::Enforce;
+    let (za, zb) = (
         node_zone(state, requester).await,
         node_zone(state, peer).await,
-    ) else {
-        return Err(Deny::ZoneDenied);
+    );
+    // The existing mint handles two known, different zones as a cross-border
+    // line even for linked servers. The topology exception applies only when
+    // the pair is not known to cross the boundary.
+    let known_crossing = matches!((za, zb), (Some(a), Some(b)) if a != b);
+    // The server topology is a pair-level gate, even when Side-scope relay
+    // candidates are used for a cross-zone path. Without this explicit check,
+    // the Side gate alone could route two unlinked servers around that rule.
+    let server_pair = if enforce_zone {
+        match (&requester.node_ref, &peer.node_ref) {
+            (NodeRef::Agent { agent_id: a }, NodeRef::Agent { agent_id: b }) => {
+                // `business_isolation::lines` deliberately hides role/DB
+                // failures for netmap shaping. The authorization snapshot
+                // must not mistake a failed read for a non-server pair.
+                let servers = roomler_core::business_authority::current_server_agents(
+                    &state.core,
+                    requester.tenant_id,
+                )
+                .await
+                .map_err(|_| Deny::PolicyUnreadable)?;
+                if servers.iter().any(|agent| agent.id == Some(*a))
+                    && servers.iter().any(|agent| agent.id == Some(*b))
+                {
+                    let network = state
+                        .overlay_networks
+                        .find_for_tenant(requester.tenant_id)
+                        .await
+                        .map_err(|_| Deny::PolicyUnreadable)?
+                        .ok_or(Deny::PolicyUnreadable)?;
+                    let pair = roomler_ai_remote_control::models::ServerLink::ordered(*a, *b);
+                    Some(
+                        network
+                            .server_links
+                            .iter()
+                            .any(|link| link.enabled && (link.a, link.b) == pair),
+                    )
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    } else {
+        None
     };
-    if za != zb && (!a_extra.supports_backbone_only_v1 || !b_extra.supports_backbone_only_v1) {
+    if server_pair == Some(false) {
+        return Err(Deny::ZoneDenied);
+    }
+    let linked_servers = enforce_zone && !known_crossing && server_pair == Some(true);
+    if enforce_zone && !linked_servers && (za.is_none() || zb.is_none()) {
+        return Err(Deny::ZoneDenied);
+    }
+    if enforce_zone
+        && !linked_servers
+        && za != zb
+        && (!a_extra.supports_backbone_only_v1 || !b_extra.supports_backbone_only_v1)
+    {
         return Err(Deny::ZoneDenied);
     }
     let network = state
@@ -109,27 +167,31 @@ pub(super) async fn prepare(
         return Err(Deny::RequesterUnsupported);
     }
 
-    // Same-zone candidates can use an authorized implicit grant. A cross-zone
-    // pair uses Side scopes, for which the existing gate requires explicit ACLs.
-    let scopes = if za == zb {
-        vec![(ZoneScope::Pair, za)]
-    } else {
-        vec![(ZoneScope::Side(za), za), (ZoneScope::Side(zb), zb)]
+    // Outside Enforce, preserve the existing Pair gate's Off/Warn behavior.
+    // In Enforce, the members have known zones (checked above), and a
+    // crossing requires explicit Side-scope authorizations.
+    let scopes = match (enforce_zone, linked_servers, za, zb) {
+        (true, true, _, _) => vec![(ZoneScope::Pair, None)],
+        (true, false, Some(a), Some(b)) if a != b => {
+            vec![(ZoneScope::Side(a), Some(a)), (ZoneScope::Side(b), Some(b))]
+        }
+        (true, false, Some(a), Some(_)) => vec![(ZoneScope::Pair, Some(a))],
+        (false, _, _, _) => vec![(ZoneScope::Pair, None)],
+        _ => return Err(Deny::ZoneDenied),
     };
     let mut inputs = Vec::new();
     let mut plans = HashMap::new();
     for (scope, expected_zone) in scopes {
         let candidates = plan_mint_candidates_reusing(state, requester, peer, None, scope).await?;
         for plan in candidates {
-            // When isolation is Off the existing Side scope does not filter;
-            // filter explicitly so the same node isn't inserted twice.
-            if node_zone(state, &plan.relay).await != Some(expected_zone) {
+            let relay_zone = node_zone(state, &plan.relay).await;
+            if enforce_zone && !linked_servers && relay_zone != expected_zone {
                 continue;
             }
             if plan.relay.node_ref == requester.node_ref || plan.relay.node_ref == peer.node_ref {
                 return Err(Deny::PolicyUnreadable);
             }
-            if za != zb && plan.implicit {
+            if enforce_zone && !linked_servers && za != zb && plan.implicit {
                 return Err(Deny::PolicyUnreadable);
             }
             let node_id = plan.relay.id.ok_or(Deny::PolicyUnreadable)?;
@@ -138,7 +200,7 @@ pub(super) async fn prepare(
                 &plan,
                 requester.tenant_id,
                 requester.network_id,
-                expected_zone,
+                relay_zone,
                 ready,
             )?;
             if plans.insert(eligible.node_id, plan).is_some() {
@@ -171,6 +233,7 @@ pub(super) async fn prepare(
         plans,
         requester_zone: za,
         peer_zone: zb,
+        restrict_ends: enforce_zone && !linked_servers,
         eligibility_epoch: epoch,
         warn_only: mode == PeerRelayMode::Warn,
     })
@@ -205,20 +268,20 @@ mod tests {
         let id = ObjectId::new();
         let p = plan(tenant, agent, id, true);
         let network = p.relay.network_id;
-        let e = eligible_from_plan(&p, tenant, network, Mainland, false).unwrap();
+        let e = eligible_from_plan(&p, tenant, network, Some(Mainland), false).unwrap();
         assert_eq!(
             (e.node_id, e.agent_id, e.zone, e.bridge_ready, e.implicit),
-            (id, agent, Mainland, false, true)
+            (id, agent, Some(Mainland), false, true)
         );
-        assert!(eligible_from_plan(&p, ObjectId::new(), network, Mainland, true).is_err());
-        assert!(eligible_from_plan(&p, tenant, ObjectId::new(), Mainland, true).is_err());
+        assert!(eligible_from_plan(&p, ObjectId::new(), network, Some(Mainland), true).is_err());
+        assert!(eligible_from_plan(&p, tenant, ObjectId::new(), Some(Mainland), true).is_err());
         let mut stale = p.clone();
         stale.relay.node_ref = NodeRef::Agent {
             agent_id: ObjectId::new(),
         };
-        assert!(eligible_from_plan(&stale, tenant, network, Mainland, true).is_err());
+        assert!(eligible_from_plan(&stale, tenant, network, Some(Mainland), true).is_err());
         let mut missing = p;
         missing.relay.id = None;
-        assert!(eligible_from_plan(&missing, tenant, network, Mainland, true).is_err());
+        assert!(eligible_from_plan(&missing, tenant, network, Some(Mainland), true).is_err());
     }
 }

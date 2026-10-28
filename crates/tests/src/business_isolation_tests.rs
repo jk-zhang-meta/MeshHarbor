@@ -1431,3 +1431,200 @@ async fn staged_graph_tunnel_bind_waits_for_old_async_leave() {
         roomler_ai_mod_network::overlay::NodeIdentity::TunnelClient(identity)).await.unwrap();
     assert_eq!(offline.status, roomler_ai_remote_control::models::AgentStatus::Offline);
 }
+
+/// Staged N-hop planning must preserve the current authorized single-relay
+/// behavior when isolation only logs or is off and zones are unknown.
+async fn staged_graph_unknown_zone_parity(mode: &'static str, slug: &str) {
+    let rig = Rig::up(slug, mode).await;
+    let (relay_id, token) = enroll(&rig.app, &rig.seeded, &format!("{slug}-relay")).await;
+    let mut relay = connect_from(&rig.app, &token, &["relay-server"], None).await;
+    let mut a = rig.device(&format!("{slug}-a"), None).await;
+    let mut b = rig.device(&format!("{slug}-b"), None).await;
+    line_join(&mut relay, 31, "1.1.1.1:41641", json!({})).await;
+    line_join(&mut a, 32, "8.8.8.8:41641", json!({})).await;
+    line_join(&mut b, 33, "8.8.4.4:41641", json!({})).await;
+    set_mode(&rig.app, &rig.seeded, "on").await;
+    assert_eq!(approve(&rig.app, &rig.seeded, &relay_id, true).await, 200);
+    let relay_node = rig.node(&format!("{slug}-relay")).await;
+    grant_relay(&rig.app, &rig.seeded, &relay_node).await;
+    let a_node = rig.node(&format!("{slug}-a")).await;
+    let b_node = rig.node(&format!("{slug}-b")).await;
+    relay_request(&mut a, &b_node).await;
+    let wait = Duration::from_secs(5);
+    if mode == "enforce" {
+        assert!(recv_t(&mut relay, "rc:overlay.relay_serve", Duration::from_millis(600)).await.is_none());
+        let a_id = ObjectId::parse_str(&a_node).unwrap();
+        let b_id = ObjectId::parse_str(&b_node).unwrap();
+        let result = roomler_ai_mod_network::org_relay::candidate_test_support::select_path(
+            rig.app.state.network(), a_id, b_id, false).await;
+        assert!(matches!(result, Err(roomler_ai_remote_control::models::PeerRelayDenyReason::ZoneDenied)));
+        return;
+    }
+    recv_t(&mut relay, "rc:overlay.relay_serve", wait).await.expect("existing relay gate should authorize");
+    recv_t(&mut a, "rc:overlay.relay_session", wait).await.expect("member a has session");
+    recv_t(&mut b, "rc:overlay.relay_session", wait).await.expect("member b has session");
+    let a_id = ObjectId::parse_str(&a_node).unwrap();
+    let b_id = ObjectId::parse_str(&b_node).unwrap();
+    let relay_agent_id = ObjectId::parse_str(&relay_id).unwrap();
+    let path = roomler_ai_mod_network::org_relay::candidate_test_support::select_path(
+        rig.app.state.network(), a_id, b_id, false).await.expect("staged gate should honor same isolation mode").expect("a relay path exists");
+    assert_eq!(path.0, vec![relay_agent_id]);
+}
+
+#[tokio::test]
+async fn staged_graph_unknown_zone_parity_off() { staged_graph_unknown_zone_parity("off", "iso-zone-none-off").await; }
+
+#[tokio::test]
+async fn staged_graph_unknown_zone_parity_warn() { staged_graph_unknown_zone_parity("warn", "iso-zone-none-warn").await; }
+
+#[tokio::test]
+async fn staged_graph_unknown_zone_parity_enforce() { staged_graph_unknown_zone_parity("enforce", "iso-zone-none-enforce").await; }
+
+/// Enforced isolation already permits a linked server pair when at least one
+/// server has zone evidence; a relay in that known zone can serve both.
+#[tokio::test]
+async fn staged_graph_unknown_zone_parity_linked_servers_enforce() {
+    let rig = Rig::up("iso-linked-zone-unknown", "enforce").await;
+    let (r_id, r_token) = enroll(&rig.app, &rig.seeded, "iso-linked-zone-relay").await;
+    let (a_id, a_token) = enroll(&rig.app, &rig.seeded, "iso-linked-zone-a").await;
+    let (b_id, b_token) = enroll(&rig.app, &rig.seeded, "iso-linked-zone-b").await;
+    let mut relay = connect_from(&rig.app, &r_token, &["relay-server"], Some(CN_R)).await;
+    let mut a = connect_from(&rig.app, &a_token, &[], Some(CN_A)).await;
+    let mut b = connect_from(&rig.app, &b_token, &[], None).await;
+    assert_observed(&rig.app, &r_id, Some(CN_R)).await;
+    assert_observed(&rig.app, &a_id, Some(CN_A)).await;
+    assert_observed(&rig.app, &b_id, None).await;
+    rig.set_role(&a_id, "server").await;
+    rig.set_role(&b_id, "server").await;
+    rig.link(&a_id, &b_id, true).await;
+    line_join(&mut relay, 31, "223.6.6.6:41641", json!({})).await;
+    line_join(&mut a, 32, "223.5.5.5:41641", json!({})).await;
+    line_join(&mut b, 33, "223.5.5.6:41641", json!({})).await;
+    set_mode(&rig.app, &rig.seeded, "on").await;
+    assert_eq!(approve(&rig.app, &rig.seeded, &r_id, true).await, 200);
+    let relay_node = rig.node("iso-linked-zone-relay").await;
+    grant_relay(&rig.app, &rig.seeded, &relay_node).await;
+    let a_node = rig.node("iso-linked-zone-a").await;
+    let b_node = rig.node("iso-linked-zone-b").await;
+    relay_request(&mut a, &b_node).await;
+    let wait = Duration::from_secs(5);
+    recv_t(&mut relay, "rc:overlay.relay_serve", wait).await.expect("existing linked-server gate should authorize");
+    recv_t(&mut a, "rc:overlay.relay_session", wait).await.expect("server a session");
+    recv_t(&mut b, "rc:overlay.relay_session", wait).await.expect("server b session");
+    let selected = roomler_ai_mod_network::org_relay::candidate_test_support::select_path(
+        rig.app.state.network(), ObjectId::parse_str(&a_node).unwrap(), ObjectId::parse_str(&b_node).unwrap(), false,
+    ).await.expect("staged gate should honor linked-server topology").expect("a relay path exists");
+    assert_eq!(selected.0, vec![ObjectId::parse_str(&r_id).unwrap()]);
+}
+
+async fn staged_graph_unknown_backbone(mode: &'static str, slug: &str) {
+    let rig = Rig::up(slug, mode).await;
+    let (r1_id, r1_token) = enroll(&rig.app, &rig.seeded, &format!("{slug}-r1")).await;
+    let (r2_id, r2_token) = enroll(&rig.app, &rig.seeded, &format!("{slug}-r2")).await;
+    let mut r1 = connect_from(&rig.app, &r1_token, &["relay-server"], None).await;
+    let mut r2 = connect_from(&rig.app, &r2_token, &["relay-server"], None).await;
+    let mut a = rig.device(&format!("{slug}-a"), None).await;
+    let mut b = rig.device(&format!("{slug}-b"), None).await;
+    line_join(&mut r1, 41, "1.1.1.1:41641", json!({ "relay_backbone_ready": true })).await;
+    line_join(&mut r2, 42, "1.0.0.1:41641", json!({ "relay_backbone_ready": true })).await;
+    line_join(&mut a, 43, "8.8.8.8:41641", json!({})).await;
+    line_join(&mut b, 44, "8.8.4.4:41641", json!({})).await;
+    set_mode(&rig.app, &rig.seeded, "on").await;
+    assert_eq!(approve(&rig.app, &rig.seeded, &r1_id, true).await, 200);
+    assert_eq!(approve(&rig.app, &rig.seeded, &r2_id, true).await, 200);
+    let r1_node = rig.node(&format!("{slug}-r1")).await;
+    let r2_node = rig.node(&format!("{slug}-r2")).await;
+    grant_relay(&rig.app, &rig.seeded, &r1_node).await;
+    grant_relay(&rig.app, &rig.seeded, &r2_node).await;
+    let a_node = ObjectId::parse_str(rig.node(&format!("{slug}-a")).await).unwrap();
+    let b_node = ObjectId::parse_str(rig.node(&format!("{slug}-b")).await).unwrap();
+    let source = ObjectId::parse_str(&r1_id).unwrap();
+    let target = ObjectId::parse_str(&r2_id).unwrap();
+    let r1_node = ObjectId::parse_str(r1_node).unwrap();
+    let r2_node = ObjectId::parse_str(r2_node).unwrap();
+    let policy = format!("/api/tenant/{}/agent/{}/peer-relay-policy", rig.seeded.tenant_id, r1_id);
+    for cross in [false, true] {
+        let (status, response) = put(&rig.app, &policy, &rig.seeded.admin.access_token, json!({
+            "serve": true, "approved_backbone_edges": [{"relay_agent_id":r2_id,
+                "endpoint":"10.42.2.113:3478", "cross_border":cross}]
+        })).await;
+        assert_eq!(status, 200, "{response}");
+        let edges = roomler_ai_mod_network::org_relay::candidate_test_support::prepare_edges(
+            rig.app.state.network(), a_node, b_node, false).await.unwrap();
+        assert_eq!(edges.iter().any(|(a,b,_,_)| *a==source && *b==target), cross,
+            "unknown endpoints must require explicit cross-border approval");
+    }
+    let net = rig.app.state.network();
+    assert!(roomler_ai_mod_network::org_relay::candidate_test_support::record_member_probe_fixture(net, a_node, &[
+        (r1_node, "1.1.1.1:3478".into(), true, Some(10)),
+        (r2_node, "1.0.0.1:3478".into(), false, None),
+    ]));
+    assert!(roomler_ai_mod_network::org_relay::candidate_test_support::record_member_probe_fixture(net, b_node, &[
+        (r1_node, "1.1.1.1:3478".into(), false, None),
+        (r2_node, "1.0.0.1:3478".into(), true, Some(10)),
+    ]));
+    let selected = roomler_ai_mod_network::org_relay::candidate_test_support::select_path(net, a_node, b_node, false)
+        .await.unwrap().expect("approved two-relay path exists");
+    assert_eq!(selected, (vec![source, target], false));
+}
+
+#[tokio::test]
+async fn staged_graph_unknown_zone_parity_backbone_off() { staged_graph_unknown_backbone("off", "iso-zone-backbone-off").await; }
+#[tokio::test]
+async fn staged_graph_unknown_zone_parity_backbone_warn() { staged_graph_unknown_backbone("warn", "iso-zone-backbone-warn").await; }
+
+/// Even topology-linked servers in different known zones need a cross-border line.
+#[tokio::test]
+async fn staged_graph_unknown_zone_parity_linked_servers_known_cross_zone() {
+    let rig = Rig::up("iso-linked-cross-unknown", "enforce").await;
+    let (r_id, r_token) = enroll(&rig.app, &rig.seeded, "iso-linked-cross-relay").await;
+    let (a_id, a_token) = enroll(&rig.app, &rig.seeded, "iso-linked-cross-a").await;
+    let (b_id, b_token) = enroll(&rig.app, &rig.seeded, "iso-linked-cross-b").await;
+    let mut relay = connect_from(&rig.app, &r_token, &["relay-server"], Some(CN_R)).await;
+    let mut a = connect_from(&rig.app, &a_token, &[], Some(CN_A)).await;
+    let mut b = connect_from(&rig.app, &b_token, &[], Some(US_A)).await;
+    assert_observed(&rig.app, &r_id, Some(CN_R)).await;
+    assert_observed(&rig.app, &a_id, Some(CN_A)).await;
+    assert_observed(&rig.app, &b_id, Some(US_A)).await;
+    rig.set_role(&a_id, "server").await;
+    rig.set_role(&b_id, "server").await;
+    rig.link(&a_id, &b_id, true).await;
+    line_join(&mut relay, 31, "223.6.6.6:41641", json!({})).await;
+    line_join(&mut a, 32, "223.5.5.5:41641", json!({})).await;
+    line_join(&mut b, 33, "8.8.8.8:41641", json!({})).await;
+    set_mode(&rig.app, &rig.seeded, "on").await;
+    assert_eq!(approve(&rig.app, &rig.seeded, &r_id, true).await, 200);
+    let relay_node = rig.node("iso-linked-cross-relay").await;
+    grant_relay(&rig.app, &rig.seeded, &relay_node).await;
+    let a_node = rig.node("iso-linked-cross-a").await;
+    let b_node = rig.node("iso-linked-cross-b").await;
+    relay_request(&mut a, &b_node).await;
+    let wait = Duration::from_secs(5);
+    assert!(recv_t(&mut relay, "rc:overlay.relay_serve", wait).await.is_none(), "no cross-border line may be minted");
+    let selected = roomler_ai_mod_network::org_relay::candidate_test_support::select_path(
+        rig.app.state.network(), ObjectId::parse_str(&a_node).unwrap(), ObjectId::parse_str(&b_node).unwrap(), false,
+    ).await;
+    assert!(matches!(selected, Err(roomler_ai_remote_control::models::PeerRelayDenyReason::ZoneDenied)));
+
+}
+
+/// Two server-role members without their topology link must not obtain a
+/// staged cross-zone path even if a relay-to-relay edge itself is approved.
+#[tokio::test]
+async fn staged_graph_unknown_zone_parity_unlinked_servers_fail_closed() {
+    let l = LineRig::up("iso-zone-unlinked-servers", true).await;
+    let net = l.rig.app.state.network();
+    let cn = ObjectId::parse_str(&l.cn_node).unwrap();
+    let us = ObjectId::parse_str(&l.us_node).unwrap();
+    let agent_id = |node: &roomler_ai_remote_control::models::OverlayNode| match node.node_ref {
+        roomler_ai_remote_control::models::NodeRef::Agent { agent_id } => agent_id.to_hex(),
+        _ => panic!("fixture member must be an agent"),
+    };
+    let cn_agent = agent_id(&net.overlay_nodes.base.find_by_id(cn).await.unwrap());
+    let us_agent = agent_id(&net.overlay_nodes.base.find_by_id(us).await.unwrap());
+    l.rig.set_role(&cn_agent, "server").await;
+    l.rig.set_role(&us_agent, "server").await;
+    l.rig.link(&cn_agent, &us_agent, false).await;
+    let result = roomler_ai_mod_network::org_relay::candidate_test_support::prepare_edges(net, cn, us, false).await;
+    assert!(matches!(result, Err(roomler_ai_remote_control::models::PeerRelayDenyReason::ZoneDenied)));
+}

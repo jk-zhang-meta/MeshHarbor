@@ -15,7 +15,7 @@ use std::collections::{HashMap, HashSet};
 pub(super) struct EligibleRelay {
     pub node_id: ObjectId,
     pub agent_id: ObjectId,
-    pub zone: BusinessZone,
+    pub zone: Option<BusinessZone>,
     pub bridge_ready: bool,
     /// True when eligibility depends on the same-zone implicit server role.
     pub implicit: bool,
@@ -80,7 +80,10 @@ pub(super) fn build(
             };
             if from == to
                 || !relay.bridge_ready
-                || (relay.zone != relays[to].zone
+                // An unknown zone is never evidence that an edge is domestic.
+                // Require cross-border approval and explicit grants whenever
+                // either end is unknown or the known zones differ.
+                || (!matches!((relay.zone, relays[to].zone), (Some(a), Some(b)) if a == b)
                     && (!approved.cross_border || relay.implicit || relays[to].implicit))
                 || !crate::routes::peer_relay::backbone_endpoint_outside_overlay(
                     &approved.endpoint,
@@ -109,7 +112,7 @@ mod tests {
         EligibleRelay {
             node_id: ObjectId::new(),
             agent_id: agent,
-            zone,
+            zone: Some(zone),
             bridge_ready: true,
             implicit: false,
             approved_edges: vec![],
@@ -198,6 +201,40 @@ mod tests {
             build(vec![], "not-cidr"),
             Err(GraphError::InvalidOverlay)
         ));
+    }
+    #[test]
+    fn unknown_zone_is_never_treated_as_proven_same_zone() {
+        let a_id = ObjectId::new();
+        let b_id = ObjectId::new();
+        let mut a = relay(a_id, M);
+        let mut b = relay(b_id, M);
+        a.zone = None;
+        b.zone = None;
+        a.approved_edges = vec![edge(b_id, "10.0.0.1:3478", false)];
+        assert!(
+            build(vec![a.clone(), b.clone()], "100.64.0.0/10")
+                .unwrap()
+                .edges
+                .is_empty()
+        );
+        a.approved_edges[0].cross_border = true;
+        assert_eq!(
+            build(vec![a.clone(), b.clone()], "100.64.0.0/10")
+                .unwrap()
+                .edges
+                .len(),
+            1
+        );
+        b.implicit = true;
+        assert!(
+            build(vec![a.clone(), b], "100.64.0.0/10")
+                .unwrap()
+                .edges
+                .is_empty()
+        );
+        let c = relay(b_id, M);
+        a.approved_edges[0].cross_border = false;
+        assert!(build(vec![a, c], "100.64.0.0/10").unwrap().edges.is_empty());
     }
     #[test]
     fn cross_zone_requires_explicit_grants_on_both_relays() {

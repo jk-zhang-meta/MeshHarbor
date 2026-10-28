@@ -112,14 +112,17 @@ pub(super) fn select(
         let load = state.org_relay.sessions_on_relay(relay.node_id);
         forward.push(SearchRelay {
             node_id: relay.node_id,
-            ingress: (relay.zone == prepared.requester_zone).then_some(a_probe),
-            exit: (relay.zone == prepared.peer_zone).then_some(b_probe),
+            ingress: (!prepared.restrict_ends || relay.zone == prepared.requester_zone)
+                .then_some(a_probe),
+            exit: (!prepared.restrict_ends || relay.zone == prepared.peer_zone).then_some(b_probe),
             load,
         });
         reverse.push(SearchRelay {
             node_id: relay.node_id,
-            ingress: (relay.zone == prepared.peer_zone).then_some(b_probe),
-            exit: (relay.zone == prepared.requester_zone).then_some(a_probe),
+            ingress: (!prepared.restrict_ends || relay.zone == prepared.peer_zone)
+                .then_some(b_probe),
+            exit: (!prepared.restrict_ends || relay.zone == prepared.requester_zone)
+                .then_some(a_probe),
             load,
         });
     }
