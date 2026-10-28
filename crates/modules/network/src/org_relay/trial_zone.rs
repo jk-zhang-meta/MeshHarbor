@@ -266,169 +266,14 @@ pub(in crate::org_relay) async fn recheck_relay_zones(
     identity: ObjectId,
     reason: &str,
 ) -> HashSet<ObjectId> {
-    recheck_selected_zones(state, Some(identity), None, reason).await
-}
-
-async fn recheck_selected_zones(
-    state: &NetworkState,
-    identity: Option<ObjectId>,
-    ids: Option<&HashSet<ObjectId>>,
-    reason: &str,
-) -> HashSet<ObjectId> {
-    let snapshots: Vec<_> = {
-        let entries = state
-            .org_relay
-            .trials
-            .entries
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        entries
-            .values()
-            .filter_map(capture)
-            .filter(|s| identity.is_some_and(|id| s.involves(id))
-                || ids.is_some_and(|ids| ids.contains(&s.id)))
-            .collect()
-    };
+    let ids = trial_ids_for_identity(state, identity);
+    let mut cursors = HashMap::new();
     let mut retry = HashSet::new();
-    for snapshot in snapshots {
-        let epoch = state.org_relay.eligibility_generation();
-        let shape_valid = snapshot.shape_valid();
-        let mut fits = shape_valid;
-        let mut unavailable = false;
-        if shape_valid {
-            for (index, relay) in snapshot.relays.iter().enumerate() {
-                let zone = {
-                    #[cfg(feature = "path-planner-test-support")]
-                    if index == 0
-                        && super::super::candidate_test_support::take_trial_zone_read_failure(
-                            snapshot.id,
-                        )
-                    {
-                        Err(())
-                    } else {
-                        bounded_party_read(current_party_zone(
-                            state,
-                            snapshot.tenant_id,
-                            relay.node_id,
-                            &relay.node_ref,
-                            true,
-                        ), Duration::from_secs(3))
-                        .await
-                    }
-                    #[cfg(not(feature = "path-planner-test-support"))]
-                    {
-                        bounded_party_read(current_party_zone(
-                            state,
-                            snapshot.tenant_id,
-                            relay.node_id,
-                            &relay.node_ref,
-                            true,
-                        ), Duration::from_secs(3))
-                        .await
-                    }
-                };
-                match zone {
-                    Ok(actual) => observe_zone(actual, snapshot.relay_zones[index], &mut fits, &mut unavailable),
-                    Err(()) => {
-                        unavailable = true;
-                    }
-                }
-            }
-        }
-        if shape_valid {
-            for (index, member) in snapshot.members.iter().enumerate() {
-                let zone = {
-                    #[cfg(feature = "path-planner-test-support")]
-                    if index == 0
-                        && super::super::candidate_test_support::take_trial_member_zone_read_failure(
-                            snapshot.id,
-                        )
-                    {
-                        Err(())
-                    } else {
-                        bounded_party_read(current_party_zone(
-                            state,
-                            snapshot.tenant_id,
-                            member.node_id,
-                            &member.node_ref,
-                            snapshot.member_zones.is_some(),
-                        ), Duration::from_secs(3))
-                        .await
-                    }
-                    #[cfg(not(feature = "path-planner-test-support"))]
-                    {
-                        bounded_party_read(current_party_zone(
-                            state,
-                            snapshot.tenant_id,
-                            member.node_id,
-                            &member.node_ref,
-                            snapshot.member_zones.is_some(),
-                        ), Duration::from_secs(3))
-                        .await
-                    }
-                };
-                match zone {
-                    Ok(actual) => {
-                        if let Some(zones) = snapshot.member_zones {
-                            observe_zone(actual, zones[index], &mut fits, &mut unavailable);
-                        } else if actual == PartyZone::Invalid {
-                            fits = false;
-                        }
-                    }
-                    Err(()) => {
-                        unavailable = true;
-                    }
-                }
-            }
-        }
-        if epoch != state.org_relay.eligibility_generation() {
-            retry.insert(snapshot.id);
-            continue;
-        }
-        if unavailable && fits {
-            retry.insert(snapshot.id);
-            continue;
-        }
-        if fits {
-            continue;
-        }
-        #[cfg(feature = "path-planner-test-support")]
-        super::super::candidate_test_support::pause_trial_zone_revoke_if_armed(snapshot.id).await;
-        let event = {
-            let mut entries = state
-                .org_relay
-                .trials
-                .entries
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            if epoch != state.org_relay.eligibility_generation() {
-                retry.insert(snapshot.id);
-                None
-            } else if entries.get(&snapshot.id).and_then(capture).as_ref() == Some(&snapshot) {
-                state.org_relay.invalidate_eligibility();
-                entries.remove(&snapshot.id).map(|trial| {
-                    notify_abort(state, &trial);
-                    revoke_event(&trial, reason)
-                })
-            } else {
-                // A still-live trial changed while its snapshot was read;
-                // evaluate its current path instead of silently losing this event.
-                if entries.get(&snapshot.id).and_then(capture).is_some() {
-                    retry.insert(snapshot.id);
-                }
-                None
-            }
-        };
-        if let Some(event) = event {
-            if !matches!(
-                tokio::time::timeout(Duration::from_secs(3), state.peer_relay_audit.record(event))
-                    .await,
-                Ok(Ok(_))
-            ) {
-                warn!(
-                    "org-relay: trial zone revoke audit failed or timed out after control revocation"
-                );
-            }
+    for id in ids {
+        loop {
+            let pending = recheck_trial_zone_slice(state, id, &mut cursors, reason).await;
+            if !pending { break; }
+            if !cursors.contains_key(&id) { retry.insert(id); break; }
         }
     }
     retry
@@ -457,6 +302,7 @@ pub(in crate::org_relay) async fn recheck_trial_zone_slice(
     state: &NetworkState,
     id: ObjectId,
     cursors: &mut HashMap<ObjectId, TrialZoneCursor>,
+    reason: &str,
 ) -> bool {
     let epoch = state.org_relay.eligibility_generation();
     let current = {
@@ -491,15 +337,28 @@ pub(in crate::org_relay) async fn recheck_trial_zone_slice(
             } else { false };
             #[cfg(not(feature = "path-planner-test-support"))]
             let injected = false;
+            #[cfg(feature = "path-planner-test-support")]
+            let stalled = cursor.next == 0 && super::super::candidate_test_support::take_trial_zone_read_stall(id);
+            #[cfg(not(feature = "path-planner-test-support"))]
+            let stalled = false;
             if injected { Err(()) } else {
-                bounded_party_read(current_party_zone(state, snap.tenant_id, node_id, node_ref, expected.is_some()), Duration::from_secs(3)).await
+                bounded_party_read(async {
+                    if stalled { std::future::pending::<Result<PartyZone, ()>>().await }
+                    else { current_party_zone(state, snap.tenant_id, node_id, node_ref, expected.is_some()).await }
+                }, Duration::from_secs(3)).await
             }
         };
         match read {
-            Ok(PartyZone::Invalid) => invalid = true,
-            Ok(PartyZone::Known(actual)) => invalid = expected.is_some_and(|zone| zone != actual),
-            Ok(PartyZone::Unknown) | Err(()) => cursor.unavailable = true,
-            Ok(PartyZone::ValidUnconstrained) => {},
+            Ok(actual) => {
+                if let Some(zone) = expected {
+                    let mut fits = true;
+                    observe_zone(actual, zone, &mut fits, &mut cursor.unavailable);
+                    invalid |= !fits;
+                } else if actual == PartyZone::Invalid {
+                    invalid = true;
+                }
+            }
+            Err(()) => cursor.unavailable = true,
         }
         cursor.next += 1;
     }
@@ -515,7 +374,7 @@ pub(in crate::org_relay) async fn recheck_trial_zone_slice(
             match entries.get(&id).and_then(capture) {
                 Some(now) if now == cursor.snapshot => {
                     state.org_relay.invalidate_eligibility();
-                    entries.remove(&id).map(|trial| { notify_abort(state, &trial); revoke_event(&trial, "zone_retry") })
+                    entries.remove(&id).map(|trial| { notify_abort(state, &trial); revoke_event(&trial, reason) })
                 }
                 Some(_) => return true,
                 None => None,

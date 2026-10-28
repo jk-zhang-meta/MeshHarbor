@@ -228,6 +228,26 @@ pub mod candidate_test_support {
     pub(super) fn take_trial_zone_read_failure(trial: ObjectId) -> bool {
         trial_zone_read_failures().lock().unwrap().remove(&trial)
     }
+    fn trial_zone_read_stalls() -> &'static Mutex<std::collections::HashSet<ObjectId>> {
+        static STALLS: OnceLock<Mutex<std::collections::HashSet<ObjectId>>> = OnceLock::new();
+        STALLS.get_or_init(|| Mutex::new(std::collections::HashSet::new()))
+    }
+    pub fn stall_next_trial_zone_read(trial: ObjectId) {
+        assert!(trial_zone_read_stalls().lock().unwrap().insert(trial));
+    }
+    pub(super) fn take_trial_zone_read_stall(trial: ObjectId) -> bool {
+        trial_zone_read_stalls().lock().unwrap().remove(&trial)
+    }
+    pub fn trial_exists_fixture(state: &NetworkState, id: ObjectId) -> bool {
+        super::trial::trial_exists_fixture(state, id)
+    }
+    /// Exercise the same sequential party slices used by one worker batch.
+    pub async fn run_two_trial_slices_fixture(state: &NetworkState, first: ObjectId, second: ObjectId) -> (bool, bool) {
+        let mut cursors = std::collections::HashMap::new();
+        let a = super::trial::recheck_trial_zone_slice(state, first, &mut cursors, "fixture").await;
+        let b = super::trial::recheck_trial_zone_slice(state, second, &mut cursors, "fixture").await;
+        (a, b)
+    }
     fn trial_member_zone_read_failures() -> &'static Mutex<std::collections::HashSet<ObjectId>> {
         static FAILURES: OnceLock<Mutex<std::collections::HashSet<ObjectId>>> = OnceLock::new();
         FAILURES.get_or_init(|| Mutex::new(std::collections::HashSet::new()))
@@ -3686,7 +3706,7 @@ fn schedule_trial_zone_retry(state: &NetworkState, ids: std::collections::HashSe
             };
             let mut pending = std::collections::HashSet::new();
             for id in batch {
-                if trial::recheck_trial_zone_slice(&state, id, &mut cursors).await { pending.insert(id); }
+                if trial::recheck_trial_zone_slice(&state, id, &mut cursors, "zone_retry").await { pending.insert(id); }
             }
             let again = state.org_relay.trial_zone_retry.lock().unwrap_or_else(|e| e.into_inner()).finish_pass(generation, pending);
             if !again { guard.completed = true; break; }

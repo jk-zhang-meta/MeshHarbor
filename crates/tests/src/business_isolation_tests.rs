@@ -3344,7 +3344,7 @@ async fn staged_nhop_trial_zone_fixture_rechecks_middle_and_members() {
     use roomler_ai_remote_control::models::NodeRef;
     use roomler_core::business_authority::BusinessZone::Mainland;
     use std::time::Instant;
-    for case in ["changed", "unknown", "stable", "race_restore", "member_changed", "unconstrained_member", "unconstrained_member_deleted", "unconstrained_member_wrong", "node_missing", "node_deleted", "agent_deleted", "read_error"] {
+    for case in ["changed", "unknown", "stable", "race_restore", "member_changed", "unconstrained_member", "unconstrained_member_deleted", "unconstrained_member_wrong", "node_missing", "node_deleted", "agent_deleted", "read_error", "slow_vs_invalid"] {
         let slug = format!("iso-nhop-zone-{case}");
         let rig = Rig::up(&slug, "off").await;
         let mut relays = Vec::new(); let mut relay_tokens = Vec::new();
@@ -3399,6 +3399,19 @@ async fn staged_nhop_trial_zone_fixture_rechecks_middle_and_members() {
         let network = rig.app.state.network();
         let constrained = if case.starts_with("unconstrained_member") { None } else { Some([Mainland;2]) };
         let trial_id = support::insert_nhop_zone_trial_fixture(network, session.clone(), vec![Mainland;4], constrained);
+        if case == "slow_vs_invalid" {
+            let mut invalid = session.clone();
+            invalid.relay.node_id = ObjectId::new(); // no DAO row for this relay
+            let invalid_id = support::insert_nhop_zone_trial_fixture(network, invalid, vec![Mainland;4], Some([Mainland;2]));
+            support::stall_next_trial_zone_read(trial_id);
+            let started = tokio::time::Instant::now();
+            let (slow_pending, invalid_pending) = support::run_two_trial_slices_fixture(network, trial_id, invalid_id).await;
+            assert!(slow_pending && !invalid_pending);
+            assert!(support::trial_exists_fixture(network, trial_id));
+            assert!(!support::trial_exists_fixture(network, invalid_id));
+            assert!(started.elapsed() < Duration::from_secs(8), "the stalled read must not block the next slice indefinitely");
+            continue;
+        }
         for id in &node_ids { assert_eq!(support::trial_slots_on_relay(network,*id),1); }
         async fn join_collect(ws:&mut Ws, seed:u8, endpoint:&str, ready:bool, path:bool)->Vec<Value> {
             ws.send(Message::Text(json!({"t":"rc:overlay.join","wg_public_key":BASE64.encode([seed;32]),"mtu":1280,

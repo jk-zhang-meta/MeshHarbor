@@ -224,6 +224,11 @@ pub(super) fn revoke_removed_backbone_edges(
 mod trial_zone;
 pub(super) use trial_zone::{prune_trial_zone_cursors, recheck_relay_zones, recheck_trial_zone_slice, trial_ids_for_identity, TrialZoneCursor};
 
+#[cfg(feature = "path-planner-test-support")]
+pub(super) fn trial_exists_fixture(state: &NetworkState, id: ObjectId) -> bool {
+    state.org_relay.trials.entries.lock().unwrap_or_else(|e| e.into_inner()).contains_key(&id)
+}
+
 /// Rebuild the bounded retry queue under the trial-table lock. All callers
 /// acquire locks in table -> retry order; no await occurs under either lock.
 pub(super) fn refill_zone_retry_if_needed(state: &NetworkState, generation: u64) {
