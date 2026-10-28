@@ -3344,7 +3344,7 @@ async fn staged_nhop_trial_zone_fixture_rechecks_middle_and_members() {
     use roomler_ai_remote_control::models::NodeRef;
     use roomler_core::business_authority::BusinessZone::Mainland;
     use std::time::Instant;
-    for case in ["changed", "unknown", "stable", "race_restore", "member_changed", "unconstrained_member", "unconstrained_member_deleted", "unconstrained_member_wrong", "node_missing", "node_deleted", "agent_deleted", "read_error", "slow_vs_invalid"] {
+    for case in ["changed", "unknown", "stable", "race_restore", "member_changed", "unconstrained_member", "unconstrained_member_deleted", "unconstrained_member_wrong", "node_missing", "node_deleted", "agent_deleted", "read_error", "slow_vs_invalid", "same_trial_race"] {
         let slug = format!("iso-nhop-zone-{case}");
         let rig = Rig::up(&slug, "off").await;
         let mut relays = Vec::new(); let mut relay_tokens = Vec::new();
@@ -3396,9 +3396,29 @@ async fn staged_nhop_trial_zone_fixture_rechecks_middle_and_members() {
             session.hops[0].relay.node_id = node_ids[1];
         }
         if case == "unconstrained_member_wrong" { session.members[0].party.node_id = node_ids[2]; }
+        if case == "same_trial_race" { session.relay.node_id = ObjectId::new(); }
         let network = rig.app.state.network();
         let constrained = if case.starts_with("unconstrained_member") { None } else { Some([Mainland;2]) };
         let trial_id = support::insert_nhop_zone_trial_fixture(network, session.clone(), vec![Mainland;4], constrained);
+        if case == "same_trial_race" {
+            let (reached, resume) = support::pause_trial_zone_revoke(trial_id);
+            let owned_state = (*network).clone();
+            let first = tokio::spawn(async move { support::run_one_trial_slice_fixture(&owned_state, trial_id).await });
+            tokio::time::timeout(Duration::from_secs(8), reached).await.expect("first path reached the revoke hook").unwrap();
+            assert!(!support::run_one_trial_slice_fixture(network, trial_id).await, "second path retires the trial");
+            resume.send(()).unwrap();
+            let _ = first.await.unwrap();
+            assert!(!support::trial_exists_fixture(network, trial_id));
+            for ws in [&mut a, &mut b] {
+                recv_t(ws, "rc:overlay.path_trial_abort", Duration::from_secs(8)).await.expect("single abort");
+                assert!(recv_t(ws, "rc:overlay.path_trial_abort", Duration::from_millis(300)).await.is_none(), "duplicate abort");
+            }
+            for ws in &mut relays {
+                recv_t(ws, "rc:overlay.relay_revoke", Duration::from_secs(8)).await.expect("single relay revoke");
+                assert!(recv_t(ws, "rc:overlay.relay_revoke", Duration::from_millis(300)).await.is_none(), "duplicate relay revoke");
+            }
+            continue;
+        }
         if case == "slow_vs_invalid" {
             let mut invalid = session.clone();
             invalid.relay.node_id = ObjectId::new(); // no DAO row for this relay

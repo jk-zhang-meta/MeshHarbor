@@ -248,6 +248,10 @@ pub mod candidate_test_support {
         let b = super::trial::recheck_trial_zone_slice(state, second, &mut cursors, "fixture").await;
         (a, b)
     }
+    pub async fn run_one_trial_slice_fixture(state: &NetworkState, id: ObjectId) -> bool {
+        let mut cursors = std::collections::HashMap::new();
+        super::trial::recheck_trial_zone_slice(state, id, &mut cursors, "fixture").await
+    }
     fn trial_member_zone_read_failures() -> &'static Mutex<std::collections::HashSet<ObjectId>> {
         static FAILURES: OnceLock<Mutex<std::collections::HashSet<ObjectId>>> = OnceLock::new();
         FAILURES.get_or_init(|| Mutex::new(std::collections::HashSet::new()))
@@ -3645,10 +3649,10 @@ impl TrialZoneRetry {
         }
     }
 
-    fn finish_pass(&mut self, generation: u64, retry: impl IntoIterator<Item = ObjectId>) -> bool {
+    fn finish_pass(&mut self, generation: u64, retry: impl IntoIterator<Item = ObjectId>, deferred: bool) -> bool {
         if !self.running || self.generation != generation { return false; }
         for id in retry { self.enqueue(id); }
-        if self.rescan || !self.pending.is_empty() { true } else { self.running = false; false }
+        if self.rescan || !self.pending.is_empty() || deferred { true } else { self.running = false; false }
     }
 
     fn abnormal_exit(&mut self, generation: u64) -> bool {
@@ -3688,9 +3692,21 @@ fn schedule_trial_zone_retry(state: &NetworkState, ids: std::collections::HashSe
     tokio::spawn(async move {
         guard.started = true;
         let mut cursors = std::collections::HashMap::<ObjectId, trial::TrialZoneCursor>::new();
+        let mut deferred = std::collections::HashSet::<ObjectId>::new();
+        let mut retry_at = tokio::time::Instant::now();
         loop {
-            // One worker processes a FIFO batch of trial IDs per pass.
-            tokio::time::sleep(Duration::from_secs(5)).await;
+            // Productive continuation is rate-bounded, while completed
+            // uncertain scans back off independently for five seconds.
+            let idle = {
+                let q = state.org_relay.trial_zone_retry.lock().unwrap_or_else(|e| e.into_inner());
+                q.pending.is_empty() && !q.rescan && !deferred.is_empty()
+            };
+            if idle { tokio::time::sleep_until(retry_at).await; }
+            else { tokio::time::sleep(Duration::from_millis(250)).await; }
+            if !deferred.is_empty() && tokio::time::Instant::now() >= retry_at {
+                let mut q = state.org_relay.trial_zone_retry.lock().unwrap_or_else(|e| e.into_inner());
+                for id in deferred.drain() { q.enqueue(id); }
+            }
             trial::prune_trial_zone_cursors(&state, &mut cursors);
             trial::refill_zone_retry_if_needed(&state, generation);
             let batch = {
@@ -3700,15 +3716,23 @@ fn schedule_trial_zone_retry(state: &NetworkState, ids: std::collections::HashSe
                 for _ in 0..4 {
                     let Some(id) = retry.pending.pop_front() else { break };
                     retry.queued.remove(&id);
+                    deferred.remove(&id);
                     batch.insert(id);
                 }
                 batch
             };
             let mut pending = std::collections::HashSet::new();
             for id in batch {
-                if trial::recheck_trial_zone_slice(&state, id, &mut cursors, "zone_retry").await { pending.insert(id); }
+                if trial::recheck_trial_zone_slice(&state, id, &mut cursors, "zone_retry").await {
+                    if cursors.contains_key(&id) { pending.insert(id); }
+                    else {
+                        if deferred.is_empty() { retry_at = tokio::time::Instant::now() + Duration::from_secs(5); }
+                        if deferred.len() < trial::MAX_TRIALS || deferred.contains(&id) { deferred.insert(id); }
+                        else { state.org_relay.trial_zone_retry.lock().unwrap_or_else(|e| e.into_inner()).rescan = true; }
+                    }
+                }
             }
-            let again = state.org_relay.trial_zone_retry.lock().unwrap_or_else(|e| e.into_inner()).finish_pass(generation, pending);
+            let again = state.org_relay.trial_zone_retry.lock().unwrap_or_else(|e| e.into_inner()).finish_pass(generation, pending, !deferred.is_empty());
             if !again { guard.completed = true; break; }
         }
     });
@@ -3892,7 +3916,7 @@ mod tests {
             { let mut q = queue.lock().unwrap(); assert_eq!(q.pending.pop_front(), Some(id)); q.queued.remove(&id); }
             let barrier = Arc::new(Barrier::new(3));
             let q = queue.clone(); let b = barrier.clone();
-            let finish = std::thread::spawn(move || { b.wait(); q.lock().unwrap().finish_pass(generation, []) });
+            let finish = std::thread::spawn(move || { b.wait(); q.lock().unwrap().finish_pass(generation, [], false) });
             let q = queue.clone(); let b = barrier.clone();
             let request = std::thread::spawn(move || { b.wait(); q.lock().unwrap().request([id]) });
             barrier.wait();
@@ -3919,7 +3943,7 @@ mod tests {
         let id = ObjectId::new();
         let old = retry.request([id]).unwrap();
         retry.pending.clear(); retry.queued.clear();
-        assert!(!retry.finish_pass(old, []));
+        assert!(!retry.finish_pass(old, [], false));
         let new = retry.request([id]).unwrap();
         assert_ne!(old, new);
         assert!(!retry.abnormal_exit(old));
@@ -3948,6 +3972,18 @@ mod tests {
         retry.enqueue(slow);
         assert_eq!(retry.pending.pop_front(), Some(other));
         assert_eq!(retry.pending.pop_front(), Some(slow));
+    }
+
+    #[test]
+    fn zone_retry_keeps_worker_alive_for_deferred_uncertainty() {
+        let mut retry = TrialZoneRetry::default();
+        let id = ObjectId::new();
+        let generation = retry.request([id]).unwrap();
+        retry.pending.clear(); retry.queued.clear();
+        assert!(retry.finish_pass(generation, [], true));
+        assert!(retry.running);
+        assert!(!retry.finish_pass(generation, [], false));
+        assert!(!retry.running);
     }
 
     fn node_with(srflx: &[&str], lan: &[&str], endpoints: &[&str]) -> OverlayNode {
