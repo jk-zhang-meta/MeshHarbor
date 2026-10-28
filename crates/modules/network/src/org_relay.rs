@@ -219,6 +219,13 @@ pub mod candidate_test_support {
             .map(|records| records.iter().map(|record| record.rtt_ms).collect())
             .unwrap_or_default()
     }
+    /// Exercise the real zone-recheck logic with fixture-owned session data.
+    pub async fn line_zones_fit_fixture(state: &NetworkState, session: &OrgRelaySession) -> bool {
+        line_zones_fit(state, session).await
+    }
+    pub async fn recheck_zones_fixture(state: &NetworkState, agent: ObjectId) {
+        recheck_zones(state, agent, "fixture-zone-recheck").await;
+    }
     /// Build only relay/bridge control frames from a fixture-owned session.
     /// No authorization, resource reservation, or messages are performed.
     pub fn delivery_frames_for_fixture(session: &OrgRelaySession) -> Result<Vec<(NodeRef, ServerMsg)>, String> {
@@ -3141,24 +3148,28 @@ async fn session_zones_fit(state: &NetworkState, s: &OrgRelaySession) -> bool {
         .is_some_and(|r| permit.relay_zones().contains(&r))
 }
 
-/// Every party of line `s` is connected here, `members[0]` in the ingress
-/// relay's zone, `members[1]` in the exit relay's, and the two zones differ.
+/// A line remains valid only while both members still match their end
+/// relays and every adjacent relay pair keeps its recorded zone relationship.
+/// Unknown zones fail closed. Changing an ordinary edge into a crossing must
+/// not silently reuse a grant which did not require cross-border approval.
 async fn line_zones_fit(state: &NetworkState, s: &OrgRelaySession) -> bool {
-    // Longer paths are not minted yet. Fail closed until per-edge zone
-    // revalidation is implemented alongside N-hop planning.
-    let [line] = s.hops.as_slice() else {
-        return false;
-    };
+    if s.hops.is_empty() { return false; }
     let zone = |r| party_zone(state, s.tenant_id, r);
-    let (Some(m0), Some(m1), Some(r0), Some(r1)) = (
+    let (Some(m0), Some(m1), Some(first)) = (
         zone(&s.members[0].party.node_ref).await,
         zone(&s.members[1].party.node_ref).await,
         zone(&s.relay.node_ref).await,
-        zone(&line.relay.node_ref).await,
-    ) else {
-        return false;
-    };
-    m0 == r0 && m1 == r1 && m0 != m1
+    ) else { return false };
+    if m0 != first { return false; }
+    let mut previous = first;
+    for hop in &s.hops {
+        let Some(current) = zone(&hop.relay.node_ref).await else { return false };
+        if (previous != current) != hop.requires_cross_border_approval {
+            return false;
+        }
+        previous = current;
+    }
+    m1 == previous
 }
 
 /// Trigger 4 — a party (member or relay) was removed from the overlay.

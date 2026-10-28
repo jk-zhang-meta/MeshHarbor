@@ -1676,3 +1676,57 @@ async fn staged_graph_mixed_edge_approval_revokes_only_when_the_edge_requires_it
     assert_eq!(revoke_removed_backbone_edges_sync(state, tenant, agents[0], &[]).len(), 1);
     assert!(state.org_relay.active_session("ordinary-edge-removed").is_none());
 }
+
+/// The real zone recheck sees three live relay identities. The inserted
+/// three-relay records are fixtures, not grants to those relay processes.
+#[tokio::test]
+async fn staged_graph_three_relay_zone_recheck_preserves_valid_and_revokes_changed_edges() {
+    use roomler_ai_mod_network::org_relay::{
+        LineLeg, SessionParty,
+        candidate_test_support::{insert_session_fixture, line_zones_fit_fixture, recheck_zones_fixture},
+    };
+    use roomler_ai_remote_control::models::NodeRef;
+    let mut l = LineRig::up("iso-three-relay-zone", true).await;
+    let (extra_agent, extra_token) = enroll(&l.rig.app, &l.rig.seeded, "iso-three-relay-zone-extra").await;
+    let mut extra = connect_from(&l.rig.app, &extra_token, &["relay-server"], Some(CN_R)).await;
+    assert_observed(&l.rig.app, &extra_agent, Some(CN_R)).await;
+    line_join(&mut extra, 5, "223.6.6.7:41641", json!({ "relay_backbone_ready": true })).await;
+    let extra_node = l.rig.node("iso-three-relay-zone-extra").await;
+    relay_request(&mut l.cn, &l.us_node).await;
+    let _ = l.expect_line().await;
+    let state = l.rig.app.state.network();
+    let pair = roomler_ai_mod_network::overlay::pair_key(
+        ObjectId::parse_str(&l.cn_node).unwrap(), ObjectId::parse_str(&l.us_node).unwrap());
+    let original = state.org_relay.active_session(&pair).unwrap();
+    assert!(line_zones_fit_fixture(state, &original).await, "the original approved crossing remains valid");
+    let extra_id = ObjectId::parse_str(&extra_agent).unwrap();
+    let mut valid = original.clone();
+    valid.pair_key = "three-zone-valid".into();
+    valid.hops.insert(0, LineLeg {
+        relay: SessionParty { node_id: ObjectId::parse_str(&extra_node).unwrap(), node_ref: NodeRef::Agent { agent_id: extra_id } },
+        relay_agent_id: extra_id, vni: 100, generation: 101, endpoints: vec!["relay".into()],
+        private_endpoint: "10.1.2.3:3478".into(), requires_cross_border_approval: false,
+        bridge_id: ObjectId::new(), bridge_secrets: ["a".into(), "b".into()],
+    });
+    assert!(line_zones_fit_fixture(state, &valid).await, "same-zone edge then approved crossing");
+    let mut ordinary_changed = valid.clone();
+    ordinary_changed.pair_key = "three-zone-ordinary-changed".into();
+    ordinary_changed.hops[0].requires_cross_border_approval = true;
+    let mut crossing_changed = valid.clone();
+    crossing_changed.pair_key = "three-zone-crossing-changed".into();
+    crossing_changed.hops[1].requires_cross_border_approval = false;
+    let mut unknown = valid.clone();
+    unknown.pair_key = "three-zone-unknown".into();
+    unknown.hops[1].relay.node_ref = NodeRef::Agent { agent_id: ObjectId::new() };
+    assert!(!line_zones_fit_fixture(state, &ordinary_changed).await);
+    assert!(!line_zones_fit_fixture(state, &crossing_changed).await);
+    assert!(!line_zones_fit_fixture(state, &unknown).await);
+    for session in [valid, ordinary_changed, crossing_changed, unknown] {
+        assert!(insert_session_fixture(state, session));
+    }
+    recheck_zones_fixture(state, extra_id).await;
+    assert!(state.org_relay.active_session("three-zone-valid").is_some());
+    for key in ["three-zone-ordinary-changed", "three-zone-crossing-changed", "three-zone-unknown"] {
+        assert!(state.org_relay.active_session(key).is_none(), "{key} must be revoked");
+    }
+}
