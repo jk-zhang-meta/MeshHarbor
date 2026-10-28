@@ -195,6 +195,39 @@ pub mod candidate_test_support {
             let _ = resume.recv_timeout(Duration::from_secs(5));
         }
     }
+    fn nhop_reauth_failures() -> &'static Mutex<std::collections::HashSet<String>> {
+        static FAILURES: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
+        FAILURES.get_or_init(|| Mutex::new(std::collections::HashSet::new()))
+    }
+    /// Simulate one transient reauthorization read failure for a fixture pair.
+    pub fn fail_next_nhop_reauth_fixture(pair: String) {
+        assert!(nhop_reauth_failures().lock().unwrap().insert(pair));
+    }
+    pub(super) fn take_nhop_reauth_failure(pair: &str) -> bool {
+        nhop_reauth_failures().lock().unwrap().remove(pair)
+    }
+    struct NhopRepushPause {
+        reached: oneshot::Sender<()>,
+        resume: oneshot::Receiver<()>,
+    }
+    fn nhop_repush_pauses() -> &'static Mutex<HashMap<String, NhopRepushPause>> {
+        static PAUSES: OnceLock<Mutex<HashMap<String, NhopRepushPause>>> = OnceLock::new();
+        PAUSES.get_or_init(|| Mutex::new(HashMap::new()))
+    }
+    /// Pause after reauthorization and before its guarded re-push.
+    pub fn pause_nhop_repush_fixture(pair: String) -> (oneshot::Receiver<()>, oneshot::Sender<()>) {
+        let (reached_tx, reached_rx) = oneshot::channel();
+        let (resume_tx, resume_rx) = oneshot::channel();
+        assert!(nhop_repush_pauses().lock().unwrap().insert(pair, NhopRepushPause { reached: reached_tx, resume: resume_rx }).is_none());
+        (reached_rx, resume_tx)
+    }
+    pub(super) async fn pause_nhop_repush_if_armed(pair: &str) {
+        let pause = nhop_repush_pauses().lock().unwrap().remove(pair);
+        if let Some(NhopRepushPause { reached, resume }) = pause {
+            let _ = reached.send(());
+            let _ = resume.await;
+        }
+    }
     struct NhopDeliveryPause {
         reached: oneshot::Sender<()>,
         resume: oneshot::Receiver<()>,
@@ -325,6 +358,15 @@ pub mod candidate_test_support {
     }
     pub async fn recheck_zones_fixture(state: &NetworkState, agent: ObjectId) {
         recheck_zones(state, agent, "fixture-zone-recheck").await;
+    }
+    /// Test the real full-path reauthorization with an already-held fixture.
+    pub async fn reauthorize_nhop_fixture(state: &NetworkState, requester: ObjectId, peer: ObjectId, session: &OrgRelaySession) -> bool {
+        let Ok(a) = state.overlay_nodes.base.find_by_id(requester).await else { return false };
+        let Ok(b) = state.overlay_nodes.base.find_by_id(peer).await else { return false };
+        path_mint::reauthorize(state, &a, &b, session).await.is_ok()
+    }
+    pub fn remove_session_fixture(state: &NetworkState, pair: &str) -> bool {
+        state.org_relay.sessions.remove(pair).is_some()
     }
     /// Build only relay/bridge control frames from a fixture-owned session.
     /// No authorization, resource reservation, or messages are performed.
@@ -1594,7 +1636,7 @@ async fn plan_mint_candidates_reusing(
             continue;
         }
         if state.org_relay.sessions_on_relay(relay_id) >= limits::MAX_SESSIONS_PER_RELAY
-            && !reuse.is_some_and(|session| session.relay.node_id == relay_id)
+            && !reuse.is_some_and(|session| session.relay_nodes().any(|node| node == relay_id))
         {
             continue;
         }
@@ -2136,10 +2178,17 @@ async fn maybe_mint_line(
     if !warn_only && let Some(s) = state.org_relay.active_session(&pk) {
         let Some(i) = s.member_index(req_id) else { return };
         if !s.hops.is_empty() && Instant::now() + BIND_REUSE_MARGIN < s.bind_by {
-            push_member(state, &s, i).await;
-            debug!(%tenant_id, %pk, vni = s.member_leg(i).vni,
-                "org-relay: re-pushed the live line to a re-requesting member");
-            return;
+            if s.hops.len() > 1 {
+                match path_mint::repush(state, requester, peer, &s).await {
+                    path_mint::RepushOutcome::Sent | path_mint::RepushOutcome::Unavailable => return,
+                    path_mint::RepushOutcome::Denied => {}
+                }
+            } else {
+                push_member(state, &s, i).await;
+                debug!(%tenant_id, %pk, vni = s.member_leg(i).vni,
+                    "org-relay: re-pushed the live line to a re-requesting member");
+                return;
+            }
         }
         revoke_where(state, "org-line-rebind", |c| {
             c.pair_key == pk && c.vni == s.vni && c.generation == s.generation
@@ -2708,11 +2757,20 @@ pub async fn maybe_mint(state: &NetworkState, requester: &OverlayNode, peer: &Ov
     // the peer and the relay already hold it. Not audited: nothing was
     // decided, and a retrying client must not fill the log.
     if !warn_only && let Some(s) = state.org_relay.active_session(&pk) {
-        if let Some(i) = s.member_index(req_id) {
-            push_member(state, &s, i).await;
-            debug!(%tenant_id, %pk, vni = s.vni, "org-relay: re-pushed the live session to a re-requesting member");
+        if s.hops.len() > 1 {
+            match path_mint::repush(state, requester, peer, &s).await {
+                path_mint::RepushOutcome::Sent | path_mint::RepushOutcome::Unavailable => return,
+                path_mint::RepushOutcome::Denied => {}
+            }
+            revoke_where(state, "nhop_reauthorization_failed", |current| current.pair_key == pk
+                && current.vni == s.vni && current.generation == s.generation).await;
+        } else {
+            if let Some(i) = s.member_index(req_id) {
+                push_member(state, &s, i).await;
+                debug!(%tenant_id, %pk, vni = s.vni, "org-relay: re-pushed the live session to a re-requesting member");
+            }
+            return;
         }
-        return;
     }
 
     // An implicit plan rests on live connections, so it mints under the
@@ -2771,7 +2829,16 @@ pub async fn maybe_mint_fallback(state: &NetworkState, requester: &OverlayNode, 
         maybe_mint_line(state, requester, peer, zones, mode == PeerRelayMode::Warn).await;
         return;
     }
-    let cached = state.org_relay.active_session(&pk);
+    let mut cached = state.org_relay.active_session(&pk);
+    if mode != PeerRelayMode::Warn && cached.as_ref().is_some_and(|s| s.hops.len() > 1) {
+        let session = cached.take().expect("checked above");
+        match path_mint::repush(state, requester, peer, &session).await {
+            path_mint::RepushOutcome::Sent | path_mint::RepushOutcome::Unavailable => return,
+            path_mint::RepushOutcome::Denied => {}
+        }
+        revoke_where(state, "nhop_reauthorization_failed", |current| current.pair_key == pk
+            && current.vni == session.vni && current.generation == session.generation).await;
+    }
     let mut epoch = state.org_relay.eligibility_generation();
     let mut verdict =
         plan_mint_candidates_reusing(state, requester, peer, cached.as_ref(), ZoneScope::Pair).await;

@@ -396,3 +396,237 @@ pub(super) async fn mint(
     }
     Ok(true)
 }
+
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum ReauthorizationError {
+    Denied,
+    Unavailable,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum RepushOutcome {
+    Sent,
+    Denied,
+    Unavailable,
+}
+
+// Candidate construction can lose a relay or zone when a dependency read
+// fails. Ambiguous absence must not tear down an established data path.
+fn classify_prepare_error(reason: Deny) -> ReauthorizationError {
+    match reason {
+        Deny::PolicyUnreadable | Deny::NoRelay | Deny::ZoneDenied => {
+            ReauthorizationError::Unavailable
+        }
+        _ => ReauthorizationError::Denied,
+    }
+}
+
+/// Reauthorize an already-installed N-hop path against current member rows,
+/// per-relay gates and every directed approved edge. Returns the epoch which
+/// must be checked again at the synchronous re-push boundary.
+pub(super) async fn reauthorize(
+    state: &NetworkState,
+    requester: &OverlayNode,
+    peer: &OverlayNode,
+    session: &OrgRelaySession,
+) -> Result<u64, ReauthorizationError> {
+    let (Some(a), Some(b)) = (requester.id, peer.id) else {
+        return Err(ReauthorizationError::Denied);
+    };
+    if session.hops.len() < 2
+        || session.implicit
+        || session.tenant_id != requester.tenant_id
+        || session.pair_key != pair_key(a, b)
+    {
+        return Err(ReauthorizationError::Denied);
+    }
+    #[cfg(feature = "path-planner-test-support")]
+    if super::candidate_test_support::take_nhop_reauth_failure(&session.pair_key) {
+        return Err(ReauthorizationError::Unavailable);
+    }
+    let fresh_a = state
+        .overlay_nodes
+        .base
+        .find_by_id(a)
+        .await
+        .map_err(|_| ReauthorizationError::Unavailable)?;
+    let fresh_b = state
+        .overlay_nodes
+        .base
+        .find_by_id(b)
+        .await
+        .map_err(|_| ReauthorizationError::Unavailable)?;
+    for (old, fresh) in [(requester, &fresh_a), (peer, &fresh_b)] {
+        if fresh.id != old.id
+            || fresh.node_ref != old.node_ref
+            || fresh.wg_public_key != old.wg_public_key
+            || fresh.tenant_id != old.tenant_id
+            || fresh.network_id != old.network_id
+        {
+            return Err(ReauthorizationError::Denied);
+        }
+        let index = session
+            .member_index(fresh.id.ok_or(ReauthorizationError::Denied)?)
+            .ok_or(ReauthorizationError::Denied)?;
+        if session.members[index].party.node_ref != fresh.node_ref
+            || session.members[index].wg_public_key != fresh.wg_public_key
+        {
+            return Err(ReauthorizationError::Denied);
+        }
+    }
+    if session.members[0].party.node_id == session.members[1].party.node_id {
+        return Err(ReauthorizationError::Denied);
+    }
+    path_delivery::build(session, Instant::now()).map_err(|_| ReauthorizationError::Denied)?;
+    let prepared = path_candidate::prepare_reusing(state, &fresh_a, &fresh_b, false, Some(session))
+        .await
+        .map_err(classify_prepare_error)?;
+    if prepared.warn_only {
+        return Err(ReauthorizationError::Denied);
+    }
+    let mut nodes = Vec::with_capacity(session.hops.len() + 1);
+    nodes.push((
+        session.relay.node_id,
+        session.relay_agent_id,
+        &session.relay.node_ref,
+        &session.endpoints,
+    ));
+    nodes.extend(session.hops.iter().map(|hop| {
+        (
+            hop.relay.node_id,
+            hop.relay_agent_id,
+            &hop.relay.node_ref,
+            &hop.endpoints,
+        )
+    }));
+    let mut relays = Vec::with_capacity(nodes.len());
+    let mut seen = std::collections::HashSet::new();
+    for (node, agent, node_ref, endpoints) in nodes {
+        if !seen.insert(node) {
+            return Err(ReauthorizationError::Denied);
+        }
+        let index = prepared
+            .graph
+            .relays
+            .iter()
+            .position(|relay| relay.node_id == node && relay.agent_id == agent)
+            .ok_or(ReauthorizationError::Unavailable)?;
+        let relay = &prepared.graph.relays[index];
+        let plan = prepared
+            .plans
+            .get(&node)
+            .ok_or(ReauthorizationError::Unavailable)?;
+        if relay.implicit || &plan.relay.node_ref != node_ref || &plan.endpoints != endpoints {
+            return Err(ReauthorizationError::Denied);
+        }
+        relays.push((index, relay));
+    }
+    let member_zone = |id| {
+        if id == a {
+            prepared.requester_zone
+        } else if id == b {
+            prepared.peer_zone
+        } else {
+            None
+        }
+    };
+    let first =
+        member_zone(session.members[0].party.node_id).ok_or(ReauthorizationError::Denied)?;
+    let last = member_zone(session.members[1].party.node_id).ok_or(ReauthorizationError::Denied)?;
+    if relays[0].1.zone != Some(first) || relays[relays.len() - 1].1.zone != Some(last) {
+        return Err(ReauthorizationError::Denied);
+    }
+    for (i, hop) in session.hops.iter().enumerate() {
+        let (from_idx, from) = relays[i];
+        let (to_idx, to) = relays[i + 1];
+        let (Some(from_zone), Some(to_zone)) = (from.zone, to.zone) else {
+            return Err(ReauthorizationError::Denied);
+        };
+        let crossing = from_zone != to_zone;
+        if crossing != hop.requires_cross_border_approval {
+            return Err(ReauthorizationError::Denied);
+        }
+        let approved = prepared.graph.edges.iter().any(|edge| {
+            edge.from == from_idx
+                && edge.to == to_idx
+                && edge.endpoint == hop.private_endpoint
+                && (!crossing || edge.cross_border)
+        });
+        if !approved {
+            return Err(ReauthorizationError::Denied);
+        }
+    }
+    if prepared.eligibility_epoch != state.org_relay.eligibility_generation() {
+        return Err(ReauthorizationError::Unavailable);
+    }
+    Ok(prepared.eligibility_epoch)
+}
+
+/// Queue one member's current grant without allowing synchronous revocation to
+/// overtake it; no network/DB await occurs while the guard is held.
+pub(super) async fn repush(
+    state: &NetworkState,
+    requester: &OverlayNode,
+    peer: &OverlayNode,
+    session: &OrgRelaySession,
+) -> RepushOutcome {
+    if Instant::now() + BIND_REUSE_MARGIN >= session.bind_by {
+        return RepushOutcome::Denied;
+    }
+    let epoch = match reauthorize(state, requester, peer, session).await {
+        Ok(epoch) => epoch,
+        Err(ReauthorizationError::Denied) => return RepushOutcome::Denied,
+        Err(ReauthorizationError::Unavailable) => return RepushOutcome::Unavailable,
+    };
+    let Some(index) = requester.id.and_then(|id| session.member_index(id)) else {
+        return RepushOutcome::Denied;
+    };
+    let Some(message) = member_message(session, index) else {
+        return RepushOutcome::Denied;
+    };
+    #[cfg(feature = "path-planner-test-support")]
+    super::candidate_test_support::pause_nhop_repush_if_armed(&session.pair_key).await;
+    let Ok(_guard) = state.org_relay.delivery_guard.lock() else {
+        return RepushOutcome::Unavailable;
+    };
+    if epoch != state.org_relay.eligibility_generation()
+        || !state
+            .org_relay
+            .active_session(&session.pair_key)
+            .is_some_and(|current| {
+                current.vni == session.vni && current.generation == session.generation
+            })
+    {
+        return RepushOutcome::Unavailable;
+    }
+    if Instant::now() + BIND_REUSE_MARGIN >= session.bind_by {
+        return RepushOutcome::Denied;
+    }
+    if push_control(state, &session.members[index].party.node_ref, message) {
+        RepushOutcome::Sent
+    } else {
+        RepushOutcome::Unavailable
+    }
+}
+
+#[cfg(test)]
+mod reauthorization_tests {
+    use super::*;
+    #[test]
+    fn ambiguous_candidate_failures_preserve_established_session() {
+        for reason in [Deny::PolicyUnreadable, Deny::NoRelay, Deny::ZoneDenied] {
+            assert_eq!(
+                classify_prepare_error(reason),
+                ReauthorizationError::Unavailable
+            );
+        }
+        assert_eq!(
+            classify_prepare_error(Deny::AclDenied),
+            ReauthorizationError::Denied
+        );
+        assert_eq!(
+            classify_prepare_error(Deny::CrossTenant),
+            ReauthorizationError::Denied
+        );
+    }
+}

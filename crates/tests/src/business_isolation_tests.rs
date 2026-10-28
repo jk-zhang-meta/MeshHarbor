@@ -1810,6 +1810,43 @@ async fn staged_graph_actual_three_relay_mint_audits_and_revokes_each_edge() {
     assert_eq!(first_bridge["bridge"]["remote_vni"], mid["vni"]);
     assert_eq!(second_bridge["bridge"]["local_vni"], mid["vni"]);
     assert_eq!(second_bridge["bridge"]["remote_vni"], hk["vni"]);
+    let pair = roomler_ai_mod_network::overlay::pair_key(a, b);
+    let live = network.org_relay.active_session(&pair).expect("real multi-hop session");
+    use roomler_ai_mod_network::org_relay::candidate_test_support as support;
+    assert!(support::reauthorize_nhop_fixture(network, a, b, &live).await);
+    let mut bad_endpoint = live.clone();
+    bad_endpoint.hops[0].private_endpoint = "10.77.0.9:3478".into();
+    assert!(!support::reauthorize_nhop_fixture(network, a, b, &bad_endpoint).await);
+    let mut bad_crossing = live.clone();
+    bad_crossing.hops[1].requires_cross_border_approval = false;
+    assert!(!support::reauthorize_nhop_fixture(network, a, b, &bad_crossing).await);
+    let mut bad_member = live.clone();
+    bad_member.members[0].wg_public_key = BASE64.encode([99u8; 32]);
+    assert!(!support::reauthorize_nhop_fixture(network, a, b, &bad_member).await);
+    // Fill the middle relay to the hard limit; the existing path's own slot
+    // must be reusable instead of being mistaken for a new allocation.
+    let middle_party = live.hops[0].relay.clone();
+    let middle_agent_id = live.hops[0].relay_agent_id;
+    let mut fixture_keys = Vec::new();
+    for i in 0..roomler_ai_remote_control::models::peer_relay_limits::MAX_SESSIONS_PER_RELAY - 1 {
+        let mut held = live.clone();
+        held.pair_key = format!("nhop-reuse-capacity-{i}");
+        held.relay = middle_party.clone(); held.relay_agent_id = middle_agent_id;
+        held.vni = 1000 + i as u32; held.generation = 1000 + i as u64;
+        held.hops.clear();
+        fixture_keys.push(held.pair_key.clone());
+        assert!(support::insert_session_fixture(network, held));
+    }
+    assert!(support::reauthorize_nhop_fixture(network, a, b, &live).await, "own occupied slots must be reusable");
+    relay_request(&mut l.cn, &l.us_node).await;
+    let repushed = recv_t(&mut l.cn, "rc:overlay.relay_session", wait).await.expect("reauthorized re-push");
+    assert_eq!(repushed["vni"], cn["vni"]);
+    assert!(recv_t(&mut l.gz, "rc:overlay.relay_serve", Duration::from_millis(500)).await.is_none(), "re-push must not mint another relay session");
+    for key in fixture_keys { assert!(support::remove_session_fixture(network, &key)); }
+    support::fail_next_nhop_reauth_fixture(pair.clone());
+    relay_request(&mut l.cn, &l.us_node).await;
+    assert!(recv_t(&mut l.cn, "rc:overlay.relay_session", Duration::from_millis(800)).await.is_none(), "transient read failure must not re-push");
+    assert_eq!(network.org_relay.active_session(&pair).unwrap().generation, live.generation, "transient failure must not tear down an established path");
     for (relay, frame) in [(&source_native, gz.clone()), (&middle_native, mid.clone()), (&exit_native, hk.clone())] {
         relay.serve(serde_json::from_value::<ServerMsg>(frame).unwrap(), None);
     }
@@ -1925,6 +1962,32 @@ async fn staged_graph_actual_three_relay_mint_audits_and_revokes_each_edge() {
     let sent = recv_t(&mut l.gz, "rc:overlay.relay_serve", wait).await.expect("first grant was queued");
     let revoked = recv_t(&mut l.gz, "rc:overlay.relay_revoke", wait).await.expect("revoke follows first grant");
     assert_eq!(sent["vni"], revoked["vni"]);
+    assert!(network.org_relay.active_session(&pair).is_none());
+
+    // Re-establish a real multi-hop session. Pause its reauthorization just
+    // before re-push, revoke an edge, and prove the old member grant does not
+    // get queued after revocation.
+    let (status, body) = put(&l.rig.app, &middle_policy, admin, policy(&l.hk_agent, &exit_endpoint, true)).await;
+    assert_eq!(status, 200, "{body}");
+    assert!(support::record_member_probe_fixture(network, a, &[
+        (gz_node, "223.6.6.6:3478".into(), true, Some(10)), (mid_node, "223.6.6.7:3478".into(), false, None),
+    ]));
+    assert!(support::record_member_probe_fixture(network, b, &[(hk_node, "1.1.1.1:3478".into(), true, Some(10))]));
+    relay_request(&mut l.cn, &l.us_node).await;
+    recv_t(&mut l.gz, "rc:overlay.relay_serve", wait).await.expect("new ingress");
+    recv_t(&mut l.gz, "rc:overlay.relay_bridge_serve", wait).await.expect("new first bridge");
+    recv_t(&mut middle, "rc:overlay.relay_serve", wait).await.expect("new middle");
+    recv_t(&mut middle, "rc:overlay.relay_bridge_serve", wait).await.expect("new second bridge");
+    recv_t(&mut l.hk, "rc:overlay.relay_serve", wait).await.expect("new exit");
+    recv_t(&mut l.cn, "rc:overlay.relay_session", wait).await.expect("new member");
+    recv_t(&mut l.us, "rc:overlay.relay_session", wait).await.expect("new peer");
+    let (reached, resume) = support::pause_nhop_repush_fixture(pair.clone());
+    relay_request(&mut l.cn, &l.us_node).await;
+    tokio::time::timeout(Duration::from_secs(10), reached).await.expect("repush pause").unwrap();
+    let (status, body) = put(&l.rig.app, &middle_policy, admin, policy(&l.hk_agent, &exit_endpoint, false)).await;
+    assert_eq!(status, 200, "{body}");
+    resume.send(()).unwrap();
+    assert!(recv_t(&mut l.cn, "rc:overlay.relay_session", Duration::from_millis(800)).await.is_none(), "revoked path must not be re-pushed");
     assert!(network.org_relay.active_session(&pair).is_none());
 }
 

@@ -5,7 +5,8 @@
 //! re-authorize and reserve the selected path before sending any grants.
 
 use super::{
-    Plan, ZoneScope, node_zone, path_graph, peer_relay_mode, plan_mint_candidates_reusing,
+    OrgRelaySession, Plan, ZoneScope, node_zone, path_graph, peer_relay_mode,
+    plan_mint_candidates_reusing,
 };
 use crate::NetworkState;
 use bson::oid::ObjectId;
@@ -66,6 +67,18 @@ pub(super) async fn prepare(
     requester: &OverlayNode,
     peer: &OverlayNode,
     for_trial: bool,
+) -> Result<PreparedGraph, Deny> {
+    prepare_reusing(state, requester, peer, for_trial, None).await
+}
+
+/// Reauthorize an already-held path without treating its own slots as new
+/// capacity on any relay in that path. Callers still validate every leg.
+pub(super) async fn prepare_reusing(
+    state: &NetworkState,
+    requester: &OverlayNode,
+    peer: &OverlayNode,
+    for_trial: bool,
+    reuse: Option<&OrgRelaySession>,
 ) -> Result<PreparedGraph, Deny> {
     if requester.tenant_id != peer.tenant_id {
         return Err(Deny::CrossTenant);
@@ -182,7 +195,7 @@ pub(super) async fn prepare(
     let mut inputs = Vec::new();
     let mut plans = HashMap::new();
     for (scope, expected_zone) in scopes {
-        let candidates = plan_mint_candidates_reusing(state, requester, peer, None, scope).await?;
+        let candidates = plan_mint_candidates_reusing(state, requester, peer, reuse, scope).await?;
         for plan in candidates {
             let relay_zone = node_zone(state, &plan.relay).await;
             if enforce_zone && !linked_servers && relay_zone != expected_zone {
