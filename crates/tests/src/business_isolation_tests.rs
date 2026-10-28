@@ -3666,9 +3666,11 @@ async fn staged_nhop_trial_actual_wg_commit_and_bilateral_return() {
     assert_eq!(wg_b.fixture_relay_receive_task_live(&key_a.public.to_bytes()),Some(true));
     let stopped_forward=packet(ip_a,ip_b,b"returned four relay trial cannot carry forward data");
     let stopped_reverse=packet(ip_b,ip_a,b"returned four relay trial cannot carry reverse data");
+    let ingress_unknown_before=native[0].session_counts().drop_unknown_vni;
+    let exit_unknown_before=native[3].session_counts().drop_unknown_vni;
     for _ in 0..4 {
-        wg_a.send_ip_packet(&stopped_forward).await;
-        wg_b.send_ip_packet(&stopped_reverse).await;
+        assert!(wg_a.send_ip_packet(&stopped_forward).await,"forward test packet was not locally accepted");
+        assert!(wg_b.send_ip_packet(&stopped_reverse).await,"reverse test packet was not locally accepted");
     }
     async fn assert_blocked(rx:&mut tokio::sync::mpsc::Receiver<Vec<u8>>, forbidden:&[u8]) {
         let deadline=tokio::time::Instant::now()+Duration::from_secs(1);
@@ -3681,6 +3683,8 @@ async fn staged_nhop_trial_actual_wg_commit_and_bilateral_return() {
         }
     }
     tokio::join!(assert_blocked(&mut received_b,&stopped_forward),assert_blocked(&mut received_a,&stopped_reverse));
+    assert!(native[0].session_counts().drop_unknown_vni>ingress_unknown_before,"ingress relay did not observe a rejected unknown VNI");
+    assert!(native[3].session_counts().drop_unknown_vni>exit_unknown_before,"exit relay did not observe a rejected unknown VNI");
     assert_eq!(wg_a.fixture_relay_receive_task_live(&key_b.public.to_bytes()),Some(true),"forward WG receive task stopped");
     assert_eq!(wg_b.fixture_relay_receive_task_live(&key_a.public.to_bytes()),Some(true),"reverse WG receive task stopped");
 }
