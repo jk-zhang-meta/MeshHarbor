@@ -4136,8 +4136,8 @@ mod discovery_traversal_tests {
     use super::*;
     fn hint(n: u8) -> OrgRelayCandidateWire {
         OrgRelayCandidateWire {
-            relay_node_id: ObjectId::from_bytes([n; 12]),
-            exit_relay_node_id: None,
+            path: RelayPathWire::new(vec![ObjectId::from_bytes([n; 12])]).unwrap(),
+            requester_at_exit: false,
             endpoints: vec!["8.8.8.8:3478".into()],
         }
     }
@@ -4176,11 +4176,11 @@ mod discovery_traversal_tests {
         let (page, next) = discovery_page(all.into_iter(), discovery_cursor(&hint(4)));
         assert_eq!(next.unwrap(), discovery_cursor(&hint(2)));
         assert_eq!(
-            page.iter().map(|c| c.relay_node_id).collect::<Vec<_>>(),
+            page.iter().map(|c| c.requester_relay_node_id()).collect::<Vec<_>>(),
             vec![
-                hint(5).relay_node_id,
-                hint(2).relay_node_id,
-                hint(1).relay_node_id
+                hint(5).requester_relay_node_id(),
+                hint(2).requester_relay_node_id(),
+                hint(1).requester_relay_node_id()
             ]
         );
     }
@@ -4189,7 +4189,7 @@ mod discovery_traversal_tests {
         let cursor = discovery_cursor(&hint(3));
         let mut all = vec![hint(1), hint(2), hint(4), hint(5)]; // revoked 3 absent
         all.push(hint(6)); // newly joined relay, no leaf address input
-        let mut next = cursor;
+        let mut next = cursor.clone();
         let mut seen = std::collections::HashSet::new();
         for _ in 0..3 {
             let (page, c) = discovery_page(all.clone().into_iter().chain(all.clone()), next);
@@ -4197,7 +4197,7 @@ mod discovery_traversal_tests {
                 page.len() <= 3
                     && page
                         .iter()
-                        .all(|c| c.relay_node_id != hint(3).relay_node_id)
+                        .all(|c| c.requester_relay_node_id() != hint(3).requester_relay_node_id())
             );
             assert_eq!(
                 page.iter()

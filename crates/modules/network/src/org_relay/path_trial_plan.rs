@@ -40,7 +40,7 @@ pub(super) struct TrialPathPlan {
     pub epoch: u64,
     pub path: RelayPathWire,
     pub requester_at_exit: bool,
-    pub member_zones: [BusinessZone; 2],
+    pub member_zones: Option<[BusinessZone; 2]>,
     requester: MemberIdentity,
     peer: MemberIdentity,
     pub relays: Vec<TrialRelay>,
@@ -200,14 +200,12 @@ pub(super) async fn plan_reusing(
         prepared.peer_zone
     } else {
         prepared.requester_zone
-    }
-    .ok_or(D::ZoneDenied)?;
+    };
     let last_zone = if requester_at_exit {
         prepared.requester_zone
     } else {
         prepared.peer_zone
-    }
-    .ok_or(D::ZoneDenied)?;
+    };
     let mut indices = Vec::with_capacity(nodes.len());
     let mut relays = Vec::with_capacity(nodes.len());
     let mut unique = std::collections::HashSet::with_capacity(nodes.len());
@@ -235,11 +233,18 @@ pub(super) async fn plan_reusing(
             endpoints: plan.endpoints.clone(),
         });
     }
-    if prepared.graph.relays[indices[0]].zone != Some(first_zone)
-        || prepared.graph.relays[*indices.last().ok_or(D::NoRelay)?].zone != Some(last_zone)
-    {
-        return Err(D::ZoneDenied);
-    }
+    let member_zones = if prepared.restrict_ends {
+        let first = first_zone.ok_or(D::ZoneDenied)?;
+        let last = last_zone.ok_or(D::ZoneDenied)?;
+        if prepared.graph.relays[indices[0]].zone != Some(first)
+            || prepared.graph.relays[*indices.last().ok_or(D::NoRelay)?].zone != Some(last)
+        {
+            return Err(D::ZoneDenied);
+        }
+        Some([first, last])
+    } else {
+        None
+    };
     let mut edges = Vec::with_capacity(nodes.len() - 1);
     for (position, pair) in indices.windows(2).enumerate() {
         let from = &prepared.graph.relays[pair[0]];
@@ -266,7 +271,7 @@ pub(super) async fn plan_reusing(
         epoch,
         path: path.clone(),
         requester_at_exit,
-        member_zones: [first_zone, last_zone],
+        member_zones,
         requester: member_identity(&fresh_a)?,
         peer: member_identity(&fresh_b)?,
         relays,

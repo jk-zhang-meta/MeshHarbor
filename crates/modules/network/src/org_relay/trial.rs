@@ -502,7 +502,7 @@ async fn audit_trial_path(
 fn trial_matches_plan(trial: &Trial, plan: &path_trial_plan::TrialPathPlan, requester: &OverlayNode, peer: &OverlayNode) -> bool {
     if trial.backbone.is_some() || trial.requester_at_exit != plan.requester_at_exit
         || trial_path(trial) != plan.path || trial.relay_zones != plan.relays.iter().map(|relay| relay.zone).collect::<Vec<_>>()
-        || trial.member_zones != Some(plan.member_zones) { return false; }
+        || trial.member_zones != plan.member_zones { return false; }
     let session = &trial.session;
     let (first, last) = if plan.requester_at_exit { (peer, requester) } else { (requester, peer) };
     for (stored, fresh) in session.members.iter().zip([first, last]) {
@@ -615,7 +615,7 @@ pub async fn request(
                 delivery.as_ref()?;
                 Some(Trial { id: trial_id, request_id, requester_node_id: req_id, requester_at_exit,
                     relay_zones: candidate.as_ref().map(|p| p.relays.iter().map(|r| r.zone).collect()).unwrap_or_default(),
-                    member_zones: candidate.as_ref().map(|p| p.member_zones), session, backbone: None,
+                    member_zones: candidate.as_ref().and_then(|p| p.member_zones), session, backbone: None,
                     phase: Phase::Preparing([None, None]), started: now, return_state: None,
                     return_ids: HashSet::new(), cancel })
             });

@@ -2877,6 +2877,7 @@ async fn staged_trial_live_relay_zone_recheck_retires_two_relays_moving_together
     let network = l.rig.app.state.network();
     assert_eq!(support::trial_slots_on_relay(network, ObjectId::parse_str(source_node).unwrap()), 0);
     assert_eq!(support::trial_slots_on_relay(network, ObjectId::parse_str(exit_node).unwrap()), 0);
+}
 
 /// An explicit future trial path is independently reauthorized from live
 /// members, relay gates and directed current policy; it sends no grants.
