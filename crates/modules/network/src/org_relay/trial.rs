@@ -414,8 +414,15 @@ pub async fn request(
         let exit_reserved = backbone_plan
             .as_ref()
             .map(|(p, _)| reserved_for(p.relay.id.unwrap_or_default()));
+        let mut relay_nodes = vec![relay_id];
+        if let Some((exit, _)) = backbone_plan.as_ref() {
+            let Some(exit_id) = exit.relay.id else { return };
+            relay_nodes.push(exit_id);
+        }
         let admission = admit_trial(
+            &state.org_relay,
             &mut entries,
+            &relay_nodes,
             &pair,
             tenant,
             req_id,
@@ -590,7 +597,9 @@ enum Admission {
 
 #[allow(clippy::too_many_arguments)]
 fn admit_trial(
+    state: &OrgRelayState,
     entries: &mut HashMap<ObjectId, Trial>,
+    relay_nodes: &[ObjectId],
     pair: &str,
     tenant: ObjectId,
     requester: ObjectId,
@@ -623,6 +632,25 @@ fn admit_trial(
                         .is_some_and(|r| !matches!(r.phase, ReturnPhase::Finalized)))
         })
     {
+        return Admission::Rejected;
+    }
+    // The caller holds the trial entries lock from this check through insert.
+    // Thus competing trials cannot all use the same last slot. Ordinary
+    // mints do not yet share this lock, so this is not global arbitration.
+    let now = Instant::now();
+    let mut seen = HashSet::new();
+    if relay_nodes.is_empty() || relay_nodes.iter().any(|relay| {
+        if !seen.insert(*relay) { return true; }
+        let active = state.sessions.iter()
+            .filter(|session| session.expires_at > now && session.relay_nodes().any(|node| node == *relay))
+            .count();
+        let trials = entries.values().filter(|trial| {
+            trial.session.expires_at > now && !returned(trial)
+                && (trial.session.relay.node_id == *relay
+                    || trial.backbone.as_ref().is_some_and(|b| b.exit.relay.node_id == *relay))
+        }).count();
+        active.saturating_add(trials) >= limits::MAX_SESSIONS_PER_RELAY
+    }) {
         return Admission::Rejected;
     }
     let Some(trial) = allocate() else {
@@ -1129,7 +1157,9 @@ mod tests {
         let mut entries = HashMap::new();
         let id = ObjectId::new();
         let admission = admit_trial(
+            &state,
             &mut entries,
+            &[id],
             "pair",
             id,
             id,
@@ -1166,7 +1196,7 @@ mod tests {
             ))
         };
         let Admission::Created(id) =
-            admit_trial(&mut entries, &pair, tenant, requester, 1, 0, 0, || {
+            admit_trial(&state, &mut entries, &[relay], &pair, tenant, requester, 1, 0, 0, || {
                 allocate(1)
             })
         else {
@@ -1174,11 +1204,13 @@ mod tests {
         };
         assert_eq!(entries[&id].session.vni, 1);
         assert!(
-            matches!(admit_trial(&mut entries, &pair, tenant, requester, 1, 0, 0, || allocate(1)), Admission::Existing(existing) if existing == id)
+            matches!(admit_trial(&state, &mut entries, &[relay], &pair, tenant, requester, 1, 0, 0, || allocate(1)), Admission::Existing(existing) if existing == id)
         );
         assert!(matches!(
             admit_trial(
+                &state,
                 &mut entries,
+                &[relay],
                 &pair,
                 tenant,
                 requester,
@@ -1191,12 +1223,12 @@ mod tests {
         ));
         entries.get_mut(&id).unwrap().phase = Phase::Finalized;
         assert!(
-            matches!(admit_trial(&mut entries, &pair, tenant, requester, 1, 0, 0, || allocate(1)), Admission::Existing(existing) if existing == id)
+            matches!(admit_trial(&state, &mut entries, &[relay], &pair, tenant, requester, 1, 0, 0, || allocate(1)), Admission::Existing(existing) if existing == id)
         );
         assert_eq!(state.lamport.load(Ordering::Relaxed), 1);
         assert_eq!(*state.next_vni.get(&relay).unwrap(), 2);
         let Admission::Created(next) =
-            admit_trial(&mut entries, &pair, tenant, requester, 2, 0, 0, || {
+            admit_trial(&state, &mut entries, &[relay], &pair, tenant, requester, 2, 0, 0, || {
                 allocate(2)
             })
         else {
@@ -1208,6 +1240,58 @@ mod tests {
         );
         assert_eq!(entries[&next].session.generation, 2);
     }
+    #[test]
+    fn concurrent_trials_cannot_claim_the_same_last_relay_slot() {
+        use std::sync::{Arc, Barrier, atomic::AtomicUsize};
+        let state = Arc::new(OrgRelayState::new());
+        let relay = ObjectId::new();
+        for i in 0..limits::MAX_SESSIONS_PER_RELAY - 1 {
+            let session = fixture_trial(ObjectId::new(), ObjectId::new(), ObjectId::new(), relay, i as u64, i as u32 + 1, i as u64 + 1).session;
+            state.sessions.insert(format!("active-{i}"), session);
+        }
+        let barrier = Arc::new(Barrier::new(24));
+        let allocations = Arc::new(AtomicUsize::new(0));
+        let threads: Vec<_> = (0..24).map(|i| {
+            let (state, barrier, allocations) = (Arc::clone(&state), Arc::clone(&barrier), Arc::clone(&allocations));
+            std::thread::spawn(move || {
+                let (tenant, requester, peer) = (ObjectId::new(), ObjectId::new(), ObjectId::new());
+                let pair = pair_key(requester, peer);
+                barrier.wait();
+                let mut entries = state.trials.entries.lock().unwrap();
+                admit_trial(&state, &mut entries, &[relay], &pair, tenant, requester, i, 0, 0, || {
+                    allocations.fetch_add(1, Ordering::Relaxed);
+                    Some(fixture_trial(tenant, requester, peer, relay, i, 1000 + i as u32, 1000 + i))
+                })
+            })
+        }).collect();
+        let outcomes: Vec<_> = threads.into_iter().map(|t| t.join().unwrap()).collect();
+        assert_eq!(outcomes.iter().filter(|a| matches!(a, Admission::Created(_))).count(), 1);
+        assert_eq!(outcomes.iter().filter(|a| matches!(a, Admission::Rejected)).count(), 23);
+        assert_eq!(allocations.load(Ordering::Relaxed), 1);
+        assert_eq!(state.sessions_on_relay(relay), limits::MAX_SESSIONS_PER_RELAY);
+        let mut entries = state.trials.entries.lock().unwrap();
+        let trial = entries.values().next().unwrap();
+        let (id, pair, tenant, requester, request_id) = (trial.id, trial.session.pair_key.clone(), trial.session.tenant_id, trial.session.members[0].party.node_id, trial.request_id);
+        assert!(matches!(admit_trial(&state, &mut entries, &[relay], &pair, tenant, requester, request_id, 0, 0, || panic!("idempotent retry must not allocate")), Admission::Existing(existing) if existing == id));
+    }
+
+    #[test]
+    fn trial_refuses_full_exit_without_allocating_either_leg() {
+        let state = OrgRelayState::new();
+        let (ingress, exit) = (ObjectId::new(), ObjectId::new());
+        for i in 0..limits::MAX_SESSIONS_PER_RELAY {
+            let session = fixture_trial(ObjectId::new(), ObjectId::new(), ObjectId::new(), exit, i as u64, i as u32 + 1, i as u64 + 1).session;
+            state.sessions.insert(format!("exit-{i}"), session);
+        }
+        let mut entries = HashMap::new();
+        let id = ObjectId::new();
+        let admission = admit_trial(&state, &mut entries, &[ingress, exit], "pair", id, id, 1, 0, 0, || panic!("full exit must not allocate"));
+        assert!(matches!(admission, Admission::Rejected));
+        assert!(entries.is_empty());
+        assert!(state.next_vni.is_empty());
+        assert!(matches!(admit_trial(&state, &mut entries, &[ingress, ingress], "pair", id, id, 1, 0, 0, || panic!("duplicate relay must not allocate")), Admission::Rejected));
+    }
+
     #[test]
     fn return_requires_bilateral_fresh_ready_and_both_returned_before_retirement() {
         let now = Instant::now();
