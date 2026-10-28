@@ -502,6 +502,33 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "path-trial-test-support")]
+    #[test]
+    fn rejected_data_fixture_is_scoped_and_requires_unknown_vni() {
+        let now = Instant::now();
+        let stats = Arc::new(RelayStats::default());
+        let (mut server, _) = RelayServer::new(CookieKey::from_bytes([1; 32]), stats.clone());
+        let source: SocketAddr = "127.0.0.1:40001".parse().unwrap();
+        let other: SocketAddr = "127.0.0.1:40002".parse().unwrap();
+        let mut data = vec![0u8; 48];
+        data[0] = 4;
+        stats.fixture_watch_rejected_data(source, VNI, data.len());
+        assert!(server.handle(source, &build_data(VNI, &data), now).is_none());
+        assert_eq!(stats.fixture_rejected_data_count(), 1);
+        server.handle(other, &build_data(VNI, &data), now);
+        server.handle(source, &build_data(VNI + 1, &data), now);
+        server.handle(source, &build_data(VNI, &data[..47]), now);
+        let mut wrong_type = data.clone(); wrong_type[0] = 1;
+        server.handle(source, &build_data(VNI, &wrong_type), now);
+        assert_eq!(stats.fixture_rejected_data_count(), 1);
+        server.apply(RelayCommand::Install(Box::new(session(now))));
+        server.handle(source, &build_data(VNI, &data), now);
+        assert_eq!(stats.fixture_rejected_data_count(), 1, "an existing unbound session is not UnknownVni");
+        server.apply(RelayCommand::Revoke(VNI));
+        server.handle(source, &build_data(VNI, &data), now);
+        assert_eq!(stats.fixture_rejected_data_count(), 2);
+    }
+
     /// The CLIENT side of the handshake, over a real socket, knowing nothing
     /// about its own mapped address -- which is the property that forced the
     /// P2a design change.
