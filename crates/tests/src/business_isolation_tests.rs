@@ -3578,6 +3578,28 @@ async fn staged_nhop_trial_actual_wg_commit_and_bilateral_return() {
     signal(&mut a,"rc:overlay.path_trial_return_request",&id,Some(&return_id)).await;
     for ws in [&mut a,&mut b] {recv_t(ws,"rc:overlay.path_trial_return_commit",wait).await.expect("one-ACK return replay");}
     for node in &nodes {assert_eq!(support::trial_slots_on_relay(network,ObjectId::parse_str(node).unwrap()),1,"one return ACK released a relay");}
+    for ws in &mut relays {
+        let deadline=tokio::time::Instant::now()+Duration::from_millis(150);
+        loop {
+            match tokio::time::timeout_at(deadline,ws.next()).await {
+                Err(_)=>break,
+                Ok(Some(Ok(Message::Text(txt))))=>{
+                    let msg:Value=serde_json::from_str(&txt).unwrap();
+                    assert!(!["rc:overlay.relay_revoke","rc:overlay.relay_bridge_revoke"].contains(&msg["t"].as_str().unwrap_or_default()),"one return ACK revoked a relay or bridge: {msg}");
+                }
+                Ok(Some(Ok(_)))=>{},
+                _=>panic!("relay control socket closed while waiting for second return ACK"),
+            }
+        }
+    }
+    let pending_forward=packet(ip_a,ip_b,b"one return ACK four relay forward");
+    tokio::time::timeout(Duration::from_secs(8),async { loop { wg_a.send_ip_packet(&pending_forward).await;
+        if let Ok(Some(got))=tokio::time::timeout(Duration::from_millis(100),received_b.recv()).await { if got==pending_forward { break; } }
+    }}).await.expect("one return ACK preserves forward data");
+    let pending_reverse=packet(ip_b,ip_a,b"one return ACK four relay reverse");
+    tokio::time::timeout(Duration::from_secs(8),async { loop { wg_b.send_ip_packet(&pending_reverse).await;
+        if let Ok(Some(got))=tokio::time::timeout(Duration::from_millis(100),received_a.recv()).await { if got==pending_reverse { break; } }
+    }}).await.expect("one return ACK preserves reverse data");
     signal(&mut b,"rc:overlay.path_trial_returned",&id,Some(&return_id)).await;
     for ws in [&mut a,&mut b] {recv_t(ws,"rc:overlay.path_trial_return_finalize",wait).await.expect("bilateral return finalize");}
     for (i,ws) in relays.iter_mut().enumerate() {
@@ -3587,6 +3609,7 @@ async fn staged_nhop_trial_actual_wg_commit_and_bilateral_return() {
     for (i,ws) in relays.iter_mut().enumerate().take(3) {
         let revoke=recv_t(ws,"rc:overlay.relay_bridge_revoke",wait).await.expect("all trial bridges retired");
         assert_eq!(revoke["trial_id"],bridges[i]["bridge"]["trial_id"]);
+        assert_eq!(revoke["generation"],bridges[i]["bridge"]["generation"]);
         native[i].serve(serde_json::from_value(revoke).unwrap(),None);
     }
     for node in &nodes {assert_eq!(support::trial_slots_on_relay(network,ObjectId::parse_str(node).unwrap()),0);}
