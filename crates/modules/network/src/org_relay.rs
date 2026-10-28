@@ -101,6 +101,12 @@ pub mod candidate_test_support {
             dashmap::mapref::entry::Entry::Occupied(_) => false,
         }
     }
+    /// Make one member key in a fixture-owned active session stale.
+    pub fn invalidate_session_member_key_fixture(state: &NetworkState, pair: &str) -> bool {
+        let Some(mut session) = state.org_relay.sessions.get_mut(pair) else { return false };
+        session.members[0].wg_public_key.push_str("-stale");
+        true
+    }
     /// Populate a test fixture through the same offer/report checks as the
     /// normal probe receiver. Only compiled for integration tests.
     pub fn record_member_probe_fixture(
@@ -224,6 +230,30 @@ pub mod candidate_test_support {
     pub(super) async fn pause_nhop_repush_if_armed(pair: &str) {
         let pause = nhop_repush_pauses().lock().unwrap().remove(pair);
         if let Some(NhopRepushPause { reached, resume }) = pause {
+            let _ = reached.send(());
+            let _ = resume.await;
+        }
+    }
+    struct LinePreclaimPause {
+        reached: oneshot::Sender<()>,
+        resume: oneshot::Receiver<()>,
+    }
+    fn line_preclaim_pauses() -> &'static Mutex<HashMap<String, LinePreclaimPause>> {
+        static PAUSES: OnceLock<Mutex<HashMap<String, LinePreclaimPause>>> = OnceLock::new();
+        PAUSES.get_or_init(|| Mutex::new(HashMap::new()))
+    }
+    /// Pause an established line just before its shared session claim.
+    pub fn pause_line_preclaim_fixture(pair: String) -> (oneshot::Receiver<()>, oneshot::Sender<()>) {
+        let (reached_tx, reached_rx) = oneshot::channel();
+        let (resume_tx, resume_rx) = oneshot::channel();
+        assert!(line_preclaim_pauses().lock().unwrap().insert(pair, LinePreclaimPause {
+            reached: reached_tx, resume: resume_rx,
+        }).is_none());
+        (reached_rx, resume_tx)
+    }
+    pub(super) async fn pause_line_preclaim_if_armed(pair: &str) {
+        let pause = line_preclaim_pauses().lock().unwrap().remove(pair);
+        if let Some(LinePreclaimPause { reached, resume }) = pause {
             let _ = reached.send(());
             let _ = resume.await;
         }
@@ -2315,6 +2345,8 @@ async fn mint_line(
             exit = %exit_id, "org-relay [warn]: would mint a cross-border line; pushing nothing");
         return;
     }
+    #[cfg(feature = "path-planner-test-support")]
+    candidate_test_support::pause_line_preclaim_if_armed(&pk).await;
     // Share the trial admission lock so no other local claim can take the
     // same remaining capacity between the check and this session's insert.
     let mut delivery = None;
@@ -2328,6 +2360,10 @@ async fn mint_line(
         trial::MintClaim::Rejected => { refuse(PeerRelayDenyReason::PolicyUnreadable).await; return; },
     };
     if let Some(current) = current {
+        if current.hops.len() > 1 {
+            reauthorize_concurrent_winner(state, requester, peer, &current).await;
+            return;
+        }
         if let Some(i) = current.member_index(req_id) {
             push_member(state, &current, i).await;
         }
@@ -2730,6 +2766,20 @@ fn random_secret() -> String {
 /// The entry point, called from `handle_overlay_relay_request` after its own
 /// cross-tenant and ACL-enforce checks. Never blocks the TURN grant: the
 /// client cascade (P4) picks Org over Turn/Derp when a session arrives.
+async fn reauthorize_concurrent_winner(
+    state: &NetworkState,
+    requester: &OverlayNode,
+    peer: &OverlayNode,
+    current: &OrgRelaySession,
+) {
+    if path_mint::repush(state, requester, peer, current).await == path_mint::RepushOutcome::Denied {
+        revoke_where(state, "nhop_reauthorization_failed", |entry| {
+            entry.pair_key == current.pair_key && entry.vni == current.vni
+                && entry.generation == current.generation
+        }).await;
+    }
+}
+
 pub async fn maybe_mint(state: &NetworkState, requester: &OverlayNode, peer: &OverlayNode) {
     let tenant_id = requester.tenant_id;
     let mode = peer_relay_mode(state, tenant_id).await;
@@ -2999,7 +3049,7 @@ async fn mint_plan(
     match claim {
         trial::MintClaim::Existing(current) => {
             if current.hops.len() > 1 {
-                let _ = path_mint::repush(state, requester, peer, &current).await;
+                reauthorize_concurrent_winner(state, requester, peer, &current).await;
                 return;
             }
             // Fallback must reauthorize this exact winner; ordinary mint has

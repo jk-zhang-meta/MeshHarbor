@@ -2400,3 +2400,80 @@ async fn staged_graph_same_zone_actual_mint_and_fallback() {
         }
     }
 }
+
+/// A direct-line claim that loses to a concurrent N-hop winner must not
+/// bypass that winner's complete reauthorization when repushing it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn staged_graph_line_claim_race_reauthorizes_multihop_winner() {
+    use roomler_ai_mod_network::org_relay::candidate_test_support as support;
+    for invalid_key in [false, true] {
+    let slug = if invalid_key { "iso-line-claim-race-denied" } else { "iso-line-claim-race-unavailable" };
+    let mut l = LineRig::up(slug, true).await;
+    let (middle_agent, token) = enroll(&l.rig.app, &l.rig.seeded, "iso-line-claim-race-mid").await;
+    let mut middle = connect_from(&l.rig.app, &token, &["relay-server"], Some(CN_R)).await;
+    assert_observed(&l.rig.app, &middle_agent, Some(CN_R)).await;
+    line_join(&mut middle, 5, "223.6.6.7:41641", json!({"relay_backbone_ready":true})).await;
+    assert_eq!(approve(&l.rig.app, &l.rig.seeded, &middle_agent, true).await, 200);
+    let middle_node = l.rig.node("iso-line-claim-race-mid").await;
+    grant_relay(&l.rig.app, &l.rig.seeded, &middle_node).await;
+    let network = l.rig.app.state.network();
+    let (a, b, gz, mid, hk) = (ObjectId::parse_str(&l.cn_node).unwrap(), ObjectId::parse_str(&l.us_node).unwrap(),
+        ObjectId::parse_str(&l.gz_node).unwrap(), ObjectId::parse_str(&middle_node).unwrap(), ObjectId::parse_str(&l.hk_node).unwrap());
+    let pair = roomler_ai_mod_network::overlay::pair_key(a, b);
+    let (reached, resume) = support::pause_line_preclaim_fixture(pair.clone());
+    relay_request(&mut l.cn, &l.us_node).await;
+    tokio::time::timeout(Duration::from_secs(10), reached).await.expect("direct line reached claim").unwrap();
+    // Keep the original direct line, but introduce a faster authorized chain
+    // while its first request is paused just before the shared claim.
+    let admin = &l.rig.seeded.admin.access_token;
+    let gz_policy = format!("/api/tenant/{}/agent/{}/peer-relay-policy", l.rig.seeded.tenant_id, l.gz_agent);
+    let mid_policy = format!("/api/tenant/{}/agent/{}/peer-relay-policy", l.rig.seeded.tenant_id, middle_agent);
+    let (status, body) = put(&l.rig.app, &gz_policy, admin, json!({"serve":true,"approved_backbone_edges":[
+        {"relay_agent_id":middle_agent,"endpoint":"10.59.0.2:3478","cross_border":false},
+        {"relay_agent_id":l.hk_agent,"endpoint":"10.59.0.3:3478","cross_border":true}]})).await;
+    assert_eq!(status, 200, "{body}");
+    let (status, body) = put(&l.rig.app, &mid_policy, admin, json!({"serve":true,"approved_backbone_edges":[
+        {"relay_agent_id":l.hk_agent,"endpoint":"10.59.0.4:3478","cross_border":true}]})).await;
+    assert_eq!(status, 200, "{body}");
+    assert!(support::record_member_probe_fixture(network, a, &[
+        (gz, "223.6.6.6:3478".into(), true, Some(10)), (mid, "223.6.6.7:3478".into(), false, None)]));
+    assert!(support::record_member_probe_fixture(network, b, &[(hk, "1.1.1.1:3478".into(), true, Some(10))]));
+    assert!(support::record_backbone_probe_fixture(network, gz, &[
+        (mid, "10.59.0.2:3478".into(), true, Some(5)), (hk, "10.59.0.3:3478".into(), true, Some(100))]));
+    assert!(support::record_backbone_probe_fixture(network, mid, &[(hk, "10.59.0.4:3478".into(), true, Some(5))]));
+    assert_eq!(support::select_path(network, a, b, false).await.unwrap().unwrap().0,
+        vec![ObjectId::parse_str(&l.gz_agent).unwrap(), ObjectId::parse_str(&middle_agent).unwrap(), ObjectId::parse_str(&l.hk_agent).unwrap()]);
+    // A different connection can issue the competing request while CN's
+    // original WebSocket handler is paused.
+    relay_request(&mut l.us, &l.cn_node).await;
+    let wait = Duration::from_secs(8);
+    let gz_serve = recv_t(&mut l.gz, "rc:overlay.relay_serve", wait).await.expect("winning ingress serve");
+    recv_t(&mut l.gz, "rc:overlay.relay_bridge_serve", wait).await.expect("winning first bridge");
+    recv_t(&mut middle, "rc:overlay.relay_serve", wait).await.expect("winning middle serve");
+    recv_t(&mut middle, "rc:overlay.relay_bridge_serve", wait).await.expect("winning second bridge");
+    recv_t(&mut l.hk, "rc:overlay.relay_serve", wait).await.expect("winning exit serve");
+    let first = recv_t(&mut l.cn, "rc:overlay.relay_session", wait).await.expect("winning CN grant");
+    recv_t(&mut l.us, "rc:overlay.relay_session", wait).await.expect("winning US grant");
+    assert_eq!(first["vni"], gz_serve["vni"]);
+    let winner = network.org_relay.active_session(&pair).expect("winning session");
+    assert_eq!(winner.hops.len(), 2);
+    // A transient read failure must not send a stale grant, nor tear down the
+    // healthy winning path. The old shortcut incorrectly sent the grant.
+    if invalid_key {
+        assert!(support::invalidate_session_member_key_fixture(network, &pair));
+        resume.send(()).unwrap();
+        recv_t(&mut l.cn, "rc:overlay.relay_revoke", wait).await.expect("definitely invalid winner revoked");
+        assert!(network.org_relay.active_session(&pair).is_none(), "invalid winner remains active");
+        assert!(recv_t(&mut l.cn, "rc:overlay.relay_session", Duration::from_millis(500)).await.is_none(), "invalid winner was re-pushed");
+    } else {
+        support::fail_next_nhop_reauth_fixture(pair.clone());
+        resume.send(()).unwrap();
+        assert!(recv_t(&mut l.cn, "rc:overlay.relay_session", Duration::from_millis(1500)).await.is_none(), "losing line bypassed multi-hop reauthorization");
+        let retained = network.org_relay.active_session(&pair).expect("transient reauthorization retains winner");
+        assert_eq!((retained.vni, retained.generation), (winner.vni, winner.generation));
+        relay_request(&mut l.cn, &l.us_node).await;
+        let retry = recv_t(&mut l.cn, "rc:overlay.relay_session", wait).await.expect("healthy reauthorization repushes winner");
+        assert_eq!(retry["vni"], first["vni"]);
+    }
+    }
+}
