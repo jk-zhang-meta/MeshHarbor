@@ -3590,6 +3590,8 @@ pub(crate) async fn recheck_zones(state: &NetworkState, agent_id: ObjectId, reas
 /// mode. A changing eligibility epoch defers the decision instead of revoking
 /// from a mixed snapshot; retry is deduplicated per affected relay.
 pub(crate) async fn recheck_trial_zones(state: &NetworkState, agent_id: ObjectId, reason: &str) {
+    let ids = trial::trial_ids_for_identity(state, agent_id);
+    if !ids.is_empty() { schedule_trial_zone_retry(state, ids); }
     let ids = trial::recheck_relay_zones(state, agent_id, reason).await;
     if !ids.is_empty() {
         schedule_trial_zone_retry(state, ids);
@@ -3665,9 +3667,11 @@ fn schedule_trial_zone_retry(state: &NetworkState, ids: std::collections::HashSe
     let mut guard = TrialZoneWorkerGuard { state: state.clone(), generation, started: false, completed: false };
     tokio::spawn(async move {
         guard.started = true;
+        let mut cursors = std::collections::HashMap::<ObjectId, trial::TrialZoneCursor>::new();
         loop {
             // One worker processes a FIFO batch of trial IDs per pass.
             tokio::time::sleep(Duration::from_secs(5)).await;
+            trial::prune_trial_zone_cursors(&state, &mut cursors);
             trial::refill_zone_retry_if_needed(&state, generation);
             let batch = {
                 let mut retry = state.org_relay.trial_zone_retry.lock().unwrap_or_else(|e| e.into_inner());
@@ -3680,7 +3684,10 @@ fn schedule_trial_zone_retry(state: &NetworkState, ids: std::collections::HashSe
                 }
                 batch
             };
-            let pending = trial::recheck_trial_zone_batch(&state, &batch, "zone_retry").await;
+            let mut pending = std::collections::HashSet::new();
+            for id in batch {
+                if trial::recheck_trial_zone_slice(&state, id, &mut cursors).await { pending.insert(id); }
+            }
             let again = state.org_relay.trial_zone_retry.lock().unwrap_or_else(|e| e.into_inner()).finish_pass(generation, pending);
             if !again { guard.completed = true; break; }
         }
@@ -3909,6 +3916,18 @@ mod tests {
         for _ in 1..=trial::MAX_TRIALS { retry.enqueue(ObjectId::new()); }
         assert_eq!(retry.pending.len(), trial::MAX_TRIALS);
         assert!(retry.rescan);
+    }
+
+    #[test]
+    fn zone_retry_unfinished_trial_goes_behind_other_pending_trials() {
+        let mut retry = TrialZoneRetry::default();
+        let slow = ObjectId::new(); let other = ObjectId::new();
+        retry.enqueue(slow); retry.enqueue(other);
+        assert_eq!(retry.pending.pop_front(), Some(slow));
+        retry.queued.remove(&slow);
+        retry.enqueue(slow);
+        assert_eq!(retry.pending.pop_front(), Some(other));
+        assert_eq!(retry.pending.pop_front(), Some(slow));
     }
 
     fn node_with(srflx: &[&str], lan: &[&str], endpoints: &[&str]) -> OverlayNode {

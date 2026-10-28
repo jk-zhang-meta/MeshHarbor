@@ -256,20 +256,17 @@ async fn current_party_zone(
 
 /// Return exact trials needing retry. No I/O is awaited while the trial table
 /// is locked; removal compares the entire path again.
+pub(in crate::org_relay) fn trial_ids_for_identity(state: &NetworkState, identity: ObjectId) -> HashSet<ObjectId> {
+    let entries = state.org_relay.trials.entries.lock().unwrap_or_else(|e| e.into_inner());
+    entries.values().filter_map(capture).filter(|s| s.involves(identity)).map(|s| s.id).collect()
+}
+
 pub(in crate::org_relay) async fn recheck_relay_zones(
     state: &NetworkState,
     identity: ObjectId,
     reason: &str,
 ) -> HashSet<ObjectId> {
     recheck_selected_zones(state, Some(identity), None, reason).await
-}
-
-pub(in crate::org_relay) async fn recheck_trial_zone_batch(
-    state: &NetworkState,
-    ids: &HashSet<ObjectId>,
-    reason: &str,
-) -> HashSet<ObjectId> {
-    recheck_selected_zones(state, None, Some(ids), reason).await
 }
 
 async fn recheck_selected_zones(
@@ -437,6 +434,105 @@ async fn recheck_selected_zones(
     retry
 }
 
+/// A worker continuation is valid only for this exact trial and epoch. It
+/// never persists beyond the owning process or survives an epoch change.
+pub(in crate::org_relay) struct TrialZoneCursor {
+    snapshot: TrialZoneSnapshot,
+    epoch: u64,
+    next: usize,
+    unavailable: bool,
+}
+
+pub(in crate::org_relay) fn prune_trial_zone_cursors(
+    state: &NetworkState,
+    cursors: &mut HashMap<ObjectId, TrialZoneCursor>,
+) {
+    let entries = state.org_relay.trials.entries.lock().unwrap_or_else(|e| e.into_inner());
+    cursors.retain(|id, _| entries.contains_key(id));
+}
+
+/// Read at most one party per invocation; `true` requeues this exact trial.
+/// No fixed path-length limit is imposed. The caller bounds batch size.
+pub(in crate::org_relay) async fn recheck_trial_zone_slice(
+    state: &NetworkState,
+    id: ObjectId,
+    cursors: &mut HashMap<ObjectId, TrialZoneCursor>,
+) -> bool {
+    let epoch = state.org_relay.eligibility_generation();
+    let current = {
+        let entries = state.org_relay.trials.entries.lock().unwrap_or_else(|e| e.into_inner());
+        entries.get(&id).and_then(capture)
+    };
+    let Some(current) = current else { cursors.remove(&id); return false };
+    if epoch != state.org_relay.eligibility_generation() { cursors.remove(&id); return true; }
+    let mut cursor = match cursors.remove(&id) {
+        Some(cursor) if cursor.epoch == epoch && cursor.snapshot == current => cursor,
+        Some(_) => return true,
+        None => TrialZoneCursor { snapshot: current, epoch, next: 0, unavailable: false },
+    };
+    let snap = &cursor.snapshot;
+    let mut invalid = !snap.shape_valid();
+    let count = snap.relays.len() + snap.members.len();
+    if !invalid && cursor.next < count {
+        let (node_id, node_ref, expected) = if cursor.next < snap.relays.len() {
+            let relay = &snap.relays[cursor.next];
+            (relay.node_id, &relay.node_ref, Some(snap.relay_zones[cursor.next]))
+        } else {
+            let index = cursor.next - snap.relays.len();
+            let member = &snap.members[index];
+            (member.node_id, &member.node_ref, snap.member_zones.map(|zones| zones[index]))
+        };
+        let read = {
+            #[cfg(feature = "path-planner-test-support")]
+            let injected = if cursor.next == 0 {
+                super::super::candidate_test_support::take_trial_zone_read_failure(id)
+            } else if cursor.next == snap.relays.len() {
+                super::super::candidate_test_support::take_trial_member_zone_read_failure(id)
+            } else { false };
+            #[cfg(not(feature = "path-planner-test-support"))]
+            let injected = false;
+            if injected { Err(()) } else {
+                bounded_party_read(current_party_zone(state, snap.tenant_id, node_id, node_ref, expected.is_some()), Duration::from_secs(3)).await
+            }
+        };
+        match read {
+            Ok(PartyZone::Invalid) => invalid = true,
+            Ok(PartyZone::Known(actual)) => invalid = expected.is_some_and(|zone| zone != actual),
+            Ok(PartyZone::Unknown) | Err(()) => cursor.unavailable = true,
+            Ok(PartyZone::ValidUnconstrained) => {},
+        }
+        cursor.next += 1;
+    }
+    if epoch != state.org_relay.eligibility_generation() { return true; }
+    if invalid {
+        #[cfg(feature = "path-planner-test-support")]
+        super::super::candidate_test_support::pause_trial_zone_revoke_if_armed(id).await;
+        let event = {
+            let mut entries = state.org_relay.trials.entries.lock().unwrap_or_else(|e| e.into_inner());
+            if epoch != state.org_relay.eligibility_generation() {
+                return true;
+            }
+            match entries.get(&id).and_then(capture) {
+                Some(now) if now == cursor.snapshot => {
+                    state.org_relay.invalidate_eligibility();
+                    entries.remove(&id).map(|trial| { notify_abort(state, &trial); revoke_event(&trial, "zone_retry") })
+                }
+                Some(_) => return true,
+                None => None,
+            }
+        };
+        if let Some(event) = event {
+            if !matches!(tokio::time::timeout(Duration::from_secs(3), state.peer_relay_audit.record(event)).await, Ok(Ok(_))) {
+                warn!("org-relay: trial zone retry revoke audit failed or timed out");
+            }
+        }
+        return false;
+    }
+    if cursor.next >= count { return cursor.unavailable; }
+    cursors.insert(id, cursor);
+    true
+}
+
 /// Fixtures own the path and receive no serve or member grants from this
 /// helper. Production admission and capacity are tested separately.
 #[cfg(feature = "path-planner-test-support")]
@@ -563,7 +659,7 @@ mod tests {
 
     #[test]
     fn all_relay_zones_and_constrained_members_are_checked_without_a_fixed_hop_cap() {
-        for n in [2, 3, 4, 128] {
+        for n in [2, 3, 4, 128, 257] {
             let valid = fixture(n);
             assert!(valid.shape_valid());
             for relay in &valid.relays {
