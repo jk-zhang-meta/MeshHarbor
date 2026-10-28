@@ -180,6 +180,14 @@ fn trial_lookup<T>(result: roomler_ai_services::dao::base::DaoResult<T>) -> Resu
     }
 }
 
+/// A hung dependency is uncertainty, not evidence of deletion.
+async fn bounded_party_read<F>(read: F, timeout: Duration) -> Result<PartyZone, ()>
+where
+    F: std::future::Future<Output = Result<PartyZone, ()>>,
+{
+    tokio::time::timeout(timeout, read).await.unwrap_or(Err(()))
+}
+
 /// Unknown geography preserves an existing trial, unlike a confirmed invalid
 /// identity or a known conflicting region. Storage errors remain retryable.
 async fn current_party_zone(
@@ -298,24 +306,24 @@ async fn recheck_selected_zones(
                     {
                         Err(())
                     } else {
-                        current_party_zone(
+                        bounded_party_read(current_party_zone(
                             state,
                             snapshot.tenant_id,
                             relay.node_id,
                             &relay.node_ref,
                             true,
-                        )
+                        ), Duration::from_secs(3))
                         .await
                     }
                     #[cfg(not(feature = "path-planner-test-support"))]
                     {
-                        current_party_zone(
+                        bounded_party_read(current_party_zone(
                             state,
                             snapshot.tenant_id,
                             relay.node_id,
                             &relay.node_ref,
                             true,
-                        )
+                        ), Duration::from_secs(3))
                         .await
                     }
                 };
@@ -338,24 +346,24 @@ async fn recheck_selected_zones(
                     {
                         Err(())
                     } else {
-                        current_party_zone(
+                        bounded_party_read(current_party_zone(
                             state,
                             snapshot.tenant_id,
                             member.node_id,
                             &member.node_ref,
                             snapshot.member_zones.is_some(),
-                        )
+                        ), Duration::from_secs(3))
                         .await
                     }
                     #[cfg(not(feature = "path-planner-test-support"))]
                     {
-                        current_party_zone(
+                        bounded_party_read(current_party_zone(
                             state,
                             snapshot.tenant_id,
                             member.node_id,
                             &member.node_ref,
                             snapshot.member_zones.is_some(),
-                        )
+                        ), Duration::from_secs(3))
                         .await
                     }
                 };
@@ -473,6 +481,13 @@ mod tests {
         assert_eq!(trial_lookup::<u32>(Err(DaoError::NotFound)), Ok(None));
         let bad_decode = bson::from_bson::<u32>(bson::Bson::String("invalid".into())).unwrap_err();
         assert_eq!(trial_lookup::<u32>(Err(DaoError::BsonDe(bad_decode))), Err(()));
+    }
+
+    #[tokio::test]
+    async fn hung_party_read_is_uncertain_not_invalid() {
+        let never = std::future::pending::<Result<PartyZone, ()>>();
+        assert_eq!(bounded_party_read(never, Duration::from_millis(10)).await, Err(()));
+        assert_eq!(bounded_party_read(async { Ok(PartyZone::Invalid) }, Duration::from_secs(1)).await, Ok(PartyZone::Invalid));
     }
 
     #[test]
