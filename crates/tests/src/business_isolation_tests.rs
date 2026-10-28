@@ -440,7 +440,11 @@ async fn relay_request(ws: &mut Ws, peer: &str) {
 
 impl LineRig {
     async fn up(slug: &str, cross_border: bool) -> Self {
-        let rig = Rig::up(slug, "enforce").await;
+        Self::up_with_isolation(slug, cross_border, "enforce").await
+    }
+
+    async fn up_with_isolation(slug: &str, cross_border: bool, isolation: &'static str) -> Self {
+        let rig = Rig::up(slug, isolation).await;
         let relay = |name: String, from: &'static str| {
             let rig = &rig;
             async move {
@@ -2529,5 +2533,91 @@ async fn staged_cross_border_trial_audit_failure_and_timeout_fail_closed() {
         assert_eq!(bridge["bridge"]["local_vni"], a["vni"]); assert_eq!(bridge["bridge"]["remote_vni"], b["vni"]);
         assert_eq!(support::trial_slots_on_relay(network, gz), 1); assert_eq!(support::trial_slots_on_relay(network, hk), 1);
         assert!(l.audit_reasons("mint").await.iter().any(|(reason, node)| reason == "cross_border_line" && node == &l.gz_node));
+    }
+}
+
+/// Off/Warn isolation does not waive approval or audit for an actual crossing;
+/// unknown relay placement cannot prove that the backbone edge is local.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn staged_trial_actual_edge_zone_gates_apply_in_off_and_warn() {
+    use roomler_ai_mod_network::org_relay::candidate_test_support::{self as support, TrialCrossingAuditFault};
+    for mode in ["off", "warn"] {
+        for case in ["unapproved", "audit_error", "audit_timeout", "unknown", "same_zone"] {
+            let slug = format!("iso-trial-zone-{mode}-{case}");
+            let mut l = LineRig::up_with_isolation(&slug, case != "unapproved", mode).await;
+            let flags = json!({"supports_backbone_only_v1":true,"supports_path_backbone_v1":true,"supports_path_trial_v1":true});
+            line_join(&mut l.cn, 1, "223.5.5.5:41641", flags.clone()).await;
+            line_join(&mut l.us, 2, "8.8.8.8:41641", flags).await;
+            let pair = roomler_ai_mod_network::overlay::pair_key(ObjectId::parse_str(&l.cn_node).unwrap(), ObjectId::parse_str(&l.us_node).unwrap());
+            let gz = ObjectId::parse_str(&l.gz_node).unwrap();
+            let hk = ObjectId::parse_str(&l.hk_node).unwrap();
+            let network = l.rig.app.state.network();
+            let mut alternate = None;
+            let mut exit_node = l.hk_node.clone();
+            if case == "unknown" || case == "same_zone" {
+                let name = format!("{slug}-alternate");
+                let (agent, token) = enroll(&l.rig.app, &l.rig.seeded, &name).await;
+                let from = if case == "unknown" { None } else { Some(CN_R) };
+                let mut ws = connect_from(&l.rig.app, &token, &["relay-server"], from).await;
+                assert_observed(&l.rig.app, &agent, from).await;
+                let endpoint = if case == "unknown" { "1.1.1.9:41641" } else { "223.6.6.9:41641" };
+                line_join(&mut ws, 10, endpoint, json!({})).await;
+                assert_eq!(approve(&l.rig.app, &l.rig.seeded, &agent, true).await, 200);
+                exit_node = l.rig.node(&name).await;
+                grant_relay(&l.rig.app, &l.rig.seeded, &exit_node).await;
+                let policy = format!("/api/tenant/{}/agent/{}/peer-relay-policy", l.rig.seeded.tenant_id, l.gz_agent);
+                let (status, body) = put(&l.rig.app, &policy, &l.rig.seeded.admin.access_token,
+                    json!({"serve":true,"approved_backbone_edges":[{"relay_agent_id":agent,"endpoint":"10.67.0.2:3478","cross_border":case == "unknown"}]})).await;
+                assert_eq!(status, 200, "{body}");
+                alternate = Some(ws);
+            }
+            if case == "audit_error" { support::fail_next_trial_crossing_audit(pair.clone(), TrialCrossingAuditFault::Error); }
+            if case == "audit_timeout" { support::fail_next_trial_crossing_audit(pair.clone(), TrialCrossingAuditFault::Timeout); }
+            async fn request(ws: &mut Ws, peer: &str, ingress: &str, exit: &str, serial: u64) {
+                ws.send(Message::Text(json!({"t":"rc:overlay.path_trial_request", "peer_node_id":peer,
+                    "relay_node_id":ingress, "exit_relay_node_id":exit, "request_id":serial}).to_string().into())).await.unwrap();
+            }
+            request(&mut l.cn, &l.us_node, &l.gz_node, &exit_node, 1).await;
+            let wait = Duration::from_secs(8);
+            if case == "same_zone" {
+                let serve = recv_t(&mut l.gz, "rc:overlay.relay_serve", wait).await.expect("same-zone ingress serve");
+                let other = recv_t(alternate.as_mut().unwrap(), "rc:overlay.relay_serve", wait).await.expect("same-zone exit serve");
+                let bridge = recv_t(&mut l.gz, "rc:overlay.relay_bridge_serve", wait).await.expect("same-zone bridge");
+                let cn = recv_t(&mut l.cn, "rc:overlay.path_trial_start", wait).await.expect("same-zone requester start");
+                let us = recv_t(&mut l.us, "rc:overlay.path_trial_start", wait).await.expect("same-zone peer start");
+                assert_eq!(cn["vni"], serve["vni"]); assert_eq!(us["vni"], other["vni"]);
+                assert_eq!(bridge["bridge"]["local_vni"], serve["vni"]); assert_eq!(bridge["bridge"]["remote_vni"], other["vni"]);
+                assert!(l.audit_reasons("mint").await.is_empty(), "same-zone edge must not claim a crossing");
+                continue;
+            }
+            async fn assert_quiet(ws: &mut Ws, label: &str) {
+                let until = tokio::time::Instant::now() + Duration::from_millis(3600);
+                while let Ok(Some(Ok(message))) = tokio::time::timeout_at(until, ws.next()).await {
+                    if let Message::Text(text) = message {
+                        let v: Value = serde_json::from_str(&text).unwrap();
+                        assert!(!["rc:overlay.relay_serve", "rc:overlay.relay_bridge_serve", "rc:overlay.path_trial_start"].contains(&v["t"].as_str().unwrap_or_default()), "{label}: forbidden/unaudited edge emitted a trial grant");
+                    }
+                }
+            }
+            if let Some(ws) = alternate.as_mut() {
+                tokio::join!(assert_quiet(&mut l.gz, &slug), assert_quiet(&mut l.hk, &slug), assert_quiet(ws, &slug),
+                    assert_quiet(&mut l.cn, &slug), assert_quiet(&mut l.us, &slug));
+            } else {
+                tokio::join!(assert_quiet(&mut l.gz, &slug), assert_quiet(&mut l.hk, &slug),
+                    assert_quiet(&mut l.cn, &slug), assert_quiet(&mut l.us, &slug));
+            }
+            assert_eq!(support::trial_slots_on_relay(network, gz), 0); assert_eq!(support::trial_slots_on_relay(network, hk), 0);
+            assert!(l.audit_reasons("mint").await.is_empty());
+            if case == "unapproved" || case == "unknown" { l.set_edge(true).await; }
+            request(&mut l.cn, &l.us_node, &l.gz_node, &l.hk_node, 2).await;
+            let a = recv_t(&mut l.gz, "rc:overlay.relay_serve", wait).await.expect("approved, audited ingress");
+            let b = recv_t(&mut l.hk, "rc:overlay.relay_serve", wait).await.expect("approved, audited exit");
+            let bridge = recv_t(&mut l.gz, "rc:overlay.relay_bridge_serve", wait).await.expect("approved bridge");
+            let cn = recv_t(&mut l.cn, "rc:overlay.path_trial_start", wait).await.expect("approved requester trial");
+            let us = recv_t(&mut l.us, "rc:overlay.path_trial_start", wait).await.expect("approved peer trial");
+            assert_eq!(cn["vni"], a["vni"]); assert_eq!(us["vni"], b["vni"]);
+            assert_eq!(bridge["bridge"]["local_vni"], a["vni"]); assert_eq!(bridge["bridge"]["remote_vni"], b["vni"]);
+            assert!(l.audit_reasons("mint").await.iter().any(|(reason,node)| reason == "cross_border_line" && node == &l.gz_node));
+        }
     }
 }

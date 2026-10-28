@@ -1972,6 +1972,18 @@ async fn plan_backbone(
             (ingress, exit)
         }
     };
+    // A private bridge can cross zones even when business isolation is Off
+    // or Warn, or when members are in the same zone. Do not treat those
+    // modes as evidence that the edge itself is same-zone. Unknown relay
+    // zones cannot establish whether approval and auditing are required.
+    let (source_zone, exit_zone) = (node_zone(state, &ingress.relay).await, node_zone(state, &exit.relay).await);
+    let (Some(source_zone), Some(exit_zone)) = (source_zone, exit_zone) else {
+        return Err(D::ZoneDenied);
+    };
+    let crossing = source_zone != exit_zone;
+    if line.is_some() && !crossing {
+        return Err(D::ZoneDenied);
+    }
     let endpoint = ingress
         .backbone_edges
         .iter()
@@ -1979,15 +1991,15 @@ async fn plan_backbone(
         .find(|edge| {
             ObjectId::parse_str(&edge.relay_agent_id).ok() == Some(exit.relay_agent_id)
                 && crate::routes::peer_relay::valid_backbone_endpoint(&edge.endpoint)
-                && (line.is_none() || edge.cross_border)
+                && (!crossing || edge.cross_border)
         })
         .map(|e| e.endpoint.clone())
-        .ok_or(if line.is_some() { D::ZoneDenied } else { D::NoRelay })?;
+        .ok_or(if crossing { D::ZoneDenied } else { D::NoRelay })?;
     if !crate::routes::peer_relay::backbone_endpoint_outside_overlay(&endpoint, &network.cidr) {
         return Err(D::NonRoutableEndpoint);
     }
-    if line.is_some() {
-        // #21 rule 5: every crossing is audited, on top of the trial's own rows.
+    if crossing {
+        // Every actual crossing is audited, regardless of isolation mode.
         info!(tenant_id = %requester.tenant_id, requester = %a, peer = %b, ingress = %ingress_id,
             exit = %exit_id, "org-relay: auditing a cross-border trial attempt");
         let event = PeerRelayAuditEvent {

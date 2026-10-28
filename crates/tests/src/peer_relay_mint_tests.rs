@@ -243,6 +243,7 @@ pub(crate) async fn wait_mint_row(app: &TestApp, seeded: &SeededTenant) -> Value
 
 /// Three nodes on one tenant: `a` asks, `b` is the peer, `r` may relay.
 struct Rig {
+    _geo: Option<tempfile::TempDir>,
     app: TestApp,
     seeded: SeededTenant,
     a: Ws,
@@ -258,16 +259,40 @@ impl Rig {
     /// `relay_rpc` = whether the relay's hello advertises `relay-server`;
     /// `a_primary` = what `a`'s join says about its org.
     async fn up(slug: &str, relay_rpc: bool, a_primary: Option<bool>) -> Self {
-        let app = TestApp::spawn().await;
+        Self::up_inner(slug, relay_rpc, a_primary, false).await
+    }
+
+    /// These tests use real trusted-proxy observations and a deterministic
+    /// GeoIP fixture to establish that both private-bridge relays are in US.
+    async fn up_zoned(slug: &str, relay_rpc: bool, a_primary: Option<bool>) -> Self {
+        Self::up_inner(slug, relay_rpc, a_primary, true).await
+    }
+
+    async fn up_inner(slug: &str, relay_rpc: bool, a_primary: Option<bool>, zoned: bool) -> Self {
+        let mut geo = None;
+        let app = if zoned {
+            let dir = tempfile::tempdir().unwrap();
+            let mmdb = dir.path().join("dbip-country-lite.mmdb");
+            std::fs::write(&mmdb, crate::peer_relay_auto_tests::fixture_mmdb()).unwrap();
+            let path = mmdb.to_str().unwrap().to_owned();
+            let app = TestApp::spawn_with_settings(move |settings| {
+                settings.app.business_trusted_proxy_cidrs = vec!["127.0.0.1/32".into()];
+                settings.app.rate_limit_trusted_hops = 0;
+                settings.stats.geoip_mmdb = Some(path);
+            }).await;
+            geo = Some(dir);
+            app
+        } else { TestApp::spawn().await };
         let seeded = app.seed_tenant(slug).await;
         let (a_agent, a_tok) = enroll(&app, &seeded, &format!("{slug}-a")).await;
         let (b_agent, b_tok) = enroll(&app, &seeded, &format!("{slug}-b")).await;
         let (r_agent, r_tok) = enroll(&app, &seeded, &format!("{slug}-r")).await;
         let _ = (a_agent, b_agent);
-        let mut a = connect(&app, &a_tok, &[]).await;
-        let mut b = connect(&app, &b_tok, &[]).await;
+        let observed = zoned.then_some("1.1.1.1");
+        let mut a = connect_from(&app, &a_tok, &[], observed).await;
+        let mut b = connect_from(&app, &b_tok, &[], observed).await;
         let rpc: &[&str] = if relay_rpc { &["relay-server"] } else { &[] };
-        let mut r = connect(&app, &r_tok, rpc).await;
+        let mut r = connect_from(&app, &r_tok, rpc, observed).await;
         // Let the hellos land (the hub registers, the row stores caps).
         tokio::time::sleep(Duration::from_millis(300)).await;
         join(&mut r, 3, Some(true), "8.8.8.8:41641").await;
@@ -277,6 +302,7 @@ impl Rig {
         let b_node = node_id(&app, &seeded, &format!("{slug}-b")).await;
         let r_node = node_id(&app, &seeded, &format!("{slug}-r")).await;
         Self {
+            _geo: geo,
             app,
             seeded,
             a,
@@ -2023,10 +2049,10 @@ async fn request_backbone(rig: &mut Rig, exit: &str, serial: u64) {
 
 #[tokio::test]
 async fn backbone_discovery_trial_dual_grants_return_and_edge_withdrawal_are_one_authorized_path() {
-    let mut rig = Rig::up("backbone-path", true, Some(true)).await;
+    let mut rig = Rig::up_zoned("backbone-path", true, Some(true)).await;
     rig.arm().await;
     let (exit_agent, exit_token) = enroll(&rig.app, &rig.seeded, "backbone-exit").await;
-    let mut exit = connect(&rig.app, &exit_token, &["relay-server"]).await;
+    let mut exit = connect_from(&rig.app, &exit_token, &["relay-server"], Some("1.1.1.1")).await;
     join(&mut exit, 4, Some(true), "8.8.4.4:41641").await;
     let exit_node = node_id(&rig.app, &rig.seeded, "backbone-exit").await;
     assert_eq!(approve(&rig.app, &rig.seeded, &exit_agent, true).await, 200);
@@ -2444,10 +2470,10 @@ async fn backbone_real_manager_fault_actual_echo_hysteresis_and_server_return_2p
         use roomlerd::relay_server::backbone_test_support::{NativeRelay,PathTrialTestHarness,WgKeypair};
         use roomler_ai_remote_control::signaling::{NetmapPeer,ServerMsg};
         use std::{sync::Arc,net::Ipv4Addr,time::Instant};
-        let mut rig=Rig::up("backbone-real-fault",true,Some(true)).await;rig.arm().await;
+        let mut rig=Rig::up_zoned("backbone-real-fault",true,Some(true)).await;rig.arm().await;
         let source=NativeRelay::start().await.unwrap();let target=NativeRelay::start().await.unwrap();
         let (exit_agent,exit_token)=enroll(&rig.app,&rig.seeded,"backbone-fault-exit").await;
-        let mut exit=connect(&rig.app,&exit_token,&["relay-server"]).await;
+        let mut exit=connect_from(&rig.app,&exit_token,&["relay-server"],Some("1.1.1.1")).await;
         let join_relay=|key:u8,port:u16,ready:bool|json!({"t":"rc:overlay.join","wg_public_key":BASE64.encode([key;32]),"mtu":1280,"endpoints":[format!("8.8.8.8:{port}")],"supports_org_relay":true,"supports_path_trial_v1":true,"supports_path_backbone_v1":true,"relay_backbone_ready":ready,"org_primary":true,"relay_port":port});
         rig.r.send(Message::Text(join_relay(3,source.port(),true).to_string().into())).await.unwrap();recv_t(&mut rig.r,"rc:overlay.netmap",Duration::from_secs(5)).await.unwrap();
         exit.send(Message::Text(join_relay(4,target.port(),false).to_string().into())).await.unwrap();recv_t(&mut exit,"rc:overlay.netmap",Duration::from_secs(5)).await.unwrap();
