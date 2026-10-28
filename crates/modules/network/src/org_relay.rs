@@ -189,7 +189,7 @@ pub mod candidate_test_support {
         state: &NetworkState,
         session: OrgRelaySession,
         relay_zones: Vec<BusinessZone>,
-        member_zones: [BusinessZone; 2],
+        member_zones: Option<[BusinessZone; 2]>,
     ) -> ObjectId {
         super::trial::insert_trial_fixture(state, session, relay_zones, member_zones)
     }

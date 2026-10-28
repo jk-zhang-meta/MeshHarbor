@@ -3076,13 +3076,13 @@ async fn staged_nhop_trial_actual_lifecycle_and_rollback() {
         ws.send(Message::Text(msg.to_string().into())).await.unwrap();
     }
     for (length, flipped, outcome) in [(3, false, "abort"), (4, true, "return"),
-        (4, false, "edge"), (4, false, "audit"), (4, false, "approval")] {
+        (4, false, "edge"), (4, false, "audit"), (4, false, "approval"), (4, false, "zone")] {
         let slug = format!("iso-nhop-trial-{length}-{outcome}");
         let mut l = LineRig::up(&slug, true).await;
         let flags = json!({"supports_backbone_only_v1":true,"supports_path_backbone_v1":true,"supports_path_trial_v1":true});
         line_join(&mut l.cn, 1, "223.5.5.5:41641", flags.clone()).await;
         line_join(&mut l.us, 2, "8.8.8.8:41641", flags).await;
-        let mut extras = Vec::new(); let mut extra_agents = Vec::new(); let mut extra_nodes = Vec::new();
+        let mut extras = Vec::new(); let mut extra_agents = Vec::new(); let mut extra_nodes = Vec::new(); let mut extra_tokens = Vec::new();
         for i in 0..length-2 {
             let name = format!("{slug}-middle-{i}");
             let (agent, token) = enroll(&l.rig.app, &l.rig.seeded, &name).await;
@@ -3093,7 +3093,7 @@ async fn staged_nhop_trial_actual_lifecycle_and_rollback() {
             line_join(&mut ws, 10+i as u8, &endpoint, json!({"relay_backbone_ready":true})).await;
             assert_eq!(approve(&l.rig.app, &l.rig.seeded, &agent, true).await, 200);
             let node = l.rig.node(&name).await; grant_relay(&l.rig.app, &l.rig.seeded, &node).await;
-            extras.push(ws); extra_agents.push(agent); extra_nodes.push(node);
+            extras.push(ws); extra_agents.push(agent); extra_nodes.push(node); extra_tokens.push(token);
         }
         let mut agents = vec![l.gz_agent.clone()]; agents.extend(extra_agents); agents.push(l.hk_agent.clone());
         let mut nodes = vec![l.gz_node.clone()]; nodes.extend(extra_nodes); nodes.push(l.hk_node.clone());
@@ -3143,9 +3143,28 @@ async fn staged_nhop_trial_actual_lifecycle_and_rollback() {
             let reason = format!("cross_border_edge:{}", agents[i+1]);
             assert!(audits.iter().any(|row| row["reason"] == reason && row["relay_node_id"] == nodes[i]), "{slug}: missing crossing audit {i}");
         }}
+        let mut rejoin_controls = Vec::new();
         if outcome == "abort" {
             control(&mut l.cn, "rc:overlay.path_trial_abort", &a["trial_id"], None).await;
             for ws in [&mut l.cn, &mut l.us] { recv_t(ws, "rc:overlay.path_trial_abort", wait).await.expect("member abort"); }
+        } else if outcome == "zone" {
+            // The first middle relay was US; reconnect the same identity in
+            // CN. The actual four-relay trial must be retired on every leg.
+            let mut moved = connect_from(&l.rig.app, &extra_tokens[0], &["relay-server"], Some(CN_R)).await;
+            moved.send(Message::Text(json!({"t":"rc:overlay.join", "wg_public_key":BASE64.encode([10;32]), "mtu":1280,
+                "endpoints":["223.6.6.7:41641"], "supports_org_relay":true, "supports_server_relay_strategy":true,
+                "relay_port":3478, "org_primary":true, "relay_backbone_ready":true}).to_string().into())).await.unwrap();
+            let until = tokio::time::Instant::now()+wait;
+            loop {
+                let frame = tokio::time::timeout_at(until, moved.next()).await.expect("middle netmap").expect("middle open").expect("middle frame");
+                if let Message::Text(text) = frame {
+                    let value:Value=serde_json::from_str(&text).unwrap();
+                    if value["t"]=="rc:overlay.netmap" {break;}
+                    if value["t"]=="rc:overlay.relay_revoke" || value["t"]=="rc:overlay.relay_bridge_revoke" {rejoin_controls.push(value);}
+                }
+            }
+            relays[1]=moved;
+            for ws in [&mut l.cn, &mut l.us] { recv_t(ws, "rc:overlay.path_trial_abort", wait).await.expect("zone change abort"); }
         } else if outcome == "edge" {
             let i=1;
             let (status, body) = put(&l.rig.app, &policy(&agents[i]), &l.rig.seeded.admin.access_token,
@@ -3167,9 +3186,14 @@ async fn staged_nhop_trial_actual_lifecycle_and_rollback() {
             control(&mut l.us, "rc:overlay.path_trial_returned", &a["trial_id"], Some(&return_id)).await;
             for ws in [&mut l.cn, &mut l.us] { recv_t(ws, "rc:overlay.path_trial_return_finalize", wait).await.expect("return finalize"); }
         }
-        for (i, ws) in relays.iter_mut().enumerate() { let revoke = recv_t(ws, "rc:overlay.relay_revoke", wait).await.expect("every relay retired"); assert_eq!(revoke["vni"], serves[i]["vni"]); }
+        for (i, ws) in relays.iter_mut().enumerate() {
+            let captured=if i==1 && outcome=="zone" {rejoin_controls.iter().find(|v|v["t"]=="rc:overlay.relay_revoke").cloned()}else{None};
+            let revoke=match captured {Some(v)=>v,None=>recv_t(ws, "rc:overlay.relay_revoke", wait).await.expect("every relay retired")};
+            assert_eq!(revoke["vni"], serves[i]["vni"]);
+        }
         for (i, ws) in relays.iter_mut().take(length-1).enumerate() {
-            let revoke = recv_t(ws, "rc:overlay.relay_bridge_revoke", wait).await.expect("every bridge retired");
+            let captured=if i==1 && outcome=="zone" {rejoin_controls.iter().find(|v|v["t"]=="rc:overlay.relay_bridge_revoke").cloned()}else{None};
+            let revoke=match captured {Some(v)=>v,None=>recv_t(ws, "rc:overlay.relay_bridge_revoke", wait).await.expect("every bridge retired")};
             assert_eq!(revoke["trial_id"], bridges[i]["bridge"]["trial_id"]);
             assert_eq!(revoke["generation"], serves[i]["generation"]);
         }
@@ -3320,7 +3344,7 @@ async fn staged_nhop_trial_zone_fixture_rechecks_middle_and_members() {
     use roomler_ai_remote_control::models::NodeRef;
     use roomler_core::business_authority::BusinessZone::Mainland;
     use std::time::Instant;
-    for case in ["changed", "unknown", "stable", "race_restore", "member_changed"] {
+    for case in ["changed", "unknown", "stable", "race_restore", "member_changed", "unconstrained_member"] {
         let slug = format!("iso-nhop-zone-{case}");
         let rig = Rig::up(&slug, "off").await;
         let mut relays = Vec::new(); let mut relay_tokens = Vec::new();
@@ -3368,7 +3392,8 @@ async fn staged_nhop_trial_zone_fixture_rechecks_middle_and_members() {
             });
         }
         let network = rig.app.state.network();
-        let trial_id = support::insert_nhop_zone_trial_fixture(network, session.clone(), vec![Mainland;4], [Mainland;2]);
+        let constrained = if case == "unconstrained_member" { None } else { Some([Mainland;2]) };
+        let trial_id = support::insert_nhop_zone_trial_fixture(network, session.clone(), vec![Mainland;4], constrained);
         for id in &node_ids { assert_eq!(support::trial_slots_on_relay(network,*id),1); }
         async fn join_collect(ws:&mut Ws, seed:u8, endpoint:&str, ready:bool, path:bool)->Vec<Value> {
             ws.send(Message::Text(json!({"t":"rc:overlay.join","wg_public_key":BASE64.encode([seed;32]),"mtu":1280,
@@ -3382,7 +3407,7 @@ async fn staged_nhop_trial_zone_fixture_rechecks_middle_and_members() {
                 }}
         }
         let mut before_netmap = Vec::new();
-        if case == "member_changed" {
+        if matches!(case, "member_changed" | "unconstrained_member") {
             let mut replacement=connect_from(&rig.app,&a_token,&[],Some(US_A)).await;
             before_netmap=join_collect(&mut replacement,1,"8.8.8.9:41641",false,true).await; a=replacement;
         } else {
@@ -3399,7 +3424,7 @@ async fn staged_nhop_trial_zone_fixture_rechecks_middle_and_members() {
                 resume.send(()).unwrap(); relays[1]=restored;
             } else { before_netmap=join_collect(&mut replacement,11,endpoint,true,false).await; relays[1]=replacement; }
         }
-        if matches!(case,"stable"|"race_restore") {
+        if matches!(case,"stable"|"race_restore"|"unconstrained_member") {
             assert!(before_netmap.is_empty(),"{slug}: healthy path retired during join");
             for id in &node_ids {assert_eq!(support::trial_slots_on_relay(network,*id),1,"{slug}: healthy path lost");}
             async fn quiet(ws:&mut Ws,label:&str){let until=tokio::time::Instant::now()+Duration::from_millis(300);

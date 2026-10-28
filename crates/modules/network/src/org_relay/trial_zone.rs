@@ -44,7 +44,6 @@ struct TrialZoneSnapshot {
     relay_zones: Vec<BusinessZone>,
     members: [MemberFingerprint; 2],
     member_zones: Option<[BusinessZone; 2]>,
-    is_legacy: bool,
 }
 
 impl TrialZoneSnapshot {
@@ -55,9 +54,6 @@ impl TrialZoneSnapshot {
             || self.relays.len() != self.relay_zones.len()
             || self.edges.len() + 1 != self.relays.len()
         {
-            return false;
-        }
-        if !self.is_legacy && self.member_zones.is_none() {
             return false;
         }
         if let Some(member_zones) = self.member_zones {
@@ -95,9 +91,7 @@ impl TrialZoneSnapshot {
     }
 }
 
-/// Capture the entire path identity, not only the edge touched by a rejoin.
-/// The legacy branch is temporary during migration of two-relay trials to
-/// `session.hops`; it can be removed together with `BackboneTrial`.
+/// Capture the complete unified path identity, not only the changed relay.
 fn capture(trial: &Trial) -> Option<TrialZoneSnapshot> {
     if returned(trial) {
         return None;
@@ -112,45 +106,27 @@ fn capture(trial: &Trial) -> Option<TrialZoneSnapshot> {
         endpoints: s.endpoints.clone(),
     }];
     let mut edges = Vec::with_capacity(s.hops.len());
-    let (relay_zones, member_zones, is_legacy) = if s.hops.is_empty() {
-        let path = trial.backbone.as_ref()?;
+    // A single relay has no private backbone zone to recheck here.
+    if s.hops.is_empty() {
+        return None;
+    }
+    for hop in &s.hops {
         relays.push(RelayFingerprint {
-            node_id: path.exit.relay.node_id,
-            agent_id: path.exit.relay_agent_id,
-            node_ref: path.exit.relay.node_ref.clone(),
-            vni: path.exit.vni,
-            generation: path.exit.generation,
-            endpoints: path.exit.endpoints.clone(),
+            node_id: hop.relay.node_id,
+            agent_id: hop.relay_agent_id,
+            node_ref: hop.relay.node_ref.clone(),
+            vni: hop.vni,
+            generation: hop.generation,
+            endpoints: hop.endpoints.clone(),
         });
-        // Existing two-relay bridge uses the trial id as its bridge id.
         edges.push(EdgeFingerprint {
-            endpoint: path.private_endpoint.clone(),
-            requires_cross_border_approval: path.requires_cross_border_approval,
-            bridge_id: trial.id,
+            endpoint: hop.private_endpoint.clone(),
+            requires_cross_border_approval: hop.requires_cross_border_approval,
+            bridge_id: hop.bridge_id,
         });
-        (
-            vec![path.source_zone, path.exit_zone],
-            trial.member_zones,
-            true,
-        )
-    } else {
-        for hop in &s.hops {
-            relays.push(RelayFingerprint {
-                node_id: hop.relay.node_id,
-                agent_id: hop.relay_agent_id,
-                node_ref: hop.relay.node_ref.clone(),
-                vni: hop.vni,
-                generation: hop.generation,
-                endpoints: hop.endpoints.clone(),
-            });
-            edges.push(EdgeFingerprint {
-                endpoint: hop.private_endpoint.clone(),
-                requires_cross_border_approval: hop.requires_cross_border_approval,
-                bridge_id: hop.bridge_id,
-            });
-        }
-        (trial.relay_zones.clone(), trial.member_zones, false)
-    };
+    }
+    let relay_zones = trial.relay_zones.clone();
+    let member_zones = trial.member_zones;
     let member = |m: &SessionMember| MemberFingerprint {
         node_id: m.party.node_id,
         node_ref: m.party.node_ref.clone(),
@@ -170,7 +146,6 @@ fn capture(trial: &Trial) -> Option<TrialZoneSnapshot> {
         relay_zones,
         members: [member(&s.members[0]), member(&s.members[1])],
         member_zones,
-        is_legacy,
     })
 }
 
@@ -373,6 +348,11 @@ pub(in crate::org_relay) async fn recheck_relay_zones(
                     revoke_event(&trial, reason)
                 })
             } else {
+                // A still-live trial changed while its snapshot was read;
+                // evaluate its current path instead of silently losing this event.
+                if entries.get(&snapshot.id).and_then(capture).is_some() {
+                    retry = true;
+                }
                 None
             }
         };
@@ -398,7 +378,7 @@ pub(in crate::org_relay) fn insert_trial_fixture(
     state: &NetworkState,
     session: OrgRelaySession,
     relay_zones: Vec<BusinessZone>,
-    member_zones: [BusinessZone; 2],
+    member_zones: Option<[BusinessZone; 2]>,
 ) -> ObjectId {
     let id = ObjectId::new();
     let trial = Trial {
@@ -407,7 +387,7 @@ pub(in crate::org_relay) fn insert_trial_fixture(
         requester_node_id: session.members[0].party.node_id,
         requester_at_exit: false,
         relay_zones,
-        member_zones: Some(member_zones),
+        member_zones,
         session,
         backbone: None,
         phase: Phase::Preparing([None, None]),
@@ -478,12 +458,11 @@ mod tests {
             relays,
             edges,
             relay_zones,
-            is_legacy: false,
         }
     }
 
     #[test]
-    fn all_relay_zones_and_members_are_required_without_a_fixed_hop_cap() {
+    fn all_relay_zones_and_constrained_members_are_checked_without_a_fixed_hop_cap() {
         for n in [2, 3, 4, 128] {
             let valid = fixture(n);
             assert!(valid.shape_valid());
@@ -495,7 +474,7 @@ mod tests {
             assert!(!missing.shape_valid());
             let mut missing_member = valid.clone();
             missing_member.member_zones = None;
-            assert!(!missing_member.shape_valid());
+            assert!(missing_member.shape_valid());
             let mut wrong_member = valid.clone();
             wrong_member.member_zones.as_mut().unwrap()[0] = NonMainland;
             assert!(!wrong_member.shape_valid());
