@@ -169,6 +169,16 @@ fn observe_zone(actual: PartyZone, issued: BusinessZone, fits: &mut bool, unavai
     *fits &= zone_fits(actual, issued);
 }
 
+/// A confirmed absent/live-filtered row is invalid; operational and decoding
+/// errors do not prove removal and must retain the existing trial for retry.
+fn trial_lookup<T>(result: roomler_ai_services::dao::base::DaoResult<T>) -> Result<Option<T>, ()> {
+    match result {
+        Ok(value) => Ok(Some(value)),
+        Err(roomler_ai_services::dao::base::DaoError::NotFound) => Ok(None),
+        Err(_) => Err(()),
+    }
+}
+
 /// Unknown geography preserves an existing trial, unlike a confirmed invalid
 /// identity or a known conflicting region. Storage errors remain retryable.
 async fn current_party_zone(
@@ -181,34 +191,31 @@ async fn current_party_zone(
         NodeRef::Agent { agent_id } => *agent_id,
         NodeRef::TunnelClient { tunnel_client_id } => *tunnel_client_id,
     };
-    let node = state
+    let Some(node) = trial_lookup(state
         .overlay_nodes
         .base
         .find_by_id(node_id)
-        .await
-        .map_err(|_| ())?;
+        .await)? else { return Ok(PartyZone::Invalid) };
     if node.tenant_id != tenant || node.deleted_at.is_some() || &node.node_ref != node_ref {
         return Ok(PartyZone::Invalid);
     }
     let device = match node_ref {
         NodeRef::Agent { agent_id } => {
-            let agent = state
+            let Some(agent) = trial_lookup(state
                 .fleet
                 .agents
                 .find_live_in_tenant(tenant, *agent_id)
-                .await
-                .map_err(|_| ())?;
+                .await)? else { return Ok(PartyZone::Invalid) };
             let Ok(device) = AuthenticatedDevice::from_agent(&agent) else {
                 return Ok(PartyZone::Invalid);
             };
             device
         }
         NodeRef::TunnelClient { tunnel_client_id } => {
-            let client = state
+            let Some(client) = trial_lookup(state
                 .tunnel_clients
                 .find_live_in_tenant(tenant, *tunnel_client_id)
-                .await
-                .map_err(|_| ())?;
+                .await)? else { return Ok(PartyZone::Invalid) };
             let Ok(device) = AuthenticatedDevice::from_tunnel_client(&client) else {
                 return Ok(PartyZone::Invalid);
             };
@@ -447,6 +454,15 @@ pub(in crate::org_relay) fn insert_trial_fixture(
 mod tests {
     use super::*;
     use BusinessZone::{Mainland, NonMainland};
+
+    #[test]
+    fn confirmed_missing_is_invalid_but_decode_errors_are_retryable() {
+        use roomler_ai_services::dao::base::DaoError;
+        assert_eq!(trial_lookup::<u32>(Ok(7)), Ok(Some(7)));
+        assert_eq!(trial_lookup::<u32>(Err(DaoError::NotFound)), Ok(None));
+        let bad_decode = bson::from_bson::<u32>(bson::Bson::String("invalid".into())).unwrap_err();
+        assert_eq!(trial_lookup::<u32>(Err(DaoError::BsonDe(bad_decode))), Err(()));
+    }
 
     #[test]
     fn unknown_preserves_trial_but_other_known_or_invalid_parties_still_fail() {

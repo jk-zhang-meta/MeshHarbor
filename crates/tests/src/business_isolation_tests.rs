@@ -3344,7 +3344,7 @@ async fn staged_nhop_trial_zone_fixture_rechecks_middle_and_members() {
     use roomler_ai_remote_control::models::NodeRef;
     use roomler_core::business_authority::BusinessZone::Mainland;
     use std::time::Instant;
-    for case in ["changed", "unknown", "stable", "race_restore", "member_changed", "unconstrained_member"] {
+    for case in ["changed", "unknown", "stable", "race_restore", "member_changed", "unconstrained_member", "node_missing", "node_deleted", "agent_deleted", "read_error"] {
         let slug = format!("iso-nhop-zone-{case}");
         let rig = Rig::up(&slug, "off").await;
         let mut relays = Vec::new(); let mut relay_tokens = Vec::new();
@@ -3391,6 +3391,10 @@ async fn staged_nhop_trial_zone_fixture_rechecks_middle_and_members() {
                 requires_cross_border_approval:false, bridge_id:ObjectId::new(), bridge_secrets:["fixture-a".into(),"fixture-b".into()],
             });
         }
+        if case == "node_missing" {
+            node_ids[1] = ObjectId::new();
+            session.hops[0].relay.node_id = node_ids[1];
+        }
         let network = rig.app.state.network();
         let constrained = if case == "unconstrained_member" { None } else { Some([Mainland;2]) };
         let trial_id = support::insert_nhop_zone_trial_fixture(network, session.clone(), vec![Mainland;4], constrained);
@@ -3407,7 +3411,12 @@ async fn staged_nhop_trial_zone_fixture_rechecks_middle_and_members() {
                 }}
         }
         let mut before_netmap = Vec::new();
-        if matches!(case, "member_changed" | "unconstrained_member") {
+        if matches!(case, "node_missing" | "node_deleted" | "agent_deleted" | "read_error") {
+            if case == "node_deleted" { assert!(network.overlay_nodes.base.soft_delete(node_ids[1]).await.unwrap()); }
+            if case == "agent_deleted" { assert!(network.fleet.agents.base.soft_delete(agent_ids[1]).await.unwrap()); }
+            if case == "read_error" { support::fail_next_trial_zone_read(trial_id); }
+            support::recheck_zones_fixture(network, agent_ids[1]).await;
+        } else if matches!(case, "member_changed" | "unconstrained_member") {
             let mut replacement=connect_from(&rig.app,&a_token,&[],Some(US_A)).await;
             before_netmap=join_collect(&mut replacement,1,"8.8.8.9:41641",false,true).await; a=replacement;
         } else {
@@ -3424,8 +3433,8 @@ async fn staged_nhop_trial_zone_fixture_rechecks_middle_and_members() {
                 resume.send(()).unwrap(); relays[1]=restored;
             } else { before_netmap=join_collect(&mut replacement,11,endpoint,true,false).await; relays[1]=replacement; }
         }
-        if matches!(case,"stable"|"race_restore"|"unconstrained_member"|"unknown") {
-            if case == "unknown" { tokio::time::sleep(Duration::from_secs(7)).await; }
+        if matches!(case,"stable"|"race_restore"|"unconstrained_member"|"unknown"|"read_error") {
+            if matches!(case, "unknown" | "read_error") { tokio::time::sleep(Duration::from_secs(7)).await; }
             assert!(before_netmap.is_empty(),"{slug}: healthy path retired during join");
             for id in &node_ids {assert_eq!(support::trial_slots_on_relay(network,*id),1,"{slug}: healthy path lost");}
             async fn quiet(ws:&mut Ws,label:&str){let until=tokio::time::Instant::now()+Duration::from_millis(300);
