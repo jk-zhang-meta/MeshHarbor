@@ -2704,3 +2704,177 @@ async fn staged_trial_edge_approval_downgrade_revokes_only_actual_crossing() {
         assert_eq!(support::trial_slots_on_relay(network, source_node), 0); assert_eq!(support::trial_slots_on_relay(network, exit_id), 0);
     }
 }
+
+/// Trial relay-zone changes must be rechecked for Off as well as Enforce;
+/// unchanged or restored zones must not tear down a healthy trial.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn staged_trial_live_relay_zone_recheck_revokes_changes_not_stale_reads() {
+    use roomler_ai_mod_network::org_relay::candidate_test_support as support;
+    for case in ["cross_to_same", "same_to_cross", "unknown", "stable", "race_restore", "read_healthy", "read_retry"] {
+        let slug = format!("iso-trial-zone-live-{case}");
+        let mut l = LineRig::up_with_isolation(&slug, true, "off").await;
+        let flags = json!({"supports_backbone_only_v1":true,"supports_path_backbone_v1":true,"supports_path_trial_v1":true});
+        line_join(&mut l.cn, 1, "223.5.5.5:41641", flags.clone()).await;
+        line_join(&mut l.us, 2, "8.8.8.8:41641", flags).await;
+        let originally_same = matches!(case, "same_to_cross" | "stable" | "race_restore" | "read_healthy" | "read_retry");
+        let initial_ip = if originally_same { CN_R } else { US_R };
+        let initial_endpoint = if originally_same { "223.6.6.9:41641" } else { "1.1.1.9:41641" };
+        let name = format!("{slug}-exit");
+        let (exit_agent, token) = enroll(&l.rig.app, &l.rig.seeded, &name).await;
+        let mut old_exit = connect_from(&l.rig.app, &token, &["relay-server"], Some(initial_ip)).await;
+        assert_observed(&l.rig.app, &exit_agent, Some(initial_ip)).await;
+        line_join(&mut old_exit, 12, initial_endpoint, json!({})).await;
+        assert_eq!(approve(&l.rig.app, &l.rig.seeded, &exit_agent, true).await, 200);
+        let exit_node = l.rig.node(&name).await;
+        grant_relay(&l.rig.app, &l.rig.seeded, &exit_node).await;
+        let policy = format!("/api/tenant/{}/agent/{}/peer-relay-policy", l.rig.seeded.tenant_id, l.gz_agent);
+        let (status, body) = put(&l.rig.app, &policy, &l.rig.seeded.admin.access_token,
+            json!({"serve":true,"approved_backbone_edges":[{"relay_agent_id":exit_agent,"endpoint":"10.70.0.2:3478","cross_border":!originally_same}]})).await;
+        assert_eq!(status, 200, "{body}");
+        l.cn.send(Message::Text(json!({"t":"rc:overlay.path_trial_request", "peer_node_id":l.us_node,
+            "relay_node_id":l.gz_node,"exit_relay_node_id":exit_node,"request_id":1}).to_string().into())).await.unwrap();
+        let wait = Duration::from_secs(8);
+        let source = recv_t(&mut l.gz, "rc:overlay.relay_serve", wait).await.expect("trial ingress serve");
+        let exit = recv_t(&mut old_exit, "rc:overlay.relay_serve", wait).await.expect("trial exit serve");
+        recv_t(&mut l.gz, "rc:overlay.relay_bridge_serve", wait).await.expect("trial bridge");
+        let cn = recv_t(&mut l.cn, "rc:overlay.path_trial_start", wait).await.expect("requester start");
+        recv_t(&mut l.us, "rc:overlay.path_trial_start", wait).await.expect("peer start");
+        let trial_id = ObjectId::parse_str(cn["trial_id"].as_str().unwrap()).unwrap();
+        let network = l.rig.app.state.network();
+        let source_node = ObjectId::parse_str(&l.gz_node).unwrap();
+        let exit_node_id = ObjectId::parse_str(&exit_node).unwrap();
+        assert_eq!(support::trial_slots_on_relay(network, source_node), 1);
+        let changed = match case { "cross_to_same" | "stable" | "read_healthy" => Some(CN_R), "same_to_cross" | "race_restore" | "read_retry" => Some(US_R), _ => None };
+        let endpoint = if changed == Some(CN_R) { "223.6.6.9:41641" } else { "1.1.1.9:41641" };
+        if matches!(case, "read_healthy" | "read_retry") { support::fail_next_trial_zone_read(trial_id); }
+        let mut fresh = connect_from(&l.rig.app, &token, &["relay-server"], changed).await;
+        async fn join_capture_revoke(ws: &mut Ws, endpoint: &str) -> Option<Value> {
+            ws.send(Message::Text(json!({"t":"rc:overlay.join", "wg_public_key":BASE64.encode([12;32]), "mtu":1280,
+                "endpoints":[endpoint], "supports_org_relay":true, "supports_server_relay_strategy":true,
+                "relay_port":3478, "org_primary":true, "supports_derp":true, "supports_forced_derp":true}).to_string().into())).await.unwrap();
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(8);
+            let mut revoke = None;
+            loop {
+                let frame = tokio::time::timeout_at(deadline, ws.next()).await.expect("netmap after rejoin").expect("WS open").expect("WS message");
+                if let Message::Text(text) = frame {
+                    let v: Value = serde_json::from_str(&text).unwrap();
+                    if v["t"] == "rc:overlay.relay_revoke" { revoke = Some(v); }
+                    else if v["t"] == "rc:overlay.netmap" { return revoke; }
+                }
+            }
+        }
+        let mut during_join = None;
+        if case == "race_restore" {
+            let (reached, resume) = support::pause_trial_zone_revoke(trial_id);
+            fresh.send(Message::Text(json!({"t":"rc:overlay.join", "wg_public_key":BASE64.encode([12;32]), "mtu":1280,
+                "endpoints":[endpoint], "supports_org_relay":true, "supports_server_relay_strategy":true,
+                "relay_port":3478, "org_primary":true, "supports_derp":true, "supports_forced_derp":true}).to_string().into())).await.unwrap();
+            tokio::time::timeout(wait, reached).await.expect("recheck paused before revoke").unwrap();
+            // Restore the original zone on a replacement connection while the
+            // previous mismatching snapshot is still paused.
+            let mut restored = connect_from(&l.rig.app, &token, &["relay-server"], Some(CN_R)).await;
+            line_join(&mut restored, 12, "223.6.6.9:41641", json!({})).await;
+            resume.send(()).unwrap();
+            fresh = restored;
+        } else {
+            during_join = join_capture_revoke(&mut fresh, endpoint).await;
+        }
+        if matches!(case, "stable" | "race_restore" | "read_healthy") {
+            assert!(during_join.is_none(), "stable rejoin already received a revoke");
+            async fn no_retirement(ws: &mut Ws, label: &str) {
+                let until = tokio::time::Instant::now() + Duration::from_millis(800);
+                while let Ok(Some(Ok(message))) = tokio::time::timeout_at(until, ws.next()).await {
+                    if let Message::Text(text) = message {
+                        let v: Value = serde_json::from_str(&text).unwrap();
+                        assert!(!["rc:overlay.path_trial_abort","rc:overlay.relay_revoke","rc:overlay.relay_bridge_revoke"].contains(&v["t"].as_str().unwrap_or_default()), "{label}: healthy trial wrongly revoked");
+                    }
+                }
+            }
+            tokio::join!(no_retirement(&mut l.gz, &slug), no_retirement(&mut fresh, &slug),
+                no_retirement(&mut l.cn, &slug), no_retirement(&mut l.us, &slug));
+            assert_eq!(support::trial_slots_on_relay(network, source_node), 1);
+            assert_eq!(support::trial_slots_on_relay(network, exit_node_id), 1);
+        } else {
+            let source_revoke = recv_t(&mut l.gz, "rc:overlay.relay_revoke", wait).await.expect("ingress revoke");
+            let exit_revoke = match during_join { Some(v) => v, None => recv_t(&mut fresh, "rc:overlay.relay_revoke", wait).await.expect("rejoined exit revoke") };
+            let bridge = recv_t(&mut l.gz, "rc:overlay.relay_bridge_revoke", wait).await.expect("bridge revoke");
+            let a = recv_t(&mut l.cn, "rc:overlay.path_trial_abort", wait).await.expect("requester abort");
+            let b = recv_t(&mut l.us, "rc:overlay.path_trial_abort", wait).await.expect("peer abort");
+            assert_eq!(source_revoke["vni"], source["vni"]); assert_eq!(exit_revoke["vni"], exit["vni"]);
+            assert_eq!(bridge["trial_id"], cn["trial_id"]); assert_eq!(bridge["generation"], source["generation"]);
+            assert_eq!(a["trial_id"], cn["trial_id"]); assert_eq!(b["trial_id"], cn["trial_id"]);
+            assert_eq!(support::trial_slots_on_relay(network, source_node), 0);
+            assert_eq!(support::trial_slots_on_relay(network, exit_node_id), 0);
+        }
+    }
+}
+
+/// Both relays can move while one asynchronous check is paused. A same-zone
+/// relation alone is insufficient: each relay must retain its issued zone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn staged_trial_live_relay_zone_recheck_retires_two_relays_moving_together() {
+    use roomler_ai_mod_network::org_relay::candidate_test_support as support;
+    let mut l = LineRig::up_with_isolation("iso-trial-both-move", true, "off").await;
+    let flags = json!({"supports_backbone_only_v1":true,"supports_path_backbone_v1":true,"supports_path_trial_v1":true});
+    line_join(&mut l.cn, 1, "223.5.5.5:41641", flags.clone()).await;
+    line_join(&mut l.us, 2, "8.8.8.8:41641", flags).await;
+    let (source_agent, source_token) = enroll(&l.rig.app, &l.rig.seeded, "iso-trial-both-move-source").await;
+    let (exit_agent, exit_token) = enroll(&l.rig.app, &l.rig.seeded, "iso-trial-both-move-exit").await;
+    let mut source = connect_from(&l.rig.app, &source_token, &["relay-server"], Some(CN_R)).await;
+    let mut exit = connect_from(&l.rig.app, &exit_token, &["relay-server"], Some(CN_R)).await;
+    assert_observed(&l.rig.app, &source_agent, Some(CN_R)).await;
+    assert_observed(&l.rig.app, &exit_agent, Some(CN_R)).await;
+    line_join(&mut source, 15, "223.6.6.10:41641", json!({"relay_backbone_ready":true})).await;
+    line_join(&mut exit, 16, "223.6.6.11:41641", json!({})).await;
+    assert_eq!(approve(&l.rig.app, &l.rig.seeded, &source_agent, true).await, 200);
+    assert_eq!(approve(&l.rig.app, &l.rig.seeded, &exit_agent, true).await, 200);
+    let source_node = l.rig.node("iso-trial-both-move-source").await;
+    let exit_node = l.rig.node("iso-trial-both-move-exit").await;
+    grant_relay(&l.rig.app, &l.rig.seeded, &source_node).await;
+    grant_relay(&l.rig.app, &l.rig.seeded, &exit_node).await;
+    let policy = format!("/api/tenant/{}/agent/{}/peer-relay-policy", l.rig.seeded.tenant_id, source_agent);
+    let (status, body) = put(&l.rig.app, &policy, &l.rig.seeded.admin.access_token,
+        json!({"serve":true,"approved_backbone_edges":[{"relay_agent_id":exit_agent,"endpoint":"10.71.0.2:3478","cross_border":false}]})).await;
+    assert_eq!(status, 200, "{body}");
+    l.cn.send(Message::Text(json!({"t":"rc:overlay.path_trial_request", "peer_node_id":l.us_node,
+        "relay_node_id":source_node,"exit_relay_node_id":exit_node,"request_id":1}).to_string().into())).await.unwrap();
+    let wait = Duration::from_secs(8);
+    let s = recv_t(&mut source, "rc:overlay.relay_serve", wait).await.expect("source serve");
+    let e = recv_t(&mut exit, "rc:overlay.relay_serve", wait).await.expect("exit serve");
+    recv_t(&mut source, "rc:overlay.relay_bridge_serve", wait).await.expect("bridge serve");
+    let a = recv_t(&mut l.cn, "rc:overlay.path_trial_start", wait).await.expect("requester start");
+    recv_t(&mut l.us, "rc:overlay.path_trial_start", wait).await.expect("peer start");
+    let trial_id = ObjectId::parse_str(a["trial_id"].as_str().unwrap()).unwrap();
+    let (reached, resume) = support::pause_trial_zone_revoke(trial_id);
+    let mut exit_new = connect_from(&l.rig.app, &exit_token, &["relay-server"], Some(US_R)).await;
+    exit_new.send(Message::Text(json!({"t":"rc:overlay.join","wg_public_key":BASE64.encode([16;32]),"mtu":1280,
+        "endpoints":["1.1.1.11:41641"],"supports_org_relay":true,"supports_server_relay_strategy":true,"relay_port":3478,"org_primary":true}).to_string().into())).await.unwrap();
+    tokio::time::timeout(wait, reached).await.expect("exit-zone recheck paused").unwrap();
+    let mut source_new = connect_from(&l.rig.app, &source_token, &["relay-server"], Some(US_R)).await;
+    source_new.send(Message::Text(json!({"t":"rc:overlay.join","wg_public_key":BASE64.encode([15;32]),"mtu":1280,
+        "endpoints":["1.1.1.10:41641"],"supports_org_relay":true,"supports_server_relay_strategy":true,
+        "relay_backbone_ready":true,"relay_port":3478,"org_primary":true}).to_string().into())).await.unwrap();
+    let mut source_revoke = None; let mut bridge_revoke = None;
+    let deadline = tokio::time::Instant::now() + wait;
+    loop {
+        let frame = tokio::time::timeout_at(deadline, source_new.next()).await.expect("source rejoin netmap").expect("source open").expect("source frame");
+        if let Message::Text(text) = frame {
+            let value: Value = serde_json::from_str(&text).unwrap();
+            if value["t"] == "rc:overlay.relay_revoke" { source_revoke = Some(value); }
+            else if value["t"] == "rc:overlay.relay_bridge_revoke" { bridge_revoke = Some(value); }
+            else if value["t"] == "rc:overlay.netmap" { break; }
+        }
+    }
+    resume.send(()).unwrap();
+    let source_revoke = match source_revoke { Some(v) => v, None => recv_t(&mut source_new, "rc:overlay.relay_revoke", wait).await.expect("both-moved source revoke") };
+    let bridge_revoke = match bridge_revoke { Some(v) => v, None => recv_t(&mut source_new, "rc:overlay.relay_bridge_revoke", wait).await.expect("both-moved bridge revoke") };
+    let exit_revoke = recv_t(&mut exit_new, "rc:overlay.relay_revoke", wait).await.expect("both-moved exit revoke");
+    let ca = recv_t(&mut l.cn, "rc:overlay.path_trial_abort", wait).await.expect("requester abort");
+    let cb = recv_t(&mut l.us, "rc:overlay.path_trial_abort", wait).await.expect("peer abort");
+    assert_eq!(source_revoke["vni"], s["vni"]); assert_eq!(exit_revoke["vni"], e["vni"]);
+    assert_eq!(bridge_revoke["trial_id"], a["trial_id"]); assert_eq!(bridge_revoke["generation"], s["generation"]);
+    assert_eq!(ca["trial_id"], a["trial_id"]); assert_eq!(cb["trial_id"], a["trial_id"]);
+    let network = l.rig.app.state.network();
+    assert_eq!(support::trial_slots_on_relay(network, ObjectId::parse_str(source_node).unwrap()), 0);
+    assert_eq!(support::trial_slots_on_relay(network, ObjectId::parse_str(exit_node).unwrap()), 0);
+}

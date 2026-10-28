@@ -53,6 +53,8 @@ struct BackboneTrial {
     exit: OrgRelaySession,
     private_endpoint: String,
     requires_cross_border_approval: bool,
+    source_zone: BusinessZone,
+    exit_zone: BusinessZone,
 }
 
 struct Trial {
@@ -219,6 +221,135 @@ pub(super) fn revoke_removed_backbone_edges(
         .collect()
 }
 
+#[derive(Clone)]
+struct TrialZoneSnapshot {
+    id: ObjectId,
+    tenant_id: ObjectId,
+    source_agent_id: ObjectId,
+    exit_agent_id: ObjectId,
+    source: NodeRef,
+    exit: NodeRef,
+    source_node_id: ObjectId,
+    exit_node_id: ObjectId,
+    source_generation: u64,
+    exit_generation: u64,
+    requires_cross_border_approval: bool,
+    source_zone: BusinessZone,
+    exit_zone: BusinessZone,
+}
+
+/// Distinguish unavailable storage from genuinely unknown connection evidence:
+/// an outage defers an existing trial, while an observed unknown zone retires
+/// it. A vanished live connection is unknown and must be checked after grace.
+async fn current_trial_relay_zone(
+    state: &NetworkState,
+    tenant: ObjectId,
+    node_id: ObjectId,
+    agent_id: ObjectId,
+) -> Result<Option<BusinessZone>, ()> {
+    let (connection, bound_at) = {
+        let Some(live) = state.org_relay.live_conns.get(&agent_id) else { return Ok(None) };
+        (live.id.clone(), live.bound_at)
+    };
+    let agent = state.fleet.agents.find_live_in_tenant(tenant, agent_id).await.map_err(|_| ())?;
+    let node = state.overlay_nodes.base.find_by_id(node_id).await.map_err(|_| ())?;
+    if node.tenant_id != tenant || node.deleted_at.is_some()
+        || node.node_ref != (NodeRef::Agent { agent_id }) { return Ok(None); }
+    let Ok(device) = AuthenticatedDevice::from_agent(&agent) else { return Ok(None) };
+    let Some(zone) = roomler_core::business_authority::connection_zone(&state.core, &device, &connection) else {
+        // The hello's zone observation can arrive after overlay.join. Give a
+        // fresh connection the same evidence window used by Enforce joins;
+        // genuine unknown placement still fails closed after the window.
+        if bound_at.elapsed() < crate::business_isolation::JOIN_ZONE_WAIT { return Err(()); }
+        return Ok(None);
+    };
+    Ok(addresses_agree(state, &node, zone).then_some(zone))
+}
+
+/// Recheck only trials using this relay. All asynchronous zone reads happen
+/// outside the trial mutex; stale snapshots are retried, never used to revoke.
+pub(super) async fn recheck_relay_zones(state: &NetworkState, agent_id: ObjectId, reason: &str) -> bool {
+    let snapshots: Vec<TrialZoneSnapshot> = {
+        let entries = state.org_relay.trials.entries.lock().unwrap_or_else(|e| e.into_inner());
+        entries.values().filter(|t| !returned(t)).filter_map(|t| {
+            let path = t.backbone.as_ref()?;
+            if t.session.relay_agent_id != agent_id && path.exit.relay_agent_id != agent_id { return None; }
+            Some(TrialZoneSnapshot {
+                id: t.id, tenant_id: t.session.tenant_id,
+                source_agent_id: t.session.relay_agent_id, exit_agent_id: path.exit.relay_agent_id,
+                source: t.session.relay.node_ref.clone(), exit: path.exit.relay.node_ref.clone(),
+                source_node_id: t.session.relay.node_id, exit_node_id: path.exit.relay.node_id,
+                source_generation: t.session.generation, exit_generation: path.exit.generation,
+                requires_cross_border_approval: path.requires_cross_border_approval,
+                source_zone: path.source_zone, exit_zone: path.exit_zone,
+            })
+        }).collect()
+    };
+    let mut retry = false;
+    for snapshot in snapshots {
+        let epoch = state.org_relay.eligibility_generation();
+        let source = {
+            #[cfg(feature = "path-planner-test-support")]
+            if super::candidate_test_support::take_trial_zone_read_failure(snapshot.id) {
+                Err(())
+            } else {
+                current_trial_relay_zone(state, snapshot.tenant_id, snapshot.source_node_id, snapshot.source_agent_id).await
+            }
+            #[cfg(not(feature = "path-planner-test-support"))]
+            { current_trial_relay_zone(state, snapshot.tenant_id, snapshot.source_node_id, snapshot.source_agent_id).await }
+        };
+        let exit = current_trial_relay_zone(state, snapshot.tenant_id, snapshot.exit_node_id, snapshot.exit_agent_id).await;
+        if epoch != state.org_relay.eligibility_generation() {
+            retry = true;
+            continue;
+        }
+        let (Ok(source), Ok(exit)) = (source, exit) else {
+            retry = true;
+            continue;
+        };
+        let fits = source == Some(snapshot.source_zone) && exit == Some(snapshot.exit_zone);
+        if fits { continue; }
+        #[cfg(feature = "path-planner-test-support")]
+        super::candidate_test_support::pause_trial_zone_revoke_if_armed(snapshot.id).await;
+        let event = {
+            let mut entries = state.org_relay.trials.entries.lock().unwrap_or_else(|e| e.into_inner());
+            if epoch != state.org_relay.eligibility_generation() {
+                retry = true;
+                None
+            } else {
+                let matches = entries.get(&snapshot.id).is_some_and(|t| {
+                    !returned(t) && t.session.tenant_id == snapshot.tenant_id
+                        && t.session.generation == snapshot.source_generation
+                        && t.session.relay_agent_id == snapshot.source_agent_id
+                        && t.session.relay.node_id == snapshot.source_node_id
+                        && t.session.relay.node_ref == snapshot.source
+                        && t.backbone.as_ref().is_some_and(|path| {
+                            path.exit.generation == snapshot.exit_generation
+                                && path.exit.relay_agent_id == snapshot.exit_agent_id
+                                && path.exit.relay.node_id == snapshot.exit_node_id
+                                && path.exit.relay.node_ref == snapshot.exit
+                                && path.requires_cross_border_approval == snapshot.requires_cross_border_approval
+                                && path.source_zone == snapshot.source_zone && path.exit_zone == snapshot.exit_zone
+                        })
+                });
+                if matches {
+                    state.org_relay.invalidate_eligibility();
+                    entries.remove(&snapshot.id).map(|t| {
+                        notify_abort(state, &t);
+                        revoke_event(&t, reason)
+                    })
+                } else { None }
+            }
+        };
+        if let Some(event) = event {
+            if !matches!(tokio::time::timeout(Duration::from_secs(3), state.peer_relay_audit.record(event)).await, Ok(Ok(_))) {
+                warn!("org-relay: trial zone revoke audit failed or timed out after control revocation");
+            }
+        }
+    }
+    retry
+}
+
 fn notify_abort(state: &NetworkState, trial: &Trial) {
     trial.cancel.send_replace(true);
     for member in &trial.session.members {
@@ -368,7 +499,7 @@ pub async fn request(
         let Ok(path) = plan_backbone(state, &requester, &peer, relay_id, exit_id).await else {
             return;
         };
-        (path.ingress, Some((path.exit, path.private_endpoint, path.requires_cross_border_approval)))
+        (path.ingress, Some((path.exit, path.private_endpoint, path.requires_cross_border_approval, path.source_zone, path.exit_zone)))
     } else {
         let Ok(plans) = plan_mint_candidates(state, &requester, &peer).await else {
             return;
@@ -415,9 +546,9 @@ pub async fn request(
         let reserved = reserved_for(relay_id);
         let exit_reserved = backbone_plan
             .as_ref()
-            .map(|(p, _, _)| reserved_for(p.relay.id.unwrap_or_default()));
+            .map(|(p, _, _, _, _)| reserved_for(p.relay.id.unwrap_or_default()));
         let mut relay_nodes = vec![relay_id];
-        if let Some((exit, _, _)) = backbone_plan.as_ref() {
+        if let Some((exit, _, _, _, _)) = backbone_plan.as_ref() {
             let Some(exit_id) = exit.relay.id else { return };
             relay_nodes.push(exit_id);
         }
@@ -471,7 +602,7 @@ pub async fn request(
                     bind_by: now + Duration::from_secs(u64::from(limits::BIND_SECS)),
                     hops: Vec::new(),
                 };
-                let backbone = if let Some((exit, private_endpoint, requires_cross_border_approval)) = backbone_plan {
+                let backbone = if let Some((exit, private_endpoint, requires_cross_border_approval, source_zone, exit_zone)) = backbone_plan {
                     let exit_id = exit.relay.id?;
                     let mut secondary = session.clone();
                     secondary.vni = state.org_relay.alloc_vni_with_reserved(
@@ -493,6 +624,8 @@ pub async fn request(
                         exit: secondary,
                         private_endpoint,
                         requires_cross_border_approval,
+                        source_zone,
+                        exit_zone,
                     })
                 } else {
                     None

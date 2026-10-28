@@ -144,6 +144,41 @@ pub mod candidate_test_support {
     pub fn trial_slots_on_relay(state: &NetworkState, relay: ObjectId) -> usize {
         state.org_relay.trials.sessions_on_relay(relay, Instant::now())
     }
+    struct TrialZonePause {
+        reached: oneshot::Sender<()>,
+        resume: oneshot::Receiver<()>,
+    }
+    fn trial_zone_pauses() -> &'static Mutex<HashMap<ObjectId, TrialZonePause>> {
+        static PAUSES: OnceLock<Mutex<HashMap<ObjectId, TrialZonePause>>> = OnceLock::new();
+        PAUSES.get_or_init(|| Mutex::new(HashMap::new()))
+    }
+    /// Pause a fixture after reading the changed zones but before removal.
+    pub fn pause_trial_zone_revoke(trial: ObjectId) -> (oneshot::Receiver<()>, oneshot::Sender<()>) {
+        let (reached_tx, reached_rx) = oneshot::channel();
+        let (resume_tx, resume_rx) = oneshot::channel();
+        assert!(trial_zone_pauses().lock().unwrap().insert(trial, TrialZonePause {
+            reached: reached_tx, resume: resume_rx,
+        }).is_none());
+        (reached_rx, resume_tx)
+    }
+    pub(super) async fn pause_trial_zone_revoke_if_armed(trial: ObjectId) {
+        let pause = trial_zone_pauses().lock().unwrap().remove(&trial);
+        if let Some(TrialZonePause { reached, resume }) = pause {
+            let _ = reached.send(());
+            let _ = resume.await;
+        }
+    }
+    fn trial_zone_read_failures() -> &'static Mutex<std::collections::HashSet<ObjectId>> {
+        static FAILURES: OnceLock<Mutex<std::collections::HashSet<ObjectId>>> = OnceLock::new();
+        FAILURES.get_or_init(|| Mutex::new(std::collections::HashSet::new()))
+    }
+    /// Simulate a transient zone-evidence read failure for one trial.
+    pub fn fail_next_trial_zone_read(trial: ObjectId) {
+        assert!(trial_zone_read_failures().lock().unwrap().insert(trial));
+    }
+    pub(super) fn take_trial_zone_read_failure(trial: ObjectId) -> bool {
+        trial_zone_read_failures().lock().unwrap().remove(&trial)
+    }
     fn line_audit_failures() -> &'static Mutex<std::collections::HashSet<String>> {
         static FAILURES: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
         FAILURES.get_or_init(|| Mutex::new(std::collections::HashSet::new()))
@@ -675,6 +710,8 @@ pub struct OrgRelayState {
     // Serializes nonblocking N-hop delivery with synchronous revocation so a
     // stale grant cannot be queued after its revoke on this control process.
     delivery_guard: std::sync::Mutex<()>,
+    /// At most one deferred zone retry per changed relay identity.
+    trial_zone_retry_pending: DashMap<ObjectId, ()>,
     sessions: DashMap<String, OrgRelaySession>,
     next_vni: DashMap<ObjectId, u32>,
     /// The server-wide logical clock the reference design calls `LamportID`:
@@ -1911,6 +1948,8 @@ struct BackbonePlan {
     exit: Plan,
     private_endpoint: String,
     requires_cross_border_approval: bool,
+    source_zone: BusinessZone,
+    exit_zone: BusinessZone,
 }
 
 /// The audit `reason` of a mint planned over a cross-border line (#21).
@@ -2042,6 +2081,8 @@ async fn plan_backbone(
         exit,
         private_endpoint: endpoint,
         requires_cross_border_approval: crossing,
+        source_zone,
+        exit_zone,
     })
 }
 
@@ -3434,6 +3475,33 @@ pub(crate) async fn recheck_zones(state: &NetworkState, agent_id: ObjectId, reas
         })
         .await;
     }
+    recheck_trial_zones(state, agent_id, reason).await;
+}
+
+/// Backbone trials need the same live relay-zone evidence in every isolation
+/// mode. A changing eligibility epoch defers the decision instead of revoking
+/// from a mixed snapshot; retry is deduplicated per affected relay.
+pub(crate) async fn recheck_trial_zones(state: &NetworkState, agent_id: ObjectId, reason: &str) {
+    if trial::recheck_relay_zones(state, agent_id, reason).await {
+        schedule_trial_zone_retry(state, agent_id, reason.to_owned());
+    }
+}
+
+fn schedule_trial_zone_retry(state: &NetworkState, agent_id: ObjectId, reason: String) {
+    use dashmap::mapref::entry::Entry;
+    if let Entry::Vacant(entry) = state.org_relay.trial_zone_retry_pending.entry(agent_id) {
+        entry.insert(());
+    } else {
+        return;
+    }
+    let state = state.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        state.org_relay.trial_zone_retry_pending.remove(&agent_id);
+        if trial::recheck_relay_zones(&state, agent_id, &reason).await {
+            schedule_trial_zone_retry(&state, agent_id, reason);
+        }
+    });
 }
 
 /// Whether session `s` fits the zones its parties are connected in now: a
