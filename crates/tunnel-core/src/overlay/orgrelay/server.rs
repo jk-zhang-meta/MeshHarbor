@@ -71,6 +71,7 @@ pub struct RelayStats {
 }
 
 #[cfg(feature = "path-trial-test-support")]
+#[derive(Debug)]
 struct RejectedDataFixture {
     source: SocketAddr,
     vni: u32,
