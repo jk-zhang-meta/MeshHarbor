@@ -23,27 +23,60 @@ pub(super) fn select(
     state: &NetworkState,
     prepared: PreparedGraph,
 ) -> Result<Option<SelectedPath>, Deny> {
-    select_inner(state, prepared, false)
+    select_inner(state, prepared, false, false)
 }
 
 /// Actual multi-hop grants require known member zones and matching end relays.
 pub(super) fn select_for_mint(
     state: &NetworkState,
     prepared: PreparedGraph,
+    same_zone_only: bool,
 ) -> Result<Option<SelectedPath>, Deny> {
     if prepared.requester_zone.is_none() || prepared.peer_zone.is_none() {
         return Err(Deny::ZoneDenied);
     }
-    select_inner(state, prepared, true)
+    select_inner(state, prepared, true, same_zone_only)
 }
 
 fn select_inner(
     state: &NetworkState,
-    prepared: PreparedGraph,
+    mut prepared: PreparedGraph,
     require_ends: bool,
+    same_zone_only: bool,
 ) -> Result<Option<SelectedPath>, Deny> {
     if prepared.eligibility_epoch != state.org_relay.eligibility_generation() {
         return Err(Deny::PolicyUnreadable);
+    }
+    // The same-zone mint cannot represent implicit relays and refuses any
+    // relay outside the members' known zone. Remove those relays from both
+    // endpoint choices and backbone traversal before ranking; otherwise an
+    // unusable faster path can hide an eligible explicit path. Retaining the
+    // filtered graph itself preserves search edge indexes for fresh checks.
+    let eligible: Vec<bool> = prepared
+        .graph
+        .relays
+        .iter()
+        .map(|relay| {
+            !same_zone_only
+                || (!relay.implicit
+                    && prepared.requester_zone.is_some()
+                    && prepared.requester_zone == prepared.peer_zone
+                    && relay.zone == prepared.requester_zone)
+        })
+        .collect();
+    if same_zone_only {
+        if prepared
+            .graph
+            .edges
+            .iter()
+            .any(|edge| edge.from >= eligible.len() || edge.to >= eligible.len())
+        {
+            return Err(Deny::PolicyUnreadable);
+        }
+        prepared
+            .graph
+            .edges
+            .retain(|edge| eligible[edge.from] && eligible[edge.to]);
     }
     let now = Instant::now();
     let a = prepared.requester_id;
@@ -103,7 +136,7 @@ fn select_inner(
     let restrict_ends = prepared.restrict_ends || require_ends;
     let mut forward = Vec::with_capacity(prepared.graph.relays.len());
     let mut reverse = Vec::with_capacity(prepared.graph.relays.len());
-    for relay in &prepared.graph.relays {
+    for (relay, eligible) in prepared.graph.relays.iter().zip(eligible) {
         let plan = prepared
             .plans
             .get(&relay.node_id)
@@ -132,14 +165,18 @@ fn select_inner(
         let load = state.org_relay.sessions_on_relay(relay.node_id);
         forward.push(SearchRelay {
             node_id: relay.node_id,
-            ingress: (!restrict_ends || relay.zone == prepared.requester_zone).then_some(a_probe),
-            exit: (!restrict_ends || relay.zone == prepared.peer_zone).then_some(b_probe),
+            ingress: (eligible && (!restrict_ends || relay.zone == prepared.requester_zone))
+                .then_some(a_probe),
+            exit: (eligible && (!restrict_ends || relay.zone == prepared.peer_zone))
+                .then_some(b_probe),
             load,
         });
         reverse.push(SearchRelay {
             node_id: relay.node_id,
-            ingress: (!restrict_ends || relay.zone == prepared.peer_zone).then_some(b_probe),
-            exit: (!restrict_ends || relay.zone == prepared.requester_zone).then_some(a_probe),
+            ingress: (eligible && (!restrict_ends || relay.zone == prepared.peer_zone))
+                .then_some(b_probe),
+            exit: (eligible && (!restrict_ends || relay.zone == prepared.requester_zone))
+                .then_some(a_probe),
             load,
         });
     }

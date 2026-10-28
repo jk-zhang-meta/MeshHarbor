@@ -41,7 +41,9 @@ pub(super) async fn mint(
     {
         return Ok(false);
     }
-    let Some(selected) = path_select::select_for_mint(state, original).unwrap_or(None) else {
+    let Some(selected) =
+        path_select::select_for_mint(state, original, same_zone_only).unwrap_or(None)
+    else {
         return Ok(false);
     };
     let graph = &selected.prepared.graph;

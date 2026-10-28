@@ -2285,6 +2285,111 @@ async fn staged_graph_long_path_capacity_race_falls_back_to_available_line() {
     assert!(recv_t(&mut l.gz, "rc:overlay.relay_serve", Duration::from_millis(500)).await.is_none());
 }
 
+/// An unusable shortcut must not hide an explicit, same-zone multi-hop path.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn staged_graph_same_zone_filters_unusable_relays_before_mint_selection() {
+    use roomler_ai_mod_network::org_relay::candidate_test_support as support;
+    for (scenario, isolation, fallback) in [
+        ("foreign", "off", false), ("foreign", "off", true),
+        ("foreign", "warn", false), ("foreign", "warn", true),
+        ("unknown", "off", false), ("implicit", "enforce", false),
+        ("implicit", "enforce", true), ("implicit", "off", true),
+    ] {
+        let slug = format!("iso-filter-{scenario}-{isolation}-{}", if fallback { "fallback" } else { "normal" });
+        let rig = Rig::up(&slug, isolation).await;
+        let mut relays = Vec::new();
+        let mut agents = Vec::new();
+        let mut nodes = Vec::new();
+        for i in 0..4 {
+            let name = format!("{slug}-relay-{i}");
+            let (agent, token) = enroll(&rig.app, &rig.seeded, &name).await;
+            let location = if i != 3 || scenario == "implicit" { Some(CN_R) }
+                else if scenario == "foreign" { Some(US_R) } else { None };
+            let mut ws = connect_from(&rig.app, &token, &["relay-server"], location).await;
+            assert_observed(&rig.app, &agent, location).await;
+            let endpoint = if i == 3 && scenario != "implicit" { "1.1.1.2:41641".to_string() }
+                else { format!("223.6.6.{}:41641", 6 + i) };
+            line_join(&mut ws, 10 + i, &endpoint, json!({"relay_backbone_ready":true})).await;
+            let node = rig.node(&name).await;
+            if i == 3 && scenario == "implicit" {
+                rig.set_role(&agent, "server").await;
+            } else {
+                assert_eq!(approve(&rig.app, &rig.seeded, &agent, true).await, 200);
+                grant_relay(&rig.app, &rig.seeded, &node).await;
+            }
+            relays.push(ws); agents.push(agent); nodes.push(node);
+        }
+        let mut a = rig.device(&format!("{slug}-a"), Some(CN_A)).await;
+        let mut b = rig.device(&format!("{slug}-b"), Some(CN_A)).await;
+        let flag = json!({"supports_backbone_only_v1":true});
+        line_join(&mut a, 1, "223.5.5.5:41641", flag.clone()).await;
+        line_join(&mut b, 2, "223.5.5.6:41641", flag).await;
+        let a_id = ObjectId::parse_str(rig.node(&format!("{slug}-a")).await).unwrap();
+        let b_id = ObjectId::parse_str(rig.node(&format!("{slug}-b")).await).unwrap();
+        set_mode(&rig.app, &rig.seeded, if scenario == "implicit" { "auto" } else { "on" }).await;
+        let path = |agent: &str| format!("/api/tenant/{}/agent/{agent}/peer-relay-policy", rig.seeded.tenant_id);
+        let mut source_edges = vec![json!({"relay_agent_id":agents[1],"endpoint":"10.68.0.2:3478","cross_border":false})];
+        if scenario != "implicit" {
+            source_edges.push(json!({"relay_agent_id":agents[3],"endpoint":"10.68.0.4:3478","cross_border":true}));
+            let (status, body) = put(&rig.app, &path(&agents[3]), &rig.seeded.admin.access_token,
+                json!({"serve":true,"approved_backbone_edges":[{"relay_agent_id":agents[2],"endpoint":"10.68.0.5:3478","cross_border":true}]})).await;
+            assert_eq!(status, 200, "{body}");
+        }
+        let (status, body) = put(&rig.app, &path(&agents[0]), &rig.seeded.admin.access_token,
+            json!({"serve":true,"approved_backbone_edges":source_edges})).await;
+        assert_eq!(status, 200, "{body}");
+        let (status, body) = put(&rig.app, &path(&agents[1]), &rig.seeded.admin.access_token,
+            json!({"serve":true,"approved_backbone_edges":[{"relay_agent_id":agents[2],"endpoint":"10.68.0.3:3478","cross_border":false}]})).await;
+        assert_eq!(status, 200, "{body}");
+        let network = rig.app.state.network();
+        let ids: Vec<_> = nodes.iter().map(|id| ObjectId::parse_str(id).unwrap()).collect();
+        let bad_endpoint = if scenario == "implicit" { "223.6.6.9:3478" } else { "1.1.1.2:3478" };
+        assert!(support::record_member_probe_fixture(network, a_id, &[
+            (ids[0], "223.6.6.6:3478".into(), true, Some(10)), (ids[1], "223.6.6.7:3478".into(), false, None),
+            (ids[2], "223.6.6.8:3478".into(), false, None), (ids[3], bad_endpoint.into(), scenario == "implicit", if scenario == "implicit" { Some(1) } else { None })]));
+        assert!(support::record_member_probe_fixture(network, b_id, &[
+            (ids[0], "223.6.6.6:3478".into(), false, None), (ids[1], "223.6.6.7:3478".into(), false, None),
+            (ids[2], "223.6.6.8:3478".into(), true, Some(10)), (ids[3], bad_endpoint.into(), scenario == "implicit", if scenario == "implicit" { Some(1) } else { None })]));
+        let mut source_probes = vec![(ids[1], "10.68.0.2:3478".into(), true, Some(50))];
+        if scenario != "implicit" { source_probes.push((ids[3], "10.68.0.4:3478".into(), true, Some(1))); }
+        assert!(support::record_backbone_probe_fixture(network, ids[0], &source_probes));
+        assert!(support::record_backbone_probe_fixture(network, ids[1], &[(ids[2], "10.68.0.3:3478".into(), true, Some(50))]));
+        if scenario != "implicit" { assert!(support::record_backbone_probe_fixture(network, ids[3], &[(ids[2], "10.68.0.5:3478".into(), true, Some(1))])); }
+        let selected = support::select_path(network, a_id, b_id, false).await.unwrap().unwrap();
+        let bad_agent = ObjectId::parse_str(&agents[3]).unwrap();
+        assert!(selected.0.contains(&bad_agent), "unfiltered ranking must prefer the ineligible relay: {slug} {selected:?}");
+        if fallback {
+            a.send(Message::Text(json!({"t":"rc:overlay.org_relay_fallback_request", "peer_node_id":b_id.to_hex(), "request_id":1}).to_string().into())).await.unwrap();
+        } else { relay_request(&mut a, &b_id.to_hex()).await; }
+        let wait = Duration::from_secs(8);
+        let mut serves = Vec::new();
+        for ws in relays.iter_mut().take(3) { serves.push(recv_t(ws, "rc:overlay.relay_serve", wait).await.unwrap_or_else(|| panic!("{slug}: explicit relay serve missing"))); }
+        recv_t(&mut relays[0], "rc:overlay.relay_bridge_serve", wait).await.expect("first bridge");
+        recv_t(&mut relays[1], "rc:overlay.relay_bridge_serve", wait).await.expect("second bridge");
+        let member_a = recv_t(&mut a, "rc:overlay.relay_session", wait).await.expect("requester grant");
+        let member_b = recv_t(&mut b, "rc:overlay.relay_session", wait).await.expect("peer grant");
+        assert_eq!(member_a["vni"], serves[0]["vni"]); assert_eq!(member_b["vni"], serves[2]["vni"]);
+        assert!(recv_t(&mut relays[3], "rc:overlay.relay_serve", Duration::from_millis(250)).await.is_none(), "ineligible relay received a multi-hop serve");
+        let pair = roomler_ai_mod_network::overlay::pair_key(a_id, b_id);
+        let session = network.org_relay.active_session(&pair).expect("actual same-zone multi-hop");
+        assert!(!session.implicit); assert_eq!(session.relay.node_id, ids[0]); assert_eq!(session.hops.len(), 2);
+        assert_eq!(session.hops[0].relay.node_id, ids[1]); assert_eq!(session.hops[1].relay.node_id, ids[2]);
+        assert!(session.hops.iter().all(|h| !h.requires_cross_border_approval));
+        // Remove the only valid first edge. No route using the ineligible
+        // shortcut may be minted; the established single-relay fallback is OK.
+        let replacement = if scenario == "implicit" { json!([]) } else { json!([
+            {"relay_agent_id":agents[3],"endpoint":"10.68.0.4:3478","cross_border":true}]) };
+        let (status, body) = put(&rig.app, &path(&agents[0]), &rig.seeded.admin.access_token,
+            json!({"serve":true,"approved_backbone_edges":replacement})).await;
+        assert_eq!(status, 200, "{body}");
+        assert!(network.org_relay.active_session(&pair).is_none(), "removed ordinary edge must revoke path");
+        relay_request(&mut a, &b_id.to_hex()).await;
+        recv_t(&mut a, "rc:overlay.relay_session", wait).await.expect("single-relay fallback");
+        let fallback_session = network.org_relay.active_session(&pair).expect("fallback session");
+        assert!(fallback_session.hops.is_empty(), "ineligible multi-hop path was minted");
+    }
+}
+
 /// Same-zone real requests should mint, reauthorize and revoke all relay legs
 /// in each isolation mode, including the org-only fallback entry point.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
