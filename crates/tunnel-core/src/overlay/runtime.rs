@@ -10448,8 +10448,8 @@ mod org_fallback_tests {
                 id,
                 request_id,
                 vec![OrgRelayCandidateWire {
-                    relay_node_id: ObjectId::new(),
-                    exit_relay_node_id: None,
+                    path: roomler_ai_remote_control::signaling::RelayPathWire::new(vec![ObjectId::new()]).unwrap(),
+                    requester_at_exit: false,
                     endpoints: vec!["8.8.8.8:47865".into()]
                 }],
                 30,

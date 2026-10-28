@@ -365,6 +365,8 @@ impl Engine {
                 request_id,
                 peer_node_id,
                 peer_wg_public_key,
+                path,
+                requester_at_exit,
                 vni,
                 generation,
                 relay_node_id,
@@ -409,7 +411,10 @@ impl Engine {
                     Self::send(&ctx.outbound, ClientMsg::OverlayPathTrialAbort { trial_id }).await;
                     return;
                 };
+                let path_nodes = path.relay_node_ids();
                 if !allowed
+                    || (path_nodes.len() == 1 && requester_at_exit)
+                    || (relay_node_id != path_nodes[0] && relay_node_id != path_nodes[path_nodes.len() - 1])
                     || super::super::decode_public(&peer_wg_public_key) != Some(peer.public_key)
                     || original.pubkey != peer.public_key
                     || original.overlay_ip != peer.overlay_ip
@@ -418,19 +423,23 @@ impl Engine {
                     return;
                 }
                 let now = Instant::now();
-                let requested = self
-                    .pending_request
-                    .as_ref()
-                    .filter(|r| {
-                        r.request_id == request_id
-                            && r.peer_id == peer_node_id
-                            && r.candidate.relay_node_id == relay_node_id
-                            && now.saturating_duration_since(r.at) < PREPARE_TIMEOUT
-                            && peers.get(&peer_node_id).is_some_and(|p| {
-                                (p.wg_public_key.clone(), p.overlay_ip.clone()) == r.identity
-                            })
-                    })
-                    .cloned();
+                let pending = self.pending_request.as_ref().filter(|r| {
+                    r.request_id == request_id && r.peer_id == peer_node_id
+                });
+                if pending.is_some_and(|r| {
+                    r.candidate.path != path
+                        || r.candidate.requester_at_exit != requester_at_exit
+                        || r.candidate.requester_relay_node_id() != relay_node_id
+                }) {
+                    Self::send(&ctx.outbound, ClientMsg::OverlayPathTrialAbort { trial_id }).await;
+                    return;
+                }
+                let requested = pending.filter(|r| {
+                    now.saturating_duration_since(r.at) < PREPARE_TIMEOUT
+                        && peers.get(&peer_node_id).is_some_and(|p| {
+                            (p.wg_public_key.clone(), p.overlay_ip.clone()) == r.identity
+                        })
+                }).cloned();
                 if requested.is_some() {
                     self.pending_request = None;
                 }
@@ -1079,7 +1088,7 @@ impl Engine {
             })
             .min_by_key(|(id, _, _)| *id);
         if let Some((peer, _, candidate)) = choice {
-            if candidate.exit_relay_node_id.is_some()
+            if candidate.path.relay_node_ids().len() > 1
                 && !crate::overlay::orgrelay::backbone::path_enabled()
             {
                 return;
@@ -1095,15 +1104,15 @@ impl Engine {
                 &ctx.outbound,
                 ClientMsg::OverlayPathTrialRequest {
                     peer_node_id: peer,
-                    relay_node_id: candidate.relay_node_id,
                     request_id: serial,
-                    exit_relay_node_id: candidate.exit_relay_node_id,
+                    path: candidate.path.clone(),
+                    requester_at_exit: candidate.requester_at_exit,
                 },
             )
             .await
             {
                 discovery.note_attempt(peers, peer, &candidate, now);
-                info!(%peer, relay = %candidate.relay_node_id, exit = ?candidate.exit_relay_node_id,
+                info!(%peer, path = ?candidate.path.relay_node_ids(), requester_at_exit = candidate.requester_at_exit,
                     "overlay path-trial: requested a relay trial for a direct peer");
                 self.pending_request = Some(RequestedCandidate {
                     peer_id: peer,
@@ -1508,13 +1517,13 @@ mod failure_feedback_regression {
             panic!("actual discovery")
         };
         let first = OrgRelayCandidateWire {
-            relay_node_id: ObjectId::new(),
-            exit_relay_node_id: Some(ObjectId::new()),
+            path: roomler_ai_remote_control::signaling::RelayPathWire::new(vec![ObjectId::new(), ObjectId::new()]).unwrap(),
+            requester_at_exit: false,
             endpoints: vec!["8.8.8.8:3478".into()],
         };
         let second = OrgRelayCandidateWire {
-            relay_node_id: ObjectId::new(),
-            exit_relay_node_id: None,
+            path: roomler_ai_remote_control::signaling::RelayPathWire::new(vec![ObjectId::new()]).unwrap(),
+            requester_at_exit: false,
             endpoints: vec!["1.1.1.1:3478".into()],
         };
         assert_eq!(
@@ -1578,8 +1587,8 @@ mod failure_feedback_regression {
             discovery
                 .candidate_for(&peers, peer_id, now)
                 .unwrap()
-                .relay_node_id,
-            second.relay_node_id
+                .requester_relay_node_id(),
+            second.requester_relay_node_id()
         );
         // Rotate around to prove the first candidate is excluded by actual
         // negative feedback, not merely skipped by the next-after cursor.
@@ -1588,8 +1597,8 @@ mod failure_feedback_regression {
             discovery
                 .candidate_for(&peers, peer_id, now)
                 .unwrap()
-                .relay_node_id,
-            second.relay_node_id
+                .requester_relay_node_id(),
+            second.requester_relay_node_id()
         );
         assert_eq!(wg.peer_count(), 0);
         assert!(installed[&peer_id].is_direct);

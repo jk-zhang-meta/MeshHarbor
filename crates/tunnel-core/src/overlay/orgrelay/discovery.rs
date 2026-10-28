@@ -4,7 +4,7 @@
 use crate::overlay::runtime::ControlTx;
 use bson::oid::ObjectId;
 use roomler_ai_remote_control::signaling::{
-    ClientMsg, NetmapPeer, OrgRelayCandidateWire, OrgRelayDiscoveryCursorWire,
+    ClientMsg, NetmapPeer, OrgRelayCandidateWire, OrgRelayDiscoveryCursorWire, RelayPathWire,
 };
 use std::{
     collections::HashMap,
@@ -26,10 +26,19 @@ pub(crate) struct Discovery {
     cursor: Option<ObjectId>,
 }
 #[derive(Clone, PartialEq, Eq)]
-struct PathKey(ObjectId, Option<ObjectId>, Vec<String>);
-fn path_key(c: &OrgRelayCandidateWire) -> PathKey {
-    PathKey(c.relay_node_id, c.exit_relay_node_id, c.endpoints.clone())
+struct PathKey(RelayPathWire, bool, Vec<String>);
+
+fn path_key(c: &OrgRelayCandidateWire) -> Option<PathKey> {
+    if c.path.relay_node_ids().len() == 1 && c.requester_at_exit {
+        return None;
+    }
+    Some(PathKey(c.path.clone(), c.requester_at_exit, c.endpoints.clone()))
 }
+
+fn path_position(key: &PathKey) -> OrgRelayDiscoveryCursorWire {
+    OrgRelayDiscoveryCursorWire { path: key.0.clone(), requester_at_exit: key.1 }
+}
+
 struct Pair {
     identity: (String, String),
     asked: Instant,
@@ -63,24 +72,22 @@ impl Discovery {
             return None;
         }
         if pair.page_cursor.is_some()
-            && let Some(page_after) = pair.page_after
+            && let Some(page_after) = pair.page_after.as_ref()
         {
             // Discovery display order is a preference, not attempt fairness.
             // Continue after the ACTUAL queued attempt. Moving only by the last
             // returned page can permanently starve paths under short cooldowns.
-            let key = pair.attempted.as_ref().map_or(
-                (page_after.relay_node_id, page_after.exit_relay_node_id),
-                |k| (k.0, k.1),
-            );
+            let key = pair.attempted.as_ref().map(path_position).unwrap_or_else(|| page_after.clone());
             return candidates
                 .iter()
                 .filter(|c| {
                     !pair.failed.iter().any(|(k, at)| {
-                        *k == path_key(c) && now.saturating_duration_since(*at) < FAILURE_COOLDOWN
+                        Some(k) == path_key(c).as_ref()
+                            && now.saturating_duration_since(*at) < FAILURE_COOLDOWN
                     })
                 })
                 .min_by_key(|c| {
-                    let k = (c.relay_node_id, c.exit_relay_node_id);
+                    let k = c.cursor();
                     (k <= key, k)
                 })
                 .cloned();
@@ -88,13 +95,18 @@ impl Discovery {
         let after = pair
             .attempted
             .as_ref()
-            .and_then(|key| candidates.iter().position(|c| path_key(c) == *key))
+            .and_then(|key| {
+                candidates
+                    .iter()
+                    .position(|c| path_key(c).as_ref() == Some(key))
+            })
             .map_or(0, |i| (i + 1) % candidates.len());
         (0..candidates.len())
             .map(|n| &candidates[(after + n) % candidates.len()])
             .find(|c| {
                 !pair.failed.iter().any(|(key, at)| {
-                    *key == path_key(c) && now.saturating_duration_since(*at) < FAILURE_COOLDOWN
+                    Some(key) == path_key(c).as_ref()
+                        && now.saturating_duration_since(*at) < FAILURE_COOLDOWN
                 })
             })
             .cloned()
@@ -118,10 +130,13 @@ impl Discovery {
         if !eligible(current) || identity(current) != pair.identity {
             return;
         }
+        let Some(key) = path_key(candidate) else {
+            return;
+        };
         if pair.cached.as_ref().is_some_and(|(until, cs)| {
-            now < *until && cs.iter().any(|c| path_key(c) == path_key(candidate))
+            now < *until && cs.iter().any(|c| path_key(c).as_ref() == Some(&key))
         }) {
-            pair.attempted = Some(path_key(candidate));
+            pair.attempted = Some(key);
         }
     }
     /// Only the local requester's exact correlated precommit failure feeds this
@@ -143,13 +158,16 @@ impl Discovery {
         if !eligible(current) || identity(current) != *expected || pair.identity != *expected {
             return;
         }
+        let Some(key) = path_key(candidate) else {
+            return;
+        };
         pair.failed.retain(|(k, at)| {
-            *k != path_key(candidate) && now.saturating_duration_since(*at) < FAILURE_COOLDOWN
+            *k != key && now.saturating_duration_since(*at) < FAILURE_COOLDOWN
         });
         if pair.failed.len() >= 3 {
             pair.failed.remove(0);
         }
-        pair.failed.push((path_key(candidate), now));
+        pair.failed.push((key, now));
     }
     /// Keep rate-limit memory, but discard all evidence and pending correlations.
     /// Used on reattach/netmap edits/revocation, including a remove+re-add in one delta.
@@ -250,16 +268,10 @@ impl Discovery {
             .pairs
             .get(&id)
             .filter(|p| p.identity == identity)
-            .map(|p| (p.attempted.clone(), p.failed.clone(), p.page_cursor))
+            .map(|p| (p.attempted.clone(), p.failed.clone(), p.page_cursor.clone()))
             .unwrap_or_default();
-        let page_after = history.2.map(|cursor| {
-            history
-                .0
-                .as_ref()
-                .map_or(cursor, |k| OrgRelayDiscoveryCursorWire {
-                    relay_node_id: k.0,
-                    exit_relay_node_id: k.1,
-                })
+        let page_after = history.2.as_ref().map(|cursor| {
+            history.0.as_ref().map(path_position).unwrap_or_else(|| cursor.clone())
         });
         self.pairs.insert(
             id,
@@ -271,7 +283,7 @@ impl Discovery {
                 attempted: history.0,
                 failed: history.1,
                 page_cursor: history.2,
-                page_after,
+                page_after: page_after.clone(),
             },
         );
         let sent = tokio::time::timeout(
@@ -328,18 +340,12 @@ impl Discovery {
             return 0;
         }
         // Reject oversize/malformed payloads rather than silently treating partial data as trusted.
-        if next_cursor.is_some_and(|next| {
-            !candidates.iter().any(|c| {
-                c.relay_node_id == next.relay_node_id
-                    && c.exit_relay_node_id == next.exit_relay_node_id
-            })
+        if next_cursor.as_ref().is_some_and(|next| {
+            !candidates.iter().any(|c| c.cursor() == *next)
         }) || candidates.len() > 3
             || candidates.iter().enumerate().any(|(index, c)| {
-                c.exit_relay_node_id == Some(c.relay_node_id)
-                    || candidates[..index].iter().any(|p| {
-                        p.relay_node_id == c.relay_node_id
-                            && p.exit_relay_node_id == c.exit_relay_node_id
-                    })
+                (c.path.relay_node_ids().len() == 1 && c.requester_at_exit)
+                    || candidates[..index].iter().any(|p| p.cursor() == c.cursor())
                     || c.endpoints.is_empty()
                     || c.endpoints.len() > 4
                     || c.endpoints.iter().any(|e| {
@@ -355,8 +361,9 @@ impl Discovery {
         let expires = (now + Duration::from_secs(u64::from(ttl_secs)).min(MAX_TTL)).min(deadline);
         let count = candidates.len();
         p.cached = Some((expires, candidates));
+        let has_cursor = next_cursor.is_some();
         p.page_cursor = next_cursor;
-        if next_cursor.is_none() {
+        if !has_cursor {
             p.page_after = None;
         }
         count
@@ -367,13 +374,31 @@ impl Discovery {
 mod tests {
     use super::*;
     use crate::overlay::WgKeypair;
+
+    #[test]
+    fn complete_paths_and_directions_have_distinct_client_identities_and_cursors() {
+        let ingress = ObjectId::new();
+        let exit = ObjectId::new();
+        let a = PathKey(RelayPathWire::new(vec![ingress, ObjectId::new(), exit]).unwrap(), false, vec!["8.8.8.8:3478".into()]);
+        let b = PathKey(RelayPathWire::new(vec![ingress, ObjectId::new(), exit]).unwrap(), false, vec!["8.8.8.8:3478".into()]);
+        let reverse = PathKey(a.0.clone(), true, a.2.clone());
+        assert!(a != b && a != reverse);
+        assert_ne!(path_position(&a), path_position(&b));
+        assert_ne!(path_position(&a), path_position(&reverse));
+        let mut invalid = candidate(); invalid.requester_at_exit = true;
+        assert!(path_key(&invalid).is_none(), "single relay must have canonical direction");
+        let mut changed = candidate(); let original = changed.clone();
+        changed.endpoints = vec!["1.1.1.1:3478".into()];
+        assert!(path_key(&original) != path_key(&changed), "endpoint change changes failure identity");
+    }
+
     fn peer() -> NetmapPeer {
         serde_json::from_value(serde_json::json!({"node_id":ObjectId::new().to_hex(),"overlay_ip":"100.64.0.2","wg_public_key":WgKeypair::generate().public_base64(),"reachable":true,"supports_org_relay":true})).unwrap()
     }
     fn candidate() -> OrgRelayCandidateWire {
         OrgRelayCandidateWire {
-            exit_relay_node_id: None,
-            relay_node_id: ObjectId::new(),
+            path: RelayPathWire::new(vec![ObjectId::new()]).unwrap(),
+            requester_at_exit: false,
             endpoints: vec!["8.8.8.8:3478".into()],
         }
     }
@@ -393,6 +418,32 @@ mod tests {
             other => panic!("unexpected side effect {other:?}"),
         }
     }
+    #[tokio::test]
+    async fn changed_endpoint_does_not_inherit_earlier_failed_attempt() {
+        let member = peer();
+        let peer_id = member.node_id;
+        let peers = HashMap::from([(peer_id, member.clone())]);
+        let now = Instant::now();
+        let mut discovery = Discovery::default();
+        let original = candidate();
+        let (_, first_request) = asked(&mut discovery, &peers, now).await;
+        assert_eq!(
+            discovery.receive(&peers, peer_id, first_request, vec![original.clone()], 30, now),
+            1
+        );
+        discovery.note_failure(&peers, peer_id, &identity(&member), &original, now);
+        assert!(discovery.candidate_for(&peers, peer_id, now).is_none());
+        let next = now + PAIR_GAP;
+        let (_, second_request) = asked(&mut discovery, &peers, next).await;
+        let mut updated = original;
+        updated.endpoints = vec!["1.1.1.1:3478".into()];
+        assert_eq!(
+            discovery.receive(&peers, peer_id, second_request, vec![updated.clone()], 30, next),
+            1
+        );
+        assert_eq!(discovery.candidate_for(&peers, peer_id, next), Some(updated));
+    }
+
     #[tokio::test]
     async fn org_relay_discovery_real_request_call_is_opt_in_metadata_only_and_rate_bounded() {
         let p = peer();
@@ -458,7 +509,7 @@ mod tests {
         let mut malformed = candidate();
         malformed.endpoints = vec!["not-a-socket-address".into()];
         let mut self_exit = candidate();
-        self_exit.exit_relay_node_id = Some(self_exit.relay_node_id);
+        self_exit.requester_at_exit = true;
         for paths in [
             vec![],
             vec![c.clone(), c],
@@ -625,8 +676,8 @@ mod candidate_coverage_tests {
         let paths: Vec<_> = [Some(ObjectId::new()), Some(ObjectId::new()), None]
             .into_iter()
             .map(|exit| OrgRelayCandidateWire {
-                relay_node_id: ingress,
-                exit_relay_node_id: exit,
+                path: RelayPathWire::new(std::iter::once(ingress).chain(exit).collect()).unwrap(),
+                requester_at_exit: false,
                 endpoints: vec!["8.8.8.8:3478".into()],
             })
             .collect();
@@ -691,14 +742,11 @@ mod cursor_tests {
         let id = peer.node_id;
         let mut peers = HashMap::from([(id, peer)]);
         let candidate = OrgRelayCandidateWire {
-            relay_node_id: ObjectId::new(),
-            exit_relay_node_id: None,
+            path: RelayPathWire::new(vec![ObjectId::new()]).unwrap(),
+            requester_at_exit: false,
             endpoints: vec!["8.8.8.8:3478".into()],
         };
-        let cursor = OrgRelayDiscoveryCursorWire {
-            relay_node_id: candidate.relay_node_id,
-            exit_relay_node_id: None,
-        };
+        let cursor = candidate.cursor();
         let mut d = Discovery::default();
         let now = Instant::now();
         let (tx, mut rx) = tokio::sync::mpsc::channel(4);
@@ -720,7 +768,7 @@ mod cursor_tests {
                 request_id + 1,
                 vec![candidate.clone()],
                 30,
-                Some(cursor),
+                Some(cursor.clone()),
                 now
             ),
             0
@@ -732,7 +780,7 @@ mod cursor_tests {
                 request_id,
                 vec![candidate.clone()],
                 30,
-                Some(cursor),
+                Some(cursor.clone()),
                 now
             ),
             1
@@ -750,11 +798,11 @@ mod cursor_tests {
         else {
             panic!()
         };
-        assert_eq!(c, Some(cursor));
+        assert_eq!(c, Some(cursor.clone()));
         // A cursor not present in its own page is malformed, not a grant/position update.
         let bad = OrgRelayDiscoveryCursorWire {
-            relay_node_id: ObjectId::new(),
-            exit_relay_node_id: None,
+            path: RelayPathWire::new(vec![ObjectId::new()]).unwrap(),
+            requester_at_exit: false,
         };
         assert_eq!(
             d.receive_page(
@@ -786,7 +834,7 @@ mod cursor_tests {
             request_id,
             vec![candidate.clone()],
             30,
-            Some(cursor),
+            Some(cursor.clone()),
             now + Duration::from_secs(120),
         );
         d.invalidate();
@@ -807,8 +855,8 @@ mod traversal_attempt_tests {
     use crate::overlay::WgKeypair;
     fn hint(n: u8) -> OrgRelayCandidateWire {
         OrgRelayCandidateWire {
-            relay_node_id: ObjectId::from_bytes([n; 12]),
-            exit_relay_node_id: None,
+            path: RelayPathWire::new(vec![ObjectId::from_bytes([n; 12])]).unwrap(),
+            requester_at_exit: false,
             endpoints: vec!["8.8.8.8:3478".into()],
         }
     }
@@ -816,11 +864,11 @@ mod traversal_attempt_tests {
         all: &[OrgRelayCandidateWire],
         cursor: Option<OrgRelayDiscoveryCursorWire>,
     ) -> (Vec<OrgRelayCandidateWire>, OrgRelayDiscoveryCursorWire) {
-        let mut selected = if let Some(cursor) = cursor {
-            let key = (cursor.relay_node_id, cursor.exit_relay_node_id);
+        let mut selected = if let Some(cursor) = cursor.as_ref() {
+            let key = cursor.clone();
             let mut ring = all.to_vec();
             ring.sort_by_key(|c| {
-                let k = (c.relay_node_id, c.exit_relay_node_id);
+                let k = c.cursor();
                 (k <= key, k)
             });
             ring.truncate(3);
@@ -831,15 +879,12 @@ mod traversal_attempt_tests {
         let last = if cursor.is_none() {
             selected
                 .iter()
-                .max_by_key(|c| (c.relay_node_id, c.exit_relay_node_id))
+                .max_by_key(|c| c.cursor())
                 .unwrap()
         } else {
             selected.last().unwrap()
         };
-        let next = OrgRelayDiscoveryCursorWire {
-            relay_node_id: last.relay_node_id,
-            exit_relay_node_id: last.exit_relay_node_id,
-        };
+        let next = last.cursor();
         selected.sort_by_key(|c| all.iter().position(|p| p == c).unwrap());
         (selected, next)
     }
@@ -870,7 +915,7 @@ mod traversal_attempt_tests {
             };
             if let Some(previous) = selected.last() {
                 assert_eq!(
-                    cursor.map(|c| c.relay_node_id),
+                    cursor.as_ref().map(|c| c.path.relay_node_ids()[0]),
                     Some(*previous),
                     "advance by actual successful enqueue, not page end"
                 );
@@ -886,14 +931,14 @@ mod traversal_attempt_tests {
             }
             // Represent a successfully queued trial exactly as production does.
             d.note_attempt(&peers, id, &candidate, now);
-            selected.push(candidate.relay_node_id);
+            selected.push(candidate.requester_relay_node_id());
             if candidate == healthy {
                 break;
             }
             d.note_failure(&peers, id, &ident, &candidate, now + Duration::from_secs(5));
         }
         assert!(
-            selected.contains(&healthy.relay_node_id),
+            selected.contains(&healthy.requester_relay_node_id()),
             "normally paced traversal must actually attempt healthy formerly-hidden key2"
         );
         assert!(selected.len() <= 5);
@@ -980,8 +1025,8 @@ mod delta_progress_tests {
         let paths = [1u8, 3, 5, 4, 2]
             .into_iter()
             .map(|n| OrgRelayCandidateWire {
-                relay_node_id: ObjectId::from_bytes([n; 12]),
-                exit_relay_node_id: None,
+                path: RelayPathWire::new(vec![ObjectId::from_bytes([n; 12])]).unwrap(),
+                requester_at_exit: false,
                 endpoints: vec![format!("8.8.8.{n}:3478")],
             })
             .collect();
@@ -1020,16 +1065,13 @@ mod delta_progress_tests {
                 request_id,
                 paths[..3].to_vec(),
                 30,
-                Some(OrgRelayDiscoveryCursorWire {
-                    relay_node_id: paths[2].relay_node_id,
-                    exit_relay_node_id: None,
-                }),
+                Some(paths[2].cursor()),
                 now
             ),
             3
         );
         let chosen = d.candidate_for(peers, id, now).unwrap();
-        assert_eq!(chosen.relay_node_id, paths[0].relay_node_id);
+        assert_eq!(chosen.requester_relay_node_id(), paths[0].requester_relay_node_id());
         d.note_attempt(peers, id, &chosen, now);
         d.note_failure(peers, id, &identity(&peers[&id]), &chosen, now);
         request_id
@@ -1066,10 +1108,7 @@ mod delta_progress_tests {
         let (fresh_request, cursor) = request(&mut d, &peers, now + PAIR_GAP).await;
         assert_eq!(
             cursor,
-            Some(OrgRelayDiscoveryCursorWire {
-                relay_node_id: paths[0].relay_node_id,
-                exit_relay_node_id: None,
-            }),
+            Some(paths[0].cursor()),
             "ordinary updates must not restart the preferred top-three page forever"
         );
         assert!(d.candidate_for(&peers, id, now + PAIR_GAP).is_none());
@@ -1082,10 +1121,7 @@ mod delta_progress_tests {
                 fresh_request,
                 successor_page,
                 30,
-                Some(OrgRelayDiscoveryCursorWire {
-                    relay_node_id: paths[3].relay_node_id,
-                    exit_relay_node_id: None,
-                }),
+                Some(paths[3].cursor()),
                 now + PAIR_GAP
             ),
             3
@@ -1093,8 +1129,8 @@ mod delta_progress_tests {
         assert_eq!(
             d.candidate_for(&peers, id, now + PAIR_GAP)
                 .unwrap()
-                .relay_node_id,
-            paths[4].relay_node_id
+                .requester_relay_node_id(),
+            paths[4].requester_relay_node_id()
         );
     }
 
