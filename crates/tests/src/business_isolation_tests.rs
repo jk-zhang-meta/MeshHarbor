@@ -2626,13 +2626,15 @@ async fn staged_graph_off_warn_cross_zone_mint_rechecks_every_edge_and_audit() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn staged_graph_same_zone_filters_unusable_relays_before_mint_selection() {
     use roomler_ai_mod_network::org_relay::candidate_test_support as support;
-    for (scenario, isolation, fallback) in [
-        ("foreign", "off", false), ("foreign", "off", true),
-        ("foreign", "warn", false), ("foreign", "warn", true),
-        ("unknown", "off", false), ("implicit", "enforce", false),
-        ("implicit", "enforce", true), ("implicit", "off", true),
+    for (scenario, isolation, fallback, best_single) in [
+        ("foreign", "off", false, false), ("foreign", "off", true, false),
+        ("foreign", "warn", false, false), ("foreign", "warn", true, false),
+        ("unknown", "off", false, false), ("implicit", "enforce", false, true),
+        ("implicit", "enforce", true, true), ("implicit", "off", true, true),
+        ("foreign", "off", false, true), ("foreign", "warn", true, true),
+        ("unknown", "off", false, true), ("unknown", "warn", true, true),
     ] {
-        let slug = format!("iso-filter-{scenario}-{isolation}-{}", if fallback { "fallback" } else { "normal" });
+        let slug = format!("iso-filter-{scenario}-{isolation}-{}-{best_single}", if fallback { "fallback" } else { "normal" });
         let rig = Rig::up(&slug, isolation).await;
         let mut relays = Vec::new();
         let mut agents = Vec::new();
@@ -2683,10 +2685,10 @@ async fn staged_graph_same_zone_filters_unusable_relays_before_mint_selection() 
         let bad_endpoint = if scenario == "implicit" { "223.6.6.9:3478" } else { "1.1.1.2:3478" };
         assert!(support::record_member_probe_fixture(network, a_id, &[
             (ids[0], "223.6.6.6:3478".into(), true, Some(10)), (ids[1], "223.6.6.7:3478".into(), false, None),
-            (ids[2], "223.6.6.8:3478".into(), false, None), (ids[3], bad_endpoint.into(), scenario == "implicit", if scenario == "implicit" { Some(1) } else { None })]));
+            (ids[2], "223.6.6.8:3478".into(), false, None), (ids[3], bad_endpoint.into(), best_single, best_single.then_some(1))]));
         assert!(support::record_member_probe_fixture(network, b_id, &[
             (ids[0], "223.6.6.6:3478".into(), false, None), (ids[1], "223.6.6.7:3478".into(), false, None),
-            (ids[2], "223.6.6.8:3478".into(), true, Some(10)), (ids[3], bad_endpoint.into(), scenario == "implicit", if scenario == "implicit" { Some(1) } else { None })]));
+            (ids[2], "223.6.6.8:3478".into(), true, Some(10)), (ids[3], bad_endpoint.into(), best_single, best_single.then_some(1))]));
         let mut source_probes = vec![(ids[1], "10.68.0.2:3478".into(), true, Some(50))];
         if scenario != "implicit" { source_probes.push((ids[3], "10.68.0.4:3478".into(), true, Some(1))); }
         assert!(support::record_backbone_probe_fixture(network, ids[0], &source_probes));
@@ -2699,6 +2701,14 @@ async fn staged_graph_same_zone_filters_unusable_relays_before_mint_selection() 
             a.send(Message::Text(json!({"t":"rc:overlay.org_relay_fallback_request", "peer_node_id":b_id.to_hex(), "request_id":1}).to_string().into())).await.unwrap();
         } else { relay_request(&mut a, &b_id.to_hex()).await; }
         let wait = Duration::from_secs(8);
+        if best_single {
+            recv_t(&mut a, "rc:overlay.relay_session", wait).await.expect("single-relay fallback");
+            let pair = roomler_ai_mod_network::overlay::pair_key(a_id, b_id);
+            let session = network.org_relay.active_session(&pair).expect("single-relay session");
+            assert!(session.hops.is_empty(), "{slug}: faster single relay was ignored");
+            assert_eq!(session.relay.node_id, ids[3], "{slug}: wrong single relay");
+            continue;
+        }
         let mut serves = Vec::new();
         for ws in relays.iter_mut().take(3) { serves.push(recv_t(ws, "rc:overlay.relay_serve", wait).await.unwrap_or_else(|| panic!("{slug}: explicit relay serve missing"))); }
         recv_t(&mut relays[0], "rc:overlay.relay_bridge_serve", wait).await.expect("first bridge");

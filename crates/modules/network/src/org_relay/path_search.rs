@@ -48,7 +48,7 @@ pub(super) struct OrientedPath {
 }
 
 impl SearchPath {
-    fn rank_key(&self) -> (u8, u128, u128, u128, u128, u128) {
+    pub(super) fn rank_key(&self) -> (u8, u128, u128, u128, u128, u128) {
         let hops = self.relays.len() as u128;
         if self.class == 0 {
             (0, self.rtt, self.load, hops, 0, 0)

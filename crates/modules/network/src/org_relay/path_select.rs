@@ -139,6 +139,8 @@ fn select_inner(
     let restrict_ends = prepared.restrict_ends || require_ends;
     let mut forward = Vec::with_capacity(prepared.graph.relays.len());
     let mut reverse = Vec::with_capacity(prepared.graph.relays.len());
+    let mut single_forward = Vec::with_capacity(prepared.graph.relays.len());
+    let mut single_reverse = Vec::with_capacity(prepared.graph.relays.len());
     for (relay, eligible) in prepared.graph.relays.iter().zip(eligible) {
         let plan = prepared
             .plans
@@ -166,6 +168,23 @@ fn select_inner(
             now,
         );
         let load = state.org_relay.sessions_on_relay(relay.node_id);
+        // These candidates are comparison-only: with no backbone edges they
+        // can never introduce an otherwise ineligible relay into a long path.
+        single_forward.push(SearchRelay {
+            node_id: relay.node_id,
+            ingress: (!prepared.restrict_ends || relay.zone == prepared.requester_zone)
+                .then_some(a_probe),
+            exit: (!prepared.restrict_ends || relay.zone == prepared.peer_zone).then_some(b_probe),
+            load,
+        });
+        single_reverse.push(SearchRelay {
+            node_id: relay.node_id,
+            ingress: (!prepared.restrict_ends || relay.zone == prepared.peer_zone)
+                .then_some(b_probe),
+            exit: (!prepared.restrict_ends || relay.zone == prepared.requester_zone)
+                .then_some(a_probe),
+            load,
+        });
         forward.push(SearchRelay {
             node_id: relay.node_id,
             ingress: (eligible && (!restrict_ends || relay.zone == prepared.requester_zone))
@@ -205,8 +224,19 @@ fn select_inner(
             ),
         })
         .collect();
-    let chosen = path_search::shortest_either_direction(&forward, &reverse, &edges)
+    let mut chosen = path_search::shortest_either_direction(&forward, &reverse, &edges)
         .map_err(|_| Deny::PolicyUnreadable)?;
+    if require_ends {
+        let single = path_search::shortest_either_direction(&single_forward, &single_reverse, &[])
+            .map_err(|_| Deny::PolicyUnreadable)?;
+        if let Some(single) = single
+            && chosen
+                .as_ref()
+                .is_none_or(|path| single.path.rank_key() <= path.path.rank_key())
+        {
+            chosen = Some(single);
+        }
+    }
     if prepared.eligibility_epoch != state.org_relay.eligibility_generation() {
         return Err(Deny::PolicyUnreadable);
     }
