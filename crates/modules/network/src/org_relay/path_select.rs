@@ -47,24 +47,25 @@ fn select_inner(
     if prepared.eligibility_epoch != state.org_relay.eligibility_generation() {
         return Err(Deny::PolicyUnreadable);
     }
-    // The same-zone mint cannot represent implicit relays and refuses any
-    // relay outside the members' known zone. Remove those relays from both
-    // endpoint choices and backbone traversal before ranking; otherwise an
-    // unusable faster path can hide an eligible explicit path. Retaining the
-    // filtered graph itself preserves search edge indexes for fresh checks.
+    // Actual multi-hop mint cannot represent implicit or unknown-zone
+    // relays, and every crossing must be explicitly approved. Apply these
+    // gates before ranking so an unusable path cannot hide a valid one.
+    // Keep edge indexes in the filtered graph for the fresh mint checks.
     let eligible: Vec<bool> = prepared
         .graph
         .relays
         .iter()
         .map(|relay| {
-            !same_zone_only
+            !require_ends
                 || (!relay.implicit
-                    && prepared.requester_zone.is_some()
-                    && prepared.requester_zone == prepared.peer_zone
-                    && relay.zone == prepared.requester_zone)
+                    && relay.zone.is_some()
+                    && (!same_zone_only
+                        || (prepared.requester_zone.is_some()
+                            && prepared.requester_zone == prepared.peer_zone
+                            && relay.zone == prepared.requester_zone)))
         })
         .collect();
-    if same_zone_only {
+    if require_ends {
         if prepared
             .graph
             .edges
@@ -73,10 +74,12 @@ fn select_inner(
         {
             return Err(Deny::PolicyUnreadable);
         }
-        prepared
-            .graph
-            .edges
-            .retain(|edge| eligible[edge.from] && eligible[edge.to]);
+        let relays = &prepared.graph.relays;
+        prepared.graph.edges.retain(|edge| {
+            eligible[edge.from]
+                && eligible[edge.to]
+                && (relays[edge.from].zone == relays[edge.to].zone || edge.cross_border)
+        });
     }
     let now = Instant::now();
     let a = prepared.requester_id;

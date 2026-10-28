@@ -2285,6 +2285,140 @@ async fn staged_graph_long_path_capacity_race_falls_back_to_available_line() {
     assert!(recv_t(&mut l.gz, "rc:overlay.relay_serve", Duration::from_millis(500)).await.is_none());
 }
 
+/// Off/Warn cross-zone paths require every crossing approval and audit, while
+/// an invalid long path still falls back through the established one-hop gate.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn staged_graph_off_warn_cross_zone_mint_rechecks_every_edge_and_audit() {
+    use roomler_ai_mod_network::org_relay::candidate_test_support as support;
+    async fn policy(rig: &Rig, source: &str, target: &str, endpoint: &str, crossing: bool) {
+        let path = format!("/api/tenant/{}/agent/{source}/peer-relay-policy", rig.seeded.tenant_id);
+        let (status, value) = put(&rig.app, &path, &rig.seeded.admin.access_token,
+            json!({"serve":true,"approved_backbone_edges":[{"relay_agent_id":target,"endpoint":endpoint,"cross_border":crossing}]})).await;
+        assert_eq!(status, 200, "{value}");
+    }
+    async fn request(ws: &mut Ws, peer: ObjectId, fallback: bool, serial: u64) {
+        if fallback {
+            ws.send(Message::Text(json!({"t":"rc:overlay.org_relay_fallback_request", "peer_node_id":peer.to_hex(), "request_id":serial}).to_string().into())).await.unwrap();
+        } else { relay_request(ws, &peer.to_hex()).await; }
+    }
+    for (isolation, fallback, fault) in [
+        ("off", false, "none"), ("off", true, "none"),
+        ("warn", false, "none"), ("warn", true, "none"),
+        ("off", false, "unknown"), ("warn", true, "implicit"),
+    ] {
+        let slug = format!("iso-cross-mint-{isolation}-{}-{fault}", if fallback {"fallback"} else {"normal"});
+        let rig = Rig::up(&slug, isolation).await;
+        let mut relays = Vec::new(); let mut agents = Vec::new(); let mut nodes = Vec::new();
+        let endpoints = ["223.6.6.6:41641", "1.1.1.1:41641", "223.6.6.8:41641", "1.1.1.3:41641"];
+        let public = ["223.6.6.6:3478", "1.1.1.1:3478", "223.6.6.8:3478", "1.1.1.3:3478"];
+        let private = ["10.69.0.2:3478", "10.69.0.3:3478", "10.69.0.4:3478"];
+        for i in 0..4 {
+            let name = format!("{slug}-r{i}");
+            let (agent, token) = enroll(&rig.app, &rig.seeded, &name).await;
+            let from = if i == 2 && fault == "unknown" { None } else if i % 2 == 0 { Some(CN_R) } else { Some(US_R) };
+            let mut ws = connect_from(&rig.app, &token, &["relay-server"], from).await;
+            assert_observed(&rig.app, &agent, from).await;
+            line_join(&mut ws, 10 + i, endpoints[i as usize], json!({"relay_backbone_ready":true})).await;
+            let node = rig.node(&name).await;
+            if i == 2 && fault == "implicit" { rig.set_role(&agent, "server").await; }
+            else { assert_eq!(approve(&rig.app, &rig.seeded, &agent, true).await, 200); grant_relay(&rig.app, &rig.seeded, &node).await; }
+            relays.push(ws); agents.push(agent); nodes.push(node);
+        }
+        let mut a = rig.device(&format!("{slug}-a"), Some(CN_A)).await;
+        let mut b = rig.device(&format!("{slug}-b"), Some(US_A)).await;
+        let flag = json!({"supports_backbone_only_v1":true});
+        line_join(&mut a, 1, "223.5.5.5:41641", flag.clone()).await;
+        line_join(&mut b, 2, "8.8.8.8:41641", flag).await;
+        let a_id = ObjectId::parse_str(rig.node(&format!("{slug}-a")).await).unwrap();
+        let b_id = ObjectId::parse_str(rig.node(&format!("{slug}-b")).await).unwrap();
+        set_mode(&rig.app, &rig.seeded, if fault == "implicit" { "auto" } else { "on" }).await;
+        // Configure from the exit backwards; a backbone target must already
+        // be relay-approved, including the Auto/ACL-negative fixture.
+        for i in (0..3).rev() { policy(&rig, &agents[i], &agents[i+1], private[i], true).await; }
+        let network = rig.app.state.network();
+        let ids: Vec<_> = nodes.iter().map(|n| ObjectId::parse_str(n).unwrap()).collect();
+        let pair = roomler_ai_mod_network::overlay::pair_key(a_id, b_id);
+        let record = || {
+            let ar: Vec<_> = (0..4).map(|i| (ids[i], public[i].into(), i == 0, (i == 0).then_some(10))).collect();
+            let br: Vec<_> = (0..4).map(|i| (ids[i], public[i].into(), i == 3, (i == 3).then_some(10))).collect();
+            assert!(support::record_member_probe_fixture(network, a_id, &ar));
+            assert!(support::record_member_probe_fixture(network, b_id, &br));
+            for i in 0..3 { assert!(support::record_backbone_probe_fixture(network, ids[i], &[(ids[i+1], private[i].into(), true, Some(5))])); }
+        };
+        if fault != "none" {
+            record(); request(&mut a, b_id, fallback, 1).await;
+            recv_t(&mut a, "rc:overlay.relay_session", Duration::from_secs(8)).await.expect("legacy fallback grant");
+            let session = network.org_relay.active_session(&pair).expect("legacy fallback session");
+            assert!(session.hops.is_empty(), "{slug}: unknown or implicit relay entered multi-hop");
+            assert!(recv_t(&mut relays[2], "rc:overlay.relay_bridge_serve", Duration::from_millis(300)).await.is_none());
+            continue;
+        }
+        let mut serial = 1;
+        // Fail each individual crossing independently. Revoke the resulting
+        // single-relay fallback between attempts so no cached session masks a
+        // later mint decision.
+        for withheld in 0..3 {
+            policy(&rig, &agents[withheld], &agents[withheld+1], private[withheld], false).await;
+            record(); request(&mut a, b_id, fallback, serial).await; serial += 1;
+            recv_t(&mut a, "rc:overlay.relay_session", Duration::from_secs(8)).await.expect("legacy fallback grant");
+            let session = network.org_relay.active_session(&pair).expect("legacy fallback session");
+            assert!(session.hops.is_empty(), "{slug}: crossing {withheld} without approval minted multi-hop");
+            assert!(audit_rows(&rig.app, &rig.seeded).await.iter().all(|row|
+                !row["reason"].as_str().unwrap_or_default().starts_with("cross_border_edge:")), "unapproved path wrote crossing audit");
+            let relay_index = ids.iter().position(|id| *id == session.relay.node_id).unwrap();
+            assert_eq!(approve(&rig.app, &rig.seeded, &agents[relay_index], false).await, 200);
+            assert!(network.org_relay.active_session(&pair).is_none());
+            assert_eq!(approve(&rig.app, &rig.seeded, &agents[relay_index], true).await, 200);
+            for ws in &mut relays { while recv_t(ws, "rc:overlay.relay_serve", Duration::from_millis(100)).await.is_some() {} }
+            while recv_t(&mut b, "rc:overlay.relay_session", Duration::from_millis(100)).await.is_some() {}
+            for i in 0..3 { policy(&rig, &agents[i], &agents[i+1], private[i], true).await; }
+        }
+        record();
+        assert_eq!(support::select_path(network, a_id, b_id, false).await.unwrap().unwrap().0,
+            agents.iter().map(|id| ObjectId::parse_str(id).unwrap()).collect::<Vec<_>>());
+        support::fail_next_nhop_audit_fixture(pair.clone());
+        request(&mut a, b_id, fallback, serial).await; serial += 1;
+        recv_t(&mut a, "rc:overlay.relay_session", Duration::from_secs(8)).await.expect("fallback after audit failure");
+        let session = network.org_relay.active_session(&pair).expect("fallback after failed audit");
+        assert!(session.hops.is_empty(), "failed crossing audit minted multi-hop");
+        let relay_index = ids.iter().position(|id| *id == session.relay.node_id).unwrap();
+        assert_eq!(approve(&rig.app, &rig.seeded, &agents[relay_index], false).await, 200);
+        assert!(network.org_relay.active_session(&pair).is_none());
+        assert_eq!(approve(&rig.app, &rig.seeded, &agents[relay_index], true).await, 200);
+        for ws in &mut relays { while recv_t(ws, "rc:overlay.relay_serve", Duration::from_millis(100)).await.is_some() {} }
+        while recv_t(&mut b, "rc:overlay.relay_session", Duration::from_millis(100)).await.is_some() {}
+        for i in 0..3 { policy(&rig, &agents[i], &agents[i+1], private[i], true).await; }
+        record(); request(&mut a, b_id, fallback, serial).await;
+        let wait = Duration::from_secs(8);
+        let mut serves = Vec::new();
+        for ws in &mut relays { serves.push(recv_t(ws, "rc:overlay.relay_serve", wait).await.unwrap_or_else(|| panic!("{slug}: actual relay serve missing"))); }
+        let mut bridges = Vec::new();
+        for ws in relays.iter_mut().take(3) { bridges.push(recv_t(ws, "rc:overlay.relay_bridge_serve", wait).await.expect("actual bridge")); }
+        let sa = recv_t(&mut a, "rc:overlay.relay_session", wait).await.expect("requester session");
+        let sb = recv_t(&mut b, "rc:overlay.relay_session", wait).await.expect("peer session");
+        assert_eq!(sa["vni"], serves[0]["vni"]); assert_eq!(sb["vni"], serves[3]["vni"]);
+        for i in 0..3 { assert_eq!(bridges[i]["bridge"]["local_vni"], serves[i]["vni"]); assert_eq!(bridges[i]["bridge"]["remote_vni"], serves[i+1]["vni"]); }
+        let session = network.org_relay.active_session(&pair).expect("cross-zone multi-hop session");
+        assert!(!session.implicit); assert_eq!(session.hops.len(), 3);
+        assert!(session.hops.iter().all(|h| h.requires_cross_border_approval));
+        assert!(support::reauthorize_nhop_fixture(network, a_id, b_id, &session).await);
+        let audits = audit_rows(&rig.app, &rig.seeded).await;
+        for i in 0..3 {
+            let reason = format!("cross_border_edge:{}", agents[i+1]);
+            assert!(audits.iter().any(|row| row["reason"] == reason && row["relay_node_id"] == nodes[i]), "missing distinct crossing audit: {slug} {i}");
+        }
+        policy(&rig, &agents[1], &agents[2], private[1], false).await;
+        assert!(network.org_relay.active_session(&pair).is_none(), "approval withdrawal must revoke all hops");
+        for (i, ws) in relays.iter_mut().enumerate() {
+            let revoked = recv_t(ws, "rc:overlay.relay_revoke", wait).await.expect("relay revoke");
+            assert_eq!(revoked["vni"], serves[i]["vni"]);
+        }
+        for ws in relays.iter_mut().take(3) { recv_t(ws, "rc:overlay.relay_bridge_revoke", wait).await.expect("bridge revoke"); }
+        assert!(recv_t(&mut a, "rc:overlay.relay_revoke", wait).await.is_some());
+        assert!(recv_t(&mut b, "rc:overlay.relay_revoke", wait).await.is_some());
+    }
+}
+
 /// An unusable shortcut must not hide an explicit, same-zone multi-hop path.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn staged_graph_same_zone_filters_unusable_relays_before_mint_selection() {
