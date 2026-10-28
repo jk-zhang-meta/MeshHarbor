@@ -40,6 +40,7 @@ pub(super) struct TrialPathPlan {
     pub epoch: u64,
     pub path: RelayPathWire,
     pub requester_at_exit: bool,
+    pub member_zones: [BusinessZone; 2],
     requester: MemberIdentity,
     peer: MemberIdentity,
     pub relays: Vec<TrialRelay>,
@@ -66,6 +67,7 @@ impl TrialPathPlan {
     fn same_authorized_path(&self, fresh: &Self) -> bool {
         self.path == fresh.path
             && self.requester_at_exit == fresh.requester_at_exit
+            && self.member_zones == fresh.member_zones
             && self.requester == fresh.requester
             && self.peer == fresh.peer
             && self.relays == fresh.relays
@@ -239,6 +241,7 @@ pub(super) async fn plan(
         epoch,
         path: path.clone(),
         requester_at_exit,
+        member_zones: [first_zone, last_zone],
         requester: member_identity(&fresh_a)?,
         peer: member_identity(&fresh_b)?,
         relays,
