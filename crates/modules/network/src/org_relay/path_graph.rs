@@ -6,6 +6,7 @@
 //! the current same-tenant, live, primary, capacity and both-member ACL gates;
 //! an implicit grant must not be used to bypass cross-zone policy.
 
+use crate::business_isolation::Mode;
 use bson::oid::ObjectId;
 use roomler_ai_remote_control::models::{MAX_PEER_RELAY_BACKBONE_EDGES, PeerRelayBackboneEdge};
 use roomler_core::business_authority::BusinessZone;
@@ -45,11 +46,13 @@ pub(super) enum GraphError {
 
 /// Consume a gate-approved candidate set, sort it deterministically and keep
 /// only usable approved directed edges. A missing/ineligible target, disabled
-/// bridge, invalid endpoint or unauthorized zone crossing is never offered.
+/// bridge or invalid endpoint is never offered. In Enforce mode an
+/// unauthorized or unknown-zone crossing is also withheld.
 /// Duplicate relay identities or malformed approval tables fail closed.
 pub(super) fn build(
     mut relays: Vec<EligibleRelay>,
     overlay_cidr: &str,
+    isolation: Mode,
 ) -> Result<EdgeGraph, GraphError> {
     if overlay_cidr.parse::<ipnet::IpNet>().is_err() {
         return Err(GraphError::InvalidOverlay);
@@ -78,19 +81,21 @@ pub(super) fn build(
             let Some(&to) = by_agent.get(&target) else {
                 continue;
             };
+            let crossing_not_authorized = !matches!((relay.zone, relays[to].zone), (Some(a), Some(b)) if a == b)
+                && (!approved.cross_border || relay.implicit || relays[to].implicit);
             if from == to
                 || !relay.bridge_ready
-                // An unknown zone is never evidence that an edge is domestic.
-                // Require cross-border approval and explicit grants whenever
-                // either end is unknown or the known zones differ.
-                || (!matches!((relay.zone, relays[to].zone), (Some(a), Some(b)) if a == b)
-                    && (!approved.cross_border || relay.implicit || relays[to].implicit))
+                || (isolation == Mode::Enforce && crossing_not_authorized)
                 || !crate::routes::peer_relay::backbone_endpoint_outside_overlay(
                     &approved.endpoint,
                     overlay_cidr,
                 )
             {
                 continue;
+            }
+            if isolation == Mode::Warn && crossing_not_authorized {
+                tracing::info!(source = %relay.agent_id, target = %relays[to].agent_id,
+                    "org-relay [isolation warn]: would withhold backbone edge by zone policy");
             }
             edges.push(GraphEdge {
                 from,
@@ -108,6 +113,10 @@ pub(super) fn build(
 mod tests {
     use super::*;
     use BusinessZone::{Mainland as M, NonMainland as N};
+    fn build(relays: Vec<EligibleRelay>, cidr: &str) -> Result<EdgeGraph, GraphError> {
+        super::build(relays, cidr, Mode::Enforce)
+    }
+
     fn relay(agent: ObjectId, zone: BusinessZone) -> EligibleRelay {
         EligibleRelay {
             node_id: ObjectId::new(),
@@ -236,6 +245,25 @@ mod tests {
         a.approved_edges[0].cross_border = false;
         assert!(build(vec![a, c], "100.64.0.0/10").unwrap().edges.is_empty());
     }
+    #[test]
+    fn off_and_warn_keep_approved_edges_without_enforcing_zones() {
+        let mut a = relay(ObjectId::new(), M);
+        let mut b = relay(ObjectId::new(), N);
+        a.implicit = true;
+        a.approved_edges = vec![edge(b.agent_id, "10.0.0.1:3478", false)];
+        for mode in [Mode::Off, Mode::Warn] {
+            let known = super::build(vec![a.clone(), b.clone()], "100.64.0.0/10", mode).unwrap();
+            assert_eq!(known.edges.len(), 1);
+            assert!(!known.edges[0].cross_border);
+            b.zone = None;
+            let unknown = super::build(vec![a.clone(), b.clone()], "100.64.0.0/10", mode).unwrap();
+            assert_eq!(unknown.edges.len(), 1);
+            assert!(!unknown.edges[0].cross_border);
+            b.zone = Some(N);
+        }
+        assert!(build(vec![a, b], "100.64.0.0/10").unwrap().edges.is_empty());
+    }
+
     #[test]
     fn cross_zone_requires_explicit_grants_on_both_relays() {
         let a_id = ObjectId::new();

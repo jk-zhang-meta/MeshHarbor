@@ -1543,6 +1543,7 @@ async fn staged_graph_unknown_backbone(mode: &'static str, slug: &str) {
     let r1_node = ObjectId::parse_str(r1_node).unwrap();
     let r2_node = ObjectId::parse_str(r2_node).unwrap();
     let policy = format!("/api/tenant/{}/agent/{}/peer-relay-policy", rig.seeded.tenant_id, r1_id);
+    let net = rig.app.state.network();
     for cross in [false, true] {
         let (status, response) = put(&rig.app, &policy, &rig.seeded.admin.access_token, json!({
             "serve": true, "approved_backbone_edges": [{"relay_agent_id":r2_id,
@@ -1551,21 +1552,20 @@ async fn staged_graph_unknown_backbone(mode: &'static str, slug: &str) {
         assert_eq!(status, 200, "{response}");
         let edges = roomler_ai_mod_network::org_relay::candidate_test_support::prepare_edges(
             rig.app.state.network(), a_node, b_node, false).await.unwrap();
-        assert_eq!(edges.iter().any(|(a,b,_,_)| *a==source && *b==target), cross,
-            "unknown endpoints must require explicit cross-border approval");
+        assert!(edges.iter().any(|(a,b,_,flag)| *a==source && *b==target && *flag == cross),
+            "Off/Warn keep an approved edge and preserve its original cross-border bit");
+        assert!(roomler_ai_mod_network::org_relay::candidate_test_support::record_member_probe_fixture(net, a_node, &[
+            (r1_node, "1.1.1.1:3478".into(), true, Some(10)),
+            (r2_node, "1.0.0.1:3478".into(), false, None),
+        ]));
+        assert!(roomler_ai_mod_network::org_relay::candidate_test_support::record_member_probe_fixture(net, b_node, &[
+            (r1_node, "1.1.1.1:3478".into(), false, None),
+            (r2_node, "1.0.0.1:3478".into(), true, Some(10)),
+        ]));
+        let selected = roomler_ai_mod_network::org_relay::candidate_test_support::select_path(net, a_node, b_node, false)
+            .await.unwrap().expect("approved two-relay path exists");
+        assert_eq!(selected, (vec![source, target], false));
     }
-    let net = rig.app.state.network();
-    assert!(roomler_ai_mod_network::org_relay::candidate_test_support::record_member_probe_fixture(net, a_node, &[
-        (r1_node, "1.1.1.1:3478".into(), true, Some(10)),
-        (r2_node, "1.0.0.1:3478".into(), false, None),
-    ]));
-    assert!(roomler_ai_mod_network::org_relay::candidate_test_support::record_member_probe_fixture(net, b_node, &[
-        (r1_node, "1.1.1.1:3478".into(), false, None),
-        (r2_node, "1.0.0.1:3478".into(), true, Some(10)),
-    ]));
-    let selected = roomler_ai_mod_network::org_relay::candidate_test_support::select_path(net, a_node, b_node, false)
-        .await.unwrap().expect("approved two-relay path exists");
-    assert_eq!(selected, (vec![source, target], false));
 }
 
 #[tokio::test]

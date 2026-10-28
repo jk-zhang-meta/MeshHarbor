@@ -212,7 +212,8 @@ pub(super) async fn prepare(
     if inputs.is_empty() {
         return Err(Deny::NoRelay);
     }
-    let graph = path_graph::build(inputs, &network.cidr).map_err(|_| Deny::PolicyUnreadable)?;
+    let graph = path_graph::build(inputs, &network.cidr, iso::mode(state))
+        .map_err(|_| Deny::PolicyUnreadable)?;
     // This detects known policy/join changes during reads, not all races; a
     // future mint must validate again under its own reservation boundary.
     if epoch != state.org_relay.eligibility_generation() {
