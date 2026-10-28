@@ -131,10 +131,36 @@ async fn observe_business_connection(
     Some(device)
 }
 
-/// Drive a tunnel-client WS until either the client closes, the
-/// signalling layer errors, or the revocation re-check kills the
-/// connection. Replaces the T1 stub message loop with real
-/// `rc:tunnel.*` dispatch.
+/// Connections for the same client share one async lock, including waiters.
+/// The weak registry can be removed only after the last connection has left.
+fn tunnel_overlay_lock(state: &NetworkState, id: ObjectId) -> Arc<Mutex<()>> {
+    use dashmap::mapref::entry::Entry;
+    match state.tunnel_overlay_locks.entry(id) {
+        Entry::Occupied(mut entry) => match entry.get().upgrade() {
+            Some(lock) => lock,
+            None => {
+                let lock = Arc::new(Mutex::new(()));
+                entry.insert(Arc::downgrade(&lock));
+                lock
+            }
+        },
+        Entry::Vacant(entry) => {
+            let lock = Arc::new(Mutex::new(()));
+            entry.insert(Arc::downgrade(&lock));
+            lock
+        }
+    }
+}
+
+fn release_tunnel_overlay_lock(state: &NetworkState, id: ObjectId, lock: &Arc<Mutex<()>>) {
+    // Called after dropping the mutex guard and after all overlay cleanup.
+    // The shard lock serializes removal with any concurrent lookup/upgrade.
+    state.tunnel_overlay_locks.remove_if(&id, |_, stored| {
+        stored.ptr_eq(&Arc::downgrade(lock)) && Arc::strong_count(lock) == 1
+    });
+}
+
+/// Drive a tunnel-client WS until the client closes or revocation ends it.
 pub async fn handle_tunnel_client_socket(
     state: NetworkState,
     socket: WebSocket,
@@ -148,26 +174,7 @@ pub async fn handle_tunnel_client_socket(
     info!(%tunnel_client_id, %tenant_id, %owner_user_id, "tunnel-client WS connected");
     let conn_established_ms = bson::DateTime::now().timestamp_millis();
     let connection_id = uuid::Uuid::new_v4().to_string();
-    // MeshHarbor #21 — this connection's opening observation is the client's
-    // zone evidence (`org_relay::node_zone`), as an agent's is from its hello.
-    state
-        .org_relay
-        .bind_live_conn(tunnel_client_id, &connection_id);
-    let business_observation = roomler_core::business_authority::ObservationTask::spawn({
-        let (state, origin, connection_id) = (state.clone(), connection_origin.clone(), connection_id.clone());
-        async move {
-            observe_business_connection(
-                &state,
-                tenant_id,
-                tunnel_client_id,
-                owner_user_id,
-                presented_generation,
-                &origin,
-                &connection_id,
-            )
-            .await
-        }
-    });
+    let overlay_lock = tunnel_overlay_lock(&state, tunnel_client_id);
 
     let (socket_tx, mut socket_rx) = socket.split();
     let socket_tx = Arc::new(Mutex::new(socket_tx));
@@ -186,9 +193,32 @@ pub async fn handle_tunnel_client_socket(
     // tunnel_client_id) so the overlay broker can fan netmaps/deltas to
     // it as a node. Harmless if the client never joins the overlay;
     // removed on disconnect below.
-    state
-        .overlay_nodes_by_id
-        .insert(tunnel_client_id, outbound_tx.clone());
+    {
+        #[cfg(feature = "path-planner-test-support")]
+        crate::org_relay::candidate_test_support::tunnel_bind_attempt(tunnel_client_id);
+        let _lifecycle = overlay_lock.lock().await;
+        state.org_relay.bind_live_conn(tunnel_client_id, &connection_id);
+        #[cfg(feature = "path-planner-test-support")]
+        crate::org_relay::candidate_test_support::tunnel_bound(tunnel_client_id);
+        state.overlay_nodes_by_id.insert(tunnel_client_id, outbound_tx.clone());
+    }
+
+    // The opening observation belongs to the connection just bound above.
+    let business_observation = roomler_core::business_authority::ObservationTask::spawn({
+        let (state, origin, connection_id) = (state.clone(), connection_origin.clone(), connection_id.clone());
+        async move {
+            observe_business_connection(
+                &state,
+                tenant_id,
+                tunnel_client_id,
+                owner_user_id,
+                presented_generation,
+                &origin,
+                &connection_id,
+            )
+            .await
+        }
+    });
 
     // Look up tunnel-client metadata once for audit-row enrichment
     // (client_version + client_os). Best-effort — audit rows still
@@ -278,16 +308,27 @@ pub async fn handle_tunnel_client_socket(
         // Overlay `rc:overlay.*` variants are brokered separately (this
         // tunnel-client is an overlay node). Consumed messages return
         // None; everything else falls through to the tunnel match below.
-        let Some(parsed) = crate::overlay::relay_overlay_msg_from_node(
-            &state,
-            crate::overlay::NodeIdentity::TunnelClient(tunnel_client_id),
-            &connection_id,
-            parsed,
-        )
-        .await
-        else {
-            continue;
+        let is_overlay = parsed.wire_tag().starts_with("rc:overlay.");
+        let is_probe = matches!(&parsed, ClientMsg::OverlayRelayProbe { .. });
+        let parsed = if is_overlay && !is_probe {
+            // Keep the guard across async DB writes and fanout. A replacement
+            // cannot bind between the ownership check and these side effects.
+            let _lifecycle = overlay_lock.lock().await;
+            if state.org_relay.live_conn(tunnel_client_id).as_deref() != Some(&connection_id) {
+                continue;
+            }
+            crate::overlay::relay_overlay_msg_from_node(
+                &state, crate::overlay::NodeIdentity::TunnelClient(tunnel_client_id),
+                &connection_id, parsed,
+            ).await
+        } else {
+            // Probes already fence ownership at their synchronous record step.
+            crate::overlay::relay_overlay_msg_from_node(
+                &state, crate::overlay::NodeIdentity::TunnelClient(tunnel_client_id),
+                &connection_id, parsed,
+            ).await
         };
+        let Some(parsed) = parsed else { continue };
 
         match parsed {
             ClientMsg::TunnelHello {
@@ -502,15 +543,21 @@ pub async fn handle_tunnel_client_socket(
     // Overlay teardown: drop this node from the registry + mark it
     // offline so peers' netmaps lose it. Best-effort; no-op if the
     // client never joined the overlay.
-    state.overlay_nodes_by_id.remove(&tunnel_client_id);
-    state
-        .org_relay
-        .unbind_live_conn(tunnel_client_id, &connection_id);
-    crate::overlay::handle_overlay_leave(
-        &state,
-        crate::overlay::NodeIdentity::TunnelClient(tunnel_client_id),
-    )
-    .await;
+    {
+        let _lifecycle = overlay_lock.lock().await;
+        if state.org_relay.unbind_live_conn(tunnel_client_id, &connection_id) {
+            #[cfg(feature = "path-planner-test-support")]
+            crate::org_relay::candidate_test_support::pause_tunnel_leave_if_armed(&connection_id).await;
+            state.overlay_nodes_by_id.remove(&tunnel_client_id);
+            crate::overlay::handle_overlay_leave(
+                &state,
+                crate::overlay::NodeIdentity::TunnelClient(tunnel_client_id),
+            ).await;
+        }
+    }
+    release_tunnel_overlay_lock(&state, tunnel_client_id, &overlay_lock);
+    #[cfg(feature = "path-planner-test-support")]
+    crate::org_relay::candidate_test_support::tunnel_cleanup_done(&connection_id);
 
     if let Some(s) = session {
         state.tunnel_clients_by_session.remove(&s.tunnel_session_id);

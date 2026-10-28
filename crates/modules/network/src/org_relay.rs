@@ -131,6 +131,71 @@ pub mod candidate_test_support {
         let _ = resume.await;
         Some(finished)
     }
+    struct TunnelLeavePause {
+        reached: oneshot::Sender<()>,
+        resume: oneshot::Receiver<()>,
+    }
+    fn tunnel_leave_pauses() -> &'static Mutex<HashMap<String, TunnelLeavePause>> {
+        static PAUSES: OnceLock<Mutex<HashMap<String, TunnelLeavePause>>> = OnceLock::new();
+        PAUSES.get_or_init(|| Mutex::new(HashMap::new()))
+    }
+    pub fn pause_tunnel_leave(connection_id: &str) -> (oneshot::Receiver<()>, oneshot::Sender<()>) {
+        let (tx, rx) = oneshot::channel();
+        let (resume_tx, resume_rx) = oneshot::channel();
+        assert!(tunnel_leave_pauses().lock().unwrap().insert(connection_id.to_owned(), TunnelLeavePause {
+            reached: tx, resume: resume_rx,
+        }).is_none());
+        (rx, resume_tx)
+    }
+    pub(crate) async fn pause_tunnel_leave_if_armed(connection_id: &str) {
+        let entry = tunnel_leave_pauses().lock().unwrap().remove(connection_id);
+        if let Some(TunnelLeavePause { reached, resume }) = entry {
+            let _ = reached.send(());
+            let _ = resume.await;
+        }
+    }
+    fn tunnel_bind_observers() -> &'static Mutex<HashMap<ObjectId, oneshot::Sender<()>>> {
+        static OBSERVERS: OnceLock<Mutex<HashMap<ObjectId, oneshot::Sender<()>>>> = OnceLock::new();
+        OBSERVERS.get_or_init(|| Mutex::new(HashMap::new()))
+    }
+    pub fn observe_tunnel_bind_attempt(identity: ObjectId) -> oneshot::Receiver<()> {
+        let (tx, rx) = oneshot::channel();
+        assert!(tunnel_bind_observers().lock().unwrap().insert(identity, tx).is_none());
+        rx
+    }
+    pub(crate) fn tunnel_bind_attempt(identity: ObjectId) {
+        if let Some(tx) = tunnel_bind_observers().lock().unwrap().remove(&identity) {
+            let _ = tx.send(());
+        }
+    }
+    fn tunnel_bound_observers() -> &'static Mutex<HashMap<ObjectId, oneshot::Sender<()>>> {
+        static OBSERVERS: OnceLock<Mutex<HashMap<ObjectId, oneshot::Sender<()>>>> = OnceLock::new();
+        OBSERVERS.get_or_init(|| Mutex::new(HashMap::new()))
+    }
+    pub fn observe_tunnel_bound(identity: ObjectId) -> oneshot::Receiver<()> {
+        let (tx, rx) = oneshot::channel();
+        assert!(tunnel_bound_observers().lock().unwrap().insert(identity, tx).is_none());
+        rx
+    }
+    pub(crate) fn tunnel_bound(identity: ObjectId) {
+        if let Some(tx) = tunnel_bound_observers().lock().unwrap().remove(&identity) {
+            let _ = tx.send(());
+        }
+    }
+    fn tunnel_cleanup_observers() -> &'static Mutex<HashMap<String, oneshot::Sender<()>>> {
+        static OBSERVERS: OnceLock<Mutex<HashMap<String, oneshot::Sender<()>>>> = OnceLock::new();
+        OBSERVERS.get_or_init(|| Mutex::new(HashMap::new()))
+    }
+    pub fn observe_tunnel_cleanup(connection_id: &str) -> oneshot::Receiver<()> {
+        let (tx, rx) = oneshot::channel();
+        assert!(tunnel_cleanup_observers().lock().unwrap().insert(connection_id.to_owned(), tx).is_none());
+        rx
+    }
+    pub(crate) fn tunnel_cleanup_done(connection_id: &str) {
+        if let Some(tx) = tunnel_cleanup_observers().lock().unwrap().remove(connection_id) {
+            let _ = tx.send(());
+        }
+    }
     pub fn current_connection_id(state: &NetworkState, identity: ObjectId) -> Option<String> {
         state.org_relay.live_conn(identity)
     }
@@ -468,7 +533,7 @@ impl OrgRelayState {
         gone
     }
 
-    fn live_conn(&self, agent_id: ObjectId) -> Option<String> {
+    pub(crate) fn live_conn(&self, agent_id: ObjectId) -> Option<String> {
         self.live_conns.get(&agent_id).map(|c| c.id.clone())
     }
 

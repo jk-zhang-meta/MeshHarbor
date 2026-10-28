@@ -1324,3 +1324,110 @@ async fn staged_graph_tunnel_displaced_probe_is_rejected() {
         }
     }).await.expect("current tunnel report must be accepted");
 }
+
+/// A displaced client cannot leave or tear down its replacement's live path.
+#[tokio::test]
+async fn staged_graph_tunnel_old_close_preserves_replacement_session() {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    let mut l = LineRig::up("iso-tunnel-revoke", true).await;
+    let et: Value = l.rig.app.auth_post(
+        &format!("/api/tenant/{}/tunnel-client/enroll-token", l.rig.seeded.tenant_id),
+        &l.rig.seeded.admin.access_token,
+    ).send().await.unwrap().json().await.unwrap();
+    let enrolled: Value = l.rig.app.client.post(l.rig.app.url("/api/tunnel-client/enroll"))
+        .json(&json!({"enrollment_token":et["enrollment_token"], "machine_id":"mach-tunnel-revoke",
+            "machine_name":"tunnel-revoke", "os":"linux", "client_version":"0.3.0-test"}))
+        .send().await.unwrap().json().await.unwrap();
+    let identity = ObjectId::parse_str(enrolled["tunnel_client_id"].as_str().unwrap()).unwrap();
+    let token = enrolled["tunnel_client_token"].as_str().unwrap();
+    let url = format!("ws://{}/ws?token={}&role=tunnel-client", l.rig.app.addr,
+        token.replace('+', "%2B").replace('/', "%2F").replace('=', "%3D"));
+    let request = || {
+        let mut req = url.as_str().into_client_request().unwrap();
+        req.headers_mut().insert("x-forwarded-for", US_A.parse().unwrap());
+        req
+    };
+    let (mut old, _) = tokio_tungstenite::connect_async(request()).await.unwrap();
+    line_join(&mut old, 31, "8.8.8.9:41641", json!({ "supports_backbone_only_v1": true })).await;
+    let old_conn = roomler_ai_mod_network::org_relay::candidate_test_support::current_connection_id(l.rig.app.state.network(), identity).unwrap();
+    let cleanup = roomler_ai_mod_network::org_relay::candidate_test_support::observe_tunnel_cleanup(&old_conn);
+    let (mut replacement, _) = tokio_tungstenite::connect_async(request()).await.unwrap();
+    line_join(&mut replacement, 31, "8.8.8.9:41641", json!({ "supports_backbone_only_v1": true })).await;
+    let net = l.rig.app.state.network();
+    let ident = roomler_ai_mod_network::overlay::NodeIdentity::TunnelClient(identity);
+    let tunnel_node = roomler_ai_mod_network::overlay::current_node(net, ident).await.unwrap().id.unwrap();
+    let cn_node = ObjectId::parse_str(&l.cn_node).unwrap();
+    let key = roomler_ai_mod_network::overlay::pair_key(cn_node, tunnel_node);
+    let current = roomler_ai_mod_network::org_relay::candidate_test_support::current_connection_id(net, identity).unwrap();
+    relay_request(&mut l.cn, &tunnel_node.to_hex()).await;
+    let wait = Duration::from_secs(5);
+    let gz = recv_t(&mut l.gz, "rc:overlay.relay_serve", wait).await.expect("GZ serves line");
+    let hk = recv_t(&mut l.hk, "rc:overlay.relay_serve", wait).await.expect("HK serves line");
+    let cn = recv_t(&mut l.cn, "rc:overlay.relay_session", wait).await.expect("CN session");
+    let tc = recv_t(&mut replacement, "rc:overlay.relay_session", wait).await.expect("tunnel session");
+    assert_eq!(gz["vni"], cn["vni"]);
+    assert_eq!(hk["vni"], tc["vni"]);
+    assert!(net.org_relay.active_session(&key).is_some());
+    // Old socket stays open: even an explicit leave from it must not remove
+    // the new client's node or revoke the established cross-zone line.
+    old.send(Message::Text(json!({"t":"rc:overlay.leave"}).to_string().into())).await.unwrap();
+    old.send(Message::Close(None)).await.unwrap();
+    tokio::time::timeout(wait, cleanup).await.expect("old cleanup did not finish").unwrap();
+    assert!(net.overlay_nodes_by_id.contains_key(&identity));
+    assert_eq!(roomler_ai_mod_network::overlay::current_node(net, ident).await.unwrap().status,
+        roomler_ai_remote_control::models::AgentStatus::Online);
+    assert!(net.org_relay.active_session(&key).is_some());
+    assert!(recv_t(&mut l.cn, "rc:overlay.relay_revoke", Duration::from_millis(600)).await.is_none());
+    assert_eq!(roomler_ai_mod_network::org_relay::candidate_test_support::current_connection_id(net, identity), Some(current));
+}
+
+/// A new bind waits for the old connection's async overlay cleanup, then the
+/// new join wins after the old leave completes.
+#[tokio::test]
+async fn staged_graph_tunnel_bind_waits_for_old_async_leave() {
+    let rig = Rig::up("iso-tunnel-leave-race", "enforce").await;
+    let et: Value = rig.app.auth_post(
+        &format!("/api/tenant/{}/tunnel-client/enroll-token", rig.seeded.tenant_id),
+        &rig.seeded.admin.access_token,
+    ).send().await.unwrap().json().await.unwrap();
+    let enrolled: Value = rig.app.client.post(rig.app.url("/api/tunnel-client/enroll"))
+        .json(&json!({"enrollment_token":et["enrollment_token"], "machine_id":"mach-tunnel-leave-race",
+            "machine_name":"tunnel-leave-race", "os":"linux", "client_version":"0.3.0-test"}))
+        .send().await.unwrap().json().await.unwrap();
+    let identity = ObjectId::parse_str(enrolled["tunnel_client_id"].as_str().unwrap()).unwrap();
+    let token = enrolled["tunnel_client_token"].as_str().unwrap();
+    let url = format!("ws://{}/ws?token={}&role=tunnel-client", rig.app.addr,
+        token.replace('+', "%2B").replace('/', "%2F").replace('=', "%3D"));
+    let (mut old, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+    line_join(&mut old, 31, "223.6.6.6:41641", json!({})).await;
+    let net = rig.app.state.network();
+    let old_id = roomler_ai_mod_network::org_relay::candidate_test_support::current_connection_id(net, identity).unwrap();
+    let (reached, resume) = roomler_ai_mod_network::org_relay::candidate_test_support::pause_tunnel_leave(&old_id);
+    old.send(Message::Close(None)).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(5), reached).await.unwrap().unwrap();
+    assert!(roomler_ai_mod_network::org_relay::candidate_test_support::current_connection_id(net, identity).is_none());
+    let bind_attempt = roomler_ai_mod_network::org_relay::candidate_test_support::observe_tunnel_bind_attempt(identity);
+    let mut bound = roomler_ai_mod_network::org_relay::candidate_test_support::observe_tunnel_bound(identity);
+    let (mut replacement, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(5), bind_attempt).await.unwrap().unwrap();
+    assert!(tokio::time::timeout(Duration::from_millis(300), &mut bound).await.is_err(), "new bind must wait for old async leave");
+    assert!(roomler_ai_mod_network::org_relay::candidate_test_support::current_connection_id(net, identity).is_none());
+    resume.send(()).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), bound).await.unwrap().unwrap();
+    line_join(&mut replacement, 31, "223.6.6.6:41641", json!({})).await;
+    assert!(net.overlay_nodes_by_id.contains_key(&identity));
+    let new_id = roomler_ai_mod_network::org_relay::candidate_test_support::current_connection_id(net, identity).unwrap();
+    assert_ne!(new_id, old_id);
+    let node = roomler_ai_mod_network::overlay::current_node(net,
+        roomler_ai_mod_network::overlay::NodeIdentity::TunnelClient(identity)).await.unwrap();
+    assert_eq!(node.status, roomler_ai_remote_control::models::AgentStatus::Online);
+    // Closing the current owner must still perform ordinary cleanup.
+    let current_cleanup = roomler_ai_mod_network::org_relay::candidate_test_support::observe_tunnel_cleanup(&new_id);
+    replacement.send(Message::Close(None)).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(5), current_cleanup).await.unwrap().unwrap();
+    assert!(!net.overlay_nodes_by_id.contains_key(&identity));
+    assert!(roomler_ai_mod_network::org_relay::candidate_test_support::current_connection_id(net, identity).is_none());
+    let offline = roomler_ai_mod_network::overlay::current_node(net,
+        roomler_ai_mod_network::overlay::NodeIdentity::TunnelClient(identity)).await.unwrap();
+    assert_eq!(offline.status, roomler_ai_remote_control::models::AgentStatus::Offline);
+}

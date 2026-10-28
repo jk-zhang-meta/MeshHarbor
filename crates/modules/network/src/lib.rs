@@ -111,6 +111,9 @@ pub struct NetworkState {
     /// via the Hub's `send_to_agent`). Used by the overlay broker to fan
     /// netmaps/deltas to client nodes.
     pub overlay_nodes_by_id: TunnelClientOutbound,
+    /// Serializes lifecycle and overlay dispatch for one tunnel-client id.
+    /// Weak entries do not keep a connection or its mutex alive.
+    pub(crate) tunnel_overlay_locks: Arc<DashMap<ObjectId, std::sync::Weak<tokio::sync::Mutex<()>>>>,
     /// Live join snapshots, for fail-closed security removal without Mongo IO.
     pub admission_nodes: Arc<DashMap<ObjectId, roomler_ai_remote_control::models::OverlayNode>>,
     /// DERP relay registry: `(network_id, wg_pubkey)` → the outbound frame
@@ -305,6 +308,7 @@ impl Module for NetworkState {
             overlay_nodes: Arc::new(OverlayNodeDao::new(db)),
             overlay_policies: Arc::new(OverlayPolicyDao::new(db)),
             overlay_nodes_by_id: Arc::new(DashMap::new()),
+            tunnel_overlay_locks: Arc::new(DashMap::new()),
             admission_nodes: Arc::new(DashMap::new()),
             derp_registry: Arc::new(DashMap::new()),
             derp_acl: Arc::new(DashMap::new()),
