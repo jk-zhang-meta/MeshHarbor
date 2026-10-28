@@ -183,6 +183,16 @@ pub mod candidate_test_support {
     pub fn trial_slots_on_relay(state: &NetworkState, relay: ObjectId) -> usize {
         state.org_relay.trials.sessions_on_relay(relay, Instant::now())
     }
+    /// Insert a fixture-owned N-hop trial without emitting any grants. Used
+    /// only to drive live zone changes and exact revoke frames in tests.
+    pub fn insert_nhop_zone_trial_fixture(
+        state: &NetworkState,
+        session: OrgRelaySession,
+        relay_zones: Vec<BusinessZone>,
+        member_zones: [BusinessZone; 2],
+    ) -> ObjectId {
+        super::trial::insert_trial_fixture(state, session, relay_zones, member_zones)
+    }
     struct TrialZonePause {
         reached: oneshot::Sender<()>,
         resume: oneshot::Receiver<()>,
@@ -217,6 +227,16 @@ pub mod candidate_test_support {
     }
     pub(super) fn take_trial_zone_read_failure(trial: ObjectId) -> bool {
         trial_zone_read_failures().lock().unwrap().remove(&trial)
+    }
+    fn trial_member_zone_read_failures() -> &'static Mutex<std::collections::HashSet<ObjectId>> {
+        static FAILURES: OnceLock<Mutex<std::collections::HashSet<ObjectId>>> = OnceLock::new();
+        FAILURES.get_or_init(|| Mutex::new(std::collections::HashSet::new()))
+    }
+    pub fn fail_next_trial_member_zone_read(trial: ObjectId) {
+        assert!(trial_member_zone_read_failures().lock().unwrap().insert(trial));
+    }
+    pub(super) fn take_trial_member_zone_read_failure(trial: ObjectId) -> bool {
+        trial_member_zone_read_failures().lock().unwrap().remove(&trial)
     }
     fn line_audit_failures() -> &'static Mutex<std::collections::HashSet<String>> {
         static FAILURES: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();

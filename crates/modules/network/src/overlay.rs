@@ -736,12 +736,14 @@ async fn handle_overlay_join(
     // rejoin: its sessions that no longer fit are revoked at once rather
     // than at expiry. Under `warn` only once its zone is known, so a late
     // observation is not logged as a refusal.
-    if let NodeRef::Agent { agent_id } = &self_node.node_ref {
-        if iso == business_isolation::Mode::Enforce || joiner_zone.is_some() {
-            crate::org_relay::recheck_zones(state, *agent_id, "zone_changed").await;
-        } else {
-            crate::org_relay::recheck_trial_zones(state, *agent_id, "zone_changed").await;
-        }
+    let identity_id = match &self_node.node_ref {
+        NodeRef::Agent { agent_id } => *agent_id,
+        NodeRef::TunnelClient { tunnel_client_id } => *tunnel_client_id,
+    };
+    if iso == business_isolation::Mode::Enforce || joiner_zone.is_some() {
+        crate::org_relay::recheck_zones(state, identity_id, "zone_changed").await;
+    } else {
+        crate::org_relay::recheck_trial_zones(state, identity_id, "zone_changed").await;
     }
     let lines = business_isolation::lines(state, iso, self_node.tenant_id).await;
     let ShapedNetmap {
@@ -988,12 +990,14 @@ async fn handle_overlay_srflx(
     fan_upsert_shaped(state, &updated, epoch, true).await;
     // GEO-04 — a trickled address can contradict the zone the node's
     // sessions were minted on.
-    if let NodeRef::Agent { agent_id } = &updated.node_ref {
-        if business_isolation::mode(state) == business_isolation::Mode::Enforce {
-            crate::org_relay::recheck_zones(state, *agent_id, "zone_conflict").await;
-        } else {
-            crate::org_relay::recheck_trial_zones(state, *agent_id, "zone_conflict").await;
-        }
+    let identity_id = match &updated.node_ref {
+        NodeRef::Agent { agent_id } => *agent_id,
+        NodeRef::TunnelClient { tunnel_client_id } => *tunnel_client_id,
+    };
+    if business_isolation::mode(state) == business_isolation::Mode::Enforce {
+        crate::org_relay::recheck_zones(state, identity_id, "zone_conflict").await;
+    } else {
+        crate::org_relay::recheck_trial_zones(state, identity_id, "zone_conflict").await;
     }
 }
 

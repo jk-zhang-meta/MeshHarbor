@@ -3311,3 +3311,120 @@ async fn staged_nhop_trial_off_warn_endpoint_zone_parity_two_and_three() {
         }
     }
 }
+/// Fixture-owned four-relay trial: recheck every middle relay and member on
+/// real WebSocket rejoin, and inspect all generated revocation frames. This
+/// inserts trial state without issuing grants; real trial admission is separate.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn staged_nhop_trial_zone_fixture_rechecks_middle_and_members() {
+    use roomler_ai_mod_network::org_relay::{candidate_test_support as support, LineLeg, OrgRelaySession, SessionMember, SessionParty};
+    use roomler_ai_remote_control::models::NodeRef;
+    use roomler_core::business_authority::BusinessZone::Mainland;
+    use std::time::Instant;
+    for case in ["changed", "unknown", "stable", "race_restore", "member_changed"] {
+        let slug = format!("iso-nhop-zone-{case}");
+        let rig = Rig::up(&slug, "off").await;
+        let mut relays = Vec::new(); let mut relay_tokens = Vec::new();
+        let mut agent_ids = Vec::new(); let mut node_ids = Vec::new();
+        for i in 0..4 {
+            let name = format!("{slug}-r{i}");
+            let (agent, token) = enroll(&rig.app, &rig.seeded, &name).await;
+            let mut ws = connect_from(&rig.app, &token, &["relay-server"], Some(CN_R)).await;
+            assert_observed(&rig.app, &agent, Some(CN_R)).await;
+            line_join(&mut ws, 10 + i, &format!("223.6.6.{}:41641",10 + i), json!({"relay_backbone_ready":true})).await;
+            assert_eq!(approve(&rig.app, &rig.seeded, &agent, true).await, 200);
+            let node = rig.node(&name).await; grant_relay(&rig.app, &rig.seeded, &node).await;
+            agent_ids.push(ObjectId::parse_str(agent).unwrap()); node_ids.push(ObjectId::parse_str(node).unwrap());
+            relay_tokens.push(token); relays.push(ws);
+        }
+        let (a_agent, a_token) = enroll(&rig.app, &rig.seeded, &format!("{slug}-a")).await;
+        let (b_agent, b_token) = enroll(&rig.app, &rig.seeded, &format!("{slug}-b")).await;
+        let mut a = connect_from(&rig.app, &a_token, &[], Some(CN_A)).await;
+        let mut b = connect_from(&rig.app, &b_token, &[], Some(CN_A)).await;
+        let flags = json!({"supports_backbone_only_v1":true,"supports_path_backbone_v1":true,"supports_path_trial_v1":true});
+        line_join(&mut a, 1, "223.5.5.5:41641", flags.clone()).await;
+        line_join(&mut b, 2, "223.5.5.6:41641", flags.clone()).await;
+        let a_id = ObjectId::parse_str(rig.node(&format!("{slug}-a")).await).unwrap();
+        let b_id = ObjectId::parse_str(rig.node(&format!("{slug}-b")).await).unwrap();
+        let now = Instant::now();
+        let member = |node_id, agent: &str, seed| SessionMember {
+            party: SessionParty { node_id, node_ref: NodeRef::Agent { agent_id:ObjectId::parse_str(agent).unwrap() } },
+            wg_public_key:BASE64.encode([seed;32]), bind_secret:"fixture-secret".into(),
+        };
+        let mut session = OrgRelaySession {
+            tenant_id:ObjectId::parse_str(&rig.seeded.tenant_id).unwrap(),
+            pair_key:roomler_ai_mod_network::overlay::pair_key(a_id,b_id),
+            vni:101, generation:201, relay:SessionParty { node_id:node_ids[0], node_ref:NodeRef::Agent{agent_id:agent_ids[0]} },
+            relay_agent_id:agent_ids[0], implicit:false,
+            members:[member(a_id,&a_agent,1),member(b_id,&b_agent,2)],
+            endpoints:vec!["223.6.6.10:3478".into()], expires_at:now+Duration::from_secs(600),
+            bind_by:now+Duration::from_secs(60), hops:Vec::new(),
+        };
+        for i in 1..4 {
+            session.hops.push(LineLeg {
+                relay:SessionParty { node_id:node_ids[i], node_ref:NodeRef::Agent{agent_id:agent_ids[i]} },
+                relay_agent_id:agent_ids[i], vni:101+i as u32, generation:201+i as u64,
+                endpoints:vec![format!("223.6.6.{}:3478",10+i)], private_endpoint:format!("10.72.0.{}:3478",i+1),
+                requires_cross_border_approval:false, bridge_id:ObjectId::new(), bridge_secrets:["fixture-a".into(),"fixture-b".into()],
+            });
+        }
+        let network = rig.app.state.network();
+        let trial_id = support::insert_nhop_zone_trial_fixture(network, session.clone(), vec![Mainland;4], [Mainland;2]);
+        for id in &node_ids { assert_eq!(support::trial_slots_on_relay(network,*id),1); }
+        async fn join_collect(ws:&mut Ws, seed:u8, endpoint:&str, ready:bool, path:bool)->Vec<Value> {
+            ws.send(Message::Text(json!({"t":"rc:overlay.join","wg_public_key":BASE64.encode([seed;32]),"mtu":1280,
+                "endpoints":[endpoint],"supports_org_relay":true,"supports_server_relay_strategy":true,"relay_port":3478,"org_primary":true,
+                "relay_backbone_ready":ready,"supports_backbone_only_v1":path,"supports_path_backbone_v1":path,"supports_path_trial_v1":path}).to_string().into())).await.unwrap();
+            let until=tokio::time::Instant::now()+Duration::from_secs(8);let mut controls=Vec::new();
+            loop {let msg=tokio::time::timeout_at(until,ws.next()).await.expect("join netmap").expect("connection").expect("frame");
+                if let Message::Text(text)=msg {let value:Value=serde_json::from_str(&text).unwrap();
+                    if value["t"]=="rc:overlay.netmap" {return controls;}
+                    if ["rc:overlay.relay_revoke","rc:overlay.relay_bridge_revoke","rc:overlay.path_trial_abort"].contains(&value["t"].as_str().unwrap_or_default()) {controls.push(value);}
+                }}
+        }
+        let mut before_netmap = Vec::new();
+        if case == "member_changed" {
+            let mut replacement=connect_from(&rig.app,&a_token,&[],Some(US_A)).await;
+            before_netmap=join_collect(&mut replacement,1,"8.8.8.9:41641",false,true).await; a=replacement;
+        } else {
+            let changed = match case { "stable" => Some(CN_R), "unknown" => None, _ => Some(US_R) };
+            let endpoint=if changed==Some(CN_R){"223.6.6.11:41641"}else{"1.1.1.11:41641"};
+            let mut replacement=connect_from(&rig.app,&relay_tokens[1],&["relay-server"],changed).await;
+            if case == "race_restore" {
+                let (reached,resume)=support::pause_trial_zone_revoke(trial_id);
+                replacement.send(Message::Text(json!({"t":"rc:overlay.join","wg_public_key":BASE64.encode([11;32]),"mtu":1280,
+                    "endpoints":[endpoint],"supports_org_relay":true,"supports_server_relay_strategy":true,"relay_port":3478,"org_primary":true,"relay_backbone_ready":true}).to_string().into())).await.unwrap();
+                tokio::time::timeout(Duration::from_secs(8),reached).await.expect("middle recheck paused").unwrap();
+                let mut restored=connect_from(&rig.app,&relay_tokens[1],&["relay-server"],Some(CN_R)).await;
+                before_netmap=join_collect(&mut restored,11,"223.6.6.11:41641",true,false).await;
+                resume.send(()).unwrap(); relays[1]=restored;
+            } else { before_netmap=join_collect(&mut replacement,11,endpoint,true,false).await; relays[1]=replacement; }
+        }
+        if matches!(case,"stable"|"race_restore") {
+            assert!(before_netmap.is_empty(),"{slug}: healthy path retired during join");
+            for id in &node_ids {assert_eq!(support::trial_slots_on_relay(network,*id),1,"{slug}: healthy path lost");}
+            async fn quiet(ws:&mut Ws,label:&str){let until=tokio::time::Instant::now()+Duration::from_millis(300);
+                while let Ok(Some(Ok(Message::Text(text))))=tokio::time::timeout_at(until,ws.next()).await {
+                    let v:Value=serde_json::from_str(&text).unwrap();assert!(!["rc:overlay.relay_revoke","rc:overlay.relay_bridge_revoke","rc:overlay.path_trial_abort"].contains(&v["t"].as_str().unwrap_or_default()),"{label}: healthy trial wrongly revoked");}}
+            for ws in &mut relays {quiet(ws,&slug).await;} quiet(&mut a,&slug).await; quiet(&mut b,&slug).await;
+        } else {
+            let wait=Duration::from_secs(8);
+            for i in 0..4 {
+                let expected=if i==0 {session.vni}else{session.hops[i-1].vni};
+                let revoke=if i==1 && case!="member_changed" {before_netmap.iter().find(|v|v["t"]=="rc:overlay.relay_revoke").cloned()}else{None};
+                let revoke=match revoke {Some(v)=>v,None=>recv_t(&mut relays[i],"rc:overlay.relay_revoke",wait).await.expect("relay revoke")};
+                assert_eq!(revoke["vni"],expected,"{slug} relay {i}");
+                if i<3 {
+                    let bridge=if i==1 && case!="member_changed" {before_netmap.iter().find(|v|v["t"]=="rc:overlay.relay_bridge_revoke").cloned()}else{None};
+                    let bridge=match bridge {Some(v)=>v,None=>recv_t(&mut relays[i],"rc:overlay.relay_bridge_revoke",wait).await.expect("bridge revoke")};
+                    assert_eq!(bridge["trial_id"],session.hops[i].bridge_id.to_hex());
+                    let generation=if i==0{session.generation}else{session.hops[i-1].generation};assert_eq!(bridge["generation"],generation);
+                }
+            }
+            let first=if case=="member_changed" {before_netmap.iter().find(|v|v["t"]=="rc:overlay.path_trial_abort").cloned()}else{None};
+            let first=match first {Some(v)=>v,None=>recv_t(&mut a,"rc:overlay.path_trial_abort",wait).await.expect("first abort")};
+            let second=recv_t(&mut b,"rc:overlay.path_trial_abort",wait).await.expect("second abort");
+            assert_eq!(first["trial_id"],trial_id.to_hex());assert_eq!(second["trial_id"],trial_id.to_hex());
+            for id in &node_ids {assert_eq!(support::trial_slots_on_relay(network,*id),0,"{slug}: trial slot leaked");}
+        }
+    }
+}
