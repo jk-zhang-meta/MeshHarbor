@@ -2877,4 +2877,189 @@ async fn staged_trial_live_relay_zone_recheck_retires_two_relays_moving_together
     let network = l.rig.app.state.network();
     assert_eq!(support::trial_slots_on_relay(network, ObjectId::parse_str(source_node).unwrap()), 0);
     assert_eq!(support::trial_slots_on_relay(network, ObjectId::parse_str(exit_node).unwrap()), 0);
+
+/// An explicit future trial path is independently reauthorized from live
+/// members, relay gates and directed current policy; it sends no grants.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn staged_graph_specified_trial_path_rechecks_all_nodes_and_edges() {
+    use roomler_ai_mod_network::org_relay::candidate_test_support as support;
+    use roomler_ai_mod_network::org_relay::{OrgRelaySession, SessionMember, SessionParty};
+    use roomler_ai_remote_control::models::{NodeRef, peer_relay_limits as limits};
+    use std::time::Instant;
+
+    let mut l = LineRig::up("iso-trial-path", true).await;
+    let caps = json!({"supports_backbone_only_v1":true, "supports_path_trial_v1":true,
+        "supports_path_backbone_v1":true});
+    line_join(&mut l.cn, 1, "223.5.5.5:41641", caps.clone()).await;
+    line_join(&mut l.us, 2, "8.8.8.8:41641", caps.clone()).await;
+    let (mid_agent, mid_token) = enroll(&l.rig.app, &l.rig.seeded, "iso-trial-path-mid").await;
+    let mut mid = connect_from(&l.rig.app, &mid_token, &["relay-server"], Some(CN_R)).await;
+    assert_observed(&l.rig.app, &mid_agent, Some(CN_R)).await;
+    line_join(&mut mid, 5, "223.6.6.7:41641", json!({"relay_backbone_ready":true})).await;
+    assert_eq!(approve(&l.rig.app, &l.rig.seeded, &mid_agent, true).await, 200);
+    let mid_node = l.rig.node("iso-trial-path-mid").await;
+    let mid_acl = grant_relay(&l.rig.app, &l.rig.seeded, &mid_node).await;
+    let (transit_agent, transit_token) = enroll(&l.rig.app, &l.rig.seeded, "iso-trial-path-transit").await;
+    let mut transit = connect_from(&l.rig.app, &transit_token, &["relay-server"], Some(US_R)).await;
+    assert_observed(&l.rig.app, &transit_agent, Some(US_R)).await;
+    line_join(&mut transit, 6, "1.1.1.2:41641", json!({"relay_backbone_ready":true})).await;
+    assert_eq!(approve(&l.rig.app, &l.rig.seeded, &transit_agent, true).await, 200);
+    let transit_node = l.rig.node("iso-trial-path-transit").await;
+    grant_relay(&l.rig.app, &l.rig.seeded, &transit_node).await;
+    let policy_path = |agent: &str| format!("/api/tenant/{}/agent/{agent}/peer-relay-policy", l.rig.seeded.tenant_id);
+    let set_edge = |target: &str, endpoint: &str, cross_border| json!({"serve":true,"approved_backbone_edges":[
+        {"relay_agent_id":target,"endpoint":endpoint,"cross_border":cross_border} ]});
+    for (agent, target, endpoint, cross) in [
+        (&l.gz_agent, &mid_agent, "10.71.0.2:3478", false),
+        (&mid_agent, &transit_agent, "10.71.0.3:3478", true),
+        (&transit_agent, &l.hk_agent, "10.71.0.4:3478", false),
+    ] {
+        let (status, body) = put(&l.rig.app, &policy_path(agent), &l.rig.seeded.admin.access_token,
+            set_edge(target, endpoint, cross)).await;
+        assert_eq!(status, 200, "{body}");
+    }
+    let network = l.rig.app.state.network();
+    let a = ObjectId::parse_str(&l.cn_node).unwrap();
+    let b = ObjectId::parse_str(&l.us_node).unwrap();
+    let nodes: Vec<_> = [&l.gz_node, &mid_node, &transit_node, &l.hk_node].into_iter()
+        .map(|id| ObjectId::parse_str(id).unwrap()).collect();
+    let snapshot = support::plan_trial_path_fixture(network, a, b, nodes.clone(), false).await.expect("approved four-relay path");
+    assert!(snapshot.locally_current(network));
+    assert_eq!(snapshot.edges(), vec![
+        (nodes[0], nodes[1], "10.71.0.2:3478".into(), false),
+        (nodes[1], nodes[2], "10.71.0.3:3478".into(), true),
+        (nodes[2], nodes[3], "10.71.0.4:3478".into(), false),
+    ]);
+    assert!(support::reauthorize_trial_path_fixture(network, a, b, &snapshot).await.is_ok());
+    assert!(support::plan_trial_path_fixture(network, b, a, nodes.clone(), true).await.is_ok(), "requester at exit");
+    assert!(support::plan_trial_path_fixture(network, a, b, nodes.clone(), true).await.is_err(), "member zone orientation");
+    assert!(support::plan_trial_path_fixture(network, a, b, vec![nodes[0], nodes[2], nodes[1], nodes[3]], false).await.is_err(), "missing directed edges");
+    assert!(support::plan_trial_path_fixture(network, a, b, vec![nodes[0], nodes[1], nodes[1], nodes[3]], false).await.is_err(), "repeated node");
+    assert!(support::plan_trial_path_fixture(network, a, b, vec![nodes[0], ObjectId::new(), nodes[3]], false).await.is_err(), "unregistered middle node");
+
+    // A real member rejoin with a different public key cannot inherit the
+    // previous snapshot, even if the same relay identities remain approved.
+    line_join(&mut l.us, 9, "8.8.8.8:41641", caps.clone()).await;
+    assert!(support::reauthorize_trial_path_fixture(network, a, b, &snapshot).await.is_err(), "changed member key");
+    assert!(support::plan_trial_path_fixture(network, a, b, nodes.clone(), false).await.is_ok(), "current member identity can plan");
+    line_join(&mut l.us, 2, "8.8.8.8:41641", caps.clone()).await;
+    let snapshot = support::plan_trial_path_fixture(network, a, b, nodes.clone(), false).await.expect("original member key restored");
+
+    // A current approved edge change must invalidate its old endpoint, while a
+    // fresh plan may use only the newly approved endpoint.
+    let (status, body) = put(&l.rig.app, &policy_path(&mid_agent), &l.rig.seeded.admin.access_token,
+        set_edge(&transit_agent, "10.71.0.33:3478", true)).await;
+    assert_eq!(status, 200, "{body}");
+    assert!(!snapshot.locally_current(network), "policy update changes epoch");
+    assert!(support::reauthorize_trial_path_fixture(network, a, b, &snapshot).await.is_err(), "stale private edge endpoint");
+    let fresh = support::plan_trial_path_fixture(network, a, b, nodes.clone(), false).await.expect("new endpoint approved");
+    assert_eq!(fresh.edges()[1].2, "10.71.0.33:3478");
+    let (status, body) = put(&l.rig.app, &policy_path(&mid_agent), &l.rig.seeded.admin.access_token,
+        set_edge(&transit_agent, "10.71.0.3:3478", false)).await;
+    assert_eq!(status, 200, "{body}");
+    assert!(support::plan_trial_path_fixture(network, a, b, nodes.clone(), false).await.is_err(), "unapproved crossing");
+    let (status, body) = put(&l.rig.app, &policy_path(&mid_agent), &l.rig.seeded.admin.access_token,
+        set_edge(&transit_agent, "10.71.0.3:3478", true)).await;
+    assert_eq!(status, 200, "{body}");
+
+    line_join(&mut mid, 5, "223.6.6.7:41641", json!({"relay_backbone_ready":false})).await;
+    assert!(support::plan_trial_path_fixture(network, a, b, nodes.clone(), false).await.is_err(), "middle bridge readiness withdrawn");
+    line_join(&mut mid, 5, "223.6.6.7:41641", json!({"relay_backbone_ready":true})).await;
+    line_join(&mut l.us, 2, "8.8.8.8:41641", json!({"supports_backbone_only_v1":true,"supports_path_backbone_v1":true})).await;
+    assert!(support::plan_trial_path_fixture(network, a, b, nodes.clone(), false).await.is_err(), "peer trial capability withdrawn");
+    line_join(&mut l.us, 2, "8.8.8.8:41641", caps).await;
+    assert_eq!(approve(&l.rig.app, &l.rig.seeded, &mid_agent, false).await, 200);
+    assert!(support::plan_trial_path_fixture(network, a, b, nodes.clone(), false).await.is_err(), "middle approval withdrawn");
+    assert_eq!(approve(&l.rig.app, &l.rig.seeded, &mid_agent, true).await, 200);
+    let (status, body) = put(&l.rig.app, &policy_path(&mid_agent), &l.rig.seeded.admin.access_token,
+        set_edge(&transit_agent, "10.71.0.3:3478", true)).await;
+    assert_eq!(status, 200, "{body}");
+    assert!(support::plan_trial_path_fixture(network, a, b, nodes.clone(), false).await.is_ok(), "approval and edge restored");
+
+    // Remove the middle relay's both-member grant, then grant only A.
+    let acl_path = format!("/api/tenant/{}/overlay-acl/{mid_acl}", l.rig.seeded.tenant_id);
+    let status = l.rig.app.client.delete(l.rig.app.url(&acl_path)).bearer_auth(&l.rig.seeded.admin.access_token)
+        .send().await.unwrap().status().as_u16();
+    assert_eq!(status, 200);
+    let acl_collection = format!("/api/tenant/{}/overlay-acl", l.rig.seeded.tenant_id);
+    let only_a = l.rig.app.auth_post(&acl_collection, &l.rig.seeded.admin.access_token).json(&json!({
+        "name":"trial middle requester only", "sources":[{"kind":"node_id","id":l.cn_node}],
+        "via":[{"kind":"node_id","id":mid_node}], "destinations":[{"cidr":"100.64.0.0/10"}]
+    })).send().await.unwrap();
+    assert!(only_a.status().is_success());
+    assert!(support::plan_trial_path_fixture(network, a, b, nodes.clone(), false).await.is_err(), "peer lacks middle relay ACL");
+    grant_relay(&l.rig.app, &l.rig.seeded, &mid_node).await;
+    let before_capacity = support::plan_trial_path_fixture(network, a, b, nodes.clone(), false).await.expect("restored path");
+    let tenant = ObjectId::parse_str(&l.rig.seeded.tenant_id).unwrap();
+    let mid_agent_id = ObjectId::parse_str(&mid_agent).unwrap();
+    let party = |id| SessionParty { node_id:id, node_ref:NodeRef::Agent { agent_id:id } };
+    let member = |id| SessionMember { party:party(id), wg_public_key:"fixture".into(), bind_secret:"fixture".into() };
+    let mut keys = Vec::new();
+    for i in 0..limits::MAX_SESSIONS_PER_RELAY {
+        let key = format!("specified-trial-capacity-{i}");
+        let fixture = OrgRelaySession {
+            tenant_id:tenant, pair_key:key.clone(), vni:i as u32+1000, generation:i as u64+1000,
+            relay:SessionParty { node_id:nodes[1], node_ref:NodeRef::Agent { agent_id:mid_agent_id } },
+            relay_agent_id:mid_agent_id, implicit:false, members:[member(ObjectId::new()), member(ObjectId::new())],
+            endpoints:vec!["fixture".into()], expires_at:Instant::now()+Duration::from_secs(90),
+            bind_by:Instant::now()+Duration::from_secs(30), hops:Vec::new(),
+        };
+        assert!(support::insert_session_fixture(network, fixture)); keys.push(key);
+    }
+    assert!(!before_capacity.locally_current(network), "capacity is rechecked separately from epoch");
+    assert!(support::plan_trial_path_fixture(network, a, b, nodes.clone(), false).await.is_err(), "middle relay full");
+    for key in keys { assert!(support::remove_session_fixture(network, &key)); }
+    let before_delete = support::plan_trial_path_fixture(network, a, b, nodes.clone(), false).await.expect("capacity restored");
+    assert!(network.overlay_nodes.base.soft_delete(b).await.unwrap());
+    assert!(support::plan_trial_path_fixture(network, a, b, nodes, false).await.is_err(), "tombstoned peer must not be accepted");
+    assert!(support::reauthorize_trial_path_fixture(network, a, b, &before_delete).await.is_err(), "tombstoned peer cannot reauthorize");
+    let pair = roomler_ai_mod_network::overlay::pair_key(a, b);
+    assert!(network.org_relay.active_session(&pair).is_none(), "planning must not mint a session");
+    assert!(l.audit_reasons("mint").await.is_empty());
+    for ws in [&mut l.gz, &mut mid, &mut transit, &mut l.hk] {
+        assert!(recv_t(ws, "rc:overlay.relay_serve", Duration::from_millis(250)).await.is_none(), "planning must not send grants");
+    }
+}
+
+/// Warn/Off isolation graph construction may retain crossing metadata. The
+/// trial planner itself must still require explicit approval of every crossing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn staged_graph_specified_trial_path_denies_unapproved_crossing_outside_enforce() {
+    use roomler_ai_mod_network::org_relay::candidate_test_support as support;
+    for mode in ["off", "warn"] {
+        let slug = format!("iso-trial-cross-{mode}");
+        let rig = Rig::up(&slug, mode).await;
+        let (left_agent, left_token) = enroll(&rig.app, &rig.seeded, &format!("{slug}-left")).await;
+        let mut left = connect_from(&rig.app, &left_token, &["relay-server"], Some(CN_R)).await;
+        assert_observed(&rig.app, &left_agent, Some(CN_R)).await;
+        line_join(&mut left, 3, "223.6.6.6:41641", json!({"relay_backbone_ready":true})).await;
+        let (right_agent, right_token) = enroll(&rig.app, &rig.seeded, &format!("{slug}-right")).await;
+        let mut right = connect_from(&rig.app, &right_token, &["relay-server"], Some(US_R)).await;
+        assert_observed(&rig.app, &right_agent, Some(US_R)).await;
+        line_join(&mut right, 4, "1.1.1.1:41641", json!({})).await;
+        let mut a = rig.device(&format!("{slug}-a"), Some(CN_A)).await;
+        let mut b = rig.device(&format!("{slug}-b"), Some(US_A)).await;
+        let flags = json!({"supports_backbone_only_v1":true,"supports_path_trial_v1":true,"supports_path_backbone_v1":true});
+        line_join(&mut a, 1, "223.5.5.5:41641", flags.clone()).await;
+        line_join(&mut b, 2, "8.8.8.8:41641", flags).await;
+        set_mode(&rig.app, &rig.seeded, "on").await;
+        assert_eq!(approve(&rig.app, &rig.seeded, &left_agent, true).await, 200);
+        assert_eq!(approve(&rig.app, &rig.seeded, &right_agent, true).await, 200);
+        let left_node = rig.node(&format!("{slug}-left")).await;
+        let right_node = rig.node(&format!("{slug}-right")).await;
+        grant_relay(&rig.app, &rig.seeded, &left_node).await;
+        grant_relay(&rig.app, &rig.seeded, &right_node).await;
+        let a_id = ObjectId::parse_str(rig.node(&format!("{slug}-a")).await).unwrap();
+        let b_id = ObjectId::parse_str(rig.node(&format!("{slug}-b")).await).unwrap();
+        let nodes = vec![ObjectId::parse_str(left_node).unwrap(), ObjectId::parse_str(right_node).unwrap()];
+        let policy = format!("/api/tenant/{}/agent/{left_agent}/peer-relay-policy", rig.seeded.tenant_id);
+        let net = rig.app.state.network();
+        for cross in [false, true] {
+            let (status, body) = put(&rig.app, &policy, &rig.seeded.admin.access_token,
+                json!({"serve":true,"approved_backbone_edges":[{"relay_agent_id":right_agent,"endpoint":"10.72.0.2:3478","cross_border":cross}]})).await;
+            assert_eq!(status, 200, "{body}");
+            let planned = support::plan_trial_path_fixture(net, a_id, b_id, nodes.clone(), false).await;
+            assert_eq!(planned.is_ok(), cross, "{mode}: crossing approval required");
+        }
+    }
 }

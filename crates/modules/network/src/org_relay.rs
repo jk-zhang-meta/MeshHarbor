@@ -84,6 +84,9 @@ mod path_select;
 // and the staged N-hop workflow; authorization and reservation stay outside.
 mod path_delivery;
 mod path_mint;
+// Staged exact-path authorization; it does not reserve or send a trial.
+#[allow(dead_code)]
+mod path_trial_plan;
 // Staged atomic admission primitive; existing mint/trial owners are not yet coordinated.
 #[allow(dead_code)]
 mod path_reservation;
@@ -93,6 +96,42 @@ mod trial;
 #[cfg(feature = "path-planner-test-support")]
 pub mod candidate_test_support {
     use super::*;
+    /// Opaque snapshot from the real staged trial path authorization.
+    pub struct TrialPathSnapshot(path_trial_plan::TrialPathPlan);
+
+    impl TrialPathSnapshot {
+        pub fn edges(&self) -> Vec<(ObjectId, ObjectId, String, bool)> {
+            self.0.edges.iter().map(|edge| (
+                edge.source, edge.target, edge.endpoint.clone(), edge.requires_cross_border_approval
+            )).collect()
+        }
+        pub fn locally_current(&self, state: &NetworkState) -> bool {
+            self.0.locally_current(state)
+        }
+    }
+
+    pub async fn plan_trial_path_fixture(
+        state: &NetworkState, requester: ObjectId, peer: ObjectId,
+        nodes: Vec<ObjectId>, requester_at_exit: bool,
+    ) -> Result<TrialPathSnapshot, PeerRelayDenyReason> {
+        let path = roomler_ai_remote_control::signaling::RelayPathWire::new(nodes)
+            .map_err(|_| PeerRelayDenyReason::RequesterUnsupported)?;
+        let a = state.overlay_nodes.base.find_by_id(requester).await
+            .map_err(|_| PeerRelayDenyReason::PolicyUnreadable)?;
+        let b = state.overlay_nodes.base.find_by_id(peer).await
+            .map_err(|_| PeerRelayDenyReason::PolicyUnreadable)?;
+        path_trial_plan::plan(state, &a, &b, &path, requester_at_exit).await.map(TrialPathSnapshot)
+    }
+
+    pub async fn reauthorize_trial_path_fixture(
+        state: &NetworkState, requester: ObjectId, peer: ObjectId, expected: &TrialPathSnapshot,
+    ) -> Result<TrialPathSnapshot, PeerRelayDenyReason> {
+        let a = state.overlay_nodes.base.find_by_id(requester).await
+            .map_err(|_| PeerRelayDenyReason::PolicyUnreadable)?;
+        let b = state.overlay_nodes.base.find_by_id(peer).await
+            .map_err(|_| PeerRelayDenyReason::PolicyUnreadable)?;
+        path_trial_plan::reauthorize(state, &a, &b, &expected.0).await.map(TrialPathSnapshot)
+    }
     /// Insert a fixture-owned session without sending grants; integration
     /// tests use it only to exercise the server's revocation entry point.
     pub fn insert_session_fixture(state: &NetworkState, session: OrgRelaySession) -> bool {

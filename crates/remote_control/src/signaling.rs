@@ -2438,15 +2438,9 @@ pub enum ClientMsg {
     OverlayPathTrialRequest {
         #[serde(with = "oid_hex")]
         peer_node_id: ObjectId,
-        #[serde(with = "oid_hex")]
-        relay_node_id: ObjectId,
         request_id: u64,
-        #[serde(
-            default,
-            with = "option_oid_hex",
-            skip_serializing_if = "Option::is_none"
-        )]
-        exit_relay_node_id: Option<ObjectId>,
+        path: RelayPathWire,
+        requester_at_exit: bool,
     },
     #[serde(rename = "rc:overlay.path_trial_ready")]
     OverlayPathTrialReady {
@@ -4313,6 +4307,8 @@ pub enum ServerMsg {
         #[serde(with = "oid_hex")]
         peer_node_id: ObjectId,
         peer_wg_public_key: String,
+        path: RelayPathWire,
+        requester_at_exit: bool,
         vni: u32,
         generation: u64,
         #[serde(with = "oid_hex")]
@@ -5269,32 +5265,164 @@ pub struct CapVectorWire {
     pub derp_ws_ok: bool,
 }
 
-/// Discovery hint only, never permission to install or promote a carrier.
-/// Server emits at most one candidate with at most four public endpoints.
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
-pub struct OrgRelayCandidateWire {
-    #[serde(with = "oid_hex")]
-    pub relay_node_id: ObjectId,
-    pub endpoints: Vec<String>,
-    #[serde(
-        default,
-        with = "option_oid_hex",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub exit_relay_node_id: Option<ObjectId>,
+/// The ordered relay-node identity of a path, from ingress through exit.
+///
+/// This is an identity and cursor component, never an authorization grant:
+/// a future consumer must independently re-check every node, directed edge,
+/// endpoint, member and approval against fresh policy before use. There is no
+/// fixed hop limit here; the transport's message-size limit is a separate
+/// resource constraint. Paths are nonempty and cannot repeat a relay node.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[serde(try_from = "UncheckedRelayPathWire")]
+pub struct RelayPathWire {
+    #[serde(with = "vec_oid_hex")]
+    relay_node_ids: Vec<ObjectId>,
 }
 
-/// Non-authorizing position in a freshly filtered discovery set. Never a grant.
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UncheckedRelayPathWire {
+    #[serde(with = "vec_oid_hex")]
+    relay_node_ids: Vec<ObjectId>,
+}
+
+impl RelayPathWire {
+    /// Construct a path identity. A rejected identity must not be cached,
+    /// paginated or submitted as a path-trial request.
+    pub fn new(relay_node_ids: Vec<ObjectId>) -> Result<Self, &'static str> {
+        if relay_node_ids.is_empty() {
+            return Err("relay path must contain at least one relay");
+        }
+        let mut unique = std::collections::HashSet::with_capacity(relay_node_ids.len());
+        if !relay_node_ids.iter().all(|node| unique.insert(*node)) {
+            return Err("relay path cannot repeat a node");
+        }
+        Ok(Self { relay_node_ids })
+    }
+
+    pub fn relay_node_ids(&self) -> &[ObjectId] {
+        &self.relay_node_ids
+    }
+}
+
+impl TryFrom<UncheckedRelayPathWire> for RelayPathWire {
+    type Error = &'static str;
+
+    fn try_from(value: UncheckedRelayPathWire) -> Result<Self, Self::Error> {
+        Self::new(value.relay_node_ids)
+    }
+}
+
+#[cfg(test)]
+mod relay_path_identity_tests {
+    use super::RelayPathWire;
+    use bson::oid::ObjectId;
+    use std::collections::{BTreeSet, HashSet};
+
+    #[test]
+    fn ordered_middle_nodes_participate_in_equality_ordering_and_hashing() {
+        let ingress = ObjectId::new();
+        let exit = ObjectId::new();
+        let middle_a = ObjectId::new();
+        let middle_b = ObjectId::new();
+        let a = RelayPathWire::new(vec![ingress, middle_a, exit]).unwrap();
+        let b = RelayPathWire::new(vec![ingress, middle_b, exit]).unwrap();
+        let reversed = RelayPathWire::new(vec![exit, middle_a, ingress]).unwrap();
+        assert_ne!(a, b);
+        assert_ne!(a, reversed);
+        assert_eq!(
+            HashSet::from([a.clone(), b.clone(), reversed.clone()]).len(),
+            3
+        );
+        assert_eq!(BTreeSet::from([a, b, reversed]).len(), 3);
+    }
+
+    #[test]
+    fn discovery_trial_and_start_carry_the_same_complete_path() {
+        use super::{ClientMsg, OrgRelayCandidateWire, ServerMsg};
+        let ids = (0..4).map(|_| ObjectId::new()).collect::<Vec<_>>();
+        let path = RelayPathWire::new(ids.clone()).unwrap();
+        let candidate = OrgRelayCandidateWire { path: path.clone(), requester_at_exit: true,
+            endpoints: vec!["1.1.1.1:3478".into()] };
+        assert_eq!(candidate.requester_relay_node_id(), ids[3]);
+        assert_eq!(candidate.cursor().path, path);
+        let peer = ObjectId::new();
+        let request = ClientMsg::OverlayPathTrialRequest { peer_node_id: peer, request_id: 7,
+            path: path.clone(), requester_at_exit: true };
+        let json = serde_json::to_value(request).unwrap();
+        assert_eq!(json["path"]["relay_node_ids"], serde_json::json!(ids.iter().map(|id| id.to_hex()).collect::<Vec<_>>()));
+        assert!(matches!(serde_json::from_value::<ClientMsg>(json).unwrap(),
+            ClientMsg::OverlayPathTrialRequest { path: decoded, requester_at_exit:true, .. } if decoded == path));
+        let start = ServerMsg::OverlayPathTrialStart { trial_id: ObjectId::new(), request_id: 7,
+            peer_node_id: peer, peer_wg_public_key: "key".into(), path: path.clone(), requester_at_exit: true,
+            vni: 4, generation: 5, relay_node_id: ids[3], relay_endpoints: vec!["1.1.1.1:3478".into()],
+            bind_secret: "secret".into(), bind_secs: 30, max_lifetime_secs: 60 };
+        let decoded: ServerMsg = serde_json::from_value(serde_json::to_value(start).unwrap()).unwrap();
+        assert!(matches!(decoded, ServerMsg::OverlayPathTrialStart {path: decoded, requester_at_exit:true, ..} if decoded == path));
+    }
+
+    #[test]
+    fn wire_roundtrips_single_and_many_hops_without_a_fixed_cap() {
+        for len in [1, 2, 3, 37, 257] {
+            let ids = (0..len).map(|_| ObjectId::new()).collect::<Vec<_>>();
+            let path = RelayPathWire::new(ids.clone()).unwrap();
+            let json = serde_json::to_value(&path).unwrap();
+            assert_eq!(
+                json["relay_node_ids"],
+                serde_json::json!(ids.iter().map(|id| id.to_hex()).collect::<Vec<_>>())
+            );
+            let decoded: RelayPathWire = serde_json::from_value(json).unwrap();
+            assert_eq!(decoded.relay_node_ids(), ids);
+        }
+    }
+
+    #[test]
+    fn every_construction_and_wire_deserialization_rejects_empty_loops_and_malformed_ids() {
+        let a = ObjectId::new();
+        let b = ObjectId::new();
+        assert!(RelayPathWire::new(vec![]).is_err());
+        assert!(RelayPathWire::new(vec![a, b, a]).is_err());
+        for value in [
+            serde_json::json!({"relay_node_ids": []}),
+            serde_json::json!({"relay_node_ids": [a.to_hex(), b.to_hex(), a.to_hex()]}),
+            serde_json::json!({"relay_node_ids": ["not-an-object-id"]}),
+            serde_json::json!({"relay_node_ids": [a.to_hex()], "unused": true}),
+            serde_json::json!({}),
+        ] {
+            assert!(serde_json::from_value::<RelayPathWire>(value).is_err());
+        }
+    }
+}
+
+/// Discovery metadata, not permission to install or promote a carrier.
+/// Endpoints belong to the relay adjacent to the requester, as selected by
+/// `requester_at_exit`; every node and edge is reauthorized at trial start.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct OrgRelayCandidateWire {
+    pub path: RelayPathWire,
+    pub requester_at_exit: bool,
+    pub endpoints: Vec<String>,
+}
+
+impl OrgRelayCandidateWire {
+    pub fn requester_relay_node_id(&self) -> ObjectId {
+        let nodes = self.path.relay_node_ids();
+        if self.requester_at_exit { nodes[nodes.len() - 1] } else { nodes[0] }
+    }
+
+    pub fn cursor(&self) -> OrgRelayDiscoveryCursorWire {
+        OrgRelayDiscoveryCursorWire {
+            path: self.path.clone(), requester_at_exit: self.requester_at_exit,
+        }
+    }
+}
+
+/// Non-authorizing position in a freshly filtered discovery set. Complete
+/// relay identity and orientation distinguish paths sharing the same ends.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct OrgRelayDiscoveryCursorWire {
-    #[serde(with = "oid_hex")]
-    pub relay_node_id: ObjectId,
-    #[serde(
-        default,
-        with = "option_oid_hex",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub exit_relay_node_id: Option<ObjectId>,
+    pub path: RelayPathWire,
+    pub requester_at_exit: bool,
 }
 
 /// A same-tenant, policy-approved two-leg bridge. Never emitted to a legacy
@@ -12270,8 +12398,8 @@ mod tests {
             peer_node_id: peer,
             request_id: 7,
             candidates: vec![OrgRelayCandidateWire {
-                exit_relay_node_id: None,
-                relay_node_id: ObjectId::new(),
+                path: RelayPathWire::new(vec![ObjectId::new()]).unwrap(),
+                requester_at_exit: false,
                 endpoints: vec!["8.8.8.8:3478".into()],
             }],
             ttl_secs: 30,
@@ -12395,7 +12523,7 @@ mod discovery_cursor_wire_tests {
         let oldmsg: ClientMsg = serde_json::from_value(old.clone()).unwrap();
         assert_eq!(serde_json::to_value(oldmsg).unwrap(), old);
         let mut new = old;
-        new["cursor"] = serde_json::json!({"relay_node_id":relay.to_hex()});
+        new["cursor"] = serde_json::json!({"path":{"relay_node_ids":[relay.to_hex()]}, "requester_at_exit":false});
         let decoded: ClientMsg = serde_json::from_value(new.clone()).unwrap();
         assert_eq!(serde_json::to_value(decoded).unwrap(), new);
         let reply = serde_json::json!({"t":"rc:overlay.org_relay_candidates","peer_node_id":peer.to_hex(),"request_id":1,"candidates":[],"ttl_secs":0});
@@ -12404,7 +12532,7 @@ mod discovery_cursor_wire_tests {
                 .unwrap(),
             reply
         );
-        new["cursor"] = serde_json::json!({"relay_node_id":"not-an-id"});
+        new["cursor"] = serde_json::json!({"path":{"relay_node_ids":["not-an-id"]}, "requester_at_exit":false});
         assert!(serde_json::from_value::<ClientMsg>(new).is_err());
     }
 }

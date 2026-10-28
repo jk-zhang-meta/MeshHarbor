@@ -60,6 +60,9 @@ struct BackboneTrial {
 struct Trial {
     id: ObjectId,
     request_id: u64,
+    requester_node_id: ObjectId,
+    requester_at_exit: bool,
+    relay_zones: Vec<BusinessZone>,
     session: OrgRelaySession,
     backbone: Option<BackboneTrial>,
     phase: Phase,
@@ -87,7 +90,7 @@ impl PathTrials {
             .unwrap_or_else(|e| e.into_inner())
             .values()
             .filter(|t| {
-                (t.session.relay.node_id == relay
+                (t.session.relay_nodes().any(|id| id == relay)
                     || t.backbone
                         .as_ref()
                         .is_some_and(|b| b.exit.relay.node_id == relay))
@@ -102,10 +105,7 @@ impl PathTrials {
             .unwrap_or_else(|e| e.into_inner())
             .values()
             .flat_map(|t| {
-                let mut out = Vec::with_capacity(2);
-                if t.session.relay.node_id == relay {
-                    out.push(t.session.vni);
-                }
+                let mut out: Vec<u32> = t.session.vnis_on(relay).collect();
                 if let Some(b) = t.backbone.as_ref() {
                     if b.exit.relay.node_id == relay {
                         out.push(b.exit.vni);
@@ -170,9 +170,10 @@ pub(super) fn revoke_backbone_node(
         .filter(|t| {
             !returned(t)
                 && t.session.tenant_id == tenant
-                && t.backbone.is_some()
+                && (t.backbone.is_some() || !t.session.hops.is_empty())
                 && ((member_withdrawn && t.session.member_index(node).is_some())
-                    || (ingress_withdrawn && t.session.relay.node_id == node))
+                    || (ingress_withdrawn && (t.session.relay.node_id == node
+                        || t.session.hops.iter().take(t.session.hops.len().saturating_sub(1)).any(|h| h.relay.node_id == node))))
         })
         .map(|t| t.id)
         .collect();
@@ -197,21 +198,16 @@ pub(super) fn revoke_removed_backbone_edges(
         .entries
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    let ids: Vec<_> = entries
-        .values()
-        .filter(|t| {
-            !returned(t) && t.session.tenant_id == tenant && t.session.relay_agent_id == source
-        })
-        .filter_map(|t| {
-            let path = t.backbone.as_ref()?;
-            let keep = approved.iter().any(|e| {
-                ObjectId::parse_str(&e.relay_agent_id).ok() == Some(path.exit.relay_agent_id)
-                    && e.endpoint == path.private_endpoint
-                    && (!path.requires_cross_border_approval || e.cross_border)
-            });
-            (!keep).then_some(t.id)
-        })
-        .collect();
+    let ids: Vec<_> = entries.values().filter(|t| {
+        if returned(t) || t.session.tenant_id != tenant { return false; }
+        if t.session.has_removed_line_edge(source, approved) { return true; }
+        if t.session.relay_agent_id != source { return false; }
+        t.backbone.as_ref().is_some_and(|path| !approved.iter().any(|e| {
+            ObjectId::parse_str(&e.relay_agent_id).ok() == Some(path.exit.relay_agent_id)
+                && e.endpoint == path.private_endpoint
+                && (!path.requires_cross_border_approval || e.cross_border)
+        }))
+    }).map(|t| t.id).collect();
     ids.into_iter()
         .filter_map(|id| entries.remove(&id))
         .map(|t| {
@@ -370,6 +366,9 @@ fn retire_relays(state: &NetworkState, trial: &Trial) {
             vni: trial.session.vni,
         },
     );
+    for (target, message) in trial.session.hop_revocations() {
+        push_control(state, &target, message);
+    }
     if let Some(path) = trial.backbone.as_ref() {
         push_control(
             state,
@@ -407,7 +406,26 @@ fn revoke_event(trial: &Trial, reason: &str) -> PeerRelayAuditEvent {
     }
 }
 
+fn trial_path(trial: &Trial) -> roomler_ai_remote_control::signaling::RelayPathWire {
+    let mut nodes: Vec<_> = trial.session.relay_nodes().collect();
+    if let Some(backbone) = trial.backbone.as_ref() { nodes.push(backbone.exit.relay.node_id); }
+    roomler_ai_remote_control::signaling::RelayPathWire::new(nodes).expect("admitted trial path is nonempty and unique")
+}
+
 fn start_message(trial: &Trial, index: usize) -> ServerMsg {
+    if !trial.session.hops.is_empty() {
+        let s = &trial.session;
+        let leg = s.member_leg(index);
+        return ServerMsg::OverlayPathTrialStart {
+            trial_id: trial.id, request_id: trial.request_id,
+            path: trial_path(trial), requester_at_exit: trial.requester_at_exit,
+            peer_node_id: s.members[1 - index].party.node_id,
+            peer_wg_public_key: s.members[1 - index].wg_public_key.clone(),
+            vni: leg.vni, generation: leg.generation, relay_node_id: leg.relay_node_id,
+            relay_endpoints: leg.endpoints.to_vec(), bind_secret: s.members[index].bind_secret.clone(),
+            bind_secs: limits::BIND_SECS, max_lifetime_secs: limits::MAX_LIFETIME_SECS,
+        };
+    }
     let s = if index == 1 {
         trial
             .backbone
@@ -420,6 +438,7 @@ fn start_message(trial: &Trial, index: usize) -> ServerMsg {
     ServerMsg::OverlayPathTrialStart {
         trial_id: trial.id,
         request_id: trial.request_id,
+        path: trial_path(trial), requester_at_exit: trial.requester_at_exit,
         peer_node_id: s.members[1 - index].party.node_id,
         peer_wg_public_key: s.members[1 - index].wg_public_key.clone(),
         vni: s.vni,
@@ -530,10 +549,7 @@ pub async fn request(
             entries
                 .values()
                 .flat_map(|t| {
-                    let mut out = Vec::with_capacity(2);
-                    if t.session.relay.node_id == id {
-                        out.push(t.session.vni);
-                    }
+                    let mut out: Vec<u32> = t.session.vnis_on(id).collect();
                     if let Some(b) = t.backbone.as_ref() {
                         if b.exit.relay.node_id == id {
                             out.push(b.exit.vni);
@@ -633,6 +649,9 @@ pub async fn request(
                 Some(Trial {
                     id: ObjectId::new(),
                     request_id,
+                    requester_node_id: req_id,
+                    requester_at_exit: false,
+                    relay_zones: Vec::new(),
                     session,
                     backbone,
                     phase: Phase::Preparing([None, None]),
@@ -749,7 +768,7 @@ fn admit_trial(
     }
     if let Some(existing) = entries.values().find(|t| {
         t.session.pair_key == pair
-            && t.session.members[0].party.node_id == requester
+            && t.requester_node_id == requester
             && t.request_id == request_id
     }) {
         return Admission::Existing(existing.id);
@@ -782,6 +801,12 @@ fn admit_trial(
     Admission::Created(id)
 }
 
+/// A transient capacity snapshot. A trial still has to claim capacity later.
+pub(super) fn path_has_capacity_snapshot(state: &OrgRelayState, relay_nodes: &[ObjectId]) -> bool {
+    let entries = state.trials.entries.lock().unwrap_or_else(|e| e.into_inner());
+    has_capacity(state, &entries, relay_nodes)
+}
+
 /// Called only while `PathTrials.entries` is held. Every session creator must
 /// use the same lock for this count to be an admission guarantee.
 fn has_capacity(state: &OrgRelayState, entries: &HashMap<ObjectId, Trial>, relay_nodes: &[ObjectId]) -> bool {
@@ -794,7 +819,7 @@ fn has_capacity(state: &OrgRelayState, entries: &HashMap<ObjectId, Trial>, relay
             .count();
         let trials = entries.values().filter(|trial| {
             trial.session.expires_at > now && !returned(trial)
-                && (trial.session.relay.node_id == *relay
+                && (trial.session.relay_nodes().any(|id| id == *relay)
                     || trial.backbone.as_ref().is_some_and(|b| b.exit.relay.node_id == *relay))
         }).count();
         active.saturating_add(trials) < limits::MAX_SESSIONS_PER_RELAY
@@ -831,8 +856,7 @@ pub(super) fn claim_mint(
     let mut allocated = Vec::with_capacity(nodes.len());
     for relay in &nodes {
         let reserved: Vec<u32> = entries.values().flat_map(|trial| {
-            let mut out = Vec::with_capacity(2);
-            if trial.session.relay.node_id == *relay { out.push(trial.session.vni); }
+            let mut out: Vec<u32> = trial.session.vnis_on(*relay).collect();
             if let Some(backbone) = trial.backbone.as_ref() {
                 if backbone.exit.relay.node_id == *relay { out.push(backbone.exit.vni); }
             }
@@ -1305,6 +1329,9 @@ mod tests {
         Trial {
             id: ObjectId::new(),
             request_id,
+            requester_node_id: requester,
+            requester_at_exit: false,
+            relay_zones: Vec::new(),
             phase: Phase::Preparing([None, None]),
             started: now,
             return_state: None,
