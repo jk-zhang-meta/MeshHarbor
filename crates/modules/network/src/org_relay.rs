@@ -3610,13 +3610,39 @@ impl TrialZoneRetry {
     fn finish_pass(&mut self, retry: bool) -> bool {
         if retry || self.requested { true } else { self.running = false; false }
     }
+
+    fn abnormal_exit(&mut self) {
+        self.running = false;
+        self.requested = true;
+    }
+}
+
+struct TrialZoneWorkerGuard {
+    state: NetworkState,
+    started: bool,
+    completed: bool,
+}
+
+impl Drop for TrialZoneWorkerGuard {
+    fn drop(&mut self) {
+        if self.completed { return; }
+        self.state.org_relay.trial_zone_retry.lock().unwrap_or_else(|e| e.into_inner()).abnormal_exit();
+        // A polled worker that panicked or was cancelled restarts via the
+        // normal delayed scheduler. A never-polled task can be dropped during
+        // runtime shutdown; do not recursively spawn during shutdown.
+        if self.started && tokio::runtime::Handle::try_current().is_ok() {
+            schedule_trial_zone_retry(&self.state);
+        }
+    }
 }
 
 fn schedule_trial_zone_retry(state: &NetworkState) {
     let start = state.org_relay.trial_zone_retry.lock().unwrap_or_else(|e| e.into_inner()).request();
     if !start { return; }
     let state = state.clone();
+    let mut guard = TrialZoneWorkerGuard { state: state.clone(), started: false, completed: false };
     tokio::spawn(async move {
+        guard.started = true;
         loop {
             // ponytail: one worker scans live trials, not one timer per hop.
             tokio::time::sleep(Duration::from_secs(5)).await;
@@ -3626,7 +3652,7 @@ fn schedule_trial_zone_retry(state: &NetworkState) {
             }
             let pending = !trial::recheck_all_trial_zones(&state, "zone_retry").await.is_empty();
             let again = state.org_relay.trial_zone_retry.lock().unwrap_or_else(|e| e.into_inner()).finish_pass(pending);
-            if !again { break; }
+            if !again { guard.completed = true; break; }
         }
     });
 }
@@ -3817,6 +3843,17 @@ mod tests {
             assert!(kept_running || started_again);
             assert!(queue.lock().unwrap().running);
         }
+    }
+
+    #[test]
+    fn abnormal_zone_worker_exit_remains_retryable() {
+        let mut retry = TrialZoneRetry::default();
+        assert!(retry.request());
+        retry.requested = false;
+        retry.abnormal_exit();
+        assert!(!retry.running && retry.requested);
+        assert!(retry.request());
+        assert!(retry.running && retry.requested);
     }
 
     fn node_with(srflx: &[&str], lan: &[&str], endpoints: &[&str]) -> OverlayNode {
