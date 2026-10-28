@@ -3641,3 +3641,81 @@ async fn a_restarted_node_starts_its_churn_count_afresh() {
         "a restart forgets grants, keeps the pin"
     );
 }
+
+/// Exercise the exact N-hop delivery frames against three native relay
+/// listeners and two actual local bridge tasks in an isolated network.
+#[tokio::test]
+#[cfg(target_os = "linux")]
+async fn nhop_delivery_three_native_relays_forward_and_revoke_middle_bridge() {
+    use roomler_ai_mod_network::org_relay::{LineLeg, OrgRelaySession, SessionMember, SessionParty};
+    use roomler_ai_remote_control::models::NodeRef;
+    use roomler_ai_remote_control::signaling::ServerMsg;
+    use roomlerd::relay_server::backbone_test_support::{
+        BindSecret, NativeRelay, WgKeypair, bind_member, build_data, parse_data,
+    };
+    use std::time::Instant;
+    let r0 = NativeRelay::start().await.unwrap();
+    let r1 = NativeRelay::start().await.unwrap();
+    let r2 = NativeRelay::start().await.unwrap();
+    let relays = [&r0, &r1, &r2];
+    let agent_ids = [ObjectId::new(), ObjectId::new(), ObjectId::new()];
+    let party = |agent_id| SessionParty { node_id: ObjectId::new(), node_ref: NodeRef::Agent { agent_id } };
+    let keys = [WgKeypair::generate(), WgKeypair::generate()];
+    let members = [11u8, 12].map(|n| SessionMember {
+        party: party(ObjectId::new()), wg_public_key: keys[(n - 11) as usize].public_base64(), bind_secret: BASE64.encode([n; 32]),
+    });
+    let secret = |n: u8| BASE64.encode([n; 32]);
+    let s = OrgRelaySession {
+        tenant_id: ObjectId::new(), pair_key: "isolated-native-delivery".into(),
+        vni: 100, generation: 101, relay: party(agent_ids[0]), relay_agent_id: agent_ids[0],
+        implicit: false, members, endpoints: vec![r0.endpoint().to_string()],
+        expires_at: Instant::now() + Duration::from_secs(300),
+        bind_by: Instant::now() + Duration::from_secs(30),
+        hops: vec![
+            LineLeg { relay: party(agent_ids[1]), relay_agent_id: agent_ids[1], vni: 200, generation: 202,
+                endpoints: vec![r1.endpoint().to_string()], private_endpoint: r1.underlay_endpoint().to_string(),
+                bridge_id: ObjectId::new(), bridge_secrets: [secret(21), secret(22)] },
+            LineLeg { relay: party(agent_ids[2]), relay_agent_id: agent_ids[2], vni: 300, generation: 303,
+                endpoints: vec![r2.endpoint().to_string()], private_endpoint: r2.underlay_endpoint().to_string(),
+                bridge_id: ObjectId::new(), bridge_secrets: [secret(31), secret(32)] },
+        ],
+    };
+    let frames = roomler_ai_mod_network::org_relay::candidate_test_support::delivery_frames_for_fixture(&s).unwrap();
+    assert_eq!(frames.len(), 5);
+    for (index, (target, msg)) in frames.into_iter().enumerate() {
+        let agent_id = match target { NodeRef::Agent { agent_id } => agent_id, _ => panic!("fixture relay must be an agent") };
+        let i = agent_ids.iter().position(|id| *id == agent_id).unwrap();
+        match &msg {
+            ServerMsg::OverlayRelayServe { .. } => { assert!(index < 3); relays[i].serve(msg, None); }
+            ServerMsg::OverlayRelayBridgeServe { .. } => { assert!(index >= 3 && i < 2); relays[i].serve(msg, Some(relays[i].policy_to(relays[i+1]))); }
+            _ => panic!("unexpected delivery frame"),
+        }
+    }
+    let a = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let b = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    bind_member(&a, r0.endpoint(), s.vni, s.generation, &BindSecret::from_bytes([11; 32]), Duration::from_secs(5)).await.unwrap();
+    bind_member(&b, r2.endpoint(), s.hops[1].vni, s.hops[1].generation, &BindSecret::from_bytes([12; 32]), Duration::from_secs(5)).await.unwrap();
+    async fn exchange(sender: &tokio::net::UdpSocket, receiver: &tokio::net::UdpSocket,
+        target: std::net::SocketAddr, from_vni: u32, to_vni: u32, payload: &[u8]) {
+        tokio::time::timeout(Duration::from_secs(8), async {
+            let mut buf = [0u8; 2048];
+            loop {
+                sender.send_to(&build_data(from_vni, payload), target).await.unwrap();
+                if let Ok(Ok((n, _))) = tokio::time::timeout(Duration::from_millis(150), receiver.recv_from(&mut buf)).await {
+                    if let Some((vni, got)) = parse_data(&buf[..n]) {
+                        if vni == to_vni && got == payload { return; }
+                    }
+                }
+            }
+        }).await.expect("three-relay payload did not arrive");
+    }
+    exchange(&a, &b, r0.endpoint(), s.vni, s.hops[1].vni, b"three-relay forward payload").await;
+    exchange(&b, &a, r2.endpoint(), s.hops[1].vni, s.vni, b"three-relay reverse payload").await;
+    // Stop the second local bridge, then ensure a new payload cannot reach B.
+    r1.fail_owned_bridge(s.hops[1].bridge_id, s.hops[0].generation).await.unwrap();
+    let mut buf = [0u8; 2048];
+    while matches!(tokio::time::timeout(Duration::from_millis(10), b.recv_from(&mut buf)).await, Ok(Ok(_))) {}
+    a.send_to(&build_data(s.vni, b"after-middle-bridge-revoke"), r0.endpoint()).await.unwrap();
+    assert!(tokio::time::timeout(Duration::from_millis(500), b.recv_from(&mut buf)).await.is_err(),
+        "a removed middle bridge must stop forwarding");
+}

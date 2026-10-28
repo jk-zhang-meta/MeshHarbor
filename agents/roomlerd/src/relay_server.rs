@@ -840,6 +840,9 @@ pub mod backbone_test_support {
         WgKeypair,
         runtime::{PathTrialTestHarness, PathTrialTestSnapshot},
     };
+    pub use tunnel_core::overlay::orgrelay::{
+        bind::BindSecret, client::bind as bind_member, build_data, parse_data,
+    };
     pub struct NativeRelay {
         running: Running,
         task: tokio::task::JoinHandle<()>,

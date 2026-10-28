@@ -80,6 +80,9 @@ mod path_candidate;
 // Staged search over an authorized snapshot; no production caller yet.
 #[allow(dead_code)]
 mod path_select;
+// Structural message construction is shared by the existing two-relay mint
+// and the staged N-hop workflow; authorization and reservation stay outside.
+mod path_delivery;
 mod trial;
 /// Test-only adapter for exercising the staged candidate builder against a
 /// real isolated server fixture. It returns metadata, never grants sessions.
@@ -204,6 +207,12 @@ pub mod candidate_test_support {
         state.org_relay.probes.get(&(reporter, relay))
             .map(|records| records.iter().map(|record| record.rtt_ms).collect())
             .unwrap_or_default()
+    }
+    /// Build only relay/bridge control frames from a fixture-owned session.
+    /// No authorization, resource reservation, or messages are performed.
+    pub fn delivery_frames_for_fixture(session: &OrgRelaySession) -> Result<Vec<(NodeRef, ServerMsg)>, String> {
+        let delivery = path_delivery::build(session, Instant::now()).map_err(|e| format!("{e:?}"))?;
+        Ok(delivery.relays.into_iter().chain(delivery.bridges).collect())
     }
     pub async fn select_path(
         state: &NetworkState,
@@ -2094,6 +2103,14 @@ async fn mint_line(
     // Until N-hop minting is implemented, never publish an unsupported
     // session shape: an entry without serve messages would strand the pair.
     let [line] = session.hops.as_slice() else { return };
+    let delivery = match path_delivery::build(&session, Instant::now()) {
+        Ok(delivery) => delivery,
+        Err(error) => {
+            warn!(?error, "org-relay: invalid line delivery shape");
+            refuse(PeerRelayDenyReason::PolicyUnreadable).await;
+            return;
+        }
+    };
     audit_line(state, &session, warn_only).await;
     if warn_only {
         info!(%tenant_id, requester = %req_id, peer = %peer_id, ingress = %ingress_id,
@@ -2123,48 +2140,12 @@ async fn mint_line(
     info!(%tenant_id, requester = %req_id, peer = %peer_id, ingress = %ingress_id, vni,
         exit = %exit_id, exit_vni, line = %line.private_endpoint,
         "org-relay: a cross-border pair rides its approved line");
-    let serve = |vni, generation, secrets: [&String; 2]| ServerMsg::OverlayRelayServe {
-        vni,
-        generation,
-        members: session
-            .members
-            .iter()
-            .zip(secrets)
-            .map(|(m, secret)| RelayMemberWire {
-                wg_public_key: m.wg_public_key.clone(),
-                bind_secret: secret.clone(),
-            })
-            .collect(),
-        bind_secs: limits::BIND_SECS,
-        idle_secs: limits::IDLE_SECS,
-        max_lifetime_secs: limits::MAX_LIFETIME_SECS,
-    };
-    // Both relays first, then the bridge, so its binds find both sessions
-    // (it retries within its own budget), then each member.
-    let [m0_secret, m1_secret] = [&session.members[0].bind_secret, &session.members[1].bind_secret];
-    send_to_node(state, &plan.ingress.relay, serve(vni, generation, [m0_secret, &line.bridge_secrets[0]])).await;
-    send_to_node(state, &plan.exit.relay, serve(exit_vni, exit_generation, [&line.bridge_secrets[1], m1_secret])).await;
-    send_to_node(
-        state,
-        &plan.ingress.relay,
-        ServerMsg::OverlayRelayBridgeServe {
-            bridge: roomler_ai_remote_control::signaling::RelayBridgeWire {
-                trial_id: line.bridge_id,
-                generation,
-                source_agent_id: session.relay_agent_id,
-                target_agent_id: line.relay_agent_id,
-                local_vni: vni,
-                local_generation: generation,
-                local_bind_secret: line.bridge_secrets[0].clone(),
-                remote_endpoint: line.private_endpoint.clone(),
-                remote_vni: exit_vni,
-                remote_generation: exit_generation,
-                remote_bind_secret: line.bridge_secrets[1].clone(),
-                max_lifetime_secs: limits::MAX_LIFETIME_SECS,
-            },
-        },
-    )
-    .await;
+    // Send every relay control message before bridge control messages.
+    // Delivery is asynchronous; bridges retry until both sides are ready.
+    // Member grants remain last.
+    for (target, message) in delivery.relays.into_iter().chain(delivery.bridges) {
+        send_to_node_ref(state, &target, message).await;
+    }
     push_member(state, &session, 0).await;
     push_member(state, &session, 1).await;
 }
