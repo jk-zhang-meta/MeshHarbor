@@ -118,6 +118,61 @@ pub mod candidate_test_support {
     use std::collections::HashMap;
     use std::sync::{Mutex, OnceLock};
     use tokio::sync::oneshot;
+    fn line_audit_failures() -> &'static Mutex<std::collections::HashSet<String>> {
+        static FAILURES: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
+        FAILURES.get_or_init(|| Mutex::new(std::collections::HashSet::new()))
+    }
+    /// Simulate a two-relay line audit error for one fixture pair.
+    pub fn fail_next_line_audit_fixture(pair: String) {
+        assert!(line_audit_failures().lock().unwrap().insert(pair));
+    }
+    pub(super) fn take_line_audit_failure(pair: &str) -> bool {
+        line_audit_failures().lock().unwrap().remove(pair)
+    }
+    fn nhop_audit_failures() -> &'static Mutex<std::collections::HashSet<String>> {
+        static FAILURES: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
+        FAILURES.get_or_init(|| Mutex::new(std::collections::HashSet::new()))
+    }
+    /// Simulate a crossing-audit error for one fixture pair, exactly once.
+    pub fn fail_next_nhop_audit_fixture(pair: String) {
+        assert!(nhop_audit_failures().lock().unwrap().insert(pair));
+    }
+    pub(super) fn take_nhop_audit_failure(pair: &str) -> bool {
+        nhop_audit_failures().lock().unwrap().remove(pair)
+    }
+    /// Populate backbone measurements via the same offer/report gates.
+    pub fn record_backbone_probe_fixture(
+        state: &NetworkState, source: ObjectId,
+        reports: &[(ObjectId, String, bool, Option<u32>)],
+    ) -> bool {
+        let targets: Vec<_> = reports.iter().map(|(relay, endpoint, _, _)| RelayProbeTargetWire {
+            relay_node_id: *relay, endpoints: vec![endpoint.clone()],
+        }).collect();
+        state.org_relay.offer_backbone_probes(source, &targets);
+        reports.iter().all(|(relay, endpoint, reachable, rtt)|
+            state.org_relay.record_probe(source, *relay, endpoint.clone(), *reachable, *rtt))
+    }
+    struct NhopPreclaimPause {
+        reached: oneshot::Sender<()>,
+        resume: oneshot::Receiver<()>,
+    }
+    fn nhop_preclaim_pauses() -> &'static Mutex<HashMap<String, NhopPreclaimPause>> {
+        static PAUSES: OnceLock<Mutex<HashMap<String, NhopPreclaimPause>>> = OnceLock::new();
+        PAUSES.get_or_init(|| Mutex::new(HashMap::new()))
+    }
+    pub fn pause_nhop_preclaim_fixture(pair: String) -> (oneshot::Receiver<()>, oneshot::Sender<()>) {
+        let (reached_tx, reached_rx) = oneshot::channel();
+        let (resume_tx, resume_rx) = oneshot::channel();
+        assert!(nhop_preclaim_pauses().lock().unwrap().insert(pair, NhopPreclaimPause { reached: reached_tx, resume: resume_rx }).is_none());
+        (reached_rx, resume_tx)
+    }
+    pub(super) async fn pause_nhop_preclaim_if_armed(pair: &str) {
+        let pause = nhop_preclaim_pauses().lock().unwrap().remove(pair);
+        if let Some(NhopPreclaimPause { reached, resume }) = pause {
+            let _ = reached.send(());
+            let _ = resume.await;
+        }
+    }
     struct NhopPartialPause {
         reached: oneshot::Sender<()>,
         resume: std::sync::mpsc::Receiver<()>,
@@ -2091,16 +2146,19 @@ async fn maybe_mint_line(
         })
         .await;
     }
-    match path_mint::mint(state, requester, peer, warn_only).await {
+    let mut charged_relay = None;
+    match path_mint::mint(state, requester, peer, warn_only, &mut charged_relay).await {
         Ok(true) => return,
         Ok(false) => {},
         Err(reason) => {
-            audit_mint(state, tenant_id, req_id, peer_id, None, None, warn_only, Some(reason)).await;
-            return;
+            // A failed long path is not evidence that a freshly authorized
+            // established two-relay line is unusable.
+            debug!(%tenant_id, requester = %req_id, peer = %peer_id, ?reason,
+                "org-relay: multi-hop attempt failed; replanning the two-relay line");
         }
     }
     match plan_line(state, requester, peer, zones).await {
-        Ok(plan) => mint_line(state, requester, peer, plan, warn_only).await,
+        Ok(plan) => mint_line(state, requester, peer, plan, warn_only, charged_relay).await,
         Err(reason) => {
             info!(%tenant_id, requester = %req_id, peer = %peer_id, ?reason, warn_only,
                 "org-relay: cross-border line refused");
@@ -2122,6 +2180,7 @@ async fn mint_line(
     peer: &OverlayNode,
     plan: LinePlan,
     warn_only: bool,
+    charged_relay: Option<ObjectId>,
 ) {
     let tenant_id = requester.tenant_id;
     let (Some(req_id), Some(peer_id)) = (requester.id, peer.id) else { return };
@@ -2131,6 +2190,7 @@ async fn mint_line(
     };
     let refuse = |reason| audit_mint(state, tenant_id, req_id, peer_id, None, None, warn_only, Some(reason));
     if !warn_only
+        && charged_relay != Some(ingress_id)
         && !state
             .relay_rate_limiter
             .check(req_id, ingress_id, limits::MINT_RATE_LIMIT_PER_MINUTE)
@@ -2189,8 +2249,8 @@ async fn mint_line(
             bridge_secrets: [random_secret(), random_secret()],
         }],
     };
-    // Until N-hop minting is implemented, never publish an unsupported
-    // session shape: an entry without serve messages would strand the pair.
+    // This established entry point handles precisely one bridge; longer paths
+    // use path_mint and must not enter this two-relay message flow.
     if session.hops.len() != 1 { return; }
     match path_delivery::build(&session, Instant::now()) {
         Ok(_) => {},
@@ -2201,7 +2261,7 @@ async fn mint_line(
         }
     };
     if warn_only {
-        audit_line(state, &session, true).await;
+        let _ = audit_line(state, &session, true).await;
         info!(%tenant_id, requester = %req_id, peer = %peer_id, ingress = %ingress_id,
             exit = %exit_id, "org-relay [warn]: would mint a cross-border line; pushing nothing");
         return;
@@ -2226,7 +2286,14 @@ async fn mint_line(
     }
     let Some(delivery) = delivery else { return };
     let (vni, exit_vni) = (session.vni, session.hops[0].vni);
-    audit_line(state, &session, false).await;
+    if !audit_line(state, &session, false).await {
+        // A concurrent retry could have received the just-claimed session;
+        // revoke it before refusing rather than leave any unrecorded path.
+        revoke_where(state, "cross_border_audit_failed", |current| current.pair_key == pk
+            && current.vni == session.vni && current.generation == session.generation).await;
+        refuse(PeerRelayDenyReason::PolicyUnreadable).await;
+        return;
+    }
     if !state.org_relay.active_session(&pk).is_some_and(|current| current.vni == session.vni && current.generation == session.generation) {
         return;
     }
@@ -2245,8 +2312,10 @@ async fn mint_line(
 
 /// Rule 5: one `mint` row per leg of a line, each naming its relay and VNI,
 /// with reason `cross_border_line`.
-async fn audit_line(state: &NetworkState, s: &OrgRelaySession, warn_only: bool) {
-    if s.hops.is_empty() { return; }
+async fn audit_line(state: &NetworkState, s: &OrgRelaySession, warn_only: bool) -> bool {
+    if s.hops.is_empty() { return false; }
+    #[cfg(feature = "path-planner-test-support")]
+    if candidate_test_support::take_line_audit_failure(&s.pair_key) { return false; }
     let relays = std::iter::once((s.relay_agent_id, s.relay.node_id, s.vni))
         .chain(s.hops.iter().map(|hop| (hop.relay_agent_id, hop.relay.node_id, hop.vni)));
     for (agent_id, relay_node_id, vni) in relays {
@@ -2266,10 +2335,12 @@ async fn audit_line(state: &NetworkState, s: &OrgRelaySession, warn_only: bool) 
             denied: None,
             reason: Some(CROSS_BORDER_REASON.into()),
         };
-        if let Err(e) = state.peer_relay_audit.record(event).await {
-            warn!(%e, "org-relay: cross-border audit write failed");
+        if !matches!(tokio::time::timeout(Duration::from_secs(3), state.peer_relay_audit.record(event)).await, Ok(Ok(_))) {
+            warn!("org-relay: cross-border audit write failed or timed out");
+            return false;
         }
     }
+    true
 }
 
 /// Discovery hints for a cross-border pair: each ingress relay in the

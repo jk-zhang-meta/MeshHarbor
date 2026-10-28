@@ -24,6 +24,7 @@ pub(super) async fn mint(
     requester: &OverlayNode,
     peer: &OverlayNode,
     warn_only: bool,
+    charged_relay: &mut Option<ObjectId>,
 ) -> Result<bool, Deny> {
     let (Some(a), Some(b)) = (requester.id, peer.id) else {
         return Err(Deny::RequesterUnsupported);
@@ -226,8 +227,15 @@ pub(super) async fn mint(
     {
         return Err(Deny::RateLimited);
     }
+    if !warn_only {
+        *charged_relay = Some(session.relay.node_id);
+    }
     // Each recorded row identifies both source and target agents. A failed or
     // timed-out audit refuses the candidate before claiming or sending it.
+    #[cfg(feature = "path-planner-test-support")]
+    if super::candidate_test_support::take_nhop_audit_failure(&session.pair_key) {
+        return Err(Deny::PolicyUnreadable);
+    }
     for (i, hop) in session
         .hops
         .iter()
@@ -273,6 +281,8 @@ pub(super) async fn mint(
         return Ok(true);
     }
     let epoch = fresh.eligibility_epoch;
+    #[cfg(feature = "path-planner-test-support")]
+    super::candidate_test_support::pause_nhop_preclaim_if_armed(&session.pair_key).await;
     let mut delivery = None;
     let claim = trial::claim_mint(&state.org_relay, &mut session, |candidate| {
         if epoch != state.org_relay.eligibility_generation()
