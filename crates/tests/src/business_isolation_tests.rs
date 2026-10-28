@@ -2284,3 +2284,119 @@ async fn staged_graph_long_path_capacity_race_falls_back_to_available_line() {
     assert_eq!(us["vni"], last["vni"]);
     assert!(recv_t(&mut l.gz, "rc:overlay.relay_serve", Duration::from_millis(500)).await.is_none());
 }
+
+/// Same-zone real requests should mint, reauthorize and revoke all relay legs
+/// in each isolation mode, including the org-only fallback entry point.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn staged_graph_same_zone_actual_mint_and_fallback() {
+    use roomler_ai_mod_network::org_relay::candidate_test_support as support;
+    for (isolation, fallback) in [("enforce", false), ("enforce", true), ("warn", false), ("warn", true), ("off", false), ("off", true)] {
+        let slug = format!("iso-same-{isolation}-{}", if fallback { "fallback" } else { "normal" });
+        let rig = Rig::up(&slug, isolation).await;
+        let mut relays = Vec::new();
+        let mut agents = Vec::new();
+        let mut nodes = Vec::new();
+        for i in 0..3 {
+            let name = format!("{slug}-r{i}");
+            let (agent, token) = enroll(&rig.app, &rig.seeded, &name).await;
+            let mut ws = connect_from(&rig.app, &token, &["relay-server"], Some(CN_R)).await;
+            assert_observed(&rig.app, &agent, Some(CN_R)).await;
+            line_join(&mut ws, 10 + i, &format!("223.6.6.{}:41641", 6 + i), json!({"relay_backbone_ready":true})).await;
+            assert_eq!(approve(&rig.app, &rig.seeded, &agent, true).await, 200);
+            let node = rig.node(&name).await;
+            grant_relay(&rig.app, &rig.seeded, &node).await;
+            relays.push(ws); agents.push(agent); nodes.push(node);
+        }
+        let mut a = rig.device(&format!("{slug}-a"), Some(CN_A)).await;
+        let mut b = rig.device(&format!("{slug}-b"), Some(CN_A)).await;
+        let flag = json!({"supports_backbone_only_v1":true});
+        line_join(&mut a, 1, "223.5.5.5:41641", flag.clone()).await;
+        line_join(&mut b, 2, "223.5.5.6:41641", flag).await;
+        let a_id = ObjectId::parse_str(rig.node(&format!("{slug}-a")).await).unwrap();
+        let b_id = ObjectId::parse_str(rig.node(&format!("{slug}-b")).await).unwrap();
+        set_mode(&rig.app, &rig.seeded, "on").await;
+        let policy_path = |agent: &str| format!("/api/tenant/{}/agent/{agent}/peer-relay-policy", rig.seeded.tenant_id);
+        for i in 0..2 {
+            let (status, body) = put(&rig.app, &policy_path(&agents[i]), &rig.seeded.admin.access_token,
+                json!({"serve":true,"approved_backbone_edges":[{"relay_agent_id":agents[i+1],"endpoint":format!("10.44.0.{}:3478",i+2),"cross_border":false}]})).await;
+            assert_eq!(status, 200, "{body}");
+        }
+        let network = rig.app.state.network();
+        let ids: Vec<_> = nodes.iter().map(|n| ObjectId::parse_str(n).unwrap()).collect();
+        assert!(support::record_member_probe_fixture(network, a_id, &[
+            (ids[0], "223.6.6.6:3478".into(), true, Some(10)),
+            (ids[1], "223.6.6.7:3478".into(), false, None),
+            (ids[2], "223.6.6.8:3478".into(), false, None),
+        ]));
+        assert!(support::record_member_probe_fixture(network, b_id, &[
+            (ids[0], "223.6.6.6:3478".into(), false, None),
+            (ids[1], "223.6.6.7:3478".into(), false, None),
+            (ids[2], "223.6.6.8:3478".into(), true, Some(10)),
+        ]));
+        if fallback {
+            a.send(Message::Text(json!({"t":"rc:overlay.org_relay_fallback_request", "peer_node_id":b_id.to_hex(), "request_id":1}).to_string().into())).await.unwrap();
+        } else { relay_request(&mut a, &b_id.to_hex()).await; }
+        let wait = Duration::from_secs(8);
+        let mut serves = Vec::new();
+        for ws in &mut relays {
+            serves.push(recv_t(ws, "rc:overlay.relay_serve", wait).await.unwrap_or_else(|| panic!("{slug}: relay serve absent")));
+        }
+        let bridge0 = recv_t(&mut relays[0], "rc:overlay.relay_bridge_serve", wait).await.expect("first bridge");
+        let bridge1 = recv_t(&mut relays[1], "rc:overlay.relay_bridge_serve", wait).await.expect("second bridge");
+        let sa = recv_t(&mut a, "rc:overlay.relay_session", wait).await.expect("requester session");
+        let sb = recv_t(&mut b, "rc:overlay.relay_session", wait).await.expect("peer session");
+        assert_eq!(sa["vni"], serves[0]["vni"]); assert_eq!(sb["vni"], serves[2]["vni"]);
+        assert_eq!(bridge0["bridge"]["local_vni"], serves[0]["vni"]);
+        assert_eq!(bridge0["bridge"]["remote_vni"], serves[1]["vni"]);
+        assert_eq!(bridge1["bridge"]["local_vni"], serves[1]["vni"]);
+        assert_eq!(bridge1["bridge"]["remote_vni"], serves[2]["vni"]);
+        assert!(audit_rows(&rig.app, &rig.seeded).await.iter().any(|row| row["reason"] == "multi_hop_same_zone_attempt"), "{slug}: audit missing");
+        relay_request(&mut a, &b_id.to_hex()).await;
+        let again = recv_t(&mut a, "rc:overlay.relay_session", wait).await.expect("reauthorized repush");
+        assert_eq!(again["vni"], sa["vni"]);
+        let (status, body) = put(&rig.app, &policy_path(&agents[0]), &rig.seeded.admin.access_token,
+            json!({"serve":true,"approved_backbone_edges":[]})).await;
+        assert_eq!(status, 200, "{body}");
+        for (i, ws) in relays.iter_mut().enumerate() {
+            let revoked = recv_t(ws, "rc:overlay.relay_revoke", wait).await.expect("relay revoked");
+            assert_eq!(revoked["vni"], serves[i]["vni"]);
+        }
+        for ws in relays.iter_mut().take(2) { recv_t(ws, "rc:overlay.relay_bridge_revoke", wait).await.expect("bridge revoked"); }
+        assert!(recv_t(&mut a, "rc:overlay.relay_revoke", wait).await.is_some());
+        assert!(recv_t(&mut b, "rc:overlay.relay_revoke", wait).await.is_some());
+        if isolation == "enforce" {
+            // Make the long path fast but keep r0 as the best single relay.
+            // Its first successful mint spent one token; leave just one more.
+            let (status, body) = put(&rig.app, &policy_path(&agents[0]), &rig.seeded.admin.access_token,
+                json!({"serve":true,"approved_backbone_edges":[{"relay_agent_id":agents[1],"endpoint":"10.44.0.2:3478","cross_border":false}]})).await;
+            assert_eq!(status, 200, "{body}");
+            assert!(support::record_member_probe_fixture(network, a_id, &[
+                (ids[0], "223.6.6.6:3478".into(), true, Some(10)),
+                (ids[1], "223.6.6.7:3478".into(), false, None),
+                (ids[2], "223.6.6.8:3478".into(), false, None),
+            ]));
+            assert!(support::record_member_probe_fixture(network, b_id, &[
+                (ids[0], "223.6.6.6:3478".into(), true, Some(1000)),
+                (ids[1], "223.6.6.7:3478".into(), false, None),
+                (ids[2], "223.6.6.8:3478".into(), true, Some(10)),
+            ]));
+            assert!(support::record_backbone_probe_fixture(network, ids[0], &[(ids[1], "10.44.0.2:3478".into(), true, Some(5))]));
+            assert!(support::record_backbone_probe_fixture(network, ids[1], &[(ids[2], "10.44.0.3:3478".into(), true, Some(5))]));
+            let selected = support::select_path(network, a_id, b_id, false).await.unwrap().unwrap();
+            assert_eq!(selected, (agents.iter().map(|id| ObjectId::parse_str(id).unwrap()).collect(), false));
+            let limit = roomler_ai_remote_control::models::peer_relay_limits::MINT_RATE_LIMIT_PER_MINUTE;
+            for _ in 0..limit - 2 { assert!(network.relay_rate_limiter.check(a_id, ids[0], limit)); }
+            let pair = roomler_ai_mod_network::overlay::pair_key(a_id, b_id);
+            support::fail_next_nhop_audit_fixture(pair.clone());
+            if fallback {
+                a.send(Message::Text(json!({"t":"rc:overlay.org_relay_fallback_request", "peer_node_id":b_id.to_hex(), "request_id":2}).to_string().into())).await.unwrap();
+            } else { relay_request(&mut a, &b_id.to_hex()).await; }
+            let old = recv_t(&mut relays[0], "rc:overlay.relay_serve", wait).await.expect("single relay fallback after audit failure");
+            let grant_a = recv_t(&mut a, "rc:overlay.relay_session", wait).await.expect("single requester grant");
+            let grant_b = recv_t(&mut b, "rc:overlay.relay_session", wait).await.expect("single peer grant");
+            assert_eq!(grant_a["vni"], old["vni"]); assert_eq!(grant_b["vni"], old["vni"]);
+            assert!(network.org_relay.active_session(&pair).unwrap().hops.is_empty(), "failed audit must not mint long path");
+            assert!(!network.relay_rate_limiter.check(a_id, ids[0], limit), "attempt spent its final token exactly once");
+        }
+    }
+}

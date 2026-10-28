@@ -2196,7 +2196,7 @@ async fn maybe_mint_line(
         .await;
     }
     let mut charged_relay = None;
-    match path_mint::mint(state, requester, peer, warn_only, &mut charged_relay).await {
+    match path_mint::mint(state, requester, peer, warn_only, false, &mut charged_relay).await {
         Ok(true) => return,
         Ok(false) => {},
         Err(reason) => {
@@ -2773,6 +2773,13 @@ pub async fn maybe_mint(state: &NetworkState, requester: &OverlayNode, peer: &Ov
         }
     }
 
+    let mut charged_relay = None;
+    match path_mint::mint(state, requester, peer, warn_only, true, &mut charged_relay).await {
+        Ok(true) => return,
+        Ok(false) => {},
+        Err(reason) => debug!(%tenant_id, %pk, ?reason, "org-relay: multi-hop attempt failed; replan"),
+    }
+
     // An implicit plan rests on live connections, so it mints under the
     // eligibility fence, whose claim also spends its rate budget (once).
     let epoch = state.org_relay.eligibility_generation();
@@ -2780,7 +2787,7 @@ pub async fn maybe_mint(state: &NetworkState, requester: &OverlayNode, peer: &Ov
         let relay_id = plan.relay.id.unwrap_or_default();
         // Gate 5 belongs to minting, not metadata discovery. Preserve its
         // existing requester->relay ceiling and audited refusal behavior.
-        if plan.implicit
+        if plan.implicit || charged_relay == Some(relay_id)
             || state
                 .relay_rate_limiter
                 .check(req_id, relay_id, limits::MINT_RATE_LIMIT_PER_MINUTE)
@@ -2809,7 +2816,7 @@ pub async fn maybe_mint(state: &NetworkState, requester: &OverlayNode, peer: &Ov
         }
     };
     let fence = plan.implicit.then_some(epoch);
-    mint_plan(state, requester, peer, plan, warn_only, fence).await;
+    mint_plan(state, requester, peer, plan, warn_only, fence, charged_relay).await;
 }
 
 /// Time a re-pushed session needs to bind before the relay's bind deadline:
@@ -2839,8 +2846,8 @@ pub async fn maybe_mint_fallback(state: &NetworkState, requester: &OverlayNode, 
         revoke_where(state, "nhop_reauthorization_failed", |current| current.pair_key == pk
             && current.vni == session.vni && current.generation == session.generation).await;
     }
-    let mut epoch = state.org_relay.eligibility_generation();
-    let mut verdict =
+    let epoch = state.org_relay.eligibility_generation();
+    let verdict =
         plan_mint_candidates_reusing(state, requester, peer, cached.as_ref(), ZoneScope::Pair).await;
     if epoch != state.org_relay.eligibility_generation()
         || crate::overlay::org_fallback_forced_derp(state, &pk) { return; }
@@ -2875,25 +2882,29 @@ pub async fn maybe_mint_fallback(state: &NetworkState, requester: &OverlayNode, 
                     && current.generation == session.generation
             })
             .await;
-            epoch = state.org_relay.eligibility_generation();
-            verdict = plan_mint_candidates(state, requester, peer).await;
         }
         if !authorized {
             revoke_where(state, "org-fallback-reauthorization", |current| {
                 current.pair_key == pk && current.vni == session.vni
                     && current.generation == session.generation
             }).await;
-            // Revocation changes the epoch. Re-read after its audit await so
-            // a concurrent approval/ACL/membership change cannot reuse a plan.
-            epoch = state.org_relay.eligibility_generation();
-            verdict = plan_mint_candidates(state, requester, peer).await;
         }
     }
+    if crate::overlay::org_fallback_forced_derp(state, &pk) { return; }
+    let mut charged_relay = None;
+    match path_mint::mint(state, requester, peer, mode == PeerRelayMode::Warn, true, &mut charged_relay).await {
+        Ok(true) => return,
+        Ok(false) => {},
+        Err(reason) => debug!(%tenant_id, %pk, ?reason, "org-relay: fallback multi-hop attempt failed; replan"),
+    }
+    // Multi-hop selection awaits fresh reads and may observe policy changes.
+    let epoch = state.org_relay.eligibility_generation();
+    let verdict = plan_mint_candidates(state, requester, peer).await;
     if epoch != state.org_relay.eligibility_generation()
         || crate::overlay::org_fallback_forced_derp(state, &pk) { return; }
     let verdict = verdict.and_then(|plans| plans.into_iter().next().ok_or(PeerRelayDenyReason::NoRelay));
     match verdict {
-        Ok(plan) => mint_plan(state, requester, peer, plan, mode == PeerRelayMode::Warn, Some(epoch)).await,
+        Ok(plan) => mint_plan(state, requester, peer, plan, mode == PeerRelayMode::Warn, Some(epoch), charged_relay).await,
         Err(reason) => audit_mint(state, tenant_id, req_id, peer_id, None, None,
             mode == PeerRelayMode::Warn, Some(reason)).await,
     }
@@ -2906,6 +2917,7 @@ async fn mint_plan(
     plan: Plan,
     warn_only: bool,
     fallback_epoch: Option<u64>,
+    charged_relay: Option<ObjectId>,
 ) {
     let tenant_id = requester.tenant_id;
     let (Some(req_id), Some(peer_id)) = (requester.id, peer.id) else { return };
@@ -2977,7 +2989,7 @@ async fn mint_plan(
         if let Some(epoch) = fallback_epoch {
             if epoch != state.org_relay.eligibility_generation()
                 || crate::overlay::org_fallback_forced_derp(state, &pk) { return false; }
-            if !state.relay_rate_limiter.check(req_id, relay_id, limits::MINT_RATE_LIMIT_PER_MINUTE) {
+            if charged_relay != Some(relay_id) && !state.relay_rate_limiter.check(req_id, relay_id, limits::MINT_RATE_LIMIT_PER_MINUTE) {
                 refusal = Some(PeerRelayDenyReason::RateLimited);
                 return false;
             }
@@ -2986,6 +2998,10 @@ async fn mint_plan(
     });
     match claim {
         trial::MintClaim::Existing(current) => {
+            if current.hops.len() > 1 {
+                let _ = path_mint::repush(state, requester, peer, &current).await;
+                return;
+            }
             // Fallback must reauthorize this exact winner; ordinary mint has
             // the same reuse semantics as maybe_mint's existing-session path.
             let authorized = fallback_epoch.is_none() || (current.relay.node_id == relay_id

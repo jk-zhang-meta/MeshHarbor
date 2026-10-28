@@ -23,6 +23,25 @@ pub(super) fn select(
     state: &NetworkState,
     prepared: PreparedGraph,
 ) -> Result<Option<SelectedPath>, Deny> {
+    select_inner(state, prepared, false)
+}
+
+/// Actual multi-hop grants require known member zones and matching end relays.
+pub(super) fn select_for_mint(
+    state: &NetworkState,
+    prepared: PreparedGraph,
+) -> Result<Option<SelectedPath>, Deny> {
+    if prepared.requester_zone.is_none() || prepared.peer_zone.is_none() {
+        return Err(Deny::ZoneDenied);
+    }
+    select_inner(state, prepared, true)
+}
+
+fn select_inner(
+    state: &NetworkState,
+    prepared: PreparedGraph,
+    require_ends: bool,
+) -> Result<Option<SelectedPath>, Deny> {
     if prepared.eligibility_epoch != state.org_relay.eligibility_generation() {
         return Err(Deny::PolicyUnreadable);
     }
@@ -81,6 +100,7 @@ pub(super) fn select(
                 .max(t_policy),
         )
     };
+    let restrict_ends = prepared.restrict_ends || require_ends;
     let mut forward = Vec::with_capacity(prepared.graph.relays.len());
     let mut reverse = Vec::with_capacity(prepared.graph.relays.len());
     for relay in &prepared.graph.relays {
@@ -112,17 +132,14 @@ pub(super) fn select(
         let load = state.org_relay.sessions_on_relay(relay.node_id);
         forward.push(SearchRelay {
             node_id: relay.node_id,
-            ingress: (!prepared.restrict_ends || relay.zone == prepared.requester_zone)
-                .then_some(a_probe),
-            exit: (!prepared.restrict_ends || relay.zone == prepared.peer_zone).then_some(b_probe),
+            ingress: (!restrict_ends || relay.zone == prepared.requester_zone).then_some(a_probe),
+            exit: (!restrict_ends || relay.zone == prepared.peer_zone).then_some(b_probe),
             load,
         });
         reverse.push(SearchRelay {
             node_id: relay.node_id,
-            ingress: (!prepared.restrict_ends || relay.zone == prepared.peer_zone)
-                .then_some(b_probe),
-            exit: (!prepared.restrict_ends || relay.zone == prepared.requester_zone)
-                .then_some(a_probe),
+            ingress: (!restrict_ends || relay.zone == prepared.peer_zone).then_some(b_probe),
+            exit: (!restrict_ends || relay.zone == prepared.requester_zone).then_some(a_probe),
             load,
         });
     }

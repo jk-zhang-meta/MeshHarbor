@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 G ROX EOOD
-//! Cross-zone multi-relay mint. Rechecks the selected path against a fresh
+//! Multi-relay mint. Rechecks the selected path against a fresh
 //! gate snapshot and records each crossing before claiming or sending it.
 
 use super::*;
@@ -17,13 +17,14 @@ struct ChosenEdge {
     cross_border: bool,
 }
 
-/// Attempt a selected multi-relay cross-zone path. No grants are sent if
+/// Attempt a selected multi-relay path. No grants are sent if
 /// a policy, live identity, edge, capacity, VNI or crossing audit check fails.
 pub(super) async fn mint(
     state: &NetworkState,
     requester: &OverlayNode,
     peer: &OverlayNode,
     warn_only: bool,
+    same_zone_only: bool,
     charged_relay: &mut Option<ObjectId>,
 ) -> Result<bool, Deny> {
     let (Some(a), Some(b)) = (requester.id, peer.id) else {
@@ -35,7 +36,12 @@ pub(super) async fn mint(
     if original.warn_only != warn_only {
         return Err(Deny::PolicyUnreadable);
     }
-    let Some(selected) = path_select::select(state, original).unwrap_or(None) else {
+    if same_zone_only
+        && (original.requester_zone.is_none() || original.requester_zone != original.peer_zone)
+    {
+        return Ok(false);
+    }
+    let Some(selected) = path_select::select_for_mint(state, original).unwrap_or(None) else {
         return Ok(false);
     };
     let graph = &selected.prepared.graph;
@@ -139,6 +145,9 @@ pub(super) async fn mint(
         || last_zone.is_none()
         || relays[0].1.zone != first_zone
         || relays[relays.len() - 1].1.zone != last_zone
+        || (same_zone_only
+            && (first_zone != last_zone
+                || relays.iter().any(|(_, relay, _)| relay.zone != first_zone)))
     {
         return Err(Deny::ZoneDenied);
     }
@@ -204,13 +213,6 @@ pub(super) async fn mint(
             bridge_secrets: [random_secret(), random_secret()],
         });
     }
-    if !session
-        .hops
-        .iter()
-        .any(|hop| hop.requires_cross_border_approval)
-    {
-        return Err(Deny::ZoneDenied);
-    }
     path_delivery::build(&session, Instant::now()).map_err(|_| Deny::PolicyUnreadable)?;
     if fresh.eligibility_epoch != state.org_relay.eligibility_generation() {
         return Err(Deny::PolicyUnreadable);
@@ -235,6 +237,35 @@ pub(super) async fn mint(
     #[cfg(feature = "path-planner-test-support")]
     if super::candidate_test_support::take_nhop_audit_failure(&session.pair_key) {
         return Err(Deny::PolicyUnreadable);
+    }
+    if !session
+        .hops
+        .iter()
+        .any(|h| h.requires_cross_border_approval)
+    {
+        let event = PeerRelayAuditEvent {
+            id: None,
+            tenant_id: session.tenant_id,
+            action: PeerRelayAuditAction::Mint,
+            agent_id: Some(session.relay_agent_id),
+            user_id: None,
+            requester_node_id: Some(a),
+            peer_node_id: Some(b),
+            relay_node_id: Some(session.relay.node_id),
+            serve: None,
+            vni: None,
+            warn_only,
+            at: DateTime::now(),
+            denied: None,
+            reason: Some("multi_hop_same_zone_attempt".into()),
+        };
+        if !matches!(
+            tokio::time::timeout(Duration::from_secs(3), state.peer_relay_audit.record(event))
+                .await,
+            Ok(Ok(_))
+        ) {
+            return Err(Deny::PolicyUnreadable);
+        }
     }
     for (i, hop) in session
         .hops
