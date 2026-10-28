@@ -3466,3 +3466,124 @@ async fn staged_nhop_trial_zone_fixture_rechecks_middle_and_members() {
         }
     }
 }
+
+/// The complete four-relay trial carries real encrypted packets before and
+/// after bilateral commit; only the second return ACK retires all resources.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn staged_nhop_trial_actual_wg_commit_and_bilateral_return() {
+    use roomler_ai_mod_network::org_relay::candidate_test_support as support;
+    use roomler_ai_remote_control::signaling::ServerMsg;
+    use roomlerd::relay_server::backbone_test_support::{BindSecret, Carrier, NativeRelay, OrgRelayConn, WgDevice, WgKeypair, bind_member};
+    use std::{net::Ipv4Addr, sync::{Arc, atomic::AtomicBool}};
+    let mut native = Vec::new();
+    for _ in 0..4 { native.push(NativeRelay::start().await.unwrap()); }
+    let key_a = WgKeypair::generate(); let key_b = WgKeypair::generate();
+    let slug = "iso-nhop-trial-wg"; let rig = Rig::up(slug, "enforce").await;
+    let mut relays = Vec::new(); let mut agents = Vec::new(); let mut nodes = Vec::new();
+    for i in 0..4u8 {
+        let name = format!("{slug}-r{i}");
+        let (agent, token) = enroll(&rig.app, &rig.seeded, &name).await;
+        let mut ws = connect_from(&rig.app, &token, &["relay-server"], Some(CN_R)).await;
+        assert_observed(&rig.app, &agent, Some(CN_R)).await;
+        line_join(&mut ws, 10+i, &format!("223.6.6.{}:41641",6+i), json!({"relay_backbone_ready":true})).await;
+        assert_eq!(approve(&rig.app,&rig.seeded,&agent,true).await,200);
+        let node = rig.node(&name).await; grant_relay(&rig.app,&rig.seeded,&node).await;
+        relays.push(ws); agents.push(agent); nodes.push(node);
+    }
+    let mut a=rig.device(&format!("{slug}-a"),Some(CN_A)).await;
+    let mut b=rig.device(&format!("{slug}-b"),Some(CN_A)).await;
+    for (ws,key,endpoint) in [(&mut a,key_a.public_base64(),"223.5.5.5:41641"),(&mut b,key_b.public_base64(),"223.5.5.6:41641")] {
+        ws.send(Message::Text(json!({"t":"rc:overlay.join","wg_public_key":key,"mtu":1280,"endpoints":[endpoint],
+            "supports_org_relay":true,"supports_path_trial_v1":true,"supports_path_backbone_v1":true,
+            "supports_backbone_only_v1":true,"supports_server_relay_strategy":true,"org_primary":true}).to_string().into())).await.unwrap();
+        recv_t(ws,"rc:overlay.netmap",Duration::from_secs(5)).await.expect("member joined");
+    }
+    let a_id=ObjectId::parse_str(rig.node(&format!("{slug}-a")).await).unwrap();
+    let b_id=ObjectId::parse_str(rig.node(&format!("{slug}-b")).await).unwrap();
+    let network=rig.app.state.network(); set_mode(&rig.app,&rig.seeded,"on").await;
+    for i in 0..3 {
+        let path=format!("/api/tenant/{}/agent/{}/peer-relay-policy",rig.seeded.tenant_id,agents[i]);
+        let (status,body)=put(&rig.app,&path,&rig.seeded.admin.access_token,json!({"serve":true,"approved_backbone_edges":[
+            {"relay_agent_id":agents[i+1],"endpoint":native[i+1].underlay_endpoint().to_string(),"cross_border":false}]})).await;
+        assert_eq!(status,200,"{body}");
+    }
+    a.send(Message::Text(json!({"t":"rc:overlay.path_trial_request","peer_node_id":b_id.to_hex(),"request_id":1,
+        "path":{"relay_node_ids":nodes},"requester_at_exit":false}).to_string().into())).await.unwrap();
+    let wait=Duration::from_secs(8); let mut serves=Vec::new(); let mut bridges=Vec::new();
+    for ws in &mut relays { serves.push(recv_t(ws,"rc:overlay.relay_serve",wait).await.expect("trial relay serve")); }
+    for ws in relays.iter_mut().take(3) { bridges.push(recv_t(ws,"rc:overlay.relay_bridge_serve",wait).await.expect("trial bridge serve")); }
+    let sa=recv_t(&mut a,"rc:overlay.path_trial_start",wait).await.expect("requester Start");
+    let sb=recv_t(&mut b,"rc:overlay.path_trial_start",wait).await.expect("peer Start");
+    assert_eq!(sa["trial_id"],sb["trial_id"]); assert_eq!(sa["path"]["relay_node_ids"],json!(nodes));
+    assert_eq!(sa["vni"],serves[0]["vni"]); assert_eq!(sb["vni"],serves[3]["vni"]);
+    for i in 0..3 { assert_eq!(bridges[i]["bridge"]["local_vni"],serves[i]["vni"]); assert_eq!(bridges[i]["bridge"]["remote_vni"],serves[i+1]["vni"]); }
+    for (r,s) in native.iter().zip(&serves) { r.serve(serde_json::from_value::<ServerMsg>(s.clone()).unwrap(),None); }
+    for i in 0..3 { native[i].serve(serde_json::from_value(bridges[i].clone()).unwrap(),Some(native[i].policy_to(&native[i+1]))); }
+    let socket_a=Arc::new(tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap());
+    let socket_b=Arc::new(tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap());
+    let secret=|f:&Value| BindSecret::from_bytes(BASE64.decode(f["bind_secret"].as_str().unwrap()).unwrap().try_into().unwrap());
+    let vni=|f:&Value| f["vni"].as_u64().unwrap() as u32;
+    let generation=|f:&Value| f["generation"].as_u64().unwrap();
+    bind_member(&socket_a,native[0].endpoint(),vni(&sa),generation(&sa),&secret(&sa),Duration::from_secs(5)).await.unwrap();
+    bind_member(&socket_b,native[3].endpoint(),vni(&sb),generation(&sb),&secret(&sb),Duration::from_secs(5)).await.unwrap();
+    let ca=Arc::new(OrgRelayConn::new(socket_a,native[0].endpoint(),vni(&sa),"nhop-trial-ingress".into()));
+    let cb=Arc::new(OrgRelayConn::new(socket_b,native[3].endpoint(),vni(&sb),"nhop-trial-exit".into()));
+    let carrier_a=Arc::new(Carrier::Relay{dst:ca.synth_peer(),conn:ca,dead:AtomicBool::new(false)});
+    let carrier_b=Arc::new(Carrier::Relay{dst:cb.synth_peer(),conn:cb,dead:AtomicBool::new(false)});
+    let ip_a:Ipv4Addr=network.overlay_nodes.base.find_by_id(a_id).await.unwrap().overlay_ip.parse().unwrap();
+    let ip_b:Ipv4Addr=network.overlay_nodes.base.find_by_id(b_id).await.unwrap().overlay_ip.parse().unwrap();
+    let (mut wg_a,mut received_a)=WgDevice::new(key_a.secret.clone());
+    let (mut wg_b,mut received_b)=WgDevice::new(key_b.secret.clone());
+    wg_a.add_peer(key_b.public.to_bytes(),ip_b,carrier_a,true); wg_b.add_peer(key_a.public.to_bytes(),ip_a,carrier_b,false);
+    let packet=|source:Ipv4Addr,target:Ipv4Addr,payload:&[u8]| {
+        let mut bytes=vec![0u8;20+payload.len()];bytes[0]=0x45;let n=bytes.len() as u16;bytes[2..4].copy_from_slice(&n.to_be_bytes());
+        bytes[8]=64;bytes[9]=17;bytes[12..16].copy_from_slice(&source.octets());bytes[16..20].copy_from_slice(&target.octets());bytes[20..].copy_from_slice(payload);bytes
+    };
+    let forward=packet(ip_a,ip_b,b"four relay trial WG forward");
+    tokio::time::timeout(Duration::from_secs(10),async { loop { wg_a.send_ip_packet(&forward).await;
+        if let Ok(Some(got))=tokio::time::timeout(Duration::from_millis(100),received_b.recv()).await { if got==forward { break; } }
+    }}).await.expect("real four relay forward data");
+    let reverse=packet(ip_b,ip_a,b"four relay trial WG reverse");
+    tokio::time::timeout(Duration::from_secs(8),async { loop { wg_b.send_ip_packet(&reverse).await;
+        if let Ok(Some(got))=tokio::time::timeout(Duration::from_millis(100),received_a.recv()).await { if got==reverse { break; } }
+    }}).await.expect("real four relay reverse data");
+    async fn signal(ws:&mut Ws,t:&str,id:&Value,return_id:Option<&str>) {
+        let mut v=json!({"t":t,"trial_id":id});if let Some(r)=return_id {v["return_id"]=json!(r);}
+        ws.send(Message::Text(v.to_string().into())).await.unwrap();
+    }
+    let id=sa["trial_id"].clone();
+    signal(&mut a,"rc:overlay.path_trial_ready",&id,None).await;
+    assert!(recv_t(&mut a,"rc:overlay.path_trial_commit",Duration::from_millis(100)).await.is_none(),"one Ready committed path");
+    signal(&mut b,"rc:overlay.path_trial_ready",&id,None).await;
+    for ws in [&mut a,&mut b] { assert_eq!(recv_t(ws,"rc:overlay.path_trial_commit",wait).await.unwrap()["trial_id"],id); }
+    signal(&mut a,"rc:overlay.path_trial_committed",&id,None).await;
+    assert!(recv_t(&mut a,"rc:overlay.path_trial_finalize",Duration::from_millis(100)).await.is_none(),"one ACK finalized path");
+    signal(&mut b,"rc:overlay.path_trial_committed",&id,None).await;
+    for ws in [&mut a,&mut b] { assert_eq!(recv_t(ws,"rc:overlay.path_trial_finalize",wait).await.unwrap()["trial_id"],id); }
+    for node in &nodes {assert_eq!(support::trial_slots_on_relay(network,ObjectId::parse_str(node).unwrap()),1);}
+    let return_id=ObjectId::new().to_hex(); signal(&mut a,"rc:overlay.path_trial_return_request",&id,Some(&return_id)).await;
+    for ws in [&mut a,&mut b] {assert_eq!(recv_t(ws,"rc:overlay.path_trial_return_prepare",wait).await.unwrap()["return_id"],return_id);}
+    signal(&mut a,"rc:overlay.path_trial_return_ready",&id,Some(&return_id)).await;
+    signal(&mut b,"rc:overlay.path_trial_return_ready",&id,Some(&return_id)).await;
+    for ws in [&mut a,&mut b] {recv_t(ws,"rc:overlay.path_trial_return_commit",wait).await.expect("bilateral return commit");}
+    signal(&mut a,"rc:overlay.path_trial_returned",&id,Some(&return_id)).await;
+    signal(&mut a,"rc:overlay.path_trial_return_request",&id,Some(&return_id)).await;
+    for ws in [&mut a,&mut b] {recv_t(ws,"rc:overlay.path_trial_return_commit",wait).await.expect("one-ACK return replay");}
+    for node in &nodes {assert_eq!(support::trial_slots_on_relay(network,ObjectId::parse_str(node).unwrap()),1,"one return ACK released a relay");}
+    signal(&mut b,"rc:overlay.path_trial_returned",&id,Some(&return_id)).await;
+    for ws in [&mut a,&mut b] {recv_t(ws,"rc:overlay.path_trial_return_finalize",wait).await.expect("bilateral return finalize");}
+    for (i,ws) in relays.iter_mut().enumerate() {
+        let revoke=recv_t(ws,"rc:overlay.relay_revoke",wait).await.expect("all trial relays retired");
+        assert_eq!(revoke["vni"],serves[i]["vni"]);native[i].serve(serde_json::from_value(revoke).unwrap(),None);
+    }
+    for (i,ws) in relays.iter_mut().enumerate().take(3) {
+        let revoke=recv_t(ws,"rc:overlay.relay_bridge_revoke",wait).await.expect("all trial bridges retired");
+        assert_eq!(revoke["trial_id"],bridges[i]["bridge"]["trial_id"]);
+        native[i].serve(serde_json::from_value(revoke).unwrap(),None);
+    }
+    for node in &nodes {assert_eq!(support::trial_slots_on_relay(network,ObjectId::parse_str(node).unwrap()),0);}
+    while received_a.try_recv().is_ok() {} while received_b.try_recv().is_ok() {}
+    let stopped=packet(ip_a,ip_b,b"returned four relay trial cannot carry data");
+    for _ in 0..4 {wg_a.send_ip_packet(&stopped).await;
+        if let Ok(Some(got))=tokio::time::timeout(Duration::from_millis(120),received_b.recv()).await {assert_ne!(got,stopped,"returned trial still carried data");}}
+}
