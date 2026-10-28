@@ -912,6 +912,12 @@ pub mod backbone_test_support {
         pub fn session_counts(&self) -> RelayCounts {
             self.running.stats.snapshot()
         }
+        pub fn watch_rejected_wg_data(&self, source: SocketAddr, vni: u32, wg_len: usize) {
+            self.running.stats.fixture_watch_rejected_data(source, vni, wg_len);
+        }
+        pub fn rejected_wg_data_count(&self) -> u64 {
+            self.running.stats.fixture_rejected_data_count()
+        }
         pub fn bridge_evidence(
             &self,
             id: ObjectId,

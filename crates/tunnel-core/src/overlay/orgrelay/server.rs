@@ -66,6 +66,16 @@ pub struct RelayStats {
     drop_bad_cookie: AtomicU64,
     drop_bad_tag2: AtomicU64,
     panics_caught: AtomicU64,
+    #[cfg(feature = "path-trial-test-support")]
+    rejected_data_fixture: std::sync::Mutex<Option<RejectedDataFixture>>,
+}
+
+#[cfg(feature = "path-trial-test-support")]
+struct RejectedDataFixture {
+    source: SocketAddr,
+    vni: u32,
+    wg_len: usize,
+    count: u64,
 }
 
 /// A plain snapshot — the reader.
@@ -97,6 +107,19 @@ pub struct RelayCounts {
 }
 
 impl RelayStats {
+    /// Fixture-only observation; scoped to one source, VNI and WG data length.
+    #[cfg(feature = "path-trial-test-support")]
+    pub fn fixture_watch_rejected_data(&self, source: SocketAddr, vni: u32, wg_len: usize) {
+        *self.rejected_data_fixture.lock().unwrap_or_else(|e| e.into_inner()) =
+            Some(RejectedDataFixture { source, vni, wg_len, count: 0 });
+    }
+
+    #[cfg(feature = "path-trial-test-support")]
+    pub fn fixture_rejected_data_count(&self) -> u64 {
+        self.rejected_data_fixture.lock().unwrap_or_else(|e| e.into_inner())
+            .as_ref().map_or(0, |fixture| fixture.count)
+    }
+
     pub fn snapshot(&self) -> RelayCounts {
         let l = |a: &AtomicU64| a.load(Ordering::Relaxed);
         RelayCounts {
@@ -355,6 +378,17 @@ impl RelayServer {
                     })
                 }
                 RelayAction::Drop(r) => {
+                    #[cfg(feature = "path-trial-test-support")]
+                    if r == DropReason::UnknownVni {
+                        if let Some(fixture) = self.stats.rejected_data_fixture.lock()
+                            .unwrap_or_else(|e| e.into_inner()).as_mut()
+                            && fixture.source == src && fixture.vni == vni
+                            && fixture.wg_len == payload.len()
+                            && payload.starts_with(&[4, 0, 0, 0])
+                        {
+                            fixture.count = fixture.count.saturating_add(1);
+                        }
+                    }
                     self.stats.record_drop(r);
                     None
                 }
