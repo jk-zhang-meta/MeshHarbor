@@ -3590,21 +3590,32 @@ pub(crate) async fn recheck_zones(state: &NetworkState, agent_id: ObjectId, reas
 /// mode. A changing eligibility epoch defers the decision instead of revoking
 /// from a mixed snapshot; retry is deduplicated per affected relay.
 pub(crate) async fn recheck_trial_zones(state: &NetworkState, agent_id: ObjectId, reason: &str) {
-    if !trial::recheck_relay_zones(state, agent_id, reason).await.is_empty() {
-        schedule_trial_zone_retry(state);
+    let ids = trial::recheck_relay_zones(state, agent_id, reason).await;
+    if !ids.is_empty() {
+        schedule_trial_zone_retry(state, ids);
     }
 }
 
 #[derive(Default)]
 struct TrialZoneRetry {
     running: bool,
-    requested: bool,
     generation: u64,
+    pending: std::collections::VecDeque<ObjectId>,
+    queued: std::collections::HashSet<ObjectId>,
+    rescan: bool,
 }
 
 impl TrialZoneRetry {
-    fn request(&mut self) -> Option<u64> {
-        self.requested = true;
+    fn enqueue(&mut self, id: ObjectId) {
+        if self.queued.contains(&id) { return; }
+        if self.pending.len() >= trial::MAX_TRIALS { self.rescan = true; return; }
+        self.queued.insert(id);
+        self.pending.push_back(id);
+    }
+
+    fn request(&mut self, ids: impl IntoIterator<Item = ObjectId>) -> Option<u64> {
+        for id in ids { self.enqueue(id); }
+        if self.pending.is_empty() && !self.rescan { return None; }
         if self.running { None } else {
             self.running = true;
             self.generation = self.generation.wrapping_add(1);
@@ -3612,15 +3623,17 @@ impl TrialZoneRetry {
         }
     }
 
-    fn finish_pass(&mut self, generation: u64, retry: bool) -> bool {
+    fn finish_pass(&mut self, generation: u64, retry: impl IntoIterator<Item = ObjectId>) -> bool {
         if !self.running || self.generation != generation { return false; }
-        if retry || self.requested { true } else { self.running = false; false }
+        for id in retry { self.enqueue(id); }
+        if self.rescan || !self.pending.is_empty() { true } else { self.running = false; false }
     }
 
     fn abnormal_exit(&mut self, generation: u64) -> bool {
         if !self.running || self.generation != generation { return false; }
         self.running = false;
-        self.requested = true;
+        // Any in-flight IDs may have been removed from the queue.
+        self.rescan = true;
         true
     }
 }
@@ -3640,27 +3653,34 @@ impl Drop for TrialZoneWorkerGuard {
         // normal delayed scheduler. A never-polled task can be dropped during
         // runtime shutdown; do not recursively spawn during shutdown.
         if owns_worker && self.started && tokio::runtime::Handle::try_current().is_ok() {
-            schedule_trial_zone_retry(&self.state);
+            schedule_trial_zone_retry(&self.state, std::collections::HashSet::new());
         }
     }
 }
 
-fn schedule_trial_zone_retry(state: &NetworkState) {
-    let generation = state.org_relay.trial_zone_retry.lock().unwrap_or_else(|e| e.into_inner()).request();
+fn schedule_trial_zone_retry(state: &NetworkState, ids: std::collections::HashSet<ObjectId>) {
+    let generation = state.org_relay.trial_zone_retry.lock().unwrap_or_else(|e| e.into_inner()).request(ids);
     let Some(generation) = generation else { return };
     let state = state.clone();
     let mut guard = TrialZoneWorkerGuard { state: state.clone(), generation, started: false, completed: false };
     tokio::spawn(async move {
         guard.started = true;
         loop {
-            // ponytail: one worker scans live trials, not one timer per hop.
+            // One worker processes a FIFO batch of trial IDs per pass.
             tokio::time::sleep(Duration::from_secs(5)).await;
-            {
+            trial::refill_zone_retry_if_needed(&state, generation);
+            let batch = {
                 let mut retry = state.org_relay.trial_zone_retry.lock().unwrap_or_else(|e| e.into_inner());
                 if !retry.running || retry.generation != generation { guard.completed = true; return; }
-                retry.requested = false;
-            }
-            let pending = !trial::recheck_all_trial_zones(&state, "zone_retry").await.is_empty();
+                let mut batch = std::collections::HashSet::new();
+                for _ in 0..4 {
+                    let Some(id) = retry.pending.pop_front() else { break };
+                    retry.queued.remove(&id);
+                    batch.insert(id);
+                }
+                batch
+            };
+            let pending = trial::recheck_trial_zone_batch(&state, &batch, "zone_retry").await;
             let again = state.org_relay.trial_zone_retry.lock().unwrap_or_else(|e| e.into_inner()).finish_pass(generation, pending);
             if !again { guard.completed = true; break; }
         }
@@ -3839,14 +3859,15 @@ mod tests {
         use std::sync::{Arc, Barrier, Mutex};
         for _ in 0..32 {
             let queue = Arc::new(Mutex::new(TrialZoneRetry::default()));
-            let generation = queue.lock().unwrap().request().unwrap();
-            assert!(queue.lock().unwrap().request().is_none());
-            queue.lock().unwrap().requested = false; // worker begins its pass
+            let id = ObjectId::new();
+            let generation = queue.lock().unwrap().request([id]).unwrap();
+            assert!(queue.lock().unwrap().request([id]).is_none());
+            { let mut q = queue.lock().unwrap(); assert_eq!(q.pending.pop_front(), Some(id)); q.queued.remove(&id); }
             let barrier = Arc::new(Barrier::new(3));
             let q = queue.clone(); let b = barrier.clone();
-            let finish = std::thread::spawn(move || { b.wait(); q.lock().unwrap().finish_pass(generation, false) });
+            let finish = std::thread::spawn(move || { b.wait(); q.lock().unwrap().finish_pass(generation, []) });
             let q = queue.clone(); let b = barrier.clone();
-            let request = std::thread::spawn(move || { b.wait(); q.lock().unwrap().request() });
+            let request = std::thread::spawn(move || { b.wait(); q.lock().unwrap().request([id]) });
             barrier.wait();
             let kept_running = finish.join().unwrap();
             let started_again = request.join().unwrap().is_some();
@@ -3858,25 +3879,36 @@ mod tests {
     #[test]
     fn abnormal_zone_worker_exit_remains_retryable() {
         let mut retry = TrialZoneRetry::default();
-        let generation = retry.request().unwrap();
-        retry.requested = false;
+        let generation = retry.request([ObjectId::new()]).unwrap();
         assert!(retry.abnormal_exit(generation));
-        assert!(!retry.running && retry.requested);
-        assert!(retry.request().is_some());
-        assert!(retry.running && retry.requested);
+        assert!(!retry.running && retry.rescan);
+        assert!(retry.request([]).is_some());
+        assert!(retry.running && retry.rescan);
     }
 
     #[test]
     fn old_zone_worker_exit_cannot_clobber_new_generation() {
         let mut retry = TrialZoneRetry::default();
-        let old = retry.request().unwrap();
-        retry.requested = false;
-        assert!(!retry.finish_pass(old, false));
-        let new = retry.request().unwrap();
+        let id = ObjectId::new();
+        let old = retry.request([id]).unwrap();
+        retry.pending.clear(); retry.queued.clear();
+        assert!(!retry.finish_pass(old, []));
+        let new = retry.request([id]).unwrap();
         assert_ne!(old, new);
         assert!(!retry.abnormal_exit(old));
-        assert!(retry.running && retry.requested);
+        assert!(retry.running && retry.queued.contains(&id));
         assert_eq!(retry.generation, new);
+    }
+
+    #[test]
+    fn zone_retry_queue_deduplicates_and_overflow_requests_a_rescan() {
+        let mut retry = TrialZoneRetry::default();
+        let first = ObjectId::new();
+        retry.enqueue(first); retry.enqueue(first);
+        assert_eq!(retry.pending.len(), 1);
+        for _ in 1..=trial::MAX_TRIALS { retry.enqueue(ObjectId::new()); }
+        assert_eq!(retry.pending.len(), trial::MAX_TRIALS);
+        assert!(retry.rescan);
     }
 
     fn node_with(srflx: &[&str], lan: &[&str], endpoints: &[&str]) -> OverlayNode {

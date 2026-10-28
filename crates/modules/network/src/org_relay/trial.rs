@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 use tokio::sync::watch;
 
-const MAX_TRIALS: usize = 128;
+pub(super) const MAX_TRIALS: usize = 128;
 const MAX_TENANT_TRIALS: usize = 16;
 const PREPARE_TIMEOUT: Duration = Duration::from_secs(30);
 const READY_FRESH: Duration = Duration::from_secs(10);
@@ -222,7 +222,20 @@ pub(super) fn revoke_removed_backbone_edges(
 // independently while sharing the trial mutex and revoke ordering.
 #[path = "trial_zone.rs"]
 mod trial_zone;
-pub(super) use trial_zone::{recheck_all_trial_zones, recheck_relay_zones};
+pub(super) use trial_zone::{recheck_relay_zones, recheck_trial_zone_batch};
+
+/// Rebuild the bounded retry queue under the trial-table lock. All callers
+/// acquire locks in table -> retry order; no await occurs under either lock.
+pub(super) fn refill_zone_retry_if_needed(state: &NetworkState, generation: u64) {
+    let entries = state.org_relay.trials.entries.lock().unwrap_or_else(|e| e.into_inner());
+    let mut retry = state.org_relay.trial_zone_retry.lock().unwrap_or_else(|e| e.into_inner());
+    if retry.running && retry.generation == generation && retry.rescan {
+        retry.pending.clear();
+        retry.queued.clear();
+        retry.rescan = false;
+        for id in entries.keys().copied() { retry.enqueue(id); }
+    }
+}
 #[cfg(feature = "path-planner-test-support")]
 pub(super) use trial_zone::insert_trial_fixture;
 

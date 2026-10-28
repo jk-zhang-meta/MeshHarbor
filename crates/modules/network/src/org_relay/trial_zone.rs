@@ -261,19 +261,21 @@ pub(in crate::org_relay) async fn recheck_relay_zones(
     identity: ObjectId,
     reason: &str,
 ) -> HashSet<ObjectId> {
-    recheck_selected_zones(state, Some(identity), reason).await
+    recheck_selected_zones(state, Some(identity), None, reason).await
 }
 
-pub(in crate::org_relay) async fn recheck_all_trial_zones(
+pub(in crate::org_relay) async fn recheck_trial_zone_batch(
     state: &NetworkState,
+    ids: &HashSet<ObjectId>,
     reason: &str,
 ) -> HashSet<ObjectId> {
-    recheck_selected_zones(state, None, reason).await
+    recheck_selected_zones(state, None, Some(ids), reason).await
 }
 
 async fn recheck_selected_zones(
     state: &NetworkState,
     identity: Option<ObjectId>,
+    ids: Option<&HashSet<ObjectId>>,
     reason: &str,
 ) -> HashSet<ObjectId> {
     let snapshots: Vec<_> = {
@@ -286,7 +288,8 @@ async fn recheck_selected_zones(
         entries
             .values()
             .filter_map(capture)
-            .filter(|s| identity.is_none_or(|id| s.involves(id)))
+            .filter(|s| identity.is_some_and(|id| s.involves(id))
+                || ids.is_some_and(|ids| ids.contains(&s.id)))
             .collect()
     };
     let mut retry = HashSet::new();
