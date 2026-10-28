@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 G ROX EOOD
-//! Staged construction of a path graph from the existing live relay gates.
+//! Construction of a path graph from the existing live relay gates.
 //! It does not mint, send messages, or reserve resources. The caller must
 //! re-authorize and reserve the selected path before sending any grants.
 
@@ -58,8 +58,8 @@ fn eligible_from_plan(
     })
 }
 
-/// Snapshot a graph only from existing per-pair gates. No production caller
-/// is enabled yet. More than one edge is possible, but this function is not a
+/// Snapshot a graph only from existing per-pair gates. More than one edge is
+/// possible, but this function is not a
 /// session reservation: it cannot by itself authorize any later bridge grant.
 pub(super) async fn prepare(
     state: &NetworkState,

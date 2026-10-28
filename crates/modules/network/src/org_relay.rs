@@ -68,21 +68,22 @@ use crate::overlay::{
 use roomler_core::business_authority::{AuthenticatedDevice, BusinessZone};
 use roomler_core::net::is_global_unicast;
 
-// Staged until the authorized planner consumes this graph search.
+// Search over the currently authorized relay graph.
 #[allow(dead_code)]
 mod path_search;
-// Staged until the authorized planner constructs this edge set.
+// Construct directed edges from approved relay policies.
 #[allow(dead_code)]
 mod path_graph;
-// Staged snapshot builder; no production caller yet.
+// Build a live authorization snapshot for path selection.
 #[allow(dead_code)]
 mod path_candidate;
-// Staged search over an authorized snapshot; no production caller yet.
+// Rank paths from a common authorized snapshot.
 #[allow(dead_code)]
 mod path_select;
 // Structural message construction is shared by the existing two-relay mint
 // and the staged N-hop workflow; authorization and reservation stay outside.
 mod path_delivery;
+mod path_mint;
 // Staged atomic admission primitive; existing mint/trial owners are not yet coordinated.
 #[allow(dead_code)]
 mod path_reservation;
@@ -117,6 +118,50 @@ pub mod candidate_test_support {
     use std::collections::HashMap;
     use std::sync::{Mutex, OnceLock};
     use tokio::sync::oneshot;
+    struct NhopPartialPause {
+        reached: oneshot::Sender<()>,
+        resume: std::sync::mpsc::Receiver<()>,
+    }
+    fn nhop_partial_pauses() -> &'static Mutex<HashMap<String, NhopPartialPause>> {
+        static PAUSES: OnceLock<Mutex<HashMap<String, NhopPartialPause>>> = OnceLock::new();
+        PAUSES.get_or_init(|| Mutex::new(HashMap::new()))
+    }
+    /// Bounded test-only pause immediately before the first send under the delivery guard.
+    pub fn pause_nhop_before_first_fixture(pair: String) -> (oneshot::Receiver<()>, std::sync::mpsc::Sender<()>) {
+        let (reached_tx, reached_rx) = oneshot::channel();
+        let (resume_tx, resume_rx) = std::sync::mpsc::channel();
+        assert!(nhop_partial_pauses().lock().unwrap().insert(pair, NhopPartialPause { reached: reached_tx, resume: resume_rx }).is_none());
+        (reached_rx, resume_tx)
+    }
+    pub(super) fn pause_nhop_before_first_if_armed(pair: &str) {
+        let pause = nhop_partial_pauses().lock().unwrap().remove(pair);
+        if let Some(NhopPartialPause { reached, resume }) = pause {
+            let _ = reached.send(());
+            let _ = resume.recv_timeout(Duration::from_secs(5));
+        }
+    }
+    struct NhopDeliveryPause {
+        reached: oneshot::Sender<()>,
+        resume: oneshot::Receiver<()>,
+    }
+    fn nhop_delivery_pauses() -> &'static Mutex<HashMap<String, NhopDeliveryPause>> {
+        static PAUSES: OnceLock<Mutex<HashMap<String, NhopDeliveryPause>>> = OnceLock::new();
+        PAUSES.get_or_init(|| Mutex::new(HashMap::new()))
+    }
+    /// Pause one fixture pair after claim but before any delivery.
+    pub fn pause_nhop_delivery_fixture(pair: String) -> (oneshot::Receiver<()>, oneshot::Sender<()>) {
+        let (reached_tx, reached_rx) = oneshot::channel();
+        let (resume_tx, resume_rx) = oneshot::channel();
+        assert!(nhop_delivery_pauses().lock().unwrap().insert(pair, NhopDeliveryPause { reached: reached_tx, resume: resume_rx }).is_none());
+        (reached_rx, resume_tx)
+    }
+    pub(super) async fn pause_nhop_delivery_if_armed(pair: &str) {
+        let pause = nhop_delivery_pauses().lock().unwrap().remove(pair);
+        if let Some(NhopDeliveryPause { reached, resume }) = pause {
+            let _ = reached.send(());
+            let _ = resume.await;
+        }
+    }
     struct ProbePause {
         reached: oneshot::Sender<()>,
         resume: oneshot::Receiver<()>,
@@ -480,6 +525,9 @@ enum ProbeVerdict {
 
 #[derive(Default)]
 pub struct OrgRelayState {
+    // Serializes nonblocking N-hop delivery with synchronous revocation so a
+    // stale grant cannot be queued after its revoke on this control process.
+    delivery_guard: std::sync::Mutex<()>,
     sessions: DashMap<String, OrgRelaySession>,
     next_vni: DashMap<ObjectId, u32>,
     /// The server-wide logical clock the reference design calls `LamportID`:
@@ -2043,6 +2091,14 @@ async fn maybe_mint_line(
         })
         .await;
     }
+    match path_mint::mint(state, requester, peer, warn_only).await {
+        Ok(true) => return,
+        Ok(false) => {},
+        Err(reason) => {
+            audit_mint(state, tenant_id, req_id, peer_id, None, None, warn_only, Some(reason)).await;
+            return;
+        }
+    }
     match plan_line(state, requester, peer, zones).await {
         Ok(plan) => mint_line(state, requester, peer, plan, warn_only).await,
         Err(reason) => {
@@ -2864,28 +2920,29 @@ async fn mint_plan(
 /// `rc:overlay.relay_session` to member `i`, naming the OTHER member as its
 /// peer and carrying only its own secret and its own relay (on a line, each
 /// member's is in its own zone).
-async fn push_member(state: &NetworkState, s: &OrgRelaySession, i: usize) {
+fn member_message(s: &OrgRelaySession, i: usize) -> Option<ServerMsg> {
     let remaining = s.expires_at.saturating_duration_since(Instant::now()).as_secs()
         .min(u64::from(limits::MAX_LIFETIME_SECS)) as u32;
-    if remaining == 0 { return; }
+    if remaining == 0 { return None; }
     let me = &s.members[i];
     let other = &s.members[1 - i];
     let leg = s.member_leg(i);
-    send_to_node_ref(
-        state,
-        &me.party.node_ref,
-        ServerMsg::OverlayRelaySession {
-            vni: leg.vni,
-            generation: leg.generation,
-            peer_node_id: other.party.node_id,
-            relay_node_id: leg.relay_node_id,
-            relay_endpoints: leg.endpoints.to_vec(),
-            bind_secret: me.bind_secret.clone(),
-            bind_secs: limits::BIND_SECS,
-            max_lifetime_secs: remaining,
-        },
-    )
-    .await;
+    Some(ServerMsg::OverlayRelaySession {
+        vni: leg.vni,
+        generation: leg.generation,
+        peer_node_id: other.party.node_id,
+        relay_node_id: leg.relay_node_id,
+        relay_endpoints: leg.endpoints.to_vec(),
+        bind_secret: me.bind_secret.clone(),
+        bind_secs: limits::BIND_SECS,
+        max_lifetime_secs: remaining,
+    })
+}
+
+async fn push_member(state: &NetworkState, s: &OrgRelaySession, i: usize) {
+    if let Some(message) = member_message(s, i) {
+        send_to_node_ref(state, &s.members[i].party.node_ref, message).await;
+    }
 }
 
 /// How long consecutive identical refusals of one pair collapse into the
@@ -2968,6 +3025,8 @@ fn revoke_matching_sync(
     reason: &str,
     pred: impl Fn(&OrgRelaySession) -> bool,
 ) -> Vec<PeerRelayAuditEvent> {
+    // Do not let N-hop grants overtake these nonblocking revocations.
+    let _delivery = state.org_relay.delivery_guard.lock().unwrap_or_else(|e| e.into_inner());
     // Even zero current sessions must invalidate an in-flight authorization.
     state.org_relay.invalidate_eligibility();
     let victims: Vec<OrgRelaySession> = state

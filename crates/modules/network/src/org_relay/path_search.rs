@@ -2,8 +2,8 @@
 // Copyright (C) 2026 G ROX EOOD
 //! Directed relay-path search over a graph already authorized by the caller.
 //!
-//! This module is staged: no production planner calls it yet. The caller must
-//! build the graph from same-tenant relays, per-member grants, current zone and
+//! The caller must build the graph from same-tenant relays, per-member grants,
+//! current zone and
 //! backbone policy, and approved edges. Search alone grants no authority.
 
 use super::{ProbeVerdict, rank_legs};
@@ -115,7 +115,7 @@ pub(super) struct InvalidGraph;
 /// prefer fewer unreachable legs, then fewer relays, fewer unknown legs,
 /// known RTT, and load. This conservatively avoids rewarding longer paths for
 /// unmeasured/down links having zero measured RTT. Legacy production ranking
-/// differs; this staged policy must not be enabled until integration review.
+/// differs; selected longer paths are checked again before minting.
 ///
 /// Class thresholds are searched separately: a later worse leg can equalize
 /// prefix classes. Inside a threshold every cost component adds non-negative

@@ -1730,3 +1730,297 @@ async fn staged_graph_three_relay_zone_recheck_preserves_valid_and_revokes_chang
         assert!(state.org_relay.active_session(key).is_none(), "{key} must be revoked");
     }
 }
+
+/// Drive the real cross-zone request handler through a three-relay chain with
+/// one same-zone edge and one approved crossing. This checks control messages,
+/// per-crossing audit, actual WireGuard data, and policy withdrawal.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn staged_graph_actual_three_relay_mint_audits_and_revokes_each_edge() {
+    use roomler_ai_remote_control::signaling::ServerMsg;
+    use roomlerd::relay_server::backbone_test_support::{BindSecret, Carrier, NativeRelay, OrgRelayConn, WgDevice, WgKeypair, bind_member};
+    use std::{net::Ipv4Addr, sync::{Arc, atomic::AtomicBool}};
+    let source_native = NativeRelay::start().await.unwrap();
+    let middle_native = NativeRelay::start().await.unwrap();
+    let exit_native = NativeRelay::start().await.unwrap();
+    let key_a = WgKeypair::generate();
+    let key_b = WgKeypair::generate();
+    let mut l = LineRig::up("iso-actual-three", true).await;
+    let (middle_agent, middle_token) = enroll(&l.rig.app, &l.rig.seeded, "iso-actual-three-middle").await;
+    let mut middle = connect_from(&l.rig.app, &middle_token, &["relay-server"], Some(CN_R)).await;
+    assert_observed(&l.rig.app, &middle_agent, Some(CN_R)).await;
+    line_join(&mut middle, 5, "223.6.6.7:41641", json!({ "relay_backbone_ready": true })).await;
+    assert_eq!(approve(&l.rig.app, &l.rig.seeded, &middle_agent, true).await, 200);
+    let middle_node = l.rig.node("iso-actual-three-middle").await;
+    grant_relay(&l.rig.app, &l.rig.seeded, &middle_node).await;
+    for (ws, key, endpoint) in [(&mut l.cn, key_a.public_base64(), "223.5.5.5:41641"), (&mut l.us, key_b.public_base64(), "8.8.8.8:41641")] {
+        ws.send(Message::Text(json!({"t":"rc:overlay.join", "wg_public_key":key, "mtu":1280,
+            "endpoints":[endpoint], "supports_org_relay":true, "supports_backbone_only_v1":true,
+            "supports_server_relay_strategy":true, "org_primary":true}).to_string().into())).await.unwrap();
+        recv_t(ws, "rc:overlay.netmap", Duration::from_secs(5)).await.expect("member rejoin");
+    }
+    let policy_path = |agent: &str| format!("/api/tenant/{}/agent/{agent}/peer-relay-policy", l.rig.seeded.tenant_id);
+    let gz_policy = policy_path(&l.gz_agent);
+    let middle_policy = policy_path(&middle_agent);
+    let policy = |target: &str, endpoint: &str, cross_border| json!({ "serve": true, "approved_backbone_edges": [
+        { "relay_agent_id": target, "endpoint": endpoint, "cross_border": cross_border },
+    ]});
+    let admin = &l.rig.seeded.admin.access_token;
+    let middle_endpoint = middle_native.underlay_endpoint().to_string();
+    let exit_endpoint = exit_native.underlay_endpoint().to_string();
+    let (status, body) = put(&l.rig.app, &gz_policy, admin, policy(&middle_agent, &middle_endpoint, false)).await;
+    assert_eq!(status, 200, "{body}");
+    let (status, body) = put(&l.rig.app, &middle_policy, admin, policy(&l.hk_agent, &exit_endpoint, false)).await;
+    assert_eq!(status, 200, "{body}");
+    relay_request(&mut l.cn, &l.us_node).await;
+    assert!(recv_t(&mut l.gz, "rc:overlay.relay_serve", Duration::from_millis(700)).await.is_none(), "crossing without approval must not mint");
+    let (status, body) = put(&l.rig.app, &middle_policy, admin, policy(&l.hk_agent, &exit_endpoint, true)).await;
+    assert_eq!(status, 200, "{body}");
+    let network = l.rig.app.state.network();
+    let a = ObjectId::parse_str(&l.cn_node).unwrap();
+    let b = ObjectId::parse_str(&l.us_node).unwrap();
+    let gz_node = ObjectId::parse_str(&l.gz_node).unwrap();
+    let mid_node = ObjectId::parse_str(&middle_node).unwrap();
+    let hk_node = ObjectId::parse_str(&l.hk_node).unwrap();
+    assert!(roomler_ai_mod_network::org_relay::candidate_test_support::record_member_probe_fixture(network, a, &[
+        (gz_node, "223.6.6.6:3478".into(), true, Some(10)),
+        (mid_node, "223.6.6.7:3478".into(), false, None),
+    ]));
+    assert!(roomler_ai_mod_network::org_relay::candidate_test_support::record_member_probe_fixture(network, b, &[
+        (hk_node, "1.1.1.1:3478".into(), true, Some(10)),
+    ]));
+    let selected = roomler_ai_mod_network::org_relay::candidate_test_support::select_path(network, a, b, false).await.unwrap().unwrap();
+    assert_eq!(selected, (vec![ObjectId::parse_str(&l.gz_agent).unwrap(), ObjectId::parse_str(&middle_agent).unwrap(), ObjectId::parse_str(&l.hk_agent).unwrap()], false));
+    relay_request(&mut l.cn, &l.us_node).await;
+    let wait = Duration::from_secs(8);
+    let gz = match recv_t(&mut l.gz, "rc:overlay.relay_serve", wait).await {
+        Some(msg) => msg,
+        None => panic!("ingress serve absent; audits={:?}", l.audit_reasons("mint").await),
+    };
+    let first_bridge = recv_t(&mut l.gz, "rc:overlay.relay_bridge_serve", wait).await.expect("first bridge");
+    let mid = recv_t(&mut middle, "rc:overlay.relay_serve", wait).await.expect("middle serve");
+    let second_bridge = recv_t(&mut middle, "rc:overlay.relay_bridge_serve", wait).await.expect("second bridge");
+    let hk = recv_t(&mut l.hk, "rc:overlay.relay_serve", wait).await.expect("exit serve");
+    let cn = recv_t(&mut l.cn, "rc:overlay.relay_session", wait).await.expect("requester session");
+    let us = recv_t(&mut l.us, "rc:overlay.relay_session", wait).await.expect("peer session");
+    assert_eq!(cn["vni"], gz["vni"]);
+    assert_eq!(us["vni"], hk["vni"]);
+    assert_eq!(cn["relay_node_id"], json!(l.gz_node));
+    assert_eq!(us["relay_node_id"], json!(l.hk_node));
+    assert_eq!(first_bridge["bridge"]["local_vni"], gz["vni"]);
+    assert_eq!(first_bridge["bridge"]["remote_vni"], mid["vni"]);
+    assert_eq!(second_bridge["bridge"]["local_vni"], mid["vni"]);
+    assert_eq!(second_bridge["bridge"]["remote_vni"], hk["vni"]);
+    for (relay, frame) in [(&source_native, gz.clone()), (&middle_native, mid.clone()), (&exit_native, hk.clone())] {
+        relay.serve(serde_json::from_value::<ServerMsg>(frame).unwrap(), None);
+    }
+    source_native.serve(serde_json::from_value(first_bridge.clone()).unwrap(), Some(source_native.policy_to(&middle_native)));
+    middle_native.serve(serde_json::from_value(second_bridge.clone()).unwrap(), Some(middle_native.policy_to(&exit_native)));
+    let socket_a = Arc::new(tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap());
+    let socket_b = Arc::new(tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap());
+    let secret = |frame: &Value| BindSecret::from_bytes(BASE64.decode(frame["bind_secret"].as_str().unwrap()).unwrap().try_into().unwrap());
+    let vni = |frame: &Value| frame["vni"].as_u64().unwrap() as u32;
+    let generation = |frame: &Value| frame["generation"].as_u64().unwrap();
+    bind_member(&socket_a, source_native.endpoint(), vni(&cn), generation(&cn), &secret(&cn), Duration::from_secs(5)).await.unwrap();
+    bind_member(&socket_b, exit_native.endpoint(), vni(&us), generation(&us), &secret(&us), Duration::from_secs(5)).await.unwrap();
+    let conn_a = Arc::new(OrgRelayConn::new(socket_a, source_native.endpoint(), vni(&cn), "test-ingress".into()));
+    let conn_b = Arc::new(OrgRelayConn::new(socket_b, exit_native.endpoint(), vni(&us), "test-exit".into()));
+    let carrier_a = Arc::new(Carrier::Relay { dst: conn_a.synth_peer(), conn: conn_a, dead: AtomicBool::new(false) });
+    let carrier_b = Arc::new(Carrier::Relay { dst: conn_b.synth_peer(), conn: conn_b, dead: AtomicBool::new(false) });
+    let ip_a: Ipv4Addr = network.overlay_nodes.base.find_by_id(a).await.unwrap().overlay_ip.parse().unwrap();
+    let ip_b: Ipv4Addr = network.overlay_nodes.base.find_by_id(b).await.unwrap().overlay_ip.parse().unwrap();
+    let (mut wg_a, mut received_a) = WgDevice::new(key_a.secret.clone());
+    let (mut wg_b, mut received_b) = WgDevice::new(key_b.secret.clone());
+    wg_a.add_peer(key_b.public.to_bytes(), ip_b, carrier_a, true);
+    wg_b.add_peer(key_a.public.to_bytes(), ip_a, carrier_b, false);
+    let packet = |source: Ipv4Addr, target: Ipv4Addr, payload: &[u8]| {
+        let mut bytes = vec![0u8; 20 + payload.len()];
+        bytes[0] = 0x45; let len = bytes.len() as u16; bytes[2..4].copy_from_slice(&len.to_be_bytes());
+        bytes[8] = 64; bytes[9] = 17; bytes[12..16].copy_from_slice(&source.octets());
+        bytes[16..20].copy_from_slice(&target.octets()); bytes[20..].copy_from_slice(payload); bytes
+    };
+    let forward = packet(ip_a, ip_b, b"three relay actual WireGuard forward");
+    tokio::time::timeout(Duration::from_secs(12), async {
+        loop {
+            wg_a.send_ip_packet(&forward).await;
+            if let Ok(Some(got)) = tokio::time::timeout(Duration::from_millis(150), received_b.recv()).await {
+                if got == forward { break; }
+            }
+        }
+    }).await.expect("actual forward WG packet across three native relays");
+    let backward = packet(ip_b, ip_a, b"three relay actual WireGuard reverse");
+    tokio::time::timeout(Duration::from_secs(8), async {
+        loop {
+            wg_b.send_ip_packet(&backward).await;
+            if let Ok(Some(got)) = tokio::time::timeout(Duration::from_millis(150), received_a.recv()).await {
+                if got == backward { break; }
+            }
+        }
+    }).await.expect("actual reverse WG packet across three native relays");
+    let crossing_reason = format!("cross_border_edge:{}", l.hk_agent);
+    let audits = l.audit_reasons("mint").await;
+    assert!(audits.iter().any(|(reason, node)| reason == &crossing_reason && node == &middle_node), "per-edge crossing audit missing: {audits:?}");
+    let (status, body) = put(&l.rig.app, &middle_policy, admin, policy(&l.hk_agent, &exit_endpoint, false)).await;
+    assert_eq!(status, 200, "{body}");
+    for (name, ws, vni) in [("ingress", &mut l.gz, &gz["vni"]), ("middle", &mut middle, &mid["vni"]),
+        ("exit", &mut l.hk, &hk["vni"]), ("requester", &mut l.cn, &cn["vni"]), ("peer", &mut l.us, &us["vni"])] {
+        let revoke = recv_t(ws, "rc:overlay.relay_revoke", wait).await.unwrap_or_else(|| panic!("{name} revoke"));
+        assert_eq!(&revoke["vni"], vni, "{name} vni");
+        match name {
+            "ingress" => source_native.serve(serde_json::from_value(revoke).unwrap(), None),
+            "middle" => middle_native.serve(serde_json::from_value(revoke).unwrap(), None),
+            "exit" => exit_native.serve(serde_json::from_value(revoke).unwrap(), None),
+            _ => {},
+        }
+    }
+    let first_revoke = recv_t(&mut l.gz, "rc:overlay.relay_bridge_revoke", wait).await.expect("first bridge revoke");
+    let second_revoke = recv_t(&mut middle, "rc:overlay.relay_bridge_revoke", wait).await.expect("second bridge revoke");
+    source_native.serve(serde_json::from_value(first_revoke).unwrap(), None);
+    middle_native.serve(serde_json::from_value(second_revoke).unwrap(), None);
+    while received_b.try_recv().is_ok() {}
+    let after = packet(ip_a, ip_b, b"must not traverse revoked bridge");
+    wg_a.send_ip_packet(&after).await;
+    assert!(tokio::time::timeout(Duration::from_millis(500), received_b.recv()).await.is_err(), "revoked path must not deliver new WG traffic");
+
+    // Force the actual policy update between the server claim and delivery.
+    let (status, body) = put(&l.rig.app, &middle_policy, admin, policy(&l.hk_agent, &exit_endpoint, true)).await;
+    assert_eq!(status, 200, "{body}");
+    assert!(roomler_ai_mod_network::org_relay::candidate_test_support::record_member_probe_fixture(network, a, &[
+        (gz_node, "223.6.6.6:3478".into(), true, Some(10)),
+        (mid_node, "223.6.6.7:3478".into(), false, None),
+    ]));
+    assert!(roomler_ai_mod_network::org_relay::candidate_test_support::record_member_probe_fixture(network, b, &[
+        (hk_node, "1.1.1.1:3478".into(), true, Some(10)),
+    ]));
+    let pair = roomler_ai_mod_network::overlay::pair_key(a, b);
+    let (reached, resume) = roomler_ai_mod_network::org_relay::candidate_test_support::pause_nhop_delivery_fixture(pair.clone());
+    relay_request(&mut l.cn, &l.us_node).await;
+    tokio::time::timeout(Duration::from_secs(10), reached).await.expect("claim pause").unwrap();
+    let (status, body) = put(&l.rig.app, &middle_policy, admin, policy(&l.hk_agent, &exit_endpoint, false)).await;
+    assert_eq!(status, 200, "{body}");
+    resume.send(()).unwrap();
+    assert!(recv_t(&mut l.gz, "rc:overlay.relay_serve", Duration::from_millis(700)).await.is_none(), "revoked candidate must not deliver a relay grant");
+    assert!(recv_t(&mut l.cn, "rc:overlay.relay_session", Duration::from_millis(700)).await.is_none(), "revoked candidate must not deliver a member grant");
+    assert!(network.org_relay.active_session(&pair).is_none());
+
+    // Force a policy withdrawal after the first eligibility check but before
+    // its send. The delivery guard keeps the revoke ordered after the grant.
+    let (status, body) = put(&l.rig.app, &middle_policy, admin, policy(&l.hk_agent, &exit_endpoint, true)).await;
+    assert_eq!(status, 200, "{body}");
+    assert!(roomler_ai_mod_network::org_relay::candidate_test_support::record_member_probe_fixture(network, a, &[
+        (gz_node, "223.6.6.6:3478".into(), true, Some(10)), (mid_node, "223.6.6.7:3478".into(), false, None),
+    ]));
+    assert!(roomler_ai_mod_network::org_relay::candidate_test_support::record_member_probe_fixture(network, b, &[
+        (hk_node, "1.1.1.1:3478".into(), true, Some(10)),
+    ]));
+    let (reached, release) = roomler_ai_mod_network::org_relay::candidate_test_support::pause_nhop_before_first_fixture(pair.clone());
+    relay_request(&mut l.cn, &l.us_node).await;
+    tokio::time::timeout(Duration::from_secs(10), reached).await.expect("first delivery pause").unwrap();
+    let withdrawal = put(&l.rig.app, &middle_policy, admin, policy(&l.hk_agent, &exit_endpoint, false));
+    let release_after_update_starts = async move {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        release.send(()).unwrap();
+    };
+    let ((status, body), ()) = tokio::join!(withdrawal, release_after_update_starts);
+    assert_eq!(status, 200, "{body}");
+    let sent = recv_t(&mut l.gz, "rc:overlay.relay_serve", wait).await.expect("first grant was queued");
+    let revoked = recv_t(&mut l.gz, "rc:overlay.relay_revoke", wait).await.expect("revoke follows first grant");
+    assert_eq!(sent["vni"], revoked["vni"]);
+    assert!(network.org_relay.active_session(&pair).is_none());
+}
+
+/// Four relays alternate between zones. The real handler must emit every
+/// bridge and a distinct audit for each of the three approved crossings.
+#[tokio::test]
+async fn staged_graph_actual_four_relay_mint_uses_every_bridge() {
+    let mut l = LineRig::up("iso-actual-four", true).await;
+    let (m1_agent, m1_token) = enroll(&l.rig.app, &l.rig.seeded, "iso-actual-four-mid1").await;
+    let (m2_agent, m2_token) = enroll(&l.rig.app, &l.rig.seeded, "iso-actual-four-mid2").await;
+    let mut m1 = connect_from(&l.rig.app, &m1_token, &["relay-server"], Some(US_R)).await;
+    let mut m2 = connect_from(&l.rig.app, &m2_token, &["relay-server"], Some(CN_R)).await;
+    assert_observed(&l.rig.app, &m1_agent, Some(US_R)).await;
+    assert_observed(&l.rig.app, &m2_agent, Some(CN_R)).await;
+    line_join(&mut m1, 5, "1.1.1.2:41641", json!({ "relay_backbone_ready": true })).await;
+    line_join(&mut m2, 6, "223.6.6.8:41641", json!({ "relay_backbone_ready": true })).await;
+    assert_eq!(approve(&l.rig.app, &l.rig.seeded, &m1_agent, true).await, 200);
+    assert_eq!(approve(&l.rig.app, &l.rig.seeded, &m2_agent, true).await, 200);
+    let m1_node = l.rig.node("iso-actual-four-mid1").await;
+    let m2_node = l.rig.node("iso-actual-four-mid2").await;
+    grant_relay(&l.rig.app, &l.rig.seeded, &m1_node).await;
+    grant_relay(&l.rig.app, &l.rig.seeded, &m2_node).await;
+    let admin = &l.rig.seeded.admin.access_token;
+    let policy = |target: &str, endpoint: &str, cross_border| json!({ "serve": true, "approved_backbone_edges": [
+        { "relay_agent_id": target, "endpoint": endpoint, "cross_border": cross_border },
+    ]});
+    for (source, target, endpoint, crossing) in [
+        (&l.gz_agent, &m1_agent, "10.44.0.1:3478", true),
+        (&m1_agent, &m2_agent, "10.44.0.2:3478", true),
+        (&m2_agent, &l.hk_agent, "10.44.0.3:3478", true),
+    ] {
+        let path = format!("/api/tenant/{}/agent/{source}/peer-relay-policy", l.rig.seeded.tenant_id);
+        let (status, body) = put(&l.rig.app, &path, admin, policy(target, endpoint, crossing)).await;
+        assert_eq!(status, 200, "{body}");
+    }
+    let network = l.rig.app.state.network();
+    let a = ObjectId::parse_str(&l.cn_node).unwrap();
+    let b = ObjectId::parse_str(&l.us_node).unwrap();
+    let gz = ObjectId::parse_str(&l.gz_node).unwrap();
+    let mid1 = ObjectId::parse_str(&m1_node).unwrap();
+    let mid2 = ObjectId::parse_str(&m2_node).unwrap();
+    let hk = ObjectId::parse_str(&l.hk_node).unwrap();
+    assert!(roomler_ai_mod_network::org_relay::candidate_test_support::record_member_probe_fixture(network, a, &[
+        (gz, "223.6.6.6:3478".into(), true, Some(10)),
+        (mid2, "223.6.6.8:3478".into(), false, None),
+    ]));
+    assert!(roomler_ai_mod_network::org_relay::candidate_test_support::record_member_probe_fixture(network, b, &[
+        (hk, "1.1.1.1:3478".into(), true, Some(10)),
+        (mid1, "1.1.1.2:3478".into(), false, None),
+    ]));
+    let chosen = roomler_ai_mod_network::org_relay::candidate_test_support::select_path(network, a, b, false).await.unwrap().unwrap();
+    assert_eq!(chosen, (vec![ObjectId::parse_str(&l.gz_agent).unwrap(), ObjectId::parse_str(&m1_agent).unwrap(),
+        ObjectId::parse_str(&m2_agent).unwrap(), ObjectId::parse_str(&l.hk_agent).unwrap()], false));
+    relay_request(&mut l.cn, &l.us_node).await;
+    let wait = Duration::from_secs(8);
+    let first = recv_t(&mut l.gz, "rc:overlay.relay_serve", wait).await.expect("first serve");
+    let bridge1 = recv_t(&mut l.gz, "rc:overlay.relay_bridge_serve", wait).await.expect("first bridge");
+    let second = recv_t(&mut m1, "rc:overlay.relay_serve", wait).await.expect("second serve");
+    let bridge2 = recv_t(&mut m1, "rc:overlay.relay_bridge_serve", wait).await.expect("second bridge");
+    let third = recv_t(&mut m2, "rc:overlay.relay_serve", wait).await.expect("third serve");
+    let bridge3 = recv_t(&mut m2, "rc:overlay.relay_bridge_serve", wait).await.expect("third bridge");
+    let last = recv_t(&mut l.hk, "rc:overlay.relay_serve", wait).await.expect("last serve");
+    let cn = recv_t(&mut l.cn, "rc:overlay.relay_session", wait).await.expect("requester grant");
+    let us = recv_t(&mut l.us, "rc:overlay.relay_session", wait).await.expect("peer grant");
+    for (bridge, source, target) in [(&bridge1, &first, &second), (&bridge2, &second, &third), (&bridge3, &third, &last)] {
+        assert_eq!(bridge["bridge"]["local_vni"], source["vni"]);
+        assert_eq!(bridge["bridge"]["remote_vni"], target["vni"]);
+    }
+    assert_eq!(cn["vni"], first["vni"]);
+    assert_eq!(us["vni"], last["vni"]);
+    let audits = l.audit_reasons("mint").await;
+    for (source_node, target_agent) in [(&l.gz_node, &m1_agent), (&m1_node, &m2_agent), (&m2_node, &l.hk_agent)] {
+        let reason = format!("cross_border_edge:{target_agent}");
+        assert!(audits.iter().any(|(r, node)| r == &reason && node == source_node), "missing crossing audit: {audits:?}");
+    }
+    // Withdraw the active path, restore it, and exhaust the real requester /
+    // ingress limiter. A refused request must not write crossing-mint rows.
+    let gz_policy = format!("/api/tenant/{}/agent/{}/peer-relay-policy", l.rig.seeded.tenant_id, l.gz_agent);
+    let (status, body) = put(&l.rig.app, &gz_policy, admin, json!({"serve": true, "approved_backbone_edges": []})).await;
+    assert_eq!(status, 200, "{body}");
+    let (status, body) = put(&l.rig.app, &gz_policy, admin, policy(&m1_agent, "10.44.0.1:3478", true)).await;
+    assert_eq!(status, 200, "{body}");
+    assert!(roomler_ai_mod_network::org_relay::candidate_test_support::record_member_probe_fixture(network, a, &[
+        (gz, "223.6.6.6:3478".into(), true, Some(10)), (mid2, "223.6.6.8:3478".into(), false, None),
+    ]));
+    assert!(roomler_ai_mod_network::org_relay::candidate_test_support::record_member_probe_fixture(network, b, &[
+        (hk, "1.1.1.1:3478".into(), true, Some(10)), (mid1, "1.1.1.2:3478".into(), false, None),
+    ]));
+    let limit = roomler_ai_remote_control::models::peer_relay_limits::MINT_RATE_LIMIT_PER_MINUTE;
+    for _ in 0..limit { network.relay_rate_limiter.check(a, gz, limit); }
+    let crossing_count = |rows: &[(String, String)]| rows.iter().filter(|(r, _)| r.starts_with("cross_border_edge:")).count();
+    let before = crossing_count(&l.audit_reasons("mint").await);
+    relay_request(&mut l.cn, &l.us_node).await;
+    assert!(recv_t(&mut l.gz, "rc:overlay.relay_serve", Duration::from_millis(800)).await.is_none(), "rate-limited path must not be served");
+    let after = crossing_count(&l.audit_reasons("mint").await);
+    assert_eq!(after, before, "rate-limit denial must precede crossing audit rows");
+    let pair = roomler_ai_mod_network::overlay::pair_key(a, b);
+    assert!(network.org_relay.active_session(&pair).is_none());
+}

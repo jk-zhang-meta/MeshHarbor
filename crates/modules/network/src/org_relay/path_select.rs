@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 G ROX EOOD
-//! Staged path selection from the live-gate snapshot. This does not reserve
-//! capacity or send grants, and is not yet used by production signaling.
+//! Path selection from the live-gate snapshot. This does not reserve
+//! capacity or send grants; the mint rechecks them before use.
 
 use super::{
     path_candidate::PreparedGraph,
