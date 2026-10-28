@@ -3568,6 +3568,18 @@ async fn staged_nhop_trial_actual_wg_commit_and_bilateral_return() {
     tokio::time::timeout(Duration::from_secs(8),async { loop { wg_b.send_ip_packet(&committed_reverse).await;
         if let Ok(Some(got))=tokio::time::timeout(Duration::from_millis(100),received_a.recv()).await { if got==committed_reverse { break; } }
     }}).await.expect("committed four relay reverse data");
+    let mut bridge_evidence=Vec::new();
+    for i in 0..3 {
+        let bridge_id=ObjectId::parse_str(bridges[i]["bridge"]["trial_id"].as_str().unwrap()).unwrap();
+        let generation=bridges[i]["bridge"]["generation"].as_u64().unwrap();
+        let (watch,sockets)=native[i].bridge_evidence(bridge_id,generation).expect("bridge active with correct generation");
+        bridge_evidence.push((bridge_id,watch,sockets));
+    }
+    for relay in &native {
+        let counts=relay.session_counts();
+        assert_eq!(counts.sessions_installed,1,"trial relay session not installed");
+        assert_eq!(counts.sessions_revoked,0,"trial relay session revoked early");
+    }
     for node in &nodes {assert_eq!(support::trial_slots_on_relay(network,ObjectId::parse_str(node).unwrap()),1);}
     let return_id=ObjectId::new().to_hex(); signal(&mut a,"rc:overlay.path_trial_return_request",&id,Some(&return_id)).await;
     for ws in [&mut a,&mut b] {assert_eq!(recv_t(ws,"rc:overlay.path_trial_return_prepare",wait).await.unwrap()["return_id"],return_id);}
@@ -3600,6 +3612,10 @@ async fn staged_nhop_trial_actual_wg_commit_and_bilateral_return() {
     tokio::time::timeout(Duration::from_secs(8),async { loop { wg_b.send_ip_packet(&pending_reverse).await;
         if let Ok(Some(got))=tokio::time::timeout(Duration::from_millis(100),received_a.recv()).await { if got==pending_reverse { break; } }
     }}).await.expect("one return ACK preserves reverse data");
+    for relay in &native {assert_eq!(relay.session_counts().sessions_revoked,0,"one ACK retired a native session");}
+    for (i,(bridge_id,_,_)) in bridge_evidence.iter().enumerate() {
+        native[i].bridge_evidence(*bridge_id,bridges[i]["bridge"]["generation"].as_u64().unwrap()).expect("one ACK retired a native bridge");
+    }
     signal(&mut b,"rc:overlay.path_trial_returned",&id,Some(&return_id)).await;
     for ws in [&mut a,&mut b] {recv_t(ws,"rc:overlay.path_trial_return_finalize",wait).await.expect("bilateral return finalize");}
     for (i,ws) in relays.iter_mut().enumerate() {
@@ -3611,6 +3627,15 @@ async fn staged_nhop_trial_actual_wg_commit_and_bilateral_return() {
         assert_eq!(revoke["trial_id"],bridges[i]["bridge"]["trial_id"]);
         assert_eq!(revoke["generation"],bridges[i]["bridge"]["generation"]);
         native[i].serve(serde_json::from_value(revoke).unwrap(),None);
+    }
+    for (i,(bridge_id,watch,sockets)) in bridge_evidence.into_iter().enumerate() {
+        native[i].assert_bridge_retired(bridge_id,watch,sockets).await.expect("bridge registry and sockets retired");
+    }
+    for relay in &native {
+        tokio::time::timeout(Duration::from_secs(2),async {
+            while relay.session_counts().sessions_revoked!=1 {tokio::time::sleep(Duration::from_millis(10)).await;}
+        }).await.expect("native session revoke applied");
+        relay.probe_healthy().await.expect("native relay listener remains healthy");
     }
     for node in &nodes {assert_eq!(support::trial_slots_on_relay(network,ObjectId::parse_str(node).unwrap()),0);}
     while received_a.try_recv().is_ok() {} while received_b.try_recv().is_ok() {}

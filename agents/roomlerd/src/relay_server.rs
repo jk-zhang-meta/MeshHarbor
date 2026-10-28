@@ -909,6 +909,45 @@ pub mod backbone_test_support {
                 overlay_cidrs: vec!["100.64.0.0/10".parse().unwrap()],
             }
         }
+        pub fn session_counts(&self) -> RelayCounts {
+            self.running.stats.snapshot()
+        }
+        pub fn bridge_evidence(
+            &self,
+            id: ObjectId,
+            generation: u64,
+        ) -> io::Result<(watch::Receiver<Option<[SocketAddr; 2]>>, [SocketAddr; 2])> {
+            let entries = self.running.bridges.lock().unwrap();
+            let entry = entries.get(&id).ok_or_else(|| io::Error::other("bridge missing"))?;
+            if entry.generation != generation {
+                return Err(io::Error::other("bridge generation mismatch"));
+            }
+            let evidence = entry.sockets.clone();
+            let sockets = (*evidence.borrow()).ok_or_else(|| io::Error::other("bridge sockets not active"))?;
+            Ok((evidence, sockets))
+        }
+        pub async fn assert_bridge_retired(
+            &self,
+            id: ObjectId,
+            mut evidence: watch::Receiver<Option<[SocketAddr; 2]>>,
+            sockets: [SocketAddr; 2],
+        ) -> io::Result<()> {
+            if self.running.bridges.lock().unwrap().contains_key(&id) {
+                return Err(io::Error::other("bridge remains registered"));
+            }
+            tokio::time::timeout(Duration::from_secs(2), async {
+                while evidence.borrow_and_update().is_some() {
+                    if evidence.changed().await.is_err() { break; }
+                }
+                for addr in sockets {
+                    loop {
+                        if tokio::net::UdpSocket::bind(addr).await.is_ok() { break; }
+                        tokio::task::yield_now().await;
+                    }
+                }
+            }).await.map_err(|_| io::Error::other("bridge sockets did not close"))?;
+            Ok(())
+        }
         pub fn serve(
             &self,
             msg: roomler_ai_remote_control::signaling::ServerMsg,
