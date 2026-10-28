@@ -2477,3 +2477,150 @@ async fn staged_graph_line_claim_race_reauthorizes_multihop_winner() {
     }
     }
 }
+
+/// Exercise a same-zone, explicitly authorized three-relay session with the
+/// real server messages, native relays, and actual WireGuard packet crypto.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn staged_graph_same_zone_actual_wg_and_bridge_revocation() {
+    use roomler_ai_mod_network::org_relay::candidate_test_support as support;
+    use roomler_ai_remote_control::signaling::ServerMsg;
+    use roomlerd::relay_server::backbone_test_support::{
+        BindSecret, Carrier, NativeRelay, OrgRelayConn, WgDevice, WgKeypair, bind_member,
+    };
+    use std::{net::Ipv4Addr, sync::{Arc, atomic::AtomicBool}};
+    let native = [NativeRelay::start().await.unwrap(), NativeRelay::start().await.unwrap(), NativeRelay::start().await.unwrap()];
+    let key_a = WgKeypair::generate();
+    let key_b = WgKeypair::generate();
+    let slug = "iso-same-wg-e2e";
+    let rig = Rig::up(slug, "enforce").await;
+    let mut relays = Vec::new();
+    let mut agents = Vec::new();
+    let mut nodes = Vec::new();
+    for i in 0..3 {
+        let name = format!("{slug}-relay-{i}");
+        let (agent, token) = enroll(&rig.app, &rig.seeded, &name).await;
+        let mut ws = connect_from(&rig.app, &token, &["relay-server"], Some(CN_R)).await;
+        assert_observed(&rig.app, &agent, Some(CN_R)).await;
+        line_join(&mut ws, 10 + i, &format!("223.6.6.{}:41641", 6 + i), json!({"relay_backbone_ready":true})).await;
+        assert_eq!(approve(&rig.app, &rig.seeded, &agent, true).await, 200);
+        let node = rig.node(&name).await;
+        grant_relay(&rig.app, &rig.seeded, &node).await;
+        relays.push(ws); agents.push(agent); nodes.push(node);
+    }
+    let mut a = rig.device(&format!("{slug}-a"), Some(CN_A)).await;
+    let mut b = rig.device(&format!("{slug}-b"), Some(CN_A)).await;
+    for (ws, key, endpoint) in [(&mut a, key_a.public_base64(), "223.5.5.5:41641"),
+        (&mut b, key_b.public_base64(), "223.5.5.6:41641")] {
+        ws.send(Message::Text(json!({"t":"rc:overlay.join", "wg_public_key":key, "mtu":1280,
+            "endpoints":[endpoint], "supports_org_relay":true, "supports_backbone_only_v1":true,
+            "supports_server_relay_strategy":true, "org_primary":true}).to_string().into())).await.unwrap();
+        recv_t(ws, "rc:overlay.netmap", Duration::from_secs(5)).await.expect("member join");
+    }
+    let a_id = ObjectId::parse_str(rig.node(&format!("{slug}-a")).await).unwrap();
+    let b_id = ObjectId::parse_str(rig.node(&format!("{slug}-b")).await).unwrap();
+    set_mode(&rig.app, &rig.seeded, "on").await;
+    let policy_path = |agent: &str| format!("/api/tenant/{}/agent/{agent}/peer-relay-policy", rig.seeded.tenant_id);
+    for i in 0..2 {
+        let body = json!({"serve":true,"approved_backbone_edges":[{"relay_agent_id":agents[i+1],
+            "endpoint":native[i+1].underlay_endpoint().to_string(),"cross_border":false}]});
+        let (status, value) = put(&rig.app, &policy_path(&agents[i]), &rig.seeded.admin.access_token, body).await;
+        assert_eq!(status, 200, "{value}");
+    }
+    let network = rig.app.state.network();
+    let ids: Vec<_> = nodes.iter().map(|id| ObjectId::parse_str(id).unwrap()).collect();
+    assert!(support::record_member_probe_fixture(network, a_id, &[
+        (ids[0], "223.6.6.6:3478".into(), true, Some(10)),
+        (ids[1], "223.6.6.7:3478".into(), false, None),
+        (ids[2], "223.6.6.8:3478".into(), false, None)]));
+    assert!(support::record_member_probe_fixture(network, b_id, &[
+        (ids[0], "223.6.6.6:3478".into(), false, None),
+        (ids[1], "223.6.6.7:3478".into(), false, None),
+        (ids[2], "223.6.6.8:3478".into(), true, Some(10))]));
+    let selected = support::select_path(network, a_id, b_id, false).await.unwrap().unwrap();
+    assert_eq!(selected, (agents.iter().map(|id| ObjectId::parse_str(id).unwrap()).collect(), false));
+    relay_request(&mut a, &b_id.to_hex()).await;
+    let wait = Duration::from_secs(8);
+    let mut serves = Vec::new();
+    for ws in &mut relays { serves.push(recv_t(ws, "rc:overlay.relay_serve", wait).await.expect("relay serve")); }
+    let bridge0 = recv_t(&mut relays[0], "rc:overlay.relay_bridge_serve", wait).await.expect("first bridge");
+    let bridge1 = recv_t(&mut relays[1], "rc:overlay.relay_bridge_serve", wait).await.expect("second bridge");
+    let sa = recv_t(&mut a, "rc:overlay.relay_session", wait).await.expect("requester grant");
+    let sb = recv_t(&mut b, "rc:overlay.relay_session", wait).await.expect("peer grant");
+    assert_eq!(sa["vni"], serves[0]["vni"]); assert_eq!(sb["vni"], serves[2]["vni"]);
+    assert_eq!(bridge0["bridge"]["local_vni"], serves[0]["vni"]);
+    assert_eq!(bridge0["bridge"]["remote_vni"], serves[1]["vni"]);
+    assert_eq!(bridge1["bridge"]["local_vni"], serves[1]["vni"]);
+    assert_eq!(bridge1["bridge"]["remote_vni"], serves[2]["vni"]);
+    assert!(audit_rows(&rig.app, &rig.seeded).await.iter().any(|r| r["reason"] == "multi_hop_same_zone_attempt"));
+    for (relay, frame) in native.iter().zip(serves.iter()) {
+        relay.serve(serde_json::from_value::<ServerMsg>(frame.clone()).unwrap(), None);
+    }
+    native[0].serve(serde_json::from_value(bridge0).unwrap(), Some(native[0].policy_to(&native[1])));
+    native[1].serve(serde_json::from_value(bridge1).unwrap(), Some(native[1].policy_to(&native[2])));
+    let socket_a = Arc::new(tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap());
+    let socket_b = Arc::new(tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap());
+    let secret = |frame: &Value| BindSecret::from_bytes(BASE64.decode(frame["bind_secret"].as_str().unwrap()).unwrap().try_into().unwrap());
+    let vni = |frame: &Value| frame["vni"].as_u64().unwrap() as u32;
+    let generation = |frame: &Value| frame["generation"].as_u64().unwrap();
+    bind_member(&socket_a, native[0].endpoint(), vni(&sa), generation(&sa), &secret(&sa), Duration::from_secs(5)).await.unwrap();
+    bind_member(&socket_b, native[2].endpoint(), vni(&sb), generation(&sb), &secret(&sb), Duration::from_secs(5)).await.unwrap();
+    let conn_a = Arc::new(OrgRelayConn::new(socket_a, native[0].endpoint(), vni(&sa), "same-zone-ingress".into()));
+    let conn_b = Arc::new(OrgRelayConn::new(socket_b, native[2].endpoint(), vni(&sb), "same-zone-exit".into()));
+    let carrier_a = Arc::new(Carrier::Relay { dst: conn_a.synth_peer(), conn: conn_a, dead: AtomicBool::new(false) });
+    let carrier_b = Arc::new(Carrier::Relay { dst: conn_b.synth_peer(), conn: conn_b, dead: AtomicBool::new(false) });
+    let ip_a: Ipv4Addr = network.overlay_nodes.base.find_by_id(a_id).await.unwrap().overlay_ip.parse().unwrap();
+    let ip_b: Ipv4Addr = network.overlay_nodes.base.find_by_id(b_id).await.unwrap().overlay_ip.parse().unwrap();
+    let (mut wg_a, mut received_a) = WgDevice::new(key_a.secret.clone());
+    let (mut wg_b, mut received_b) = WgDevice::new(key_b.secret.clone());
+    wg_a.add_peer(key_b.public.to_bytes(), ip_b, carrier_a, true);
+    wg_b.add_peer(key_a.public.to_bytes(), ip_a, carrier_b, false);
+    let packet = |source: Ipv4Addr, target: Ipv4Addr, payload: &[u8]| {
+        let mut bytes = vec![0u8; 20 + payload.len()]; bytes[0] = 0x45;
+        let len = bytes.len() as u16; bytes[2..4].copy_from_slice(&len.to_be_bytes());
+        bytes[8] = 64; bytes[9] = 17; bytes[12..16].copy_from_slice(&source.octets());
+        bytes[16..20].copy_from_slice(&target.octets()); bytes[20..].copy_from_slice(payload); bytes
+    };
+    let forward = packet(ip_a, ip_b, b"same zone three relay WG forward");
+    tokio::time::timeout(Duration::from_secs(12), async {
+        loop { wg_a.send_ip_packet(&forward).await;
+            if let Ok(Some(got)) = tokio::time::timeout(Duration::from_millis(150), received_b.recv()).await { if got == forward { break; } }
+        }
+    }).await.expect("actual forward WG packet across three same-zone native relays");
+    let backward = packet(ip_b, ip_a, b"same zone three relay WG reverse");
+    tokio::time::timeout(Duration::from_secs(8), async {
+        loop { wg_b.send_ip_packet(&backward).await;
+            if let Ok(Some(got)) = tokio::time::timeout(Duration::from_millis(150), received_a.recv()).await { if got == backward { break; } }
+        }
+    }).await.expect("actual reverse WG packet across three same-zone native relays");
+    let (status, body) = put(&rig.app, &policy_path(&agents[0]), &rig.seeded.admin.access_token,
+        json!({"serve":true,"approved_backbone_edges":[]})).await;
+    assert_eq!(status, 200, "{body}");
+    let pair = roomler_ai_mod_network::overlay::pair_key(a_id, b_id);
+    assert!(network.org_relay.active_session(&pair).is_none(), "withdrawn edge must remove session");
+    // Save the other server revocations, but first apply only the revoked
+    // source bridge. This tests that the bridge itself stops both directions.
+    let mut revokes = Vec::new();
+    for (i, ws) in relays.iter_mut().enumerate() {
+        let revoke = recv_t(ws, "rc:overlay.relay_revoke", wait).await.expect("relay revoke");
+        assert_eq!(revoke["vni"], serves[i]["vni"]); revokes.push(revoke);
+    }
+    let revoke0 = recv_t(&mut relays[0], "rc:overlay.relay_bridge_revoke", wait).await.expect("first bridge revoke");
+    let revoke1 = recv_t(&mut relays[1], "rc:overlay.relay_bridge_revoke", wait).await.expect("second bridge revoke");
+    assert!(recv_t(&mut a, "rc:overlay.relay_revoke", wait).await.is_some());
+    assert!(recv_t(&mut b, "rc:overlay.relay_revoke", wait).await.is_some());
+    native[0].serve(serde_json::from_value(revoke0).unwrap(), None);
+    while received_a.try_recv().is_ok() {} while received_b.try_recv().is_ok() {}
+    let blocked_a = packet(ip_a, ip_b, b"revoked same zone bridge blocks forward");
+    let blocked_b = packet(ip_b, ip_a, b"revoked same zone bridge blocks reverse");
+    for _ in 0..6 {
+        wg_a.send_ip_packet(&blocked_a).await; wg_b.send_ip_packet(&blocked_b).await;
+        if let Ok(Some(got)) = tokio::time::timeout(Duration::from_millis(120), received_b.recv()).await {
+            assert_ne!(got, blocked_a, "forward passed revoked bridge");
+        }
+        if let Ok(Some(got)) = tokio::time::timeout(Duration::from_millis(120), received_a.recv()).await {
+            assert_ne!(got, blocked_b, "reverse passed revoked bridge");
+        }
+    }
+    for (relay, frame) in native.iter().zip(revokes.into_iter()) { relay.serve(serde_json::from_value(frame).unwrap(), None); }
+    native[1].serve(serde_json::from_value(revoke1).unwrap(), None);
+}
