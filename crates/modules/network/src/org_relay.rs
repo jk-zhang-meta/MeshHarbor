@@ -793,8 +793,8 @@ pub struct OrgRelayState {
     // Serializes nonblocking N-hop delivery with synchronous revocation so a
     // stale grant cannot be queued after its revoke on this control process.
     delivery_guard: std::sync::Mutex<()>,
-    /// At most one deferred zone retry per changed relay identity.
-    trial_zone_retry_pending: DashMap<ObjectId, ()>,
+    /// One process-wide worker rechecks each live trial at most once per pass.
+    trial_zone_retry: std::sync::Mutex<TrialZoneRetry>,
     sessions: DashMap<String, OrgRelaySession>,
     next_vni: DashMap<ObjectId, u32>,
     /// The server-wide logical clock the reference design calls `LamportID`:
@@ -3590,27 +3590,43 @@ pub(crate) async fn recheck_zones(state: &NetworkState, agent_id: ObjectId, reas
 /// mode. A changing eligibility epoch defers the decision instead of revoking
 /// from a mixed snapshot; retry is deduplicated per affected relay.
 pub(crate) async fn recheck_trial_zones(state: &NetworkState, agent_id: ObjectId, reason: &str) {
-    if trial::recheck_relay_zones(state, agent_id, reason).await {
-        schedule_trial_zone_retry(state, agent_id, reason.to_owned());
+    if !trial::recheck_relay_zones(state, agent_id, reason).await.is_empty() {
+        schedule_trial_zone_retry(state);
     }
 }
 
-fn schedule_trial_zone_retry(state: &NetworkState, agent_id: ObjectId, reason: String) {
-    // ponytail: one pending timer per identity; a five-second retry bounds
-    // persistent unknown/read-failure polling while live events recheck now.
-    const RETRY_DELAY: Duration = Duration::from_secs(5);
-    use dashmap::mapref::entry::Entry;
-    if let Entry::Vacant(entry) = state.org_relay.trial_zone_retry_pending.entry(agent_id) {
-        entry.insert(());
-    } else {
-        return;
+#[derive(Default)]
+struct TrialZoneRetry {
+    running: bool,
+    requested: bool,
+}
+
+impl TrialZoneRetry {
+    fn request(&mut self) -> bool {
+        self.requested = true;
+        if self.running { false } else { self.running = true; true }
     }
+
+    fn finish_pass(&mut self, retry: bool) -> bool {
+        if retry || self.requested { true } else { self.running = false; false }
+    }
+}
+
+fn schedule_trial_zone_retry(state: &NetworkState) {
+    let start = state.org_relay.trial_zone_retry.lock().unwrap_or_else(|e| e.into_inner()).request();
+    if !start { return; }
     let state = state.clone();
     tokio::spawn(async move {
-        tokio::time::sleep(RETRY_DELAY).await;
-        state.org_relay.trial_zone_retry_pending.remove(&agent_id);
-        if trial::recheck_relay_zones(&state, agent_id, &reason).await {
-            schedule_trial_zone_retry(&state, agent_id, reason);
+        loop {
+            // ponytail: one worker scans live trials, not one timer per hop.
+            tokio::time::sleep(Duration::from_secs(5)).await;
+            {
+                let mut retry = state.org_relay.trial_zone_retry.lock().unwrap_or_else(|e| e.into_inner());
+                retry.requested = false;
+            }
+            let pending = !trial::recheck_all_trial_zones(&state, "zone_retry").await.is_empty();
+            let again = state.org_relay.trial_zone_retry.lock().unwrap_or_else(|e| e.into_inner()).finish_pass(pending);
+            if !again { break; }
         }
     });
 }
@@ -3781,6 +3797,27 @@ pub(crate) fn reported_session(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn zone_retry_coalesces_requests_and_does_not_lose_a_wakeup() {
+        use std::sync::{Arc, Barrier, Mutex};
+        for _ in 0..32 {
+            let queue = Arc::new(Mutex::new(TrialZoneRetry::default()));
+            assert!(queue.lock().unwrap().request());
+            assert!(!queue.lock().unwrap().request());
+            queue.lock().unwrap().requested = false; // worker begins its pass
+            let barrier = Arc::new(Barrier::new(3));
+            let q = queue.clone(); let b = barrier.clone();
+            let finish = std::thread::spawn(move || { b.wait(); q.lock().unwrap().finish_pass(false) });
+            let q = queue.clone(); let b = barrier.clone();
+            let request = std::thread::spawn(move || { b.wait(); q.lock().unwrap().request() });
+            barrier.wait();
+            let kept_running = finish.join().unwrap();
+            let started_again = request.join().unwrap();
+            assert!(kept_running || started_again);
+            assert!(queue.lock().unwrap().running);
+        }
+    }
 
     fn node_with(srflx: &[&str], lan: &[&str], endpoints: &[&str]) -> OverlayNode {
         let mut n: OverlayNode = serde_json::from_value(serde_json::json!({

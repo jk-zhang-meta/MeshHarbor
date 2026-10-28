@@ -236,13 +236,28 @@ async fn current_party_zone(
     })
 }
 
-/// `true` asks the caller to schedule a deduplicated retry. No I/O is awaited
-/// while `trials.entries` is locked; removal compares the entire path again.
+/// Return exact trials needing retry. No I/O is awaited while the trial table
+/// is locked; removal compares the entire path again.
 pub(in crate::org_relay) async fn recheck_relay_zones(
     state: &NetworkState,
     identity: ObjectId,
     reason: &str,
-) -> bool {
+) -> HashSet<ObjectId> {
+    recheck_selected_zones(state, Some(identity), reason).await
+}
+
+pub(in crate::org_relay) async fn recheck_all_trial_zones(
+    state: &NetworkState,
+    reason: &str,
+) -> HashSet<ObjectId> {
+    recheck_selected_zones(state, None, reason).await
+}
+
+async fn recheck_selected_zones(
+    state: &NetworkState,
+    identity: Option<ObjectId>,
+    reason: &str,
+) -> HashSet<ObjectId> {
     let snapshots: Vec<_> = {
         let entries = state
             .org_relay
@@ -253,10 +268,10 @@ pub(in crate::org_relay) async fn recheck_relay_zones(
         entries
             .values()
             .filter_map(capture)
-            .filter(|s| s.involves(identity))
+            .filter(|s| identity.is_none_or(|id| s.involves(id)))
             .collect()
     };
-    let mut retry = false;
+    let mut retry = HashSet::new();
     for snapshot in snapshots {
         let epoch = state.org_relay.eligibility_generation();
         let shape_valid = snapshot.shape_valid();
@@ -341,11 +356,11 @@ pub(in crate::org_relay) async fn recheck_relay_zones(
             }
         }
         if epoch != state.org_relay.eligibility_generation() {
-            retry = true;
+            retry.insert(snapshot.id);
             continue;
         }
         if unavailable && fits {
-            retry = true;
+            retry.insert(snapshot.id);
             continue;
         }
         if fits {
@@ -361,7 +376,7 @@ pub(in crate::org_relay) async fn recheck_relay_zones(
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
             if epoch != state.org_relay.eligibility_generation() {
-                retry = true;
+                retry.insert(snapshot.id);
                 None
             } else if entries.get(&snapshot.id).and_then(capture).as_ref() == Some(&snapshot) {
                 state.org_relay.invalidate_eligibility();
@@ -373,7 +388,7 @@ pub(in crate::org_relay) async fn recheck_relay_zones(
                 // A still-live trial changed while its snapshot was read;
                 // evaluate its current path instead of silently losing this event.
                 if entries.get(&snapshot.id).and_then(capture).is_some() {
-                    retry = true;
+                    retry.insert(snapshot.id);
                 }
                 None
             }

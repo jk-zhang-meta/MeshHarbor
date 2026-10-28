@@ -222,7 +222,7 @@ pub(super) fn revoke_removed_backbone_edges(
 // independently while sharing the trial mutex and revoke ordering.
 #[path = "trial_zone.rs"]
 mod trial_zone;
-pub(super) use trial_zone::recheck_relay_zones;
+pub(super) use trial_zone::{recheck_all_trial_zones, recheck_relay_zones};
 #[cfg(feature = "path-planner-test-support")]
 pub(super) use trial_zone::insert_trial_fixture;
 
