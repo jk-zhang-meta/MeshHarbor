@@ -83,6 +83,9 @@ mod path_select;
 // Structural message construction is shared by the existing two-relay mint
 // and the staged N-hop workflow; authorization and reservation stay outside.
 mod path_delivery;
+// Staged atomic admission primitive; existing mint/trial owners are not yet coordinated.
+#[allow(dead_code)]
+mod path_reservation;
 mod trial;
 /// Test-only adapter for exercising the staged candidate builder against a
 /// real isolated server fixture. It returns metadata, never grants sessions.
