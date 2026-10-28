@@ -222,7 +222,7 @@ pub(super) fn revoke_removed_backbone_edges(
 // independently while sharing the trial mutex and revoke ordering.
 #[path = "trial_zone.rs"]
 mod trial_zone;
-pub(super) use trial_zone::{prune_trial_zone_cursors, recheck_relay_zones, recheck_trial_zone_slice, trial_ids_for_identity, TrialZoneCursor};
+pub(super) use trial_zone::{prune_trial_zone_cursors, recheck_relay_zones, recheck_trial_zone_slice, trial_ids_for_identity, TrialZoneCursor, TrialZoneSlice};
 
 #[cfg(feature = "path-planner-test-support")]
 pub(super) fn trial_exists_fixture(state: &NetworkState, id: ObjectId) -> bool {

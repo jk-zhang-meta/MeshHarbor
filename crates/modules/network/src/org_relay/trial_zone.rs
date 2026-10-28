@@ -267,13 +267,14 @@ pub(in crate::org_relay) async fn recheck_relay_zones(
     reason: &str,
 ) -> HashSet<ObjectId> {
     let ids = trial_ids_for_identity(state, identity);
-    let mut cursors = HashMap::new();
     let mut retry = HashSet::new();
     for id in ids {
         loop {
-            let pending = recheck_trial_zone_slice(state, id, &mut cursors, reason).await;
-            if !pending { break; }
-            if !cursors.contains_key(&id) { retry.insert(id); break; }
+            match recheck_trial_zone_slice(state, id, reason).await {
+                TrialZoneSlice::Complete => break,
+                TrialZoneSlice::Continue => {},
+                TrialZoneSlice::Retry => { retry.insert(id); break; }
+            }
         }
     }
     retry
@@ -288,32 +289,65 @@ pub(in crate::org_relay) struct TrialZoneCursor {
     unavailable: bool,
 }
 
-pub(in crate::org_relay) fn prune_trial_zone_cursors(
-    state: &NetworkState,
-    cursors: &mut HashMap<ObjectId, TrialZoneCursor>,
-) {
+pub(in crate::org_relay) enum TrialZoneSlice { Complete, Continue, Retry }
+
+struct TrialZoneSliceGuard {
+    owner: std::sync::Arc<OrgRelayState>,
+    id: ObjectId,
+}
+
+impl Drop for TrialZoneSliceGuard {
+    fn drop(&mut self) {
+        self.owner.trial_zone_inflight.lock().unwrap_or_else(|e| e.into_inner()).remove(&self.id);
+    }
+}
+
+async fn limited_party_read<F>(state: &NetworkState, read: F) -> Result<PartyZone, ()>
+where
+    F: std::future::Future<Output = Result<PartyZone, ()>>,
+{
+    let permits = state.org_relay.trial_zone_io_permits.get_or_init(|| std::sync::Arc::new(tokio::sync::Semaphore::new(4))).clone();
+    let Ok(_permit) = permits.try_acquire_owned() else { return Err(()) };
+    if !state.org_relay.trial_zone_io_budget.lock().unwrap_or_else(|e| e.into_inner()).admit(Instant::now()) { return Err(()); }
+    bounded_party_read(read, Duration::from_secs(3)).await
+}
+
+pub(in crate::org_relay) fn prune_trial_zone_cursors(state: &NetworkState) {
     let entries = state.org_relay.trials.entries.lock().unwrap_or_else(|e| e.into_inner());
+    let mut cursors = state.org_relay.trial_zone_cursors.lock().unwrap_or_else(|e| e.into_inner());
     cursors.retain(|id, _| entries.contains_key(id));
 }
 
-/// Read at most one party per invocation; `true` requeues this exact trial.
+/// Read at most one party per invocation. Concurrent same-trial slices are
+/// coalesced as retry, and all callers share the same continuation.
 /// No fixed path-length limit is imposed. The caller bounds batch size.
 pub(in crate::org_relay) async fn recheck_trial_zone_slice(
     state: &NetworkState,
     id: ObjectId,
-    cursors: &mut HashMap<ObjectId, TrialZoneCursor>,
     reason: &str,
-) -> bool {
+) -> TrialZoneSlice {
+    {
+        let mut inflight = state.org_relay.trial_zone_inflight.lock().unwrap_or_else(|e| e.into_inner());
+        if !inflight.insert(id) { return TrialZoneSlice::Retry; }
+    }
+    let _guard = TrialZoneSliceGuard { owner: state.org_relay.clone(), id };
     let epoch = state.org_relay.eligibility_generation();
     let current = {
         let entries = state.org_relay.trials.entries.lock().unwrap_or_else(|e| e.into_inner());
         entries.get(&id).and_then(capture)
     };
-    let Some(current) = current else { cursors.remove(&id); return false };
-    if epoch != state.org_relay.eligibility_generation() { cursors.remove(&id); return true; }
-    let mut cursor = match cursors.remove(&id) {
+    let Some(current) = current else {
+        state.org_relay.trial_zone_cursors.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
+        return TrialZoneSlice::Complete;
+    };
+    let previous = {
+        let mut cursors = state.org_relay.trial_zone_cursors.lock().unwrap_or_else(|e| e.into_inner());
+        if epoch != state.org_relay.eligibility_generation() { cursors.remove(&id); return TrialZoneSlice::Retry; }
+        cursors.remove(&id)
+    };
+    let mut cursor = match previous {
         Some(cursor) if cursor.epoch == epoch && cursor.snapshot == current => cursor,
-        Some(_) => return true,
+        Some(_) => return TrialZoneSlice::Retry,
         None => TrialZoneCursor { snapshot: current, epoch, next: 0, unavailable: false },
     };
     let snap = &cursor.snapshot;
@@ -342,10 +376,10 @@ pub(in crate::org_relay) async fn recheck_trial_zone_slice(
             #[cfg(not(feature = "path-planner-test-support"))]
             let stalled = false;
             if injected { Err(()) } else {
-                bounded_party_read(async {
+                limited_party_read(state, async {
                     if stalled { std::future::pending::<Result<PartyZone, ()>>().await }
                     else { current_party_zone(state, snap.tenant_id, node_id, node_ref, expected.is_some()).await }
-                }, Duration::from_secs(3)).await
+                }).await
             }
         };
         match read {
@@ -362,21 +396,21 @@ pub(in crate::org_relay) async fn recheck_trial_zone_slice(
         }
         cursor.next += 1;
     }
-    if epoch != state.org_relay.eligibility_generation() { return true; }
+    if epoch != state.org_relay.eligibility_generation() { return TrialZoneSlice::Retry; }
     if invalid {
         #[cfg(feature = "path-planner-test-support")]
         super::super::candidate_test_support::pause_trial_zone_revoke_if_armed(id).await;
         let event = {
             let mut entries = state.org_relay.trials.entries.lock().unwrap_or_else(|e| e.into_inner());
             if epoch != state.org_relay.eligibility_generation() {
-                return true;
+                return TrialZoneSlice::Retry;
             }
             match entries.get(&id).and_then(capture) {
                 Some(now) if now == cursor.snapshot => {
                     state.org_relay.invalidate_eligibility();
                     entries.remove(&id).map(|trial| { notify_abort(state, &trial); revoke_event(&trial, reason) })
                 }
-                Some(_) => return true,
+                Some(_) => return TrialZoneSlice::Retry,
                 None => None,
             }
         };
@@ -385,11 +419,13 @@ pub(in crate::org_relay) async fn recheck_trial_zone_slice(
                 warn!("org-relay: trial zone retry revoke audit failed or timed out");
             }
         }
-        return false;
+        return TrialZoneSlice::Complete;
     }
-    if cursor.next >= count { return cursor.unavailable; }
-    cursors.insert(id, cursor);
-    true
+    if cursor.next >= count {
+        return if cursor.unavailable { TrialZoneSlice::Retry } else { TrialZoneSlice::Complete };
+    }
+    state.org_relay.trial_zone_cursors.lock().unwrap_or_else(|e| e.into_inner()).insert(id, cursor);
+    TrialZoneSlice::Continue
 }
 
 /// Fixtures own the path and receive no serve or member grants from this

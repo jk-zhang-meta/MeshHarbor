@@ -243,14 +243,12 @@ pub mod candidate_test_support {
     }
     /// Exercise the same sequential party slices used by one worker batch.
     pub async fn run_two_trial_slices_fixture(state: &NetworkState, first: ObjectId, second: ObjectId) -> (bool, bool) {
-        let mut cursors = std::collections::HashMap::new();
-        let a = super::trial::recheck_trial_zone_slice(state, first, &mut cursors, "fixture").await;
-        let b = super::trial::recheck_trial_zone_slice(state, second, &mut cursors, "fixture").await;
+        let a = !matches!(super::trial::recheck_trial_zone_slice(state, first, "fixture").await, super::trial::TrialZoneSlice::Complete);
+        let b = !matches!(super::trial::recheck_trial_zone_slice(state, second, "fixture").await, super::trial::TrialZoneSlice::Complete);
         (a, b)
     }
     pub async fn run_one_trial_slice_fixture(state: &NetworkState, id: ObjectId) -> bool {
-        let mut cursors = std::collections::HashMap::new();
-        super::trial::recheck_trial_zone_slice(state, id, &mut cursors, "fixture").await
+        !matches!(super::trial::recheck_trial_zone_slice(state, id, "fixture").await, super::trial::TrialZoneSlice::Complete)
     }
     fn trial_member_zone_read_failures() -> &'static Mutex<std::collections::HashSet<ObjectId>> {
         static FAILURES: OnceLock<Mutex<std::collections::HashSet<ObjectId>>> = OnceLock::new();
@@ -819,6 +817,10 @@ pub struct OrgRelayState {
     delivery_guard: std::sync::Mutex<()>,
     /// One process-wide worker rechecks each live trial at most once per pass.
     trial_zone_retry: std::sync::Mutex<TrialZoneRetry>,
+    trial_zone_cursors: std::sync::Mutex<std::collections::HashMap<ObjectId, trial::TrialZoneCursor>>,
+    trial_zone_inflight: std::sync::Mutex<std::collections::HashSet<ObjectId>>,
+    trial_zone_io_permits: std::sync::OnceLock<std::sync::Arc<tokio::sync::Semaphore>>,
+    trial_zone_io_budget: std::sync::Mutex<TrialZoneIoBudget>,
     sessions: DashMap<String, OrgRelaySession>,
     next_vni: DashMap<ObjectId, u32>,
     /// The server-wide logical clock the reference design calls `LamportID`:
@@ -3631,6 +3633,27 @@ struct TrialZoneRetry {
     rescan: bool,
 }
 
+/// At most 16 party-read starts per one-second fixed window, independent of
+/// the semaphore limiting concurrent reads. Each party performs at most two
+/// sequential DAO lookups. A rejected read is uncertainty, not invalidity.
+#[derive(Default)]
+struct TrialZoneIoBudget {
+    window: Option<Instant>,
+    starts: u32,
+}
+
+impl TrialZoneIoBudget {
+    fn admit(&mut self, now: Instant) -> bool {
+        if self.window.is_none_or(|start| now.saturating_duration_since(start) >= Duration::from_secs(1)) {
+            self.window = Some(now);
+            self.starts = 0;
+        }
+        if self.starts >= 16 { return false; }
+        self.starts += 1;
+        true
+    }
+}
+
 impl TrialZoneRetry {
     fn enqueue(&mut self, id: ObjectId) {
         if self.queued.contains(&id) { return; }
@@ -3691,7 +3714,6 @@ fn schedule_trial_zone_retry(state: &NetworkState, ids: std::collections::HashSe
     let mut guard = TrialZoneWorkerGuard { state: state.clone(), generation, started: false, completed: false };
     tokio::spawn(async move {
         guard.started = true;
-        let mut cursors = std::collections::HashMap::<ObjectId, trial::TrialZoneCursor>::new();
         let mut deferred = std::collections::HashSet::<ObjectId>::new();
         let mut retry_at = tokio::time::Instant::now();
         loop {
@@ -3707,7 +3729,7 @@ fn schedule_trial_zone_retry(state: &NetworkState, ids: std::collections::HashSe
                 let mut q = state.org_relay.trial_zone_retry.lock().unwrap_or_else(|e| e.into_inner());
                 for id in deferred.drain() { q.enqueue(id); }
             }
-            trial::prune_trial_zone_cursors(&state, &mut cursors);
+            trial::prune_trial_zone_cursors(&state);
             trial::refill_zone_retry_if_needed(&state, generation);
             let batch = {
                 let mut retry = state.org_relay.trial_zone_retry.lock().unwrap_or_else(|e| e.into_inner());
@@ -3723,13 +3745,14 @@ fn schedule_trial_zone_retry(state: &NetworkState, ids: std::collections::HashSe
             };
             let mut pending = std::collections::HashSet::new();
             for id in batch {
-                if trial::recheck_trial_zone_slice(&state, id, &mut cursors, "zone_retry").await {
-                    if cursors.contains_key(&id) { pending.insert(id); }
-                    else {
+                match trial::recheck_trial_zone_slice(&state, id, "zone_retry").await {
+                    trial::TrialZoneSlice::Complete => {},
+                    trial::TrialZoneSlice::Continue => { pending.insert(id); },
+                    trial::TrialZoneSlice::Retry => {
                         if deferred.is_empty() { retry_at = tokio::time::Instant::now() + Duration::from_secs(5); }
                         if deferred.len() < trial::MAX_TRIALS || deferred.contains(&id) { deferred.insert(id); }
                         else { state.org_relay.trial_zone_retry.lock().unwrap_or_else(|e| e.into_inner()).rescan = true; }
-                    }
+                    },
                 }
             }
             let again = state.org_relay.trial_zone_retry.lock().unwrap_or_else(|e| e.into_inner()).finish_pass(generation, pending, !deferred.is_empty());
@@ -3904,6 +3927,24 @@ pub(crate) fn reported_session(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn trial_zone_party_read_budget_bounds_starts_per_window() {
+        let mut budget = TrialZoneIoBudget::default();
+        let now = Instant::now();
+        for _ in 0..16 { assert!(budget.admit(now)); }
+        assert!(!budget.admit(now));
+        assert!(budget.admit(now + Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn trial_zone_semaphore_limits_concurrent_party_reads() {
+        let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(4));
+        let guards: Vec<_> = (0..4).map(|_| sem.clone().try_acquire_owned().unwrap()).collect();
+        assert!(sem.clone().try_acquire_owned().is_err());
+        drop(guards);
+        assert!(sem.try_acquire_owned().is_ok());
+    }
 
     #[test]
     fn zone_retry_coalesces_requests_and_does_not_lose_a_wakeup() {

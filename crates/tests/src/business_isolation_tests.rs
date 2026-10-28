@@ -3405,9 +3405,10 @@ async fn staged_nhop_trial_zone_fixture_rechecks_middle_and_members() {
             let owned_state = (*network).clone();
             let first = tokio::spawn(async move { support::run_one_trial_slice_fixture(&owned_state, trial_id).await });
             tokio::time::timeout(Duration::from_secs(8), reached).await.expect("first path reached the revoke hook").unwrap();
-            assert!(!support::run_one_trial_slice_fixture(network, trial_id).await, "second path retires the trial");
+            assert!(support::run_one_trial_slice_fixture(network, trial_id).await, "second path coalesces while first is in flight");
+            assert!(support::trial_exists_fixture(network, trial_id));
             resume.send(()).unwrap();
-            let _ = first.await.unwrap();
+            assert!(!first.await.unwrap(), "first path retires the trial");
             assert!(!support::trial_exists_fixture(network, trial_id));
             for ws in [&mut a, &mut b] {
                 recv_t(ws, "rc:overlay.path_trial_abort", Duration::from_secs(8)).await.expect("single abort");
