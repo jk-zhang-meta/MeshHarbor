@@ -634,23 +634,8 @@ fn admit_trial(
     {
         return Admission::Rejected;
     }
-    // The caller holds the trial entries lock from this check through insert.
-    // Thus competing trials cannot all use the same last slot. Ordinary
-    // mints do not yet share this lock, so this is not global arbitration.
-    let now = Instant::now();
-    let mut seen = HashSet::new();
-    if relay_nodes.is_empty() || relay_nodes.iter().any(|relay| {
-        if !seen.insert(*relay) { return true; }
-        let active = state.sessions.iter()
-            .filter(|session| session.expires_at > now && session.relay_nodes().any(|node| node == *relay))
-            .count();
-        let trials = entries.values().filter(|trial| {
-            trial.session.expires_at > now && !returned(trial)
-                && (trial.session.relay.node_id == *relay
-                    || trial.backbone.as_ref().is_some_and(|b| b.exit.relay.node_id == *relay))
-        }).count();
-        active.saturating_add(trials) >= limits::MAX_SESSIONS_PER_RELAY
-    }) {
+    // The trial lock is held from capacity inspection through insertion.
+    if !has_capacity(state, entries, relay_nodes) {
         return Admission::Rejected;
     }
     let Some(trial) = allocate() else {
@@ -659,6 +644,64 @@ fn admit_trial(
     let id = trial.id;
     entries.insert(id, trial);
     Admission::Created(id)
+}
+
+/// Called only while `PathTrials.entries` is held. Every session creator must
+/// use the same lock for this count to be an admission guarantee.
+fn has_capacity(state: &OrgRelayState, entries: &HashMap<ObjectId, Trial>, relay_nodes: &[ObjectId]) -> bool {
+    let now = Instant::now();
+    let mut seen = HashSet::new();
+    !relay_nodes.is_empty() && relay_nodes.iter().all(|relay| {
+        if !seen.insert(*relay) { return false; }
+        let active = state.sessions.iter()
+            .filter(|session| session.expires_at > now && session.relay_nodes().any(|node| node == *relay))
+            .count();
+        let trials = entries.values().filter(|trial| {
+            trial.session.expires_at > now && !returned(trial)
+                && (trial.session.relay.node_id == *relay
+                    || trial.backbone.as_ref().is_some_and(|b| b.exit.relay.node_id == *relay))
+        }).count();
+        active.saturating_add(trials) < limits::MAX_SESSIONS_PER_RELAY
+    })
+}
+
+pub(super) enum MintClaim {
+    Inserted,
+    Existing(OrgRelaySession),
+    Full,
+    Rejected,
+}
+
+/// Synchronous only: do not await, send or access storage while holding this
+/// lock. The callback may apply local admission fences and consume a rate slot.
+pub(super) fn claim_mint(
+    state: &OrgRelayState,
+    session: &OrgRelaySession,
+    allow: impl FnOnce() -> bool,
+) -> MintClaim {
+    let entries = state.trials.entries.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(existing) = state.sessions.get(&session.pair_key).map(|entry| entry.value().clone()) {
+        if existing.expires_at > Instant::now() {
+            return MintClaim::Existing(existing);
+        }
+    }
+    let nodes: Vec<_> = session.relay_nodes().collect();
+    if !has_capacity(state, &entries, &nodes) {
+        return MintClaim::Full;
+    }
+    if !allow() {
+        return MintClaim::Rejected;
+    }
+    match state.sessions.entry(session.pair_key.clone()) {
+        dashmap::mapref::entry::Entry::Occupied(mut entry) => {
+            if entry.get().expires_at > Instant::now() {
+                return MintClaim::Existing(entry.get().clone());
+            }
+            entry.insert(session.clone());
+        }
+        dashmap::mapref::entry::Entry::Vacant(entry) => { entry.insert(session.clone()); }
+    }
+    MintClaim::Inserted
 }
 
 // This is a protocol rendezvous, not a server-side RTT score. Ready asserts
@@ -1290,6 +1333,59 @@ mod tests {
         assert!(entries.is_empty());
         assert!(state.next_vni.is_empty());
         assert!(matches!(admit_trial(&state, &mut entries, &[ingress, ingress], "pair", id, id, 1, 0, 0, || panic!("duplicate relay must not allocate")), Admission::Rejected));
+    }
+
+    #[test]
+    fn concurrent_mint_and_trial_share_the_last_capacity_slot() {
+        use std::sync::{Arc, Barrier, atomic::AtomicUsize};
+        let state = Arc::new(OrgRelayState::new());
+        let relay = ObjectId::new();
+        for i in 0..limits::MAX_SESSIONS_PER_RELAY - 1 {
+            let session = fixture_trial(ObjectId::new(), ObjectId::new(), ObjectId::new(), relay, i as u64, i as u32 + 1, i as u64 + 1).session;
+            state.sessions.insert(format!("active-{i}"), session);
+        }
+        let barrier = Arc::new(Barrier::new(24));
+        let allocated = Arc::new(AtomicUsize::new(0));
+        let threads: Vec<_> = (0..24).map(|i| {
+            let (state, barrier, allocated) = (Arc::clone(&state), Arc::clone(&barrier), Arc::clone(&allocated));
+            std::thread::spawn(move || {
+                let (tenant, requester, peer) = (ObjectId::new(), ObjectId::new(), ObjectId::new());
+                let fixture = fixture_trial(tenant, requester, peer, relay, i, 1000 + i as u32, 1000 + i);
+                let pair = fixture.session.pair_key.clone();
+                barrier.wait();
+                if i % 2 == 0 {
+                    matches!(claim_mint(&state, &fixture.session, || { allocated.fetch_add(1, Ordering::Relaxed); true }), MintClaim::Inserted)
+                } else {
+                    let mut entries = state.trials.entries.lock().unwrap();
+                    matches!(admit_trial(&state, &mut entries, &[relay], &pair, tenant, requester, i, 0, 0, || {
+                        allocated.fetch_add(1, Ordering::Relaxed); Some(fixture)
+                    }), Admission::Created(_))
+                }
+            })
+        }).collect();
+        assert_eq!(threads.into_iter().map(|t| t.join().unwrap()).filter(|won| *won).count(), 1);
+        assert_eq!(allocated.load(Ordering::Relaxed), 1);
+        assert_eq!(state.sessions_on_relay(relay), limits::MAX_SESSIONS_PER_RELAY);
+    }
+
+    #[test]
+    fn mint_pair_reuses_winner_and_full_second_leg_claims_nothing() {
+        let state = OrgRelayState::new();
+        let (ingress, exit) = (ObjectId::new(), ObjectId::new());
+        let mut new = fixture_trial(ObjectId::new(), ObjectId::new(), ObjectId::new(), ingress, 1, 300, 301).session;
+        assert!(matches!(claim_mint(&state, &new, || true), MintClaim::Inserted));
+        let mut duplicate = new.clone();
+        duplicate.vni = 301;
+        duplicate.generation = 302;
+        assert!(matches!(claim_mint(&state, &duplicate, || panic!("winner must be reused")), MintClaim::Existing(existing) if existing.vni == 300));
+        for i in 0..limits::MAX_SESSIONS_PER_RELAY {
+            let session = fixture_trial(ObjectId::new(), ObjectId::new(), ObjectId::new(), exit, i as u64, i as u32 + 1, i as u64 + 1).session;
+            state.sessions.insert(format!("exit-{i}"), session);
+        }
+        new.pair_key = "new-pair".into();
+        new.hops.push(LineLeg { relay: SessionParty { node_id: exit, node_ref: NodeRef::Agent { agent_id: exit } }, relay_agent_id: exit, vni: 500, generation: 501, endpoints: vec!["exit".into()], private_endpoint: "10.0.0.2:3478".into(), bridge_id: ObjectId::new(), bridge_secrets: ["a".into(), "b".into()] });
+        assert!(matches!(claim_mint(&state, &new, || panic!("full second leg must not allocate")), MintClaim::Full));
+        assert!(state.sessions.get("new-pair").is_none());
     }
 
     #[test]

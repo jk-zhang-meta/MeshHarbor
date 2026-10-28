@@ -2123,30 +2123,28 @@ async fn mint_line(
             return;
         }
     };
-    audit_line(state, &session, warn_only).await;
     if warn_only {
+        audit_line(state, &session, true).await;
         info!(%tenant_id, requester = %req_id, peer = %peer_id, ingress = %ingress_id,
             exit = %exit_id, "org-relay [warn]: would mint a cross-border line; pushing nothing");
         return;
     }
-    // One live session per pair: a concurrent winner is re-pushed instead.
-    let current = match state.org_relay.sessions.entry(pk.clone()) {
-        dashmap::mapref::entry::Entry::Occupied(e) if e.get().expires_at > Instant::now() => {
-            Some(e.get().clone())
-        }
-        dashmap::mapref::entry::Entry::Occupied(mut e) => {
-            e.insert(session.clone());
-            None
-        }
-        dashmap::mapref::entry::Entry::Vacant(e) => {
-            e.insert(session.clone());
-            None
-        }
+    // Share the trial admission lock so no other local claim can take the
+    // same remaining capacity between the check and this session's insert.
+    let current = match trial::claim_mint(&state.org_relay, &session, || true) {
+        trial::MintClaim::Existing(existing) => Some(existing),
+        trial::MintClaim::Inserted => None,
+        trial::MintClaim::Full => { refuse(PeerRelayDenyReason::NoRelay).await; return; }
+        trial::MintClaim::Rejected => return,
     };
     if let Some(current) = current {
         if let Some(i) = current.member_index(req_id) {
             push_member(state, &current, i).await;
         }
+        return;
+    }
+    audit_line(state, &session, false).await;
+    if !state.org_relay.active_session(&pk).is_some_and(|current| current.vni == session.vni && current.generation == session.generation) {
         return;
     }
     info!(%tenant_id, requester = %req_id, peer = %peer_id, ingress = %ingress_id, vni,
@@ -2743,8 +2741,8 @@ async fn mint_plan(
         bind_by: Instant::now() + Duration::from_secs(u64::from(limits::BIND_SECS)),
         hops: Vec::new(),
     };
-    // Legacy ordering stays intact; fallback audits only its winning claim.
-    if fallback_epoch.is_none() || warn_only {
+    // Warn never claims capacity; actual mints audit only after winning.
+    if warn_only {
         if fallback_epoch.is_some() && !state.relay_rate_limiter.check(req_id, relay_id, limits::MINT_RATE_LIMIT_PER_MINUTE) {
             audit_mint(state, tenant_id, req_id, peer_id, None, None, warn_only,
                 Some(PeerRelayDenyReason::RateLimited)).await;
@@ -2760,49 +2758,55 @@ async fn mint_plan(
     if let Some(epoch) = fallback_epoch {
         if epoch != state.org_relay.eligibility_generation()
             || crate::overlay::org_fallback_forced_derp(state, &pk) { return; }
-        // Both members can cross policy IO with cached=None. Claim under the
-        // pair entry, consume mint budget only for the winner, and release the
-        // guard before any push/audit await. Never overwrite a live generation.
-        let claim = match state.org_relay.sessions.entry(pk.clone()) {
-            dashmap::mapref::entry::Entry::Occupied(mut entry) => {
-                if entry.get().expires_at > Instant::now() {
-                    Ok(Some(entry.get().clone()))
-                } else if state.relay_rate_limiter.check(req_id, relay_id, limits::MINT_RATE_LIMIT_PER_MINUTE) {
-                    entry.insert(session.clone());
-                    Ok(None)
-                } else { Err(PeerRelayDenyReason::RateLimited) }
+    }
+    let mut refusal = None;
+    let claim = trial::claim_mint(&state.org_relay, &session, || {
+        if let Some(epoch) = fallback_epoch {
+            if epoch != state.org_relay.eligibility_generation()
+                || crate::overlay::org_fallback_forced_derp(state, &pk) { return false; }
+            if !state.relay_rate_limiter.check(req_id, relay_id, limits::MINT_RATE_LIMIT_PER_MINUTE) {
+                refusal = Some(PeerRelayDenyReason::RateLimited);
+                return false;
             }
-            dashmap::mapref::entry::Entry::Vacant(entry) => {
-                if state.relay_rate_limiter.check(req_id, relay_id, limits::MINT_RATE_LIMIT_PER_MINUTE) {
-                    entry.insert(session.clone());
-                    Ok(None)
-                } else { Err(PeerRelayDenyReason::RateLimited) }
-            }
-        };
-        match claim {
-            Ok(Some(current)) => {
-                // A concurrent winner may have used a different authorization
-                // snapshot. Only this freshly authorized exact lease is reused.
-                if current.relay.node_id == relay_id && current.relay.node_ref == plan.relay.node_ref
-                    && current.endpoints == plan.endpoints && current.implicit == plan.implicit
-                    && [(req_id, requester), (peer_id, peer)].iter().all(|(id,node)| {
-                        current.member_index(*id).is_some_and(|i| current.members[i].wg_public_key == node.wg_public_key
-                            && current.members[i].party.node_ref == node.node_ref)
-                    })
-                    && epoch == state.org_relay.eligibility_generation()
-                    && !crate::overlay::org_fallback_forced_derp(state, &pk)
-                    && let Some(i) = current.member_index(req_id)
-                { push_member(state, &current, i).await; }
-                return;
-            }
-            Err(reason) => {
-                audit_mint(state, tenant_id, req_id, peer_id, None, None, false, Some(reason)).await;
-                return;
-            }
-            Ok(None) => {}
         }
-    } else {
-        state.org_relay.sessions.insert(pk.clone(), session.clone());
+        true
+    });
+    match claim {
+        trial::MintClaim::Existing(current) => {
+            // Fallback must reauthorize this exact winner; ordinary mint has
+            // the same reuse semantics as maybe_mint's existing-session path.
+            let authorized = fallback_epoch.is_none() || (current.relay.node_id == relay_id
+                && current.relay.node_ref == plan.relay.node_ref
+                && current.endpoints == plan.endpoints && current.implicit == plan.implicit
+                && [(req_id, requester), (peer_id, peer)].iter().all(|(id,node)| {
+                    current.member_index(*id).is_some_and(|i| current.members[i].wg_public_key == node.wg_public_key
+                        && current.members[i].party.node_ref == node.node_ref)
+                })
+                && fallback_epoch == Some(state.org_relay.eligibility_generation())
+                && !crate::overlay::org_fallback_forced_derp(state, &pk));
+            if authorized && let Some(i) = current.member_index(req_id) {
+                push_member(state, &current, i).await;
+            }
+            return;
+        }
+        trial::MintClaim::Full => {
+            audit_mint(state, tenant_id, req_id, peer_id, None, None, false, Some(PeerRelayDenyReason::NoRelay)).await;
+            return;
+        }
+        trial::MintClaim::Rejected => {
+            if let Some(reason) = refusal {
+                audit_mint(state, tenant_id, req_id, peer_id, None, None, false, Some(reason)).await;
+            }
+            return;
+        }
+        trial::MintClaim::Inserted => {}
+    }
+    if fallback_epoch.is_none() {
+        audit_mint(state, tenant_id, req_id, peer_id, Some((plan.relay_agent_id, relay_id)),
+            Some(vni), false, None).await;
+        if !state.org_relay.active_session(&pk).is_some_and(|current| current.vni == session.vni && current.generation == session.generation) {
+            return;
+        }
     }
     info!(%tenant_id, requester = %req_id, peer = %peer_id, relay = %relay_id, vni, generation,
         endpoints = ?session.endpoints, "org-relay: minted");
