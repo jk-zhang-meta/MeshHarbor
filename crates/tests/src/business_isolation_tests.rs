@@ -2500,7 +2500,7 @@ async fn staged_cross_border_trial_audit_failure_and_timeout_fail_closed() {
         let network = l.rig.app.state.network();
         support::fail_next_trial_crossing_audit(pair, fault);
         let request = |request_id| Message::Text(json!({"t":"rc:overlay.path_trial_request", "peer_node_id":l.us_node,
-            "relay_node_id":l.gz_node, "exit_relay_node_id":l.hk_node, "request_id":request_id}).to_string().into());
+            "path":{"relay_node_ids":[l.gz_node,l.hk_node]}, "requester_at_exit":false, "request_id":request_id}).to_string().into());
         l.cn.send(request(1)).await.unwrap();
         async fn assert_no_trial_frames(ws: &mut Ws, label: &str) {
             let until = tokio::time::Instant::now() + Duration::from_millis(3800);
@@ -2520,7 +2520,7 @@ async fn staged_cross_border_trial_audit_failure_and_timeout_fail_closed() {
         // audit write or trial/session allocation after the failed attempt.
         l.cn.send(Message::Text(json!({"t":"rc:overlay.org_relay_discover", "peer_node_id":l.us_node, "request_id":1}).to_string().into())).await.unwrap();
         let hint = recv_t(&mut l.cn, "rc:overlay.org_relay_candidates", Duration::from_secs(5)).await.expect("discovery unaffected");
-        assert!(hint["candidates"].as_array().unwrap().iter().any(|c| c["relay_node_id"] == l.gz_node && c["exit_relay_node_id"] == l.hk_node));
+        assert!(hint["candidates"].as_array().unwrap().iter().any(|c| c["path"]["relay_node_ids"] == json!([l.gz_node, l.hk_node]) && c["requester_at_exit"] == false));
         assert!(l.audit_reasons("mint").await.is_empty());
         l.cn.send(request(2)).await.unwrap();
         let wait = Duration::from_secs(8);
@@ -2532,7 +2532,7 @@ async fn staged_cross_border_trial_audit_failure_and_timeout_fail_closed() {
         assert_eq!(cn["vni"], a["vni"]); assert_eq!(us["vni"], b["vni"]);
         assert_eq!(bridge["bridge"]["local_vni"], a["vni"]); assert_eq!(bridge["bridge"]["remote_vni"], b["vni"]);
         assert_eq!(support::trial_slots_on_relay(network, gz), 1); assert_eq!(support::trial_slots_on_relay(network, hk), 1);
-        assert!(l.audit_reasons("mint").await.iter().any(|(reason, node)| reason == "cross_border_line" && node == &l.gz_node));
+        assert!(l.audit_reasons("mint").await.iter().any(|(reason, node)| reason == &format!("cross_border_edge:{}", l.hk_agent) && node == &l.gz_node));
     }
 }
 
@@ -2575,7 +2575,7 @@ async fn staged_trial_actual_edge_zone_gates_apply_in_off_and_warn() {
             if case == "audit_timeout" { support::fail_next_trial_crossing_audit(pair.clone(), TrialCrossingAuditFault::Timeout); }
             async fn request(ws: &mut Ws, peer: &str, ingress: &str, exit: &str, serial: u64) {
                 ws.send(Message::Text(json!({"t":"rc:overlay.path_trial_request", "peer_node_id":peer,
-                    "relay_node_id":ingress, "exit_relay_node_id":exit, "request_id":serial}).to_string().into())).await.unwrap();
+                    "path":{"relay_node_ids":[ingress,exit]}, "requester_at_exit":false, "request_id":serial}).to_string().into())).await.unwrap();
             }
             request(&mut l.cn, &l.us_node, &l.gz_node, &exit_node, 1).await;
             let wait = Duration::from_secs(8);
@@ -2617,7 +2617,7 @@ async fn staged_trial_actual_edge_zone_gates_apply_in_off_and_warn() {
             let us = recv_t(&mut l.us, "rc:overlay.path_trial_start", wait).await.expect("approved peer trial");
             assert_eq!(cn["vni"], a["vni"]); assert_eq!(us["vni"], b["vni"]);
             assert_eq!(bridge["bridge"]["local_vni"], a["vni"]); assert_eq!(bridge["bridge"]["remote_vni"], b["vni"]);
-            assert!(l.audit_reasons("mint").await.iter().any(|(reason,node)| reason == "cross_border_line" && node == &l.gz_node));
+            assert!(l.audit_reasons("mint").await.iter().any(|(reason,node)| reason == &format!("cross_border_edge:{}", l.hk_agent) && node == &l.gz_node));
         }
     }
 }
@@ -2656,7 +2656,7 @@ async fn staged_trial_edge_approval_downgrade_revokes_only_actual_crossing() {
         let (status, body) = put(&l.rig.app, &policy, &l.rig.seeded.admin.access_token, set_edge(true)).await;
         assert_eq!(status, 200, "{body}");
         l.cn.send(Message::Text(json!({"t":"rc:overlay.path_trial_request", "peer_node_id":l.us_node,
-            "relay_node_id":l.gz_node,"exit_relay_node_id":target_node,"request_id":1}).to_string().into())).await.unwrap();
+            "path":{"relay_node_ids":[l.gz_node,target_node]}, "requester_at_exit":false,"request_id":1}).to_string().into())).await.unwrap();
         let wait = Duration::from_secs(8);
         let source = recv_t(&mut l.gz, "rc:overlay.relay_serve", wait).await.expect("trial ingress serve");
         let exit_ws = if same_zone { alternate.as_mut().unwrap() } else { &mut l.hk };
@@ -2732,7 +2732,7 @@ async fn staged_trial_live_relay_zone_recheck_revokes_changes_not_stale_reads() 
             json!({"serve":true,"approved_backbone_edges":[{"relay_agent_id":exit_agent,"endpoint":"10.70.0.2:3478","cross_border":!originally_same}]})).await;
         assert_eq!(status, 200, "{body}");
         l.cn.send(Message::Text(json!({"t":"rc:overlay.path_trial_request", "peer_node_id":l.us_node,
-            "relay_node_id":l.gz_node,"exit_relay_node_id":exit_node,"request_id":1}).to_string().into())).await.unwrap();
+            "path":{"relay_node_ids":[l.gz_node,exit_node]}, "requester_at_exit":false,"request_id":1}).to_string().into())).await.unwrap();
         let wait = Duration::from_secs(8);
         let source = recv_t(&mut l.gz, "rc:overlay.relay_serve", wait).await.expect("trial ingress serve");
         let exit = recv_t(&mut old_exit, "rc:overlay.relay_serve", wait).await.expect("trial exit serve");
@@ -2837,7 +2837,7 @@ async fn staged_trial_live_relay_zone_recheck_retires_two_relays_moving_together
         json!({"serve":true,"approved_backbone_edges":[{"relay_agent_id":exit_agent,"endpoint":"10.71.0.2:3478","cross_border":false}]})).await;
     assert_eq!(status, 200, "{body}");
     l.cn.send(Message::Text(json!({"t":"rc:overlay.path_trial_request", "peer_node_id":l.us_node,
-        "relay_node_id":source_node,"exit_relay_node_id":exit_node,"request_id":1}).to_string().into())).await.unwrap();
+        "path":{"relay_node_ids":[source_node,exit_node]}, "requester_at_exit":false,"request_id":1}).to_string().into())).await.unwrap();
     let wait = Duration::from_secs(8);
     let s = recv_t(&mut source, "rc:overlay.relay_serve", wait).await.expect("source serve");
     let e = recv_t(&mut exit, "rc:overlay.relay_serve", wait).await.expect("exit serve");
@@ -3252,4 +3252,62 @@ async fn staged_graph_cross_zone_discovery_paginates_and_rechecks_approvals() {
     assert!(l.audit_reasons("mint").await.is_empty(), "discovery must not audit a mint");
     for ws in [&mut l.gz, &mut l.hk] { assert!(recv_t(ws, "rc:overlay.relay_serve", Duration::from_millis(250)).await.is_none()); }
     for ws in &mut relays { assert!(recv_t(ws, "rc:overlay.relay_serve", Duration::from_millis(250)).await.is_none()); }
+}
+
+/// Off/Warn must not add a member-to-endpoint zone gate at either path length.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn staged_nhop_trial_off_warn_endpoint_zone_parity_two_and_three() {
+    use roomler_ai_mod_network::org_relay::candidate_test_support as support;
+    for isolation in ["off", "warn"] {
+        let slug = format!("iso-trial-endpoint-parity-{isolation}");
+        let rig = Rig::up(&slug, isolation).await;
+        let mut relays = Vec::new(); let mut agents = Vec::new(); let mut nodes = Vec::new();
+        for i in 0..3 {
+            let name = format!("{slug}-r{i}"); let (agent, token) = enroll(&rig.app, &rig.seeded, &name).await;
+            let mut ws = connect_from(&rig.app, &token, &["relay-server"], Some(US_R)).await;
+            assert_observed(&rig.app, &agent, Some(US_R)).await;
+            line_join(&mut ws, 10+i, &format!("1.1.1.{}:41641", i+1), json!({"relay_backbone_ready":true})).await;
+            assert_eq!(approve(&rig.app, &rig.seeded, &agent, true).await, 200);
+            let node = rig.node(&name).await; grant_relay(&rig.app, &rig.seeded, &node).await;
+            relays.push(ws); agents.push(agent); nodes.push(node);
+        }
+        let mut a = rig.device(&format!("{slug}-a"), Some(CN_A)).await;
+        let mut b = rig.device(&format!("{slug}-b"), if isolation == "warn" { None } else { Some(CN_A) }).await;
+        let flags = json!({"supports_backbone_only_v1":true,"supports_path_backbone_v1":true,"supports_path_trial_v1":true});
+        line_join(&mut a, 1, "223.5.5.5:41641", flags.clone()).await;
+        line_join(&mut b, 2, "223.5.5.6:41641", flags).await;
+        let a_id = ObjectId::parse_str(rig.node(&format!("{slug}-a")).await).unwrap();
+        let b_id = ObjectId::parse_str(rig.node(&format!("{slug}-b")).await).unwrap();
+        set_mode(&rig.app, &rig.seeded, "on").await;
+        let path = |agent: &str| format!("/api/tenant/{}/agent/{agent}/peer-relay-policy", rig.seeded.tenant_id);
+        let (status, body) = put(&rig.app, &path(&agents[0]), &rig.seeded.admin.access_token,
+            json!({"serve":true,"approved_backbone_edges":[
+                {"relay_agent_id":agents[1],"endpoint":"10.74.0.2:3478","cross_border":false},
+                {"relay_agent_id":agents[2],"endpoint":"10.74.0.3:3478","cross_border":false}]})).await;
+        assert_eq!(status, 200, "{body}");
+        let (status, body) = put(&rig.app, &path(&agents[1]), &rig.seeded.admin.access_token,
+            json!({"serve":true,"approved_backbone_edges":[{"relay_agent_id":agents[2],"endpoint":"10.74.0.4:3478","cross_border":false}]})).await;
+        assert_eq!(status, 200, "{body}");
+        let network = rig.app.state.network(); let ids: Vec<_> = nodes.iter().map(|n| ObjectId::parse_str(n).unwrap()).collect();
+        for (serial, indexes, flipped) in [(1, vec![0,2], false), (2, vec![0,1,2], true)] {
+            let path_nodes: Vec<_> = indexes.iter().map(|&i| nodes[i].clone()).collect();
+            let request = json!({"t":"rc:overlay.path_trial_request", "peer_node_id":if flipped {a_id.to_hex()} else {b_id.to_hex()},
+                "request_id":serial,"path":{"relay_node_ids":path_nodes},"requester_at_exit":flipped});
+            if flipped { b.send(Message::Text(request.to_string().into())).await.unwrap(); }
+            else { a.send(Message::Text(request.to_string().into())).await.unwrap(); }
+            let wait = Duration::from_secs(8); let mut serves = Vec::new();
+            for &i in &indexes { serves.push(recv_t(&mut relays[i], "rc:overlay.relay_serve", wait).await.expect("off/warn endpoint-mismatch serve")); }
+            let mut bridges = Vec::new();
+            for &i in indexes.iter().take(indexes.len()-1) { bridges.push(recv_t(&mut relays[i], "rc:overlay.relay_bridge_serve", wait).await.expect("endpoint-mismatch bridge")); }
+            let sa = recv_t(&mut a, "rc:overlay.path_trial_start", wait).await.expect("a start");
+            let sb = recv_t(&mut b, "rc:overlay.path_trial_start", wait).await.expect("b start");
+            assert_eq!(sa["trial_id"], sb["trial_id"]); assert_eq!(sa["vni"], serves[0]["vni"]); assert_eq!(sb["vni"], serves.last().unwrap()["vni"]);
+            for &i in &indexes { assert_eq!(support::trial_slots_on_relay(network, ids[i]), 1); }
+            a.send(Message::Text(json!({"t":"rc:overlay.path_trial_abort","trial_id":sa["trial_id"]}).to_string().into())).await.unwrap();
+            for ws in [&mut a, &mut b] { recv_t(ws, "rc:overlay.path_trial_abort", wait).await.expect("abort"); }
+            for (position, &i) in indexes.iter().enumerate() { let revoke=recv_t(&mut relays[i], "rc:overlay.relay_revoke", wait).await.expect("relay revoke"); assert_eq!(revoke["vni"], serves[position]["vni"]); }
+            for (position, &i) in indexes.iter().take(indexes.len()-1).enumerate() { let revoke=recv_t(&mut relays[i], "rc:overlay.relay_bridge_revoke", wait).await.expect("bridge revoke"); assert_eq!(revoke["trial_id"], bridges[position]["bridge"]["trial_id"]); }
+            for &i in &indexes { assert_eq!(support::trial_slots_on_relay(network, ids[i]), 0); }
+        }
+    }
 }
