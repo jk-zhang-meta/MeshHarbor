@@ -3596,6 +3596,9 @@ pub(crate) async fn recheck_trial_zones(state: &NetworkState, agent_id: ObjectId
 }
 
 fn schedule_trial_zone_retry(state: &NetworkState, agent_id: ObjectId, reason: String) {
+    // ponytail: one pending timer per identity; a five-second retry bounds
+    // persistent unknown/read-failure polling while live events recheck now.
+    const RETRY_DELAY: Duration = Duration::from_secs(5);
     use dashmap::mapref::entry::Entry;
     if let Entry::Vacant(entry) = state.org_relay.trial_zone_retry_pending.entry(agent_id) {
         entry.insert(());
@@ -3604,7 +3607,7 @@ fn schedule_trial_zone_retry(state: &NetworkState, agent_id: ObjectId, reason: S
     }
     let state = state.clone();
     tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        tokio::time::sleep(RETRY_DELAY).await;
         state.org_relay.trial_zone_retry_pending.remove(&agent_id);
         if trial::recheck_relay_zones(&state, agent_id, &reason).await {
             schedule_trial_zone_retry(&state, agent_id, reason);

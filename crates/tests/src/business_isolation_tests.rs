@@ -3425,7 +3425,7 @@ async fn staged_nhop_trial_zone_fixture_rechecks_middle_and_members() {
             } else { before_netmap=join_collect(&mut replacement,11,endpoint,true,false).await; relays[1]=replacement; }
         }
         if matches!(case,"stable"|"race_restore"|"unconstrained_member"|"unknown") {
-            if case == "unknown" { tokio::time::sleep(Duration::from_secs(3)).await; }
+            if case == "unknown" { tokio::time::sleep(Duration::from_secs(7)).await; }
             assert!(before_netmap.is_empty(),"{slug}: healthy path retired during join");
             for id in &node_ids {assert_eq!(support::trial_slots_on_relay(network,*id),1,"{slug}: healthy path lost");}
             async fn quiet(ws:&mut Ws,label:&str){let until=tokio::time::Instant::now()+Duration::from_millis(300);
