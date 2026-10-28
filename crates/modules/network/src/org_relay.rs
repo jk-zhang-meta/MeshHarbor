@@ -53,7 +53,7 @@ use roomler_ai_remote_control::{
         PeerRelayDenyReason, PeerRelayMode, RpcCap, peer_relay_limits as limits,
     },
     signaling::{
-        OrgRelayCandidateWire, OrgRelayDiscoveryCursorWire, RelayMemberWire, RelayProbeTargetWire,
+        OrgRelayCandidateWire, OrgRelayDiscoveryCursorWire, RelayMemberWire, RelayPathWire, RelayProbeTargetWire,
         ServerMsg,
     },
 };
@@ -348,6 +348,30 @@ pub mod candidate_test_support {
     pub(super) async fn pause_line_preclaim_if_armed(pair: &str) {
         let pause = line_preclaim_pauses().lock().unwrap().remove(pair);
         if let Some(LinePreclaimPause { reached, resume }) = pause {
+            let _ = reached.send(());
+            let _ = resume.await;
+        }
+    }
+    struct CrossDiscoveryPause {
+        reached: oneshot::Sender<()>,
+        resume: oneshot::Receiver<()>,
+    }
+    fn cross_discovery_pauses() -> &'static Mutex<HashMap<String, CrossDiscoveryPause>> {
+        static PAUSES: OnceLock<Mutex<HashMap<String, CrossDiscoveryPause>>> = OnceLock::new();
+        PAUSES.get_or_init(|| Mutex::new(HashMap::new()))
+    }
+    /// Pause after constructing a cross-zone page, before its final fence.
+    pub fn pause_cross_discovery_fixture(pair: String) -> (oneshot::Receiver<()>, oneshot::Sender<()>) {
+        let (reached_tx, reached_rx) = oneshot::channel();
+        let (resume_tx, resume_rx) = oneshot::channel();
+        assert!(cross_discovery_pauses().lock().unwrap().insert(pair, CrossDiscoveryPause {
+            reached: reached_tx, resume: resume_rx,
+        }).is_none());
+        (reached_rx, resume_tx)
+    }
+    pub(super) async fn pause_cross_discovery_if_armed(pair: &str) {
+        let pause = cross_discovery_pauses().lock().unwrap().remove(pair);
+        if let Some(CrossDiscoveryPause { reached, resume }) = pause {
             let _ = reached.send(());
             let _ = resume.await;
         }
@@ -2556,63 +2580,58 @@ async fn audit_line(state: &NetworkState, s: &OrgRelaySession, warn_only: bool) 
     true
 }
 
-/// Discovery hints for a cross-border pair: each ingress relay in the
-/// requester's zone with an approved `cross_border` edge to an exit relay in
-/// the peer's zone, both authorized for the pair. At most two.
+/// Cross-border hints are metadata only. The cursor page is rebuilt from
+/// fresh side-authorized plans and keeps only a bounded page while scanning.
 async fn cross_border_hints(
     state: &NetworkState,
     requester: &OverlayNode,
     peer: &OverlayNode,
     overlay_cidr: &str,
-) -> Vec<OrgRelayCandidateWire> {
+    cursor: Option<OrgRelayDiscoveryCursorWire>,
+) -> (Vec<OrgRelayCandidateWire>, Option<OrgRelayDiscoveryCursorWire>) {
     let Some((za, zb)) = cross_border_zones(state, requester, peer).await else {
-        return Vec::new();
+        return (Vec::new(), None);
     };
     let Ok(ingresses) =
         plan_mint_candidates_reusing(state, requester, peer, None, ZoneScope::Side(za)).await
     else {
-        return Vec::new();
+        return (Vec::new(), None);
     };
     let Ok(exits) =
         plan_mint_candidates_reusing(state, requester, peer, None, ZoneScope::Side(zb)).await
     else {
-        return Vec::new();
+        return (Vec::new(), None);
     };
-    let mut out = Vec::new();
-    for ingress in &ingresses {
-        let Some(ingress_id) = ingress.relay.id else { continue };
-        if !state.org_relay.join_extras(ingress_id).relay_backbone_ready {
-            continue;
-        }
-        for edge in ingress.backbone_edges.iter().take(8).filter(|e| e.cross_border) {
-            if !crate::routes::peer_relay::backbone_endpoint_outside_overlay(&edge.endpoint, overlay_cidr) {
-                continue;
+    let hints = ingresses.iter().filter_map(|ingress| {
+        let ingress_id = ingress.relay.id?;
+        state.org_relay.join_extras(ingress_id).relay_backbone_ready.then_some((ingress_id, ingress))
+    }).flat_map(|(ingress_id, ingress)| {
+        let exits = &exits;
+        ingress.backbone_edges.iter().take(8).filter_map(move |edge| {
+            if !edge.cross_border || !crate::routes::peer_relay::backbone_endpoint_outside_overlay(&edge.endpoint, overlay_cidr) {
+                return None;
             }
-            let Ok(target) = ObjectId::parse_str(&edge.relay_agent_id) else { continue };
-            let Some(exit) = exits.iter().find(|p| p.relay_agent_id == target) else {
-                continue;
-            };
-            out.push(OrgRelayCandidateWire {
-                relay_node_id: ingress_id,
+            let target = ObjectId::parse_str(&edge.relay_agent_id).ok()?;
+            let exit = exits.iter().find(|p| p.relay_agent_id == target)?;
+            Some(OrgRelayCandidateWire {
+                path: RelayPathWire::new(vec![ingress_id, exit.relay.id?]).ok()?,
+                requester_at_exit: false,
                 endpoints: ingress.endpoints.iter().take(4).cloned().collect(),
-                exit_relay_node_id: exit.relay.id,
-            });
-            if out.len() >= 2 {
-                return out;
-            }
-        }
+            })
+        })
+    });
+    if let Some(cursor) = cursor {
+        discovery_page(hints, cursor)
+    } else {
+        (hints.take(2).collect(), None)
     }
-    out
 }
 
-fn discovery_key(c: &OrgRelayCandidateWire) -> (ObjectId, Option<ObjectId>) {
-    (c.relay_node_id, c.exit_relay_node_id)
+fn discovery_key(c: &OrgRelayCandidateWire) -> OrgRelayDiscoveryCursorWire {
+    c.cursor()
 }
 fn discovery_cursor(c: &OrgRelayCandidateWire) -> OrgRelayDiscoveryCursorWire {
-    OrgRelayDiscoveryCursorWire {
-        relay_node_id: c.relay_node_id,
-        exit_relay_node_id: c.exit_relay_node_id,
-    }
+    c.cursor()
 }
 /// At most six hints retained while scanning the already-authorized planner.
 /// Ring order provides coverage; output order remains planner preference order.
@@ -2623,7 +2642,7 @@ fn discovery_page(
     Vec<OrgRelayCandidateWire>,
     Option<OrgRelayDiscoveryCursorWire>,
 ) {
-    let key = (cursor.relay_node_id, cursor.exit_relay_node_id);
+    let key = cursor;
     let mut first = Vec::new();
     let mut after = Vec::new();
     for (rank, hint) in hints.enumerate() {
@@ -2709,7 +2728,7 @@ pub async fn discover(
         };
         if let Some(path_network) = path_network.as_ref() {
             // A cross-border pair gets only its line's hints.
-            candidates.extend(cross_border_hints(state, requester, peer, &path_network.cidr).await);
+            candidates.extend(cross_border_hints(state, requester, peer, &path_network.cidr, None).await.0);
         }
         if let Some(path_network) = path_network {
             backbone_cidr = Some(path_network.cidr.clone());
@@ -2740,10 +2759,10 @@ pub async fn discover(
                         else {
                             continue;
                         };
+                        let Some(path) = exit.relay.id.and_then(|id| RelayPathWire::new(vec![ingress_id, id]).ok()) else { continue };
                         candidates.push(OrgRelayCandidateWire {
-                            relay_node_id: ingress_id,
+                            path, requester_at_exit: false,
                             endpoints: ingress.endpoints.iter().take(4).cloned().collect(),
-                            exit_relay_node_id: exit.relay.id,
                         });
                         if candidates.len() >= 2 {
                             break 'sources;
@@ -2773,13 +2792,13 @@ pub async fn discover(
                     };
                     if candidates
                         .iter()
-                        .any(|c| c.relay_node_id == relay_node_id && c.exit_relay_node_id.is_none())
+                        .any(|c| c.path.relay_node_ids() == [relay_node_id] && !c.requester_at_exit)
                     {
                         continue;
                     }
                     candidates.push(OrgRelayCandidateWire {
-                        relay_node_id,
-                        exit_relay_node_id: None,
+                        path: RelayPathWire::new(vec![relay_node_id]).expect("one relay"),
+                        requester_at_exit: false,
                         endpoints: plan.endpoints.into_iter().take(4).collect(),
                     });
                 }
@@ -2787,8 +2806,8 @@ pub async fn discover(
         } else if let Ok(plan) = plan_mint(state, requester, peer).await {
             if let Some(relay_node_id) = plan.relay.id {
                 candidates.push(OrgRelayCandidateWire {
-                    relay_node_id,
-                    exit_relay_node_id: None,
+                    path: RelayPathWire::new(vec![relay_node_id]).expect("one relay"),
+                    requester_at_exit: false,
                     endpoints: plan.endpoints.into_iter().take(4).collect(),
                 });
             }
@@ -2796,71 +2815,101 @@ pub async fn discover(
     }
     if traversal && enabled {
         if let Some(cursor) = cursor {
-            // Existing two-hop scope is unchanged: only the original at-most-two
-            // backbone hints participate. All one-hop plans are freshly filtered.
-            match plan_mint_candidates(state, requester, peer).await {
-                Ok(plans) => {
-                    // Never carry a backbone hint across the await into this
-                    // fresh page snapshot: approval, ACL or approved edges may
-                    // have changed. Rebuild only the existing <=2 hint scope.
-                    let mut backbone = Vec::new();
-                    let current_path_caps = requester.id.is_some_and(|id| {
-                        state.org_relay.join_extras(id).supports_path_backbone_v1
-                    }) && state
-                        .org_relay
-                        .join_extras(peer_id)
-                        .supports_path_backbone_v1;
-                    if let Some(cidr) = backbone_cidr.as_deref().filter(|_| current_path_caps) {
-                        'sources: for ingress in &plans {
-                            let Some(ingress_id) = ingress.relay.id else {
-                                continue;
-                            };
-                            if !state.org_relay.join_extras(ingress_id).relay_backbone_ready {
-                                continue;
-                            }
-                            for edge in ingress.backbone_edges.iter().take(8) {
-                                if !crate::routes::peer_relay::backbone_endpoint_outside_overlay(
-                                    &edge.endpoint,
-                                    cidr,
-                                ) {
+            if let Some(zones) = cross_border_zones(state, requester, peer).await {
+                // A cross-zone pair has no Pair-scope single-relay plan. Build
+                // each page from newly authorized Side-scope lines instead.
+                let epoch = state.org_relay.eligibility_generation();
+                let current_caps = requester.id.is_some_and(|id| state.org_relay.join_extras(id).supports_path_backbone_v1)
+                    && state.org_relay.join_extras(peer_id).supports_path_backbone_v1;
+                let current_network = if current_caps {
+                    state.overlay_networks.get_or_create(requester.tenant_id).await.ok()
+                        .filter(|n| n.mtu <= limits::BACKBONE_MAX_OVERLAY_MTU)
+                } else { None };
+                if let Some(network) = current_network {
+                    (candidates, next_cursor) = cross_border_hints(state, requester, peer, &network.cidr, Some(cursor)).await;
+                } else {
+                    candidates.clear();
+                }
+                #[cfg(feature = "path-planner-test-support")]
+                if let Some(requester_id) = requester.id {
+                    candidate_test_support::pause_cross_discovery_if_armed(&pair_key(requester_id, peer_id)).await;
+                }
+                let current_zones = cross_border_zones(state, requester, peer).await;
+                let current_mode = peer_relay_mode(state, requester.tenant_id).await;
+                if current_zones != Some(zones)
+                    || !matches!(current_mode, PeerRelayMode::On | PeerRelayMode::Auto)
+                    || epoch != state.org_relay.eligibility_generation()
+                {
+                    candidates.clear();
+                    next_cursor = None;
+                }
+            } else {
+                // Existing two-hop scope is unchanged: only the original at-most-two
+                // backbone hints participate. All one-hop plans are freshly filtered.
+                match plan_mint_candidates(state, requester, peer).await {
+                    Ok(plans) => {
+                        // Never carry a backbone hint across the await into this
+                        // fresh page snapshot: approval, ACL or approved edges may
+                        // have changed. Rebuild only the existing <=2 hint scope.
+                        let mut backbone = Vec::new();
+                        let current_path_caps = requester.id.is_some_and(|id| {
+                            state.org_relay.join_extras(id).supports_path_backbone_v1
+                        }) && state
+                            .org_relay
+                            .join_extras(peer_id)
+                            .supports_path_backbone_v1;
+                        if let Some(cidr) = backbone_cidr.as_deref().filter(|_| current_path_caps) {
+                            'sources: for ingress in &plans {
+                                let Some(ingress_id) = ingress.relay.id else {
+                                    continue;
+                                };
+                                if !state.org_relay.join_extras(ingress_id).relay_backbone_ready {
                                     continue;
                                 }
-                                let Ok(target) = ObjectId::parse_str(&edge.relay_agent_id) else {
-                                    continue;
-                                };
-                                let Some(exit) = plans.iter().find(|p| {
-                                    p.relay_agent_id == target && p.relay.id != Some(ingress_id)
-                                }) else {
-                                    continue;
-                                };
-                                let hint = OrgRelayCandidateWire {
-                                    relay_node_id: ingress_id,
-                                    endpoints: ingress.endpoints.iter().take(4).cloned().collect(),
-                                    exit_relay_node_id: exit.relay.id,
-                                };
-                                if !backbone
-                                    .iter()
-                                    .any(|c| discovery_key(c) == discovery_key(&hint))
-                                {
-                                    backbone.push(hint);
-                                }
-                                if backbone.len() == 2 {
-                                    break 'sources;
+                                for edge in ingress.backbone_edges.iter().take(8) {
+                                    if !crate::routes::peer_relay::backbone_endpoint_outside_overlay(
+                                        &edge.endpoint,
+                                        cidr,
+                                    ) {
+                                        continue;
+                                    }
+                                    let Ok(target) = ObjectId::parse_str(&edge.relay_agent_id) else {
+                                        continue;
+                                    };
+                                    let Some(exit) = plans.iter().find(|p| {
+                                        p.relay_agent_id == target && p.relay.id != Some(ingress_id)
+                                    }) else {
+                                        continue;
+                                    };
+                                    let Some(path) = exit.relay.id.and_then(|id| RelayPathWire::new(vec![ingress_id, id]).ok()) else { continue };
+                                    let hint = OrgRelayCandidateWire {
+                                        path, requester_at_exit: false,
+                                        endpoints: ingress.endpoints.iter().take(4).cloned().collect(),
+                                    };
+                                    if !backbone
+                                        .iter()
+                                        .any(|c| discovery_key(c) == discovery_key(&hint))
+                                    {
+                                        backbone.push(hint);
+                                    }
+                                    if backbone.len() == 2 {
+                                        break 'sources;
+                                    }
                                 }
                             }
                         }
+                        let onehop = plans.into_iter().filter_map(|p| {
+                            p.relay.id.map(|id| OrgRelayCandidateWire {
+                                path: RelayPathWire::new(vec![id]).expect("one relay"),
+                                requester_at_exit: false,
+                                endpoints: p.endpoints.into_iter().take(4).collect(),
+                            })
+                        });
+                        (candidates, next_cursor) =
+                            discovery_page(backbone.into_iter().chain(onehop), cursor);
                     }
-                    let onehop = plans.into_iter().filter_map(|p| {
-                        p.relay.id.map(|id| OrgRelayCandidateWire {
-                            relay_node_id: id,
-                            exit_relay_node_id: None,
-                            endpoints: p.endpoints.into_iter().take(4).collect(),
-                        })
-                    });
-                    (candidates, next_cursor) =
-                        discovery_page(backbone.into_iter().chain(onehop), cursor);
+                    Err(_) => candidates.clear(), // no stale-page fallback on authorization failure
                 }
-                Err(_) => candidates.clear(), // no stale-page fallback on authorization failure
             }
         } else {
             // Preserve the original preferred first page, including backbone reservation.

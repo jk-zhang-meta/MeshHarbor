@@ -3175,3 +3175,80 @@ async fn staged_nhop_trial_actual_lifecycle_and_rollback() {
         for id in &ids { assert_eq!(support::trial_slots_on_relay(network, *id), 0, "every trial slot released"); }
     }
 }
+
+/// Cross-zone cursor pages must traverse freshly authorized lines, not the
+/// Pair-scope one-relay planner that rejects cross-zone endpoints.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn staged_graph_cross_zone_discovery_paginates_and_rechecks_approvals() {
+    let mut l = LineRig::up("iso-cross-page", true).await;
+    let flags = json!({"supports_backbone_only_v1":true,"supports_path_backbone_v1":true,
+        "supports_path_trial_v1":true,"supports_org_relay_multi_candidate":true,
+        "supports_org_relay_discovery_cursor":true});
+    line_join(&mut l.cn, 1, "223.5.5.5:41641", flags.clone()).await;
+    line_join(&mut l.us, 2, "8.8.8.8:41641", flags).await;
+    let mut agents = vec![l.hk_agent.clone()];
+    let mut ids = vec![l.hk_node.clone()];
+    let mut relays = Vec::new();
+    for i in 0..4 {
+        let name = format!("iso-cross-page-exit-{i}");
+        let (agent, token) = enroll(&l.rig.app, &l.rig.seeded, &name).await;
+        let mut ws = connect_from(&l.rig.app, &token, &["relay-server"], Some(US_R)).await;
+        assert_observed(&l.rig.app, &agent, Some(US_R)).await;
+        line_join(&mut ws, 10 + i, &format!("1.1.1.{}:41641", i + 2), json!({})).await;
+        assert_eq!(approve(&l.rig.app, &l.rig.seeded, &agent, true).await, 200);
+        let id = l.rig.node(&name).await;
+        grant_relay(&l.rig.app, &l.rig.seeded, &id).await;
+        agents.push(agent); ids.push(id); relays.push(ws);
+    }
+    let policy = format!("/api/tenant/{}/agent/{}/peer-relay-policy", l.rig.seeded.tenant_id, l.gz_agent);
+    let make_edges = |agents: &[String]| agents.iter().enumerate().map(|(i, id)|
+        json!({"relay_agent_id":id,"endpoint":format!("10.61.0.{}:3478",i+2),"cross_border":true})).collect::<Vec<_>>();
+    let (status, body) = put(&l.rig.app, &policy, &l.rig.seeded.admin.access_token,
+        json!({"serve":true,"approved_backbone_edges":make_edges(&agents)})).await;
+    assert_eq!(status, 200, "{body}");
+    async fn page(ws: &mut Ws, peer: &str, serial: u64, cursor: Option<Value>) -> Value {
+        let mut req = json!({"t":"rc:overlay.org_relay_discover", "peer_node_id":peer, "request_id":serial});
+        if let Some(c) = cursor { req["cursor"] = c; }
+        ws.send(Message::Text(req.to_string().into())).await.unwrap();
+        let result = recv_t(ws, "rc:overlay.org_relay_candidates", Duration::from_secs(8)).await.expect("discovery response");
+        assert_eq!(result["request_id"], serial); result
+    }
+    let mut result = page(&mut l.cn, &l.us_node, 1, None).await;
+    assert_eq!(result["candidates"].as_array().unwrap().len(), 2, "preferred first page");
+    let mut seen = BTreeSet::new();
+    for serial in 2..=3 {
+        for c in result["candidates"].as_array().unwrap() {
+            assert_eq!(c["path"]["relay_node_ids"][0], l.gz_node);
+            seen.insert(c["path"]["relay_node_ids"][1].as_str().unwrap().to_owned());
+        }
+        let cursor = result["next_cursor"].clone();
+        assert!(cursor.is_object(), "cross-zone cursor missing: {result}");
+        result = page(&mut l.cn, &l.us_node, serial, Some(cursor)).await;
+        assert!(result["candidates"].as_array().unwrap().len() <= 3);
+    }
+    for c in result["candidates"].as_array().unwrap() { seen.insert(c["path"]["relay_node_ids"][1].as_str().unwrap().to_owned()); }
+    assert_eq!(seen, ids.iter().cloned().collect(), "all five approved exits should be discoverable");
+    let removed = ids[0].clone();
+    let pair = roomler_ai_mod_network::overlay::pair_key(ObjectId::parse_str(&l.cn_node).unwrap(), ObjectId::parse_str(&l.us_node).unwrap());
+    let (reached, resume) = roomler_ai_mod_network::org_relay::candidate_test_support::pause_cross_discovery_fixture(pair.clone());
+    l.cn.send(Message::Text(json!({"t":"rc:overlay.org_relay_discover", "peer_node_id":l.us_node,
+        "request_id":4, "cursor":result["next_cursor"]}).to_string().into())).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(10), reached).await.expect("discovery page reached final fence").unwrap();
+    let (status, body) = put(&l.rig.app, &policy, &l.rig.seeded.admin.access_token,
+        json!({"serve":true,"approved_backbone_edges":make_edges(&agents[1..])})).await;
+    assert_eq!(status, 200, "{body}");
+    resume.send(()).unwrap();
+    let stale = recv_t(&mut l.cn, "rc:overlay.org_relay_candidates", Duration::from_secs(8)).await.expect("fenced page response");
+    assert_eq!(stale["request_id"], 4);
+    assert!(stale["candidates"].as_array().unwrap().is_empty(), "concurrent withdrawal must discard the old snapshot");
+    let after = page(&mut l.cn, &l.us_node, 5, Some(result["next_cursor"].clone())).await;
+    assert!(after["candidates"].as_array().unwrap().iter().all(|c| c["path"]["relay_node_ids"][1] != removed), "withdrawn edge remains in page");
+    assert!(!after["candidates"].as_array().unwrap().is_empty(), "other approved lines remain available");
+    assert_eq!(approve(&l.rig.app, &l.rig.seeded, &agents[1], false).await, 200);
+    let after_approval = page(&mut l.cn, &l.us_node, 6, Some(after["next_cursor"].clone())).await;
+    assert!(after_approval["candidates"].as_array().unwrap().iter().all(|c| c["path"]["relay_node_ids"][1] != ids[1]), "unapproved relay remains in page");
+    assert!(l.rig.app.state.network().org_relay.active_session(&pair).is_none(), "discovery must not mint");
+    assert!(l.audit_reasons("mint").await.is_empty(), "discovery must not audit a mint");
+    for ws in [&mut l.gz, &mut l.hk] { assert!(recv_t(ws, "rc:overlay.relay_serve", Duration::from_millis(250)).await.is_none()); }
+    for ws in &mut relays { assert!(recv_t(ws, "rc:overlay.relay_serve", Duration::from_millis(250)).await.is_none()); }
+}

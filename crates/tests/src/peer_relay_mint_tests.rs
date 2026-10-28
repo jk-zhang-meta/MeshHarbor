@@ -994,7 +994,7 @@ async fn metadata_discovery_is_bounded_and_never_allocates_or_spends_mint_budget
         assert_eq!(reply["ttl_secs"], json!(30));
         let candidates = reply["candidates"].as_array().unwrap();
         assert_eq!(candidates.len(), 1);
-        assert_eq!(candidates[0]["relay_node_id"], json!(rig.r_node));
+        assert_eq!(candidates[0]["path"]["relay_node_ids"][0], json!(rig.r_node));
         assert_eq!(candidates[0]["endpoints"].as_array().unwrap().len(), 4);
         assert!(reply.get("vni").is_none() && reply.get("bind_secret").is_none());
     }
@@ -1103,7 +1103,7 @@ async fn metadata_discovery_multi_onehop_negotiates_caps_and_preserves_all_gates
     );
     let ids: std::collections::HashSet<_> = hints
         .iter()
-        .map(|c| c["relay_node_id"].as_str().unwrap().to_owned())
+        .map(|c| c["path"]["relay_node_ids"][0].as_str().unwrap().to_owned())
         .collect();
     assert_eq!(ids.len(), 3, "no duplicate candidate identities");
     assert!(
@@ -1111,7 +1111,7 @@ async fn metadata_discovery_multi_onehop_negotiates_caps_and_preserves_all_gates
         "only the shared planner's ACL-authorized relays"
     );
     assert!(hints.iter().all(|c| {
-        c.get("exit_relay_node_id").is_none()
+        c["path"]["relay_node_ids"].as_array().unwrap().len() == 1
             && c["endpoints"]
                 .as_array()
                 .is_some_and(|e| !e.is_empty() && e.len() <= 4)
@@ -1119,7 +1119,7 @@ async fn metadata_discovery_multi_onehop_negotiates_caps_and_preserves_all_gates
     assert_eq!(new["ttl_secs"], json!(30));
     // Remove the preferred relay through the real policy API. Discovery
     // must still expose all three remaining eligible paths, not starvation.
-    let first = hints[0]["relay_node_id"].as_str().unwrap();
+    let first = hints[0]["path"]["relay_node_ids"][0].as_str().unwrap();
     let first_index = allowed.iter().position(|id| id == first).unwrap();
     assert_eq!(
         approve(&rig.app, &rig.seeded, &approved_agents[first_index], false).await,
@@ -1128,7 +1128,7 @@ async fn metadata_discovery_multi_onehop_negotiates_caps_and_preserves_all_gates
     let after = discover(&mut rig, &peer, 4).await;
     let after = after["candidates"].as_array().unwrap();
     assert_eq!(after.len(), 3);
-    assert!(after.iter().all(|c| c["relay_node_id"] != json!(first)));
+    assert!(after.iter().all(|c| c["path"]["relay_node_ids"][0] != json!(first)));
     for agent in &approved_agents {
         assert_eq!(approve(&rig.app, &rig.seeded, agent, false).await, 200);
     }
@@ -1399,7 +1399,7 @@ async fn begin_trial(rig: &mut Rig, request_id: u64) -> (Value, Value, Value) {
         .send(Message::Text(
             json!({
                 "t": "rc:overlay.path_trial_request", "peer_node_id": rig.b_node,
-                "relay_node_id": rig.r_node, "request_id": request_id
+                "path":{"relay_node_ids":[rig.r_node]}, "requester_at_exit":false, "request_id": request_id
             })
             .to_string()
             .into(),
@@ -1462,7 +1462,7 @@ async fn request_onehop(rig: &mut Rig, relay: &str, serial: u64) {
     rig.a
         .send(Message::Text(
             json!({"t":"rc:overlay.path_trial_request",
-                "peer_node_id":rig.b_node, "relay_node_id":relay, "request_id":serial
+                "peer_node_id":rig.b_node, "path":{"relay_node_ids":[relay]}, "requester_at_exit":false, "request_id":serial
             })
             .to_string()
             .into(),
@@ -1479,8 +1479,8 @@ async fn path_trial_nonpreferred_onehop_is_fresh_authorized_and_revocation_fails
     let metadata = discover(&mut rig, &peer, 1).await;
     let hints = metadata["candidates"].as_array().unwrap();
     assert_eq!(hints.len(), 2);
-    let preferred = hints[0]["relay_node_id"].as_str().unwrap().to_owned();
-    let requested = hints[1]["relay_node_id"].as_str().unwrap().to_owned();
+    let preferred = hints[0]["path"]["relay_node_ids"][0].as_str().unwrap().to_owned();
+    let requested = hints[1]["path"]["relay_node_ids"][0].as_str().unwrap().to_owned();
     assert_ne!(requested, preferred);
     assert!(requested == rig.r_node || requested == extra_node);
     request_onehop(&mut rig, &requested, 41).await;
@@ -1570,8 +1570,8 @@ async fn path_trial_nonpreferred_onehop_acl_removed_does_not_fall_back_to_other_
     let metadata = discover(&mut rig, &peer, 1).await;
     let hints = metadata["candidates"].as_array().unwrap();
     assert_eq!(hints.len(), 2);
-    let preferred = hints[0]["relay_node_id"].as_str().unwrap().to_owned();
-    let requested = hints[1]["relay_node_id"].as_str().unwrap().to_owned();
+    let preferred = hints[0]["path"]["relay_node_ids"][0].as_str().unwrap().to_owned();
+    let requested = hints[1]["path"]["relay_node_ids"][0].as_str().unwrap().to_owned();
     let acl = if requested == rig.r_node {
         original_acl
     } else {
@@ -1600,7 +1600,7 @@ async fn path_trial_nonpreferred_onehop_acl_removed_does_not_fall_back_to_other_
     assert_no_discovery_allocation(&mut extra).await;
     let fresh = discover(&mut rig, &peer, 2).await;
     assert_eq!(fresh["candidates"].as_array().unwrap().len(), 1);
-    assert_eq!(fresh["candidates"][0]["relay_node_id"], json!(preferred));
+    assert_eq!(fresh["candidates"][0]["path"]["relay_node_ids"][0], json!(preferred));
     assert!(requested == rig.r_node || requested == extra_node);
     // Authorization still works for the other actual relay: rejection cannot
     // be a false-positive caused by missing path capability or a closed WS.
@@ -1697,7 +1697,7 @@ async fn path_trial_bilateral_ack_preserves_active_session_and_uses_independent_
     rig.a
         .send(Message::Text(
             json!({ "t": "rc:overlay.path_trial_request", "peer_node_id": rig.b_node,
-        "relay_node_id": rig.r_node, "request_id": 1 })
+        "path":{"relay_node_ids":[rig.r_node]}, "requester_at_exit":false, "request_id": 1 })
             .to_string()
             .into(),
         ))
@@ -1745,7 +1745,7 @@ async fn path_trial_legacy_peer_is_not_sent_new_variant_and_revoke_covers_trial(
     rig.a
         .send(Message::Text(
             json!({ "t": "rc:overlay.path_trial_request", "peer_node_id": rig.b_node,
-        "relay_node_id": rig.r_node, "request_id": 1 })
+        "path":{"relay_node_ids":[rig.r_node]}, "requester_at_exit":false, "request_id": 1 })
             .to_string()
             .into(),
         ))
@@ -2044,7 +2044,7 @@ async fn backbone_join(ws: &mut Ws, seed: u8, path: bool, serving: bool, endpoin
         .unwrap();
 }
 async fn request_backbone(rig: &mut Rig, exit: &str, serial: u64) {
-    rig.a.send(Message::Text(json!({"t":"rc:overlay.path_trial_request","peer_node_id":rig.b_node,"relay_node_id":rig.r_node,"exit_relay_node_id":exit,"request_id":serial}).to_string().into())).await.unwrap();
+    rig.a.send(Message::Text(json!({"t":"rc:overlay.path_trial_request","peer_node_id":rig.b_node,"path":{"relay_node_ids":[rig.r_node,exit]},"requester_at_exit":false,"request_id":serial}).to_string().into())).await.unwrap();
 }
 
 #[tokio::test]
@@ -2073,7 +2073,7 @@ async fn backbone_discovery_trial_dual_grants_return_and_edge_withdrawal_are_one
             .as_array()
             .unwrap()
             .iter()
-            .all(|c| c.get("exit_relay_node_id").is_none())
+            .all(|c| c["path"]["relay_node_ids"].as_array().unwrap().len() == 1)
     );
     backbone_join(&mut rig.r, 3, true, true, "8.8.8.8:41641").await;
     // Both API and fresh mint defend the tenant's real overlay range, not
@@ -2124,10 +2124,10 @@ async fn backbone_discovery_trial_dual_grants_return_and_edge_withdrawal_are_one
             .as_array()
             .unwrap()
             .iter()
-            .all(|c| c.get("exit_relay_node_id").is_none()),
+            .all(|c| c["path"]["relay_node_ids"].as_array().unwrap().len() == 1),
         "stored invalid edges cannot be discovered"
     );
-    rig.b.send(Message::Text(json!({"t":"rc:overlay.path_trial_request","peer_node_id":rig.a_node,"relay_node_id":rig.r_node,"exit_relay_node_id":exit_node,"request_id":90}).to_string().into())).await.unwrap();
+    rig.b.send(Message::Text(json!({"t":"rc:overlay.path_trial_request","peer_node_id":rig.a_node,"path":{"relay_node_ids":[rig.r_node,exit_node]},"requester_at_exit":false,"request_id":90}).to_string().into())).await.unwrap();
     assert!(
         recv_t(
             &mut rig.r,
@@ -2145,7 +2145,7 @@ async fn backbone_discovery_trial_dual_grants_return_and_edge_withdrawal_are_one
             .as_array()
             .unwrap()
             .iter()
-            .any(|c| c["relay_node_id"] == rig.r_node && c["exit_relay_node_id"] == exit_node)
+            .any(|c| c["path"]["relay_node_ids"][0] == rig.r_node && c["path"]["relay_node_ids"][1] == exit_node)
     );
     assert!(
         !metadata.to_string().contains("10.20.0.2"),
@@ -2572,16 +2572,11 @@ async fn alternate_composite_drive(
         h.request_discovery().await;
     }
     while let Ok(msg) = output.try_recv() {
-        if let ClientMsg::OverlayPathTrialRequest {
-            relay_node_id,
-            exit_relay_node_id,
-            ..
-        } = &msg
+        if let ClientMsg::OverlayPathTrialRequest { path, requester_at_exit, .. } = &msg
         {
-            assert!(
-                exit_relay_node_id.is_none(),
-                "this oracle covers one-hop alternatives"
-            );
+            assert_eq!(path.relay_node_ids().len(), 1, "this oracle covers one-hop alternatives");
+            assert!(!requester_at_exit);
+            let relay_node_id = path.relay_node_ids()[0];
             requests.push((relay_node_id.to_hex(), std::time::Instant::now()));
             let role = if relay_node_id.to_hex() == first_id {
                 "first"
@@ -2740,22 +2735,22 @@ async fn run_alternate_wg_composite(five_registered_relays: bool) {
         rig.a.send(Message::Text(serde_json::to_string(&discovery).unwrap().into())).await.unwrap();
         let metadata=recv_t(&mut rig.a,"rc:overlay.org_relay_candidates",Duration::from_secs(5)).await.unwrap();
         let hints=metadata["candidates"].as_array().unwrap();assert_eq!(hints.len(),hint_count);
-        let first=hints[0]["relay_node_id"].as_str().unwrap().to_owned();
+        let first=hints[0]["path"]["relay_node_ids"][0].as_str().unwrap().to_owned();
         let backup=if five_registered_relays {
-            let observed:Vec<_>=hints.iter().map(|c|c["relay_node_id"].as_str().unwrap().to_owned()).collect();
+            let observed:Vec<_>=hints.iter().map(|c|c["path"]["relay_node_ids"][0].as_str().unwrap().to_owned()).collect();
             assert_eq!(observed,vec![registered_ids[0].clone(),registered_ids[2].clone(),registered_ids[4].clone()],"real central preference must yield canonical IDs[1,3,5]");
-            assert!(hints.iter().all(|c|c["relay_node_id"]!=registered_ids[1]),"healthy canonical2 must be hidden from initial metadata");
+            assert!(hints.iter().all(|c|c["path"]["relay_node_ids"][0]!=registered_ids[1]),"healthy canonical2 must be hidden from initial metadata");
             assert_eq!(first,registered_ids[0]);
             assert!(metadata.get("next_cursor").is_some(),"real WS must negotiate traversal");
             registered_ids[1].clone()
-        } else {hints[1]["relay_node_id"].as_str().unwrap().to_owned()};
+        } else {hints[1]["path"]["relay_node_ids"][0].as_str().unwrap().to_owned()};
         assert!(first==rig.r_node||first==extra_node);assert_ne!(first,backup);
         assert_eq!(a.receive_discovery(serde_json::from_value(metadata).unwrap()),hint_count);
         println!("ALT_STAGE discovery_received candidate_count={} hidden_healthy={} elapsed_ms={}",hint_count,five_registered_relays,diagnostic_started.elapsed().as_millis());
         let first_requested_at=Instant::now(); // lower bound before the actual paced tick
         a.tick().await;
         let request=a_out.recv().await.unwrap();
-        assert!(matches!(&request,ClientMsg::OverlayPathTrialRequest{relay_node_id,..} if relay_node_id.to_hex()==first));
+        assert!(matches!(&request,ClientMsg::OverlayPathTrialRequest{path,requester_at_exit:false,..} if path.relay_node_ids()[0].to_hex()==first));
         rig.a.send(Message::Text(serde_json::to_string(&request).unwrap().into())).await.unwrap();
         let mut start_a=recv_t(&mut rig.a,"rc:overlay.path_trial_start",Duration::from_secs(5)).await.unwrap();
         let mut start_b=recv_t(&mut rig.b,"rc:overlay.path_trial_start",Duration::from_secs(5)).await.unwrap();
@@ -2967,7 +2962,7 @@ async fn metadata_discovery_cursor_covers_five_relays_and_rechecks_acl_between_p
     let false_page = discovery_cursor_page(
         &mut rig,
         2,
-        Some(json!({"relay_node_id":ObjectId::new().to_hex()})),
+        Some(json!({"path":{"relay_node_ids":[ObjectId::new().to_hex()]},"requester_at_exit":false})),
     )
     .await;
     assert_eq!(old["candidates"], false_page["candidates"]);
@@ -2982,13 +2977,13 @@ async fn metadata_discovery_cursor_covers_five_relays_and_rechecks_acl_between_p
     let mut page = first;
     for serial in 4..=5 {
         for c in page["candidates"].as_array().unwrap() {
-            assert!(ids.contains(&c["relay_node_id"].as_str().unwrap().to_owned()));
-            seen.insert(c["relay_node_id"].as_str().unwrap().to_owned());
+            assert!(ids.contains(&c["path"]["relay_node_ids"][0].as_str().unwrap().to_owned()));
+            seen.insert(c["path"]["relay_node_ids"][0].as_str().unwrap().to_owned());
         }
         page = discovery_cursor_page(&mut rig, serial, Some(page["next_cursor"].clone())).await;
     }
     for c in page["candidates"].as_array().unwrap() {
-        seen.insert(c["relay_node_id"].as_str().unwrap().to_owned());
+        seen.insert(c["path"]["relay_node_ids"][0].as_str().unwrap().to_owned());
     }
     assert_eq!(
         seen.len(),
@@ -3012,7 +3007,7 @@ async fn metadata_discovery_cursor_covers_five_relays_and_rechecks_acl_between_p
             .as_array()
             .unwrap()
             .iter()
-            .all(|c| c["relay_node_id"] != denied)
+            .all(|c| c["path"]["relay_node_ids"][0] != denied)
     );
     // Fresh trial mint must deny the now-unapproved ACL even with a former hint.
     trial_join(&mut rig.b, 2, true).await;
@@ -3078,7 +3073,7 @@ async fn metadata_discovery_cursor_rebuilds_backbone_after_approval_and_mode_cha
             .as_array()
             .unwrap()
             .iter()
-            .any(|c| c["relay_node_id"] == rig.r_node && c["exit_relay_node_id"] == exit_id)
+            .any(|c| c["path"]["relay_node_ids"][0] == rig.r_node && c["path"]["relay_node_ids"][1] == exit_id)
     );
     assert_eq!(approve(&rig.app, &rig.seeded, &agent, false).await, 200);
     let second = discovery_cursor_page(&mut rig, 2, Some(first["next_cursor"].clone())).await;
@@ -3087,7 +3082,7 @@ async fn metadata_discovery_cursor_rebuilds_backbone_after_approval_and_mode_cha
             .as_array()
             .unwrap()
             .iter()
-            .all(|c| c.get("exit_relay_node_id").is_none() && c["relay_node_id"] != exit_id)
+            .all(|c| c["path"]["relay_node_ids"].as_array().unwrap().len() == 1 && c["path"]["relay_node_ids"][0] != exit_id)
     );
     set_mode(&rig.app, &rig.seeded, "off").await;
     let off = discovery_cursor_page(&mut rig, 3, Some(second["next_cursor"].clone())).await;
