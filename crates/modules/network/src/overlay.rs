@@ -198,17 +198,17 @@ pub async fn relay_overlay_msg_from_node(
         }
         ClientMsg::OverlayPathTrialRequest {
             peer_node_id,
-            relay_node_id,
             request_id,
-            exit_relay_node_id,
+            path,
+            requester_at_exit,
         } => {
             crate::org_relay::path_trial_request(
                 state,
                 ident,
                 peer_node_id,
-                relay_node_id,
                 request_id,
-                exit_relay_node_id,
+                path,
+                requester_at_exit,
             )
             .await;
             None

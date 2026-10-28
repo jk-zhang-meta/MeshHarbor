@@ -51,14 +51,21 @@ impl TrialPathPlan {
     /// A local fence and capacity snapshot, not an atomic reservation. A
     /// later admission must recheck capacity under the trial lock itself.
     pub(super) fn locally_current(&self, state: &NetworkState) -> bool {
+        self.locally_current_reusing(state, None)
+    }
+
+    fn locally_current_reusing(&self, state: &NetworkState, trial_id: Option<ObjectId>) -> bool {
         let pair = pair_key(self.requester.node_id, self.peer.node_id);
         if self.epoch != state.org_relay.eligibility_generation()
             || crate::overlay::org_fallback_forced_derp(state, &pair)
         {
             return false;
         }
-        let available =
-            trial::path_has_capacity_snapshot(&state.org_relay, self.path.relay_node_ids());
+        let available = trial::path_has_capacity_reusing(
+            &state.org_relay,
+            self.path.relay_node_ids(),
+            trial_id,
+        );
         available
             && self.epoch == state.org_relay.eligibility_generation()
             && !crate::overlay::org_fallback_forced_derp(state, &pair)
@@ -94,6 +101,17 @@ pub(super) async fn plan(
     peer: &OverlayNode,
     path: &RelayPathWire,
     requester_at_exit: bool,
+) -> Result<TrialPathPlan, PeerRelayDenyReason> {
+    plan_reusing(state, requester, peer, path, requester_at_exit, None).await
+}
+
+pub(super) async fn plan_reusing(
+    state: &NetworkState,
+    requester: &OverlayNode,
+    peer: &OverlayNode,
+    path: &RelayPathWire,
+    requester_at_exit: bool,
+    reuse: Option<(ObjectId, &OrgRelaySession)>,
 ) -> Result<TrialPathPlan, PeerRelayDenyReason> {
     use PeerRelayDenyReason as D;
     let nodes = path.relay_node_ids();
@@ -167,7 +185,14 @@ pub(super) async fn plan(
             }
         }
     }
-    let prepared = path_candidate::prepare(state, &fresh_a, &fresh_b, true).await?;
+    let prepared = path_candidate::prepare_reusing(
+        state,
+        &fresh_a,
+        &fresh_b,
+        true,
+        reuse.map(|(_, session)| session),
+    )
+    .await?;
     if prepared.warn_only || prepared.eligibility_epoch != epoch {
         return Err(D::PolicyUnreadable);
     }
@@ -247,7 +272,7 @@ pub(super) async fn plan(
         relays,
         edges,
     };
-    if !result.locally_current(state) {
+    if !result.locally_current_reusing(state, reuse.map(|(id, _)| id)) {
         return Err(D::PolicyUnreadable);
     }
     Ok(result)
@@ -261,12 +286,23 @@ pub(super) async fn reauthorize(
     peer: &OverlayNode,
     expected: &TrialPathPlan,
 ) -> Result<TrialPathPlan, PeerRelayDenyReason> {
-    let fresh = plan(
+    reauthorize_reusing(state, requester, peer, expected, None).await
+}
+
+pub(super) async fn reauthorize_reusing(
+    state: &NetworkState,
+    requester: &OverlayNode,
+    peer: &OverlayNode,
+    expected: &TrialPathPlan,
+    reuse: Option<(ObjectId, &OrgRelaySession)>,
+) -> Result<TrialPathPlan, PeerRelayDenyReason> {
+    let fresh = plan_reusing(
         state,
         requester,
         peer,
         &expected.path,
         expected.requester_at_exit,
+        reuse,
     )
     .await?;
     if !expected.same_authorized_path(&fresh) {

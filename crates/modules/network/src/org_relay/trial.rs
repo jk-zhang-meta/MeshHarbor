@@ -463,287 +463,204 @@ fn push_members(state: &NetworkState, trial: &Trial, message: ServerMsg) -> bool
     a && b
 }
 
+/// Record each cross-zone trial attempt before any capacity or grant escapes.
+/// Rows denote attempts, not successful installation or delivery.
+async fn audit_trial_path(
+    state: &NetworkState,
+    requester: &OverlayNode,
+    peer: &OverlayNode,
+    plan: &path_trial_plan::TrialPathPlan,
+) -> bool {
+    let (Some(a), Some(b)) = (requester.id, peer.id) else { return false };
+    let pair = pair_key(a, b);
+    for (i, edge) in plan.edges.iter().enumerate().filter(|(_, edge)| edge.requires_cross_border_approval) {
+        let source = &plan.relays[i];
+        let target = &plan.relays[i + 1];
+        let event = PeerRelayAuditEvent {
+            id: None, tenant_id: requester.tenant_id, action: PeerRelayAuditAction::Mint,
+            agent_id: Some(source.agent_id), user_id: None, requester_node_id: Some(a),
+            peer_node_id: Some(b), relay_node_id: Some(source.node_id), serve: None,
+            vni: None, warn_only: false, at: DateTime::now(), denied: None,
+            reason: Some(format!("cross_border_edge:{}", target.agent_id)),
+        };
+        let write = async {
+            #[cfg(feature = "path-planner-test-support")]
+            match candidate_test_support::take_trial_crossing_audit_fault(&pair) {
+                Some(candidate_test_support::TrialCrossingAuditFault::Error) => return false,
+                Some(candidate_test_support::TrialCrossingAuditFault::Timeout) => std::future::pending::<()>().await,
+                None => {}
+            }
+            state.peer_relay_audit.record(event).await.is_ok()
+        };
+        if !matches!(tokio::time::timeout(Duration::from_secs(3), write).await, Ok(true)) { return false; }
+    }
+    true
+}
+
+/// The plan is freshly authorized; a retained trial must still match every
+/// node, edge, member and zone before any idempotent reply can reuse it.
+fn trial_matches_plan(trial: &Trial, plan: &path_trial_plan::TrialPathPlan, requester: &OverlayNode, peer: &OverlayNode) -> bool {
+    if trial.backbone.is_some() || trial.requester_at_exit != plan.requester_at_exit
+        || trial_path(trial) != plan.path || trial.relay_zones != plan.relays.iter().map(|relay| relay.zone).collect::<Vec<_>>()
+        || trial.member_zones != Some(plan.member_zones) { return false; }
+    let session = &trial.session;
+    let (first, last) = if plan.requester_at_exit { (peer, requester) } else { (requester, peer) };
+    for (stored, fresh) in session.members.iter().zip([first, last]) {
+        if Some(stored.party.node_id) != fresh.id || stored.party.node_ref != fresh.node_ref
+            || stored.wg_public_key != fresh.wg_public_key { return false; }
+    }
+    if plan.relays.len() != session.hops.len() + 1 || plan.edges.len() != session.hops.len() { return false; }
+    let first_relay = &plan.relays[0];
+    if session.relay.node_id != first_relay.node_id || session.relay.node_ref != first_relay.node_ref
+        || session.relay_agent_id != first_relay.agent_id || session.endpoints != first_relay.endpoints { return false; }
+    for ((hop, relay), edge) in session.hops.iter().zip(plan.relays.iter().skip(1)).zip(&plan.edges) {
+        if hop.relay.node_id != relay.node_id || hop.relay.node_ref != relay.node_ref
+            || hop.relay_agent_id != relay.agent_id || hop.endpoints != relay.endpoints
+            || hop.private_endpoint != edge.endpoint || hop.requires_cross_border_approval != edge.requires_cross_border_approval { return false; }
+    }
+    true
+}
+
 pub async fn request(
     state: &NetworkState,
     ident: NodeIdentity,
     peer_id: ObjectId,
-    relay_id: ObjectId,
     request_id: u64,
-    exit_relay_node_id: Option<ObjectId>,
+    path: roomler_ai_remote_control::signaling::RelayPathWire,
+    requester_at_exit: bool,
 ) {
-    let authorization_epoch = state.org_relay.eligibility_generation();
-    let Some(requester) = current_node(state, ident).await else {
-        return;
-    };
+    let Some(requester) = current_node(state, ident).await else { return };
     let Some(req_id) = requester.id else { return };
-    if !state.org_relay.trials.rate.check_bounded(req_id, req_id, 2) {
-        return;
-    }
-    let Ok(peer) = state.overlay_nodes.base.find_by_id(peer_id).await else {
-        return;
-    };
-    if req_id == peer_id || peer.tenant_id != requester.tenant_id || peer.deleted_at.is_some() {
-        return;
-    }
-    if peer_relay_mode(state, requester.tenant_id).await != PeerRelayMode::On {
-        return;
-    }
-    if !state.org_relay.join_extras(req_id).supports_path_trial_v1
-        || !state.org_relay.join_extras(peer_id).supports_path_trial_v1
-    {
-        return;
-    }
-    // Pair authorization is separate from each member's grant to the relay.
-    let Ok(acl) = try_load_acl(state, requester.tenant_id, PolicyLoad::Always).await else {
-        return;
-    };
-    let Ok(source) = try_overlay_source_of(state, &requester).await else {
-        return;
-    };
-    let routes = peer.effective_routes();
-    if acl.enforcing()
-        && !evaluate_overlay(
-            &acl.policies,
-            &source,
-            OverlayPeerRef {
-                node_id: peer_id,
-                overlay_ip: &peer.overlay_ip,
-                approved_routes: &routes,
-            },
-        )
-        .visible
-    {
-        return;
-    }
-    let (plan, backbone_plan) = if let Some(exit_id) = exit_relay_node_id {
-        let Ok(path) = plan_backbone(state, &requester, &peer, relay_id, exit_id).await else {
-            return;
-        };
-        (path.ingress, Some((path.exit, path.private_endpoint, path.requires_cross_border_approval, path.source_zone, path.exit_zone)))
-    } else {
-        let Ok(plans) = plan_mint_candidates(state, &requester, &peer).await else {
-            return;
-        };
-        // The client may legitimately try a non-first discovery hint. Re-run
-        // every shared authorization gate, then require this EXACT relay; do
-        // not replace its requested path with the server's current first pick.
-        let Some(plan) = plans.into_iter().find(|p| p.relay.id == Some(relay_id)) else {
-            return;
-        };
-        (plan, None)
-    };
-    // Metadata is only a hint: eligibility is re-evaluated now, never trusted
-    // from a client-provided relay id or stale discovery cache.
-    if plan.relay.id != Some(relay_id) {
-        return;
-    }
+    if !state.org_relay.trials.rate.check_bounded(req_id, req_id, 2) { return; }
+    let Ok(peer) = state.overlay_nodes.base.find_by_id(peer_id).await else { return };
+    if req_id == peer_id || peer.tenant_id != requester.tenant_id || peer.deleted_at.is_some() { return; }
+    if peer_relay_mode(state, requester.tenant_id).await != PeerRelayMode::On { return; }
+    if !state.org_relay.join_extras(req_id).supports_path_trial_v1 || !state.org_relay.join_extras(peer_id).supports_path_trial_v1 { return; }
+    let nodes = path.relay_node_ids();
+    if nodes.len() == 1 && requester_at_exit { return; }
     let pair = pair_key(req_id, peer_id);
+    if crate::overlay::org_fallback_forced_derp(state, &pair) { return; }
+    let existing = {
+        let entries = state.org_relay.trials.entries.lock().unwrap_or_else(|e| e.into_inner());
+        entries.values().find(|t| t.session.pair_key == pair && t.requester_node_id == req_id && t.request_id == request_id)
+            .map(|t| (t.id, t.session.clone()))
+    };
+    let reuse = existing.as_ref().map(|(id, session)| (*id, session));
+    let mut candidate = None;
+    let mut single_plan = None;
+    let epoch;
+    if nodes.len() >= 2 {
+        let Ok(first) = path_trial_plan::plan_reusing(state, &requester, &peer, &path, requester_at_exit, reuse).await else { return };
+        if !audit_trial_path(state, &requester, &peer, &first).await { return; }
+        let Ok(fresh) = path_trial_plan::reauthorize_reusing(state, &requester, &peer, &first, reuse).await else { return };
+        epoch = fresh.epoch;
+        candidate = Some(fresh);
+    } else {
+        let auth_epoch = state.org_relay.eligibility_generation();
+        let Ok(acl) = try_load_acl(state, requester.tenant_id, PolicyLoad::Always).await else { return };
+        let Ok(source) = try_overlay_source_of(state, &requester).await else { return };
+        let routes = peer.effective_routes();
+        if acl.enforcing() && !evaluate_overlay(&acl.policies, &source,
+            OverlayPeerRef { node_id: peer_id, overlay_ip: &peer.overlay_ip, approved_routes: &routes }).visible { return; }
+        let Ok(plans) = plan_mint_candidates_reusing(state, &requester, &peer, reuse.map(|(_, session)| session), ZoneScope::Pair).await else { return };
+        let Some(plan) = plans.into_iter().find(|p| p.relay.id == Some(nodes[0])) else { return };
+        epoch = auth_epoch;
+        single_plan = Some(plan);
+    }
     let tenant = requester.tenant_id;
     let (trial_id, cancel_rx) = {
-        let mut entries = state
-            .org_relay
-            .trials
-            .entries
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let reserved_for = |id: ObjectId| {
-            entries
-                .values()
-                .flat_map(|t| {
-                    let mut out: Vec<u32> = t.session.vnis_on(id).collect();
-                    if let Some(b) = t.backbone.as_ref() {
-                        if b.exit.relay.node_id == id {
-                            out.push(b.exit.vni);
-                        }
-                    }
-                    out
-                })
-                .collect::<Vec<_>>()
-        };
-        let reserved = reserved_for(relay_id);
-        let exit_reserved = backbone_plan
-            .as_ref()
-            .map(|(p, _, _, _, _)| reserved_for(p.relay.id.unwrap_or_default()));
-        let mut relay_nodes = vec![relay_id];
-        if let Some((exit, _, _, _, _)) = backbone_plan.as_ref() {
-            let Some(exit_id) = exit.relay.id else { return };
-            relay_nodes.push(exit_id);
-        }
-        let admission = admit_trial(
-            &state.org_relay,
-            &mut entries,
-            &relay_nodes,
-            &pair,
-            tenant,
-            req_id,
-            request_id,
-            authorization_epoch,
-            state.org_relay.eligibility_generation(),
-            || {
-                let vni = state
-                    .org_relay
-                    .alloc_vni_with_reserved(relay_id, &reserved)?;
-                let now = Instant::now();
-                let (cancel, _) = watch::channel(false);
-                let session = OrgRelaySession {
-                    tenant_id: tenant,
-                    pair_key: pair.clone(),
-                    vni,
-                    generation: state.org_relay.lamport.fetch_add(1, Ordering::Relaxed) + 1,
-                    relay: SessionParty {
-                        node_id: relay_id,
-                        node_ref: plan.relay.node_ref,
-                    },
-                    relay_agent_id: plan.relay_agent_id,
-                    implicit: plan.implicit,
-                    members: [
-                        SessionMember {
-                            party: SessionParty {
-                                node_id: req_id,
-                                node_ref: requester.node_ref,
-                            },
-                            wg_public_key: requester.wg_public_key,
-                            bind_secret: random_secret(),
-                        },
-                        SessionMember {
-                            party: SessionParty {
-                                node_id: peer_id,
-                                node_ref: peer.node_ref,
-                            },
-                            wg_public_key: peer.wg_public_key,
-                            bind_secret: random_secret(),
-                        },
-                    ],
-                    endpoints: plan.endpoints.into_iter().take(4).collect(),
-                    expires_at: now + Duration::from_secs(u64::from(limits::MAX_LIFETIME_SECS)),
-                    bind_by: now + Duration::from_secs(u64::from(limits::BIND_SECS)),
-                    hops: Vec::new(),
+        let mut entries = state.org_relay.trials.entries.lock().unwrap_or_else(|e| e.into_inner());
+        if epoch != state.org_relay.eligibility_generation() || crate::overlay::org_fallback_forced_derp(state, &pair) { return; }
+        let reserved: Vec<Vec<u32>> = nodes.iter().map(|node| entries.values().flat_map(|t| {
+            let mut held: Vec<u32> = t.session.vnis_on(*node).collect();
+            if let Some(backbone) = t.backbone.as_ref() { if backbone.exit.relay.node_id == *node { held.push(backbone.exit.vni); } }
+            held
+        }).collect()).collect();
+        let mut delivery = None;
+        let admission = admit_trial(&state.org_relay, &mut entries, nodes, &pair, tenant, req_id, request_id,
+            epoch, state.org_relay.eligibility_generation(), || {
+                let mut vnis = Vec::with_capacity(nodes.len());
+                for (node, reserved) in nodes.iter().zip(&reserved) {
+                    vnis.push(state.org_relay.alloc_vni_with_reserved(*node, reserved)?);
+                }
+                let now = Instant::now(); let (cancel, _) = watch::channel(false);
+                let trial_id = ObjectId::new();
+                let (first, last) = if requester_at_exit { (&peer, &requester) } else { (&requester, &peer) };
+                let member = |n: &OverlayNode| SessionMember {
+                    party: SessionParty { node_id: n.id.unwrap_or_default(), node_ref: n.node_ref.clone() },
+                    wg_public_key: n.wg_public_key.clone(), bind_secret: random_secret(),
                 };
-                let backbone = if let Some((exit, private_endpoint, requires_cross_border_approval, source_zone, exit_zone)) = backbone_plan {
-                    let exit_id = exit.relay.id?;
-                    let mut secondary = session.clone();
-                    secondary.vni = state.org_relay.alloc_vni_with_reserved(
-                        exit_id,
-                        exit_reserved.as_deref().unwrap_or(&[]),
-                    )?;
-                    secondary.generation =
-                        state.org_relay.lamport.fetch_add(1, Ordering::Relaxed) + 1;
-                    secondary.relay = SessionParty {
-                        node_id: exit_id,
-                        node_ref: exit.relay.node_ref,
-                    };
-                    secondary.relay_agent_id = exit.relay_agent_id;
-                    secondary.endpoints = exit.endpoints.into_iter().take(4).collect();
-                    for m in &mut secondary.members {
-                        m.bind_secret = random_secret();
-                    }
-                    Some(BackboneTrial {
-                        exit: secondary,
-                        private_endpoint,
-                        requires_cross_border_approval,
-                        source_zone,
-                        exit_zone,
-                    })
+                let (relay, relay_agent_id, endpoints, implicit) = if let Some(plan) = candidate.as_ref() {
+                    let r = &plan.relays[0]; (SessionParty { node_id: r.node_id, node_ref: r.node_ref.clone() }, r.agent_id, r.endpoints.clone(), false)
                 } else {
-                    None
+                    let p = single_plan.as_ref()?; (SessionParty { node_id: p.relay.id?, node_ref: p.relay.node_ref.clone() }, p.relay_agent_id, p.endpoints.clone(), p.implicit)
                 };
-                Some(Trial {
-                    id: ObjectId::new(),
-                    request_id,
-                    requester_node_id: req_id,
-                    requester_at_exit: false,
-                    relay_zones: Vec::new(),
-                    member_zones: None,
-                    session,
-                    backbone,
-                    phase: Phase::Preparing([None, None]),
-                    started: now,
-                    return_state: None,
-                    return_ids: HashSet::new(),
-                    cancel,
-                })
-            },
-        );
+                let mut session = OrgRelaySession { tenant_id: tenant, pair_key: pair.clone(), vni: vnis[0],
+                    generation: state.org_relay.lamport.fetch_add(1, Ordering::Relaxed) + 1,
+                    relay, relay_agent_id, implicit, members: [member(first), member(last)], endpoints,
+                    expires_at: now + Duration::from_secs(u64::from(limits::MAX_LIFETIME_SECS)),
+                    bind_by: now + Duration::from_secs(u64::from(limits::BIND_SECS)), hops: Vec::new() };
+                if let Some(plan) = candidate.as_ref() {
+                    for (i, (relay, edge)) in plan.relays.iter().skip(1).zip(&plan.edges).enumerate() {
+                        session.hops.push(LineLeg { relay: SessionParty { node_id: relay.node_id, node_ref: relay.node_ref.clone() },
+                            relay_agent_id: relay.agent_id, vni: vnis[i + 1],
+                            generation: state.org_relay.lamport.fetch_add(1, Ordering::Relaxed) + 1,
+                            endpoints: relay.endpoints.clone(), private_endpoint: edge.endpoint.clone(),
+                            requires_cross_border_approval: edge.requires_cross_border_approval,
+                            bridge_id: if i == 0 { trial_id } else { ObjectId::new() },
+                            bridge_secrets: [random_secret(), random_secret()] });
+                    }
+                }
+                delivery = path_delivery::build(&session, now).ok();
+                delivery.as_ref()?;
+                Some(Trial { id: trial_id, request_id, requester_node_id: req_id, requester_at_exit,
+                    relay_zones: candidate.as_ref().map(|p| p.relays.iter().map(|r| r.zone).collect()).unwrap_or_default(),
+                    member_zones: candidate.as_ref().map(|p| p.member_zones), session, backbone: None,
+                    phase: Phase::Preparing([None, None]), started: now, return_state: None,
+                    return_ids: HashSet::new(), cancel })
+            });
         let id = match admission {
             Admission::Rejected => return,
             Admission::Existing(id) => {
                 let existing = &entries[&id];
-                if existing.session.relay.node_id != relay_id
-                    || existing.backbone.as_ref().map(|b| b.exit.relay.node_id)
-                        != exit_relay_node_id
-                {
-                    return;
+                if trial_path(existing) != path || existing.requester_at_exit != requester_at_exit
+                    || candidate.as_ref().is_some_and(|plan| !trial_matches_plan(existing, plan, &requester, &peer)) { return; }
+                if let Some(plan) = single_plan.as_ref() {
+                    let session = &existing.session;
+                    let matches = session.hops.is_empty() && existing.backbone.is_none()
+                        && session.relay.node_id == nodes[0] && session.relay.node_ref == plan.relay.node_ref
+                        && session.relay_agent_id == plan.relay_agent_id && session.endpoints == plan.endpoints
+                        && session.implicit == plan.implicit
+                        && [(&requester, req_id), (&peer, peer_id)].iter().all(|(node, id)|
+                            session.member_index(*id).is_some_and(|i| session.members[i].party.node_ref == node.node_ref
+                                && session.members[i].wg_public_key == node.wg_public_key));
+                    if !matches { return; }
                 }
-                let message = if let Some(r) = existing.return_state.as_ref() {
-                    return_message(existing.id, r)
-                } else if matches!(existing.phase, Phase::Finalized) {
-                    ServerMsg::OverlayPathTrialFinalize { trial_id: id }
-                } else {
-                    start_message(existing, 0)
-                };
-                push_control(state, &existing.session.members[0].party.node_ref, message);
+                let message = if let Some(r) = existing.return_state.as_ref() { return_message(existing.id, r) }
+                    else if matches!(existing.phase, Phase::Finalized) { ServerMsg::OverlayPathTrialFinalize { trial_id: id } }
+                    else if matches!(existing.phase, Phase::Committing(_)) { ServerMsg::OverlayPathTrialCommit { trial_id: id } }
+                    else { let Some(index) = existing.session.member_index(req_id) else { return }; start_message(existing, index) };
+                push_control(state, &requester.node_ref, message);
                 return;
             }
             Admission::Created(id) => id,
         };
         let trial = &entries[&id];
-        let s = &trial.session;
-        let serve = |session: &OrgRelaySession| ServerMsg::OverlayRelayServe {
-            vni: session.vni,
-            generation: session.generation,
-            members: session
-                .members
-                .iter()
-                .map(|m| RelayMemberWire {
-                    wg_public_key: m.wg_public_key.clone(),
-                    bind_secret: m.bind_secret.clone(),
-                })
-                .collect(),
-            bind_secs: limits::BIND_SECS,
-            idle_secs: limits::IDLE_SECS,
-            max_lifetime_secs: limits::MAX_LIFETIME_SECS,
-        };
-        let mut relay_sent = push_control(state, &s.relay.node_ref, serve(s));
-        if let Some(path) = trial.backbone.as_ref() {
-            let exit_sent = push_control(state, &path.exit.relay.node_ref, serve(&path.exit));
-            let bridge_sent = push_control(
-                state,
-                &s.relay.node_ref,
-                ServerMsg::OverlayRelayBridgeServe {
-                    bridge: roomler_ai_remote_control::signaling::RelayBridgeWire {
-                        trial_id: trial.id,
-                        generation: s.generation,
-                        source_agent_id: s.relay_agent_id,
-                        target_agent_id: path.exit.relay_agent_id,
-                        local_vni: s.vni,
-                        local_generation: s.generation,
-                        local_bind_secret: s.members[1].bind_secret.clone(),
-                        remote_endpoint: path.private_endpoint.clone(),
-                        remote_vni: path.exit.vni,
-                        remote_generation: path.exit.generation,
-                        remote_bind_secret: path.exit.members[0].bind_secret.clone(),
-                        max_lifetime_secs: limits::MAX_LIFETIME_SECS,
-                    },
-                },
-            );
-            relay_sent = relay_sent && exit_sent && bridge_sent;
+        let Some(delivery) = delivery else { return };
+        let mut sent = true;
+        for (target, message) in delivery.relays.into_iter().chain(delivery.bridges) {
+            if epoch != state.org_relay.eligibility_generation() || crate::overlay::org_fallback_forced_derp(state, &pair)
+                || !push_control(state, &target, message) { sent = false; break; }
         }
-        let a = relay_sent
-            && push_control(state, &s.members[0].party.node_ref, start_message(trial, 0));
-        let b = relay_sent
-            && push_control(state, &s.members[1].party.node_ref, start_message(trial, 1));
-        if !(relay_sent && a && b) {
-            if let Some(trial) = entries.remove(&id) {
-                notify_abort(state, &trial);
-            }
+        let a = sent && push_control(state, &trial.session.members[0].party.node_ref, start_message(trial, 0));
+        let b = sent && push_control(state, &trial.session.members[1].party.node_ref, start_message(trial, 1));
+        if !(sent && a && b) {
+            if let Some(trial) = entries.remove(&id) { notify_abort(state, &trial); }
             return;
         }
         (id, trial.cancel.subscribe())
     };
-    let state = state.clone();
-    tokio::spawn(async move {
-        timer(state, trial_id, cancel_rx).await;
-    });
+    let state = state.clone(); tokio::spawn(async move { timer(state, trial_id, cancel_rx).await; });
 }
 
 enum Admission {
@@ -805,13 +722,21 @@ fn admit_trial(
 
 /// A transient capacity snapshot. A trial still has to claim capacity later.
 pub(super) fn path_has_capacity_snapshot(state: &OrgRelayState, relay_nodes: &[ObjectId]) -> bool {
+    path_has_capacity_reusing(state, relay_nodes, None)
+}
+
+pub(super) fn path_has_capacity_reusing(state: &OrgRelayState, relay_nodes: &[ObjectId], trial_id: Option<ObjectId>) -> bool {
     let entries = state.trials.entries.lock().unwrap_or_else(|e| e.into_inner());
-    has_capacity(state, &entries, relay_nodes)
+    has_capacity_except(state, &entries, relay_nodes, trial_id)
 }
 
 /// Called only while `PathTrials.entries` is held. Every session creator must
 /// use the same lock for this count to be an admission guarantee.
 fn has_capacity(state: &OrgRelayState, entries: &HashMap<ObjectId, Trial>, relay_nodes: &[ObjectId]) -> bool {
+    has_capacity_except(state, entries, relay_nodes, None)
+}
+
+fn has_capacity_except(state: &OrgRelayState, entries: &HashMap<ObjectId, Trial>, relay_nodes: &[ObjectId], skip: Option<ObjectId>) -> bool {
     let now = Instant::now();
     let mut seen = HashSet::new();
     !relay_nodes.is_empty() && relay_nodes.iter().all(|relay| {
@@ -820,7 +745,7 @@ fn has_capacity(state: &OrgRelayState, entries: &HashMap<ObjectId, Trial>, relay
             .filter(|session| session.expires_at > now && session.relay_nodes().any(|node| node == *relay))
             .count();
         let trials = entries.values().filter(|trial| {
-            trial.session.expires_at > now && !returned(trial)
+            Some(trial.id) != skip && trial.session.expires_at > now && !returned(trial)
                 && (trial.session.relay_nodes().any(|id| id == *relay)
                     || trial.backbone.as_ref().is_some_and(|b| b.exit.relay.node_id == *relay))
         }).count();

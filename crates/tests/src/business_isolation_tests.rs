@@ -3063,3 +3063,115 @@ async fn staged_graph_specified_trial_path_denies_unapproved_crossing_outside_en
         }
     }
 }
+
+/// Exercise the actual WS trial endpoint with an exact, directed multi-hop
+/// path, both member orientations, bilateral commit/return, and revocation.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn staged_nhop_trial_actual_lifecycle_and_rollback() {
+    use roomler_ai_mod_network::org_relay::candidate_test_support::{self as support, TrialCrossingAuditFault};
+    async fn control(ws: &mut Ws, kind: &str, trial: &Value, return_id: Option<&str>) {
+        let mut msg = json!({"t":kind,"trial_id":trial});
+        if let Some(id) = return_id { msg["return_id"] = json!(id); }
+        ws.send(Message::Text(msg.to_string().into())).await.unwrap();
+    }
+    for (length, flipped, outcome) in [(3, false, "abort"), (4, true, "return"),
+        (4, false, "edge"), (4, false, "audit"), (4, false, "approval")] {
+        let slug = format!("iso-nhop-trial-{length}-{outcome}");
+        let mut l = LineRig::up(&slug, true).await;
+        let flags = json!({"supports_backbone_only_v1":true,"supports_path_backbone_v1":true,"supports_path_trial_v1":true});
+        line_join(&mut l.cn, 1, "223.5.5.5:41641", flags.clone()).await;
+        line_join(&mut l.us, 2, "8.8.8.8:41641", flags).await;
+        let mut extras = Vec::new(); let mut extra_agents = Vec::new(); let mut extra_nodes = Vec::new();
+        for i in 0..length-2 {
+            let name = format!("{slug}-middle-{i}");
+            let (agent, token) = enroll(&l.rig.app, &l.rig.seeded, &name).await;
+            let from = if length == 3 || i % 2 == 1 { CN_R } else { US_R };
+            let mut ws = connect_from(&l.rig.app, &token, &["relay-server"], Some(from)).await;
+            assert_observed(&l.rig.app, &agent, Some(from)).await;
+            let endpoint = if from == CN_R { format!("223.6.6.{}:41641", 7+i) } else { format!("1.1.1.{}:41641",2+i) };
+            line_join(&mut ws, 10+i as u8, &endpoint, json!({"relay_backbone_ready":true})).await;
+            assert_eq!(approve(&l.rig.app, &l.rig.seeded, &agent, true).await, 200);
+            let node = l.rig.node(&name).await; grant_relay(&l.rig.app, &l.rig.seeded, &node).await;
+            extras.push(ws); extra_agents.push(agent); extra_nodes.push(node);
+        }
+        let mut agents = vec![l.gz_agent.clone()]; agents.extend(extra_agents); agents.push(l.hk_agent.clone());
+        let mut nodes = vec![l.gz_node.clone()]; nodes.extend(extra_nodes); nodes.push(l.hk_node.clone());
+        let mut relays = vec![l.gz]; relays.extend(extras); relays.push(l.hk);
+        let endpoints: Vec<_> = (0..length-1).map(|i| format!("10.73.0.{}:3478",i+2)).collect();
+        let crosses: Vec<_> = (0..length-1).map(|i| length == 4 || i == 1).collect();
+        let policy = |source: &str| format!("/api/tenant/{}/agent/{source}/peer-relay-policy", l.rig.seeded.tenant_id);
+        for i in 0..length-1 {
+            let approved = crosses[i] && !(outcome == "approval" && i == 1);
+            let (status, body) = put(&l.rig.app, &policy(&agents[i]), &l.rig.seeded.admin.access_token,
+                json!({"serve":true,"approved_backbone_edges":[{"relay_agent_id":agents[i+1],"endpoint":endpoints[i],"cross_border":approved}]})).await;
+            assert_eq!(status, 200, "{body}");
+        }
+        let network = l.rig.app.state.network();
+        let cn = ObjectId::parse_str(&l.cn_node).unwrap(); let us = ObjectId::parse_str(&l.us_node).unwrap();
+        let pair = roomler_ai_mod_network::overlay::pair_key(cn, us);
+        let ids: Vec<_> = nodes.iter().map(|id| ObjectId::parse_str(id).unwrap()).collect();
+        if outcome == "audit" { support::fail_next_trial_crossing_audit(pair, TrialCrossingAuditFault::Error); }
+        let request = json!({"t":"rc:overlay.path_trial_request", "peer_node_id":if flipped {&l.cn_node} else {&l.us_node},
+            "request_id":1, "path":{"relay_node_ids":nodes}, "requester_at_exit":flipped});
+        if flipped { l.us.send(Message::Text(request.to_string().into())).await.unwrap(); }
+        else { l.cn.send(Message::Text(request.to_string().into())).await.unwrap(); }
+        let wait = Duration::from_secs(8);
+        if outcome == "audit" || outcome == "approval" {
+            for ws in &mut relays { assert!(recv_t(ws, "rc:overlay.relay_serve", Duration::from_millis(500)).await.is_none(), "{slug}: rejected path emitted serve"); }
+            assert!(recv_t(&mut l.cn, "rc:overlay.path_trial_start", Duration::from_millis(500)).await.is_none());
+            assert!(recv_t(&mut l.us, "rc:overlay.path_trial_start", Duration::from_millis(500)).await.is_none());
+            for id in &ids { assert_eq!(support::trial_slots_on_relay(network, *id), 0, "{slug}: leaked trial slot"); }
+            continue;
+        }
+        let mut serves = Vec::new();
+        for ws in &mut relays { serves.push(recv_t(ws, "rc:overlay.relay_serve", wait).await.expect("trial relay serve")); }
+        let mut bridges = Vec::new();
+        for ws in relays.iter_mut().take(length-1) { bridges.push(recv_t(ws, "rc:overlay.relay_bridge_serve", wait).await.expect("trial bridge")); }
+        let a = recv_t(&mut l.cn, "rc:overlay.path_trial_start", wait).await.expect("CN trial start");
+        let b = recv_t(&mut l.us, "rc:overlay.path_trial_start", wait).await.expect("US trial start");
+        assert_eq!(a["trial_id"], b["trial_id"]); assert_eq!(a["path"]["relay_node_ids"], json!(nodes)); assert_eq!(b["path"], a["path"]);
+        assert_eq!(a["requester_at_exit"], json!(flipped)); assert_eq!(b["requester_at_exit"], json!(flipped));
+        assert_eq!(a["vni"], serves[0]["vni"]); assert_eq!(b["vni"], serves[length-1]["vni"]);
+        for i in 0..length-1 {
+            assert_eq!(bridges[i]["bridge"]["local_vni"], serves[i]["vni"]);
+            assert_eq!(bridges[i]["bridge"]["remote_vni"], serves[i+1]["vni"]);
+        }
+        for id in &ids { assert_eq!(support::trial_slots_on_relay(network, *id), 1); }
+        let audits = audit_rows(&l.rig.app, &l.rig.seeded).await;
+        for i in 0..length-1 { if crosses[i] {
+            let reason = format!("cross_border_edge:{}", agents[i+1]);
+            assert!(audits.iter().any(|row| row["reason"] == reason && row["relay_node_id"] == nodes[i]), "{slug}: missing crossing audit {i}");
+        }}
+        if outcome == "abort" {
+            control(&mut l.cn, "rc:overlay.path_trial_abort", &a["trial_id"], None).await;
+            for ws in [&mut l.cn, &mut l.us] { recv_t(ws, "rc:overlay.path_trial_abort", wait).await.expect("member abort"); }
+        } else if outcome == "edge" {
+            let i=1;
+            let (status, body) = put(&l.rig.app, &policy(&agents[i]), &l.rig.seeded.admin.access_token,
+                json!({"serve":true,"approved_backbone_edges":[{"relay_agent_id":agents[i+1],"endpoint":endpoints[i],"cross_border":false}]})).await;
+            assert_eq!(status, 200, "{body}");
+            for ws in [&mut l.cn, &mut l.us] { recv_t(ws, "rc:overlay.path_trial_abort", wait).await.expect("edge withdrawal abort"); }
+        } else {
+            for ws in [&mut l.cn, &mut l.us] { control(ws, "rc:overlay.path_trial_ready", &a["trial_id"], None).await; }
+            for ws in [&mut l.cn, &mut l.us] { recv_t(ws, "rc:overlay.path_trial_commit", wait).await.expect("bilateral commit"); }
+            for ws in [&mut l.cn, &mut l.us] { control(ws, "rc:overlay.path_trial_committed", &a["trial_id"], None).await; }
+            for ws in [&mut l.cn, &mut l.us] { recv_t(ws, "rc:overlay.path_trial_finalize", wait).await.expect("bilateral finalize"); }
+            let return_id = ObjectId::new().to_hex();
+            control(&mut l.cn, "rc:overlay.path_trial_return_request", &a["trial_id"], Some(&return_id)).await;
+            for ws in [&mut l.cn, &mut l.us] { recv_t(ws, "rc:overlay.path_trial_return_prepare", wait).await.expect("return prepare"); }
+            for ws in [&mut l.cn, &mut l.us] { control(ws, "rc:overlay.path_trial_return_ready", &a["trial_id"], Some(&return_id)).await; }
+            for ws in [&mut l.cn, &mut l.us] { recv_t(ws, "rc:overlay.path_trial_return_commit", wait).await.expect("return commit"); }
+            control(&mut l.cn, "rc:overlay.path_trial_returned", &a["trial_id"], Some(&return_id)).await;
+            for id in &ids { assert_eq!(support::trial_slots_on_relay(network, *id), 1, "one member cannot retire relays"); }
+            control(&mut l.us, "rc:overlay.path_trial_returned", &a["trial_id"], Some(&return_id)).await;
+            for ws in [&mut l.cn, &mut l.us] { recv_t(ws, "rc:overlay.path_trial_return_finalize", wait).await.expect("return finalize"); }
+        }
+        for (i, ws) in relays.iter_mut().enumerate() { let revoke = recv_t(ws, "rc:overlay.relay_revoke", wait).await.expect("every relay retired"); assert_eq!(revoke["vni"], serves[i]["vni"]); }
+        for (i, ws) in relays.iter_mut().take(length-1).enumerate() {
+            let revoke = recv_t(ws, "rc:overlay.relay_bridge_revoke", wait).await.expect("every bridge retired");
+            assert_eq!(revoke["trial_id"], bridges[i]["bridge"]["trial_id"]);
+            assert_eq!(revoke["generation"], serves[i]["generation"]);
+        }
+        for id in &ids { assert_eq!(support::trial_slots_on_relay(network, *id), 0, "every trial slot released"); }
+    }
+}
