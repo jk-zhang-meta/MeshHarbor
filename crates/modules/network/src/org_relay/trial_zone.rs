@@ -83,11 +83,10 @@ impl TrialZoneSnapshot {
 
     fn involves(&self, identity: ObjectId) -> bool {
         self.relays.iter().any(|r| r.agent_id == identity)
-            || (self.member_zones.is_some()
-                && self.members.iter().any(|m| match &m.node_ref {
+            || self.members.iter().any(|m| match &m.node_ref {
                     NodeRef::Agent { agent_id } => *agent_id == identity,
                     NodeRef::TunnelClient { tunnel_client_id } => *tunnel_client_id == identity,
-                }))
+                })
     }
 }
 
@@ -154,6 +153,7 @@ enum PartyZone {
     Known(BusinessZone),
     Unknown,
     Invalid,
+    ValidUnconstrained,
 }
 
 fn zone_fits(actual: PartyZone, issued: BusinessZone) -> bool {
@@ -161,6 +161,7 @@ fn zone_fits(actual: PartyZone, issued: BusinessZone) -> bool {
         PartyZone::Known(zone) => zone == issued,
         PartyZone::Unknown => true,
         PartyZone::Invalid => false,
+        PartyZone::ValidUnconstrained => true,
     }
 }
 
@@ -186,6 +187,7 @@ async fn current_party_zone(
     tenant: ObjectId,
     node_id: ObjectId,
     node_ref: &NodeRef,
+    require_zone: bool,
 ) -> Result<PartyZone, ()> {
     let identity = match node_ref {
         NodeRef::Agent { agent_id } => *agent_id,
@@ -222,6 +224,7 @@ async fn current_party_zone(
             device
         }
     };
+    if !require_zone { return Ok(PartyZone::ValidUnconstrained); }
     let (connection, bound_at) = {
         let Some(live) = state.org_relay.live_conns.get(&identity) else {
             return Ok(PartyZone::Unknown);
@@ -300,6 +303,7 @@ async fn recheck_selected_zones(
                             snapshot.tenant_id,
                             relay.node_id,
                             &relay.node_ref,
+                            true,
                         )
                         .await
                     }
@@ -310,6 +314,7 @@ async fn recheck_selected_zones(
                             snapshot.tenant_id,
                             relay.node_id,
                             &relay.node_ref,
+                            true,
                         )
                         .await
                     }
@@ -322,9 +327,7 @@ async fn recheck_selected_zones(
                 }
             }
         }
-        if shape_valid
-            && let Some(zones) = snapshot.member_zones
-        {
+        if shape_valid {
             for (index, member) in snapshot.members.iter().enumerate() {
                 let zone = {
                     #[cfg(feature = "path-planner-test-support")]
@@ -340,6 +343,7 @@ async fn recheck_selected_zones(
                             snapshot.tenant_id,
                             member.node_id,
                             &member.node_ref,
+                            snapshot.member_zones.is_some(),
                         )
                         .await
                     }
@@ -350,12 +354,19 @@ async fn recheck_selected_zones(
                             snapshot.tenant_id,
                             member.node_id,
                             &member.node_ref,
+                            snapshot.member_zones.is_some(),
                         )
                         .await
                     }
                 };
                 match zone {
-                    Ok(actual) => observe_zone(actual, zones[index], &mut fits, &mut unavailable),
+                    Ok(actual) => {
+                        if let Some(zones) = snapshot.member_zones {
+                            observe_zone(actual, zones[index], &mut fits, &mut unavailable);
+                        } else if actual == PartyZone::Invalid {
+                            fits = false;
+                        }
+                    }
                     Err(()) => {
                         unavailable = true;
                     }
@@ -470,6 +481,7 @@ mod tests {
         assert!(zone_fits(PartyZone::Known(Mainland), Mainland));
         assert!(!zone_fits(PartyZone::Known(NonMainland), Mainland));
         assert!(!zone_fits(PartyZone::Invalid, Mainland));
+        assert!(zone_fits(PartyZone::ValidUnconstrained, Mainland));
         let observations = [PartyZone::Unknown, PartyZone::Known(NonMainland)];
         assert!(!observations.into_iter().fold(true, |fits, actual| {
             fits & zone_fits(actual, Mainland)
@@ -588,6 +600,6 @@ mod tests {
         };
         assert!(tunnel.involves(tunnel_id));
         tunnel.member_zones = None;
-        assert!(!tunnel.involves(tunnel_id));
+        assert!(tunnel.involves(tunnel_id));
     }
 }

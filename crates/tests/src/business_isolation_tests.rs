@@ -3344,7 +3344,7 @@ async fn staged_nhop_trial_zone_fixture_rechecks_middle_and_members() {
     use roomler_ai_remote_control::models::NodeRef;
     use roomler_core::business_authority::BusinessZone::Mainland;
     use std::time::Instant;
-    for case in ["changed", "unknown", "stable", "race_restore", "member_changed", "unconstrained_member", "node_missing", "node_deleted", "agent_deleted", "read_error"] {
+    for case in ["changed", "unknown", "stable", "race_restore", "member_changed", "unconstrained_member", "unconstrained_member_deleted", "unconstrained_member_wrong", "node_missing", "node_deleted", "agent_deleted", "read_error"] {
         let slug = format!("iso-nhop-zone-{case}");
         let rig = Rig::up(&slug, "off").await;
         let mut relays = Vec::new(); let mut relay_tokens = Vec::new();
@@ -3395,8 +3395,9 @@ async fn staged_nhop_trial_zone_fixture_rechecks_middle_and_members() {
             node_ids[1] = ObjectId::new();
             session.hops[0].relay.node_id = node_ids[1];
         }
+        if case == "unconstrained_member_wrong" { session.members[0].party.node_id = node_ids[2]; }
         let network = rig.app.state.network();
-        let constrained = if case == "unconstrained_member" { None } else { Some([Mainland;2]) };
+        let constrained = if case.starts_with("unconstrained_member") { None } else { Some([Mainland;2]) };
         let trial_id = support::insert_nhop_zone_trial_fixture(network, session.clone(), vec![Mainland;4], constrained);
         for id in &node_ids { assert_eq!(support::trial_slots_on_relay(network,*id),1); }
         async fn join_collect(ws:&mut Ws, seed:u8, endpoint:&str, ready:bool, path:bool)->Vec<Value> {
@@ -3411,11 +3412,13 @@ async fn staged_nhop_trial_zone_fixture_rechecks_middle_and_members() {
                 }}
         }
         let mut before_netmap = Vec::new();
-        if matches!(case, "node_missing" | "node_deleted" | "agent_deleted" | "read_error") {
+        if matches!(case, "node_missing" | "node_deleted" | "agent_deleted" | "read_error" | "unconstrained_member_deleted" | "unconstrained_member_wrong") {
             if case == "node_deleted" { assert!(network.overlay_nodes.base.soft_delete(node_ids[1]).await.unwrap()); }
             if case == "agent_deleted" { assert!(network.fleet.agents.base.soft_delete(agent_ids[1]).await.unwrap()); }
             if case == "read_error" { support::fail_next_trial_zone_read(trial_id); }
-            support::recheck_zones_fixture(network, agent_ids[1]).await;
+            if case == "unconstrained_member_deleted" { assert!(network.fleet.agents.base.soft_delete(ObjectId::parse_str(&a_agent).unwrap()).await.unwrap()); }
+            let changed = if case.starts_with("unconstrained_member") { ObjectId::parse_str(&a_agent).unwrap() } else { agent_ids[1] };
+            support::recheck_zones_fixture(network, changed).await;
         } else if matches!(case, "member_changed" | "unconstrained_member") {
             let mut replacement=connect_from(&rig.app,&a_token,&[],Some(US_A)).await;
             before_netmap=join_collect(&mut replacement,1,"8.8.8.9:41641",false,true).await; a=replacement;
