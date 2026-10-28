@@ -2064,13 +2064,15 @@ async fn mint_line(
         refuse(PeerRelayDenyReason::RateLimited).await;
         return;
     }
-    let (Some(vni), Some(exit_vni)) = (
-        state.org_relay.alloc_vni(ingress_id),
-        state.org_relay.alloc_vni(exit_id),
-    ) else {
-        refuse(PeerRelayDenyReason::NoRelay).await;
-        return;
-    };
+    // Warn uses tentative values only for its audit; a real mint allocates
+    // under the shared claim lock below. The placeholder is never sent.
+    let (vni, exit_vni) = if warn_only {
+        let (Some(vni), Some(exit_vni)) = (
+            state.org_relay.alloc_vni(ingress_id),
+            state.org_relay.alloc_vni(exit_id),
+        ) else { refuse(PeerRelayDenyReason::NoRelay).await; return; };
+        (vni, exit_vni)
+    } else { (1, 1) };
     let (m0, m1) = if plan.flipped { (peer, requester) } else { (requester, peer) };
     let member = |n: &OverlayNode| SessionMember {
         party: SessionParty {
@@ -2083,7 +2085,7 @@ async fn mint_line(
     let now = Instant::now();
     let generation = state.org_relay.lamport.fetch_add(1, Ordering::Relaxed) + 1;
     let exit_generation = state.org_relay.lamport.fetch_add(1, Ordering::Relaxed) + 1;
-    let session = OrgRelaySession {
+    let mut session = OrgRelaySession {
         tenant_id,
         pair_key: pk.clone(),
         vni,
@@ -2114,9 +2116,9 @@ async fn mint_line(
     };
     // Until N-hop minting is implemented, never publish an unsupported
     // session shape: an entry without serve messages would strand the pair.
-    let [line] = session.hops.as_slice() else { return };
-    let delivery = match path_delivery::build(&session, Instant::now()) {
-        Ok(delivery) => delivery,
+    if session.hops.len() != 1 { return; }
+    match path_delivery::build(&session, Instant::now()) {
+        Ok(_) => {},
         Err(error) => {
             warn!(?error, "org-relay: invalid line delivery shape");
             refuse(PeerRelayDenyReason::PolicyUnreadable).await;
@@ -2131,11 +2133,15 @@ async fn mint_line(
     }
     // Share the trial admission lock so no other local claim can take the
     // same remaining capacity between the check and this session's insert.
-    let current = match trial::claim_mint(&state.org_relay, &session, || true) {
+    let mut delivery = None;
+    let current = match trial::claim_mint(&state.org_relay, &mut session, |allocated| {
+        delivery = path_delivery::build(allocated, Instant::now()).ok();
+        delivery.is_some()
+    }) {
         trial::MintClaim::Existing(existing) => Some(existing),
         trial::MintClaim::Inserted => None,
         trial::MintClaim::Full => { refuse(PeerRelayDenyReason::NoRelay).await; return; }
-        trial::MintClaim::Rejected => return,
+        trial::MintClaim::Rejected => { refuse(PeerRelayDenyReason::PolicyUnreadable).await; return; },
     };
     if let Some(current) = current {
         if let Some(i) = current.member_index(req_id) {
@@ -2143,12 +2149,14 @@ async fn mint_line(
         }
         return;
     }
+    let Some(delivery) = delivery else { return };
+    let (vni, exit_vni) = (session.vni, session.hops[0].vni);
     audit_line(state, &session, false).await;
     if !state.org_relay.active_session(&pk).is_some_and(|current| current.vni == session.vni && current.generation == session.generation) {
         return;
     }
     info!(%tenant_id, requester = %req_id, peer = %peer_id, ingress = %ingress_id, vni,
-        exit = %exit_id, exit_vni, line = %line.private_endpoint,
+        exit = %exit_id, exit_vni, line = %session.hops[0].private_endpoint,
         "org-relay: a cross-border pair rides its approved line");
     // Send every relay control message before bridge control messages.
     // Delivery is asynchronous; bridges retry until both sides are ready.
@@ -2690,24 +2698,16 @@ async fn mint_plan(
     let (Some(req_id), Some(peer_id)) = (requester.id, peer.id) else { return };
     let pk = pair_key(req_id, peer_id);
     let relay_id = plan.relay.id.unwrap_or_default();
-    let Some(vni) = state.org_relay.alloc_vni(relay_id) else {
-        // Every VNI on that relay is held: it is full in a way the session
-        // count did not show. Same answer as no relay at all.
-        audit_mint(
-            state,
-            tenant_id,
-            req_id,
-            peer_id,
-            Some((plan.relay_agent_id, relay_id)),
-            None,
-            warn_only,
-            Some(PeerRelayDenyReason::NoRelay),
-        )
-        .await;
-        return;
-    };
+    let vni = if warn_only {
+        let Some(vni) = state.org_relay.alloc_vni(relay_id) else {
+            audit_mint(state, tenant_id, req_id, peer_id, Some((plan.relay_agent_id, relay_id)),
+                None, true, Some(PeerRelayDenyReason::NoRelay)).await;
+            return;
+        };
+        vni
+    } else { 1 }; // Placeholder is replaced under the claim lock before use.
     let generation = state.org_relay.lamport.fetch_add(1, Ordering::Relaxed) + 1;
-    let session = OrgRelaySession {
+    let mut session = OrgRelaySession {
         tenant_id,
         pair_key: pk.clone(),
         vni,
@@ -2760,7 +2760,7 @@ async fn mint_plan(
             || crate::overlay::org_fallback_forced_derp(state, &pk) { return; }
     }
     let mut refusal = None;
-    let claim = trial::claim_mint(&state.org_relay, &session, || {
+    let claim = trial::claim_mint(&state.org_relay, &mut session, |_| {
         if let Some(epoch) = fallback_epoch {
             if epoch != state.org_relay.eligibility_generation()
                 || crate::overlay::org_fallback_forced_derp(state, &pk) { return false; }
@@ -2801,6 +2801,7 @@ async fn mint_plan(
         }
         trial::MintClaim::Inserted => {}
     }
+    let vni = session.vni;
     if fallback_epoch.is_none() {
         audit_mint(state, tenant_id, req_id, peer_id, Some((plan.relay_agent_id, relay_id)),
             Some(vni), false, None).await;

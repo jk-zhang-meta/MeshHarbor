@@ -676,8 +676,8 @@ pub(super) enum MintClaim {
 /// lock. The callback may apply local admission fences and consume a rate slot.
 pub(super) fn claim_mint(
     state: &OrgRelayState,
-    session: &OrgRelaySession,
-    allow: impl FnOnce() -> bool,
+    session: &mut OrgRelaySession,
+    allow: impl FnOnce(&OrgRelaySession) -> bool,
 ) -> MintClaim {
     let entries = state.trials.entries.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(existing) = state.sessions.get(&session.pair_key).map(|entry| entry.value().clone()) {
@@ -689,7 +689,29 @@ pub(super) fn claim_mint(
     if !has_capacity(state, &entries, &nodes) {
         return MintClaim::Full;
     }
-    if !allow() {
+    // Allocate under the same lock as trial admissions and the final insert.
+    // Trial VNIs (including still-retained expired entries) are excluded just
+    // as in the existing trial allocator; allocations are scoped per relay.
+    let mut allocated = Vec::with_capacity(nodes.len());
+    for relay in &nodes {
+        let reserved: Vec<u32> = entries.values().flat_map(|trial| {
+            let mut out = Vec::with_capacity(2);
+            if trial.session.relay.node_id == *relay { out.push(trial.session.vni); }
+            if let Some(backbone) = trial.backbone.as_ref() {
+                if backbone.exit.relay.node_id == *relay { out.push(backbone.exit.vni); }
+            }
+            out
+        }).collect();
+        let Some(vni) = state.alloc_vni_with_reserved(*relay, &reserved) else {
+            return MintClaim::Full;
+        };
+        allocated.push(vni);
+    }
+    session.vni = allocated[0];
+    for (hop, vni) in session.hops.iter_mut().zip(allocated.into_iter().skip(1)) {
+        hop.vni = vni;
+    }
+    if !allow(session) {
         return MintClaim::Rejected;
     }
     match state.sessions.entry(session.pair_key.clone()) {
@@ -1350,11 +1372,11 @@ mod tests {
             let (state, barrier, allocated) = (Arc::clone(&state), Arc::clone(&barrier), Arc::clone(&allocated));
             std::thread::spawn(move || {
                 let (tenant, requester, peer) = (ObjectId::new(), ObjectId::new(), ObjectId::new());
-                let fixture = fixture_trial(tenant, requester, peer, relay, i, 1000 + i as u32, 1000 + i);
+                let mut fixture = fixture_trial(tenant, requester, peer, relay, i, 1000 + i as u32, 1000 + i);
                 let pair = fixture.session.pair_key.clone();
                 barrier.wait();
                 if i % 2 == 0 {
-                    matches!(claim_mint(&state, &fixture.session, || { allocated.fetch_add(1, Ordering::Relaxed); true }), MintClaim::Inserted)
+                    matches!(claim_mint(&state, &mut fixture.session, |_| { allocated.fetch_add(1, Ordering::Relaxed); true }), MintClaim::Inserted)
                 } else {
                     let mut entries = state.trials.entries.lock().unwrap();
                     matches!(admit_trial(&state, &mut entries, &[relay], &pair, tenant, requester, i, 0, 0, || {
@@ -1373,19 +1395,56 @@ mod tests {
         let state = OrgRelayState::new();
         let (ingress, exit) = (ObjectId::new(), ObjectId::new());
         let mut new = fixture_trial(ObjectId::new(), ObjectId::new(), ObjectId::new(), ingress, 1, 300, 301).session;
-        assert!(matches!(claim_mint(&state, &new, || true), MintClaim::Inserted));
+        assert!(matches!(claim_mint(&state, &mut new, |_| true), MintClaim::Inserted));
+        let winner_vni = new.vni;
         let mut duplicate = new.clone();
         duplicate.vni = 301;
         duplicate.generation = 302;
-        assert!(matches!(claim_mint(&state, &duplicate, || panic!("winner must be reused")), MintClaim::Existing(existing) if existing.vni == 300));
+        assert!(matches!(claim_mint(&state, &mut duplicate, |_| panic!("winner must be reused")), MintClaim::Existing(existing) if existing.vni == winner_vni));
         for i in 0..limits::MAX_SESSIONS_PER_RELAY {
             let session = fixture_trial(ObjectId::new(), ObjectId::new(), ObjectId::new(), exit, i as u64, i as u32 + 1, i as u64 + 1).session;
             state.sessions.insert(format!("exit-{i}"), session);
         }
         new.pair_key = "new-pair".into();
         new.hops.push(LineLeg { relay: SessionParty { node_id: exit, node_ref: NodeRef::Agent { agent_id: exit } }, relay_agent_id: exit, vni: 500, generation: 501, endpoints: vec!["exit".into()], private_endpoint: "10.0.0.2:3478".into(), bridge_id: ObjectId::new(), bridge_secrets: ["a".into(), "b".into()] });
-        assert!(matches!(claim_mint(&state, &new, || panic!("full second leg must not allocate")), MintClaim::Full));
+        assert!(matches!(claim_mint(&state, &mut new, |_| panic!("full second leg must not allocate")), MintClaim::Full));
         assert!(state.sessions.get("new-pair").is_none());
+    }
+
+    #[test]
+    fn mint_vni_wrap_skips_both_live_sessions_and_trial_reservations() {
+        let state = OrgRelayState::new();
+        let relay = ObjectId::new();
+        state.next_vni.insert(relay, limits::VNI_MAX);
+        let old = fixture_trial(ObjectId::new(), ObjectId::new(), ObjectId::new(), relay, 1, 1, 1).session;
+        state.sessions.insert(old.pair_key.clone(), old);
+        let reserved = fixture_trial(ObjectId::new(), ObjectId::new(), ObjectId::new(), relay, 2, limits::VNI_MAX, 2);
+        state.trials.entries.lock().unwrap().insert(reserved.id, reserved);
+        let mut new = fixture_trial(ObjectId::new(), ObjectId::new(), ObjectId::new(), relay, 3, 999, 3).session;
+        assert!(matches!(claim_mint(&state, &mut new, |_| true), MintClaim::Inserted));
+        assert_eq!(new.vni, 2);
+        assert_eq!(state.sessions.get(&new.pair_key).unwrap().vni, 2);
+    }
+
+    #[test]
+    fn failed_second_vni_allocation_does_not_publish_partial_path() {
+        let state = OrgRelayState::new();
+        let (ingress, exit) = (ObjectId::new(), ObjectId::new());
+        // Retained expired trials still reserve their VNIs, although they do
+        // not consume live capacity. Fill the allocator's bounded probe range.
+        {
+            let mut entries = state.trials.entries.lock().unwrap();
+            for i in 1..=(limits::MAX_SESSIONS_PER_RELAY + 4) {
+                let mut trial = fixture_trial(ObjectId::new(), ObjectId::new(), ObjectId::new(), exit, i as u64, i as u32, i as u64);
+                trial.session.expires_at = Instant::now() - Duration::from_secs(1);
+                entries.insert(trial.id, trial);
+            }
+        }
+        let mut new = fixture_trial(ObjectId::new(), ObjectId::new(), ObjectId::new(), ingress, 1, 700, 701).session;
+        new.hops.push(LineLeg { relay: SessionParty { node_id: exit, node_ref: NodeRef::Agent { agent_id: exit } }, relay_agent_id: exit, vni: 800, generation: 801, endpoints: vec!["exit".into()], private_endpoint: "10.0.0.2:3478".into(), bridge_id: ObjectId::new(), bridge_secrets: ["a".into(), "b".into()] });
+        assert!(matches!(claim_mint(&state, &mut new, |_| panic!("allocation must fail before validation")), MintClaim::Full));
+        assert!(state.sessions.get(&new.pair_key).is_none());
+        assert_eq!((new.vni, new.hops[0].vni), (700, 800));
     }
 
     #[test]
