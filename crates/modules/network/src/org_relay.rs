@@ -630,13 +630,22 @@ impl OrgRelayState {
     /// The live session for a pair, if any. Expired sessions are reaped on
     /// the way out so a stale entry can never be re-pushed.
     pub fn active_session(&self, pair_key: &str) -> Option<OrgRelaySession> {
-        let now = Instant::now();
-        let s = self.sessions.get(pair_key).map(|e| e.value().clone())?;
-        if s.expires_at <= now {
-            self.sessions.remove(pair_key);
-            return None;
+        loop {
+            let s = self.sessions.get(pair_key).map(|e| e.value().clone())?;
+            let now = Instant::now();
+            if s.expires_at > now {
+                return Some(s);
+            }
+            // A replacement can arrive after the read. Only remove the value
+            // currently in the map if it is still expired; otherwise retry.
+            if self.remove_expired_session(pair_key, now) {
+                return None;
+            }
         }
-        Some(s)
+    }
+
+    fn remove_expired_session(&self, pair_key: &str, now: Instant) -> bool {
+        self.sessions.remove_if(pair_key, |_, current| current.expires_at <= now).is_some()
     }
 
     /// Test hook: as if `pair_key`'s session had outlived its bind window.
@@ -3309,6 +3318,53 @@ mod tests {
         }
         assert!(valid_static_endpoint("62.210.194.66:3478"));
         assert!(!valid_static_endpoint("62.210.194.66:0"));
+    }
+
+    /// A reaper holding an old observation must not delete a replacement.
+    /// Simulate the exact read/replace/remove interleaving; the two threads
+    /// synchronize so this test does not depend on scheduler timing.
+    #[test]
+    fn expired_observation_never_reaps_a_replacement_session() {
+        use std::sync::{Arc, mpsc};
+        let st = Arc::new(OrgRelayState::new());
+        let relay = ObjectId::new();
+        let party = |id| SessionParty { node_id: id, node_ref: NodeRef::Agent { agent_id: id } };
+        let member = |id| SessionMember { party: party(id), wg_public_key: "k".into(), bind_secret: "s".into() };
+        let now = Instant::now();
+        let old = OrgRelaySession {
+            tenant_id: ObjectId::new(), pair_key: "pair".into(), vni: 21, generation: 10,
+            relay: party(relay), relay_agent_id: relay, implicit: false,
+            members: [member(ObjectId::new()), member(ObjectId::new())], endpoints: vec!["relay".into()],
+            expires_at: now - Duration::from_secs(1), bind_by: now, hops: Vec::new(),
+        };
+        let mut replacement = old.clone();
+        replacement.vni = 22;
+        replacement.generation = 11;
+        replacement.expires_at = now + Duration::from_secs(60);
+        st.sessions.insert("pair".into(), old);
+        let (read_tx, read_rx) = mpsc::channel();
+        let (replace_tx, replace_rx) = mpsc::channel();
+        let worker_st = Arc::clone(&st);
+        let worker = std::thread::spawn(move || {
+            let observed = worker_st.sessions.get("pair").unwrap().value().clone();
+            assert!(observed.expires_at <= now);
+            read_tx.send(()).unwrap();
+            replace_rx.recv().unwrap();
+            assert!(!worker_st.remove_expired_session("pair", now));
+        });
+        read_rx.recv().unwrap();
+        st.sessions.insert("pair".into(), replacement);
+        replace_tx.send(()).unwrap();
+        worker.join().unwrap();
+        let current = st.active_session("pair").unwrap();
+        assert_eq!((current.vni, current.generation), (22, 11));
+        assert_eq!(st.sessions_on_relay(relay), 1);
+        st.next_vni.insert(relay, 22);
+        assert_ne!(st.alloc_vni(relay), Some(22));
+        assert_eq!(st.active_session("missing").map(|s| s.generation), None);
+        st.sessions.get_mut("pair").unwrap().expires_at = now - Duration::from_secs(1);
+        assert!(st.active_session("pair").is_none());
+        assert_eq!(st.sessions_on_relay(relay), 0);
     }
 
     /// VNIs are per relay, never 0 or the STUN cookie, and never one a live
