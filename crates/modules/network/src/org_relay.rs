@@ -124,6 +124,26 @@ pub mod candidate_test_support {
     use std::collections::HashMap;
     use std::sync::{Mutex, OnceLock};
     use tokio::sync::oneshot;
+    #[derive(Clone, Copy)]
+    pub enum TrialCrossingAuditFault {
+        Error,
+        Timeout,
+    }
+    fn trial_crossing_audit_faults() -> &'static Mutex<HashMap<String, TrialCrossingAuditFault>> {
+        static FAULTS: OnceLock<Mutex<HashMap<String, TrialCrossingAuditFault>>> = OnceLock::new();
+        FAULTS.get_or_init(|| Mutex::new(HashMap::new()))
+    }
+    /// Inject one audit failure or a pending write for an isolated trial pair.
+    pub fn fail_next_trial_crossing_audit(pair: String, fault: TrialCrossingAuditFault) {
+        assert!(trial_crossing_audit_faults().lock().unwrap().insert(pair, fault).is_none());
+    }
+    pub(super) fn take_trial_crossing_audit_fault(pair: &str) -> Option<TrialCrossingAuditFault> {
+        trial_crossing_audit_faults().lock().unwrap().remove(pair)
+    }
+    /// Exposes only the fixture's currently reserved trial slots.
+    pub fn trial_slots_on_relay(state: &NetworkState, relay: ObjectId) -> usize {
+        state.org_relay.trials.sessions_on_relay(relay, Instant::now())
+    }
     fn line_audit_failures() -> &'static Mutex<std::collections::HashSet<String>> {
         static FAILURES: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
         FAILURES.get_or_init(|| Mutex::new(std::collections::HashSet::new()))
@@ -1969,7 +1989,7 @@ async fn plan_backbone(
     if line.is_some() {
         // #21 rule 5: every crossing is audited, on top of the trial's own rows.
         info!(tenant_id = %requester.tenant_id, requester = %a, peer = %b, ingress = %ingress_id,
-            exit = %exit_id, "org-relay: a cross-border pair rides its approved line");
+            exit = %exit_id, "org-relay: auditing a cross-border trial attempt");
         let event = PeerRelayAuditEvent {
             id: None,
             tenant_id: requester.tenant_id,
@@ -1986,8 +2006,22 @@ async fn plan_backbone(
             denied: None,
             reason: Some(CROSS_BORDER_REASON.into()),
         };
-        if let Err(e) = state.peer_relay_audit.record(event).await {
-            warn!(%e, "org-relay: cross-border audit write failed");
+        // The row records an attempt; no trial VNI exists yet. Fail closed on
+        // storage failure or timeout before reserving or sending any grants.
+        let write = async {
+            #[cfg(feature = "path-planner-test-support")]
+            match candidate_test_support::take_trial_crossing_audit_fault(&pair_key(a, b)) {
+                Some(candidate_test_support::TrialCrossingAuditFault::Error) => return false,
+                Some(candidate_test_support::TrialCrossingAuditFault::Timeout) => {
+                    std::future::pending::<()>().await;
+                }
+                None => {}
+            }
+            state.peer_relay_audit.record(event).await.is_ok()
+        };
+        if !matches!(tokio::time::timeout(Duration::from_secs(3), write).await, Ok(true)) {
+            warn!("org-relay: cross-border trial audit failed or timed out");
+            return Err(D::PolicyUnreadable);
         }
     }
     Ok(BackbonePlan {

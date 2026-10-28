@@ -2477,3 +2477,57 @@ async fn staged_graph_line_claim_race_reauthorizes_multihop_winner() {
     }
     }
 }
+
+/// Cross-zone trial authorization must record the crossing attempt before it
+/// reserves a trial slot or emits relay, bridge, and member grants.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn staged_cross_border_trial_audit_failure_and_timeout_fail_closed() {
+    use roomler_ai_mod_network::org_relay::candidate_test_support::{self as support, TrialCrossingAuditFault};
+    for (slug, fault) in [("iso-trial-audit-error", TrialCrossingAuditFault::Error), ("iso-trial-audit-timeout", TrialCrossingAuditFault::Timeout)] {
+        let mut l = LineRig::up(slug, true).await;
+        let flags = json!({"supports_backbone_only_v1":true,"supports_path_backbone_v1":true,
+            "supports_path_trial_v1":true,"supports_org_relay_multi_candidate":true,
+            "supports_org_relay_discovery_cursor":true});
+        line_join(&mut l.cn, 1, "223.5.5.5:41641", flags.clone()).await;
+        line_join(&mut l.us, 2, "8.8.8.8:41641", flags).await;
+        let (a, b, gz, hk) = (ObjectId::parse_str(&l.cn_node).unwrap(), ObjectId::parse_str(&l.us_node).unwrap(),
+            ObjectId::parse_str(&l.gz_node).unwrap(), ObjectId::parse_str(&l.hk_node).unwrap());
+        let pair = roomler_ai_mod_network::overlay::pair_key(a, b);
+        let network = l.rig.app.state.network();
+        support::fail_next_trial_crossing_audit(pair, fault);
+        let request = |request_id| Message::Text(json!({"t":"rc:overlay.path_trial_request", "peer_node_id":l.us_node,
+            "relay_node_id":l.gz_node, "exit_relay_node_id":l.hk_node, "request_id":request_id}).to_string().into());
+        l.cn.send(request(1)).await.unwrap();
+        async fn assert_no_trial_frames(ws: &mut Ws, label: &str) {
+            let until = tokio::time::Instant::now() + Duration::from_millis(3800);
+            while let Ok(Some(Ok(message))) = tokio::time::timeout_at(until, ws.next()).await {
+                if let Message::Text(text) = message {
+                    let v: Value = serde_json::from_str(&text).unwrap();
+                    assert!(!["rc:overlay.relay_serve", "rc:overlay.relay_bridge_serve", "rc:overlay.path_trial_start"].contains(&v["t"].as_str().unwrap_or_default()), "{label}: failed audit emitted a trial grant");
+                }
+            }
+        }
+        tokio::join!(assert_no_trial_frames(&mut l.gz, &slug), assert_no_trial_frames(&mut l.hk, &slug),
+            assert_no_trial_frames(&mut l.cn, &slug), assert_no_trial_frames(&mut l.us, &slug));
+        assert_eq!(support::trial_slots_on_relay(network, gz), 0, "{slug}: ingress capacity leak");
+        assert_eq!(support::trial_slots_on_relay(network, hk), 0, "{slug}: exit capacity leak");
+        assert!(l.audit_reasons("mint").await.is_empty(), "{slug}: simulated failed audit cannot be successful");
+        // Discovery is metadata only; it must remain available without any
+        // audit write or trial/session allocation after the failed attempt.
+        l.cn.send(Message::Text(json!({"t":"rc:overlay.org_relay_discover", "peer_node_id":l.us_node, "request_id":1}).to_string().into())).await.unwrap();
+        let hint = recv_t(&mut l.cn, "rc:overlay.org_relay_candidates", Duration::from_secs(5)).await.expect("discovery unaffected");
+        assert!(hint["candidates"].as_array().unwrap().iter().any(|c| c["relay_node_id"] == l.gz_node && c["exit_relay_node_id"] == l.hk_node));
+        assert!(l.audit_reasons("mint").await.is_empty());
+        l.cn.send(request(2)).await.unwrap();
+        let wait = Duration::from_secs(8);
+        let a = recv_t(&mut l.gz, "rc:overlay.relay_serve", wait).await.expect("success ingress serve");
+        let b = recv_t(&mut l.hk, "rc:overlay.relay_serve", wait).await.expect("success exit serve");
+        let bridge = recv_t(&mut l.gz, "rc:overlay.relay_bridge_serve", wait).await.expect("success bridge");
+        let cn = recv_t(&mut l.cn, "rc:overlay.path_trial_start", wait).await.expect("success requester trial");
+        let us = recv_t(&mut l.us, "rc:overlay.path_trial_start", wait).await.expect("success peer trial");
+        assert_eq!(cn["vni"], a["vni"]); assert_eq!(us["vni"], b["vni"]);
+        assert_eq!(bridge["bridge"]["local_vni"], a["vni"]); assert_eq!(bridge["bridge"]["remote_vni"], b["vni"]);
+        assert_eq!(support::trial_slots_on_relay(network, gz), 1); assert_eq!(support::trial_slots_on_relay(network, hk), 1);
+        assert!(l.audit_reasons("mint").await.iter().any(|(reason, node)| reason == "cross_border_line" && node == &l.gz_node));
+    }
+}
