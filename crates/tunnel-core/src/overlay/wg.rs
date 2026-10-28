@@ -3542,6 +3542,14 @@ impl WgDevice {
         Some(self.peers.get(peer_public)?.carrier.is_dead())
     }
 
+    /// Fixture-only observation for a dedicated relay peer's receive task.
+    #[cfg(feature = "path-trial-test-support")]
+    pub fn fixture_relay_receive_task_live(&self, peer_public: &[u8; 32]) -> Option<bool> {
+        let peer = self.peers.get(peer_public)?;
+        if peer.direct_src.is_some() { return None; }
+        Some(!peer.tasks.first()?.is_finished())
+    }
+
     /// Phase C — LOCK-FREE: has the WG handshake to `peer_public` completed (a
     /// session exists)? `None` if the peer is unknown. The health sweep reads
     /// this to time out a srflx / public-direct punch carrier that NEVER

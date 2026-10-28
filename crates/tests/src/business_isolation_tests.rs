@@ -3662,6 +3662,8 @@ async fn staged_nhop_trial_actual_wg_commit_and_bilateral_return() {
     }
     for node in &nodes {assert_eq!(support::trial_slots_on_relay(network,ObjectId::parse_str(node).unwrap()),0);}
     while received_a.try_recv().is_ok() {} while received_b.try_recv().is_ok() {}
+    assert_eq!(wg_a.fixture_relay_receive_task_live(&key_b.public.to_bytes()),Some(true));
+    assert_eq!(wg_b.fixture_relay_receive_task_live(&key_a.public.to_bytes()),Some(true));
     let stopped_forward=packet(ip_a,ip_b,b"returned four relay trial cannot carry forward data");
     let stopped_reverse=packet(ip_b,ip_a,b"returned four relay trial cannot carry reverse data");
     for _ in 0..4 {
@@ -3679,4 +3681,6 @@ async fn staged_nhop_trial_actual_wg_commit_and_bilateral_return() {
         }
     }
     tokio::join!(assert_blocked(&mut received_b,&stopped_forward),assert_blocked(&mut received_a,&stopped_reverse));
+    assert_eq!(wg_a.fixture_relay_receive_task_live(&key_b.public.to_bytes()),Some(true),"forward WG receive task stopped");
+    assert_eq!(wg_b.fixture_relay_receive_task_live(&key_a.public.to_bytes()),Some(true),"reverse WG receive task stopped");
 }
