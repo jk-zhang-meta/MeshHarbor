@@ -3560,6 +3560,14 @@ async fn staged_nhop_trial_actual_wg_commit_and_bilateral_return() {
     assert!(recv_t(&mut a,"rc:overlay.path_trial_finalize",Duration::from_millis(100)).await.is_none(),"one ACK finalized path");
     signal(&mut b,"rc:overlay.path_trial_committed",&id,None).await;
     for ws in [&mut a,&mut b] { assert_eq!(recv_t(ws,"rc:overlay.path_trial_finalize",wait).await.unwrap()["trial_id"],id); }
+    let committed_forward=packet(ip_a,ip_b,b"committed four relay WG forward");
+    tokio::time::timeout(Duration::from_secs(8),async { loop { wg_a.send_ip_packet(&committed_forward).await;
+        if let Ok(Some(got))=tokio::time::timeout(Duration::from_millis(100),received_b.recv()).await { if got==committed_forward { break; } }
+    }}).await.expect("committed four relay forward data");
+    let committed_reverse=packet(ip_b,ip_a,b"committed four relay WG reverse");
+    tokio::time::timeout(Duration::from_secs(8),async { loop { wg_b.send_ip_packet(&committed_reverse).await;
+        if let Ok(Some(got))=tokio::time::timeout(Duration::from_millis(100),received_a.recv()).await { if got==committed_reverse { break; } }
+    }}).await.expect("committed four relay reverse data");
     for node in &nodes {assert_eq!(support::trial_slots_on_relay(network,ObjectId::parse_str(node).unwrap()),1);}
     let return_id=ObjectId::new().to_hex(); signal(&mut a,"rc:overlay.path_trial_return_request",&id,Some(&return_id)).await;
     for ws in [&mut a,&mut b] {assert_eq!(recv_t(ws,"rc:overlay.path_trial_return_prepare",wait).await.unwrap()["return_id"],return_id);}
