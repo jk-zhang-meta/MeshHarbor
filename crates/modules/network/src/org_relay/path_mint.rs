@@ -24,7 +24,7 @@ pub(super) async fn mint(
     requester: &OverlayNode,
     peer: &OverlayNode,
     warn_only: bool,
-    same_zone_only: bool,
+    same_zone_request: bool,
     charged_relay: &mut Option<ObjectId>,
 ) -> Result<bool, Deny> {
     let (Some(a), Some(b)) = (requester.id, peer.id) else {
@@ -36,12 +36,20 @@ pub(super) async fn mint(
     if original.warn_only != warn_only {
         return Err(Deny::PolicyUnreadable);
     }
-    if same_zone_only
-        && (original.requester_zone.is_none() || original.requester_zone != original.peer_zone)
-    {
+    let (Some(za), Some(zb)) = (original.requester_zone, original.peer_zone) else {
+        return Ok(false);
+    };
+    // Ordinary requests in Off/Warn may use a freshly approved cross-zone
+    // path. Enforce continues to route such pairs through maybe_mint_line.
+    let same_zone_only = same_zone_request
+        && (za == zb
+            || crate::business_isolation::mode(state) == crate::business_isolation::Mode::Enforce);
+    if (same_zone_only && za != zb) || (!same_zone_only && za == zb) {
         return Ok(false);
     }
-    let Some(selected) = path_select::select_for_mint(state, original).unwrap_or(None) else {
+    let Some(selected) =
+        path_select::select_for_mint(state, original, same_zone_only).unwrap_or(None)
+    else {
         return Ok(false);
     };
     let graph = &selected.prepared.graph;
@@ -148,6 +156,7 @@ pub(super) async fn mint(
         || (same_zone_only
             && (first_zone != last_zone
                 || relays.iter().any(|(_, relay, _)| relay.zone != first_zone)))
+        || (!same_zone_only && first_zone == last_zone)
     {
         return Err(Deny::ZoneDenied);
     }
@@ -464,7 +473,7 @@ pub(super) async fn reauthorize(
     let (Some(a), Some(b)) = (requester.id, peer.id) else {
         return Err(ReauthorizationError::Denied);
     };
-    if session.hops.len() < 2
+    if session.hops.is_empty()
         || session.implicit
         || session.tenant_id != requester.tenant_id
         || session.pair_key != pair_key(a, b)
