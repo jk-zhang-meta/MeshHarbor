@@ -229,7 +229,7 @@ impl Engine {
             epoch: self.observation.epoch,
             observed_at_ms: SystemTime::now()
                 .duration_since(SystemTime::UNIX_EPOCH)
-                .map(|d| millis(d))
+                .map(millis)
                 .unwrap_or(0),
             history_ttl_ms: millis(HISTORY_TTL),
             active,

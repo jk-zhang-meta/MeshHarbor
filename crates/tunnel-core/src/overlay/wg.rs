@@ -2466,7 +2466,7 @@ impl WgDevice {
         t.incumbent.as_ref()?.carrier.direct_dst()
     }
 
-    #[cfg(any(test, feature = "path-trial-test-support"))]
+    #[cfg(feature = "path-trial-test-support")]
     pub(crate) fn fail_retained_path_trial_direct(&self, trial: ObjectId) -> bool {
         let Some(t) = self.path_trials.get(&trial) else {
             return false;
@@ -2705,52 +2705,6 @@ impl WgDevice {
             self.unregister_trial_owned(&p).await;
         }
         owned
-    }
-
-    pub(crate) fn abort_path_trial(&mut self, trial: ObjectId) -> bool {
-        let Some(mut t) = self.path_trials.remove(&trial) else {
-            return false;
-        };
-        if !t.committed {
-            if let Some(candidate) = t.candidate.take() {
-                self.unregister_plane_route(&candidate);
-            }
-            return true;
-        }
-        let current_matches = self.peers.get(&t.public_key).is_some_and(|p| {
-            t.committed_tunn.as_ref().is_some_and(|committed| {
-                std::sync::Weak::ptr_eq(committed, &Arc::downgrade(&p.tunn))
-            })
-        });
-        if !current_matches {
-            if let Some(old) = t.incumbent.take() {
-                self.unregister_plane_route(&old);
-            }
-            return false; // never restore over an unrelated newer install
-        }
-        let Some(old) = t.incumbent.take() else {
-            return false;
-        };
-        let (ip, tunn, carrier, stats) = (
-            old.overlay_ip,
-            old.tunn.clone(),
-            old.carrier.clone(),
-            old.stats.clone(),
-        );
-        if let Some(candidate) = self.peers.insert(t.public_key, old) {
-            self.unregister_plane_route(&candidate);
-            self.path_trial_drains.insert(
-                trial,
-                (
-                    t.public_key,
-                    Instant::now() + Duration::from_secs(10),
-                    candidate,
-                ),
-            );
-        }
-        self.send_install(t.public_key, ip, tunn, carrier, stats);
-        self.debug_assert_send_synced();
-        true
     }
 
     pub(crate) fn reap_path_trial_drains(&mut self, now: Instant) {

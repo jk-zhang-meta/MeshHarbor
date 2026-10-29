@@ -380,8 +380,8 @@ impl RelayServer {
                 }
                 RelayAction::Drop(r) => {
                     #[cfg(feature = "path-trial-test-support")]
-                    if r == DropReason::UnknownVni {
-                        if let Some(fixture) = self.stats.rejected_data_fixture.lock()
+                    if r == DropReason::UnknownVni
+                        && let Some(fixture) = self.stats.rejected_data_fixture.lock()
                             .unwrap_or_else(|e| e.into_inner()).as_mut()
                             && fixture.source == src && fixture.vni == vni
                             && fixture.wg_len == payload.len()
@@ -389,7 +389,6 @@ impl RelayServer {
                         {
                             fixture.count = fixture.count.saturating_add(1);
                         }
-                    }
                     self.stats.record_drop(r);
                     None
                 }

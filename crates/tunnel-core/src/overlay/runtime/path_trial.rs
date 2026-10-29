@@ -279,13 +279,13 @@ impl Engine {
             return;
         };
         info!(trial = %id, peer = %t.peer_id, notify, "overlay path-trial: cancelled");
-        if matches!(t.phase, Phase::Binding | Phase::Measuring | Phase::Ready) {
-            if let Some(requested) = t.requested.clone() {
+        if matches!(t.phase, Phase::Binding | Phase::Measuring | Phase::Ready)
+            && let Some(requested) = t.requested.clone()
+        {
                 if self.failed_requests.len() >= MAX_TRIALS {
                     self.failed_requests.remove(0);
                 }
                 self.failed_requests.push(requested);
-            }
         }
         let current = Self::current(&t, peers, installed);
         // A revoked/removed/rekeyed trial may never restore the captured peer.
@@ -322,6 +322,7 @@ impl Engine {
         self.control_enabled(msg, ctx, wg, peers, installed, supported, enabled())
             .await;
     }
+    #[allow(clippy::too_many_arguments)] // Preserve the runtime owners and explicit local gate.
     async fn control_enabled(
         &mut self,
         msg: ServerMsg,
@@ -349,6 +350,7 @@ impl Engine {
             });
         }
     }
+    #[allow(clippy::too_many_arguments)] // Same runtime-owner seam as control_enabled.
     async fn control_enabled_inner(
         &mut self,
         msg: ServerMsg,
@@ -506,10 +508,10 @@ impl Engine {
                             None
                         }
                     };
-                    if let Err(e) = tx.send(Bound { id: trial_id, conn }).await {
-                        if let Some(c) = e.0.conn {
+                    if let Err(e) = tx.send(Bound { id: trial_id, conn }).await
+                        && let Some(c) = e.0.conn
+                    {
                             c.close();
-                        }
                     }
                 });
             }
@@ -580,13 +582,12 @@ impl Engine {
                 .await;
             }
             ServerMsg::OverlayPathTrialFinalize { trial_id } => {
-                if let Some(t) = self.trials.get_mut(&trial_id) {
-                    if t.phase == Phase::Committed
+                if let Some(t) = self.trials.get_mut(&trial_id)
+                        && t.phase == Phase::Committed
                         && Self::current(t, peers, installed)
                         && wg.finalize_path_trial(trial_id)
                     {
                         t.phase = Phase::Finalized;
-                    }
                 }
             }
             ServerMsg::OverlayPathTrialReturnPrepare {
@@ -775,6 +776,7 @@ impl Engine {
         self.tick_enabled(ctx, wg, peers, installed, discovery, supported, enabled())
             .await;
     }
+    #[allow(clippy::too_many_arguments)] // Runtime owners and explicit gate are independently borrowed.
     async fn tick_enabled(
         &mut self,
         ctx: &OverlayRuntime,
@@ -810,6 +812,7 @@ impl Engine {
             });
         }
     }
+    #[allow(clippy::too_many_arguments)] // Same runtime-owner seam as tick_enabled.
     async fn tick_enabled_inner(
         &mut self,
         ctx: &OverlayRuntime,
@@ -975,7 +978,7 @@ impl Engine {
                 && t.measurements.return_ready(now)
                 && wg.path_trial_direct_ready(id)
             {
-                let return_id = t.return_id.unwrap_or_else(ObjectId::new);
+                let return_id = t.return_id.unwrap_or_default();
                 if now.duration_since(t.last_control) < Duration::from_secs(5) {
                     continue;
                 }
@@ -995,10 +998,9 @@ impl Engine {
             } else if matches!(t.phase, Phase::ReturnPreparing | Phase::ReturnReady) {
                 let return_id = t.return_id.unwrap();
                 if t.measurements.return_ready(now) && wg.path_trial_direct_ready(id) {
-                    if t.phase != Phase::ReturnReady
-                        || now.duration_since(t.last_control) >= Duration::from_secs(5)
-                    {
-                        if Self::send(
+                    if (t.phase != Phase::ReturnReady
+                        || now.duration_since(t.last_control) >= Duration::from_secs(5))
+                        && Self::send(
                             &ctx.outbound,
                             ClientMsg::OverlayPathTrialReturnReady {
                                 trial_id: id,
@@ -1009,7 +1011,6 @@ impl Engine {
                         {
                             t.phase = Phase::ReturnReady;
                             t.last_control = now;
-                        }
                     }
                 } else if t.phase == Phase::ReturnReady
                     || t.return_started
@@ -1027,8 +1028,9 @@ impl Engine {
                     // a Commit decision may already be in flight.
                     t.last_control = now;
                 }
-            } else if t.phase == Phase::Returned {
-                if now.duration_since(t.last_control) >= Duration::from_secs(5) {
+            } else if t.phase == Phase::Returned
+                && now.duration_since(t.last_control) >= Duration::from_secs(5)
+            {
                     t.last_control = now;
                     Self::send(
                         &ctx.outbound,
@@ -1038,7 +1040,6 @@ impl Engine {
                         },
                     )
                     .await;
-                }
             }
             let t = self.trials.get_mut(&id).unwrap();
             if t.measurements.round.is_none()

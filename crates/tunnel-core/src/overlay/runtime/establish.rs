@@ -316,6 +316,7 @@ impl OverlayRuntime {
     ///   re-allocated its coturn port (restart/churn) and we're dialing a stale
     ///   one. Re-request so we re-allocate + re-dial the peer's CURRENT address
     ///   ([`RELAY_REFRESH_COOLDOWN`] bounds two ends ping-ponging).
+    ///
     /// Run the fallback health pass and immediately repair a real removal.
     /// The establish walk supplies the existing DERP floor and coordinates
     /// better tiers; a healthy pass does not add any walk or retry work.

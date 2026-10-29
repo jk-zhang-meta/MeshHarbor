@@ -438,7 +438,7 @@ pub(crate) fn bsd_pin_holds(row: Option<&BsdTableRow>, uplink: &BsdUplink) -> bo
 
 /// FR-97 P0e (N12) — an uplink as the Linux and Windows pin code compares it:
 /// the interface (Linux `dev`, Windows ifIndex) and the next hop.
-#[cfg(any(target_os = "linux", target_os = "windows", test))]
+#[cfg(any(all(feature = "overlay-l3", any(target_os = "linux", target_os = "windows")), test))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct UplinkKey {
     pub(crate) interface: String,
@@ -454,7 +454,7 @@ pub(crate) struct UplinkKey {
 /// uplink to adopt, when it moved, and every pin the table does not show
 /// through the uplink in force: through the old one after a network change,
 /// or gone (an interface that went down takes its routes with it).
-#[cfg(any(target_os = "linux", target_os = "windows", test))]
+#[cfg(any(all(feature = "overlay-l3", any(target_os = "linux", target_os = "windows")), test))]
 pub(crate) fn stale_pins(
     pins: &[std::net::IpAddr],
     held: Option<&UplinkKey>,
@@ -476,7 +476,7 @@ pub(crate) fn stale_pins(
 /// FR-97 P0e (N12) — the gateway host routes in `ip -4|-6 route show`: the
 /// lines whose destination is a bare address (iproute2 prints a `/32` or a
 /// `/128` without its length) and that carry a `via` and a `dev`. Pure.
-#[cfg(any(target_os = "linux", test))]
+#[cfg(any(all(feature = "overlay-l3", target_os = "linux"), test))]
 pub(crate) fn parse_linux_host_routes(output: &str) -> Vec<(std::net::IpAddr, UplinkKey)> {
     output
         .lines()

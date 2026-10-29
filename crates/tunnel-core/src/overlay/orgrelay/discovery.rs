@@ -258,15 +258,14 @@ impl Discovery {
             return;
         };
         // Bound state without starving large netmaps: evict least recently requested.
-        if !self.pairs.contains_key(&id) && self.pairs.len() >= MAX_PAIRS {
-            if let Some(oldest) = self
+        if !self.pairs.contains_key(&id) && self.pairs.len() >= MAX_PAIRS
+            && let Some(oldest) = self
                 .pairs
                 .iter()
                 .min_by_key(|(id, p)| (p.asked, **id))
                 .map(|(id, _)| *id)
             {
                 self.pairs.remove(&oldest);
-            }
         }
         // No wrap means an ancient response can never collide with a new request.
         let Some(request_id) = self.serial.checked_add(1) else {
@@ -327,6 +326,8 @@ impl Discovery {
     ) -> usize {
         self.receive_page(peers, peer, request_id, candidates, ttl_secs, None, now)
     }
+    // Keep request identity, time and wire fields explicit at the validation seam.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn receive_wire_page(
         &mut self,
         peers: &HashMap<ObjectId, NetmapPeer>,
@@ -347,7 +348,7 @@ impl Discovery {
             Some(OrgRelayDiscoveryScanWire::Unavailable) => {
                 pair.pending = None;
                 pair.cached = None;
-                return 0; // Retry the same non-authorizing position later.
+                0 // Retry the same non-authorizing position later.
             }
             Some(OrgRelayDiscoveryScanWire::Stale) => {
                 pair.pending = None;
@@ -355,7 +356,7 @@ impl Discovery {
                 pair.scan = None;
                 pair.page_cursor = None;
                 pair.page_after = None;
-                return 0;
+                0
             }
             progress @ Some(OrgRelayDiscoveryScanWire::Progress { .. }) => {
                 if ttl_secs == 0 { return 0; }
@@ -393,6 +394,7 @@ impl Discovery {
             None => self.receive_page(peers, peer, request_id, candidates, ttl_secs, next_cursor, now),
         }
     }
+    #[allow(clippy::too_many_arguments)] // Existing scoped response fields, as above.
     pub(crate) fn receive_page(
         &mut self,
         peers: &HashMap<ObjectId, NetmapPeer>,

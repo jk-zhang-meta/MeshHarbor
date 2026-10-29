@@ -2626,6 +2626,7 @@ mod tests {
             dc: Arc<webrtc::data_channel::RTCDataChannel>,
             probe: Mutex<mpsc::Receiver<Bytes>>,
             registry: ReplyRegistry,
+            #[allow(clippy::type_complexity)] // Record the existing close callback fields verbatim.
             closed: Mutex<Vec<(ObjectId, u32, CloseReason, u64, u64)>>,
         }
         #[async_trait]

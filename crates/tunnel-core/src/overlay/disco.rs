@@ -506,6 +506,7 @@ impl Prober {
     }
 
     /// Record that the round actually went out to `dst`.
+    #[cfg(test)]
     pub(crate) fn sent(&mut self, peer: [u8; 32], dst: SocketAddr, nonce: [u8; 8]) {
         self.sent_at(peer, dst, nonce, std::time::Instant::now());
     }

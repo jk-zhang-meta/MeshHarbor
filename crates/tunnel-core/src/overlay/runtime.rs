@@ -2084,6 +2084,7 @@ impl OverlayRuntime {
     /// table it fills is read only by the LocalAPI and the summary log. That
     /// separation is deliberate: rc.346 coupled measurement to demotion in
     /// one release and took healthy carriers down with it.
+    #[allow(clippy::too_many_arguments)] // Existing owners stay separately borrowed for the probe round.
     async fn disco_round(
         &self,
         prober: &mut super::disco::Prober,
@@ -2231,6 +2232,7 @@ impl OverlayRuntime {
         back
     }
 
+    #[allow(clippy::too_many_arguments)] // Snapshot the existing runtime owners without a new wrapper.
     fn publish_view(
         &self,
         self_ip: &str,
@@ -10464,7 +10466,7 @@ mod org_fallback_tests {
 
     #[tokio::test]
     async fn org_fallback_runtime_fresh_hint_bootstraps_derp_without_replacing_it() {
-        let (id, installed, peers, discovery, mut relay, mut rx, now) = fixture().await;
+        let (id, installed, peers, _discovery, mut relay, mut rx, now) = fixture().await;
         let since = installed[&id].since;
         request_org_fallbacks(true, &installed, &peers, &mut relay, now).await;
         assert!(
@@ -10486,10 +10488,10 @@ mod org_fallback_tests {
     #[tokio::test]
     async fn org_fallback_runtime_requires_enabled_current_identity_capability_and_derp() {
         for gate in 0..8 {
-            let (id, mut installed, mut peers, mut discovery, mut relay, mut rx, now) =
+            let (id, mut installed, mut peers, _discovery, mut relay, mut rx, now) =
                 fixture().await;
             let mut enabled = true;
-            let mut at = now;
+            let at = now;
             match gate {
                 0 => enabled = false,
                 1 => installed.get_mut(&id).unwrap().is_direct = true,
@@ -10617,7 +10619,6 @@ mod org_upgrade_tests {
     }
 
 
-    use crate::transport::relay::UdpRelayConn;
     use base64::Engine;
     use crate::overlay::disco::derp_follow as proofwire;
     use std::sync::atomic::{AtomicBool, Ordering};
