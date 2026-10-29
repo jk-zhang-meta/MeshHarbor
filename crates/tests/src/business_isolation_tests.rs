@@ -1703,6 +1703,15 @@ async fn staged_graph_three_relay_zone_recheck_preserves_valid_and_revokes_chang
         ObjectId::parse_str(&l.cn_node).unwrap(), ObjectId::parse_str(&l.us_node).unwrap());
     let original = state.org_relay.active_session(&pair).unwrap();
     assert!(line_zones_fit_fixture(state, &original).await, "the original approved crossing remains valid");
+    // Loss of region evidence is not proof that the existing data path is invalid.
+    let gz_id = ObjectId::parse_str(&l.gz_agent).unwrap();
+    let gz_conn = roomler_ai_mod_network::org_relay::candidate_test_support::current_connection_id(state, gz_id).unwrap();
+    assert!(state.org_relay.unbind_live_conn(gz_id, &gz_conn));
+    recheck_zones_fixture(state, gz_id).await;
+    assert_eq!(state.org_relay.active_session(&pair).expect("unknown relay region must preserve a healthy formal session").generation, original.generation);
+    relay_request(&mut l.cn, &l.us_node).await;
+    assert!(recv_t(&mut l.cn, "rc:overlay.relay_session", Duration::from_millis(600)).await.is_none(), "unknown relay region must withhold a line re-push");
+    state.org_relay.bind_live_conn(gz_id, &gz_conn);
     let extra_id = ObjectId::parse_str(&extra_agent).unwrap();
     let mut valid = original.clone();
     valid.pair_key = "three-zone-valid".into();
@@ -1732,6 +1741,47 @@ async fn staged_graph_three_relay_zone_recheck_preserves_valid_and_revokes_chang
     assert!(state.org_relay.active_session("three-zone-valid").is_some());
     for key in ["three-zone-ordinary-changed", "three-zone-crossing-changed", "three-zone-unknown"] {
         assert!(state.org_relay.active_session(key).is_none(), "{key} must be revoked");
+    }
+}
+
+/// A concurrent zero-hit revocation still changes the eligibility epoch. It
+/// cannot hide an already-confirmed bad edge, or revoke its newer replacement.
+#[tokio::test]
+async fn staged_session_zone_epoch_change_revokes_invalid_snapshot_not_new_generation() {
+    use roomler_ai_mod_network::org_relay::{self, candidate_test_support as support};
+    let mut l = LineRig::up("iso-session-zone-epoch", true).await;
+    relay_request(&mut l.cn, &l.us_node).await;
+    let _ = l.expect_line().await;
+    let state = l.rig.app.state.network();
+    let pair = roomler_ai_mod_network::overlay::pair_key(
+        ObjectId::parse_str(&l.cn_node).unwrap(), ObjectId::parse_str(&l.us_node).unwrap());
+    let original = state.org_relay.active_session(&pair).unwrap();
+    let gz_id = ObjectId::parse_str(&l.gz_agent).unwrap();
+    for replace in [false, true] {
+        let mut invalid = original.clone();
+        invalid.pair_key = format!("session-zone-epoch-replacement-{replace}");
+        invalid.hops[0].requires_cross_border_approval = false;
+        assert!(support::insert_session_fixture(state, invalid.clone()));
+        let (reached, resume) = support::pause_session_zone_fixture(invalid.pair_key.clone());
+        let checking = state.clone();
+        let task = tokio::spawn(async move { support::recheck_zones_fixture(&checking, gz_id).await; });
+        tokio::time::timeout(Duration::from_secs(5), reached).await.expect("region decision pause").unwrap();
+        assert_eq!(org_relay::revoke_relay_agent(state, original.tenant_id, ObjectId::new(), "epoch-only").await, 0);
+        if replace {
+            assert!(support::remove_session_fixture(state, &invalid.pair_key));
+            let mut replacement = original.clone();
+            replacement.pair_key = invalid.pair_key.clone();
+            replacement.generation = invalid.generation + 1;
+            assert!(support::insert_session_fixture(state, replacement));
+        }
+        resume.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(5), task).await.expect("zone recheck finished").unwrap();
+        if replace {
+            assert_eq!(state.org_relay.active_session(&invalid.pair_key).expect("the same pair/VNI with a new generation must survive").generation, invalid.generation + 1);
+            assert!(support::remove_session_fixture(state, &invalid.pair_key));
+        } else {
+            assert!(state.org_relay.active_session(&invalid.pair_key).is_none(), "an epoch change must not hide a confirmed invalid region relationship");
+        }
     }
 }
 
@@ -1897,6 +1947,24 @@ async fn staged_graph_actual_three_relay_mint_audits_and_revokes_each_edge() {
             }
         }
     }).await.expect("actual reverse WG packet across three native relays");
+    let middle_conn = support::current_connection_id(network, middle_agent_id).unwrap();
+    assert!(network.org_relay.unbind_live_conn(middle_agent_id, &middle_conn));
+    relay_request(&mut l.cn, &l.us_node).await;
+    assert!(recv_t(&mut l.cn, "rc:overlay.relay_session", Duration::from_millis(700)).await.is_none(), "unknown middle relay must not receive a fresh re-push");
+    assert_eq!(network.org_relay.active_session(&pair).expect("unknown middle relay must not revoke the established path").generation, live.generation);
+    support::recheck_zones_fixture(network, middle_agent_id).await;
+    assert_eq!(network.org_relay.active_session(&pair).expect("unknown middle relay must also survive the active zone recheck").generation, live.generation);
+    let during_unknown = packet(ip_a, ip_b, b"healthy WireGuard path while middle region is unknown");
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            wg_a.send_ip_packet(&during_unknown).await;
+            if let Ok(Some(got)) = tokio::time::timeout(Duration::from_millis(150), received_b.recv()).await {
+                if got == during_unknown { break; }
+            }
+        }
+    }).await.expect("uncertain geography must not interrupt established encrypted data");
+    network.org_relay.bind_live_conn(middle_agent_id, &middle_conn);
+    line_join(&mut middle, 5, "223.6.6.7:41641", json!({ "relay_backbone_ready": true })).await;
     let crossing_reason = format!("cross_border_edge:{}", l.hk_agent);
     let audits = l.audit_reasons("mint").await;
     assert!(audits.iter().any(|(reason, node)| reason == &crossing_reason && node == &middle_node), "per-edge crossing audit missing: {audits:?}");

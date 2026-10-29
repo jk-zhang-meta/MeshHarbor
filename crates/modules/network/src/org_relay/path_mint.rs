@@ -484,6 +484,11 @@ pub(super) async fn reauthorize(
     if super::candidate_test_support::take_nhop_reauth_failure(&session.pair_key) {
         return Err(ReauthorizationError::Unavailable);
     }
+    match super::session_zone::check(state, session).await {
+        super::session_zone::Decision::Fits => {},
+        super::session_zone::Decision::Uncertain => return Err(ReauthorizationError::Unavailable),
+        super::session_zone::Decision::Invalid => return Err(ReauthorizationError::Denied),
+    }
     let fresh_a = state
         .overlay_nodes
         .base
@@ -571,16 +576,19 @@ pub(super) async fn reauthorize(
         }
     };
     let first =
-        member_zone(session.members[0].party.node_id).ok_or(ReauthorizationError::Denied)?;
-    let last = member_zone(session.members[1].party.node_id).ok_or(ReauthorizationError::Denied)?;
-    if relays[0].1.zone != Some(first) || relays[relays.len() - 1].1.zone != Some(last) {
+        member_zone(session.members[0].party.node_id).ok_or(ReauthorizationError::Unavailable)?;
+    let last = member_zone(session.members[1].party.node_id).ok_or(ReauthorizationError::Unavailable)?;
+    let (Some(first_relay), Some(last_relay)) = (relays[0].1.zone, relays[relays.len() - 1].1.zone) else {
+        return Err(ReauthorizationError::Unavailable);
+    };
+    if first_relay != first || last_relay != last {
         return Err(ReauthorizationError::Denied);
     }
     for (i, hop) in session.hops.iter().enumerate() {
         let (from_idx, from) = relays[i];
         let (to_idx, to) = relays[i + 1];
         let (Some(from_zone), Some(to_zone)) = (from.zone, to.zone) else {
-            return Err(ReauthorizationError::Denied);
+            return Err(ReauthorizationError::Unavailable);
         };
         let crossing = from_zone != to_zone;
         if crossing != hop.requires_cross_border_approval {
