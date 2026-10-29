@@ -4704,7 +4704,18 @@ async fn staged_graph_same_zone_actual_wg_and_bridge_revocation() {
     let revoke1 = recv_t(&mut relays[1], "rc:overlay.relay_bridge_revoke", wait).await.expect("second bridge revoke");
     assert!(recv_t(&mut a, "rc:overlay.relay_revoke", wait).await.is_some());
     assert!(recv_t(&mut b, "rc:overlay.relay_revoke", wait).await.is_some());
+    let bridge_id = ObjectId::parse_str(revoke0["trial_id"].as_str().unwrap()).unwrap();
+    let bridge_generation = revoke0["generation"].as_u64().unwrap();
+    let (bridge_retirement, bridge_sockets) = native[0]
+        .bridge_evidence(bridge_id, bridge_generation)
+        .expect("revocation names the running source bridge generation");
     native[0].serve(serde_json::from_value(revoke0).unwrap(), None);
+    // Revocation requests asynchronous cancellation in the production manager.
+    // Observe both bridge sockets close before testing post-retirement traffic.
+    native[0]
+        .assert_bridge_retired(bridge_id, bridge_retirement, bridge_sockets)
+        .await
+        .expect("revoked source bridge must unregister and close both sockets");
     while received_a.try_recv().is_ok() {} while received_b.try_recv().is_ok() {}
     let blocked_a = packet(ip_a, ip_b, b"revoked same zone bridge blocks forward");
     let blocked_b = packet(ip_b, ip_a, b"revoked same zone bridge blocks reverse");
