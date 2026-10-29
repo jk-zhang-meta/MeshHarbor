@@ -1166,6 +1166,7 @@ pub enum OverlayEvent {
         request_id: u64,
         candidates: Vec<roomler_ai_remote_control::signaling::OrgRelayCandidateWire>,
         next_cursor: Option<roomler_ai_remote_control::signaling::OrgRelayDiscoveryCursorWire>,
+        scan: Option<roomler_ai_remote_control::signaling::OrgRelayDiscoveryScanWire>,
         ttl_secs: u32,
     },
     /// R3/R4 — the embedder observed a LAN-address-set change on a
@@ -4897,9 +4898,9 @@ impl OverlayRuntime {
                         }
                         warn_if_slow("arm:org_relay_session", t_arm);
                     }
-                    Some(OverlayEvent::OrgRelayCandidates { peer_node_id, request_id, candidates, ttl_secs, next_cursor }) => {
+                    Some(OverlayEvent::OrgRelayCandidates { peer_node_id, request_id, candidates, ttl_secs, next_cursor, scan }) => {
                         if self.org_primary && super::direct::org_relay_enabled() && server_org_discovery {
-                            let count = org_discovery.receive_page(&current_peers, peer_node_id, request_id, candidates, ttl_secs, next_cursor, Instant::now());
+                            let count = org_discovery.receive_wire_page(&current_peers, peer_node_id, request_id, candidates, ttl_secs, next_cursor, scan, Instant::now());
                             debug!(target: "tunnel_core::overlay::runtime::org_discovery_metadata", peer = %peer_node_id, candidates = count, "overlay: org-relay discovery metadata received (not a session or path decision)");
                         } else {
                             org_discovery.invalidate();

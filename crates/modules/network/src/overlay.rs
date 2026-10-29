@@ -303,8 +303,9 @@ pub async fn relay_overlay_msg_from_node(
             peer_node_id,
             request_id,
             cursor,
+            scan,
         } => {
-            handle_org_relay_discover(state, ident, peer_node_id, request_id, cursor).await;
+            handle_org_relay_discover(state, ident, peer_node_id, request_id, cursor, scan).await;
             None
         }
         ClientMsg::OverlayWarmRelayRequest {} => {
@@ -1156,6 +1157,7 @@ async fn handle_org_relay_discover(
     peer_node_id: ObjectId,
     request_id: u64,
     cursor: Option<roomler_ai_remote_control::signaling::OrgRelayDiscoveryCursorWire>,
+    scan: Option<roomler_ai_remote_control::signaling::OrgRelayDiscoveryScanWire>,
 ) {
     let Some(requester) = current_node(state, ident).await else {
         return;
@@ -1200,7 +1202,7 @@ async fn handle_org_relay_discover(
             return;
         }
     }
-    crate::org_relay::discover(state, &requester, &peer, request_id, cursor).await;
+    crate::org_relay::discover(state, &requester, &peer, request_id, cursor, scan).await;
 }
 
 /// ORG-only recovery is deliberately separate from TURN allocation/churn.

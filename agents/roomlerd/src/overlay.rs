@@ -1150,12 +1150,14 @@ fn intercept_with_bridge_installer(
             candidates,
             ttl_secs,
             next_cursor,
+            scan,
         } => OverlayEvent::OrgRelayCandidates {
             peer_node_id,
             request_id,
             candidates,
             ttl_secs,
             next_cursor,
+            scan,
         },
         ServerMsg::OverlayRelaySession {
             vni,
@@ -1506,6 +1508,7 @@ mod org_relay_discovery_dispatch_tests {
             candidates: vec![],
             ttl_secs: 0,
             next_cursor: None,
+            scan: None,
         };
         assert!(intercept(&tx, msg(), false, "").is_none());
         assert!(rx.try_recv().is_err());

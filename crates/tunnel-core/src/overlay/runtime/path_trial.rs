@@ -1686,6 +1686,10 @@ pub mod test_support {
                 .request(true, true, &self.peers, &self.ctx.outbound, Instant::now())
                 .await;
         }
+        /// Drive the production limiter with an explicit monotonic test clock.
+        pub async fn request_discovery_at(&mut self, now: Instant) {
+            self.discovery.request(true, true, &self.peers, &self.ctx.outbound, now).await;
+        }
         pub fn receive_discovery(&mut self, msg: ServerMsg) -> usize {
             let ServerMsg::OverlayOrgRelayCandidates {
                 peer_node_id,
@@ -1693,17 +1697,19 @@ pub mod test_support {
                 candidates,
                 ttl_secs,
                 next_cursor,
+                scan,
             } = msg
             else {
                 panic!("expected actual server discovery metadata");
             };
-            self.discovery.receive_page(
+            self.discovery.receive_wire_page(
                 &self.peers,
                 peer_node_id,
                 request_id,
                 candidates,
                 ttl_secs,
                 next_cursor,
+                scan,
                 Instant::now(),
             )
         }
