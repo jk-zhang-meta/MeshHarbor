@@ -14,7 +14,7 @@ pub(crate) fn server_base(raw: &str) -> Result<String> {
             .parse::<std::net::IpAddr>()
             .is_ok_and(|ip| ip.is_loopback())
     });
-    if !matches!(url.scheme(), "https") && !(url.scheme() == "http" && loopback) {
+    if !(matches!(url.scheme(), "https") || url.scheme() == "http" && loopback) {
         bail!("Native authentication requires HTTPS (only literal loopback IP HTTP is allowed)");
     }
     if url.host_str().is_none()

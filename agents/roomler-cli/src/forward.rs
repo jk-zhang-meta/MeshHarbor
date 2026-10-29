@@ -625,7 +625,7 @@ pub async fn run_shared_ssh_transport(
             net_grant: None,
         },
         vec![TRANSPORT_WEBRTC_DC_V1.into()],
-        TRANSPORT_WEBRTC_DC_V1.into(),
+        TRANSPORT_WEBRTC_DC_V1,
         Arc::new(tunnel_core::forward::SessionThroughput::default()),
     )
     .await
