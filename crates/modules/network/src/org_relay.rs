@@ -74,6 +74,9 @@ mod path_search;
 // Construct directed edges from approved relay policies.
 #[allow(dead_code)]
 mod path_graph;
+// Resumable enumeration is staged until discovery carries its checkpoint.
+#[allow(dead_code)]
+mod path_discovery;
 // Build a live authorization snapshot for path selection.
 #[allow(dead_code)]
 mod path_candidate;
