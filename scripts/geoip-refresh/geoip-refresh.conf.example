@@ -1,0 +1,6 @@
+# Install root:root mode 0600. Strict KEY=value; no shell expressions.
+DATA_ROOT=/opt/meshharbor/geoip-refresh/data
+CONTAINER=meshharbor-test-app-1
+READY_URL=http://127.0.0.1:18081/health/ready
+FETCH_SCRIPT=/usr/local/libexec/meshharbor-fetch-geoip
+LOCK_FILE=/opt/meshharbor/.app-update.lock
