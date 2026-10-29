@@ -139,9 +139,8 @@ fn select_inner(
     let restrict_ends = prepared.restrict_ends || require_ends;
     let mut forward = Vec::with_capacity(prepared.graph.relays.len());
     let mut reverse = Vec::with_capacity(prepared.graph.relays.len());
-    let mut single_forward = Vec::with_capacity(prepared.graph.relays.len());
-    let mut single_reverse = Vec::with_capacity(prepared.graph.relays.len());
-    for (relay, eligible) in prepared.graph.relays.iter().zip(eligible) {
+    let mut best_single = None;
+    for (index, (relay, eligible)) in prepared.graph.relays.iter().zip(eligible).enumerate() {
         let plan = prepared
             .plans
             .get(&relay.node_id)
@@ -168,23 +167,18 @@ fn select_inner(
             now,
         );
         let load = state.org_relay.sessions_on_relay(relay.node_id);
-        // These candidates are comparison-only: with no backbone edges they
-        // can never introduce an otherwise ineligible relay into a long path.
-        single_forward.push(SearchRelay {
-            node_id: relay.node_id,
-            ingress: (!prepared.restrict_ends || relay.zone == prepared.requester_zone)
-                .then_some(a_probe),
-            exit: (!prepared.restrict_ends || relay.zone == prepared.peer_zone).then_some(b_probe),
-            load,
-        });
-        single_reverse.push(SearchRelay {
-            node_id: relay.node_id,
-            ingress: (!prepared.restrict_ends || relay.zone == prepared.peer_zone)
-                .then_some(b_probe),
-            exit: (!prepared.restrict_ends || relay.zone == prepared.requester_zone)
-                .then_some(a_probe),
-            load,
-        });
+        // Compare the established single-relay planner's actual rank. Its
+        // missing-RTT and probe-freshness semantics differ from path search.
+        // This candidate cannot introduce an ineligible relay into a long path.
+        if !prepared.restrict_ends
+            || (relay.zone == prepared.requester_zone && relay.zone == prepared.peer_zone)
+        {
+            let (class, rtt) = super::rank_key(state, a, b, relay.node_id, now);
+            let rank = (class, rtt, load);
+            if best_single.as_ref().is_none_or(|(_, best)| rank < *best) {
+                best_single = Some((index, rank));
+            }
+        }
         forward.push(SearchRelay {
             node_id: relay.node_id,
             ingress: (eligible && (!restrict_ends || relay.zone == prepared.requester_zone))
@@ -226,15 +220,28 @@ fn select_inner(
         .collect();
     let mut chosen = path_search::shortest_either_direction(&forward, &reverse, &edges)
         .map_err(|_| Deny::PolicyUnreadable)?;
-    if require_ends {
-        let single = path_search::shortest_either_direction(&single_forward, &single_reverse, &[])
-            .map_err(|_| Deny::PolicyUnreadable)?;
-        if let Some(single) = single
-            && chosen
-                .as_ref()
-                .is_none_or(|path| single.path.rank_key() <= path.path.rank_key())
-        {
-            chosen = Some(single);
+    if require_ends && let Some((index, (class, rtt, load))) = best_single {
+        // Unknown/down paths conservatively prefer the established one-relay
+        // fallback. Fully measured paths still compete on measured latency.
+        let single_wins = chosen.as_ref().is_none_or(|path| {
+            path.path.relays.len() >= 3
+                && (class < path.path.class
+                    || (class == path.path.class
+                        && (class != 0 || u128::from(rtt) <= path.path.rtt)))
+        });
+        if single_wins {
+            chosen = Some(OrientedPath {
+                flipped: false,
+                path: path_search::SearchPath {
+                    relays: vec![index],
+                    edges: Vec::new(),
+                    class,
+                    rtt: u128::from(rtt),
+                    load: load as u128,
+                    unknown_legs: 0,
+                    unreachable_legs: 0,
+                },
+            });
         }
     }
     if prepared.eligibility_epoch != state.org_relay.eligibility_generation() {

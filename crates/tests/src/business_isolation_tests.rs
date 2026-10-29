@@ -2626,15 +2626,17 @@ async fn staged_graph_off_warn_cross_zone_mint_rechecks_every_edge_and_audit() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn staged_graph_same_zone_filters_unusable_relays_before_mint_selection() {
     use roomler_ai_mod_network::org_relay::candidate_test_support as support;
-    for (scenario, isolation, fallback, best_single) in [
-        ("foreign", "off", false, false), ("foreign", "off", true, false),
-        ("foreign", "warn", false, false), ("foreign", "warn", true, false),
-        ("unknown", "off", false, false), ("implicit", "enforce", false, true),
-        ("implicit", "enforce", true, true), ("implicit", "off", true, true),
-        ("foreign", "off", false, true), ("foreign", "warn", true, true),
-        ("unknown", "off", false, true), ("unknown", "warn", true, true),
+    for (scenario, isolation, fallback, best_single, probe_case) in [
+        ("foreign", "off", false, false, "measured"), ("foreign", "off", true, false, "measured"),
+        ("foreign", "warn", false, false, "measured"), ("foreign", "warn", true, false, "measured"),
+        ("unknown", "off", false, false, "measured"), ("implicit", "enforce", false, true, "measured"),
+        ("implicit", "enforce", true, true, "measured"), ("implicit", "off", true, true, "measured"),
+        ("foreign", "off", false, true, "measured"), ("foreign", "warn", true, true, "measured"),
+        ("unknown", "off", false, true, "measured"), ("unknown", "warn", true, true, "measured"),
+        ("foreign", "off", false, true, "no-rtt"),
+        ("unknown", "warn", true, true, "old-endpoint"),
     ] {
-        let slug = format!("iso-filter-{scenario}-{isolation}-{}-{best_single}", if fallback { "fallback" } else { "normal" });
+        let slug = format!("iso-filter-{scenario}-{isolation}-{}-{best_single}-{probe_case}", if fallback { "fallback" } else { "normal" });
         let rig = Rig::up(&slug, isolation).await;
         let mut relays = Vec::new();
         let mut agents = Vec::new();
@@ -2683,12 +2685,14 @@ async fn staged_graph_same_zone_filters_unusable_relays_before_mint_selection() 
         let network = rig.app.state.network();
         let ids: Vec<_> = nodes.iter().map(|id| ObjectId::parse_str(id).unwrap()).collect();
         let bad_endpoint = if scenario == "implicit" { "223.6.6.9:3478" } else { "1.1.1.2:3478" };
+        let probe_endpoint = if probe_case == "old-endpoint" { "8.8.4.4:3478" } else { bad_endpoint };
+        let probe_rtt = if best_single && probe_case != "no-rtt" { Some(1) } else { None };
         assert!(support::record_member_probe_fixture(network, a_id, &[
             (ids[0], "223.6.6.6:3478".into(), true, Some(10)), (ids[1], "223.6.6.7:3478".into(), false, None),
-            (ids[2], "223.6.6.8:3478".into(), false, None), (ids[3], bad_endpoint.into(), best_single, best_single.then_some(1))]));
+            (ids[2], "223.6.6.8:3478".into(), false, None), (ids[3], probe_endpoint.into(), best_single, probe_rtt)]));
         assert!(support::record_member_probe_fixture(network, b_id, &[
             (ids[0], "223.6.6.6:3478".into(), false, None), (ids[1], "223.6.6.7:3478".into(), false, None),
-            (ids[2], "223.6.6.8:3478".into(), true, Some(10)), (ids[3], bad_endpoint.into(), best_single, best_single.then_some(1))]));
+            (ids[2], "223.6.6.8:3478".into(), true, Some(10)), (ids[3], probe_endpoint.into(), best_single, probe_rtt)]));
         let mut source_probes = vec![(ids[1], "10.68.0.2:3478".into(), true, Some(50))];
         if scenario != "implicit" { source_probes.push((ids[3], "10.68.0.4:3478".into(), true, Some(1))); }
         assert!(support::record_backbone_probe_fixture(network, ids[0], &source_probes));
