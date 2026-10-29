@@ -699,6 +699,9 @@ pub struct AgentResponse {
     /// most recent rc:agent.hello. Default empty for pre-2A.1 agents
     /// that haven't reconnected since the schema change.
     pub capabilities: roomler_ai_remote_control::models::AgentCaps,
+    /// Public SSH host identity registered by the device's authenticated hello.
+    /// Empty means unpublished; it grants no SSH access and is not a capability.
+    pub ssh_host_pubkey: String,
     /// Multi-region relay PoPs: the agent's nearest relay region (derived
     /// from its STUN probe reports). `None` = never probed / all timed out —
     /// the default region serves it.
@@ -1819,6 +1822,7 @@ fn to_agent_response(
         routes: a.routes,
         advertised_routes: a.advertised_routes,
         capabilities: a.capabilities,
+        ssh_host_pubkey: a.ssh_host_pubkey,
         relay_home: a.relay_home,
         exec_policy: configured_only(a.exec_policy),
         exec_anchor: a.exec_anchor.map(|x| ExecAnchorView {
