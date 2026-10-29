@@ -108,6 +108,9 @@ async fn observe_business_connection(
 ///
 /// Lifecycle: verify + look up agent, expect `rc:agent.hello`, register with
 /// the Hub, then relay `rc:*` traffic in both directions until the socket closes.
+// These independently authenticated claims and connection observations are
+// supplied by the existing WS route; retain that interface for this lint fix.
+#[allow(clippy::too_many_arguments)]
 pub async fn handle_agent_socket(
     state: FleetState,
     socket: WebSocket,
@@ -1494,98 +1497,6 @@ fn mesh_link_doc(l: &roomler_ai_remote_control::signaling::PeerLink) -> bson::Do
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn authority_requires_actual_presented_generation_even_when_legacy_control_accepts() {
-        let owner = ObjectId::new();
-        assert!(authority_identity_current(7, 7, owner, owner));
-        assert!(!authority_identity_current(6, 7, owner, owner));
-        assert!(!authority_identity_current(8, 7, owner, owner));
-    }
-
-    #[test]
-    fn authority_does_not_relabel_an_old_owner_after_reassignment() {
-        assert!(!authority_identity_current(
-            7,
-            7,
-            ObjectId::new(),
-            ObjectId::new(),
-        ));
-    }
-
-    /// Every numeric counter the agent reports must survive into the
-    /// persisted document. This test exists because they did not: the
-    /// hand-built doc dropped four wave-3 fields for several releases while
-    /// the agents dutifully sent them, and nothing anywhere failed — the
-    /// dashboards just showed an empty series, which reads exactly like a
-    /// fleet that hasn't upgraded yet.
-    #[test]
-    fn sys_doc_carries_every_counter() {
-        let s = AgentSysStats {
-            rss_mb: 87,
-            cpu_pct: 1.5,
-            net_rx_bytes: 1_000,
-            net_tx_bytes: 2_000,
-            direct: 3,
-            relay: 1,
-            derp: 1,
-            peer_rtt_ms: Some(42),
-            overlay_rx_bytes: 4_096,
-            overlay_tx_bytes: 8_192,
-            tunnel_rx_bytes: 65_536,
-            tunnel_tx_bytes: 1_024,
-            links: Vec::new(),
-        };
-        let d = machine_sys_doc(&s, Some(0));
-
-        // The four that were silently dropped.
-        assert_eq!(d.get_i64("overlay_rx_bytes").unwrap(), 4_096);
-        assert_eq!(d.get_i64("overlay_tx_bytes").unwrap(), 8_192);
-        assert_eq!(d.get_i64("tunnel_rx_bytes").unwrap(), 65_536);
-        assert_eq!(d.get_i64("tunnel_tx_bytes").unwrap(), 1_024);
-
-        // …and the ones that already worked, so a refactor can't trade one
-        // for another.
-        assert_eq!(d.get_i64("net_rx_bytes").unwrap(), 1_000);
-        assert_eq!(d.get_i32("rss_mb").unwrap(), 87);
-        assert_eq!(
-            d.get_document("transports")
-                .unwrap()
-                .get_i32("direct")
-                .unwrap(),
-            3
-        );
-        // A measured zero must persist as 0, never as absent — "can't
-        // hole-punch" and "didn't report" are different facts.
-        assert_eq!(d.get_i64("srflx_count").unwrap(), 0);
-    }
-
-    /// Every `PeerLink` field must survive into the persisted edge — same
-    /// silent-drop trap as the sys doc, same guard discipline.
-    #[test]
-    fn mesh_link_doc_carries_every_field() {
-        let l = roomler_ai_remote_control::signaling::PeerLink {
-            node: "6a1f00000000000000000001".into(),
-            carrier: "relay".into(),
-            rtt_ms: Some(87),
-            stalled: true,
-            tx: 512,
-            rx: 0,
-            relay: Some("turn/udp".into()),
-        };
-        let d = mesh_link_doc(&l);
-        assert_eq!(d.get_str("node").unwrap(), "6a1f00000000000000000001");
-        assert_eq!(d.get_str("carrier").unwrap(), "relay");
-        assert_eq!(d.get_i64("rtt_ms").unwrap(), 87);
-        assert!(d.get_bool("stalled").unwrap());
-        assert_eq!(d.get_i64("tx").unwrap(), 512);
-        assert_eq!(d.get_i64("rx").unwrap(), 0);
-        assert_eq!(d.get_str("relay").unwrap(), "turn/udp");
-    }
-}
 
 /// The `/ws?role=agent` upgrade (FR-69 P7b, from the host): verify the agent
 /// JWT, the affinity key and the row, say why on refusal, then run the loop.
@@ -1778,4 +1689,97 @@ pub async fn ws_upgrade_agent(
             )
             .await;
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn authority_requires_actual_presented_generation_even_when_legacy_control_accepts() {
+        let owner = ObjectId::new();
+        assert!(authority_identity_current(7, 7, owner, owner));
+        assert!(!authority_identity_current(6, 7, owner, owner));
+        assert!(!authority_identity_current(8, 7, owner, owner));
+    }
+
+    #[test]
+    fn authority_does_not_relabel_an_old_owner_after_reassignment() {
+        assert!(!authority_identity_current(
+            7,
+            7,
+            ObjectId::new(),
+            ObjectId::new(),
+        ));
+    }
+
+    /// Every numeric counter the agent reports must survive into the
+    /// persisted document. This test exists because they did not: the
+    /// hand-built doc dropped four wave-3 fields for several releases while
+    /// the agents dutifully sent them, and nothing anywhere failed — the
+    /// dashboards just showed an empty series, which reads exactly like a
+    /// fleet that hasn't upgraded yet.
+    #[test]
+    fn sys_doc_carries_every_counter() {
+        let s = AgentSysStats {
+            rss_mb: 87,
+            cpu_pct: 1.5,
+            net_rx_bytes: 1_000,
+            net_tx_bytes: 2_000,
+            direct: 3,
+            relay: 1,
+            derp: 1,
+            peer_rtt_ms: Some(42),
+            overlay_rx_bytes: 4_096,
+            overlay_tx_bytes: 8_192,
+            tunnel_rx_bytes: 65_536,
+            tunnel_tx_bytes: 1_024,
+            links: Vec::new(),
+        };
+        let d = machine_sys_doc(&s, Some(0));
+
+        // The four that were silently dropped.
+        assert_eq!(d.get_i64("overlay_rx_bytes").unwrap(), 4_096);
+        assert_eq!(d.get_i64("overlay_tx_bytes").unwrap(), 8_192);
+        assert_eq!(d.get_i64("tunnel_rx_bytes").unwrap(), 65_536);
+        assert_eq!(d.get_i64("tunnel_tx_bytes").unwrap(), 1_024);
+
+        // …and the ones that already worked, so a refactor can't trade one
+        // for another.
+        assert_eq!(d.get_i64("net_rx_bytes").unwrap(), 1_000);
+        assert_eq!(d.get_i32("rss_mb").unwrap(), 87);
+        assert_eq!(
+            d.get_document("transports")
+                .unwrap()
+                .get_i32("direct")
+                .unwrap(),
+            3
+        );
+        // A measured zero must persist as 0, never as absent — "can't
+        // hole-punch" and "didn't report" are different facts.
+        assert_eq!(d.get_i64("srflx_count").unwrap(), 0);
+    }
+
+    /// Every `PeerLink` field must survive into the persisted edge — same
+    /// silent-drop trap as the sys doc, same guard discipline.
+    #[test]
+    fn mesh_link_doc_carries_every_field() {
+        let l = roomler_ai_remote_control::signaling::PeerLink {
+            node: "6a1f00000000000000000001".into(),
+            carrier: "relay".into(),
+            rtt_ms: Some(87),
+            stalled: true,
+            tx: 512,
+            rx: 0,
+            relay: Some("turn/udp".into()),
+        };
+        let d = mesh_link_doc(&l);
+        assert_eq!(d.get_str("node").unwrap(), "6a1f00000000000000000001");
+        assert_eq!(d.get_str("carrier").unwrap(), "relay");
+        assert_eq!(d.get_i64("rtt_ms").unwrap(), 87);
+        assert!(d.get_bool("stalled").unwrap());
+        assert_eq!(d.get_i64("tx").unwrap(), 512);
+        assert_eq!(d.get_i64("rx").unwrap(), 0);
+        assert_eq!(d.get_str("relay").unwrap(), "turn/udp");
+    }
 }

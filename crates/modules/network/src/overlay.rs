@@ -1099,12 +1099,11 @@ pub fn revoke_agent_admission(state: &NetworkState, agent_id: ObjectId) {
                 }
             }
         }
-        if let Ok(bytes) = BASE64.decode(&node.wg_public_key) {
-            if let Ok(key) = <[u8; 32]>::try_from(bytes.as_slice()) {
-                state.derp_registry.remove(&(node.network_id, key));
-                if let Some(cancel) = state.derp_cancels.get(&(node.network_id, key)) {
-                    cancel.notify_one();
-                }
+        if let Ok(bytes) = BASE64.decode(&node.wg_public_key)
+            && let Ok(key) = <[u8; 32]>::try_from(bytes.as_slice()) {
+            state.derp_registry.remove(&(node.network_id, key));
+            if let Some(cancel) = state.derp_cancels.get(&(node.network_id, key)) {
+                cancel.notify_one();
             }
         }
     }

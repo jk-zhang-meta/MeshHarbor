@@ -129,13 +129,6 @@ pub async fn installer_proxy(
     crate::release_delivery::stream_asset(release, asset, content_type_for(&asset.name)).await
 }
 
-#[cfg(test)]
-fn sanitise_header_value(s: &str) -> String {
-    s.chars()
-        .filter(|c| !matches!(c, '\r' | '\n' | '"'))
-        .collect()
-}
-
 fn content_type_for(filename: &str) -> &'static str {
     let lower = filename.to_ascii_lowercase();
     if lower.ends_with(".tar.gz") || lower.ends_with(".tgz") {

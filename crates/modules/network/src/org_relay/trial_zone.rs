@@ -56,12 +56,10 @@ impl TrialZoneSnapshot {
         {
             return false;
         }
-        if let Some(member_zones) = self.member_zones {
-            if member_zones[0] != self.relay_zones[0]
-                || member_zones[1] != self.relay_zones[self.relay_zones.len() - 1]
-            {
-                return false;
-            }
+        if let Some(member_zones) = self.member_zones
+            && (member_zones[0] != self.relay_zones[0]
+                || member_zones[1] != self.relay_zones[self.relay_zones.len() - 1]) {
+            return false;
         }
         let mut node_ids = HashSet::new();
         let mut agent_ids = HashSet::new();
@@ -414,10 +412,9 @@ pub(in crate::org_relay) async fn recheck_trial_zone_slice(
                 None => None,
             }
         };
-        if let Some(event) = event {
-            if !matches!(tokio::time::timeout(Duration::from_secs(3), state.peer_relay_audit.record(event)).await, Ok(Ok(_))) {
-                warn!("org-relay: trial zone retry revoke audit failed or timed out");
-            }
+        if let Some(event) = event
+            && !matches!(tokio::time::timeout(Duration::from_secs(3), state.peer_relay_audit.record(event)).await, Ok(Ok(_))) {
+            warn!("org-relay: trial zone retry revoke audit failed or timed out");
         }
         return TrialZoneSlice::Complete;
     }
