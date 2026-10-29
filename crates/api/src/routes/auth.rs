@@ -356,7 +356,7 @@ pub(super) async fn password_identity(state: &Core, body: &LoginRequest) -> Resu
     let hash = user
         .as_ref()
         .and_then(|u| u.password_hash.as_deref())
-        .unwrap_or_else(|| dummy_password_hash(&state));
+        .unwrap_or_else(|| dummy_password_hash(state));
 
     // Verified even when the account is absent, so the Argon2 cost is paid on
     // every path. `unwrap_or(false)`, not `?`: a stored hash that fails to
