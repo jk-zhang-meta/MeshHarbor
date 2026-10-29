@@ -77,6 +77,7 @@ mod path_graph;
 // Resumable enumeration is staged until discovery carries its checkpoint.
 #[allow(dead_code)]
 mod path_discovery;
+mod path_discovery_page;
 // Build a live authorization snapshot for path selection.
 #[allow(dead_code)]
 mod path_candidate;
@@ -2812,6 +2813,7 @@ pub async fn discover(
     peer: &OverlayNode,
     request_id: u64,
     cursor: Option<OrgRelayDiscoveryCursorWire>,
+    scan: Option<roomler_ai_remote_control::signaling::OrgRelayDiscoveryScanWire>,
 ) {
     let Some(peer_id) = peer.id else { return };
     let mut candidates = Vec::new();
@@ -2821,6 +2823,15 @@ pub async fn discover(
         .unwrap_or_default();
     let traversal =
         extras.supports_org_relay_multi_candidate && extras.supports_org_relay_discovery_cursor;
+    use roomler_ai_remote_control::signaling::OrgRelayDiscoveryScanWire as Scan;
+    if traversal && let Some(Scan::Progress { scan_next: true, checkpoint, after }) = scan.as_ref() {
+        let (candidates, progress) = path_discovery_page::page(state, requester, peer, checkpoint.as_ref(), after.as_ref()).await;
+        send_to_node(state, requester, ServerMsg::OverlayOrgRelayCandidates {
+            peer_node_id: peer_id, request_id, candidates, ttl_secs: 30, next_cursor: None,
+            scan: Some(progress),
+        }).await;
+        return;
+    }
     let mut next_cursor = None;
     let mut backbone_cidr = None;
     let enabled = matches!(
@@ -3038,7 +3049,16 @@ pub async fn discover(
                 .map(discovery_cursor);
         }
     }
-    let ttl_secs = if candidates.is_empty() { 0 } else { 30 };
+    let scan_caps = extras.supports_path_trial_v1 && extras.supports_path_backbone_v1
+        && state.org_relay.join_extras(peer_id).supports_path_trial_v1
+        && state.org_relay.join_extras(peer_id).supports_path_backbone_v1;
+    let scan = if traversal && scan_caps && peer_relay_mode(state, requester.tenant_id).await == PeerRelayMode::On {
+        Some(match scan {
+            Some(Scan::Progress { checkpoint, after, .. }) => Scan::Progress { scan_next: true, checkpoint, after },
+            _ => Scan::Progress { scan_next: true, checkpoint: None, after: None },
+        })
+    } else { None };
+    let ttl_secs = if candidates.is_empty() && scan.is_none() { 0 } else { 30 };
     send_to_node(
         state,
         requester,
@@ -3048,6 +3068,7 @@ pub async fn discover(
             candidates,
             ttl_secs,
             next_cursor,
+            scan,
         },
     )
     .await;

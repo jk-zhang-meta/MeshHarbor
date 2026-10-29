@@ -2496,6 +2496,8 @@ pub enum ClientMsg {
         request_id: u64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cursor: Option<OrgRelayDiscoveryCursorWire>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scan: Option<OrgRelayDiscoveryScanWire>,
     },
 
     /// Node asks for short-lived coturn credentials to stand up a relay
@@ -4374,6 +4376,8 @@ pub enum ServerMsg {
         ttl_secs: u32,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         next_cursor: Option<OrgRelayDiscoveryCursorWire>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scan: Option<OrgRelayDiscoveryScanWire>,
     },
 
     /// FR-19 — a minted org-relay session, pushed to each MEMBER of the pair.
@@ -5423,6 +5427,40 @@ impl OrgRelayCandidateWire {
 pub struct OrgRelayDiscoveryCursorWire {
     pub path: RelayPathWire,
     pub requester_at_exit: bool,
+}
+
+/// Non-authorizing scan progress. Prefixes are never trial candidates. A
+/// legacy page alternates with each bounded graph scan, including empty ones.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum OrgRelayDiscoveryScanWire {
+    Progress {
+        scan_next: bool,
+        checkpoint: Option<RelayPathWire>,
+        after: Option<OrgRelayDiscoveryCursorWire>,
+    },
+    Unavailable,
+    Stale,
+}
+
+#[cfg(test)]
+mod discovery_scan_wire_tests {
+    use super::*;
+    #[test]
+    fn scan_prefix_round_trips_separately_from_candidate_position() {
+        let ids: Vec<_> = (0..257).map(|_| ObjectId::new()).collect();
+        let progress = OrgRelayDiscoveryScanWire::Progress {
+            scan_next: true,
+            checkpoint: Some(RelayPathWire::new(ids).unwrap()),
+            after: None,
+        };
+        let value = serde_json::to_value(&progress).unwrap();
+        assert_eq!(value["state"], "progress");
+        assert_eq!(value["checkpoint"]["relay_node_ids"].as_array().unwrap().len(),257);
+        assert_eq!(serde_json::from_value::<OrgRelayDiscoveryScanWire>(value).unwrap(),progress);
+        assert_ne!(serde_json::to_value(OrgRelayDiscoveryScanWire::Unavailable).unwrap(),
+            serde_json::to_value(OrgRelayDiscoveryScanWire::Stale).unwrap());
+    }
 }
 
 /// A same-tenant, policy-approved two-leg bridge. Never emitted to a legacy
@@ -12387,6 +12425,7 @@ mod tests {
             peer_node_id: peer,
             request_id: 7,
             cursor: None,
+            scan: None,
         };
         let value = serde_json::to_value(&request).unwrap();
         assert_eq!(value["t"], "rc:overlay.org_relay_discover");
@@ -12404,6 +12443,7 @@ mod tests {
             }],
             ttl_secs: 30,
             next_cursor: None,
+            scan: None,
         };
         let value = serde_json::to_value(&response).unwrap();
         assert_eq!(value["t"], "rc:overlay.org_relay_candidates");

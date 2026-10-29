@@ -3403,6 +3403,90 @@ async fn staged_trial_live_relay_zone_recheck_retires_two_relays_moving_together
     assert_eq!(support::trial_slots_on_relay(network, ObjectId::parse_str(exit_node).unwrap()), 0);
 }
 
+/// The authenticated production discovery endpoint feeds the real Discovery
+/// and Engine request path; an incorrect middle hop must not consume its Start.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn staged_graph_multihop_discovery_actual_client_request_and_middle_fence() {
+    use roomler_ai_remote_control::signaling::{ClientMsg, NetmapPeer, ServerMsg};
+    use roomlerd::relay_server::backbone_test_support::{PathTrialTestHarness, WgKeypair};
+    use std::sync::Arc;
+    let mut l = LineRig::up("iso-discovery-nhop-client", true).await;
+    let caps = json!({"supports_backbone_only_v1":true,"supports_path_backbone_v1":true,
+        "supports_path_trial_v1":true,"supports_org_relay_multi_candidate":true,"supports_org_relay_discovery_cursor":true});
+    line_join(&mut l.cn, 1, "223.5.5.5:41641", caps.clone()).await;
+    line_join(&mut l.us, 2, "8.8.8.8:41641", caps).await;
+    let mut middles = Vec::new(); let mut agents = Vec::new(); let mut nodes = Vec::new();
+    for index in 0..2 {
+        let name = format!("iso-discovery-nhop-middle-{index}");
+        let (agent, token) = enroll(&l.rig.app, &l.rig.seeded, &name).await;
+        let mut ws = connect_from(&l.rig.app, &token, &["relay-server"], Some(CN_R)).await;
+        assert_observed(&l.rig.app, &agent, Some(CN_R)).await;
+        line_join(&mut ws, 8+index, &format!("223.6.6.{}:41641",8+index), json!({"relay_backbone_ready":true})).await;
+        assert_eq!(approve(&l.rig.app, &l.rig.seeded, &agent, true).await,200);
+        let node = l.rig.node(&name).await; grant_relay(&l.rig.app,&l.rig.seeded,&node).await;
+        middles.push(ws); agents.push(agent); nodes.push(node);
+    }
+    let policy = |source: &str| format!("/api/tenant/{}/agent/{source}/peer-relay-policy",l.rig.seeded.tenant_id);
+    let (status, body) = put(&l.rig.app,&policy(&l.gz_agent),&l.rig.seeded.admin.access_token,
+        json!({"serve":true,"approved_backbone_edges":[
+            {"relay_agent_id":l.hk_agent,"endpoint":"10.79.0.2:3478","cross_border":true},
+            {"relay_agent_id":agents[0],"endpoint":"10.79.0.3:3478","cross_border":false},
+            {"relay_agent_id":agents[1],"endpoint":"10.79.0.4:3478","cross_border":false}]})).await;
+    assert_eq!(status,200,"{body}");
+    for index in 0..2 {
+        let mut edges = vec![json!({"relay_agent_id":l.hk_agent,"endpoint":"10.79.0.2:3478","cross_border":true})];
+        if index == 0 { edges.push(json!({"relay_agent_id":agents[1],"endpoint":"10.79.0.4:3478","cross_border":false})); }
+        let (status,body)=put(&l.rig.app,&policy(&agents[index]),&l.rig.seeded.admin.access_token,json!({"serve":true,"approved_backbone_edges":edges})).await;
+        assert_eq!(status,200,"{body}");
+    }
+    let id = ObjectId::parse_str(&l.us_node).unwrap();
+    let row = l.rig.app.state.network().overlay_nodes.base.find_by_id(id).await.unwrap();
+    let peer: NetmapPeer = serde_json::from_value(json!({"node_id":l.us_node,"overlay_ip":row.overlay_ip,
+        "wg_public_key":row.wg_public_key,"reachable":true,"supports_org_relay":true})).unwrap();
+    let socket = Arc::new(tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap());
+    let dst = socket.local_addr().unwrap();
+    let (mut client,mut out)=PathTrialTestHarness::new(WgKeypair::generate(),peer,socket,dst,true).await;
+    let now = std::time::Instant::now(); let wait=Duration::from_secs(8);
+    let mut received_paths = Vec::new();
+    for page in 0..2 {
+        client.request_discovery_at(now+Duration::from_secs(page*61)).await;
+        let request=out.recv().await.expect("production Discovery request");
+        assert!(matches!(request,ClientMsg::OverlayOrgRelayDiscover{..}));
+        l.cn.send(Message::Text(serde_json::to_string(&request).unwrap().into())).await.unwrap();
+        let response=recv_t(&mut l.cn,"rc:overlay.org_relay_candidates",wait).await.expect("actual discovery reply");
+        if page == 1 {
+            received_paths=response["candidates"].as_array().unwrap().iter().map(|c|c["path"]["relay_node_ids"].clone()).collect();
+            assert!(received_paths.contains(&json!([l.gz_node,nodes[0],l.hk_node])),"first same-end alternate missing: {response}");
+            assert!(received_paths.contains(&json!([l.gz_node,nodes[1],l.hk_node])),"second same-end alternate missing: {response}");
+            assert!(received_paths.contains(&json!([l.gz_node,nodes[0],nodes[1],l.hk_node])),"four-relay candidate missing: {response}");
+        }
+        client.receive_discovery(serde_json::from_value(response).unwrap());
+    }
+    client.tick().await;
+    let request=tokio::time::timeout(wait,out.recv()).await.expect("actual Engine request deadline").expect("actual Engine trial request");
+    let ClientMsg::OverlayPathTrialRequest{ref path,..}=request else {panic!("actual Engine did not request a trial")};
+    assert!(path.relay_node_ids().len()>=3);
+    assert!(received_paths.contains(&serde_json::to_value(path).unwrap()["relay_node_ids"]));
+    l.cn.send(Message::Text(serde_json::to_string(&request).unwrap().into())).await.unwrap();
+    let start=recv_t(&mut l.cn,"rc:overlay.path_trial_start",wait).await.expect("real unified engine Start");
+    let mut wrong=start.clone(); wrong["path"]["relay_node_ids"][1]=json!(ObjectId::new().to_hex());
+    client.control(serde_json::from_value::<ServerMsg>(wrong).unwrap()).await;
+    assert_eq!(client.trial_count(),0,"wrong middle node consumed pending request");
+    assert!(client.diagnostic_counters().1,"correct pending request was discarded");
+    let abort=out.recv().await.expect("wrong full path rejected");
+    assert!(matches!(abort,ClientMsg::OverlayPathTrialAbort{..}));
+    l.cn.send(Message::Text(serde_json::to_string(&abort).unwrap().into())).await.unwrap();
+    recv_t(&mut l.cn,"rc:overlay.path_trial_abort",wait).await.expect("trial abort acknowledged");
+    // Remove one actual edge and rescan from scratch. No stale path may survive.
+    let (status,body)=put(&l.rig.app,&policy(&agents[0]),&l.rig.seeded.admin.access_token,
+        json!({"serve":true,"approved_backbone_edges":[]})).await;
+    assert_eq!(status,200,"{body}");
+    l.cn.send(Message::Text(json!({"t":"rc:overlay.org_relay_discover","peer_node_id":l.us_node,"request_id":99,
+        "scan":{"state":"progress","scan_next":true,"checkpoint":null,"after":null}}).to_string().into())).await.unwrap();
+    let refreshed=recv_t(&mut l.cn,"rc:overlay.org_relay_candidates",wait).await.expect("fresh scan after edge removal");
+    assert!(refreshed["candidates"].as_array().unwrap().iter().all(|c|!c["path"]["relay_node_ids"].as_array().unwrap().contains(&json!(nodes[0]))),"withdrawn middle path leaked: {refreshed}");
+}
+
 /// An explicit future trial path is independently reauthorized from live
 /// members, relay gates and directed current policy; it sends no grants.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

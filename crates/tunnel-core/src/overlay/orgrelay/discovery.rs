@@ -4,7 +4,7 @@
 use crate::overlay::runtime::ControlTx;
 use bson::oid::ObjectId;
 use roomler_ai_remote_control::signaling::{
-    ClientMsg, NetmapPeer, OrgRelayCandidateWire, OrgRelayDiscoveryCursorWire, RelayPathWire,
+    ClientMsg, NetmapPeer, OrgRelayCandidateWire, OrgRelayDiscoveryCursorWire, OrgRelayDiscoveryScanWire, RelayPathWire,
 };
 use std::{
     collections::HashMap,
@@ -48,6 +48,7 @@ struct Pair {
     failed: Vec<(PathKey, Instant)>,
     page_cursor: Option<OrgRelayDiscoveryCursorWire>,
     page_after: Option<OrgRelayDiscoveryCursorWire>,
+    scan: Option<OrgRelayDiscoveryScanWire>,
 }
 fn eligible(p: &NetmapPeer) -> bool {
     p.reachable && p.supports_org_relay && crate::overlay::decode_public(&p.wg_public_key).is_some()
@@ -136,6 +137,15 @@ impl Discovery {
         if pair.cached.as_ref().is_some_and(|(until, cs)| {
             now < *until && cs.iter().any(|c| path_key(c).as_ref() == Some(&key))
         }) {
+            if key.0.relay_node_ids().len() >= 3
+                && let Some(OrgRelayDiscoveryScanWire::Progress { checkpoint, after, .. }) = pair.scan.as_mut()
+            {
+                // Advance graph coverage by the actual queued trial, not by
+                // the last displayed hint. Clear a later budget prefix so it
+                // cannot skip still-unattempted candidates from this page.
+                *checkpoint = None;
+                *after = Some(path_position(&key));
+            }
             pair.attempted = Some(key);
         }
     }
@@ -177,6 +187,7 @@ impl Discovery {
             p.cached = None;
             p.page_cursor = None;
             p.page_after = None;
+            p.scan = None;
         }
     }
     /// Every delta invalidates authorization hints and pending correlations.
@@ -268,10 +279,11 @@ impl Discovery {
             .pairs
             .get(&id)
             .filter(|p| p.identity == identity)
-            .map(|p| (p.attempted.clone(), p.failed.clone(), p.page_cursor.clone()))
+            .map(|p| (p.attempted.clone(), p.failed.clone(), p.page_cursor.clone(), p.scan.clone()))
             .unwrap_or_default();
         let page_after = history.2.as_ref().map(|cursor| {
-            history.0.as_ref().map(path_position).unwrap_or_else(|| cursor.clone())
+            history.0.as_ref().filter(|key| key.0.relay_node_ids().len() < 3)
+                .map(path_position).unwrap_or_else(|| cursor.clone())
         });
         self.pairs.insert(
             id,
@@ -284,6 +296,7 @@ impl Discovery {
                 failed: history.1,
                 page_cursor: history.2,
                 page_after: page_after.clone(),
+                scan: history.3.clone(),
             },
         );
         let sent = tokio::time::timeout(
@@ -292,6 +305,7 @@ impl Discovery {
                 peer_node_id: id,
                 request_id,
                 cursor: page_after,
+                scan: history.3,
             }),
         )
         .await;
@@ -312,6 +326,72 @@ impl Discovery {
         now: Instant,
     ) -> usize {
         self.receive_page(peers, peer, request_id, candidates, ttl_secs, None, now)
+    }
+    pub(crate) fn receive_wire_page(
+        &mut self,
+        peers: &HashMap<ObjectId, NetmapPeer>,
+        peer: ObjectId,
+        request_id: u64,
+        candidates: Vec<OrgRelayCandidateWire>,
+        ttl_secs: u32,
+        next_cursor: Option<OrgRelayDiscoveryCursorWire>,
+        scan: Option<OrgRelayDiscoveryScanWire>,
+        now: Instant,
+    ) -> usize {
+        self.prune(peers, now);
+        let Some(pair) = self.pairs.get_mut(&peer) else { return 0 };
+        if !pair.pending.is_some_and(|(id, deadline)| id == request_id && now < deadline) {
+            return 0;
+        }
+        match scan {
+            Some(OrgRelayDiscoveryScanWire::Unavailable) => {
+                pair.pending = None;
+                pair.cached = None;
+                return 0; // Retry the same non-authorizing position later.
+            }
+            Some(OrgRelayDiscoveryScanWire::Stale) => {
+                pair.pending = None;
+                pair.cached = None;
+                pair.scan = None;
+                pair.page_cursor = None;
+                pair.page_after = None;
+                return 0;
+            }
+            progress @ Some(OrgRelayDiscoveryScanWire::Progress { .. }) => {
+                if ttl_secs == 0 { return 0; }
+                let path_page = matches!(pair.scan,
+                    Some(OrgRelayDiscoveryScanWire::Progress { scan_next: true, .. }));
+                let legacy_cursor = pair.page_cursor.clone();
+                let requested_progress = pair.scan.clone();
+                if candidates.is_empty() {
+                    pair.pending = None;
+                    pair.cached = None;
+                    pair.scan = progress;
+                    if !path_page { pair.page_cursor = next_cursor; }
+                    return 0; // Budget progress is meaningful even with no candidate.
+                }
+                let count = self.receive_page(peers, peer, request_id, candidates, ttl_secs, next_cursor, now);
+                let pair = self.pairs.get_mut(&peer).expect("pruned identity remains current");
+                if count > 0 {
+                    pair.scan = progress;
+                    if path_page {
+                        pair.page_cursor = legacy_cursor;
+                        pair.page_after = None;
+                        if let Some(OrgRelayDiscoveryScanWire::Progress { checkpoint: requested_checkpoint, after: requested_after, .. }) = requested_progress
+                            && let Some(OrgRelayDiscoveryScanWire::Progress { checkpoint, after, .. }) = pair.scan.as_mut()
+                        {
+                            // Revisit unattempted hints. An empty scan may
+                            // advance CPU progress, but a displayed page alone
+                            // is not evidence that a trial was ever queued.
+                            *checkpoint = requested_checkpoint;
+                            *after = requested_after;
+                        }
+                    }
+                }
+                count
+            }
+            None => self.receive_page(peers, peer, request_id, candidates, ttl_secs, next_cursor, now),
+        }
     }
     pub(crate) fn receive_page(
         &mut self,
@@ -386,6 +466,53 @@ impl Discovery {
 mod tests {
     use super::*;
     use crate::overlay::WgKeypair;
+
+    #[tokio::test]
+    async fn empty_scan_progress_survives_unavailability_but_stale_resets_it() {
+        let member = peer();
+        let id = member.node_id;
+        let peers = HashMap::from([(id, member)]);
+        let now = Instant::now();
+        let mut discovery = Discovery::default();
+        let (_, request_id) = asked(&mut discovery, &peers, now).await;
+        let progress = OrgRelayDiscoveryScanWire::Progress {
+            scan_next: true,
+            checkpoint: Some(RelayPathWire::new(vec![ObjectId::new(), ObjectId::new()]).unwrap()),
+            after: None,
+        };
+        assert_eq!(discovery.receive_wire_page(&peers, id, request_id, vec![], 30, None, Some(progress.clone()), now), 0);
+        assert_eq!(discovery.pairs[&id].scan, Some(progress.clone()));
+        assert!(discovery.candidate_for(&peers, id, now).is_none(), "prefix must never become a candidate");
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        let later = now + Duration::from_secs(61);
+        discovery.request(true, true, &peers, &ControlTx::new(tx), later).await;
+        let ClientMsg::OverlayOrgRelayDiscover { request_id, scan, .. } = rx.recv().await.unwrap() else { panic!() };
+        assert_eq!(scan, Some(progress.clone()));
+        discovery.receive_wire_page(&peers, id, request_id, vec![], 30, None, Some(OrgRelayDiscoveryScanWire::Unavailable), later);
+        assert_eq!(discovery.pairs[&id].scan, Some(progress));
+        let (_, next) = asked(&mut discovery, &peers, later + Duration::from_secs(61)).await;
+        discovery.receive_wire_page(&peers, id, next, vec![], 30, None, Some(OrgRelayDiscoveryScanWire::Stale), later + Duration::from_secs(61));
+        assert!(discovery.pairs[&id].scan.is_none());
+    }
+
+    #[tokio::test]
+    async fn graph_scan_position_follows_actual_attempt_not_last_displayed_path() {
+        let member = peer(); let id=member.node_id; let peers=HashMap::from([(id,member)]);
+        let now=Instant::now(); let mut d=Discovery::default();
+        let (_,request)=asked(&mut d,&peers,now).await;
+        let start=OrgRelayDiscoveryScanWire::Progress {scan_next:true,checkpoint:None,after:None};
+        d.receive_wire_page(&peers,id,request,vec![],30,None,Some(start),now);
+        let at=now+Duration::from_secs(61); let (_,request)=asked(&mut d,&peers,at).await;
+        let first=OrgRelayCandidateWire {path:RelayPathWire::new(vec![ObjectId::new(),ObjectId::new(),ObjectId::new()]).unwrap(),requester_at_exit:false,endpoints:vec!["8.8.8.8:3478".into()]};
+        let second=OrgRelayCandidateWire {path:RelayPathWire::new(vec![ObjectId::new(),ObjectId::new(),ObjectId::new()]).unwrap(),..first.clone()};
+        let returned=OrgRelayDiscoveryScanWire::Progress {scan_next:false,checkpoint:Some(RelayPathWire::new(vec![ObjectId::new()]).unwrap()),after:Some(second.cursor())};
+        assert_eq!(d.receive_wire_page(&peers,id,request,vec![first.clone(),second],30,None,Some(returned),at),2);
+        assert!(matches!(&d.pairs[&id].scan,Some(OrgRelayDiscoveryScanWire::Progress {checkpoint:None,after:None,..})),"displayed paths advanced coverage without an actual request");
+        d.note_attempt(&peers,id,&first,at);
+        let (_,next)=asked(&mut d,&peers,at+Duration::from_secs(61)).await;
+        assert!(next>request);
+        assert!(matches!(&d.pairs[&id].scan,Some(OrgRelayDiscoveryScanWire::Progress {checkpoint:None,after:Some(cursor),..}) if *cursor==first.cursor()),"last display/budget checkpoint skipped unattempted paths");
+    }
 
     #[test]
     fn complete_paths_and_directions_have_distinct_client_identities_and_cursors() {
