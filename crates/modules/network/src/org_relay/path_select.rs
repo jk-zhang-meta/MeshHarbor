@@ -37,6 +37,17 @@ pub(super) fn select_for_mint(
     select_inner(state, prepared, true)
 }
 
+/// Validate edge indexes before looking up probe provenance. The search
+/// rejects invalid graphs too, but it runs after these lookups.
+fn checked_edge_endpoints<'a>(
+    graph: &'a super::path_graph::EdgeGraph,
+    edge: &super::path_graph::GraphEdge,
+) -> Result<(&'a super::path_graph::EligibleRelay, &'a super::path_graph::EligibleRelay), Deny> {
+    let from = graph.relays.get(edge.from).ok_or(Deny::PolicyUnreadable)?;
+    let to = graph.relays.get(edge.to).ok_or(Deny::PolicyUnreadable)?;
+    Ok((from, to))
+}
+
 fn select_inner(
     state: &NetworkState,
     prepared: PreparedGraph,
@@ -147,28 +158,52 @@ fn select_inner(
         .graph
         .edges
         .iter()
-        .map(|edge| SearchEdge {
-            from: edge.from,
-            to: edge.to,
-            verdict: super::scoped_probe_verdict(
-                &state.org_relay.backbone_probes,
-                prepared.graph.relays[edge.from].node_id,
-                prepared.graph.relays[edge.to].node_id,
-                std::slice::from_ref(&edge.endpoint),
-                cutoff(
-                    prepared.graph.relays[edge.from].node_id,
-                    prepared.graph.relays[edge.from].agent_id,
-                    prepared.graph.relays[edge.to].node_id,
-                    prepared.graph.relays[edge.to].agent_id,
+        .map(|edge| {
+            let (from, to) = checked_edge_endpoints(&prepared.graph, edge)?;
+            Ok(SearchEdge {
+                from: edge.from,
+                to: edge.to,
+                verdict: super::scoped_probe_verdict(
+                    &state.org_relay.backbone_probes,
+                    from.node_id,
+                    to.node_id,
+                    std::slice::from_ref(&edge.endpoint),
+                    cutoff(from.node_id, from.agent_id, to.node_id, to.agent_id),
+                    now,
                 ),
-                now,
-            ),
+            })
         })
-        .collect();
+        .collect::<Result<Vec<_>, Deny>>()?;
     let chosen = path_search::shortest_either_direction(&forward, &reverse, &edges)
         .map_err(|_| Deny::PolicyUnreadable)?;
     if prepared.eligibility_epoch != state.org_relay.eligibility_generation() {
         return Err(Deny::PolicyUnreadable);
     }
     Ok(chosen.map(|path| SelectedPath { prepared, path }))
+}
+
+#[cfg(test)]
+mod checked_edge_tests {
+    use super::*;
+    use crate::org_relay::path_graph::{EdgeGraph, EligibleRelay, GraphEdge};
+    use bson::oid::ObjectId;
+
+    #[test]
+    fn malformed_edge_indexes_return_error_and_valid_edges_resolve() {
+        let node_id = ObjectId::new();
+        let graph = EdgeGraph {
+            relays: vec![EligibleRelay {
+                node_id, agent_id: ObjectId::new(), zone: None, bridge_ready: false,
+                implicit: false, approved_edges: Vec::new(),
+            }],
+            edges: Vec::new(),
+        };
+        let edge = |from, to| GraphEdge { from, to, endpoint: "10.0.0.1:3478".into(), cross_border: false };
+        let (from, to) = checked_edge_endpoints(&graph, &edge(0, 0)).expect("valid indexes");
+        assert_eq!(from.node_id, node_id);
+        assert_eq!(to.node_id, node_id);
+        assert!(matches!(checked_edge_endpoints(&graph, &edge(1, 0)), Err(Deny::PolicyUnreadable)));
+        assert!(matches!(checked_edge_endpoints(&graph, &edge(0, 1)), Err(Deny::PolicyUnreadable)));
+        assert!(matches!(checked_edge_endpoints(&graph, &edge(usize::MAX, usize::MAX)), Err(Deny::PolicyUnreadable)));
+    }
 }

@@ -652,6 +652,79 @@ pub async fn current_server_agents(
     Ok(out)
 }
 
+/// Target-scoped observations for admitting a *new* trial. None of these
+/// values authenticates the current socket or fences a subsequent policy
+/// change: only a shared authority revision can make them durable evidence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrialServerEvidence {
+    ObservedServer,
+    ObservedClient,
+    ObservedInactive,
+    MissingApproval,
+    ApprovalDisabled,
+    Unknown,
+}
+
+/// Unlike `current_server_agents`, an unreadable owner for the target cannot
+/// be silently omitted from a server list. Other tenants/devices do not block.
+pub async fn trial_server_evidence(
+    core: &Core,
+    tenant_id: ObjectId,
+    agent_id: ObjectId,
+) -> TrialServerEvidence {
+    use TrialServerEvidence as E;
+    let owner = match current_owner(core) {
+        Ok(Some(owner)) => owner,
+        Ok(None) => return E::ApprovalDisabled,
+        Err(_) => return E::Unknown,
+    };
+    let key = format!("agent:{tenant_id}:{agent_id}");
+    let approval = match core.db.collection::<RoleApproval>(ROLE_APPROVALS_COLLECTION)
+        .find_one(doc! { "_id": key }).await {
+        Ok(Some(approval)) => approval,
+        Ok(None) => return E::MissingApproval,
+        Err(_) => return E::Unknown,
+    };
+    if approval.identity.kind != DeviceKind::Agent
+        || approval.identity.tenant_id != tenant_id
+        || approval.identity.device_id != agent_id
+    {
+        return E::Unknown;
+    }
+    // Match the existing server-list short circuit: approvals that cannot be
+    // current Server approvals take the ordinary zone/ACL path, not a new
+    // blanket denial. These are observations, not socket-role proof.
+    if approval.revoked || approval.role == DeviceUseRole::Unknown || approval.approved_by != owner {
+        return E::ObservedInactive;
+    }
+    if approval.role == DeviceUseRole::Client {
+        return E::ObservedClient;
+    }
+    let agent = match core.db.collection::<Agent>(Agent::COLLECTION)
+        .find_one(doc! { "_id": agent_id, "tenant_id": tenant_id, "deleted_at": bson::Bson::Null })
+        .await {
+        Ok(Some(agent)) => agent,
+        Ok(None) => return E::ObservedInactive,
+        Err(_) => return E::Unknown,
+    };
+    let device = match AuthenticatedDevice::from_agent(&agent) {
+        Ok(device) => device,
+        Err(_) => return E::ObservedInactive,
+    };
+    if effective_role(Some(&approval), &device, Some(owner), DateTime::now()) != DeviceUseRole::Server
+        || matches!(agent.status, AgentStatus::Quarantined)
+    {
+        return E::ObservedInactive;
+    }
+    match crate::admission::authorize_user_id(core, agent.owner_user_id, None).await {
+        Ok(()) => E::ObservedServer,
+        // The legacy role list excludes these confirmed admission outcomes.
+        Err(ApiError::NotFound(_) | ApiError::Forbidden(_) | ApiError::Unauthorized(_)) => E::ObservedInactive,
+        // Includes storage, deserialization and timeout; not non-server proof.
+        Err(_) => E::Unknown,
+    }
+}
+
 /// Private operator diagnostics. The caller must enforce the central-owner gate
 /// before serializing this view. This does not mint or return business grants.
 pub async fn get_device_authority(

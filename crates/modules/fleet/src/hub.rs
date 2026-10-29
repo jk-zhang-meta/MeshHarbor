@@ -1059,26 +1059,23 @@ impl Hub {
     /// the displacing connection's Online was a live status-clobber
     /// race (the same race rc.53 fixed for the registry entry itself).
     pub fn unregister_agent(&self, agent_id: ObjectId, tx: Option<&ClientTx>) -> bool {
-        if let Some(expected_tx) = tx {
-            // Identity-gated removal. Read the current entry's tx
-            // under the DashMap lock and compare; if it doesn't match
-            // ours, a newer connection has already taken over this
-            // slot — leave it alone.
-            let still_ours = self
-                .inner
-                .agents
-                .get(&agent_id)
-                .map(|a| ptr_eq(&a.tx, expected_tx))
-                .unwrap_or(false);
-            if !still_ours {
-                info!(
-                    "agent {} unregister skipped (tx no longer matches; newer connection holds the slot)",
-                    agent_id
-                );
-                return false;
-            }
+        // Keep the identity comparison and removal under the same DashMap
+        // shard lock: a replacement must not slip between them.
+        let removed = match tx {
+            Some(expected_tx) => self.inner.agents.remove_if(&agent_id, |_, agent| {
+                let matches = ptr_eq(&agent.tx, expected_tx);
+                #[cfg(test)]
+                if matches { tests::pause_agent_remove_if_armed(agent_id); }
+                matches
+            }).is_some(),
+            None => self.inner.agents.remove(&agent_id).is_some(),
+        };
+        if !removed && tx.is_some() {
+            info!(
+                "agent {} unregister skipped (tx no longer matches; newer connection holds the slot)",
+                agent_id
+            );
         }
-        let removed = self.inner.agents.remove(&agent_id).is_some();
         if removed {
             info!("agent {} offline", agent_id);
             self.end_agent_sessions(agent_id);
@@ -6966,6 +6963,54 @@ mod tests {
             );
     }
 
+    // Test-only pause inside the actual DashMap conditional-removal closure.
+    // A fresh ObjectId scopes the hook to this test's own registry entry.
+    type RemovePause = (ObjectId, std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>);
+    fn remove_pause() -> &'static std::sync::Mutex<Option<RemovePause>> {
+        static PAUSE: std::sync::OnceLock<std::sync::Mutex<Option<RemovePause>>> = std::sync::OnceLock::new();
+        PAUSE.get_or_init(|| std::sync::Mutex::new(None))
+    }
+    pub(super) fn pause_agent_remove_if_armed(agent: ObjectId) {
+        let pause = {
+            let mut slot = remove_pause().lock().unwrap();
+            if slot.as_ref().is_some_and(|entry| entry.0 == agent) { slot.take() } else { None }
+        };
+        if let Some((_, reached, resume)) = pause {
+            reached.send(()).unwrap();
+            resume.recv_timeout(Duration::from_secs(5)).expect("test must resume conditional remove");
+        }
+    }
+
+    // Draft: requires the normal fleet test fixture. Never run in this task.
+    #[tokio::test]
+    async fn unregister_compare_and_remove_blocks_replacement_in_the_same_shard() {
+        use std::{sync::mpsc, thread};
+        let hub = test_hub().await;
+        let (agent, tenant, owner) = (ObjectId::new(), ObjectId::new(), ObjectId::new());
+        let (old, _cancel, _rx) = hub.register_agent(agent, tenant, owner, OsKind::Linux, 3, false, false);
+        let (reached_tx, reached_rx) = mpsc::channel();
+        let (resume_tx, resume_rx) = mpsc::channel();
+        *remove_pause().lock().unwrap() = Some((agent, reached_tx, resume_rx));
+        let old_hub = hub.clone();
+        let old_thread = thread::spawn(move || old_hub.unregister_agent(agent, Some(&old)));
+        reached_rx.recv_timeout(Duration::from_secs(2)).expect("remove predicate reached");
+        // Unlike a fixed sleep, this directly observes that the predicate is
+        // inside the map's write lock, before the removal has completed.
+        assert!(matches!(hub.inner.agents.try_get_mut(&agent), dashmap::try_result::TryResult::Locked));
+        let (started_tx, started_rx) = mpsc::channel();
+        let new_hub = hub.clone();
+        let new_thread = thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            new_hub.register_agent(agent, tenant, owner, OsKind::Linux, 3, false, false)
+        });
+        started_rx.recv_timeout(Duration::from_secs(2)).expect("replacement thread started");
+        resume_tx.send(()).unwrap();
+        assert!(old_thread.join().unwrap());
+        let (new, _cancel, _rx) = new_thread.join().unwrap();
+        let current = hub.agent_tx(agent).expect("replacement remains registered");
+        assert!(ptr_eq(&current, &new));
+    }
+
     #[tokio::test]
     async fn unregister_agent_with_stale_tx_is_noop() {
         // rc.53 race fix: the displaced `handle_agent_socket`
@@ -6986,7 +7031,7 @@ mod tests {
             false,
             false,
         );
-        let (_tx2, _cancel2, _rx2) = hub.register_agent(
+        let (tx2, _cancel2, _rx2) = hub.register_agent(
             agent_id,
             ObjectId::new(),
             ObjectId::new(),
@@ -6998,7 +7043,8 @@ mod tests {
 
         // tx1 is now stale (tx2 holds the slot). Stale-tx unregister
         // must NOT evict tx2's entry.
-        hub.unregister_agent(agent_id, Some(&tx1));
+        assert!(!hub.unregister_agent(agent_id, Some(&tx1)));
+        assert!(ptr_eq(&hub.agent_tx(agent_id).unwrap(), &tx2));
         assert!(
             hub.is_agent_online(agent_id),
             "stale-tx unregister evicted the NEW connection — rc.53 race regression"
@@ -7022,7 +7068,8 @@ mod tests {
         );
         assert!(hub.is_agent_online(agent_id));
 
-        hub.unregister_agent(agent_id, None);
+        assert!(hub.unregister_agent(agent_id, None));
+        assert!(!hub.unregister_agent(agent_id, None));
         assert!(
             !hub.is_agent_online(agent_id),
             "None-tx unregister must always remove (admin-kick path)"
@@ -7045,11 +7092,24 @@ mod tests {
         );
         assert!(hub.is_agent_online(agent_id));
 
-        hub.unregister_agent(agent_id, Some(&tx));
+        assert!(hub.unregister_agent(agent_id, Some(&tx)));
+        assert!(!hub.unregister_agent(agent_id, Some(&tx)));
         assert!(
             !hub.is_agent_online(agent_id),
             "matching-tx unregister must remove the entry"
         );
+    }
+
+    #[tokio::test]
+    async fn unregister_agent_accepts_same_channel_after_receiver_closed() {
+        let hub = test_hub().await;
+        let agent_id = ObjectId::new();
+        let (tx, _cancel, rx) = hub.register_agent(
+            agent_id, ObjectId::new(), ObjectId::new(), OsKind::Linux, 3, false, false,
+        );
+        drop(rx);
+        assert!(hub.unregister_agent(agent_id, Some(&tx)));
+        assert!(!hub.unregister_agent(agent_id, Some(&tx)));
     }
 
     // ─── #2267: a removal's kick tells the device ────────────────────

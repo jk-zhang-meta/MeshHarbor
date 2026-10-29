@@ -418,6 +418,44 @@ fn trial_matches_plan(trial: &Trial, plan: &path_trial_plan::TrialPathPlan, requ
     true
 }
 
+/// Admission-only evidence: inconclusive data never becomes a server-link
+/// authorization. This does not classify/revoke established sessions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TrialPairEvidence { Allowed, Denied, Unknown }
+
+async fn trial_pair_evidence(
+    state: &NetworkState, requester: &OverlayNode, peer: &OverlayNode,
+) -> TrialPairEvidence {
+    use crate::business_isolation::{self as iso, Mode};
+    use roomler_core::business_authority::{trial_server_evidence, TrialServerEvidence as E};
+    if iso::mode(state) != Mode::Enforce { return TrialPairEvidence::Allowed; }
+    let (NodeRef::Agent { agent_id: a }, NodeRef::Agent { agent_id: b }) =
+        (&requester.node_ref, &peer.node_ref) else { return TrialPairEvidence::Allowed };
+    let facts = tokio::time::timeout(Duration::from_secs(3), async {
+        let a_role = trial_server_evidence(&state.core, requester.tenant_id, *a).await;
+        let b_role = trial_server_evidence(&state.core, requester.tenant_id, *b).await;
+        if a_role == E::Unknown || b_role == E::Unknown {
+            return TrialPairEvidence::Unknown;
+        }
+        if a_role != E::ObservedServer || b_role != E::ObservedServer {
+            // Legacy treatment only: inactive/missing/client observations
+            // cannot prove the role of the current live connection.
+            return TrialPairEvidence::Allowed;
+        }
+        let network = match state.overlay_networks.find_for_tenant(requester.tenant_id).await {
+            Ok(Some(network)) => network,
+            _ => return TrialPairEvidence::Unknown,
+        };
+        let pair = roomler_ai_remote_control::models::ServerLink::ordered(*a, *b);
+        if network.server_links.iter().any(|link| link.enabled && (link.a, link.b) == pair) {
+            TrialPairEvidence::Allowed
+        } else {
+            TrialPairEvidence::Denied
+        }
+    }).await;
+    facts.unwrap_or(TrialPairEvidence::Unknown)
+}
+
 pub async fn request(
     state: &NetworkState,
     ident: NodeIdentity,
@@ -433,6 +471,9 @@ pub async fn request(
     if req_id == peer_id || peer.tenant_id != requester.tenant_id || peer.deleted_at.is_some() { return; }
     if peer_relay_mode(state, requester.tenant_id).await != PeerRelayMode::On { return; }
     if !state.org_relay.join_extras(req_id).supports_path_trial_v1 || !state.org_relay.join_extras(peer_id).supports_path_trial_v1 { return; }
+    // Read exact target evidence before any new candidate is created. This is
+    // not a distributed authorization fence and does not affect fallback.
+    if trial_pair_evidence(state, &requester, &peer).await != TrialPairEvidence::Allowed { return; }
     let nodes = path.relay_node_ids();
     if nodes.len() == 1 && requester_at_exit { return; }
     let pair = pair_key(req_id, peer_id);
@@ -459,11 +500,26 @@ pub async fn request(
         let routes = peer.effective_routes();
         if acl.enforcing() && !evaluate_overlay(&acl.policies, &source,
             OverlayPeerRef { node_id: peer_id, overlay_ip: &peer.overlay_ip, approved_routes: &routes }).visible { return; }
-        let Ok(plans) = plan_mint_candidates_reusing(state, &requester, &peer, reuse.map(|(_, session)| session), ZoneScope::Pair).await else { return };
+        let mut trial_diagnostic = TrialUnknownZoneDiagnostics::default();
+        let Ok(plans) = plan_mint_candidates_with_trial_diagnostics(
+            state,
+            &requester,
+            &peer,
+            reuse.map(|(_, session)| session),
+            ZoneScope::Pair,
+            Some(&mut trial_diagnostic),
+        )
+        .await
+        else {
+            return;
+        };
         let Some(plan) = plans.into_iter().find(|p| p.relay.id == Some(nodes[0])) else { return };
         epoch = auth_epoch;
         single_plan = Some(plan);
     }
+    // Candidate preparation awaits DB work; re-read the target roles/link.
+    // A policy mutation can still race this read and the later claim/delivery.
+    if trial_pair_evidence(state, &requester, &peer).await != TrialPairEvidence::Allowed { return; }
     let tenant = requester.tenant_id;
     let (trial_id, cancel_rx) = {
         let mut entries = state.org_relay.trials.entries.lock().unwrap_or_else(|e| e.into_inner());

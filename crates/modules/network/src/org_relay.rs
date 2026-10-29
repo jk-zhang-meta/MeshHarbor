@@ -1699,12 +1699,47 @@ pub(crate) async fn next_relay(
         .id
 }
 
+// A per-preparation cap, shared across Side scopes. This is not a
+// cross-request rate limiter and does not contain network addresses.
+#[derive(Default)]
+struct TrialUnknownZoneDiagnostics {
+    logged: std::collections::HashSet<ObjectId>,
+    suppressed: bool,
+}
+impl TrialUnknownZoneDiagnostics {
+    fn filtered(&mut self, agent_id: ObjectId) {
+        if self.logged.contains(&agent_id) {
+            return;
+        }
+        if self.logged.len() < 16 {
+            self.logged.insert(agent_id);
+            warn!(relay_agent_id = %agent_id,
+                reason = "zone_evidence_unavailable",
+                "path trial candidate filtered: relay zone is unavailable");
+        } else if !self.suppressed {
+            self.suppressed = true;
+            warn!("path trial: additional unknown-zone candidate diagnostics suppressed");
+        }
+    }
+}
+
 async fn plan_mint_candidates_reusing(
     state: &NetworkState,
     requester: &OverlayNode,
     peer: &OverlayNode,
     reuse: Option<&OrgRelaySession>,
     scope: ZoneScope,
+) -> Result<Vec<Plan>, PeerRelayDenyReason> {
+    plan_mint_candidates_with_trial_diagnostics(state, requester, peer, reuse, scope, None).await
+}
+
+async fn plan_mint_candidates_with_trial_diagnostics(
+    state: &NetworkState,
+    requester: &OverlayNode,
+    peer: &OverlayNode,
+    reuse: Option<&OrgRelaySession>,
+    scope: ZoneScope,
+    mut diagnostic: Option<&mut TrialUnknownZoneDiagnostics>,
 ) -> Result<Vec<Plan>, PeerRelayDenyReason> {
     use PeerRelayDenyReason as D;
     let tenant_id = requester.tenant_id;
@@ -1875,6 +1910,16 @@ async fn plan_mint_candidates_reusing(
         }
         if iso_mode != Mode::Off && !relay_zone.is_some_and(|z| iso_zones.contains(&z)) {
             if iso_mode == Mode::Enforce {
+                if granted
+                    && relay_zone.is_none()
+                    && node.tenant_id == tenant_id
+                    && node.network_id == requester.network_id
+                    && matches!(&node.node_ref, NodeRef::Agent { agent_id: owner } if *owner == agent_id)
+                {
+                    if let Some(diagnostic) = diagnostic.as_deref_mut() {
+                        diagnostic.filtered(agent_id);
+                    }
+                }
                 zone_denied += 1;
                 continue;
             }

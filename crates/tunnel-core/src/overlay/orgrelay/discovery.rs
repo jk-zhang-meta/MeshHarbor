@@ -333,31 +333,43 @@ impl Discovery {
         if request_id != expected || now >= deadline {
             return 0;
         }
+        if ttl_secs == 0 || candidates.is_empty() {
+            // Existing wire contract: empty or TTL zero clears the result.
+            p.pending = None;
+            p.cached = None;
+            p.page_cursor = None;
+            return 0;
+        }
+        // Validate cheap count and endpoint bounds before scanning any path.
+        // A malformed nonempty page leaves the outstanding request intact.
+        if candidates.len() > 3 || candidates.iter().any(|c| {
+            (c.path.relay_node_ids().len() == 1 && c.requester_at_exit)
+                || c.endpoints.is_empty()
+                || c.endpoints.len() > 4
+                || c.endpoints.iter().any(|e| {
+                    if e.len() > 80 { return true; }
+                    match e.parse::<std::net::SocketAddr>() {
+                        Ok(addr) => addr.port() == 0,
+                        Err(_) => true,
+                    }
+                })
+        }) {
+            return 0;
+        }
+        // At most three candidates remain. Compare borrowed identities instead
+        // of cloning entire paths through `cursor()`. There is no hop cap here.
+        if next_cursor.as_ref().is_some_and(|next| {
+            !candidates.iter().any(|c| c.requester_at_exit == next.requester_at_exit
+                && c.path.relay_node_ids() == next.path.relay_node_ids())
+        }) || candidates.iter().enumerate().any(|(index, c)| {
+            candidates[..index].iter().any(|prior| prior.requester_at_exit == c.requester_at_exit
+                && prior.path.relay_node_ids() == c.path.relay_node_ids())
+        }) {
+            return 0;
+        }
         p.pending = None;
         p.cached = None;
         p.page_cursor = None;
-        if ttl_secs == 0 || candidates.is_empty() {
-            return 0;
-        }
-        // Reject oversize/malformed payloads rather than silently treating partial data as trusted.
-        if next_cursor.as_ref().is_some_and(|next| {
-            !candidates.iter().any(|c| c.cursor() == *next)
-        }) || candidates.len() > 3
-            || candidates.iter().enumerate().any(|(index, c)| {
-                (c.path.relay_node_ids().len() == 1 && c.requester_at_exit)
-                    || candidates[..index].iter().any(|p| p.cursor() == c.cursor())
-                    || c.endpoints.is_empty()
-                    || c.endpoints.len() > 4
-                    || c.endpoints.iter().any(|e| {
-                        e.len() > 80
-                            || e.parse::<std::net::SocketAddr>().is_err()
-                            || e.parse::<std::net::SocketAddr>()
-                                .is_ok_and(|s| s.port() == 0)
-                    })
-            })
-        {
-            return 0;
-        }
         let expires = (now + Duration::from_secs(u64::from(ttl_secs)).min(MAX_TTL)).min(deadline);
         let count = candidates.len();
         p.cached = Some((expires, candidates));
@@ -737,7 +749,45 @@ mod cursor_tests {
     use super::*;
     use crate::overlay::WgKeypair;
     #[tokio::test]
-    async fn discovery_cursor_survives_ttl_but_not_identity_reset_or_bad_reply() {
+    async fn oversized_malformed_page_preserves_pending_for_valid_reply() {
+        let peer: NetmapPeer = serde_json::from_value(serde_json::json!({
+            "node_id":ObjectId::new().to_hex(), "overlay_ip":"100.64.0.2",
+            "wg_public_key":WgKeypair::generate().public_base64(), "reachable":true,
+            "supports_org_relay":true
+        })).unwrap();
+        let id = peer.node_id;
+        let peers = HashMap::from([(id, peer)]);
+        let mut d = Discovery::default();
+        let now = Instant::now();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        d.request(true, true, &peers, &ControlTx::new(tx), now).await;
+        let ClientMsg::OverlayOrgRelayDiscover { request_id, .. } = rx.recv().await.unwrap() else { panic!() };
+        let long = OrgRelayCandidateWire {
+            path: RelayPathWire::new((0..4096).map(|_| ObjectId::new()).collect()).unwrap(),
+            requester_at_exit: false, endpoints: vec!["8.8.8.8:3478".into()],
+        };
+        let bad_cursor = OrgRelayDiscoveryCursorWire {
+            path: RelayPathWire::new(vec![ObjectId::new()]).unwrap(), requester_at_exit: false,
+        };
+        assert_eq!(d.receive_page(&peers, id, request_id, vec![long.clone(); 4], 30,
+            Some(bad_cursor), now), 0);
+        assert!(d.pairs[&id].pending.is_some());
+        let mut bad_endpoint = long.clone();
+        bad_endpoint.endpoints[0] = "x".repeat(81);
+        assert_eq!(d.receive_page(&peers, id, request_id, vec![bad_endpoint], 30,
+            Some(long.cursor()), now), 0);
+        assert!(d.pairs[&id].pending.is_some());
+        assert_eq!(d.receive_page(&peers, id, request_id, vec![long.clone(), long.clone()], 30,
+            Some(long.cursor()), now), 0);
+        assert!(d.pairs[&id].pending.is_some());
+        let valid_cursor = long.cursor();
+        assert_eq!(d.receive_page(&peers, id, request_id, vec![long], 30,
+            Some(valid_cursor.clone()), now), 1);
+        assert!(d.pairs[&id].pending.is_none());
+        assert_eq!(d.pairs[&id].page_cursor, Some(valid_cursor));
+    }
+    #[tokio::test]
+    async fn discovery_cursor_survives_bad_reply_but_not_identity_reset() {
         let peer:NetmapPeer=serde_json::from_value(serde_json::json!({"node_id":ObjectId::new().to_hex(),"overlay_ip":"100.64.0.2","wg_public_key":WgKeypair::generate().public_base64(),"reachable":true,"supports_org_relay":true})).unwrap();
         let id = peer.node_id;
         let mut peers = HashMap::from([(id, peer)]);
@@ -816,7 +866,12 @@ mod cursor_tests {
             ),
             0
         );
-        assert!(d.pairs[&id].page_cursor.is_none());
+        assert_eq!(d.pairs[&id].page_cursor, Some(cursor.clone()));
+        assert!(d.pairs[&id].pending.is_some());
+        // A later valid reply for the SAME request remains eligible.
+        assert_eq!(d.receive_page(&peers, id, request_id, vec![candidate.clone()], 30,
+            Some(cursor.clone()), now + Duration::from_secs(61)), 1);
+        assert!(d.pairs[&id].pending.is_none());
         d.request(true, true, &peers, &out, now + Duration::from_secs(120))
             .await;
         let ClientMsg::OverlayOrgRelayDiscover {
@@ -827,7 +882,7 @@ mod cursor_tests {
         else {
             panic!()
         };
-        assert!(c.is_none());
+        assert_eq!(c, Some(cursor.clone()));
         d.receive_page(
             &peers,
             id,
@@ -847,6 +902,35 @@ mod cursor_tests {
         };
         assert!(c.is_none());
     }
+    #[tokio::test]
+    async fn empty_or_zero_ttl_remains_an_explicit_clear() {
+        for (empty, ttl) in [(true, 30), (false, 0)] {
+            let peer: NetmapPeer = serde_json::from_value(serde_json::json!({
+                "node_id":ObjectId::new().to_hex(), "overlay_ip":"100.64.0.2",
+                "wg_public_key":WgKeypair::generate().public_base64(), "reachable":true, "supports_org_relay":true
+            })).unwrap();
+            let id = peer.node_id;
+            let peers = HashMap::from([(id, peer)]);
+            let c = OrgRelayCandidateWire { path: RelayPathWire::new(vec![ObjectId::new()]).unwrap(),
+                requester_at_exit: false, endpoints: vec!["8.8.8.8:3478".into()] };
+            let mut d = Discovery::default();
+            let now = Instant::now();
+            let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+            let out = ControlTx::new(tx);
+            d.request(true, true, &peers, &out, now).await;
+            let ClientMsg::OverlayOrgRelayDiscover { request_id, .. } = rx.recv().await.unwrap() else { panic!() };
+            assert_eq!(d.receive_page(&peers, id, request_id, vec![c.clone()], 30, Some(c.cursor()), now), 1);
+            let t = now + PAIR_GAP;
+            d.request(true, true, &peers, &out, t).await;
+            let ClientMsg::OverlayOrgRelayDiscover { request_id, .. } = rx.recv().await.unwrap() else { panic!() };
+            let hints = if empty { vec![] } else { vec![c] };
+            assert_eq!(d.receive_page(&peers, id, request_id, hints, ttl, None, t), 0);
+            assert!(d.pairs[&id].pending.is_none());
+            assert!(d.pairs[&id].cached.is_none());
+            assert!(d.pairs[&id].page_cursor.is_none());
+        }
+    }
+
 }
 
 #[cfg(test)]

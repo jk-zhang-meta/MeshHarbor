@@ -5,8 +5,8 @@
 //! re-authorize and reserve the selected path before sending any grants.
 
 use super::{
-    OrgRelaySession, Plan, ZoneScope, node_zone, path_graph, peer_relay_mode,
-    plan_mint_candidates_reusing,
+    OrgRelaySession, Plan, TrialUnknownZoneDiagnostics, ZoneScope, node_zone, path_graph,
+    peer_relay_mode, plan_mint_candidates_with_trial_diagnostics,
 };
 use crate::NetworkState;
 use bson::oid::ObjectId;
@@ -194,11 +194,30 @@ pub(super) async fn prepare_reusing(
     };
     let mut inputs = Vec::new();
     let mut plans = HashMap::new();
+    let mut trial_diagnostic = TrialUnknownZoneDiagnostics::default();
     for (scope, expected_zone) in scopes {
-        let candidates = plan_mint_candidates_reusing(state, requester, peer, reuse, scope).await?;
+        let diagnostic = if for_trial {
+            Some(&mut trial_diagnostic)
+        } else {
+            None
+        };
+        let candidates = plan_mint_candidates_with_trial_diagnostics(
+            state, requester, peer, reuse, scope, diagnostic,
+        )
+        .await?;
         for plan in candidates {
             let relay_zone = node_zone(state, &plan.relay).await;
             if enforce_zone && !linked_servers && relay_zone != expected_zone {
+                if for_trial
+                    && !plan.implicit
+                    && relay_zone.is_none()
+                    && expected_zone.is_some()
+                    && plan.relay.tenant_id == requester.tenant_id
+                    && plan.relay.network_id == requester.network_id
+                    && matches!(&plan.relay.node_ref, NodeRef::Agent { agent_id } if *agent_id == plan.relay_agent_id)
+                {
+                    trial_diagnostic.filtered(plan.relay_agent_id);
+                }
                 continue;
             }
             if plan.relay.node_ref == requester.node_ref || plan.relay.node_ref == peer.node_ref {
