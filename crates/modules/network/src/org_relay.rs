@@ -375,6 +375,24 @@ pub mod candidate_test_support {
             let _ = resume.await;
         }
     }
+    fn session_zone_pauses() -> &'static Mutex<HashMap<String, NhopRepushPause>> {
+        static PAUSES: OnceLock<Mutex<HashMap<String, NhopRepushPause>>> = OnceLock::new();
+        PAUSES.get_or_init(|| Mutex::new(HashMap::new()))
+    }
+    /// Pause after region reads and immediately before their final decision.
+    pub fn pause_session_zone_fixture(pair: String) -> (oneshot::Receiver<()>, oneshot::Sender<()>) {
+        let (reached_tx, reached_rx) = oneshot::channel();
+        let (resume_tx, resume_rx) = oneshot::channel();
+        assert!(session_zone_pauses().lock().unwrap().insert(pair, NhopRepushPause { reached: reached_tx, resume: resume_rx }).is_none());
+        (reached_rx, resume_tx)
+    }
+    pub(super) async fn pause_session_zone_if_armed(pair: &str) {
+        let pause = session_zone_pauses().lock().unwrap().remove(pair);
+        if let Some(NhopRepushPause { reached, resume }) = pause {
+            let _ = reached.send(());
+            let _ = resume.await;
+        }
+    }
     struct LinePreclaimPause {
         reached: oneshot::Sender<()>,
         resume: oneshot::Receiver<()>,

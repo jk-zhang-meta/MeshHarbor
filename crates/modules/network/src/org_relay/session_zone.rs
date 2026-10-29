@@ -74,11 +74,13 @@ pub(super) async fn check(state: &NetworkState, session: &OrgRelaySession) -> De
             _ => true,
         };
     }
-    if epoch != state.org_relay.eligibility_generation() {
-        Decision::Uncertain
-    } else if invalid {
+    #[cfg(feature = "path-planner-test-support")]
+    super::candidate_test_support::pause_session_zone_if_armed(&session.pair_key).await;
+    // Confirmed invalidity wins: callers revoke only the captured session's
+    // exact pair/VNI/generation, never a concurrently installed replacement.
+    if invalid {
         Decision::Invalid
-    } else if unknown {
+    } else if unknown || epoch != state.org_relay.eligibility_generation() {
         Decision::Uncertain
     } else {
         Decision::Fits

@@ -1744,6 +1744,47 @@ async fn staged_graph_three_relay_zone_recheck_preserves_valid_and_revokes_chang
     }
 }
 
+/// A concurrent zero-hit revocation still changes the eligibility epoch. It
+/// cannot hide an already-confirmed bad edge, or revoke its newer replacement.
+#[tokio::test]
+async fn staged_session_zone_epoch_change_revokes_invalid_snapshot_not_new_generation() {
+    use roomler_ai_mod_network::org_relay::{self, candidate_test_support as support};
+    let mut l = LineRig::up("iso-session-zone-epoch", true).await;
+    relay_request(&mut l.cn, &l.us_node).await;
+    let _ = l.expect_line().await;
+    let state = l.rig.app.state.network();
+    let pair = roomler_ai_mod_network::overlay::pair_key(
+        ObjectId::parse_str(&l.cn_node).unwrap(), ObjectId::parse_str(&l.us_node).unwrap());
+    let original = state.org_relay.active_session(&pair).unwrap();
+    let gz_id = ObjectId::parse_str(&l.gz_agent).unwrap();
+    for replace in [false, true] {
+        let mut invalid = original.clone();
+        invalid.pair_key = format!("session-zone-epoch-replacement-{replace}");
+        invalid.hops[0].requires_cross_border_approval = false;
+        assert!(support::insert_session_fixture(state, invalid.clone()));
+        let (reached, resume) = support::pause_session_zone_fixture(invalid.pair_key.clone());
+        let checking = state.clone();
+        let task = tokio::spawn(async move { support::recheck_zones_fixture(&checking, gz_id).await; });
+        tokio::time::timeout(Duration::from_secs(5), reached).await.expect("region decision pause").unwrap();
+        assert_eq!(org_relay::revoke_relay_agent(state, original.tenant_id, ObjectId::new(), "epoch-only").await, 0);
+        if replace {
+            assert!(support::remove_session_fixture(state, &invalid.pair_key));
+            let mut replacement = original.clone();
+            replacement.pair_key = invalid.pair_key.clone();
+            replacement.generation = invalid.generation + 1;
+            assert!(support::insert_session_fixture(state, replacement));
+        }
+        resume.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(5), task).await.expect("zone recheck finished").unwrap();
+        if replace {
+            assert_eq!(state.org_relay.active_session(&invalid.pair_key).expect("the same pair/VNI with a new generation must survive").generation, invalid.generation + 1);
+            assert!(support::remove_session_fixture(state, &invalid.pair_key));
+        } else {
+            assert!(state.org_relay.active_session(&invalid.pair_key).is_none(), "an epoch change must not hide a confirmed invalid region relationship");
+        }
+    }
+}
+
 /// Drive the real cross-zone request handler through a three-relay chain with
 /// one same-zone edge and one approved crossing. This checks control messages,
 /// per-crossing audit, actual WireGuard data, and policy withdrawal.
