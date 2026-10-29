@@ -576,6 +576,13 @@ pub mod candidate_test_support {
     pub async fn recheck_zones_fixture(state: &NetworkState, agent: ObjectId) {
         recheck_zones(state, agent, "fixture-zone-recheck").await;
     }
+    pub fn schedule_trial_zone_retry_fixture(state: &NetworkState, id: ObjectId) {
+        schedule_trial_zone_retry(state, std::collections::HashSet::from([id]));
+    }
+    pub fn trial_zone_retry_state_fixture(state: &NetworkState) -> (bool, bool) {
+        let retry = state.org_relay.trial_zone_retry.lock().unwrap();
+        (retry.running, retry.rescan)
+    }
     /// Test the real full-path reauthorization with an already-held fixture.
     pub async fn reauthorize_nhop_fixture(state: &NetworkState, requester: ObjectId, peer: ObjectId, session: &OrgRelaySession) -> bool {
         let Ok(a) = state.overlay_nodes.base.find_by_id(requester).await else { return false };
@@ -1938,10 +1945,8 @@ async fn plan_mint_candidates_with_trial_diagnostics(
                     && node.tenant_id == tenant_id
                     && node.network_id == requester.network_id
                     && matches!(&node.node_ref, NodeRef::Agent { agent_id: owner } if *owner == agent_id)
-                {
-                    if let Some(diagnostic) = diagnostic.as_deref_mut() {
-                        diagnostic.filtered(agent_id);
-                    }
+                    && let Some(diagnostic) = diagnostic.as_deref_mut() {
+                    diagnostic.filtered(agent_id);
                 }
                 zone_denied += 1;
                 continue;
@@ -2124,148 +2129,8 @@ pub fn revoke_removed_backbone_edges_sync(
     events
 }
 
-struct BackbonePlan {
-    ingress: Plan,
-    exit: Plan,
-    private_endpoint: String,
-    requires_cross_border_approval: bool,
-    source_zone: BusinessZone,
-    exit_zone: BusinessZone,
-}
-
 /// The audit `reason` of a mint planned over a cross-border line (#21).
 pub const CROSS_BORDER_REASON: &str = "cross_border_line";
-
-async fn plan_backbone(
-    state: &NetworkState,
-    requester: &OverlayNode,
-    peer: &OverlayNode,
-    ingress_id: ObjectId,
-    exit_id: ObjectId,
-) -> Result<BackbonePlan, PeerRelayDenyReason> {
-    use PeerRelayDenyReason as D;
-    let (Some(a), Some(b)) = (requester.id, peer.id) else {
-        return Err(D::RequesterUnsupported);
-    };
-    if ingress_id == exit_id
-        || !state.org_relay.join_extras(a).supports_path_backbone_v1
-        || !state.org_relay.join_extras(b).supports_path_backbone_v1
-        || !state.org_relay.join_extras(ingress_id).relay_backbone_ready
-    {
-        return Err(D::RequesterUnsupported);
-    }
-    let network = state
-        .overlay_networks
-        .get_or_create(requester.tenant_id)
-        .await
-        .map_err(|_| D::PolicyUnreadable)?;
-    if network.mtu > limits::BACKBONE_MAX_OVERLAY_MTU {
-        return Err(D::RequesterUnsupported);
-    }
-    // #21: a pair in two zones may ride only a cross-border line, each relay
-    // in its own member's zone.
-    let line = cross_border_zones(state, requester, peer).await;
-    let (ingress, exit) = match line {
-        None => {
-            let mut plans = plan_mint_candidates(state, requester, peer).await?;
-            let Some(exit_index) = plans.iter().position(|p| p.relay.id == Some(exit_id)) else {
-                return Err(D::NoRelay);
-            };
-            let exit = plans.remove(exit_index);
-            let Some(ingress_index) = plans.iter().position(|p| p.relay.id == Some(ingress_id))
-            else {
-                return Err(D::NoRelay);
-            };
-            (plans.remove(ingress_index), exit)
-        }
-        Some((za, zb)) => {
-            let pick = |plans: Vec<Plan>, id: ObjectId| plans.into_iter().find(|p| p.relay.id == Some(id));
-            let ingress = pick(
-                plan_mint_candidates_reusing(state, requester, peer, None, ZoneScope::Side(za)).await?,
-                ingress_id,
-            )
-            .ok_or(D::ZoneDenied)?;
-            let exit = pick(
-                plan_mint_candidates_reusing(state, requester, peer, None, ZoneScope::Side(zb)).await?,
-                exit_id,
-            )
-            .ok_or(D::ZoneDenied)?;
-            (ingress, exit)
-        }
-    };
-    // A private bridge can cross zones even when business isolation is Off
-    // or Warn, or when members are in the same zone. Do not treat those
-    // modes as evidence that the edge itself is same-zone. Unknown relay
-    // zones cannot establish whether approval and auditing are required.
-    let (source_zone, exit_zone) = (node_zone(state, &ingress.relay).await, node_zone(state, &exit.relay).await);
-    let (Some(source_zone), Some(exit_zone)) = (source_zone, exit_zone) else {
-        return Err(D::ZoneDenied);
-    };
-    let crossing = source_zone != exit_zone;
-    if line.is_some() && !crossing {
-        return Err(D::ZoneDenied);
-    }
-    let endpoint = ingress
-        .backbone_edges
-        .iter()
-        .take(8)
-        .find(|edge| {
-            ObjectId::parse_str(&edge.relay_agent_id).ok() == Some(exit.relay_agent_id)
-                && crate::routes::peer_relay::valid_backbone_endpoint(&edge.endpoint)
-                && (!crossing || edge.cross_border)
-        })
-        .map(|e| e.endpoint.clone())
-        .ok_or(if crossing { D::ZoneDenied } else { D::NoRelay })?;
-    if !crate::routes::peer_relay::backbone_endpoint_outside_overlay(&endpoint, &network.cidr) {
-        return Err(D::NonRoutableEndpoint);
-    }
-    if crossing {
-        // Every actual crossing is audited, regardless of isolation mode.
-        info!(tenant_id = %requester.tenant_id, requester = %a, peer = %b, ingress = %ingress_id,
-            exit = %exit_id, "org-relay: auditing a cross-border trial attempt");
-        let event = PeerRelayAuditEvent {
-            id: None,
-            tenant_id: requester.tenant_id,
-            action: PeerRelayAuditAction::Mint,
-            agent_id: Some(ingress.relay_agent_id),
-            user_id: None,
-            requester_node_id: Some(a),
-            peer_node_id: Some(b),
-            relay_node_id: Some(ingress_id),
-            serve: None,
-            vni: None,
-            warn_only: false,
-            at: DateTime::now(),
-            denied: None,
-            reason: Some(CROSS_BORDER_REASON.into()),
-        };
-        // The row records an attempt; no trial VNI exists yet. Fail closed on
-        // storage failure or timeout before reserving or sending any grants.
-        let write = async {
-            #[cfg(feature = "path-planner-test-support")]
-            match candidate_test_support::take_trial_crossing_audit_fault(&pair_key(a, b)) {
-                Some(candidate_test_support::TrialCrossingAuditFault::Error) => return false,
-                Some(candidate_test_support::TrialCrossingAuditFault::Timeout) => {
-                    std::future::pending::<()>().await;
-                }
-                None => {}
-            }
-            state.peer_relay_audit.record(event).await.is_ok()
-        };
-        if !matches!(tokio::time::timeout(Duration::from_secs(3), write).await, Ok(true)) {
-            warn!("org-relay: cross-border trial audit failed or timed out");
-            return Err(D::PolicyUnreadable);
-        }
-    }
-    Ok(BackbonePlan {
-        ingress,
-        exit,
-        private_endpoint: endpoint,
-        requires_cross_border_approval: crossing,
-        source_zone,
-        exit_zone,
-    })
-}
 
 /// The zone pairs the tenant's approved cross-border lines connect: an
 /// approved relay with a `cross_border` edge to another approved relay, both
@@ -2325,8 +2190,8 @@ async fn cross_border_zones(
 
 /// A cross-border line for a pair (#21 rule 2): an approved relay in one
 /// member's zone with an approved `cross_border` edge to an approved relay in
-/// the other's, each granted to both members (explicit grants only, as in
-/// [`plan_backbone`]). The edge's source holds the bridge, so whichever
+/// the other's, each explicitly granted to both members. The edge's source
+/// holds the bridge, so whichever
 /// member asked, the member in the source's zone binds there.
 struct LinePlan {
     ingress: Plan,
@@ -2933,14 +2798,13 @@ pub async fn discover(
                     });
                 }
             }
-        } else if let Ok(plan) = plan_mint(state, requester, peer).await {
-            if let Some(relay_node_id) = plan.relay.id {
-                candidates.push(OrgRelayCandidateWire {
-                    path: RelayPathWire::new(vec![relay_node_id]).expect("one relay"),
-                    requester_at_exit: false,
-                    endpoints: plan.endpoints.into_iter().take(4).collect(),
-                });
-            }
+        } else if let Ok(plan) = plan_mint(state, requester, peer).await
+            && let Some(relay_node_id) = plan.relay.id {
+            candidates.push(OrgRelayCandidateWire {
+                path: RelayPathWire::new(vec![relay_node_id]).expect("one relay"),
+                requester_at_exit: false,
+                endpoints: plan.endpoints.into_iter().take(4).collect(),
+            });
         }
     }
     if traversal && enabled {
@@ -3371,10 +3235,9 @@ async fn mint_plan(
         info!(%tenant_id, requester = %req_id, peer = %peer_id, relay = %relay_id, vni, "org-relay [warn]: would mint; pushing nothing");
         return;
     }
-    if let Some(epoch) = fallback_epoch {
-        if epoch != state.org_relay.eligibility_generation()
-            || crate::overlay::org_fallback_forced_derp(state, &pk) { return; }
-    }
+    if let Some(epoch) = fallback_epoch
+        && (epoch != state.org_relay.eligibility_generation()
+            || crate::overlay::org_fallback_forced_derp(state, &pk)) { return; }
     let mut refusal = None;
     let claim = trial::claim_mint(&state.org_relay, &mut session, |_| {
         if let Some(epoch) = fallback_epoch {
@@ -3829,8 +3692,10 @@ fn schedule_trial_zone_retry(state: &NetworkState, ids: std::collections::HashSe
     let generation = state.org_relay.trial_zone_retry.lock().unwrap_or_else(|e| e.into_inner()).request(ids);
     let Some(generation) = generation else { return };
     let state = state.clone();
-    let mut guard = TrialZoneWorkerGuard { state: state.clone(), generation, started: false, completed: false };
+    let guard = TrialZoneWorkerGuard { state: state.clone(), generation, started: false, completed: false };
     tokio::spawn(async move {
+        // Capture the whole Drop guard, rather than separate Copy fields.
+        let mut guard = guard;
         guard.started = true;
         let mut deferred = std::collections::HashSet::<ObjectId>::new();
         let mut retry_at = tokio::time::Instant::now();

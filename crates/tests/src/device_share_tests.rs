@@ -552,7 +552,7 @@ async fn device_share_remote_real_ws_session_and_live_revoke() {
             .1
             .contains(roomler_ai_remote_control::permissions::Permissions::FILES)
     );
-    assert_eq!(request.2, false);
+    assert!(!request.2);
     assert_eq!(hub.session_grant(request.0).unwrap().1, f.recipient.id);
     hub.deliver_consent(request.0, true, None).unwrap();
     tokio::time::timeout(Duration::from_secs(5), async {

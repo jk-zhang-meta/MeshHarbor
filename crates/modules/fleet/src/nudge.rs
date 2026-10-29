@@ -220,147 +220,6 @@ pub fn nudge_request_allowed_at(
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::time::Duration;
-
-    const GUARD: i64 = 5000;
-
-    #[test]
-    fn keyless_or_wrong_key_moves_the_controller_and_never_nudges() {
-        let t = "69a1dbbad2000f26adc875ce";
-        assert_eq!(
-            rehome_direction(None, t, 2_000_000, 1_000, GUARD),
-            RehomeDirection::ControllerMove {
-                reason: "keyless_dial"
-            }
-        );
-        assert_eq!(
-            rehome_direction(Some("68eeeeeeeeeeeeeeeeeeeeee"), t, 2_000_000, 1_000, GUARD),
-            RehomeDirection::ControllerMove {
-                reason: "wrong_key"
-            }
-        );
-        // Agent-tenant lookup failed: cannot prove the key correct.
-        assert_eq!(
-            rehome_direction(Some(t), "", 2_000_000, 1_000, GUARD),
-            RehomeDirection::ControllerMove {
-                reason: "wrong_key"
-            }
-        );
-    }
-
-    #[test]
-    fn correct_key_and_provably_newer_conn_nudges_the_agent() {
-        let t = "69a1dbbad2000f26adc875ce";
-        assert_eq!(
-            rehome_direction(Some(t), t, 100_000, 10_000, GUARD),
-            RehomeDirection::NudgeAgent
-        );
-    }
-
-    #[test]
-    fn ambiguous_age_moves_the_controller() {
-        let t = "69a1dbbad2000f26adc875ce";
-        // Inside the guard band either way: an LB map flip between two
-        // dials makes neither party provably wrong.
-        assert_eq!(
-            rehome_direction(Some(t), t, 12_000, 10_000, GUARD),
-            RehomeDirection::ControllerMove {
-                reason: "ambiguous_age"
-            }
-        );
-        // Controller OLDER than the record: a parked pre-flip tab.
-        assert_eq!(
-            rehome_direction(Some(t), t, 5_000, 10_000, GUARD),
-            RehomeDirection::ControllerMove {
-                reason: "ambiguous_age"
-            }
-        );
-    }
-
-    fn pacing() -> NudgePacing {
-        NudgePacing {
-            cooldown: Duration::from_secs(60),
-            max_attempts: 3,
-            attempts_reset_after: Duration::from_secs(600),
-        }
-    }
-
-    #[test]
-    fn gate_paces_books_caps_and_resets() {
-        let cd = NudgeCooldowns::default();
-        let agent = ObjectId::new();
-        let t0 = Instant::now();
-
-        assert_eq!(nudge_gate_at(&cd, agent, pacing(), t0), NudgeGate::Allow);
-        nudge_book_at(&cd, agent, pacing(), t0);
-        // Inside the cooldown: refused, and NOT booked.
-        assert_eq!(
-            nudge_gate_at(&cd, agent, pacing(), t0 + Duration::from_secs(10)),
-            NudgeGate::Cooldown
-        );
-        // Cycles 2 and 3 spaced past the cooldown: allowed + booked.
-        let t2 = t0 + Duration::from_secs(61);
-        assert_eq!(nudge_gate_at(&cd, agent, pacing(), t2), NudgeGate::Allow);
-        nudge_book_at(&cd, agent, pacing(), t2);
-        let t3 = t2 + Duration::from_secs(61);
-        assert_eq!(nudge_gate_at(&cd, agent, pacing(), t3), NudgeGate::Allow);
-        nudge_book_at(&cd, agent, pacing(), t3);
-        // A 4th cycle inside the reset window: capped (split evidence).
-        assert_eq!(
-            nudge_gate_at(&cd, agent, pacing(), t3 + Duration::from_secs(61)),
-            NudgeGate::Stuck
-        );
-        // Quiet period passes: allowed again, booking restarts the count.
-        let t5 = t3 + Duration::from_secs(601);
-        assert_eq!(nudge_gate_at(&cd, agent, pacing(), t5), NudgeGate::Allow);
-        nudge_book_at(&cd, agent, pacing(), t5);
-        assert_eq!(cd.get(&agent).unwrap().attempts, 1);
-    }
-
-    #[test]
-    fn busy_refusals_do_not_consume_attempts() {
-        let cd = NudgeCooldowns::default();
-        let agent = ObjectId::new();
-        let t0 = Instant::now();
-        // Many peeks, zero books: still Allow, attempts untouched.
-        for i in 0..10 {
-            assert_eq!(
-                nudge_gate_at(&cd, agent, pacing(), t0 + Duration::from_secs(i)),
-                NudgeGate::Allow
-            );
-        }
-        assert_eq!(cd.get(&agent).unwrap().attempts, 0);
-    }
-
-    #[test]
-    fn requester_throttle_books_one_slot_per_interval() {
-        let th = NudgeRequestThrottle::default();
-        let agent = ObjectId::new();
-        let t0 = Instant::now();
-        assert!(nudge_request_allowed_at(
-            &th,
-            agent,
-            Duration::from_secs(5),
-            t0
-        ));
-        assert!(!nudge_request_allowed_at(
-            &th,
-            agent,
-            Duration::from_secs(5),
-            t0 + Duration::from_secs(1)
-        ));
-        assert!(nudge_request_allowed_at(
-            &th,
-            agent,
-            Duration::from_secs(5),
-            t0 + Duration::from_secs(6)
-        ));
-    }
-}
-
 // ────────────────────────────────────────────────────────────────────────────
 // FR-69 P6 — the requester-side pair every cross-pod miss uses (the
 // controller's session request in `remote`, the tunnel originator's forward
@@ -556,4 +415,145 @@ pub fn register_bus_handler(state: &FleetState) {
             Ok(serde_json::json!({ "nudged": false, "reason": reason }))
         })
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    const GUARD: i64 = 5000;
+
+    #[test]
+    fn keyless_or_wrong_key_moves_the_controller_and_never_nudges() {
+        let t = "69a1dbbad2000f26adc875ce";
+        assert_eq!(
+            rehome_direction(None, t, 2_000_000, 1_000, GUARD),
+            RehomeDirection::ControllerMove {
+                reason: "keyless_dial"
+            }
+        );
+        assert_eq!(
+            rehome_direction(Some("68eeeeeeeeeeeeeeeeeeeeee"), t, 2_000_000, 1_000, GUARD),
+            RehomeDirection::ControllerMove {
+                reason: "wrong_key"
+            }
+        );
+        // Agent-tenant lookup failed: cannot prove the key correct.
+        assert_eq!(
+            rehome_direction(Some(t), "", 2_000_000, 1_000, GUARD),
+            RehomeDirection::ControllerMove {
+                reason: "wrong_key"
+            }
+        );
+    }
+
+    #[test]
+    fn correct_key_and_provably_newer_conn_nudges_the_agent() {
+        let t = "69a1dbbad2000f26adc875ce";
+        assert_eq!(
+            rehome_direction(Some(t), t, 100_000, 10_000, GUARD),
+            RehomeDirection::NudgeAgent
+        );
+    }
+
+    #[test]
+    fn ambiguous_age_moves_the_controller() {
+        let t = "69a1dbbad2000f26adc875ce";
+        // Inside the guard band either way: an LB map flip between two
+        // dials makes neither party provably wrong.
+        assert_eq!(
+            rehome_direction(Some(t), t, 12_000, 10_000, GUARD),
+            RehomeDirection::ControllerMove {
+                reason: "ambiguous_age"
+            }
+        );
+        // Controller OLDER than the record: a parked pre-flip tab.
+        assert_eq!(
+            rehome_direction(Some(t), t, 5_000, 10_000, GUARD),
+            RehomeDirection::ControllerMove {
+                reason: "ambiguous_age"
+            }
+        );
+    }
+
+    fn pacing() -> NudgePacing {
+        NudgePacing {
+            cooldown: Duration::from_secs(60),
+            max_attempts: 3,
+            attempts_reset_after: Duration::from_secs(600),
+        }
+    }
+
+    #[test]
+    fn gate_paces_books_caps_and_resets() {
+        let cd = NudgeCooldowns::default();
+        let agent = ObjectId::new();
+        let t0 = Instant::now();
+
+        assert_eq!(nudge_gate_at(&cd, agent, pacing(), t0), NudgeGate::Allow);
+        nudge_book_at(&cd, agent, pacing(), t0);
+        // Inside the cooldown: refused, and NOT booked.
+        assert_eq!(
+            nudge_gate_at(&cd, agent, pacing(), t0 + Duration::from_secs(10)),
+            NudgeGate::Cooldown
+        );
+        // Cycles 2 and 3 spaced past the cooldown: allowed + booked.
+        let t2 = t0 + Duration::from_secs(61);
+        assert_eq!(nudge_gate_at(&cd, agent, pacing(), t2), NudgeGate::Allow);
+        nudge_book_at(&cd, agent, pacing(), t2);
+        let t3 = t2 + Duration::from_secs(61);
+        assert_eq!(nudge_gate_at(&cd, agent, pacing(), t3), NudgeGate::Allow);
+        nudge_book_at(&cd, agent, pacing(), t3);
+        // A 4th cycle inside the reset window: capped (split evidence).
+        assert_eq!(
+            nudge_gate_at(&cd, agent, pacing(), t3 + Duration::from_secs(61)),
+            NudgeGate::Stuck
+        );
+        // Quiet period passes: allowed again, booking restarts the count.
+        let t5 = t3 + Duration::from_secs(601);
+        assert_eq!(nudge_gate_at(&cd, agent, pacing(), t5), NudgeGate::Allow);
+        nudge_book_at(&cd, agent, pacing(), t5);
+        assert_eq!(cd.get(&agent).unwrap().attempts, 1);
+    }
+
+    #[test]
+    fn busy_refusals_do_not_consume_attempts() {
+        let cd = NudgeCooldowns::default();
+        let agent = ObjectId::new();
+        let t0 = Instant::now();
+        // Many peeks, zero books: still Allow, attempts untouched.
+        for i in 0..10 {
+            assert_eq!(
+                nudge_gate_at(&cd, agent, pacing(), t0 + Duration::from_secs(i)),
+                NudgeGate::Allow
+            );
+        }
+        assert_eq!(cd.get(&agent).unwrap().attempts, 0);
+    }
+
+    #[test]
+    fn requester_throttle_books_one_slot_per_interval() {
+        let th = NudgeRequestThrottle::default();
+        let agent = ObjectId::new();
+        let t0 = Instant::now();
+        assert!(nudge_request_allowed_at(
+            &th,
+            agent,
+            Duration::from_secs(5),
+            t0
+        ));
+        assert!(!nudge_request_allowed_at(
+            &th,
+            agent,
+            Duration::from_secs(5),
+            t0 + Duration::from_secs(1)
+        ));
+        assert!(nudge_request_allowed_at(
+            &th,
+            agent,
+            Duration::from_secs(5),
+            t0 + Duration::from_secs(6)
+        ));
+    }
 }

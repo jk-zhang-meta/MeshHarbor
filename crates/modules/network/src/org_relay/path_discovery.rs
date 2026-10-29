@@ -116,6 +116,9 @@ pub(super) fn paths(
 /// A missing prefix/edge seeks its lexical successor on the fresh graph; each
 /// result must still be reauthorized. Ring wrap and safe checkpoint binding are
 /// caller responsibilities, and continuous graph churn has no fairness claim.
+// Keep graph, endpoint constraints, continuation positions and work budgets
+// explicit at the existing traversal seam; no new configuration wrapper.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn scan(
     graph: &EdgeGraph,
     requester_zone: Option<BusinessZone>,
@@ -189,7 +192,7 @@ pub(super) fn scan(
                 rebased: false,
             };
         }
-        let Some((indexes, changed)) = seek_resume(&graph, &roots, &next, prefix.relay_node_ids())
+        let Some((indexes, changed)) = seek_resume(graph, &roots, &next, prefix.relay_node_ids())
         else {
             return ScanPage {
                 paths: Vec::new(),
@@ -207,10 +210,9 @@ pub(super) fn scan(
         if result.len() >= limit {
             break;
         }
-        if let Some(prefix) = &resumed {
-            if graph.relays[root].node_id < graph.relays[prefix[0]].node_id {
-                continue;
-            }
+        if let Some(prefix) = &resumed
+            && graph.relays[root].node_id < graph.relays[prefix[0]].node_id {
+            continue;
         }
         if after.is_some_and(|cursor| graph.relays[root].node_id < cursor.path.relay_node_ids()[0])
         {
@@ -666,9 +668,9 @@ mod tests {
             let make_edges = |s: usize| -> Vec<GraphEdge> {
                 (0..5)
                     .flat_map(|a| {
-                        (0..5).filter_map(move |b| {
-                            (a != b && (a * 11 + b * 7 + s * 3) % 5 < 2).then(|| edge(a, b, false))
-                        })
+                        (0..5)
+                            .filter(move |&b| a != b && (a * 11 + b * 7 + s * 3) % 5 < 2)
+                            .map(move |b| edge(a, b, false))
                     })
                     .collect()
             };

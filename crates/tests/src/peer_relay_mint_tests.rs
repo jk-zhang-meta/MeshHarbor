@@ -2602,18 +2602,17 @@ async fn alternate_composite_drive(
             other => panic!("composite fixture WS ended: {other:?}"),
         };
         let mut value: Value = serde_json::from_str(&text).unwrap();
-        if let (Some(tag), Some(id)) = (value["t"].as_str(), value["trial_id"].as_str()) {
-            if tag.starts_with("rc:overlay.path_trial_") {
-                controls.push((tag.to_owned(), ObjectId::parse_str(id).unwrap()));
-                let phase = match tag {
-                    "rc:overlay.path_trial_start" => "start",
-                    "rc:overlay.path_trial_commit" => "commit",
-                    "rc:overlay.path_trial_finalize" => "finalize",
-                    "rc:overlay.path_trial_abort" => "abort",
-                    _ => "other_path_control",
-                };
-                println!("ALT_SERVER phase={phase}");
-            }
+        if let (Some(tag), Some(id)) = (value["t"].as_str(), value["trial_id"].as_str())
+            && tag.starts_with("rc:overlay.path_trial_") {
+            controls.push((tag.to_owned(), ObjectId::parse_str(id).unwrap()));
+            let phase = match tag {
+                "rc:overlay.path_trial_start" => "start",
+                "rc:overlay.path_trial_commit" => "commit",
+                "rc:overlay.path_trial_finalize" => "finalize",
+                "rc:overlay.path_trial_abort" => "abort",
+                _ => "other_path_control",
+            };
+            println!("ALT_SERVER phase={phase}");
         }
         if value["t"] == json!("rc:overlay.path_trial_start") {
             let endpoint = if value["relay_node_id"] == json!(first_id) {
@@ -2796,13 +2795,12 @@ async fn run_alternate_wg_composite(five_registered_relays: bool) {
                 assert_eq!(a.installed_identity(),Some(original_a));
                 assert_eq!(b.installed_identity(),Some(original_b));
             }
-            if !served {
-                if let Some(value)=recv_t(&mut backup_ws,"rc:overlay.relay_serve",Duration::from_millis(1)).await {
-                    assert_eq!(requests.len(),2);
-                    let generation=value["generation"].as_u64().unwrap();assert!(generation>first_generation);
-                    backup_native.serve(serde_json::from_value(value).unwrap(),None);served=true;
-                    println!("ALT_STAGE alternate_manager_serve elapsed_ms={}",diagnostic_started.elapsed().as_millis());
-                }
+            if !served
+                && let Some(value)=recv_t(&mut backup_ws,"rc:overlay.relay_serve",Duration::from_millis(1)).await {
+                assert_eq!(requests.len(),2);
+                let generation=value["generation"].as_u64().unwrap();assert!(generation>first_generation);
+                backup_native.serve(serde_json::from_value(value).unwrap(),None);served=true;
+                println!("ALT_STAGE alternate_manager_serve elapsed_ms={}",diagnostic_started.elapsed().as_millis());
             }
             // The real Engine exposes no fabricated winner. The trial id is
             // observed from its server Start via the server's actual sessions.
@@ -2811,9 +2809,8 @@ async fn run_alternate_wg_composite(five_registered_relays: bool) {
                 assert_eq!(sessions,1,"exactly one current alternate reservation");
                 // Captured on a separate read below by the helper's trace API.
             }
-            if let Some((id,start))=a.active_trial_observation() {
-                if id!=first_trial { backup_trial=Some(id);backup_start=Some(start); }
-            }
+            if let Some((id,start))=a.active_trial_observation()
+                && id!=first_trial { backup_trial=Some(id);backup_start=Some(start); }
             if Instant::now()>=next_diagnostic {
                 next_diagnostic=Instant::now()+Duration::from_secs(5);
                 let (at,ap,ad,ac,af,av)=a.diagnostic_counters();
@@ -2829,9 +2826,8 @@ async fn run_alternate_wg_composite(five_registered_relays: bool) {
                     controls_a.iter().any(|(t,id)|t=="rc:overlay.path_trial_abort"&&*id==first_trial),
                     controls_b.iter().any(|(t,id)|t=="rc:overlay.path_trial_abort"&&*id==first_trial));
             }
-            if let Some(id)=backup_trial {
-                if a.snapshot(id).phase=="finalized"&&b.snapshot(id).phase=="finalized" {break;}
-            }
+            if let Some(id)=backup_trial
+                && a.snapshot(id).phase=="finalized"&&b.snapshot(id).phase=="finalized" {break;}
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         println!("ALT_STAGE alternate_bilateral_finalized elapsed_ms={}",diagnostic_started.elapsed().as_millis());
@@ -3722,11 +3718,9 @@ async fn nhop_delivery_three_native_relays_forward_and_revoke_middle_bridge() {
             let mut buf = [0u8; 2048];
             loop {
                 sender.send_to(&build_data(from_vni, payload), target).await.unwrap();
-                if let Ok(Ok((n, _))) = tokio::time::timeout(Duration::from_millis(150), receiver.recv_from(&mut buf)).await {
-                    if let Some((vni, got)) = parse_data(&buf[..n]) {
-                        if vni == to_vni && got == payload { return; }
-                    }
-                }
+                if let Ok(Ok((n, _))) = tokio::time::timeout(Duration::from_millis(150), receiver.recv_from(&mut buf)).await
+                    && let Some((vni, got)) = parse_data(&buf[..n])
+                    && vni == to_vni && got == payload { return; }
             }
         }).await.expect("three-relay payload did not arrive");
     }

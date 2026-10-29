@@ -53,8 +53,6 @@ struct BackboneTrial {
     exit: OrgRelaySession,
     private_endpoint: String,
     requires_cross_border_approval: bool,
-    source_zone: BusinessZone,
-    exit_zone: BusinessZone,
 }
 
 struct Trial {
@@ -107,10 +105,9 @@ impl PathTrials {
             .values()
             .flat_map(|t| {
                 let mut out: Vec<u32> = t.session.vnis_on(relay).collect();
-                if let Some(b) = t.backbone.as_ref() {
-                    if b.exit.relay.node_id == relay {
-                        out.push(b.exit.vni);
-                    }
+                if let Some(b) = t.backbone.as_ref()
+                    && b.exit.relay.node_id == relay {
+                    out.push(b.exit.vni);
                 }
                 out
             })
@@ -370,8 +367,9 @@ async fn audit_trial_path(
     plan: &path_trial_plan::TrialPathPlan,
 ) -> bool {
     let (Some(a), Some(b)) = (requester.id, peer.id) else { return false };
+    #[cfg(feature = "path-planner-test-support")]
     let pair = pair_key(a, b);
-    for (i, edge) in plan.edges.iter().enumerate().filter(|(_, edge)| edge.requires_cross_border_approval) {
+    for (i, _) in plan.edges.iter().enumerate().filter(|(_, edge)| edge.requires_cross_border_approval) {
         let source = &plan.relays[i];
         let target = &plan.relays[i + 1];
         let event = PeerRelayAuditEvent {
@@ -527,7 +525,8 @@ pub async fn request(
         if epoch != state.org_relay.eligibility_generation() || crate::overlay::org_fallback_forced_derp(state, &pair) { return; }
         let reserved: Vec<Vec<u32>> = nodes.iter().map(|node| entries.values().flat_map(|t| {
             let mut held: Vec<u32> = t.session.vnis_on(*node).collect();
-            if let Some(backbone) = t.backbone.as_ref() { if backbone.exit.relay.node_id == *node { held.push(backbone.exit.vni); } }
+            if let Some(backbone) = t.backbone.as_ref()
+                && backbone.exit.relay.node_id == *node { held.push(backbone.exit.vni); }
             held
         }).collect()).collect();
         let mut delivery = None;
@@ -674,11 +673,6 @@ fn admit_trial(
     Admission::Created(id)
 }
 
-/// A transient capacity snapshot. A trial still has to claim capacity later.
-pub(super) fn path_has_capacity_snapshot(state: &OrgRelayState, relay_nodes: &[ObjectId]) -> bool {
-    path_has_capacity_reusing(state, relay_nodes, None)
-}
-
 pub(super) fn path_has_capacity_reusing(state: &OrgRelayState, relay_nodes: &[ObjectId], trial_id: Option<ObjectId>) -> bool {
     let entries = state.trials.entries.lock().unwrap_or_else(|e| e.into_inner());
     has_capacity_except(state, &entries, relay_nodes, trial_id)
@@ -709,7 +703,7 @@ fn has_capacity_except(state: &OrgRelayState, entries: &HashMap<ObjectId, Trial>
 
 pub(super) enum MintClaim {
     Inserted,
-    Existing(OrgRelaySession),
+    Existing(Box<OrgRelaySession>),
     Full,
     Rejected,
 }
@@ -722,10 +716,9 @@ pub(super) fn claim_mint(
     allow: impl FnOnce(&OrgRelaySession) -> bool,
 ) -> MintClaim {
     let entries = state.trials.entries.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(existing) = state.sessions.get(&session.pair_key).map(|entry| entry.value().clone()) {
-        if existing.expires_at > Instant::now() {
-            return MintClaim::Existing(existing);
-        }
+    if let Some(existing) = state.sessions.get(&session.pair_key).map(|entry| entry.value().clone())
+        && existing.expires_at > Instant::now() {
+        return MintClaim::Existing(Box::new(existing));
     }
     let nodes: Vec<_> = session.relay_nodes().collect();
     if !has_capacity(state, &entries, &nodes) {
@@ -738,9 +731,8 @@ pub(super) fn claim_mint(
     for relay in &nodes {
         let reserved: Vec<u32> = entries.values().flat_map(|trial| {
             let mut out: Vec<u32> = trial.session.vnis_on(*relay).collect();
-            if let Some(backbone) = trial.backbone.as_ref() {
-                if backbone.exit.relay.node_id == *relay { out.push(backbone.exit.vni); }
-            }
+            if let Some(backbone) = trial.backbone.as_ref()
+                && backbone.exit.relay.node_id == *relay { out.push(backbone.exit.vni); }
             out
         }).collect();
         let Some(vni) = state.alloc_vni_with_reserved(*relay, &reserved) else {
@@ -758,7 +750,7 @@ pub(super) fn claim_mint(
     match state.sessions.entry(session.pair_key.clone()) {
         dashmap::mapref::entry::Entry::Occupied(mut entry) => {
             if entry.get().expires_at > Instant::now() {
-                return MintClaim::Existing(entry.get().clone());
+                return MintClaim::Existing(Box::new(entry.get().clone()));
             }
             entry.insert(session.clone());
         }
@@ -1121,16 +1113,15 @@ fn expire_tick(state: &NetworkState, id: ObjectId) -> Option<Duration> {
     let now = Instant::now();
     // A returned tombstone only supports bounded idempotent Finalize replay.
     // It has no allocated relay and expires without tearing down healthy direct.
-    if let Some(r) = trial.return_state.as_ref() {
-        if matches!(r.phase, ReturnPhase::Finalized) {
-            let deadline = r.started + RETURN_TOMBSTONE;
-            if now < deadline {
-                return Some(deadline - now);
-            }
-            let trial = entries.remove(&id).unwrap();
-            trial.cancel.send_replace(true);
-            return None;
+    if let Some(r) = trial.return_state.as_ref()
+        && matches!(r.phase, ReturnPhase::Finalized) {
+        let deadline = r.started + RETURN_TOMBSTONE;
+        if now < deadline {
+            return Some(deadline - now);
         }
+        let trial = entries.remove(&id).unwrap();
+        trial.cancel.send_replace(true);
+        return None;
     }
     if trial.session.expires_at <= now
         || (!matches!(trial.phase, Phase::Finalized)

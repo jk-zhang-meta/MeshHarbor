@@ -25,7 +25,7 @@ use axum::{
     response::Response,
 };
 use serde::{Deserialize, Serialize};
-use std::{borrow::Cow, time::Duration};
+use std::borrow::Cow;
 
 use roomler_core::{ApiError, client_ip::PeerAddr};
 
@@ -361,13 +361,6 @@ async fn stream_asset(
     asset: &AgentReleaseAsset,
 ) -> Result<Response, ApiError> {
     crate::release_delivery::stream_asset(release, asset, content_type_for(&asset.name)).await
-}
-
-#[cfg(test)]
-fn sanitise_header_value(s: &str) -> String {
-    s.chars()
-        .filter(|c| !matches!(c, '\r' | '\n' | '"'))
-        .collect()
 }
 
 fn content_type_for(filename: &str) -> &'static str {

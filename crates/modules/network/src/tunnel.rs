@@ -161,6 +161,9 @@ fn release_tunnel_overlay_lock(state: &NetworkState, id: ObjectId, lock: &Arc<Mu
 }
 
 /// Drive a tunnel-client WS until the client closes or revocation ends it.
+// Match the existing agent socket entry point: authenticated claims and
+// connection observations remain separate inputs from the WS route.
+#[allow(clippy::too_many_arguments)]
 pub async fn handle_tunnel_client_socket(
     state: NetworkState,
     socket: WebSocket,

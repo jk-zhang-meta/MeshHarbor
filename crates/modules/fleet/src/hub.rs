@@ -1478,6 +1478,9 @@ impl Hub {
         )
     }
 
+    // Preserve the existing session-creation interface shared by browser and
+    // scoped-share callers; grouping its policy fields is unrelated to linting.
+    #[allow(clippy::too_many_arguments)]
     fn create_session_full_scoped(
         &self,
         agent_id: ObjectId,
