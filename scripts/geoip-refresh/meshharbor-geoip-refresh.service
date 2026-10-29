@@ -1,0 +1,22 @@
+[Unit]
+Description=Refresh the managed MeshHarbor country database
+After=docker.service network-online.target
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/local/libexec/meshharbor-geoip-refresh --config /etc/meshharbor/geoip-refresh.conf
+TimeoutStartSec=12min
+TimeoutStopSec=3min
+KillMode=mixed
+UMask=0077
+Nice=10
+CPUQuota=50%
+MemoryMax=384M
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/meshharbor/geoip-refresh/data /opt/meshharbor/.app-update.lock
