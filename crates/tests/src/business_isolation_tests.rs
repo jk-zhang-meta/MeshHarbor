@@ -1860,14 +1860,6 @@ async fn staged_graph_actual_three_relay_mint_audits_and_revokes_each_edge() {
     relay_request(&mut l.cn, &l.us_node).await;
     assert!(recv_t(&mut l.cn, "rc:overlay.relay_session", Duration::from_millis(800)).await.is_none(), "transient read failure must not re-push");
     assert_eq!(network.org_relay.active_session(&pair).unwrap().generation, live.generation, "transient failure must not tear down an established path");
-    let middle_conn = support::current_connection_id(network, middle_agent_id).unwrap();
-    assert!(network.org_relay.unbind_live_conn(middle_agent_id, &middle_conn));
-    relay_request(&mut l.cn, &l.us_node).await;
-    assert!(recv_t(&mut l.cn, "rc:overlay.relay_session", Duration::from_millis(700)).await.is_none(), "unknown middle relay must not receive a fresh re-push");
-    assert_eq!(network.org_relay.active_session(&pair).expect("unknown middle relay must not revoke the established path").generation, live.generation);
-    support::recheck_zones_fixture(network, middle_agent_id).await;
-    assert_eq!(network.org_relay.active_session(&pair).expect("unknown middle relay must also survive the active zone recheck").generation, live.generation);
-    network.org_relay.bind_live_conn(middle_agent_id, &middle_conn);
     for (relay, frame) in [(&source_native, gz.clone()), (&middle_native, mid.clone()), (&exit_native, hk.clone())] {
         relay.serve(serde_json::from_value::<ServerMsg>(frame).unwrap(), None);
     }
@@ -1914,6 +1906,24 @@ async fn staged_graph_actual_three_relay_mint_audits_and_revokes_each_edge() {
             }
         }
     }).await.expect("actual reverse WG packet across three native relays");
+    let middle_conn = support::current_connection_id(network, middle_agent_id).unwrap();
+    assert!(network.org_relay.unbind_live_conn(middle_agent_id, &middle_conn));
+    relay_request(&mut l.cn, &l.us_node).await;
+    assert!(recv_t(&mut l.cn, "rc:overlay.relay_session", Duration::from_millis(700)).await.is_none(), "unknown middle relay must not receive a fresh re-push");
+    assert_eq!(network.org_relay.active_session(&pair).expect("unknown middle relay must not revoke the established path").generation, live.generation);
+    support::recheck_zones_fixture(network, middle_agent_id).await;
+    assert_eq!(network.org_relay.active_session(&pair).expect("unknown middle relay must also survive the active zone recheck").generation, live.generation);
+    let during_unknown = packet(ip_a, ip_b, b"healthy WireGuard path while middle region is unknown");
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            wg_a.send_ip_packet(&during_unknown).await;
+            if let Ok(Some(got)) = tokio::time::timeout(Duration::from_millis(150), received_b.recv()).await {
+                if got == during_unknown { break; }
+            }
+        }
+    }).await.expect("uncertain geography must not interrupt established encrypted data");
+    network.org_relay.bind_live_conn(middle_agent_id, &middle_conn);
+    line_join(&mut middle, 5, "223.6.6.7:41641", json!({ "relay_backbone_ready": true })).await;
     let crossing_reason = format!("cross_border_edge:{}", l.hk_agent);
     let audits = l.audit_reasons("mint").await;
     assert!(audits.iter().any(|(reason, node)| reason == &crossing_reason && node == &middle_node), "per-edge crossing audit missing: {audits:?}");
