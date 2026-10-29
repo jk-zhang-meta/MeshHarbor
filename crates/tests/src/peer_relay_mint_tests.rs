@@ -2339,11 +2339,11 @@ async fn backbone_discovery_trial_dual_grants_return_and_edge_withdrawal_are_one
 }
 
 #[cfg(target_os = "linux")]
-struct CompositeDirectLink {
+pub(crate) struct CompositeDirectLink {
     delay: std::sync::Arc<std::sync::atomic::AtomicU64>,
     tasks: Vec<tokio::task::JoinHandle<()>>,
-    a: std::net::SocketAddr,
-    b: std::net::SocketAddr,
+    pub(crate) a: std::net::SocketAddr,
+    pub(crate) b: std::net::SocketAddr,
 }
 #[cfg(target_os = "linux")]
 impl Drop for CompositeDirectLink {
@@ -2355,7 +2355,7 @@ impl Drop for CompositeDirectLink {
 }
 #[cfg(target_os = "linux")]
 impl CompositeDirectLink {
-    async fn new(a: std::net::SocketAddr, b: std::net::SocketAddr) -> Self {
+    pub(crate) async fn new(a: std::net::SocketAddr, b: std::net::SocketAddr) -> Self {
         use std::sync::{
             Arc,
             atomic::{AtomicU64, Ordering},
@@ -2388,7 +2388,7 @@ impl CompositeDirectLink {
             b: ab,
         }
     }
-    fn recover(&self) {
+    pub(crate) fn recover(&self) {
         self.delay.store(0, std::sync::atomic::Ordering::Relaxed);
     }
 }
@@ -2450,7 +2450,7 @@ async fn composite_drive(
 }
 
 #[cfg(target_os = "linux")]
-fn composite_ip(src: std::net::Ipv4Addr, dst: std::net::Ipv4Addr, payload: &[u8]) -> Vec<u8> {
+pub(crate) fn composite_ip(src: std::net::Ipv4Addr, dst: std::net::Ipv4Addr, payload: &[u8]) -> Vec<u8> {
     let mut packet = vec![0u8; 20 + payload.len()];
     packet[0] = 0x45;
     let len = packet.len() as u16;

@@ -4126,6 +4126,221 @@ async fn staged_nhop_trial_zone_fixture_rechecks_middle_and_members() {
     }
 }
 
+/// Both real client owners discover and run a four-relay native WG trial,
+/// then return through measured bridge failure and the server's bilateral 2PC.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[cfg(target_os = "linux")]
+async fn staged_graph_multihop_discovery_bilateral_client_wg_commit_return() {
+    run_multihop_discovery_bilateral_client_wg(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[cfg(target_os = "linux")]
+async fn staged_graph_multihop_discovery_bilateral_client_wg_commit_return_at_exit() {
+    run_multihop_discovery_bilateral_client_wg(true).await;
+}
+
+#[cfg(target_os = "linux")]
+async fn run_multihop_discovery_bilateral_client_wg(flipped: bool) {
+    tokio::time::timeout(Duration::from_secs(180), async {
+        use crate::peer_relay_mint_tests::{CompositeDirectLink, composite_ip};
+        use roomler_ai_mod_network::org_relay::candidate_test_support as support;
+        use roomler_ai_remote_control::signaling::{ClientMsg, NetmapPeer, ServerMsg};
+        use roomlerd::relay_server::backbone_test_support::{NativeRelay, PathTrialTestHarness, WgKeypair};
+        use std::{net::Ipv4Addr, sync::Arc, time::Instant};
+        #[allow(clippy::too_many_arguments)]
+        async fn pump(label: &str, owner: &mut PathTrialTestHarness,
+            output: &mut tokio::sync::mpsc::Receiver<ClientMsg>, ws: &mut Ws,
+            trace: &mut Vec<(String,String)>, trial: ObjectId,
+            fault: Option<Instant>, hold_returned: bool, held: &mut Option<ClientMsg>) {
+            owner.tick().await;
+            while let Ok(message)=output.try_recv() {
+                let value=serde_json::to_value(&message).unwrap(); let tag=value["t"].as_str().unwrap();
+                if tag=="rc:overlay.path_trial_return_request" {
+                    let snapshot=owner.snapshot(trial); let fault=fault.expect("return before actual middle-bridge failure");
+                    assert_eq!(snapshot.windows.len(),9);
+                    assert!(snapshot.windows.iter().filter(|w|w.0.is_some()).count()>=6,"direct path lacks real successful echoes");
+                    assert!(snapshot.windows.iter().filter(|w|w.1.is_none()&&w.2>=fault).count()>=6,"return lacks fresh post-fault relay loss");
+                }
+                if hold_returned && matches!(&message,ClientMsg::OverlayPathTrialReturned{..}) {
+                    assert!(held.replace(message).is_none(),"unexpected duplicate held Return ACK"); continue;
+                }
+                trace.push((label.into(),tag.into()));
+                ws.send(Message::Text(value.to_string().into())).await.unwrap();
+            }
+            for _ in 0..32 {
+                let text=match tokio::time::timeout(Duration::from_millis(1),ws.next()).await {
+                    Ok(Some(Ok(Message::Text(text))))=>text, Ok(Some(Ok(_)))=>continue, Err(_)=>break,
+                    other=>panic!("client fixture control ended: {other:?}"),
+                };
+                let value:Value=serde_json::from_str(&text).unwrap();
+                if let Some(tag)=value["t"].as_str().filter(|tag|tag.starts_with("rc:overlay.path_trial_")) {
+                    trace.push((format!("server->{label}"),tag.into()));
+                }
+                if let Ok(message)=serde_json::from_value(value) { owner.control(message).await; }
+            }
+        }
+        let slug=if flipped {"iso-nhop-client-native-exit"}else{"iso-nhop-client-native"}; let rig=Rig::up(slug,"enforce").await;
+        let mut native=Vec::new(); let mut relays=Vec::new(); let mut agents=Vec::new(); let mut nodes=Vec::new();
+        for index in 0..4u8 {
+            let relay=NativeRelay::start().await.unwrap(); let name=format!("{slug}-r{index}");
+            let (agent,token)=enroll(&rig.app,&rig.seeded,&name).await;
+            let from=if index==3 {US_R}else{CN_R};
+            let mut ws=connect_from(&rig.app,&token,&["relay-server"],Some(from)).await;
+            assert_observed(&rig.app,&agent,Some(from)).await;
+            let public=if index==3 {"1.1.1.1".to_string()}else{format!("223.6.6.{}",6+index)};
+            line_join(&mut ws,10+index,&format!("{public}:{}",relay.port()),
+                json!({"relay_backbone_ready":true,"relay_port":relay.port()})).await;
+            assert_eq!(approve(&rig.app,&rig.seeded,&agent,true).await,200);
+            let node=rig.node(&name).await; grant_relay(&rig.app,&rig.seeded,&node).await;
+            native.push(relay);relays.push(ws);agents.push(agent);nodes.push(node);
+        }
+        let key_a=WgKeypair::generate();let key_b=WgKeypair::generate();
+        let mut a_ws=rig.device(&format!("{slug}-a"),Some(CN_A)).await;
+        let mut b_ws=rig.device(&format!("{slug}-b"),Some(US_A)).await;
+        for (ws,key,endpoint) in [(&mut a_ws,key_a.public_base64(),"223.5.5.5:41641"),(&mut b_ws,key_b.public_base64(),"8.8.8.8:41641")] {
+            ws.send(Message::Text(json!({"t":"rc:overlay.join","wg_public_key":key,"mtu":1280,"endpoints":[endpoint],
+                "supports_org_relay":true,"supports_path_trial_v1":true,"supports_path_backbone_v1":true,
+                "supports_backbone_only_v1":true,"supports_server_relay_strategy":true,"supports_overlay_echo":true,
+                "supports_org_relay_multi_candidate":true,"supports_org_relay_discovery_cursor":true,"org_primary":true}).to_string().into())).await.unwrap();
+            recv_t(ws,"rc:overlay.netmap",Duration::from_secs(5)).await.expect("real-key member join");
+        }
+        let a_id=ObjectId::parse_str(rig.node(&format!("{slug}-a")).await).unwrap();
+        let b_id=ObjectId::parse_str(rig.node(&format!("{slug}-b")).await).unwrap();
+        let network=rig.app.state.network();set_mode(&rig.app,&rig.seeded,"on").await;
+        for index in 0..3 {
+            let path=format!("/api/tenant/{}/agent/{}/peer-relay-policy",rig.seeded.tenant_id,agents[index]);
+            let (status,body)=put(&rig.app,&path,&rig.seeded.admin.access_token,json!({"serve":true,"approved_backbone_edges":[
+                {"relay_agent_id":agents[index+1],"endpoint":native[index+1].underlay_endpoint().to_string(),"cross_border":index==2}]})).await;
+            assert_eq!(status,200,"{body}");
+        }
+        let a_ip:Ipv4Addr=network.overlay_nodes.base.find_by_id(a_id).await.unwrap().overlay_ip.parse().unwrap();
+        let b_ip:Ipv4Addr=network.overlay_nodes.base.find_by_id(b_id).await.unwrap().overlay_ip.parse().unwrap();
+        let socket_a=Arc::new(tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let socket_b=Arc::new(tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let direct=CompositeDirectLink::new(socket_a.local_addr().unwrap(),socket_b.local_addr().unwrap()).await;
+        let peer=|id:ObjectId,ip:Ipv4Addr,key:String|serde_json::from_value::<NetmapPeer>(json!({
+            "node_id":id.to_hex(),"overlay_ip":ip.to_string(),"wg_public_key":key,"reachable":true,
+            "supports_org_relay":true,"supports_overlay_echo":true})).unwrap();
+        let (mut a,mut a_out)=PathTrialTestHarness::new(key_a.clone(),peer(b_id,b_ip,key_b.public_base64()),socket_a,direct.a,true).await;
+        let (mut b,mut b_out)=PathTrialTestHarness::new(key_b,peer(a_id,a_ip,key_a.public_base64()),socket_b,direct.b,false).await;
+        tokio::time::timeout(Duration::from_secs(8),async {while !a.handshake_done()||!b.handshake_done(){tokio::time::sleep(Duration::from_millis(10)).await;}}).await.expect("real incumbent bilateral WG handshake");
+        let direct_packet=composite_ip(a_ip,b_ip,b"native client incumbent WG before discovery");
+        assert!(a.send_packet(&direct_packet).await);assert_eq!(b.receive_packet().await.unwrap(),direct_packet);
+        let direct_reverse=composite_ip(b_ip,a_ip,b"native client reverse incumbent WG before discovery");
+        assert!(b.send_packet(&direct_reverse).await);assert_eq!(a.receive_packet().await.unwrap(),direct_reverse);
+        let asked=Instant::now();
+        for page in 0..2 {
+            if page==1 {tokio::time::sleep_until(tokio::time::Instant::from_std(asked+Duration::from_secs(61))).await;}
+            let (requester,output,ws)=if flipped {(&mut b,&mut b_out,&mut b_ws)}else{(&mut a,&mut a_out,&mut a_ws)};
+            requester.request_discovery().await;
+            let request=tokio::time::timeout(Duration::from_secs(2),output.recv()).await.unwrap().expect("actual paced discovery request");
+            assert!(matches!(request,ClientMsg::OverlayOrgRelayDiscover{..}));
+            ws.send(Message::Text(serde_json::to_string(&request).unwrap().into())).await.unwrap();
+            let metadata=recv_t(ws,"rc:overlay.org_relay_candidates",Duration::from_secs(8)).await.expect("production discovery response");
+            if page==1 {assert_eq!(metadata["candidates"][0]["path"]["relay_node_ids"],json!(nodes),"actual first graph candidate must carry all four relays");assert_eq!(metadata["candidates"][0]["requester_at_exit"],json!(flipped));}
+            requester.receive_discovery(serde_json::from_value(metadata).unwrap());
+        }
+        {
+            let (requester,output,ws)=if flipped {(&mut b,&mut b_out,&mut b_ws)}else{(&mut a,&mut a_out,&mut a_ws)};
+            requester.tick().await;
+            let request=tokio::time::timeout(Duration::from_secs(2),output.recv()).await.unwrap().expect("actual four-relay client request");
+            assert!(matches!(&request,ClientMsg::OverlayPathTrialRequest{path,requester_at_exit,..} if *requester_at_exit==flipped && path.relay_node_ids().iter().map(|id|id.to_hex()).collect::<Vec<_>>()==nodes));
+            ws.send(Message::Text(serde_json::to_string(&request).unwrap().into())).await.unwrap();
+        }
+        let wait=Duration::from_secs(8);let mut serves=Vec::new();let mut bridges=Vec::new();
+        for ws in &mut relays {serves.push(recv_t(ws,"rc:overlay.relay_serve",wait).await.expect("all four actual relay grants"));}
+        for ws in relays.iter_mut().take(3) {bridges.push(recv_t(ws,"rc:overlay.relay_bridge_serve",wait).await.expect("all three actual bridge grants"));}
+        for (relay,serve) in native.iter().zip(&serves) {relay.serve(serde_json::from_value::<ServerMsg>(serve.clone()).unwrap(),None);}
+        for index in 0..3 {native[index].serve(serde_json::from_value(bridges[index].clone()).unwrap(),Some(native[index].policy_to(&native[index+1])));}
+        let mut start_a=recv_t(&mut a_ws,"rc:overlay.path_trial_start",wait).await.expect("requester Start");
+        let mut start_b=recv_t(&mut b_ws,"rc:overlay.path_trial_start",wait).await.expect("responder Start");
+        let trial=ObjectId::parse_str(start_a["trial_id"].as_str().unwrap()).unwrap();
+        assert_eq!(start_a["path"]["relay_node_ids"],json!(nodes));assert_eq!(start_a["trial_id"],start_b["trial_id"]);
+        assert_eq!(start_a["requester_at_exit"],json!(flipped));assert_eq!(start_b["requester_at_exit"],json!(flipped));
+        assert_eq!(start_a["relay_node_id"],nodes[0]);assert_eq!(start_b["relay_node_id"],nodes[3]);
+        start_a["relay_endpoints"]=json!([native[0].endpoint().to_string()]);
+        start_b["relay_endpoints"]=json!([native[3].endpoint().to_string()]);
+        a.control(serde_json::from_value(start_a).unwrap()).await;b.control(serde_json::from_value(start_b).unwrap()).await;
+        let mut trace=Vec::new();let mut held=None;
+        loop {
+            pump("a",&mut a,&mut a_out,&mut a_ws,&mut trace,trial,None,false,&mut held).await;
+            pump("b",&mut b,&mut b_out,&mut b_ws,&mut trace,trial,None,false,&mut held).await;
+            if a.snapshot(trial).phase=="finalized"&&b.snapshot(trial).phase=="finalized" {break;}
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(!a.snapshot(trial).direct_sender&&!b.snapshot(trial).direct_sender,"real measured four-relay path did not become both senders");
+        for (owner,tag) in [("a","rc:overlay.path_trial_ready"),("b","rc:overlay.path_trial_ready"),("a","rc:overlay.path_trial_committed"),("b","rc:overlay.path_trial_committed"),("server->a","rc:overlay.path_trial_finalize"),("server->b","rc:overlay.path_trial_finalize")] {
+            assert!(trace.iter().any(|(observed,kind)|observed==owner&&kind==tag),"missing actual client/server phase {owner} {tag}");
+        }
+        let forward=composite_ip(a_ip,b_ip,b"bilateral real client four relay WG forward");
+        assert!(a.send_packet(&forward).await);assert_eq!(b.receive_packet().await.unwrap(),forward);
+        let reverse=composite_ip(b_ip,a_ip,b"bilateral real client four relay WG reverse");
+        assert!(b.send_packet(&reverse).await);assert_eq!(a.receive_packet().await.unwrap(),reverse);
+        let mut evidence=Vec::new();
+        for index in 0..3 {let id=ObjectId::parse_str(bridges[index]["bridge"]["trial_id"].as_str().unwrap()).unwrap();
+            let generation=bridges[index]["bridge"]["generation"].as_u64().unwrap();
+            let (watch,sockets)=native[index].bridge_evidence(id,generation).expect("exact active manager");evidence.push((id,watch,sockets));}
+        for node in &nodes {assert_eq!(support::trial_slots_on_relay(network,ObjectId::parse_str(node).unwrap()),1);}
+        let bridge=ObjectId::parse_str(bridges[1]["bridge"]["trial_id"].as_str().unwrap()).unwrap();
+        let generation=bridges[1]["bridge"]["generation"].as_u64().unwrap();
+        native[1].fail_owned_bridge(bridge,generation).await.expect("actual middle manager failure");
+        direct.recover();let fault=Instant::now();
+        for relay in &native {relay.probe_healthy().await.expect("listener remains healthy during private bridge loss");}
+        loop {
+            pump("a",&mut a,&mut a_out,&mut a_ws,&mut trace,trial,Some(fault),false,&mut held).await;
+            pump("b",&mut b,&mut b_out,&mut b_ws,&mut trace,trial,Some(fault),true,&mut held).await;
+            if held.is_some()&&a.snapshot(trial).phase=="returned"&&b.snapshot(trial).phase=="returned" {break;}
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        // Hold B's REAL generated ACK at the fixture transport. A socket ping
+        // barrier proves A's earlier ACK was processed before inspecting slots.
+        let nonce=b"actual-return-first-ack-barrier";
+        a_ws.send(Message::Ping(nonce.to_vec().into())).await.unwrap();
+        tokio::time::timeout(wait,async {loop {let frame=a_ws.next().await.expect("live barrier WS").unwrap();
+            if matches!(frame,Message::Pong(ref data) if data.as_ref()==nonce) {break;}
+            if let Message::Text(text)=frame {let value:Value=serde_json::from_str(&text).unwrap();assert_ne!(value["t"],"rc:overlay.path_trial_return_finalize","server finalized before both ACKs");}
+        }}).await.expect("first real returned ACK barrier");
+        for node in &nodes {assert_eq!(support::trial_slots_on_relay(network,ObjectId::parse_str(node).unwrap()),1,"one ACK released a relay slot");}
+        for relay in &native {assert_eq!(relay.session_counts().sessions_revoked,0,"one ACK retired a native session");}
+        let message=held.take().unwrap();trace.push(("b".into(),"rc:overlay.path_trial_returned".into()));
+        b_ws.send(Message::Text(serde_json::to_string(&message).unwrap().into())).await.unwrap();
+        loop {
+            pump("a",&mut a,&mut a_out,&mut a_ws,&mut trace,trial,Some(fault),false,&mut held).await;
+            pump("b",&mut b,&mut b_out,&mut b_ws,&mut trace,trial,Some(fault),false,&mut held).await;
+            if a.snapshot(trial).phase=="retired"&&b.snapshot(trial).phase=="retired" {break;}
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(a.snapshot(trial).direct_sender&&b.snapshot(trial).direct_sender);
+        assert!(!a.snapshot(trial).managed&&!b.snapshot(trial).managed);
+        for (index,ws) in relays.iter_mut().enumerate() {
+            let revoke=recv_t(ws,"rc:overlay.relay_revoke",wait).await.expect("all four relay revokes");
+            assert_eq!(revoke["vni"],serves[index]["vni"]);native[index].serve(serde_json::from_value(revoke).unwrap(),None);
+        }
+        for (index,ws) in relays.iter_mut().take(3).enumerate() {
+            let revoke=recv_t(ws,"rc:overlay.relay_bridge_revoke",wait).await.expect("all three bridge revokes");
+            assert_eq!(revoke["trial_id"],bridges[index]["bridge"]["trial_id"]);assert_eq!(revoke["generation"],bridges[index]["bridge"]["generation"]);
+            native[index].serve(serde_json::from_value(revoke).unwrap(),None);
+        }
+        for (index,(id,watch,sockets)) in evidence.into_iter().enumerate() {native[index].assert_bridge_retired(id,watch,sockets).await.expect("all manager registrations and sockets retired");}
+        for (owner,tag) in [("a","rc:overlay.path_trial_return_ready"),("b","rc:overlay.path_trial_return_ready"),("a","rc:overlay.path_trial_returned"),("b","rc:overlay.path_trial_returned"),("server->a","rc:overlay.path_trial_return_finalize"),("server->b","rc:overlay.path_trial_return_finalize")] {
+            assert!(trace.iter().any(|(observed,kind)|observed==owner&&kind==tag),"missing real return phase {owner} {tag}");
+        }
+        for node in &nodes {assert_eq!(support::trial_slots_on_relay(network,ObjectId::parse_str(node).unwrap()),0);}
+        for relay in &native {
+            tokio::time::timeout(Duration::from_secs(2),async {
+                while relay.session_counts().sessions_revoked!=1 {tokio::time::sleep(Duration::from_millis(10)).await;}
+            }).await.expect("native session revoke applied");
+            relay.probe_healthy().await.unwrap();
+        }
+        drop(native); // Post-return payload cannot be secretly carried by any relay.
+        let packet=composite_ip(a_ip,b_ip,b"after real bilateral return client P2P forward");
+        assert!(a.send_packet(&packet).await);assert_eq!(b.receive_packet().await.unwrap(),packet);
+        let packet=composite_ip(b_ip,a_ip,b"after real bilateral return client P2P reverse");
+        assert!(b.send_packet(&packet).await);assert_eq!(a.receive_packet().await.unwrap(),packet);
+    }).await.expect("bounded four-relay actual-client lifecycle exceeded180 seconds");
+}
+
 /// The complete four-relay trial carries real encrypted packets before and
 /// after bilateral commit; only the second return ACK retires all resources.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
