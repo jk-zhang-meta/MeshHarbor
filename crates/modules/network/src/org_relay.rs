@@ -576,6 +576,13 @@ pub mod candidate_test_support {
     pub async fn recheck_zones_fixture(state: &NetworkState, agent: ObjectId) {
         recheck_zones(state, agent, "fixture-zone-recheck").await;
     }
+    pub fn schedule_trial_zone_retry_fixture(state: &NetworkState, id: ObjectId) {
+        schedule_trial_zone_retry(state, std::collections::HashSet::from([id]));
+    }
+    pub fn trial_zone_retry_state_fixture(state: &NetworkState) -> (bool, bool) {
+        let retry = state.org_relay.trial_zone_retry.lock().unwrap();
+        (retry.running, retry.rescan)
+    }
     /// Test the real full-path reauthorization with an already-held fixture.
     pub async fn reauthorize_nhop_fixture(state: &NetworkState, requester: ObjectId, peer: ObjectId, session: &OrgRelaySession) -> bool {
         let Ok(a) = state.overlay_nodes.base.find_by_id(requester).await else { return false };
@@ -3829,8 +3836,10 @@ fn schedule_trial_zone_retry(state: &NetworkState, ids: std::collections::HashSe
     let generation = state.org_relay.trial_zone_retry.lock().unwrap_or_else(|e| e.into_inner()).request(ids);
     let Some(generation) = generation else { return };
     let state = state.clone();
-    let mut guard = TrialZoneWorkerGuard { state: state.clone(), generation, started: false, completed: false };
+    let guard = TrialZoneWorkerGuard { state: state.clone(), generation, started: false, completed: false };
     tokio::spawn(async move {
+        // Capture the whole Drop guard, rather than separate Copy fields.
+        let mut guard = guard;
         guard.started = true;
         let mut deferred = std::collections::HashSet::<ObjectId>::new();
         let mut retry_at = tokio::time::Instant::now();

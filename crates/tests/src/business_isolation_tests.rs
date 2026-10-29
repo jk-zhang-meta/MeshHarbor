@@ -1785,6 +1785,24 @@ async fn staged_session_zone_epoch_change_revokes_invalid_snapshot_not_new_gener
     }
 }
 
+/// The actual scheduler owns its recovery guard from spawn through completion.
+#[tokio::test]
+async fn staged_trial_zone_worker_keeps_its_guard_until_the_worker_finishes() {
+    use roomler_ai_mod_network::org_relay::candidate_test_support as support;
+    let rig = Rig::up("iso-trial-zone-guard", "enforce").await;
+    let state = rig.app.state.network();
+    // No await between spawn and this observation: on this current-thread
+    // runtime the worker has not been polled, so only premature Drop can clear it.
+    support::schedule_trial_zone_retry_fixture(state, ObjectId::new());
+    assert_eq!(support::trial_zone_retry_state_fixture(state), (true, false), "the recovery guard must be owned by the unpolled worker");
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while support::trial_zone_retry_state_fixture(state).0 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }).await.expect("missing trial completes its normal recheck");
+    assert_eq!(support::trial_zone_retry_state_fixture(state), (false, false), "normal completion must not request an abnormal-exit rescan");
+}
+
 /// Drive the real cross-zone request handler through a three-relay chain with
 /// one same-zone edge and one approved crossing. This checks control messages,
 /// per-crossing audit, actual WireGuard data, and policy withdrawal.
