@@ -4044,7 +4044,19 @@ async fn staged_nhop_trial_zone_fixture_rechecks_middle_and_members() {
 /// Both real client owners discover and run a four-relay native WG trial,
 /// then return through measured bridge failure and the server's bilateral 2PC.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[cfg(target_os = "linux")]
 async fn staged_graph_multihop_discovery_bilateral_client_wg_commit_return() {
+    run_multihop_discovery_bilateral_client_wg(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[cfg(target_os = "linux")]
+async fn staged_graph_multihop_discovery_bilateral_client_wg_commit_return_at_exit() {
+    run_multihop_discovery_bilateral_client_wg(true).await;
+}
+
+#[cfg(target_os = "linux")]
+async fn run_multihop_discovery_bilateral_client_wg(flipped: bool) {
     tokio::time::timeout(Duration::from_secs(180), async {
         use crate::peer_relay_mint_tests::{CompositeDirectLink, composite_ip};
         use roomler_ai_mod_network::org_relay::candidate_test_support as support;
@@ -4083,7 +4095,7 @@ async fn staged_graph_multihop_discovery_bilateral_client_wg_commit_return() {
                 if let Ok(message)=serde_json::from_value(value) { owner.control(message).await; }
             }
         }
-        let slug="iso-nhop-client-native"; let rig=Rig::up(slug,"enforce").await;
+        let slug=if flipped {"iso-nhop-client-native-exit"}else{"iso-nhop-client-native"}; let rig=Rig::up(slug,"enforce").await;
         let mut native=Vec::new(); let mut relays=Vec::new(); let mut agents=Vec::new(); let mut nodes=Vec::new();
         for index in 0..4u8 {
             let relay=NativeRelay::start().await.unwrap(); let name=format!("{slug}-r{index}");
@@ -4130,21 +4142,27 @@ async fn staged_graph_multihop_discovery_bilateral_client_wg_commit_return() {
         tokio::time::timeout(Duration::from_secs(8),async {while !a.handshake_done()||!b.handshake_done(){tokio::time::sleep(Duration::from_millis(10)).await;}}).await.expect("real incumbent bilateral WG handshake");
         let direct_packet=composite_ip(a_ip,b_ip,b"native client incumbent WG before discovery");
         assert!(a.send_packet(&direct_packet).await);assert_eq!(b.receive_packet().await.unwrap(),direct_packet);
+        let direct_reverse=composite_ip(b_ip,a_ip,b"native client reverse incumbent WG before discovery");
+        assert!(b.send_packet(&direct_reverse).await);assert_eq!(a.receive_packet().await.unwrap(),direct_reverse);
         let asked=Instant::now();
         for page in 0..2 {
             if page==1 {tokio::time::sleep_until(tokio::time::Instant::from_std(asked+Duration::from_secs(61))).await;}
-            a.request_discovery().await;
-            let request=tokio::time::timeout(Duration::from_secs(2),a_out.recv()).await.unwrap().expect("actual paced discovery request");
+            let (requester,output,ws)=if flipped {(&mut b,&mut b_out,&mut b_ws)}else{(&mut a,&mut a_out,&mut a_ws)};
+            requester.request_discovery().await;
+            let request=tokio::time::timeout(Duration::from_secs(2),output.recv()).await.unwrap().expect("actual paced discovery request");
             assert!(matches!(request,ClientMsg::OverlayOrgRelayDiscover{..}));
-            a_ws.send(Message::Text(serde_json::to_string(&request).unwrap().into())).await.unwrap();
-            let metadata=recv_t(&mut a_ws,"rc:overlay.org_relay_candidates",Duration::from_secs(8)).await.expect("production discovery response");
-            if page==1 {assert_eq!(metadata["candidates"][0]["path"]["relay_node_ids"],json!(nodes),"actual first graph candidate must carry all four relays");}
-            a.receive_discovery(serde_json::from_value(metadata).unwrap());
+            ws.send(Message::Text(serde_json::to_string(&request).unwrap().into())).await.unwrap();
+            let metadata=recv_t(ws,"rc:overlay.org_relay_candidates",Duration::from_secs(8)).await.expect("production discovery response");
+            if page==1 {assert_eq!(metadata["candidates"][0]["path"]["relay_node_ids"],json!(nodes),"actual first graph candidate must carry all four relays");assert_eq!(metadata["candidates"][0]["requester_at_exit"],json!(flipped));}
+            requester.receive_discovery(serde_json::from_value(metadata).unwrap());
         }
-        a.tick().await;
-        let request=tokio::time::timeout(Duration::from_secs(2),a_out.recv()).await.unwrap().expect("actual four-relay client request");
-        assert!(matches!(&request,ClientMsg::OverlayPathTrialRequest{path,requester_at_exit:false,..} if path.relay_node_ids().iter().map(|id|id.to_hex()).collect::<Vec<_>>()==nodes));
-        a_ws.send(Message::Text(serde_json::to_string(&request).unwrap().into())).await.unwrap();
+        {
+            let (requester,output,ws)=if flipped {(&mut b,&mut b_out,&mut b_ws)}else{(&mut a,&mut a_out,&mut a_ws)};
+            requester.tick().await;
+            let request=tokio::time::timeout(Duration::from_secs(2),output.recv()).await.unwrap().expect("actual four-relay client request");
+            assert!(matches!(&request,ClientMsg::OverlayPathTrialRequest{path,requester_at_exit,..} if *requester_at_exit==flipped && path.relay_node_ids().iter().map(|id|id.to_hex()).collect::<Vec<_>>()==nodes));
+            ws.send(Message::Text(serde_json::to_string(&request).unwrap().into())).await.unwrap();
+        }
         let wait=Duration::from_secs(8);let mut serves=Vec::new();let mut bridges=Vec::new();
         for ws in &mut relays {serves.push(recv_t(ws,"rc:overlay.relay_serve",wait).await.expect("all four actual relay grants"));}
         for ws in relays.iter_mut().take(3) {bridges.push(recv_t(ws,"rc:overlay.relay_bridge_serve",wait).await.expect("all three actual bridge grants"));}
@@ -4154,6 +4172,8 @@ async fn staged_graph_multihop_discovery_bilateral_client_wg_commit_return() {
         let mut start_b=recv_t(&mut b_ws,"rc:overlay.path_trial_start",wait).await.expect("responder Start");
         let trial=ObjectId::parse_str(start_a["trial_id"].as_str().unwrap()).unwrap();
         assert_eq!(start_a["path"]["relay_node_ids"],json!(nodes));assert_eq!(start_a["trial_id"],start_b["trial_id"]);
+        assert_eq!(start_a["requester_at_exit"],json!(flipped));assert_eq!(start_b["requester_at_exit"],json!(flipped));
+        assert_eq!(start_a["relay_node_id"],nodes[0]);assert_eq!(start_b["relay_node_id"],nodes[3]);
         start_a["relay_endpoints"]=json!([native[0].endpoint().to_string()]);
         start_b["relay_endpoints"]=json!([native[3].endpoint().to_string()]);
         a.control(serde_json::from_value(start_a).unwrap()).await;b.control(serde_json::from_value(start_b).unwrap()).await;
@@ -4222,7 +4242,12 @@ async fn staged_graph_multihop_discovery_bilateral_client_wg_commit_return() {
             assert!(trace.iter().any(|(observed,kind)|observed==owner&&kind==tag),"missing real return phase {owner} {tag}");
         }
         for node in &nodes {assert_eq!(support::trial_slots_on_relay(network,ObjectId::parse_str(node).unwrap()),0);}
-        for relay in &native {assert_eq!(relay.session_counts().sessions_revoked,1);relay.probe_healthy().await.unwrap();}
+        for relay in &native {
+            tokio::time::timeout(Duration::from_secs(2),async {
+                while relay.session_counts().sessions_revoked!=1 {tokio::time::sleep(Duration::from_millis(10)).await;}
+            }).await.expect("native session revoke applied");
+            relay.probe_healthy().await.unwrap();
+        }
         drop(native); // Post-return payload cannot be secretly carried by any relay.
         let packet=composite_ip(a_ip,b_ip,b"after real bilateral return client P2P forward");
         assert!(a.send_packet(&packet).await);assert_eq!(b.receive_packet().await.unwrap(),packet);
