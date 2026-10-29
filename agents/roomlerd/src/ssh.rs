@@ -380,7 +380,8 @@ async fn accept_loop(
 #[cfg(all(feature = "overlay-netstack", feature = "ssh-server"))]
 type ServeCtx = Option<std::sync::Arc<sshd::Ctx>>;
 #[cfg(all(feature = "overlay-netstack", not(feature = "ssh-server")))]
-type ServeCtx = ();
+#[derive(Clone)]
+struct ServeCtx;
 
 #[cfg(all(feature = "overlay-netstack", not(feature = "ssh-server")))]
 fn build_ctx(cfg: &crate::config::AgentConfig, services: SessionServices) -> ServeCtx {
@@ -389,6 +390,7 @@ fn build_ctx(cfg: &crate::config::AgentConfig, services: SessionServices) -> Ser
         "ssh_enabled is on but this build lacks the `ssh-server` feature — \
          the intercepted port answers with the P1 echo, not SSH"
     );
+    ServeCtx
 }
 
 /// P1 payload, kept for builds without `ssh-server`: prove the path, then get

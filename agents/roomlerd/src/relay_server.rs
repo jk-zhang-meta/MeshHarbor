@@ -918,6 +918,8 @@ pub mod backbone_test_support {
         pub fn rejected_wg_data_count(&self) -> u64 {
             self.running.stats.fixture_rejected_data_count()
         }
+        // One fixture snapshot couples the lifetime watch with its current sockets.
+        #[allow(clippy::type_complexity)]
         pub fn bridge_evidence(
             &self,
             id: ObjectId,

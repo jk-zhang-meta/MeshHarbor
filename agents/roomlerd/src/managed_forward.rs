@@ -311,8 +311,8 @@ async fn serve_tcp(a: Assignment, l: TcpListener, overlay: Option<Arc<dyn Overla
 }
 
 async fn serve_udp(a: Assignment, sock: Arc<UdpSocket>, overlay: Option<Arc<dyn OverlayDial>>) {
-    let mut sessions: HashMap<SocketAddr, (Arc<dyn UdpSession>, Instant, JoinHandle<()>)> =
-        HashMap::new();
+    type UdpFlow = (Arc<dyn UdpSession>, Instant, JoinHandle<()>);
+    let mut sessions: HashMap<SocketAddr, UdpFlow> = HashMap::new();
     let mut buf = vec![0u8; 65535];
     loop {
         let Ok((n, peer)) = sock.recv_from(&mut buf).await else {
