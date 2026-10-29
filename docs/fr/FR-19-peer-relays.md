@@ -16,6 +16,44 @@ this FR is about **replacing that path with a better one** rather than tuning it
 
 ---
 
+## MeshHarbor arbitrary-hop continuation — acceptance still open
+
+The historical P0–P4c result above covers the original peer-relay release. It
+does not establish completion of MeshHarbor's arbitrary-hop routing and trial
+continuation. That work remains in development until coordinated rollout and
+field verification pass.
+
+The continuation keeps one ordered, loop-free relay path and its requester
+orientation through discovery, trial admission, delivery, commit and return.
+Every relay and actual cross-region edge is authorized from current evidence;
+the control plane continues to carry no application plaintext. Computation and
+page budgets must allow a discovery scan to resume, rather than permanently
+hide a valid path beyond the first budget window. Existing peer-relay and
+backbone controls remain the operational gates; no second compatibility mode
+or fixed hop limit is part of this continuation.
+
+The current acceptance oracle is:
+
+- [ ] Production discovery and the actual client enumerate distinct paths with
+  shared first/last relays, resume after budget exhaustion, and refresh revoked
+  candidates without reusing stale authority.
+- [ ] The client-generated complete path reaches the unified trial engine;
+  a Start with the same request ID but different intermediate relays is rejected.
+- [ ] Three- and four-relay encrypted traffic survives bilateral commit;
+  bilateral return releases all relay/bridge reservations and blocks retired data.
+- [ ] Unknown region evidence refuses a new affected trial while retaining a
+  healthy established session; confirmed identity or connection-rule violations
+  still revoke the exact session generation.
+- [ ] The combined implementation passes review and its build, client, actual
+  request, rollback and data-plane checks on the exact release candidate.
+- [ ] Server and node rollout, real network/NAT behavior, fallback, and operator
+  management access are verified in the field with a recoverable release.
+
+Local library and isolated WS/WireGuard results are development evidence. They
+do not tick the combined or field criteria above, and do not change the older
+release's historical status. Detailed mutable attempts and review conclusions
+remain in the task's handoff/evidence records rather than this specification.
+
 ## Goal
 
 Let an org nominate one of its own enrolled nodes as a **peer relay**: a `roomlerd` that
