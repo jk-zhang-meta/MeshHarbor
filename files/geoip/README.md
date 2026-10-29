@@ -65,20 +65,41 @@ build host dropped `GeoLite2-Country.mmdb` here by hand; the GitHub lane
 
 - **Your own** (a licensed GeoIP2 Country, or a GeoLite2 you are entitled
   to use): mount it and set `ROOMLER__STATS__GEOIP_MMDB=/path/to/it.mmdb`.
-- **None**: set `ROOMLER__STATS__GEOIP_MMDB=` (empty). Lookups stop, and
-  no warning is logged.
+- **None**: set `ROOMLER__STATS__GEOIP_MMDB=` (empty). Lookups stop; the
+  security freshness monitor warns that geographic zone evidence is unavailable.
 - ⚠️ An environment variable outranks `config/*.toml`, and the image sets
   this one. `[stats] geoip_mmdb` in a config file cannot override it; set
   the variable.
 
-## Nothing breaks when it is absent
+## Analytics when it is absent
 
 A build without the file (DB-IP unreachable during the build, or a source
 build that skipped the script) produces an image whose analytics report
 `country: unknown` and whose payload carries `geoip: false`, so the
 dashboard says "no GeoIP database" rather than implying every user is in
-one place. The fetch warns and the build goes on; the server logs one
-warning at boot. That is the designed degradation, not an error.
+one place. The fetch warns and the build goes on; the server warns at boot
+and periodically. Analytics remains available, while missing data cannot
+provide geographic zone security evidence.
+
+## Security freshness and updates
+
+The server checks the loaded reader on startup and every 24 hours. It warns if
+metadata is missing or invalid, during the final 30 days of the 120-day
+security validity window, and after expiry. Missing, invalid or expired data
+cannot serve as geographic zone security evidence. The policy outcome depends
+on `app.business_isolation`: `enforce` uses the evidence for enforcement;
+`warn` can log and allow, and `off` can allow. These checks never log an IP
+address and do not reload the database.
+
+The monitor emits `tracing` WARN events, not a guaranteed external alert.
+Subscriber filters, logging queues and downstream collectors can suppress or
+drop events; operators must configure and verify their own alert pipeline.
+
+The image workflows fetch a database when an image is built; this is not a
+scheduled update of a running server. Refreshing a file on disk also does not
+replace the reader already held in memory. Rebuild or provision a fresh image
+or file, then restart the service; check the loaded dataset and warning logs.
+A build alone does not deploy or restart the service.
 
 Country granularity is what the analytics uses. City databases also exist
 (much larger); adopting one would only make sense alongside a deliberate

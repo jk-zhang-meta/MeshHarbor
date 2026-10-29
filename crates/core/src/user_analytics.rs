@@ -103,6 +103,40 @@ pub struct GeoIpSecurityLookup {
     pub country_code: Option<String>,
 }
 
+/// Warn during the last 30 days of the 120-day security validity window.
+const GEOIP_WARN_BEFORE_EXPIRY_SECS: u64 = 30 * 24 * 3600;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GeoIpFreshness {
+    Missing,
+    Invalid,
+    Current,
+    Expiring { remaining_secs: u64 },
+    Expired,
+}
+
+// Keep the boundary identical to business_authority::dataset_current:
+// exactly MAX age is valid, the following second is expired.
+fn geoip_freshness(metadata: Option<(&str, u64)>, now_secs: u64) -> GeoIpFreshness {
+    let Some((database_type, build_epoch)) = metadata else {
+        return GeoIpFreshness::Missing;
+    };
+    if database_type.is_empty() || build_epoch == 0 || build_epoch > now_secs {
+        return GeoIpFreshness::Invalid;
+    }
+    let age = now_secs - build_epoch;
+    let max = crate::business_authority::MAX_GEOIP_DATASET_AGE_SECS;
+    if age > max {
+        GeoIpFreshness::Expired
+    } else if age >= max - GEOIP_WARN_BEFORE_EXPIRY_SECS {
+        GeoIpFreshness::Expiring {
+            remaining_secs: max - age,
+        }
+    } else {
+        GeoIpFreshness::Current
+    }
+}
+
 impl GeoIp {
     /// Open the database named by `stats.geoip_mmdb`. A missing or
     /// unreadable file is logged and degrades to "no geo", because
@@ -133,6 +167,34 @@ impl GeoIp {
             }
         });
         Self { reader }
+    }
+
+    /// Report the loaded reader's security freshness without inspecting or
+    /// logging any address. This does not reload the reader or grant access.
+    pub fn warn_if_dataset_stale(&self) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_secs());
+        let metadata = self
+            .reader
+            .as_ref()
+            .map(|r| (r.metadata.database_type.as_str(), r.metadata.build_epoch));
+        match geoip_freshness(metadata, now) {
+            GeoIpFreshness::Missing => tracing::warn!(
+                "geoip security dataset missing; geographic zone evidence unavailable"
+            ),
+            GeoIpFreshness::Invalid => tracing::warn!(
+                "geoip security dataset metadata or system clock invalid; geographic zone evidence unavailable"
+            ),
+            GeoIpFreshness::Expiring { remaining_secs } => tracing::warn!(
+                remaining_secs,
+                "geoip security dataset approaching expiry; refresh and restart the service"
+            ),
+            GeoIpFreshness::Expired => tracing::warn!(
+                "geoip security dataset expired; geographic zone evidence unavailable until refreshed and restarted"
+            ),
+            GeoIpFreshness::Current => {}
+        }
     }
 
     pub fn enabled(&self) -> bool {
@@ -321,6 +383,41 @@ pub const PAGE_VIEWS: &str = "page_views";
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn geoip_freshness_matches_security_expiry_boundary() {
+        let max = crate::business_authority::MAX_GEOIP_DATASET_AGE_SECS;
+        let built = 1_700_000_000;
+        let meta = Some(("DBIP-Country-Lite", built));
+        assert_eq!(geoip_freshness(None, built), GeoIpFreshness::Missing);
+        assert_eq!(
+            geoip_freshness(Some(("", built)), built),
+            GeoIpFreshness::Invalid
+        );
+        assert_eq!(
+            geoip_freshness(Some(("db", 0)), built),
+            GeoIpFreshness::Invalid
+        );
+        assert_eq!(geoip_freshness(meta, built - 1), GeoIpFreshness::Invalid);
+        assert_eq!(
+            geoip_freshness(meta, built + max - GEOIP_WARN_BEFORE_EXPIRY_SECS - 1),
+            GeoIpFreshness::Current
+        );
+        assert_eq!(
+            geoip_freshness(meta, built + max - GEOIP_WARN_BEFORE_EXPIRY_SECS),
+            GeoIpFreshness::Expiring {
+                remaining_secs: GEOIP_WARN_BEFORE_EXPIRY_SECS
+            }
+        );
+        assert_eq!(
+            geoip_freshness(meta, built + max),
+            GeoIpFreshness::Expiring { remaining_secs: 0 }
+        );
+        assert_eq!(
+            geoip_freshness(meta, built + max + 1),
+            GeoIpFreshness::Expired
+        );
+    }
 
     #[test]
     fn ua_brand_beats_the_engine_it_embeds() {

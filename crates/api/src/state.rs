@@ -208,6 +208,22 @@ impl AppState {
         let geoip = Arc::new(crate::user_analytics::GeoIp::open(
             settings.stats.geoip_mmdb.as_deref(),
         ));
+        // Check the exact reader used for security even when analytics are off.
+        // Reader replacement is not automatic: this task only raises warnings.
+        geoip.warn_if_dataset_stale();
+        let geoip_watch = Arc::downgrade(&geoip);
+        tokio::spawn(async move {
+            let every = std::time::Duration::from_secs(24 * 3600);
+            let mut tick = tokio::time::interval_at(tokio::time::Instant::now() + every, every);
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                tick.tick().await;
+                let Some(geoip) = geoip_watch.upgrade() else {
+                    break;
+                };
+                geoip.warn_if_dataset_stale();
+            }
+        });
 
         let turn_map = Arc::new(build_turn_map(&settings));
         // P6b — live per-region load (written by the /stats poller, consulted
