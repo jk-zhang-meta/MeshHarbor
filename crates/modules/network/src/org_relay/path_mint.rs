@@ -392,13 +392,12 @@ pub(super) async fn mint(
     let delivered = match state.org_relay.delivery_guard.lock() {
         Ok(_guard) => {
             let mut ok = true;
-            #[cfg(feature = "path-planner-test-support")]
-            let mut sent = 0usize;
-            for (target, message) in delivery
+            for (_sent, (target, message)) in delivery
                 .relays
                 .into_iter()
                 .chain(delivery.bridges)
                 .chain(members)
+                .enumerate()
             {
                 if !current() {
                     ok = false;
@@ -407,7 +406,7 @@ pub(super) async fn mint(
                 // The fixture pauses precisely between the check and first
                 // send to test ordering against a concurrent policy revoke.
                 #[cfg(feature = "path-planner-test-support")]
-                if sent == 0 {
+                if _sent == 0 {
                     super::candidate_test_support::pause_nhop_before_first_if_armed(
                         &session.pair_key,
                     );
@@ -415,10 +414,6 @@ pub(super) async fn mint(
                 if !push_control(state, &target, message) {
                     ok = false;
                     break;
-                }
-                #[cfg(feature = "path-planner-test-support")]
-                {
-                    sent += 1;
                 }
             }
             ok && current()
