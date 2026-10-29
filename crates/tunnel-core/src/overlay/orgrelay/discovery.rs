@@ -137,6 +137,15 @@ impl Discovery {
         if pair.cached.as_ref().is_some_and(|(until, cs)| {
             now < *until && cs.iter().any(|c| path_key(c).as_ref() == Some(&key))
         }) {
+            if key.0.relay_node_ids().len() >= 3
+                && let Some(OrgRelayDiscoveryScanWire::Progress { checkpoint, after, .. }) = pair.scan.as_mut()
+            {
+                // Advance graph coverage by the actual queued trial, not by
+                // the last displayed hint. Clear a later budget prefix so it
+                // cannot skip still-unattempted candidates from this page.
+                *checkpoint = None;
+                *after = Some(path_position(&key));
+            }
             pair.attempted = Some(key);
         }
     }
@@ -353,6 +362,7 @@ impl Discovery {
                 let path_page = matches!(pair.scan,
                     Some(OrgRelayDiscoveryScanWire::Progress { scan_next: true, .. }));
                 let legacy_cursor = pair.page_cursor.clone();
+                let requested_progress = pair.scan.clone();
                 if candidates.is_empty() {
                     pair.pending = None;
                     pair.cached = None;
@@ -364,7 +374,19 @@ impl Discovery {
                 let pair = self.pairs.get_mut(&peer).expect("pruned identity remains current");
                 if count > 0 {
                     pair.scan = progress;
-                    if path_page { pair.page_cursor = legacy_cursor; pair.page_after = None; }
+                    if path_page {
+                        pair.page_cursor = legacy_cursor;
+                        pair.page_after = None;
+                        if let Some(OrgRelayDiscoveryScanWire::Progress { checkpoint: requested_checkpoint, after: requested_after, .. }) = requested_progress
+                            && let Some(OrgRelayDiscoveryScanWire::Progress { checkpoint, after, .. }) = pair.scan.as_mut()
+                        {
+                            // Revisit unattempted hints. An empty scan may
+                            // advance CPU progress, but a displayed page alone
+                            // is not evidence that a trial was ever queued.
+                            *checkpoint = requested_checkpoint;
+                            *after = requested_after;
+                        }
+                    }
                 }
                 count
             }
@@ -471,6 +493,25 @@ mod tests {
         let (_, next) = asked(&mut discovery, &peers, later + Duration::from_secs(61)).await;
         discovery.receive_wire_page(&peers, id, next, vec![], 30, None, Some(OrgRelayDiscoveryScanWire::Stale), later + Duration::from_secs(61));
         assert!(discovery.pairs[&id].scan.is_none());
+    }
+
+    #[tokio::test]
+    async fn graph_scan_position_follows_actual_attempt_not_last_displayed_path() {
+        let member = peer(); let id=member.node_id; let peers=HashMap::from([(id,member)]);
+        let now=Instant::now(); let mut d=Discovery::default();
+        let (_,request)=asked(&mut d,&peers,now).await;
+        let start=OrgRelayDiscoveryScanWire::Progress {scan_next:true,checkpoint:None,after:None};
+        d.receive_wire_page(&peers,id,request,vec![],30,None,Some(start),now);
+        let at=now+Duration::from_secs(61); let (_,request)=asked(&mut d,&peers,at).await;
+        let first=OrgRelayCandidateWire {path:RelayPathWire::new(vec![ObjectId::new(),ObjectId::new(),ObjectId::new()]).unwrap(),requester_at_exit:false,endpoints:vec!["8.8.8.8:3478".into()]};
+        let second=OrgRelayCandidateWire {path:RelayPathWire::new(vec![ObjectId::new(),ObjectId::new(),ObjectId::new()]).unwrap(),..first.clone()};
+        let returned=OrgRelayDiscoveryScanWire::Progress {scan_next:false,checkpoint:Some(RelayPathWire::new(vec![ObjectId::new()]).unwrap()),after:Some(second.cursor())};
+        assert_eq!(d.receive_wire_page(&peers,id,request,vec![first.clone(),second],30,None,Some(returned),at),2);
+        assert!(matches!(&d.pairs[&id].scan,Some(OrgRelayDiscoveryScanWire::Progress {checkpoint:None,after:None,..})),"displayed paths advanced coverage without an actual request");
+        d.note_attempt(&peers,id,&first,at);
+        let (_,next)=asked(&mut d,&peers,at+Duration::from_secs(61)).await;
+        assert!(next>request);
+        assert!(matches!(&d.pairs[&id].scan,Some(OrgRelayDiscoveryScanWire::Progress {checkpoint:None,after:Some(cursor),..}) if *cursor==first.cursor()),"last display/budget checkpoint skipped unattempted paths");
     }
 
     #[test]
