@@ -1115,7 +1115,7 @@ impl Default for RcSettings {
     }
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone, Default)]
 pub struct AccountApprovalSettings {
     /// Opt-in deployment policy; unrelated application features are unchanged.
     #[serde(default)]
@@ -1123,15 +1123,6 @@ pub struct AccountApprovalSettings {
     /// Explicit existing user ObjectId. Never inferred from signup order/email.
     #[serde(default)]
     pub owner_user_id: Option<String>,
-}
-
-impl Default for AccountApprovalSettings {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            owner_user_id: None,
-        }
-    }
 }
 
 #[derive(Debug, Deserialize, Clone)]

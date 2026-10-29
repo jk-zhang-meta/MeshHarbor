@@ -256,6 +256,8 @@ pub struct ManagementChannel<'a> {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+// Keep the existing Copy evidence-request interface; boxing changes its contract.
+#[allow(clippy::large_enum_variant)]
 pub enum Request<'a> { Business(BusinessRequest<'a>), Management(ManagementChannel<'a>) }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
