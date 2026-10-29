@@ -13,6 +13,193 @@ use futures::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
+/// Normal authenticated hello publication must reach the ordinary Fleet DTO,
+/// without treating this public identity as a capability or an SSH grant.
+#[tokio::test]
+async fn fleet_hostkey_registered_hello_is_public_member_metadata_and_scoped() {
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    let app = TestApp::spawn().await;
+    let tenant = app.seed_tenant("fleet-hostkey").await;
+    let other = app.seed_tenant("fleet-hostkey-other").await;
+    let (agent_id, token) = enroll(&app, &tenant, "fleet-hostkey-native-identity").await;
+    let path = format!("/api/tenant/{}/agent/{agent_id}", tenant.tenant_id);
+    let list_path = format!("/api/tenant/{}/agent?page=1&per_page=100", tenant.tenant_id);
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&11u32.to_be_bytes());
+    bytes.extend_from_slice(b"ssh-ed25519");
+    bytes.extend_from_slice(&32u32.to_be_bytes());
+    bytes.extend_from_slice(&[7u8; 32]);
+    let first = format!("ssh-ed25519 {} fixture-first", STANDARD.encode(&bytes));
+    bytes[19..].fill(9);
+    let second = format!("ssh-ed25519 {} fixture-refreshed", STANDARD.encode(&bytes));
+    let empty = String::new();
+    for key in [&first, &second, &empty] {
+        let url = format!(
+            "ws://{}/ws?token={}&role=agent",
+            app.addr,
+            urlencode(&token)
+        );
+        let (mut ws, _) = connect_async(&url).await.unwrap();
+        ws.send(Message::Text(
+            json!({
+                "t":"rc:agent.hello", "machine_name":"hostkey fixture", "os":"linux",
+                "agent_version":"0.4.151", "displays":[], "ssh_host_pubkey":key,
+                "caps":{"hw_encoders":[],"codecs":["h264"],"has_input_permission":true,
+                        "supports_clipboard":false,"supports_file_transfer":false,
+                        "max_simultaneous_sessions":1,"rpc":["ssh"]}
+            })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let response = app
+                .auth_get(&path, &tenant.member.access_token)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                200,
+                "ordinary member retains read access"
+            );
+            let row: Value = response.json().await.unwrap();
+            if row["is_online"] == true {
+                assert!(
+                    row["ssh_host_pubkey"].is_string(),
+                    "registered host key must be an explicit top-level DTO string, even when empty"
+                );
+                if row["ssh_host_pubkey"] == key.as_str() {
+                    assert!(row["capabilities"].get("ssh_host_pubkey").is_none());
+                    for private in [
+                        "agent_token",
+                        "agent_token_hash",
+                        "ssh_host_key",
+                        "overlay_wg_secret_key",
+                    ] {
+                        assert!(
+                            row.get(private).is_none(),
+                            "private field leaked: {private}"
+                        );
+                    }
+                    break;
+                }
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "authenticated hello metadata did not refresh"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        let list: Value = app
+            .auth_get(&list_path, &tenant.member.access_token)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let row = list["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["id"] == agent_id)
+            .unwrap();
+        assert_eq!(row["ssh_host_pubkey"], key.as_str());
+        let denied = app
+            .client
+            .put(app.url(&path))
+            .bearer_auth(&tenant.member.access_token)
+            .json(&json!({"tags":["no-escalation"]}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            denied.status(),
+            403,
+            "metadata read does not add MANAGE_AGENTS"
+        );
+        let changed: Value = app
+            .client
+            .put(app.url(&path))
+            .bearer_auth(&tenant.admin.access_token)
+            .json(&json!({"tags":["fixture"]}))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(
+            changed["agent"]["ssh_host_pubkey"],
+            key.as_str(),
+            "admin update reuses the same DTO"
+        );
+        ws.close(None).await.unwrap();
+    }
+    assert_eq!(
+        reqwest::Client::new()
+            .get(app.url(&path))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        401
+    );
+    assert_eq!(
+        app.auth_get(&path, &other.admin.access_token)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        403
+    );
+    let foreign_id_path = format!("/api/tenant/{}/agent/{agent_id}", other.tenant_id);
+    assert_eq!(
+        app.auth_get(&foreign_id_path, &other.admin.access_token)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        404
+    );
+    assert_eq!(
+        app.client
+            .delete(app.url(&path))
+            .bearer_auth(&tenant.admin.access_token)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+    assert_eq!(
+        app.auth_get(&path, &tenant.member.access_token)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        404
+    );
+    let list: Value = app
+        .auth_get(&list_path, &tenant.member.access_token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        !list["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["id"] == agent_id)
+    );
+}
+
 fn urlencode(s: &str) -> String {
     s.replace('+', "%2B")
         .replace('/', "%2F")
