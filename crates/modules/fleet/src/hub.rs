@@ -1062,12 +1062,18 @@ impl Hub {
         // Keep the identity comparison and removal under the same DashMap
         // shard lock: a replacement must not slip between them.
         let removed = match tx {
-            Some(expected_tx) => self.inner.agents.remove_if(&agent_id, |_, agent| {
-                let matches = ptr_eq(&agent.tx, expected_tx);
-                #[cfg(test)]
-                if matches { tests::pause_agent_remove_if_armed(agent_id); }
-                matches
-            }).is_some(),
+            Some(expected_tx) => self
+                .inner
+                .agents
+                .remove_if(&agent_id, |_, agent| {
+                    let matches = ptr_eq(&agent.tx, expected_tx);
+                    #[cfg(test)]
+                    if matches {
+                        tests::pause_agent_remove_if_armed(agent_id);
+                    }
+                    matches
+                })
+                .is_some(),
             None => self.inner.agents.remove(&agent_id).is_some(),
         };
         if !removed && tx.is_some() {
@@ -6968,19 +6974,30 @@ mod tests {
 
     // Test-only pause inside the actual DashMap conditional-removal closure.
     // A fresh ObjectId scopes the hook to this test's own registry entry.
-    type RemovePause = (ObjectId, std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>);
+    type RemovePause = (
+        ObjectId,
+        std::sync::mpsc::Sender<()>,
+        std::sync::mpsc::Receiver<()>,
+    );
     fn remove_pause() -> &'static std::sync::Mutex<Option<RemovePause>> {
-        static PAUSE: std::sync::OnceLock<std::sync::Mutex<Option<RemovePause>>> = std::sync::OnceLock::new();
+        static PAUSE: std::sync::OnceLock<std::sync::Mutex<Option<RemovePause>>> =
+            std::sync::OnceLock::new();
         PAUSE.get_or_init(|| std::sync::Mutex::new(None))
     }
     pub(super) fn pause_agent_remove_if_armed(agent: ObjectId) {
         let pause = {
             let mut slot = remove_pause().lock().unwrap();
-            if slot.as_ref().is_some_and(|entry| entry.0 == agent) { slot.take() } else { None }
+            if slot.as_ref().is_some_and(|entry| entry.0 == agent) {
+                slot.take()
+            } else {
+                None
+            }
         };
         if let Some((_, reached, resume)) = pause {
             reached.send(()).unwrap();
-            resume.recv_timeout(Duration::from_secs(5)).expect("test must resume conditional remove");
+            resume
+                .recv_timeout(Duration::from_secs(5))
+                .expect("test must resume conditional remove");
         }
     }
 
@@ -6990,23 +7007,31 @@ mod tests {
         use std::{sync::mpsc, thread};
         let hub = test_hub().await;
         let (agent, tenant, owner) = (ObjectId::new(), ObjectId::new(), ObjectId::new());
-        let (old, _cancel, _rx) = hub.register_agent(agent, tenant, owner, OsKind::Linux, 3, false, false);
+        let (old, _cancel, _rx) =
+            hub.register_agent(agent, tenant, owner, OsKind::Linux, 3, false, false);
         let (reached_tx, reached_rx) = mpsc::channel();
         let (resume_tx, resume_rx) = mpsc::channel();
         *remove_pause().lock().unwrap() = Some((agent, reached_tx, resume_rx));
         let old_hub = hub.clone();
         let old_thread = thread::spawn(move || old_hub.unregister_agent(agent, Some(&old)));
-        reached_rx.recv_timeout(Duration::from_secs(2)).expect("remove predicate reached");
+        reached_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("remove predicate reached");
         // Unlike a fixed sleep, this directly observes that the predicate is
         // inside the map's write lock, before the removal has completed.
-        assert!(matches!(hub.inner.agents.try_get_mut(&agent), dashmap::try_result::TryResult::Locked));
+        assert!(matches!(
+            hub.inner.agents.try_get_mut(&agent),
+            dashmap::try_result::TryResult::Locked
+        ));
         let (started_tx, started_rx) = mpsc::channel();
         let new_hub = hub.clone();
         let new_thread = thread::spawn(move || {
             started_tx.send(()).unwrap();
             new_hub.register_agent(agent, tenant, owner, OsKind::Linux, 3, false, false)
         });
-        started_rx.recv_timeout(Duration::from_secs(2)).expect("replacement thread started");
+        started_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("replacement thread started");
         resume_tx.send(()).unwrap();
         assert!(old_thread.join().unwrap());
         let (new, _cancel, _rx) = new_thread.join().unwrap();
@@ -7108,7 +7133,13 @@ mod tests {
         let hub = test_hub().await;
         let agent_id = ObjectId::new();
         let (tx, _cancel, rx) = hub.register_agent(
-            agent_id, ObjectId::new(), ObjectId::new(), OsKind::Linux, 3, false, false,
+            agent_id,
+            ObjectId::new(),
+            ObjectId::new(),
+            OsKind::Linux,
+            3,
+            false,
+            false,
         );
         drop(rx);
         assert!(hub.unregister_agent(agent_id, Some(&tx)));

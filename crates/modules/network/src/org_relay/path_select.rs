@@ -43,7 +43,13 @@ pub(super) fn select_for_mint(
 fn checked_edge_endpoints<'a>(
     graph: &'a super::path_graph::EdgeGraph,
     edge: &super::path_graph::GraphEdge,
-) -> Result<(&'a super::path_graph::EligibleRelay, &'a super::path_graph::EligibleRelay), Deny> {
+) -> Result<
+    (
+        &'a super::path_graph::EligibleRelay,
+        &'a super::path_graph::EligibleRelay,
+    ),
+    Deny,
+> {
     let from = graph.relays.get(edge.from).ok_or(Deny::PolicyUnreadable)?;
     let to = graph.relays.get(edge.to).ok_or(Deny::PolicyUnreadable)?;
     Ok((from, to))
@@ -270,17 +276,35 @@ mod checked_edge_tests {
         let node_id = ObjectId::new();
         let graph = EdgeGraph {
             relays: vec![EligibleRelay {
-                node_id, agent_id: ObjectId::new(), zone: None, bridge_ready: false,
-                implicit: false, approved_edges: Vec::new(),
+                node_id,
+                agent_id: ObjectId::new(),
+                zone: None,
+                bridge_ready: false,
+                implicit: false,
+                approved_edges: Vec::new(),
             }],
             edges: Vec::new(),
         };
-        let edge = |from, to| GraphEdge { from, to, endpoint: "10.0.0.1:3478".into(), cross_border: false };
+        let edge = |from, to| GraphEdge {
+            from,
+            to,
+            endpoint: "10.0.0.1:3478".into(),
+            cross_border: false,
+        };
         let (from, to) = checked_edge_endpoints(&graph, &edge(0, 0)).expect("valid indexes");
         assert_eq!(from.node_id, node_id);
         assert_eq!(to.node_id, node_id);
-        assert!(matches!(checked_edge_endpoints(&graph, &edge(1, 0)), Err(Deny::PolicyUnreadable)));
-        assert!(matches!(checked_edge_endpoints(&graph, &edge(0, 1)), Err(Deny::PolicyUnreadable)));
-        assert!(matches!(checked_edge_endpoints(&graph, &edge(usize::MAX, usize::MAX)), Err(Deny::PolicyUnreadable)));
+        assert!(matches!(
+            checked_edge_endpoints(&graph, &edge(1, 0)),
+            Err(Deny::PolicyUnreadable)
+        ));
+        assert!(matches!(
+            checked_edge_endpoints(&graph, &edge(0, 1)),
+            Err(Deny::PolicyUnreadable)
+        ));
+        assert!(matches!(
+            checked_edge_endpoints(&graph, &edge(usize::MAX, usize::MAX)),
+            Err(Deny::PolicyUnreadable)
+        ));
     }
 }

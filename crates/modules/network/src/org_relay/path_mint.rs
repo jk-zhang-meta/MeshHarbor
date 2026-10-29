@@ -480,7 +480,7 @@ pub(super) async fn reauthorize(
         return Err(ReauthorizationError::Unavailable);
     }
     match super::session_zone::check(state, session).await {
-        super::session_zone::Decision::Fits => {},
+        super::session_zone::Decision::Fits => {}
         super::session_zone::Decision::Uncertain => return Err(ReauthorizationError::Unavailable),
         super::session_zone::Decision::Invalid => return Err(ReauthorizationError::Denied),
     }
@@ -572,8 +572,10 @@ pub(super) async fn reauthorize(
     };
     let first =
         member_zone(session.members[0].party.node_id).ok_or(ReauthorizationError::Unavailable)?;
-    let last = member_zone(session.members[1].party.node_id).ok_or(ReauthorizationError::Unavailable)?;
-    let (Some(first_relay), Some(last_relay)) = (relays[0].1.zone, relays[relays.len() - 1].1.zone) else {
+    let last =
+        member_zone(session.members[1].party.node_id).ok_or(ReauthorizationError::Unavailable)?;
+    let (Some(first_relay), Some(last_relay)) = (relays[0].1.zone, relays[relays.len() - 1].1.zone)
+    else {
         return Err(ReauthorizationError::Unavailable);
     };
     if first_relay != first || last_relay != last {
