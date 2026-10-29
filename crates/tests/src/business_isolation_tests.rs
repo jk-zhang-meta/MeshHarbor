@@ -1951,18 +1951,16 @@ async fn staged_graph_actual_three_relay_mint_audits_and_revokes_each_edge() {
     tokio::time::timeout(Duration::from_secs(12), async {
         loop {
             wg_a.send_ip_packet(&forward).await;
-            if let Ok(Some(got)) = tokio::time::timeout(Duration::from_millis(150), received_b.recv()).await {
-                if got == forward { break; }
-            }
+            if let Ok(Some(got)) = tokio::time::timeout(Duration::from_millis(150), received_b.recv()).await
+                && got == forward { break; }
         }
     }).await.expect("actual forward WG packet across three native relays");
     let backward = packet(ip_b, ip_a, b"three relay actual WireGuard reverse");
     tokio::time::timeout(Duration::from_secs(8), async {
         loop {
             wg_b.send_ip_packet(&backward).await;
-            if let Ok(Some(got)) = tokio::time::timeout(Duration::from_millis(150), received_a.recv()).await {
-                if got == backward { break; }
-            }
+            if let Ok(Some(got)) = tokio::time::timeout(Duration::from_millis(150), received_a.recv()).await
+                && got == backward { break; }
         }
     }).await.expect("actual reverse WG packet across three native relays");
     let middle_conn = support::current_connection_id(network, middle_agent_id).unwrap();
@@ -1976,9 +1974,8 @@ async fn staged_graph_actual_three_relay_mint_audits_and_revokes_each_edge() {
     tokio::time::timeout(Duration::from_secs(3), async {
         loop {
             wg_a.send_ip_packet(&during_unknown).await;
-            if let Ok(Some(got)) = tokio::time::timeout(Duration::from_millis(150), received_b.recv()).await {
-                if got == during_unknown { break; }
-            }
+            if let Ok(Some(got)) = tokio::time::timeout(Duration::from_millis(150), received_b.recv()).await
+                && got == during_unknown { break; }
         }
     }).await.expect("uncertain geography must not interrupt established encrypted data");
     network.org_relay.bind_live_conn(middle_agent_id, &middle_conn);
@@ -2548,11 +2545,13 @@ async fn staged_graph_off_warn_cross_zone_actual_wg_and_warn_only() {
         };
         let forward = packet(ip_a, ip_b, b"off-warn cross-zone WG forward");
         tokio::time::timeout(Duration::from_secs(12), async { loop { wg_a.send_ip_packet(&forward).await;
-            if let Ok(Some(got)) = tokio::time::timeout(Duration::from_millis(150), received_b.recv()).await { if got == forward { break; } }
+            if let Ok(Some(got)) = tokio::time::timeout(Duration::from_millis(150), received_b.recv()).await
+                && got == forward { break; }
         }}).await.expect("cross-zone forward WG");
         let backward = packet(ip_b, ip_a, b"off-warn cross-zone WG reverse");
         tokio::time::timeout(Duration::from_secs(8), async { loop { wg_b.send_ip_packet(&backward).await;
-            if let Ok(Some(got)) = tokio::time::timeout(Duration::from_millis(150), received_a.recv()).await { if got == backward { break; } }
+            if let Ok(Some(got)) = tokio::time::timeout(Duration::from_millis(150), received_a.recv()).await
+                && got == backward { break; }
         }}).await.expect("cross-zone reverse WG");
         let (status, body) = put(&rig.app, &path(&agents[1]), &rig.seeded.admin.access_token,
             json!({"serve":true,"approved_backbone_edges":[{"relay_agent_id":agents[2], "endpoint":native[2].underlay_endpoint().to_string(), "cross_border":false}]})).await;
@@ -3053,8 +3052,8 @@ async fn staged_cross_border_trial_audit_failure_and_timeout_fail_closed() {
                 }
             }
         }
-        tokio::join!(assert_no_trial_frames(&mut l.gz, &slug), assert_no_trial_frames(&mut l.hk, &slug),
-            assert_no_trial_frames(&mut l.cn, &slug), assert_no_trial_frames(&mut l.us, &slug));
+        tokio::join!(assert_no_trial_frames(&mut l.gz, slug), assert_no_trial_frames(&mut l.hk, slug),
+            assert_no_trial_frames(&mut l.cn, slug), assert_no_trial_frames(&mut l.us, slug));
         assert_eq!(support::trial_slots_on_relay(network, gz), 0, "{slug}: ingress capacity leak");
         assert_eq!(support::trial_slots_on_relay(network, hk), 0, "{slug}: exit capacity leak");
         assert!(l.audit_reasons("mint").await.is_empty(), "{slug}: simulated failed audit cannot be successful");
@@ -4106,14 +4105,14 @@ async fn staged_nhop_trial_zone_fixture_rechecks_middle_and_members() {
             for ws in &mut relays {quiet(ws,&slug).await;} quiet(&mut a,&slug).await; quiet(&mut b,&slug).await;
         } else {
             let wait=Duration::from_secs(8);
-            for i in 0..4 {
+            for (i, relay) in relays.iter_mut().enumerate().take(4) {
                 let expected=if i==0 {session.vni}else{session.hops[i-1].vni};
                 let revoke=if i==1 && case!="member_changed" {before_netmap.iter().find(|v|v["t"]=="rc:overlay.relay_revoke").cloned()}else{None};
-                let revoke=match revoke {Some(v)=>v,None=>recv_t(&mut relays[i],"rc:overlay.relay_revoke",wait).await.expect("relay revoke")};
+                let revoke=match revoke {Some(v)=>v,None=>recv_t(relay,"rc:overlay.relay_revoke",wait).await.expect("relay revoke")};
                 assert_eq!(revoke["vni"],expected,"{slug} relay {i}");
                 if i<3 {
                     let bridge=if i==1 && case!="member_changed" {before_netmap.iter().find(|v|v["t"]=="rc:overlay.relay_bridge_revoke").cloned()}else{None};
-                    let bridge=match bridge {Some(v)=>v,None=>recv_t(&mut relays[i],"rc:overlay.relay_bridge_revoke",wait).await.expect("bridge revoke")};
+                    let bridge=match bridge {Some(v)=>v,None=>recv_t(relay,"rc:overlay.relay_bridge_revoke",wait).await.expect("bridge revoke")};
                     assert_eq!(bridge["trial_id"],session.hops[i].bridge_id.to_hex());
                     let generation=if i==0{session.generation}else{session.hops[i-1].generation};assert_eq!(bridge["generation"],generation);
                 }
@@ -4202,11 +4201,13 @@ async fn staged_nhop_trial_actual_wg_commit_and_bilateral_return() {
     };
     let forward=packet(ip_a,ip_b,b"four relay trial WG forward");
     tokio::time::timeout(Duration::from_secs(10),async { loop { wg_a.send_ip_packet(&forward).await;
-        if let Ok(Some(got))=tokio::time::timeout(Duration::from_millis(100),received_b.recv()).await { if got==forward { break; } }
+        if let Ok(Some(got))=tokio::time::timeout(Duration::from_millis(100),received_b.recv()).await
+            && got==forward { break; }
     }}).await.expect("real four relay forward data");
     let reverse=packet(ip_b,ip_a,b"four relay trial WG reverse");
     tokio::time::timeout(Duration::from_secs(8),async { loop { wg_b.send_ip_packet(&reverse).await;
-        if let Ok(Some(got))=tokio::time::timeout(Duration::from_millis(100),received_a.recv()).await { if got==reverse { break; } }
+        if let Ok(Some(got))=tokio::time::timeout(Duration::from_millis(100),received_a.recv()).await
+            && got==reverse { break; }
     }}).await.expect("real four relay reverse data");
     async fn signal(ws:&mut Ws,t:&str,id:&Value,return_id:Option<&str>) {
         let mut v=json!({"t":t,"trial_id":id});if let Some(r)=return_id {v["return_id"]=json!(r);}
@@ -4246,11 +4247,13 @@ async fn staged_nhop_trial_actual_wg_commit_and_bilateral_return() {
     for ws in [&mut a,&mut b] { assert_eq!(recv_t(ws,"rc:overlay.path_trial_finalize",wait).await.unwrap()["trial_id"],id); }
     let committed_forward=packet(ip_a,ip_b,b"committed four relay WG forward");
     tokio::time::timeout(Duration::from_secs(8),async { loop { wg_a.send_ip_packet(&committed_forward).await;
-        if let Ok(Some(got))=tokio::time::timeout(Duration::from_millis(100),received_b.recv()).await { if got==committed_forward { break; } }
+        if let Ok(Some(got))=tokio::time::timeout(Duration::from_millis(100),received_b.recv()).await
+            && got==committed_forward { break; }
     }}).await.expect("committed four relay forward data");
     let committed_reverse=packet(ip_b,ip_a,b"committed four relay WG reverse");
     tokio::time::timeout(Duration::from_secs(8),async { loop { wg_b.send_ip_packet(&committed_reverse).await;
-        if let Ok(Some(got))=tokio::time::timeout(Duration::from_millis(100),received_a.recv()).await { if got==committed_reverse { break; } }
+        if let Ok(Some(got))=tokio::time::timeout(Duration::from_millis(100),received_a.recv()).await
+            && got==committed_reverse { break; }
     }}).await.expect("committed four relay reverse data");
     let mut bridge_evidence=Vec::new();
     for i in 0..3 {
@@ -4290,11 +4293,13 @@ async fn staged_nhop_trial_actual_wg_commit_and_bilateral_return() {
     }
     let pending_forward=packet(ip_a,ip_b,b"one return ACK four relay forward");
     tokio::time::timeout(Duration::from_secs(8),async { loop { wg_a.send_ip_packet(&pending_forward).await;
-        if let Ok(Some(got))=tokio::time::timeout(Duration::from_millis(100),received_b.recv()).await { if got==pending_forward { break; } }
+        if let Ok(Some(got))=tokio::time::timeout(Duration::from_millis(100),received_b.recv()).await
+            && got==pending_forward { break; }
     }}).await.expect("one return ACK preserves forward data");
     let pending_reverse=packet(ip_b,ip_a,b"one return ACK four relay reverse");
     tokio::time::timeout(Duration::from_secs(8),async { loop { wg_b.send_ip_packet(&pending_reverse).await;
-        if let Ok(Some(got))=tokio::time::timeout(Duration::from_millis(100),received_a.recv()).await { if got==pending_reverse { break; } }
+        if let Ok(Some(got))=tokio::time::timeout(Duration::from_millis(100),received_a.recv()).await
+            && got==pending_reverse { break; }
     }}).await.expect("one return ACK preserves reverse data");
     for relay in &native {assert_eq!(relay.session_counts().sessions_revoked,0,"one ACK retired a native session");}
     for (i,(bridge_id,_,_)) in bridge_evidence.iter().enumerate() {
@@ -4457,13 +4462,15 @@ async fn staged_graph_same_zone_actual_wg_and_bridge_revocation() {
     let forward = packet(ip_a, ip_b, b"same zone three relay WG forward");
     tokio::time::timeout(Duration::from_secs(12), async {
         loop { wg_a.send_ip_packet(&forward).await;
-            if let Ok(Some(got)) = tokio::time::timeout(Duration::from_millis(150), received_b.recv()).await { if got == forward { break; } }
+            if let Ok(Some(got)) = tokio::time::timeout(Duration::from_millis(150), received_b.recv()).await
+                && got == forward { break; }
         }
     }).await.expect("actual forward WG packet across three same-zone native relays");
     let backward = packet(ip_b, ip_a, b"same zone three relay WG reverse");
     tokio::time::timeout(Duration::from_secs(8), async {
         loop { wg_b.send_ip_packet(&backward).await;
-            if let Ok(Some(got)) = tokio::time::timeout(Duration::from_millis(150), received_a.recv()).await { if got == backward { break; } }
+            if let Ok(Some(got)) = tokio::time::timeout(Duration::from_millis(150), received_a.recv()).await
+                && got == backward { break; }
         }
     }).await.expect("actual reverse WG packet across three same-zone native relays");
     let (status, body) = put(&rig.app, &policy_path(&agents[0]), &rig.seeded.admin.access_token,
