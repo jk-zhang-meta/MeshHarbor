@@ -56,7 +56,8 @@ enum Command {
         /// Base URL of the Roomler API (e.g. https://roomler.live).
         #[arg(long)]
         server: String,
-        /// Enrollment token, as printed by the admin UI.
+        /// Enrollment token, as printed by the admin UI. Use `-` to read it
+        /// from standard input instead of passing the credential in argv.
         #[arg(long)]
         token: String,
         /// Friendly name shown in the admin agents list.
@@ -1583,6 +1584,7 @@ async fn daemon_main() -> Result<()> {
             install_method,
             install_scope,
         } => {
+            let token = enrollment_token_input(token, std::io::stdin().lock())?;
             enroll_cmd(
                 &config_path,
                 EnrollOptions {
@@ -2404,6 +2406,31 @@ fn resolve_encoder_preference(
         config::EncoderPreferenceChoice::Hardware => encode::EncoderPreference::Hardware,
         config::EncoderPreferenceChoice::Software => encode::EncoderPreference::Software,
     }
+}
+
+const MAX_ENROLL_TOKEN_STDIN_BYTES: usize = 16 * 1024;
+
+/// Resolve only Enroll's explicit stdin sentinel; ordinary arguments do no IO.
+fn enrollment_token_input(token: String, input: impl std::io::Read) -> Result<String> {
+    if token != "-" {
+        return Ok(token);
+    }
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    input
+        .take(MAX_ENROLL_TOKEN_STDIN_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| anyhow::anyhow!("could not read enrollment token from stdin"))?;
+    if bytes.len() > MAX_ENROLL_TOKEN_STDIN_BYTES {
+        bail!("stdin enrollment token exceeds {MAX_ENROLL_TOKEN_STDIN_BYTES} bytes");
+    }
+    let token = String::from_utf8(bytes)
+        .map_err(|_| anyhow::anyhow!("stdin enrollment token is not valid UTF-8"))?;
+    let token = token.trim_end_matches(['\r', '\n']);
+    if token.trim().is_empty() {
+        bail!("stdin enrollment token is empty");
+    }
+    Ok(token.to_owned())
 }
 
 /// What `enroll` was asked to do.
@@ -6578,6 +6605,134 @@ mod tests {
     //! hands.
 
     use super::*;
+    #[test]
+    fn enroll_token_stdin_preserves_value_and_only_removes_terminal_crlf() {
+        for (input, expected) in [
+            ("ey.fake.signature", "ey.fake.signature"),
+            ("ey.fake.signature\r\n", "ey.fake.signature"),
+            (" token with spaces \n", " token with spaces "),
+        ] {
+            assert_eq!(
+                enrollment_token_input("-".into(), input.as_bytes()).unwrap(),
+                expected
+            );
+        }
+        let boundary = vec![b'x'; MAX_ENROLL_TOKEN_STDIN_BYTES];
+        assert_eq!(
+            enrollment_token_input("-".into(), boundary.as_slice())
+                .unwrap()
+                .len(),
+            MAX_ENROLL_TOKEN_STDIN_BYTES
+        );
+    }
+
+    #[test]
+    fn enroll_token_stdin_rejects_bad_input_without_echoing_it() {
+        let secret = "synthetic-sensitive-token";
+        let mut oversized = secret.as_bytes().to_vec();
+        oversized.resize(MAX_ENROLL_TOKEN_STDIN_BYTES + 1, b'x');
+        let mut invalid_utf8 = secret.as_bytes().to_vec();
+        invalid_utf8.push(0xff);
+        for input in [
+            Vec::new(),
+            b"\r\n".to_vec(),
+            b" \t\r\n".to_vec(),
+            oversized,
+            invalid_utf8,
+        ] {
+            let error = enrollment_token_input("-".into(), input.as_slice()).unwrap_err();
+            let message = format!("{error:?}");
+            assert!(!message.contains(secret));
+            assert!(message.starts_with("stdin enrollment token"));
+        }
+    }
+
+    #[test]
+    fn enroll_token_stdin_leaves_literal_arguments_without_reading() {
+        struct NeverRead;
+        impl std::io::Read for NeverRead {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                panic!("ordinary --token must not read stdin");
+            }
+        }
+        let literal = " literal-token\r\n";
+        assert_eq!(
+            enrollment_token_input(literal.into(), NeverRead).unwrap(),
+            literal
+        );
+    }
+
+    #[test]
+    fn enroll_token_stdin_bounds_reads_and_redacts_reader_errors() {
+        struct Endless {
+            bytes: usize,
+        }
+        impl std::io::Read for Endless {
+            fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+                buffer.fill(b'x');
+                self.bytes += buffer.len();
+                Ok(buffer.len())
+            }
+        }
+        let mut input = Endless { bytes: 0 };
+        assert!(enrollment_token_input("-".into(), &mut input).is_err());
+        assert_eq!(input.bytes, MAX_ENROLL_TOKEN_STDIN_BYTES + 1);
+        struct FailedRead;
+        impl std::io::Read for FailedRead {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::other("synthetic-sensitive-reader-detail"))
+            }
+        }
+        let error = enrollment_token_input("-".into(), FailedRead).unwrap_err();
+        assert_eq!(
+            format!("{error:?}"),
+            "could not read enrollment token from stdin"
+        );
+    }
+
+    #[test]
+    fn enroll_token_stdin_cli_preserves_enroll_options() {
+        let cli = Cli::try_parse_from([
+            "meshharbord",
+            "--config",
+            "/not-written/config.toml",
+            "enroll",
+            "--server",
+            "https://example.invalid",
+            "--token",
+            "-",
+            "--name",
+            "node",
+            "--label",
+            "secondary",
+            "--replace",
+            "--overlay",
+            "--relay-server",
+            "--archive-replica",
+        ])
+        .unwrap();
+        assert_eq!(cli.config, Some(PathBuf::from("/not-written/config.toml")));
+        match cli.command.unwrap() {
+            Command::Enroll {
+                server,
+                token,
+                name,
+                label,
+                replace,
+                overlay,
+                relay_server,
+                archive_replica,
+                ..
+            } => {
+                assert_eq!(server, "https://example.invalid");
+                assert_eq!(token, "-");
+                assert_eq!(name, "node");
+                assert_eq!(label.as_deref(), Some("secondary"));
+                assert!(replace && overlay && relay_server && archive_replica);
+            }
+            _ => panic!("expected the existing Enroll command"),
+        }
+    }
     /// FR-21 P3 (D1) — the acceptance case taken from the LIVE fleet, not invented.
     /// The three cluster nodes each carried these exact four entries in an
     /// operator-authored `/etc/systemd/system/meshharbord.service.d/virtual-desktop.conf`,
