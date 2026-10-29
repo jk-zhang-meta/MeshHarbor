@@ -1703,6 +1703,15 @@ async fn staged_graph_three_relay_zone_recheck_preserves_valid_and_revokes_chang
         ObjectId::parse_str(&l.cn_node).unwrap(), ObjectId::parse_str(&l.us_node).unwrap());
     let original = state.org_relay.active_session(&pair).unwrap();
     assert!(line_zones_fit_fixture(state, &original).await, "the original approved crossing remains valid");
+    // Loss of region evidence is not proof that the existing data path is invalid.
+    let gz_id = ObjectId::parse_str(&l.gz_agent).unwrap();
+    let gz_conn = roomler_ai_mod_network::org_relay::candidate_test_support::current_connection_id(state, gz_id).unwrap();
+    assert!(state.org_relay.unbind_live_conn(gz_id, &gz_conn));
+    recheck_zones_fixture(state, gz_id).await;
+    assert_eq!(state.org_relay.active_session(&pair).expect("unknown relay region must preserve a healthy formal session").generation, original.generation);
+    relay_request(&mut l.cn, &l.us_node).await;
+    assert!(recv_t(&mut l.cn, "rc:overlay.relay_session", Duration::from_millis(600)).await.is_none(), "unknown relay region must withhold a line re-push");
+    state.org_relay.bind_live_conn(gz_id, &gz_conn);
     let extra_id = ObjectId::parse_str(&extra_agent).unwrap();
     let mut valid = original.clone();
     valid.pair_key = "three-zone-valid".into();
@@ -1851,6 +1860,14 @@ async fn staged_graph_actual_three_relay_mint_audits_and_revokes_each_edge() {
     relay_request(&mut l.cn, &l.us_node).await;
     assert!(recv_t(&mut l.cn, "rc:overlay.relay_session", Duration::from_millis(800)).await.is_none(), "transient read failure must not re-push");
     assert_eq!(network.org_relay.active_session(&pair).unwrap().generation, live.generation, "transient failure must not tear down an established path");
+    let middle_conn = support::current_connection_id(network, middle_agent_id).unwrap();
+    assert!(network.org_relay.unbind_live_conn(middle_agent_id, &middle_conn));
+    relay_request(&mut l.cn, &l.us_node).await;
+    assert!(recv_t(&mut l.cn, "rc:overlay.relay_session", Duration::from_millis(700)).await.is_none(), "unknown middle relay must not receive a fresh re-push");
+    assert_eq!(network.org_relay.active_session(&pair).expect("unknown middle relay must not revoke the established path").generation, live.generation);
+    support::recheck_zones_fixture(network, middle_agent_id).await;
+    assert_eq!(network.org_relay.active_session(&pair).expect("unknown middle relay must also survive the active zone recheck").generation, live.generation);
+    network.org_relay.bind_live_conn(middle_agent_id, &middle_conn);
     for (relay, frame) in [(&source_native, gz.clone()), (&middle_native, mid.clone()), (&exit_native, hk.clone())] {
         relay.serve(serde_json::from_value::<ServerMsg>(frame).unwrap(), None);
     }

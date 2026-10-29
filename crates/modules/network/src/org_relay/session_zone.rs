@@ -1,0 +1,80 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 G ROX EOOD
+//! Region evidence for an already-established formal session. Uncertainty
+//! prevents a fresh grant but is not evidence for tearing down working data.
+
+use super::{trial::{current_party_zone, PartyZone}, OrgRelaySession};
+use crate::{business_isolation as iso, NetworkState};
+use std::time::Duration;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Decision {
+    Fits,
+    Uncertain,
+    Invalid,
+}
+
+fn relation_invalid(a: PartyZone, b: PartyZone, crossing: bool) -> bool {
+    matches!((a, b), (PartyZone::Known(a), PartyZone::Known(b)) if (a != b) != crossing)
+}
+
+pub(super) async fn check(state: &NetworkState, session: &OrgRelaySession) -> Decision {
+    let epoch = state.org_relay.eligibility_generation();
+    let parties: Vec<_> = std::iter::once(&session.members[0].party)
+        .chain(std::iter::once(&session.relay))
+        .chain(session.hops.iter().map(|hop| &hop.relay))
+        .chain(std::iter::once(&session.members[1].party))
+        .collect();
+    let mut zones = Vec::with_capacity(parties.len());
+    // Read every party: an unknown early relay cannot hide a later confirmed
+    // deletion or a known edge whose region relationship has changed.
+    for party in parties {
+        let observed = tokio::time::timeout(
+            Duration::from_secs(3),
+            current_party_zone(state, session.tenant_id, party.node_id, &party.node_ref, true),
+        ).await;
+        zones.push(match observed {
+            Ok(Ok(zone)) => zone,
+            _ => PartyZone::Unknown,
+        });
+    }
+    let unknown = zones.contains(&PartyZone::Unknown);
+    let mut invalid = zones.contains(&PartyZone::Invalid);
+    if !session.hops.is_empty() {
+        invalid |= relation_invalid(zones[0], zones[1], false);
+        for (index, hop) in session.hops.iter().enumerate() {
+            invalid |= relation_invalid(zones[index + 1], zones[index + 2], hop.requires_cross_border_approval);
+        }
+        invalid |= relation_invalid(zones[zones.len() - 2], zones[zones.len() - 1], false);
+    } else if !unknown && !invalid {
+        let permit = iso::permit_refs(state, iso::mode(state), session.tenant_id,
+            &session.members[0].party.node_ref, &session.members[1].party.node_ref).await;
+        invalid = match zones[1] {
+            PartyZone::Known(relay) => !permit.relay_zones().contains(&relay),
+            _ => true,
+        };
+    }
+    if epoch != state.org_relay.eligibility_generation() {
+        Decision::Uncertain
+    } else if invalid {
+        Decision::Invalid
+    } else if unknown {
+        Decision::Uncertain
+    } else {
+        Decision::Fits
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use roomler_core::business_authority::BusinessZone::{Mainland, NonMainland};
+
+    #[test]
+    fn uncertain_edges_do_not_hide_a_later_known_violation() {
+        let zones = [PartyZone::Unknown, PartyZone::Known(Mainland), PartyZone::Known(NonMainland)];
+        assert!(!relation_invalid(zones[0], zones[1], false));
+        assert!(relation_invalid(zones[1], zones[2], false));
+        assert!(!relation_invalid(zones[1], zones[2], true));
+    }
+}

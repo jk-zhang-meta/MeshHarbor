@@ -91,6 +91,7 @@ mod path_trial_plan;
 #[allow(dead_code)]
 mod path_reservation;
 mod trial;
+mod session_zone;
 /// Test-only adapter for exercising the staged candidate builder against a
 /// real isolated server fixture. It returns metadata, never grants sessions.
 #[cfg(feature = "path-planner-test-support")]
@@ -2409,7 +2410,16 @@ async fn maybe_mint_line(
     let pk = pair_key(req_id, peer_id);
     if !warn_only && let Some(s) = state.org_relay.active_session(&pk) {
         let Some(i) = s.member_index(req_id) else { return };
-        if !s.hops.is_empty() && Instant::now() + BIND_REUSE_MARGIN < s.bind_by {
+        let zones_fit = if s.hops.is_empty() {
+            false
+        } else {
+            match session_zone::check(state, &s).await {
+                session_zone::Decision::Uncertain => return,
+                session_zone::Decision::Fits => true,
+                session_zone::Decision::Invalid => false,
+            }
+        };
+        if zones_fit && Instant::now() + BIND_REUSE_MARGIN < s.bind_by {
             if s.hops.len() > 1 {
                 match path_mint::repush(state, requester, peer, &s).await {
                     path_mint::RepushOutcome::Sent | path_mint::RepushOutcome::Unavailable => return,
@@ -3042,6 +3052,17 @@ pub async fn maybe_mint(state: &NetworkState, requester: &OverlayNode, peer: &Ov
             revoke_where(state, "nhop_reauthorization_failed", |current| current.pair_key == pk
                 && current.vni == s.vni && current.generation == s.generation).await;
         } else {
+            if !s.hops.is_empty() || crate::business_isolation::mode(state) == crate::business_isolation::Mode::Enforce {
+                match session_zone::check(state, &s).await {
+                    session_zone::Decision::Uncertain => return,
+                    session_zone::Decision::Fits => {},
+                    session_zone::Decision::Invalid => {
+                        revoke_where(state, "session_region_changed", |current| current.pair_key == pk
+                            && current.vni == s.vni && current.generation == s.generation).await;
+                        return;
+                    },
+                }
+            }
             if let Some(i) = s.member_index(req_id) {
                 push_member(state, &s, i).await;
                 debug!(%tenant_id, %pk, vni = s.vni, "org-relay: re-pushed the live session to a re-requesting member");
@@ -3122,6 +3143,19 @@ pub async fn maybe_mint_fallback(state: &NetworkState, requester: &OverlayNode, 
         }
         revoke_where(state, "nhop_reauthorization_failed", |current| current.pair_key == pk
             && current.vni == session.vni && current.generation == session.generation).await;
+    }
+    if let Some(session) = cached.as_ref()
+        && (!session.hops.is_empty() || crate::business_isolation::mode(state) == crate::business_isolation::Mode::Enforce)
+    {
+        match session_zone::check(state, session).await {
+            session_zone::Decision::Uncertain => return,
+            session_zone::Decision::Fits => {},
+            session_zone::Decision::Invalid => {
+                revoke_where(state, "session_region_changed", |current| current.pair_key == pk
+                    && current.vni == session.vni && current.generation == session.generation).await;
+                cached = None;
+            },
+        }
     }
     let epoch = state.org_relay.eligibility_generation();
     let verdict =
@@ -3600,7 +3634,7 @@ pub(crate) async fn recheck_zones(state: &NetworkState, agent_id: ObjectId, reas
         .map(|e| e.value().clone())
         .collect();
     for s in sessions {
-        if session_zones_fit(state, &s).await {
+        if session_zone::check(state, &s).await != session_zone::Decision::Invalid {
             continue;
         }
         if s.hops.is_empty() && mode != Mode::Enforce {
@@ -3765,51 +3799,11 @@ fn schedule_trial_zone_retry(state: &NetworkState, ids: std::collections::HashSe
     });
 }
 
-/// Whether session `s` fits the zones its parties are connected in now: a
-/// line by [`line_zones_fit`], any other by its members' [`Permit`] (one
-/// shared zone, or a server link) with the relay in a zone it allows.
-///
-/// [`Permit`]: crate::business_isolation::Permit
-async fn session_zones_fit(state: &NetworkState, s: &OrgRelaySession) -> bool {
-    if !s.hops.is_empty() {
-        return line_zones_fit(state, s).await;
-    }
-    use crate::business_isolation as iso;
-    let permit = iso::permit_refs(
-        state,
-        iso::mode(state),
-        s.tenant_id,
-        &s.members[0].party.node_ref,
-        &s.members[1].party.node_ref,
-    )
-    .await;
-    party_zone(state, s.tenant_id, &s.relay.node_ref)
-        .await
-        .is_some_and(|r| permit.relay_zones().contains(&r))
-}
-
-/// A line remains valid only while both members still match their end
-/// relays and every adjacent relay pair keeps its recorded zone relationship.
-/// Unknown zones fail closed. Changing an ordinary edge into a crossing must
-/// not silently reuse a grant which did not require cross-border approval.
+/// A fixture's boolean answer is true only for a fully known valid line.
+/// Production rechecks distinguish uncertainty from confirmed invalidity.
+#[cfg(feature = "path-planner-test-support")]
 async fn line_zones_fit(state: &NetworkState, s: &OrgRelaySession) -> bool {
-    if s.hops.is_empty() { return false; }
-    let zone = |r| party_zone(state, s.tenant_id, r);
-    let (Some(m0), Some(m1), Some(first)) = (
-        zone(&s.members[0].party.node_ref).await,
-        zone(&s.members[1].party.node_ref).await,
-        zone(&s.relay.node_ref).await,
-    ) else { return false };
-    if m0 != first { return false; }
-    let mut previous = first;
-    for hop in &s.hops {
-        let Some(current) = zone(&hop.relay.node_ref).await else { return false };
-        if (previous != current) != hop.requires_cross_border_approval {
-            return false;
-        }
-        previous = current;
-    }
-    m1 == previous
+    !s.hops.is_empty() && session_zone::check(state, s).await == session_zone::Decision::Fits
 }
 
 /// Trigger 4 — a party (member or relay) was removed from the overlay.

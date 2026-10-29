@@ -223,6 +223,7 @@ pub(super) fn revoke_removed_backbone_edges(
 #[path = "trial_zone.rs"]
 mod trial_zone;
 pub(super) use trial_zone::{prune_trial_zone_cursors, recheck_relay_zones, recheck_trial_zone_slice, trial_ids_for_identity, TrialZoneCursor, TrialZoneSlice};
+pub(super) use trial_zone::{current_party_zone, PartyZone};
 
 #[cfg(feature = "path-planner-test-support")]
 pub(super) fn trial_exists_fixture(state: &NetworkState, id: ObjectId) -> bool {

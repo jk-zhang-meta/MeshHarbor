@@ -149,7 +149,7 @@ fn capture(trial: &Trial) -> Option<TrialZoneSnapshot> {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum PartyZone {
+pub(in crate::org_relay) enum PartyZone {
     Known(BusinessZone),
     Unknown,
     Invalid,
@@ -190,7 +190,7 @@ where
 
 /// Unknown geography preserves an existing trial, unlike a confirmed invalid
 /// identity or a known conflicting region. Storage errors remain retryable.
-async fn current_party_zone(
+pub(in crate::org_relay) async fn current_party_zone(
     state: &NetworkState,
     tenant: ObjectId,
     node_id: ObjectId,
