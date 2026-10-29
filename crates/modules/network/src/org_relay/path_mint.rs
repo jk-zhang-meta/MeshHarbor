@@ -392,6 +392,11 @@ pub(super) async fn mint(
     let delivered = match state.org_relay.delivery_guard.lock() {
         Ok(_guard) => {
             let mut ok = true;
+            // The index is used only by the first-send test hook.
+            #[cfg_attr(
+                not(feature = "path-planner-test-support"),
+                allow(clippy::unused_enumerate_index)
+            )]
             for (_sent, (target, message)) in delivery
                 .relays
                 .into_iter()

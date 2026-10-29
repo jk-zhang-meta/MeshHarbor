@@ -2,7 +2,9 @@
 //! Target-side typed SSH stream slots. No caller-controlled destination host or
 //! port exists; each scoped peer can consume one prepared embedded-SSH stream.
 use bson::oid::ObjectId;
-use roomler_ai_remote_control::signaling::{ClientMsg, RejectKind, SharedSshSetup};
+#[cfg(feature = "ssh-server")]
+use roomler_ai_remote_control::signaling::SharedSshSetup;
+use roomler_ai_remote_control::signaling::{ClientMsg, RejectKind};
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;

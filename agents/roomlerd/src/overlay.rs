@@ -646,6 +646,7 @@ static ORG_TUN_CACHE: std::sync::Mutex<
 /// (machine, org) — the suffix is a stable tenant-id prefix, and the FULL
 /// tenant still drives the distinct per-org GUID, so a 6-hex-prefix clash
 /// (negligible for a machine's handful of orgs) can't alias two devices.
+#[cfg(any(feature = "overlay-l3", test))]
 fn per_org_ifname(if_name: &str, org_key: &str) -> String {
     const MAX_IFNAME: usize = 15; // IFNAMSIZ - 1 (Linux); Windows aliases allow more
     let max_suffix = MAX_IFNAME.saturating_sub(if_name.len() + 1);
