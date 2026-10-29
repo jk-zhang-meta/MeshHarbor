@@ -58,8 +58,10 @@ The validator container has no network, read-only root/candidate mount, no
 capabilities, no new privileges and bounded CPU/memory/PIDs; it runs as nobody.
 Downloads use the fetcher's TLS, timeout and size bounds. The oneshot is limited
 to 12 minutes, with three minutes for recovery on stop. Readiness polling is at
-most 30 attempts, two-second sleeps and two-second HTTP calls. Failed candidates
-and old bundles are retained; no automatic accumulated-data cleanup is included.
+most 30 attempts, two-second sleeps and two-second HTTP calls. Every exit removes
+only this invocation's exact unpromoted candidate directory. Promoted immutable
+releases (including an activation failure) and old bundles are kept; no automatic
+accumulated-release cleanup is included.
 
 `journalctl -u meshharbor-geoip-refresh.service` and the existing startup/daily
 GeoIP WARNs are local logs, **not externally delivered notifications**. Docker

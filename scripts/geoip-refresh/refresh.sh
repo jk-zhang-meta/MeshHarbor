@@ -54,6 +54,19 @@ IFS='|' read -r app_id image_id started running <<< "$initial"
 mkdir -p "$DATA_ROOT/releases"
 [[ ! -L $DATA_ROOT/releases && $(stat -c '%u' "$DATA_ROOT/releases") == 0 && $((8#$(stat -c '%a' "$DATA_ROOT/releases") & 8#022)) == 0 ]] || die 'unsafe releases directory'
 candidate=$(mktemp -d "$DATA_ROOT/.candidate.XXXXXX")
+cleanup_candidate() {
+    [[ -e $candidate || -L $candidate ]] || return 0
+    [[ ${candidate%/*} == "$DATA_ROOT" && ${candidate##*/} =~ ^\.candidate\.[a-zA-Z0-9]{6}$ &&
+       -d $candidate && ! -L $candidate && $(stat -c '%u' "$candidate") == 0 ]] || {
+        echo 'GeoIP refresh: refusing cleanup of an unexpected candidate path' >&2
+        return 1
+    }
+    # Only this invocation's exact mktemp directory; releases are never removed.
+    rm -rf --one-file-system -- "$candidate"
+}
+trap 'status=$?; trap - EXIT INT TERM; cleanup_candidate || status=1; exit "$status"' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 # This fetch helper may exit zero without staging anything. Never reuse current.
 env -u GEOIP_BASE_URL -u GITHUB_OUTPUT -u GITHUB_ACTIONS bash "$FETCH_SCRIPT" "$candidate"
 [[ -s $candidate/$db_name && -s $candidate/$prov_name ]] || die 'fetch produced no complete candidate'
@@ -115,8 +128,12 @@ fi
 switch_to() {
     local link
     link=$(mktemp -u "$DATA_ROOT/.current.XXXXXXXX")
-    ln -s "$1" "$link"
-    mv -Tf "$link" "$DATA_ROOT/current"
+    ln -s "$1" "$link" || return $?
+    mv -Tf "$link" "$DATA_ROOT/current" || {
+        local status=$?
+        rm -f -- "$link"
+        return "$status"
+    }
 }
 same_app() {
     local now
@@ -147,11 +164,14 @@ restart_ready() {
     ready
 }
 active=false
+activated=false
 finish() {
     status=$?
     trap - EXIT INT TERM
     if $active; then
-        if same_app && [[ $(readlink "$DATA_ROOT/current") == "$release" ]] &&
+        if ! $activated && [[ $(readlink "$DATA_ROOT/current") == "$old" ]]; then
+            echo 'GeoIP refresh: activation was not committed; previous dataset unchanged' >&2
+        elif same_app && [[ $(readlink "$DATA_ROOT/current") == "$release" ]] &&
            switch_to "$old" && restart_ready; then
             echo "GeoIP refresh: activation failed; rollback verified sha256=$old_digest" >&2
         else
@@ -159,6 +179,7 @@ finish() {
         fi
         [[ $status != 0 ]] || status=1
     fi
+    cleanup_candidate || status=1
     exit "$status"
 }
 trap finish EXIT
@@ -167,6 +188,7 @@ trap 'exit 143' TERM
 [[ $(snapshot) == "$initial" ]] || die 'app changed before activation'
 active=true
 switch_to "$release"
+activated=true
 restart_ready
 active=false
 echo "GeoIP refresh: activated sha256=$digest build_epoch=$epoch app=$app_id"

@@ -18,10 +18,14 @@ IMAGE = 'sha256:' + '1' * 64
 APP = '2' * 64
 
 MOCK = r'''#!/usr/bin/env python3
-import gzip,json,os,pathlib,sys
+import gzip,json,os,pathlib,subprocess,sys
 r=pathlib.Path(os.environ['MOCK_ROOT']); s=json.loads((r/'state').read_text()); a=sys.argv[1:]
 name=pathlib.Path(sys.argv[0]).name
 def save(): (r/'state').write_text(json.dumps(s))
+if name=='mv':
+ if s['case']=='switch-failure' and a[-1]==str(r/'data/current'):
+  sys.exit(28)
+ sys.exit(subprocess.run(['/usr/bin/mv',*a]).returncode)
 if name=='sleep': sys.exit(0)
 if name=='curl':
  if '-o' in a:
@@ -70,13 +74,16 @@ class Refresh(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix='geoip-refresh-oracle-') as raw:
             root = Path(raw)
             (root / 'bin').mkdir()
-            for name in ('docker', 'curl', 'sleep'):
+            for name in ('docker', 'curl', 'sleep', 'mv'):
                 f = root / 'bin' / name
                 f.write_text(MOCK)
                 f.chmod(0o755)
             data = root / 'data'
             releases = data / 'releases'
             releases.mkdir(parents=True)
+            unrelated = data / '.candidate.unrelated'
+            unrelated.mkdir()
+            (unrelated / 'keep').write_text('another operation owns this\n')
             old = dataset(100, 'old')
             new = old if case == 'same' else dataset(99 if case == 'downgrade' else 200, 'new')
             old_digest = hashlib.sha256(old).hexdigest()
@@ -103,6 +110,9 @@ class Refresh(unittest.TestCase):
             result = subprocess.run(['bash', str(HERE / 'refresh.sh'), '--config', str(config)], env=env, capture_output=True, text=True, timeout=15)
             state = json.loads((root / 'state').read_text())
             target = os.readlink(data / 'current')
+            self.assertEqual([p.name for p in data.glob('.candidate.*')], ['.candidate.unrelated'])
+            self.assertTrue((unrelated / 'keep').is_file())
+            self.assertEqual((bundle / DB).read_bytes(), old)
             if case in ('same', 'changed'):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(state['restarts'], 0 if case == 'same' else 1)
@@ -118,10 +128,15 @@ class Refresh(unittest.TestCase):
                     self.assertIn('rollback verified', result.stderr)
                 if case == 'rollback-failure':
                     self.assertIn('CRITICAL rollback could not be verified', result.stderr)
+                if case == 'switch-failure':
+                    self.assertIn('activation was not committed', result.stderr)
+                    self.assertNotIn('CRITICAL', result.stderr)
+            if case in ('changed', 'rollback', 'restart-failure', 'restart-noop', 'stopped-restart-failure', 'rollback-failure', 'switch-failure'):
+                self.assertEqual((releases / hashlib.sha256(new).hexdigest() / DB).read_bytes(), new)
             return case, result.returncode, state['restarts']
 
     def test_scenarios(self):
-        for case in ('same', 'changed', 'no-file', 'invalid', 'empty-json', 'downgrade', 'drift', 'image-drift', 'env-drift', 'wrong-mount', 'bad-config', 'missing-manifest', 'rollback', 'restart-failure', 'restart-noop', 'stopped-restart-failure', 'rollback-failure'):
+        for case in ('same', 'changed', 'no-file', 'invalid', 'empty-json', 'downgrade', 'drift', 'image-drift', 'env-drift', 'wrong-mount', 'bad-config', 'missing-manifest', 'rollback', 'restart-failure', 'restart-noop', 'stopped-restart-failure', 'rollback-failure', 'switch-failure'):
             with self.subTest(case=case):
                 print('OBSERVED', self.run_case(case), flush=True)
 
