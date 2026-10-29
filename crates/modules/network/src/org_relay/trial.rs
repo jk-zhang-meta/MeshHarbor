@@ -222,7 +222,12 @@ pub(super) fn revoke_removed_backbone_edges(
 // independently while sharing the trial mutex and revoke ordering.
 #[path = "trial_zone.rs"]
 mod trial_zone;
-pub(super) use trial_zone::{recheck_relay_zones, recheck_trial_zone_batch};
+pub(super) use trial_zone::{prune_trial_zone_cursors, recheck_relay_zones, recheck_trial_zone_slice, trial_ids_for_identity, TrialZoneCursor, TrialZoneSlice};
+
+#[cfg(feature = "path-planner-test-support")]
+pub(super) fn trial_exists_fixture(state: &NetworkState, id: ObjectId) -> bool {
+    state.org_relay.trials.entries.lock().unwrap_or_else(|e| e.into_inner()).contains_key(&id)
+}
 
 /// Rebuild the bounded retry queue under the trial-table lock. All callers
 /// acquire locks in table -> retry order; no await occurs under either lock.
