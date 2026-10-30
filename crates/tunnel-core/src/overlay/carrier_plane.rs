@@ -115,6 +115,12 @@ struct PlaneRoute {
     /// on a roam (the send pump's `SendPeer` mirror shares the same `Arc`).
     /// Weak so a dropped peer's carrier isn't pinned by the route table.
     carrier: std::sync::Weak<Carrier>,
+    /// Whether this route currently belongs to an unpromoted shadow probe
+    /// (`WgDevice::probes`). A spray-socket HandshakeInit from the route's
+    /// `expected_src` is forwarded to the runtime as `ForwardInit` ONLY while
+    /// `probing` is true; once promoted (`probing == false`), a spray-socket
+    /// INIT from `expected_src` is handled on the installed `Tunn` directly.
+    probing: bool,
     /// A3 — last adoption instant for this session (roam rate limit).
     last_roam: Option<Instant>,
     /// Diagnostic — last session-trace emission (throttle; see
@@ -417,7 +423,7 @@ impl CarrierPlane {
         let mut stats: Vec<Arc<direct::SockStat>> = Vec::new();
         for ((_, s), ep) in socks.iter().zip(&endpoints) {
             let stat = direct::SockStat::new(ep.clone());
-            tasks.push(self.adopt_socket_with(s.clone(), Some(stat.clone())));
+            tasks.push(self.adopt_socket_with(s.clone(), Some(stat.clone()), false));
             stats.push(stat);
         }
         if let Some(p) = &public_sock {
@@ -426,7 +432,7 @@ impl CarrierPlane {
                 .map(|a| format!("{a} (public-dial)"))
                 .unwrap_or_else(|_| "public-dial".into());
             let stat = direct::SockStat::new(local);
-            tasks.push(self.adopt_socket_with(p.clone(), Some(stat.clone())));
+            tasks.push(self.adopt_socket_with(p.clone(), Some(stat.clone()), false));
             stats.push(stat);
         }
         if let Some(s6) = &v6 {
@@ -435,7 +441,7 @@ impl CarrierPlane {
                 .map(|a| format!("{a} (ipv6)"))
                 .unwrap_or_else(|_| "ipv6".into());
             let stat = direct::SockStat::new(local);
-            tasks.push(self.adopt_socket_with(s6.clone(), Some(stat.clone())));
+            tasks.push(self.adopt_socket_with(s6.clone(), Some(stat.clone()), false));
             stats.push(stat);
         }
         let mut st = self.lock();
@@ -498,7 +504,7 @@ impl CarrierPlane {
     /// which wires a [`direct::SockStat`] per socket.
     #[cfg(test)]
     pub(crate) fn adopt_socket(self: &Arc<Self>, sock: Arc<UdpSocket>) -> JoinHandle<()> {
-        self.adopt_socket_with(sock, None)
+        self.adopt_socket_with(sock, None, false)
     }
 
     /// The plane recv loop, with a PR-B1 liveness stat the loop bumps per
@@ -507,6 +513,7 @@ impl CarrierPlane {
         self: &Arc<Self>,
         sock: Arc<UdpSocket>,
         stat: Option<Arc<direct::SockStat>>,
+        spray_socket: bool,
     ) -> JoinHandle<()> {
         let plane = self.clone();
         tokio::spawn(async move {
@@ -552,6 +559,7 @@ impl CarrierPlane {
                                     datagrams,
                                     &mut recent_unknown,
                                     &mut last_stun_drop_log,
+                                    spray_socket,
                                 )
                                 .await;
                         }
@@ -583,6 +591,7 @@ impl CarrierPlane {
                         n,
                         &mut recent_unknown,
                         &mut last_stun_drop_log,
+                        spray_socket,
                     )
                     .await;
             }
@@ -607,6 +616,7 @@ impl CarrierPlane {
         datagrams: std::slice::ChunksMut<'_, u8>,
         recent_unknown: &mut HashMap<SocketAddr, (Instant, u32)>,
         last_stun_drop_log: &mut Option<Instant>,
+        spray_socket: bool,
     ) {
         #[cfg(test)]
         if self.blackhole.load(Ordering::Relaxed) {
@@ -623,8 +633,18 @@ impl CarrierPlane {
                 if let Some(r) = run.take() {
                     r.deliver().await;
                 }
-                self.on_datagram(sock, local, stat, src, dg, n, recent_unknown, last_stun_drop_log)
-                    .await;
+                self.on_datagram(
+                    sock,
+                    local,
+                    stat,
+                    src,
+                    dg,
+                    n,
+                    recent_unknown,
+                    last_stun_drop_log,
+                    spray_socket,
+                )
+                .await;
                 continue;
             };
             if let Some(s) = stat {
@@ -634,8 +654,21 @@ impl CarrierPlane {
                 if let Some(r) = run.take() {
                     r.deliver().await;
                 }
-                let Routed::Session { tunn, ingress, tun_tx } = self.route_by_index(idx, src) else {
-                    self.handle_datagram(sock, src, dg, n, Some(&mut *recent_unknown)).await;
+                let Routed::Session {
+                    tunn,
+                    ingress,
+                    tun_tx,
+                } = self.route_by_index(idx, src)
+                else {
+                    self.handle_datagram(
+                        sock,
+                        src,
+                        dg,
+                        n,
+                        Some(&mut *recent_unknown),
+                        spray_socket,
+                    )
+                    .await;
                     continue;
                 };
                 run = Some(InboundRun {
@@ -669,6 +702,7 @@ impl CarrierPlane {
         n: usize,
         recent_unknown: &mut HashMap<SocketAddr, (Instant, u32)>,
         last_stun_drop_log: &mut Option<Instant>,
+        spray_socket: bool,
     ) {
         #[cfg(test)]
         if self.blackhole.load(Ordering::Relaxed) {
@@ -719,7 +753,8 @@ impl CarrierPlane {
             }
             return;
         }
-        self.handle_datagram(sock, src, buf, n, Some(recent_unknown)).await;
+        self.handle_datagram(sock, src, buf, n, Some(recent_unknown), spray_socket)
+            .await;
     }
 
     /// Take the receiver for plane-routed STUN Binding responses. `None`
@@ -738,6 +773,7 @@ impl CarrierPlane {
         buf: &mut [u8],
         n: usize,
         mut recent_unknown: Option<&mut HashMap<SocketAddr, (Instant, u32)>>,
+        spray_socket: bool,
     ) {
         let routed = match Tunn::parse_incoming_packet(&buf[..n]) {
             // Sessionful message types carry OUR receiver index — the exact
@@ -766,7 +802,11 @@ impl CarrierPlane {
                         .collect();
                     (c, st.engines.len())
                 };
-                let auth_first = engines_len > 1 && self.init_auth_first.load(Ordering::Relaxed);
+                // A spray INIT may need to replace the probe's LOCAL socket,
+                // even when its remote src is already known. Authenticate
+                // before asking the runtime to adopt that socket.
+                let auth_first = spray_socket
+                    || (engines_len > 1 && self.init_auth_first.load(Ordering::Relaxed));
                 match candidates.as_slice() {
                     // Single-org plane (or the kill switch is off): an init
                     // from a source the engine has a session with is that
@@ -788,7 +828,13 @@ impl CarrierPlane {
                         } else {
                             match self.authenticate_against_engines(&buf[..n], &candidates) {
                                 Some(engine) => match self.route_session_of(engine, src) {
-                                    Routed::Drop => {
+                                    route
+                                        if matches!(route, Routed::Drop)
+                                            || (spray_socket
+                                                && self.probe_uses_other_socket(
+                                                    engine, src, sock,
+                                                )) =>
+                                    {
                                         let ev = {
                                             let st = self.lock();
                                             st.engines
@@ -1065,6 +1111,22 @@ impl CarrierPlane {
         }
     }
 
+    fn probe_uses_other_socket(
+        &self,
+        engine: u64,
+        src: SocketAddr,
+        sock: &Arc<UdpSocket>,
+    ) -> bool {
+        let st = self.lock();
+        st.by_src
+            .get(&(engine, src))
+            .and_then(|idx| st.routes.get(idx))
+            .filter(|r| r.probing)
+            .and_then(|r| r.carrier.upgrade())
+            .and_then(|carrier| carrier.direct_parts())
+            .is_some_and(|(current, _)| !Arc::ptr_eq(&current, sock))
+    }
+
     /// C1 — answer a disco ping on behalf of whichever attached engine knows
     /// the sender. Engines are snapshotted out of the lock so the X25519 runs
     /// unlocked, exactly like [`authenticate_against_engines`].
@@ -1212,6 +1274,13 @@ impl PlaneHandle {
         1 + self.plane.index_alloc.fetch_add(1, Ordering::Relaxed) % (INDEX_SPACE - 1)
     }
 
+    /// Birthday spray — run the plane's receive loop on a short-lived socket
+    /// that is not one of the plane's own (no liveness stat, no rebuild
+    /// ownership). The caller aborts the returned task to close it.
+    pub(crate) fn adopt_ephemeral(&self, sock: Arc<UdpSocket>) -> JoinHandle<()> {
+        self.plane.adopt_socket_with(sock, None, true)
+    }
+
     /// Register the session route for an index handed out by
     /// [`alloc_index`](Self::alloc_index). Replaces nothing by construction —
     /// an occupied slot is a bug and is logged loudly instead of silently
@@ -1224,6 +1293,7 @@ impl PlaneHandle {
         ingress: Ingress,
         expected_src: SocketAddr,
         carrier: std::sync::Weak<Carrier>,
+        probing: bool,
     ) {
         let mut st = self.plane.lock();
         let Some(tun_tx) = st
@@ -1263,6 +1333,7 @@ impl PlaneHandle {
                     tun_tx,
                     expected_src,
                     carrier,
+                    probing,
                     last_roam: None,
                     last_trace: None,
                 },
@@ -1281,6 +1352,15 @@ impl PlaneHandle {
     /// only if it still points at THIS index — a replacement session for the
     /// same source (re-install to the same peer) registered after us must
     /// keep its own reverse entry.
+    pub(crate) fn mark_route_promoted(&self, idx: u32) {
+        let mut st = self.plane.lock();
+        if let Some(r) = st.routes.get_mut(&idx)
+            && r.engine == self.id
+        {
+            r.probing = false;
+        }
+    }
+
     pub(crate) fn unregister_route(&self, idx: u32) {
         let mut st = self.plane.lock();
         if let Some(r) = st.routes.remove(&idx) {
@@ -1310,7 +1390,7 @@ impl PlaneHandle {
         let mut buf = packet.to_vec();
         let n = buf.len();
         self.plane
-            .handle_datagram(&sock, src, &mut buf, n, None)
+            .handle_datagram(&sock, src, &mut buf, n, None, false)
             .await;
     }
 }

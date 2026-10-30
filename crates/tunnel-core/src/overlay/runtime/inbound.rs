@@ -74,6 +74,7 @@ impl OverlayRuntime {
             return;
         };
         let node_id = np.node_id;
+        let old_probe_identity = wg.direct_probe_identity(&pubkey);
         // MeshHarbor #21 — a cross-border peer rides its line alone: a direct
         // init from it is never answered, so no direct carrier can form.
         if cfg.backbone_only {
@@ -92,6 +93,10 @@ impl OverlayRuntime {
         // same auth → Drop → ForwardInit path — a livelock burning a DH per
         // cycle and never answering the peer.
         if wg.direct_src_of(&pubkey) == Some(inb.src) {
+            if upgrade_probes.remove(&node_id).is_some() || wg.has_direct_probe(&pubkey) {
+                self.shadow(|s| s.mon.on_probe_aborted(&node_id));
+                wg.drop_direct_probe(&pubkey).await;
+            }
             wg.reassert_plane_src(&pubkey, inb.src);
             wg.feed_direct(inb.src, inb.sock.clone(), &inb.packet).await;
             return;
@@ -157,10 +162,82 @@ impl OverlayRuntime {
         if make_before_break {
             // A retransmitted init while we're already probing this src → just
             // answer it and let the in-flight probe keep converging.
+            //
+            // Except when it arrived on a birthday-spray socket and our probe
+            // sends from another one: behind our symmetric NAT only that
+            // spray socket's mapping is open toward the peer, so a session on
+            // the probe's socket may not preserve the traversed NAT tuple.
+            // This recovered WIP moves an authenticated init's probe onto
+            // the arriving socket; bidirectional WG data still needs proof.
             if wg.has_direct_probe(&pubkey) {
-                record_inbound(Some(path::PathAction::Keep));
-                wg.feed_direct(inb.src, inb.sock.clone(), &inb.packet).await;
-                return;
+                let arrived = inb.sock.local_addr().ok();
+                if by_node.get(&node_id).is_some_and(|e| e.is_direct) {
+                    // A direct incumbent must never retain or answer on a
+                    // residual shadow probe; drop the stale probe and heal
+                    // the installed peer's reverse entry before evaluating
+                    // the inbound INIT against the installed Tunn below.
+                    upgrade_probes.remove(&node_id);
+                    self.shadow(|s| s.mon.on_probe_aborted(&node_id));
+                    wg.drop_direct_probe(&pubkey).await;
+                    if let Some(cur_src) = wg.direct_src_of(&pubkey) {
+                        wg.reassert_plane_src(&pubkey, cur_src);
+                    }
+                } else {
+                    let moves = arrived.is_some_and(|a| self.is_spray_local(a))
+                        && upgrade_probes.get(&node_id).is_some_and(|p| p.local != arrived);
+                    if !moves {
+                        record_inbound(Some(path::PathAction::Keep));
+                        wg.feed_direct(inb.src, inb.sock.clone(), &inb.packet).await;
+                        return;
+                    }
+                }
+                if by_node.get(&node_id).is_some_and(|e| !e.is_direct) {
+                    if !wg
+                        .try_adopt_direct_probe_init(
+                            &pubkey,
+                            inb.sock.clone(),
+                            inb.src,
+                            &inb.packet,
+                        )
+                        .await
+                    {
+                        record_inbound(Some(path::PathAction::Keep));
+                        return;
+                    }
+                    info!(peer = %node_id, src = %inb.src, local = ?arrived,
+                        "overlay: init on a birthday-spray socket — moving the upgrade probe onto it");
+                    self.shadow(|s| s.mon.on_probe_aborted(&node_id));
+                    record_inbound(Some(path::PathAction::Probe(tier)));
+                    self.shadow(|s| s.mon.on_probe_started(&node_id, tier, now));
+                    upgrade_probes.insert(
+                        node_id,
+                        UpgradeProbe {
+                            pubkey,
+                            overlay_ip: cfg.overlay_ip,
+                            dst: inb.src,
+                            tier,
+                            since: now,
+                            initiated: false,
+                            local: arrived,
+                        },
+                    );
+                    if let Some((new_session_idx, actual_local, actual_dst)) =
+                        wg.direct_probe_identity(&pubkey)
+                    {
+                        info!(event = "birthday_probe_adopted", peer = %node_id,
+                            peer_key = %hex::encode(pubkey),
+                            old_session_idx = ?old_probe_identity.map(|p| p.0),
+                            old_actual_local = ?old_probe_identity.map(|p| p.1),
+                            old_actual_dst = ?old_probe_identity.map(|p| p.2),
+                            new_session_idx, %actual_local, %actual_dst, spray_local = true,
+                            "overlay: authenticated current-peer INIT adopted on birthday socket");
+                    }
+                    info!(
+                        peer = %node_id, src = %inb.src, ?tier,
+                        "overlay: make-before-break — accepted inbound direct handshake as a PROBE (relay held)"
+                    );
+                    return;
+                }
             }
             // Only probe when there's a working relay to protect. A fresh peer
             // (nothing installed) or one already on direct-via-another-src falls
@@ -188,6 +265,22 @@ impl OverlayRuntime {
                         local: inb.sock.local_addr().ok(),
                     },
                 );
+                if inb
+                    .sock
+                    .local_addr()
+                    .ok()
+                    .is_some_and(|a| self.is_spray_local(a))
+                    && let Some((new_session_idx, actual_local, actual_dst)) =
+                        wg.direct_probe_identity(&pubkey)
+                {
+                    info!(event = "birthday_probe_adopted", peer = %node_id,
+                        peer_key = %hex::encode(pubkey),
+                        old_session_idx = ?old_probe_identity.map(|p| p.0),
+                        old_actual_local = ?old_probe_identity.map(|p| p.1),
+                        old_actual_dst = ?old_probe_identity.map(|p| p.2),
+                        new_session_idx, %actual_local, %actual_dst, spray_local = true,
+                        "overlay: authenticated current-peer INIT adopted on birthday socket");
+                }
                 info!(
                     peer = %node_id, src = %inb.src, ?tier,
                     "overlay: make-before-break — accepted inbound direct handshake as a PROBE (relay held)"
@@ -196,7 +289,59 @@ impl OverlayRuntime {
             }
         }
 
-        // Re-point: drop any existing carrier (relay or direct-on-another-src)
+        // If the peer is already installed on a direct carrier with the same
+        // static key, authenticate and anti-replay-check the arriving INIT
+        // against that installed `Tunn` BEFORE repointing in place. An
+        // intercepted INIT replayed from a new source address (or onto a live
+        // spray socket) is rejected by boringtun's TAI64N watermark without
+        // tearing down the active direct session.
+        if by_node
+            .get(&node_id)
+            .is_some_and(|e| e.is_direct && e.pubkey == pubkey)
+            && wg.direct_peer_identity(&pubkey).is_some()
+        {
+            if upgrade_probes.remove(&node_id).is_some() || wg.has_direct_probe(&pubkey) {
+                self.shadow(|s| s.mon.on_probe_aborted(&node_id));
+                wg.drop_direct_probe(&pubkey).await;
+                if let Some(cur_src) = wg.direct_src_of(&pubkey) {
+                    wg.reassert_plane_src(&pubkey, cur_src);
+                }
+            }
+            if !wg
+                .try_repoint_direct_peer_init(&pubkey, inb.sock.clone(), inb.src, &inb.packet)
+                .await
+            {
+                record_inbound(Some(path::PathAction::Keep));
+                return;
+            }
+            record_inbound(Some(path::PathAction::Install(tier)));
+            self.shadow(|s| s.mon.on_installed(&node_id, tier, now));
+            if let Some(r) = relay.as_mut() {
+                r.forget(&node_id);
+            }
+            relay_bq.invalidate(&node_id);
+            let traffic = wg.peer_traffic(&pubkey).unwrap_or((0, 0));
+            by_node.insert(
+                node_id,
+                Installed {
+                    hs_done: true,
+                    last_traffic: traffic,
+                    carrier_local: inb.sock.local_addr().ok(),
+                    carrier_dst: Some(inb.src),
+                    public_direct_dst: is_public_src.then_some(inb.src),
+                    ..Installed::base(pubkey, cfg.overlay_ip, tier, Instant::now())
+                },
+            );
+            if let Err(e) = tun.add_peer_route(cfg.overlay_ip).await {
+                debug!(peer = %node_id, %e, "overlay: /32 peer route not installed (ok on clean hosts)");
+            }
+            self.install_subnets(wg, tun, node_id, pubkey, &cfg.subnets)
+                .await;
+            info!(peer = %node_id, src = %inb.src, ?tier, "overlay: repointed direct peer in-place from authenticated inbound handshake");
+            return;
+        }
+
+        // Re-point: drop any existing carrier (relay or key-rotated direct)
         // and any pending relay request, then install direct on the arriving
         // socket keyed by the init's source. `initiate = false` — the peer
         // already initiated; we only need to respond.
