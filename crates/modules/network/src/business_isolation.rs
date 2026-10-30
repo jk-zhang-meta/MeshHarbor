@@ -46,8 +46,9 @@ use tracing::{info, warn};
 
 use crate::NetworkState;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Mode {
+    #[default]
     Off,
     Warn,
     Enforce,
@@ -69,6 +70,33 @@ pub fn mode(state: &NetworkState) -> Mode {
     Mode::parse(&state.core.settings.app.business_isolation)
 }
 
+/// Independent staged gate for `Unknown`-role devices (`app.business_unknown_role`),
+/// active only when `business_isolation != off`.
+pub fn unknown_role_mode(state: &NetworkState) -> Mode {
+    if mode(state) == Mode::Off {
+        Mode::Off
+    } else {
+        Mode::parse(&state.core.settings.app.business_unknown_role)
+    }
+}
+
+/// Log `"would refuse: unknown_role"` with the `Unknown` devices that currently
+/// have business peers under `business_unknown_role = warn`.
+pub fn log_unknown_role_with_peers(
+    tenant_id: ObjectId,
+    context: &'static str,
+    unknown_devices: &[String],
+) {
+    if !unknown_devices.is_empty() {
+        info!(
+            %tenant_id,
+            context,
+            ?unknown_devices,
+            "business isolation [warn]: would refuse: unknown_role"
+        );
+    }
+}
+
 /// The zones one shaping decision is about: the recipient's and the shaped
 /// peer's. `None` is unknown.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -82,6 +110,11 @@ pub struct Zones {
     /// Both are servers: `Some(linked)`, and the server topology alone
     /// decides ([`Lines::server_pair`]). `None` for any other pair.
     pub servers: Option<bool>,
+    /// Staged gate for `Unknown`-role devices (`app.business_unknown_role`).
+    pub unknown_role: Mode,
+    /// Whether both devices in the pair have an approved effective role
+    /// (`Client` or `Server`).
+    pub role_known: bool,
 }
 
 impl Zones {
@@ -91,6 +124,8 @@ impl Zones {
         peer: None,
         line: false,
         servers: None,
+        unknown_role: Mode::Off,
+        role_known: true,
     };
 
     /// The pair may meet: two linked servers, or both zones known and equal.
@@ -101,22 +136,36 @@ impl Zones {
         }
     }
 
-    /// The rule says no: zones differ or one is unknown. Under `off` the
-    /// rule is not consulted at all.
+    /// Whether the `Unknown`-role gate flags this pair (`warn` or `enforce`).
+    pub fn unknown_role_denies(&self) -> bool {
+        self.mode != Mode::Off && self.unknown_role != Mode::Off && !self.role_known
+    }
+
+    /// Whether the `Unknown`-role gate withholds this pair (`enforce` on both).
+    pub fn unknown_role_withholds(&self) -> bool {
+        self.mode == Mode::Enforce && self.unknown_role == Mode::Enforce && !self.role_known
+    }
+
+    /// The rule says no: zones differ, one is unknown, or an `Unknown`-role
+    /// device is gated. Under `off` the rule is not consulted at all.
     pub fn denies(&self) -> bool {
-        self.mode != Mode::Off && !self.same()
+        (self.mode != Mode::Off && !self.same()) || self.unknown_role_denies()
     }
 
     /// Withhold the peer from the recipient (only under `enforce`).
+    /// Never relaxes regional rules already in `enforce` when `unknown_role` is `warn`.
     pub fn withholds(&self) -> bool {
-        self.mode == Mode::Enforce && self.denies() && !self.line_only()
+        self.unknown_role_withholds()
+            || (self.mode == Mode::Enforce && !self.same() && !self.line_only())
     }
 
     /// The one exception (the user's 2026-10-26 rule): two known, different
     /// zones an approved cross-border line connects, toward a recipient that
     /// rides such a peer over the line alone. Shown as `backbone_only`.
+    /// Never applies when `unknown_role` withholds either party.
     pub fn line_only(&self) -> bool {
-        self.mode == Mode::Enforce
+        !self.unknown_role_withholds()
+            && self.mode == Mode::Enforce
             && self.line
             && self.servers.is_none()
             && matches!((self.recipient, self.peer), (Some(a), Some(b)) if a != b)
@@ -135,9 +184,84 @@ pub struct Lines {
     pub lines: Vec<(BusinessZone, BusinessZone)>,
     pub servers: std::collections::HashSet<ObjectId>,
     pub links: std::collections::HashSet<(ObjectId, ObjectId)>,
+    pub unknown_role: Mode,
+    pub approved_roles:
+        std::collections::HashSet<(roomler_core::business_authority::DeviceKind, ObjectId)>,
 }
 
 impl Lines {
+    pub fn ref_identity(r: &NodeRef) -> (roomler_core::business_authority::DeviceKind, ObjectId) {
+        match r {
+            NodeRef::Agent { agent_id } => {
+                (roomler_core::business_authority::DeviceKind::Agent, *agent_id)
+            }
+            NodeRef::TunnelClient { tunnel_client_id } => (
+                roomler_core::business_authority::DeviceKind::TunnelClient,
+                *tunnel_client_id,
+            ),
+        }
+    }
+
+    pub fn ref_label(r: &NodeRef) -> String {
+        match r {
+            NodeRef::Agent { agent_id } => format!("agent:{agent_id}"),
+            NodeRef::TunnelClient { tunnel_client_id } => format!("tunnel_client:{tunnel_client_id}"),
+        }
+    }
+
+    pub fn node_label(n: &OverlayNode) -> String {
+        format!("{}:{}", Self::ref_label(&n.node_ref), n.name)
+    }
+
+    pub fn ref_role_known(&self, r: &NodeRef) -> bool {
+        self.unknown_role == Mode::Off || self.approved_roles.contains(&Self::ref_identity(r))
+    }
+
+    pub fn node_role_known(&self, n: &OverlayNode) -> bool {
+        self.ref_role_known(&n.node_ref)
+    }
+
+    pub fn pair_roles_known(&self, a: &OverlayNode, b: &OverlayNode) -> bool {
+        self.refs_roles_known(&a.node_ref, &b.node_ref)
+    }
+
+    pub fn refs_roles_known(&self, a: &NodeRef, b: &NodeRef) -> bool {
+        self.ref_role_known(a) && self.ref_role_known(b)
+    }
+
+    pub fn unknown_refs_list(&self, refs: &[&NodeRef]) -> Vec<String> {
+        let mut out = Vec::new();
+        for r in refs {
+            if !self.ref_role_known(r) {
+                let label = Self::ref_label(r);
+                if !out.contains(&label) {
+                    out.push(label);
+                }
+            }
+        }
+        out
+    }
+
+    pub fn zones_for(
+        &self,
+        mode: Mode,
+        recipient: &OverlayNode,
+        recipient_zone: Option<BusinessZone>,
+        peer: &OverlayNode,
+        peer_zone: Option<BusinessZone>,
+        recipient_rides_lines: bool,
+    ) -> Zones {
+        Zones {
+            mode,
+            recipient: recipient_zone,
+            peer: peer_zone,
+            line: recipient_rides_lines && self.connects(recipient_zone, peer_zone),
+            servers: self.server_pair(recipient, peer),
+            unknown_role: self.unknown_role,
+            role_known: self.pair_roles_known(recipient, peer),
+        }
+    }
+
     pub fn connects(&self, a: Option<BusinessZone>, b: Option<BusinessZone>) -> bool {
         matches!((a, b), (Some(a), Some(b)) if a != b
             && self.lines.iter().any(|&(x, y)| (x, y) == (a, b) || (x, y) == (b, a)))
@@ -167,12 +291,22 @@ pub async fn lines(state: &NetworkState, mode: Mode, tenant_id: ObjectId) -> Lin
     if mode == Mode::Off {
         return Lines::default();
     }
-    // Every read fails closed: no role read means no servers (the zone rule
-    // then applies to everyone), no network read means no links.
-    let servers = roomler_core::business_authority::current_server_agents(&state.core, tenant_id)
+    let unknown_role = unknown_role_mode(state);
+    // Every read fails closed: no role read means no approved roles and no
+    // servers (under unknown_role = enforce everyone is withheld; under warn
+    // the zone rule applies to everyone), no network read means no links.
+    let roles = roomler_core::business_authority::current_approved_roles(&state.core, tenant_id)
         .await
-        .map(|agents| agents.into_iter().filter_map(|a| a.id).collect())
         .unwrap_or_default();
+    let servers = roles
+        .iter()
+        .filter_map(|(&(kind, id), &role)| {
+            (kind == roomler_core::business_authority::DeviceKind::Agent
+                && role == roomler_core::business_authority::DeviceUseRole::Server)
+                .then_some(id)
+        })
+        .collect();
+    let approved_roles = roles.into_keys().collect();
     let links = state
         .overlay_networks
         .find_for_tenant(tenant_id)
@@ -196,6 +330,8 @@ pub async fn lines(state: &NetworkState, mode: Mode, tenant_id: ObjectId) -> Lin
         lines,
         servers,
         links,
+        unknown_role,
+        approved_roles,
     }
 }
 
@@ -231,16 +367,26 @@ pub async fn permit_refs(
     if mode == Mode::Off {
         return Permit::Denied;
     }
+    let topo = lines(state, mode, tenant_id).await;
+    let role_known = topo.refs_roles_known(a, b);
+    if mode == Mode::Enforce && topo.unknown_role == Mode::Enforce && !role_known {
+        return Permit::Denied;
+    }
     let za = crate::org_relay::party_zone(state, tenant_id, a).await;
     let zb = crate::org_relay::party_zone(state, tenant_id, b).await;
-    match lines(state, mode, tenant_id).await.server_refs(a, b) {
+    let permit = match topo.server_refs(a, b) {
         Some(true) => Permit::Linked(za, zb),
         Some(false) => Permit::Denied,
         None => match (za, zb) {
             (Some(x), Some(y)) if x == y => Permit::Zone(x),
             _ => Permit::Denied,
         },
+    };
+    if topo.unknown_role != Mode::Off && !role_known && permit != Permit::Denied {
+        let unknown_devices = topo.unknown_refs_list(&[a, b]);
+        log_unknown_role_with_peers(tenant_id, "permit_refs", &unknown_devices);
     }
+    permit
 }
 
 /// Whether `recipient` joined able to ride a line-only peer.
@@ -330,8 +476,46 @@ pub async fn refuses_parties(
     if mode == Mode::Off {
         return false;
     }
-    if a.0 == b.0 && permit_refs(state, mode, a.0, a.1, b.1).await != Permit::Denied {
-        return false;
+    if a.0 == b.0 {
+        let topo = lines(state, mode, a.0).await;
+        let role_known = topo.refs_roles_known(a.1, b.1);
+        if !role_known {
+            let unknown_devices = topo.unknown_refs_list(&[a.1, b.1]);
+            if mode == Mode::Enforce && topo.unknown_role == Mode::Enforce {
+                warn!(
+                    tenant_id = %a.0,
+                    a = ?a.1,
+                    b = ?b.1,
+                    what,
+                    ?unknown_devices,
+                    "business isolation: refusing: unknown_role"
+                );
+                return true;
+            }
+            if topo.unknown_role != Mode::Off {
+                info!(
+                    tenant_id = %a.0,
+                    a = ?a.1,
+                    b = ?b.1,
+                    what,
+                    ?unknown_devices,
+                    "business isolation [warn]: would refuse: unknown_role"
+                );
+            }
+        }
+        let za = crate::org_relay::party_zone(state, a.0, a.1).await;
+        let zb = crate::org_relay::party_zone(state, a.0, b.1).await;
+        let permit = match topo.server_refs(a.1, b.1) {
+            Some(true) => Permit::Linked(za, zb),
+            Some(false) => Permit::Denied,
+            None => match (za, zb) {
+                (Some(x), Some(y)) if x == y => Permit::Zone(x),
+                _ => Permit::Denied,
+            },
+        };
+        if permit != Permit::Denied {
+            return false;
+        }
     }
     let (a, b) = (a.1, b.1);
     if mode == Mode::Enforce {
@@ -364,6 +548,8 @@ mod tests {
             peer,
             line: false,
             servers: None,
+            unknown_role: Mode::Off,
+            role_known: true,
         }
     }
 
@@ -454,5 +640,47 @@ mod tests {
         assert_eq!(Mode::parse("enforce"), Mode::Enforce);
         assert_eq!(Mode::parse("enforced"), Mode::Enforce);
         assert_eq!(Mode::parse(""), Mode::Enforce);
+    }
+
+    #[test]
+    fn unknown_role_enforce_withholds_unapproved_and_warn_never_relaxes_zone_enforce() {
+        let same_zone_unknown = Zones {
+            unknown_role: Mode::Enforce,
+            role_known: false,
+            ..z(Mode::Enforce, Some(Mainland), Some(Mainland))
+        };
+        assert!(same_zone_unknown.denies());
+        assert!(same_zone_unknown.withholds());
+        assert!(!same_zone_unknown.line_only());
+
+        let cross_line_unknown = Zones {
+            line: true,
+            unknown_role: Mode::Enforce,
+            role_known: false,
+            ..z(Mode::Enforce, Some(Mainland), Some(NonMainland))
+        };
+        assert!(cross_line_unknown.denies());
+        assert!(cross_line_unknown.withholds());
+        assert!(!cross_line_unknown.line_only());
+
+        let warn_same_zone_unknown = Zones {
+            unknown_role: Mode::Warn,
+            role_known: false,
+            ..z(Mode::Enforce, Some(Mainland), Some(Mainland))
+        };
+        assert!(
+            warn_same_zone_unknown.denies() && !warn_same_zone_unknown.withholds(),
+            "warn logs unapproved role in same zone without withholding"
+        );
+
+        let warn_cross_zone_unknown = Zones {
+            unknown_role: Mode::Warn,
+            role_known: false,
+            ..z(Mode::Enforce, Some(Mainland), Some(NonMainland))
+        };
+        assert!(
+            warn_cross_zone_unknown.withholds(),
+            "unknown_role=warn must never relax cross-zone enforce"
+        );
     }
 }

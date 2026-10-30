@@ -427,6 +427,7 @@ pub async fn handle_tunnel_client_socket(
                 }
                 if let Some(s) = session.take() {
                     state.tunnel_clients_by_session.remove(&s.tunnel_session_id);
+                    state.tunnel_session_parties.remove(&s.tunnel_session_id);
                     unindex_session_target(
                         &state.tunnel_sessions_by_target_agent,
                         s.agent_id,
@@ -564,6 +565,7 @@ pub async fn handle_tunnel_client_socket(
 
     if let Some(s) = session {
         state.tunnel_clients_by_session.remove(&s.tunnel_session_id);
+                    state.tunnel_session_parties.remove(&s.tunnel_session_id);
         unindex_session_target(
             &state.tunnel_sessions_by_target_agent,
             s.agent_id,
@@ -1140,6 +1142,18 @@ async fn handle_tunnel_open(
         .entry(agent_id)
         .or_default()
         .insert(tunnel_session_id);
+    let session_origin_ref = match orig.principal {
+        Principal::TunnelClient(id) => NodeRef::TunnelClient {
+            tunnel_client_id: id,
+        },
+        Principal::Agent(id) | Principal::Session { agent_id: id, .. } => {
+            NodeRef::Agent { agent_id: id }
+        }
+    };
+    state.tunnel_session_parties.insert(
+        tunnel_session_id,
+        (orig.tenant_id, session_origin_ref, agent_id),
+    );
 
     // 5. Audit the open. RelayMode is "Direct" until ICE finishes —
     // T2.7 updates this after candidate selection. Under a grant the row
@@ -1421,6 +1435,52 @@ async fn handle_forward_request(
             return;
         }
     };
+
+    let origin_ref = match orig.principal {
+        Principal::TunnelClient(id) => NodeRef::TunnelClient {
+            tunnel_client_id: id,
+        },
+        Principal::Agent(id) | Principal::Session { agent_id: id, .. } => {
+            NodeRef::Agent { agent_id: id }
+        }
+    };
+    if crate::business_isolation::refuses_parties(
+        state,
+        (orig.tenant_id, &origin_ref),
+        (
+            agent.tenant_id,
+            &NodeRef::Agent {
+                agent_id: s.agent_id,
+            },
+        ),
+        "tunnel forward",
+    )
+    .await
+    {
+        audit_tcp_reject(
+            state,
+            s,
+            orig,
+            flow_id,
+            dst_host,
+            dst_port,
+            RejectKind::AclDenied,
+            "business_isolation",
+        )
+        .await;
+        send_msg(
+            &orig.outbound_tx,
+            forward_reject_msg(
+                proto,
+                request_session_id,
+                flow_id,
+                RejectKind::AclDenied,
+                "business_isolation".into(),
+            ),
+        )
+        .await;
+        return;
+    }
 
     // Active policies for the agent's tenant. Server-side ACL is
     // the auth boundary; the agent runs its own minimal allowlist
@@ -1804,6 +1864,9 @@ async fn relay_sdp_offer_to_agent(
         debug!(%request_session_id, "SDP offer on dead session — ignoring");
         return;
     };
+    if !state.tunnel_clients_by_session.contains_key(&request_session_id) {
+        return;
+    }
     if s.tunnel_session_id != request_session_id {
         debug!(%request_session_id, "SDP offer session_id mismatch — ignoring");
         return;
@@ -2215,6 +2278,7 @@ pub async fn relay_tunnel_client_msg_from_agent(
                     },
                 );
                 state.tunnel_clients_by_session.remove(&s.tunnel_session_id);
+                    state.tunnel_session_parties.remove(&s.tunnel_session_id);
                 unindex_session_target(
                     &state.tunnel_sessions_by_target_agent,
                     s.agent_id,
@@ -2246,6 +2310,7 @@ pub(crate) fn fence_originated_sessions(
 ) {
     for s in sessions.values() {
         state.tunnel_clients_by_session.remove(&s.tunnel_session_id);
+                    state.tunnel_session_parties.remove(&s.tunnel_session_id);
         let _ = state.fleet.rc_hub.send_to_agent(
             s.agent_id,
             ServerMsg::TunnelTerminate {
@@ -2267,6 +2332,7 @@ pub async fn teardown_agent_originated_sessions(
 ) {
     for (_session_id, s) in sessions {
         state.tunnel_clients_by_session.remove(&s.tunnel_session_id);
+                    state.tunnel_session_parties.remove(&s.tunnel_session_id);
         unindex_session_target(
             &state.tunnel_sessions_by_target_agent,
             s.agent_id,
@@ -2361,6 +2427,54 @@ pub async fn terminate_sessions_targeting_agent(state: &NetworkState, agent_id: 
 /// Immediately terminate every tunnel session targeting `agent_id`: drop the
 /// by-target index and push `TunnelTerminate` to each client. The pre-R3
 /// behaviour, now also the grace-expiry path.
+/// Immediately terminate every center-brokered tunnel session where `agent_id`
+/// is either the target or the originator (e.g. when its business role is
+/// revoked to `Unknown` under `enforce`), pushing `TunnelTerminate` to both ends.
+pub async fn reconcile_tunnel_sessions(state: &NetworkState, tenant_id: ObjectId) {
+    let active: Vec<(ObjectId, ObjectId, NodeRef, ObjectId)> = state
+        .tunnel_session_parties
+        .iter()
+        .filter(|e| e.value().0 == tenant_id)
+        .map(|e| (*e.key(), e.value().0, e.value().1.clone(), e.value().2))
+        .collect();
+    for (sid, orig_tid, orig_ref, target_agent_id) in active {
+        let target_ref = NodeRef::Agent {
+            agent_id: target_agent_id,
+        };
+        if !crate::business_isolation::refuses_parties(
+            state,
+            (orig_tid, &orig_ref),
+            (orig_tid, &target_ref),
+            "tunnel_reconcile",
+        )
+        .await
+        {
+            continue;
+        }
+        state.tunnel_session_parties.remove(&sid);
+        unindex_session_target(&state.tunnel_sessions_by_target_agent, target_agent_id, sid);
+        if let NodeRef::Agent {
+            agent_id: orig_agent_id,
+        } = orig_ref
+        {
+            unindex_session_target(&state.tunnel_sessions_by_origin_agent, orig_agent_id, sid);
+        }
+        if let Some((_, tx)) = state.tunnel_clients_by_session.remove(&sid) {
+            let _ = tx.try_send(ServerMsg::TunnelTerminate {
+                session_id: sid,
+                reason: CloseReason::ServerTerminated,
+            });
+        }
+        let _ = state.fleet.rc_hub.send_to_agent(
+            target_agent_id,
+            ServerMsg::TunnelTerminate {
+                session_id: sid,
+                reason: CloseReason::ServerTerminated,
+            },
+        );
+    }
+}
+
 pub(crate) fn terminate_agent_sessions_now(state: &NetworkState, agent_id: ObjectId) {
     let Some((_, session_ids)) = state.tunnel_sessions_by_target_agent.remove(&agent_id) else {
         return;

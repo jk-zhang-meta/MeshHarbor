@@ -90,18 +90,46 @@ pub async fn approve(
     let identity = current_device(&state, &kind, &tenant, &device).await?;
     let approval =
         approve_device_role(&state.core, &auth, &identity, body.role, &body.reason).await?;
-    // MeshHarbor `auto`: the Server role IS an implicit relay's grant. Any
-    // change fences in-flight mints, and losing it ends what it minted.
-    if approval.identity.kind == DeviceKind::Agent {
-        state.org_relay.invalidate_eligibility();
-        if approval.role != DeviceUseRole::Server {
-            let agent_id = approval.identity.device_id;
-            crate::org_relay::revoke_where(&state, "role_revoked", |s| {
-                s.implicit && s.relay_agent_id == agent_id
-            })
-            .await;
-        }
+    // MeshHarbor `auto` + Item #96: any role change fences in-flight mints,
+    // re-fans the tenant's overlay netmaps, rebuilds the DERP allow table, and
+    // revokes sessions/grants the new role no longer permits.
+    let tenant_id = approval.identity.tenant_id;
+    let device_id = approval.identity.device_id;
+    state.org_relay.invalidate_eligibility();
+    if approval.identity.kind == DeviceKind::Agent && approval.role != DeviceUseRole::Server {
+        crate::org_relay::revoke_where(&state, "role_revoked", |s| {
+            s.implicit && s.relay_agent_id == device_id
+        })
+        .await;
     }
+    if approval.role == DeviceUseRole::Unknown
+        && crate::business_isolation::mode(&state) == crate::business_isolation::Mode::Enforce
+        && crate::business_isolation::unknown_role_mode(&state)
+            == crate::business_isolation::Mode::Enforce
+    {
+        crate::org_relay::revoke_where(&state, "role_revoked", |s| {
+            s.tenant_id == tenant_id && s.involves_device(approval.identity.kind, device_id)
+        })
+        .await;
+    }
+    crate::tunnel::reconcile_tunnel_sessions(&state, tenant_id).await;
+    crate::managed_forward::reconcile_tenant_forwards(&state, tenant_id).await;
+    if let Ok(Some(net)) = state.overlay_networks.find_for_tenant(tenant_id).await
+        && let Some(network_id) = net.id
+    {
+        if let Ok(nodes) = state
+            .overlay_nodes
+            .list_active_in_network(tenant_id, network_id)
+            .await
+        {
+            for node in &nodes {
+                crate::overlay::refan_node(&state, node).await;
+            }
+        }
+        crate::derp_acl::rebuild(&state, tenant_id, network_id).await;
+    }
+    crate::org_relay::recheck_zones(&state, device_id, "role_changed").await;
+    crate::org_relay::reconcile_acl(&state, tenant_id).await;
     Ok(Json(approval))
 }
 

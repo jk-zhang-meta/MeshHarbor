@@ -106,6 +106,42 @@ pub(super) async fn prepare_reusing(
     }
     use crate::business_isolation::{self as iso, Mode};
     let enforce_zone = iso::mode(state) == Mode::Enforce;
+    let unknown_role_mode = iso::unknown_role_mode(state);
+    if unknown_role_mode != Mode::Off {
+        let roles = match roomler_core::business_authority::current_approved_roles(
+            &state.core,
+            requester.tenant_id,
+        )
+        .await
+        {
+            Ok(roles) => Some(roles),
+            Err(_) if enforce_zone && unknown_role_mode == Mode::Enforce => {
+                return Err(Deny::PolicyUnreadable);
+            }
+            Err(_) => None,
+        };
+        if let Some(roles) = roles.as_ref() {
+            let req_known = roles.contains_key(&iso::Lines::ref_identity(&requester.node_ref));
+            let peer_known = roles.contains_key(&iso::Lines::ref_identity(&peer.node_ref));
+            if !req_known || !peer_known {
+                let mut unknown_devices = Vec::new();
+                if !req_known {
+                    unknown_devices.push(iso::Lines::node_label(requester));
+                }
+                if !peer_known {
+                    unknown_devices.push(iso::Lines::node_label(peer));
+                }
+                if enforce_zone && unknown_role_mode == Mode::Enforce {
+                    return Err(Deny::ZoneDenied);
+                }
+                iso::log_unknown_role_with_peers(
+                    requester.tenant_id,
+                    "path_candidate",
+                    &unknown_devices,
+                );
+            }
+        }
+    }
     let (za, zb) = (
         node_zone(state, requester).await,
         node_zone(state, peer).await,

@@ -877,14 +877,14 @@ async fn handle_overlay_join(
         // U2 — this recipient's edge is `peer → self_node` (the joiner).
         let verdict = server_relay_verdict(state, peer, &self_node);
         let recipient_zone = business_isolation::zone_of(state, iso, peer).await;
-        let zones = Zones {
-            mode: iso,
-            recipient: recipient_zone,
-            peer: joiner_zone,
-            line: lines.connects(recipient_zone, joiner_zone)
-                && business_isolation::rides_lines(state, peer),
-            servers: lines.server_pair(peer, &self_node),
-        };
+        let zones = lines.zones_for(
+            iso,
+            peer,
+            recipient_zone,
+            &self_node,
+            joiner_zone,
+            business_isolation::rides_lines(state, peer),
+        );
         let (upserts, removes) =
             match shape_peer(&acl, &peer_src, &self_node, joiner_ingress, true, zones) {
                 Some(mut u) => {
@@ -2257,7 +2257,8 @@ async fn fan_upsert_shaped(state: &NetworkState, node: &OverlayNode, epoch: u64,
     // delta re-stamping its outgoing edges whenever it is present and
     // U2-capable (verdicts are the only per-edge data its change moves;
     // pre-U2 nodes ignore stamps, so the delta would be pure noise there).
-    let reverse = reachable && node.supports_server_relay_strategy;
+    let reverse =
+        reachable && (node.supports_server_relay_strategy || iso == business_isolation::Mode::Enforce);
     let (node_recip_src, peer_reach) = if reverse {
         (
             Some(overlay_source_of(state, node).await),
@@ -2267,20 +2268,21 @@ async fn fan_upsert_shaped(state: &NetworkState, node: &OverlayNode, epoch: u64,
         (None, HashMap::new())
     };
     let mut reverse_rows: Vec<NetmapPeer> = Vec::new();
+    let mut reverse_removes: Vec<ObjectId> = Vec::new();
     for peer in peers.iter().filter(|p| p.id != node.id) {
         let src = overlay_source_of(state, peer).await;
         // U2 — the edge is `recipient=peer → this fanned node`; both full
         // rows are in hand, so stamp the server verdict onto the shaped peer.
         let verdict = server_relay_verdict(state, peer, node);
         let peer_zone = business_isolation::zone_of(state, iso, peer).await;
-        let zones = Zones {
-            mode: iso,
-            recipient: peer_zone,
-            peer: node_zone,
-            line: lines.connects(peer_zone, node_zone)
-                && business_isolation::rides_lines(state, peer),
-            servers: lines.server_pair(peer, node),
-        };
+        let zones = lines.zones_for(
+            iso,
+            peer,
+            peer_zone,
+            node,
+            node_zone,
+            business_isolation::rides_lines(state, peer),
+        );
         let (upserts, removes) =
             match shape_peer(&acl, &src, node, node_src.as_ref(), reachable, zones) {
                 Some(mut u) => {
@@ -2306,14 +2308,14 @@ async fn fan_upsert_shaped(state: &NetworkState, node: &OverlayNode, epoch: u64,
         if let Some(rsrc) = node_recip_src.as_ref() {
             let rev_verdict = server_relay_verdict(state, node, peer);
             let peer_src_arg = if acl.enforcing() { Some(&src) } else { None };
-            let back = Zones {
-                mode: iso,
-                recipient: node_zone,
-                peer: peer_zone,
-                line: lines.connects(node_zone, peer_zone)
-                    && business_isolation::rides_lines(state, node),
-                servers: lines.server_pair(node, peer),
-            };
+            let back = lines.zones_for(
+                iso,
+                node,
+                node_zone,
+                peer,
+                peer_zone,
+                business_isolation::rides_lines(state, node),
+            );
             if let Some(mut r) = shape_peer(
                 &acl,
                 rsrc,
@@ -2324,13 +2326,18 @@ async fn fan_upsert_shaped(state: &NetworkState, node: &OverlayNode, epoch: u64,
             ) {
                 stamp_verdict(&mut r, rev_verdict);
                 reverse_rows.push(r);
+            } else if iso == business_isolation::Mode::Enforce
+                && let Some(pid) = peer.id
+            {
+                reverse_removes.push(pid);
             }
         }
     }
-    if !reverse_rows.is_empty() {
+    if !reverse_rows.is_empty() || !reverse_removes.is_empty() {
         debug!(
             node = %node.name,
             rows = reverse_rows.len(),
+            removes = reverse_removes.len(),
             epoch,
             "overlay: reverse verdict delta — re-stamping the changed node's outgoing edges (D0)"
         );
@@ -2340,7 +2347,7 @@ async fn fan_upsert_shaped(state: &NetworkState, node: &OverlayNode, epoch: u64,
             ServerMsg::OverlayNetmapDelta {
                 epoch,
                 upserts: reverse_rows,
-                removes: vec![],
+                removes: reverse_removes,
             },
         )
         .await;
@@ -2379,13 +2386,14 @@ async fn fan_pair_verdicts(state: &NetworkState, a: &OverlayNode, b: &OverlayNod
             b,
             if enforcing { Some(&b_src) } else { None },
             b_reach,
-            Zones {
-                mode: iso,
-                recipient: a_zone,
-                peer: b_zone,
-                line: lines.connects(a_zone, b_zone) && business_isolation::rides_lines(state, a),
-                servers: lines.server_pair(a, b),
-            },
+            lines.zones_for(
+                iso,
+                a,
+                a_zone,
+                b,
+                b_zone,
+                business_isolation::rides_lines(state, a),
+            ),
         )
     {
         stamp_verdict(&mut row, server_relay_verdict(state, a, b));
@@ -2407,13 +2415,14 @@ async fn fan_pair_verdicts(state: &NetworkState, a: &OverlayNode, b: &OverlayNod
             a,
             if enforcing { Some(&a_src) } else { None },
             true,
-            Zones {
-                mode: iso,
-                recipient: b_zone,
-                peer: a_zone,
-                line: lines.connects(b_zone, a_zone) && business_isolation::rides_lines(state, b),
-                servers: lines.server_pair(b, a),
-            },
+            lines.zones_for(
+                iso,
+                b,
+                b_zone,
+                a,
+                a_zone,
+                business_isolation::rides_lines(state, b),
+            ),
         )
     {
         stamp_verdict(&mut row, server_relay_verdict(state, b, a));
@@ -3110,15 +3119,11 @@ pub async fn shape_full_netmap(
     let lines = business_isolation::lines(state, iso, self_node.tenant_id).await;
     let rides = business_isolation::rides_lines(state, self_node);
     let mut peers: Vec<NetmapPeer> = Vec::new();
+    let mut unknown_with_peers: Vec<String> = Vec::new();
+    let self_role_known = lines.node_role_known(self_node);
     for n in all.iter().filter(|n| n.id != self_node.id) {
         let peer_zone = business_isolation::zone_of(state, iso, n).await;
-        let zones = Zones {
-            mode: iso,
-            recipient: self_zone,
-            peer: peer_zone,
-            line: rides && lines.connects(self_zone, peer_zone),
-            servers: lines.server_pair(self_node, n),
-        };
+        let zones = lines.zones_for(iso, self_node, self_zone, n, peer_zone, rides);
         // P4 — resolving the peer's own identity costs up to 2 reads, so do it
         // ONLY when the tenant is enforcing and the rules will actually ship.
         // An `off`/`warn` tenant's join path is unchanged.
@@ -3135,10 +3140,29 @@ pub async fn shape_full_netmap(
             is_reachable(reach, n),
             zones,
         ) {
+            if lines.unknown_role == business_isolation::Mode::Warn && !lines.node_role_known(n) {
+                let label = business_isolation::Lines::node_label(n);
+                if !unknown_with_peers.contains(&label) {
+                    unknown_with_peers.push(label);
+                }
+            }
             // U2 — the recipient's full-netmap edge is `self_node → n`.
             stamp_verdict(&mut p, server_relay_verdict(state, self_node, n));
             peers.push(p);
         }
+    }
+    if lines.unknown_role == business_isolation::Mode::Warn && !peers.is_empty() {
+        if !self_role_known {
+            let self_label = business_isolation::Lines::node_label(self_node);
+            if !unknown_with_peers.contains(&self_label) {
+                unknown_with_peers.insert(0, self_label);
+            }
+        }
+        business_isolation::log_unknown_role_with_peers(
+            self_node.tenant_id,
+            "netmap",
+            &unknown_with_peers,
+        );
     }
     ShapedNetmap {
         acl,
@@ -3167,6 +3191,14 @@ fn shape_peer(
     // is shaped like any other (the ACL still decides), then stripped to the
     // line: no address to dial, no DERP or TURN to try.
     if zones.line_only() {
+        if zones.unknown_role_denies() {
+            tracing::info!(
+                source = %src.node_id,
+                peer = %peer.name,
+                ?zones,
+                "business isolation [warn]: would refuse: unknown_role"
+            );
+        }
         debug!(source = %src.node_id, peer = %peer.name, ?zones,
             "business isolation: peer shown backbone-only (an approved cross-border line)");
         return shape_peer_zoned(acl, src, peer, peer_src, reachable, Zones::OFF).map(line_only);
@@ -3228,12 +3260,26 @@ fn shape_peer_zoned(
     // ACL: no grant, share or relay can make a peer across it visible.
     if zones.denies() {
         if zones.withholds() {
-            debug!(source = %src.node_id, peer = %peer.name, ?zones,
-                "business isolation: WITHHOLD peer (zones differ or unknown, or servers without a link)");
+            if zones.unknown_role_withholds() {
+                debug!(source = %src.node_id, peer = %peer.name, ?zones,
+                    "business isolation: WITHHOLD peer (refusing: unknown_role)");
+            } else {
+                debug!(source = %src.node_id, peer = %peer.name, ?zones,
+                    "business isolation: WITHHOLD peer (zones differ or unknown, or servers without a link)");
+            }
             return None;
         }
-        debug!(source = %src.node_id, peer = %peer.name, ?zones,
-            "business isolation [warn]: would WITHHOLD peer (zones differ or unknown, or servers without a link)");
+        if zones.unknown_role_denies() {
+            tracing::info!(
+                source = %src.node_id,
+                peer = %peer.name,
+                ?zones,
+                "business isolation [warn]: would refuse: unknown_role"
+            );
+        } else {
+            debug!(source = %src.node_id, peer = %peer.name, ?zones,
+                "business isolation [warn]: would WITHHOLD peer (zones differ or unknown, or servers without a link)");
+        }
     }
     // Two linked servers: the link IS the decision, both ways, every port —
     // the topology view shows exactly what connects. Only under `enforce`;

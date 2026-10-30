@@ -36,6 +36,14 @@ struct Rig {
 
 impl Rig {
     async fn up(slug: &str, isolation: &'static str) -> Self {
+        Self::up_with_unknown_role(slug, isolation, "warn").await
+    }
+
+    async fn up_with_unknown_role(
+        slug: &str,
+        isolation: &'static str,
+        unknown_role: &'static str,
+    ) -> Self {
         let geo = tempfile::tempdir().unwrap();
         let mmdb = geo.path().join("dbip-country-lite.mmdb");
         std::fs::write(&mmdb, fixture_mmdb()).unwrap();
@@ -47,6 +55,7 @@ impl Rig {
             s.app.business_trusted_proxy_cidrs = vec!["127.0.0.1/32".into()];
             s.app.rate_limit_trusted_hops = 0;
             s.app.business_isolation = isolation.into();
+            s.app.business_unknown_role = unknown_role.into();
             s.stats.geoip_mmdb = Some(mmdb);
         })
         .await;
@@ -83,18 +92,22 @@ impl Rig {
 
     /// The central owner approves `agent`'s business role (`server`).
     async fn set_role(&self, agent: &str, role: &str) {
+        self.set_device_role("agent", agent, role).await;
+    }
+
+    async fn set_device_role(&self, kind: &str, id: &str, role: &str) {
         let path = format!(
-            "/api/admin/business-authority/agent/{}/{agent}",
+            "/api/admin/business-authority/{kind}/{}/{id}",
             self.seeded.tenant_id
         );
         let (s, v) = put(
             &self.app,
             &path,
             &self.owner_token,
-            json!({ "role": role, "reason": "server topology fixture" }),
+            json!({ "role": role, "reason": "business role fixture" }),
         )
         .await;
-        assert_eq!(s, 200, "set role {role}: {v}");
+        assert_eq!(s, 200, "set {kind} role {role}: {v}");
     }
 
     /// The admin enables or disables the server link `a`—`b`.
@@ -4730,4 +4743,571 @@ async fn staged_graph_same_zone_actual_wg_and_bridge_revocation() {
     }
     for (relay, frame) in native.iter().zip(revokes.into_iter()) { relay.serve(serde_json::from_value(frame).unwrap(), None); }
     native[1].serve(serde_json::from_value(revoke1).unwrap(), None);
+}
+
+
+/// Item #96 — Under `app.business_isolation = "enforce"` and
+/// `app.business_unknown_role = "enforce"`, any `Agent` or `TunnelClient`
+/// whose effective role is `Unknown` (including revoked) is denied all
+/// business connectivity across discovery, full/delta netmaps, TURN grants,
+/// org relay planning, DERP allow table, managed forward admission, and
+/// center-brokered tunnels (both open and mid-session forward requests),
+/// regardless of `overlay_acl` (`off`/`warn`/`enforce`), while management
+/// traffic remains unaffected.
+#[tokio::test]
+async fn unknown_role_enforce_denies_all_business_connectivity_until_approved_and_revokes_on_reset() {
+    use crate::managed_forward_tests::{post as mf_post, report_listener, spec, verdict};
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+
+    let rig = Rig::up_with_unknown_role("iso-unknown-role", "enforce", "enforce").await;
+    let tid = rig.seeded.tenant_id.clone();
+    let tid_oid = ObjectId::parse_str(&tid).unwrap();
+    let admin = rig.seeded.admin.access_token.clone();
+
+    // Allow all_users -> all_agents on loopback 9000-9999 for center-brokered tunnel tests.
+    let policy_resp = rig
+        .app
+        .auth_post(&format!("/api/tenant/{tid}/tunnel-policy"), &admin)
+        .json(&json!({
+            "name": "allow-loopback-9000",
+            "subjects": [{ "kind": "all_users" }],
+            "targets": [{ "kind": "all_agents" }],
+            "allowlist": [{
+                "host_pattern": { "kind": "cidr", "value": "127.0.0.0/8" },
+                "port_range": { "low": 9000, "high": 9999 }
+            }],
+            "max_concurrent_flows": 32,
+            "max_bytes_per_session": 1048576
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert!(policy_resp.status().is_success());
+
+    // Enroll two same-zone agents (US_A, US_B), one cross-zone agent (CN_A),
+    // one same-zone relay agent (US_R), and one same-zone TunnelClient (US_A).
+    let (us_a_id, us_a_tok) = enroll(&rig.app, &rig.seeded, "ur-us-a").await;
+    let (us_b_id, us_b_tok) = enroll(&rig.app, &rig.seeded, "ur-us-b").await;
+    let (cn_a_id, cn_a_tok) = enroll(&rig.app, &rig.seeded, "ur-cn-a").await;
+    let (us_r_id, us_r_tok) = enroll(&rig.app, &rig.seeded, "ur-us-r").await;
+
+    let mut us_a = connect_from(&rig.app, &us_a_tok, &["managed-forward"], Some(US_A)).await;
+    let mut us_b = connect_from(&rig.app, &us_b_tok, &[], Some(US_B)).await;
+    let mut cn_a = connect_from(&rig.app, &cn_a_tok, &[], Some(CN_A)).await;
+    let mut us_r = connect_from(&rig.app, &us_r_tok, &["relay-server"], Some(US_R)).await;
+    assert_observed(&rig.app, &us_a_id, Some(US_A)).await;
+    assert_observed(&rig.app, &us_b_id, Some(US_B)).await;
+    assert_observed(&rig.app, &cn_a_id, Some(CN_A)).await;
+    assert_observed(&rig.app, &us_r_id, Some(US_R)).await;
+
+    let et: Value = rig
+        .app
+        .auth_post(&format!("/api/tenant/{tid}/tunnel-client/enroll-token"), &admin)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let enrolled_tc: Value = rig
+        .app
+        .client
+        .post(rig.app.url("/api/tunnel-client/enroll"))
+        .json(&json!({
+            "enrollment_token": et["enrollment_token"],
+            "machine_id": "ur-tc-us",
+            "machine_name": "ur-tc-us",
+            "os": "linux",
+            "client_version": "0.4.151"
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let tc_id = enrolled_tc["tunnel_client_id"].as_str().unwrap().to_owned();
+    let tc_tok = enrolled_tc["tunnel_client_token"].as_str().unwrap().to_owned();
+    let tc_url = format!(
+        "ws://{}/ws?token={}&role=tunnel-client",
+        rig.app.addr,
+        tc_tok.replace('+', "%2B").replace('/', "%2F").replace('=', "%3D")
+    );
+    let mut tc_req = tc_url.as_str().into_client_request().unwrap();
+    tc_req.headers_mut().insert("x-forwarded-for", US_A.parse().unwrap());
+    let (mut tc_ws, _) = tokio_tungstenite::connect_async(tc_req).await.unwrap();
+
+    // Management endpoints work while effective_role is Unknown.
+    for (kind, id) in [("agent", us_a_id.as_str()), ("tunnel-client", tc_id.as_str())] {
+        let auth_view: Value = rig
+            .app
+            .auth_get(
+                &format!("/api/admin/business-authority/{kind}/{tid}/{id}"),
+                &rig.owner_token,
+            )
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(auth_view["effective_role"], json!("unknown"), "{auth_view}");
+    }
+
+    // Join overlay on all 5 devices (seeds 1..=5).
+    assert!(peer_ids(&line_join(&mut us_a, 1, "8.8.8.1:41641", json!({})).await).is_empty());
+    assert!(peer_ids(&line_join(&mut us_b, 2, "8.8.8.2:41641", json!({})).await).is_empty());
+    assert!(peer_ids(&line_join(&mut cn_a, 3, "223.5.5.1:41641", json!({})).await).is_empty());
+    assert!(peer_ids(&line_join(&mut us_r, 4, "1.1.1.1:41641", json!({})).await).is_empty());
+    assert!(peer_ids(&line_join(&mut tc_ws, 5, "8.8.8.5:41641", json!({})).await).is_empty());
+
+    let us_a_node = rig.node("ur-us-a").await;
+    let us_b_node = rig.node("ur-us-b").await;
+    let cn_a_node = rig.node("ur-cn-a").await;
+    let us_r_node = rig.node("ur-us-r").await;
+    let net = rig.app.state.network();
+    let tc_oid = ObjectId::parse_str(&tc_id).unwrap();
+    let tc_node = roomler_ai_mod_network::overlay::current_node(
+        net,
+        roomler_ai_mod_network::overlay::NodeIdentity::TunnelClient(tc_oid),
+    )
+    .await
+    .unwrap()
+    .id
+    .unwrap()
+    .to_hex();
+
+    // Approve us_r as an org-relay server (both peer-relay + business role "server")
+    // so the relay itself is ready while the members are still Unknown.
+    set_mode(&rig.app, &rig.seeded, "on").await;
+    assert_eq!(approve(&rig.app, &rig.seeded, &us_r_id, true).await, 200);
+    grant_relay(&rig.app, &rig.seeded, &us_r_node).await;
+    rig.set_role(&us_r_id, "server").await;
+    let _ = deltas(&mut us_a, Duration::from_millis(400)).await;
+
+    // Seed a mesh link row between us_a and us_b so `/api/agent/self/mesh` has an edge to filter.
+    rig.app
+        .db
+        .collection::<bson::Document>("stats_mesh")
+        .insert_one(bson::doc! {
+            "_id": &us_a_id,
+            "tenant_id": tid_oid,
+            "agent_id": ObjectId::parse_str(&us_a_id).unwrap(),
+            "ts": bson::DateTime::now(),
+            "links": [{
+                "node": &us_b_node,
+                "carrier": "direct",
+                "rtt_ms": 4_i64,
+                "stalled": false,
+                "tx": 0_i64,
+                "rx": 0_i64,
+                "relay": null,
+            }],
+        })
+        .await
+        .unwrap();
+
+    // Report listener on us_a for managed-forward checks.
+    report_listener(&rig.app, &mut us_a, &tid, &admin, &us_a_id, 22).await;
+    let ip_a = net
+        .overlay_nodes
+        .base
+        .find_by_id(ObjectId::parse_str(&us_a_node).unwrap())
+        .await
+        .unwrap()
+        .overlay_ip;
+    let ip_b = net
+        .overlay_nodes
+        .base
+        .find_by_id(ObjectId::parse_str(&us_b_node).unwrap())
+        .await
+        .unwrap()
+        .overlay_ip;
+    let ip_tc = net.overlay_nodes.base.find_by_id(ObjectId::parse_str(&tc_node).unwrap()).await.unwrap().overlay_ip;
+    let plan_path = format!("/api/tenant/{tid}/managed-forward/plan");
+
+    // Verify across all three overlay_acl modes ("off", "warn", "enforce") that
+    // Unknown role is denied on every business connectivity surface.
+    for acl_mode in ["off", "warn", "enforce"] {
+        let (s, v) = put(
+            &rig.app,
+            &format!("/api/tenant/{tid}/overlay-acl/mode"),
+            &admin,
+            json!({ "mode": acl_mode }),
+        )
+        .await;
+        assert_eq!(s, 200, "{v}");
+        let map_a = line_join(&mut us_a, 1, "8.8.8.1:41641", json!({})).await;
+        assert!(
+            peer_ids(&map_a).is_empty(),
+            "acl={acl_mode}: Unknown us_a must see no peers: {map_a}"
+        );
+        assert!(
+            map_a["network"]["relay_probe_targets"]
+                .as_array()
+                .is_none_or(|t| t.is_empty()),
+            "acl={acl_mode}: Unknown us_a must not receive relay_probe_targets: {map_a}"
+        );
+        let (up, rm) = deltas(&mut us_b, Duration::from_millis(400)).await;
+        assert!(
+            !up.contains(&us_a_node) && rm.contains(&us_a_node),
+            "acl={acl_mode}: us_b must receive explicit remove for Unknown us_a: up={up:?} rm={rm:?}"
+        );
+
+        // Discovery: /api/agent/self/devices, /api/agent/self/mesh, /api/tunnel-client/agents
+        let devs: Value = rig
+            .app
+            .auth_get("/api/agent/self/devices", &us_a_tok)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(devs["total"], json!(1), "acl={acl_mode}: only self in devices: {devs}");
+        assert_eq!(devs["items"][0]["id"], json!(us_a_id));
+
+        let mesh: Value = rig
+            .app
+            .auth_get("/api/agent/self/mesh", &us_a_tok)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(mesh["nodes"].as_array().unwrap().len(), 1, "acl={acl_mode}: {mesh}");
+        assert!(mesh["edges"].as_array().unwrap().is_empty(), "acl={acl_mode}: {mesh}");
+
+        let tc_agents: Value = rig
+            .app
+            .auth_get("/api/tunnel-client/agents", &tc_tok)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert!(
+            tc_agents.as_array().unwrap().is_empty(),
+            "acl={acl_mode}: Unknown tunnel-client must see no agents: {tc_agents}"
+        );
+    }
+
+    // Restore overlay_acl to "off" so only business_isolation + business_unknown_role gate.
+    let (s, _) = put(
+        &rig.app,
+        &format!("/api/tenant/{tid}/overlay-acl/mode"),
+        &admin,
+        json!({ "mode": "off" }),
+    )
+    .await;
+    assert_eq!(s, 200);
+
+    // TURN grant & org relay denied while Unknown.
+    relay_request(&mut us_a, &us_b_node).await;
+    assert!(
+        recv_t(&mut us_r, "rc:overlay.relay_serve", Duration::from_millis(500))
+            .await
+            .is_none(),
+        "Unknown pair must not mint org-relay session"
+    );
+    assert!(
+        recv_t(&mut us_a, "rc:overlay.relay_grant", Duration::from_millis(300))
+            .await
+            .is_none(),
+        "Unknown pair must not receive TURN grant"
+    );
+    let us_a_oid = ObjectId::parse_str(&us_a_node).unwrap();
+    let us_b_oid = ObjectId::parse_str(&us_b_node).unwrap();
+    assert!(matches!(
+        roomler_ai_mod_network::org_relay::candidate_test_support::select_path(
+            net, us_a_oid, us_b_oid, false
+        )
+        .await,
+        Err(roomler_ai_remote_control::models::PeerRelayDenyReason::ZoneDenied)
+    ));
+    assert!(matches!(
+        roomler_ai_mod_network::org_relay::candidate_test_support::prepare_edges(
+            net, us_a_oid, us_b_oid, false
+        )
+        .await,
+        Err(roomler_ai_remote_control::models::PeerRelayDenyReason::ZoneDenied)
+    ));
+
+    // DERP allow table denies Unknown pubkeys even in the same zone.
+    assert!(!net.derp_acl.iter().next().unwrap().value().permits(&[1u8; 32], &[2u8; 32]));
+    assert!(!net.derp_acl.iter().next().unwrap().value().permits(&[5u8; 32], &[1u8; 32]));
+
+    // Managed forward admission denies both cross-node and same-node while Unknown.
+    let mut fwd_spec = spec(&us_a_id, 15432);
+    fwd_spec["dest_addr"] = json!(ip_b);
+    fwd_spec["sources"] = json!([format!("{ip_tc}/32")]);
+    let (_, plan) = mf_post(&rig.app, &plan_path, &admin, &fwd_spec).await;
+    assert_eq!(verdict(&plan, "region"), "fail", "{plan}");
+    assert_eq!(verdict(&plan, "source region"), "fail", "{plan}");
+
+    let mut self_spec = spec(&us_a_id, 15433);
+    self_spec["dest_addr"] = json!(ip_a);
+    self_spec["sources"] = json!([format!("{ip_a}/32")]);
+    let (_, self_plan) = mf_post(&rig.app, &plan_path, &admin, &self_spec).await;
+    assert_eq!(verdict(&self_plan, "region"), "fail", "same-node Unknown must also fail: {self_plan}");
+
+    // Center-brokered tunnel open is refused for both Agent and TunnelClient while Unknown.
+    assert_eq!(tunnel_open(&mut us_a, &us_b_id).await, "business_isolation");
+    assert_eq!(tunnel_open(&mut tc_ws, &us_b_id).await, "business_isolation");
+
+    // ── Approve us_a, us_b, tc_us as "client" (and cn_a as "client" in CN) ──
+    let _ = deltas(&mut us_a, Duration::from_millis(200)).await;
+    rig.set_device_role("agent", &us_a_id, "client").await;
+    rig.set_device_role("agent", &us_b_id, "client").await;
+    rig.set_device_role("agent", &cn_a_id, "client").await;
+    rig.set_device_role("tunnel-client", &tc_id, "client").await;
+
+    let (up, _) = deltas(&mut us_a, Duration::from_millis(800)).await;
+    assert!(
+        up.contains(&us_b_node) && up.contains(&tc_node) && up.contains(&us_r_node),
+        "approved same-zone peers must be upserted: {up:?}"
+    );
+    assert!(
+        !up.contains(&cn_a_node),
+        "approved cross-zone client must stay withheld: {up:?}"
+    );
+
+    // Discovery now includes approved same-zone peers and excludes cross-zone cn_a.
+    let devs: Value = rig
+        .app
+        .auth_get("/api/agent/self/devices", &us_a_tok)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(devs["total"], json!(4), "{devs}");
+    let mesh: Value = rig
+        .app
+        .auth_get("/api/agent/self/mesh", &us_a_tok)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(mesh["edges"].as_array().unwrap().len(), 1, "{mesh}");
+    let tc_agents: Value = rig
+        .app
+        .auth_get("/api/tunnel-client/agents", &tc_tok)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let tc_agent_ids: BTreeSet<String> = tc_agents
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a["agent_id"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(
+        tc_agent_ids,
+        BTreeSet::from([us_a_id.clone(), us_b_id.clone(), us_r_id.clone()])
+    );
+
+    // DERP allow table permits approved same-zone peers and denies cross-zone cn_a.
+    assert!(net.derp_acl.iter().next().unwrap().value().permits(&[1u8; 32], &[2u8; 32]));
+    assert!(net.derp_acl.iter().next().unwrap().value().permits(&[5u8; 32], &[1u8; 32]));
+    assert!(!net.derp_acl.iter().next().unwrap().value().permits(&[1u8; 32], &[3u8; 32]));
+
+    // Managed forward plan now passes AND live managed forward is created and pushed.
+    let (_, plan) = mf_post(&rig.app, &plan_path, &admin, &fwd_spec).await;
+    assert_eq!(verdict(&plan, "region"), "pass", "{plan}");
+    assert_eq!(verdict(&plan, "source region"), "pass", "{plan}");
+    let wait = Duration::from_secs(5);
+    let _ = recv_t(&mut us_a, "rc:forward.set", Duration::from_millis(300)).await;
+    let (create_status, created_fwd) = mf_post(
+        &rig.app,
+        &format!("/api/tenant/{tid}/managed-forward"),
+        &admin,
+        &fwd_spec,
+    )
+    .await;
+    assert_eq!(create_status, 201, "{created_fwd}");
+    let pushed_fwd = recv_t(&mut us_a, "rc:forward.set", wait)
+        .await
+        .expect("ingress us_a receives ManagedForwardSet on create");
+    assert_eq!(pushed_fwd["forwards"].as_array().unwrap().len(), 1, "{pushed_fwd}");
+
+    // Org relay now mints for approved same-zone peers.
+    relay_request(&mut us_a, &us_b_node).await;
+    let serve = recv_t(&mut us_r, "rc:overlay.relay_serve", wait)
+        .await
+        .expect("approved pair mints org relay");
+    let sess_a = recv_t(&mut us_a, "rc:overlay.relay_session", wait)
+        .await
+        .expect("us_a receives relay_session");
+    let _sess_b = recv_t(&mut us_b, "rc:overlay.relay_session", wait)
+        .await
+        .expect("us_b receives relay_session");
+    assert_eq!(serve["vni"], sess_a["vni"]);
+    let pair = roomler_ai_mod_network::overlay::pair_key(us_a_oid, us_b_oid);
+    assert!(net.org_relay.active_session(&pair).is_some());
+
+    // Center-brokered tunnel now opens for both Agent and TunnelClient, and forwards TCP.
+    assert_eq!(tunnel_open(&mut us_a, &us_b_id).await, "opened");
+    tc_ws
+        .send(Message::Text(
+            json!({
+                "t": "rc:tunnel.open",
+                "agent_id": us_a_id,
+                "transport": "webrtc-dc-v1"
+            })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .unwrap();
+    let tc_opened = recv_t(&mut tc_ws, "rc:tunnel.opened", wait)
+        .await
+        .expect("approved tunnel-client opens tunnel");
+    let tc_session_id = tc_opened["session_id"].as_str().unwrap().to_owned();
+    tc_ws
+        .send(Message::Text(
+            json!({
+                "t": "rc:tunnel.tcp.request",
+                "session_id": tc_session_id,
+                "flow_id": 1,
+                "dst_host": "127.0.0.1",
+                "dst_port": 9000
+            })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .unwrap();
+    let forwarded = recv_t(&mut us_a, "rc:tunnel.tcp.forward", wait)
+        .await
+        .expect("us_a receives forwarded TCP request from approved tunnel-client");
+    assert_eq!(forwarded["flow_id"], json!(1));
+
+    // ── Revoke tc_us back to "unknown": immediate tunnel termination on BOTH legs,
+    // managed-forward withdrawal on us_a, netmap remove on BOTH us_a and tc_ws,
+    // DERP deny, and mid-session forward rejection at tunnel.rs:1424 ──
+    let _ = deltas(&mut us_a, Duration::from_millis(200)).await;
+    let _ = deltas(&mut tc_ws, Duration::from_millis(200)).await;
+    rig.set_device_role("tunnel-client", &tc_id, "unknown").await;
+    let tc_term = recv_t(&mut tc_ws, "rc:tunnel.terminate", wait)
+        .await
+        .expect("revoked tunnel-client receives rc:tunnel.terminate");
+    assert_eq!(tc_term["session_id"], json!(tc_session_id));
+    let target_term = recv_t(&mut us_a, "rc:tunnel.terminate", wait)
+        .await
+        .expect("target agent us_a receives rc:tunnel.terminate when tunnel-client is revoked");
+    assert_eq!(target_term["session_id"], json!(tc_session_id));
+    let withdrawn_fwd = recv_t(&mut us_a, "rc:forward.set", wait)
+        .await
+        .expect("ingress us_a receives ManagedForwardSet withdrawal when source tc_us is revoked");
+    assert!(
+        withdrawn_fwd["forwards"].as_array().unwrap().is_empty(),
+        "managed forward admitting revoked source must be withdrawn: {withdrawn_fwd}"
+    );
+    let (_, rm_a) = deltas(&mut us_a, Duration::from_millis(800)).await;
+    assert!(
+        rm_a.contains(&tc_node),
+        "revoking tunnel-client to unknown must fan explicit remove to us_a: {rm_a:?}"
+    );
+    let (_, rm_tc) = deltas(&mut tc_ws, Duration::from_millis(800)).await;
+    assert!(
+        rm_tc.contains(&us_a_node) && rm_tc.contains(&us_b_node) && rm_tc.contains(&us_r_node),
+        "revoked tunnel-client itself must receive explicit removes for its peers: {rm_tc:?}"
+    );
+    assert!(!net.derp_acl.iter().next().unwrap().value().permits(&[5u8; 32], &[1u8; 32]));
+    tc_ws
+        .send(Message::Text(
+            json!({
+                "t": "rc:tunnel.tcp.request",
+                "session_id": tc_session_id,
+                "flow_id": 2,
+                "dst_host": "127.0.0.1",
+                "dst_port": 9000
+            })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .unwrap();
+    let rejected = recv_t(&mut tc_ws, "rc:tunnel.tcp.reject", wait)
+        .await
+        .expect("revoked tunnel-client mid-session forward must be rejected at tunnel.rs:1424");
+    assert_eq!(rejected["flow_id"], json!(2));
+    assert_eq!(rejected["kind"], json!("acl_denied"));
+    assert_eq!(rejected["reason"], json!("business_isolation"));
+
+    // ── Revoke originating agent us_a back to "unknown": immediate org-relay
+    // revocation, tunnel termination on BOTH originating us_a AND target us_b,
+    // netmap remove on BOTH us_b and us_a, and DERP deny ──
+    let _ = deltas(&mut us_a, Duration::from_millis(200)).await;
+    let _ = deltas(&mut us_b, Duration::from_millis(200)).await;
+    rig.set_device_role("agent", &us_a_id, "unknown").await;
+    assert!(
+        net.org_relay.active_session(&pair).is_none(),
+        "revoking member to unknown must immediately revoke org-relay session"
+    );
+    let rev_r = recv_t(&mut us_r, "rc:overlay.relay_revoke", wait)
+        .await
+        .expect("relay receives relay_revoke");
+    let rev_a = recv_t(&mut us_a, "rc:overlay.relay_revoke", wait)
+        .await
+        .expect("us_a receives relay_revoke");
+    let rev_b = recv_t(&mut us_b, "rc:overlay.relay_revoke", wait)
+        .await
+        .expect("us_b receives relay_revoke");
+    assert_eq!(rev_r["vni"], serve["vni"]);
+    assert_eq!(rev_a["vni"], serve["vni"]);
+    assert_eq!(rev_b["vni"], serve["vni"]);
+    let _ = recv_t(&mut us_a, "rc:tunnel.terminate", wait)
+        .await
+        .expect("originating us_a receives rc:tunnel.terminate when its role is revoked");
+    let _ = recv_t(&mut us_b, "rc:tunnel.terminate", wait)
+        .await
+        .expect("target us_b receives rc:tunnel.terminate when originating us_a role is revoked");
+    let (_, rm_b) = deltas(&mut us_b, Duration::from_millis(800)).await;
+    assert!(
+        rm_b.contains(&us_a_node),
+        "revoking us_a to unknown must fan explicit remove to us_b: {rm_b:?}"
+    );
+    let (_, rm_a2) = deltas(&mut us_a, Duration::from_millis(800)).await;
+    assert!(
+        rm_a2.contains(&us_b_node) && rm_a2.contains(&us_r_node),
+        "revoked us_a itself must receive explicit removes for its peers: {rm_a2:?}"
+    );
+    assert!(!net.derp_acl.iter().next().unwrap().value().permits(&[1u8; 32], &[2u8; 32]));
+}
+
+/// Item #96 (b) — under `app.business_isolation = enforce` and
+/// `app.business_unknown_role = warn`, `Unknown` devices in the same zone
+/// remain visible (while logging `would refuse: unknown_role`), and cross-zone
+/// `Unknown` devices are still strictly blocked by regional `enforce`.
+/// Under `app.business_unknown_role = enforce`, an `Unknown`-role relay agent
+/// with a `cross_border` edge does not create a cross-border line.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn unknown_role_warn_logs_without_blocking_same_zone_or_relaxing_zone_enforce() {
+    let rig = Rig::up_with_unknown_role("iso-unknown-warn", "enforce", "warn").await;
+    let mut us_a = rig.device("uw-us-a", Some(US_A)).await;
+    let mut us_b = rig.device("uw-us-b", Some(US_B)).await;
+    let mut cn_a = rig.device("uw-cn-a", Some(CN_A)).await;
+    join(&mut us_a, 1, Some(true), "8.8.8.1:41641").await;
+    let us_a_node = rig.node("uw-us-a").await;
+    let b_map = join(&mut us_b, 2, Some(true), "8.8.8.2:41641").await;
+    assert_eq!(
+        peer_ids(&b_map),
+        set(&[&us_a_node]),
+        "warn mode permits same-zone Unknown peers"
+    );
+    let cn_map = join(&mut cn_a, 3, Some(true), "223.5.5.1:41641").await;
+    assert!(
+        peer_ids(&cn_map).is_empty(),
+        "warn mode never relaxes cross-zone regional enforce"
+    );
 }

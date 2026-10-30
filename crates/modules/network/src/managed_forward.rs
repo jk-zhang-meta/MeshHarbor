@@ -1135,6 +1135,21 @@ pub async fn audit(
 /// advertises [`RpcCap::ManagedForward`]. The hard region gate is checked
 /// again at every push: a zone that changed since the forward was planned
 /// withdraws it (fails closed under `enforce`).
+pub async fn reconcile_tenant_forwards(state: &NetworkState, tenant_id: ObjectId) {
+    let Ok(forwards) = list(state, tenant_id).await else {
+        return;
+    };
+    let mut ingresses = std::collections::BTreeSet::new();
+    for f in forwards {
+        if let Ok(id) = ObjectId::parse_str(f.spec.ingress_agent_id.trim()) {
+            ingresses.insert(id);
+        }
+    }
+    for ingress_id in ingresses {
+        push_to(state, tenant_id, ingress_id).await;
+    }
+}
+
 pub async fn push_to(state: &NetworkState, tenant_id: ObjectId, agent_id: ObjectId) {
     let Ok(agent) = state
         .fleet

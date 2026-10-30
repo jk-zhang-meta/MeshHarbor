@@ -230,6 +230,38 @@ pub(in crate::org_relay) async fn current_party_zone(
             device
         }
     };
+    let unknown_role_mode = crate::business_isolation::unknown_role_mode(state);
+    if crate::business_isolation::mode(state) == crate::business_isolation::Mode::Enforce
+        && (!require_zone || unknown_role_mode != crate::business_isolation::Mode::Off)
+    {
+        let (kind, dev_id) = crate::business_isolation::Lines::ref_identity(node_ref);
+        match roomler_core::business_authority::trial_device_role_evidence(
+            &state.core,
+            tenant,
+            kind,
+            dev_id,
+        )
+        .await
+        {
+            roomler_core::business_authority::TrialServerEvidence::ObservedServer => {}
+            roomler_core::business_authority::TrialServerEvidence::ObservedClient
+                if require_zone => {}
+            roomler_core::business_authority::TrialServerEvidence::Unknown => return Err(()),
+            _ if !require_zone
+                || unknown_role_mode == crate::business_isolation::Mode::Enforce =>
+            {
+                return Ok(PartyZone::Invalid);
+            }
+            _ => {
+                let unknown_devices = vec![crate::business_isolation::Lines::node_label(&node)];
+                crate::business_isolation::log_unknown_role_with_peers(
+                    tenant,
+                    "current_party_zone",
+                    &unknown_devices,
+                );
+            }
+        }
+    }
     if !require_zone { return Ok(PartyZone::ValidUnconstrained); }
     let (connection, bound_at) = {
         let Some(live) = state.org_relay.live_conns.get(&identity) else {
