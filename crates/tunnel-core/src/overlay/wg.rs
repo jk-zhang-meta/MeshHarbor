@@ -142,7 +142,7 @@ pub(crate) async fn assert_relay_permission(
 pub enum Carrier {
     /// Tier 1: direct UDP to the peer's (possibly hole-punched) endpoint.
     Direct {
-        sock: Arc<UdpSocket>,
+        sock: std::sync::RwLock<Arc<UdpSocket>>,
         /// A3 (WG-style roaming) — interior-mutable so an AUTHENTICATED
         /// inbound from a new source can repoint our outbound in place
         /// ([`Carrier::set_direct_dst`]): every holder of this `Arc` (the
@@ -201,8 +201,8 @@ impl Carrier {
     /// A refusal/lost reply is a sample, not authority to evict a live path.
     async fn send_disco(&self, bytes: &[u8]) -> io::Result<usize> {
         match self {
-            Self::Direct { sock, dst, .. } => {
-                let dst = *dst.read().unwrap_or_else(|e| e.into_inner());
+            Self::Direct { .. } => {
+                let (sock, dst) = self.direct_parts().expect("direct carrier");
                 sock.send_to(bytes, dst).await
             }
             Self::Relay { conn, dst, .. } => conn.send_to(bytes, *dst).await,
@@ -215,7 +215,7 @@ impl Carrier {
 
     pub fn direct(sock: Arc<UdpSocket>, dst: SocketAddr) -> Arc<Self> {
         Arc::new(Carrier::Direct {
-            sock,
+            sock: std::sync::RwLock::new(sock),
             dst: std::sync::RwLock::new(dst),
             dead: AtomicBool::new(false),
         })
@@ -372,13 +372,34 @@ impl Carrier {
 
     /// The socket and current destination of a direct carrier — what a GSO
     /// batch send needs; `None` for relay carriers.
-    fn direct_parts(&self) -> Option<(&Arc<UdpSocket>, SocketAddr)> {
+    ///
+    /// Benchmark note (B1+B2 merge): snapshotting `sock` alongside `dst` adds
+    /// one uncontended `std::sync::RwLock` read and one `Arc<UdpSocket>` clone
+    /// per send call (~few ns, negligible beside ChaCha20-Poly1305 AEAD and the
+    /// UDP send syscall) so in-place birthday spray socket adoption can swap
+    /// `(sock, dst)` atomically without recreating `Peer` or `Tunn`.
+    pub(crate) fn direct_parts(&self) -> Option<(Arc<UdpSocket>, SocketAddr)> {
         match self {
             Carrier::Direct { sock, dst, .. } => {
-                Some((sock, *dst.read().unwrap_or_else(|e| e.into_inner())))
+                // Lock destination first for an atomic socket/destination snapshot.
+                let dst = dst.read().unwrap_or_else(|e| e.into_inner());
+                let sock = sock.read().unwrap_or_else(|e| e.into_inner());
+                Some((sock.clone(), *dst))
             }
             _ => None,
         }
+    }
+
+    /// Move the complete direct endpoint for a freshly authenticated probe.
+    /// Every sender snapshots both fields under the same lock order.
+    fn set_direct_endpoint(&self, new_sock: Arc<UdpSocket>, new_dst: SocketAddr) -> bool {
+        let Carrier::Direct { sock, dst, dead } = self else { return false };
+        let mut dst = dst.write().unwrap_or_else(|e| e.into_inner());
+        let mut sock = sock.write().unwrap_or_else(|e| e.into_inner());
+        *sock = new_sock;
+        *dst = new_dst;
+        dead.store(false, Ordering::Relaxed);
+        true
     }
 
     /// A direct UDP carrier (vs a coturn relay). The runtime uses this to
@@ -436,8 +457,8 @@ impl Carrier {
             // `is_err()`: that would kill a healthy carrier on the first
             // ICMP-induced error, which is exactly the trap the old
             // always-false behaviour was avoiding.
-            Carrier::Direct { sock, dst, dead } => {
-                let d = *dst.read().unwrap_or_else(|e| e.into_inner());
+            Carrier::Direct { dead, .. } => {
+                let (sock, d) = self.direct_parts().expect("direct carrier");
                 let r = sock.send_to(buf, d).await;
                 if let Err(e) = &r
                     && matches!(
@@ -481,7 +502,10 @@ impl Carrier {
 
     async fn recv(&self, buf: &mut [u8]) -> io::Result<usize> {
         match self {
-            Carrier::Direct { sock, .. } => Ok(sock.recv_from(buf).await?.0),
+            Carrier::Direct { .. } => {
+                let (sock, _) = self.direct_parts().expect("direct carrier");
+                Ok(sock.recv_from(buf).await?.0)
+            }
             Carrier::Relay { conn, .. } => Ok(conn.recv_from(buf).await?.0),
             // A dead QUIC connection errors here → the recv task exits → the
             // runtime's health sweep sees rx go flat and rebuilds the carrier.
@@ -904,6 +928,18 @@ struct IndexSlot {
     last_roam: Option<Instant>,
 }
 
+impl Peer {
+    /// Non-secret identity of the actual carrier/session, not runtime intent.
+    fn direct_identity(&self) -> Option<(u32, SocketAddr, SocketAddr)> {
+        let (sock, dst) = self.carrier.direct_parts()?;
+        Some((
+            self.plane_idx.or(self.direct_index)?,
+            sock.local_addr().ok()?,
+            dst,
+        ))
+    }
+}
+
 impl Drop for Peer {
     fn drop(&mut self) {
         for t in &self.tasks {
@@ -1248,7 +1284,7 @@ impl SendPeer {
             let ok = if j - i == 1 {
                 send_wg_recorded(&self.carrier, stats, &wire[start..end]).await.is_ok()
             } else {
-                super::udp_batch::send_segments(sock, dst, &wire[start..end], seg).await.is_ok()
+                super::udp_batch::send_segments(&sock, dst, &wire[start..end], seg).await.is_ok()
             };
             if ok {
                 sent += j - i;
@@ -1831,6 +1867,7 @@ impl WgDevice {
                 ingress,
                 SocketAddr::new(std::net::IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
                 Arc::downgrade(&carrier),
+                false,
             );
         }
 
@@ -2427,19 +2464,22 @@ impl WgDevice {
         let Some(old) = t.incumbent.as_ref() else {
             return false;
         };
-        let Carrier::Direct { sock, dst, .. } = old.carrier.as_ref() else {
+        let Some((sock, dst)) = old.carrier.direct_parts() else {
             return false;
         };
         // Reuse the CURRENT authenticated/roamed endpoint and its existing
         // interface socket. Socket/NIC rebuild belongs to the existing direct
         // plane executor, not a second network scheduler here.
         let (sock, dst, public, ip) = (
-            sock.clone(),
-            *dst.read().unwrap_or_else(|e| e.into_inner()),
+            sock,
+            dst,
             t.public_key,
             old.overlay_ip,
         );
-        let Some(fresh) = self.make_direct_peer(sock, public, ip, dst, true).await else {
+        let Some(fresh) = self
+            .make_direct_peer(sock, public, ip, dst, true, false)
+            .await
+        else {
             return false;
         };
         let t = self
@@ -2790,6 +2830,31 @@ impl WgDevice {
         demux.stats.push(stat);
     }
 
+    /// Birthday spray — receive on a short-lived extra socket exactly as on a
+    /// direct one: disco answered, a WG init forwarded as an inbound dial,
+    /// session traffic demuxed. On the plane the loop is the caller's (the
+    /// returned task); in device mode it is a demux slot, retired by
+    /// [`Self::release_spray_socket`].
+    pub(crate) fn adopt_spray_socket(&mut self, sock: Arc<UdpSocket>) -> Option<JoinHandle<()>> {
+        match &self.plane {
+            Some(p) => Some(p.adopt_ephemeral(sock)),
+            None => {
+                self.ensure_direct_demux(sock);
+                None
+            }
+        }
+    }
+
+    /// Close a socket from [`Self::adopt_spray_socket`].
+    pub(crate) fn release_spray_socket(&mut self, local: SocketAddr, rx: Option<JoinHandle<()>>) {
+        match rx {
+            Some(rx) => rx.abort(),
+            None => {
+                self.retire_direct_socket(local);
+            }
+        }
+    }
+
     /// R2 — retire one direct socket's demux slot: abort its recv loop and
     /// drop the slot's socket Arc. Without this, a direct-plane rebuild that
     /// re-binds the SAME stable `ip:port` is silently defeated by
@@ -2868,7 +2933,7 @@ impl WgDevice {
         self.cancel_org_upgrade(&peer_public);
         self.drop_org_floor_receiver(&peer_public);
         if let Some(peer) = self
-            .make_direct_peer(sock, peer_public, overlay_ip, dst, initiate)
+            .make_direct_peer(sock, peer_public, overlay_ip, dst, initiate, false)
             .await
         {
             let (tunn, carrier, stats) =
@@ -2893,6 +2958,7 @@ impl WgDevice {
         overlay_ip: Ipv4Addr,
         dst: SocketAddr,
         initiate: bool,
+        probing: bool,
     ) -> Option<Peer> {
         if self.plane.is_none() && self.direct.is_none() {
             warn!("wg: make_direct_peer before ensure_direct_demux; ignoring");
@@ -2921,7 +2987,14 @@ impl WgDevice {
         // outbound in place without a runtime round-trip.
         let (plane_idx, direct_index) = match &self.plane {
             Some(h) => {
-                h.register_route(index, tunn.clone(), ingress, dst, Arc::downgrade(&carrier));
+                h.register_route(
+                    index,
+                    tunn.clone(),
+                    ingress,
+                    dst,
+                    Arc::downgrade(&carrier),
+                    probing,
+                );
                 (Some(index), None)
             }
             None => {
@@ -3041,7 +3114,7 @@ impl WgDevice {
     ) {
         self.drop_direct_probe(&peer_public).await;
         if let Some(peer) = self
-            .make_direct_peer(sock, peer_public, overlay_ip, dst, initiate)
+            .make_direct_peer(sock, peer_public, overlay_ip, dst, initiate, true)
             .await
         {
             // Deliberately NOT added to the router — routing stays on the active
@@ -3067,6 +3140,134 @@ impl WgDevice {
     /// Make-before-break — is a shadow probe in flight for `peer_public`?
     pub fn has_direct_probe(&self, peer_public: &[u8; 32]) -> bool {
         self.probes.contains_key(peer_public)
+    }
+
+    pub(crate) fn direct_probe_identity(
+        &self,
+        peer_public: &[u8; 32],
+    ) -> Option<(u32, SocketAddr, SocketAddr)> {
+        self.probes.get(peer_public)?.direct_identity()
+    }
+
+    pub(crate) fn direct_peer_identity(
+        &self,
+        peer_public: &[u8; 32],
+    ) -> Option<(u32, SocketAddr, SocketAddr)> {
+        self.peers.get(peer_public)?.direct_identity()
+    }
+
+    /// Birthday spray — adopt a spray socket and source onto the EXISTING
+    /// shadow probe for `peer_public` ONLY when `packet` is a handshake
+    /// initiation that decapsulates against that probe's `Tunn`, preserving
+    /// its session index and anti-replay timestamp state.
+    pub(crate) async fn try_adopt_direct_probe_init(
+        &mut self,
+        peer_public: &[u8; 32],
+        sock: Arc<UdpSocket>,
+        src: SocketAddr,
+        packet: &[u8],
+    ) -> bool {
+        self.try_adopt_direct_map_init(true, peer_public, sock, src, packet)
+            .await
+    }
+
+    /// Repoint an EXISTING installed direct peer's endpoint (`sock`, `src`) in
+    /// place ONLY when `packet` is a HandshakeInit that passes boringtun's
+    /// cryptographic and TAI64N anti-replay check on that peer's installed
+    /// `Tunn`. Prevents a replayed or forged unknown-source INIT from tearing
+    /// down an established direct session.
+    pub(crate) async fn try_repoint_direct_peer_init(
+        &mut self,
+        peer_public: &[u8; 32],
+        sock: Arc<UdpSocket>,
+        src: SocketAddr,
+        packet: &[u8],
+    ) -> bool {
+        self.try_adopt_direct_map_init(false, peer_public, sock, src, packet)
+            .await
+    }
+
+    async fn try_adopt_direct_map_init(
+        &mut self,
+        in_probes: bool,
+        peer_public: &[u8; 32],
+        sock: Arc<UdpSocket>,
+        src: SocketAddr,
+        packet: &[u8],
+    ) -> bool {
+        if !matches!(
+            Tunn::parse_incoming_packet(packet),
+            Ok(Packet::HandshakeInit(_))
+        ) {
+            return false;
+        }
+        let map = if in_probes { &self.probes } else { &self.peers };
+        let Some((tunn, stats)) = map
+            .get(peer_public)
+            .filter(|p| p.carrier.is_direct())
+            .map(|p| (p.tunn.clone(), p.stats.clone()))
+        else {
+            return false;
+        };
+        let ingress = self.ingress_for(*peer_public, stats);
+        let reply = Carrier::direct(sock.clone(), src);
+        let mut buf = packet.to_vec();
+        let n = buf.len();
+        let authenticated = {
+            let mut t = tunn.lock().await;
+            let ok = process_inbound(&mut t, n, &mut buf, &reply, &self.tun_tx, &ingress).await;
+            if ok && in_probes {
+                // Clear the probe handshake latch inside the Tunn critical
+                // section so a follow-up packet processed immediately after
+                // unlock cannot have its newly-latched handshake overwritten.
+                ingress.stats.handshake.store(false, Ordering::Relaxed);
+                ingress.stats.handshake_at.store(0, Ordering::Relaxed);
+            }
+            ok
+        };
+        if !authenticated {
+            return false;
+        }
+        self.ensure_direct_demux(sock.clone());
+        let map = if in_probes {
+            &mut self.probes
+        } else {
+            &mut self.peers
+        };
+        let Some(peer) = map.get_mut(peer_public) else {
+            return false;
+        };
+        if !peer.carrier.set_direct_endpoint(sock, src) {
+            return false;
+        }
+        let old_src = peer.direct_src.replace(src);
+        let plane_idx = peer.plane_idx;
+        let direct_index = peer.direct_index;
+        let tunn = peer.tunn.clone();
+        if let (Some(idx), Some(h)) = (plane_idx, &self.plane) {
+            h.reassert_src(idx, src);
+        } else if let Some(demux) = &self.direct {
+            {
+                let mut routes = demux.routes.lock().await;
+                if let Some(old_src) = old_src
+                    && old_src != src
+                    && routes
+                        .get(&old_src)
+                        .is_some_and(|(t, _)| Arc::ptr_eq(t, &tunn))
+                {
+                    routes.remove(&old_src);
+                }
+                routes.insert(src, (tunn, ingress));
+            }
+            if let Some(idx) = direct_index {
+                let mut m = demux.index_routes.lock().unwrap_or_else(|e| e.into_inner());
+                if let Some(s) = m.get_mut(&idx) {
+                    s.src = src;
+                    s.last_roam = Some(Instant::now());
+                }
+            }
+        }
+        true
     }
 
     /// P3 PR-B — the probe's REAL latch latency: ms between `since` (the
@@ -3100,6 +3301,8 @@ impl WgDevice {
     /// its own per-peer bookkeeping and forgets the now-unused relay allocation.
     pub fn promote_direct_probe(&mut self, peer_public: &[u8; 32]) -> bool {
         if let Some(probe) = self.probes.remove(peer_public) {
+            let identity = probe.direct_identity();
+            let handshake_done = probe.stats.handshake.load(Ordering::Relaxed);
             self.cancel_org_upgrade(peer_public);
             self.drop_org_floor_receiver(peer_public);
             let overlay_ip = probe.overlay_ip;
@@ -3108,6 +3311,9 @@ impl WgDevice {
                 probe.carrier.clone(),
                 probe.stats.clone(),
             );
+            if let (Some(idx), Some(h)) = (probe.plane_idx, &self.plane) {
+                h.mark_route_promoted(idx);
+            }
             // Insert replaces + drops the old (relay) peer; Drop aborts its task.
             if let Some(old) = self.peers.insert(*peer_public, probe) {
                 self.unregister_plane_route(&old);
@@ -3116,6 +3322,11 @@ impl WgDevice {
             // replaces the old one under a single write lock.
             self.send_install(*peer_public, overlay_ip, tunn, carrier, stats);
             self.debug_assert_send_synced();
+            if let Some((session_idx, actual_local, actual_dst)) = identity {
+                info!(event = "direct_probe_promoted", peer_key = %hex::encode(peer_public),
+                    session_idx, %actual_local, %actual_dst, handshake_done,
+                    "overlay: actual direct probe carrier promoted");
+            }
             true
         } else {
             false

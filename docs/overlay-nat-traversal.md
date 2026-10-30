@@ -364,6 +364,99 @@ direct.
     candidates ride the IPv4 gather);
   - legacy mode's socket wiring is unit-covered only; the lab ran plane mode.
 
+### 8. Symmetric ↔ cone: the birthday spray
+
+**Recovered WIP, default off; not field-validated.** This section describes
+the intended mechanism, not an observed successful carrier. All three retained
+lab attempts ended with no hit and no direct promotion. In the third capture,
+the easy-side external source changed from 45210 to 8904; all five observed
+post-mapping destination-port intersections used 8904 while the hard side
+targeted 45210. Missing conntrack state prevents identifying the cause.
+An overlapping port, a pong, or a WG handshake alone is not acceptance:
+require bidirectional WireGuard/application payload with relay fallback intact.
+
+Step 4 lets a symmetric ↔ cone pair attempt the punch, and it fails whenever
+the cone end filters by address **and port** (most home routers): the cone
+end dials the symmetric end's srflx, which is the wrong port for this pair,
+and the symmetric end dials from a mapping the cone end has never sent to.
+The pair rides a relay for good. That is the common mainland case: a mobile
+CGNAT (symmetric) against home broadband (cone).
+
+The spray finds the symmetric end's port by the birthday paradox
+(`runtime/birthday.rs`; Tailscale, "How NAT traversal works"):
+
+- the **hard** end (symmetric) opens 256 fresh sockets and pings the easy
+  end's srflx from each, so its NAT holds 256 mappings toward it;
+- the **easy** end (cone) sends 1024 disco pings from its punch socket to
+  the hard end's public IP: first the 64 ports above each of its srflx ports
+  (for a NAT that allocates in sequence), then random distinct ports ≥ 1024.
+  Each probe also opens the easy end's own filter for that port.
+
+A probe that lands on one of the 256 mappings is answered, and the pong
+comes back through the filter that probe opened. With random allocation
+over ~64 K ports the odds are 1 − e^(−256·1024/64512) ≈ 98 %
+in an independent random-port model
+(`independent_random_port_model_has_the_expected_overlap`); this assumes
+compatible, stable mapping/filter tuples and does not predict real NAT success.
+The easy end then dials that
+port as an ordinary make-before-break srflx probe; the hard end's plane
+receives the WG init on the spray socket that owns the mapping and accepts
+it as an inbound probe on that socket.
+
+```mermaid
+sequenceDiagram
+    participant E as Easy end (cone NAT)
+    participant H as Hard end (symmetric NAT)
+
+    Note over E,H: both: our NAT type and the peer's (netmap srflx_nat),<br/>a pair on a relay, the top of the pair's 120 s slot
+    loop 256 sockets, at +0 / +10 / +20 s
+        H->>E: disco ping to E's srflx (opens one mapping each; E's filter drops it)
+    end
+    loop 1024 probes from +3 s over 15 s
+        E->>H: disco ping to H's IP : probe port (opens E's filter for that port)
+    end
+    H-->>E: pong from the spray socket whose mapping the probe hit
+    E->>H: WG init to that port (make-before-break, relay held)
+    H-->>E: WG response from the same spray socket
+    Note over E,H: handshake latches → direct (srflx tier), relay released
+```
+
+- **No signalling.** Both ends derive the attempt from the two NAT types
+  in the netmap and the wall clock: attempts start at the top of a 120 s
+  slot whose phase is a hash of the two public keys, so the two ends start
+  within their clock skew. The hard end keeps its mappings open for 30 s,
+  and the easy end starts 3 s in, so a skew of a few seconds either way
+  costs only a few probes.
+- **Backoff.** After *f* failed attempts a pair attempts only in slots whose
+  index is a multiple of 2^min(*f*, 6) (at most one attempt per ~2 h). The
+  end that failed more often attempts on a subset of the other's slots, so
+  the two still meet when their counts differ (one end restarted).
+- **Cost per attempt:** the hard end sends 3 × 256 pings (~65 KB) and holds
+  256 descriptors for 30 s; the easy end sends ≤ 1024 pings (~87 KB) and
+  stops at the first answer. At most one hard-end and four easy-end
+  attempts run at once (a leak of UDP sockets once ate a host's ephemeral
+  range, and with it its DNS).
+- **Sockets:** a spray socket gets the plane's receive loop
+  (`PlaneHandle::adopt_ephemeral`; a demux slot in legacy mode), so it
+  answers disco and forwards a WG init exactly like a plane socket. When the
+  attempt ends every socket no carrier or upgrade probe sends from is
+  closed; the one carrying the pair stays until nothing uses it.
+- **Probe-move candidate, unverified:** the hard end's own periodic srflx probe dials from
+  its punch socket, whose mapping the easy end never opened. If that probe
+  is in flight when the easy end's init arrives on a spray socket, the probe
+  moves onto the spray socket (`inbound.rs`); otherwise the session would
+  answer from the punch socket and carry packets one way only.
+  The recovered conditional handles an authenticated WG init on a tracked
+  spray socket while a different-local upgrade probe exists. It is not on the
+  PONG hit path, and existing-source/direct branches can bypass it. Do not
+  interpret its presence as resolving the failed lab attempts.
+- **Not sprayed:** both-symmetric pairs (that needs ~65 K probes a side),
+  a pair behind one public IP (a hairpin), unknown NAT types, cross-border
+  pairs, pairs a path trial owns or the server pins to DERP.
+- **Kill switch / gate:** `ROOMLERD_OVERLAY_BIRTHDAY`, default **off**. Both
+  ends must run it: with one end alone nothing is found, and only that
+  end's packets are spent.
+
 ### The accept side
 
 Both A and C rely on the exit/peer *accepting* an inbound INIT from a source it

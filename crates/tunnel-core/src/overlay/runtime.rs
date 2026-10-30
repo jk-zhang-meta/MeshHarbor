@@ -56,6 +56,7 @@ use roomler_ai_remote_control::signaling::{ClientMsg, IceServer, NetmapPeer, Ove
 // `runtime` (not siblings), so the moved code keeps private-field access to
 // [`OverlayRuntime`]/[`Installed`] and its `use super::*` inherits this import
 // block unchanged — a pure move, no behavior change.
+mod birthday;
 mod establish;
 mod inbound;
 mod path_trial;
@@ -1625,6 +1626,9 @@ pub struct OverlayRuntime {
     /// FR-19 P4b — see [`Self::with_org_primary`].
     org_primary: bool,
     path_trial_managed: std::sync::Mutex<HashSet<ObjectId>>,
+    /// The birthday spray's open sockets, by local address — the inbound
+    /// accept path needs to know an init arrived on one (`birthday`).
+    spray_locals: std::sync::Mutex<HashSet<std::net::SocketAddr>>,
     /// Actual daemon listener lifetime; never inferred from environment.
     relay_listener_readiness: Option<watch::Receiver<Option<u16>>>,
     /// Phase 1 — subnet CIDRs this node advertises as a router (from config).
@@ -1910,6 +1914,7 @@ impl OverlayRuntime {
             peer_view: None,
             org_primary: false,
             path_trial_managed: std::sync::Mutex::new(HashSet::new()),
+            spray_locals: std::sync::Mutex::new(HashSet::new()),
             relay_listener_readiness: None,
             exit_node: None,
             exit_server_ips: Vec::new(),
@@ -1947,6 +1952,7 @@ impl OverlayRuntime {
             peer_view: None,
             org_primary: false,
             path_trial_managed: std::sync::Mutex::new(HashSet::new()),
+            spray_locals: std::sync::Mutex::new(HashSet::new()),
             relay_listener_readiness: None,
             exit_node: None,
             exit_server_ips: Vec::new(),
@@ -2089,6 +2095,7 @@ impl OverlayRuntime {
         &self,
         prober: &mut super::disco::Prober,
         path_trials: &mut path_trial::Engine,
+        birthday: &mut birthday::Engine,
         rx: &mut Option<mpsc::Receiver<super::disco::DiscoInbound>>,
         wg: &WgDevice,
         by_node: &HashMap<ObjectId, Installed>,
@@ -2103,6 +2110,7 @@ impl OverlayRuntime {
         if let Some(rx) = rx.as_mut() {
             while let Ok(p) = rx.try_recv() {
                 path_trials.active_pong(&p);
+                birthday.on_pong(&p);
                 prober.on_pong(&p);
             }
         }
@@ -2979,6 +2987,8 @@ impl OverlayRuntime {
 
         // Independent of TURN coordination and the installed P2P/DERP carrier.
         let mut path_trials = path_trial::Engine::new();
+        // Hard-NAT punching (default OFF); driven on the path-trial tick.
+        let mut birthday = birthday::Engine::default();
         let _path_trial_view_guard = path_trial::ObservationViewGuard::new(
             self.peer_view.clone(),
             path_trials.observation_runtime_id(),
@@ -3384,6 +3394,7 @@ impl OverlayRuntime {
                         .values()
                         .any(|p| wg.probe_handshake_done(&p.pubkey) == Some(true));
                     if latched {
+                        birthday.reconcile(&self, &mut wg, &current_peers, &by_node, &mut upgrade_probes, direct_ctx.as_ref()).await;
                         self.sweep_upgrade_probes(
                             &mut wg, &mut by_node, &mut relay, &tun,
                             &mut upgrade_probes, &mut relay_bq,
@@ -3414,6 +3425,7 @@ impl OverlayRuntime {
                             .values()
                             .any(|p| wg.probe_handshake_done(&p.pubkey) == Some(true));
                     if latched {
+                        birthday.reconcile(&self, &mut wg, &current_peers, &by_node, &mut upgrade_probes, direct_ctx.as_ref()).await;
                         self.sweep_upgrade_probes(
                             &mut wg, &mut by_node, &mut relay, &tun,
                             &mut upgrade_probes, &mut relay_bq,
@@ -3744,6 +3756,7 @@ impl OverlayRuntime {
                             if let Some(h) = srflx_keepalive.take() {
                                 h.abort();
                             }
+                            birthday.reset(&self, &mut wg).await;
                             let stun_rx = self
                                 .rebuild_direct_plane_sockets(
                                     &mut wg, &mut by_node, &mut upgrade_probes, &mut relay,
@@ -3836,7 +3849,7 @@ impl OverlayRuntime {
                     // replies. MEASUREMENT ONLY — nothing below reads the
                     // table to make a routing decision (that is C3/C6, behind
                     // their own flags). Default OFF.
-                    let revived = self.disco_round(&mut disco, &mut path_trials, &mut disco_rx, &wg, &by_node, &current_peers, direct_ctx.as_ref()).await;
+                    let revived = self.disco_round(&mut disco, &mut path_trials, &mut birthday, &mut disco_rx, &wg, &by_node, &current_peers, direct_ctx.as_ref()).await;
                     // A relayed peer's direct candidate answers disco again:
                     // lift its suppression and walk this very tick, so the
                     // make-before-break probe starts now instead of up to a
@@ -3853,6 +3866,7 @@ impl OverlayRuntime {
                     // expire any that missed its deadline (keep the relay). Inert
                     // when the feature is off / no probes are in flight.
                     let t0 = Instant::now();
+                    birthday.reconcile(&self, &mut wg, &current_peers, &by_node, &mut upgrade_probes, direct_ctx.as_ref()).await;
                     self.sweep_upgrade_probes(
                         &mut wg, &mut by_node, &mut relay, &tun,
                         &mut upgrade_probes, &mut relay_bq,
@@ -4258,9 +4272,10 @@ impl OverlayRuntime {
                 // is NONE is THE measurement: the flow is grandfathered.
                 _ = path_trial_tick.tick() => {
                     if let Some(rx) = disco_rx.as_mut() { while let Ok(p) = rx.try_recv() {
-                        path_trials.active_pong(&p); disco.on_pong(&p);
+                        path_trials.active_pong(&p); birthday.on_pong(&p); disco.on_pong(&p);
                     }}
                     path_trials.tick(&self, &mut wg, &current_peers, &mut by_node, &mut org_discovery, server_path_trial_v1).await;
+                    birthday.tick(&self, &mut wg, &current_peers, &by_node, &mut upgrade_probes, direct_ctx.as_ref()).await;
                     path_trial::publish_observation_view(&self.peer_view,&path_trials,&current_peers,&by_node,
                         self.org_primary && path_trial::enabled() && server_path_trial_v1);
                 },
@@ -4429,6 +4444,7 @@ impl OverlayRuntime {
                             ).await;
                             // Our view of the old sockets goes too — holding
                             // it would keep the ports alive past the ack.
+                            birthday.reset(&self, &mut wg).await;
                             direct_ctx = None;
                             self.shadow(|s| s.mon.on_local_rebuild());
                             let _ = ack.send(()).await;
@@ -4457,6 +4473,7 @@ impl OverlayRuntime {
                 } => {
                     if let Some(inb) = maybe_init {
                         let t_arm = Instant::now();
+                        birthday.reconcile(&self, &mut wg, &current_peers, &by_node, &mut upgrade_probes, direct_ctx.as_ref()).await;
                         self.handle_direct_inbound(
                             &mut wg, &mut by_node, &mut relay, &tun,
                             &current_peers, &mut upgrade_probes,
@@ -4594,6 +4611,7 @@ impl OverlayRuntime {
                         }
                         // P4 — refresh per-source ingress rules from the netmap
                         // the server just shaped for us.
+                        birthday.reconcile(&self, &mut wg, &current_peers, &by_node, &mut upgrade_probes, direct_ctx.as_ref()).await;
                         wg.sync_peer_ingress(&current_peers);
                         // rc.225 — a peer whose direct endpoints changed gets a
                         // clean slate: its old strike counts were measured
@@ -4700,6 +4718,7 @@ impl OverlayRuntime {
                             }
                         }
                         org_discovery.reconcile_delta(&current_peers, &removes);
+                        birthday.reconcile(&self, &mut wg, &current_peers, &by_node, &mut upgrade_probes, direct_ctx.as_ref()).await;
                         // P4 — a delta can change a peer's grant without any
                         // install/removal, so the table is resynced here too.
                         wg.sync_peer_ingress(&current_peers);
@@ -4936,6 +4955,7 @@ impl OverlayRuntime {
                         // (relay-Q resets; direct decisions unaffected — the
                         // pin stays a server-side OVERRIDE, never scored).
                         self.shadow(|s| s.mon.on_forced_derp(&peer_node_id, Duration::from_millis(ttl_ms), Instant::now()));
+                        birthday.reconcile(&self, &mut wg, &current_peers, &by_node, &mut upgrade_probes, direct_ctx.as_ref()).await;
                         if let Some(r) = relay.as_mut() {
                             // P7 — a UDP-capable node skipped the startup
                             // `/derp` open; lazily invoke the retained factory
