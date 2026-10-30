@@ -474,9 +474,14 @@ async fn handle_overlay_join(
         .await
     {
         Ok(true) => {
+            refuse(
+                OverlayJoinRefusal::KeyUnauthorized,
+                "wg_public_key already held by another node or retired in network".to_string(),
+            )
+            .await;
             warn!(
                 %tenant_id, %machine_id,
-                "overlay.join: refused — wg_public_key already held by another live node"
+                "overlay.join: refused — wg_public_key already held by another node or retired in network"
             );
             return;
         }
@@ -503,6 +508,7 @@ async fn handle_overlay_join(
             } else {
                 existing.name.clone()
             };
+            let prev_wg_key = existing.wg_public_key.clone();
             match state
                 .overlay_nodes
                 .rehydrate(
@@ -525,8 +531,30 @@ async fn handle_overlay_join(
                 )
                 .await
             {
-                Ok(n) => n,
+                Ok(n) => {
+                    if prev_wg_key != n.wg_public_key {
+                        super::derp::evict_pubkey(state, network_id, &prev_wg_key);
+                        crate::org_relay::revoke_node(state, id, "key_rotated").await;
+                    }
+                    n
+                }
                 Err(e) => {
+                    if !existing.is_key_authorized_at(bson::DateTime::now()) {
+                        let evicted = state
+                            .overlay_nodes
+                            .revoke_current_key(id, "expired")
+                            .await
+                            .unwrap_or(existing);
+                        enforce_node_key_revocation_or_expiry(state, &evicted).await;
+                        order_auto_key_rotate_if_needed(state, &evicted).await;
+                    }
+                    let refusal_reason = match &e {
+                        DaoError::Forbidden(_) | DaoError::Validation(_) => {
+                            OverlayJoinRefusal::KeyUnauthorized
+                        }
+                        _ => OverlayJoinRefusal::StoreUnavailable,
+                    };
+                    refuse(refusal_reason, format!("{e}")).await;
                     warn!(%tenant_id, %e, "overlay.join: rehydrate failed");
                     return;
                 }
@@ -703,6 +731,27 @@ async fn handle_overlay_join(
                 state.peer_relay_audit.record(event),
             )
             .await;
+        }
+    }
+
+    let sweep_now = bson::DateTime::now();
+    if let Ok(expiring_soon) = state
+        .overlay_nodes
+        .list_keys_expiring_soon(network_id, sweep_now)
+        .await
+    {
+        for exp_soon in &expiring_soon {
+            order_auto_key_rotate_if_needed(state, exp_soon).await;
+        }
+    }
+    if let Ok(expired) = state
+        .overlay_nodes
+        .expire_keys_due(network_id, sweep_now)
+        .await
+    {
+        for exp_node in &expired {
+            enforce_node_key_revocation_or_expiry(state, exp_node).await;
+            order_auto_key_rotate_if_needed(state, exp_node).await;
         }
     }
 
@@ -1110,7 +1159,15 @@ pub fn revoke_agent_admission(state: &NetworkState, agent_id: ObjectId) {
 }
 
 pub async fn handle_overlay_leave(state: &NetworkState, ident: NodeIdentity) {
-    let Some(self_node) = current_node(state, ident).await else {
+    let Some((tenant_id, machine_id, _name)) = resolve_tenant_and_machine(state, ident).await
+    else {
+        return;
+    };
+    let Ok(Some(self_node)) = state
+        .overlay_nodes
+        .find_live_by_tenant_and_machine(tenant_id, &machine_id)
+        .await
+    else {
         return; // never joined the overlay — nothing to tear down
     };
     let Some(self_id) = self_node.id else { return };
@@ -1123,6 +1180,15 @@ pub async fn handle_overlay_leave(state: &NetworkState, ident: NodeIdentity) {
         .overlay_nodes
         .mark_status(self_id, AgentStatus::Offline)
         .await;
+    if !self_node.is_key_authorized_at(bson::DateTime::now()) {
+        let evicted = state
+            .overlay_nodes
+            .revoke_current_key(self_id, "expired")
+            .await
+            .unwrap_or(self_node);
+        enforce_node_key_revocation_or_expiry(state, &evicted).await;
+        return;
+    }
     let epoch = next_epoch();
     // Grey the row out; do NOT delete it. A `removes` delta made every
     // connected peer drop the node from `current_peers` entirely, so a host
@@ -1174,7 +1240,14 @@ async fn handle_org_relay_discover(
         return;
     }
     let peer = match state.overlay_nodes.base.find_by_id(peer_node_id).await {
-        Ok(peer) if peer.tenant_id == requester.tenant_id && peer_node_id != requester_id => peer,
+        Ok(peer)
+            if peer.tenant_id == requester.tenant_id
+                && peer_node_id != requester_id
+                && peer.deleted_at.is_none()
+                && peer.is_key_authorized_at(bson::DateTime::now()) =>
+        {
+            peer
+        }
         _ => return,
     };
     // Same pair visibility guard as relay_request, with unreadable policy
@@ -1223,8 +1296,14 @@ async fn handle_org_relay_fallback_request(
         return;
     }
     let peer = match state.overlay_nodes.base.find_by_id(peer_node_id).await {
-        Ok(peer) if peer.tenant_id == requester.tenant_id
-            && peer_node_id != requester_id && peer.deleted_at.is_none() => peer,
+        Ok(peer)
+            if peer.tenant_id == requester.tenant_id
+                && peer_node_id != requester_id
+                && peer.deleted_at.is_none()
+                && peer.is_key_authorized_at(bson::DateTime::now()) =>
+        {
+            peer
+        }
         _ => return,
     };
     let pk = pair_key(requester_id, peer_node_id);
@@ -1260,12 +1339,24 @@ async fn handle_overlay_relay_request(
     };
     let Some(self_id) = self_node.id else { return };
 
-    // Cross-tenant gate: the peer must be in the requester's tenant.
+    // Cross-tenant & live/authorized-key gate: the peer must be live and
+    // key-authorized in the requester's tenant.
     let peer = match state.overlay_nodes.base.find_by_id(peer_node_id).await {
-        Ok(p) if p.tenant_id == self_node.tenant_id => p,
-        Ok(p) => {
+        Ok(p)
+            if p.tenant_id == self_node.tenant_id
+                && peer_node_id != self_id
+                && p.deleted_at.is_none()
+                && p.is_key_authorized_at(bson::DateTime::now()) =>
+        {
+            p
+        }
+        Ok(p) if p.tenant_id != self_node.tenant_id => {
             warn!(%self_id, peer = %peer_node_id, peer_tenant = %p.tenant_id,
                 "overlay.relay_request across tenants; refusing");
+            return;
+        }
+        Ok(_) => {
+            debug!(peer = %peer_node_id, "overlay.relay_request: peer deleted or key unauthorized; refusing");
             return;
         }
         Err(e) => {
@@ -1840,7 +1931,13 @@ async fn handle_org_relay_loss(
         return;
     }
     let peer = match state.overlay_nodes.base.find_by_id(peer_node_id).await {
-        Ok(p) if p.tenant_id == reporter.tenant_id && p.deleted_at.is_none() => p,
+        Ok(p)
+            if p.tenant_id == reporter.tenant_id
+                && p.deleted_at.is_none()
+                && p.is_key_authorized_at(bson::DateTime::now()) =>
+        {
+            p
+        }
         _ => return,
     };
     let pk = session.pair_key.clone();
@@ -2554,13 +2651,194 @@ async fn resolve_tenant_and_machine(
 /// below is redundant now that the lookup is scoped; kept as belt and braces.
 pub async fn current_node(state: &NetworkState, ident: NodeIdentity) -> Option<OverlayNode> {
     let (tenant_id, machine_id, _name) = resolve_tenant_and_machine(state, ident).await?;
+    let now = bson::DateTime::now();
     state
         .overlay_nodes
         .find_live_by_tenant_and_machine(tenant_id, &machine_id)
         .await
         .ok()
         .flatten()
-        .filter(|n| n.deleted_at.is_none())
+        .filter(|n| n.is_key_authorized_at(now))
+}
+
+/// B4 — Immediately evict a node whose current WireGuard key has been revoked
+/// or expired: drop its admission cache entry, revoke active org-relay sessions,
+/// evict its DERP registration/socket, rebuild the network's DERP allow table,
+/// broadcast `removes: [node_id]` to all peers in its network (locally and
+/// across pods), and clear the node's own peer list.
+pub async fn enforce_node_key_revocation_or_expiry(state: &NetworkState, node: &OverlayNode) {
+    let Some(node_id) = node.id else { return };
+    state.admission_nodes.remove(&node_id);
+    crate::org_relay::revoke_node(state, node_id, "key_revoked_or_expired").await;
+    super::derp::evict_pubkey(state, node.network_id, &node.wg_public_key);
+    super::derp_acl::rebuild(state, node.tenant_id, node.network_id).await;
+
+    let peers = state
+        .overlay_nodes
+        .list_active_in_network(node.tenant_id, node.network_id)
+        .await
+        .unwrap_or_default();
+    let epoch = next_epoch();
+    let mut peer_ids_for_self = Vec::new();
+    for peer in peers.iter().filter(|p| p.id != Some(node_id)) {
+        if let Some(pid) = peer.id {
+            peer_ids_for_self.push(pid);
+        }
+        send_to_node(
+            state,
+            peer,
+            ServerMsg::OverlayNetmapDelta {
+                epoch,
+                upserts: Vec::new(),
+                removes: vec![node_id],
+            },
+        )
+        .await;
+    }
+    if !peer_ids_for_self.is_empty() {
+        send_to_node(
+            state,
+            node,
+            ServerMsg::OverlayNetmapDelta {
+                epoch,
+                upserts: Vec::new(),
+                removes: peer_ids_for_self,
+            },
+        )
+        .await;
+    }
+    roomler_ai_mod_fleet::ctrl::publish_rc_ctrl(
+        state,
+        "overlay_removes",
+        serde_json::json!({
+            "tenant_id": node.tenant_id.to_hex(),
+            "network_id": node.network_id.to_hex(),
+            "node_id": node_id.to_hex(),
+            "epoch": epoch,
+        }),
+    )
+    .await;
+}
+
+/// B4 — Ensure an agent node whose key expired or was revoked has an active
+/// `KeyRotationRequest` and receives `ServerMsg::KeyRotate` (rate-bounded by
+/// `should_redeliver` so repeated ticks do not spam duplicate rotation orders).
+pub async fn order_auto_key_rotate_if_needed(state: &NetworkState, node: &OverlayNode) {
+    let NodeRef::Agent { agent_id } = node.node_ref else {
+        return;
+    };
+    let Ok(agent) = state
+        .fleet
+        .agents
+        .find_live_in_tenant(node.tenant_id, agent_id)
+        .await
+    else {
+        return;
+    };
+    let now = bson::DateTime::now();
+    if let Some(req) = &agent.key_rotation
+        && !roomler_ai_remote_control::models::order_is_satisfied(
+            req,
+            agent.overlay_identity.as_ref(),
+        )
+        && !roomler_ai_remote_control::models::should_redeliver(
+            req,
+            agent.key_rotation_report.as_ref(),
+            now,
+        )
+    {
+        return;
+    }
+    let request_id = ObjectId::new().to_hex();
+    let request = roomler_ai_remote_control::models::KeyRotationRequest {
+        request_id: request_id.clone(),
+        requested_by: agent.owner_user_id,
+        requested_at: now,
+        delivered_at: None,
+        public_key_before: Some(node.wg_public_key.clone()),
+    };
+    let _ = state
+        .fleet
+        .agents
+        .record_key_rotation_request(node.tenant_id, agent_id, &request)
+        .await;
+    let supports_rotation = agent
+        .capabilities
+        .has_rpc(roomler_ai_remote_control::models::RpcCap::KeyRotate);
+    let delivered = supports_rotation
+        && state
+            .fleet
+            .rc_hub
+            .send_to_agent(
+                agent_id,
+                ServerMsg::KeyRotate {
+                    request_id: request_id.clone(),
+                },
+            )
+            .is_ok();
+    if delivered {
+        let _ = state
+            .fleet
+            .agents
+            .mark_key_rotation_delivered(node.tenant_id, agent_id, &request_id)
+            .await;
+    }
+    let _ = state
+        .key_rotation_audit
+        .record(
+            node.tenant_id,
+            agent_id,
+            agent.owner_user_id,
+            &request_id,
+            Some(if delivered { "pushed" } else { "queued" }),
+            None,
+        )
+        .await;
+}
+
+/// B4 — Background reaper that sweeps active networks for:
+/// 1. Pre-expiry make-before-break key rotation (`list_keys_expiring_soon`),
+///    pushing `ServerMsg::KeyRotate` to online agents before `key_expires_at`
+///    is reached so they rotate without losing connectivity or being evicted.
+/// 2. Hard expiration (`expire_keys_due`), evicting peers whose `key_expires_at`
+///    passed without rotating.
+pub fn spawn_key_expiry_reaper(state: NetworkState) {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(5));
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            ticker.tick().await;
+            let mut network_ids: std::collections::HashSet<ObjectId> = state
+                .admission_nodes
+                .iter()
+                .map(|entry| entry.value().network_id)
+                .collect();
+            for entry in state.derp_registry.iter() {
+                network_ids.insert(entry.key().0);
+            }
+            if network_ids.is_empty() {
+                continue;
+            }
+            let now = bson::DateTime::now();
+            for network_id in network_ids {
+                if let Ok(expiring_soon) = state
+                    .overlay_nodes
+                    .list_keys_expiring_soon(network_id, now)
+                    .await
+                {
+                    for exp_soon in &expiring_soon {
+                        order_auto_key_rotate_if_needed(&state, exp_soon).await;
+                    }
+                }
+                if let Ok(expired) = state.overlay_nodes.expire_keys_due(network_id, now).await {
+                    for exp_node in &expired {
+                        enforce_node_key_revocation_or_expiry(&state, exp_node).await;
+                        order_auto_key_rotate_if_needed(&state, exp_node).await;
+                    }
+                }
+            }
+        }
+    });
 }
 
 /// Sanitize a display name to a single DNS label — lowercase `[a-z0-9-]`, no
@@ -3105,6 +3383,13 @@ pub async fn shape_full_netmap(
 ) -> ShapedNetmap {
     let acl = load_acl(state, self_node.tenant_id).await;
     let self_src = overlay_source_of(state, self_node).await;
+    if !self_node.is_key_authorized_at(bson::DateTime::now()) {
+        return ShapedNetmap {
+            acl,
+            self_src,
+            peers: Vec::new(),
+        };
+    }
     let iso = business_isolation::mode(state);
     let self_zone = business_isolation::zone_of(state, iso, self_node).await;
     let lines = business_isolation::lines(state, iso, self_node.tenant_id).await;
@@ -3155,6 +3440,9 @@ fn shape_peer(
     reachable: bool,
     zones: Zones,
 ) -> Option<NetmapPeer> {
+    if !peer.is_key_authorized_at(bson::DateTime::now()) {
+        return None;
+    }
     let unbound;
     let peer = match routes_outside_their_zone(peer, zones) {
         Some(p) => {
@@ -3707,6 +3995,12 @@ mod tests {
             overlay_ip: ip.into(),
             wg_public_key: "cHVia2V5".into(),
             key_epoch: 0,
+            retired_wg_keys: vec![],
+            key_issued_at: Some(now),
+            key_ttl_secs: None,
+            key_expires_at: None,
+            key_revoked_at: None,
+            reauth_required: false,
             endpoints: vec!["1.2.3.4:1234".into()],
             lan_endpoints: vec!["192.168.1.5:41641".into()],
             srflx_endpoints: vec!["5.6.7.8:5678".into()],
@@ -3853,6 +4147,46 @@ mod tests {
         let mut line = line_only(to_netmap_peer(&n, true));
         stamp_verdict(&mut line, Some(RelayStrategyWire::Derp));
         assert_eq!(line.relay_strategy, None);
+    }
+
+    #[test]
+    fn b4_shape_peer_withholds_expired_and_revoked_node_keys() {
+        let acl = AclCtx {
+            mode: OverlayAclMode::Off,
+            policies: vec![],
+        };
+        let src = OverlaySource {
+            node_id: ObjectId::new(),
+            owner_user_id: None,
+            role_ids: vec![],
+        };
+        let mut peer = node("peer-b4", "100.64.0.42");
+        assert!(
+            shape_peer(&acl, &src, &peer, None, true, Zones::OFF).is_some(),
+            "authorized peer key must be shaped"
+        );
+
+        // Expired key must be withheld from netmap shaping.
+        peer.key_expires_at = Some(bson::DateTime::from_millis(
+            bson::DateTime::now().timestamp_millis() - 1_000,
+        ));
+        assert!(
+            shape_peer(&acl, &src, &peer, None, true, Zones::OFF).is_none(),
+            "expired peer key must be withheld from netmap"
+        );
+
+        // Future expiry restores shaping.
+        peer.key_expires_at = Some(bson::DateTime::from_millis(
+            bson::DateTime::now().timestamp_millis() + 60_000,
+        ));
+        assert!(shape_peer(&acl, &src, &peer, None, true, Zones::OFF).is_some());
+
+        // Explicit revocation (`reauth_required` / `key_revoked_at`) withholds peer.
+        peer.reauth_required = true;
+        assert!(shape_peer(&acl, &src, &peer, None, true, Zones::OFF).is_none());
+        peer.reauth_required = false;
+        peer.key_revoked_at = Some(bson::DateTime::now());
+        assert!(shape_peer(&acl, &src, &peer, None, true, Zones::OFF).is_none());
     }
 
     /// #18 — an unreadable policy never shapes as "ACL off": the last one read

@@ -336,6 +336,7 @@ impl Module for NetworkState {
         // fed by the host's redis ctrl subscriber; with no Redis the sender
         // side never fires and this task just parks).
         overlay::spawn_removes_applier(state.clone(), overlay_ctrl_rx);
+        overlay::spawn_key_expiry_reaper(state.clone());
 
         // P7b — the sockets' machinery, from the host's `AppState::new`.
         // The agent socket is fleet's; this module's half (the tunnel and
@@ -448,6 +449,14 @@ impl Module for NetworkState {
             .route(
                 "/{agent_id}/overlay-key/rotate",
                 post(routes::overlay_key::rotate_overlay_key),
+            )
+            .route(
+                "/{agent_id}/overlay-key/revoke",
+                post(routes::overlay_key::revoke_overlay_key),
+            )
+            .route(
+                "/{agent_id}/overlay-key/ttl",
+                put(routes::overlay_key::set_overlay_key_ttl),
             )
             // Roomler SSH — ask for a session on one device. Answers 200 with
             // either where to dial or which gate refused; a denial is a policy

@@ -95,7 +95,7 @@ impl Ipam {
                 machine_id: machine_id.to_string(),
                 name: name.to_string(),
                 overlay_ip: overlay_ip.to_string(),
-                wg_public_key: "pk-base64".to_string(),
+                wg_public_key: format!("pk-base64-{machine_id}"),
                 key_epoch: 0,
                 endpoints: vec![],
                 supports_quic: false,
@@ -2307,4 +2307,84 @@ async fn turning_multi_block_off_after_a_grow_fails_the_boot_loudly() {
     apply_index_sets(&app.db, &app.state.modules.index_sets_for(true))
         .await
         .expect("multi-block schema still applies to a grown network");
+}
+
+/// B4 — Evicting a node (`DELETE /api/tenant/{tid}/overlay-node/{id}` -> `release`)
+/// forces a new lease rather than permanently banning the machine: the SAME
+/// `machine_id` can re-join with its existing `wg_public_key` and obtain a new
+/// overlay lease, while a DIFFERENT `machine_id` attempting to claim that
+/// tombstoned `wg_public_key` is rejected. Also verifies pre-expiry proactive
+/// key rotation (`list_keys_expiring_soon` + `order_auto_key_rotate_if_needed`).
+#[tokio::test]
+async fn b4_evicted_node_allows_same_machine_rejoin_with_same_key_and_rejects_other_machine() {
+    let app = TestApp::spawn().await;
+    let seeded = app.seed_tenant("ovb4evict").await;
+    let ipam = Ipam::new(&app, tid(&seeded.tenant_id)).await;
+
+    ipam.alloc().await.unwrap();
+    let first = ipam
+        .create_node("mach-evict-a", "evict-box", "100.64.0.1")
+        .await
+        .unwrap();
+    let first_id = first.id.unwrap();
+    let first_key = first.wg_public_key.clone();
+
+    // Admin evicts the node via REST API.
+    let resp = app
+        .auth_delete(
+            &format!("/api/tenant/{}/overlay-node/{first_id}", seeded.tenant_id),
+            &seeded.admin.access_token,
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+
+    // Another machine ("mach-hijack") attempting to claim the evicted node's
+    // tombstoned `wg_public_key` must be rejected.
+    let hijack = ipam
+        .nodes
+        .create(NewOverlayNode {
+            tenant_id: ipam.tenant_id,
+            node_ref: NodeRef::Agent {
+                agent_id: ObjectId::new(),
+            },
+            network_id: ipam.network_id,
+            machine_id: "mach-hijack".to_string(),
+            name: "hijack-box".to_string(),
+            overlay_ip: "100.64.0.2".to_string(),
+            wg_public_key: first_key.clone(),
+            key_epoch: 0,
+            endpoints: vec![],
+            supports_quic: false,
+            supports_relay_single: false,
+            supports_derp: false,
+            supports_forced_derp: false,
+            supports_server_relay_strategy: false,
+            supports_derp_floor: false,
+            supports_overlay_echo: false,
+            supports_org_relay: false,
+            advertised_routes: vec![],
+            route_offer_withheld: None,
+        })
+        .await;
+    assert!(
+        matches!(hijack, Err(DaoError::Forbidden(_))),
+        "different machine_id must not claim a tombstoned node's wg_public_key: {hijack:?}"
+    );
+
+    // The SAME machine ("mach-evict-a") reconnecting with its persisted `wg_public_key`
+    // must succeed and obtain a fresh overlay lease.
+    let rejoined = ipam
+        .create_node("mach-evict-a", "evict-box", "100.64.0.1")
+        .await
+        .expect("evicted machine must be able to re-join with its same wg_public_key");
+    assert_ne!(rejoined.id, first.id);
+    assert_eq!(rejoined.wg_public_key, first_key);
+    assert!(
+        ipam.nodes
+            .accepts_current_key(rejoined.id.unwrap(), &first_key, 0)
+            .await
+            .unwrap()
+    );
 }

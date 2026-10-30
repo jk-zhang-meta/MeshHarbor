@@ -142,10 +142,11 @@ pub(super) async fn plan_reusing(
     if fresh_a.tenant_id != fresh_b.tenant_id {
         return Err(D::CrossTenant);
     }
-    if fresh_a.deleted_at.is_some() {
+    let now_dt = bson::DateTime::now();
+    if fresh_a.deleted_at.is_some() || !fresh_a.is_key_authorized_at(now_dt) {
         return Err(D::RequesterUnsupported);
     }
-    if fresh_b.deleted_at.is_some() {
+    if fresh_b.deleted_at.is_some() || !fresh_b.is_key_authorized_at(now_dt) {
         return Err(D::PeerUnsupported);
     }
     if fresh_a.network_id != fresh_b.network_id || fresh_a.node_ref == fresh_b.node_ref {

@@ -160,12 +160,16 @@ pub async fn rebuild(state: &NetworkState, tenant_id: ObjectId, network_id: Obje
         state.derp_acl.remove(&network_id);
         return;
     }
-    let nodes = match state
+    let now = bson::DateTime::now();
+    let nodes: Vec<_> = match state
         .overlay_nodes
         .list_active_in_network(tenant_id, network_id)
         .await
     {
-        Ok(v) => v,
+        Ok(v) => v
+            .into_iter()
+            .filter(|n| n.is_key_authorized_at(now))
+            .collect(),
         Err(e) => {
             // Keep the PREVIOUS table rather than dropping to fail-open on a
             // transient Mongo blip.
