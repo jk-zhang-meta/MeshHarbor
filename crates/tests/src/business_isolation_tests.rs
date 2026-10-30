@@ -3333,7 +3333,10 @@ async fn staged_trial_live_relay_zone_recheck_revokes_changes_not_stale_reads() 
         } else {
             during_join = join_capture_revoke(&mut fresh, endpoint).await;
         }
-        if matches!(case, "stable" | "race_restore" | "read_healthy") {
+        if matches!(case, "unknown" | "stable" | "race_restore" | "read_healthy") {
+            if case == "unknown" {
+                tokio::time::sleep(Duration::from_secs(3)).await;
+            }
             assert!(during_join.is_none(), "stable rejoin already received a revoke");
             async fn no_retirement(ws: &mut Ws, label: &str) {
                 let until = tokio::time::Instant::now() + Duration::from_millis(800);
@@ -5843,6 +5846,51 @@ async fn unknown_role_enforce_transient_role_read_failure_preserves_live_state_a
         net.org_relay.active_session(&pair).is_some(),
         "role read failure must NOT tear down active org-relay session"
     );
+
+    // 1b. Re-joining (`rc:overlay.join`) on `us_a` during `roles_read_failed` must NOT
+    //     emit a degraded empty `rc:overlay.netmap` (which would wipe `us_a`'s established
+    //     peers) and must NOT emit `removes` to `us_b`; once role reads recover, the
+    //     scheduled join retry delivers the full netmap to `us_a`.
+    us_a.send(Message::Text(
+        json!({
+            "t": "rc:overlay.join",
+            "wg_public_key": BASE64.encode([1u8; 32]),
+            "mtu": 1280,
+            "key_epoch": 1,
+            "endpoints": ["8.8.8.1:41641"],
+            "supports_derp": true,
+            "supports_org_relay": true,
+            "supports_server_relay_strategy": true,
+            "relay_port": 3478,
+            "org_primary": true,
+            "supports_forced_derp": true,
+        })
+        .to_string()
+        .into(),
+    ))
+    .await
+    .unwrap();
+    assert!(
+        recv_t(&mut us_a, "rc:overlay.netmap", Duration::from_millis(250))
+            .await
+            .is_none(),
+        "handle_overlay_join during role read failure must withhold degraded empty full netmap"
+    );
+    let (_, rm_b_on_rejoin) = deltas(&mut us_b, Duration::from_millis(150)).await;
+    assert!(
+        rm_b_on_rejoin.is_empty(),
+        "handle_overlay_join during role read failure must not emit removes to us_b: {rm_b_on_rejoin:?}"
+    );
+    roomler_core::business_authority::set_test_force_role_read_fail(tid_oid, false);
+    let recovered_netmap = recv_t(&mut us_a, "rc:overlay.netmap", wait)
+        .await
+        .expect("scheduled join netmap retry delivers full netmap to us_a once role read recovers");
+    assert!(
+        peer_ids(&recovered_netmap).contains(&us_b_node),
+        "recovered join netmap must include healthy peer us_b: {recovered_netmap}"
+    );
+    let _ = deltas(&mut us_b, Duration::from_millis(200)).await;
+    roomler_core::business_authority::set_test_force_role_read_fail(tid_oid, true);
 
     // 2. Superseding a failed `unknown` approval with a `client` re-approval before retry
     //    fires must cancel the stale `unknown` retry and keep tc_us's session + DERP alive.

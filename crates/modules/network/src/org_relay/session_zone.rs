@@ -13,7 +13,7 @@ use std::time::Duration;
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Decision {
     Fits,
-    Uncertain,
+    Uncertain { retryable: bool },
     Invalid,
 }
 
@@ -29,6 +29,7 @@ pub(super) async fn check(state: &NetworkState, session: &OrgRelaySession) -> De
         .chain(std::iter::once(&session.members[1].party))
         .collect();
     let mut zones = Vec::with_capacity(parties.len());
+    let mut read_failed = false;
     // Read every party: an unknown early relay cannot hide a later confirmed
     // deletion or a known edge whose region relationship has changed.
     for party in parties {
@@ -45,7 +46,10 @@ pub(super) async fn check(state: &NetworkState, session: &OrgRelaySession) -> De
         .await;
         zones.push(match observed {
             Ok(Ok(zone)) => zone,
-            _ => PartyZone::Unknown,
+            _ => {
+                read_failed = true;
+                PartyZone::Unknown
+            }
         });
     }
     let mut unknown = zones.contains(&PartyZone::Unknown);
@@ -65,6 +69,7 @@ pub(super) async fn check(state: &NetworkState, session: &OrgRelaySession) -> De
         let topo = iso::lines(state, mode, session.tenant_id).await;
         if topo.roles_read_failed {
             unknown = true;
+            read_failed = true;
         } else {
             let permit = iso::permit_refs_with_lines(
                 state,
@@ -83,12 +88,15 @@ pub(super) async fn check(state: &NetworkState, session: &OrgRelaySession) -> De
     }
     #[cfg(feature = "path-planner-test-support")]
     super::candidate_test_support::pause_session_zone_if_armed(&session.pair_key).await;
+    let epoch_changed = epoch != state.org_relay.eligibility_generation();
     // Confirmed invalidity wins: callers revoke only the captured session's
     // exact pair/VNI/generation, never a concurrently installed replacement.
     if invalid {
         Decision::Invalid
-    } else if unknown || epoch != state.org_relay.eligibility_generation() {
-        Decision::Uncertain
+    } else if unknown || epoch_changed {
+        Decision::Uncertain {
+            retryable: read_failed || epoch_changed,
+        }
     } else {
         Decision::Fits
     }

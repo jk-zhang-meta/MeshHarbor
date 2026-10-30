@@ -718,7 +718,6 @@ async fn handle_overlay_join(
         }
     };
 
-    let epoch = next_epoch();
     // P9 — presence: ghost rows (clean-leave Offline, or an agent whose
     // heartbeat went stale) ship `reachable = false` in the FULL netmap
     // instead of resurrecting as dialable peers on every rejoin.
@@ -778,6 +777,35 @@ async fn handle_overlay_join(
         });
     }
 
+    if let Some(id) = self_node.id {
+        state.admission_nodes.insert(id, self_node.clone());
+        // Before the netmap, so the node's first requests already count afresh.
+        forget_restarted_grants(state, id, instance.as_deref());
+    }
+
+    if lines.roles_read_failed && iso == business_isolation::Mode::Enforce {
+        warn!(
+            tenant_id = %self_node.tenant_id,
+            node = %self_node.name,
+            "overlay.join: role approval read failed; withholding degraded full netmap and peer deltas to preserve live peers, scheduling retry"
+        );
+        if state
+            .org_relay
+            .live_conn(ident.connection_key())
+            .as_deref()
+            == Some(connection_id)
+            && let Some(self_id) = self_node.id
+        {
+            schedule_join_netmap_retry(state, tenant_id, network_id, self_id);
+        }
+        repush_forced_pairs_on_join(state, &self_node).await;
+        return;
+    }
+
+    if let Some(self_id) = self_node.id {
+        cancel_join_netmap_retry(tenant_id, self_id).await;
+    }
+
     // Overlay ACL — refresh the DERP relay allow table off the join path. A
     // join is when a NEW pubkey can enter the network, and the table is keyed by
     // pubkey, so it would otherwise stay stale (fail-open) for that node until
@@ -785,10 +813,7 @@ async fn handle_overlay_join(
     // not wait on that to get its netmap. #21 enforce needs the table for its
     // zones even when the ACL is off.
     if acl.gating() || iso == business_isolation::Mode::Enforce {
-        let st = state.clone();
-        tokio::spawn(async move {
-            super::derp_acl::rebuild(&st, tenant_id, network_id).await;
-        });
+        schedule_derp_acl_rebuild(state, tenant_id, network_id);
     }
 
     // Phase 2 MagicDNS — carry the tenant's DNS suffix + upstreams so the node
@@ -809,12 +834,7 @@ async fn handle_overlay_join(
     // near it, and a node that grew the space during its own join would hold a
     // list captured before the block it caused.
     let join_blocks = state.overlay_networks.block_list(&network).await;
-
-    if let Some(id) = self_node.id {
-        state.admission_nodes.insert(id, self_node.clone());
-        // Before the netmap, so the node's first requests already count afresh.
-        forget_restarted_grants(state, id, instance.as_deref());
-    }
+    let epoch = next_epoch();
 
     // Full netmap → joiner.
     send_to_node(
@@ -879,47 +899,39 @@ async fn handle_overlay_join(
     // `removes` rather than mere omission: omitting a peer (or shipping
     // `reachable: false`) is a no-op against an already-installed peer — only
     // the removes branch tears down the WG peer, its route and its carrier.
-    if lines.roles_read_failed && iso == business_isolation::Mode::Enforce {
-        warn!(
-            tenant_id = %self_node.tenant_id,
-            node = %self_node.name,
-            "overlay.join: role approval read failed; skipping peer delta removes to preserve live peers"
+    for peer in all.iter().filter(|n| n.id != self_node.id) {
+        let peer_src = overlay_source_of(state, peer).await;
+        // The shaped peer here is the JOINER, whose identity we already have.
+        let joiner_ingress = acl.enforcing().then_some(&joiner_src);
+        // U2 — this recipient's edge is `peer → self_node` (the joiner).
+        let verdict = server_relay_verdict(state, peer, &self_node);
+        let recipient_zone = business_isolation::zone_of(state, iso, peer).await;
+        let zones = lines.zones_for(
+            iso,
+            peer,
+            recipient_zone,
+            &self_node,
+            joiner_zone,
+            business_isolation::rides_lines(state, peer),
         );
-    } else {
-        for peer in all.iter().filter(|n| n.id != self_node.id) {
-            let peer_src = overlay_source_of(state, peer).await;
-            // The shaped peer here is the JOINER, whose identity we already have.
-            let joiner_ingress = acl.enforcing().then_some(&joiner_src);
-            // U2 — this recipient's edge is `peer → self_node` (the joiner).
-            let verdict = server_relay_verdict(state, peer, &self_node);
-            let recipient_zone = business_isolation::zone_of(state, iso, peer).await;
-            let zones = lines.zones_for(
-                iso,
-                peer,
-                recipient_zone,
-                &self_node,
-                joiner_zone,
-                business_isolation::rides_lines(state, peer),
-            );
-            let (upserts, removes) =
-                match shape_peer(&acl, &peer_src, &self_node, joiner_ingress, true, zones) {
-                    Some(mut u) => {
-                        stamp_verdict(&mut u, verdict);
-                        (vec![u], vec![])
-                    }
-                    None => (vec![], vec![self_node.id.unwrap_or_default()]),
-                };
-            send_to_node(
-                state,
-                peer,
-                ServerMsg::OverlayNetmapDelta {
-                    epoch,
-                    upserts,
-                    removes,
-                },
-            )
-            .await;
-        }
+        let (upserts, removes) =
+            match shape_peer(&acl, &peer_src, &self_node, joiner_ingress, true, zones) {
+                Some(mut u) => {
+                    stamp_verdict(&mut u, verdict);
+                    (vec![u], vec![])
+                }
+                None => (vec![], vec![self_node.id.unwrap_or_default()]),
+            };
+        send_to_node(
+            state,
+            peer,
+            ServerMsg::OverlayNetmapDelta {
+                epoch,
+                upserts,
+                removes,
+            },
+        )
+        .await;
     }
 
     // P7 — a node that restarted mid-escalation lost its client-side DERP pin
@@ -928,6 +940,273 @@ async fn handle_overlay_join(
     // the ONLY re-delivery path a single-relay DIALER has — it never sends a
     // relay_request, so it can't pick the pin back up reactively.
     repush_forced_pairs_on_join(state, &self_node).await;
+}
+
+struct JoinNetmapRetrySlot {
+    generation: std::sync::atomic::AtomicU64,
+    lock: tokio::sync::Mutex<()>,
+}
+
+static JOIN_NETMAP_RETRY_SLOTS: std::sync::LazyLock<
+    dashmap::DashMap<(ObjectId, ObjectId), std::sync::Arc<JoinNetmapRetrySlot>>,
+> = std::sync::LazyLock::new(dashmap::DashMap::new);
+
+fn cleanup_join_netmap_retry_slot(
+    key: (ObjectId, ObjectId),
+    slot: std::sync::Arc<JoinNetmapRetrySlot>,
+) {
+    drop(slot);
+    JOIN_NETMAP_RETRY_SLOTS.remove_if(&key, |_, existing| {
+        std::sync::Arc::strong_count(existing) == 1
+    });
+}
+
+async fn cancel_join_netmap_retry(tenant_id: ObjectId, self_id: ObjectId) {
+    let key = (tenant_id, self_id);
+    if let Some(slot) = JOIN_NETMAP_RETRY_SLOTS.get(&key).map(|e| e.value().clone()) {
+        slot.generation.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        let _guard = slot.lock.lock().await;
+        drop(_guard);
+        cleanup_join_netmap_retry_slot(key, slot);
+    }
+}
+
+fn schedule_join_netmap_retry(
+    state: &NetworkState,
+    tenant_id: ObjectId,
+    network_id: ObjectId,
+    self_id: ObjectId,
+) {
+    let key = (tenant_id, self_id);
+    let slot = JOIN_NETMAP_RETRY_SLOTS
+        .entry(key)
+        .or_insert_with(|| {
+            std::sync::Arc::new(JoinNetmapRetrySlot {
+                generation: std::sync::atomic::AtomicU64::new(0),
+                lock: tokio::sync::Mutex::new(()),
+            })
+        })
+        .clone();
+    let my_gen = slot.generation.fetch_add(1, std::sync::atomic::Ordering::AcqRel) + 1;
+    let retry_state = state.clone();
+    tokio::spawn(async move {
+        for delay_ms in [200u64, 500, 1000]
+            .into_iter()
+            .chain(std::iter::repeat(2000u64))
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+            if slot.generation.load(std::sync::atomic::Ordering::Acquire) != my_gen {
+                cleanup_join_netmap_retry_slot(key, slot);
+                return;
+            }
+            let done = {
+                let _guard = slot.lock.lock().await;
+                if slot.generation.load(std::sync::atomic::Ordering::Acquire) != my_gen {
+                    drop(_guard);
+                    cleanup_join_netmap_retry_slot(key, slot);
+                    return;
+                }
+                try_complete_join_netmap(
+                    &retry_state,
+                    tenant_id,
+                    network_id,
+                    self_id,
+                    &slot.generation,
+                    my_gen,
+                )
+                .await
+            };
+            if done {
+                tracing::info!(
+                    %tenant_id,
+                    %self_id,
+                    "overlay.join: deferred full netmap and peer fan-out succeeded on retry"
+                );
+                cleanup_join_netmap_retry_slot(key, slot);
+                return;
+            }
+        }
+    });
+}
+
+static DERP_REBUILD_RETRY_SLOTS: std::sync::LazyLock<
+    dashmap::DashMap<(ObjectId, ObjectId), std::sync::Arc<std::sync::atomic::AtomicU64>>,
+> = std::sync::LazyLock::new(dashmap::DashMap::new);
+
+fn cleanup_derp_rebuild_retry_slot(
+    key: (ObjectId, ObjectId),
+    cell: std::sync::Arc<std::sync::atomic::AtomicU64>,
+) {
+    drop(cell);
+    DERP_REBUILD_RETRY_SLOTS.remove_if(&key, |_, existing| {
+        std::sync::Arc::strong_count(existing) == 1
+    });
+}
+
+fn schedule_derp_acl_rebuild(state: &NetworkState, tenant_id: ObjectId, network_id: ObjectId) {
+    let key = (tenant_id, network_id);
+    let cell = DERP_REBUILD_RETRY_SLOTS
+        .entry(key)
+        .or_insert_with(|| std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)))
+        .clone();
+    let my_gen = cell.fetch_add(1, std::sync::atomic::Ordering::AcqRel) + 1;
+    let st = state.clone();
+    tokio::spawn(async move {
+        if !super::derp_acl::rebuild(&st, tenant_id, network_id).await {
+            for delay_ms in [200u64, 500, 1000]
+                .into_iter()
+                .chain(std::iter::repeat(2000u64))
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                if cell.load(std::sync::atomic::Ordering::Acquire) != my_gen {
+                    cleanup_derp_rebuild_retry_slot(key, cell);
+                    return;
+                }
+                if super::derp_acl::rebuild(&st, tenant_id, network_id).await {
+                    break;
+                }
+            }
+        }
+        cleanup_derp_rebuild_retry_slot(key, cell);
+    });
+}
+
+async fn try_complete_join_netmap(
+    state: &NetworkState,
+    tenant_id: ObjectId,
+    network_id: ObjectId,
+    self_id: ObjectId,
+    generation: &std::sync::atomic::AtomicU64,
+    my_gen: u64,
+) -> bool {
+    let self_node = match state.overlay_nodes.base.find_by_id(self_id).await {
+        Ok(n) => n,
+        Err(roomler_ai_services::dao::base::DaoError::NotFound) => return true,
+        Err(_) => return false,
+    };
+    if self_node.deleted_at.is_some() || !matches!(self_node.status, AgentStatus::Online) {
+        return true;
+    }
+    let Ok(network) = state.overlay_networks.get_or_create(tenant_id).await else {
+        return false;
+    };
+    let Ok(all) = state
+        .overlay_nodes
+        .list_active_in_network(tenant_id, network_id)
+        .await
+    else {
+        return false;
+    };
+    let iso = business_isolation::mode(state);
+    let joiner_zone = business_isolation::joiner_zone(state, iso, &self_node).await;
+    let identity_id = match &self_node.node_ref {
+        NodeRef::Agent { agent_id } => *agent_id,
+        NodeRef::TunnelClient { tunnel_client_id } => *tunnel_client_id,
+    };
+    if iso == business_isolation::Mode::Enforce || joiner_zone.is_some() {
+        if !crate::org_relay::recheck_zones(state, identity_id, "zone_changed").await {
+            return false;
+        }
+    } else {
+        crate::org_relay::recheck_trial_zones(state, identity_id, "zone_changed").await;
+    }
+    let lines = business_isolation::lines(state, iso, tenant_id).await;
+    if lines.roles_read_failed && iso == business_isolation::Mode::Enforce {
+        return false;
+    }
+    let reach = reachability(state, &all).await;
+    let ShapedNetmap {
+        acl,
+        self_src: joiner_src,
+        peers,
+    } = shape_full_netmap_with_lines(state, &self_node, &all, &reach, Some(&lines)).await;
+    if (acl.gating() || iso == business_isolation::Mode::Enforce)
+        && !super::derp_acl::rebuild(state, tenant_id, network_id).await
+    {
+        return false;
+    }
+    let (magic_domain, nameservers) = match state.tenants.base.find_by_id(tenant_id).await {
+        Ok(t) => (
+            t.settings.magic_dns_domain.clone(),
+            t.settings.magic_dns_nameservers.clone(),
+        ),
+        Err(_) => (None, Vec::new()),
+    };
+    let join_blocks = state.overlay_networks.block_list(&network).await;
+    let relay_probe_targets =
+        crate::org_relay::probe_targets(state, &self_node, Some(&lines)).await;
+    let backbone_probe_targets =
+        crate::org_relay::backbone_probe_targets(state, &self_node, Some(&lines)).await;
+    if generation.load(std::sync::atomic::Ordering::Acquire) != my_gen {
+        return false;
+    }
+    let epoch = next_epoch();
+    send_to_node(
+        state,
+        &self_node,
+        ServerMsg::OverlayNetmap {
+            org_relay_discovery: true,
+            path_trial_v1: true,
+            self_ip: self_node.overlay_ip.clone(),
+            network: OverlayNetworkInfo {
+                cidr: join_blocks
+                    .cidr_for_ip(&self_node.overlay_ip)
+                    .unwrap_or(&network.cidr)
+                    .to_string(),
+                cidrs: join_blocks.cidrs().to_vec(),
+                org_relay_fallback_v1: true,
+                org_relay_loss_v1: true,
+                mtu: network.mtu,
+                magic_domain,
+                nameservers,
+                self_name: (!self_node.name.is_empty()).then(|| self_node.name.clone()),
+                stun_urls: stun_urls_from_turn(state),
+                relay_probe_targets,
+                backbone_probe_targets,
+            },
+            peers,
+            epoch,
+        },
+    )
+    .await;
+    let self_reachable = is_reachable(&reach, &self_node);
+    for peer in all.iter().filter(|n| n.id != self_node.id) {
+        if generation.load(std::sync::atomic::Ordering::Acquire) != my_gen {
+            return false;
+        }
+        let peer_src = overlay_source_of(state, peer).await;
+        let joiner_ingress = acl.enforcing().then_some(&joiner_src);
+        let verdict = server_relay_verdict(state, peer, &self_node);
+        let recipient_zone = business_isolation::zone_of(state, iso, peer).await;
+        let zones = lines.zones_for(
+            iso,
+            peer,
+            recipient_zone,
+            &self_node,
+            joiner_zone,
+            business_isolation::rides_lines(state, peer),
+        );
+        let (upserts, removes) =
+            match shape_peer(&acl, &peer_src, &self_node, joiner_ingress, self_reachable, zones) {
+                Some(mut u) => {
+                    stamp_verdict(&mut u, verdict);
+                    (vec![u], vec![])
+                }
+                None => (vec![], vec![self_node.id.unwrap_or_default()]),
+            };
+        send_to_node(
+            state,
+            peer,
+            ServerMsg::OverlayNetmapDelta {
+                epoch,
+                upserts,
+                removes,
+            },
+        )
+        .await;
+    }
+    repush_forced_pairs_on_join(state, &self_node).await;
+    true
 }
 
 /// Trickle: update the node's candidates → fan an upsert delta so peers

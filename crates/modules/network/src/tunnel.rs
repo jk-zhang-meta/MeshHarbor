@@ -790,6 +790,17 @@ impl Originator {
     }
 }
 
+/// Combined eligibility generation across role/grant mutations, live-zone
+/// transitions, and GeoIP dataset refreshes so cached `evaluate_pair` lines
+/// invalidate on any input change.
+fn tunnel_eligibility_generation(state: &NetworkState) -> u64 {
+    state
+        .org_relay
+        .eligibility_generation()
+        .wrapping_add(state.core.business_zones.generation().rotate_left(21))
+        .wrapping_add(state.core.geoip.dataset_generation().rotate_left(42))
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn handle_tunnel_open(
     state: &NetworkState,
@@ -1010,7 +1021,7 @@ async fn handle_tunnel_open(
             NodeRef::Agent { agent_id: id }
         }
     };
-    let verified_eligibility_gen = state.org_relay.eligibility_generation();
+    let verified_eligibility_gen = tunnel_eligibility_generation(state);
     if crate::business_isolation::refuses_parties(
         state,
         (orig.tenant_id, &origin_ref),
@@ -1160,7 +1171,7 @@ async fn handle_tunnel_open(
             verified_eligibility_gen,
         ),
     );
-    let post_insert_gen = state.org_relay.eligibility_generation();
+    let post_insert_gen = tunnel_eligibility_generation(state);
     if post_insert_gen != verified_eligibility_gen {
         if crate::business_isolation::refuses_parties(
             state,
@@ -1190,7 +1201,7 @@ async fn handle_tunnel_open(
             .await;
             return None;
         }
-        if state.org_relay.eligibility_generation() == post_insert_gen
+        if tunnel_eligibility_generation(state) == post_insert_gen
             && let Some(mut entry) = state.tunnel_session_parties.get_mut(&tunnel_session_id)
         {
             entry.value_mut().3 = post_insert_gen;
@@ -1478,7 +1489,7 @@ async fn handle_forward_request(
         }
     };
 
-    let cur_gen = state.org_relay.eligibility_generation();
+    let cur_gen = tunnel_eligibility_generation(state);
     let verified_gen = state
         .tunnel_session_parties
         .get(&s.tunnel_session_id)
@@ -1529,7 +1540,7 @@ async fn handle_forward_request(
             .await;
             return;
         }
-        if state.org_relay.eligibility_generation() == cur_gen
+        if tunnel_eligibility_generation(state) == cur_gen
             && let Some(mut entry) = state.tunnel_session_parties.get_mut(&s.tunnel_session_id)
         {
             entry.value_mut().3 = cur_gen;

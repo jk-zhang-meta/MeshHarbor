@@ -98,16 +98,19 @@ pub async fn approve(
     let device_kind = approval.identity.kind;
     let new_role = approval.role;
     state.org_relay.invalidate_eligibility();
+    let key = (tenant_id, device_kind, device_id);
     let slot = device_reconcile_slot(tenant_id, device_kind, device_id);
     let my_gen = slot.generation.fetch_add(1, std::sync::atomic::Ordering::AcqRel) + 1;
     let st = state.clone();
     // Spawn the post-approval reconcile on the runtime so an HTTP caller that
     // disconnects mid-request cannot cancel revocation/re-fan, and schedule
-    // bounded retries if any step hits a transient storage read error.
+    // capped-backoff retries if any step hits a transient storage read error.
     let reconcile_handle = tokio::spawn(async move {
         let ok = {
             let _guard = slot.lock.lock().await;
             if slot.generation.load(std::sync::atomic::Ordering::Acquire) != my_gen {
+                drop(_guard);
+                cleanup_device_reconcile_slot(key, slot);
                 return;
             }
             apply_immediate_in_memory_revocations(&st, tenant_id, device_kind, device_id, new_role)
@@ -115,33 +118,42 @@ pub async fn approve(
             run_role_change_reconcile(&st, tenant_id, device_id).await
         };
         if !ok && slot.generation.load(std::sync::atomic::Ordering::Acquire) == my_gen {
-            let retry_state = st.clone();
-            let retry_slot = slot.clone();
+            let retry_state = st;
+            let retry_slot = slot;
             tokio::spawn(async move {
-                for delay_ms in [200u64, 500, 1000, 2000] {
+                for delay_ms in [200u64, 500, 1000]
+                    .into_iter()
+                    .chain(std::iter::repeat(2000u64))
+                {
                     tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
                     if retry_slot.generation.load(std::sync::atomic::Ordering::Acquire) != my_gen {
+                        cleanup_device_reconcile_slot(key, retry_slot);
                         return;
                     }
-                    let _guard = retry_slot.lock.lock().await;
-                    if retry_slot.generation.load(std::sync::atomic::Ordering::Acquire) != my_gen {
-                        return;
-                    }
-                    if run_role_change_reconcile(&retry_state, tenant_id, device_id).await {
+                    let done = {
+                        let _guard = retry_slot.lock.lock().await;
+                        if retry_slot.generation.load(std::sync::atomic::Ordering::Acquire)
+                            != my_gen
+                        {
+                            drop(_guard);
+                            cleanup_device_reconcile_slot(key, retry_slot);
+                            return;
+                        }
+                        run_role_change_reconcile(&retry_state, tenant_id, device_id).await
+                    };
+                    if done {
                         tracing::info!(
                             %tenant_id,
                             %device_id,
                             "business authority: post-approval reconcile succeeded on retry"
                         );
+                        cleanup_device_reconcile_slot(key, retry_slot);
                         return;
                     }
                 }
-                tracing::error!(
-                    %tenant_id,
-                    %device_id,
-                    "business authority: post-approval reconcile exhausted retries"
-                );
             });
+        } else {
+            cleanup_device_reconcile_slot(key, slot);
         }
     });
     let _ = reconcile_handle.await;
@@ -171,6 +183,16 @@ fn device_reconcile_slot(
             })
         })
         .clone()
+}
+
+fn cleanup_device_reconcile_slot(
+    key: (ObjectId, DeviceKind, ObjectId),
+    slot: std::sync::Arc<DeviceReconcileSlot>,
+) {
+    drop(slot);
+    DEVICE_RECONCILE_SLOTS.remove_if(&key, |_, existing| {
+        std::sync::Arc::strong_count(existing) == 1
+    });
 }
 
 async fn apply_immediate_in_memory_revocations(

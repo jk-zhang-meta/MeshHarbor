@@ -211,17 +211,21 @@ static LINK_RECONCILE_SLOTS: std::sync::LazyLock<
     dashmap::DashMap<(ObjectId, ObjectId, ObjectId), std::sync::Arc<LinkReconcileSlot>>,
 > = std::sync::LazyLock::new(dashmap::DashMap::new);
 
-fn link_reconcile_slot(
-    tenant_id: ObjectId,
-    agents: [ObjectId; 2],
-) -> std::sync::Arc<LinkReconcileSlot> {
+fn link_reconcile_key(tenant_id: ObjectId, agents: [ObjectId; 2]) -> (ObjectId, ObjectId, ObjectId) {
     let (a, b) = if agents[0] <= agents[1] {
         (agents[0], agents[1])
     } else {
         (agents[1], agents[0])
     };
+    (tenant_id, a, b)
+}
+
+fn link_reconcile_slot(
+    tenant_id: ObjectId,
+    agents: [ObjectId; 2],
+) -> std::sync::Arc<LinkReconcileSlot> {
     LINK_RECONCILE_SLOTS
-        .entry((tenant_id, a, b))
+        .entry(link_reconcile_key(tenant_id, agents))
         .or_insert_with(|| {
             std::sync::Arc::new(LinkReconcileSlot {
                 generation: std::sync::atomic::AtomicU64::new(0),
@@ -231,12 +235,23 @@ fn link_reconcile_slot(
         .clone()
 }
 
+fn cleanup_link_reconcile_slot(
+    key: (ObjectId, ObjectId, ObjectId),
+    slot: std::sync::Arc<LinkReconcileSlot>,
+) {
+    drop(slot);
+    LINK_RECONCILE_SLOTS.remove_if(&key, |_, existing| {
+        std::sync::Arc::strong_count(existing) == 1
+    });
+}
+
 /// Make an edit take effect now: both servers re-fanned (every peer's view of
 /// them, and theirs of every peer), the DERP allow table rebuilt, and the
-/// sessions either takes part in re-judged. Spawns bounded retries if any step
-/// hits a transient storage read failure.
+/// sessions either takes part in re-judged. Spawns capped-backoff retries if
+/// any step hits a transient storage read failure.
 async fn apply(state: &NetworkState, tenant_id: ObjectId, agents: [ObjectId; 2]) {
     state.org_relay.invalidate_eligibility();
+    let key = link_reconcile_key(tenant_id, agents);
     let slot = link_reconcile_slot(tenant_id, agents);
     let my_gen = slot.generation.fetch_add(1, std::sync::atomic::Ordering::AcqRel) + 1;
     let st = state.clone();
@@ -244,38 +259,49 @@ async fn apply(state: &NetworkState, tenant_id: ObjectId, agents: [ObjectId; 2])
         let ok = {
             let _guard = slot.lock.lock().await;
             if slot.generation.load(std::sync::atomic::Ordering::Acquire) != my_gen {
+                drop(_guard);
+                cleanup_link_reconcile_slot(key, slot);
                 return;
             }
             apply_once(&st, tenant_id, agents).await
         };
         if !ok && slot.generation.load(std::sync::atomic::Ordering::Acquire) == my_gen {
-            let retry_state = st.clone();
-            let retry_slot = slot.clone();
+            let retry_state = st;
+            let retry_slot = slot;
             tokio::spawn(async move {
-                for delay_ms in [200u64, 500, 1000, 2000] {
+                for delay_ms in [200u64, 500, 1000]
+                    .into_iter()
+                    .chain(std::iter::repeat(2000u64))
+                {
                     tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
                     if retry_slot.generation.load(std::sync::atomic::Ordering::Acquire) != my_gen {
+                        cleanup_link_reconcile_slot(key, retry_slot);
                         return;
                     }
-                    let _guard = retry_slot.lock.lock().await;
-                    if retry_slot.generation.load(std::sync::atomic::Ordering::Acquire) != my_gen {
-                        return;
-                    }
-                    if apply_once(&retry_state, tenant_id, agents).await {
+                    let done = {
+                        let _guard = retry_slot.lock.lock().await;
+                        if retry_slot.generation.load(std::sync::atomic::Ordering::Acquire)
+                            != my_gen
+                        {
+                            drop(_guard);
+                            cleanup_link_reconcile_slot(key, retry_slot);
+                            return;
+                        }
+                        apply_once(&retry_state, tenant_id, agents).await
+                    };
+                    if done {
                         tracing::info!(
                             %tenant_id,
                             ?agents,
                             "server link: reconcile succeeded on retry"
                         );
+                        cleanup_link_reconcile_slot(key, retry_slot);
                         return;
                     }
                 }
-                tracing::error!(
-                    %tenant_id,
-                    ?agents,
-                    "server link: reconcile exhausted retries"
-                );
             });
+        } else {
+            cleanup_link_reconcile_slot(key, slot);
         }
     });
     let _ = handle.await;
@@ -319,6 +345,7 @@ async fn apply_once(state: &NetworkState, tenant_id: ObjectId, agents: [ObjectId
                 Ok(None) => {}
                 Err(_) => ok = false,
             },
+            Err(roomler_ai_services::dao::base::DaoError::NotFound) => {}
             Err(_) => ok = false,
         }
     }

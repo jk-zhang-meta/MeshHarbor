@@ -1194,18 +1194,33 @@ static PUSH_TO_RETRY_GEN: std::sync::LazyLock<
     dashmap::DashMap<(ObjectId, ObjectId), std::sync::Arc<std::sync::atomic::AtomicU64>>,
 > = std::sync::LazyLock::new(dashmap::DashMap::new);
 
+fn cleanup_push_to_retry_gen(
+    key: (ObjectId, ObjectId),
+    cell: std::sync::Arc<std::sync::atomic::AtomicU64>,
+) {
+    drop(cell);
+    PUSH_TO_RETRY_GEN.remove_if(&key, |_, existing| {
+        std::sync::Arc::strong_count(existing) == 1
+    });
+}
+
 pub async fn push_to(state: &NetworkState, tenant_id: ObjectId, agent_id: ObjectId) {
+    let key = (tenant_id, agent_id);
     let cell = PUSH_TO_RETRY_GEN
-        .entry((tenant_id, agent_id))
+        .entry(key)
         .or_insert_with(|| std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)))
         .clone();
     let my_gen = cell.fetch_add(1, std::sync::atomic::Ordering::AcqRel) + 1;
     if !push_to_checked(state, tenant_id, agent_id).await {
         let retry_state = state.clone();
         tokio::spawn(async move {
-            for delay_ms in [200u64, 500, 1000, 2000] {
+            for delay_ms in [200u64, 500, 1000]
+                .into_iter()
+                .chain(std::iter::repeat(2000u64))
+            {
                 tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
                 if cell.load(std::sync::atomic::Ordering::Acquire) != my_gen {
+                    cleanup_push_to_retry_gen(key, cell);
                     return;
                 }
                 if push_to_checked(&retry_state, tenant_id, agent_id).await {
@@ -1214,26 +1229,26 @@ pub async fn push_to(state: &NetworkState, tenant_id: ObjectId, agent_id: Object
                         %agent_id,
                         "managed forward: push_to succeeded on retry"
                     );
+                    cleanup_push_to_retry_gen(key, cell);
                     return;
                 }
             }
-            tracing::error!(
-                %tenant_id,
-                %agent_id,
-                "managed forward: push_to exhausted retries"
-            );
         });
+    } else {
+        cleanup_push_to_retry_gen(key, cell);
     }
 }
 
 async fn push_to_checked(state: &NetworkState, tenant_id: ObjectId, agent_id: ObjectId) -> bool {
-    let Ok(agent) = state
+    let agent = match state
         .fleet
         .agents
         .find_live_in_tenant(tenant_id, agent_id)
         .await
-    else {
-        return true;
+    {
+        Ok(agent) => agent,
+        Err(roomler_ai_services::dao::base::DaoError::NotFound) => return true,
+        Err(_) => return false,
     };
     if !agent.capabilities.has_rpc(RpcCap::ManagedForward)
         || !state.fleet.rc_hub.is_agent_online(agent_id)

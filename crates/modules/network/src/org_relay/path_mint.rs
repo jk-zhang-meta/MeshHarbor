@@ -486,7 +486,9 @@ pub(super) async fn reauthorize(
     }
     match super::session_zone::check(state, session).await {
         super::session_zone::Decision::Fits => {}
-        super::session_zone::Decision::Uncertain => return Err(ReauthorizationError::Unavailable),
+        super::session_zone::Decision::Uncertain { .. } => {
+            return Err(ReauthorizationError::Unavailable);
+        }
         super::session_zone::Decision::Invalid => return Err(ReauthorizationError::Denied),
     }
     let fresh_a = state

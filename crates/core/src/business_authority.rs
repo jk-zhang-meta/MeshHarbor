@@ -239,14 +239,34 @@ impl ConnectionObservation {
 /// its source address. Written only after the row is persisted, and dropped
 /// when that connection's observation is closed.
 #[derive(Clone, Default)]
-pub struct LiveZones(std::sync::Arc<dashmap::DashMap<String, (DeviceIdentity, BusinessZone)>>);
+pub struct LiveZones {
+    map: std::sync::Arc<dashmap::DashMap<String, (DeviceIdentity, BusinessZone)>>,
+    generation: std::sync::Arc<std::sync::atomic::AtomicU64>,
+}
 
 impl LiveZones {
     fn get(&self, key: &str, device: &AuthenticatedDevice) -> Option<BusinessZone> {
-        self.0
+        self.map
             .get(key)
             .filter(|e| e.0 == device.identity)
             .map(|e| e.1)
+    }
+
+    fn insert(&self, key: String, value: (DeviceIdentity, BusinessZone)) {
+        self.map.insert(key, value);
+        self.generation
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+    }
+
+    fn remove(&self, key: &str) {
+        if self.map.remove(key).is_some() {
+            self.generation
+                .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        }
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.generation.load(std::sync::atomic::Ordering::Acquire)
     }
 }
 
@@ -492,7 +512,6 @@ pub async fn record_connection_observation(
         .filter(|_| row.is_current_for(device, connection_id, DateTime::now()))
     {
         core.business_zones
-            .0
             .insert(row.id.clone(), (device.identity.clone(), zone));
     }
     Ok(row)
@@ -555,7 +574,6 @@ pub async fn close_connection_observation(
         ));
     }
     core.business_zones
-        .0
         .remove(&observation_key(device, connection_id));
     let identity = bson::to_bson(&device.identity)
         .map_err(|_| ApiError::Internal("Device identity serialization failed".into()))?;
