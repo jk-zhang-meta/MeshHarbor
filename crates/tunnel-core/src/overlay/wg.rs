@@ -52,7 +52,7 @@ pub(crate) const WG_BUF: usize = 2048;
 
 /// WireGuard persistent-keepalive interval. Keeps a relayed/NAT mapping
 /// warm so a mostly-idle overlay link stays reachable.
-const KEEPALIVE_SECS: u16 = 25;
+pub(crate) const KEEPALIVE_SECS: u16 = 25;
 
 /// How often the timer task drives `update_timers` (handshake retries +
 /// keepalive scheduling). WG's own timers are second-granular; 250 ms
@@ -629,9 +629,17 @@ pub struct PeerStats {
     rx_ctr_hi: AtomicU64,
     rx_ctr_span: AtomicU64,
     rx_ctr_accepted: AtomicU64,
+    /// MeshHarbor B6 — per-peer on-demand dormancy state machine and wire
+    /// background/data traffic counters.
+    pub(crate) on_demand: super::on_demand::PeerOnDemand,
 }
 
 impl PeerStats {
+    #[inline]
+    pub(crate) fn has_local_hold(&self) -> bool {
+        self.standby.armed() || self.recovery_hold.load(Ordering::Relaxed) > mono_ms_now()
+    }
+
     /// Book one authenticated datagram toward the passive loss counters if it
     /// is a transport packet (type 4: data or keepalive, each one counter).
     /// Its receiver index names the session (counters restart with each), its
@@ -676,6 +684,12 @@ fn wg_epoch() -> Instant {
 /// Milliseconds of `wg_epoch()` elapsed — the `handshake_at` clock.
 fn mono_ms_now() -> u64 {
     wg_epoch().elapsed().as_millis() as u64
+}
+
+/// Nanoseconds of `wg_epoch()` elapsed — the high-resolution on-demand wakeup
+/// latency and idle-timeout clock.
+fn mono_ns_now() -> u64 {
+    wg_epoch().elapsed().as_nanos() as u64
 }
 
 /// P4 — min interval between reverse-path warnings for the SAME peer.
@@ -1160,21 +1174,39 @@ impl SendPeer {
         let mut buf = vec![0u8; WG_BUF];
         // rc.211 — encapsulate UNDER the lock, send AFTER releasing it (see
         // the timer tasks): never hold the Tunn lock across a carrier send.
-        let len = {
+        let (encap, just_woke) = {
             let mut t = self.tunn.lock().await;
-            encapsulate_into(&mut t, packet, &mut buf)
+            let just_woke = self
+                .stats
+                .on_demand
+                .prepare_outbound_under_lock(&mut t, mono_ns_now());
+            if just_woke {
+                self.stats.handshake.store(false, Ordering::Relaxed);
+            }
+            (
+                self.stats
+                    .on_demand
+                    .encapsulate_for_send(&mut t, packet, &mut buf, just_woke),
+                just_woke,
+            )
         };
-        match len {
-            Some(n) => {
+        match encap {
+            super::on_demand::OutboundEncap::SendWire(n) => {
                 self.stats.tx_attempted.fetch_add(1, Ordering::Relaxed);
                 let ok = send_wg_recorded(&self.carrier, &self.stats, &buf[..n]).await.is_ok();
                 if ok {
                     self.stats.tx.fetch_add(1, Ordering::Relaxed);
+                } else if just_woke && buf[0] == 1 {
+                    self.stats.on_demand.note_wake_init_send_failed();
                 }
                 self.stats.standby.copy(&buf[..n]);
                 ok
             }
-            None => false,
+            super::on_demand::OutboundEncap::QueuedForWake => {
+                self.stats.tx_attempted.fetch_add(1, Ordering::Relaxed);
+                true
+            }
+            super::on_demand::OutboundEncap::Dropped => false,
         }
     }
 
@@ -1199,33 +1231,61 @@ impl SendPeer {
         let mut wire: Vec<u8> = Vec::with_capacity(idxs.len() * WG_BUF);
         let mut lens: Vec<usize> = Vec::with_capacity(idxs.len());
         let mut control: Vec<Vec<u8>> = Vec::new();
+        let mut queued_for_wake: usize = 0;
+        let mut woke_on_batch = false;
         {
             let mut t = self.tunn.lock().await;
+            let mut just_woke = self
+                .stats
+                .on_demand
+                .prepare_outbound_under_lock(&mut t, mono_ns_now());
+            if just_woke {
+                woke_on_batch = true;
+                self.stats.handshake.store(false, Ordering::Relaxed);
+            }
             for &i in idxs {
                 let off = wire.len();
                 wire.resize(off + WG_BUF, 0);
-                match encapsulate_into(&mut t, &packets[i], &mut wire[off..]) {
+                match self.stats.on_demand.encapsulate_for_send(
+                    &mut t,
+                    &packets[i],
+                    &mut wire[off..],
+                    just_woke,
+                ) {
                     // Type 4 = transport data; anything else is a handshake step.
-                    Some(n) if wire[off] == 4 => {
+                    super::on_demand::OutboundEncap::SendWire(n) if wire[off] == 4 => {
+                        just_woke = false;
                         wire.truncate(off + n);
                         lens.push(n);
                     }
-                    Some(n) => {
+                    super::on_demand::OutboundEncap::SendWire(n) => {
+                        just_woke = false;
                         control.push(wire[off..off + n].to_vec());
                         wire.truncate(off);
                     }
-                    None => wire.truncate(off),
+                    super::on_demand::OutboundEncap::QueuedForWake => {
+                        just_woke = false;
+                        queued_for_wake += 1;
+                        wire.truncate(off);
+                    }
+                    super::on_demand::OutboundEncap::Dropped => {
+                        just_woke = false;
+                        wire.truncate(off);
+                    }
                 }
             }
         }
         let stats = &self.stats;
-        stats
-            .tx_attempted
-            .fetch_add((lens.len() + control.len()) as u64, Ordering::Relaxed);
+        stats.tx_attempted.fetch_add(
+            (lens.len() + control.len() + queued_for_wake) as u64,
+            Ordering::Relaxed,
+        );
         let mut sent = 0;
         for c in &control {
             if send_wg_recorded(&self.carrier, stats, c).await.is_ok() {
                 sent += 1;
+            } else if woke_on_batch && c.first() == Some(&1) {
+                stats.on_demand.note_wake_init_send_failed();
             }
         }
         let (sock, dst) = direct.expect("checked above");
@@ -1248,14 +1308,25 @@ impl SendPeer {
             let ok = if j - i == 1 {
                 send_wg_recorded(&self.carrier, stats, &wire[start..end]).await.is_ok()
             } else {
-                super::udp_batch::send_segments(sock, dst, &wire[start..end], seg).await.is_ok()
+                let gso_ok = super::udp_batch::send_segments(sock, dst, &wire[start..end], seg)
+                    .await
+                    .is_ok();
+                if gso_ok {
+                    stats
+                        .on_demand
+                        .record_wire_tx_data_batch((j - i) as u64, (end - start) as u64);
+                }
+                gso_ok
             };
             if ok {
                 sent += j - i;
             } else if j - i > 1 {
                 let mut off = start;
                 for &n in &lens[i..j] {
-                    if self.carrier.send(&wire[off..off + n]).await.is_ok() {
+                    if send_wg_recorded(&self.carrier, stats, &wire[off..off + n])
+                        .await
+                        .is_ok()
+                    {
                         sent += 1;
                     }
                     off += n;
@@ -1272,29 +1343,8 @@ impl SendPeer {
                 off += n;
             }
         }
-        sent
+        sent + queued_for_wake
     }
-}
-
-/// Encapsulate `packet` into the front of `out`; the datagram length when
-/// boringtun produced one (data, or a handshake initiation while no session
-/// exists). boringtun writes from the start of `out`; the copy covers any
-/// other layout so callers can always send `out[..n]`.
-fn encapsulate_into(t: &mut Tunn, packet: &[u8], out: &mut [u8]) -> Option<usize> {
-    let base = out.as_ptr() as usize;
-    let (off, n) = match t.encapsulate(packet, out) {
-        TunnResult::WriteToNetwork(b) => (b.as_ptr() as usize - base, b.len()),
-        TunnResult::Done => return None,
-        TunnResult::Err(e) => {
-            warn!(?e, "wg encapsulate error");
-            return None;
-        }
-        _ => return None,
-    };
-    if off != 0 {
-        out.copy_within(off..off + n, 0);
-    }
-    Some(n)
 }
 
 /// A candidate owns a private receive/timer/crypto session without changing
@@ -1406,6 +1456,8 @@ pub struct WgDevice {
     /// its receiver-index demux) and direct-session routes register THERE;
     /// the plane's recv loops replace this device's own source-keyed demux.
     plane: Option<super::carrier_plane::PlaneHandle>,
+    /// MeshHarbor B6 — device-wide on-demand pair tunneling configuration.
+    on_demand: super::on_demand::OnDemandConfig,
 }
 
 impl Drop for WgDevice {
@@ -1431,8 +1483,11 @@ impl WgDevice {
         let (disco_events_tx, disco_events_rx) = mpsc::channel(64);
         let (stun_events_tx, stun_events_rx) = mpsc::channel(16);
         let rpf = RpfMode::parse(crate::env::node_env("OVERLAY_RPF").as_deref());
+        let on_demand = super::on_demand::OnDemandConfig::from_env();
         tracing::info!(
             mode = rpf.as_str(),
+            on_demand_enabled = on_demand.enabled,
+            on_demand_idle_s = on_demand.idle_timeout.as_secs(),
             "overlay: reverse-path filtering (inbound source validation)"
         );
         (
@@ -1459,9 +1514,135 @@ impl WgDevice {
                 stun_events_rx: Some(stun_events_rx),
                 rpf,
                 plane: None,
+                on_demand,
             },
             tun_rx,
         )
+    }
+
+    /// MeshHarbor B6 — current on-demand pair tunneling configuration.
+    pub fn on_demand_config(&self) -> super::on_demand::OnDemandConfig {
+        self.on_demand
+    }
+
+    /// MeshHarbor B6 — configure or disable on-demand pair tunneling on this
+    /// device and propagate the configuration to all currently installed peers.
+    pub fn set_on_demand_config(&mut self, cfg: super::on_demand::OnDemandConfig) {
+        self.on_demand = cfg;
+        let now_ns = mono_ns_now();
+        let keys: Vec<[u8; 32]> = self.peers.keys().copied().collect();
+        for pk in keys {
+            let held = self.peer_has_external_hold(&pk);
+            if let Some(p) = self.peers.get(&pk) {
+                let effective_cfg = if p.stats.handshake.load(Ordering::Relaxed) {
+                    cfg.with_defer_initial_handshake(false)
+                } else {
+                    cfg
+                };
+                let defer = p.stats.on_demand.configure(
+                    effective_cfg,
+                    self.secret.clone(),
+                    held,
+                    now_ns,
+                );
+                if defer {
+                    p.stats.handshake.store(false, Ordering::Relaxed);
+                }
+            }
+        }
+    }
+
+    /// MeshHarbor B6 — whether any shadow probe, bilateral path trial, ORG
+    /// relay upgrade, unsettled DERP follow state, or ORG recovery hold is
+    /// currently active for `peer_public`.
+    pub(crate) fn peer_has_external_hold(&self, peer_public: &[u8; 32]) -> bool {
+        self.probes.contains_key(peer_public)
+            || self.org_upgrades.contains_key(peer_public)
+            || self
+                .derp_follow
+                .get(peer_public)
+                .is_some_and(|s| !s.capable || s.pending.is_some())
+            || self.org_recovery_held(peer_public)
+            || self.path_trials.values().any(|t| &t.public_key == peer_public)
+            || self
+                .path_trial_drains
+                .values()
+                .any(|(pk, _, _)| pk == peer_public)
+    }
+
+    fn sync_peer_on_demand_hold(&self, peer_public: &[u8; 32]) {
+        let held = self.peer_has_external_hold(peer_public);
+        if let Some(p) = self.peers.get(peer_public) {
+            p.stats.on_demand.set_external_hold(held, mono_ns_now());
+        }
+    }
+
+    fn sync_promoted_peer_on_demand(&self, peer_public: &[u8; 32]) {
+        let held = self.peer_has_external_hold(peer_public);
+        if let Some(p) = self.peers.get(peer_public) {
+            p.stats.on_demand.configure(
+                self.on_demand.with_defer_initial_handshake(false),
+                self.secret.clone(),
+                held,
+                mono_ns_now(),
+            );
+        }
+    }
+
+    /// MeshHarbor B6 — synchronize external hold state across all installed
+    /// peers (called by the runtime's carrier sweep).
+    pub fn tick_on_demand(&self) {
+        let now_ns = mono_ns_now();
+        for (pk, p) in &self.peers {
+            let held = self.peer_has_external_hold(pk);
+            p.stats.on_demand.set_external_hold(held, now_ns);
+        }
+    }
+
+    /// MeshHarbor B6 — whether `peer_public` is currently in
+    /// [`OnDemandPhase::Dormant`](super::on_demand::OnDemandPhase::Dormant).
+    pub fn peer_is_dormant(&self, peer_public: &[u8; 32]) -> Option<bool> {
+        Some(self.peers.get(peer_public)?.stats.on_demand.is_dormant())
+    }
+
+    /// MeshHarbor B6 — whether `peer_public` is currently in
+    /// `Dormant` or `Waking`.
+    pub fn peer_is_dormant_or_waking(&self, peer_public: &[u8; 32]) -> Option<bool> {
+        Some(
+            self.peers
+                .get(peer_public)?
+                .stats
+                .on_demand
+                .is_dormant_or_waking(),
+        )
+    }
+
+    /// MeshHarbor B6 — consume and return whether `peer_public` entered or
+    /// was in `Dormant` since the last health sweep.
+    pub(crate) fn take_peer_dormant_since_last_sweep(&self, peer_public: &[u8; 32]) -> bool {
+        self.peers
+            .get(peer_public)
+            .is_some_and(|p| p.stats.on_demand.take_dormant_since_last_sweep())
+    }
+
+    /// MeshHarbor B6 — current [`OnDemandPhase`](super::on_demand::OnDemandPhase)
+    /// of `peer_public`.
+    pub fn peer_on_demand_phase(
+        &self,
+        peer_public: &[u8; 32],
+    ) -> Option<super::on_demand::OnDemandPhase> {
+        Some(self.peers.get(peer_public)?.stats.on_demand.phase())
+    }
+
+    /// MeshHarbor B6 — full wire-traffic and on-demand state snapshot for
+    /// `peer_public`.
+    pub fn peer_on_demand_snapshot(
+        &self,
+        peer_public: &[u8; 32],
+    ) -> Option<super::on_demand::PeerOnDemandSnapshot> {
+        let p = self.peers.get(peer_public)?;
+        let local_hold = p.stats.has_local_hold() || self.peer_has_external_hold(peer_public);
+        Some(p.stats.on_demand.snapshot(local_hold))
     }
 
     /// Multi-org v2 — attach this device to the shared carrier plane. Must be
@@ -1759,18 +1940,21 @@ impl WgDevice {
     ) {
         self.cancel_org_upgrade(&peer_public);
         self.drop_org_floor_receiver(&peer_public);
+        let on_demand_cfg = self.on_demand;
         let peer = self.make_carrier_peer(
             peer_public,
             overlay_ip,
             carrier,
             initiate,
             self.disco_events_tx.clone(),
+            on_demand_cfg,
         );
         let (tunn, carrier, stats) = (peer.tunn.clone(), peer.carrier.clone(), peer.stats.clone());
         if let Some(old) = self.peers.insert(peer_public, peer) {
             self.unregister_plane_route(&old);
         }
         self.send_install(peer_public, overlay_ip, tunn, carrier, stats);
+        self.sync_peer_on_demand_hold(&peer_public);
         self.debug_assert_send_synced();
     }
 
@@ -1783,6 +1967,7 @@ impl WgDevice {
         carrier: Arc<Carrier>,
         initiate: bool,
         disco_sink: mpsc::Sender<super::disco::DiscoInbound>,
+        on_demand_cfg: super::on_demand::OnDemandConfig,
     ) -> Peer {
         let index = self.alloc_index();
 
@@ -1797,6 +1982,15 @@ impl WgDevice {
         let tunn = Arc::new(Mutex::new(tunn));
 
         let stats = Arc::new(PeerStats { recovery_hold: self.recovery_for(peer_public, overlay_ip), ..PeerStats::default() });
+        stats
+            .on_demand
+            .set_peer_identity(self.secret.clone(), peer_public, index);
+        let defer_init = stats.on_demand.configure(
+            on_demand_cfg,
+            self.secret.clone(),
+            self.peer_has_external_hold(&peer_public),
+            mono_ns_now(),
+        );
 
         // Multi-org v2 — register this session on the plane's receiver-index
         // demux even though it is NOT a direct install.
@@ -1951,7 +2145,7 @@ impl WgDevice {
             plane_idx: self.plane.as_ref().map(|_| index),
             direct_index: None,
         };
-        if initiate {
+        if initiate && !defer_init {
             let init_stats = stats.clone();
             tokio::spawn(async move {
                 let mut buf = vec![0u8; WG_BUF];
@@ -1982,6 +2176,16 @@ impl WgDevice {
             let mut tick = tokio::time::interval(Duration::from_millis(TIMER_TICK_MS));
             loop {
                 tick.tick().await;
+                let now_ns = mono_ns_now();
+                let local_hold = stats.has_local_hold();
+                if local_hold {
+                    stats.on_demand.note_hold_active(now_ns);
+                } else if stats.on_demand.is_dormant() {
+                    // MeshHarbor B6 — while `Dormant`, keep the peer's route,
+                    // carrier, and demux registrations in place, but do not
+                    // drive `Tunn::update_timers` (0 keepalives / 0 rekeys).
+                    continue;
+                }
                 // rc.211 — capture the handshake/keepalive bytes UNDER the
                 // lock, then RELEASE it before the carrier send. Holding the
                 // per-peer Tunn lock across `carrier.send().await` (a slow
@@ -1991,18 +2195,44 @@ impl WgDevice {
                 // UDP for ALL direct peers.
                 let out = {
                     let mut t = timer_tunn.lock().await;
-                    match t.update_timers(&mut buf) {
-                        TunnResult::WriteToNetwork(b) => Some(b.to_vec()),
-                        // boringtun gives up re-handshaking once a rekey
-                        // attempt expires and reports the session over. That
-                        // verdict is conclusive, and dropping it (as this arm
-                        // did) left the carrier to be rediscovered the slow
-                        // way, by the rx-staleness bound.
-                        TunnResult::Err(WireGuardError::ConnectionExpired) => {
-                            timer_carrier.mark_dead();
-                            None
+                    let now_ns = mono_ns_now();
+                    let local_hold = stats.has_local_hold();
+                    if local_hold {
+                        stats.on_demand.note_hold_active(now_ns);
+                    }
+                    stats.on_demand.sync_tunn_if_needed_under_lock(&mut t);
+                    if !local_hold && stats.on_demand.is_dormant() {
+                        None
+                    } else if !local_hold
+                        && stats
+                            .on_demand
+                            .try_enter_dormant_under_lock(local_hold, &mut t, now_ns)
+                    {
+                        stats.handshake.store(false, Ordering::Relaxed);
+                        None
+                    } else {
+                        match t.update_timers(&mut buf) {
+                            TunnResult::WriteToNetwork(b) => Some(b.to_vec()),
+                            // boringtun gives up re-handshaking once a rekey
+                            // attempt expires and reports the session over. That
+                            // verdict is conclusive, and dropping it (as this arm
+                            // did) left the carrier to be rediscovered the slow
+                            // way, by the rx-staleness bound.
+                            TunnResult::Err(WireGuardError::ConnectionExpired) => {
+                                if stats.on_demand.is_waking()
+                                    && stats.on_demand.waking_elapsed_ns(now_ns)
+                                        < super::on_demand::WAKING_CONNECTION_EXPIRED_GRACE_NS
+                                {
+                                    stats
+                                        .on_demand
+                                        .requeue_wake_packets_after_timer_reset(&mut t, &mut buf)
+                                } else {
+                                    timer_carrier.mark_dead();
+                                    None
+                                }
+                            }
+                            _ => None,
                         }
-                        _ => None,
                     }
                 };
                 if let Some(b) = out {
@@ -2026,11 +2256,17 @@ impl WgDevice {
         let incumbent_tunn = Arc::downgrade(&active.tunn);
         self.cancel_org_upgrade(&public);
         let mut candidate = self.make_carrier_peer(
-            public, ip, carrier, true, self.disco_events_tx.clone(),
+            public,
+            ip,
+            carrier,
+            true,
+            self.disco_events_tx.clone(),
+            super::on_demand::OnDemandConfig::disabled(),
         );
         candidate.stats.org_role.store(true, Ordering::Relaxed);
         Self::drive_initiator_proof(&mut candidate);
         self.org_upgrades.insert(public, OrgUpgradePeer { candidate, incumbent_tunn });
+        self.sync_peer_on_demand_hold(&public);
         true
     }
 
@@ -2076,6 +2312,7 @@ impl WgDevice {
             *p.stats.follow_init.lock().unwrap_or_else(|e|e.into_inner()) = None;
             *p.stats.follow_proof.lock().unwrap_or_else(|e|e.into_inner()) = None;
         }
+        self.sync_peer_on_demand_hold(public);
     }
 
     pub(crate) fn peer_relay_addrs(&self, public: &[u8; 32]) -> (Option<SocketAddr>, Option<SocketAddr>) {
@@ -2089,6 +2326,9 @@ impl WgDevice {
     /// capability exchange, challenge, late packet, or bad authentication.
     pub(crate) fn poll_derp_follow(&mut self, public: &[u8; 32]) -> bool {
         let Some(active) = self.peers.get(public) else { return false; };
+        if active.stats.on_demand.is_dormant() {
+            return false;
+        }
         let Some(floor) = self.org_floor_receivers.get(public) else { return false; };
         let Some(state) = self.derp_follow.get_mut(public) else { return false; };
         if !active.stats.org_role.load(Ordering::Relaxed)
@@ -2096,6 +2336,7 @@ impl WgDevice {
             || !std::sync::Weak::ptr_eq(&state.org, &Arc::downgrade(&active.tunn))
             || !std::sync::Weak::ptr_eq(&state.floor, &Arc::downgrade(&floor.tunn))
         { return false; }
+        let prev_hold = !state.capable || state.pending.is_some();
         if let Some(ack) = active.stats.follow_ack.lock().unwrap_or_else(|e|e.into_inner()).take()
             && state.hello.fresh() && state.hello.sent > 0
             && ack.kind == follow::Kind::HelloAck && ack.nonce == state.hello.nonce
@@ -2150,6 +2391,10 @@ impl WgDevice {
             round.sent += 1; round.last_sent = Some(Instant::now());
             emit(frame, floor.carrier.clone(), active.tunn.clone(), active.carrier.clone());
         }
+        let new_hold = !state.capable || state.pending.is_some();
+        if new_hold != prev_hold {
+            self.sync_peer_on_demand_hold(public);
+        }
         false
     }
 
@@ -2162,6 +2407,7 @@ impl WgDevice {
         let (ip, tunn, carrier, stats) = (floor.overlay_ip, floor.tunn.clone(), floor.carrier.clone(), floor.stats.clone());
         if let Some(old_org) = self.peers.insert(*public, floor) { self.unregister_plane_route(&old_org); }
         self.send_install(*public, ip, tunn, carrier, stats);
+        self.sync_promoted_peer_on_demand(public);
         self.debug_assert_send_synced();
         true
     }
@@ -2183,6 +2429,7 @@ impl WgDevice {
         if let Some(u) = self.org_upgrades.remove(public) {
             self.unregister_plane_route(&u.candidate);
         }
+        self.sync_peer_on_demand_hold(public);
     }
 
     fn drop_org_floor_receiver(&mut self, public: &[u8; 32]) {
@@ -2190,6 +2437,7 @@ impl WgDevice {
         if let Some(p) = self.org_floor_receivers.remove(public) {
             self.unregister_plane_route(&p);
         }
+        self.sync_peer_on_demand_hold(public);
     }
 
     pub(crate) fn promote_org_upgrade(&mut self, public: &[u8; 32]) -> bool {
@@ -2216,6 +2464,7 @@ impl WgDevice {
         }
         Self::send_install_locked(&mut locked, *public, ip, tunn, carrier, stats);
         drop(locked);
+        self.sync_promoted_peer_on_demand(public);
         self.debug_assert_send_synced();
         true
     }
@@ -2299,7 +2548,14 @@ impl WgDevice {
         }
         let incumbent_tunn = Arc::downgrade(&active.tunn);
         let (tx, pongs) = mpsc::channel(32);
-        let mut candidate = self.make_carrier_peer(public, ip, carrier, true, tx);
+        let mut candidate = self.make_carrier_peer(
+            public,
+            ip,
+            carrier,
+            true,
+            tx,
+            super::on_demand::OnDemandConfig::disabled(),
+        );
         Self::drive_initiator_proof(&mut candidate);
         self.path_trials.insert(
             trial,
@@ -2314,6 +2570,7 @@ impl WgDevice {
                 returned: false,
             },
         );
+        self.sync_peer_on_demand_hold(&public);
         true
     }
 
@@ -2439,7 +2696,17 @@ impl WgDevice {
             t.public_key,
             old.overlay_ip,
         );
-        let Some(fresh) = self.make_direct_peer(sock, public, ip, dst, true).await else {
+        let Some(fresh) = self
+            .make_direct_peer(
+                sock,
+                public,
+                ip,
+                dst,
+                true,
+                super::on_demand::OnDemandConfig::disabled(),
+            )
+            .await
+        else {
             return false;
         };
         let t = self
@@ -2519,6 +2786,7 @@ impl WgDevice {
         t.returned = true;
         let public = t.public_key;
         self.send_install(public, ip, tunn, carrier, stats);
+        self.sync_promoted_peer_on_demand(&public);
         self.debug_assert_send_synced();
         true
     }
@@ -2556,6 +2824,7 @@ impl WgDevice {
         t.returned = false;
         let public = t.public_key;
         self.send_install(public, ip, tunn, carrier, stats);
+        self.sync_promoted_peer_on_demand(&public);
         self.debug_assert_send_synced();
         true
     }
@@ -2571,9 +2840,11 @@ impl WgDevice {
             return false;
         }
         let mut t = self.path_trials.remove(&trial).unwrap();
+        let public = t.public_key;
         if let Some(relay) = t.incumbent.take() {
             self.unregister_plane_route(&relay);
         }
+        self.sync_peer_on_demand_hold(&public);
         true
     }
 
@@ -2628,6 +2899,7 @@ impl WgDevice {
         // DO NOT unregister/drop the incumbent. Its receive path must remain
         // valid while the other end is still prepared and sends over direct.
         self.send_install(public, ip, tunn, carrier, stats);
+        self.sync_promoted_peer_on_demand(&public);
         self.debug_assert_send_synced();
         true
     }
@@ -2704,6 +2976,7 @@ impl WgDevice {
         if let Some(p) = active {
             self.unregister_trial_owned(&p).await;
         }
+        self.sync_peer_on_demand_hold(&t.public_key);
         owned
     }
 
@@ -2730,6 +3003,7 @@ impl WgDevice {
             }
         }
         self.path_trial_drains.retain(|_, (p, _, _)| p != public);
+        self.sync_peer_on_demand_hold(public);
     }
 
     /// rc.134 — ensure the shared direct-LAN socket + its demux loop exist.
@@ -2867,8 +3141,9 @@ impl WgDevice {
     ) {
         self.cancel_org_upgrade(&peer_public);
         self.drop_org_floor_receiver(&peer_public);
+        let on_demand_cfg = self.on_demand;
         if let Some(peer) = self
-            .make_direct_peer(sock, peer_public, overlay_ip, dst, initiate)
+            .make_direct_peer(sock, peer_public, overlay_ip, dst, initiate, on_demand_cfg)
             .await
         {
             let (tunn, carrier, stats) =
@@ -2877,6 +3152,7 @@ impl WgDevice {
                 self.unregister_plane_route(&old);
             }
             self.send_install(peer_public, overlay_ip, tunn, carrier, stats);
+            self.sync_peer_on_demand_hold(&peer_public);
             self.debug_assert_send_synced();
         }
     }
@@ -2886,6 +3162,7 @@ impl WgDevice {
     /// Shared by [`add_direct_peer`] (installs into the routing `peers` map) and
     /// [`start_direct_probe`] (installs into the shadow `probes` map). `None` if
     /// the direct demux hasn't been set up — `ensure_direct_demux` must precede.
+    #[allow(clippy::too_many_arguments)]
     async fn make_direct_peer(
         &mut self,
         sock: Arc<UdpSocket>,
@@ -2893,6 +3170,7 @@ impl WgDevice {
         overlay_ip: Ipv4Addr,
         dst: SocketAddr,
         initiate: bool,
+        on_demand_cfg: super::on_demand::OnDemandConfig,
     ) -> Option<Peer> {
         if self.plane.is_none() && self.direct.is_none() {
             warn!("wg: make_direct_peer before ensure_direct_demux; ignoring");
@@ -2913,6 +3191,15 @@ impl WgDevice {
         )));
 
         let stats = Arc::new(PeerStats { recovery_hold: self.recovery_for(peer_public, overlay_ip), ..PeerStats::default() });
+        stats
+            .on_demand
+            .set_peer_identity(self.secret.clone(), peer_public, index);
+        let defer_init = stats.on_demand.configure(
+            on_demand_cfg,
+            self.secret.clone(),
+            self.peer_has_external_hold(&peer_public),
+            mono_ns_now(),
+        );
         let ingress = self.ingress_for(peer_public, stats.clone());
         // Register for demux BEFORE the handshake so inbound is routed —
         // on the plane by session index (unique across every attached
@@ -2949,44 +3236,9 @@ impl WgDevice {
 
         // Timer task only — no recv task; the shared demux loop delivers
         // this peer's inbound.
-        let timer_tunn = tunn.clone();
-        let timer_carrier = carrier.clone();
-        let timer_stats = stats.clone();
-        let timer_task = tokio::spawn(async move {
-            let mut buf = vec![0u8; WG_BUF];
-            let mut tick = tokio::time::interval(Duration::from_millis(TIMER_TICK_MS));
-            loop {
-                tick.tick().await;
-                // rc.211 — capture the handshake/keepalive bytes UNDER the
-                // lock, then RELEASE it before the carrier send. Holding the
-                // per-peer Tunn lock across `carrier.send().await` (a slow
-                // relay/QUIC send under churn) stalls every other task that
-                // needs the same Tunn — including the SHARED direct recv loop,
-                // which then stops reading the socket and the OS drops inbound
-                // UDP for ALL direct peers.
-                let out = {
-                    let mut t = timer_tunn.lock().await;
-                    match t.update_timers(&mut buf) {
-                        TunnResult::WriteToNetwork(b) => Some(b.to_vec()),
-                        // boringtun gives up re-handshaking once a rekey
-                        // attempt expires and reports the session over. That
-                        // verdict is conclusive, and dropping it (as this arm
-                        // did) left the carrier to be rediscovered the slow
-                        // way, by the rx-staleness bound.
-                        TunnResult::Err(WireGuardError::ConnectionExpired) => {
-                            timer_carrier.mark_dead();
-                            None
-                        }
-                        _ => None,
-                    }
-                };
-                if let Some(b) = out {
-                    let _ = send_wg_recorded(&timer_carrier, &timer_stats, &b).await;
-                }
-            }
-        });
+        let timer_task = Self::spawn_carrier_timer(tunn.clone(), carrier.clone(), stats.clone());
 
-        if initiate {
+        if initiate && !defer_init {
             let it = tunn.clone();
             let ic = carrier.clone();
             let init_stats = stats.clone();
@@ -3041,12 +3293,20 @@ impl WgDevice {
     ) {
         self.drop_direct_probe(&peer_public).await;
         if let Some(peer) = self
-            .make_direct_peer(sock, peer_public, overlay_ip, dst, initiate)
+            .make_direct_peer(
+                sock,
+                peer_public,
+                overlay_ip,
+                dst,
+                initiate,
+                super::on_demand::OnDemandConfig::disabled(),
+            )
             .await
         {
             // Deliberately NOT added to the router — routing stays on the active
             // (relay) peer in `peers` until this probe is promoted.
             self.probes.insert(peer_public, peer);
+            self.sync_peer_on_demand_hold(&peer_public);
         }
     }
 
@@ -3115,6 +3375,7 @@ impl WgDevice {
             // P1 (S6) — swap the pump's view atomically: the whole triple
             // replaces the old one under a single write lock.
             self.send_install(*peer_public, overlay_ip, tunn, carrier, stats);
+            self.sync_promoted_peer_on_demand(peer_public);
             self.debug_assert_send_synced();
             true
         } else {
@@ -3130,6 +3391,7 @@ impl WgDevice {
         if let Some(probe) = self.probes.remove(peer_public) {
             self.unregister_direct(&probe).await;
         }
+        self.sync_peer_on_demand_hold(peer_public);
     }
 
     /// Did an MBB upgrade probe hear ANYTHING back from the far end?
@@ -3417,7 +3679,11 @@ impl WgDevice {
         let Some(p) = self.peers.get(peer_public) else {
             return false;
         };
+        let armed = mux.is_some();
         p.stats.standby.set(mux.map(|m| (m, *peer_public)));
+        if armed {
+            p.stats.on_demand.note_hold_active(mono_ns_now());
+        }
         true
     }
 
@@ -3562,14 +3828,21 @@ impl WgDevice {
         let Some(p) = self.peers.get(peer_public) else {
             return false;
         };
+        if p.stats.on_demand.is_dormant() {
+            return false;
+        }
         let (tunn, carrier, stats) = (p.tunn.clone(), p.carrier.clone(), p.stats.clone());
         tokio::spawn(async move {
             let mut buf = vec![0u8; WG_BUF];
             let out = {
                 let mut t = tunn.lock().await;
-                match t.format_handshake_initiation(&mut buf, true) {
-                    TunnResult::WriteToNetwork(b) => Some(b.to_vec()),
-                    _ => None,
+                if stats.on_demand.is_dormant() {
+                    None
+                } else {
+                    match t.format_handshake_initiation(&mut buf, true) {
+                        TunnResult::WriteToNetwork(b) => Some(b.to_vec()),
+                        _ => None,
+                    }
                 }
             };
             if let Some(b) = out {
@@ -3638,11 +3911,14 @@ impl WgDevice {
 
 async fn send_wg_recorded(carrier: &Arc<Carrier>, stats: &PeerStats, bytes: &[u8]) -> io::Result<usize> {
     let n = carrier.send(bytes).await?;
-    if n == bytes.len() && let Some(digest) = follow::init_digest(bytes) {
-        let mut sent = stats.sent_inits.lock().unwrap_or_else(|e|e.into_inner());
-        if !sent.contains(&digest) {
-            if sent.len() == 4 { sent.pop_front(); }
-            sent.push_back(digest);
+    if n == bytes.len() {
+        stats.on_demand.record_wire_tx(&bytes[..n]);
+        if let Some(digest) = follow::init_digest(bytes) {
+            let mut sent = stats.sent_inits.lock().unwrap_or_else(|e|e.into_inner());
+            if !sent.contains(&digest) {
+                if sent.len() == 4 { sent.pop_front(); }
+                sent.push_back(digest);
+            }
         }
     }
     Ok(n)
@@ -3688,6 +3964,10 @@ pub(crate) fn decap_standby(t: &mut Tunn, datagram: &[u8], ingress: &Ingress) ->
     if datagram.len() < 16 || datagram[..4] != [4, 0, 0, 0] {
         return None;
     }
+    ingress
+        .stats
+        .on_demand
+        .prepare_inbound_while_dormant_under_lock(t, false);
     let mut out = vec![0u8; WG_BUF];
     let (src, pkt) = match t.decapsulate(None, datagram, &mut out) {
         TunnResult::WriteToTunnelV4(pkt, src) => (IpAddr::V4(src), pkt),
@@ -3699,6 +3979,7 @@ pub(crate) fn decap_standby(t: &mut Tunn, datagram: &[u8], ingress: &Ingress) ->
     if !ingress.permits(src, pkt) {
         return None;
     }
+    ingress.stats.on_demand.on_inbound_business_packet(mono_ns_now());
     let (at, len) = (pkt.as_ptr() as usize, pkt.len());
     let span = (at - out.as_ptr() as usize, len);
     Some(into_packet(out, span))
@@ -3713,6 +3994,11 @@ pub(crate) fn decap_inbound(
 ) -> (bool, Option<Vec<u8>>) {
     let stats = &ingress.stats;
     let mut delivered = None;
+    let is_handshake_init = n >= 4 && buf[0] == 1 && buf[1..4] == [0, 0, 0];
+    let is_handshake_resp = n >= 4 && buf[0] == 2 && buf[1..4] == [0, 0, 0];
+    stats
+        .on_demand
+        .prepare_inbound_while_dormant_under_lock(t, is_handshake_init);
     // Decapsulate writes into a separate scratch buffer so the borrow on
     // the result doesn't alias the inbound `buf`.
     let mut out = vec![0u8; WG_BUF];
@@ -3723,6 +4009,7 @@ pub(crate) fn decap_inbound(
         *stats.follow_init.lock().unwrap_or_else(|e|e.into_inner()) = Some((digest, Instant::now()));
     }
     let authenticated = n > 0 && !matches!(res, TunnResult::Err(_));
+    let now_ns = mono_ns_now();
     // rc.206 — a non-empty inbound datagram that passed WG decapsulation (data, a
     // handshake step, OR a content-free persistent-keepalive → `Done`) proves we
     // HEARD from this peer: the liveness signal the health sweep keys rx-staleness
@@ -3734,13 +4021,15 @@ pub(crate) fn decap_inbound(
     if authenticated {
         stats.rx_any.fetch_add(1, Ordering::Relaxed);
         stats.note_rx_counter(&buf[..n]);
+        stats.on_demand.record_wire_rx(&buf[..n]);
         // #22 — a HANDSHAKE INITIATION (type 1) from the peer: counted so
         // the sweep can spot re-init PRESSURE (a ~5 s retry cadence means
         // the peer cannot hear our responses — see `PeerStats::reinit_seen`).
         // boringtun authenticated it (mac1/cookie), so a spoofed flood
         // cannot bump this.
-        if n >= 4 && buf[0] == 1 && buf[1..4] == [0, 0, 0] {
+        if is_handshake_init {
             stats.reinit_seen.fetch_add(1, Ordering::Relaxed);
+            stats.on_demand.on_inbound_handshake_init(now_ns);
         }
         // Stage 2 — a HANDSHAKE RESPONSE (type 2) that decapsulated without
         // error means a handshake WE initiated just completed: boringtun only
@@ -3749,12 +4038,46 @@ pub(crate) fn decap_inbound(
         // the round-trip evidence the active-revalidation poke waits for.
         // (boringtun rejects any size ≠ 92 or crypto/state mismatch as `Err`,
         // so the byte-shape check alone can't be spoofed into a stamp.)
-        if n >= 4 && buf[0] == 2 && buf[1..4] == [0, 0, 0] {
+        if is_handshake_resp {
             stats
                 .hs_response_at
                 .store(mono_ms_now().max(1), Ordering::Relaxed);
         }
     }
+    let flush_waking_responder_queue = |t: &mut Tunn| {
+        if authenticated && stats.on_demand.is_waking() && t.time_since_last_handshake().is_some() {
+            let mut outs: Vec<Vec<u8>> = Vec::new();
+            loop {
+                let mut flush = vec![0u8; WG_BUF];
+                match t.decapsulate(None, &[], &mut flush) {
+                    TunnResult::WriteToNetwork(b2) => outs.push(b2.to_vec()),
+                    _ => break,
+                }
+            }
+            let flushed_data = outs
+                .iter()
+                .filter(|frame| super::on_demand::is_wg_transport_data_frame(frame))
+                .count() as u64;
+            let extra_tx = stats
+                .on_demand
+                .on_inbound_handshake_response(now_ns, flushed_data);
+            if extra_tx > 0 {
+                stats.tx.fetch_add(extra_tx, Ordering::Relaxed);
+            }
+            if !outs.is_empty() {
+                let c = carrier.clone();
+                let send_stats = stats.clone();
+                tokio::spawn(async move {
+                    for b in outs {
+                        if super::on_demand::is_wg_transport_data_frame(&b) {
+                            send_stats.standby.copy(&b);
+                        }
+                        let _ = send_wg_recorded(&c, &send_stats, &b).await;
+                    }
+                });
+            }
+        }
+    };
     match res {
         TunnResult::WriteToNetwork(b) => {
             // rc.211 — collect the handshake response + any flushed follow-ups
@@ -3767,17 +4090,40 @@ pub(crate) fn decap_inbound(
             // recv loop stopped reading the socket and the OS dropped inbound
             // UDP for every direct peer.
             let mut outs: Vec<Vec<u8>> = vec![b.to_vec()];
-            loop {
-                let mut flush = vec![0u8; WG_BUF];
-                match t.decapsulate(None, &[], &mut flush) {
-                    TunnResult::WriteToNetwork(b2) => outs.push(b2.to_vec()),
-                    _ => break,
+            // Only drain `t.decapsulate(None, &[], ...)` when a session is
+            // established (`time_since_last_handshake().is_some()`): on an
+            // inbound `HandshakeInit` before the responder session is promoted,
+            // calling `decapsulate(None, &[], ...)` would pop a queued packet,
+            // format a competing `HandshakeInit` (clobbering the responder's
+            // `HandshakeCreated` state), and re-queue the packet out of order.
+            if t.time_since_last_handshake().is_some() {
+                loop {
+                    let mut flush = vec![0u8; WG_BUF];
+                    match t.decapsulate(None, &[], &mut flush) {
+                        TunnResult::WriteToNetwork(b2) => outs.push(b2.to_vec()),
+                        _ => break,
+                    }
+                }
+            }
+            if authenticated && is_handshake_resp {
+                let flushed_data = outs
+                    .iter()
+                    .filter(|frame| super::on_demand::is_wg_transport_data_frame(frame))
+                    .count() as u64;
+                let extra_tx = stats
+                    .on_demand
+                    .on_inbound_handshake_response(now_ns, flushed_data);
+                if extra_tx > 0 {
+                    stats.tx.fetch_add(extra_tx, Ordering::Relaxed);
                 }
             }
             let c = carrier.clone();
             let send_stats = stats.clone();
             tokio::spawn(async move {
                 for b in outs {
+                    if super::on_demand::is_wg_transport_data_frame(&b) {
+                        send_stats.standby.copy(&b);
+                    }
                     let _ = send_wg_recorded(&c, &send_stats, &b).await;
                 }
             });
@@ -3788,22 +4134,31 @@ pub(crate) fn decap_inbound(
         // enforced on ingress. It was discarded until P4, which is what let any
         // peer with a live session write an arbitrary source into our TUN.
         TunnResult::WriteToTunnelV4(pkt, src) => {
+            flush_waking_responder_queue(t);
             if ingress.permits(IpAddr::V4(src), pkt) {
                 stats.rx.fetch_add(1, Ordering::Relaxed);
+                stats.on_demand.on_inbound_business_packet(now_ns);
                 let (at, len) = (pkt.as_ptr() as usize, pkt.len());
                 let span = (at - out.as_ptr() as usize, len);
                 delivered = Some(into_packet(out, span));
             }
         }
         TunnResult::WriteToTunnelV6(pkt, src) => {
+            flush_waking_responder_queue(t);
             if ingress.permits(IpAddr::V6(src), pkt) {
                 stats.rx.fetch_add(1, Ordering::Relaxed);
+                stats.on_demand.on_inbound_business_packet(now_ns);
                 let (at, len) = (pkt.as_ptr() as usize, pkt.len());
                 let span = (at - out.as_ptr() as usize, len);
                 delivered = Some(into_packet(out, span));
             }
         }
-        TunnResult::Done => {}
+        TunnResult::Done => {
+            if authenticated && is_handshake_resp {
+                let _ = stats.on_demand.on_inbound_handshake_response(now_ns, 0);
+            }
+            flush_waking_responder_queue(t);
+        }
         TunnResult::Err(e) => debug!(?e, "wg decapsulate error"),
     }
     // Phase C — latch "handshake completed" the moment this peer's session is
@@ -5071,7 +5426,10 @@ mod tests {
         let mut wire = vec![0u8; WG_BUF];
         let n = {
             let mut t = dev_a.peers[&pk_b].tunn.lock().await;
-            encapsulate_into(&mut t, &pkt, &mut wire).expect("a session exists")
+            match t.encapsulate(&pkt, &mut wire) {
+                TunnResult::WriteToNetwork(b) => b.len(),
+                other => panic!("expected WriteToNetwork, got {other:?}"),
+            }
         };
         assert_eq!(wire[0], 4, "WG data");
         let rx_before = dev_b.peers[&pk_a].stats.rx.load(Ordering::Relaxed);
@@ -6931,5 +7289,390 @@ mod tests {
             cpu / (bytes as f64 * 8.0 / 1e9).max(1e-9),
         );
         drop((dev_a, dev_b));
+    }
+
+    // -----------------------------------------------------------------------
+    // MeshHarbor B6 — On-demand pair tunneling (`按需pair隧道`)
+    // -----------------------------------------------------------------------
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn b6_idle_background_traffic_baseline_and_deferred_initial_dormancy() {
+        // 1. Classic always-on baseline (`OnDemandConfig::disabled()`):
+        //    Installing a pair immediately emits a 148-byte Type 1 Handshake
+        //    Initiation + 92-byte Type 2 Handshake Response + 32-byte Type 4
+        //    empty keepalive (272 bytes total across the pair) with 0 business
+        //    IP packets sent.
+        let a = WgKeypair::generate();
+        let b = WgKeypair::generate();
+        let pk_a = a.public.to_bytes();
+        let pk_b = b.public.to_bytes();
+        let sock_a = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let sock_b = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let (addr_a, addr_b) = (sock_a.local_addr().unwrap(), sock_b.local_addr().unwrap());
+
+        let (mut classic_a, _rx_a) = WgDevice::new(a.secret.clone());
+        let (mut classic_b, _rx_b) = WgDevice::new(b.secret.clone());
+        assert!(!classic_a.on_demand_config().enabled);
+        classic_a.add_peer(pk_b, IP_B, Carrier::direct(sock_a, addr_b), true);
+        classic_b.add_peer(pk_a, IP_A, Carrier::direct(sock_b, addr_a), false);
+        wait_connected(&classic_a, &pk_b).await;
+        wait_connected(&classic_b, &pk_a).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let snap_classic_a = classic_a.peer_on_demand_snapshot(&pk_b).unwrap();
+        let snap_classic_b = classic_b.peer_on_demand_snapshot(&pk_a).unwrap();
+        assert_eq!(snap_classic_a.phase, super::super::on_demand::OnDemandPhase::Disabled);
+        assert!(
+            snap_classic_a.background_tx_packets >= 1
+                && snap_classic_a.background_tx_bytes >= 148,
+            "classic initiator must emit at least the 148-byte Handshake Initiation at install: {snap_classic_a:?}"
+        );
+        assert!(
+            snap_classic_b.background_tx_packets >= 1
+                && snap_classic_b.background_tx_bytes >= 92,
+            "classic responder must emit at least the 92-byte Handshake Response at install: {snap_classic_b:?}"
+        );
+        assert_eq!(classic_a.peer_traffic(&pk_b), Some((0, 0)));
+        drop((classic_a, classic_b));
+
+        // 2. On-demand pair (`OnDemandConfig::enabled(...)`):
+        //    Installing a pair starts both ends in `OnDemandPhase::Dormant` with
+        //    ZERO wire packets and ZERO background bytes across multiple 250 ms
+        //    timer ticks, while routes remain installed.
+        let sock_od_a = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let sock_od_b = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let (od_addr_a, od_addr_b) = (
+            sock_od_a.local_addr().unwrap(),
+            sock_od_b.local_addr().unwrap(),
+        );
+        let (mut od_a, _od_rx_a) = WgDevice::new(a.secret.clone());
+        let (mut od_b, _od_rx_b) = WgDevice::new(b.secret.clone());
+        let cfg = super::super::on_demand::OnDemandConfig::enabled(Duration::from_millis(300));
+        od_a.set_on_demand_config(cfg);
+        od_b.set_on_demand_config(cfg);
+
+        od_a.ensure_direct_demux(sock_od_a.clone());
+        od_b.ensure_direct_demux(sock_od_b.clone());
+        od_a.add_direct_peer(sock_od_a, pk_b, IP_B, od_addr_b, true)
+            .await;
+        od_b.add_direct_peer(sock_od_b, pk_a, IP_A, od_addr_a, true)
+            .await;
+
+        assert_eq!(od_a.test_route(&IP_B), Some(pk_b), "cryptokey route must stay installed while Dormant");
+        assert_eq!(od_b.test_route(&IP_A), Some(pk_a));
+        assert_eq!(
+            od_a.peer_on_demand_phase(&pk_b),
+            Some(super::super::on_demand::OnDemandPhase::Dormant)
+        );
+        assert_eq!(
+            od_b.peer_on_demand_phase(&pk_a),
+            Some(super::super::on_demand::OnDemandPhase::Dormant)
+        );
+
+        // Wait across >2 timer ticks (600 ms) and verify 0 wire packets / 0 bytes.
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        let snap_od_a = od_a.peer_on_demand_snapshot(&pk_b).unwrap();
+        let snap_od_b = od_b.peer_on_demand_snapshot(&pk_a).unwrap();
+        assert_eq!(snap_od_a.phase, super::super::on_demand::OnDemandPhase::Dormant);
+        assert_eq!(snap_od_b.phase, super::super::on_demand::OnDemandPhase::Dormant);
+        assert_eq!(snap_od_a.wire_tx_packets, 0, "Dormant peer must emit 0 wire packets");
+        assert_eq!(snap_od_a.wire_tx_bytes, 0, "Dormant peer must emit 0 wire bytes");
+        assert_eq!(snap_od_a.background_tx_packets, 0);
+        assert_eq!(snap_od_a.background_tx_bytes, 0);
+        assert_eq!(snap_od_b.wire_tx_packets, 0);
+        assert_eq!(snap_od_b.wire_tx_bytes, 0);
+        assert!(!od_a.is_connected(&pk_b).await);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn b6_on_demand_direct_wake_and_idle_retirement_zero_packet_loss() {
+        let a = WgKeypair::generate();
+        let b = WgKeypair::generate();
+        let pk_a = a.public.to_bytes();
+        let pk_b = b.public.to_bytes();
+        let sock_a = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let sock_b = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let (addr_a, addr_b) = (sock_a.local_addr().unwrap(), sock_b.local_addr().unwrap());
+
+        let (mut dev_a, mut rx_a) = WgDevice::new(a.secret.clone());
+        let (mut dev_b, mut rx_b) = WgDevice::new(b.secret.clone());
+        let cfg = super::super::on_demand::OnDemandConfig::enabled(Duration::from_millis(350));
+        dev_a.set_on_demand_config(cfg);
+        dev_b.set_on_demand_config(cfg);
+
+        dev_a.ensure_direct_demux(sock_a.clone());
+        dev_b.ensure_direct_demux(sock_b.clone());
+        dev_a
+            .add_direct_peer(sock_a, pk_b, IP_B, addr_b, true)
+            .await;
+        dev_b
+            .add_direct_peer(sock_b, pk_a, IP_A, addr_a, true)
+            .await;
+
+        assert_eq!(dev_a.peer_is_dormant(&pk_b), Some(true));
+        assert_eq!(dev_b.peer_is_dormant(&pk_a), Some(true));
+
+        // 1. First-packet burst wakeup from initial `Dormant` state:
+        //    Send a 5-packet burst back-to-back while `Dormant`. All 5 packets
+        //    must be queued and flushed in FIFO order upon Handshake Response
+        //    with ZERO packet loss.
+        let burst: Vec<Vec<u8>> = (0..5u8)
+            .map(|i| synthetic_ipv4(IP_A, IP_B, &[b'w', b'a', b'k', b'e', i]))
+            .collect();
+        let sent = dev_a.send_ip_batch(&burst).await;
+        assert_eq!(sent, burst.len(), "all packets in the wake burst must be accepted");
+
+        for expected in &burst {
+            let got = tokio::time::timeout(Duration::from_secs(2), rx_b.recv())
+                .await
+                .expect("burst packet must arrive after on-demand wake")
+                .unwrap();
+            assert_eq!(&got, expected, "FIFO delivery with zero packet loss on wake");
+        }
+
+        let snap_a1 = dev_a.peer_on_demand_snapshot(&pk_b).unwrap();
+        let snap_b1 = dev_b.peer_on_demand_snapshot(&pk_a).unwrap();
+        assert_eq!(snap_a1.phase, super::super::on_demand::OnDemandPhase::Active);
+        assert_eq!(snap_b1.phase, super::super::on_demand::OnDemandPhase::Active);
+        assert_eq!(snap_a1.outbound_wake_count, 1);
+        assert_eq!(snap_a1.wake_count, 1);
+        assert_eq!(snap_a1.queued_on_wake_packets, 5);
+        assert_eq!(snap_a1.flushed_on_wake_packets, 5);
+        assert!(
+            snap_a1.last_wake_latency.is_some_and(|d| !d.is_zero() && d < Duration::from_secs(1)),
+            "first-packet wake establishment latency must be quantified: {:?}",
+            snap_a1.last_wake_latency
+        );
+        assert_eq!(snap_b1.inbound_wake_count, 1);
+        assert_eq!(dev_a.peer_traffic(&pk_b), Some((5, 0)));
+        assert_eq!(dev_b.peer_traffic(&pk_a), Some((0, 5)));
+
+        // 2. Idle retirement (`Active -> Dormant`):
+        //    Wait past `idle_timeout` (350 ms) + one 250 ms timer tick. Both
+        //    peers must transition to `Dormant` in-place without dropping routes
+        //    or carrier registrations, and background traffic must freeze at 0.
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while dev_a.peer_is_dormant(&pk_b) != Some(true)
+                || dev_b.peer_is_dormant(&pk_a) != Some(true)
+            {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .expect("peers must transition from Active to Dormant after idle_timeout");
+
+        let snap_dormant = dev_a.peer_on_demand_snapshot(&pk_b).unwrap();
+        assert_eq!(snap_dormant.phase, super::super::on_demand::OnDemandPhase::Dormant);
+        assert_eq!(snap_dormant.dormant_transitions, 1);
+        assert_eq!(dev_a.test_route(&IP_B), Some(pk_b), "route preserved across Dormant transition");
+
+        // Verify zero wire emissions while `Dormant`.
+        tokio::time::sleep(Duration::from_millis(550)).await;
+        let snap_dormant_after = dev_a.peer_on_demand_snapshot(&pk_b).unwrap();
+        assert_eq!(
+            snap_dormant_after.wire_tx_packets,
+            snap_dormant.wire_tx_packets,
+            "zero wire packets emitted while Dormant"
+        );
+        assert_eq!(
+            snap_dormant_after.background_tx_bytes,
+            snap_dormant.background_tx_bytes,
+            "zero background bytes emitted while Dormant"
+        );
+
+        // 3. Re-wakeup from post-idle `Dormant` in the reverse direction (`B -> A`):
+        //    `dev_b` clears its stale `Tunn` sessions via `set_static_private`
+        //    (preserving its peer index and TAI64N replay watermark), initiates a
+        //    fresh handshake, and delivers the triggering packet to `dev_a` with
+        //    zero loss.
+        let reply = synthetic_ipv4(IP_B, IP_A, b"reverse-wake-after-idle");
+        assert!(dev_b.send_ip_packet(&reply).await);
+        let got_reply = tokio::time::timeout(Duration::from_secs(2), rx_a.recv())
+            .await
+            .expect("reverse wake packet must arrive with zero loss")
+            .unwrap();
+        assert_eq!(got_reply, reply);
+
+        let snap_b2 = dev_b.peer_on_demand_snapshot(&pk_a).unwrap();
+        let snap_a2 = dev_a.peer_on_demand_snapshot(&pk_b).unwrap();
+        assert_eq!(snap_b2.phase, super::super::on_demand::OnDemandPhase::Active);
+        assert_eq!(snap_a2.phase, super::super::on_demand::OnDemandPhase::Active);
+        assert_eq!(snap_b2.outbound_wake_count, 1);
+        assert_eq!(snap_b2.flushed_on_wake_packets, 1);
+        assert!(snap_b2.last_wake_latency.is_some());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn b6_on_demand_relay_carrier_wake_and_hold_coordination() {
+        use crate::transport::relay::UdpRelayConn;
+        // Verify on-demand wake and idle retirement over a `Carrier::Relay`
+        // pair, and verify that active holds (direct upgrade probe, bilateral
+        // path trial, and global disable) prevent premature dormancy.
+        let a = WgKeypair::generate();
+        let b = WgKeypair::generate();
+        let pk_a = a.public.to_bytes();
+        let pk_b = b.public.to_bytes();
+
+        let relay_sock_a = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let relay_sock_b = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let (ra_addr, rb_addr) = (
+            relay_sock_a.local_addr().unwrap(),
+            relay_sock_b.local_addr().unwrap(),
+        );
+
+        let (mut dev_a, _rx_a) = WgDevice::new(a.secret.clone());
+        let (mut dev_b, mut rx_b) = WgDevice::new(b.secret.clone());
+        let cfg = super::super::on_demand::OnDemandConfig::enabled(Duration::from_millis(300));
+        dev_a.set_on_demand_config(cfg);
+        dev_b.set_on_demand_config(cfg);
+
+        dev_a.add_peer(
+            pk_b,
+            IP_B,
+            Carrier::relay(Arc::new(UdpRelayConn(relay_sock_a)), rb_addr),
+            true,
+        );
+        dev_b.add_peer(
+            pk_a,
+            IP_A,
+            Carrier::relay(Arc::new(UdpRelayConn(relay_sock_b)), ra_addr),
+            false,
+        );
+
+        assert_eq!(dev_a.peer_is_dormant(&pk_b), Some(true));
+        assert_eq!(dev_b.peer_is_dormant(&pk_a), Some(true));
+
+        // First packet over Relay wakes the pair with 0 packet loss.
+        let pkt1 = synthetic_ipv4(IP_A, IP_B, b"relay-on-demand-first-packet");
+        assert!(dev_a.send_ip_packet(&pkt1).await);
+        let got1 = tokio::time::timeout(Duration::from_secs(2), rx_b.recv())
+            .await
+            .expect("relay on-demand wake packet must arrive")
+            .unwrap();
+        assert_eq!(got1, pkt1);
+        assert_eq!(dev_a.peer_is_dormant(&pk_b), Some(false));
+
+        // Start a shadow direct upgrade probe on `dev_a`: this places an
+        // external hold on `pk_b`, preventing `dev_a` from entering `Dormant`
+        // even after `idle_timeout` (300 ms) elapses.
+        let direct_sock_a = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let blackhole = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        dev_a.ensure_direct_demux(direct_sock_a.clone());
+        dev_a
+            .start_direct_probe(
+                direct_sock_a,
+                pk_b,
+                IP_B,
+                blackhole.local_addr().unwrap(),
+                false,
+            )
+            .await;
+        assert!(dev_a.peer_on_demand_snapshot(&pk_b).unwrap().held);
+
+        tokio::time::sleep(Duration::from_millis(650)).await;
+        assert_eq!(
+            dev_a.peer_is_dormant(&pk_b),
+            Some(false),
+            "active direct upgrade probe must hold the incumbent peer out of Dormant"
+        );
+
+        // Drop the shadow probe -> hold clears -> peer retires to `Dormant` on
+        // the next timer tick after `idle_timeout`.
+        dev_a.drop_direct_probe(&pk_b).await;
+        assert!(!dev_a.peer_on_demand_snapshot(&pk_b).unwrap().held);
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while dev_a.peer_is_dormant(&pk_b) != Some(true) {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .expect("peer must enter Dormant once the upgrade probe hold is dropped");
+
+        // Disabling on-demand globally transitions the peer to `Disabled`.
+        dev_a.set_on_demand_config(super::super::on_demand::OnDemandConfig::disabled());
+        assert_eq!(
+            dev_a.peer_on_demand_phase(&pk_b),
+            Some(super::super::on_demand::OnDemandPhase::Disabled)
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn b6_on_demand_simultaneous_wake_standby_sink_and_poke_preserve_dormancy() {
+        let a = WgKeypair::generate();
+        let b = WgKeypair::generate();
+        let pk_a = a.public.to_bytes();
+        let pk_b = b.public.to_bytes();
+        let sock_a = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let sock_b = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let (addr_a, addr_b) = (sock_a.local_addr().unwrap(), sock_b.local_addr().unwrap());
+
+        let (mut dev_a, mut rx_a) = WgDevice::new(a.secret.clone());
+        let (mut dev_b, mut rx_b) = WgDevice::new(b.secret.clone());
+        let cfg = super::super::on_demand::OnDemandConfig::enabled(Duration::from_millis(350));
+        dev_a.set_on_demand_config(cfg);
+        dev_b.set_on_demand_config(cfg);
+
+        dev_a.ensure_direct_demux(sock_a.clone());
+        dev_b.ensure_direct_demux(sock_b.clone());
+        dev_a
+            .add_direct_peer(sock_a, pk_b, IP_B, addr_b, true)
+            .await;
+        dev_b
+            .add_direct_peer(sock_b, pk_a, IP_A, addr_a, true)
+            .await;
+
+        // 1. Attaching a standby sink (as `OverlayRuntime::sweep_standby` does
+        //    for every direct peer) must NOT count as a hold or wake `Dormant`.
+        let (_st_tx_a, st_rx_a) = mpsc::channel(8);
+        let (_st_tx_b, st_rx_b) = mpsc::channel(8);
+        assert!(dev_a.attach_standby_sink(&pk_b, st_rx_a));
+        assert!(dev_b.attach_standby_sink(&pk_a, st_rx_b));
+        assert!(!dev_a.peer_on_demand_snapshot(&pk_b).unwrap().held);
+        assert_eq!(dev_a.peer_is_dormant(&pk_b), Some(true));
+        assert_eq!(dev_b.peer_is_dormant(&pk_a), Some(true));
+
+        // 2. Simultaneous wake: both `dev_a` and `dev_b` send 3-packet bursts
+        //    concurrently while `Dormant`. Even if both sides enter `Waking`
+        //    simultaneously and cross `HandshakeInit`s on the wire, all 3
+        //    packets in each direction must arrive in FIFO order with 0 loss.
+        let burst_ab: Vec<Vec<u8>> = (0..3u8)
+            .map(|i| synthetic_ipv4(IP_A, IP_B, &[b'a', b'2', b'b', i]))
+            .collect();
+        let burst_ba: Vec<Vec<u8>> = (0..3u8)
+            .map(|i| synthetic_ipv4(IP_B, IP_A, &[b'b', b'2', b'a', i]))
+            .collect();
+        let (sent_ab, sent_ba) =
+            tokio::join!(dev_a.send_ip_batch(&burst_ab), dev_b.send_ip_batch(&burst_ba));
+        assert_eq!(sent_ab, 3);
+        assert_eq!(sent_ba, 3);
+
+        for expected in &burst_ab {
+            let got = tokio::time::timeout(Duration::from_secs(2), rx_b.recv())
+                .await
+                .expect("A->B simultaneous wake packet must arrive")
+                .unwrap();
+            assert_eq!(&got, expected, "A->B FIFO order preserved on simultaneous wake");
+        }
+        for expected in &burst_ba {
+            let got = tokio::time::timeout(Duration::from_secs(2), rx_a.recv())
+                .await
+                .expect("B->A simultaneous wake packet must arrive")
+                .unwrap();
+            assert_eq!(&got, expected, "B->A FIFO order preserved on simultaneous wake");
+        }
+
+        // 3. Background `poke_handshake` (silence/rekey) while `Active` must NOT
+        //    refresh `last_business_ns` or block `Active -> Dormant` retirement.
+        tokio::time::sleep(Duration::from_millis(120)).await;
+        assert!(dev_a.poke_handshake(&pk_b));
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while dev_a.peer_is_dormant(&pk_b) != Some(true)
+                || dev_b.peer_is_dormant(&pk_a) != Some(true)
+            {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .expect("poke_handshake while Active must not prevent idle retirement to Dormant");
     }
 }
