@@ -353,10 +353,13 @@ impl OverlayRuntime {
         by_node: &mut HashMap<ObjectId, Installed>,
         samples: &mut HashMap<ObjectId, BusinessTrafficSample>,
     ) {
+        wg.tick_on_demand();
         samples.retain(|nid, _| by_node.contains_key(nid));
         let now = Instant::now();
         for (nid, e) in by_node.iter_mut() {
-            if !e.is_direct || !wg.peer_handshake_done(&e.pubkey).unwrap_or(false)
+            if wg.peer_is_dormant_or_waking(&e.pubkey) == Some(true)
+                || !e.is_direct
+                || !wg.peer_handshake_done(&e.pubkey).unwrap_or(false)
                 || now.saturating_duration_since(e.since) < crate::overlay::lifecycle::DIRECT_GRACE
             {
                 samples.remove(nid);
@@ -439,6 +442,9 @@ impl OverlayRuntime {
             if !wg.has_standby_sink(&e.pubkey) {
                 wg.attach_standby_sink(&e.pubkey, mux.standby_route(e.pubkey));
             }
+            if wg.peer_is_dormant(&e.pubkey) == Some(true) {
+                continue;
+            }
             let last = standby.entry(e.pubkey).or_insert(None);
             if last.is_none_or(|t| now.saturating_duration_since(t) >= STANDBY_HELLO_EVERY) {
                 let frame = crate::overlay::disco::standby_hello(
@@ -487,6 +493,7 @@ impl OverlayRuntime {
         force_poke: ForcedPoke,
     ) -> bool {
         let now = Instant::now();
+        wg.tick_on_demand();
         let mut carrier_lost = false;
         // P3 PR-A — the shadow monitor consumes the same env read the legacy
         // escalation table does, at the same moment.
@@ -537,6 +544,29 @@ impl OverlayRuntime {
             let Some(handshake_done) = wg.peer_handshake_done(&e.pubkey) else {
                 continue;
             };
+            let hard_dead = wg.peer_carrier_dead(&e.pubkey).unwrap_or(false)
+                || (e.relay_kind == Some(RelayKind::Org)
+                    && relay.as_ref().is_some_and(|r| !r.holds_org_session(nid)));
+            // MeshHarbor B6 — while a peer is intentionally `Dormant` or `Waking`
+            // (or was `Dormant` at any point since the previous health sweep, and
+            // its carrier is not `hard_dead`), periodic keepalives and handshake
+            // timers are suspended or re-establishing by design. Keep its liveness
+            // clocks fresh and skip `carrier_tick` / `should_poke` while `Dormant`
+            // or `Waking` so `sweep_carrier_health` never convicts or tears down a
+            // dormant or waking peer (`不反复拆建`).
+            let was_dormant = wg.take_peer_dormant_since_last_sweep(&e.pubkey);
+            let dormant_or_waking = wg.peer_is_dormant_or_waking(&e.pubkey) == Some(true);
+            if (dormant_or_waking || was_dormant) && !hard_dead {
+                e.last_rx_at = now;
+                e.since = now;
+                e.bad_sweeps = 0;
+                e.stalled = false;
+                e.hs_done = handshake_done;
+                e.poke = None;
+                if dormant_or_waking {
+                    continue;
+                }
+            }
             // Stage 2 — settle any pending active-revalidation poke: answered
             // iff an INITIATOR-role handshake completed at-or-after the poke
             // instant (the only signal that proves OUR outbound works — see
@@ -572,9 +602,7 @@ impl OverlayRuntime {
                 // An ORG carrier lives only as long as its session: once the
                 // server revoked it (or it expired), it is dead before any
                 // send trips the latch.
-                hard_dead: wg.peer_carrier_dead(&e.pubkey).unwrap_or(false)
-                    || (e.relay_kind == Some(RelayKind::Org)
-                        && relay.as_ref().is_some_and(|r| !r.holds_org_session(nid))),
+                hard_dead,
                 handshake_done,
                 since_install: e.since.elapsed(),
                 since_last_rx,
@@ -1476,6 +1504,11 @@ impl OverlayRuntime {
             {
                 continue;
             }
+            if let Some((_, pk, _, _)) = installed
+                && wg.peer_is_dormant(&pk) == Some(true)
+            {
+                continue;
+            }
             // P3 PR-A — the shadow monitor's answer to the SAME question this
             // walk is about to answer, computed up-front; every decision exit
             // below records the legacy outcome against it (`record`). Legacy
@@ -1559,6 +1592,10 @@ impl OverlayRuntime {
             };
             match installed {
                 Some((true, pk, tier, inst_dst)) => {
+                    if wg.peer_is_dormant(&pk) == Some(true) {
+                        record("install_peers:keep_direct", path::PathAction::Keep);
+                        continue;
+                    }
                     // D10 — a zombie srflx punch (installed but never handshook)
                     // whose advertised srflx has since CHANGED: re-dial the fresh
                     // mapping NOW, without booking a strike (the old dst is
@@ -1737,6 +1774,10 @@ impl OverlayRuntime {
                     continue; // already direct (LAN / public / srflx)
                 }
                 Some((false, pk, _, _)) => {
+                    if wg.peer_is_dormant(&pk) == Some(true) {
+                        record("install_peers:upgrade", path::PathAction::Keep);
+                        continue;
+                    }
                     // Installed on RELAY — upgrade to the best available direct
                     // tier now that an endpoint has appeared: LAN > public-NIC >
                     // srflx punch.
@@ -2029,6 +2070,7 @@ impl OverlayRuntime {
                         // server DERP pin still wins, as it does on the walk.
                         if make_before_break
                             && crate::overlay::direct::birth_lan_probe_enabled()
+                            && wg.peer_is_dormant(&cfg.public_key) != Some(true)
                             && !wg.has_direct_probe(&cfg.public_key)
                             && !self
                                 .shadow(|s| s.mon.forced_derp_active(&np.node_id, now))
@@ -2072,7 +2114,10 @@ impl OverlayRuntime {
                     // nothing else is dialable (airgapped pure-LAN mesh — a
                     // wrong guess costs nothing there) and when MBB is
                     // env-disabled.
+                    let defer_on_demand = wg.on_demand_config().enabled
+                        && wg.on_demand_config().defer_initial_handshake;
                     let lan_probe_first = make_before_break
+                        && !defer_on_demand
                         && direct_dst.is_some()
                         && (phase_a_dst.is_some() || srflx_dst.is_some() || relay.is_some());
                     let mut lan_probing = false;
@@ -3715,5 +3760,91 @@ mod tests {
         p.backbone_only = true;
         let line = resolve_direct_candidates(Some(&c), &p, CandidateRotation::default());
         assert!(line.lan.is_none() && line.public.is_none() && line.srflx.is_none());
+    }
+
+    struct NoopTun;
+    #[async_trait::async_trait]
+    impl TunIo for NoopTun {
+        async fn read_packet(&self) -> std::io::Result<Vec<u8>> {
+            std::future::pending().await
+        }
+        async fn write_packet(&self, _: &[u8]) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// MeshHarbor B6 — a `Dormant` peer must never be convicted or poked by
+    /// `sweep_carrier_health` or `scout_business_traffic` (`不反复拆建`), even
+    /// when `since` and `last_rx_at` are artificially aged past every
+    /// `HandshakeDeadline` and `RxStale` threshold; yet a `hard_dead` carrier
+    /// is still reaped immediately.
+    #[tokio::test]
+    async fn b6_dormant_peer_survives_carrier_health_sweep_without_teardown_or_poke() {
+        let kp = WgKeypair::generate();
+        let peer_kp = WgKeypair::generate();
+        let pk = peer_kp.public.to_bytes();
+        let nid = ObjectId::new();
+        let ip = Ipv4Addr::new(100, 64, 9, 9);
+
+        let (tx, _rx) = mpsc::channel(16);
+        let tun: Arc<dyn TunIo> = Arc::new(NoopTun);
+        let tf: TunFactory = {
+            let t = tun.clone();
+            Box::new(move |_, _, _| Ok(t.clone()))
+        };
+        let rt = OverlayRuntime::new_relay(kp.clone(), tx, tf, 1280);
+
+        let (mut wg, _tun_rx) = WgDevice::new(kp.secret.clone());
+        wg.set_on_demand_config(crate::overlay::on_demand::OnDemandConfig::enabled(
+            Duration::from_millis(200),
+        ));
+
+        let sock = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let dst_sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let dst = dst_sock.local_addr().unwrap();
+        wg.ensure_direct_demux(sock.clone());
+        wg.add_direct_peer(sock, pk, ip, dst, true).await;
+        assert_eq!(wg.peer_is_dormant(&pk), Some(true));
+
+        let ancient = Instant::now() - Duration::from_secs(600);
+        let mut inst = Installed::base(pk, ip, DirectTier::Lan, ancient);
+        inst.last_rx_at = ancient;
+        inst.bad_sweeps = 2;
+        inst.poke = Some(PokeArm {
+            at: ancient,
+            from_major: true,
+            from_business: true,
+        });
+        let mut by_node = HashMap::from([(nid, inst)]);
+        let mut relay = None;
+        let mut cooldown = HashMap::new();
+        let current_peers = HashMap::new();
+        let mut samples = HashMap::new();
+
+        rt.scout_business_traffic(&mut wg, &mut by_node, &mut samples);
+        assert!(samples.is_empty(), "dormant peer is skipped by business scout");
+
+        let lost = rt
+            .sweep_carrier_health(
+                &mut wg,
+                &mut by_node,
+                &mut relay,
+                &tun,
+                &mut cooldown,
+                &current_peers,
+                ForcedPoke::Major,
+            )
+            .await;
+        assert!(!lost, "dormant peer must not be convicted by sweep_carrier_health");
+        assert!(by_node.contains_key(&nid), "dormant peer stays installed");
+        let e = &by_node[&nid];
+        assert_eq!(e.bad_sweeps, 0);
+        assert!(!e.stalled);
+        assert!(e.poke.is_none(), "stale poke cleared while dormant");
+        assert_eq!(
+            wg.peer_on_demand_snapshot(&pk).unwrap().wire_tx_packets,
+            0,
+            "sweep_carrier_health must not emit any poke packet on a dormant peer"
+        );
     }
 }
