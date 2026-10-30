@@ -84,6 +84,7 @@ const KIND_RESP: u8 = 2;
 const KIND_REJECT: u8 = 3;
 const KIND_CONFIRM: u8 = 4;
 const KIND_ACK: u8 = 5;
+const KIND_FRAG: u8 = 6;
 
 const REJECT_MODE_OFF: u8 = 1;
 const REJECT_INVALID_KEY: u8 = 2;
@@ -106,6 +107,19 @@ pub(crate) const REJECT_FRAME_LEN: usize = REJECT_HEADER_LEN + MAC_LEN; // 99
 
 const CONFIRM_HEADER_LEN: usize = 8 + 1 + 1 + 8 + NONCE_LEN + NONCE_LEN + PUBKEY_LEN; // 82
 pub(crate) const CONFIRM_FRAME_LEN: usize = CONFIRM_HEADER_LEN + MAC_LEN; // 114
+
+/// Header layout of a `KIND_FRAG` datagram:
+/// `MAGIC (8) + KIND_FRAG (1) + inner_kind (1) + frag_idx (1) + frag_total (1) + epoch (8) + msg_nonce (16) + sender_pub (32) = 68 B`.
+const FRAG_HEADER_LEN: usize = 8 + 1 + 1 + 1 + 1 + 8 + NONCE_LEN + PUBKEY_LEN; // 68
+/// Maximum payload carried in a single `KIND_FRAG` datagram (`<= 580 B`),
+/// keeping the entire wire datagram (`68 + 580 + 32 = 680 B`) strictly under
+/// 700 B so `KIND_INIT` (1282 B) and `KIND_RESP` (1202 B) traverse 1280 B IPv6
+/// minimum-MTU, PPPoE, and double-encapsulated tunnel/relay paths without IP
+/// fragmentation or DF drops.
+pub(crate) const MAX_FRAG_PAYLOAD: usize = 580;
+pub(crate) const MAX_WIRE_CONTROL_FRAME_LEN: usize = FRAG_HEADER_LEN + MAX_FRAG_PAYLOAD + MAC_LEN; // 680
+const MAX_FRAG_TOTAL: u8 = 4;
+const MAX_REASSEMBLY_SLOTS: usize = 4;
 
 const MAX_PENDING_RESP: usize = 4;
 const DEFAULT_REKEY_INTERVAL: Duration = Duration::from_secs(120);
@@ -139,7 +153,11 @@ impl PqPskMode {
             || v.eq_ignore_ascii_case("no")
         {
             Self::Off
-        } else if v.eq_ignore_ascii_case("optional") || v.eq_ignore_ascii_case("opt") {
+        } else if v.eq_ignore_ascii_case("optional")
+            || v.eq_ignore_ascii_case("opt")
+            || v.eq_ignore_ascii_case("preferred")
+            || v.eq_ignore_ascii_case("prefer")
+        {
             Self::Optional
         } else if v.eq_ignore_ascii_case("1")
             || v.eq_ignore_ascii_case("true")
@@ -252,14 +270,16 @@ pub(crate) fn is_pq_psk_shaped(pkt: &[u8]) -> bool {
     if pkt.len() < 9 || &pkt[..8] != MAGIC.as_slice() {
         return false;
     }
-    matches!(
-        (pkt[8], pkt.len()),
-        (KIND_INIT, INIT_FRAME_LEN)
-            | (KIND_RESP, RESP_FRAME_LEN)
-            | (KIND_REJECT, REJECT_FRAME_LEN)
-            | (KIND_CONFIRM, CONFIRM_FRAME_LEN)
-            | (KIND_ACK, CONFIRM_FRAME_LEN)
-    )
+    match pkt[8] {
+        KIND_INIT => pkt.len() == INIT_FRAME_LEN,
+        KIND_RESP => pkt.len() == RESP_FRAME_LEN,
+        KIND_REJECT => pkt.len() == REJECT_FRAME_LEN,
+        KIND_CONFIRM | KIND_ACK => pkt.len() == CONFIRM_FRAME_LEN,
+        KIND_FRAG => {
+            pkt.len() > FRAG_HEADER_LEN + MAC_LEN && pkt.len() <= MAX_WIRE_CONTROL_FRAME_LEN
+        }
+        _ => false,
+    }
 }
 
 /// Extract the sender's claimed static public key before verifying the MAC.
@@ -271,6 +291,7 @@ pub(crate) fn claimed_sender(pkt: &[u8]) -> Option<[u8; 32]> {
         KIND_INIT => 8 + 1 + 1 + 8 + NONCE_LEN,
         KIND_RESP | KIND_CONFIRM | KIND_ACK => 8 + 1 + 1 + 8 + NONCE_LEN + NONCE_LEN,
         KIND_REJECT => 8 + 1 + 1 + 8 + NONCE_LEN + 1,
+        KIND_FRAG => 8 + 1 + 1 + 1 + 1 + 8 + NONCE_LEN,
         _ => return None,
     };
     pkt.get(off..off + PUBKEY_LEN)?.try_into().ok()
@@ -463,6 +484,14 @@ struct CommittedAckCache {
     ack_frame: Vec<u8>,
 }
 
+struct FragReassemblySlot {
+    inner_kind: u8,
+    epoch: u64,
+    msg_nonce: [u8; 16],
+    frag_total: u8,
+    chunks: Vec<Option<Vec<u8>>>,
+}
+
 struct PqPeerInner {
     config: PqPskConfig,
     status: PqPeerStatus,
@@ -475,6 +504,7 @@ struct PqPeerInner {
     pending_confirm: Option<PendingConfirm>,
     pending_packets: VecDeque<Vec<u8>>,
     committed_init_nonces: VecDeque<[u8; NONCE_LEN]>,
+    frag_reassembly: VecDeque<FragReassemblySlot>,
     last_ack: Option<CommittedAckCache>,
     rotations_completed: u64,
     mismatch_count: u64,
@@ -517,12 +547,10 @@ impl fmt::Debug for PqPeerInner {
 /// reference cycle and dropping `Peer` immediately releases `Tunn`.
 pub(crate) struct PqPeerHandle {
     mode: PqPskMode,
-    self_secret: StaticSecret,
     self_public: [u8; 32],
     peer_public: [u8; 32],
     auth_key: [u8; 32],
     tunn_index: u32,
-    keepalive_secs: Option<u16>,
     tunn: std::sync::Weak<Mutex<Tunn>>,
     carrier: std::sync::Weak<Carrier>,
     stats: std::sync::Weak<PeerStats>,
@@ -572,7 +600,7 @@ impl PqPeerHandle {
         self_public: [u8; 32],
         peer_public: [u8; 32],
         tunn_index: u32,
-        keepalive_secs: Option<u16>,
+        _keepalive_secs: Option<u16>,
         tunn: Arc<Mutex<Tunn>>,
         carrier: Arc<Carrier>,
         stats: Arc<PeerStats>,
@@ -589,12 +617,10 @@ impl PqPeerHandle {
             .store(guard_active, Ordering::Release);
         Arc::new(Self {
             mode,
-            self_secret,
             self_public,
             peer_public,
             auth_key,
             tunn_index,
-            keepalive_secs,
             tunn: Arc::downgrade(&tunn),
             carrier: Arc::downgrade(&carrier),
             stats: Arc::downgrade(&stats),
@@ -610,6 +636,7 @@ impl PqPeerHandle {
                 pending_confirm: None,
                 pending_packets: VecDeque::new(),
                 committed_init_nonces: VecDeque::new(),
+                frag_reassembly: VecDeque::new(),
                 last_ack: None,
                 rotations_completed: 0,
                 mismatch_count: 0,
@@ -695,7 +722,7 @@ impl PqPeerHandle {
         if let Some(bytes) = frame
             && let Some(carrier) = self.carrier.upgrade()
         {
-            let _ = carrier.send_disco(&bytes).await;
+            self.send_control_frame(&carrier, &bytes).await;
             true
         } else {
             false
@@ -720,7 +747,7 @@ impl PqPeerHandle {
         if let Some(bytes) = frame
             && let Some(carrier) = self.carrier.upgrade()
         {
-            let _ = carrier.send_disco(&bytes).await;
+            self.send_control_frame(&carrier, &bytes).await;
             true
         } else {
             false
@@ -778,11 +805,19 @@ impl PqPeerHandle {
                             conf.last_sent = Instant::now();
                             to_send = Some(conf.confirm_frame.clone());
                         } else {
+                            let failed_epoch = conf.epoch;
                             g.pending_confirm = None;
                             g.failed_exchanges = g.failed_exchanges.saturating_add(1);
                             if g.established_at.is_none() {
                                 g.status = PqPeerStatus::ExchangeFailed;
                             }
+                            warn!(
+                                peer = %short_hex(&self.peer_public),
+                                epoch = failed_epoch,
+                                stage = "confirm",
+                                failed_exchanges = g.failed_exchanges,
+                                "overlay pq-psk: exchange confirmation timed out after max retries"
+                            );
                         }
                     }
                 } else if let Some(init) = g.pending_init.as_mut() {
@@ -792,11 +827,19 @@ impl PqPeerHandle {
                             init.last_sent = Instant::now();
                             to_send = Some(init.frame.clone());
                         } else {
+                            let failed_epoch = init.epoch;
                             g.pending_init = None;
                             g.failed_exchanges = g.failed_exchanges.saturating_add(1);
                             if g.established_at.is_none() {
                                 g.status = PqPeerStatus::ExchangeFailed;
                             }
+                            warn!(
+                                peer = %short_hex(&self.peer_public),
+                                epoch = failed_epoch,
+                                stage = "init",
+                                failed_exchanges = g.failed_exchanges,
+                                "overlay pq-psk: exchange initiation timed out after max retries"
+                            );
                         }
                     }
                 } else if let Some(est_at) = g.established_at {
@@ -829,7 +872,56 @@ impl PqPeerHandle {
         if let Some(bytes) = to_send
             && let Some(carrier) = self.carrier.upgrade()
         {
-            let _ = carrier.send_disco(&bytes).await;
+            self.send_control_frame(&carrier, &bytes).await;
+        }
+    }
+
+    /// Split any oversized `RMPQPSK1` frame (`KIND_INIT` 1282 B, `KIND_RESP` 1202 B)
+    /// into authenticated `KIND_FRAG` datagrams (`<= 680 B` each) so every wire
+    /// packet fits comfortably inside a 1280 B IPv6/tunnel MTU even with UDP,
+    /// IPv6, TURN, or DERP headers. Small control frames (`KIND_CONFIRM`,
+    /// `KIND_ACK`, `KIND_REJECT`, all `<= 114 B`) are returned as a single frame.
+    pub(crate) fn fragment_control_frame(&self, frame: &[u8]) -> Vec<Vec<u8>> {
+        if frame.len() <= MAX_WIRE_CONTROL_FRAME_LEN {
+            return vec![frame.to_vec()];
+        }
+        let inner_kind = frame[8];
+        let epoch_bytes = &frame[10..18];
+        let msg_nonce = match inner_kind {
+            KIND_INIT => &frame[18..34],
+            KIND_RESP => &frame[34..50],
+            _ => return vec![frame.to_vec()],
+        };
+        let chunks: Vec<&[u8]> = frame.chunks(MAX_FRAG_PAYLOAD).collect();
+        let frag_total = chunks.len() as u8;
+        debug_assert!((2..=MAX_FRAG_TOTAL).contains(&frag_total));
+
+        let mut out = Vec::with_capacity(chunks.len());
+        for (idx, chunk) in chunks.into_iter().enumerate() {
+            let mut pkt = Vec::with_capacity(FRAG_HEADER_LEN + chunk.len() + MAC_LEN);
+            pkt.extend_from_slice(MAGIC);
+            pkt.push(KIND_FRAG);
+            pkt.push(inner_kind);
+            pkt.push(idx as u8);
+            pkt.push(frag_total);
+            pkt.extend_from_slice(epoch_bytes);
+            pkt.extend_from_slice(msg_nonce);
+            pkt.extend_from_slice(&self.self_public);
+            pkt.extend_from_slice(chunk);
+            let mac = compute_mac(
+                &self.auth_key,
+                &[b"meshharbor-pqpsk-v1-frag", pkt.as_slice()],
+            );
+            pkt.extend_from_slice(&mac);
+            debug_assert!(pkt.len() <= MAX_WIRE_CONTROL_FRAME_LEN);
+            out.push(pkt);
+        }
+        out
+    }
+
+    async fn send_control_frame(&self, carrier: &Arc<Carrier>, frame: &[u8]) {
+        for pkt in self.fragment_control_frame(frame) {
+            let _ = carrier.send_disco(&pkt).await;
         }
     }
 
@@ -896,9 +988,121 @@ impl PqPeerHandle {
         match pkt[8] {
             KIND_INIT => self.on_init(pkt, reply_carrier).await,
             KIND_RESP => self.on_resp(pkt, reply_carrier).await,
-            KIND_REJECT => self.on_reject(pkt).await,
+            KIND_REJECT => self.on_reject(pkt, reply_carrier).await,
             KIND_CONFIRM => self.on_confirm(pkt, reply_carrier).await,
             KIND_ACK => self.on_ack(pkt, reply_carrier).await,
+            KIND_FRAG => self.on_frag(pkt, reply_carrier).await,
+            _ => {}
+        }
+    }
+
+    async fn on_frag(&self, pkt: &[u8], reply_carrier: &Arc<Carrier>) {
+        if pkt.len() <= FRAG_HEADER_LEN + MAC_LEN || pkt.len() > MAX_WIRE_CONTROL_FRAME_LEN {
+            return;
+        }
+        let inner_kind = pkt[9];
+        let frag_idx = pkt[10];
+        let frag_total = pkt[11];
+        if !matches!(inner_kind, KIND_INIT | KIND_RESP)
+            || !(2..=MAX_FRAG_TOTAL).contains(&frag_total)
+            || frag_idx >= frag_total
+        {
+            return;
+        }
+        let epoch = u64::from_be_bytes(pkt[12..20].try_into().expect("len"));
+        if epoch == 0 {
+            return;
+        }
+        let msg_nonce: [u8; 16] = pkt[20..36].try_into().expect("len");
+        let body = &pkt[..pkt.len() - MAC_LEN];
+        let mac_bytes: [u8; 32] = pkt[pkt.len() - MAC_LEN..].try_into().expect("len");
+        // Authenticate the individual fragment before locking or allocating in
+        // `frag_reassembly` so unauthenticated packets cannot consume memory.
+        if !verify_mac(
+            &self.auth_key,
+            &[b"meshharbor-pqpsk-v1-frag", body],
+            &mac_bytes,
+        ) {
+            return;
+        }
+        let chunk = &pkt[FRAG_HEADER_LEN..pkt.len() - MAC_LEN];
+
+        let reassembled = {
+            let mut g = self.inner.lock().await;
+            if g.config.mode == PqPskMode::Off && inner_kind != KIND_INIT {
+                return;
+            }
+            if inner_kind == KIND_INIT {
+                if g.committed_init_nonces.contains(&msg_nonce)
+                    || (epoch <= g.current_epoch && epoch != 1)
+                {
+                    return;
+                }
+            } else if inner_kind == KIND_RESP {
+                let matches_pending_init = g.pending_init.as_ref().is_some_and(|p| epoch >= p.epoch);
+                let matches_pending_confirm = g
+                    .pending_confirm
+                    .as_ref()
+                    .is_some_and(|c| c.epoch == epoch && c.resp_nonce == msg_nonce);
+                if epoch <= g.current_epoch || (!matches_pending_init && !matches_pending_confirm) {
+                    return;
+                }
+            }
+            let pos = g.frag_reassembly.iter().position(|s| {
+                s.inner_kind == inner_kind
+                    && s.epoch == epoch
+                    && s.msg_nonce == msg_nonce
+                    && s.frag_total == frag_total
+            });
+            let idx = if let Some(p) = pos {
+                p
+            } else {
+                if g.frag_reassembly.len() >= MAX_REASSEMBLY_SLOTS {
+                    g.frag_reassembly.pop_front();
+                }
+                g.frag_reassembly.push_back(FragReassemblySlot {
+                    inner_kind,
+                    epoch,
+                    msg_nonce,
+                    frag_total,
+                    chunks: vec![None; frag_total as usize],
+                });
+                g.frag_reassembly.len() - 1
+            };
+            let slot = &mut g.frag_reassembly[idx];
+            slot.chunks[frag_idx as usize] = Some(chunk.to_vec());
+            if slot.chunks.iter().all(Option::is_some) {
+                let completed = g.frag_reassembly.remove(idx).expect("slot index valid");
+                let total_len: usize = completed
+                    .chunks
+                    .iter()
+                    .map(|c| c.as_ref().map_or(0, Vec::len))
+                    .sum();
+                let mut full = Vec::with_capacity(total_len);
+                for c in completed.chunks.into_iter().flatten() {
+                    full.extend_from_slice(&c);
+                }
+                Some(full)
+            } else {
+                None
+            }
+        };
+
+        let Some(full_frame) = reassembled else {
+            return;
+        };
+        if !is_pq_psk_shaped(&full_frame)
+            || claimed_sender(&full_frame).as_ref() != Some(&self.peer_public)
+        {
+            return;
+        }
+        match inner_kind {
+            KIND_INIT if full_frame.len() == INIT_FRAME_LEN => {
+                self.on_init(&full_frame, reply_carrier).await;
+            }
+            KIND_RESP if full_frame.len() == RESP_FRAME_LEN => {
+                self.on_resp(&full_frame, reply_carrier).await;
+            }
             _ => {}
         }
     }
@@ -969,11 +1173,19 @@ impl PqPeerHandle {
                         REJECT_INVALID_KEY,
                     );
                     drop(g);
-                    let _ = reply_carrier.send_disco(&rej).await;
+                    self.send_control_frame(reply_carrier, &rej).await;
                     return;
                 };
                 let effective_epoch = g.current_epoch.saturating_add(1).max(req_epoch);
-                let m = B32::from(random_bytes::<32>());
+                // NIST FIPS 203 §7.2 Algorithm 20 `ML-KEM.Encaps(ek)` samples 32
+                // CSPRNG bytes `m` and invokes `ML-KEM.Encaps_internal(ek, m)`.
+                // Using `rand::rng()` + `encapsulate_deterministic(&m)` implements
+                // Algorithm 20 directly without the `rand_core 0.9` vs `0.10`
+                // trait mismatch in `ml-kem 0.3.0-pre.2`; `m_bytes` is zeroized
+                // immediately after encapsulation.
+                let mut m_bytes = random_bytes::<32>();
+                let m = B32::from(m_bytes);
+                m_bytes.fill(0);
                 let (ct, k_pq) = ek.encapsulate_deterministic(&m);
                 let ct_slice: &[u8] = ct.as_slice();
                 let ek_hash = sha256_bytes(ek_slice);
@@ -1020,7 +1232,7 @@ impl PqPeerHandle {
         };
 
         if let Some(bytes) = reply {
-            let _ = reply_carrier.send_disco(&bytes).await;
+            self.send_control_frame(reply_carrier, &bytes).await;
         }
     }
 
@@ -1113,7 +1325,7 @@ impl PqPeerHandle {
         };
 
         if let Some(bytes) = confirm_to_send {
-            let _ = reply_carrier.send_disco(&bytes).await;
+            self.send_control_frame(reply_carrier, &bytes).await;
         }
     }
 
@@ -1244,7 +1456,7 @@ impl PqPeerHandle {
                 .await;
         }
         if let Some(bytes) = reply_frame {
-            let _ = reply_carrier.send_disco(&bytes).await;
+            self.send_control_frame(reply_carrier, &bytes).await;
         }
     }
 
@@ -1307,7 +1519,7 @@ impl PqPeerHandle {
         }
     }
 
-    async fn on_reject(&self, pkt: &[u8]) {
+    async fn on_reject(&self, pkt: &[u8], reply_carrier: &Arc<Carrier>) {
         let body = &pkt[..REJECT_FRAME_LEN - MAC_LEN];
         let mac_bytes: [u8; 32] = pkt[REJECT_FRAME_LEN - MAC_LEN..].try_into().expect("len");
         if !verify_mac(&self.auth_key, &[body], &mac_bytes) {
@@ -1346,6 +1558,8 @@ impl PqPeerHandle {
                             g.config.configured_psk.is_some() || g.current_epoch > 0;
                         g.downgraded_count = g.downgraded_count.saturating_add(1);
                         g.status = PqPeerStatus::DowngradedToClassical;
+                        g.current_epoch = 0;
+                        self.epoch_atomic.store(0, Ordering::Release);
                         g.active_psk = None;
                         g.established_at = None;
                         self.set_guard_active(false);
@@ -1389,10 +1603,10 @@ impl PqPeerHandle {
         }
 
         if downgrade_reinstall {
-            self.reinstall_tunn_psk(None, false, true, Vec::new(), None)
+            self.reinstall_tunn_psk(None, false, true, Vec::new(), Some(reply_carrier))
                 .await;
         } else if let Some(guard) = lock_guard_psk {
-            self.reinstall_tunn_psk(Some(guard), true, false, Vec::new(), None)
+            self.reinstall_tunn_psk(Some(guard), true, false, Vec::new(), Some(reply_carrier))
                 .await;
         }
     }
@@ -1411,46 +1625,59 @@ impl PqPeerHandle {
         let Some(stats) = self.stats.upgrade() else {
             return;
         };
-        let init_packet = {
+        let out_packets = {
             let mut t = tunn.lock().await;
-            *t = Tunn::new(
-                self.self_secret.clone(),
-                PublicKey::from(self.peer_public),
-                psk,
-                self.keepalive_secs,
-                self.tunn_index,
-                None,
-            );
-            stats.handshake.store(false, Ordering::Release);
-            stats.handshake_at.store(0, Ordering::Release);
-            stats.hs_response_at.store(0, Ordering::Release);
+            // B7 in-place PSK update: update `handshake.params.preshared_key`
+            // without reconstructing `Tunn`, preserving `last_handshake_timestamp`
+            // (TAI64N anti-replay watermark) across all PSK establishments and
+            // rotations.
+            t.set_preshared_key(psk);
             self.set_guard_active(guard_after);
-            let mut init_out: Option<Vec<u8>> = None;
-            let mut buf = vec![0u8; WG_BUF];
-            if !guard_after {
+            if guard_after {
+                // Fail-closed guard lock (`Required` mode expiry or mismatch):
+                // drop active transport sessions immediately while preserving
+                // the TAI64N replay watermark.
+                t.reset_sessions_preserving_replay_and_psk();
+                stats.handshake.store(false, Ordering::Release);
+                stats.handshake_at.store(0, Ordering::Release);
+                stats.hs_response_at.store(0, Ordering::Release);
+                Vec::new()
+            } else {
+                // If downgrading to classical WG (`psk.is_none()`), clear any
+                // stale PQ-keyed transport sessions while preserving the TAI64N
+                // replay watermark so outbound traffic uses the classical session.
+                if psk.is_none() {
+                    t.reset_sessions_preserving_replay_and_psk();
+                }
+                // Normal PQ-PSK establishment or rotation: keep any already-active
+                // transport `sessions` intact so in-flight data packets suffer
+                // zero packet loss while the new WG handshake is in flight.
+                let mut outs: Vec<Vec<u8>> = Vec::new();
+                let mut buf = vec![0u8; WG_BUF];
+                if initiate_wg
+                    && let TunnResult::WriteToNetwork(b) =
+                        t.format_handshake_initiation(&mut buf, true)
+                {
+                    outs.push(b.to_vec());
+                }
                 for pkt in &queued_packets {
-                    let res = t.encapsulate(pkt, &mut buf);
-                    if initiate_wg
-                        && init_out.is_none()
-                        && let TunnResult::WriteToNetwork(b) = res
-                    {
-                        init_out = Some(b.to_vec());
+                    if t.has_current_session() {
+                        if let TunnResult::WriteToNetwork(b) = t.encapsulate(pkt, &mut buf) {
+                            outs.push(b.to_vec());
+                        }
+                    } else {
+                        t.queue_packet_only(pkt);
                     }
                 }
-                if initiate_wg
-                    && init_out.is_none()
-                    && let TunnResult::WriteToNetwork(b) =
-                        t.format_handshake_initiation(&mut buf, false)
-                {
-                    init_out = Some(b.to_vec());
-                }
+                outs
             }
-            init_out
         };
-        if let Some(pkt) = init_packet {
+        if !out_packets.is_empty() {
             let upgraded = self.carrier.upgrade();
             if let Some(out_carrier) = reply_carrier.or(upgraded.as_ref()) {
-                let _ = super::wg::send_wg_recorded(out_carrier, &stats, &pkt).await;
+                for pkt in &out_packets {
+                    let _ = super::wg::send_wg_recorded(out_carrier, &stats, pkt).await;
+                }
             }
         }
     }
@@ -1500,5 +1727,213 @@ mod tests {
         assert!(dbg.contains("[REDACTED]"));
         assert!(!dbg.contains("170"));
         assert!(!dbg.contains("aa"));
+    }
+
+    #[tokio::test]
+    async fn pq_psk_fragmentation_keeps_all_wire_frames_under_700_bytes_and_rejects_unauth_frags() {
+        use tokio::net::UdpSocket;
+
+        let a = WgKeypair::generate();
+        let b = WgKeypair::generate();
+        let sock_a = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let sock_b = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let addr_a = sock_a.local_addr().unwrap();
+        let addr_b = sock_b.local_addr().unwrap();
+
+        let tunn_a = Arc::new(Mutex::new(Tunn::new(
+            a.secret.clone(),
+            b.public,
+            None,
+            None,
+            1,
+            None,
+        )));
+        let tunn_b = Arc::new(Mutex::new(Tunn::new(
+            b.secret.clone(),
+            a.public,
+            None,
+            None,
+            2,
+            None,
+        )));
+        let carrier_a = Carrier::direct(sock_a.clone(), addr_b);
+        let carrier_b = Carrier::direct(sock_b.clone(), addr_a);
+        let stats_a = Arc::new(PeerStats::default());
+        let stats_b = Arc::new(PeerStats::default());
+
+        let cfg = PqPskConfig {
+            mode: PqPskMode::Required,
+            ..PqPskConfig::default()
+        };
+        let handle_a = PqPeerHandle::new(
+            cfg.clone(),
+            a.secret.clone(),
+            a.public.to_bytes(),
+            b.public.to_bytes(),
+            1,
+            None,
+            tunn_a,
+            carrier_a.clone(),
+            stats_a,
+        );
+        let handle_b = PqPeerHandle::new(
+            cfg,
+            b.secret.clone(),
+            b.public.to_bytes(),
+            a.public.to_bytes(),
+            2,
+            None,
+            tunn_b,
+            carrier_b.clone(),
+            stats_b,
+        );
+
+        let raw_init = {
+            let mut ga = handle_a.inner.lock().await;
+            handle_a.build_init_locked(&mut ga, 1)
+        };
+        assert_eq!(raw_init.len(), INIT_FRAME_LEN);
+        let frags = handle_a.fragment_control_frame(&raw_init);
+        assert_eq!(frags.len(), 3, "1282 B KIND_INIT must split into 3 sub-700B fragments");
+        for f in &frags {
+            assert!(
+                f.len() <= MAX_WIRE_CONTROL_FRAME_LEN && f.len() < 700,
+                "fragment wire size {} must be <= 680 (< 700 B)",
+                f.len()
+            );
+            assert!(is_pq_psk_shaped(f));
+            assert!(!super::super::wg::is_wg_shaped(f));
+            assert!(!crate::transport::stun::has_stun_cookie(f));
+            assert!(!super::super::disco::is_disco_shaped(f));
+            assert_eq!(claimed_sender(f), Some(a.public.to_bytes()));
+        }
+
+        // Tampered fragment MAC must be rejected before allocating any slot in `frag_reassembly`.
+        let mut tampered = frags[0].clone();
+        let last = tampered.len() - 1;
+        tampered[last] ^= 0x55;
+        handle_b.handle_inbound(&tampered, &carrier_b).await;
+        assert!(
+            handle_b.inner.lock().await.frag_reassembly.is_empty(),
+            "unauthenticated fragment must not allocate in frag_reassembly"
+        );
+
+        // Deliver fragments out-of-order (2, 0, duplicate 2, 1) and verify reassembly triggers on_init.
+        handle_b.handle_inbound(&frags[2], &carrier_b).await;
+        handle_b.handle_inbound(&frags[0], &carrier_b).await;
+        handle_b.handle_inbound(&frags[2], &carrier_b).await;
+        assert_eq!(handle_b.inner.lock().await.frag_reassembly.len(), 1);
+        handle_b.handle_inbound(&frags[1], &carrier_b).await;
+        assert!(
+            handle_b.inner.lock().await.frag_reassembly.is_empty(),
+            "completed fragment slot must be drained on reassembly"
+        );
+        assert_eq!(
+            handle_b.inner.lock().await.pending_resps.len(),
+            1,
+            "reassembled KIND_INIT must produce a pending response"
+        );
+    }
+
+    #[test]
+    fn in_place_set_preshared_key_preserves_tai64n_replay_watermark_and_active_sessions() {
+        use boringtun::noise::errors::WireGuardError;
+
+        let a = WgKeypair::generate();
+        let b = WgKeypair::generate();
+        let psk_1 = [0x11u8; 32];
+        let psk_2 = [0x22u8; 32];
+
+        let mut t_a = Tunn::new(a.secret.clone(), b.public, Some(psk_1), None, 1, None);
+        let mut t_b = Tunn::new(b.secret.clone(), a.public, Some(psk_1), None, 2, None);
+
+        // 1. Complete epoch-1 handshake under `psk_1` and capture the `HandshakeInit` wire bytes.
+        let mut buf_a = vec![0u8; WG_BUF];
+        let mut buf_b = vec![0u8; WG_BUF];
+        let init_1 = match t_a.format_handshake_initiation(&mut buf_a, false) {
+            TunnResult::WriteToNetwork(pkt) => pkt.to_vec(),
+            other => panic!("expected HandshakeInit, got {other:?}"),
+        };
+        let resp_1 = match t_b.decapsulate(None, &init_1, &mut buf_b) {
+            TunnResult::WriteToNetwork(pkt) => pkt.to_vec(),
+            other => panic!("expected HandshakeResponse, got {other:?}"),
+        };
+        let keepalive_1 = match t_a.decapsulate(None, &resp_1, &mut buf_a) {
+            TunnResult::WriteToNetwork(pkt) => pkt.to_vec(),
+            other => panic!("expected keepalive, got {other:?}"),
+        };
+        assert!(matches!(
+            t_b.decapsulate(None, &keepalive_1, &mut buf_b),
+            TunnResult::Done
+        ));
+
+        // 2. Rotate PSK in-place to `psk_2` on BOTH peers (`set_preshared_key`).
+        //    Verify that BEFORE the new WG handshake completes, in-flight data
+        //    packets continue to encrypt and decrypt on the existing session
+        //    with ZERO packet loss!
+        t_b.set_preshared_key(Some(psk_2));
+        t_a.set_preshared_key(Some(psk_2));
+        assert_eq!(t_a.preshared_key(), Some(psk_2));
+        assert_eq!(t_b.preshared_key(), Some(psk_2));
+
+        let ipv4_pkt = [
+            0x45, 0x00, 0x00, 0x1c, 0x00, 0x01, 0x00, 0x00, 0x40, 0x11, 0x00, 0x00, 100, 64, 0, 1,
+            100, 64, 0, 2, 0x04, 0xd2, 0x04, 0xd2, 0x00, 0x08, 0x00, 0x00,
+        ];
+        let enc_during_rot = match t_a.encapsulate(&ipv4_pkt, &mut buf_a) {
+            TunnResult::WriteToNetwork(pkt) => pkt.to_vec(),
+            other => panic!("active session must stay alive during rotation window: {other:?}"),
+        };
+        match t_b.decapsulate(None, &enc_during_rot, &mut buf_b) {
+            TunnResult::WriteToTunnelV4(dec, _) => assert_eq!(dec, ipv4_pkt),
+            other => panic!("responder must decrypt in-flight packet during rotation: {other:?}"),
+        }
+
+        // 3. Initiate and complete the new WG handshake under `psk_2`.
+        let init_2 = match t_a.format_handshake_initiation(&mut buf_a, true) {
+            TunnResult::WriteToNetwork(pkt) => pkt.to_vec(),
+            other => panic!("expected rotated HandshakeInit, got {other:?}"),
+        };
+        let resp_2 = match t_b.decapsulate(None, &init_2, &mut buf_b) {
+            TunnResult::WriteToNetwork(pkt) => pkt.to_vec(),
+            other => panic!("expected rotated HandshakeResponse, got {other:?}"),
+        };
+        let keepalive_2 = match t_a.decapsulate(None, &resp_2, &mut buf_a) {
+            TunnResult::WriteToNetwork(pkt) => pkt.to_vec(),
+            other => panic!("expected rotated keepalive, got {other:?}"),
+        };
+        assert!(matches!(
+            t_b.decapsulate(None, &keepalive_2, &mut buf_b),
+            TunnResult::Done
+        ));
+
+        // 4. Even if `t_b` is set back to `Some(psk_1)` (or in `Optional` mode),
+        //    replaying the captured pre-rotation `init_1` is rejected with
+        //    `WrongTai64nTimestamp` because `set_preshared_key` preserved
+        //    `handshake.last_handshake_timestamp`!
+        t_b.set_preshared_key(Some(psk_1));
+        assert!(
+            matches!(
+                t_b.decapsulate(None, &init_1, &mut buf_b),
+                TunnResult::Err(WireGuardError::WrongTai64nTimestamp)
+            ),
+            "replayed pre-rotation HandshakeInit must fail WrongTai64nTimestamp"
+        );
+
+        // 5. `reset_sessions_preserving_replay_and_psk` drops active sessions
+        //    while still preserving `last_handshake_timestamp` and `preshared_key`.
+        t_b.reset_sessions_preserving_replay_and_psk();
+        assert_eq!(t_b.preshared_key(), Some(psk_1));
+        assert!(matches!(
+            t_b.decapsulate(None, &enc_during_rot, &mut buf_b),
+            TunnResult::Err(WireGuardError::NoCurrentSession)
+        ));
+        assert!(
+            matches!(
+                t_b.decapsulate(None, &init_1, &mut buf_b),
+                TunnResult::Err(WireGuardError::WrongTai64nTimestamp)
+            ),
+            "TAI64N watermark must survive reset_sessions_preserving_replay_and_psk"
+        );
     }
 }

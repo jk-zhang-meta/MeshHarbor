@@ -828,6 +828,71 @@ server. Detail and the negative-control test:
 
 ---
 
+## 8c. Optional Post-Quantum WireGuard PSK (B7)
+
+By default (`ROOMLERD_OVERLAY_PQ_PSK=off`), WireGuard peers use `preshared_key = None`
+and emit zero post-quantum control frames. Operators can enable out-of-band
+ML-KEM-768 (NIST FIPS 203) hybrid pre-shared key negotiation and periodic
+rotation (`crates/tunnel-core/src/overlay/pq_psk.rs`) in two modes:
+
+* **`Optional` / `Preferred` (`ROOMLERD_OVERLAY_PQ_PSK=optional` or `preferred`):**
+  Negotiates an ML-KEM-768 hybrid PSK with peers that support B7, and downgrades
+  cleanly to classical `PSK=None` only when the remote peer replies with an
+  authenticated `REJECT_MODE_OFF` (`HMAC-SHA256` keyed by the domain-separated
+  static X25519 shared secret `X25519(self_secret, peer_public)`).
+  * **Trust model note:** `Optional` / `Preferred` protects against passive
+    "harvest-now, decrypt-later" quantum adversaries and against active
+    network attackers that do not possess either peer's static X25519 private
+    key. Because `REJECT_MODE_OFF` is authenticated by the classical X25519
+    static DH key, an adversary that has *already* compromised a peer's static
+    X25519 key in real time could forge `REJECT_MODE_OFF`; deployments requiring
+    mandatory post-quantum authentication must use `Required`.
+* **`Required` (`ROOMLERD_OVERLAY_PQ_PSK=required` / `1` / `true`):**
+  Fail-closed mode. On peer installation, `Tunn` is initialized with a fresh
+  32-byte CSPRNG guard PSK (`initial_tunn_psk`) so no classical `PSK=None`
+  WireGuard handshake can succeed before ML-KEM-768 agreement completes. On key
+  lifetime expiration (`max_lifetime`, default 300 s) or PSK confirmation
+  mismatch (`REJECT_PSK_MISMATCH`), `Tunn` is immediately re-locked with a fresh
+  random guard PSK and active transport sessions are cleared via
+  `Tunn::reset_sessions_preserving_replay_and_psk()`.
+
+### Wire protocol (`RMPQPSK1`) and sub-700 B MTU fragmentation
+
+1. **Four-step authenticated KEM handshake:**
+   - `KIND_INIT (1)` (`1282 B` logical frame): Initiator generates an ephemeral
+     ML-KEM-768 keypair `(dk, ek)`, `init_nonce`, and `epoch`, authenticated by
+     `HMAC-SHA256(auth_key, header || ek)`.
+   - `KIND_RESP (2)` (`1202 B` logical frame): Responder verifies the MAC,
+     encapsulates `(ct, k_pq)` via FIPS 203 Algorithm 20, selects monotonic
+     `effective_epoch = max(local_epoch + 1, req_epoch)`, derives the hybrid
+     `candidate_psk = HKDF(k_pq, auth_key, configured_psk, transcript)`, and
+     replies with `ct` + `HMAC-SHA256(auth_key, header || ct || SHA256(ek))`
+     without mutating its active `Tunn`.
+   - `KIND_CONFIRM (4)` (`114 B`): Initiator decapsulates `ct`, derives
+     `candidate_psk`, and sends `confirm_tag` keyed by `candidate_psk`.
+   - `KIND_ACK (5)` (`114 B`): Responder verifies `confirm_tag` in constant
+     time, updates its `Tunn` PSK in-place (`Tunn::set_preshared_key`), and sends
+     `KIND_ACK`. Upon receiving `KIND_ACK`, Initiator updates its `Tunn` PSK
+     in-place and triggers a fresh WireGuard handshake.
+2. **Authenticated fragmentation (`KIND_FRAG = 6`, `<= 680 B` on wire):**
+   - Because unfragmented `KIND_INIT` (`1282 B`) and `KIND_RESP` (`1202 B`)
+     exceed a `1280 B` IPv6 minimum MTU or tunnel/relay MTU once UDP/IPv6/relay
+     headers are added, `PqPeerHandle::fragment_control_frame` splits any control
+     frame `> 680 B` into 3 `KIND_FRAG` datagrams (`MAX_FRAG_PAYLOAD = 580 B`,
+     max wire frame `680 B < 700 B`).
+   - Every `KIND_FRAG` datagram carries its own 32-byte `HMAC-SHA256` tag under
+     `auth_key`, verified **before** locking or allocating in the bounded
+     per-peer reassembly ring (`MAX_REASSEMBLY_SLOTS = 4`).
+3. **In-place `Tunn::set_preshared_key` rotation:**
+   - Normal PQ-PSK establishment and periodic rotation (`rekey_interval`, default
+     120 s) update `Tunn`'s `preshared_key` in-place via
+     `boringtun::noise::Tunn::set_preshared_key`, preserving both
+     `handshake.last_handshake_timestamp` (the TAI64N anti-replay watermark) and
+     existing transport `sessions` (`[Option<Session>; N_SESSIONS]`), achieving
+     zero packet loss for in-flight traffic during the rotation window.
+
+---
+
 ## 9. Configuration reference
 
 <!-- RETIRED-NAME-ANCHOR(4): names the legacy env prefix env::node_env still honours; an

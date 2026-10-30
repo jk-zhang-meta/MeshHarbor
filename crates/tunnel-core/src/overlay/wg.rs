@@ -3894,6 +3894,18 @@ pub(crate) fn decap_inbound(
                 .store(mono_ms_now().max(1), Ordering::Relaxed);
         }
     }
+    let mut outs: Vec<Vec<u8>> = Vec::new();
+    let flush_queued_if_session_ready = |t: &mut Tunn, outs: &mut Vec<Vec<u8>>| {
+        if t.has_current_session() && t.has_queued_packets() {
+            loop {
+                let mut flush = vec![0u8; WG_BUF];
+                match t.decapsulate(None, &[], &mut flush) {
+                    TunnResult::WriteToNetwork(b2) => outs.push(b2.to_vec()),
+                    _ => break,
+                }
+            }
+        }
+    };
     match res {
         TunnResult::WriteToNetwork(b) => {
             // rc.211 — collect the handshake response + any flushed follow-ups
@@ -3905,21 +3917,8 @@ pub(crate) fn decap_inbound(
             // this peer's Tunn lock across a possibly-slow carrier send, so the
             // recv loop stopped reading the socket and the OS dropped inbound
             // UDP for every direct peer.
-            let mut outs: Vec<Vec<u8>> = vec![b.to_vec()];
-            loop {
-                let mut flush = vec![0u8; WG_BUF];
-                match t.decapsulate(None, &[], &mut flush) {
-                    TunnResult::WriteToNetwork(b2) => outs.push(b2.to_vec()),
-                    _ => break,
-                }
-            }
-            let c = carrier.clone();
-            let send_stats = stats.clone();
-            tokio::spawn(async move {
-                for b in outs {
-                    let _ = send_wg_recorded(&c, &send_stats, &b).await;
-                }
-            });
+            outs.push(b.to_vec());
+            flush_queued_if_session_ready(t, &mut outs);
         }
         // P4 — the second field is boringtun's own parse of the decapsulated
         // packet's SOURCE address (already validated against the IP header's
@@ -3927,6 +3926,7 @@ pub(crate) fn decap_inbound(
         // enforced on ingress. It was discarded until P4, which is what let any
         // peer with a live session write an arbitrary source into our TUN.
         TunnResult::WriteToTunnelV4(pkt, src) => {
+            flush_queued_if_session_ready(t, &mut outs);
             if ingress.permits(IpAddr::V4(src), pkt) {
                 stats.rx.fetch_add(1, Ordering::Relaxed);
                 let (at, len) = (pkt.as_ptr() as usize, pkt.len());
@@ -3935,6 +3935,7 @@ pub(crate) fn decap_inbound(
             }
         }
         TunnResult::WriteToTunnelV6(pkt, src) => {
+            flush_queued_if_session_ready(t, &mut outs);
             if ingress.permits(IpAddr::V6(src), pkt) {
                 stats.rx.fetch_add(1, Ordering::Relaxed);
                 let (at, len) = (pkt.as_ptr() as usize, pkt.len());
@@ -3942,8 +3943,21 @@ pub(crate) fn decap_inbound(
                 delivered = Some(into_packet(out, span));
             }
         }
-        TunnResult::Done => {}
+        TunnResult::Done => {
+            if authenticated {
+                flush_queued_if_session_ready(t, &mut outs);
+            }
+        }
         TunnResult::Err(e) => debug!(?e, "wg decapsulate error"),
+    }
+    if !outs.is_empty() {
+        let c = carrier.clone();
+        let send_stats = stats.clone();
+        tokio::spawn(async move {
+            for b in outs {
+                let _ = send_wg_recorded(&c, &send_stats, &b).await;
+            }
+        });
     }
     // Phase C — latch "handshake completed" the moment this peer's session is
     // live. `process_inbound` only runs on a packet FROM the peer, so a set flag
@@ -7615,5 +7629,151 @@ mod tests {
             .unwrap();
         assert_eq!(got_after_exp, pkt_after_exp);
         let _ = &mut rx_b2;
+    }
+
+    #[tokio::test]
+    async fn pq_psk_strict_1280_mtu_carrier_and_zero_loss_in_flight_rotation() {
+        use super::super::pq_psk::{
+            MAX_WIRE_CONTROL_FRAME_LEN, PqPeerStatus, PqPskConfig, PqPskMode,
+        };
+        use std::sync::atomic::AtomicUsize;
+
+        let a = WgKeypair::generate();
+        let b = WgKeypair::generate();
+        let sock_a = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let sock_b = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let proxy_a = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let proxy_b = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let addr_a = sock_a.local_addr().unwrap();
+        let addr_b = sock_b.local_addr().unwrap();
+        let proxy_addr_a = proxy_a.local_addr().unwrap();
+        let proxy_addr_b = proxy_b.local_addr().unwrap();
+        let drops = Arc::new(AtomicUsize::new(0));
+
+        // Enforce a strict 700 B UDP payload cap on the wire between `sock_a`
+        // and `sock_b` (strictly tighter than a 1280 B IPv6 minimum MTU minus
+        // IPv6/UDP/TURN/DERP headers). Unfragmented 1282 B KIND_INIT or 1202 B
+        // KIND_RESP would be 100% dropped here.
+        let pump_ab = {
+            let rx_sock = proxy_a.clone();
+            let tx_sock = proxy_b.clone();
+            let drops = drops.clone();
+            tokio::spawn(async move {
+                let mut buf = [0u8; 4096];
+                while let Ok((n, _)) = rx_sock.recv_from(&mut buf).await {
+                    if n > 700 {
+                        drops.fetch_add(1, Ordering::Relaxed);
+                        continue;
+                    }
+                    let _ = tx_sock.send_to(&buf[..n], addr_b).await;
+                }
+            })
+        };
+        let pump_ba = {
+            let rx_sock = proxy_b.clone();
+            let tx_sock = proxy_a.clone();
+            let drops = drops.clone();
+            tokio::spawn(async move {
+                let mut buf = [0u8; 4096];
+                while let Ok((n, _)) = rx_sock.recv_from(&mut buf).await {
+                    if n > 700 {
+                        drops.fetch_add(1, Ordering::Relaxed);
+                        continue;
+                    }
+                    let _ = tx_sock.send_to(&buf[..n], addr_a).await;
+                }
+            })
+        };
+        const { assert!(MAX_WIRE_CONTROL_FRAME_LEN <= 700) };
+
+        let (mut dev_a, mut rx_a) = WgDevice::new(a.secret.clone());
+        let (mut dev_b, mut rx_b) = WgDevice::new(b.secret.clone());
+        let cfg = PqPskConfig {
+            mode: PqPskMode::Required,
+            rekey_interval: Duration::from_secs(60),
+            max_lifetime: Duration::from_secs(120),
+            retry_interval: Duration::from_millis(150),
+            max_retries: 6,
+            configured_psk: None,
+        };
+        dev_a.set_pq_psk_config(cfg.clone());
+        dev_b.set_pq_psk_config(cfg);
+
+        let pk_a = a.public.to_bytes();
+        let pk_b = b.public.to_bytes();
+        dev_a.add_peer(pk_b, IP_B, Carrier::direct(sock_a, proxy_addr_a), true);
+        dev_b.add_peer(pk_a, IP_A, Carrier::direct(sock_b, proxy_addr_b), false);
+
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let sa = dev_a.peer_pq_psk_snapshot(&pk_b).await.unwrap();
+                let sb = dev_b.peer_pq_psk_snapshot(&pk_a).await.unwrap();
+                if sa.current_epoch >= 1
+                    && sa.current_epoch == sb.current_epoch
+                    && matches!(sa.status, PqPeerStatus::Established { .. })
+                    && matches!(sb.status, PqPeerStatus::Established { .. })
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("Required-mode PQ-PSK must establish over strict 700B-MTU carrier");
+
+        wait_connected(&dev_a, &pk_b).await;
+        wait_connected(&dev_b, &pk_a).await;
+
+        // Warm up bidirectional transport session before rotating.
+        let warmup = synthetic_ipv4(IP_A, IP_B, b"mtu-warmup");
+        send_until_ok(&dev_a, &pk_b, &warmup).await;
+        let got_warm = tokio::time::timeout(Duration::from_secs(2), rx_b.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(got_warm, warmup);
+
+        // Trigger PQ-PSK rotation while streaming 20 in-flight packets at 5ms intervals
+        // across the rotation window: verify ZERO packet loss and ZERO oversized drops.
+        let sender = dev_a.sender();
+        assert!(dev_a.rotate_peer_pq_psk(&pk_b).await);
+        let mut expected_payloads = Vec::new();
+        for seq in 0..20u32 {
+            let msg = format!("in-flight-rot-seq-{seq:02}");
+            let pkt = synthetic_ipv4(IP_A, IP_B, msg.as_bytes());
+            expected_payloads.push(pkt.clone());
+            assert!(sender.send_ip_packet(&pkt).await);
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+
+        for expected in &expected_payloads {
+            let got = tokio::time::timeout(Duration::from_secs(2), rx_b.recv())
+                .await
+                .expect("in-flight packet during PQ-PSK rotation must not be dropped")
+                .unwrap();
+            assert_eq!(&got, expected);
+        }
+
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let sa = dev_a.peer_pq_psk_snapshot(&pk_b).await.unwrap();
+                let sb = dev_b.peer_pq_psk_snapshot(&pk_a).await.unwrap();
+                if sa.current_epoch >= 2 && sa.current_epoch == sb.current_epoch {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("rotation to epoch 2 must complete over strict 700B-MTU carrier");
+
+        assert_eq!(
+            drops.load(Ordering::Relaxed),
+            0,
+            "zero control or data frames may exceed the 700B strict MTU limit"
+        );
+        pump_ab.abort();
+        pump_ba.abort();
+        let _ = &mut rx_a;
     }
 }
