@@ -751,7 +751,7 @@ async fn handle_overlay_join(
         acl,
         self_src: joiner_src,
         peers,
-    } = shape_full_netmap(state, &self_node, &all, &reach).await;
+    } = shape_full_netmap_with_lines(state, &self_node, &all, &reach, Some(&lines)).await;
 
     // FR-40 — stamp what this device PRESENTED, as verified above, onto its
     // agent row: the server's own record of the device's current overlay
@@ -855,9 +855,18 @@ async fn handle_overlay_join(
                 // coturn workers (a `turn:host:port` UDP listener also answers
                 // STUN Binding). Empty when TURN is unconfigured → srflx inert.
                 stun_urls: stun_urls_from_turn(state),
-                relay_probe_targets: crate::org_relay::probe_targets(state, &self_node).await,
-                backbone_probe_targets: crate::org_relay::backbone_probe_targets(state, &self_node)
-                    .await,
+                relay_probe_targets: crate::org_relay::probe_targets(
+                    state,
+                    &self_node,
+                    Some(&lines),
+                )
+                .await,
+                backbone_probe_targets: crate::org_relay::backbone_probe_targets(
+                    state,
+                    &self_node,
+                    Some(&lines),
+                )
+                .await,
             },
             peers,
             epoch,
@@ -870,39 +879,47 @@ async fn handle_overlay_join(
     // `removes` rather than mere omission: omitting a peer (or shipping
     // `reachable: false`) is a no-op against an already-installed peer — only
     // the removes branch tears down the WG peer, its route and its carrier.
-    for peer in all.iter().filter(|n| n.id != self_node.id) {
-        let peer_src = overlay_source_of(state, peer).await;
-        // The shaped peer here is the JOINER, whose identity we already have.
-        let joiner_ingress = acl.enforcing().then_some(&joiner_src);
-        // U2 — this recipient's edge is `peer → self_node` (the joiner).
-        let verdict = server_relay_verdict(state, peer, &self_node);
-        let recipient_zone = business_isolation::zone_of(state, iso, peer).await;
-        let zones = lines.zones_for(
-            iso,
-            peer,
-            recipient_zone,
-            &self_node,
-            joiner_zone,
-            business_isolation::rides_lines(state, peer),
+    if lines.roles_read_failed && iso == business_isolation::Mode::Enforce {
+        warn!(
+            tenant_id = %self_node.tenant_id,
+            node = %self_node.name,
+            "overlay.join: role approval read failed; skipping peer delta removes to preserve live peers"
         );
-        let (upserts, removes) =
-            match shape_peer(&acl, &peer_src, &self_node, joiner_ingress, true, zones) {
-                Some(mut u) => {
-                    stamp_verdict(&mut u, verdict);
-                    (vec![u], vec![])
-                }
-                None => (vec![], vec![self_node.id.unwrap_or_default()]),
-            };
-        send_to_node(
-            state,
-            peer,
-            ServerMsg::OverlayNetmapDelta {
-                epoch,
-                upserts,
-                removes,
-            },
-        )
-        .await;
+    } else {
+        for peer in all.iter().filter(|n| n.id != self_node.id) {
+            let peer_src = overlay_source_of(state, peer).await;
+            // The shaped peer here is the JOINER, whose identity we already have.
+            let joiner_ingress = acl.enforcing().then_some(&joiner_src);
+            // U2 — this recipient's edge is `peer → self_node` (the joiner).
+            let verdict = server_relay_verdict(state, peer, &self_node);
+            let recipient_zone = business_isolation::zone_of(state, iso, peer).await;
+            let zones = lines.zones_for(
+                iso,
+                peer,
+                recipient_zone,
+                &self_node,
+                joiner_zone,
+                business_isolation::rides_lines(state, peer),
+            );
+            let (upserts, removes) =
+                match shape_peer(&acl, &peer_src, &self_node, joiner_ingress, true, zones) {
+                    Some(mut u) => {
+                        stamp_verdict(&mut u, verdict);
+                        (vec![u], vec![])
+                    }
+                    None => (vec![], vec![self_node.id.unwrap_or_default()]),
+                };
+            send_to_node(
+                state,
+                peer,
+                ServerMsg::OverlayNetmapDelta {
+                    epoch,
+                    upserts,
+                    removes,
+                },
+            )
+            .await;
+        }
     }
 
     // P7 — a node that restarted mid-escalation lost its client-side DERP pin
@@ -1906,11 +1923,11 @@ async fn handle_org_relay_loss(
 /// when something OUT of band changes the node's wire shape (Phase 1: an admin
 /// approving/revoking its subnet `routes`), so peers pick it up immediately
 /// instead of waiting for the next join. Best-effort.
-pub async fn refan_node(state: &NetworkState, node: &OverlayNode) {
+pub async fn refan_node(state: &NetworkState, node: &OverlayNode) -> bool {
     // P9 — an out-of-band refan (admin route approval) can target a node
     // that is currently offline; carry its real presence, not a blanket true.
     let reach = reachability(state, std::slice::from_ref(node)).await;
-    fan_upsert_shaped(state, node, next_epoch(), is_reachable(&reach, node)).await;
+    fan_upsert_shaped(state, node, next_epoch(), is_reachable(&reach, node)).await
 }
 
 /// Propagate a fleet-level device rename onto the device's live overlay node:
@@ -2223,7 +2240,12 @@ pub async fn release_overlay_node_for(
 /// being skipped — omitting a peer from a delta (or shipping it with
 /// `reachable: false`) does NOT tear down an already-installed peer; only the
 /// removes branch drops the WG peer, its route and its carrier.
-async fn fan_upsert_shaped(state: &NetworkState, node: &OverlayNode, epoch: u64, reachable: bool) {
+async fn fan_upsert_shaped(
+    state: &NetworkState,
+    node: &OverlayNode,
+    epoch: u64,
+    reachable: bool,
+) -> bool {
     let peers = match state
         .overlay_nodes
         .list_active_in_network(node.tenant_id, node.network_id)
@@ -2232,13 +2254,21 @@ async fn fan_upsert_shaped(state: &NetworkState, node: &OverlayNode, epoch: u64,
         Ok(v) => v,
         Err(e) => {
             warn!(%e, "overlay: peer list for delta fan-out failed");
-            return;
+            return false;
         }
     };
     let acl = load_acl(state, node.tenant_id).await;
     let iso = business_isolation::mode(state);
     let node_zone = business_isolation::zone_of(state, iso, node).await;
     let lines = business_isolation::lines(state, iso, node.tenant_id).await;
+    if lines.roles_read_failed && iso == business_isolation::Mode::Enforce {
+        warn!(
+            tenant_id = %node.tenant_id,
+            node = %node.name,
+            "overlay: role approval read failed during delta fan-out; preserving existing peer netmaps"
+        );
+        return false;
+    }
     // P4 — the fanned node is the SHAPED peer for every recipient, so its
     // identity is resolved once, not per recipient.
     let node_src = if acl.enforcing() {
@@ -2352,6 +2382,7 @@ async fn fan_upsert_shaped(state: &NetworkState, node: &OverlayNode, epoch: u64,
         )
         .await;
     }
+    true
 }
 
 /// D2 — re-stamp ONE pair's verdicts on both ends, now.
@@ -2379,6 +2410,15 @@ async fn fan_pair_verdicts(state: &NetworkState, a: &OverlayNode, b: &OverlayNod
         business_isolation::zone_of(state, iso, b).await,
     );
     let lines = business_isolation::lines(state, iso, a.tenant_id).await;
+    if lines.roles_read_failed && iso == business_isolation::Mode::Enforce {
+        warn!(
+            tenant_id = %a.tenant_id,
+            a = %a.name,
+            b = %b.name,
+            "overlay: role approval read failed during pair verdict fan-out; skipping"
+        );
+        return;
+    }
     if a.supports_server_relay_strategy
         && let Some(mut row) = shape_peer(
             &acl,
@@ -3112,11 +3152,28 @@ pub async fn shape_full_netmap(
     all: &[OverlayNode],
     reach: &HashMap<ObjectId, bool>,
 ) -> ShapedNetmap {
+    shape_full_netmap_with_lines(state, self_node, all, reach, None).await
+}
+
+pub async fn shape_full_netmap_with_lines(
+    state: &NetworkState,
+    self_node: &OverlayNode,
+    all: &[OverlayNode],
+    reach: &HashMap<ObjectId, bool>,
+    preloaded_lines: Option<&business_isolation::Lines>,
+) -> ShapedNetmap {
     let acl = load_acl(state, self_node.tenant_id).await;
     let self_src = overlay_source_of(state, self_node).await;
     let iso = business_isolation::mode(state);
     let self_zone = business_isolation::zone_of(state, iso, self_node).await;
-    let lines = business_isolation::lines(state, iso, self_node.tenant_id).await;
+    let owned_lines;
+    let lines = match preloaded_lines {
+        Some(l) => l,
+        None => {
+            owned_lines = business_isolation::lines(state, iso, self_node.tenant_id).await;
+            &owned_lines
+        }
+    };
     let rides = business_isolation::rides_lines(state, self_node);
     let mut peers: Vec<NetmapPeer> = Vec::new();
     let mut unknown_with_peers: Vec<String> = Vec::new();
@@ -3140,7 +3197,10 @@ pub async fn shape_full_netmap(
             is_reachable(reach, n),
             zones,
         ) {
-            if lines.unknown_role == business_isolation::Mode::Warn && !lines.node_role_known(n) {
+            if !lines.roles_read_failed
+                && lines.unknown_role == business_isolation::Mode::Warn
+                && !lines.node_role_known(n)
+            {
                 let label = business_isolation::Lines::node_label(n);
                 if !unknown_with_peers.contains(&label) {
                     unknown_with_peers.push(label);
@@ -3151,7 +3211,10 @@ pub async fn shape_full_netmap(
             peers.push(p);
         }
     }
-    if lines.unknown_role == business_isolation::Mode::Warn && !peers.is_empty() {
+    if !lines.roles_read_failed
+        && lines.unknown_role == business_isolation::Mode::Warn
+        && !peers.is_empty()
+    {
         if !self_role_known {
             let self_label = business_isolation::Lines::node_label(self_node);
             if !unknown_with_peers.contains(&self_label) {
@@ -3192,7 +3255,7 @@ fn shape_peer(
     // line: no address to dial, no DERP or TURN to try.
     if zones.line_only() {
         if zones.unknown_role_denies() {
-            tracing::info!(
+            debug!(
                 source = %src.node_id,
                 peer = %peer.name,
                 ?zones,
@@ -3270,7 +3333,7 @@ fn shape_peer_zoned(
             return None;
         }
         if zones.unknown_role_denies() {
-            tracing::info!(
+            debug!(
                 source = %src.node_id,
                 peer = %peer.name,
                 ?zones,

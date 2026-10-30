@@ -42,7 +42,7 @@ use bson::oid::ObjectId;
 use roomler_ai_remote_control::models::{NodeRef, OverlayNode};
 use roomler_core::business_authority::BusinessZone;
 
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::NetworkState;
 
@@ -187,6 +187,12 @@ pub struct Lines {
     pub unknown_role: Mode,
     pub approved_roles:
         std::collections::HashSet<(roomler_core::business_authority::DeviceKind, ObjectId)>,
+    /// True when reading `current_approved_roles` from storage failed.
+    /// New-admission paths fail closed (`approved_roles` is empty under
+    /// `enforce`), whereas revocation/teardown/reconcile paths must preserve
+    /// existing state and retry rather than treating a transient DB error as
+    /// mass revocation.
+    pub roles_read_failed: bool,
 }
 
 impl Lines {
@@ -214,7 +220,9 @@ impl Lines {
     }
 
     pub fn ref_role_known(&self, r: &NodeRef) -> bool {
-        self.unknown_role == Mode::Off || self.approved_roles.contains(&Self::ref_identity(r))
+        self.unknown_role == Mode::Off
+            || (self.roles_read_failed && self.unknown_role != Mode::Enforce)
+            || self.approved_roles.contains(&Self::ref_identity(r))
     }
 
     pub fn node_role_known(&self, n: &OverlayNode) -> bool {
@@ -251,14 +259,21 @@ impl Lines {
         peer_zone: Option<BusinessZone>,
         recipient_rides_lines: bool,
     ) -> Zones {
+        let fail_closed_read = self.roles_read_failed && mode == Mode::Enforce;
         Zones {
             mode,
             recipient: recipient_zone,
             peer: peer_zone,
-            line: recipient_rides_lines && self.connects(recipient_zone, peer_zone),
+            line: !fail_closed_read
+                && recipient_rides_lines
+                && self.connects(recipient_zone, peer_zone),
             servers: self.server_pair(recipient, peer),
-            unknown_role: self.unknown_role,
-            role_known: self.pair_roles_known(recipient, peer),
+            unknown_role: if fail_closed_read {
+                Mode::Enforce
+            } else {
+                self.unknown_role
+            },
+            role_known: !fail_closed_read && self.pair_roles_known(recipient, peer),
         }
     }
 
@@ -292,12 +307,18 @@ pub async fn lines(state: &NetworkState, mode: Mode, tenant_id: ObjectId) -> Lin
         return Lines::default();
     }
     let unknown_role = unknown_role_mode(state);
-    // Every read fails closed: no role read means no approved roles and no
-    // servers (under unknown_role = enforce everyone is withheld; under warn
-    // the zone rule applies to everyone), no network read means no links.
-    let roles = roomler_core::business_authority::current_approved_roles(&state.core, tenant_id)
-        .await
-        .unwrap_or_default();
+    // New admissions fail closed when role reads fail (`approved_roles` is
+    // empty), while `roles_read_failed` is exposed so teardown/reconcile
+    // paths preserve existing sessions/carriers/DERP tables and retry.
+    let (roles, roles_read_failed) =
+        match roomler_core::business_authority::current_approved_roles(&state.core, tenant_id).await
+        {
+            Ok(r) => (r, false),
+            Err(e) => {
+                warn!(%tenant_id, %e, "business isolation: role approval read failed");
+                (std::collections::HashMap::new(), true)
+            }
+        };
     let servers = roles
         .iter()
         .filter_map(|(&(kind, id), &role)| {
@@ -306,7 +327,10 @@ pub async fn lines(state: &NetworkState, mode: Mode, tenant_id: ObjectId) -> Lin
                 .then_some(id)
         })
         .collect();
-    let approved_roles = roles.into_keys().collect();
+    let approved_roles: std::collections::HashSet<(
+        roomler_core::business_authority::DeviceKind,
+        ObjectId,
+    )> = roles.into_keys().collect();
     let links = state
         .overlay_networks
         .find_for_tenant(tenant_id)
@@ -322,7 +346,12 @@ pub async fn lines(state: &NetworkState, mode: Mode, tenant_id: ObjectId) -> Lin
         })
         .unwrap_or_default();
     let lines = if mode == Mode::Enforce {
-        crate::org_relay::cross_border_lines(state, tenant_id).await
+        crate::org_relay::cross_border_lines_with_roles(
+            state,
+            tenant_id,
+            Some((&approved_roles, unknown_role, roles_read_failed)),
+        )
+        .await
     } else {
         Vec::new()
     };
@@ -332,6 +361,7 @@ pub async fn lines(state: &NetworkState, mode: Mode, tenant_id: ObjectId) -> Lin
         links,
         unknown_role,
         approved_roles,
+        roles_read_failed,
     }
 }
 
@@ -368,6 +398,23 @@ pub async fn permit_refs(
         return Permit::Denied;
     }
     let topo = lines(state, mode, tenant_id).await;
+    permit_refs_with_lines(state, mode, &topo, tenant_id, a, b).await
+}
+
+pub async fn permit_refs_with_lines(
+    state: &NetworkState,
+    mode: Mode,
+    topo: &Lines,
+    tenant_id: ObjectId,
+    a: &NodeRef,
+    b: &NodeRef,
+) -> Permit {
+    if mode == Mode::Off {
+        return Permit::Denied;
+    }
+    if mode == Mode::Enforce && topo.roles_read_failed {
+        return Permit::Denied;
+    }
     let role_known = topo.refs_roles_known(a, b);
     if mode == Mode::Enforce && topo.unknown_role == Mode::Enforce && !role_known {
         return Permit::Denied;
@@ -478,6 +525,52 @@ pub async fn refuses_parties(
     }
     if a.0 == b.0 {
         let topo = lines(state, mode, a.0).await;
+        return refuses_parties_with_lines(state, &topo, a, b, what).await;
+    }
+    let (a, b) = (a.1, b.1);
+    if mode == Mode::Enforce {
+        warn!(
+            ?a,
+            ?b,
+            what,
+            "business isolation: pair not in one zone (or servers without a link); refusing"
+        );
+        return true;
+    }
+    info!(
+        ?a,
+        ?b,
+        what,
+        "business isolation [warn]: would refuse a pair not in one zone (or servers without a link)"
+    );
+    false
+}
+
+pub async fn refuses_parties_with_lines(
+    state: &NetworkState,
+    topo: &Lines,
+    a: (ObjectId, &NodeRef),
+    b: (ObjectId, &NodeRef),
+    what: &str,
+) -> bool {
+    let mode = mode(state);
+    if mode == Mode::Off {
+        return false;
+    }
+    if a.0 == b.0 {
+        if topo.roles_read_failed {
+            if mode == Mode::Enforce {
+                warn!(
+                    tenant_id = %a.0,
+                    a = ?a.1,
+                    b = ?b.1,
+                    what,
+                    "business isolation: role approvals unreadable; refusing"
+                );
+                return true;
+            }
+            return false;
+        }
         let role_known = topo.refs_roles_known(a.1, b.1);
         if !role_known {
             let unknown_devices = topo.unknown_refs_list(&[a.1, b.1]);
@@ -493,7 +586,7 @@ pub async fn refuses_parties(
                 return true;
             }
             if topo.unknown_role != Mode::Off {
-                info!(
+                debug!(
                     tenant_id = %a.0,
                     a = ?a.1,
                     b = ?b.1,

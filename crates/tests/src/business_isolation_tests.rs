@@ -5287,27 +5287,644 @@ async fn unknown_role_enforce_denies_all_business_connectivity_until_approved_an
 
 /// Item #96 (b) — under `app.business_isolation = enforce` and
 /// `app.business_unknown_role = warn`, `Unknown` devices in the same zone
-/// remain visible (while logging `would refuse: unknown_role`), and cross-zone
-/// `Unknown` devices are still strictly blocked by regional `enforce`.
-/// Under `app.business_unknown_role = enforce`, an `Unknown`-role relay agent
-/// with a `cross_border` edge does not create a cross-border line.
+/// remain permitted across all connectivity surfaces (netmap, DERP, tunnel
+/// roster/open/forward, 1-hop org-relay mint, cross-border line, and managed
+/// forward) while identifying the `Unknown` devices for `would refuse: unknown_role`
+/// logging, and cross-zone `Unknown` devices without a line remain strictly
+/// blocked by regional `enforce`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn unknown_role_warn_logs_without_blocking_same_zone_or_relaxing_zone_enforce() {
+    use crate::managed_forward_tests::{post as mf_post, report_listener, spec, verdict};
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+
     let rig = Rig::up_with_unknown_role("iso-unknown-warn", "enforce", "warn").await;
-    let mut us_a = rig.device("uw-us-a", Some(US_A)).await;
-    let mut us_b = rig.device("uw-us-b", Some(US_B)).await;
-    let mut cn_a = rig.device("uw-cn-a", Some(CN_A)).await;
-    join(&mut us_a, 1, Some(true), "8.8.8.1:41641").await;
+    let tid = rig.seeded.tenant_id.clone();
+    let tid_oid = ObjectId::parse_str(&tid).unwrap();
+    let admin = rig.seeded.admin.access_token.clone();
+    let wait = Duration::from_secs(5);
+
+    let policy_resp = rig
+        .app
+        .auth_post(&format!("/api/tenant/{tid}/tunnel-policy"), &admin)
+        .json(&json!({
+            "name": "allow-loopback-9000",
+            "subjects": [{ "kind": "all_users" }],
+            "targets": [{ "kind": "all_agents" }],
+            "allowlist": [{
+                "host_pattern": { "kind": "cidr", "value": "127.0.0.0/8" },
+                "port_range": { "low": 9000, "high": 9999 }
+            }],
+            "max_concurrent_flows": 32,
+            "max_bytes_per_session": 1048576
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert!(policy_resp.status().is_success());
+
+    let (us_a_id, us_a_tok) = enroll(&rig.app, &rig.seeded, "uw-us-a").await;
+    let (us_b_id, us_b_tok) = enroll(&rig.app, &rig.seeded, "uw-us-b").await;
+    let (cn_a_id, cn_a_tok) = enroll(&rig.app, &rig.seeded, "uw-cn-a").await;
+    let (us_r_id, us_r_tok) = enroll(&rig.app, &rig.seeded, "uw-us-r").await;
+
+    let mut us_a = connect_from(&rig.app, &us_a_tok, &["managed-forward"], Some(US_A)).await;
+    let mut us_b = connect_from(&rig.app, &us_b_tok, &[], Some(US_B)).await;
+    let mut cn_a = connect_from(&rig.app, &cn_a_tok, &[], Some(CN_A)).await;
+    let mut us_r = connect_from(&rig.app, &us_r_tok, &["relay-server"], Some(US_R)).await;
+    assert_observed(&rig.app, &us_a_id, Some(US_A)).await;
+    assert_observed(&rig.app, &us_b_id, Some(US_B)).await;
+    assert_observed(&rig.app, &cn_a_id, Some(CN_A)).await;
+    assert_observed(&rig.app, &us_r_id, Some(US_R)).await;
+
+    // 1. Netmap: same-zone Unknown peers see each other; cross-zone Unknown peer is withheld.
+    line_join(&mut us_a, 1, "8.8.8.1:41641", json!({})).await;
     let us_a_node = rig.node("uw-us-a").await;
-    let b_map = join(&mut us_b, 2, Some(true), "8.8.8.2:41641").await;
+    let b_map = line_join(&mut us_b, 2, "8.8.8.2:41641", json!({})).await;
+    let us_b_node = rig.node("uw-us-b").await;
     assert_eq!(
         peer_ids(&b_map),
         set(&[&us_a_node]),
         "warn mode permits same-zone Unknown peers"
     );
-    let cn_map = join(&mut cn_a, 3, Some(true), "223.5.5.1:41641").await;
+    let cn_map = line_join(&mut cn_a, 3, "223.5.5.1:41641", json!({})).await;
     assert!(
         peer_ids(&cn_map).is_empty(),
         "warn mode never relaxes cross-zone regional enforce"
+    );
+    line_join(&mut us_r, 4, "1.1.1.1:41641", json!({"relay_backbone_ready": true})).await;
+    let us_r_node = rig.node("uw-us-r").await;
+
+    // 2. DERP allow table: permits same-zone Unknown peers, denies cross-zone Unknown peers.
+    let net = rig.app.state.network();
+    assert!(
+        net.derp_acl.iter().next().unwrap().value().permits(&[1u8; 32], &[2u8; 32]),
+        "warn mode DERP permits same-zone Unknown peers"
+    );
+    assert!(
+        !net.derp_acl.iter().next().unwrap().value().permits(&[1u8; 32], &[3u8; 32]),
+        "warn mode DERP still denies cross-zone Unknown peers"
+    );
+
+    // Verify `Lines` under warn mode identifies Unknown devices for `would refuse: unknown_role`.
+    let topo = roomler_ai_mod_network::business_isolation::lines(
+        net,
+        roomler_ai_mod_network::business_isolation::Mode::Enforce,
+        tid_oid,
+    )
+    .await;
+    assert_eq!(
+        topo.unknown_role,
+        roomler_ai_mod_network::business_isolation::Mode::Warn
+    );
+    assert!(topo.approved_roles.is_empty());
+
+    // 3. Center-brokered Tunnel (roster + open + TCP forward) with Unknown roles in warn mode.
+    let et: Value = rig
+        .app
+        .auth_post(&format!("/api/tenant/{tid}/tunnel-client/enroll-token"), &admin)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let enrolled_tc: Value = rig
+        .app
+        .client
+        .post(rig.app.url("/api/tunnel-client/enroll"))
+        .json(&json!({
+            "enrollment_token": et["enrollment_token"],
+            "machine_id": "uw-tc-us",
+            "machine_name": "uw-tc-us",
+            "os": "linux",
+            "client_version": "0.4.151"
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let tc_tok = enrolled_tc["tunnel_client_token"].as_str().unwrap().to_owned();
+    let tc_url = format!(
+        "ws://{}/ws?token={}&role=tunnel-client",
+        rig.app.addr,
+        tc_tok.replace('+', "%2B").replace('/', "%2F").replace('=', "%3D")
+    );
+    let mut tc_req = tc_url.as_str().into_client_request().unwrap();
+    tc_req.headers_mut().insert("x-forwarded-for", US_A.parse().unwrap());
+    let (mut tc_ws, _) = tokio_tungstenite::connect_async(tc_req).await.unwrap();
+    line_join(&mut tc_ws, 5, "8.8.8.5:41641", json!({})).await;
+
+    let tc_agents: Value = rig
+        .app
+        .auth_get("/api/tunnel-client/agents", &tc_tok)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let tc_agent_ids: BTreeSet<String> = tc_agents
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a["agent_id"].as_str().unwrap().to_owned())
+        .collect();
+    assert!(
+        tc_agent_ids.contains(&us_a_id) && !tc_agent_ids.contains(&cn_a_id),
+        "warn mode tunnel roster includes same-zone Unknown agent and excludes cross-zone: {tc_agent_ids:?}"
+    );
+    tc_ws
+        .send(Message::Text(
+            json!({
+                "t": "rc:tunnel.open",
+                "agent_id": us_a_id,
+                "transport": "webrtc-dc-v1"
+            })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .unwrap();
+    let tc_opened = recv_t(&mut tc_ws, "rc:tunnel.opened", wait)
+        .await
+        .expect("warn mode permits tunnel open between Unknown devices");
+    let tc_session_id = tc_opened["session_id"].as_str().unwrap().to_owned();
+    tc_ws
+        .send(Message::Text(
+            json!({
+                "t": "rc:tunnel.tcp.request",
+                "session_id": tc_session_id,
+                "flow_id": 1,
+                "dst_host": "127.0.0.1",
+                "dst_port": 9000
+            })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .unwrap();
+    let forwarded = recv_t(&mut us_a, "rc:tunnel.tcp.forward", wait)
+        .await
+        .expect("warn mode permits tunnel TCP forward between Unknown devices");
+    assert_eq!(forwarded["flow_id"], json!(1));
+
+    // 4. 1-hop org-relay mint with Unknown roles in warn mode.
+    set_mode(&rig.app, &rig.seeded, "on").await;
+    assert_eq!(approve(&rig.app, &rig.seeded, &us_r_id, true).await, 200);
+    grant_relay(&rig.app, &rig.seeded, &us_r_node).await;
+    relay_request(&mut us_a, &us_b_node).await;
+    let _ = recv_t(&mut us_r, "rc:overlay.relay_serve", wait)
+        .await
+        .expect("warn mode permits 1-hop org-relay serve with Unknown roles");
+    let _ = recv_t(&mut us_a, "rc:overlay.relay_session", wait)
+        .await
+        .expect("warn mode permits 1-hop org-relay session with Unknown roles");
+
+    // 5. Cross-border line formation with Unknown relay roles in warn mode.
+    let (cn_r_id, cn_r_tok) = enroll(&rig.app, &rig.seeded, "uw-cn-r").await;
+    let mut cn_r = connect_from(&rig.app, &cn_r_tok, &["relay-server"], Some(CN_R)).await;
+    assert_observed(&rig.app, &cn_r_id, Some(CN_R)).await;
+    line_join(&mut cn_r, 6, "223.6.6.6:41641", json!({"relay_backbone_ready": true})).await;
+    assert_eq!(approve(&rig.app, &rig.seeded, &cn_r_id, true).await, 200);
+    let edge_path = format!("/api/tenant/{tid}/agent/{us_r_id}/peer-relay-policy");
+    let (st, _) = put(
+        &rig.app,
+        &edge_path,
+        &admin,
+        json!({
+            "serve": true,
+            "approved_backbone_edges": [{
+                "relay_agent_id": cn_r_id,
+                "endpoint": "10.88.0.2:3478",
+                "cross_border": true
+            }]
+        }),
+    )
+    .await;
+    assert_eq!(st, 200);
+    let topo_after_line = roomler_ai_mod_network::business_isolation::lines(
+        net,
+        roomler_ai_mod_network::business_isolation::Mode::Enforce,
+        tid_oid,
+    )
+    .await;
+    assert!(
+        !topo_after_line.lines.is_empty(),
+        "warn mode permits cross-border line between Unknown-role relays"
+    );
+
+    // 6. Managed forward between Unknown-role agents in warn mode.
+    report_listener(&rig.app, &mut us_a, &tid, &admin, &us_a_id, 22).await;
+    let ip_b = net
+        .overlay_nodes
+        .base
+        .find_by_id(ObjectId::parse_str(&us_b_node).unwrap())
+        .await
+        .unwrap()
+        .overlay_ip;
+    let mut fwd_spec = spec(&us_a_id, 15432);
+    fwd_spec["dest_addr"] = json!(ip_b);
+    fwd_spec["dest_port"] = json!(80);
+    fwd_spec["sources"] = json!([format!("{ip_b}/32")]);
+    let plan_path = format!("/api/tenant/{tid}/managed-forward/plan");
+    let (_, plan) = mf_post(&rig.app, &plan_path, &admin, &fwd_spec).await;
+    assert_eq!(verdict(&plan, "region"), "pass", "warn mode region check passes: {plan}");
+    assert_eq!(
+        verdict(&plan, "source region"),
+        "pass",
+        "warn mode source region check passes: {plan}"
+    );
+
+    // 7. Role-read outage under `business_isolation = enforce` + `business_unknown_role = warn`:
+    //    because `topo.servers` is derived from `current_approved_roles`, an unreadable
+    //    role table under `business_isolation = enforce` must fail closed for new admissions
+    //    (preventing unlinked same-zone servers from failing open) while preserving live
+    //    netmaps, DERP tables, tunnel sessions, and managed forwards.
+    roomler_core::business_authority::set_test_force_role_read_fail(tid_oid, true);
+    let (_, warn_outage_plan) = mf_post(&rig.app, &plan_path, &admin, &fwd_spec).await;
+    assert_eq!(
+        verdict(&warn_outage_plan, "region"),
+        "unknown",
+        "warn mode under enforce isolation returns unknown when role read fails: {warn_outage_plan}"
+    );
+    assert_eq!(
+        verdict(&warn_outage_plan, "source region"),
+        "unknown",
+        "warn mode under enforce isolation returns unknown source region when role read fails: {warn_outage_plan}"
+    );
+    let us_a_ref = roomler_ai_remote_control::models::NodeRef::Agent {
+        agent_id: ObjectId::parse_str(&us_a_id).unwrap(),
+    };
+    let us_b_ref = roomler_ai_remote_control::models::NodeRef::Agent {
+        agent_id: ObjectId::parse_str(&us_b_id).unwrap(),
+    };
+    assert_eq!(
+        roomler_ai_mod_network::business_isolation::permit_refs(
+            net,
+            roomler_ai_mod_network::business_isolation::Mode::Enforce,
+            tid_oid,
+            &us_a_ref,
+            &us_b_ref,
+        )
+        .await,
+        roomler_ai_mod_network::business_isolation::Permit::Denied,
+        "new admission permit_refs fails closed when role read fails under enforce isolation"
+    );
+    assert!(
+        roomler_ai_mod_network::business_isolation::refuses_parties(
+            net,
+            (tid_oid, &us_a_ref),
+            (tid_oid, &us_b_ref),
+            "test_warn_outage",
+        )
+        .await,
+        "new admission refuses_parties fails closed when role read fails under enforce isolation"
+    );
+    assert!(
+        !roomler_ai_mod_network::tunnel::reconcile_tunnel_sessions(net, tid_oid).await,
+        "reconcile_tunnel_sessions preserves live tunnel sessions on role read failure in warn mode"
+    );
+    let us_a_row = net
+        .overlay_nodes
+        .base
+        .find_by_id(ObjectId::parse_str(&us_a_node).unwrap())
+        .await
+        .unwrap();
+    assert!(
+        !roomler_ai_mod_network::overlay::refan_node(net, &us_a_row).await,
+        "refan_node preserves live peer netmaps on role read failure in warn mode"
+    );
+    roomler_core::business_authority::set_test_force_role_read_fail(tid_oid, false);
+}
+
+/// Mandatory Item 1 & 3 — under `app.business_isolation = enforce` and
+/// `app.business_unknown_role = enforce`, a transient storage failure when
+/// reading `current_approved_roles` must NOT be treated as mass revocation by
+/// reconcile/teardown paths (zero `removes`, zero `rc:tunnel.terminate`, zero
+/// `rc:overlay.relay_revoke`, unchanged `DerpAllowTable`, and no managed-forward
+/// withdrawal), while new admissions fail closed, and post-revocation background
+/// retry automatically completes once storage recovers.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn unknown_role_enforce_transient_role_read_failure_preserves_live_state_and_retries() {
+    use crate::managed_forward_tests::{post as mf_post, report_listener, spec, verdict};
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+
+    let rig = Rig::up_with_unknown_role("iso-unknown-transient-err", "enforce", "enforce").await;
+    let tid = rig.seeded.tenant_id.clone();
+    let tid_oid = ObjectId::parse_str(&tid).unwrap();
+    let admin = rig.seeded.admin.access_token.clone();
+    let wait = Duration::from_secs(5);
+
+    let policy_resp = rig
+        .app
+        .auth_post(&format!("/api/tenant/{tid}/tunnel-policy"), &admin)
+        .json(&json!({
+            "name": "allow-loopback-9000",
+            "subjects": [{ "kind": "all_users" }],
+            "targets": [{ "kind": "all_agents" }],
+            "allowlist": [{
+                "host_pattern": { "kind": "cidr", "value": "127.0.0.0/8" },
+                "port_range": { "low": 9000, "high": 9999 }
+            }],
+            "max_concurrent_flows": 32,
+            "max_bytes_per_session": 1048576
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert!(policy_resp.status().is_success());
+
+    let (us_a_id, us_a_tok) = enroll(&rig.app, &rig.seeded, "te-us-a").await;
+    let (us_b_id, us_b_tok) = enroll(&rig.app, &rig.seeded, "te-us-b").await;
+    let (us_r_id, us_r_tok) = enroll(&rig.app, &rig.seeded, "te-us-r").await;
+
+    let mut us_a = connect_from(&rig.app, &us_a_tok, &["managed-forward"], Some(US_A)).await;
+    let mut us_b = connect_from(&rig.app, &us_b_tok, &[], Some(US_B)).await;
+    let mut us_r = connect_from(&rig.app, &us_r_tok, &["relay-server"], Some(US_R)).await;
+    assert_observed(&rig.app, &us_a_id, Some(US_A)).await;
+    assert_observed(&rig.app, &us_b_id, Some(US_B)).await;
+    assert_observed(&rig.app, &us_r_id, Some(US_R)).await;
+
+    let et: Value = rig
+        .app
+        .auth_post(&format!("/api/tenant/{tid}/tunnel-client/enroll-token"), &admin)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let enrolled_tc: Value = rig
+        .app
+        .client
+        .post(rig.app.url("/api/tunnel-client/enroll"))
+        .json(&json!({
+            "enrollment_token": et["enrollment_token"],
+            "machine_id": "te-tc-us",
+            "machine_name": "te-tc-us",
+            "os": "linux",
+            "client_version": "0.4.151"
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let tc_id = enrolled_tc["tunnel_client_id"].as_str().unwrap().to_owned();
+    let tc_tok = enrolled_tc["tunnel_client_token"].as_str().unwrap().to_owned();
+    let tc_url = format!(
+        "ws://{}/ws?token={}&role=tunnel-client",
+        rig.app.addr,
+        tc_tok.replace('+', "%2B").replace('/', "%2F").replace('=', "%3D")
+    );
+    let mut tc_req = tc_url.as_str().into_client_request().unwrap();
+    tc_req.headers_mut().insert("x-forwarded-for", US_A.parse().unwrap());
+    let (mut tc_ws, _) = tokio_tungstenite::connect_async(tc_req).await.unwrap();
+
+    // Approve all devices as Client and join overlay.
+    rig.set_device_role("agent", &us_a_id, "client").await;
+    rig.set_device_role("agent", &us_b_id, "client").await;
+    rig.set_device_role("agent", &us_r_id, "client").await;
+    rig.set_device_role("tunnel-client", &tc_id, "client").await;
+
+    line_join(&mut us_a, 1, "8.8.8.1:41641", json!({})).await;
+    let us_a_node = rig.node("te-us-a").await;
+    line_join(&mut us_b, 2, "8.8.8.2:41641", json!({})).await;
+    let us_b_node = rig.node("te-us-b").await;
+    line_join(&mut us_r, 4, "1.1.1.1:41641", json!({})).await;
+    let us_r_node = rig.node("te-us-r").await;
+    line_join(&mut tc_ws, 5, "8.8.8.5:41641", json!({})).await;
+
+    let net = rig.app.state.network();
+    let tc_oid = ObjectId::parse_str(&tc_id).unwrap();
+    let tc_node = roomler_ai_mod_network::overlay::current_node(
+        net,
+        roomler_ai_mod_network::overlay::NodeIdentity::TunnelClient(tc_oid),
+    )
+    .await
+    .unwrap()
+    .id
+    .unwrap()
+    .to_hex();
+
+    set_mode(&rig.app, &rig.seeded, "on").await;
+    assert_eq!(approve(&rig.app, &rig.seeded, &us_r_id, true).await, 200);
+    grant_relay(&rig.app, &rig.seeded, &us_r_node).await;
+
+    // Drain initial join deltas.
+    let _ = deltas(&mut us_a, Duration::from_millis(300)).await;
+    let _ = deltas(&mut us_b, Duration::from_millis(300)).await;
+    let _ = deltas(&mut tc_ws, Duration::from_millis(300)).await;
+
+    let net_id = net.overlay_networks.get_or_create(tid_oid).await.unwrap().id.unwrap();
+    assert!(roomler_ai_mod_network::derp_acl::rebuild(net, tid_oid, net_id).await);
+    assert!(net.derp_acl.get(&net_id).unwrap().permits(&[1u8; 32], &[2u8; 32]));
+    assert!(net.derp_acl.get(&net_id).unwrap().permits(&[5u8; 32], &[1u8; 32]));
+
+    // Open tunnel session tc_ws -> us_a.
+    tc_ws
+        .send(Message::Text(
+            json!({
+                "t": "rc:tunnel.open",
+                "agent_id": us_a_id,
+                "transport": "webrtc-dc-v1"
+            })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .unwrap();
+    let tc_opened = recv_t(&mut tc_ws, "rc:tunnel.opened", wait).await.unwrap();
+    let tc_session_id = tc_opened["session_id"].as_str().unwrap().to_owned();
+
+    // Mint 1-hop org-relay session us_a <-> us_b via us_r.
+    let us_a_oid = ObjectId::parse_str(&us_a_node).unwrap();
+    let us_b_oid = ObjectId::parse_str(&us_b_node).unwrap();
+    let pair = roomler_ai_mod_network::overlay::pair_key(us_a_oid, us_b_oid);
+    relay_request(&mut us_a, &us_b_node).await;
+    let _ = recv_t(&mut us_r, "rc:overlay.relay_serve", wait).await.unwrap();
+    let _ = recv_t(&mut us_a, "rc:overlay.relay_session", wait).await.unwrap();
+    let _ = recv_t(&mut us_b, "rc:overlay.relay_session", wait).await.unwrap();
+    assert!(net.org_relay.active_session(&pair).is_some());
+
+    // Create managed forward on us_a admitting tc_ip -> ip_b.
+    report_listener(&rig.app, &mut us_a, &tid, &admin, &us_a_id, 22).await;
+    let ip_b = net.overlay_nodes.base.find_by_id(us_b_oid).await.unwrap().overlay_ip;
+    let ip_tc = net
+        .overlay_nodes
+        .base
+        .find_by_id(ObjectId::parse_str(&tc_node).unwrap())
+        .await
+        .unwrap()
+        .overlay_ip;
+    let mut fwd_spec = spec(&us_a_id, 15432);
+    fwd_spec["dest_addr"] = json!(ip_b);
+    fwd_spec["dest_port"] = json!(80);
+    fwd_spec["sources"] = json!([format!("{ip_tc}/32")]);
+    let _ = recv_t(&mut us_a, "rc:forward.set", Duration::from_millis(300)).await;
+    let (create_status, created_fwd) = mf_post(
+        &rig.app,
+        &format!("/api/tenant/{tid}/managed-forward"),
+        &admin,
+        &fwd_spec,
+    )
+    .await;
+    assert_eq!(create_status, 201, "{created_fwd}");
+    let init_fwd = recv_t(&mut us_a, "rc:forward.set", wait).await.unwrap();
+    assert_eq!(init_fwd["forwards"].as_array().unwrap().len(), 1);
+
+    // ── Inject simulated transient role-read storage failure ──
+    roomler_core::business_authority::set_test_force_role_read_fail(tid_oid, true);
+
+    // New managed-forward plan during outage fails closed with Verdict::Unknown.
+    let plan_path = format!("/api/tenant/{tid}/managed-forward/plan");
+    let (_, outage_plan) = mf_post(&rig.app, &plan_path, &admin, &fwd_spec).await;
+    assert_eq!(verdict(&outage_plan, "region"), "unknown", "{outage_plan}");
+    assert_eq!(verdict(&outage_plan, "source region"), "unknown", "{outage_plan}");
+
+    // 1. Direct reconcile calls during outage must return false and preserve ALL live state.
+    assert!(
+        !roomler_ai_mod_network::org_relay::recheck_zones(
+            net,
+            ObjectId::parse_str(&us_a_id).unwrap(),
+            "test_role_read_outage",
+        )
+        .await,
+        "org_relay::recheck_zones must return false on role read failure"
+    );
+    assert!(
+        !roomler_ai_mod_network::derp_acl::rebuild(net, tid_oid, net_id).await,
+        "derp_acl::rebuild must return false on role read failure"
+    );
+    assert!(
+        net.derp_acl.get(&net_id).unwrap().permits(&[1u8; 32], &[2u8; 32]),
+        "DERP table must remain intact on role read failure"
+    );
+    assert!(
+        net.derp_acl.get(&net_id).unwrap().permits(&[5u8; 32], &[1u8; 32]),
+        "DERP table must remain intact for tc_us on role read failure"
+    );
+    assert!(
+        !roomler_ai_mod_network::tunnel::reconcile_tunnel_sessions(net, tid_oid).await,
+        "reconcile_tunnel_sessions must return false on role read failure"
+    );
+    assert!(
+        !roomler_ai_mod_network::managed_forward::reconcile_tenant_forwards(net, tid_oid).await,
+        "reconcile_tenant_forwards must return false on role read failure"
+    );
+    let us_a_row = net.overlay_nodes.base.find_by_id(us_a_oid).await.unwrap();
+    assert!(
+        !roomler_ai_mod_network::overlay::refan_node(net, &us_a_row).await,
+        "refan_node must return false on role read failure"
+    );
+
+    // Verify zero removes, zero TunnelTerminate, zero forward withdrawals, and active org-relay kept during outage.
+    let (_, rm_b_during) = deltas(&mut us_b, Duration::from_millis(300)).await;
+    assert!(
+        rm_b_during.is_empty(),
+        "role read failure must NOT emit netmap removes to us_b: {rm_b_during:?}"
+    );
+    assert!(
+        recv_t(&mut tc_ws, "rc:tunnel.terminate", Duration::from_millis(200))
+            .await
+            .is_none(),
+        "role read failure must NOT emit TunnelTerminate"
+    );
+    assert!(
+        recv_t(&mut us_a, "rc:forward.set", Duration::from_millis(200))
+            .await
+            .is_none(),
+        "role read failure must NOT push a managed-forward withdrawal"
+    );
+    assert!(
+        net.org_relay.active_session(&pair).is_some(),
+        "role read failure must NOT tear down active org-relay session"
+    );
+
+    // 2. Superseding a failed `unknown` approval with a `client` re-approval before retry
+    //    fires must cancel the stale `unknown` retry and keep tc_us's session + DERP alive.
+    let tc_sid_oid = ObjectId::parse_str(&tc_session_id).unwrap();
+    rig.set_device_role("tunnel-client", &tc_id, "unknown").await;
+    assert!(
+        net.derp_acl.get(&net_id).unwrap().permits(&[5u8; 32], &[1u8; 32]),
+        "during role-read outage, DERP entry for tc_us is preserved until storage recovers"
+    );
+    assert!(
+        net.tunnel_clients_by_session.contains_key(&tc_sid_oid),
+        "during role-read outage, tunnel session for tc_us is preserved until storage recovers"
+    );
+    rig.set_device_role("tunnel-client", &tc_id, "client").await;
+    roomler_core::business_authority::set_test_force_role_read_fail(tid_oid, false);
+    assert!(
+        recv_t(&mut tc_ws, "rc:tunnel.terminate", Duration::from_millis(350))
+            .await
+            .is_none(),
+        "superseded unknown -> client approval must not terminate tc_us on retry"
+    );
+    assert!(
+        net.tunnel_clients_by_session.contains_key(&tc_sid_oid),
+        "superseded unknown -> client approval keeps tunnel session in map"
+    );
+    assert!(
+        net.derp_acl.get(&net_id).unwrap().permits(&[5u8; 32], &[1u8; 32]),
+        "superseded unknown -> client approval keeps tc_us permitted in DERP"
+    );
+
+    // 3. Revoke tc_us to "unknown" while role reads are failing again:
+    //    `approve` writes the revocation to DB, runs the first pass (which sees
+    //    the read failure and preserves live DERP/tunnel/forward state during the
+    //    outage), and spawns the background retry task.
+    roomler_core::business_authority::set_test_force_role_read_fail(tid_oid, true);
+    rig.set_device_role("tunnel-client", &tc_id, "unknown").await;
+    assert!(
+        net.derp_acl.get(&net_id).unwrap().permits(&[5u8; 32], &[1u8; 32]),
+        "before storage recovers, tc_us DERP entry is still preserved"
+    );
+    assert!(
+        net.tunnel_clients_by_session.contains_key(&tc_sid_oid),
+        "before storage recovers, tc_us tunnel session is still preserved"
+    );
+    assert!(
+        net.derp_acl.get(&net_id).unwrap().permits(&[1u8; 32], &[2u8; 32]),
+        "unaffected pair us_a <-> us_b stays permitted in DERP during read outage"
+    );
+    assert!(
+        net.org_relay.active_session(&pair).is_some(),
+        "unaffected org-relay session us_a <-> us_b stays alive during read outage"
+    );
+
+    // Now clear the simulated storage failure so the spawned retry task succeeds.
+    roomler_core::business_authority::set_test_force_role_read_fail(tid_oid, false);
+
+    let tc_term = recv_t(&mut tc_ws, "rc:tunnel.terminate", wait)
+        .await
+        .expect("background retry terminates revoked tunnel-client session once storage recovers");
+    assert_eq!(tc_term["session_id"], json!(tc_session_id));
+    let _ = recv_t(&mut us_a, "rc:tunnel.terminate", wait)
+        .await
+        .expect("background retry terminates target agent side once storage recovers");
+    let withdrawn = recv_t(&mut us_a, "rc:forward.set", wait)
+        .await
+        .expect("background retry withdraws managed forward admitting revoked tc_us");
+    assert!(withdrawn["forwards"].as_array().unwrap().is_empty());
+    let (_, rm_a_after) = deltas(&mut us_a, Duration::from_millis(1200)).await;
+    assert!(
+        rm_a_after.contains(&tc_node),
+        "background retry fans remove for revoked tc_node to us_a: {rm_a_after:?}"
+    );
+    assert!(
+        !net.derp_acl.get(&net_id).unwrap().permits(&[5u8; 32], &[1u8; 32]),
+        "background retry rebuilds DERP table denying revoked tc_us"
+    );
+    assert!(
+        net.derp_acl.get(&net_id).unwrap().permits(&[1u8; 32], &[2u8; 32]),
+        "healthy approved pair us_a <-> us_b remains permitted in DERP"
+    );
+    assert!(
+        net.org_relay.active_session(&pair).is_some(),
+        "healthy approved org-relay session us_a <-> us_b remains active"
     );
 }

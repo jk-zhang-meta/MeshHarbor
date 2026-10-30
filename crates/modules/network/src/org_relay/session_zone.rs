@@ -48,7 +48,7 @@ pub(super) async fn check(state: &NetworkState, session: &OrgRelaySession) -> De
             _ => PartyZone::Unknown,
         });
     }
-    let unknown = zones.contains(&PartyZone::Unknown);
+    let mut unknown = zones.contains(&PartyZone::Unknown);
     let mut invalid = zones.contains(&PartyZone::Invalid);
     if !session.hops.is_empty() {
         invalid |= relation_invalid(zones[0], zones[1], false);
@@ -61,18 +61,25 @@ pub(super) async fn check(state: &NetworkState, session: &OrgRelaySession) -> De
         }
         invalid |= relation_invalid(zones[zones.len() - 2], zones[zones.len() - 1], false);
     } else if !unknown && !invalid {
-        let permit = iso::permit_refs(
-            state,
-            iso::mode(state),
-            session.tenant_id,
-            &session.members[0].party.node_ref,
-            &session.members[1].party.node_ref,
-        )
-        .await;
-        invalid = match zones[1] {
-            PartyZone::Known(relay) => !permit.relay_zones().contains(&relay),
-            _ => true,
-        };
+        let mode = iso::mode(state);
+        let topo = iso::lines(state, mode, session.tenant_id).await;
+        if topo.roles_read_failed {
+            unknown = true;
+        } else {
+            let permit = iso::permit_refs_with_lines(
+                state,
+                mode,
+                &topo,
+                session.tenant_id,
+                &session.members[0].party.node_ref,
+                &session.members[1].party.node_ref,
+            )
+            .await;
+            invalid = match zones[1] {
+                PartyZone::Known(relay) => !permit.relay_zones().contains(&relay),
+                _ => true,
+            };
+        }
     }
     #[cfg(feature = "path-planner-test-support")]
     super::candidate_test_support::pause_session_zone_if_armed(&session.pair_key).await;

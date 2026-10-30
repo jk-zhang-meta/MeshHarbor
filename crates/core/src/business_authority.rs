@@ -605,10 +605,77 @@ pub async fn approve_device_role(
 /// each re-checked against its live registration (identity and token
 /// generation, quarantine, the owner's admission), never the stored row alone.
 /// One direction only: serving as a relay never makes a device a Server.
+static TEST_FAIL_ROLE_READ_TENANTS: std::sync::LazyLock<
+    std::sync::RwLock<std::collections::HashSet<ObjectId>>,
+> = std::sync::LazyLock::new(|| std::sync::RwLock::new(std::collections::HashSet::new()));
+
+/// Test hook to simulate transient storage failure in `current_approved_roles`
+/// and `current_server_agents` for a specific `tenant_id`.
+pub fn set_test_force_role_read_fail(tenant_id: ObjectId, fail: bool) {
+    let mut guard = TEST_FAIL_ROLE_READ_TENANTS
+        .write()
+        .unwrap_or_else(|e| e.into_inner());
+    if fail {
+        guard.insert(tenant_id);
+    } else {
+        guard.remove(&tenant_id);
+    }
+}
+
+fn check_test_role_read_fail(tenant_id: ObjectId) -> Result<(), ApiError> {
+    if TEST_FAIL_ROLE_READ_TENANTS
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .contains(&tenant_id)
+    {
+        return Err(ApiError::ServiceUnavailable(
+            "Simulated role approval storage failure".into(),
+        ));
+    }
+    Ok(())
+}
+
+async fn admitted_owner_set(
+    core: &Core,
+    owner_ids: &[ObjectId],
+) -> Result<Option<std::collections::HashSet<ObjectId>>, ApiError> {
+    if !core.settings.auth.account_approval.enabled {
+        return Ok(None);
+    }
+    if owner_ids.is_empty() {
+        return Ok(Some(std::collections::HashSet::new()));
+    }
+    let users: Vec<roomler_ai_db::models::User> = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        async {
+            core.db
+                .collection::<roomler_ai_db::models::User>(roomler_ai_db::models::User::COLLECTION)
+                .find(doc! { "_id": { "$in": owner_ids } })
+                .await
+                .map_err(storage_error)?
+                .try_collect()
+                .await
+                .map_err(storage_error)
+        },
+    )
+    .await
+    .map_err(|_| ApiError::ServiceUnavailable("Account admission lookup timed out".into()))??;
+    let mut admitted = std::collections::HashSet::with_capacity(users.len());
+    for user in users {
+        if let Some(uid) = user.id
+            && crate::admission::require_user(core, &user, None).is_ok()
+        {
+            admitted.insert(uid);
+        }
+    }
+    Ok(Some(admitted))
+}
+
 pub async fn current_server_agents(
     core: &Core,
     tenant_id: ObjectId,
 ) -> Result<Vec<Agent>, ApiError> {
+    check_test_role_read_fail(tenant_id)?;
     let Some(owner) = current_owner(core)? else {
         return Ok(Vec::new());
     };
@@ -624,16 +691,35 @@ pub async fn current_server_agents(
         .try_collect()
         .await
         .map_err(storage_error)?;
+    if approvals.is_empty() {
+        return Ok(Vec::new());
+    }
+    let agent_ids: Vec<ObjectId> = approvals.iter().map(|a| a.identity.device_id).collect();
+    let agents: Vec<Agent> = core
+        .db
+        .collection::<Agent>(Agent::COLLECTION)
+        .find(doc! {
+            "_id": { "$in": &agent_ids },
+            "tenant_id": tenant_id,
+            "deleted_at": bson::Bson::Null,
+        })
+        .await
+        .map_err(storage_error)?
+        .try_collect()
+        .await
+        .map_err(storage_error)?;
+    let mut agent_map: std::collections::HashMap<ObjectId, Agent> = agents
+        .into_iter()
+        .filter_map(|a| Some((a.id?, a)))
+        .collect();
+    let mut owner_ids: Vec<ObjectId> = agent_map.values().map(|a| a.owner_user_id).collect();
+    owner_ids.sort_unstable();
+    owner_ids.dedup();
+    let admitted = admitted_owner_set(core, &owner_ids).await?;
     let now = DateTime::now();
     let mut out = Vec::new();
     for approval in approvals {
-        let Some(agent) = core
-            .db
-            .collection::<Agent>(Agent::COLLECTION)
-            .find_one(doc! { "_id": approval.identity.device_id, "tenant_id": tenant_id, "deleted_at": bson::Bson::Null })
-            .await
-            .map_err(storage_error)?
-        else {
+        let Some(agent) = agent_map.remove(&approval.identity.device_id) else {
             continue;
         };
         let Ok(device) = AuthenticatedDevice::from_agent(&agent) else {
@@ -641,9 +727,9 @@ pub async fn current_server_agents(
         };
         if effective_role(Some(&approval), &device, Some(owner), now) != DeviceUseRole::Server
             || matches!(agent.status, AgentStatus::Quarantined)
-            || crate::admission::authorize_user_id(core, agent.owner_user_id, None)
-                .await
-                .is_err()
+            || admitted
+                .as_ref()
+                .is_some_and(|set| !set.contains(&agent.owner_user_id))
         {
             continue;
         }
@@ -655,11 +741,12 @@ pub async fn current_server_agents(
 /// Every device (`Agent` or `TunnelClient`) in `tenant_id` whose current
 /// effective role is approved (`Client` or `Server`), re-checked against its
 /// live registration (`machine_id`, `token_generation`, `deleted_at`, agent
-/// quarantine, and the device owner's admission).
+/// quarantine, and the device owner's admission) using batch `$in` queries.
 pub async fn current_approved_roles(
     core: &Core,
     tenant_id: ObjectId,
 ) -> Result<std::collections::HashMap<(DeviceKind, ObjectId), DeviceUseRole>, ApiError> {
+    check_test_role_read_fail(tenant_id)?;
     let Some(owner) = current_owner(core)? else {
         return Ok(std::collections::HashMap::new());
     };
@@ -677,51 +764,86 @@ pub async fn current_approved_roles(
         .try_collect()
         .await
         .map_err(storage_error)?;
+    if approvals.is_empty() {
+        return Ok(std::collections::HashMap::new());
+    }
+    let mut agent_ids = Vec::new();
+    let mut client_ids = Vec::new();
+    for a in &approvals {
+        match a.identity.kind {
+            DeviceKind::Agent => agent_ids.push(a.identity.device_id),
+            DeviceKind::TunnelClient => client_ids.push(a.identity.device_id),
+        }
+    }
+    let agents: std::collections::HashMap<ObjectId, Agent> = if agent_ids.is_empty() {
+        std::collections::HashMap::new()
+    } else {
+        let rows: Vec<Agent> = core
+            .db
+            .collection::<Agent>(Agent::COLLECTION)
+            .find(doc! {
+                "_id": { "$in": &agent_ids },
+                "tenant_id": tenant_id,
+                "deleted_at": bson::Bson::Null,
+            })
+            .await
+            .map_err(storage_error)?
+            .try_collect()
+            .await
+            .map_err(storage_error)?;
+        rows.into_iter().filter_map(|a| Some((a.id?, a))).collect()
+    };
+    let clients: std::collections::HashMap<ObjectId, TunnelClient> = if client_ids.is_empty() {
+        std::collections::HashMap::new()
+    } else {
+        let rows: Vec<TunnelClient> = core
+            .db
+            .collection::<TunnelClient>(TunnelClient::COLLECTION)
+            .find(doc! {
+                "_id": { "$in": &client_ids },
+                "tenant_id": tenant_id,
+                "deleted_at": bson::Bson::Null,
+            })
+            .await
+            .map_err(storage_error)?
+            .try_collect()
+            .await
+            .map_err(storage_error)?;
+        rows.into_iter().filter_map(|c| Some((c.id?, c))).collect()
+    };
+    let mut owner_ids: Vec<ObjectId> = agents
+        .values()
+        .map(|a| a.owner_user_id)
+        .chain(clients.values().map(|c| c.owner_user_id))
+        .collect();
+    owner_ids.sort_unstable();
+    owner_ids.dedup();
+    let admitted = admitted_owner_set(core, &owner_ids).await?;
     let now = DateTime::now();
-    let mut out = std::collections::HashMap::new();
+    let mut out = std::collections::HashMap::with_capacity(approvals.len());
     for approval in approvals {
         let device_id = approval.identity.device_id;
         let (device, owner_user_id) = match approval.identity.kind {
             DeviceKind::Agent => {
-                let Some(agent) = core
-                    .db
-                    .collection::<Agent>(Agent::COLLECTION)
-                    .find_one(doc! {
-                        "_id": device_id,
-                        "tenant_id": tenant_id,
-                        "deleted_at": bson::Bson::Null,
-                    })
-                    .await
-                    .map_err(storage_error)?
-                else {
+                let Some(agent) = agents.get(&device_id) else {
                     continue;
                 };
                 if matches!(agent.status, AgentStatus::Quarantined) {
                     continue;
                 }
-                let Ok(device) = AuthenticatedDevice::from_agent(&agent) else {
+                let Ok(device) = AuthenticatedDevice::from_agent(agent) else {
                     continue;
                 };
                 (device, agent.owner_user_id)
             }
             DeviceKind::TunnelClient => {
-                let Some(client) = core
-                    .db
-                    .collection::<TunnelClient>(TunnelClient::COLLECTION)
-                    .find_one(doc! {
-                        "_id": device_id,
-                        "tenant_id": tenant_id,
-                        "deleted_at": bson::Bson::Null,
-                    })
-                    .await
-                    .map_err(storage_error)?
-                else {
+                let Some(client) = clients.get(&device_id) else {
                     continue;
                 };
                 if matches!(client.status, AgentStatus::Quarantined) {
                     continue;
                 }
-                let Ok(device) = AuthenticatedDevice::from_tunnel_client(&client) else {
+                let Ok(device) = AuthenticatedDevice::from_tunnel_client(client) else {
                     continue;
                 };
                 (device, client.owner_user_id)
@@ -730,9 +852,9 @@ pub async fn current_approved_roles(
         let role = effective_role(Some(&approval), &device, Some(owner), now);
         if role != approval.role
             || role == DeviceUseRole::Unknown
-            || crate::admission::authorize_user_id(core, owner_user_id, None)
-                .await
-                .is_err()
+            || admitted
+                .as_ref()
+                .is_some_and(|set| !set.contains(&owner_user_id))
         {
             continue;
         }
@@ -753,6 +875,9 @@ pub async fn trial_device_role_evidence(
     device_id: ObjectId,
 ) -> TrialServerEvidence {
     use TrialServerEvidence as E;
+    if check_test_role_read_fail(tenant_id).is_err() {
+        return E::Unknown;
+    }
     let owner = match current_owner(core) {
         Ok(Some(owner)) => owner,
         Ok(None) => return E::ApprovalDisabled,
@@ -871,6 +996,9 @@ pub async fn trial_server_evidence(
     agent_id: ObjectId,
 ) -> TrialServerEvidence {
     use TrialServerEvidence as E;
+    if check_test_role_read_fail(tenant_id).is_err() {
+        return E::Unknown;
+    }
     let owner = match current_owner(core) {
         Ok(Some(owner)) => owner,
         Ok(None) => return E::ApprovalDisabled,
