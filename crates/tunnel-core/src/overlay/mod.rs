@@ -73,6 +73,9 @@ pub(crate) mod pf;
 /// MeshHarbor §6 item 5 — UDP port mapping on the local gateway (PCP, then
 /// NAT-PMP). One exchange per call; the caller owns refresh and release.
 pub mod portmap;
+/// B7 — optional post-quantum WireGuard pre-shared key agreement (ML-KEM-768)
+/// and rotation, default off.
+pub mod pq_psk;
 pub mod relay_link;
 pub mod router;
 pub mod runtime;
