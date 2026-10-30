@@ -31,6 +31,32 @@ pub(super) fn classify_inbound_src(src: SocketAddr, peer_srflx: &[String]) -> (D
 }
 
 impl OverlayRuntime {
+    /// Note (f) — true when a direct incumbent has an active `pathmon`
+    /// upward/demote probe (`establish.rs:1626/1718`) in flight on a distinct
+    /// non-spray tier/destination. Such a probe legitimately coexists with the
+    /// direct incumbent ("incumbent held until latch") and must not be aborted
+    /// as a residual or birthday-spray shadow probe when an inbound INIT
+    /// reaches `handle_direct_inbound`.
+    fn has_active_pathmon_probe(
+        &self,
+        node_id: &ObjectId,
+        pubkey: &[u8; 32],
+        wg: &WgDevice,
+        by_node: &HashMap<ObjectId, Installed>,
+        upgrade_probes: &HashMap<ObjectId, UpgradeProbe>,
+    ) -> bool {
+        by_node.get(node_id).is_some_and(|inst| {
+            inst.is_direct
+                && upgrade_probes.get(node_id).is_some_and(|p| {
+                    p.initiated
+                        && &p.pubkey == pubkey
+                        && p.tier != inst.tier
+                        && Some(p.dst) != wg.direct_src_of(pubkey)
+                        && !p.local.is_some_and(|l| self.is_spray_local(l))
+                })
+        })
+    }
+
     /// Phase A — act on an AUTHENTICATED inbound direct handshake initiation
     /// forwarded by a demux loop ([`crate::overlay::wg::DirectInbound`]): a NAT'd client
     /// dialing our advertised public endpoint (the exit-side accept — we can't
@@ -47,7 +73,6 @@ impl OverlayRuntime {
     /// suppressed on the matching tier (monitor penalty) is left on relay
     /// (anti-thrash).
     #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
     pub(super) async fn handle_direct_inbound(
         &self,
         wg: &mut WgDevice,
@@ -58,6 +83,34 @@ impl OverlayRuntime {
         upgrade_probes: &mut HashMap<ObjectId, UpgradeProbe>,
         relay_bq: &mut RelayBuildQueue,
         inb: crate::overlay::wg::DirectInbound,
+    ) {
+        let make_before_break = crate::overlay::direct::make_before_break_enabled();
+        self.handle_direct_inbound_with_mbb(
+            wg,
+            by_node,
+            relay,
+            tun,
+            current_peers,
+            upgrade_probes,
+            relay_bq,
+            inb,
+            make_before_break,
+        )
+        .await;
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) async fn handle_direct_inbound_with_mbb(
+        &self,
+        wg: &mut WgDevice,
+        by_node: &mut HashMap<ObjectId, Installed>,
+        relay: &mut Option<RelayCoordinator>,
+        tun: &Arc<dyn TunIo>,
+        current_peers: &HashMap<ObjectId, NetmapPeer>,
+        upgrade_probes: &mut HashMap<ObjectId, UpgradeProbe>,
+        relay_bq: &mut RelayBuildQueue,
+        inb: crate::overlay::wg::DirectInbound,
+        make_before_break: bool,
     ) {
         let Some(pubkey) = wg.authenticate_init(&inb.packet) else {
             return; // unparseable / forged — drop
@@ -93,7 +146,9 @@ impl OverlayRuntime {
         // same auth → Drop → ForwardInit path — a livelock burning a DH per
         // cycle and never answering the peer.
         if wg.direct_src_of(&pubkey) == Some(inb.src) {
-            if upgrade_probes.remove(&node_id).is_some() || wg.has_direct_probe(&pubkey) {
+            if !self.has_active_pathmon_probe(&node_id, &pubkey, wg, by_node, upgrade_probes)
+                && (upgrade_probes.remove(&node_id).is_some() || wg.has_direct_probe(&pubkey))
+            {
                 self.shadow(|s| s.mon.on_probe_aborted(&node_id));
                 wg.drop_direct_probe(&pubkey).await;
             }
@@ -118,7 +173,6 @@ impl OverlayRuntime {
         }
         // Classify the arriving source into a tier (pure helper below).
         let now = Instant::now();
-        let make_before_break = crate::overlay::direct::make_before_break_enabled();
         let (tier, is_public_src) = classify_inbound_src(inb.src, &np.srflx_endpoints);
 
         // P3 PR-A — the monitor's inbound decision (evidence feed + its own
@@ -160,6 +214,18 @@ impl OverlayRuntime {
         // untouched — so a peer whose direct init reaches us over a path that
         // can't carry OUR reply (one-way) doesn't cost us the relay.
         if make_before_break {
+            // Note (e): When the peer is currently installed on a relay carrier,
+            // verify that the arriving HandshakeInit is strictly newer than the
+            // relay Tunn's TAI64N watermark before answering, adopting, or
+            // starting a shadow direct probe.
+            if by_node
+                .get(&node_id)
+                .is_some_and(|e| !e.is_direct && e.pubkey == pubkey)
+                && !wg.init_is_fresh_for_installed_peer(&pubkey, &inb.packet)
+            {
+                record_inbound(Some(path::PathAction::Keep));
+                return;
+            }
             // A retransmitted init while we're already probing this src → just
             // answer it and let the in-flight probe keep converging.
             //
@@ -172,15 +238,36 @@ impl OverlayRuntime {
             if wg.has_direct_probe(&pubkey) {
                 let arrived = inb.sock.local_addr().ok();
                 if by_node.get(&node_id).is_some_and(|e| e.is_direct) {
-                    // A direct incumbent must never retain or answer on a
-                    // residual shadow probe; drop the stale probe and heal
-                    // the installed peer's reverse entry before evaluating
-                    // the inbound INIT against the installed Tunn below.
-                    upgrade_probes.remove(&node_id);
-                    self.shadow(|s| s.mon.on_probe_aborted(&node_id));
-                    wg.drop_direct_probe(&pubkey).await;
-                    if let Some(cur_src) = wg.direct_src_of(&pubkey) {
-                        wg.reassert_plane_src(&pubkey, cur_src);
+                    // Note (f): An active pathmon upward/demote probe
+                    // legitimately coexists with a direct incumbent ("incumbent
+                    // held until latch", establish.rs). Only discard a probe
+                    // beside a direct incumbent when it is not an active
+                    // pathmon probe; do not abort an active pathmon probe
+                    // before `try_repoint_direct_peer_init` checks TAI64N
+                    // freshness (even if a replayed INIT arrived on a spray
+                    // socket).
+                    let preserve_pathmon_probe = self.has_active_pathmon_probe(
+                        &node_id,
+                        &pubkey,
+                        wg,
+                        by_node,
+                        upgrade_probes,
+                    );
+                    if !preserve_pathmon_probe {
+                        upgrade_probes.remove(&node_id);
+                        self.shadow(|s| s.mon.on_probe_aborted(&node_id));
+                        wg.drop_direct_probe(&pubkey).await;
+                        if let Some(cur_src) = wg.direct_src_of(&pubkey) {
+                            wg.reassert_plane_src(&pubkey, cur_src);
+                        }
+                    } else if upgrade_probes
+                        .get(&node_id)
+                        .is_some_and(|p| p.dst == inb.src && p.local == arrived)
+                    {
+                        record_inbound(Some(path::PathAction::Keep));
+                        wg.reassert_probe_plane_src(&pubkey, inb.src);
+                        wg.feed_direct(inb.src, inb.sock.clone(), &inb.packet).await;
+                        return;
                     }
                 } else {
                     let moves = arrived.is_some_and(|a| self.is_spray_local(a))
@@ -289,18 +376,24 @@ impl OverlayRuntime {
             }
         }
 
-        // If the peer is already installed on a direct carrier with the same
-        // static key, authenticate and anti-replay-check the arriving INIT
-        // against that installed `Tunn` BEFORE repointing in place. An
-        // intercepted INIT replayed from a new source address (or onto a live
-        // spray socket) is rejected by boringtun's TAI64N watermark without
-        // tearing down the active direct session.
+        // If the peer is already installed with the same static key (whether on
+        // a direct carrier OR a relay carrier when make-before-break is off),
+        // authenticate and anti-replay-check the arriving INIT against that
+        // installed `Tunn` BEFORE repointing in place. An intercepted INIT
+        // replayed from a new source address (or onto a live spray socket) is
+        // rejected by boringtun's TAI64N watermark without tearing down the
+        // active direct or relay session (Notes d & e).
         if by_node
             .get(&node_id)
-            .is_some_and(|e| e.is_direct && e.pubkey == pubkey)
-            && wg.direct_peer_identity(&pubkey).is_some()
+            .is_some_and(|e| e.pubkey == pubkey)
+            && wg.has_installed_peer(&pubkey)
         {
-            if upgrade_probes.remove(&node_id).is_some() || wg.has_direct_probe(&pubkey) {
+            let arrived = inb.sock.local_addr().ok();
+            let preserve_pathmon_probe =
+                self.has_active_pathmon_probe(&node_id, &pubkey, wg, by_node, upgrade_probes);
+            if !preserve_pathmon_probe
+                && (upgrade_probes.remove(&node_id).is_some() || wg.has_direct_probe(&pubkey))
+            {
                 self.shadow(|s| s.mon.on_probe_aborted(&node_id));
                 wg.drop_direct_probe(&pubkey).await;
                 if let Some(cur_src) = wg.direct_src_of(&pubkey) {
@@ -313,6 +406,20 @@ impl OverlayRuntime {
             {
                 record_inbound(Some(path::PathAction::Keep));
                 return;
+            }
+            let keep_probe_after_repoint = preserve_pathmon_probe
+                && !arrived.is_some_and(|a| self.is_spray_local(a))
+                && upgrade_probes
+                    .get(&node_id)
+                    .is_some_and(|p| p.tier != tier && p.dst != inb.src);
+            if !keep_probe_after_repoint
+                && (upgrade_probes.remove(&node_id).is_some() || wg.has_direct_probe(&pubkey))
+            {
+                self.shadow(|s| s.mon.on_probe_aborted(&node_id));
+                wg.drop_direct_probe(&pubkey).await;
+                if let Some(cur_src) = wg.direct_src_of(&pubkey) {
+                    wg.reassert_plane_src(&pubkey, cur_src);
+                }
             }
             record_inbound(Some(path::PathAction::Install(tier)));
             self.shadow(|s| s.mon.on_installed(&node_id, tier, now));

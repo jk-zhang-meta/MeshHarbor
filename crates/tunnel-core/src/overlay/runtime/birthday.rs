@@ -2072,4 +2072,399 @@ mod tests {
         );
         assert_eq!(first_public_v4(&l(&["192.168.1.2:5", "junk"])), None);
     }
+
+    #[tokio::test]
+    async fn note_e_relay_incumbent_rejects_replayed_init_and_repoints_in_place_on_fresh_init() {
+        use super::super::tests::MockTun;
+        use crate::overlay::carrier_plane::CarrierPlane;
+        use crate::overlay::wg::Carrier;
+        use crate::transport::derp::DerpMux;
+        use crate::transport::relay::RelayConn;
+
+        let our = WgKeypair::generate();
+        let remote_key = WgKeypair::generate();
+        let our_pk = our.public.to_bytes();
+        let pk = remote_key.public.to_bytes();
+        let (out, _out_rx) = mpsc::channel(4);
+        let rt =
+            OverlayRuntime::new_relay(our.clone(), out, Box::new(|_, _, _| unreachable!()), 1280);
+        let (mut wg, _ours_rx) = WgDevice::new(our.secret);
+        let plane = CarrierPlane::new();
+        wg.set_plane(plane.attach(wg.plane_hooks()));
+        let main = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let main_local = main.local_addr().unwrap();
+        let main_rx = plane.adopt_socket(main.clone());
+        let mut inbound = wg.take_direct_events().unwrap();
+
+        let (mux, mut relay_out) = DerpMux::new(our_pk);
+        let relay_conn: Arc<dyn RelayConn> = Arc::new(mux.conn_for(pk));
+        let relay_dst: SocketAddr = "100.64.0.17:51820".parse().unwrap();
+        let our_relay = Carrier::relay(relay_conn, relay_dst);
+        let np = super::super::tests::peer(&remote_key, "100.64.0.17");
+        let node = np.node_id;
+        let ip = "100.64.0.17".parse().unwrap();
+        wg.add_peer(pk, ip, our_relay, false);
+        let relay_session_idx = wg.peer_session_index(&pk).expect("relay peer has session index");
+        assert!(wg.direct_peer_identity(&pk).is_none());
+
+        let mut installed = HashMap::from([(
+            node,
+            Installed {
+                is_direct: false,
+                hs_done: true,
+                ..Installed::base(pk, ip, DirectTier::Relay, Instant::now())
+            },
+        )]);
+        let current = HashMap::from([(node, np)]);
+        let mut probes = HashMap::new();
+        let (tun, _, _) = MockTun::new();
+        let tun: Arc<dyn TunIo> = tun;
+        let mut relay = None;
+        let (tx, _rx) = mpsc::channel(4);
+        let mut bq = RelayBuildQueue {
+            in_flight: HashMap::new(),
+            epoch: 0,
+            tx,
+        };
+
+        // Populate the relay Tunn's TAI64N anti-replay watermark over the relay carrier.
+        let older = crate::overlay::wg::test_genuine_init(&remote_key.secret, our_pk);
+        tokio::time::sleep(Duration::from_millis(2)).await;
+        let accepted = crate::overlay::wg::test_genuine_init(&remote_key.secret, our_pk);
+        let mut relay_in = Vec::with_capacity(32 + accepted.len());
+        relay_in.extend_from_slice(&pk);
+        relay_in.extend_from_slice(&accepted);
+        mux.deliver(&relay_in);
+        let (_queued_at, frame) = tokio::time::timeout(Duration::from_secs(2), relay_out.recv())
+            .await
+            .expect("relay Tunn must answer fresh INIT over relay")
+            .unwrap();
+        assert_eq!((frame.len() - 32, &frame[32..36]), (92, &[2, 0, 0, 0][..]));
+
+        // Note (e): Replayed or older INIT from an attacker's direct socket
+        // arriving through CarrierPlane -> DirectInbound -> handle_direct_inbound
+        // (under BOTH make_before_break = true and make_before_break = false)
+        // must be rejected by the relay Tunn's TAI64N watermark without
+        // creating a probe, switching the relay peer to direct, or emitting a response.
+        let mut wire = vec![0u8; 2048];
+        for mbb in [true, false] {
+            for stale in [&accepted, &older] {
+                let attacker = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+                let attacker_src = attacker.local_addr().unwrap();
+                attacker.send_to(stale, main_local).await.unwrap();
+                let ev_stale = tokio::time::timeout(Duration::from_secs(2), inbound.recv())
+                    .await
+                    .expect("stale INIT from unknown direct source must be forwarded to runtime")
+                    .unwrap();
+                assert_eq!(ev_stale.src, attacker_src);
+                rt.handle_direct_inbound_with_mbb(
+                    &mut wg,
+                    &mut installed,
+                    &mut relay,
+                    &tun,
+                    &current,
+                    &mut probes,
+                    &mut bq,
+                    ev_stale,
+                    mbb,
+                )
+                .await;
+                assert!(
+                    !installed[&node].is_direct
+                        && wg.direct_peer_identity(&pk).is_none()
+                        && !probes.contains_key(&node)
+                        && !wg.has_direct_probe(&pk),
+                    "relay peer must remain on relay without a probe when INIT is replayed (mbb={mbb})"
+                );
+                assert_eq!(wg.peer_session_index(&pk), Some(relay_session_idx));
+                assert!(
+                    tokio::time::timeout(Duration::from_millis(80), attacker.recv_from(&mut wire))
+                        .await
+                        .is_err(),
+                    "replayed INIT against relay peer must not receive a direct handshake response (mbb={mbb})"
+                );
+            }
+        }
+
+        // A strictly newer INIT from a legitimate direct socket promotes the
+        // relay peer in-place to direct via handle_direct_inbound_with_mbb(..., false)
+        // while preserving its session index.
+        tokio::time::sleep(Duration::from_millis(2)).await;
+        let far = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let far_src = far.local_addr().unwrap();
+        let fresh = crate::overlay::wg::test_genuine_init(&remote_key.secret, our_pk);
+        far.send_to(&fresh, main_local).await.unwrap();
+        let ev_fresh = tokio::time::timeout(Duration::from_secs(2), inbound.recv())
+            .await
+            .expect("fresh INIT from direct socket must be forwarded to runtime")
+            .unwrap();
+        assert_eq!(ev_fresh.src, far_src);
+        rt.handle_direct_inbound_with_mbb(
+            &mut wg,
+            &mut installed,
+            &mut relay,
+            &tun,
+            &current,
+            &mut probes,
+            &mut bq,
+            ev_fresh,
+            false,
+        )
+        .await;
+        assert!(installed[&node].is_direct);
+        assert_eq!(installed[&node].carrier_local, Some(main_local));
+        assert_eq!(installed[&node].carrier_dst, Some(far_src));
+        assert_eq!(
+            wg.direct_peer_identity(&pk),
+            Some((relay_session_idx, main_local, far_src)),
+            "in-place relay->direct promotion must preserve the relay Tunn's session index"
+        );
+        let (dn, dfrom) = tokio::time::timeout(Duration::from_secs(2), far.recv_from(&mut wire))
+            .await
+            .expect("fresh direct INIT must receive a 92B handshake response")
+            .unwrap();
+        assert_eq!(dfrom, main_local);
+        assert_eq!((dn, &wire[..4]), (92, &[2, 0, 0, 0][..]));
+
+        // Subsequent replay of that direct INIT from another socket is also rejected.
+        let attacker_after = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        attacker_after.send_to(&fresh, main_local).await.unwrap();
+        let ev_replay = tokio::time::timeout(Duration::from_secs(2), inbound.recv())
+            .await
+            .expect("replayed INIT from attacker must be forwarded to runtime")
+            .unwrap();
+        rt.handle_direct_inbound(
+            &mut wg,
+            &mut installed,
+            &mut relay,
+            &tun,
+            &current,
+            &mut probes,
+            &mut bq,
+            ev_replay,
+        )
+        .await;
+        assert_eq!(
+            wg.direct_peer_identity(&pk),
+            Some((relay_session_idx, main_local, far_src))
+        );
+
+        wg.remove_peer(&pk).await;
+        main_rx.abort();
+    }
+
+    #[tokio::test]
+    async fn note_f_direct_incumbent_preserves_and_promotes_active_pathmon_probe_under_inbound_inits()
+    {
+        use super::super::tests::MockTun;
+        use crate::overlay::carrier_plane::CarrierPlane;
+
+        let our = WgKeypair::generate();
+        let remote_key = WgKeypair::generate();
+        let our_pk = our.public.to_bytes();
+        let pk = remote_key.public.to_bytes();
+        let (out, _out_rx) = mpsc::channel(4);
+        let rt =
+            OverlayRuntime::new_relay(our.clone(), out, Box::new(|_, _, _| unreachable!()), 1280);
+        let (mut wg, _ours_rx) = WgDevice::new(our.secret);
+        let plane = CarrierPlane::new();
+        wg.set_plane(plane.attach(wg.plane_hooks()));
+
+        let pub_sock = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let pub_local = pub_sock.local_addr().unwrap();
+        let pub_rx = plane.adopt_socket(pub_sock.clone());
+
+        let lan_sock = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let lan_local = lan_sock.local_addr().unwrap();
+        let lan_rx = plane.adopt_socket(lan_sock.clone());
+        let mut inbound = wg.take_direct_events().unwrap();
+
+        let pub_far = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let pub_src = pub_far.local_addr().unwrap();
+
+        let lan_far = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let lan_src = lan_far.local_addr().unwrap();
+
+        let np = super::super::tests::peer(&remote_key, "100.64.0.18");
+        let cfg = peer_config_from_netmap(&np).unwrap();
+        let node = np.node_id;
+        let ip = cfg.overlay_ip;
+        let self_ip = "100.64.0.1".parse().unwrap();
+
+        // Install direct incumbent on `DirectTier::Public` (`pub_sock` <-> `pub_src`).
+        wg.ensure_direct_demux(pub_sock.clone());
+        wg.add_direct_peer(pub_sock.clone(), pk, ip, pub_src, false)
+            .await;
+        let incumbent_identity = wg.direct_peer_identity(&pk).unwrap();
+        let mut installed = HashMap::from([(
+            node,
+            Installed {
+                is_direct: true,
+                hs_done: true,
+                carrier_local: Some(pub_local),
+                carrier_dst: Some(pub_src),
+                public_direct_dst: Some(pub_src),
+                ..Installed::base(pk, ip, DirectTier::Public, Instant::now())
+            },
+        )]);
+        let current = HashMap::from([(node, np)]);
+        let mut probes = HashMap::new();
+        let (tun, _, _) = MockTun::new();
+        let tun: Arc<dyn TunIo> = tun;
+        let mut relay = None;
+        let (tx, _rx) = mpsc::channel(4);
+        let mut bq = RelayBuildQueue {
+            in_flight: HashMap::new(),
+            epoch: 0,
+            tx,
+        };
+
+        // Populate incumbent's TAI64N watermark.
+        let accepted = crate::overlay::wg::test_genuine_init(&remote_key.secret, our_pk);
+        pub_far.send_to(&accepted, pub_local).await.unwrap();
+        let mut wire = vec![0u8; 2048];
+        let (n, _) = tokio::time::timeout(Duration::from_secs(2), pub_far.recv_from(&mut wire))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!((n, &wire[..4]), (92, &[2, 0, 0, 0][..]));
+
+        // Start a legitimate pathmon upward probe toward `DirectTier::Lan` (`lan_sock` -> `lan_src`).
+        rt.start_upgrade_probe(
+            &mut wg,
+            &mut probes,
+            node,
+            &cfg,
+            lan_sock.clone(),
+            lan_src,
+            DirectTier::Lan,
+            Instant::now(),
+        )
+        .await;
+        let probe_identity = wg
+            .direct_probe_identity(&pk)
+            .expect("pathmon upward probe must be installed");
+        assert!(probes[&node].initiated);
+        assert_eq!(probes[&node].tier, DirectTier::Lan);
+
+        // Drain the initial outbound INIT emitted by `start_upgrade_probe` on `lan_far`.
+        let (init_n, init_from) =
+            tokio::time::timeout(Duration::from_secs(2), lan_far.recv_from(&mut wire))
+                .await
+                .expect("pathmon upward probe must emit an outbound INIT")
+                .unwrap();
+        assert_eq!(init_from, lan_local);
+        assert_eq!((init_n, &wire[..4]), (148, &[1, 0, 0, 0][..]));
+        let probe_init_pkt = wire[..init_n].to_vec();
+
+        // 1) Inbound INIT on the incumbent's own `pub_src` (hits `wg.direct_src_of(&pk) == Some(inb.src)`):
+        //    must NOT abort the active pathmon upward probe.
+        tokio::time::sleep(Duration::from_millis(2)).await;
+        let rekey_init = crate::overlay::wg::test_genuine_init(&remote_key.secret, our_pk);
+        rt.handle_direct_inbound(
+            &mut wg,
+            &mut installed,
+            &mut relay,
+            &tun,
+            &current,
+            &mut probes,
+            &mut bq,
+            crate::overlay::wg::DirectInbound {
+                src: pub_src,
+                sock: pub_sock.clone(),
+                packet: rekey_init.clone(),
+            },
+        )
+        .await;
+        assert!(
+            probes.contains_key(&node) && wg.direct_probe_identity(&pk) == Some(probe_identity),
+            "incumbent-source rekey INIT must preserve the active pathmon upward probe"
+        );
+        let _ = tokio::time::timeout(Duration::from_secs(2), pub_far.recv_from(&mut wire))
+            .await
+            .unwrap()
+            .unwrap();
+
+        // 2) Replayed INIT from an unknown source arriving through CarrierPlane ->
+        //    DirectInbound -> handle_direct_inbound on BOTH `pub_sock` and a
+        //    registered birthday spray socket (hits `wg.has_direct_probe(&pk)`
+        //    and `try_repoint_direct_peer_init`): must NOT abort the active pathmon upward probe.
+        let spray = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let spray_local = spray.local_addr().unwrap();
+        let spray_rx = wg.adopt_spray_socket(spray.clone());
+        rt.spray_locals.lock().unwrap().insert(spray_local);
+        for dst_local in [pub_local, spray_local] {
+            let attacker = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+            let attacker_src = attacker.local_addr().unwrap();
+            attacker.send_to(&rekey_init, dst_local).await.unwrap();
+            let ev_attacker = tokio::time::timeout(Duration::from_secs(2), inbound.recv())
+                .await
+                .expect("unknown-source INIT must be forwarded to runtime")
+                .unwrap();
+            assert_eq!(ev_attacker.src, attacker_src);
+            rt.handle_direct_inbound(
+                &mut wg,
+                &mut installed,
+                &mut relay,
+                &tun,
+                &current,
+                &mut probes,
+                &mut bq,
+                ev_attacker,
+            )
+            .await;
+            assert!(
+                probes.contains_key(&node) && wg.direct_probe_identity(&pk) == Some(probe_identity),
+                "unknown-source replayed INIT on {dst_local} must preserve the active pathmon upward probe"
+            );
+            assert_eq!(wg.direct_peer_identity(&pk), Some(incumbent_identity));
+        }
+        rt.spray_locals.lock().unwrap().remove(&spray_local);
+        wg.release_spray_socket(spray_local, spray_rx);
+
+        // 3) Complete the real WireGuard handshake on the pathmon LAN probe and
+        //    verify `sweep_upgrade_probes` promotes the peer from Public to Lan.
+        let (mut remote, _remote_rx) = WgDevice::new(remote_key.secret);
+        let remote_plane = CarrierPlane::new();
+        remote.set_plane(remote_plane.attach(remote.plane_hooks()));
+        let remote_lan_rx = remote_plane.adopt_socket(lan_far.clone());
+        remote
+            .add_direct_peer(lan_far.clone(), our_pk, self_ip, lan_local, false)
+            .await;
+        remote
+            .feed_direct(lan_local, lan_far.clone(), &probe_init_pkt)
+            .await;
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while wg.probe_handshake_done(&pk) != Some(true) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("preserved pathmon upward probe must latch its handshake");
+
+        rt.sweep_upgrade_probes(
+            &mut wg,
+            &mut installed,
+            &mut relay,
+            &tun,
+            &mut probes,
+            &mut bq,
+        )
+        .await;
+        assert!(!probes.contains_key(&node));
+        assert_eq!(installed[&node].tier, DirectTier::Lan);
+        assert_eq!(installed[&node].carrier_local, Some(lan_local));
+        assert_eq!(installed[&node].carrier_dst, Some(lan_src));
+        assert_eq!(
+            wg.direct_peer_identity(&pk),
+            Some(probe_identity),
+            "pathmon upward probe must promote to the active direct peer"
+        );
+
+        wg.remove_peer(&pk).await;
+        remote.remove_peer(&our_pk).await;
+        pub_rx.abort();
+        lan_rx.abort();
+        remote_lan_rx.abort();
+    }
 }
