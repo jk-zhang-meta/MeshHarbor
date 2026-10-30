@@ -1420,6 +1420,11 @@ pub struct WgDevice {
     /// Brief receive-only drain after a coordinated rollback. Still owned by
     /// this device and removed immediately on peer removal/rekey.
     path_trial_drains: HashMap<ObjectId, ([u8; 32], Instant, Peer)>,
+    /// MeshHarbor B6 — buffered wakeup IP packets drained across a `remove_peer`
+    /// -> fallback `add_peer` / `add_direct_peer` transition when a waking
+    /// direct carrier's NAT pinhole timed out (`waking_timeout`) and `sweep_carrier_health`
+    /// tears down the dead carrier before installing the relay fallback.
+    pending_wake_queues: HashMap<[u8; 32], Vec<Vec<u8>>>,
     /// P1 (S6) — the shared send half (Router + send-triple mirror). This
     /// device is the SOLE writer; the outbound pump reads. See [`WgSender`].
     send: WgSender,
@@ -1502,6 +1507,7 @@ impl WgDevice {
                 derp_follow: HashMap::new(),
                 recovery: HashMap::new(),
                 path_trial_drains: HashMap::new(),
+                pending_wake_queues: HashMap::new(),
                 send: WgSender::new(),
                 tun_tx,
                 next_index: 1,
@@ -1596,6 +1602,9 @@ impl WgDevice {
         for (pk, p) in &self.peers {
             let held = self.peer_has_external_hold(pk);
             p.stats.on_demand.set_external_hold(held, now_ns);
+            if p.stats.on_demand.check_and_note_waking_timeout(now_ns) {
+                p.carrier.mark_dead();
+            }
         }
     }
 
@@ -1940,14 +1949,37 @@ impl WgDevice {
     ) {
         self.cancel_org_upgrade(&peer_public);
         self.drop_org_floor_receiver(&peer_public);
-        let on_demand_cfg = self.on_demand;
+        let mut carried_wake_pkts = self
+            .pending_wake_queues
+            .remove(&peer_public)
+            .unwrap_or_default();
+        let prev_waking_or_active = if let Some(old) = self.peers.get(&peer_public) {
+            let was_active = matches!(
+                old.stats.on_demand.phase(),
+                super::on_demand::OnDemandPhase::Waking
+                    | super::on_demand::OnDemandPhase::Active
+            );
+            let q = old.stats.on_demand.take_wake_queue();
+            if !q.is_empty() {
+                carried_wake_pkts = q;
+            }
+            was_active || !carried_wake_pkts.is_empty()
+        } else {
+            !carried_wake_pkts.is_empty()
+        };
+        let on_demand_cfg = if prev_waking_or_active {
+            self.on_demand.with_defer_initial_handshake(false)
+        } else {
+            self.on_demand
+        };
         let peer = self.make_carrier_peer(
             peer_public,
             overlay_ip,
             carrier,
-            initiate,
+            initiate || !carried_wake_pkts.is_empty(),
             self.disco_events_tx.clone(),
             on_demand_cfg,
+            carried_wake_pkts,
         );
         let (tunn, carrier, stats) = (peer.tunn.clone(), peer.carrier.clone(), peer.stats.clone());
         if let Some(old) = self.peers.insert(peer_public, peer) {
@@ -1960,6 +1992,7 @@ impl WgDevice {
 
     /// Builds a fully live but UNROUTED carrier/Tunn pair. Used both by normal
     /// installs and path-trial shadows, so crypto/timers/ingress stay identical.
+    #[allow(clippy::too_many_arguments)]
     fn make_carrier_peer(
         &mut self,
         peer_public: [u8; 32],
@@ -1968,10 +2001,11 @@ impl WgDevice {
         initiate: bool,
         disco_sink: mpsc::Sender<super::disco::DiscoInbound>,
         on_demand_cfg: super::on_demand::OnDemandConfig,
+        carried_wake_pkts: Vec<Vec<u8>>,
     ) -> Peer {
         let index = self.alloc_index();
 
-        let tunn = Tunn::new(
+        let mut tunn_inner = Tunn::new(
             self.secret.clone(),
             PublicKey::from(peer_public),
             None,
@@ -1979,7 +2013,6 @@ impl WgDevice {
             index,
             None,
         );
-        let tunn = Arc::new(Mutex::new(tunn));
 
         let stats = Arc::new(PeerStats { recovery_hold: self.recovery_for(peer_public, overlay_ip), ..PeerStats::default() });
         stats
@@ -1991,6 +2024,12 @@ impl WgDevice {
             self.peer_has_external_hold(&peer_public),
             mono_ns_now(),
         );
+        if !carried_wake_pkts.is_empty() {
+            stats
+                .on_demand
+                .inherit_wake_queue(&mut tunn_inner, carried_wake_pkts, mono_ns_now());
+        }
+        let tunn = Arc::new(Mutex::new(tunn_inner));
 
         // Multi-org v2 — register this session on the plane's receiver-index
         // demux even though it is NOT a direct install.
@@ -2203,6 +2242,9 @@ impl WgDevice {
                     stats.on_demand.sync_tunn_if_needed_under_lock(&mut t);
                     if !local_hold && stats.on_demand.is_dormant() {
                         None
+                    } else if stats.on_demand.check_and_note_waking_timeout(now_ns) {
+                        timer_carrier.mark_dead();
+                        None
                     } else if !local_hold
                         && stats
                             .on_demand
@@ -2219,17 +2261,8 @@ impl WgDevice {
                             // did) left the carrier to be rediscovered the slow
                             // way, by the rx-staleness bound.
                             TunnResult::Err(WireGuardError::ConnectionExpired) => {
-                                if stats.on_demand.is_waking()
-                                    && stats.on_demand.waking_elapsed_ns(now_ns)
-                                        < super::on_demand::WAKING_CONNECTION_EXPIRED_GRACE_NS
-                                {
-                                    stats
-                                        .on_demand
-                                        .requeue_wake_packets_after_timer_reset(&mut t, &mut buf)
-                                } else {
-                                    timer_carrier.mark_dead();
-                                    None
-                                }
+                                timer_carrier.mark_dead();
+                                None
                             }
                             _ => None,
                         }
@@ -2262,6 +2295,7 @@ impl WgDevice {
             true,
             self.disco_events_tx.clone(),
             super::on_demand::OnDemandConfig::disabled(),
+            Vec::new(),
         );
         candidate.stats.org_role.store(true, Ordering::Relaxed);
         Self::drive_initiator_proof(&mut candidate);
@@ -2555,6 +2589,7 @@ impl WgDevice {
             true,
             tx,
             super::on_demand::OnDemandConfig::disabled(),
+            Vec::new(),
         );
         Self::drive_initiator_proof(&mut candidate);
         self.path_trials.insert(
@@ -2704,6 +2739,7 @@ impl WgDevice {
                 dst,
                 true,
                 super::on_demand::OnDemandConfig::disabled(),
+                Vec::new(),
             )
             .await
         else {
@@ -3141,9 +3177,39 @@ impl WgDevice {
     ) {
         self.cancel_org_upgrade(&peer_public);
         self.drop_org_floor_receiver(&peer_public);
-        let on_demand_cfg = self.on_demand;
+        let mut carried_wake_pkts = self
+            .pending_wake_queues
+            .remove(&peer_public)
+            .unwrap_or_default();
+        let prev_waking_or_active = if let Some(old) = self.peers.get(&peer_public) {
+            let was_active = matches!(
+                old.stats.on_demand.phase(),
+                super::on_demand::OnDemandPhase::Waking
+                    | super::on_demand::OnDemandPhase::Active
+            );
+            let q = old.stats.on_demand.take_wake_queue();
+            if !q.is_empty() {
+                carried_wake_pkts = q;
+            }
+            was_active || !carried_wake_pkts.is_empty()
+        } else {
+            !carried_wake_pkts.is_empty()
+        };
+        let on_demand_cfg = if prev_waking_or_active {
+            self.on_demand.with_defer_initial_handshake(false)
+        } else {
+            self.on_demand
+        };
         if let Some(peer) = self
-            .make_direct_peer(sock, peer_public, overlay_ip, dst, initiate, on_demand_cfg)
+            .make_direct_peer(
+                sock,
+                peer_public,
+                overlay_ip,
+                dst,
+                initiate || !carried_wake_pkts.is_empty(),
+                on_demand_cfg,
+                carried_wake_pkts,
+            )
             .await
         {
             let (tunn, carrier, stats) =
@@ -3171,6 +3237,7 @@ impl WgDevice {
         dst: SocketAddr,
         initiate: bool,
         on_demand_cfg: super::on_demand::OnDemandConfig,
+        carried_wake_pkts: Vec<Vec<u8>>,
     ) -> Option<Peer> {
         if self.plane.is_none() && self.direct.is_none() {
             warn!("wg: make_direct_peer before ensure_direct_demux; ignoring");
@@ -3181,14 +3248,14 @@ impl WgDevice {
         let carrier = Carrier::direct(sock, dst);
 
         let index = self.alloc_index();
-        let tunn = Arc::new(Mutex::new(Tunn::new(
+        let mut tunn_inner = Tunn::new(
             self.secret.clone(),
             PublicKey::from(peer_public),
             None,
             Some(KEEPALIVE_SECS),
             index,
             None,
-        )));
+        );
 
         let stats = Arc::new(PeerStats { recovery_hold: self.recovery_for(peer_public, overlay_ip), ..PeerStats::default() });
         stats
@@ -3200,6 +3267,12 @@ impl WgDevice {
             self.peer_has_external_hold(&peer_public),
             mono_ns_now(),
         );
+        if !carried_wake_pkts.is_empty() {
+            stats
+                .on_demand
+                .inherit_wake_queue(&mut tunn_inner, carried_wake_pkts, mono_ns_now());
+        }
+        let tunn = Arc::new(Mutex::new(tunn_inner));
         let ingress = self.ingress_for(peer_public, stats.clone());
         // Register for demux BEFORE the handshake so inbound is routed —
         // on the plane by session index (unique across every attached
@@ -3300,6 +3373,7 @@ impl WgDevice {
                 dst,
                 initiate,
                 super::on_demand::OnDemandConfig::disabled(),
+                Vec::new(),
             )
             .await
         {
@@ -3446,7 +3520,11 @@ impl WgDevice {
         self.drop_org_floor_receiver(peer_public);
         // Withdraw the sender before any asynchronous backup demux cleanup.
         let active = self.peers.remove(peer_public);
-        if active.is_some() {
+        if let Some(ref p) = active {
+            let wake_pkts = p.stats.on_demand.take_wake_queue();
+            if !wake_pkts.is_empty() {
+                self.pending_wake_queues.insert(*peer_public, wake_pkts);
+            }
             self.send_uninstall(peer_public);
             self.debug_assert_send_synced();
         }
@@ -3454,6 +3532,12 @@ impl WgDevice {
         if let Some(p) = active {
             self.unregister_direct(&p).await;
         }
+    }
+
+    /// Clear any buffered wakeup IP packets saved for `peer_public` when that
+    /// peer is permanently evicted from the netmap.
+    pub fn clear_pending_wake_queue(&mut self, peer_public: &[u8; 32]) {
+        self.pending_wake_queues.remove(peer_public);
     }
 
     /// Phase 1 — set the subnet routes a peer is a router for, so packets to
@@ -4045,7 +4129,11 @@ pub(crate) fn decap_inbound(
         }
     }
     let flush_waking_responder_queue = |t: &mut Tunn| {
-        if authenticated && stats.on_demand.is_waking() && t.time_since_last_handshake().is_some() {
+        if authenticated
+            && stats.on_demand.is_waking()
+            && t.has_current_session()
+            && t.has_queued_packets()
+        {
             let mut outs: Vec<Vec<u8>> = Vec::new();
             loop {
                 let mut flush = vec![0u8; WG_BUF];
@@ -4090,13 +4178,13 @@ pub(crate) fn decap_inbound(
             // recv loop stopped reading the socket and the OS dropped inbound
             // UDP for every direct peer.
             let mut outs: Vec<Vec<u8>> = vec![b.to_vec()];
-            // Only drain `t.decapsulate(None, &[], ...)` when a session is
-            // established (`time_since_last_handshake().is_some()`): on an
-            // inbound `HandshakeInit` before the responder session is promoted,
+            // Only drain `t.decapsulate(None, &[], ...)` when a current session
+            // is populated (`has_current_session() && has_queued_packets()`): on
+            // an inbound `HandshakeInit` before the responder session is promoted,
             // calling `decapsulate(None, &[], ...)` would pop a queued packet,
             // format a competing `HandshakeInit` (clobbering the responder's
             // `HandshakeCreated` state), and re-queue the packet out of order.
-            if t.time_since_last_handshake().is_some() {
+            if t.has_current_session() && t.has_queued_packets() {
                 loop {
                     let mut flush = vec![0u8; WG_BUF];
                     match t.decapsulate(None, &[], &mut flush) {
@@ -7481,9 +7569,10 @@ mod tests {
         );
 
         // 3. Re-wakeup from post-idle `Dormant` in the reverse direction (`B -> A`):
-        //    `dev_b` clears its stale `Tunn` sessions via `set_static_private`
-        //    (preserving its peer index and TAI64N replay watermark), initiates a
-        //    fresh handshake, and delivers the triggering packet to `dev_a` with
+        //    `dev_b` clears its stale `Tunn` sessions in-place via
+        //    `reset_sessions_preserving_replay_and_psk` (preserving its peer
+        //    index, TAI64N replay watermark, and PSK), initiates a fresh
+        //    handshake, and delivers the triggering packet to `dev_a` with
         //    zero loss.
         let reply = synthetic_ipv4(IP_B, IP_A, b"reverse-wake-after-idle");
         assert!(dev_b.send_ip_packet(&reply).await);
@@ -7674,5 +7763,494 @@ mod tests {
         })
         .await
         .expect("poke_handshake while Active must not prevent idle retirement to Dormant");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn b6_on_demand_replay_rejected_while_dormant_and_expired_nat_pinhole_falls_back_with_zero_packet_loss()
+    {
+        use crate::transport::relay::UdpRelayConn;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        // 1. Setup a UDP NAT proxy between `dev_a` (`sock_a`) and `dev_b`
+        //    (`sock_b`) whose NAT pinhole can be closed (`pinhole_expired = true`)
+        //    during `Dormant`, plus an attacker socket (`attacker_sock`) that
+        //    captures the first authenticated `HandshakeInit` and replays it
+        //    after `dev_b` retires to `Dormant`.
+        let a = WgKeypair::generate();
+        let b = WgKeypair::generate();
+        let pk_a = a.public.to_bytes();
+        let pk_b = b.public.to_bytes();
+
+        let sock_a = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let sock_b = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let nat_proxy = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let (addr_a, addr_b, addr_nat) = (
+            sock_a.local_addr().unwrap(),
+            sock_b.local_addr().unwrap(),
+            nat_proxy.local_addr().unwrap(),
+        );
+
+        let pinhole_expired = Arc::new(AtomicBool::new(false));
+        let captured_init: Arc<std::sync::Mutex<Option<Vec<u8>>>> =
+            Arc::new(std::sync::Mutex::new(None));
+        let proxy_sock = nat_proxy.clone();
+        let proxy_expired = pinhole_expired.clone();
+        let proxy_captured = captured_init.clone();
+        let proxy_task = tokio::spawn(async move {
+            let mut buf = vec![0u8; 2048];
+            while let Ok((n, src)) = proxy_sock.recv_from(&mut buf).await {
+                if src == addr_a {
+                    if n == 148 && buf[..4] == [1, 0, 0, 0] {
+                        let mut g = proxy_captured.lock().unwrap();
+                        if g.is_none() {
+                            *g = Some(buf[..n].to_vec());
+                        }
+                    }
+                    if !proxy_expired.load(Ordering::Acquire) {
+                        let _ = proxy_sock.send_to(&buf[..n], addr_b).await;
+                    }
+                } else if src == addr_b && !proxy_expired.load(Ordering::Acquire) {
+                    let _ = proxy_sock.send_to(&buf[..n], addr_a).await;
+                }
+            }
+        });
+
+        let (mut dev_a, _rx_a) = WgDevice::new(a.secret.clone());
+        let (mut dev_b, mut rx_b) = WgDevice::new(b.secret.clone());
+        let cfg = super::super::on_demand::OnDemandConfig::enabled(Duration::from_millis(300))
+            .with_waking_timeout(Duration::from_millis(180));
+        dev_a.set_on_demand_config(cfg);
+        dev_b.set_on_demand_config(cfg);
+
+        dev_a.ensure_direct_demux(sock_a.clone());
+        dev_b.ensure_direct_demux(sock_b.clone());
+        dev_a
+            .add_direct_peer(sock_a.clone(), pk_b, IP_B, addr_nat, true)
+            .await;
+        dev_b
+            .add_direct_peer(sock_b.clone(), pk_a, IP_A, addr_nat, true)
+            .await;
+
+        // 2. Wake the direct pair with packet 1 so `dev_b` establishes a session
+        //    and records `a`'s TAI64N anti-replay watermark.
+        let pkt1 = synthetic_ipv4(IP_A, IP_B, b"initial-direct-wake-before-dormant");
+        assert!(dev_a.send_ip_packet(&pkt1).await);
+        let got1 = tokio::time::timeout(Duration::from_secs(2), rx_b.recv())
+            .await
+            .expect("initial direct wake packet must arrive")
+            .unwrap();
+        assert_eq!(got1, pkt1);
+        let init_bytes = captured_init
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("NAT proxy must have captured the initial 148-byte HandshakeInit");
+
+        // 3. Wait for both peers to retire to `Dormant` after `idle_timeout` (300 ms).
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while dev_a.peer_is_dormant(&pk_b) != Some(true)
+                || dev_b.peer_is_dormant(&pk_a) != Some(true)
+            {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .expect("both peers must enter Dormant after idle_timeout");
+
+        let snap_b_dormant = dev_b.peer_on_demand_snapshot(&pk_a).unwrap();
+        assert_eq!(
+            snap_b_dormant.phase,
+            super::super::on_demand::OnDemandPhase::Dormant
+        );
+        let tx_before_replay = snap_b_dormant.wire_tx_packets;
+        let inbound_wakes_before = snap_b_dormant.inbound_wake_count;
+
+        // 4. Replay the captured pre-dormancy `HandshakeInit` to `dev_b` both
+        //    from the registered direct route (`nat_proxy -> sock_b`) and from an
+        //    unknown attacker address (`attacker_sock -> sock_b`).
+        //    Neither replay may wake `dev_b`, emit a HandshakeResponse, or
+        //    repoint `dev_b`'s direct carrier!
+        nat_proxy.send_to(&init_bytes, addr_b).await.unwrap();
+        let attacker_sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        attacker_sock.send_to(&init_bytes, addr_b).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(120)).await;
+
+        let snap_b_after_replay = dev_b.peer_on_demand_snapshot(&pk_a).unwrap();
+        assert_eq!(
+            snap_b_after_replay.phase,
+            super::super::on_demand::OnDemandPhase::Dormant,
+            "replayed pre-dormancy HandshakeInit must NEVER wake a Dormant peer"
+        );
+        assert_eq!(
+            snap_b_after_replay.inbound_wake_count, inbound_wakes_before,
+            "replayed HandshakeInit must not increment inbound_wake_count"
+        );
+        assert_eq!(
+            snap_b_after_replay.wire_tx_packets, tx_before_replay,
+            "replayed HandshakeInit must not elicit any wire response from Dormant peer"
+        );
+        assert_eq!(
+            dev_b.direct_src_of(&pk_a),
+            Some(addr_nat),
+            "replayed HandshakeInit from attacker socket must not repoint direct carrier"
+        );
+
+        // 5. Simulate NAT UDP pinhole expiry while `Dormant`, then send a 4-packet
+        //    burst on `dev_a`. `dev_a` enters `Waking` and buffers all 4 packets,
+        //    then marks its dead direct carrier after `waking_timeout` (180 ms).
+        pinhole_expired.store(true, Ordering::Release);
+        let burst: Vec<Vec<u8>> = (0..4u8)
+            .map(|i| synthetic_ipv4(IP_A, IP_B, &[b'f', b'a', b'l', b'l', b'b', b'a', b'c', b'k', i]))
+            .collect();
+        let sent = dev_a.send_ip_batch(&burst).await;
+        assert_eq!(sent, 4);
+        assert_eq!(
+            dev_a.peer_on_demand_phase(&pk_b),
+            Some(super::super::on_demand::OnDemandPhase::Waking)
+        );
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while dev_a.peer_carrier_dead(&pk_b) != Some(true) {
+                dev_a.tick_on_demand();
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("expired direct NAT pinhole must mark carrier dead within waking_timeout");
+        assert!(
+            dev_a.peer_on_demand_snapshot(&pk_b).unwrap().wake_timeout_count >= 1,
+            "wake_timeout_count must record the waking timeout"
+        );
+
+        // 6. Tear down the dead direct carrier via `remove_peer` (as
+        //    `sweep_carrier_health` does) and install a relay fallback carrier.
+        //    `dev_a` must inherit all 4 buffered wakeup packets across
+        //    `remove_peer -> add_peer` and deliver them in FIFO order with 0 loss!
+        dev_a.remove_peer(&pk_b).await;
+        let relay_sock_a = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let relay_sock_b = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let (ra_addr, rb_addr) = (
+            relay_sock_a.local_addr().unwrap(),
+            relay_sock_b.local_addr().unwrap(),
+        );
+        dev_b.add_peer(
+            pk_a,
+            IP_A,
+            Carrier::relay(Arc::new(UdpRelayConn(relay_sock_b)), ra_addr),
+            false,
+        );
+        dev_a.add_peer(
+            pk_b,
+            IP_B,
+            Carrier::relay(Arc::new(UdpRelayConn(relay_sock_a)), rb_addr),
+            true,
+        );
+
+        for expected in &burst {
+            let got = tokio::time::timeout(Duration::from_secs(2), rx_b.recv())
+                .await
+                .expect("buffered wake packet must arrive over fallback relay carrier with zero loss")
+                .unwrap();
+            assert_eq!(&got, expected, "FIFO order preserved across direct->relay wake fallback");
+        }
+        proxy_task.abort();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn b6_on_demand_real_linux_netns_nat_wake_and_expired_conntrack_fallback() {
+        const INNER_ENV: &str = "ROOMLER_B6_NETNS_INNER";
+        if std::env::var_os(INNER_ENV).is_none() {
+            // Outer process: spawn `unshare -Urn` to construct a real 3-namespace
+            // Linux network topology (`ns_a` behind stateful masquerading NAT ->
+            // `ns_wan` -> `ns_b`) with zero impact on the host's network namespace.
+            let exe = std::env::current_exe().expect("current test binary path");
+            let script = r#"
+                set -eu
+                ip link set lo up
+                for ns in ns_a ns_wan ns_b; do
+                    ip netns add "$ns"
+                    ip -n "$ns" link set lo up
+                done
+                ip link add veth_a type veth peer name veth_wan_a
+                ip link set veth_a netns ns_a
+                ip link set veth_wan_a netns ns_wan
+                ip link add veth_b type veth peer name veth_wan_b
+                ip link set veth_b netns ns_b
+                ip link set veth_wan_b netns ns_wan
+
+                ip -n ns_a addr add 10.201.1.2/24 dev veth_a
+                ip -n ns_a link set veth_a up
+                ip -n ns_a route add default via 10.201.1.1
+
+                ip -n ns_wan addr add 10.201.1.1/24 dev veth_wan_a
+                ip -n ns_wan link set veth_wan_a up
+                ip -n ns_wan addr add 198.51.100.1/24 dev veth_wan_b
+                ip -n ns_wan link set veth_wan_b up
+                ip netns exec ns_wan sysctl -qw net.ipv4.ip_forward=1
+
+                # Configure stateful NAT + firewall on ns_wan:
+                # Forward from ns_b (198.51.100.2) to ns_a (10.201.1.2) is only
+                # permitted when an ESTABLISHED/RELATED UDP conntrack pinhole exists.
+                if ip netns exec ns_wan iptables -t nat -A POSTROUTING -s 10.201.1.0/24 -o veth_wan_b -j MASQUERADE 2>/dev/null; then
+                    ip netns exec ns_wan iptables -P FORWARD DROP
+                    ip netns exec ns_wan iptables -A FORWARD -i veth_wan_a -o veth_wan_b -j ACCEPT
+                    ip netns exec ns_wan iptables -A FORWARD -i veth_wan_b -o veth_wan_a -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+                elif ip netns exec ns_wan nft -f - <<'NFT' 2>/dev/null
+table ip nat {
+    chain postrouting {
+        type nat hook postrouting priority srcnat; policy accept;
+        ip saddr 10.201.1.0/24 oifname "veth_wan_b" masquerade
+    }
+}
+table ip filter {
+    chain forward {
+        type filter hook forward priority filter; policy drop;
+        iifname "veth_wan_a" oifname "veth_wan_b" accept
+        iifname "veth_wan_b" oifname "veth_wan_a" ct state established,related accept
+    }
+}
+NFT
+                then
+                    :
+                else
+                    echo "SKIP: neither iptables nor nft available inside unshare -Urn"
+                    exit 0
+                fi
+
+                ip -n ns_b addr add 198.51.100.2/24 dev veth_b
+                ip -n ns_b link set veth_b up
+                ip -n ns_b route add default via 198.51.100.1
+
+                ROOMLER_B6_NETNS_INNER=1 "$TEST_EXE" --exact overlay::wg::tests::b6_on_demand_real_linux_netns_nat_wake_and_expired_conntrack_fallback --nocapture
+            "#;
+            let status = std::process::Command::new("unshare")
+                .args(["-Urnm", "sh", "-c", script])
+                .env("TEST_EXE", exe)
+                .status();
+            match status {
+                Ok(s) => assert!(s.success(), "inner netns NAT test failed with status {s}"),
+                Err(e) => eprintln!("skipping netns test (unshare unavailable): {e}"),
+            }
+            return;
+        }
+
+        // Inner process: we have CAP_SYS_ADMIN inside the unshared user+network
+        // namespace and `ns_a` (`10.201.1.2` behind stateful NAT `198.51.100.1`)
+        // and `ns_b` (`198.51.100.2`) are configured.
+        use crate::transport::relay::UdpRelayConn;
+        use std::os::fd::AsRawFd;
+
+        fn setns_net(fd: std::os::fd::RawFd) {
+            // SAFETY: `fd` is a valid open file descriptor referring to a Linux
+            // network namespace (`/proc/self/ns/net` or `/var/run/netns/<ns>`).
+            let rc = unsafe { libc::setns(fd, libc::CLONE_NEWNET) };
+            assert_eq!(
+                rc,
+                0,
+                "libc::setns(CLONE_NEWNET) failed: {}",
+                std::io::Error::last_os_error()
+            );
+        }
+
+        fn bind_std_udp_in_netns(ns: &str, addr: &str) -> std::net::UdpSocket {
+            let orig = std::fs::File::open("/proc/self/ns/net").expect("open current netns");
+            let target =
+                std::fs::File::open(format!("/var/run/netns/{ns}")).expect("open target netns");
+            setns_net(target.as_raw_fd());
+            let sock = std::net::UdpSocket::bind(addr).expect("bind UDP in target netns");
+            sock.set_nonblocking(true).expect("set_nonblocking");
+            setns_net(orig.as_raw_fd());
+            sock
+        }
+
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(4)
+            .enable_all()
+            .build()
+            .unwrap();
+
+        rt.block_on(async {
+            let a = WgKeypair::generate();
+            let b = WgKeypair::generate();
+            let pk_a = a.public.to_bytes();
+            let pk_b = b.public.to_bytes();
+
+            let std_sock_a = bind_std_udp_in_netns("ns_a", "10.201.1.2:41820");
+            let std_sock_b = bind_std_udp_in_netns("ns_b", "198.51.100.2:51820");
+            let sock_a = Arc::new(UdpSocket::from_std(std_sock_a).unwrap());
+            let sock_b = Arc::new(UdpSocket::from_std(std_sock_b).unwrap());
+            let addr_b_wan: SocketAddr = "198.51.100.2:51820".parse().unwrap();
+
+            // `a` is behind NAT (`10.201.1.2:41820`, masqueraded as `198.51.100.1:41820`).
+            // Punch the initial NAT conntrack entry from `ns_a -> ns_b` so `ns_b` can
+            // reach `ns_a` via `198.51.100.1:41820`.
+            sock_a.send_to(b"punch", addr_b_wan).await.unwrap();
+            let mut punch_buf = [0u8; 16];
+            let (_, nat_mapped_a) = tokio::time::timeout(
+                Duration::from_secs(2),
+                sock_b.recv_from(&mut punch_buf),
+            )
+            .await
+            .expect("NAT punch packet must arrive at ns_b")
+            .unwrap();
+
+            let (mut dev_a, mut rx_a) = WgDevice::new(a.secret.clone());
+            let (mut dev_b, mut rx_b) = WgDevice::new(b.secret.clone());
+            let cfg = super::super::on_demand::OnDemandConfig::enabled(Duration::from_millis(300))
+                .with_waking_timeout(Duration::from_millis(200));
+            dev_a.set_on_demand_config(cfg);
+            dev_b.set_on_demand_config(cfg);
+
+            dev_a.ensure_direct_demux(sock_a.clone());
+            dev_b.ensure_direct_demux(sock_b.clone());
+            dev_a
+                .add_direct_peer(sock_a.clone(), pk_b, IP_B, addr_b_wan, true)
+                .await;
+            dev_b
+                .add_direct_peer(sock_b.clone(), pk_a, IP_A, nat_mapped_a, true)
+                .await;
+
+            // Phase 1: Outbound wake from `ns_a` (behind NAT) -> `ns_b` (`198.51.100.2:51820`).
+            let t0 = Instant::now();
+            let pkt1 = synthetic_ipv4(IP_A, IP_B, b"netns-nat-outbound-wake-1");
+            assert!(dev_a.send_ip_packet(&pkt1).await);
+            let got1 = tokio::time::timeout(Duration::from_secs(2), rx_b.recv())
+                .await
+                .expect("NAT outbound wake packet must arrive at ns_b")
+                .unwrap();
+            let nat_wake_rtt = t0.elapsed();
+            assert_eq!(got1, pkt1);
+            let snap_a1 = dev_a.peer_on_demand_snapshot(&pk_b).unwrap();
+            eprintln!(
+                "B6_NETNS_NAT_METRICS: outbound_nat_wake_rtt_us={} last_wake_latency_us={}",
+                nat_wake_rtt.as_micros(),
+                snap_a1.last_wake_latency.unwrap_or_default().as_micros()
+            );
+
+            // Wait for both ends to retire to `Dormant`.
+            tokio::time::timeout(Duration::from_secs(3), async {
+                while dev_a.peer_is_dormant(&pk_b) != Some(true)
+                    || dev_b.peer_is_dormant(&pk_a) != Some(true)
+                {
+                    tokio::time::sleep(Duration::from_millis(25)).await;
+                }
+            })
+            .await
+            .expect("peers must enter Dormant across real Linux netns NAT");
+
+            // Phase 2: Expire the NAT pinhole on `ns_wan` by dropping inbound
+            // UDP from `ns_b` (`198.51.100.2`) to `ns_a` on `veth_wan_b` (simulating
+            // conntrack UDP mapping timeout while `Dormant`).
+            let drop_ok = std::process::Command::new("ip")
+                .args([
+                    "netns",
+                    "exec",
+                    "ns_wan",
+                    "iptables",
+                    "-I",
+                    "FORWARD",
+                    "1",
+                    "-i",
+                    "veth_wan_b",
+                    "-p",
+                    "udp",
+                    "--dport",
+                    "41820",
+                    "-j",
+                    "DROP",
+                ])
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+            if !drop_ok {
+                let _ = std::process::Command::new("ip")
+                    .args([
+                        "netns",
+                        "exec",
+                        "ns_wan",
+                        "nft",
+                        "insert",
+                        "rule",
+                        "ip",
+                        "filter",
+                        "forward",
+                        "iifname",
+                        "veth_wan_b",
+                        "udp",
+                        "dport",
+                        "41820",
+                        "drop",
+                    ])
+                    .status();
+            }
+
+            // Now `dev_b` (`ns_b`) sends a 3-packet burst to `dev_a` (`ns_a`).
+            // Because the NAT pinhole on `ns_wan` has expired, `dev_b`'s
+            // `HandshakeInit` is dropped by `ns_wan`'s firewall!
+            let t_fail_start = Instant::now();
+            let burst_ba: Vec<Vec<u8>> = (0..3u8)
+                .map(|i| synthetic_ipv4(IP_B, IP_A, &[b'n', b'a', b't', b'-', b'f', b'b', i]))
+                .collect();
+            assert_eq!(dev_b.send_ip_batch(&burst_ba).await, 3);
+            assert_eq!(
+                dev_b.peer_on_demand_phase(&pk_a),
+                Some(super::super::on_demand::OnDemandPhase::Waking)
+            );
+
+            // `dev_b` must convict the dead direct NAT carrier within `waking_timeout` (200 ms)
+            // instead of waiting 90 s!
+            tokio::time::timeout(Duration::from_secs(2), async {
+                while dev_b.peer_carrier_dead(&pk_a) != Some(true) {
+                    dev_b.tick_on_demand();
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .expect("ns_b must mark dead NAT carrier within waking_timeout");
+            let conviction_ms = t_fail_start.elapsed().as_millis();
+
+            // Fall back to relay carrier (bound in `ns_a` and `ns_b` on port 3478,
+            // where `ns_a` dials outbound to `ns_b:3478` so NAT allows it).
+            dev_b.remove_peer(&pk_a).await;
+            let relay_sock_a =
+                UdpSocket::from_std(bind_std_udp_in_netns("ns_a", "10.201.1.2:0")).unwrap();
+            let relay_sock_b =
+                UdpSocket::from_std(bind_std_udp_in_netns("ns_b", "198.51.100.2:3478")).unwrap();
+            let relay_b_wan: SocketAddr = "198.51.100.2:3478".parse().unwrap();
+            relay_sock_a.send_to(b"punch", relay_b_wan).await.unwrap();
+            let (_, relay_a_mapped) = tokio::time::timeout(
+                Duration::from_secs(2),
+                relay_sock_b.recv_from(&mut punch_buf),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+
+            dev_a.add_peer(
+                pk_b,
+                IP_B,
+                Carrier::relay(Arc::new(UdpRelayConn(relay_sock_a)), relay_b_wan),
+                true,
+            );
+            dev_b.add_peer(
+                pk_a,
+                IP_A,
+                Carrier::relay(Arc::new(UdpRelayConn(relay_sock_b)), relay_a_mapped),
+                true,
+            );
+
+            for expected in &burst_ba {
+                let got = tokio::time::timeout(Duration::from_secs(2), rx_a.recv())
+                    .await
+                    .expect("buffered packet must arrive over fallback relay in netns NAT")
+                    .unwrap();
+                assert_eq!(&got, expected);
+            }
+            let total_fallback_delivery_ms = t_fail_start.elapsed().as_millis();
+            eprintln!(
+                "B6_NETNS_NAT_METRICS: expired_nat_conviction_ms={conviction_ms} total_fallback_zero_loss_delivery_ms={total_fallback_delivery_ms}"
+            );
+        });
     }
 }
