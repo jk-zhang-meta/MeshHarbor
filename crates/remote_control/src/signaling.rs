@@ -474,6 +474,9 @@ pub enum OverlayJoinRefusal {
     NetworkUnavailable,
     /// A transient persistence failure. Retryable.
     StoreUnavailable,
+    /// B4 — The node's WireGuard public key is expired, revoked, retired, or
+    /// already held by another machine in the network; requires key rotation.
+    KeyUnauthorized,
     /// A reason this build does not know.
     Unknown,
 }
@@ -488,6 +491,7 @@ impl<'de> Deserialize<'de> for OverlayJoinRefusal {
             "address_space_exhausted" => OverlayJoinRefusal::AddressSpaceExhausted,
             "network_unavailable" => OverlayJoinRefusal::NetworkUnavailable,
             "store_unavailable" => OverlayJoinRefusal::StoreUnavailable,
+            "key_unauthorized" => OverlayJoinRefusal::KeyUnauthorized,
             _ => OverlayJoinRefusal::Unknown,
         })
     }

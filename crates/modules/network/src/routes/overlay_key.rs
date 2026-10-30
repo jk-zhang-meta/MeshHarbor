@@ -26,7 +26,7 @@ use roomler_ai_remote_control::{
     models::{KeyRotationRequest, RpcCap},
     signaling::ServerMsg,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use roomler_core::{ApiError, extractors::auth::AuthUser};
 
@@ -250,6 +250,220 @@ pub async fn rotate_overlay_key(
         request_id,
         dispatch: dispatch.wire(),
         delivered: dispatch == Dispatch::Pushed,
+    }))
+}
+
+#[derive(Debug, Serialize)]
+pub struct RevokeKeyResult {
+    pub agent_id: String,
+    pub node_id: String,
+    pub revoked_public_key: String,
+    pub key_epoch: u32,
+    pub reauth_required: bool,
+    pub rotation_request_id: String,
+    pub rotation_delivered: bool,
+}
+
+/// B4 — `POST /api/tenant/{tid}/agent/{agent_id}/overlay-key/revoke`:
+/// Immediately revoke the agent's current WireGuard key in `overlay_nodes`,
+/// retire it into `retired_wg_keys`, set `reauth_required = true`, evict its
+/// active DERP registration and peer netmap presence, and order a key rotation.
+pub async fn revoke_overlay_key(
+    State(state): State<NetworkState>,
+    auth: AuthUser,
+    Path((tenant_id, agent_id)): Path<(String, String)>,
+) -> Result<Json<RevokeKeyResult>, ApiError> {
+    let tid = ObjectId::parse_str(&tenant_id)
+        .map_err(|_| ApiError::BadRequest("Invalid tenant_id".to_string()))?;
+    let aid = ObjectId::parse_str(&agent_id)
+        .map_err(|_| ApiError::BadRequest("Invalid agent_id".to_string()))?;
+
+    require_permission(
+        &state,
+        tid,
+        auth.user_id,
+        permissions::MANAGE_AGENTS,
+        "MANAGE_AGENTS",
+    )
+    .await?;
+
+    let agent = state.fleet.agents.find_live_in_tenant(tid, aid).await?;
+    let Some(node) = state.overlay_nodes.find_live_by_agent(tid, aid).await? else {
+        return Err(ApiError::NotFound(
+            "Agent has no live overlay node".to_string(),
+        ));
+    };
+    let Some(node_id) = node.id else {
+        return Err(ApiError::NotFound("Overlay node missing _id".to_string()));
+    };
+
+    let revoked = state
+        .overlay_nodes
+        .revoke_current_key(node_id, "admin_revoke")
+        .await?;
+    crate::overlay::enforce_node_key_revocation_or_expiry(&state, &revoked).await;
+
+    let now = DateTime::now();
+    let supports_rotation = agent.capabilities.has_rpc(RpcCap::KeyRotate);
+    if let Some(existing_req) = &agent.key_rotation
+        && !order_is_satisfied(existing_req, agent.overlay_identity.as_ref())
+        && !should_redeliver(existing_req, agent.key_rotation_report.as_ref(), now)
+    {
+        let delivered = supports_rotation && existing_req.delivered_at.is_some();
+        let _ = state
+            .key_rotation_audit
+            .record(
+                tid,
+                aid,
+                auth.user_id,
+                &existing_req.request_id,
+                Some(if delivered { "pushed" } else { "queued" }),
+                None,
+            )
+            .await;
+        return Ok(Json(RevokeKeyResult {
+            agent_id: aid.to_hex(),
+            node_id: node_id.to_hex(),
+            revoked_public_key: revoked.wg_public_key,
+            key_epoch: revoked.key_epoch,
+            reauth_required: revoked.reauth_required,
+            rotation_request_id: existing_req.request_id.clone(),
+            rotation_delivered: delivered,
+        }));
+    }
+
+    let request_id = ObjectId::new().to_hex();
+    let request = KeyRotationRequest {
+        request_id: request_id.clone(),
+        requested_by: auth.user_id,
+        requested_at: now,
+        delivered_at: None,
+        public_key_before: Some(revoked.wg_public_key.clone()),
+    };
+    let _ = state
+        .fleet
+        .agents
+        .record_key_rotation_request(tid, aid, &request)
+        .await;
+    let delivered = supports_rotation
+        && state
+            .fleet
+            .rc_hub
+            .send_to_agent(
+                aid,
+                ServerMsg::KeyRotate {
+                    request_id: request_id.clone(),
+                },
+            )
+            .is_ok();
+    if delivered {
+        let _ = state
+            .fleet
+            .agents
+            .mark_key_rotation_delivered(tid, aid, &request_id)
+            .await;
+    }
+    let _ = state
+        .key_rotation_audit
+        .record(
+            tid,
+            aid,
+            auth.user_id,
+            &request_id,
+            Some(if delivered { "pushed" } else { "queued" }),
+            None,
+        )
+        .await;
+
+    Ok(Json(RevokeKeyResult {
+        agent_id: aid.to_hex(),
+        node_id: node_id.to_hex(),
+        revoked_public_key: revoked.wg_public_key,
+        key_epoch: revoked.key_epoch,
+        reauth_required: revoked.reauth_required,
+        rotation_request_id: request_id,
+        rotation_delivered: delivered,
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SetKeyTtlPayload {
+    pub key_ttl_secs: Option<u64>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SetKeyTtlResult {
+    pub agent_id: String,
+    pub node_id: String,
+    pub key_ttl_secs: Option<u64>,
+    pub key_expires_at_ms: Option<i64>,
+    pub reauth_required: bool,
+}
+
+/// B4 — `PUT /api/tenant/{tid}/agent/{agent_id}/overlay-key/ttl`:
+/// Configure per-node key authorization TTL (`None` or `Some(60..=31_536_000)` seconds).
+pub async fn set_overlay_key_ttl(
+    State(state): State<NetworkState>,
+    auth: AuthUser,
+    Path((tenant_id, agent_id)): Path<(String, String)>,
+    Json(payload): Json<SetKeyTtlPayload>,
+) -> Result<Json<SetKeyTtlResult>, ApiError> {
+    if let Some(ttl) = payload.key_ttl_secs
+        && !(60..=31_536_000).contains(&ttl)
+    {
+        return Err(ApiError::BadRequest(
+            "key_ttl_secs must be between 60 and 31536000 seconds (or null to disable)".to_string(),
+        ));
+    }
+    let tid = ObjectId::parse_str(&tenant_id)
+        .map_err(|_| ApiError::BadRequest("Invalid tenant_id".to_string()))?;
+    let aid = ObjectId::parse_str(&agent_id)
+        .map_err(|_| ApiError::BadRequest("Invalid agent_id".to_string()))?;
+
+    require_permission(
+        &state,
+        tid,
+        auth.user_id,
+        permissions::MANAGE_AGENTS,
+        "MANAGE_AGENTS",
+    )
+    .await?;
+
+    let _agent = state.fleet.agents.find_live_in_tenant(tid, aid).await?;
+    let Some(node) = state.overlay_nodes.find_live_by_agent(tid, aid).await? else {
+        return Err(ApiError::NotFound(
+            "Agent has no live overlay node".to_string(),
+        ));
+    };
+    let Some(node_id) = node.id else {
+        return Err(ApiError::NotFound("Overlay node missing _id".to_string()));
+    };
+
+    let mut updated = state
+        .overlay_nodes
+        .set_key_ttl(node_id, payload.key_ttl_secs)
+        .await?;
+    let now = DateTime::now();
+    if !updated.is_key_authorized_at(now) {
+        if let Ok(revoked) = state
+            .overlay_nodes
+            .revoke_current_key(node_id, "expired")
+            .await
+        {
+            updated = revoked;
+        }
+        crate::overlay::enforce_node_key_revocation_or_expiry(&state, &updated).await;
+        crate::overlay::order_auto_key_rotate_if_needed(&state, &updated).await;
+    } else if updated.should_pre_rotate_key_at(now) {
+        crate::overlay::order_auto_key_rotate_if_needed(&state, &updated).await;
+    }
+
+    Ok(Json(SetKeyTtlResult {
+        agent_id: aid.to_hex(),
+        node_id: node_id.to_hex(),
+        key_ttl_secs: updated.key_ttl_secs,
+        key_expires_at_ms: updated.key_expires_at.map(|d| d.timestamp_millis()),
+        reauth_required: updated.reauth_required,
     }))
 }
 

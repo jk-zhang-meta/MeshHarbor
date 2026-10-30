@@ -5,7 +5,7 @@ use mongodb::Database;
 use mongodb::options::ReturnDocument;
 use roomler_ai_remote_control::models::{AgentStatus, DEFAULT_ROUTE_V4, NodeRef, OverlayNode};
 
-use super::base::{BaseDao, DaoResult};
+use super::base::{BaseDao, DaoError, DaoResult};
 
 /// Overlay membership rows — one per host (agent or tunnel-client) that
 /// has joined a tenant's virtual LAN. Keyed for rehydrate by
@@ -95,9 +95,54 @@ pub struct NewOverlayNode {
     pub route_offer_withheld: Option<String>,
 }
 
+/// B4 — Minimum allowed key authorization TTL (seconds), matching the HTTP API
+/// validation floor in `routes/overlay_key.rs` so a misconfigured environment
+/// variable (`ROOMLER_OVERLAY_KEY_TTL_SECS=1`) cannot cause a 5-second reaper
+/// revocation storm.
+pub const MIN_KEY_TTL_SECS: u64 = 60;
+
+/// B4 — Maximum number of historical `RetiredWgKey` entries retained per
+/// `OverlayNode` document (`$push` with `$slice: -64`).
+pub const MAX_RETIRED_WG_KEYS: usize = 64;
+
+/// B4 — Pre-expiry scan horizon (seconds) for proactive make-before-break key
+/// rotation (`list_keys_expiring_soon`).
+pub const KEY_PRE_EXPIRY_ROTATE_HORIZON_SECS: u64 = 300;
+
 impl OverlayNodeDao {
-    /// Is `wg_public_key` already held by a LIVE node in this network that is
-    /// NOT `machine_id`?
+    /// Is `wg_public_key` explicitly retired, revoked, or expired anywhere in
+    /// `network_id` (inside `retired_wg_keys`, or as the active `wg_public_key`
+    /// of a row with `reauth_required == true`, `key_revoked_at != null`, or
+    /// `key_expires_at <= now`)?
+    pub async fn wg_key_retired_in_network(
+        &self,
+        network_id: ObjectId,
+        wg_public_key: &str,
+    ) -> DaoResult<bool> {
+        let now = DateTime::now();
+        Ok(self
+            .base
+            .find_one(doc! {
+                "network_id": network_id,
+                "$or": [
+                    { "retired_wg_keys.public_key": wg_public_key },
+                    {
+                        "wg_public_key": wg_public_key,
+                        "$or": [
+                            { "reauth_required": true },
+                            { "key_revoked_at": { "$ne": null } },
+                            { "key_expires_at": { "$ne": null, "$lte": now } },
+                        ],
+                    },
+                ],
+            })
+            .await?
+            .is_some())
+    }
+
+    /// Is `wg_public_key` already held by a LIVE or TOMBSTONED node in this
+    /// network that is NOT `machine_id`, OR already retired in `retired_wg_keys`
+    /// anywhere in `network_id`?
     ///
     /// The WG public key arrives verbatim from the joining client and is then
     /// used as an ADDRESSING key: `/derp` authorizes a registration by
@@ -105,27 +150,31 @@ impl OverlayNodeDao {
     /// pubkey. Without this check a second enrolled device in the same tenant
     /// could join advertising ANOTHER device's key and black-hole its DERP
     /// traffic (registration is last-writer-wins) or capture its peer entry.
-    /// Nothing proves possession of the private half, so uniqueness is the
-    /// cheap structural defence.
-    ///
-    /// Live-scoped: tombstones keep their key as the forensic record and must
-    /// not block a new joiner.
+    /// Checking both live and tombstoned rows for `machine_id != machine_id`
+    /// prevents another machine from claiming a released node's key while
+    /// allowing the SAME `machine_id` to re-enroll and obtain a fresh lease
+    /// after eviction (`CLAUDE.md` free-pool invariant: evict forces a new
+    /// lease, not a permanent ban).
     pub async fn wg_key_taken_by_other(
         &self,
         network_id: ObjectId,
         wg_public_key: &str,
         machine_id: &str,
     ) -> DaoResult<bool> {
-        Ok(self
+        let taken_by_other_machine = self
             .base
             .find_one(doc! {
                 "network_id": network_id,
                 "wg_public_key": wg_public_key,
                 "machine_id": { "$ne": machine_id },
-                "deleted_at": null,
             })
             .await?
-            .is_some())
+            .is_some();
+        if taken_by_other_machine {
+            return Ok(true);
+        }
+        self.wg_key_retired_in_network(network_id, wg_public_key)
+            .await
     }
 
     /// Insert a fresh node with a freshly-allocated overlay IP.
@@ -151,7 +200,64 @@ impl OverlayNodeDao {
             advertised_routes,
             route_offer_withheld,
         } = new;
+        if wg_public_key.trim().is_empty() {
+            return Err(DaoError::Validation("wg_public_key_empty".into()));
+        }
+        if key_epoch == u32::MAX {
+            return Err(DaoError::Validation("key_epoch_overflow".into()));
+        }
+        if self
+            .wg_key_taken_by_other(network_id, &wg_public_key, &machine_id)
+            .await?
+        {
+            return Err(DaoError::Forbidden(
+                "key_retired_or_taken_in_network".into(),
+            ));
+        }
         let now = DateTime::now();
+        let prior_rows = self
+            .base
+            .find_many(
+                doc! {
+                    "network_id": network_id,
+                    "machine_id": &machine_id,
+                    "wg_public_key": &wg_public_key,
+                },
+                None,
+            )
+            .await?;
+        let default_ttl = default_key_ttl_secs();
+        let (key_issued_at, key_ttl_secs, key_expires_at) = if prior_rows.is_empty() {
+            let expires = default_ttl.map(|ttl| compute_expiry(now, ttl));
+            (Some(now), default_ttl, expires)
+        } else {
+            let mut issued = now;
+            let mut ttl: Option<u64> = default_ttl;
+            let mut expires: Option<DateTime> = None;
+            for prev in prior_rows {
+                if let Some(pi) = prev.key_issued_at
+                    && pi.timestamp_millis() < issued.timestamp_millis()
+                {
+                    issued = pi;
+                }
+                if let Some(pt) = prev.key_ttl_secs {
+                    ttl = Some(ttl.map_or(pt, |cur| cur.min(pt)));
+                }
+                if let Some(pe) = prev.key_expires_at {
+                    expires = Some(match expires {
+                        Some(cur) if cur.timestamp_millis() <= pe.timestamp_millis() => cur,
+                        _ => pe,
+                    });
+                }
+            }
+            if let Some(computed_exp) = ttl.map(|t| compute_expiry(issued, t)) {
+                expires = Some(match expires {
+                    Some(cur) if cur.timestamp_millis() <= computed_exp.timestamp_millis() => cur,
+                    _ => computed_exp,
+                });
+            }
+            (Some(issued), ttl, expires)
+        };
         let node = OverlayNode {
             id: None,
             tenant_id,
@@ -162,6 +268,12 @@ impl OverlayNodeDao {
             overlay_ip,
             wg_public_key,
             key_epoch,
+            retired_wg_keys: Vec::new(),
+            key_issued_at,
+            key_ttl_secs,
+            key_expires_at,
+            key_revoked_at: None,
+            reauth_required: false,
             // The join carries the agent's DIRECT LAN candidates; seed BOTH
             // buckets. The relay trickle later replaces `endpoints` only —
             // `lan_endpoints` survives so peers keep seeing the LAN address.
@@ -208,10 +320,9 @@ impl OverlayNodeDao {
     /// Re-join: refresh the WG key + endpoints + node_ref, mark Online. Keeps
     /// the existing `overlay_ip`. Returns the updated row.
     ///
-    /// Only ever reached for a LIVE row (the lookup is
-    /// [`Self::find_live_by_tenant_and_machine`]), so the `deleted_at: Null` in
-    /// the `$set` below is a vestigial no-op — kept as belt-and-braces in case
-    /// the lookup is ever widened.
+    /// The existing identity is the baseline, not client testimony about history.
+    /// A changed key must advance its epoch; retirement and replacement commit
+    /// in ONE document CAS. A raced/rejected join never retries over a winner.
     #[allow(clippy::too_many_arguments)]
     pub async fn rehydrate(
         &self,
@@ -232,82 +343,399 @@ impl OverlayNodeDao {
         advertised_routes: &[String],
         route_offer_withheld: Option<&str>,
     ) -> DaoResult<OverlayNode> {
-        let node_ref_bson = bson::to_bson(node_ref).unwrap_or(bson::Bson::Null);
-        self.base
-            .update_by_id(
+        if wg_public_key.trim().is_empty() {
+            return Err(DaoError::Validation("wg_public_key_empty".into()));
+        }
+        for attempt in 0..2 {
+            let current = self.base.find_by_id(node_id).await?;
+            let now = DateTime::now();
+            let unversioned_epoch0_rekey = wg_public_key != current.wg_public_key
+                && current.key_epoch == 0
+                && key_epoch == 0
+                && current.retired_wg_keys.is_empty()
+                && current.key_ttl_secs.is_none()
+                && default_key_ttl_secs().is_none()
+                && current.is_key_authorized_at(now);
+            if current.deleted_at.is_some()
+                || key_epoch < current.key_epoch
+                || (wg_public_key != current.wg_public_key
+                    && key_epoch == current.key_epoch
+                    && !unversioned_epoch0_rekey)
+                || (wg_public_key == current.wg_public_key && key_epoch != current.key_epoch)
+            {
+                return Err(DaoError::Forbidden("key_identity_stale".into()));
+            }
+            if wg_public_key != current.wg_public_key && current.key_epoch == u32::MAX {
+                return Err(DaoError::Validation("key_epoch_overflow".into()));
+            }
+            if wg_public_key == current.wg_public_key && !current.is_key_authorized_at(now) {
+                return Err(DaoError::Forbidden("key_expired_or_reauth_required".into()));
+            }
+            if self
+                .wg_key_taken_by_other(current.network_id, wg_public_key, &current.machine_id)
+                .await?
+            {
+                return Err(DaoError::Forbidden(
+                    "key_retired_or_taken_in_network".into(),
+                ));
+            }
+            let should_retire_current = wg_public_key != current.wg_public_key
+                && !unversioned_epoch0_rekey
+                && !current
+                    .retired_wg_keys
+                    .iter()
+                    .any(|k| k.public_key == current.wg_public_key);
+            let filter = cas_row_filter(
                 node_id,
+                &current.wg_public_key,
+                current.key_epoch,
+                wg_public_key,
+                wg_public_key == current.wg_public_key,
+                should_retire_current,
+                now,
+            );
+            let node_ref_bson = bson::to_bson(node_ref).unwrap_or(bson::Bson::Null);
+            let mut set_doc = doc! {
+                "node_ref": node_ref_bson,
+                // Phase 0 — the join handler passes the stable name
+                // (existing name reused, or a freshly deduped one when
+                // backfilling a pre-Phase-0 row).
+                "name": name,
+                // Phase 1 — refresh the CLAIMED routes on each join.
+                // `approved_routes` is admin-controlled and intentionally
+                // NOT touched here, so approvals survive a rejoin.
+                "advertised_routes": advertised_routes,
+                // FR-97 P0b — and why they are empty, refreshed with
+                // them: null clears a reason the device no longer has.
+                "route_offer_withheld": route_offer_withheld,
+                "wg_public_key": wg_public_key,
+                "key_epoch": key_epoch as i64,
+                // Refresh BOTH buckets from the join (rc.135) — a DHCP
+                // IP change is picked up, and the LAN bucket is restored
+                // before the next relay trickle replaces `endpoints`.
+                "endpoints": endpoints,
+                "lan_endpoints": endpoints,
+                // Phase B — clear stale srflx on re-join; the node
+                // re-gathers + re-trickles fresh srflx this connection
+                // (a prior session's NAT mapping is meaningless now).
+                "srflx_endpoints": [],
+                // Phase C (A8) — clear the stale NAT class in the SAME
+                // $set (a prior session's NAT type is meaningless after
+                // a roam); the node re-probes + re-trickles it.
+                "srflx_nat": bson::Bson::Null,
+                // Dialer honesty — clear with the srflx bucket: the
+                // restarted runtime re-earns the verdict (and its
+                // first srflx trickle re-declares it).
+                "udp_dialer_ok": bson::Bson::Null,
+                // Phase B — the capability vector is re-measured
+                // ~45 s after start; a prior session's measurements
+                // are meaningless on a possibly-new network.
+                "caps": bson::Bson::Null,
+                "caps_measured_at": bson::Bson::Null,
+                // C4 stage 2 (PR-B) — clear the stale warm-leg address
+                // for the same reason: a restarted runtime holds no
+                // allocation; its heartbeats re-mirror a fresh one.
+                "warm_relay_endpoint": bson::Bson::Null,
+                // rc.142 — refresh the QUIC capability on each re-join
+                // (an operator may flip ROOMLERD_OVERLAY_QUIC).
+                "supports_quic": supports_quic,
+                // Phase D — refresh the single-relay capability on each
+                // re-join (an operator may flip OVERLAY_RELAY_SINGLE).
+                "supports_relay_single": supports_relay_single,
+                // Phase D (DERP) — refresh the DERP capability on each
+                // re-join (an operator may flip OVERLAY_DERP).
+                "supports_derp": supports_derp,
+                // P7 — refresh the forced-DERP capability likewise.
+                "supports_forced_derp": supports_forced_derp,
+                // U2 — refresh the server-relay-strategy opt-in likewise
+                // (an operator may flip OVERLAY_SERVER_RELAY_STRATEGY).
+                "supports_server_relay_strategy": supports_server_relay_strategy,
+                "supports_derp_floor": supports_derp_floor,
+                // Data-probe — refresh the overlay-native-echo capability
+                // on each re-join (a downgrade must clear it). Hand-built
+                // doc: adding the field HERE is load-bearing (a doc!{} miss
+                // is not a compile error and silently never persists).
+                "supports_overlay_echo": supports_overlay_echo,
+                "supports_org_relay": supports_org_relay,
+                "status": bson::to_bson(&AgentStatus::Online).unwrap(),
+                "last_seen_at": now,
+                "updated_at": now,
+            };
+            if wg_public_key != current.wg_public_key {
+                let effective_ttl = current.key_ttl_secs.or_else(default_key_ttl_secs);
+                set_doc.insert("key_issued_at", now);
+                set_doc.insert(
+                    "key_expires_at",
+                    effective_ttl
+                        .map(|ttl| bson::Bson::DateTime(compute_expiry(now, ttl)))
+                        .unwrap_or(bson::Bson::Null),
+                );
+                set_doc.insert("key_revoked_at", bson::Bson::Null);
+                set_doc.insert("reauth_required", false);
+            }
+            let mut update = doc! { "$set": set_doc };
+            if should_retire_current {
+                update.insert(
+                    "$push",
+                    doc! {
+                        "retired_wg_keys": {
+                            "$each": [{
+                                "public_key": &current.wg_public_key,
+                                "key_epoch": i64::from(current.key_epoch),
+                                "retired_at": now,
+                                "reason": "rotate",
+                            }],
+                            "$slice": -(MAX_RETIRED_WG_KEYS as i32),
+                        }
+                    },
+                );
+            }
+            if let Some(updated) = self
+                .base
+                .collection()
+                .find_one_and_update(filter, update)
+                .return_document(ReturnDocument::After)
+                .await?
+            {
+                return Ok(updated);
+            }
+            if attempt == 0 && wg_public_key != current.wg_public_key {
+                // If a concurrent `revoke_current_key` retired `current.wg_public_key`
+                // while keeping `key_epoch` unchanged, retry once so the rotation
+                // succeeds without pushing a duplicate `retired_wg_keys` entry.
+                continue;
+            }
+            break;
+        }
+        Err(DaoError::Forbidden("key_retired_or_identity_changed".into()))
+    }
+
+    /// Fresh admission read for a DERP registration or post-join operation at `now`.
+    pub async fn accepts_current_key_at(
+        &self,
+        node_id: ObjectId,
+        public_key: &str,
+        epoch: u32,
+        now: DateTime,
+    ) -> DaoResult<bool> {
+        let Some(node) = self
+            .base
+            .find_one(active_key_admission_filter(node_id, public_key, epoch, now))
+            .await?
+        else {
+            return Ok(false);
+        };
+        Ok(!self
+            .wg_key_retired_in_network(node.network_id, public_key)
+            .await?)
+    }
+
+    /// Fresh admission read for a DERP registration, not its earlier node snapshot.
+    /// This does not revoke already admitted sockets or promise an atomic DB/WS
+    /// commit. Those active-key invalidations belong to the control-plane owner.
+    pub async fn accepts_current_key(
+        &self,
+        node_id: ObjectId,
+        public_key: &str,
+        epoch: u32,
+    ) -> DaoResult<bool> {
+        self.accepts_current_key_at(node_id, public_key, epoch, DateTime::now())
+            .await
+    }
+
+    /// B4 — Configure per-node key authorization TTL (`key_ttl_secs`) and recompute
+    /// `key_expires_at` from the current key's `key_issued_at` (or `created_at`).
+    /// Does NOT slide `key_issued_at`, and never resurrects an already-expired or
+    /// revoked key.
+    pub async fn set_key_ttl(
+        &self,
+        node_id: ObjectId,
+        key_ttl_secs: Option<u64>,
+    ) -> DaoResult<OverlayNode> {
+        let mut current = self.base.find_by_id(node_id).await?;
+        if current.deleted_at.is_some() {
+            return Err(DaoError::Forbidden("node_released".into()));
+        }
+        let now = DateTime::now();
+        if !current.is_key_authorized_at(now) && !current.reauth_required {
+            current = self.revoke_current_key(node_id, "expired").await?;
+        }
+        let issued = current.key_issued_at.unwrap_or(current.created_at);
+        let ttl_bson = key_ttl_secs
+            .map(|t| bson::Bson::Int64(t as i64))
+            .unwrap_or(bson::Bson::Null);
+        let set_doc = if !current.is_key_authorized_at(now) {
+            // Current key is already expired/revoked: only stage `key_ttl_secs`
+            // for future key rotations without un-expiring the current key.
+            doc! {
+                "key_ttl_secs": ttl_bson,
+                "updated_at": now,
+            }
+        } else {
+            let exp_bson = key_ttl_secs
+                .map(|ttl| bson::Bson::DateTime(compute_expiry(issued, ttl)))
+                .unwrap_or(bson::Bson::Null);
+            doc! {
+                "key_issued_at": issued,
+                "key_ttl_secs": ttl_bson,
+                "key_expires_at": exp_bson,
+                "updated_at": now,
+            }
+        };
+        let filter = epoch_match_filter(node_id, &current.wg_public_key, current.key_epoch);
+        self.base
+            .collection()
+            .find_one_and_update(filter, doc! { "$set": set_doc })
+            .return_document(ReturnDocument::After)
+            .await?
+            .ok_or_else(|| DaoError::Forbidden("key_identity_changed".into()))
+    }
+
+    /// B4 — Explicitly set or clear `key_expires_at` on a live node row.
+    pub async fn set_key_expires_at(
+        &self,
+        node_id: ObjectId,
+        expires_at: Option<DateTime>,
+    ) -> DaoResult<OverlayNode> {
+        let current = self.base.find_by_id(node_id).await?;
+        if current.deleted_at.is_some() {
+            return Err(DaoError::Forbidden("node_released".into()));
+        }
+        let now = DateTime::now();
+        let exp_bson = expires_at
+            .map(bson::Bson::DateTime)
+            .unwrap_or(bson::Bson::Null);
+        let filter = epoch_match_filter(node_id, &current.wg_public_key, current.key_epoch);
+        self.base
+            .collection()
+            .find_one_and_update(
+                filter,
+                doc! { "$set": {
+                    "key_expires_at": exp_bson,
+                    "updated_at": now,
+                } },
+            )
+            .return_document(ReturnDocument::After)
+            .await?
+            .ok_or_else(|| DaoError::Forbidden("key_identity_changed".into()))
+    }
+
+    /// B4 — Immediately revoke the node's current `wg_public_key`, retire it into
+    /// `retired_wg_keys` (`reason`), and set `reauth_required = true` so the node
+    /// cannot use or rehydrate with the revoked key and must rotate (`key_epoch + 1`).
+    pub async fn revoke_current_key(
+        &self,
+        node_id: ObjectId,
+        reason: &str,
+    ) -> DaoResult<OverlayNode> {
+        for _attempt in 0..2 {
+            let current = self.base.find_by_id(node_id).await?;
+            if current.deleted_at.is_some() {
+                return Err(DaoError::Forbidden("node_released".into()));
+            }
+            let now = DateTime::now();
+            let already_retired = current
+                .retired_wg_keys
+                .iter()
+                .any(|k| k.public_key == current.wg_public_key);
+            let mut filter =
+                epoch_match_filter(node_id, &current.wg_public_key, current.key_epoch);
+            let mut update = doc! {
+                "$set": {
+                    "key_revoked_at": current.key_revoked_at.unwrap_or(now),
+                    "reauth_required": true,
+                    "updated_at": now,
+                }
+            };
+            if !already_retired {
+                filter.insert(
+                    "retired_wg_keys.public_key",
+                    doc! { "$ne": &current.wg_public_key },
+                );
+                update.insert(
+                    "$push",
+                    doc! {
+                        "retired_wg_keys": {
+                            "$each": [{
+                                "public_key": &current.wg_public_key,
+                                "key_epoch": i64::from(current.key_epoch),
+                                "retired_at": now,
+                                "reason": reason,
+                            }],
+                            "$slice": -(MAX_RETIRED_WG_KEYS as i32),
+                        }
+                    },
+                );
+            }
+            if let Some(updated) = self
+                .base
+                .collection()
+                .find_one_and_update(filter, update)
+                .return_document(ReturnDocument::After)
+                .await?
+            {
+                return Ok(updated);
+            }
+        }
+        Err(DaoError::Forbidden("key_identity_changed".into()))
+    }
+
+    /// B4 — Return all live, currently-authorized nodes in `network_id` that
+    /// have entered their pre-expiry key rotation lead window at `now` so the
+    /// control plane can order `ServerMsg::KeyRotate` make-before-break before
+    /// `key_expires_at` is reached.
+    pub async fn list_keys_expiring_soon(
+        &self,
+        network_id: ObjectId,
+        now: DateTime,
+    ) -> DaoResult<Vec<OverlayNode>> {
+        let horizon = compute_expiry(now, KEY_PRE_EXPIRY_ROTATE_HORIZON_SECS);
+        let candidates = self
+            .base
+            .find_many(
                 doc! {
-                    "$set": {
-                        "node_ref": node_ref_bson,
-                        // Phase 0 — the join handler passes the stable name
-                        // (existing name reused, or a freshly deduped one when
-                        // backfilling a pre-Phase-0 row).
-                        "name": name,
-                        // Phase 1 — refresh the CLAIMED routes on each join.
-                        // `approved_routes` is admin-controlled and intentionally
-                        // NOT touched here, so approvals survive a rejoin.
-                        "advertised_routes": advertised_routes,
-                        // FR-97 P0b — and why they are empty, refreshed with
-                        // them: null clears a reason the device no longer has.
-                        "route_offer_withheld": route_offer_withheld,
-                        "wg_public_key": wg_public_key,
-                        "key_epoch": key_epoch as i64,
-                        // Refresh BOTH buckets from the join (rc.135) — a DHCP
-                        // IP change is picked up, and the LAN bucket is restored
-                        // before the next relay trickle replaces `endpoints`.
-                        "endpoints": endpoints,
-                        "lan_endpoints": endpoints,
-                        // Phase B — clear stale srflx on re-join; the node
-                        // re-gathers + re-trickles fresh srflx this connection
-                        // (a prior session's NAT mapping is meaningless now).
-                        "srflx_endpoints": [],
-                        // Phase C (A8) — clear the stale NAT class in the SAME
-                        // $set (a prior session's NAT type is meaningless after
-                        // a roam); the node re-probes + re-trickles it.
-                        "srflx_nat": bson::Bson::Null,
-                        // Dialer honesty — clear with the srflx bucket: the
-                        // restarted runtime re-earns the verdict (and its
-                        // first srflx trickle re-declares it).
-                        "udp_dialer_ok": bson::Bson::Null,
-                        // Phase B — the capability vector is re-measured
-                        // ~45 s after start; a prior session's measurements
-                        // are meaningless on a possibly-new network.
-                        "caps": bson::Bson::Null,
-                        "caps_measured_at": bson::Bson::Null,
-                        // C4 stage 2 (PR-B) — clear the stale warm-leg address
-                        // for the same reason: a restarted runtime holds no
-                        // allocation; its heartbeats re-mirror a fresh one.
-                        "warm_relay_endpoint": bson::Bson::Null,
-                        // rc.142 — refresh the QUIC capability on each re-join
-                        // (an operator may flip ROOMLERD_OVERLAY_QUIC).
-                        "supports_quic": supports_quic,
-                        // Phase D — refresh the single-relay capability on each
-                        // re-join (an operator may flip OVERLAY_RELAY_SINGLE).
-                        "supports_relay_single": supports_relay_single,
-                        // Phase D (DERP) — refresh the DERP capability on each
-                        // re-join (an operator may flip OVERLAY_DERP).
-                        "supports_derp": supports_derp,
-                        // P7 — refresh the forced-DERP capability likewise.
-                        "supports_forced_derp": supports_forced_derp,
-                        // U2 — refresh the server-relay-strategy opt-in likewise
-                        // (an operator may flip OVERLAY_SERVER_RELAY_STRATEGY).
-                        "supports_server_relay_strategy": supports_server_relay_strategy,
-                        "supports_derp_floor": supports_derp_floor,
-                        // Data-probe — refresh the overlay-native-echo capability
-                        // on each re-join (a downgrade must clear it). Hand-built
-                        // doc: adding the field HERE is load-bearing (a doc!{} miss
-                        // is not a compile error and silently never persists).
-                        "supports_overlay_echo": supports_overlay_echo,
-                        "supports_org_relay": supports_org_relay,
-                        "status": bson::to_bson(&AgentStatus::Online).unwrap(),
-                        "last_seen_at": DateTime::now(),
-                        "updated_at": DateTime::now(),
-                        "deleted_at": bson::Bson::Null,
-                    }
+                    "network_id": network_id,
+                    "deleted_at": null,
+                    "reauth_required": { "$ne": true },
+                    "key_revoked_at": null,
+                    "key_expires_at": { "$gt": now, "$lte": horizon },
                 },
+                None,
             )
             .await?;
-        self.base.find_by_id(node_id).await
+        Ok(candidates
+            .into_iter()
+            .filter(|node| node.should_pre_rotate_key_at(now))
+            .collect())
+    }
+
+    /// B4 — Sweep all live nodes in `network_id` whose `key_expires_at <= now` and
+    /// atomically mark them `reauth_required = true` while retiring the expired key.
+    pub async fn expire_keys_due(
+        &self,
+        network_id: ObjectId,
+        now: DateTime,
+    ) -> DaoResult<Vec<OverlayNode>> {
+        let due = self
+            .base
+            .find_many(
+                doc! {
+                    "network_id": network_id,
+                    "deleted_at": null,
+                    "reauth_required": { "$ne": true },
+                    "key_expires_at": { "$ne": null, "$lte": now },
+                },
+                None,
+            )
+            .await?;
+        let mut expired_nodes = Vec::new();
+        for node in due {
+            let Some(node_id) = node.id else { continue };
+            if let Ok(updated) = self.revoke_current_key(node_id, "expired").await {
+                expired_nodes.push(updated);
+            }
+        }
+        Ok(expired_nodes)
     }
 
     /// Compare-and-swap tombstone: mark the node released ONLY if it is still
@@ -655,5 +1083,99 @@ impl OverlayNodeDao {
                 doc! { "$set": { "last_seen_at": DateTime::now() } },
             )
             .await
+    }
+}
+
+pub fn clamp_default_key_ttl_secs(raw: u64) -> Option<u64> {
+    (raw > 0).then(|| raw.max(MIN_KEY_TTL_SECS))
+}
+
+fn default_key_ttl_secs() -> Option<u64> {
+    std::env::var("ROOMLER_OVERLAY_KEY_TTL_SECS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .and_then(clamp_default_key_ttl_secs)
+}
+
+fn compute_expiry(issued_at: DateTime, ttl_secs: u64) -> DateTime {
+    let delta_ms = (ttl_secs as i64).saturating_mul(1_000);
+    DateTime::from_millis(issued_at.timestamp_millis().saturating_add(delta_ms))
+}
+
+fn epoch_clause(epoch: u32) -> bson::Document {
+    // Historical rows without an epoch already deserialize as epoch zero.
+    if epoch == 0 {
+        doc! {
+            "$or": [
+                { "key_epoch": 0 },
+                { "key_epoch": { "$exists": false } },
+            ]
+        }
+    } else {
+        doc! { "key_epoch": i64::from(epoch) }
+    }
+}
+
+fn epoch_match_filter(node_id: ObjectId, public_key: &str, epoch: u32) -> bson::Document {
+    let mut filter = doc! {
+        "_id": node_id,
+        "deleted_at": null,
+        "wg_public_key": public_key,
+    };
+    filter.extend(epoch_clause(epoch));
+    filter
+}
+
+fn cas_row_filter(
+    node_id: ObjectId,
+    current_public_key: &str,
+    current_epoch: u32,
+    candidate_public_key: &str,
+    same_key: bool,
+    should_retire_current: bool,
+    now: DateTime,
+) -> bson::Document {
+    if same_key {
+        active_key_admission_filter(node_id, current_public_key, current_epoch, now)
+    } else {
+        let mut filter = epoch_match_filter(node_id, current_public_key, current_epoch);
+        if should_retire_current {
+            filter.insert(
+                "retired_wg_keys.public_key",
+                doc! { "$nin": [candidate_public_key, current_public_key] },
+            );
+        } else {
+            filter.insert(
+                "retired_wg_keys.public_key",
+                doc! { "$ne": candidate_public_key },
+            );
+        }
+        filter
+    }
+}
+
+fn active_key_admission_filter(
+    node_id: ObjectId,
+    public_key: &str,
+    epoch: u32,
+    now: DateTime,
+) -> bson::Document {
+    doc! {
+        "_id": node_id,
+        "deleted_at": null,
+        "wg_public_key": public_key,
+        "retired_wg_keys.public_key": { "$ne": public_key },
+        "reauth_required": { "$ne": true },
+        "key_revoked_at": null,
+        "$and": [
+            epoch_clause(epoch),
+            {
+                "$or": [
+                    { "key_expires_at": null },
+                    { "key_expires_at": { "$exists": false } },
+                    { "key_expires_at": { "$gt": now } },
+                ]
+            }
+        ]
     }
 }

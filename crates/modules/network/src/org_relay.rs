@@ -1552,6 +1552,9 @@ async fn probe_targets_inner(
         else {
             continue;
         };
+        if !node.is_key_authorized_at(bson::DateTime::now()) {
+            continue;
+        }
         let Some(relay_id) = node.id else { continue };
         if relay_id == member_id {
             continue;
@@ -1667,6 +1670,9 @@ async fn backbone_probe_targets_inner(
         else {
             continue;
         };
+        if !exit_node.is_key_authorized_at(bson::DateTime::now()) {
+            continue;
+        }
         let Some(exit_id) = exit_node.id else {
             continue;
         };
@@ -1775,6 +1781,13 @@ async fn plan_mint_candidates_with_trial_diagnostics(
     let tenant_id = requester.tenant_id;
     if peer.tenant_id != tenant_id {
         return Err(D::CrossTenant);
+    }
+    let now_dt = bson::DateTime::now();
+    if !requester.is_key_authorized_at(now_dt) {
+        return Err(D::RequesterUnsupported);
+    }
+    if !peer.is_key_authorized_at(now_dt) {
+        return Err(D::PeerUnsupported);
     }
     if !requester.supports_org_relay {
         return Err(D::RequesterUnsupported);
@@ -1887,6 +1900,9 @@ async fn plan_mint_candidates_with_trial_diagnostics(
         else {
             continue;
         };
+        if !node.is_key_authorized_at(bson::DateTime::now()) {
+            continue;
+        }
         let Some(relay_id) = node.id else { continue };
         if relay_id == req_id || relay_id == peer_id {
             continue;
@@ -2066,7 +2082,13 @@ async fn rerank_young(state: &NetworkState, reporter: &OverlayNode) {
             continue;
         };
         let peer = match state.overlay_nodes.base.find_by_id(peer_id).await {
-            Ok(p) if p.tenant_id == reporter.tenant_id && p.deleted_at.is_none() => p,
+            Ok(p)
+                if p.tenant_id == reporter.tenant_id
+                    && p.deleted_at.is_none()
+                    && p.is_key_authorized_at(bson::DateTime::now()) =>
+            {
+                p
+            }
             _ => continue,
         };
         let Some(best) = next_relay(state, reporter, &peer).await else {
@@ -2996,22 +3018,46 @@ pub async fn maybe_mint(state: &NetworkState, requester: &OverlayNode, peer: &Ov
             revoke_where(state, "nhop_reauthorization_failed", |current| current.pair_key == pk
                 && current.vni == s.vni && current.generation == s.generation).await;
         } else {
-            if !s.hops.is_empty() || crate::business_isolation::mode(state) == crate::business_isolation::Mode::Enforce {
-                match session_zone::check(state, &s).await {
-                    session_zone::Decision::Uncertain => return,
-                    session_zone::Decision::Fits => {},
-                    session_zone::Decision::Invalid => {
-                        revoke_where(state, "session_region_changed", |current| current.pair_key == pk
-                            && current.vni == s.vni && current.generation == s.generation).await;
-                        return;
-                    },
+            let keys_current = [(req_id, requester), (peer_id, peer)]
+                .iter()
+                .all(|(id, node)| {
+                    s.member_index(*id).is_some_and(|i| {
+                        s.members[i].wg_public_key == node.wg_public_key
+                            && s.members[i].party.node_ref == node.node_ref
+                    })
+                });
+            if !keys_current {
+                revoke_where(state, "member_key_rotated", |current| {
+                    current.pair_key == pk
+                        && current.vni == s.vni
+                        && current.generation == s.generation
+                })
+                .await;
+            } else {
+                if !s.hops.is_empty()
+                    || crate::business_isolation::mode(state)
+                        == crate::business_isolation::Mode::Enforce
+                {
+                    match session_zone::check(state, &s).await {
+                        session_zone::Decision::Uncertain => return,
+                        session_zone::Decision::Fits => {}
+                        session_zone::Decision::Invalid => {
+                            revoke_where(state, "session_region_changed", |current| {
+                                current.pair_key == pk
+                                    && current.vni == s.vni
+                                    && current.generation == s.generation
+                            })
+                            .await;
+                            return;
+                        }
+                    }
                 }
+                if let Some(i) = s.member_index(req_id) {
+                    push_member(state, &s, i).await;
+                    debug!(%tenant_id, %pk, vni = s.vni, "org-relay: re-pushed the live session to a re-requesting member");
+                }
+                return;
             }
-            if let Some(i) = s.member_index(req_id) {
-                push_member(state, &s, i).await;
-                debug!(%tenant_id, %pk, vni = s.vni, "org-relay: re-pushed the live session to a re-requesting member");
-            }
-            return;
         }
     }
 

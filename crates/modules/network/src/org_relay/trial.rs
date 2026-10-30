@@ -467,7 +467,13 @@ pub async fn request(
     let Some(req_id) = requester.id else { return };
     if !state.org_relay.trials.rate.check_bounded(req_id, req_id, 2) { return; }
     let Ok(peer) = state.overlay_nodes.base.find_by_id(peer_id).await else { return };
-    if req_id == peer_id || peer.tenant_id != requester.tenant_id || peer.deleted_at.is_some() { return; }
+    if req_id == peer_id
+        || peer.tenant_id != requester.tenant_id
+        || peer.deleted_at.is_some()
+        || !peer.is_key_authorized_at(bson::DateTime::now())
+    {
+        return;
+    }
     if peer_relay_mode(state, requester.tenant_id).await != PeerRelayMode::On { return; }
     if !state.org_relay.join_extras(req_id).supports_path_trial_v1 || !state.org_relay.join_extras(peer_id).supports_path_trial_v1 { return; }
     // Read exact target evidence before any new candidate is created. This is
