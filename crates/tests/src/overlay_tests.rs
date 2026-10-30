@@ -2308,3 +2308,125 @@ async fn turning_multi_block_off_after_a_grow_fails_the_boot_loudly() {
         .await
         .expect("multi-block schema still applies to a grown network");
 }
+
+/// B5 — Subnet-Router HA: approving the exact same canonical CIDR on a second
+/// live router succeeds when `allow_ha: true` is passed, remains preserved on
+/// subsequent route edits of an already-approved HA member, and still rejects
+/// partial prefix overlaps (`10.66.0.0/16` vs `10.66.51.0/24`) even with
+/// `allow_ha: true`. Withdrawing the CIDR on one HA router leaves the surviving
+/// HA router's approval intact.
+#[tokio::test]
+async fn subnet_router_ha_allows_equal_cidr_with_opt_in_and_rejects_partial_overlap() {
+    let app = TestApp::spawn().await;
+    let seeded = app.seed_tenant("ovsubnetha").await;
+    let ipam = Ipam::new(&app, tid(&seeded.tenant_id)).await;
+    const SUB_24: &str = "10.66.51.0/24";
+    const SUB_16: &str = "10.66.0.0/16";
+    const EXTRA: &str = "10.77.0.0/24";
+
+    ipam.alloc().await.unwrap();
+    ipam.alloc().await.unwrap();
+    ipam.alloc().await.unwrap();
+    let r1 = ipam
+        .create_router_node("mach-ha-1", "ha-router-1", "100.64.0.1", &[SUB_24, EXTRA])
+        .await;
+    let r2 = ipam
+        .create_router_node(
+            "mach-ha-2",
+            "ha-router-2",
+            "100.64.0.2",
+            &[SUB_24, SUB_16, EXTRA],
+        )
+        .await;
+    let r3 = ipam
+        .create_router_node("mach-ha-3", "ha-router-3", "100.64.0.3", &[SUB_16])
+        .await;
+
+    let r1_id = r1.id.unwrap().to_hex();
+    let r2_id = r2.id.unwrap().to_hex();
+    let r3_id = r3.id.unwrap().to_hex();
+
+    let put = |node_id: String, body: serde_json::Value| {
+        let path = format!(
+            "/api/tenant/{}/overlay-node/{node_id}/approved-routes",
+            seeded.tenant_id
+        );
+        let token = seeded.admin.access_token.clone();
+        let app = &app;
+        async move {
+            app.auth_put(&path, &token)
+                .json(&body)
+                .send()
+                .await
+                .unwrap()
+        }
+    };
+
+    // 1. Primary router approves SUB_24.
+    let resp = put(r1_id.clone(), serde_json::json!({ "approved_routes": [SUB_24] })).await;
+    assert_eq!(resp.status().as_u16(), 200);
+
+    // 2. Without `allow_ha`, secondary router is still rejected with 409 naming `ha-router-1`.
+    let resp = put(r2_id.clone(), serde_json::json!({ "approved_routes": [SUB_24] })).await;
+    assert_eq!(resp.status().as_u16(), 409);
+    assert!(resp.text().await.unwrap().contains("ha-router-1"));
+
+    // 3. With `allow_ha: true`, secondary router joins the HA group for SUB_24.
+    let resp = put(
+        r2_id.clone(),
+        serde_json::json!({ "approved_routes": [SUB_24], "allow_ha": true }),
+    )
+    .await;
+    assert_eq!(resp.status().as_u16(), 200);
+    let r2_body: Value = resp.json().await.unwrap();
+    assert_eq!(r2_body["approved_routes"], serde_json::json!([SUB_24]));
+
+    // 4. Subsequent route edits on an existing HA member preserve its HA route
+    //    even without passing `allow_ha: true` again.
+    let resp = put(
+        r2_id.clone(),
+        serde_json::json!({ "approved_routes": [SUB_24, EXTRA] }),
+    )
+    .await;
+    assert_eq!(resp.status().as_u16(), 200);
+
+    // 5. Partial overlap (`10.66.0.0/16` vs `10.66.51.0/24`) is ALWAYS rejected
+    //    with 409 even when `allow_ha: true` is passed.
+    let resp = put(
+        r3_id.clone(),
+        serde_json::json!({ "approved_routes": [SUB_16], "allow_ha": true }),
+    )
+    .await;
+    assert_eq!(resp.status().as_u16(), 409);
+
+    // 6. Even when a request includes BOTH an exact-match HA route (SUB_24) and
+    //    a partially overlapping route (SUB_16), it is rejected with 409.
+    let resp = put(
+        r2_id.clone(),
+        serde_json::json!({ "approved_routes": [SUB_24, SUB_16], "allow_ha": true }),
+    )
+    .await;
+    assert_eq!(resp.status().as_u16(), 409);
+
+    // 7. Withdrawing SUB_24 from primary `ha-router-1` leaves `ha-router-2`'s
+    //    approved SUB_24 intact in the tenant's overlay node list.
+    let resp = put(r1_id.clone(), serde_json::json!({ "approved_routes": [] })).await;
+    assert_eq!(resp.status().as_u16(), 200);
+
+    let list: Value = app
+        .auth_get(
+            &format!("/api/tenant/{}/overlay-node", seeded.tenant_id),
+            &seeded.admin.access_token,
+        )
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let items = list["items"].as_array().unwrap();
+    let r1_row = items.iter().find(|i| i["id"] == r1_id).unwrap();
+    let r2_row = items.iter().find(|i| i["id"] == r2_id).unwrap();
+    assert_eq!(r1_row["approved_routes"], serde_json::json!([]));
+    assert_eq!(r2_row["approved_routes"], serde_json::json!([SUB_24, EXTRA]));
+}

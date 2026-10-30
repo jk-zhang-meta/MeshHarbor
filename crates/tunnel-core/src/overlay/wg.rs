@@ -629,6 +629,26 @@ pub struct PeerStats {
     rx_ctr_hi: AtomicU64,
     rx_ctr_span: AtomicU64,
     rx_ctr_accepted: AtomicU64,
+    /// B5 — latched by the runtime's carrier health sweep when a peer's carrier
+    /// is stalled or accumulating one-way `bad_sweeps`, so Subnet-Router HA
+    /// fails over to a healthy standby router immediately on the send path.
+    stalled: AtomicBool,
+}
+
+fn compute_router_health(
+    carrier: &Carrier,
+    stats: &PeerStats,
+) -> super::router::RouterHealth {
+    use super::router::RouterHealth;
+    if carrier.is_dead() || stats.stalled.load(Ordering::Relaxed) {
+        RouterHealth::Stalled
+    } else if !stats.handshake.load(Ordering::Relaxed) {
+        RouterHealth::Unproven
+    } else if carrier.is_direct() {
+        RouterHealth::HealthyDirect
+    } else {
+        RouterHealth::HealthyRelay
+    }
 }
 
 impl PeerStats {
@@ -1091,7 +1111,7 @@ impl WgSender {
     /// global v6 destination → the configured v6 exit.
     fn route(g: &SendState, packet: &[u8]) -> Option<[u8; 32]> {
         if let Some(dst) = Router::dst_of_ip_packet(packet) {
-            g.router.route(&dst)
+            g.router.route_with_live(&dst, |pk| g.live_router_health(pk))
         } else if Router::is_global_v6_dst(packet).is_some() {
             g.router.v6_exit()
         } else {
@@ -1149,6 +1169,28 @@ impl SendState {
     fn note_outbound(&self, peer: &[u8; 32], packet: &[u8]) {
         if self.ingress_acls.contains_key(peer) {
             self.flows.note_outbound(packet, mono_ms_now());
+        }
+    }
+
+    /// B5 — lock-free live health tier of `pk` for Subnet-Router HA active/standby
+    /// selection on the outbound packet path.
+    fn live_router_health(&self, pk: &[u8; 32]) -> super::router::RouterHealth {
+        match self.peers.get(pk) {
+            Some(sp) => compute_router_health(&sp.carrier, &sp.stats),
+            None => self.router.peer_health(pk),
+        }
+    }
+
+    /// B5 — synchronize `Router::peer_health` with every installed peer's live
+    /// lock-free carrier/handshake/stalled state.
+    fn sync_all_router_health(&mut self) {
+        let updates: Vec<([u8; 32], super::router::RouterHealth)> = self
+            .peers
+            .iter()
+            .map(|(pk, sp)| (*pk, compute_router_health(&sp.carrier, &sp.stats)))
+            .collect();
+        for (pk, health) in updates {
+            self.router.set_peer_health(pk, health);
         }
     }
 }
@@ -1699,6 +1741,8 @@ impl WgDevice {
                 "overlay: overlay IP reassigned to a different peer"
             );
         }
+        let health = compute_router_health(&carrier, &stats);
+        g.router.set_peer_health(peer_public, health);
         g.peers.insert(
             peer_public,
             SendPeer {
@@ -3168,10 +3212,39 @@ impl WgDevice {
     }
 
     /// Which peer the crypto-router currently resolves `ip` to — so the
-    /// recycled-address tests can assert the routing table directly.
+    /// recycled-address and Subnet-Router HA tests can assert the live routing
+    /// table directly.
     #[cfg(test)]
     pub fn test_route(&self, ip: &Ipv4Addr) -> Option<[u8; 32]> {
-        self.send.0.read().unwrap().router.route(ip)
+        let g = self.send.0.read().unwrap();
+        g.router.route_with_live(ip, |pk| g.live_router_health(pk))
+    }
+
+    /// B5 — update `peer_public`'s stalled flag from the carrier health sweep
+    /// and reconcile the router's sticky HA subnet owners.
+    pub fn set_peer_router_stalled(&mut self, peer_public: &[u8; 32], stalled: bool) {
+        if let Some(p) = self.peers.get(peer_public) {
+            p.stats.stalled.store(stalled, Ordering::Relaxed);
+        } else {
+            return;
+        }
+        let mut g = self.send.0.write().unwrap();
+        g.sync_all_router_health();
+    }
+
+    /// B5 — whether any peer in the crypto-router currently claims `cidr`.
+    pub fn any_peer_claims_subnet(&self, cidr: &super::router::Cidr) -> bool {
+        self.send.0.read().unwrap().router.any_claims_subnet(cidr)
+    }
+
+    /// B5 — the currently pinned sticky active owner for `cidr`, if any.
+    pub fn active_subnet_owner(&self, cidr: &super::router::Cidr) -> Option<[u8; 32]> {
+        self.send
+            .0
+            .read()
+            .unwrap()
+            .router
+            .active_subnet_owner(cidr)
     }
 
     /// Remove a peer (drops its `Tunn` + aborts its tasks + clears its
@@ -3208,12 +3281,9 @@ impl WgDevice {
         peer_public: [u8; 32],
         subnets: &[super::router::Cidr],
     ) -> Vec<(super::router::Cidr, [u8; 32])> {
-        self.send
-            .0
-            .write()
-            .unwrap()
-            .router
-            .set_subnets(peer_public, subnets)
+        let mut g = self.send.0.write().unwrap();
+        g.sync_all_router_health();
+        g.router.set_subnets(peer_public, subnets)
     }
 
     /// P5/S3b exit-node — route this node's GLOBAL IPv6 egress through `pubkey`
@@ -3613,6 +3683,7 @@ impl WgDevice {
             p.stats
                 .handshake_at
                 .store(mono_ms_now().max(1), Ordering::Relaxed);
+            self.send.0.write().unwrap().sync_all_router_health();
         }
     }
 

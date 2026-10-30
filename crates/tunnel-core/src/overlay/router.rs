@@ -245,7 +245,7 @@ pub enum RpfVerdict {
 
 /// An IPv4 CIDR — Phase 1 subnet routes. Hand-rolled (no dep): the overlay only
 /// needs `contains` + `parse` for a handful of advertised subnets per peer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Cidr {
     /// Network address, already masked to `prefix` bits.
     base: u32,
@@ -308,13 +308,65 @@ impl std::fmt::Display for Cidr {
     }
 }
 
+/// B5 — health tier of a peer for Subnet-Router HA active/standby election.
+///
+/// Ordered from worst (`Stalled`) to best (`HealthyDirect`) so tuple comparisons
+/// prefer a healthy, handshook router over an unproven or stalled claimant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
+pub enum RouterHealth {
+    /// Carrier hard-dead, or the health sweep flagged the carrier as stalled /
+    /// accumulating one-way `bad_sweeps`.
+    Stalled = 0,
+    /// Installed and not stalled, but WG handshake has not completed yet (also
+    /// the default in unit tests that do not drive a live WG handshake).
+    #[default]
+    Unproven = 1,
+    /// WG handshake completed over a relay carrier (TURN / QUIC-relay / DERP / ORG),
+    /// not stalled and not dead.
+    HealthyRelay = 2,
+    /// WG handshake completed over a direct UDP carrier, not stalled and not dead.
+    HealthyDirect = 3,
+}
+
+impl RouterHealth {
+    /// Whether this router has a proven, non-stalled session capable of holding
+    /// sticky active ownership of an HA subnet.
+    pub fn is_healthy(self) -> bool {
+        matches!(self, Self::HealthyRelay | Self::HealthyDirect)
+    }
+}
+
+/// Interior-mutable sticky active-owner map for HA subnets so [`Router`] stays
+/// `Clone` and [`Router::route`] / [`Router::route_with_live`] can update the
+/// sticky pin under a shared `&self` reference (`SendState` read lock).
+#[derive(Debug, Default)]
+struct ActiveSubnets(std::sync::Mutex<HashMap<Cidr, [u8; 32]>>);
+
+impl Clone for ActiveSubnets {
+    fn clone(&self) -> Self {
+        let map = self
+            .0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        Self(std::sync::Mutex::new(map))
+    }
+}
+
 /// Overlay crypto-routing table: exact-match `/32` host routes (the fast path
 /// every peer carries) plus optional per-peer subnet CIDRs (Phase 1 subnet
-/// router), resolved by longest-prefix on a host-route miss.
+/// router + B5 Subnet-Router HA), resolved by longest-prefix on a host-route miss.
 #[derive(Debug, Default, Clone)]
 pub struct Router {
     by_ip: HashMap<Ipv4Addr, [u8; 32]>,
     subnets: Vec<(Cidr, [u8; 32])>,
+    /// B5 — per-peer health state for Subnet-Router HA active/standby selection.
+    peer_health: HashMap<[u8; 32], RouterHealth>,
+    /// B5 — sticky active router pubkey per CIDR. Once a healthy router is
+    /// elected for a CIDR, it remains the active owner until it becomes
+    /// unhealthy (`Stalled` / `Unproven`) or withdraws the CIDR, preventing
+    /// stateful NAT/TCP flows from flapping when a secondary router connects.
+    active_subnets: ActiveSubnets,
     /// P5 exit-node (S3b) — when set, the pubkey of the peer that carries this
     /// node's GLOBAL IPv6 egress. Any global-unicast v6 destination (that isn't
     /// an overlay-internal derived ULA) encapsulates to it. `None` (default) =
@@ -341,18 +393,76 @@ impl Router {
         self.by_ip.insert(ip, pubkey).filter(|prev| *prev != pubkey)
     }
 
+    /// B5 — update `pubkey`'s health tier for Subnet-Router HA election and
+    /// reconcile sticky active subnet owners.
+    pub fn set_peer_health(&mut self, pubkey: [u8; 32], health: RouterHealth) {
+        self.peer_health.insert(pubkey, health);
+        self.reconcile_active_subnets();
+    }
+
+    /// B5 — current recorded health tier of `pubkey` (`Unproven` if not set).
+    pub fn peer_health(&self, pubkey: &[u8; 32]) -> RouterHealth {
+        self.peer_health.get(pubkey).copied().unwrap_or_default()
+    }
+
+    /// B5 — whether any peer in the table currently claims `cidr`. Used by the
+    /// runtime on peer eviction / route withdrawal so an OS CIDR route is only
+    /// deleted when the LAST HA claimant for that prefix is gone.
+    pub fn any_claims_subnet(&self, cidr: &Cidr) -> bool {
+        self.subnets.iter().any(|(c, _)| c == cidr)
+    }
+
+    /// B5 — the currently pinned sticky active owner for `cidr`, if any.
+    pub fn active_subnet_owner(&self, cidr: &Cidr) -> Option<[u8; 32]> {
+        self.active_subnets
+            .0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(cidr)
+            .copied()
+    }
+
+    fn reconcile_active_subnets(&mut self) {
+        let mut active = self
+            .active_subnets
+            .0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        active.retain(|cidr, owner| {
+            self.subnets.iter().any(|(c, pk)| c == cidr && pk == owner)
+                && self.peer_health.get(owner).copied().unwrap_or_default().is_healthy()
+        });
+        let mut unique_cidrs: Vec<Cidr> = Vec::new();
+        for (c, _) in &self.subnets {
+            if !unique_cidrs.contains(c) {
+                unique_cidrs.push(*c);
+            }
+        }
+        for cidr in unique_cidrs {
+            if active.contains_key(&cidr) {
+                continue;
+            }
+            if let Some((_, best_pk)) = self
+                .subnets
+                .iter()
+                .filter(|(c, _)| *c == cidr)
+                .max_by_key(|(_, pk)| (self.peer_health(pk), *pk))
+                && self.peer_health(best_pk).is_healthy()
+            {
+                active.insert(cidr, *best_pk);
+            }
+        }
+    }
+
     /// Phase 1 — replace `pubkey`'s advertised subnet routes (empty clears them).
     ///
     /// Returns every claim that is now DUPLICATED — an identical CIDR also held
     /// by a different peer, i.e. two subnet routers approved for the same
     /// prefix. Both claims stay in the table (each claimant's RPF authority
     /// must survive so its own return traffic isn't dropped by a table edit),
-    /// [`route`](Self::route) picks one winner deterministically, and the
-    /// CALLER must surface the conflict loudly: a duplicate claim is an admin
-    /// error the data plane cannot resolve, only expose. Field 2026-08-25: a
-    /// stale approval left two routers claiming the same corp `/32`s and
-    /// insertion order decided which one carried the traffic — a restart
-    /// lottery between a working and a dead egress.
+    /// [`route`](Self::route) / [`route_with_live`](Self::route_with_live)
+    /// picks one active winner (sticky health-aware election with deterministic
+    /// pubkey tie-breaking), and the CALLER surfaces the shared claim in logs.
     pub fn set_subnets(&mut self, pubkey: [u8; 32], cidrs: &[Cidr]) -> Vec<(Cidr, [u8; 32])> {
         self.subnets.retain(|(_, pk)| *pk != pubkey);
         let conflicts: Vec<(Cidr, [u8; 32])> = self
@@ -362,6 +472,7 @@ impl Router {
             .map(|(c, pk)| (*c, *pk))
             .collect();
         self.subnets.extend(cidrs.iter().map(|c| (*c, pubkey)));
+        self.reconcile_active_subnets();
         conflicts
     }
 
@@ -402,66 +513,122 @@ impl Router {
         let before = self.by_ip.len() + self.subnets.len();
         self.by_ip.retain(|_, pk| pk != pubkey);
         self.subnets.retain(|(_, pk)| pk != pubkey);
+        self.peer_health.remove(pubkey);
+        self.reconcile_active_subnets();
         before != self.by_ip.len() + self.subnets.len()
     }
 
     /// Which peer owns the overlay destination `ip`? Exact `/32` first, else the
     /// longest-prefix subnet route that contains it.
     ///
-    /// Equal-prefix ties (two routers claiming the SAME prefix — see
-    /// [`set_subnets`](Self::set_subnets)) break on the pubkey, so the winner
-    /// is a function of the claims alone. It used to be positional (last
-    /// `set_subnets` won), which made the winner depend on peer-establish
-    /// order: every restart re-rolled which claimant carried the traffic AND
-    /// which one's replies [`rpf_check`](Self::rpf_check) denied (field
-    /// 2026-08-25, the `rx_denied` climb on the honest router). The choice
-    /// stays arbitrary — only the ADMIN can resolve a duplicate claim — but it
-    /// no longer flaps.
+    /// Equal-prefix ties (Subnet-Router HA — two or more routers claiming the
+    /// SAME prefix) use health-aware sticky election ([`Self::route_with_live`])
+    /// backed by [`Self::peer_health`], falling back to deterministic pubkey
+    /// tie-breaking when claimants have equal health.
     pub fn route(&self, ip: &Ipv4Addr) -> Option<[u8; 32]> {
+        self.route_with_live(ip, |pk| self.peer_health(pk))
+    }
+
+    /// B5 — health-aware, sticky longest-prefix lookup using a caller-supplied
+    /// live health oracle (e.g. `SendState` reading `Carrier::is_dead()`,
+    /// `PeerStats::stalled`, and `PeerStats::handshake` lock-free on every packet).
+    ///
+    /// 1. Exact `/32` host route wins immediately.
+    /// 2. Among subnet routes containing `ip`, the longest prefix (`best_cidr`)
+    ///    wins.
+    /// 3. If `active_subnets` holds a pinned incumbent for `best_cidr` that still
+    ///    claims `best_cidr` and is currently healthy (`live_health(incumbent).is_healthy()`),
+    ///    keep routing to that incumbent (non-preemptive stickiness so stateful
+    ///    NAT/TCP flows do not flap when a standby router connects or recovers).
+    /// 4. Otherwise elect the claimant of `best_cidr` maximizing
+    ///    `(live_health(pk), self.peer_health(pk), *pk)`. If the winner is
+    ///    healthy, pin it in `active_subnets`.
+    pub fn route_with_live(
+        &self,
+        ip: &Ipv4Addr,
+        live_health: impl Fn(&[u8; 32]) -> RouterHealth,
+    ) -> Option<[u8; 32]> {
         if let Some(pk) = self.by_ip.get(ip) {
             return Some(*pk);
         }
-        self.subnets
+        let best_cidr = self
+            .subnets
             .iter()
             .filter(|(c, _)| c.contains(*ip))
-            .max_by_key(|(c, pk)| (c.prefix, *pk))
-            .map(|(_, pk)| *pk)
+            .max_by_key(|(c, _)| c.prefix)
+            .map(|(c, _)| *c)?;
+        let mut active = self
+            .active_subnets
+            .0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if let Some(&incumbent) = active.get(&best_cidr) {
+            if self
+                .subnets
+                .iter()
+                .any(|(c, pk)| *c == best_cidr && *pk == incumbent)
+                && live_health(&incumbent).is_healthy()
+            {
+                return Some(incumbent);
+            }
+            active.remove(&best_cidr);
+        }
+        let (_, winner) = self
+            .subnets
+            .iter()
+            .filter(|(c, _)| *c == best_cidr)
+            .max_by_key(|(_, pk)| (live_health(pk), self.peer_health(pk), *pk))?;
+        if live_health(winner).is_healthy() {
+            active.insert(best_cidr, *winner);
+        }
+        Some(*winner)
     }
 
-    /// P4 — **reverse-path check**: may the peer `from` originate a packet whose
-    /// SOURCE address is `src`?
+    /// P4 / B5 — **reverse-path check**: may the peer `from` originate a packet
+    /// whose SOURCE address is `src`?
     ///
-    /// This is the ingress half of cryptokey routing, and until P4 it simply
-    /// did not exist: [`route`](Self::route) was consulted only on EGRESS
-    /// (`WgSender::send_ip_packet`), so any peer holding a live WireGuard
-    /// session could write a packet with ANY source and ANY destination
-    /// straight into this node's TUN. Real WireGuard treats `allowed_ips` as
-    /// bidirectional — an inbound packet whose source isn't in the sending
-    /// peer's allowed range is dropped — and this restores that semantic on
-    /// the same table, so a peer's authority to SEND AS an address is exactly
-    /// its authority to RECEIVE for it. No new state, and a subnet router or
-    /// exit node stays legitimate for its whole approved range for free.
-    ///
-    /// The address is boringtun's own `WriteToTunnelV4`/`V6` source field
-    /// (already length-validated against the IP header), never re-parsed here.
-    ///
-    /// * v4, or a derived-ULA v6 (unmapped to its embedded v4) → must resolve
-    ///   through the v4 table to `from` — its `/32`, or any subnet/exit CIDR it
-    ///   advertised (an exit peer carries the split-default `/1`s, so internet
-    ///   return traffic passes without a special case).
-    /// * any other v6 → only this node's v6 exit may originate it; with no exit
-    ///   configured that's nobody, mirroring the fail-closed drop
-    ///   [`WgSender::send_ip_packet`] already applies to global v6 on egress.
+    /// * Exact `/32` host route in `by_ip`: only that `/32`'s owner may source it.
+    /// * Subnet/exit CIDR in `subnets`: let `max_prefix` be the longest prefix
+    ///   matching `v4`. Any peer claiming a subnet of length `max_prefix` that
+    ///   contains `v4` is allowed to source `v4`. In a Subnet-Router HA group
+    ///   (two or more routers approved for the same CIDR), ALL equal-prefix HA
+    ///   claimants pass RPF so in-flight or asymmetric return traffic from a
+    ///   standby/failover router is never dropped as `OtherPeer`, while a peer
+    ///   with only a shorter prefix (such as an exit node's `/1` split-default)
+    ///   still cannot spoof a more specific internal subnet.
+    /// * Any other v6 → only this node's v6 exit may originate it.
     pub fn rpf_check(&self, from: &[u8; 32], src: IpAddr) -> RpfVerdict {
         let v4 = match src {
             IpAddr::V4(v4) => Some(v4),
             IpAddr::V6(v6) => embedded_v4_of_overlay_v6(v6),
         };
         if let Some(v4) = v4 {
-            return match self.route(&v4) {
-                Some(pk) if pk == *from => RpfVerdict::Allow,
-                Some(_) => RpfVerdict::Deny(RpfDeny::OtherPeer),
+            if let Some(pk) = self.by_ip.get(&v4) {
+                return if pk == from {
+                    RpfVerdict::Allow
+                } else {
+                    RpfVerdict::Deny(RpfDeny::OtherPeer)
+                };
+            }
+            let max_prefix = self
+                .subnets
+                .iter()
+                .filter(|(c, _)| c.contains(v4))
+                .map(|(c, _)| c.prefix)
+                .max();
+            return match max_prefix {
                 None => RpfVerdict::Deny(RpfDeny::NoRoute),
+                Some(p) => {
+                    if self
+                        .subnets
+                        .iter()
+                        .any(|(c, pk)| c.prefix == p && c.contains(v4) && pk == from)
+                    {
+                        RpfVerdict::Allow
+                    } else {
+                        RpfVerdict::Deny(RpfDeny::OtherPeer)
+                    }
+                }
             };
         }
         match self.v6_exit {
@@ -635,6 +802,98 @@ mod tests {
         // …and removing the winner hands the CIDR to the surviving claimant.
         assert!(a.remove_by_pubkey(&hi));
         assert_eq!(a.route(&dst), Some(lo), "the loser takes over on removal");
+    }
+
+    #[test]
+    fn subnet_ha_sticky_active_standby_failover_and_non_preemptive_recovery() {
+        let (lo, hi) = ([1u8; 32], [2u8; 32]);
+        let cidr = Cidr::parse("10.20.0.0/24").unwrap();
+        let dst = Ipv4Addr::new(10, 20, 0, 42);
+
+        let mut r = Router::new();
+        r.set_subnets(lo, &[cidr]);
+        r.set_subnets(hi, &[cidr]);
+        assert!(r.any_claims_subnet(&cidr));
+
+        // 1. Both Unproven: deterministic tie-break picks `hi`, but neither is
+        //    healthy yet so no sticky pin is recorded.
+        assert_eq!(r.route(&dst), Some(hi));
+        assert_eq!(r.active_subnet_owner(&cidr), None);
+
+        // 2. `lo` completes its handshake first (HealthyRelay) while `hi` is
+        //    still Unproven -> `lo` becomes active and is pinned.
+        r.set_peer_health(lo, RouterHealth::HealthyRelay);
+        assert_eq!(r.active_subnet_owner(&cidr), Some(lo));
+        assert_eq!(r.route(&dst), Some(lo));
+
+        // 3. `hi` now completes a direct handshake (HealthyDirect, higher pubkey
+        //    AND higher tier). Sticky non-preemption keeps `lo` active so
+        //    existing stateful NAT/TCP flows through `lo` do not flap.
+        r.set_peer_health(hi, RouterHealth::HealthyDirect);
+        assert_eq!(r.active_subnet_owner(&cidr), Some(lo));
+        assert_eq!(r.route(&dst), Some(lo));
+
+        // 4. `lo` stalls -> immediate failover to `hi`, which becomes the new
+        //    pinned active owner.
+        r.set_peer_health(lo, RouterHealth::Stalled);
+        assert_eq!(r.active_subnet_owner(&cidr), Some(hi));
+        assert_eq!(r.route(&dst), Some(hi));
+
+        // 5. `lo` recovers to HealthyDirect -> sticky non-preemption keeps `hi`.
+        r.set_peer_health(lo, RouterHealth::HealthyDirect);
+        assert_eq!(r.active_subnet_owner(&cidr), Some(hi));
+        assert_eq!(r.route(&dst), Some(hi));
+
+        // 6. `hi` is removed -> `lo` takes over; CIDR is still claimed.
+        assert!(r.remove_by_pubkey(&hi));
+        assert!(r.any_claims_subnet(&cidr));
+        assert_eq!(r.active_subnet_owner(&cidr), Some(lo));
+        assert_eq!(r.route(&dst), Some(lo));
+
+        // 7. Last claimant removed -> CIDR no longer claimed, pin cleared.
+        assert!(r.remove_by_pubkey(&lo));
+        assert!(!r.any_claims_subnet(&cidr));
+        assert_eq!(r.active_subnet_owner(&cidr), None);
+        assert_eq!(r.route(&dst), None);
+    }
+
+    #[test]
+    fn rpf_allows_all_equal_prefix_ha_subnet_routers_and_denies_shorter_prefix_spoofing() {
+        const PEER_C: [u8; 32] = [0xcc; 32];
+        let mut r = Router::new();
+        let corp = Cidr::parse("10.66.0.0/16").unwrap();
+
+        // PEER_A and PEER_B form an HA pair for 10.66.0.0/16.
+        r.set_subnets(PEER_A, &[corp]);
+        r.set_subnets(PEER_B, &[corp]);
+        r.set_peer_health(PEER_A, RouterHealth::HealthyDirect);
+        r.set_peer_health(PEER_B, RouterHealth::HealthyRelay);
+
+        // PEER_C is an exit node (split-default /1s) + broader 10.0.0.0/8 router.
+        r.set_subnets(
+            PEER_C,
+            &[
+                Cidr::parse("0.0.0.0/1").unwrap(),
+                Cidr::parse("128.0.0.0/1").unwrap(),
+                Cidr::parse("10.0.0.0/8").unwrap(),
+            ],
+        );
+
+        // Egress routes to PEER_A (active), but RPF allows BOTH PEER_A and PEER_B
+        // for 10.66.51.147 (v4 and derived-ULA v6).
+        assert_eq!(r.route(&Ipv4Addr::new(10, 66, 51, 147)), Some(PEER_A));
+        assert_eq!(r.rpf_check(&PEER_A, v4("10.66.51.147")), RpfVerdict::Allow);
+        assert_eq!(r.rpf_check(&PEER_B, v4("10.66.51.147")), RpfVerdict::Allow);
+
+        // PEER_C holds shorter prefixes (/1 and /8 < /16), so it cannot spoof
+        // 10.66.51.147, even though it may legitimately source 10.99.1.1 (/8)
+        // and 8.8.8.8 (/1).
+        assert_eq!(
+            r.rpf_check(&PEER_C, v4("10.66.51.147")),
+            RpfVerdict::Deny(RpfDeny::OtherPeer)
+        );
+        assert_eq!(r.rpf_check(&PEER_C, v4("10.99.1.1")), RpfVerdict::Allow);
+        assert_eq!(r.rpf_check(&PEER_C, v4("8.8.8.8")), RpfVerdict::Allow);
     }
 
     #[test]
