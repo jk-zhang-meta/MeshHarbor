@@ -195,6 +195,9 @@ impl OverlayNodeDao {
             is_exit_node: false,
             routes_zone: None,
             route_offer_withheld,
+            applied_auth_revision: 0,
+            applied_netmap_epoch: 0,
+            applied_auth_at: None,
             status: AgentStatus::Online,
             last_seen_at: now,
             created_at: now,
@@ -655,5 +658,57 @@ impl OverlayNodeDao {
                 doc! { "$set": { "last_seen_at": DateTime::now() } },
             )
             .await
+    }
+
+    /// B3 — monotonically record the `(netmap_epoch, auth_revision)` watermark
+    /// acknowledged by `node_id` via `rc:overlay.netmap_ack`.
+    ///
+    /// Uses a compare-and-swap filter so an out-of-order or replayed ack with a
+    /// lower `auth_revision` (or equal `auth_revision` and lower/equal
+    /// `netmap_epoch`) can never regress the stored watermark.
+    pub async fn record_applied_auth_revision(
+        &self,
+        node_id: ObjectId,
+        netmap_epoch: u64,
+        auth_revision: u64,
+    ) -> DaoResult<bool> {
+        if netmap_epoch == 0 && auth_revision == 0 {
+            return Ok(false);
+        }
+        let now = DateTime::now();
+        let rev_i64 = i64::try_from(auth_revision).unwrap_or(i64::MAX);
+        let epoch_i64 = i64::try_from(netmap_epoch).unwrap_or(i64::MAX);
+        let filter = doc! {
+            "_id": node_id,
+            "deleted_at": null,
+            "$or": [
+                { "applied_auth_revision": { "$exists": false } },
+                { "applied_auth_revision": { "$lt": rev_i64 } },
+                {
+                    "applied_auth_revision": rev_i64,
+                    "$or": [
+                        { "applied_netmap_epoch": { "$exists": false } },
+                        { "applied_netmap_epoch": { "$lt": epoch_i64 } },
+                    ],
+                },
+            ],
+        };
+        let res = self
+            .base
+            .collection()
+            .update_one(
+                filter,
+                doc! {
+                    "$set": {
+                        "applied_auth_revision": rev_i64,
+                        "applied_netmap_epoch": epoch_i64,
+                        "applied_auth_at": now,
+                        "last_seen_at": now,
+                        "updated_at": now,
+                    }
+                },
+            )
+            .await?;
+        Ok(res.modified_count > 0)
     }
 }

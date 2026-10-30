@@ -102,6 +102,13 @@ pub async fn approve(
             .await;
         }
     }
+    crate::overlay::publish_and_refan_tenant_authority(
+        &state,
+        approval.identity.tenant_id,
+        true,
+        "role_changed",
+    )
+    .await;
     Ok(Json(approval))
 }
 

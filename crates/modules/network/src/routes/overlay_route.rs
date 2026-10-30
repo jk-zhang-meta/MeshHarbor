@@ -383,8 +383,8 @@ pub async fn set_approved_routes(
         .overlay_nodes
         .set_approved_routes(nid, &approved, zone_now.or(node.routes_zone.as_deref()))
         .await?;
-    // Push the change to peers now, not on their next join.
-    crate::overlay::refan_node(&state, &updated).await;
+    // Push the change to peers now across all control-plane pods, not on their next join.
+    crate::overlay::publish_and_refan_tenant_authority(&state, tid, true, "route_approval").await;
     Ok(Json(single_node_response(&state, updated).await))
 }
 
@@ -499,7 +499,7 @@ pub async fn set_exit_node(
     }
 
     let updated = state.overlay_nodes.set_exit_node(nid, body.enabled).await?;
-    crate::overlay::refan_node(&state, &updated).await;
+    crate::overlay::publish_and_refan_tenant_authority(&state, tid, true, "exit_node").await;
     Ok(Json(single_node_response(&state, updated).await))
 }
 

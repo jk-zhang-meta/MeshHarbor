@@ -202,30 +202,19 @@ pub async fn delete(
     Ok(Json(serde_json::json!({ "removed": true })))
 }
 
-/// Make an edit take effect now: both servers re-fanned (every peer's view of
-/// them, and theirs of every peer), the DERP allow table rebuilt, and the
-/// sessions either takes part in re-judged.
+/// Make an edit take effect now across all control-plane pods: both servers
+/// (and all local nodes) re-fanned, the DERP allow table rebuilt, the
+/// sessions either takes part in re-judged, and `overlay_policy_sync`
+/// broadcast to every other pod.
 async fn apply(state: &NetworkState, tenant_id: ObjectId, agents: [ObjectId; 2]) {
-    let Ok(network) = state.overlay_networks.get_or_create(tenant_id).await else {
-        return;
-    };
-    let Some(network_id) = network.id else { return };
-    for agent_id in agents {
-        if let Ok(agent) = state
-            .fleet
-            .agents
-            .find_live_in_tenant(tenant_id, agent_id)
-            .await
-            && let Ok(Some(node)) = state
-                .overlay_nodes
-                .find_live_by_tenant_and_machine(tenant_id, &agent.machine_id)
-                .await
-        {
-            crate::overlay::refan_node(state, &node).await;
-        }
-    }
-    crate::derp_acl::rebuild(state, tenant_id, network_id).await;
     for agent_id in agents {
         crate::org_relay::recheck_zones(state, agent_id, "server_link_changed").await;
     }
+    crate::overlay::publish_and_refan_tenant_authority(
+        state,
+        tenant_id,
+        false,
+        "server_link_changed",
+    )
+    .await;
 }

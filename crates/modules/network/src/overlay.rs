@@ -330,7 +330,36 @@ pub async fn relay_overlay_msg_from_node(
             .await;
             None
         }
+        ClientMsg::OverlayNetmapAck {
+            epoch,
+            auth_revision,
+        } => {
+            handle_overlay_netmap_ack(state, ident, epoch, auth_revision).await;
+            None
+        }
         other => Some(other),
+    }
+}
+
+/// B3 — record a node's monotonic acknowledgement of the netmap epoch and
+/// tenant `auth_revision` it has applied locally.
+async fn handle_overlay_netmap_ack(
+    state: &NetworkState,
+    ident: NodeIdentity,
+    epoch: u64,
+    auth_revision: u64,
+) {
+    let Some(self_node) = current_node(state, ident).await else {
+        debug!(?ident, "overlay.netmap_ack before join; ignoring");
+        return;
+    };
+    let Some(node_id) = self_node.id else { return };
+    if let Err(e) = state
+        .overlay_nodes
+        .record_applied_auth_revision(node_id, epoch, auth_revision)
+        .await
+    {
+        warn!(%node_id, epoch, auth_revision, %e, "overlay: failed to persist netmap_ack");
     }
 }
 
@@ -717,6 +746,10 @@ async fn handle_overlay_join(
             return;
         }
     };
+    if self_node.id.is_none() || !all.iter().any(|n| n.id == self_node.id) {
+        debug!(?ident, "overlay.join: node was tombstoned during join; aborting fan-out");
+        return;
+    }
 
     let epoch = next_epoch();
     // P9 — presence: ghost rows (clean-leave Offline, or an agent whose
@@ -858,6 +891,7 @@ async fn handle_overlay_join(
                 relay_probe_targets: crate::org_relay::probe_targets(state, &self_node).await,
                 backbone_probe_targets: crate::org_relay::backbone_probe_targets(state, &self_node)
                     .await,
+                auth_revision: network.auth_revision.max(1),
             },
             peers,
             epoch,
@@ -865,6 +899,7 @@ async fn handle_overlay_join(
     )
     .await;
 
+    let auth_revision = network.auth_revision.max(1);
     // Upsert delta → every peer, shaped PER RECIPIENT. The joiner is live by
     // construction. A recipient that may not see the joiner gets an explicit
     // `removes` rather than mere omission: omitting a peer (or shipping
@@ -898,6 +933,7 @@ async fn handle_overlay_join(
             peer,
             ServerMsg::OverlayNetmapDelta {
                 epoch,
+                auth_revision,
                 upserts,
                 removes,
             },
@@ -1080,6 +1116,7 @@ pub fn revoke_agent_admission(state: &NetworkState, agent_id: ObjectId) {
         state.admission_nodes.remove(&id);
         let msg = ServerMsg::OverlayNetmapDelta {
             epoch: next_epoch(),
+            auth_revision: 0,
             upserts: vec![],
             removes: vec![id],
         };
@@ -2059,12 +2096,27 @@ pub async fn release_overlay_node(
 
     // 4 — tell the peers, then the node itself.
     let epoch = next_epoch();
-    fan_delta_to(state, &peers, Some(node_id), epoch, vec![], vec![node_id]).await;
+    let auth_revision = state
+        .overlay_networks
+        .bump_auth_revision(before.tenant_id)
+        .await
+        .unwrap_or(1);
+    fan_delta_to(
+        state,
+        &peers,
+        Some(node_id),
+        epoch,
+        auth_revision,
+        vec![],
+        vec![node_id],
+    )
+    .await;
     send_to_node(
         state,
         &before,
         ServerMsg::OverlayNetmapDelta {
             epoch,
+            auth_revision,
             upserts: vec![],
             removes: vec![node_id],
         },
@@ -2089,6 +2141,7 @@ pub async fn release_overlay_node(
             "network_id": before.network_id.to_hex(),
             "node_id": node_id.to_hex(),
             "epoch": epoch,
+            "auth_revision": auth_revision,
         }),
     )
     .await;
@@ -2146,19 +2199,33 @@ pub async fn apply_removes_ctrl(state: &NetworkState, ctrl: &serde_json::Value) 
         return;
     };
     let epoch = ctrl.get("epoch").and_then(|v| v.as_u64()).unwrap_or(0);
+    let auth_revision = ctrl
+        .get("auth_revision")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
 
     let peers = state
         .overlay_nodes
         .list_active_in_network(tid, net)
         .await
         .unwrap_or_default();
-    fan_delta_to(state, &peers, Some(node_id), epoch, vec![], vec![node_id]).await;
+    fan_delta_to(
+        state,
+        &peers,
+        Some(node_id),
+        epoch,
+        auth_revision,
+        vec![],
+        vec![node_id],
+    )
+    .await;
     if let Ok(tombstone) = state.overlay_nodes.base.find_by_id(node_id).await {
         send_to_node(
             state,
             &tombstone,
             ServerMsg::OverlayNetmapDelta {
                 epoch,
+                auth_revision,
                 upserts: vec![],
                 removes: vec![node_id],
             },
@@ -2169,18 +2236,123 @@ pub async fn apply_removes_ctrl(state: &NetworkState, ctrl: &serde_json::Value) 
         "overlay: removes re-fanned from another pod's removal");
 }
 
-/// #1186 — drain the channel the redis ctrl subscriber feeds `overlay_removes`
-/// envelopes into. A channel + late spawn rather than handling inline because
-/// the subscriber loop is spawned mid-`AppState::new` and cannot capture the
-/// full state the re-fan needs (`apply_rc_ctrl` is hub-only by the same
-/// constraint).
+/// B3 — re-fan local sockets, rebuild local DERP ACL, and reconcile local
+/// org-relay state for `tenant_id` on this pod.
+pub async fn refan_tenant_authority_local(
+    state: &NetworkState,
+    tenant_id: ObjectId,
+    reason: &str,
+) {
+    // B3 + #18 — Refresh `LAST_GOOD_ACL` in place only when MongoDB succeeds;
+    // never evict `LAST_GOOD_ACL` before reading, so a transient MongoDB blip
+    // during authority refan preserves the last known-good policy instead of
+    // failing closed with an empty policy set and tearing down the mesh.
+    if let Ok(fresh_acl) = try_load_acl(state, tenant_id, PolicyLoad::WhenGating).await {
+        LAST_GOOD_ACL.insert(tenant_id, fresh_acl);
+    }
+    state.org_relay.invalidate_mode(tenant_id);
+    state.org_relay.invalidate_eligibility();
+    let Ok(network) = state.overlay_networks.get_or_create(tenant_id).await else {
+        return;
+    };
+    let Some(network_id) = network.id else { return };
+    let Ok(nodes) = state
+        .overlay_nodes
+        .list_active_in_network(tenant_id, network_id)
+        .await
+    else {
+        return;
+    };
+    for n in &nodes {
+        refan_node(state, n).await;
+    }
+    crate::derp_acl::rebuild(state, tenant_id, network_id).await;
+    crate::org_relay::reconcile_acl(state, tenant_id).await;
+    if matches!(
+        reason,
+        "server_link_changed" | "role_changed" | "business_authority"
+    ) {
+        for n in &nodes {
+            if let NodeRef::Agent { agent_id } = n.node_ref {
+                crate::org_relay::recheck_zones(state, agent_id, reason).await;
+            }
+        }
+    }
+}
+
+/// B3 — bump `OverlayNetwork.auth_revision` (when `bump_revision` is true and
+/// the DAO method hasn't already bumped it), apply the authority change on
+/// this pod, and publish `overlay_policy_sync` over Redis pub/sub so every
+/// other control-plane pod invalidates its caches, rebuilds its DERP allow
+/// table, reconciles its org-relay sessions, and re-fans the sockets it holds.
+pub async fn publish_and_refan_tenant_authority(
+    state: &NetworkState,
+    tenant_id: ObjectId,
+    bump_revision: bool,
+    reason: &str,
+) -> u64 {
+    let auth_revision = if bump_revision {
+        state
+            .overlay_networks
+            .bump_auth_revision(tenant_id)
+            .await
+            .unwrap_or(1)
+    } else {
+        state
+            .overlay_networks
+            .current_auth_revision(tenant_id)
+            .await
+            .unwrap_or(1)
+    };
+    refan_tenant_authority_local(state, tenant_id, reason).await;
+    roomler_ai_mod_fleet::ctrl::publish_rc_ctrl(
+        state,
+        "overlay_policy_sync",
+        serde_json::json!({
+            "tenant_id": tenant_id.to_hex(),
+            "auth_revision": auth_revision,
+            "reason": reason,
+        }),
+    )
+    .await;
+    auth_revision
+}
+
+/// B3 — apply an `overlay_policy_sync` control event received from another
+/// pod on the cluster Redis channel.
+pub async fn apply_policy_sync_ctrl(state: &NetworkState, ctrl: &serde_json::Value) {
+    let Some(tid) = ctrl
+        .get("tenant_id")
+        .and_then(|v| v.as_str())
+        .and_then(|s| ObjectId::parse_str(s).ok())
+    else {
+        return;
+    };
+    let auth_revision = ctrl
+        .get("auth_revision")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let reason = ctrl
+        .get("reason")
+        .and_then(|v| v.as_str())
+        .unwrap_or("policy_sync");
+    refan_tenant_authority_local(state, tid, reason).await;
+    debug!(%tid, auth_revision, reason,
+        "overlay: policy sync applied from another pod");
+}
+
+/// #1186 + B3 — drain the channel the redis ctrl subscriber feeds
+/// `overlay_removes` and `overlay_policy_sync` envelopes into.
 pub fn spawn_removes_applier(
     state: NetworkState,
     mut rx: tokio::sync::mpsc::Receiver<serde_json::Value>,
 ) {
     tokio::spawn(async move {
         while let Some(ctrl) = rx.recv().await {
-            apply_removes_ctrl(&state, &ctrl).await;
+            match ctrl.get("evt").and_then(|v| v.as_str()) {
+                Some("overlay_policy_sync") => apply_policy_sync_ctrl(&state, &ctrl).await,
+                _ => apply_removes_ctrl(&state, &ctrl).await,
+            }
         }
     });
 }
@@ -2224,6 +2396,11 @@ pub async fn release_overlay_node_for(
 /// `reachable: false`) does NOT tear down an already-installed peer; only the
 /// removes branch drops the WG peer, its route and its carrier.
 async fn fan_upsert_shaped(state: &NetworkState, node: &OverlayNode, epoch: u64, reachable: bool) {
+    let auth_revision = state
+        .overlay_networks
+        .current_auth_revision(node.tenant_id)
+        .await
+        .unwrap_or(1);
     let peers = match state
         .overlay_nodes
         .list_active_in_network(node.tenant_id, node.network_id)
@@ -2235,6 +2412,10 @@ async fn fan_upsert_shaped(state: &NetworkState, node: &OverlayNode, epoch: u64,
             return;
         }
     };
+    if node.id.is_none() || !peers.iter().any(|p| p.id == node.id) {
+        debug!(node = ?node.id, "overlay: skipping delta fan-out for tombstoned node");
+        return;
+    }
     let acl = load_acl(state, node.tenant_id).await;
     let iso = business_isolation::mode(state);
     let node_zone = business_isolation::zone_of(state, iso, node).await;
@@ -2266,6 +2447,7 @@ async fn fan_upsert_shaped(state: &NetworkState, node: &OverlayNode, epoch: u64,
     } else {
         (None, HashMap::new())
     };
+    let epoch = epoch.max(next_epoch());
     let mut reverse_rows: Vec<NetmapPeer> = Vec::new();
     for peer in peers.iter().filter(|p| p.id != node.id) {
         let src = overlay_source_of(state, peer).await;
@@ -2294,6 +2476,7 @@ async fn fan_upsert_shaped(state: &NetworkState, node: &OverlayNode, epoch: u64,
             peer,
             ServerMsg::OverlayNetmapDelta {
                 epoch,
+                auth_revision,
                 upserts,
                 removes,
             },
@@ -2339,6 +2522,7 @@ async fn fan_upsert_shaped(state: &NetworkState, node: &OverlayNode, epoch: u64,
             node,
             ServerMsg::OverlayNetmapDelta {
                 epoch,
+                auth_revision,
                 upserts: reverse_rows,
                 removes: vec![],
             },
@@ -2357,6 +2541,11 @@ async fn fan_upsert_shaped(state: &NetworkState, node: &OverlayNode, epoch: u64,
 /// [`fan_upsert_shaped`] maintains on ordinary changes.
 async fn fan_pair_verdicts(state: &NetworkState, a: &OverlayNode, b: &OverlayNode) {
     let acl = load_acl(state, a.tenant_id).await;
+    let auth_revision = state
+        .overlay_networks
+        .current_auth_revision(a.tenant_id)
+        .await
+        .unwrap_or(1);
     let a_src = overlay_source_of(state, a).await;
     let b_src = overlay_source_of(state, b).await;
     let reach = reachability(state, std::slice::from_ref(b)).await;
@@ -2394,6 +2583,7 @@ async fn fan_pair_verdicts(state: &NetworkState, a: &OverlayNode, b: &OverlayNod
             a,
             ServerMsg::OverlayNetmapDelta {
                 epoch,
+                auth_revision,
                 upserts: vec![row],
                 removes: vec![],
             },
@@ -2422,6 +2612,7 @@ async fn fan_pair_verdicts(state: &NetworkState, a: &OverlayNode, b: &OverlayNod
             b,
             ServerMsg::OverlayNetmapDelta {
                 epoch,
+                auth_revision,
                 upserts: vec![row],
                 removes: vec![],
             },
@@ -2445,6 +2636,7 @@ async fn fan_delta_to(
     peers: &[OverlayNode],
     exclude: Option<ObjectId>,
     epoch: u64,
+    auth_revision: u64,
     upserts: Vec<NetmapPeer>,
     removes: Vec<ObjectId>,
 ) {
@@ -2454,6 +2646,7 @@ async fn fan_delta_to(
             peer,
             ServerMsg::OverlayNetmapDelta {
                 epoch,
+                auth_revision,
                 upserts: upserts.clone(),
                 removes: removes.clone(),
             },
@@ -3731,6 +3924,9 @@ mod tests {
             route_offer_withheld: None,
             status: AgentStatus::Online,
             last_seen_at: now,
+            applied_auth_revision: 0,
+            applied_netmap_epoch: 0,
+            applied_auth_at: None,
             created_at: now,
             updated_at: now,
             deleted_at: None,
