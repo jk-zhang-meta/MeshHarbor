@@ -107,6 +107,9 @@ boringtun = { version = "0.7", optional = true }
 # verify a handshake initiation's mac1 against each engine's static BEFORE
 # spending an X25519 in trial-authentication.
 blake2 = { version = "0.10", optional = true }
+# B7 — NIST FIPS 203 ML-KEM-768 for optional post-quantum WireGuard PSK
+# negotiation and rotation (`overlay::pq_psk`). Already in Cargo.lock via russh.
+ml-kem = { version = "0.3", optional = true }
 # FR-19 org-relay bind handshake: the MAC there IS the authenticator (unlike
 # WireGuard mac1, which its own doc calls "a ROUTER's pre-filter, not an
 # authenticator"), so its comparison must be constant-time. Already in the
@@ -217,7 +220,7 @@ quinn-udp = { version = "0.5", default-features = false }
 # Local integration tests only; never enabled by production profiles.
 path-trial-test-support = ["overlay"]
 # Userspace WireGuard L3 overlay (Phase 2+). Off by default.
-overlay = ["dep:boringtun", "dep:if-addrs", "dep:blake2"]
+overlay = ["dep:boringtun", "dep:if-addrs", "dep:blake2", "dep:ml-kem"]
 # Phase 3: the OS TUN device (`overlay::tun::SystemTun`) on top of the WG
 # core. `overlay` alone gives the WG device + the bridge logic + the
 # in-memory MockTun loopback test (no real device); `overlay-l3` adds the

@@ -199,7 +199,7 @@ impl Carrier {
 
     /// Diagnostic probes must never set the carrier's data-plane dead latch.
     /// A refusal/lost reply is a sample, not authority to evict a live path.
-    async fn send_disco(&self, bytes: &[u8]) -> io::Result<usize> {
+    pub(crate) async fn send_disco(&self, bytes: &[u8]) -> io::Result<usize> {
         match self {
             Self::Direct { sock, dst, .. } => {
                 let dst = *dst.read().unwrap_or_else(|e| e.into_inner());
@@ -580,7 +580,7 @@ pub struct PeerStats {
     /// punch from a pre-handshake zombie — whose `tx`/`rx` counters stay flat
     /// (handshake packets touch neither), so the rx-flat heuristic can't see it
     /// and boringtun stops even keepalives once the attempt expires at ~90 s.
-    handshake: AtomicBool,
+    pub(crate) handshake: AtomicBool,
     /// P3 PR-B — mono-ms (against [`wg_epoch`]) when `handshake` first
     /// latched; 0 = not yet (stamps are `max(1)`-floored so 0 stays the unset
     /// sentinel). Stamped in `process_inbound` — the RECV path, the instant
@@ -588,7 +588,7 @@ pub struct PeerStats {
     /// gets a REAL latency; the health sweep only observes the latch at its
     /// 5 s tick, and that quantization would be worse than no number at all
     /// (why PR-A passed `None`).
-    handshake_at: AtomicU64,
+    pub(crate) handshake_at: AtomicU64,
     /// Stage 2 — mono-ms (against [`wg_epoch`]) when we last processed a valid
     /// handshake RESPONSE from this peer, i.e. when a handshake WE INITIATED
     /// last completed; 0 = never (stamps are `max(1)`-floored). Unlike the
@@ -600,7 +600,7 @@ pub struct PeerStats {
     /// to catch (our tx dead, field 2026-08-08 winhost-a→devbox), the peer
     /// hammers initiations at us every ~5 s, so an either-role stamp would
     /// read permanently alive.
-    hs_response_at: AtomicU64,
+    pub(crate) hs_response_at: AtomicU64,
     /// P4 — inbound IP packets from this peer whose SOURCE address it does not
     /// own ([`Router::rpf_check`]). Counted in `warn` AND `enforce` (only
     /// `enforce` also drops), so a fleet read of this counter is exactly the
@@ -629,6 +629,11 @@ pub struct PeerStats {
     rx_ctr_hi: AtomicU64,
     rx_ctr_span: AtomicU64,
     rx_ctr_accepted: AtomicU64,
+    /// B7 — per-peer optional post-quantum PSK state machine handle.
+    pub(crate) pq: std::sync::OnceLock<Arc<super::pq_psk::PqPeerHandle>>,
+    /// B7 — true while `PqPskMode::Required` has not yet established a valid
+    /// ML-KEM-768 PSK (or after mismatch/expiry), blocking classical WG traffic.
+    pub(crate) pq_guard_active: AtomicBool,
 }
 
 impl PeerStats {
@@ -712,10 +717,10 @@ enum IngressDeny {
 
 #[derive(Clone)]
 pub(crate) struct Ingress {
-    peer: [u8; 32],
+    pub(crate) peer: [u8; 32],
     /// Read-only here: the routing table doubles as the allowed-IPs table.
     send: WgSender,
-    stats: Arc<PeerStats>,
+    pub(crate) stats: Arc<PeerStats>,
     mode: RpfMode,
 }
 
@@ -1036,6 +1041,16 @@ impl WgSender {
         self.0.read().unwrap().peers.contains_key(pk)
     }
 
+    pub(crate) fn pq_peer(
+        &self,
+        pk: &[u8; 32],
+    ) -> Option<Arc<super::pq_psk::PqPeerHandle>> {
+        let g = self.0.read().unwrap();
+        g.peers
+            .get(pk)
+            .and_then(|p| p.stats.pq.get().cloned())
+    }
+
     fn attest_active_derp(&self, public: &[u8; 32], tunn: &Arc<Mutex<Tunn>>, carrier: &Arc<Carrier>, init: &[u8; 32]) -> bool {
         let g = self.0.read().unwrap();
         let Some(p) = g.peers.get(public) else { return false; };
@@ -1157,6 +1172,12 @@ impl SendPeer {
     /// The single encapsulate-and-send implementation (moved verbatim from
     /// the pre-P1 `WgDevice::send_to_peer`).
     async fn send(&self, packet: &[u8]) -> bool {
+        if self.stats.pq_guard_active.load(Ordering::Acquire) {
+            if let Some(pq) = self.stats.pq.get() {
+                return pq.buffer_outbound_if_negotiating(packet).await;
+            }
+            return false;
+        }
         let mut buf = vec![0u8; WG_BUF];
         // rc.211 — encapsulate UNDER the lock, send AFTER releasing it (see
         // the timer tasks): never hold the Tunn lock across a carrier send.
@@ -1185,6 +1206,17 @@ impl SendPeer {
     /// recorded single send; a refused GSO send is retried datagram by
     /// datagram, so every path still ends in [`Carrier::send`]'s semantics.
     async fn send_batch(&self, packets: &[Vec<u8>], idxs: &[usize]) -> usize {
+        if self.stats.pq_guard_active.load(Ordering::Acquire) {
+            let mut buffered = 0;
+            if let Some(pq) = self.stats.pq.get() {
+                for &i in idxs {
+                    if pq.buffer_outbound_if_negotiating(&packets[i]).await {
+                        buffered += 1;
+                    }
+                }
+            }
+            return buffered;
+        }
         let direct = self.carrier.direct_parts();
         let max_segs = super::udp_batch::max_send_segments();
         if idxs.len() < 2 || max_segs < 2 || direct.is_none() {
@@ -1406,6 +1438,9 @@ pub struct WgDevice {
     /// its receiver-index demux) and direct-session routes register THERE;
     /// the plane's recv loops replace this device's own source-keyed demux.
     plane: Option<super::carrier_plane::PlaneHandle>,
+    /// B7 — optional post-quantum PSK configuration for peers installed on
+    /// this device (default `PqPskMode::Off` unless `OVERLAY_PQ_PSK` is set).
+    pq_psk: super::pq_psk::PqPskConfig,
 }
 
 impl Drop for WgDevice {
@@ -1459,9 +1494,45 @@ impl WgDevice {
                 stun_events_rx: Some(stun_events_rx),
                 rpf,
                 plane: None,
+                pq_psk: super::pq_psk::PqPskConfig::default(),
             },
             tun_rx,
         )
+    }
+
+    /// B7 — configure optional post-quantum PSK agreement and rotation for
+    /// peers installed on this device. Must be called before installing peers
+    /// whose initial policy it governs.
+    pub fn set_pq_psk_config(&mut self, config: super::pq_psk::PqPskConfig) {
+        self.pq_psk = config;
+    }
+
+    /// B7 — current post-quantum PSK mode for this device.
+    pub fn pq_psk_mode(&self) -> super::pq_psk::PqPskMode {
+        self.pq_psk.mode
+    }
+
+    /// B7 — inspect the non-sensitive PQ-PSK lifecycle snapshot for `peer_public`.
+    pub async fn peer_pq_psk_snapshot(
+        &self,
+        peer_public: &[u8; 32],
+    ) -> Option<super::pq_psk::PqPeerSnapshot> {
+        let pq = self.peers.get(peer_public)?.stats.pq.get()?.clone();
+        Some(pq.snapshot().await)
+    }
+
+    /// B7 — explicitly trigger a post-quantum PSK exchange or key rotation
+    /// toward `peer_public`. Returns `false` if the peer is unknown or PQ-PSK
+    /// mode is `Off`.
+    pub async fn rotate_peer_pq_psk(&self, peer_public: &[u8; 32]) -> bool {
+        let Some(pq) = self
+            .peers
+            .get(peer_public)
+            .and_then(|p| p.stats.pq.get().cloned())
+        else {
+            return false;
+        };
+        pq.start_or_rotate().await
     }
 
     /// Multi-org v2 — attach this device to the shared carrier plane. Must be
@@ -1785,11 +1856,12 @@ impl WgDevice {
         disco_sink: mpsc::Sender<super::disco::DiscoInbound>,
     ) -> Peer {
         let index = self.alloc_index();
+        let initial_psk = super::pq_psk::PqPeerHandle::initial_tunn_psk(&self.pq_psk);
 
         let tunn = Tunn::new(
             self.secret.clone(),
             PublicKey::from(peer_public),
-            None,
+            initial_psk,
             Some(KEEPALIVE_SECS),
             index,
             None,
@@ -1797,6 +1869,18 @@ impl WgDevice {
         let tunn = Arc::new(Mutex::new(tunn));
 
         let stats = Arc::new(PeerStats { recovery_hold: self.recovery_for(peer_public, overlay_ip), ..PeerStats::default() });
+        let pq_handle = super::pq_psk::PqPeerHandle::new(
+            self.pq_psk.clone(),
+            self.secret.clone(),
+            self.public.to_bytes(),
+            peer_public,
+            index,
+            Some(KEEPALIVE_SECS),
+            tunn.clone(),
+            carrier.clone(),
+            stats.clone(),
+        );
+        let _ = stats.pq.set(pq_handle.clone());
 
         // Multi-org v2 — register this session on the plane's receiver-index
         // demux even though it is NOT a direct install.
@@ -1934,6 +2018,12 @@ impl WgDevice {
                     }
                     continue;
                 }
+                if super::pq_psk::is_pq_psk_shaped(&buf[..n]) {
+                    if let Some(pq) = recv_stats.pq.get() {
+                        pq.handle_inbound(&buf[..n], &recv_carrier).await;
+                    }
+                    continue;
+                }
                 let mut t = recv_tunn.lock().await;
                 process_inbound(&mut t, n, &mut buf, &recv_carrier, &tun_tx, &recv_ingress).await;
             }
@@ -1951,7 +2041,16 @@ impl WgDevice {
             plane_idx: self.plane.as_ref().map(|_| index),
             direct_index: None,
         };
-        if initiate {
+        if self.pq_psk.mode != super::pq_psk::PqPskMode::Off && (initiate || pq_handle.is_primary_initiator()) {
+            let pq_init = pq_handle.clone();
+            tokio::spawn(async move {
+                if !pq_init.is_primary_initiator() {
+                    tokio::time::sleep(Duration::from_millis(25)).await;
+                }
+                let _ = pq_init.start_initial().await;
+            });
+        }
+        if initiate && !pq_handle.should_defer_initial_wg_handshake() {
             let init_stats = stats.clone();
             tokio::spawn(async move {
                 let mut buf = vec![0u8; WG_BUF];
@@ -1982,6 +2081,12 @@ impl WgDevice {
             let mut tick = tokio::time::interval(Duration::from_millis(TIMER_TICK_MS));
             loop {
                 tick.tick().await;
+                if let Some(pq) = stats.pq.get() {
+                    pq.tick_timer().await;
+                }
+                if stats.pq_guard_active.load(Ordering::Acquire) {
+                    continue;
+                }
                 // rc.211 — capture the handshake/keepalive bytes UNDER the
                 // lock, then RELEASE it before the carrier send. Holding the
                 // per-peer Tunn lock across `carrier.send().await` (a slow
@@ -2903,16 +3008,29 @@ impl WgDevice {
         let carrier = Carrier::direct(sock, dst);
 
         let index = self.alloc_index();
+        let initial_psk = super::pq_psk::PqPeerHandle::initial_tunn_psk(&self.pq_psk);
         let tunn = Arc::new(Mutex::new(Tunn::new(
             self.secret.clone(),
             PublicKey::from(peer_public),
-            None,
+            initial_psk,
             Some(KEEPALIVE_SECS),
             index,
             None,
         )));
 
         let stats = Arc::new(PeerStats { recovery_hold: self.recovery_for(peer_public, overlay_ip), ..PeerStats::default() });
+        let pq_handle = super::pq_psk::PqPeerHandle::new(
+            self.pq_psk.clone(),
+            self.secret.clone(),
+            self.public.to_bytes(),
+            peer_public,
+            index,
+            Some(KEEPALIVE_SECS),
+            tunn.clone(),
+            carrier.clone(),
+            stats.clone(),
+        );
+        let _ = stats.pq.set(pq_handle.clone());
         let ingress = self.ingress_for(peer_public, stats.clone());
         // Register for demux BEFORE the handshake so inbound is routed —
         // on the plane by session index (unique across every attached
@@ -2957,6 +3075,12 @@ impl WgDevice {
             let mut tick = tokio::time::interval(Duration::from_millis(TIMER_TICK_MS));
             loop {
                 tick.tick().await;
+                if let Some(pq) = timer_stats.pq.get() {
+                    pq.tick_timer().await;
+                }
+                if timer_stats.pq_guard_active.load(Ordering::Acquire) {
+                    continue;
+                }
                 // rc.211 — capture the handshake/keepalive bytes UNDER the
                 // lock, then RELEASE it before the carrier send. Holding the
                 // per-peer Tunn lock across `carrier.send().await` (a slow
@@ -2986,7 +3110,16 @@ impl WgDevice {
             }
         });
 
-        if initiate {
+        if self.pq_psk.mode != super::pq_psk::PqPskMode::Off && (initiate || pq_handle.is_primary_initiator()) {
+            let pq_init = pq_handle.clone();
+            tokio::spawn(async move {
+                if !pq_init.is_primary_initiator() {
+                    tokio::time::sleep(Duration::from_millis(25)).await;
+                }
+                let _ = pq_init.start_initial().await;
+            });
+        }
+        if initiate && !pq_handle.should_defer_initial_wg_handshake() {
             let it = tunn.clone();
             let ic = carrier.clone();
             let init_stats = stats.clone();
@@ -3636,7 +3769,7 @@ impl WgDevice {
     }
 }
 
-async fn send_wg_recorded(carrier: &Arc<Carrier>, stats: &PeerStats, bytes: &[u8]) -> io::Result<usize> {
+pub(crate) async fn send_wg_recorded(carrier: &Arc<Carrier>, stats: &PeerStats, bytes: &[u8]) -> io::Result<usize> {
     let n = carrier.send(bytes).await?;
     if n == bytes.len() && let Some(digest) = follow::init_digest(bytes) {
         let mut sent = stats.sent_inits.lock().unwrap_or_else(|e|e.into_inner());
@@ -3685,6 +3818,9 @@ pub(crate) async fn process_inbound(
 /// itself. A replay (its direct original got here first), a handshake or a
 /// cookie is dropped, and nothing is ever sent in reply.
 pub(crate) fn decap_standby(t: &mut Tunn, datagram: &[u8], ingress: &Ingress) -> Option<Vec<u8>> {
+    if ingress.stats.pq_guard_active.load(Ordering::Acquire) {
+        return None;
+    }
     if datagram.len() < 16 || datagram[..4] != [4, 0, 0, 0] {
         return None;
     }
@@ -3712,6 +3848,9 @@ pub(crate) fn decap_inbound(
     ingress: &Ingress,
 ) -> (bool, Option<Vec<u8>>) {
     let stats = &ingress.stats;
+    if stats.pq_guard_active.load(Ordering::Acquire) {
+        return (false, None);
+    }
     let mut delivered = None;
     // Decapsulate writes into a separate scratch buffer so the borrow on
     // the result doesn't alias the inbound `buf`.
@@ -4010,6 +4149,32 @@ async fn run_direct_demux(
                     let _ = disco_events.try_send(p);
                 }
                 super::disco::Verdict::Ignore => {}
+            }
+            continue;
+        }
+        if super::pq_psk::is_pq_psk_shaped(&buf[..n]) {
+            let sender_pk = super::pq_psk::claimed_sender(&buf[..n]);
+            let pq_handle = {
+                let g = routes.lock().await;
+                let by_src = g
+                    .get(&src)
+                    .and_then(|(_, ing)| ing.stats.pq.get().cloned());
+                by_src
+                    .or_else(|| {
+                        sender_pk.and_then(|pk| {
+                            g.values()
+                                .find(|(_, ing)| ing.peer == pk)
+                                .and_then(|(_, ing)| ing.stats.pq.get().cloned())
+                        })
+                    })
+                    .or_else(|| sender_pk.and_then(|pk| disco_routes.pq_peer(&pk)))
+            };
+            if let Some(pq) = pq_handle {
+                let pkt = buf[..n].to_vec();
+                let reply = Carrier::direct(sock.clone(), src);
+                tokio::spawn(async move {
+                    pq.handle_inbound(&pkt, &reply).await;
+                });
             }
             continue;
         }
@@ -6931,5 +7096,524 @@ mod tests {
             cpu / (bytes as f64 * 8.0 / 1e9).max(1e-9),
         );
         drop((dev_a, dev_b));
+    }
+
+    #[tokio::test]
+    async fn pq_psk_default_off_preserves_classical_wg_with_zero_pq_state() {
+        let a = WgKeypair::generate();
+        let b = WgKeypair::generate();
+        let sock_a = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let sock_b = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let addr_a = sock_a.local_addr().unwrap();
+        let addr_b = sock_b.local_addr().unwrap();
+
+        let (mut dev_a, mut rx_a) = WgDevice::new(a.secret.clone());
+        let (mut dev_b, mut rx_b) = WgDevice::new(b.secret.clone());
+        assert_eq!(dev_a.pq_psk_mode(), super::super::pq_psk::PqPskMode::Off);
+        assert_eq!(dev_b.pq_psk_mode(), super::super::pq_psk::PqPskMode::Off);
+
+        dev_a.ensure_direct_demux(sock_a.clone());
+        dev_b.ensure_direct_demux(sock_b.clone());
+        dev_a
+            .add_direct_peer(sock_a, b.public.to_bytes(), IP_B, addr_b, true)
+            .await;
+        dev_b
+            .add_direct_peer(sock_b, a.public.to_bytes(), IP_A, addr_a, false)
+            .await;
+
+        let pk_a = a.public.to_bytes();
+        let pk_b = b.public.to_bytes();
+        wait_connected(&dev_a, &pk_b).await;
+        wait_connected(&dev_b, &pk_a).await;
+
+        let snap_a = dev_a.peer_pq_psk_snapshot(&pk_b).await.unwrap();
+        let snap_b = dev_b.peer_pq_psk_snapshot(&pk_a).await.unwrap();
+        assert_eq!(snap_a.status, super::super::pq_psk::PqPeerStatus::Disabled);
+        assert_eq!(snap_b.status, super::super::pq_psk::PqPeerStatus::Disabled);
+        assert_eq!(snap_a.current_epoch, 0);
+        assert!(snap_a.psk_fingerprint.is_none());
+        assert!(!dev_a.rotate_peer_pq_psk(&pk_b).await);
+
+        let pkt = synthetic_ipv4(IP_A, IP_B, b"classical default-off payload");
+        send_until_ok(&dev_a, &pk_b, &pkt).await;
+        let got = tokio::time::timeout(Duration::from_secs(2), rx_b.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(got, pkt);
+
+        let reply = synthetic_ipv4(IP_B, IP_A, b"classical default-off reply");
+        send_until_ok(&dev_b, &pk_a, &reply).await;
+        let got_reply = tokio::time::timeout(Duration::from_secs(2), rx_a.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(got_reply, reply);
+    }
+
+    #[tokio::test]
+    async fn pq_psk_required_establishes_mlkem768_hybrid_session_on_direct_and_carrier_peers() {
+        use super::super::pq_psk::{PqPeerStatus, PqPskConfig, PqPskMode};
+
+        // 1. Shared direct demux carrier with Required + configured_psk
+        let a = WgKeypair::generate();
+        let b = WgKeypair::generate();
+        let sock_a = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let sock_b = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let addr_a = sock_a.local_addr().unwrap();
+        let addr_b = sock_b.local_addr().unwrap();
+
+        let (mut dev_a, mut rx_a) = WgDevice::new(a.secret.clone());
+        let (mut dev_b, mut rx_b) = WgDevice::new(b.secret.clone());
+        let cfg = PqPskConfig {
+            mode: PqPskMode::Required,
+            configured_psk: Some([0x42; 32]),
+            ..PqPskConfig::default()
+        };
+        dev_a.set_pq_psk_config(cfg.clone());
+        dev_b.set_pq_psk_config(cfg);
+
+        dev_a.ensure_direct_demux(sock_a.clone());
+        dev_b.ensure_direct_demux(sock_b.clone());
+        let pk_a = a.public.to_bytes();
+        let pk_b = b.public.to_bytes();
+        dev_a
+            .add_direct_peer(sock_a, pk_b, IP_B, addr_b, true)
+            .await;
+        dev_b
+            .add_direct_peer(sock_b, pk_a, IP_A, addr_a, false)
+            .await;
+
+        // Queue an outbound packet while PQ negotiation may still be in progress
+        let early_pkt = synthetic_ipv4(IP_A, IP_B, b"early packet buffered under pq-psk");
+        assert!(dev_a.send_ip_packet(&early_pkt).await);
+
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let sa = dev_a.peer_pq_psk_snapshot(&pk_b).await.unwrap();
+                let sb = dev_b.peer_pq_psk_snapshot(&pk_a).await.unwrap();
+                if matches!(sa.status, PqPeerStatus::Established { epoch: 1 })
+                    && matches!(sb.status, PqPeerStatus::Established { epoch: 1 })
+                {
+                    assert!(sa.psk_fingerprint.is_some());
+                    assert_eq!(sa.psk_fingerprint, sb.psk_fingerprint);
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("PQ-PSK Required handshake must establish epoch 1 on direct demux");
+
+        wait_connected(&dev_a, &pk_b).await;
+        wait_connected(&dev_b, &pk_a).await;
+
+        let pkt_ab = synthetic_ipv4(IP_A, IP_B, b"ml-kem-768 direct payload A->B");
+        send_until_ok(&dev_a, &pk_b, &pkt_ab).await;
+        let mut saw_ab = false;
+        for _ in 0..4 {
+            let got = tokio::time::timeout(Duration::from_secs(2), rx_b.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            if got == pkt_ab {
+                saw_ab = true;
+                break;
+            }
+        }
+        assert!(saw_ab, "expected direct A->B payload over ML-KEM-768 session");
+
+        let pkt_ba = synthetic_ipv4(IP_B, IP_A, b"ml-kem-768 direct payload B->A");
+        send_until_ok(&dev_b, &pk_a, &pkt_ba).await;
+        let got_ba = tokio::time::timeout(Duration::from_secs(2), rx_a.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(got_ba, pkt_ba);
+
+        // 2. Dedicated carrier peer (`add_peer`) in Required mode
+        let c = WgKeypair::generate();
+        let d = WgKeypair::generate();
+        let sock_c = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let sock_d = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let addr_c = sock_c.local_addr().unwrap();
+        let addr_d = sock_d.local_addr().unwrap();
+        let (mut dev_c, _rx_c) = WgDevice::new(c.secret.clone());
+        let (mut dev_d, mut rx_d) = WgDevice::new(d.secret.clone());
+        let req_cfg = PqPskConfig {
+            mode: PqPskMode::Required,
+            ..PqPskConfig::default()
+        };
+        dev_c.set_pq_psk_config(req_cfg.clone());
+        dev_d.set_pq_psk_config(req_cfg);
+        let pk_c = c.public.to_bytes();
+        let pk_d = d.public.to_bytes();
+        dev_c.add_peer(pk_d, IP_B, Carrier::direct(sock_c, addr_d), true);
+        dev_d.add_peer(pk_c, IP_A, Carrier::direct(sock_d, addr_c), false);
+
+        wait_connected(&dev_c, &pk_d).await;
+        let sc = dev_c.peer_pq_psk_snapshot(&pk_d).await.unwrap();
+        let sd = dev_d.peer_pq_psk_snapshot(&pk_c).await.unwrap();
+        assert_eq!(sc.status, PqPeerStatus::Established { epoch: 1 });
+        assert_eq!(sd.status, PqPeerStatus::Established { epoch: 1 });
+        assert_eq!(sc.psk_fingerprint, sd.psk_fingerprint);
+
+        let pkt_cd = synthetic_ipv4(IP_A, IP_B, b"ml-kem-768 carrier peer payload");
+        send_until_ok(&dev_c, &pk_d, &pkt_cd).await;
+        let got_cd = tokio::time::timeout(Duration::from_secs(2), rx_d.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(got_cd, pkt_cd);
+    }
+
+    #[tokio::test]
+    async fn pq_psk_required_vs_off_and_mismatched_psk_fail_closed() {
+        use super::super::pq_psk::{PqPeerStatus, PqPskConfig, PqPskMode};
+
+        // Case 1: Required vs Off -> fails closed with PeerMismatch
+        let a = WgKeypair::generate();
+        let b = WgKeypair::generate();
+        let sock_a = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let sock_b = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let addr_a = sock_a.local_addr().unwrap();
+        let addr_b = sock_b.local_addr().unwrap();
+
+        let (mut dev_a, mut rx_a) = WgDevice::new(a.secret.clone());
+        let (mut dev_b, mut rx_b) = WgDevice::new(b.secret.clone());
+        dev_a.set_pq_psk_config(PqPskConfig {
+            mode: PqPskMode::Required,
+            ..PqPskConfig::default()
+        });
+        dev_b.set_pq_psk_config(PqPskConfig {
+            mode: PqPskMode::Off,
+            ..PqPskConfig::default()
+        });
+
+        let pk_a = a.public.to_bytes();
+        let pk_b = b.public.to_bytes();
+        dev_a.add_peer(pk_b, IP_B, Carrier::direct(sock_a, addr_b), true);
+        dev_b.add_peer(pk_a, IP_A, Carrier::direct(sock_b, addr_a), true);
+
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let sa = dev_a.peer_pq_psk_snapshot(&pk_b).await.unwrap();
+                if sa.status == PqPeerStatus::PeerMismatch {
+                    assert_eq!(sa.mismatch_count, 1);
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("Required peer must detect Off peer and fail closed");
+
+        assert!(!dev_a.is_connected(&pk_b).await);
+        assert!(!dev_b.is_connected(&pk_a).await);
+        let pkt = synthetic_ipv4(IP_A, IP_B, b"must never cross mismatch boundary");
+        assert!(!dev_a.send_ip_packet(&pkt).await);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(150), rx_b.recv())
+                .await
+                .is_err()
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(150), rx_a.recv())
+                .await
+                .is_err()
+        );
+
+        // Case 2: Required vs Required with mismatched configured_psk -> fails closed
+        let c = WgKeypair::generate();
+        let d = WgKeypair::generate();
+        let sock_c = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let sock_d = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let addr_c = sock_c.local_addr().unwrap();
+        let addr_d = sock_d.local_addr().unwrap();
+        let (mut dev_c, _rx_c) = WgDevice::new(c.secret.clone());
+        let (mut dev_d, mut rx_d) = WgDevice::new(d.secret.clone());
+        dev_c.set_pq_psk_config(PqPskConfig {
+            mode: PqPskMode::Required,
+            configured_psk: Some([0x11; 32]),
+            ..PqPskConfig::default()
+        });
+        dev_d.set_pq_psk_config(PqPskConfig {
+            mode: PqPskMode::Required,
+            configured_psk: Some([0x22; 32]),
+            ..PqPskConfig::default()
+        });
+        let pk_c = c.public.to_bytes();
+        let pk_d = d.public.to_bytes();
+        dev_c.add_peer(pk_d, IP_B, Carrier::direct(sock_c, addr_d), true);
+        dev_d.add_peer(pk_c, IP_A, Carrier::direct(sock_d, addr_c), false);
+
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let sc = dev_c.peer_pq_psk_snapshot(&pk_d).await.unwrap();
+                let sd = dev_d.peer_pq_psk_snapshot(&pk_c).await.unwrap();
+                if sc.status == PqPeerStatus::PeerMismatch
+                    && sd.status == PqPeerStatus::PeerMismatch
+                {
+                    assert!(sc.mismatch_count >= 1);
+                    assert!(sd.mismatch_count >= 1);
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("Mismatched configured_psk must transition both peers to PeerMismatch");
+
+        assert!(!dev_c.is_connected(&pk_d).await);
+        assert!(!dev_d.is_connected(&pk_c).await);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(150), rx_d.recv())
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn pq_psk_optional_downgrades_with_off_peer_and_upgrades_with_pq_peer() {
+        use super::super::pq_psk::{PqPeerStatus, PqPskConfig, PqPskMode};
+
+        // 1. Optional vs Off -> DowngradedToClassical and classical traffic flows
+        let a = WgKeypair::generate();
+        let b = WgKeypair::generate();
+        let sock_a = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let sock_b = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let addr_a = sock_a.local_addr().unwrap();
+        let addr_b = sock_b.local_addr().unwrap();
+
+        let (mut dev_a, _rx_a) = WgDevice::new(a.secret.clone());
+        let (mut dev_b, mut rx_b) = WgDevice::new(b.secret.clone());
+        dev_a.set_pq_psk_config(PqPskConfig {
+            mode: PqPskMode::Optional,
+            ..PqPskConfig::default()
+        });
+        dev_b.set_pq_psk_config(PqPskConfig {
+            mode: PqPskMode::Off,
+            ..PqPskConfig::default()
+        });
+        let pk_a = a.public.to_bytes();
+        let pk_b = b.public.to_bytes();
+        dev_a.add_peer(pk_b, IP_B, Carrier::direct(sock_a, addr_b), true);
+        dev_b.add_peer(pk_a, IP_A, Carrier::direct(sock_b, addr_a), false);
+
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let sa = dev_a.peer_pq_psk_snapshot(&pk_b).await.unwrap();
+                if sa.status == PqPeerStatus::DowngradedToClassical {
+                    assert_eq!(sa.downgraded_count, 1);
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("Optional peer must downgrade cleanly when remote peer has PQ-PSK Off");
+
+        wait_connected(&dev_a, &pk_b).await;
+        let pkt = synthetic_ipv4(IP_A, IP_B, b"optional downgraded classical traffic");
+        send_until_ok(&dev_a, &pk_b, &pkt).await;
+        let got = tokio::time::timeout(Duration::from_secs(2), rx_b.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(got, pkt);
+
+        // 2. Optional vs Optional -> Upgrades to ML-KEM-768 PSK
+        let c = WgKeypair::generate();
+        let d = WgKeypair::generate();
+        let sock_c = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let sock_d = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let addr_c = sock_c.local_addr().unwrap();
+        let addr_d = sock_d.local_addr().unwrap();
+        let (mut dev_c, _rx_c) = WgDevice::new(c.secret.clone());
+        let (mut dev_d, mut rx_d) = WgDevice::new(d.secret.clone());
+        let opt_cfg = PqPskConfig {
+            mode: PqPskMode::Optional,
+            ..PqPskConfig::default()
+        };
+        dev_c.set_pq_psk_config(opt_cfg.clone());
+        dev_d.set_pq_psk_config(opt_cfg);
+        let pk_c = c.public.to_bytes();
+        let pk_d = d.public.to_bytes();
+        dev_c.add_peer(pk_d, IP_B, Carrier::direct(sock_c, addr_d), true);
+        dev_d.add_peer(pk_c, IP_A, Carrier::direct(sock_d, addr_c), false);
+
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let sc = dev_c.peer_pq_psk_snapshot(&pk_d).await.unwrap();
+                let sd = dev_d.peer_pq_psk_snapshot(&pk_c).await.unwrap();
+                if matches!(sc.status, PqPeerStatus::Established { .. })
+                    && matches!(sd.status, PqPeerStatus::Established { .. })
+                {
+                    assert_eq!(sc.psk_fingerprint, sd.psk_fingerprint);
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("Optional vs Optional must upgrade to ML-KEM-768 PSK");
+
+        wait_connected(&dev_c, &pk_d).await;
+        let pkt_up = synthetic_ipv4(IP_A, IP_B, b"optional upgraded pq traffic");
+        send_until_ok(&dev_c, &pk_d, &pkt_up).await;
+        let got_up = tokio::time::timeout(Duration::from_secs(2), rx_d.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(got_up, pkt_up);
+    }
+
+    #[tokio::test]
+    async fn pq_psk_live_rotation_expiry_and_peer_restart_recovery() {
+        use super::super::pq_psk::{PqPeerStatus, PqPskConfig, PqPskMode};
+
+        let a = WgKeypair::generate();
+        let b = WgKeypair::generate();
+        let sock_a = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let sock_b = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let addr_a = sock_a.local_addr().unwrap();
+        let addr_b = sock_b.local_addr().unwrap();
+
+        let (mut dev_a, mut rx_a) = WgDevice::new(a.secret.clone());
+        let (mut dev_b, mut rx_b) = WgDevice::new(b.secret.clone());
+        let cfg = PqPskConfig {
+            mode: PqPskMode::Required,
+            rekey_interval: Duration::from_millis(600),
+            max_lifetime: Duration::from_secs(30),
+            retry_interval: Duration::from_millis(150),
+            max_retries: 6,
+            configured_psk: None,
+        };
+        dev_a.set_pq_psk_config(cfg.clone());
+        dev_b.set_pq_psk_config(cfg.clone());
+
+        let pk_a = a.public.to_bytes();
+        let pk_b = b.public.to_bytes();
+        dev_a.add_peer(pk_b, IP_B, Carrier::direct(sock_a.clone(), addr_b), true);
+        dev_b.add_peer(pk_a, IP_A, Carrier::direct(sock_b.clone(), addr_a), false);
+
+        // Wait for epoch 1
+        let fp1 = tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let sa = dev_a.peer_pq_psk_snapshot(&pk_b).await.unwrap();
+                let sb = dev_b.peer_pq_psk_snapshot(&pk_a).await.unwrap();
+                if sa.current_epoch >= 1 && sa.current_epoch == sb.current_epoch {
+                    assert_eq!(sa.psk_fingerprint, sb.psk_fingerprint);
+                    return sa.psk_fingerprint.unwrap();
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("initial epoch 1 established");
+
+        // Trigger explicit rotation (`rotate_peer_pq_psk`) and verify epoch advances + key changes
+        assert!(dev_a.rotate_peer_pq_psk(&pk_b).await);
+        let (epoch2, fp2) = tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let sa = dev_a.peer_pq_psk_snapshot(&pk_b).await.unwrap();
+                let sb = dev_b.peer_pq_psk_snapshot(&pk_a).await.unwrap();
+                if sa.current_epoch >= 2 && sa.current_epoch == sb.current_epoch {
+                    assert_eq!(sa.psk_fingerprint, sb.psk_fingerprint);
+                    return (sa.current_epoch, sa.psk_fingerprint.unwrap());
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("explicit rotation must advance epoch");
+        assert_ne!(fp1, fp2, "rotated ML-KEM-768 PSK must differ from epoch 1");
+
+        // Wait for automatic timer rotation (`rekey_interval = 600ms`) to advance further
+        let (epoch3, fp3) = tokio::time::timeout(Duration::from_secs(4), async {
+            loop {
+                let sa = dev_a.peer_pq_psk_snapshot(&pk_b).await.unwrap();
+                let sb = dev_b.peer_pq_psk_snapshot(&pk_a).await.unwrap();
+                if sa.current_epoch > epoch2 && sa.current_epoch == sb.current_epoch {
+                    assert_eq!(sa.psk_fingerprint, sb.psk_fingerprint);
+                    assert!(sa.rotations_completed >= 2);
+                    return (sa.current_epoch, sa.psk_fingerprint.unwrap());
+                }
+                tokio::time::sleep(Duration::from_millis(30)).await;
+            }
+        })
+        .await
+        .expect("periodic timer rotation must advance epoch");
+        assert_ne!(fp2, fp3);
+
+        wait_connected(&dev_a, &pk_b).await;
+        let pkt_rot = synthetic_ipv4(IP_A, IP_B, b"traffic after automatic pq rotation");
+        send_until_ok(&dev_a, &pk_b, &pkt_rot).await;
+        let got_rot = tokio::time::timeout(Duration::from_secs(2), rx_b.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(got_rot, pkt_rot);
+
+        // Simulate Peer B restart on the same socket: Peer B resets to epoch 0 while Peer A is at >= epoch3.
+        dev_b.remove_peer(&pk_a).await;
+        drop(dev_b);
+        let (mut dev_b2, mut rx_b2) = WgDevice::new(b.secret.clone());
+        dev_b2.set_pq_psk_config(PqPskConfig {
+            mode: PqPskMode::Required,
+            rekey_interval: Duration::from_secs(60),
+            max_lifetime: Duration::from_millis(500),
+            retry_interval: Duration::from_millis(150),
+            max_retries: 6,
+            configured_psk: None,
+        });
+        dev_b2.add_peer(pk_a, IP_A, Carrier::direct(sock_b, addr_a), true);
+
+        let restart_epoch = tokio::time::timeout(Duration::from_secs(4), async {
+            loop {
+                let sa = dev_a.peer_pq_psk_snapshot(&pk_b).await.unwrap();
+                let sb = dev_b2.peer_pq_psk_snapshot(&pk_a).await.unwrap();
+                if sb.current_epoch > epoch3
+                    && sa.current_epoch == sb.current_epoch
+                    && matches!(sb.status, PqPeerStatus::Established { .. })
+                {
+                    assert_eq!(sa.psk_fingerprint, sb.psk_fingerprint);
+                    return sb.current_epoch;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("restarted peer must negotiate monotonic epoch > previous epoch");
+        assert!(restart_epoch > epoch3);
+
+        // Verify max_lifetime expiration triggers re-negotiation and increments expired_count
+        tokio::time::timeout(Duration::from_secs(4), async {
+            loop {
+                let sb = dev_b2.peer_pq_psk_snapshot(&pk_a).await.unwrap();
+                let sa = dev_a.peer_pq_psk_snapshot(&pk_b).await.unwrap();
+                if sb.expired_count >= 1
+                    && sb.current_epoch > restart_epoch
+                    && sa.current_epoch == sb.current_epoch
+                    && matches!(sb.status, PqPeerStatus::Established { .. })
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(30)).await;
+            }
+        })
+        .await
+        .expect("expired key must increment expired_count and recover via fresh ML-KEM-768 exchange");
+
+        wait_connected(&dev_a, &pk_b).await;
+        wait_connected(&dev_b2, &pk_a).await;
+        let pkt_after_exp = synthetic_ipv4(IP_B, IP_A, b"traffic after key expiry recovery");
+        send_until_ok(&dev_b2, &pk_a, &pkt_after_exp).await;
+        let got_after_exp = tokio::time::timeout(Duration::from_secs(2), rx_a.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(got_after_exp, pkt_after_exp);
+        let _ = &mut rx_b2;
     }
 }

@@ -9228,6 +9228,7 @@ dependencies = [
  "if-addrs",
  "ipnet",
  "libc",
+ "ml-kem",
  "quinn",
  "quinn-udp",
  "rand 0.9.4",

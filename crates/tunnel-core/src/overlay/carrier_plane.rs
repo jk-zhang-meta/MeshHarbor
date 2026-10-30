@@ -697,6 +697,19 @@ impl CarrierPlane {
             }
             return;
         }
+        if super::pq_psk::is_pq_psk_shaped(&buf[..n]) {
+            let handles = self.pq_psk_handles(&buf[..n], src);
+            if !handles.is_empty() {
+                let pkt = buf[..n].to_vec();
+                let reply = Carrier::direct(sock.clone(), src);
+                tokio::spawn(async move {
+                    for pq in handles {
+                        pq.handle_inbound(&pkt, &reply).await;
+                    }
+                });
+            }
+            return;
+        }
         if crate::transport::stun::has_stun_cookie(&buf[..n]) && !is_wg_shaped(&buf[..n]) {
             // Only a STUN datagram needs the channel: taking the plane lock
             // for it on every WG data packet was pure per-packet overhead.
@@ -1118,6 +1131,58 @@ impl CarrierPlane {
             }
         }
         None
+    }
+
+    fn pq_psk_handles(
+        &self,
+        pkt: &[u8],
+        src: SocketAddr,
+    ) -> Vec<Arc<super::pq_psk::PqPeerHandle>> {
+        let Some(sender) = super::pq_psk::claimed_sender(pkt) else {
+            return Vec::new();
+        };
+        let mut out: Vec<Arc<super::pq_psk::PqPeerHandle>> = Vec::new();
+        let st = self.lock();
+        for r in st.routes.values() {
+            if r.ingress.peer == sender
+                && r.expected_src == src
+                && let Some(pq) = r.ingress.stats.pq.get()
+                && !out.iter().any(|x| Arc::ptr_eq(x, pq))
+            {
+                out.push(pq.clone());
+            }
+        }
+        if !out.is_empty() {
+            return out;
+        }
+        for r in st.routes.values() {
+            if r.ingress.peer == sender
+                && !r.expected_src.ip().is_unspecified()
+                && let Some(pq) = r.ingress.stats.pq.get()
+                && !out.iter().any(|x| Arc::ptr_eq(x, pq))
+            {
+                out.push(pq.clone());
+            }
+        }
+        if !out.is_empty() {
+            return out;
+        }
+        for r in st.routes.values() {
+            if r.ingress.peer == sender
+                && let Some(pq) = r.ingress.stats.pq.get()
+                && !out.iter().any(|x| Arc::ptr_eq(x, pq))
+            {
+                out.push(pq.clone());
+            }
+        }
+        for e in &st.engines {
+            if let Some(pq) = e.send.pq_peer(&sender)
+                && !out.iter().any(|x| Arc::ptr_eq(x, &pq))
+            {
+                out.push(pq);
+            }
+        }
+        out
     }
 
     /// Try each attached engine's static against a handshake initiation.
@@ -2990,5 +3055,48 @@ mod tests {
             cpu / (bytes as f64 * 8.0 / 1e9).max(1e-9),
         );
         drop((a, b));
+    }
+
+    #[tokio::test]
+    async fn plane_routes_pq_psk_negotiation_and_delivers_encrypted_traffic() {
+        use super::super::pq_psk::{PqPeerStatus, PqPskConfig, PqPskMode};
+
+        let (kp_a, kp_b) = (WgKeypair::generate(), WgKeypair::generate());
+        let (plane_a, plane_b) = (CarrierPlane::new(), CarrierPlane::new());
+        let sock_a = Arc::new(tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let sock_b = Arc::new(tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let (addr_a, addr_b) = (sock_a.local_addr().unwrap(), sock_b.local_addr().unwrap());
+        plane_a.adopt_socket(sock_a.clone());
+        plane_b.adopt_socket(sock_b.clone());
+        let (mut a, mut ra) = engine(&plane_a, &kp_a).await;
+        let (mut b, mut rb) = engine(&plane_b, &kp_b).await;
+
+        let cfg = PqPskConfig {
+            mode: PqPskMode::Required,
+            configured_psk: Some([0x77; 32]),
+            ..PqPskConfig::default()
+        };
+        a.set_pq_psk_config(cfg.clone());
+        b.set_pq_psk_config(cfg);
+
+        let (ip_a, ip_b) = (Ipv4Addr::new(100, 65, 9, 10), Ipv4Addr::new(100, 65, 9, 11));
+        let pk_a = kp_a.public.to_bytes();
+        let pk_b = kp_b.public.to_bytes();
+        b.add_direct_peer(sock_b.clone(), pk_a, ip_a, addr_a, false)
+            .await;
+        a.add_direct_peer(sock_a.clone(), pk_b, ip_b, addr_b, true)
+            .await;
+
+        let pkt_ab = synthetic_ipv4(ip_a, ip_b, b"plane pq-psk payload A->B");
+        pump_until_delivered(&a, &mut rb, &pkt_ab).await;
+        let pkt_ba = synthetic_ipv4(ip_b, ip_a, b"plane pq-psk payload B->A");
+        pump_until_delivered(&b, &mut ra, &pkt_ba).await;
+
+        let sa = a.peer_pq_psk_snapshot(&pk_b).await.unwrap();
+        let sb = b.peer_pq_psk_snapshot(&pk_a).await.unwrap();
+        assert_eq!(sa.status, PqPeerStatus::Established { epoch: 1 });
+        assert_eq!(sb.status, PqPeerStatus::Established { epoch: 1 });
+        assert!(sa.psk_fingerprint.is_some());
+        assert_eq!(sa.psk_fingerprint, sb.psk_fingerprint);
     }
 }
