@@ -48,6 +48,8 @@ pub mod ingress;
 /// with the prefix's two on-link halves. Never routes around a capture.
 pub mod lan_repair;
 pub(crate) mod lifecycle;
+/// B8 — Multi-path & link aggregation (`ActiveStandby`, `Redundant`, `Aggregate`).
+pub mod multipath;
 pub mod nat;
 pub mod netcheck;
 pub mod netmap;

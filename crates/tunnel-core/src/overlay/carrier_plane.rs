@@ -651,6 +651,7 @@ impl CarrierPlane {
             if let (_, Some(p)) = decap_inbound(&mut r.tunn, n, dg, &r.reply, &r.ingress) {
                 r.packets.push(p);
             }
+            r.ingress.multipath.drain_ready_into(&mut r.packets);
         }
         if let Some(r) = run.take() {
             r.deliver().await;
@@ -953,13 +954,25 @@ impl CarrierPlane {
                 ingress: r.ingress.clone(),
                 tun_tx: r.tun_tx.clone(),
             },
+            Some(r) if let Some(leg_id) = r.ingress.multipath.leg_id_for_direct_src(src) => {
+                Routed::Session {
+                    tunn: r.tunn.clone(),
+                    ingress: r.ingress.clone().with_leg_id(leg_id),
+                    tun_tx: r.tun_tx.clone(),
+                }
+            }
             // A3 — a known session (by receiver index) from a NEW source:
             // route it to the session's Tunn as a ROAM CANDIDATE. Adoption
             // commits only if the payload authenticates (handle_datagram
             // calls `commit_roam` on success), so a forged index can spend
             // one decap but never move an endpoint. Rate-limited per session.
+            // When secondary multipath legs are attached and expected_src is
+            // already populated, do not clobber the primary endpoint with an
+            // unconfigured secondary source.
             Some(r)
                 if direct::roam_enabled()
+                    && (!r.ingress.multipath.has_secondary_legs()
+                        || r.expected_src.ip().is_unspecified())
                     && r.last_roam
                         .is_none_or(|t| t.elapsed() >= direct::ROAM_MIN_INTERVAL) =>
             {
@@ -1210,6 +1223,19 @@ impl PlaneHandle {
     /// never handed out twice within a wrap of the 24-bit space.
     pub(crate) fn alloc_index(&self) -> u32 {
         1 + self.plane.index_alloc.fetch_add(1, Ordering::Relaxed) % (INDEX_SPACE - 1)
+    }
+
+    /// Check whether `sock` is one of the plane's bound demux sockets.
+    pub(crate) fn owns_socket(&self, sock: &Arc<UdpSocket>) -> bool {
+        let st = self.plane.lock();
+        let Some(b) = &st.binds else {
+            return false;
+        };
+        b.socks.iter().any(|(_, s)| Arc::ptr_eq(s, sock))
+            || b.public_sock
+                .as_ref()
+                .is_some_and(|s| Arc::ptr_eq(s, sock))
+            || b.v6.as_ref().is_some_and(|s| Arc::ptr_eq(s, sock))
     }
 
     /// Register the session route for an index handed out by

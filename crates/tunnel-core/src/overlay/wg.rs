@@ -372,7 +372,7 @@ impl Carrier {
 
     /// The socket and current destination of a direct carrier — what a GSO
     /// batch send needs; `None` for relay carriers.
-    fn direct_parts(&self) -> Option<(&Arc<UdpSocket>, SocketAddr)> {
+    pub(super) fn direct_parts(&self) -> Option<(&Arc<UdpSocket>, SocketAddr)> {
         match self {
             Carrier::Direct { sock, dst, .. } => {
                 Some((sock, *dst.read().unwrap_or_else(|e| e.into_inner())))
@@ -674,7 +674,7 @@ fn wg_epoch() -> Instant {
 }
 
 /// Milliseconds of `wg_epoch()` elapsed — the `handshake_at` clock.
-fn mono_ms_now() -> u64 {
+pub(crate) fn mono_ms_now() -> u64 {
     wg_epoch().elapsed().as_millis() as u64
 }
 
@@ -717,9 +717,16 @@ pub(crate) struct Ingress {
     send: WgSender,
     stats: Arc<PeerStats>,
     mode: RpfMode,
+    pub(crate) multipath: Arc<super::multipath::PeerMultipathState>,
+    pub(crate) leg_id: u32,
 }
 
 impl Ingress {
+    pub(crate) fn with_leg_id(&self, leg_id: u32) -> Self {
+        let mut c = self.clone();
+        c.leg_id = leg_id;
+        c
+    }
     /// May this peer deliver this packet? Two independent questions, answered
     /// from ONE lock acquisition:
     ///
@@ -893,6 +900,9 @@ struct Peer {
     /// would miss it). `None` for plane-mode (plane_idx covers it) and
     /// relay peers.
     direct_index: Option<u32>,
+    /// B8 — per-peer multipath scheduler, cryptographic deduplicator, and
+    /// counter-ordered reassembly state.
+    multipath: Arc<super::multipath::PeerMultipathState>,
 }
 
 /// A3 — one session's roaming state in the device demux's index side-map:
@@ -906,6 +916,7 @@ struct IndexSlot {
 
 impl Drop for Peer {
     fn drop(&mut self) {
+        self.multipath.clear_secondary_legs();
         for t in &self.tasks {
             t.abort();
         }
@@ -947,6 +958,7 @@ struct SendPeer {
     tunn: Arc<Mutex<Tunn>>,
     carrier: Arc<Carrier>,
     stats: Arc<PeerStats>,
+    multipath: Arc<super::multipath::PeerMultipathState>,
 }
 
 /// P1 (S6) — everything the outbound data path needs, shared between the
@@ -1154,6 +1166,44 @@ impl SendState {
 }
 
 impl SendPeer {
+    /// Dispatch a single encapsulated WireGuard frame according to the peer's
+    /// multipath scheduler (`Off`, `ActiveStandby`, `Redundant`, `Aggregate`).
+    async fn send_wire_frame(&self, frame: &[u8]) -> bool {
+        if !self.multipath.is_active() {
+            let ok = send_wg_recorded(&self.carrier, &self.stats, frame).await.is_ok();
+            self.multipath
+                .record_leg_tx_outcome(0, frame.len(), ok, false);
+            return ok;
+        }
+        let mode = self.multipath.mode();
+        let targets = self.multipath.select_tx_targets(&self.carrier, frame);
+        match mode {
+            super::multipath::MultipathMode::Redundant => {
+                let mut any_ok = false;
+                for (idx, (leg_id, leg_carrier)) in targets.iter().enumerate() {
+                    let ok = send_wg_recorded(leg_carrier, &self.stats, frame).await.is_ok();
+                    self.multipath
+                        .record_leg_tx_outcome(*leg_id, frame.len(), ok, idx > 0);
+                    if ok {
+                        any_ok = true;
+                    }
+                }
+                any_ok
+            }
+            _ => {
+                for (leg_id, leg_carrier) in targets.iter() {
+                    let ok = send_wg_recorded(leg_carrier, &self.stats, frame).await.is_ok();
+                    self.multipath
+                        .record_leg_tx_outcome(*leg_id, frame.len(), ok, false);
+                    if ok {
+                        return true;
+                    }
+                }
+                false
+            }
+        }
+    }
+
     /// The single encapsulate-and-send implementation (moved verbatim from
     /// the pre-P1 `WgDevice::send_to_peer`).
     async fn send(&self, packet: &[u8]) -> bool {
@@ -1167,7 +1217,7 @@ impl SendPeer {
         match len {
             Some(n) => {
                 self.stats.tx_attempted.fetch_add(1, Ordering::Relaxed);
-                let ok = send_wg_recorded(&self.carrier, &self.stats, &buf[..n]).await.is_ok();
+                let ok = self.send_wire_frame(&buf[..n]).await;
                 if ok {
                     self.stats.tx.fetch_add(1, Ordering::Relaxed);
                 }
@@ -1185,6 +1235,34 @@ impl SendPeer {
     /// recorded single send; a refused GSO send is retried datagram by
     /// datagram, so every path still ends in [`Carrier::send`]'s semantics.
     async fn send_batch(&self, packets: &[Vec<u8>], idxs: &[usize]) -> usize {
+        if self.multipath.is_active() {
+            // Encapsulate the entire batch under a single Tunn lock acquisition,
+            // then dispatch each frame through the multipath scheduler.
+            let mut frames: Vec<Vec<u8>> = Vec::with_capacity(idxs.len());
+            {
+                let mut t = self.tunn.lock().await;
+                let mut buf = vec![0u8; WG_BUF];
+                for &i in idxs {
+                    if let Some(n) = encapsulate_into(&mut t, &packets[i], &mut buf) {
+                        frames.push(buf[..n].to_vec());
+                    }
+                }
+            }
+            self.stats
+                .tx_attempted
+                .fetch_add(frames.len() as u64, Ordering::Relaxed);
+            let mut sent = 0;
+            for f in &frames {
+                if self.send_wire_frame(f).await {
+                    sent += 1;
+                }
+                if f.first() == Some(&4) {
+                    self.stats.standby.copy(f);
+                }
+            }
+            self.stats.tx.fetch_add(sent as u64, Ordering::Relaxed);
+            return sent;
+        }
         let direct = self.carrier.direct_parts();
         let max_segs = super::udp_batch::max_send_segments();
         if idxs.len() < 2 || max_segs < 2 || direct.is_none() {
@@ -1553,12 +1631,19 @@ impl WgDevice {
 
     /// P4 — the [`Ingress`] context for one peer's inbound path: its identity,
     /// the shared routing table, its counters, and this device's mode.
-    fn ingress_for(&self, peer_public: [u8; 32], stats: Arc<PeerStats>) -> Ingress {
+    fn ingress_for(
+        &self,
+        peer_public: [u8; 32],
+        stats: Arc<PeerStats>,
+        multipath: Arc<super::multipath::PeerMultipathState>,
+    ) -> Ingress {
         Ingress {
             peer: peer_public,
             send: self.send.clone(),
             stats,
             mode: self.rpf,
+            multipath,
+            leg_id: 0,
         }
     }
 
@@ -1679,13 +1764,15 @@ impl WgDevice {
         tunn: Arc<Mutex<Tunn>>,
         carrier: Arc<Carrier>,
         stats: Arc<PeerStats>,
+        multipath: Arc<super::multipath::PeerMultipathState>,
     ) {
         let mut g = self.send.0.write().unwrap();
-        Self::send_install_locked(&mut g, peer_public, overlay_ip, tunn, carrier, stats);
+        Self::send_install_locked(&mut g, peer_public, overlay_ip, tunn, carrier, stats, multipath);
     }
     fn send_install_locked(
         g: &mut SendState, peer_public: [u8; 32], overlay_ip: Ipv4Addr,
         tunn: Arc<Mutex<Tunn>>, carrier: Arc<Carrier>, stats: Arc<PeerStats>,
+        multipath: Arc<super::multipath::PeerMultipathState>,
     ) {
         if let Some(prev) = g.router.upsert(overlay_ip, peer_public) {
             // Expected once, right after the server recycled a removed device's
@@ -1705,6 +1792,7 @@ impl WgDevice {
                 tunn,
                 carrier,
                 stats,
+                multipath,
             },
         );
     }
@@ -1766,11 +1854,16 @@ impl WgDevice {
             initiate,
             self.disco_events_tx.clone(),
         );
-        let (tunn, carrier, stats) = (peer.tunn.clone(), peer.carrier.clone(), peer.stats.clone());
+        let (tunn, carrier, stats, multipath) = (
+            peer.tunn.clone(),
+            peer.carrier.clone(),
+            peer.stats.clone(),
+            peer.multipath.clone(),
+        );
         if let Some(old) = self.peers.insert(peer_public, peer) {
             self.unregister_plane_route(&old);
         }
-        self.send_install(peer_public, overlay_ip, tunn, carrier, stats);
+        self.send_install(peer_public, overlay_ip, tunn, carrier, stats, multipath);
         self.debug_assert_send_synced();
     }
 
@@ -1797,6 +1890,7 @@ impl WgDevice {
         let tunn = Arc::new(Mutex::new(tunn));
 
         let stats = Arc::new(PeerStats { recovery_hold: self.recovery_for(peer_public, overlay_ip), ..PeerStats::default() });
+        let multipath = Arc::new(super::multipath::PeerMultipathState::default());
 
         // Multi-org v2 — register this session on the plane's receiver-index
         // demux even though it is NOT a direct install.
@@ -1824,7 +1918,7 @@ impl WgDevice {
         // (`index_alloc`, locked by a test), so this cannot capture another
         // engine's traffic.
         if let Some(h) = &self.plane {
-            let ingress = self.ingress_for(peer_public, stats.clone());
+            let ingress = self.ingress_for(peer_public, stats.clone(), multipath.clone());
             h.register_route(
                 index,
                 tunn.clone(),
@@ -1841,7 +1935,7 @@ impl WgDevice {
         let recv_stats = stats.clone();
         let follow_shared = super::disco::shared_secret(&self.secret, &PublicKey::from(peer_public));
         let tun_tx = self.tun_tx.clone();
-        let recv_ingress = self.ingress_for(peer_public, stats.clone());
+        let recv_ingress = self.ingress_for(peer_public, stats.clone(), multipath.clone());
         let disco_secret = self.secret.clone();
         let disco_public = self.public;
         let disco_replies = Arc::new(Semaphore::new(1));
@@ -1939,17 +2033,24 @@ impl WgDevice {
             }
         });
 
-        let timer_task = Self::spawn_carrier_timer(tunn.clone(), carrier.clone(), stats.clone());
+        let timer_task = Self::spawn_carrier_timer(
+            tunn.clone(),
+            carrier.clone(),
+            stats.clone(),
+            multipath.clone(),
+        );
+        let reorder_task = multipath.spawn_reorder_flush_task(self.tun_tx.clone());
 
         let peer = Peer {
             tunn: tunn.clone(),
             carrier: carrier.clone(),
             overlay_ip,
-            tasks: vec![recv_task, timer_task],
+            tasks: vec![recv_task, timer_task, reorder_task],
             stats: stats.clone(),
             direct_src: None,
             plane_idx: self.plane.as_ref().map(|_| index),
             direct_index: None,
+            multipath,
         };
         if initiate {
             let init_stats = stats.clone();
@@ -1972,11 +2073,15 @@ impl WgDevice {
     }
 
     fn spawn_carrier_timer(
-        tunn: Arc<Mutex<Tunn>>, carrier: Arc<Carrier>, stats: Arc<PeerStats>,
+        tunn: Arc<Mutex<Tunn>>,
+        carrier: Arc<Carrier>,
+        stats: Arc<PeerStats>,
+        multipath: Arc<super::multipath::PeerMultipathState>,
     ) -> JoinHandle<()> {
         // timer task: drive handshake retries + keepalives.
         let timer_tunn = tunn;
         let timer_carrier = carrier;
+        let timer_multipath = multipath;
         tokio::spawn(async move {
             let mut buf = vec![0u8; WG_BUF];
             let mut tick = tokio::time::interval(Duration::from_millis(TIMER_TICK_MS));
@@ -2006,7 +2111,25 @@ impl WgDevice {
                     }
                 };
                 if let Some(b) = out {
-                    let _ = send_wg_recorded(&timer_carrier, &stats, &b).await;
+                    if timer_multipath.is_active() {
+                        let mode = timer_multipath.mode();
+                        let is_redundant = mode == super::multipath::MultipathMode::Redundant;
+                        let targets = timer_multipath.select_tx_targets(&timer_carrier, &b);
+                        for (idx, (leg_id, leg_carrier)) in targets.iter().enumerate() {
+                            let ok = send_wg_recorded(leg_carrier, &stats, &b).await.is_ok();
+                            timer_multipath.record_leg_tx_outcome(
+                                *leg_id,
+                                b.len(),
+                                ok,
+                                is_redundant && idx > 0,
+                            );
+                            if ok && !is_redundant {
+                                break;
+                            }
+                        }
+                    } else {
+                        let _ = send_wg_recorded(&timer_carrier, &stats, &b).await;
+                    }
                 }
             }
         })
@@ -2158,10 +2281,26 @@ impl WgDevice {
         floor.stats.recovery_hold.fetch_max(mono_ms_now().saturating_add(60_000), Ordering::Relaxed);
         self.derp_follow.remove(public); // consume nonce before any new owner
         self.cancel_org_upgrade(public);
-        floor.tasks.push(Self::spawn_carrier_timer(floor.tunn.clone(), floor.carrier.clone(), floor.stats.clone()));
-        let (ip, tunn, carrier, stats) = (floor.overlay_ip, floor.tunn.clone(), floor.carrier.clone(), floor.stats.clone());
+        floor.tasks.push(Self::spawn_carrier_timer(
+            floor.tunn.clone(),
+            floor.carrier.clone(),
+            floor.stats.clone(),
+            floor.multipath.clone(),
+        ));
+        floor.tasks.push(
+            floor
+                .multipath
+                .spawn_reorder_flush_task(self.tun_tx.clone()),
+        );
+        let (ip, tunn, carrier, stats, multipath) = (
+            floor.overlay_ip,
+            floor.tunn.clone(),
+            floor.carrier.clone(),
+            floor.stats.clone(),
+            floor.multipath.clone(),
+        );
         if let Some(old_org) = self.peers.insert(*public, floor) { self.unregister_plane_route(&old_org); }
-        self.send_install(*public, ip, tunn, carrier, stats);
+        self.send_install(*public, ip, tunn, carrier, stats, multipath);
         self.debug_assert_send_synced();
         true
     }
@@ -2198,11 +2337,17 @@ impl WgDevice {
         if !self.org_upgrade_ready(public) { return false; }
         let u = self.org_upgrades.remove(public).expect("ready candidate");
         let candidate = u.candidate;
-        let (ip, tunn, carrier, stats) = (candidate.overlay_ip,
-            candidate.tunn.clone(), candidate.carrier.clone(), candidate.stats.clone());
+        let (ip, tunn, carrier, stats, multipath) = (
+            candidate.overlay_ip,
+            candidate.tunn.clone(),
+            candidate.carrier.clone(),
+            candidate.stats.clone(),
+            candidate.multipath.clone(),
+        );
         if let Some(mut old) = self.peers.insert(*public, candidate) {
-            // make_carrier_peer owns [receive, timer]. Retain receive only;
+            // make_carrier_peer owns [receive, timer, reorder]. Retain receive only;
             // old keepalives/retries must not imply that DERP remains active.
+            old.multipath.clear_secondary_legs();
             for timer in old.tasks.drain(1..) { timer.abort(); }
             self.drop_org_floor_receiver(public);
             *old.stats.follow_init.lock().unwrap_or_else(|e| e.into_inner()) = None;
@@ -2214,7 +2359,7 @@ impl WgDevice {
             });
             self.org_floor_receivers.insert(*public, old);
         }
-        Self::send_install_locked(&mut locked, *public, ip, tunn, carrier, stats);
+        Self::send_install_locked(&mut locked, *public, ip, tunn, carrier, stats, multipath);
         drop(locked);
         self.debug_assert_send_synced();
         true
@@ -2509,16 +2654,17 @@ impl WgDevice {
         let Some(direct) = t.incumbent.take() else {
             return false;
         };
-        let (ip, tunn, carrier, stats) = (
+        let (ip, tunn, carrier, stats, multipath) = (
             direct.overlay_ip,
             direct.tunn.clone(),
             direct.carrier.clone(),
             direct.stats.clone(),
+            direct.multipath.clone(),
         );
         t.incumbent = self.peers.insert(t.public_key, direct);
         t.returned = true;
         let public = t.public_key;
-        self.send_install(public, ip, tunn, carrier, stats);
+        self.send_install(public, ip, tunn, carrier, stats, multipath);
         self.debug_assert_send_synced();
         true
     }
@@ -2546,16 +2692,17 @@ impl WgDevice {
             t.incumbent = Some(relay);
             return false;
         }
-        let (ip, tunn, carrier, stats) = (
+        let (ip, tunn, carrier, stats, multipath) = (
             relay.overlay_ip,
             relay.tunn.clone(),
             relay.carrier.clone(),
             relay.stats.clone(),
+            relay.multipath.clone(),
         );
         t.incumbent = self.peers.insert(t.public_key, relay);
         t.returned = false;
         let public = t.public_key;
-        self.send_install(public, ip, tunn, carrier, stats);
+        self.send_install(public, ip, tunn, carrier, stats, multipath);
         self.debug_assert_send_synced();
         true
     }
@@ -2615,11 +2762,12 @@ impl WgDevice {
         let Some(candidate) = t.candidate.take() else {
             return false;
         };
-        let (ip, tunn, carrier, stats) = (
+        let (ip, tunn, carrier, stats, multipath) = (
             candidate.overlay_ip,
             candidate.tunn.clone(),
             candidate.carrier.clone(),
             candidate.stats.clone(),
+            candidate.multipath.clone(),
         );
         t.committed_tunn = Some(Arc::downgrade(&tunn));
         t.incumbent = self.peers.insert(t.public_key, candidate);
@@ -2627,7 +2775,7 @@ impl WgDevice {
         let public = t.public_key;
         // DO NOT unregister/drop the incumbent. Its receive path must remain
         // valid while the other end is still prepared and sends over direct.
-        self.send_install(public, ip, tunn, carrier, stats);
+        self.send_install(public, ip, tunn, carrier, stats, multipath);
         self.debug_assert_send_synced();
         true
     }
@@ -2871,12 +3019,16 @@ impl WgDevice {
             .make_direct_peer(sock, peer_public, overlay_ip, dst, initiate)
             .await
         {
-            let (tunn, carrier, stats) =
-                (peer.tunn.clone(), peer.carrier.clone(), peer.stats.clone());
+            let (tunn, carrier, stats, multipath) = (
+                peer.tunn.clone(),
+                peer.carrier.clone(),
+                peer.stats.clone(),
+                peer.multipath.clone(),
+            );
             if let Some(old) = self.peers.insert(peer_public, peer) {
                 self.unregister_plane_route(&old);
             }
-            self.send_install(peer_public, overlay_ip, tunn, carrier, stats);
+            self.send_install(peer_public, overlay_ip, tunn, carrier, stats, multipath);
             self.debug_assert_send_synced();
         }
     }
@@ -2913,7 +3065,8 @@ impl WgDevice {
         )));
 
         let stats = Arc::new(PeerStats { recovery_hold: self.recovery_for(peer_public, overlay_ip), ..PeerStats::default() });
-        let ingress = self.ingress_for(peer_public, stats.clone());
+        let multipath = Arc::new(super::multipath::PeerMultipathState::default());
+        let ingress = self.ingress_for(peer_public, stats.clone(), multipath.clone());
         // Register for demux BEFORE the handshake so inbound is routed —
         // on the plane by session index (unique across every attached
         // engine), else in the device's source-keyed table. Both register
@@ -2947,44 +3100,15 @@ impl WgDevice {
             }
         };
 
-        // Timer task only — no recv task; the shared demux loop delivers
-        // this peer's inbound.
-        let timer_tunn = tunn.clone();
-        let timer_carrier = carrier.clone();
-        let timer_stats = stats.clone();
-        let timer_task = tokio::spawn(async move {
-            let mut buf = vec![0u8; WG_BUF];
-            let mut tick = tokio::time::interval(Duration::from_millis(TIMER_TICK_MS));
-            loop {
-                tick.tick().await;
-                // rc.211 — capture the handshake/keepalive bytes UNDER the
-                // lock, then RELEASE it before the carrier send. Holding the
-                // per-peer Tunn lock across `carrier.send().await` (a slow
-                // relay/QUIC send under churn) stalls every other task that
-                // needs the same Tunn — including the SHARED direct recv loop,
-                // which then stops reading the socket and the OS drops inbound
-                // UDP for ALL direct peers.
-                let out = {
-                    let mut t = timer_tunn.lock().await;
-                    match t.update_timers(&mut buf) {
-                        TunnResult::WriteToNetwork(b) => Some(b.to_vec()),
-                        // boringtun gives up re-handshaking once a rekey
-                        // attempt expires and reports the session over. That
-                        // verdict is conclusive, and dropping it (as this arm
-                        // did) left the carrier to be rediscovered the slow
-                        // way, by the rx-staleness bound.
-                        TunnResult::Err(WireGuardError::ConnectionExpired) => {
-                            timer_carrier.mark_dead();
-                            None
-                        }
-                        _ => None,
-                    }
-                };
-                if let Some(b) = out {
-                    let _ = send_wg_recorded(&timer_carrier, &timer_stats, &b).await;
-                }
-            }
-        });
+        // Timer task + reorder flush task — no recv task; the shared demux loop
+        // delivers this peer's inbound.
+        let timer_task = Self::spawn_carrier_timer(
+            tunn.clone(),
+            carrier.clone(),
+            stats.clone(),
+            multipath.clone(),
+        );
+        let reorder_task = multipath.spawn_reorder_flush_task(self.tun_tx.clone());
 
         if initiate {
             let it = tunn.clone();
@@ -3010,11 +3134,12 @@ impl WgDevice {
             tunn,
             carrier,
             overlay_ip,
-            tasks: vec![timer_task],
+            tasks: vec![timer_task, reorder_task],
             stats,
             direct_src: Some(dst),
             plane_idx,
             direct_index,
+            multipath,
         })
     }
 
@@ -3103,10 +3228,11 @@ impl WgDevice {
             self.cancel_org_upgrade(peer_public);
             self.drop_org_floor_receiver(peer_public);
             let overlay_ip = probe.overlay_ip;
-            let (tunn, carrier, stats) = (
+            let (tunn, carrier, stats, multipath) = (
                 probe.tunn.clone(),
                 probe.carrier.clone(),
                 probe.stats.clone(),
+                probe.multipath.clone(),
             );
             // Insert replaces + drops the old (relay) peer; Drop aborts its task.
             if let Some(old) = self.peers.insert(*peer_public, probe) {
@@ -3114,7 +3240,7 @@ impl WgDevice {
             }
             // P1 (S6) — swap the pump's view atomically: the whole triple
             // replaces the old one under a single write lock.
-            self.send_install(*peer_public, overlay_ip, tunn, carrier, stats);
+            self.send_install(*peer_public, overlay_ip, tunn, carrier, stats, multipath);
             self.debug_assert_send_synced();
             true
         } else {
@@ -3430,10 +3556,14 @@ impl WgDevice {
         peer_public: &[u8; 32],
         mut rx: mpsc::Receiver<Vec<u8>>,
     ) -> bool {
-        let Some(stats) = self.peers.get(peer_public).map(|p| p.stats.clone()) else {
+        let Some((stats, multipath)) = self
+            .peers
+            .get(peer_public)
+            .map(|p| (p.stats.clone(), p.multipath.clone()))
+        else {
             return false;
         };
-        let ingress = self.ingress_for(*peer_public, stats);
+        let ingress = self.ingress_for(*peer_public, stats, multipath);
         let tun_tx = self.tun_tx.clone();
         let Some(p) = self.peers.get_mut(peer_public) else {
             return false;
@@ -3562,7 +3692,12 @@ impl WgDevice {
         let Some(p) = self.peers.get(peer_public) else {
             return false;
         };
-        let (tunn, carrier, stats) = (p.tunn.clone(), p.carrier.clone(), p.stats.clone());
+        let (tunn, carrier, stats, multipath) = (
+            p.tunn.clone(),
+            p.carrier.clone(),
+            p.stats.clone(),
+            p.multipath.clone(),
+        );
         tokio::spawn(async move {
             let mut buf = vec![0u8; WG_BUF];
             let out = {
@@ -3573,7 +3708,25 @@ impl WgDevice {
                 }
             };
             if let Some(b) = out {
-                let _ = send_wg_recorded(&carrier, &stats, &b).await;
+                if multipath.is_active() {
+                    let is_redundant =
+                        multipath.mode() == super::multipath::MultipathMode::Redundant;
+                    let targets = multipath.select_tx_targets(&carrier, &b);
+                    for (idx, (leg_id, leg_carrier)) in targets.iter().enumerate() {
+                        let ok = send_wg_recorded(leg_carrier, &stats, &b).await.is_ok();
+                        multipath.record_leg_tx_outcome(
+                            *leg_id,
+                            b.len(),
+                            ok,
+                            is_redundant && idx > 0,
+                        );
+                        if ok && !is_redundant {
+                            break;
+                        }
+                    }
+                } else {
+                    let _ = send_wg_recorded(&carrier, &stats, &b).await;
+                }
             }
         });
         true
@@ -3634,6 +3787,209 @@ impl WgDevice {
             p.stats.reinit_seen.fetch_add(n, Ordering::Relaxed);
         }
     }
+
+    /// B8 — Configure multipath mode and parameters (`Off`, `ActiveStandby`,
+    /// `Redundant`, `Aggregate`) for an installed peer.
+    pub fn set_peer_multipath_config(
+        &self,
+        peer_public: &[u8; 32],
+        config: super::multipath::MultipathConfig,
+    ) -> bool {
+        let Some(p) = self.peers.get(peer_public) else {
+            return false;
+        };
+        p.multipath.set_config(config);
+        true
+    }
+
+    /// B8 — Query the current [`MultipathMode`](super::multipath::MultipathMode)
+    /// of `peer_public`.
+    pub fn peer_multipath_mode(
+        &self,
+        peer_public: &[u8; 32],
+    ) -> Option<super::multipath::MultipathMode> {
+        Some(self.peers.get(peer_public)?.multipath.mode())
+    }
+
+    /// B8 — Attach or replace a secondary multipath carrier leg (`leg_id > 0`)
+    /// for `peer_public`, spawning its dedicated receive loop (with out-of-tunnel
+    /// disco responder + `process_inbound` on the shared `Tunn` session).
+    pub fn add_multipath_leg(
+        &mut self,
+        peer_public: &[u8; 32],
+        leg_id: u32,
+        carrier: Arc<Carrier>,
+        priority: u8,
+        weight: u16,
+    ) -> bool {
+        if leg_id == 0 || leg_id >= 64 {
+            return false;
+        }
+        let Some(peer) = self.peers.get(peer_public) else {
+            return false;
+        };
+        let multipath = peer.multipath.clone();
+        // If `carrier` shares a bound UDP socket with `CarrierPlane`, `DirectDemux`,
+        // or the peer's own primary carrier, inbound datagrams are already read and
+        // demuxed by that shared socket loop (which attributes secondary-leg traffic
+        // via `leg_id_for_direct_src`). Only spawn a dedicated `recv_task` when the
+        // secondary leg owns a separate socket or relay allocation.
+        let shared_demux_socket = Arc::ptr_eq(&peer.carrier, &carrier)
+            || carrier.direct_parts().is_some_and(|(sock, _)| {
+                self.plane.as_ref().is_some_and(|h| h.owns_socket(sock))
+                    || self
+                        .direct
+                        .as_ref()
+                        .is_some_and(|d| d.socks.iter().any(|s| Arc::ptr_eq(s, sock)))
+                    || peer
+                        .carrier
+                        .direct_parts()
+                        .is_some_and(|(ps, _)| Arc::ptr_eq(ps, sock))
+            });
+
+        let mut tasks = Vec::new();
+        if !shared_demux_socket {
+            let recv_tunn = peer.tunn.clone();
+            let recv_carrier = carrier.clone();
+            let stats = peer.stats.clone();
+            let tun_tx = self.tun_tx.clone();
+            let leg_ingress = self
+                .ingress_for(*peer_public, stats, multipath.clone())
+                .with_leg_id(leg_id);
+            let disco_secret = self.secret.clone();
+            let disco_public = self.public;
+            let disco_sink = self.disco_events_tx.clone();
+            let expected_peer = *peer_public;
+            let disco_replies = Arc::new(Semaphore::new(1));
+
+            let recv_task = tokio::spawn(async move {
+                let mut buf = vec![0u8; WG_BUF];
+                loop {
+                    let n = match recv_carrier.recv(&mut buf).await {
+                        Ok(n) => n,
+                        Err(e) => {
+                            debug!(%e, leg_id, "wg multipath secondary leg recv ended");
+                            break;
+                        }
+                    };
+                    if super::disco::is_disco_shaped(&buf[..n]) {
+                        match super::disco::classify(
+                            &buf[..n],
+                            recv_carrier.disco_endpoint(),
+                            &disco_secret,
+                            &disco_public,
+                            |pk| pk == &expected_peer,
+                        ) {
+                            super::disco::Verdict::Answer(pong) => {
+                                if super::direct::disco_respond_enabled()
+                                    && let Ok(permit) = disco_replies.clone().try_acquire_owned()
+                                {
+                                    let c = recv_carrier.clone();
+                                    tokio::spawn(async move {
+                                        let _permit = permit;
+                                        let _ = tokio::time::timeout(
+                                            Duration::from_millis(100),
+                                            c.send_disco(&pong),
+                                        )
+                                        .await;
+                                    });
+                                }
+                            }
+                            super::disco::Verdict::Pong(pong) => {
+                                let _ = disco_sink.try_send(pong);
+                            }
+                            super::disco::Verdict::Ignore => {}
+                        }
+                        continue;
+                    }
+                    let mut t = recv_tunn.lock().await;
+                    process_inbound(&mut t, n, &mut buf, &recv_carrier, &tun_tx, &leg_ingress)
+                        .await;
+                }
+            });
+            tasks.push(recv_task);
+        }
+
+        multipath.upsert_secondary_leg(leg_id, carrier, priority, weight, tasks)
+    }
+
+    /// B8 — Remove a secondary multipath leg (`leg_id > 0`) from `peer_public`.
+    pub fn remove_multipath_leg(&self, peer_public: &[u8; 32], leg_id: u32) -> bool {
+        let Some(p) = self.peers.get(peer_public) else {
+            return false;
+        };
+        p.multipath.remove_secondary_leg(leg_id)
+    }
+
+    /// B8 — Remove all secondary multipath legs from `peer_public`.
+    pub fn clear_multipath_legs(&self, peer_public: &[u8; 32]) -> bool {
+        let Some(p) = self.peers.get(peer_public) else {
+            return false;
+        };
+        p.multipath.clear_secondary_legs();
+        true
+    }
+
+    /// B8 — Update the administrative / path-monitor health of `leg_id` (`0` =
+    /// primary carrier, `> 0` = secondary leg).
+    pub fn set_multipath_leg_healthy(
+        &self,
+        peer_public: &[u8; 32],
+        leg_id: u32,
+        healthy: bool,
+    ) -> bool {
+        let Some(p) = self.peers.get(peer_public) else {
+            return false;
+        };
+        p.multipath.set_leg_healthy(leg_id, healthy)
+    }
+
+    /// B8 — Update the priority and weight of `leg_id` (`0` = primary carrier,
+    /// `> 0` = secondary leg).
+    pub fn set_multipath_leg_policy(
+        &self,
+        peer_public: &[u8; 32],
+        leg_id: u32,
+        priority: u8,
+        weight: u16,
+    ) -> bool {
+        let Some(p) = self.peers.get(peer_public) else {
+            return false;
+        };
+        p.multipath.set_leg_policy(leg_id, priority, weight)
+    }
+
+    /// B8 — Record an observed RTT sample for `leg_id` (`0` = primary carrier,
+    /// `> 0` = secondary leg).
+    pub fn record_multipath_leg_rtt(
+        &self,
+        peer_public: &[u8; 32],
+        leg_id: u32,
+        rtt: Duration,
+    ) -> bool {
+        let Some(p) = self.peers.get(peer_public) else {
+            return false;
+        };
+        p.multipath.record_leg_rtt(leg_id, rtt)
+    }
+
+    /// B8 — Snapshot the peer's multipath scheduler, deduplicator, reorder
+    /// buffer, and per-leg counters.
+    pub fn peer_multipath_snapshot(
+        &self,
+        peer_public: &[u8; 32],
+    ) -> Option<super::multipath::MultipathPeerSnapshot> {
+        let p = self.peers.get(peer_public)?;
+        Some(p.multipath.snapshot(&p.carrier))
+    }
+
+    /// B8 — Manually flush any expired packets in `peer_public`'s reorder buffer.
+    pub fn flush_peer_multipath_reorder(&self, peer_public: &[u8; 32]) -> Vec<Vec<u8>> {
+        let Some(p) = self.peers.get(peer_public) else {
+            return Vec::new();
+        };
+        p.multipath.flush_expired_reorder(Instant::now())
+    }
 }
 
 async fn send_wg_recorded(carrier: &Arc<Carrier>, stats: &PeerStats, bytes: &[u8]) -> io::Result<usize> {
@@ -3668,6 +4024,9 @@ pub(crate) async fn process_inbound(
     let (authenticated, packet) = decap_inbound(t, n, buf, carrier, ingress);
     if let Some(p) = packet {
         let _ = tun_tx.send(p).await;
+    }
+    for extra in ingress.multipath.drain_ready_packets() {
+        let _ = tun_tx.send(extra).await;
     }
     authenticated
 }
@@ -3712,6 +4071,16 @@ pub(crate) fn decap_inbound(
     ingress: &Ingress,
 ) -> (bool, Option<Vec<u8>>) {
     let stats = &ingress.stats;
+    if let super::multipath::PreDecapVerdict::AuthenticatedDuplicate { first_on_leg } =
+        ingress.multipath.pre_decap_check(&buf[..n], ingress.leg_id)
+    {
+        if first_on_leg {
+            stats.rx_any.fetch_add(1, Ordering::Relaxed);
+        }
+        // Return `authenticated = false` so a duplicate/replayed Type-4 datagram
+        // can never authorize an A3 endpoint roam (`commit_roam` / `set_direct_dst`).
+        return (false, None);
+    }
     let mut delivered = None;
     // Decapsulate writes into a separate scratch buffer so the borrow on
     // the result doesn't alias the inbound `buf`.
@@ -3805,6 +4174,11 @@ pub(crate) fn decap_inbound(
         }
         TunnResult::Done => {}
         TunnResult::Err(e) => debug!(?e, "wg decapsulate error"),
+    }
+    if authenticated {
+        delivered = ingress
+            .multipath
+            .post_decap_record(&buf[..n], ingress.leg_id, delivered);
     }
     // Phase C — latch "handshake completed" the moment this peer's session is
     // live. `process_inbound` only runs on a packet FROM the peer, so a set flag
@@ -4026,8 +4400,7 @@ async fn run_direct_demux(
             // symmetric-NAT peer: its real per-destination mapping differs
             // from its advert, so its packets arrive from a source nobody
             // registered — and what follows a mid-session NAT rebind.
-            if super::direct::roam_enabled()
-                && let Ok(pkt) = Tunn::parse_incoming_packet(&buf[..n])
+            if let Ok(pkt) = Tunn::parse_incoming_packet(&buf[..n])
                 && let Some(idx) = match &pkt {
                     Packet::HandshakeResponse(p) => Some(p.receiver_idx >> 8),
                     Packet::PacketCookieReply(p) => Some(p.receiver_idx >> 8),
@@ -4041,40 +4414,57 @@ async fn run_direct_demux(
                 };
                 if let Some((old_src, weak, last)) = slot
                     && old_src != src
-                    && last.is_none_or(|t| t.elapsed() >= super::direct::ROAM_MIN_INTERVAL)
                 {
                     let sess = routes.lock().await.get(&old_src).cloned();
                     if let Some((tunn, ingress)) = sess {
-                        let reply = Carrier::direct(sock.clone(), src);
-                        let authenticated = {
+                        // B8 — if `src` matches an attached secondary direct leg,
+                        // route on that leg's `leg_id` without roaming `old_src`.
+                        if let Some(leg_id) = ingress.multipath.leg_id_for_direct_src(src) {
+                            let reply = Carrier::direct(sock.clone(), src);
+                            let leg_ingress = ingress.with_leg_id(leg_id);
                             let mut t = tunn.lock().await;
-                            process_inbound(&mut t, n, &mut buf, &reply, &tun_tx, &ingress).await
-                        };
-                        if authenticated {
-                            {
-                                let mut r = routes.lock().await;
-                                if let Some(e) = r.remove(&old_src) {
-                                    r.insert(src, e);
-                                }
-                            }
-                            {
-                                let mut m = index_routes.lock().unwrap_or_else(|e| e.into_inner());
-                                if let Some(s) = m.get_mut(&idx) {
-                                    s.src = src;
-                                    s.last_roam = Some(Instant::now());
-                                }
-                            }
-                            if let Some(c) = weak.upgrade() {
-                                c.set_direct_dst(src);
-                            }
-                            crate::evidence::ROAM_ADOPTIONS.fetch_add(1, Ordering::Relaxed);
-                            info!(
-                                %old_src, new_src = %src, idx,
-                                "wg: peer endpoint ROAMED — authenticated inbound from a new \
-                                 source adopted (outbound repointed)"
-                            );
+                            process_inbound(&mut t, n, &mut buf, &reply, &tun_tx, &leg_ingress)
+                                .await;
+                            continue;
                         }
-                        continue;
+                        if super::direct::roam_enabled()
+                            && (!ingress.multipath.has_secondary_legs()
+                                || old_src.ip().is_unspecified())
+                            && last.is_none_or(|t| t.elapsed() >= super::direct::ROAM_MIN_INTERVAL)
+                        {
+                            let reply = Carrier::direct(sock.clone(), src);
+                            let authenticated = {
+                                let mut t = tunn.lock().await;
+                                process_inbound(&mut t, n, &mut buf, &reply, &tun_tx, &ingress)
+                                    .await
+                            };
+                            if authenticated {
+                                {
+                                    let mut r = routes.lock().await;
+                                    if let Some(e) = r.remove(&old_src) {
+                                        r.insert(src, e);
+                                    }
+                                }
+                                {
+                                    let mut m =
+                                        index_routes.lock().unwrap_or_else(|e| e.into_inner());
+                                    if let Some(s) = m.get_mut(&idx) {
+                                        s.src = src;
+                                        s.last_roam = Some(Instant::now());
+                                    }
+                                }
+                                if let Some(c) = weak.upgrade() {
+                                    c.set_direct_dst(src);
+                                }
+                                crate::evidence::ROAM_ADOPTIONS.fetch_add(1, Ordering::Relaxed);
+                                info!(
+                                    %old_src, new_src = %src, idx,
+                                    "wg: peer endpoint ROAMED — authenticated inbound from a new \
+                                     source adopted (outbound repointed)"
+                                );
+                            }
+                            continue;
+                        }
                     }
                 }
             }
@@ -6931,5 +7321,421 @@ mod tests {
             cpu / (bytes as f64 * 8.0 / 1e9).max(1e-9),
         );
         drop((dev_a, dev_b));
+    }
+
+    #[tokio::test]
+    async fn b8_active_standby_fails_over_on_primary_death_and_fails_back_without_rekey() {
+        use super::super::multipath::{MultipathConfig, MultipathMode};
+
+        let a = WgKeypair::generate();
+        let b = WgKeypair::generate();
+        let (pk_a, pk_b) = (a.public.to_bytes(), b.public.to_bytes());
+
+        let sock_a0 = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let sock_b0 = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let sock_a1 = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let sock_b1 = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let sock_a2 = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let sock_b2 = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+
+        let (addr_a0, addr_b0) = (sock_a0.local_addr().unwrap(), sock_b0.local_addr().unwrap());
+        let (addr_a1, addr_b1) = (sock_a1.local_addr().unwrap(), sock_b1.local_addr().unwrap());
+        let (addr_a2, addr_b2) = (sock_a2.local_addr().unwrap(), sock_b2.local_addr().unwrap());
+
+        let (mut dev_a, _rx_a) = WgDevice::new(a.secret.clone());
+        let (mut dev_b, mut rx_b) = WgDevice::new(b.secret.clone());
+
+        dev_a.add_peer(pk_b, IP_B, Carrier::direct(sock_a0.clone(), addr_b0), true);
+        dev_b.add_peer(pk_a, IP_A, Carrier::direct(sock_b0.clone(), addr_a0), false);
+        wait_connected(&dev_a, &pk_b).await;
+
+        let orig_tunn_a = dev_a.peers[&pk_b].tunn.clone();
+
+        // Attach secondary legs 1 (priority 10) and 2 (priority 20) on both ends.
+        assert!(dev_a.add_multipath_leg(
+            &pk_b,
+            1,
+            Carrier::direct(sock_a1.clone(), addr_b1),
+            10,
+            1,
+        ));
+        assert!(dev_a.add_multipath_leg(
+            &pk_b,
+            2,
+            Carrier::direct(sock_a2.clone(), addr_b2),
+            20,
+            1,
+        ));
+        assert!(dev_b.add_multipath_leg(
+            &pk_a,
+            1,
+            Carrier::direct(sock_b1.clone(), addr_a1),
+            10,
+            1,
+        ));
+        assert!(dev_b.add_multipath_leg(
+            &pk_a,
+            2,
+            Carrier::direct(sock_b2.clone(), addr_a2),
+            20,
+            1,
+        ));
+
+        assert!(dev_a.set_peer_multipath_config(
+            &pk_b,
+            MultipathConfig::new(MultipathMode::ActiveStandby),
+        ));
+        assert!(dev_b.set_peer_multipath_config(
+            &pk_a,
+            MultipathConfig::new(MultipathMode::ActiveStandby),
+        ));
+
+        // 1. Primary leg 0 is healthy: traffic rides leg 0.
+        let p0 = synthetic_ipv4(IP_A, IP_B, b"on-primary-leg-0");
+        assert!(dev_a.send_to_peer(&pk_b, &p0).await);
+        let got0 = tokio::time::timeout(Duration::from_secs(2), rx_b.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(got0, p0);
+        let snap0 = dev_a.peer_multipath_snapshot(&pk_b).unwrap();
+        assert_eq!(snap0.active_tx_leg_id, 0);
+        assert_eq!(snap0.legs[0].tx_packets, 1);
+
+        // 2. Mark primary leg 0 unhealthy: next packet immediately fails over to leg 1 (priority 10).
+        assert!(dev_a.set_multipath_leg_healthy(&pk_b, 0, false));
+        let p1 = synthetic_ipv4(IP_A, IP_B, b"failover-to-leg-1");
+        assert!(dev_a.send_to_peer(&pk_b, &p1).await);
+        let got1 = tokio::time::timeout(Duration::from_secs(2), rx_b.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(got1, p1);
+        let snap1 = dev_a.peer_multipath_snapshot(&pk_b).unwrap();
+        assert_eq!(snap1.active_tx_leg_id, 1);
+        assert_eq!(snap1.failover_switches, 1);
+        assert_eq!(snap1.legs[1].tx_packets, 1);
+        assert!(
+            Arc::ptr_eq(&orig_tunn_a, &dev_a.peers[&pk_b].tunn),
+            "ActiveStandby failover must preserve Tunn session without rekeying"
+        );
+
+        // 3. Mark leg 1 unhealthy too: next packet fails over to leg 2 (priority 20).
+        assert!(dev_a.set_multipath_leg_healthy(&pk_b, 1, false));
+        let p2 = synthetic_ipv4(IP_A, IP_B, b"failover-to-leg-2");
+        assert!(dev_a.send_to_peer(&pk_b, &p2).await);
+        let got2 = tokio::time::timeout(Duration::from_secs(2), rx_b.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(got2, p2);
+        let snap2 = dev_a.peer_multipath_snapshot(&pk_b).unwrap();
+        assert_eq!(snap2.active_tx_leg_id, 2);
+        assert_eq!(snap2.failover_switches, 2);
+        assert_eq!(snap2.legs[2].tx_packets, 1);
+
+        // 4. Restore primary leg 0 health: immediately fails back to leg 0.
+        assert!(dev_a.set_multipath_leg_healthy(&pk_b, 0, true));
+        let p3 = synthetic_ipv4(IP_A, IP_B, b"failback-to-leg-0");
+        assert!(dev_a.send_to_peer(&pk_b, &p3).await);
+        let got3 = tokio::time::timeout(Duration::from_secs(2), rx_b.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(got3, p3);
+        let snap3 = dev_a.peer_multipath_snapshot(&pk_b).unwrap();
+        assert_eq!(snap3.active_tx_leg_id, 0);
+        assert_eq!(snap3.failover_switches, 3);
+
+        // 5. Removing the peer must abort all secondary-leg tasks and break the Arc cycle.
+        drop(orig_tunn_a);
+        let (tunn_ref, mp_ref) = {
+            let p = dev_a.peers.get(&pk_b).unwrap();
+            (p.tunn.clone(), p.multipath.clone())
+        };
+        dev_a.remove_peer(&pk_b).await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(Arc::strong_count(&mp_ref), 1);
+        assert_eq!(Arc::strong_count(&tunn_ref), 1);
+    }
+
+    #[tokio::test]
+    async fn b8_redundant_duplicate_send_survives_single_leg_blackhole_and_deduplicates_both_legs() {
+        use super::super::multipath::{MultipathConfig, MultipathMode};
+
+        let a = WgKeypair::generate();
+        let b = WgKeypair::generate();
+        let (pk_a, pk_b) = (a.public.to_bytes(), b.public.to_bytes());
+
+        let sock_a0 = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let sock_b0 = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let sock_a1 = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let sock_b1 = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+
+        let (addr_a0, addr_b0) = (sock_a0.local_addr().unwrap(), sock_b0.local_addr().unwrap());
+        let (addr_a1, addr_b1) = (sock_a1.local_addr().unwrap(), sock_b1.local_addr().unwrap());
+
+        let (mut dev_a, _rx_a) = WgDevice::new(a.secret.clone());
+        let (mut dev_b, mut rx_b) = WgDevice::new(b.secret.clone());
+
+        let primary_a = Carrier::direct(sock_a0.clone(), addr_b0);
+        dev_a.add_peer(pk_b, IP_B, primary_a.clone(), true);
+        dev_b.add_peer(pk_a, IP_A, Carrier::direct(sock_b0.clone(), addr_a0), false);
+        wait_connected(&dev_a, &pk_b).await;
+
+        assert!(dev_a.add_multipath_leg(
+            &pk_b,
+            1,
+            Carrier::direct(sock_a1.clone(), addr_b1),
+            10,
+            1,
+        ));
+        assert!(dev_b.add_multipath_leg(
+            &pk_a,
+            1,
+            Carrier::direct(sock_b1.clone(), addr_a1),
+            10,
+            1,
+        ));
+        assert!(dev_a.set_peer_multipath_config(
+            &pk_b,
+            MultipathConfig::new(MultipathMode::Redundant),
+        ));
+        assert!(dev_b.set_peer_multipath_config(
+            &pk_a,
+            MultipathConfig::new(MultipathMode::Redundant),
+        ));
+        let leg0_rx_baseline = dev_b.peer_multipath_snapshot(&pk_a).unwrap().legs[0].rx_packets;
+
+        // Send 20 packets duplicated across both leg 0 and leg 1.
+        for seq in 0u32..20 {
+            let pkt = synthetic_ipv4(IP_A, IP_B, &seq.to_be_bytes());
+            assert!(dev_a.send_to_peer(&pk_b, &pkt).await);
+            let got = tokio::time::timeout(Duration::from_secs(2), rx_b.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(got, pkt);
+        }
+        // Let all in-flight second copies settle on the receiver.
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        // Receiver TUN channel must have ZERO duplicate packets queued!
+        assert!(rx_b.try_recv().is_err(), "duplicate copy must never reach TUN");
+
+        let snap_a = dev_a.peer_multipath_snapshot(&pk_b).unwrap();
+        assert_eq!(snap_a.redundant_extra_tx_packets, 20);
+        assert_eq!(snap_a.legs[0].tx_packets, 20);
+        assert_eq!(snap_a.legs[1].tx_packets, 20);
+
+        let snap_b = dev_b.peer_multipath_snapshot(&pk_a).unwrap();
+        assert_eq!(snap_b.dedup_dropped, 20);
+        assert_eq!(snap_b.legs[0].rx_packets - leg0_rx_baseline, 20);
+        assert_eq!(snap_b.legs[1].rx_packets, 20);
+        assert_eq!(
+            snap_b.legs[0].rx_dedup_hits + snap_b.legs[1].rx_dedup_hits,
+            20
+        );
+        // Passive WG counter loss must report 0 lost packets (span == accepted).
+        let (span, accepted) = dev_b.peer_rx_loss(&pk_a).unwrap();
+        assert_eq!(span, accepted);
+
+        // Now silently blackhole leg 0 (without even marking it unhealthy yet):
+        // Redundant mode still delivers 100% of packets immediately over leg 1 with 0 loss!
+        let blackhole = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        primary_a.set_direct_dst(blackhole.local_addr().unwrap());
+        for seq in 20u32..30 {
+            let pkt = synthetic_ipv4(IP_A, IP_B, &seq.to_be_bytes());
+            assert!(dev_a.send_to_peer(&pk_b, &pkt).await);
+            let got = tokio::time::timeout(Duration::from_secs(2), rx_b.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(got, pkt);
+        }
+    }
+
+    #[tokio::test]
+    async fn b8_aggregate_weighted_striping_and_asymmetric_rtt_reorder_buffer_delivers_strict_in_order() {
+        use super::super::multipath::{MultipathConfig, MultipathMode};
+
+        let a = WgKeypair::generate();
+        let b = WgKeypair::generate();
+        let (pk_a, pk_b) = (a.public.to_bytes(), b.public.to_bytes());
+
+        // Leg 0: goes through an in-test delay proxy adding 18 ms latency A -> B.
+        // Leg 1: direct 0 ms loopback socket A -> B.
+        let sock_a0 = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let sock_proxy = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let sock_b0 = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let sock_a1 = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let sock_b1 = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+
+        let addr_a0 = sock_a0.local_addr().unwrap();
+        let addr_proxy = sock_proxy.local_addr().unwrap();
+        let addr_b0 = sock_b0.local_addr().unwrap();
+        let (addr_a1, addr_b1) = (sock_a1.local_addr().unwrap(), sock_b1.local_addr().unwrap());
+
+        // Spawn bidirectional proxy between sock_a0 and sock_b0 that delays A -> B Type-4 data by 18 ms.
+        let proxy_sock = sock_proxy.clone();
+        let proxy_task = tokio::spawn(async move {
+            let mut buf = vec![0u8; 2048];
+            while let Ok((n, src)) = proxy_sock.recv_from(&mut buf).await {
+                let data = buf[..n].to_vec();
+                let ps = proxy_sock.clone();
+                if src == addr_a0 {
+                    let is_type4_data = data.len() > 32 && data[..4] == [4, 0, 0, 0];
+                    tokio::spawn(async move {
+                        if is_type4_data {
+                            tokio::time::sleep(Duration::from_millis(18)).await;
+                        }
+                        let _ = ps.send_to(&data, addr_b0).await;
+                    });
+                } else {
+                    let _ = ps.send_to(&data, addr_a0).await;
+                }
+            }
+        });
+
+        let (mut dev_a, _rx_a) = WgDevice::new(a.secret.clone());
+        let (mut dev_b, mut rx_b) = WgDevice::new(b.secret.clone());
+
+        dev_a.add_peer(pk_b, IP_B, Carrier::direct(sock_a0.clone(), addr_proxy), true);
+        dev_b.add_peer(pk_a, IP_A, Carrier::direct(sock_b0.clone(), addr_proxy), false);
+        wait_connected(&dev_a, &pk_b).await;
+
+        // Attach fast leg 1 with weight = 2 (primary slow leg 0 has weight = 1).
+        assert!(dev_a.add_multipath_leg(
+            &pk_b,
+            1,
+            Carrier::direct(sock_a1.clone(), addr_b1),
+            10,
+            2,
+        ));
+        assert!(dev_b.add_multipath_leg(
+            &pk_a,
+            1,
+            Carrier::direct(sock_b1.clone(), addr_a1),
+            10,
+            2,
+        ));
+        assert!(dev_a.set_peer_multipath_config(
+            &pk_b,
+            MultipathConfig::new(MultipathMode::Aggregate).with_primary_weight(1),
+        ));
+        assert!(dev_b.set_peer_multipath_config(
+            &pk_a,
+            MultipathConfig::new(MultipathMode::Aggregate)
+                .with_max_reorder_depth(64)
+                .with_reorder_hold_timeout(Duration::from_millis(80)),
+        ));
+
+        // Send a burst of 30 packets via `send_ip_batch`.
+        let mut batch = Vec::with_capacity(30);
+        for seq in 0u32..30 {
+            batch.push(synthetic_ipv4(IP_A, IP_B, &seq.to_be_bytes()));
+        }
+        assert_eq!(dev_a.send_ip_batch(&batch).await, 30);
+
+        let mut received = Vec::with_capacity(30);
+        for _ in 0..30 {
+            let p = tokio::time::timeout(Duration::from_secs(2), rx_b.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            received.push(p);
+        }
+        assert_eq!(
+            received, batch,
+            "MultipathReorderBuffer must deliver all 30 packets in strict ascending WG counter order despite 18 ms leg RTT asymmetry"
+        );
+
+        let snap_a = dev_a.peer_multipath_snapshot(&pk_b).unwrap();
+        assert_eq!(snap_a.legs[0].tx_packets, 10);
+        assert_eq!(snap_a.legs[1].tx_packets, 20);
+
+        let snap_b = dev_b.peer_multipath_snapshot(&pk_a).unwrap();
+        assert!(snap_b.reorder_buffered > 0);
+        assert!(snap_b.reorder_reordered_delivered > 0);
+        assert_eq!(snap_b.reorder_current_depth, 0);
+
+        proxy_task.abort();
+    }
+
+    #[tokio::test]
+    async fn b8_aggregate_packet_loss_flushes_parked_tail_after_hold_timeout_without_hanging() {
+        use super::super::multipath::{MultipathConfig, MultipathMode};
+
+        let a = WgKeypair::generate();
+        let b = WgKeypair::generate();
+        let (pk_a, pk_b) = (a.public.to_bytes(), b.public.to_bytes());
+
+        let sock_a0 = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let sock_b0 = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let sock_a1 = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let sock_b1 = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+
+        let (addr_a0, addr_b0) = (sock_a0.local_addr().unwrap(), sock_b0.local_addr().unwrap());
+        let (addr_a1, addr_b1) = (sock_a1.local_addr().unwrap(), sock_b1.local_addr().unwrap());
+
+        let (mut dev_a, _rx_a) = WgDevice::new(a.secret.clone());
+        let (mut dev_b, mut rx_b) = WgDevice::new(b.secret.clone());
+
+        let primary_a = Carrier::direct(sock_a0.clone(), addr_b0);
+        dev_a.add_peer(pk_b, IP_B, primary_a.clone(), true);
+        dev_b.add_peer(pk_a, IP_A, Carrier::direct(sock_b0.clone(), addr_a0), false);
+        wait_connected(&dev_a, &pk_b).await;
+
+        assert!(dev_a.add_multipath_leg(
+            &pk_b,
+            1,
+            Carrier::direct(sock_a1.clone(), addr_b1),
+            10,
+            2,
+        ));
+        assert!(dev_b.add_multipath_leg(
+            &pk_a,
+            1,
+            Carrier::direct(sock_b1.clone(), addr_a1),
+            10,
+            2,
+        ));
+        assert!(dev_a.set_peer_multipath_config(
+            &pk_b,
+            MultipathConfig::new(MultipathMode::Aggregate).with_primary_weight(1),
+        ));
+        assert!(dev_b.set_peer_multipath_config(
+            &pk_a,
+            MultipathConfig::new(MultipathMode::Aggregate)
+                .with_reorder_hold_timeout(Duration::from_millis(30)),
+        ));
+
+        // Blackhole leg 0 so packet #0 (sent on leg 0 by WRR) is LOST, while packets #1 and #2
+        // (sent on leg 1 by WRR) arrive at dev_b and are parked waiting for counter #0.
+        let blackhole = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        primary_a.set_direct_dst(blackhole.local_addr().unwrap());
+
+        let p0 = synthetic_ipv4(IP_A, IP_B, b"lost-0");
+        let p1 = synthetic_ipv4(IP_A, IP_B, b"tail-1");
+        let p2 = synthetic_ipv4(IP_A, IP_B, b"tail-2");
+        assert!(dev_a.send_to_peer(&pk_b, &p0).await);
+        assert!(dev_a.send_to_peer(&pk_b, &p1).await);
+        assert!(dev_a.send_to_peer(&pk_b, &p2).await);
+
+        // No further packets are sent! `spawn_reorder_flush_task` must wake after ~30 ms
+        // and flush `p1` and `p2` in order to `rx_b`.
+        let got1 = tokio::time::timeout(Duration::from_millis(500), rx_b.recv())
+            .await
+            .expect("reorder flush task must deliver p1 after hold_timeout")
+            .unwrap();
+        let got2 = tokio::time::timeout(Duration::from_millis(500), rx_b.recv())
+            .await
+            .expect("reorder flush task must deliver p2 after hold_timeout")
+            .unwrap();
+        assert_eq!(got1, p1);
+        assert_eq!(got2, p2);
+
+        let snap_b = dev_b.peer_multipath_snapshot(&pk_a).unwrap();
+        assert_eq!(snap_b.reorder_timeout_flushed, 2);
+        assert_eq!(snap_b.reorder_current_depth, 0);
     }
 }
