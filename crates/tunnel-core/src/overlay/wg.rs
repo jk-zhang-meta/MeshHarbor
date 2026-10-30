@@ -569,6 +569,7 @@ pub struct PeerStats {
     recovery_hold: Arc<AtomicU64>,
     org_role: AtomicBool,
     sent_inits: std::sync::Mutex<std::collections::VecDeque<[u8; 32]>>,
+    last_init: std::sync::Mutex<Option<Vec<u8>>>,
     follow_init: std::sync::Mutex<Option<([u8; 32], Instant)>>,
     follow_ack: std::sync::Mutex<Option<follow::Frame>>,
     follow_proof: std::sync::Mutex<Option<follow::Frame>>,
@@ -1665,6 +1666,14 @@ impl WgDevice {
         }
     }
 
+    pub fn reassert_probe_plane_src(&self, peer_public: &[u8; 32], src: SocketAddr) {
+        if let (Some(h), Some(p)) = (&self.plane, self.probes.get(peer_public))
+            && let Some(idx) = p.plane_idx
+        {
+            h.reassert_src(idx, src);
+        }
+    }
+
     /// Phase A — EXTRACT + AUTHENTICATE a WireGuard handshake INITIATION with
     /// no per-peer state, returning the initiator's static public key **only if
     /// the init is cryptographically genuine**. Used by the runtime before it
@@ -1986,7 +1995,7 @@ impl WgDevice {
             stats: stats.clone(),
             direct_src: None,
             plane_idx: self.plane.as_ref().map(|_| index),
-            direct_index: None,
+            direct_index: self.plane.is_none().then_some(index),
         };
         if initiate {
             let init_stats = stats.clone();
@@ -3149,11 +3158,18 @@ impl WgDevice {
         self.probes.get(peer_public)?.direct_identity()
     }
 
+    #[cfg(test)]
     pub(crate) fn direct_peer_identity(
         &self,
         peer_public: &[u8; 32],
     ) -> Option<(u32, SocketAddr, SocketAddr)> {
         self.peers.get(peer_public)?.direct_identity()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn peer_session_index(&self, peer_public: &[u8; 32]) -> Option<u32> {
+        let p = self.peers.get(peer_public)?;
+        p.plane_idx.or(p.direct_index)
     }
 
     /// Birthday spray — adopt a spray socket and source onto the EXISTING
@@ -3171,11 +3187,12 @@ impl WgDevice {
             .await
     }
 
-    /// Repoint an EXISTING installed direct peer's endpoint (`sock`, `src`) in
+    /// Repoint an EXISTING installed peer's endpoint (`sock`, `src`) in
     /// place ONLY when `packet` is a HandshakeInit that passes boringtun's
     /// cryptographic and TAI64N anti-replay check on that peer's installed
-    /// `Tunn`. Prevents a replayed or forged unknown-source INIT from tearing
-    /// down an established direct session.
+    /// `Tunn` (whether that peer is currently on a direct or relay carrier).
+    /// Prevents a replayed or forged unknown-source INIT from tearing down an
+    /// established direct or relay session.
     pub(crate) async fn try_repoint_direct_peer_init(
         &mut self,
         peer_public: &[u8; 32],
@@ -3185,6 +3202,48 @@ impl WgDevice {
     ) -> bool {
         self.try_adopt_direct_map_init(false, peer_public, sock, src, packet)
             .await
+    }
+
+    pub(crate) fn has_installed_peer(&self, peer_public: &[u8; 32]) -> bool {
+        self.peers.contains_key(peer_public)
+    }
+
+    /// Note (e) — verify that an inbound `HandshakeInit` is strictly newer than
+    /// the last `HandshakeInit` accepted by the installed peer's `Tunn`
+    /// (`self.peers[peer_public]`), without mutating that `Tunn`. Used when
+    /// `make_before_break` is enabled so a replayed/older `HandshakeInit` cannot
+    /// create or adopt a shadow probe against a relay-carried incumbent.
+    pub(crate) fn init_is_fresh_for_installed_peer(
+        &self,
+        peer_public: &[u8; 32],
+        packet: &[u8],
+    ) -> bool {
+        let Some(last) = self
+            .peers
+            .get(peer_public)
+            .and_then(|p| p.stats.last_init.lock().unwrap_or_else(|e| e.into_inner()).clone())
+        else {
+            return true;
+        };
+        let mut probe = Tunn::new(
+            self.secret.clone(),
+            PublicKey::from(*peer_public),
+            None,
+            None,
+            0,
+            None,
+        );
+        let mut out = [0u8; 256];
+        if !matches!(
+            probe.decapsulate(None, &last, &mut out),
+            TunnResult::WriteToNetwork(_)
+        ) {
+            return true;
+        }
+        matches!(
+            probe.decapsulate(None, packet, &mut out),
+            TunnResult::WriteToNetwork(_)
+        )
     }
 
     async fn try_adopt_direct_map_init(
@@ -3204,7 +3263,7 @@ impl WgDevice {
         let map = if in_probes { &self.probes } else { &self.peers };
         let Some((tunn, stats)) = map
             .get(peer_public)
-            .filter(|p| p.carrier.is_direct())
+            .filter(|p| !in_probes || p.carrier.is_direct())
             .map(|p| (p.tunn.clone(), p.stats.clone()))
         else {
             return false;
@@ -3228,6 +3287,10 @@ impl WgDevice {
         if !authenticated {
             return false;
         }
+        if !in_probes {
+            self.cancel_org_upgrade(peer_public);
+            self.drop_org_floor_receiver(peer_public);
+        }
         self.ensure_direct_demux(sock.clone());
         let map = if in_probes {
             &mut self.probes
@@ -3237,15 +3300,48 @@ impl WgDevice {
         let Some(peer) = map.get_mut(peer_public) else {
             return false;
         };
-        if !peer.carrier.set_direct_endpoint(sock, src) {
-            return false;
-        }
+        let mut send_mirror_update = None;
+        let carrier_weak = if peer.carrier.set_direct_endpoint(sock.clone(), src) {
+            Arc::downgrade(&peer.carrier)
+        } else {
+            if in_probes {
+                return false;
+            }
+            // Relay -> Direct in-place promotion: preserve `peer.tunn` (and its
+            // TAI64N watermark + session index), abort the per-peer relay recv
+            // task + relay timer task, and spawn a direct carrier + timer task.
+            let new_carrier = Carrier::direct(sock, src);
+            let timer_task = Self::spawn_carrier_timer(
+                peer.tunn.clone(),
+                new_carrier.clone(),
+                peer.stats.clone(),
+            );
+            for t in peer.tasks.drain(..) {
+                t.abort();
+            }
+            peer.stats.derp_role.store(false, Ordering::Relaxed);
+            peer.stats.org_role.store(false, Ordering::Relaxed);
+            peer.stats.standby.sink.store(false, Ordering::Relaxed);
+            peer.tasks.push(timer_task);
+            peer.carrier = new_carrier.clone();
+            send_mirror_update = Some((
+                peer.overlay_ip,
+                peer.tunn.clone(),
+                new_carrier.clone(),
+                peer.stats.clone(),
+            ));
+            Arc::downgrade(&new_carrier)
+        };
         let old_src = peer.direct_src.replace(src);
         let plane_idx = peer.plane_idx;
         let direct_index = peer.direct_index;
         let tunn = peer.tunn.clone();
+        if let Some((overlay_ip, tunn_c, carrier_c, stats_c)) = send_mirror_update {
+            self.send_install(*peer_public, overlay_ip, tunn_c, carrier_c, stats_c);
+            self.debug_assert_send_synced();
+        }
         if let (Some(idx), Some(h)) = (plane_idx, &self.plane) {
-            h.reassert_src(idx, src);
+            h.reassert_route_carrier_and_src(idx, carrier_weak, src);
         } else if let Some(demux) = &self.direct {
             {
                 let mut routes = demux.routes.lock().await;
@@ -3261,10 +3357,14 @@ impl WgDevice {
             }
             if let Some(idx) = direct_index {
                 let mut m = demux.index_routes.lock().unwrap_or_else(|e| e.into_inner());
-                if let Some(s) = m.get_mut(&idx) {
-                    s.src = src;
-                    s.last_roam = Some(Instant::now());
-                }
+                m.insert(
+                    idx,
+                    IndexSlot {
+                        src,
+                        carrier: carrier_weak,
+                        last_roam: Some(Instant::now()),
+                    },
+                );
             }
         }
         true
@@ -3930,8 +4030,11 @@ pub(crate) fn decap_inbound(
     let res = t.decapsulate(None, &buf[..n], &mut out);
     let authenticated_init = matches!(&res, TunnResult::WriteToNetwork(p)
         if p.len() == 92 && p[..4] == [2, 0, 0, 0]);
-    if authenticated_init && let Some(digest) = follow::init_digest(&buf[..n]) {
-        *stats.follow_init.lock().unwrap_or_else(|e|e.into_inner()) = Some((digest, Instant::now()));
+    if authenticated_init {
+        *stats.last_init.lock().unwrap_or_else(|e| e.into_inner()) = Some(buf[..n].to_vec());
+        if let Some(digest) = follow::init_digest(&buf[..n]) {
+            *stats.follow_init.lock().unwrap_or_else(|e|e.into_inner()) = Some((digest, Instant::now()));
+        }
     }
     let authenticated = n > 0 && !matches!(res, TunnResult::Err(_));
     // rc.206 — a non-empty inbound datagram that passed WG decapsulation (data, a

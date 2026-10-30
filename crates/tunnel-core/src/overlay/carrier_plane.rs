@@ -1382,6 +1382,24 @@ impl PlaneHandle {
         self.plane.commit_roam(idx, src);
     }
 
+    pub(crate) fn reassert_route_carrier_and_src(
+        &self,
+        idx: u32,
+        carrier: std::sync::Weak<Carrier>,
+        src: SocketAddr,
+    ) {
+        {
+            let mut st = self.plane.lock();
+            if let Some(r) = st.routes.get_mut(&idx)
+                && r.engine == self.id
+            {
+                r.carrier = carrier;
+                r.probing = false;
+            }
+        }
+        self.plane.commit_roam(idx, src);
+    }
+
     /// Process ONE datagram as if it had arrived on a plane socket — the
     /// plane twin of `WgDevice::feed_direct` (the accept path answers the
     /// very initiation that triggered its [`DirectInbound`] immediately
