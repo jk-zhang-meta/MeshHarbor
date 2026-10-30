@@ -2593,7 +2593,7 @@ async fn maybe_mint_line(
             false
         } else {
             match session_zone::check(state, &s).await {
-                session_zone::Decision::Uncertain => return,
+                session_zone::Decision::Uncertain { .. } => return,
                 session_zone::Decision::Fits => true,
                 session_zone::Decision::Invalid => false,
             }
@@ -3260,7 +3260,7 @@ pub async fn maybe_mint(state: &NetworkState, requester: &OverlayNode, peer: &Ov
         } else {
             if !s.hops.is_empty() || crate::business_isolation::mode(state) == crate::business_isolation::Mode::Enforce {
                 match session_zone::check(state, &s).await {
-                    session_zone::Decision::Uncertain => return,
+                    session_zone::Decision::Uncertain { .. } => return,
                     session_zone::Decision::Fits => {},
                     session_zone::Decision::Invalid => {
                         revoke_where(state, "session_region_changed", |current| current.pair_key == pk
@@ -3354,7 +3354,7 @@ pub async fn maybe_mint_fallback(state: &NetworkState, requester: &OverlayNode, 
         && (!session.hops.is_empty() || crate::business_isolation::mode(state) == crate::business_isolation::Mode::Enforce)
     {
         match session_zone::check(state, session).await {
-            session_zone::Decision::Uncertain => return,
+            session_zone::Decision::Uncertain { .. } => return,
             session_zone::Decision::Fits => {},
             session_zone::Decision::Invalid => {
                 revoke_where(state, "session_region_changed", |current| current.pair_key == pk
@@ -3848,8 +3848,10 @@ pub async fn recheck_zones(state: &NetworkState, agent_id: ObjectId, reason: &st
     for s in sessions {
         match session_zone::check(state, &s).await {
             session_zone::Decision::Fits => continue,
-            session_zone::Decision::Uncertain => {
-                all_certain = false;
+            session_zone::Decision::Uncertain { retryable } => {
+                if retryable {
+                    all_certain = false;
+                }
                 continue;
             }
             session_zone::Decision::Invalid => {}

@@ -35,6 +35,21 @@
 //! `warn`, the default, logs what `enforce` would withhold: a server
 //! without zone evidence (no GeoIP database, no trusted proxy chain) would
 //! otherwise cut every business mesh the moment it is deployed.
+//!
+//! Device-role gate (`app.business_unknown_role`: `off` | `warn` | `enforce`,
+//! effective when `app.business_isolation != off`):
+//! - **DB read succeeded, effective role is `Unknown`** (no approved non-expired
+//!   `business_device_roles` record): `warn` logs `"would refuse: unknown_role"`
+//!   and permits client-pair fallback; `enforce` refuses new and existing pairs.
+//! - **`business_device_roles` DB read failed (`roles_read_failed = true`)**:
+//!   cannot distinguish a Server-Server pair (which requires an enabled
+//!   [`ServerLink`](roomler_ai_remote_control::models::ServerLink)) from a
+//!   Client pair. Therefore, whenever `app.business_isolation = enforce` —
+//!   **even if `app.business_unknown_role = warn`** — new admissions
+//!   (`overlay.join` netmap emission, `overlay.relay_request`, `tunnel_open`,
+//!   `forward_request`, `managed_forward` push) are withheld/refused until a
+//!   role-read retry succeeds, while existing in-memory sessions/ACL/forwards
+//!   are preserved without mass teardown.
 
 use std::time::Duration;
 
@@ -310,7 +325,7 @@ pub async fn lines(state: &NetworkState, mode: Mode, tenant_id: ObjectId) -> Lin
     // New admissions fail closed when role reads fail (`approved_roles` is
     // empty), while `roles_read_failed` is exposed so teardown/reconcile
     // paths preserve existing sessions/carriers/DERP tables and retry.
-    let (roles, roles_read_failed) =
+    let (roles, mut roles_read_failed) =
         match roomler_core::business_authority::current_approved_roles(&state.core, tenant_id).await
         {
             Ok(r) => (r, false),
@@ -331,20 +346,20 @@ pub async fn lines(state: &NetworkState, mode: Mode, tenant_id: ObjectId) -> Lin
         roomler_core::business_authority::DeviceKind,
         ObjectId,
     )> = roles.into_keys().collect();
-    let links = state
-        .overlay_networks
-        .find_for_tenant(tenant_id)
-        .await
-        .ok()
-        .flatten()
-        .map(|n| {
-            n.server_links
-                .into_iter()
-                .filter(|l| l.enabled)
-                .map(|l| (l.a, l.b))
-                .collect()
-        })
-        .unwrap_or_default();
+    let links = match state.overlay_networks.find_for_tenant(tenant_id).await {
+        Ok(Some(n)) => n
+            .server_links
+            .into_iter()
+            .filter(|l| l.enabled)
+            .map(|l| (l.a, l.b))
+            .collect(),
+        Ok(None) => std::collections::HashSet::new(),
+        Err(e) => {
+            warn!(%tenant_id, %e, "business isolation: overlay network read failed");
+            roles_read_failed = true;
+            std::collections::HashSet::new()
+        }
+    };
     let lines = if mode == Mode::Enforce {
         crate::org_relay::cross_border_lines_with_roles(
             state,
