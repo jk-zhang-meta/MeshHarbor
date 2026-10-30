@@ -221,6 +221,8 @@ pub struct NetworkState {
     /// routes-only agent read as IDLE and got its WS cycled (tearing every
     /// declared route plus its overlay carriers).
     pub tunnel_sessions_by_origin_agent: Arc<DashMap<ObjectId, HashSet<ObjectId>>>,
+    pub(crate) tunnel_session_parties:
+        Arc<DashMap<ObjectId, (ObjectId, roomler_ai_remote_control::models::NodeRef, ObjectId)>>,
     /// C-5 — directory owner-tokens for LOCAL derp registrations
     /// (`roomler:own:derp:<net>:<pubkey>`); refreshed by the directory
     /// heartbeat while the registry holds the key.
@@ -290,6 +292,7 @@ impl Module for NetworkState {
             tunnel_clients_by_session: Arc::new(DashMap::new()),
             tunnel_sessions_by_target_agent: Arc::new(DashMap::new()),
             tunnel_sessions_by_origin_agent: Arc::new(DashMap::new()),
+            tunnel_session_parties: Arc::new(DashMap::new()),
             derp_presence_tokens: Arc::new(DashMap::new()),
             derp_rehome_cooldowns: Arc::new(DashMap::new()),
             tunnel_clients: Arc::new(TunnelClientDao::new(db)),

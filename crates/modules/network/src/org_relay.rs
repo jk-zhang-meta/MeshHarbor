@@ -746,10 +746,35 @@ impl OrgRelaySession {
             || self.hops.iter().any(|l| l.relay.node_id == node_id)
     }
     fn involves_agent(&self, agent_id: ObjectId) -> bool {
-        let is = |n: &NodeRef| matches!(n, NodeRef::Agent { agent_id: id } if *id == agent_id);
+        self.involves_device(roomler_core::business_authority::DeviceKind::Agent, agent_id)
+    }
+
+    pub(crate) fn involves_device(
+        &self,
+        kind: roomler_core::business_authority::DeviceKind,
+        device_id: ObjectId,
+    ) -> bool {
+        let is = |n: &NodeRef| match (kind, n) {
+            (roomler_core::business_authority::DeviceKind::Agent, NodeRef::Agent { agent_id }) => {
+                *agent_id == device_id
+            }
+            (
+                roomler_core::business_authority::DeviceKind::TunnelClient,
+                NodeRef::TunnelClient { tunnel_client_id },
+            ) => *tunnel_client_id == device_id,
+            _ => false,
+        };
         is(&self.relay.node_ref)
             || self.members.iter().any(|m| is(&m.party.node_ref))
             || self.hops.iter().any(|l| is(&l.relay.node_ref))
+    }
+
+    fn involves_identity(&self, identity_id: ObjectId) -> bool {
+        self.involves_device(roomler_core::business_authority::DeviceKind::Agent, identity_id)
+            || self.involves_device(
+                roomler_core::business_authority::DeviceKind::TunnelClient,
+                identity_id,
+            )
     }
     /// Whether `agent_id` relays this session (either leg of a line).
     fn relayed_by_agent(&self, agent_id: ObjectId) -> bool {
@@ -1529,6 +1554,16 @@ async fn probe_targets_inner(
         }
     }
     let iso_mode = iso::mode(state);
+    let topo = iso::lines(state, iso_mode, tenant_id).await;
+    if !topo.node_role_known(member) {
+        if iso_mode == Mode::Enforce && topo.unknown_role == Mode::Enforce {
+            return Vec::new();
+        }
+        if topo.unknown_role != Mode::Off {
+            let unknown_devices = vec![iso::Lines::node_label(member)];
+            iso::log_unknown_role_with_peers(tenant_id, "probe_targets", &unknown_devices);
+        }
+    }
     let member_zone = if iso_mode != Mode::Off || !servers.is_empty() {
         node_zone(state, member).await
     } else {
@@ -1540,6 +1575,16 @@ async fn probe_targets_inner(
             break;
         }
         let Some(agent_id) = agent.id else { continue };
+        let relay_ref = NodeRef::Agent { agent_id };
+        if !topo.ref_role_known(&relay_ref) {
+            if iso_mode == Mode::Enforce && topo.unknown_role == Mode::Enforce {
+                continue;
+            }
+            if topo.unknown_role != Mode::Off {
+                let unknown_devices = vec![iso::Lines::ref_label(&relay_ref)];
+                iso::log_unknown_role_with_peers(tenant_id, "probe_targets_relay", &unknown_devices);
+            }
+        }
         if !agent.capabilities.has_rpc(RpcCap::RelayServer)
             || !state.fleet.rc_hub.is_agent_online(agent_id)
         {
@@ -1622,6 +1667,23 @@ async fn backbone_probe_targets_inner(
     if !state.org_relay.join_extras(relay_id).relay_backbone_ready {
         return Vec::new();
     }
+    let iso_mode = crate::business_isolation::mode(state);
+    let topo = crate::business_isolation::lines(state, iso_mode, relay.tenant_id).await;
+    if !topo.node_role_known(relay) {
+        if iso_mode == crate::business_isolation::Mode::Enforce
+            && topo.unknown_role == crate::business_isolation::Mode::Enforce
+        {
+            return Vec::new();
+        }
+        if topo.unknown_role != crate::business_isolation::Mode::Off {
+            let unknown_devices = vec![crate::business_isolation::Lines::node_label(relay)];
+            crate::business_isolation::log_unknown_role_with_peers(
+                relay.tenant_id,
+                "backbone_probe_targets",
+                &unknown_devices,
+            );
+        }
+    }
     let Ok(relays) = state
         .fleet
         .agents
@@ -1670,6 +1732,21 @@ async fn backbone_probe_targets_inner(
         let Some(exit_id) = exit_node.id else {
             continue;
         };
+        if !topo.node_role_known(&exit_node) {
+            if iso_mode == crate::business_isolation::Mode::Enforce
+                && topo.unknown_role == crate::business_isolation::Mode::Enforce
+            {
+                continue;
+            }
+            if topo.unknown_role != crate::business_isolation::Mode::Off {
+                let unknown_devices = vec![crate::business_isolation::Lines::node_label(&exit_node)];
+                crate::business_isolation::log_unknown_role_with_peers(
+                    relay.tenant_id,
+                    "backbone_probe_targets_exit",
+                    &unknown_devices,
+                );
+            }
+        }
         if exit_id == relay_id || out.iter().any(|t| t.relay_node_id == exit_id) {
             continue;
         }
@@ -1795,6 +1872,44 @@ async fn plan_mint_candidates_with_trial_diagnostics(
     // the mainland line. Under `warn` both are only logged.
     use crate::business_isolation::{self as iso, Mode};
     let iso_mode = iso::mode(state);
+    let unknown_role_mode = iso::unknown_role_mode(state);
+    let approved_roles = if unknown_role_mode != Mode::Off {
+        match roomler_core::business_authority::current_approved_roles(&state.core, tenant_id).await
+        {
+            Ok(roles) => Some(roles),
+            Err(e) if iso_mode == Mode::Enforce && unknown_role_mode == Mode::Enforce => {
+                warn!(%tenant_id, %e, "org-relay: approved device roles unreadable; refusing");
+                return Err(D::PolicyUnreadable);
+            }
+            Err(_) => None,
+        }
+    } else {
+        None
+    };
+    if let Some(roles) = approved_roles.as_ref() {
+        let req_known = roles.contains_key(&iso::Lines::ref_identity(&requester.node_ref));
+        let peer_known = roles.contains_key(&iso::Lines::ref_identity(&peer.node_ref));
+        if !req_known || !peer_known {
+            let mut unknown_devices = Vec::new();
+            if !req_known {
+                unknown_devices.push(iso::Lines::node_label(requester));
+            }
+            if !peer_known {
+                unknown_devices.push(iso::Lines::node_label(peer));
+            }
+            if iso_mode == Mode::Enforce && unknown_role_mode == Mode::Enforce {
+                warn!(
+                    %tenant_id,
+                    requester = %req_id,
+                    peer = %peer_id,
+                    ?unknown_devices,
+                    "org-relay: refusing: unknown_role"
+                );
+                return Err(D::ZoneDenied);
+            }
+            iso::log_unknown_role_with_peers(tenant_id, "org_relay_pair", &unknown_devices);
+        }
+    }
     // Servers meet by their topology link instead; a linked pair may ride a
     // relay in either server's zone.
     let iso_zones: Vec<BusinessZone> = match (iso_mode, scope) {
@@ -1874,6 +1989,19 @@ async fn plan_mint_candidates_with_trial_diagnostics(
     let mut bad_static = false;
     for agent in relays {
         let Some(agent_id) = agent.id else { continue };
+        if let Some(roles) = approved_roles.as_ref()
+            && !roles.contains_key(&(
+                roomler_core::business_authority::DeviceKind::Agent,
+                agent_id,
+            ))
+        {
+            if iso_mode == Mode::Enforce && unknown_role_mode == Mode::Enforce {
+                zone_denied += 1;
+                continue;
+            }
+            let unknown_devices = vec![format!("agent:{agent_id}:{}", agent.name)];
+            iso::log_unknown_role_with_peers(tenant_id, "org_relay_candidate", &unknown_devices);
+        }
         // Gate 4 as the device last advertised it, and liveness on this pod.
         if !agent.capabilities.has_rpc(RpcCap::RelayServer)
             || !state.fleet.rc_hub.is_agent_online(agent_id)
@@ -2142,8 +2270,43 @@ pub(crate) async fn cross_border_lines(
     let Ok(relays) = state.fleet.agents.list_relay_approved(tenant_id).await else {
         return Vec::new();
     };
+    let unknown_role_mode = crate::business_isolation::unknown_role_mode(state);
+    let approved_roles = if crate::business_isolation::mode(state)
+        == crate::business_isolation::Mode::Enforce
+        && unknown_role_mode != crate::business_isolation::Mode::Off
+    {
+        Some(
+            roomler_core::business_authority::current_approved_roles(&state.core, tenant_id)
+                .await
+                .unwrap_or_default(),
+        )
+    } else {
+        None
+    };
+    let mut unknown_relays = Vec::new();
+    let role_ok = |agent_id: ObjectId, unknown: &mut Vec<String>| -> bool {
+        let Some(approved) = &approved_roles else {
+            return true;
+        };
+        if approved.contains_key(&(
+            roomler_core::business_authority::DeviceKind::Agent,
+            agent_id,
+        )) {
+            true
+        } else {
+            let label = format!("agent:{agent_id}");
+            if !unknown.contains(&label) {
+                unknown.push(label);
+            }
+            unknown_role_mode != crate::business_isolation::Mode::Enforce
+        }
+    };
     let mut out = Vec::new();
     for r in &relays {
+        let Some(r_id) = r.id else { continue };
+        if !role_ok(r_id, &mut unknown_relays) {
+            continue;
+        }
         let mut edges = r
             .peer_relay_policy
             .approved_backbone_edges
@@ -2156,6 +2319,9 @@ pub(crate) async fn cross_border_lines(
         let Some(from) = agent_zone(state, r) else { continue };
         for e in edges {
             let Ok(t) = ObjectId::parse_str(&e.relay_agent_id) else { continue };
+            if !role_ok(t, &mut unknown_relays) {
+                continue;
+            }
             let Some(to) = relays.iter().find(|x| x.id == Some(t)).and_then(|x| agent_zone(state, x))
             else {
                 continue;
@@ -2164,6 +2330,13 @@ pub(crate) async fn cross_border_lines(
                 out.push((from, to));
             }
         }
+    }
+    if unknown_role_mode == crate::business_isolation::Mode::Warn && !unknown_relays.is_empty() {
+        crate::business_isolation::log_unknown_role_with_peers(
+            tenant_id,
+            "cross_border_lines",
+            &unknown_relays,
+        );
     }
     out
 }
@@ -2373,8 +2546,9 @@ async fn maybe_mint_line(
                 "org-relay: multi-hop attempt failed; replanning the two-relay line");
         }
     }
+    let line_epoch = state.org_relay.eligibility_generation();
     match plan_line(state, requester, peer, zones).await {
-        Ok(plan) => mint_line(state, requester, peer, plan, warn_only, charged_relay).await,
+        Ok(plan) => mint_line(state, requester, peer, plan, warn_only, line_epoch, charged_relay).await,
         Err(reason) => {
             info!(%tenant_id, requester = %req_id, peer = %peer_id, ?reason, warn_only,
                 "org-relay: cross-border line refused");
@@ -2396,6 +2570,7 @@ async fn mint_line(
     peer: &OverlayNode,
     plan: LinePlan,
     warn_only: bool,
+    plan_epoch: u64,
     charged_relay: Option<ObjectId>,
 ) {
     let tenant_id = requester.tenant_id;
@@ -2486,15 +2661,28 @@ async fn mint_line(
     candidate_test_support::pause_line_preclaim_if_armed(&pk).await;
     // Share the trial admission lock so no other local claim can take the
     // same remaining capacity between the check and this session's insert.
+    if plan_epoch != state.org_relay.eligibility_generation() {
+        return;
+    }
     let mut delivery = None;
+    let mut epoch_stale = false;
     let current = match trial::claim_mint(&state.org_relay, &mut session, |allocated| {
+        if plan_epoch != state.org_relay.eligibility_generation() {
+            epoch_stale = true;
+            return false;
+        }
         delivery = path_delivery::build(allocated, Instant::now()).ok();
         delivery.is_some()
     }) {
         trial::MintClaim::Existing(existing) => Some(existing),
         trial::MintClaim::Inserted => None,
         trial::MintClaim::Full => { refuse(PeerRelayDenyReason::NoRelay).await; return; }
-        trial::MintClaim::Rejected => { refuse(PeerRelayDenyReason::PolicyUnreadable).await; return; },
+        trial::MintClaim::Rejected => {
+            if !epoch_stale {
+                refuse(PeerRelayDenyReason::PolicyUnreadable).await;
+            }
+            return;
+        }
     };
     if let Some(current) = current {
         if !current.hops.is_empty() {
@@ -3058,7 +3246,7 @@ pub async fn maybe_mint(state: &NetworkState, requester: &OverlayNode, peer: &Ov
         }
     };
     let fence = plan.implicit.then_some(epoch);
-    mint_plan(state, requester, peer, plan, warn_only, fence, charged_relay).await;
+    mint_plan(state, requester, peer, plan, warn_only, epoch, fence, charged_relay).await;
 }
 
 /// Time a re-pushed session needs to bind before the relay's bind deadline:
@@ -3159,18 +3347,20 @@ pub async fn maybe_mint_fallback(state: &NetworkState, requester: &OverlayNode, 
         || crate::overlay::org_fallback_forced_derp(state, &pk) { return; }
     let verdict = verdict.and_then(|plans| plans.into_iter().next().ok_or(PeerRelayDenyReason::NoRelay));
     match verdict {
-        Ok(plan) => mint_plan(state, requester, peer, plan, mode == PeerRelayMode::Warn, Some(epoch), charged_relay).await,
+        Ok(plan) => mint_plan(state, requester, peer, plan, mode == PeerRelayMode::Warn, epoch, Some(epoch), charged_relay).await,
         Err(reason) => audit_mint(state, tenant_id, req_id, peer_id, None, None,
             mode == PeerRelayMode::Warn, Some(reason)).await,
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn mint_plan(
     state: &NetworkState,
     requester: &OverlayNode,
     peer: &OverlayNode,
     plan: Plan,
     warn_only: bool,
+    plan_epoch: u64,
     fallback_epoch: Option<u64>,
     charged_relay: Option<ObjectId>,
 ) {
@@ -3235,11 +3425,17 @@ async fn mint_plan(
         info!(%tenant_id, requester = %req_id, peer = %peer_id, relay = %relay_id, vni, "org-relay [warn]: would mint; pushing nothing");
         return;
     }
+    if plan_epoch != state.org_relay.eligibility_generation() {
+        return;
+    }
     if let Some(epoch) = fallback_epoch
         && (epoch != state.org_relay.eligibility_generation()
             || crate::overlay::org_fallback_forced_derp(state, &pk)) { return; }
     let mut refusal = None;
     let claim = trial::claim_mint(&state.org_relay, &mut session, |_| {
+        if plan_epoch != state.org_relay.eligibility_generation() {
+            return false;
+        }
         if let Some(epoch) = fallback_epoch {
             if epoch != state.org_relay.eligibility_generation()
                 || crate::overlay::org_fallback_forced_derp(state, &pk) { return false; }
@@ -3573,7 +3769,7 @@ pub(crate) async fn recheck_zones(state: &NetworkState, agent_id: ObjectId, reas
         .org_relay
         .sessions
         .iter()
-        .filter(|e| e.involves_agent(agent_id) && (!e.hops.is_empty() || mode != Mode::Off))
+        .filter(|e| e.involves_identity(agent_id) && (!e.hops.is_empty() || mode != Mode::Off))
         .map(|e| e.value().clone())
         .collect();
     for s in sessions {
