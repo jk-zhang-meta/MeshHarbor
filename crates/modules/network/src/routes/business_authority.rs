@@ -95,42 +95,168 @@ pub async fn approve(
     // revokes sessions/grants the new role no longer permits.
     let tenant_id = approval.identity.tenant_id;
     let device_id = approval.identity.device_id;
+    let device_kind = approval.identity.kind;
+    let new_role = approval.role;
     state.org_relay.invalidate_eligibility();
-    if approval.identity.kind == DeviceKind::Agent && approval.role != DeviceUseRole::Server {
-        crate::org_relay::revoke_where(&state, "role_revoked", |s| {
+    let slot = device_reconcile_slot(tenant_id, device_kind, device_id);
+    let my_gen = slot.generation.fetch_add(1, std::sync::atomic::Ordering::AcqRel) + 1;
+    let st = state.clone();
+    // Spawn the post-approval reconcile on the runtime so an HTTP caller that
+    // disconnects mid-request cannot cancel revocation/re-fan, and schedule
+    // bounded retries if any step hits a transient storage read error.
+    let reconcile_handle = tokio::spawn(async move {
+        let ok = {
+            let _guard = slot.lock.lock().await;
+            if slot.generation.load(std::sync::atomic::Ordering::Acquire) != my_gen {
+                return;
+            }
+            apply_immediate_in_memory_revocations(&st, tenant_id, device_kind, device_id, new_role)
+                .await;
+            run_role_change_reconcile(&st, tenant_id, device_id).await
+        };
+        if !ok && slot.generation.load(std::sync::atomic::Ordering::Acquire) == my_gen {
+            let retry_state = st.clone();
+            let retry_slot = slot.clone();
+            tokio::spawn(async move {
+                for delay_ms in [200u64, 500, 1000, 2000] {
+                    tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                    if retry_slot.generation.load(std::sync::atomic::Ordering::Acquire) != my_gen {
+                        return;
+                    }
+                    let _guard = retry_slot.lock.lock().await;
+                    if retry_slot.generation.load(std::sync::atomic::Ordering::Acquire) != my_gen {
+                        return;
+                    }
+                    if run_role_change_reconcile(&retry_state, tenant_id, device_id).await {
+                        tracing::info!(
+                            %tenant_id,
+                            %device_id,
+                            "business authority: post-approval reconcile succeeded on retry"
+                        );
+                        return;
+                    }
+                }
+                tracing::error!(
+                    %tenant_id,
+                    %device_id,
+                    "business authority: post-approval reconcile exhausted retries"
+                );
+            });
+        }
+    });
+    let _ = reconcile_handle.await;
+    Ok(Json(approval))
+}
+
+struct DeviceReconcileSlot {
+    generation: std::sync::atomic::AtomicU64,
+    lock: tokio::sync::Mutex<()>,
+}
+
+static DEVICE_RECONCILE_SLOTS: std::sync::LazyLock<
+    dashmap::DashMap<(ObjectId, DeviceKind, ObjectId), std::sync::Arc<DeviceReconcileSlot>>,
+> = std::sync::LazyLock::new(dashmap::DashMap::new);
+
+fn device_reconcile_slot(
+    tenant_id: ObjectId,
+    device_kind: DeviceKind,
+    device_id: ObjectId,
+) -> std::sync::Arc<DeviceReconcileSlot> {
+    DEVICE_RECONCILE_SLOTS
+        .entry((tenant_id, device_kind, device_id))
+        .or_insert_with(|| {
+            std::sync::Arc::new(DeviceReconcileSlot {
+                generation: std::sync::atomic::AtomicU64::new(0),
+                lock: tokio::sync::Mutex::new(()),
+            })
+        })
+        .clone()
+}
+
+async fn apply_immediate_in_memory_revocations(
+    state: &NetworkState,
+    tenant_id: ObjectId,
+    device_kind: DeviceKind,
+    device_id: ObjectId,
+    new_role: DeviceUseRole,
+) {
+    state.org_relay.invalidate_eligibility();
+    if device_kind == DeviceKind::Agent && new_role != DeviceUseRole::Server {
+        crate::org_relay::revoke_where(state, "role_revoked", |s| {
             s.implicit && s.relay_agent_id == device_id
         })
         .await;
     }
-    if approval.role == DeviceUseRole::Unknown
-        && crate::business_isolation::mode(&state) == crate::business_isolation::Mode::Enforce
-        && crate::business_isolation::unknown_role_mode(&state)
+    if new_role == DeviceUseRole::Unknown
+        && crate::business_isolation::mode(state) == crate::business_isolation::Mode::Enforce
+        && crate::business_isolation::unknown_role_mode(state)
             == crate::business_isolation::Mode::Enforce
     {
-        crate::org_relay::revoke_where(&state, "role_revoked", |s| {
-            s.tenant_id == tenant_id && s.involves_device(approval.identity.kind, device_id)
+        crate::org_relay::revoke_where(state, "role_revoked", |s| {
+            s.tenant_id == tenant_id && s.involves_device(device_kind, device_id)
         })
         .await;
     }
-    crate::tunnel::reconcile_tunnel_sessions(&state, tenant_id).await;
-    crate::managed_forward::reconcile_tenant_forwards(&state, tenant_id).await;
-    if let Ok(Some(net)) = state.overlay_networks.find_for_tenant(tenant_id).await
+}
+
+async fn run_role_change_reconcile(
+    state: &NetworkState,
+    tenant_id: ObjectId,
+    device_id: ObjectId,
+) -> bool {
+    state.org_relay.invalidate_eligibility();
+    let mut ok = true;
+    // 1. Fast security-critical gates first (relay zones/ACL, DERP allow table,
+    //    center-brokered tunnel sessions, managed forwards).
+    if !crate::org_relay::recheck_zones(state, device_id, "role_changed").await {
+        ok = false;
+    }
+    if !crate::org_relay::reconcile_acl(state, tenant_id).await {
+        ok = false;
+    }
+    let network_opt = match state.overlay_networks.find_for_tenant(tenant_id).await {
+        Ok(n) => n,
+        Err(e) => {
+            tracing::warn!(%tenant_id, %e, "business authority: overlay network lookup failed during reconcile");
+            ok = false;
+            None
+        }
+    };
+    if let Some(ref net) = network_opt
+        && let Some(network_id) = net.id
+        && !crate::derp_acl::rebuild(state, tenant_id, network_id).await
+    {
+        ok = false;
+    }
+    if !crate::tunnel::reconcile_tunnel_sessions(state, tenant_id).await {
+        ok = false;
+    }
+    if !crate::managed_forward::reconcile_tenant_forwards(state, tenant_id).await {
+        ok = false;
+    }
+    // 2. O(N^2) overlay netmap re-fan across active nodes.
+    if let Some(net) = network_opt
         && let Some(network_id) = net.id
     {
-        if let Ok(nodes) = state
+        match state
             .overlay_nodes
             .list_active_in_network(tenant_id, network_id)
             .await
         {
-            for node in &nodes {
-                crate::overlay::refan_node(&state, node).await;
+            Ok(nodes) => {
+                for node in &nodes {
+                    if !crate::overlay::refan_node(state, node).await {
+                        ok = false;
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!(%tenant_id, %e, "business authority: active node list failed during reconcile");
+                ok = false;
             }
         }
-        crate::derp_acl::rebuild(&state, tenant_id, network_id).await;
     }
-    crate::org_relay::recheck_zones(&state, device_id, "role_changed").await;
-    crate::org_relay::reconcile_acl(&state, tenant_id).await;
-    Ok(Json(approval))
+    ok
 }
 
 #[cfg(test)]

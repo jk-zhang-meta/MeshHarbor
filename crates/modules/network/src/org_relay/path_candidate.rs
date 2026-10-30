@@ -107,15 +107,15 @@ pub(super) async fn prepare_reusing(
     use crate::business_isolation::{self as iso, Mode};
     let enforce_zone = iso::mode(state) == Mode::Enforce;
     let unknown_role_mode = iso::unknown_role_mode(state);
-    if unknown_role_mode != Mode::Off {
+    if enforce_zone || unknown_role_mode != Mode::Off {
         let roles = match roomler_core::business_authority::current_approved_roles(
             &state.core,
             requester.tenant_id,
         )
         .await
         {
-            Ok(roles) => Some(roles),
-            Err(_) if enforce_zone && unknown_role_mode == Mode::Enforce => {
+            Ok(roles) => (unknown_role_mode != Mode::Off).then_some(roles),
+            Err(_) if enforce_zone => {
                 return Err(Deny::PolicyUnreadable);
             }
             Err(_) => None,

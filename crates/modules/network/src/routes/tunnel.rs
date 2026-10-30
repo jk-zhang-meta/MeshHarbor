@@ -226,12 +226,15 @@ pub async fn list_tenant_agents(
         tunnel_client_id: client_id,
     };
     let page = state.fleet.agents.list_for_tenant(tid, &params).await?;
+    let iso = crate::business_isolation::mode(&state);
+    let topo = crate::business_isolation::lines(&state, iso, tid).await;
     let mut agents = Vec::with_capacity(page.items.len());
     for a in page.items {
         let Some(agent_id) = a.id else { continue };
         let agent_ref = roomler_ai_remote_control::models::NodeRef::Agent { agent_id };
-        if crate::business_isolation::refuses_parties(
+        if crate::business_isolation::refuses_parties_with_lines(
             &state,
+            &topo,
             (tid, &client_ref),
             (tid, &agent_ref),
             "tunnel_roster",

@@ -222,7 +222,7 @@ pub struct NetworkState {
     /// declared route plus its overlay carriers).
     pub tunnel_sessions_by_origin_agent: Arc<DashMap<ObjectId, HashSet<ObjectId>>>,
     pub(crate) tunnel_session_parties:
-        Arc<DashMap<ObjectId, (ObjectId, roomler_ai_remote_control::models::NodeRef, ObjectId)>>,
+        Arc<DashMap<ObjectId, (ObjectId, roomler_ai_remote_control::models::NodeRef, ObjectId, u64)>>,
     /// C-5 — directory owner-tokens for LOCAL derp registrations
     /// (`roomler:own:derp:<net>:<pubkey>`); refreshed by the directory
     /// heartbeat while the registry holds the key.

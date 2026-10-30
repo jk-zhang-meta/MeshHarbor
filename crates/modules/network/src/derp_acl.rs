@@ -158,7 +158,7 @@ fn pubkey_of(node: &OverlayNode) -> Option<DerpPubKey> {
 /// gate at all). O(N²) over the network's nodes, but it runs only on policy
 /// changes and joins — never per datagram, and never on an endpoint trickle,
 /// which cannot change an ACL decision.
-pub async fn rebuild(state: &NetworkState, tenant_id: ObjectId, network_id: ObjectId) {
+pub async fn rebuild(state: &NetworkState, tenant_id: ObjectId, network_id: ObjectId) -> bool {
     let acl = super::overlay::load_acl(state, tenant_id).await;
     let isolating =
         super::business_isolation::mode(state) == super::business_isolation::Mode::Enforce;
@@ -166,7 +166,7 @@ pub async fn rebuild(state: &NetworkState, tenant_id: ObjectId, network_id: Obje
     // dropping the entry keeps a disabled tenant's memory at zero.
     if !acl.gating() && !isolating {
         state.derp_acl.remove(&network_id);
-        return;
+        return true;
     }
     let nodes = match state
         .overlay_nodes
@@ -178,7 +178,7 @@ pub async fn rebuild(state: &NetworkState, tenant_id: ObjectId, network_id: Obje
             // Keep the PREVIOUS table rather than dropping to fail-open on a
             // transient Mongo blip.
             tracing::error!(%tenant_id, %e, "derp acl: node list failed; keeping the previous table");
-            return;
+            return false;
         }
     };
 
@@ -244,6 +244,14 @@ pub async fn rebuild(state: &NetworkState, tenant_id: ObjectId, network_id: Obje
             tenant_id,
         )
         .await;
+        if topo.roles_read_failed {
+            tracing::error!(
+                %tenant_id,
+                %network_id,
+                "derp acl: role approval read failed; keeping the previous table"
+            );
+            return false;
+        }
         all_keyed = nodes
             .iter()
             .filter_map(|n| Some((n, pubkey_of(n)?)))
@@ -316,6 +324,7 @@ pub async fn rebuild(state: &NetworkState, tenant_id: ObjectId, network_id: Obje
         "derp acl: allow table rebuilt"
     );
     state.derp_acl.insert(network_id, table);
+    true
 }
 
 #[cfg(test)]

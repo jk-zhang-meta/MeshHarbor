@@ -202,30 +202,125 @@ pub async fn delete(
     Ok(Json(serde_json::json!({ "removed": true })))
 }
 
+struct LinkReconcileSlot {
+    generation: std::sync::atomic::AtomicU64,
+    lock: tokio::sync::Mutex<()>,
+}
+
+static LINK_RECONCILE_SLOTS: std::sync::LazyLock<
+    dashmap::DashMap<(ObjectId, ObjectId, ObjectId), std::sync::Arc<LinkReconcileSlot>>,
+> = std::sync::LazyLock::new(dashmap::DashMap::new);
+
+fn link_reconcile_slot(
+    tenant_id: ObjectId,
+    agents: [ObjectId; 2],
+) -> std::sync::Arc<LinkReconcileSlot> {
+    let (a, b) = if agents[0] <= agents[1] {
+        (agents[0], agents[1])
+    } else {
+        (agents[1], agents[0])
+    };
+    LINK_RECONCILE_SLOTS
+        .entry((tenant_id, a, b))
+        .or_insert_with(|| {
+            std::sync::Arc::new(LinkReconcileSlot {
+                generation: std::sync::atomic::AtomicU64::new(0),
+                lock: tokio::sync::Mutex::new(()),
+            })
+        })
+        .clone()
+}
+
 /// Make an edit take effect now: both servers re-fanned (every peer's view of
 /// them, and theirs of every peer), the DERP allow table rebuilt, and the
-/// sessions either takes part in re-judged.
+/// sessions either takes part in re-judged. Spawns bounded retries if any step
+/// hits a transient storage read failure.
 async fn apply(state: &NetworkState, tenant_id: ObjectId, agents: [ObjectId; 2]) {
+    state.org_relay.invalidate_eligibility();
+    let slot = link_reconcile_slot(tenant_id, agents);
+    let my_gen = slot.generation.fetch_add(1, std::sync::atomic::Ordering::AcqRel) + 1;
+    let st = state.clone();
+    let handle = tokio::spawn(async move {
+        let ok = {
+            let _guard = slot.lock.lock().await;
+            if slot.generation.load(std::sync::atomic::Ordering::Acquire) != my_gen {
+                return;
+            }
+            apply_once(&st, tenant_id, agents).await
+        };
+        if !ok && slot.generation.load(std::sync::atomic::Ordering::Acquire) == my_gen {
+            let retry_state = st.clone();
+            let retry_slot = slot.clone();
+            tokio::spawn(async move {
+                for delay_ms in [200u64, 500, 1000, 2000] {
+                    tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                    if retry_slot.generation.load(std::sync::atomic::Ordering::Acquire) != my_gen {
+                        return;
+                    }
+                    let _guard = retry_slot.lock.lock().await;
+                    if retry_slot.generation.load(std::sync::atomic::Ordering::Acquire) != my_gen {
+                        return;
+                    }
+                    if apply_once(&retry_state, tenant_id, agents).await {
+                        tracing::info!(
+                            %tenant_id,
+                            ?agents,
+                            "server link: reconcile succeeded on retry"
+                        );
+                        return;
+                    }
+                }
+                tracing::error!(
+                    %tenant_id,
+                    ?agents,
+                    "server link: reconcile exhausted retries"
+                );
+            });
+        }
+    });
+    let _ = handle.await;
+}
+
+async fn apply_once(state: &NetworkState, tenant_id: ObjectId, agents: [ObjectId; 2]) -> bool {
+    state.org_relay.invalidate_eligibility();
     let Ok(network) = state.overlay_networks.get_or_create(tenant_id).await else {
-        return;
+        return false;
     };
-    let Some(network_id) = network.id else { return };
+    let Some(network_id) = network.id else {
+        return false;
+    };
+    let mut ok = true;
+    if !crate::derp_acl::rebuild(state, tenant_id, network_id).await {
+        ok = false;
+    }
+    if !crate::tunnel::reconcile_tunnel_sessions(state, tenant_id).await {
+        ok = false;
+    }
+    if !crate::managed_forward::reconcile_tenant_forwards(state, tenant_id).await {
+        ok = false;
+    }
     for agent_id in agents {
-        if let Ok(agent) = state
-            .fleet
-            .agents
-            .find_live_in_tenant(tenant_id, agent_id)
-            .await
-            && let Ok(Some(node)) = state
+        if !crate::org_relay::recheck_zones(state, agent_id, "server_link_changed").await {
+            ok = false;
+        }
+    }
+    for agent_id in agents {
+        match state.fleet.agents.find_live_in_tenant(tenant_id, agent_id).await {
+            Ok(agent) => match state
                 .overlay_nodes
                 .find_live_by_tenant_and_machine(tenant_id, &agent.machine_id)
                 .await
-        {
-            crate::overlay::refan_node(state, &node).await;
+            {
+                Ok(Some(node)) => {
+                    if !crate::overlay::refan_node(state, &node).await {
+                        ok = false;
+                    }
+                }
+                Ok(None) => {}
+                Err(_) => ok = false,
+            },
+            Err(_) => ok = false,
         }
     }
-    crate::derp_acl::rebuild(state, tenant_id, network_id).await;
-    for agent_id in agents {
-        crate::org_relay::recheck_zones(state, agent_id, "server_link_changed").await;
-    }
+    ok
 }

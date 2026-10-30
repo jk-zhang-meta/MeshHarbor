@@ -934,7 +934,7 @@ impl OrgRelayState {
     pub(crate) fn invalidate_eligibility(&self) {
         self.eligibility_epoch.fetch_add(1, Ordering::AcqRel);
     }
-    fn eligibility_generation(&self) -> u64 {
+    pub(crate) fn eligibility_generation(&self) -> u64 {
         self.eligibility_epoch.load(Ordering::Acquire)
     }
 
@@ -1504,8 +1504,9 @@ const MAX_PROBE_TARGETS: usize = 16;
 pub(crate) async fn probe_targets(
     state: &NetworkState,
     member: &OverlayNode,
+    preloaded_lines: Option<&crate::business_isolation::Lines>,
 ) -> Vec<RelayProbeTargetWire> {
-    let targets = probe_targets_inner(state, member).await;
+    let targets = probe_targets_inner(state, member, preloaded_lines).await;
     if let Some(id) = member.id {
         state.org_relay.offer_probes(id, &targets);
     }
@@ -1515,6 +1516,7 @@ pub(crate) async fn probe_targets(
 async fn probe_targets_inner(
     state: &NetworkState,
     member: &OverlayNode,
+    preloaded_lines: Option<&crate::business_isolation::Lines>,
 ) -> Vec<RelayProbeTargetWire> {
     use crate::business_isolation::{self as iso, Mode};
     let tenant_id = member.tenant_id;
@@ -1554,7 +1556,17 @@ async fn probe_targets_inner(
         }
     }
     let iso_mode = iso::mode(state);
-    let topo = iso::lines(state, iso_mode, tenant_id).await;
+    let owned_topo;
+    let topo = match preloaded_lines {
+        Some(l) => l,
+        None => {
+            owned_topo = iso::lines(state, iso_mode, tenant_id).await;
+            &owned_topo
+        }
+    };
+    if iso_mode == Mode::Enforce && topo.roles_read_failed {
+        return Vec::new();
+    }
     if !topo.node_role_known(member) {
         if iso_mode == Mode::Enforce && topo.unknown_role == Mode::Enforce {
             return Vec::new();
@@ -1649,8 +1661,9 @@ async fn probe_targets_inner(
 pub(crate) async fn backbone_probe_targets(
     state: &NetworkState,
     relay: &OverlayNode,
+    preloaded_lines: Option<&crate::business_isolation::Lines>,
 ) -> Vec<RelayProbeTargetWire> {
-    let targets = backbone_probe_targets_inner(state, relay).await;
+    let targets = backbone_probe_targets_inner(state, relay, preloaded_lines).await;
     if let Some(id) = relay.id {
         state.org_relay.offer_backbone_probes(id, &targets);
     }
@@ -1660,6 +1673,7 @@ pub(crate) async fn backbone_probe_targets(
 async fn backbone_probe_targets_inner(
     state: &NetworkState,
     relay: &OverlayNode,
+    preloaded_lines: Option<&crate::business_isolation::Lines>,
 ) -> Vec<RelayProbeTargetWire> {
     let Some(relay_id) = relay.id else {
         return Vec::new();
@@ -1668,7 +1682,17 @@ async fn backbone_probe_targets_inner(
         return Vec::new();
     }
     let iso_mode = crate::business_isolation::mode(state);
-    let topo = crate::business_isolation::lines(state, iso_mode, relay.tenant_id).await;
+    let owned_topo;
+    let topo = match preloaded_lines {
+        Some(l) => l,
+        None => {
+            owned_topo = crate::business_isolation::lines(state, iso_mode, relay.tenant_id).await;
+            &owned_topo
+        }
+    };
+    if iso_mode == crate::business_isolation::Mode::Enforce && topo.roles_read_failed {
+        return Vec::new();
+    }
     if !topo.node_role_known(relay) {
         if iso_mode == crate::business_isolation::Mode::Enforce
             && topo.unknown_role == crate::business_isolation::Mode::Enforce
@@ -1873,11 +1897,11 @@ async fn plan_mint_candidates_with_trial_diagnostics(
     use crate::business_isolation::{self as iso, Mode};
     let iso_mode = iso::mode(state);
     let unknown_role_mode = iso::unknown_role_mode(state);
-    let approved_roles = if unknown_role_mode != Mode::Off {
+    let approved_roles = if iso_mode == Mode::Enforce || unknown_role_mode != Mode::Off {
         match roomler_core::business_authority::current_approved_roles(&state.core, tenant_id).await
         {
-            Ok(roles) => Some(roles),
-            Err(e) if iso_mode == Mode::Enforce && unknown_role_mode == Mode::Enforce => {
+            Ok(roles) => (unknown_role_mode != Mode::Off).then_some(roles),
+            Err(e) if iso_mode == Mode::Enforce => {
                 warn!(%tenant_id, %e, "org-relay: approved device roles unreadable; refusing");
                 return Err(D::PolicyUnreadable);
             }
@@ -2267,28 +2291,78 @@ pub(crate) async fn cross_border_lines(
     state: &NetworkState,
     tenant_id: ObjectId,
 ) -> Vec<(BusinessZone, BusinessZone)> {
+    cross_border_lines_with_roles(state, tenant_id, None).await
+}
+
+pub(crate) type PreloadedRoles<'a> = (
+    &'a std::collections::HashSet<(roomler_core::business_authority::DeviceKind, ObjectId)>,
+    crate::business_isolation::Mode,
+    bool,
+);
+
+pub(crate) async fn cross_border_lines_with_roles(
+    state: &NetworkState,
+    tenant_id: ObjectId,
+    preloaded_roles: Option<PreloadedRoles<'_>>,
+) -> Vec<(BusinessZone, BusinessZone)> {
     let Ok(relays) = state.fleet.agents.list_relay_approved(tenant_id).await else {
         return Vec::new();
     };
-    let unknown_role_mode = crate::business_isolation::unknown_role_mode(state);
-    let approved_roles = if crate::business_isolation::mode(state)
-        == crate::business_isolation::Mode::Enforce
-        && unknown_role_mode != crate::business_isolation::Mode::Off
-    {
-        Some(
-            roomler_core::business_authority::current_approved_roles(&state.core, tenant_id)
+    let owned_roles: std::collections::HashSet<(
+        roomler_core::business_authority::DeviceKind,
+        ObjectId,
+    )>;
+    let (approved_roles, unknown_role_mode, roles_read_failed) = match preloaded_roles {
+        Some((set, mode, failed)) => {
+            if crate::business_isolation::mode(state) == crate::business_isolation::Mode::Enforce {
+                (
+                    (mode != crate::business_isolation::Mode::Off).then_some(set),
+                    mode,
+                    failed,
+                )
+            } else {
+                (None, mode, false)
+            }
+        }
+        None => {
+            let mode = crate::business_isolation::unknown_role_mode(state);
+            if crate::business_isolation::mode(state) == crate::business_isolation::Mode::Enforce
+                && mode != crate::business_isolation::Mode::Off
+            {
+                match roomler_core::business_authority::current_approved_roles(
+                    &state.core,
+                    tenant_id,
+                )
                 .await
-                .unwrap_or_default(),
-        )
-    } else {
-        None
+                {
+                    Ok(map) => {
+                        owned_roles = map.into_keys().collect();
+                        (Some(&owned_roles), mode, false)
+                    }
+                    Err(_) => {
+                        owned_roles = std::collections::HashSet::new();
+                        (Some(&owned_roles), mode, true)
+                    }
+                }
+            } else {
+                (None, mode, false)
+            }
+        }
     };
+    if roles_read_failed
+        && crate::business_isolation::mode(state) == crate::business_isolation::Mode::Enforce
+    {
+        return Vec::new();
+    }
     let mut unknown_relays = Vec::new();
     let role_ok = |agent_id: ObjectId, unknown: &mut Vec<String>| -> bool {
-        let Some(approved) = &approved_roles else {
+        let Some(approved) = approved_roles else {
             return true;
         };
-        if approved.contains_key(&(
+        if roles_read_failed && unknown_role_mode != crate::business_isolation::Mode::Enforce {
+            return true;
+        }
+        if approved.contains(&(
             roomler_core::business_authority::DeviceKind::Agent,
             agent_id,
         )) {
@@ -2661,9 +2735,9 @@ async fn mint_line(
     candidate_test_support::pause_line_preclaim_if_armed(&pk).await;
     // Share the trial admission lock so no other local claim can take the
     // same remaining capacity between the check and this session's insert.
-    if plan_epoch != state.org_relay.eligibility_generation() {
-        return;
-    }
+    // Note: `plan_epoch` is checked inside the `claim_mint` closure so that if
+    // a concurrent N-hop trial won the pair while we were paused, `claim_mint`
+    // still returns `MintClaim::Existing` and runs `reauthorize_concurrent_winner`.
     let mut delivery = None;
     let mut epoch_stale = false;
     let current = match trial::claim_mint(&state.org_relay, &mut session, |allocated| {
@@ -3425,9 +3499,6 @@ async fn mint_plan(
         info!(%tenant_id, requester = %req_id, peer = %peer_id, relay = %relay_id, vni, "org-relay [warn]: would mint; pushing nothing");
         return;
     }
-    if plan_epoch != state.org_relay.eligibility_generation() {
-        return;
-    }
     if let Some(epoch) = fallback_epoch
         && (epoch != state.org_relay.eligibility_generation()
             || crate::overlay::org_fallback_forced_derp(state, &pk)) { return; }
@@ -3762,8 +3833,9 @@ pub async fn connection_ended(state: &NetworkState, agent_id: ObjectId, reason: 
 /// [`connection_ended`] once more after [`LINE_RECONNECT_GRACE`]). Lines
 /// always; every other session only under #21 `enforce`, where it was minted
 /// on one shared zone (under `warn` the refusal is logged).
-pub(crate) async fn recheck_zones(state: &NetworkState, agent_id: ObjectId, reason: &str) {
+pub async fn recheck_zones(state: &NetworkState, agent_id: ObjectId, reason: &str) -> bool {
     use crate::business_isolation::{self as iso, Mode};
+    state.org_relay.invalidate_eligibility();
     let mode = iso::mode(state);
     let sessions: Vec<OrgRelaySession> = state
         .org_relay
@@ -3772,9 +3844,15 @@ pub(crate) async fn recheck_zones(state: &NetworkState, agent_id: ObjectId, reas
         .filter(|e| e.involves_identity(agent_id) && (!e.hops.is_empty() || mode != Mode::Off))
         .map(|e| e.value().clone())
         .collect();
+    let mut all_certain = true;
     for s in sessions {
-        if session_zone::check(state, &s).await != session_zone::Decision::Invalid {
-            continue;
+        match session_zone::check(state, &s).await {
+            session_zone::Decision::Fits => continue,
+            session_zone::Decision::Uncertain => {
+                all_certain = false;
+                continue;
+            }
+            session_zone::Decision::Invalid => {}
         }
         if s.hops.is_empty() && mode != Mode::Enforce {
             info!(pair = %s.pair_key, vni = s.vni, reason,
@@ -3787,6 +3865,7 @@ pub(crate) async fn recheck_zones(state: &NetworkState, agent_id: ObjectId, reas
         .await;
     }
     recheck_trial_zones(state, agent_id, reason).await;
+    all_certain
 }
 
 /// Backbone trials need the same live relay-zone evidence in every isolation
@@ -3959,13 +4038,13 @@ pub async fn revoke_node(state: &NetworkState, node_id: ObjectId, reason: &str) 
 /// A read failure here does NOTHING, deliberately. Refusing a NEW mint on a
 /// blip costs one session; tearing down every LIVE session on a blip is the
 /// "spurious deny takes the mesh down" failure `load_acl` fails open to avoid.
-pub async fn reconcile_acl(state: &NetworkState, tenant_id: ObjectId) {
+pub async fn reconcile_acl(state: &NetworkState, tenant_id: ObjectId) -> bool {
     state.org_relay.invalidate_eligibility();
     let acl = match try_load_acl(state, tenant_id, PolicyLoad::Always).await {
         Ok(a) => a,
         Err(e) => {
             warn!(%tenant_id, %e, "org-relay: policies unreadable during reconcile; leaving sessions as they are");
-            return;
+            return false;
         }
     };
     let mut live: Vec<OrgRelaySession> = state
@@ -4015,6 +4094,7 @@ pub async fn reconcile_acl(state: &NetworkState, tenant_id: ObjectId) {
             revoke_where(state, "acl_revoked", |x| x.pair_key == pk).await;
         }
     }
+    true
 }
 
 /// `rc:overlay.relay_probe` — a member's own measurement toward a relay the
