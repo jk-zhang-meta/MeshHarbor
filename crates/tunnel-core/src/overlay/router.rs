@@ -394,10 +394,53 @@ impl Router {
     }
 
     /// B5 — update `pubkey`'s health tier for Subnet-Router HA election and
-    /// reconcile sticky active subnet owners.
-    pub fn set_peer_health(&mut self, pubkey: [u8; 32], health: RouterHealth) {
-        self.peer_health.insert(pubkey, health);
-        self.reconcile_active_subnets();
+    /// reconcile sticky active subnet owners only when `pubkey`'s health tier
+    /// actually changed and `pubkey` participates in a multi-claimant HA subnet
+    /// (`>= 2` claimants). Returns `true` iff `peer_health` changed.
+    pub fn set_peer_health(&mut self, pubkey: [u8; 32], health: RouterHealth) -> bool {
+        let prev = self.peer_health.insert(pubkey, health).unwrap_or_default();
+        if prev == health {
+            return false;
+        }
+        if self.peer_has_ha_subnet(&pubkey) {
+            self.reconcile_active_subnets();
+        }
+        true
+    }
+
+    /// B5 — whether `pubkey` claims at least one CIDR that is also claimed by
+    /// another peer (`>= 2` claimants). Non-HA peers and single-claimant subnet
+    /// routers return `false`, skipping HA active-subnet reconciliation.
+    fn peer_has_ha_subnet(&self, pubkey: &[u8; 32]) -> bool {
+        self.subnets
+            .iter()
+            .filter(|(_, pk)| pk == pubkey)
+            .any(|(cidr, _)| {
+                self.subnets
+                    .iter()
+                    .any(|(other_cidr, other_pk)| other_cidr == cidr && other_pk != pubkey)
+            })
+    }
+
+    /// B5 — return all other peer pubkeys that share at least one subnet claim
+    /// with `pubkey` or with `extra_cidrs`. Empty (zero allocations) for
+    /// non-HA peers.
+    pub fn ha_co_claimants(&self, pubkey: &[u8; 32], extra_cidrs: &[Cidr]) -> Vec<[u8; 32]> {
+        let mut out = Vec::new();
+        for (c, pk) in &self.subnets {
+            if pk == pubkey {
+                continue;
+            }
+            let shared = extra_cidrs.contains(c)
+                || self
+                    .subnets
+                    .iter()
+                    .any(|(own_c, own_pk)| own_pk == pubkey && own_c == c);
+            if shared && !out.contains(pk) {
+                out.push(*pk);
+            }
+        }
+        out
     }
 
     /// B5 — current recorded health tier of `pubkey` (`Unproven` if not set).
@@ -413,13 +456,66 @@ impl Router {
     }
 
     /// B5 — the currently pinned sticky active owner for `cidr`, if any.
+    ///
+    /// For a single-claimant subnet (not an HA pair), returns that sole claimant
+    /// iff its recorded health tier is healthy.
     pub fn active_subnet_owner(&self, cidr: &Cidr) -> Option<[u8; 32]> {
-        self.active_subnets
-            .0
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(cidr)
-            .copied()
+        self.active_subnet_owner_with_live(cidr, |pk| self.peer_health(pk))
+    }
+
+    /// B5 — the currently pinned sticky active owner for `cidr`, evaluated
+    /// against `live_health` so asynchronous `Carrier::is_dead()` or
+    /// `handshake_done` transitions take effect immediately.
+    pub fn active_subnet_owner_with_live(
+        &self,
+        cidr: &Cidr,
+        live_health: impl Fn(&[u8; 32]) -> RouterHealth,
+    ) -> Option<[u8; 32]> {
+        let mut first = None;
+        let mut count = 0usize;
+        for (c, pk) in &self.subnets {
+            if c == cidr {
+                count += 1;
+                if count == 1 {
+                    first = Some(*pk);
+                } else {
+                    break;
+                }
+            }
+        }
+        match count {
+            0 => None,
+            1 => first.filter(|pk| live_health(pk).is_healthy()),
+            _ => {
+                let mut active = self
+                    .active_subnets
+                    .0
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                if let Some(&incumbent) = active.get(cidr) {
+                    if self
+                        .subnets
+                        .iter()
+                        .any(|(c, pk)| c == cidr && *pk == incumbent)
+                        && live_health(&incumbent).is_healthy()
+                    {
+                        return Some(incumbent);
+                    }
+                    active.remove(cidr);
+                }
+                let (_, winner) = self
+                    .subnets
+                    .iter()
+                    .filter(|(c, _)| c == cidr)
+                    .max_by_key(|(_, pk)| (live_health(pk), self.peer_health(pk), *pk))?;
+                if live_health(winner).is_healthy() {
+                    active.insert(*cidr, *winner);
+                    Some(*winner)
+                } else {
+                    None
+                }
+            }
+        }
     }
 
     fn reconcile_active_subnets(&mut self) {
@@ -429,16 +525,29 @@ impl Router {
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         active.retain(|cidr, owner| {
-            self.subnets.iter().any(|(c, pk)| c == cidr && pk == owner)
+            let mut claimants = 0usize;
+            let mut owner_claims = false;
+            for (c, pk) in &self.subnets {
+                if c == cidr {
+                    claimants += 1;
+                    if pk == owner {
+                        owner_claims = true;
+                    }
+                }
+            }
+            claimants >= 2
+                && owner_claims
                 && self.peer_health.get(owner).copied().unwrap_or_default().is_healthy()
         });
-        let mut unique_cidrs: Vec<Cidr> = Vec::new();
-        for (c, _) in &self.subnets {
-            if !unique_cidrs.contains(c) {
-                unique_cidrs.push(*c);
+        let mut ha_cidrs: Vec<Cidr> = Vec::new();
+        for (i, (c, _)) in self.subnets.iter().enumerate() {
+            if !ha_cidrs.contains(c)
+                && self.subnets[i + 1..].iter().any(|(other, _)| other == c)
+            {
+                ha_cidrs.push(*c);
             }
         }
-        for cidr in unique_cidrs {
+        for cidr in ha_cidrs {
             if active.contains_key(&cidr) {
                 continue;
             }
@@ -464,6 +573,7 @@ impl Router {
     /// picks one active winner (sticky health-aware election with deterministic
     /// pubkey tie-breaking), and the CALLER surfaces the shared claim in logs.
     pub fn set_subnets(&mut self, pubkey: [u8; 32], cidrs: &[Cidr]) -> Vec<(Cidr, [u8; 32])> {
+        let had_ha = self.peer_has_ha_subnet(&pubkey);
         self.subnets.retain(|(_, pk)| *pk != pubkey);
         let conflicts: Vec<(Cidr, [u8; 32])> = self
             .subnets
@@ -471,8 +581,30 @@ impl Router {
             .filter(|(c, _)| cidrs.contains(c))
             .map(|(c, pk)| (*c, *pk))
             .collect();
+        // B5 non-preemptive stickiness on 1 -> 2 claimant transition: if a CIDR
+        // in `cidrs` currently has a single healthy incumbent claimant, seed
+        // `active_subnets` with that incumbent before adding `pubkey` so
+        // `reconcile_active_subnets` preserves the active incumbent instead of
+        // preempting it when the standby joins.
+        if !conflicts.is_empty() {
+            let mut active = self
+                .active_subnets
+                .0
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            for c in cidrs {
+                let mut iter = self.subnets.iter().filter(|(sc, _)| sc == c);
+                if let (Some((_, sole_pk)), None) = (iter.next(), iter.next())
+                    && self.peer_health(sole_pk).is_healthy()
+                {
+                    active.entry(*c).or_insert(*sole_pk);
+                }
+            }
+        }
         self.subnets.extend(cidrs.iter().map(|c| (*c, pubkey)));
-        self.reconcile_active_subnets();
+        if had_ha || !conflicts.is_empty() {
+            self.reconcile_active_subnets();
+        }
         conflicts
     }
 
@@ -510,11 +642,14 @@ impl Router {
     /// `subnets.retain`, the live peer's subnet routes with it — blackholing
     /// that address with no self-heal until the process restarted.
     pub fn remove_by_pubkey(&mut self, pubkey: &[u8; 32]) -> bool {
+        let had_ha = self.peer_has_ha_subnet(pubkey);
         let before = self.by_ip.len() + self.subnets.len();
         self.by_ip.retain(|_, pk| pk != pubkey);
         self.subnets.retain(|(_, pk)| pk != pubkey);
         self.peer_health.remove(pubkey);
-        self.reconcile_active_subnets();
+        if had_ha {
+            self.reconcile_active_subnets();
+        }
         before != self.by_ip.len() + self.subnets.len()
     }
 
@@ -536,11 +671,15 @@ impl Router {
     /// 1. Exact `/32` host route wins immediately.
     /// 2. Among subnet routes containing `ip`, the longest prefix (`best_cidr`)
     ///    wins.
-    /// 3. If `active_subnets` holds a pinned incumbent for `best_cidr` that still
+    /// 3. **Single-claimant lock-free fast path**: if only one peer claims
+    ///    `best_cidr` (including exit-node `/1` split-default routes and non-HA
+    ///    subnet routers), return that claimant directly without acquiring the
+    ///    `ActiveSubnets` mutex or computing live health.
+    /// 4. If `active_subnets` holds a pinned incumbent for `best_cidr` that still
     ///    claims `best_cidr` and is currently healthy (`live_health(incumbent).is_healthy()`),
     ///    keep routing to that incumbent (non-preemptive stickiness so stateful
     ///    NAT/TCP flows do not flap when a standby router connects or recovers).
-    /// 4. Otherwise elect the claimant of `best_cidr` maximizing
+    /// 5. Otherwise elect the claimant of `best_cidr` maximizing
     ///    `(live_health(pk), self.peer_health(pk), *pk)`. If the winner is
     ///    healthy, pin it in `active_subnets`.
     pub fn route_with_live(
@@ -557,6 +696,21 @@ impl Router {
             .filter(|(c, _)| c.contains(*ip))
             .max_by_key(|(c, _)| c.prefix)
             .map(|(c, _)| *c)?;
+        let mut first_claimant = None;
+        let mut multiple_claimants = false;
+        for (c, pk) in &self.subnets {
+            if *c == best_cidr {
+                if first_claimant.is_none() {
+                    first_claimant = Some(*pk);
+                } else {
+                    multiple_claimants = true;
+                    break;
+                }
+            }
+        }
+        if !multiple_claimants {
+            return first_claimant;
+        }
         let mut active = self
             .active_subnets
             .0
@@ -578,7 +732,8 @@ impl Router {
             .iter()
             .filter(|(c, _)| *c == best_cidr)
             .max_by_key(|(_, pk)| (live_health(pk), self.peer_health(pk), *pk))?;
-        if live_health(winner).is_healthy() {
+        let winner_live = live_health(winner);
+        if winner_live.is_healthy() {
             active.insert(best_cidr, *winner);
         }
         Some(*winner)
@@ -855,6 +1010,90 @@ mod tests {
         assert!(!r.any_claims_subnet(&cidr));
         assert_eq!(r.active_subnet_owner(&cidr), None);
         assert_eq!(r.route(&dst), None);
+    }
+
+    #[test]
+    fn subnet_ha_single_claimant_fast_path_and_500_peer_health_sweep_benchmark() {
+        let mut r = Router::new();
+        let solo_pk = [0x42u8; 32];
+        let solo_cidr = Cidr::parse("192.168.42.0/24").unwrap();
+        r.set_subnets(solo_pk, &[solo_cidr]);
+        r.set_peer_health(solo_pk, RouterHealth::HealthyDirect);
+
+        // Single-claimant CIDR must take the lock-free fast path without
+        // invoking the `live_health` closure or touching `ActiveSubnets`.
+        let live_calls = std::sync::atomic::AtomicUsize::new(0);
+        assert_eq!(
+            r.route_with_live(&Ipv4Addr::new(192, 168, 42, 10), |_| {
+                live_calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                RouterHealth::HealthyDirect
+            }),
+            Some(solo_pk)
+        );
+        assert_eq!(
+            live_calls.load(std::sync::atomic::Ordering::Relaxed),
+            0,
+            "single-claimant subnet lookup must not call live_health or lock ActiveSubnets"
+        );
+        assert!(
+            r.active_subnets.0.lock().unwrap().is_empty(),
+            "single-claimant subnet must not populate ActiveSubnets"
+        );
+
+        // Install 500 peers (498 leaf peers + 2 HA subnet routers claiming 10.77.0.0/16).
+        let ha_cidr = Cidr::parse("10.77.0.0/16").unwrap();
+        let mut peers = Vec::with_capacity(500);
+        for i in 0..500u16 {
+            let mut pk = [0u8; 32];
+            pk[0..2].copy_from_slice(&i.to_be_bytes());
+            pk[31] = 1;
+            let ip = Ipv4Addr::new(100, 64, (i >> 8) as u8, (i & 0xff) as u8);
+            r.upsert(ip, pk);
+            assert!(r.set_peer_health(pk, RouterHealth::HealthyDirect));
+            if i < 2 {
+                r.set_subnets(pk, &[ha_cidr]);
+            }
+            peers.push(pk);
+        }
+        assert_eq!(
+            r.active_subnet_owner(&ha_cidr),
+            Some(peers[0]),
+            "joining standby peers[1] (> peers[0]) must not preempt already-healthy sole incumbent peers[0]"
+        );
+
+        // Unchanged health sweep across 500 peers must be a no-op (returns false)
+        // and complete well under 5 ms.
+        let t_unchanged = std::time::Instant::now();
+        for pk in &peers {
+            assert!(
+                !r.set_peer_health(*pk, RouterHealth::HealthyDirect),
+                "unchanged health must be a fast no-op"
+            );
+        }
+        let unchanged_us = t_unchanged.elapsed().as_micros();
+
+        // Toggling all 498 non-HA leaf peers between HealthyDirect and Stalled
+        // updates only each peer's entry without reconciling `ActiveSubnets`.
+        let t_leaf_toggle = std::time::Instant::now();
+        for pk in &peers[2..] {
+            assert!(r.set_peer_health(*pk, RouterHealth::Stalled));
+            assert!(r.set_peer_health(*pk, RouterHealth::HealthyDirect));
+        }
+        let leaf_toggle_us = t_leaf_toggle.elapsed().as_micros();
+
+        // Failover on the HA pair (peers[0] -> peers[1]) still reconciles immediately.
+        let t_ha_failover = std::time::Instant::now();
+        assert!(r.set_peer_health(peers[0], RouterHealth::Stalled));
+        assert_eq!(r.active_subnet_owner(&ha_cidr), Some(peers[1]));
+        let ha_failover_us = t_ha_failover.elapsed().as_micros();
+
+        println!(
+            "BENCH_B5_500_PEERS unchanged_500_us={unchanged_us} leaf_996_transitions_us={leaf_toggle_us} ha_failover_us={ha_failover_us}"
+        );
+        assert!(
+            unchanged_us < 10_000 && leaf_toggle_us < 25_000,
+            "500-peer health updates must remain sub-millisecond/low-ms (unchanged={unchanged_us}us, leaf_toggle={leaf_toggle_us}us)"
+        );
     }
 
     #[test]
