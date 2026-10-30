@@ -828,6 +828,60 @@ server. Detail and the negative-control test:
 
 ---
 
+## 8b. Subnet-Router High Availability (B5)
+
+Two or more subnet routers in the same network (and, when regional enforcement
+is active, the same known region) may advertise and be approved for the **exact
+same canonical CIDR** when the administrator explicitly passes `"allow_ha": true`
+to `PUT /api/tenant/{tenant_id}/overlay-node/{node_id}/approved-routes`. Partial CIDR
+overlaps or duplicate approvals without `"allow_ha": true` continue to be
+rejected with HTTP `409 Conflict`.
+
+### Client-side active/standby election and non-preemptive stickiness
+
+* **Election key** — When two or more peers claim the same longest-matching
+  prefix `C`, the client's crypto-router (`Router::route_with_live`) elects an
+  active router by maximizing `(live_health(pk), cached_health(pk), pk)`, where
+  `RouterHealth` is ordered `Stalled < Unproven < HealthyRelay < HealthyDirect`.
+* **Non-preemptive sticky pinning** — Once a healthy claimant (`HealthyRelay`
+  or `HealthyDirect`) is elected for `C`, it is pinned in `ActiveSubnets`. As
+  long as the pinned active router still claims `C` and remains healthy, all
+  packets to `C` stay on that incumbent. Even if the previous primary recovers
+  or a standby upgrades to a higher health tier (`HealthyDirect`) or has a
+  higher public key, the client **does not preempt** the healthy active router.
+  This prevents stateful NAT/firewall sessions and TCP flows traversing the
+  active subnet router from being reset by route flapping.
+* **Single-claimant lock-free fast path** — When a CIDR has only one claimant
+  (including non-HA subnet routes and exit-node `/1` split-default routes),
+  `route_with_live` returns that sole claimant directly without locking
+  `ActiveSubnets`.
+* **Failover timing** — Failover occurs on the first outbound packet or carrier
+  health sweep after the active router's carrier is marked dead (`Carrier::is_dead()`)
+  or flagged stalled / one-way (`bad_sweeps > 0`) by `sweep_carrier_health`.
+* **OS route lifecycle** — An OS CIDR route is retained across peer evictions
+  and route withdrawals until the **last** claimant for that prefix leaves
+  (`any_peer_claims_subnet`).
+
+### Reverse-path filtering (RPF) and return-path symmetry
+
+* **RPF authority** — `Router::rpf_check` permits inbound packets sourced from
+  any peer that claims a matching subnet at the **maximum** prefix length
+  covering the source IP. Both the active and standby HA routers for `C` pass
+  RPF, while any peer holding only a shorter prefix (such as an exit node's
+  `/1` split-default or a broader summary route) is still denied (`OtherPeer`).
+* **SNAT / symmetric return routing** — Subnet-Router HA assumes either:
+  1. Both HA subnet routers perform **SNAT / MASQUERADE** toward the LAN
+     (Roomler's default in `overlay::nat::enable`), so LAN hosts always reply
+     to the specific router that forwarded the packet; or
+  2. In no-SNAT deployments, LAN return routing is symmetric or stateless across
+     the router pair. If LAN hosts reply via the standby router while the
+     active router holds stateful firewall state, LAN-side stateful firewalls
+     must share state or permit asymmetric return paths; on the overlay side,
+     Roomler's RPF already accepts return packets from all equal-prefix HA
+     claimants.
+
+---
+
 ## 9. Configuration reference
 
 <!-- RETIRED-NAME-ANCHOR(4): names the legacy env prefix env::node_env still honours; an

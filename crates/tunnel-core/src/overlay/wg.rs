@@ -740,6 +740,19 @@ pub(crate) struct Ingress {
 }
 
 impl Ingress {
+    /// B5 — called from `decap_inbound` the moment a peer's `handshake_done`
+    /// latch flips from `false` to `true`, so `Router::peer_health` is updated
+    /// immediately without waiting for the 5-second carrier health sweep.
+    fn on_handshake_latched(&self) {
+        let mut g = self.send.0.write().unwrap();
+        if g.peers
+            .get(&self.peer)
+            .is_some_and(|sp| Arc::ptr_eq(&sp.stats, &self.stats))
+        {
+            g.sync_peer_and_co_claimants(&self.peer, &[]);
+        }
+    }
+
     /// May this peer deliver this packet? Two independent questions, answered
     /// from ONE lock acquisition:
     ///
@@ -1181,17 +1194,29 @@ impl SendState {
         }
     }
 
-    /// B5 — synchronize `Router::peer_health` with every installed peer's live
-    /// lock-free carrier/handshake/stalled state.
-    fn sync_all_router_health(&mut self) {
-        let updates: Vec<([u8; 32], super::router::RouterHealth)> = self
-            .peers
-            .iter()
-            .map(|(pk, sp)| (*pk, compute_router_health(&sp.carrier, &sp.stats)))
-            .collect();
-        for (pk, health) in updates {
-            self.router.set_peer_health(pk, health);
+    /// B5 — synchronize `Router::peer_health` for a SINGLE peer (`pk`) from its
+    /// live lock-free carrier/handshake/stalled state. Reconciles active HA
+    /// subnets only when `pk`'s health tier changed and `pk` participates in a
+    /// multi-claimant CIDR (`>= 2` claimants).
+    fn sync_peer_router_health(&mut self, pk: &[u8; 32]) {
+        if let Some(sp) = self.peers.get(pk) {
+            let health = compute_router_health(&sp.carrier, &sp.stats);
+            self.router.set_peer_health(*pk, health);
         }
+    }
+
+    /// B5 — synchronize `pk` and any HA co-claimants sharing a subnet with `pk`
+    /// (or `extra_cidrs`). For non-HA peers (`ha_co_claimants` empty), this is
+    /// an $O(1)$ single-peer update.
+    fn sync_peer_and_co_claimants(
+        &mut self,
+        pk: &[u8; 32],
+        extra_cidrs: &[super::router::Cidr],
+    ) {
+        for co_pk in self.router.ha_co_claimants(pk, extra_cidrs) {
+            self.sync_peer_router_health(&co_pk);
+        }
+        self.sync_peer_router_health(pk);
     }
 }
 
@@ -1741,8 +1766,6 @@ impl WgDevice {
                 "overlay: overlay IP reassigned to a different peer"
             );
         }
-        let health = compute_router_health(&carrier, &stats);
-        g.router.set_peer_health(peer_public, health);
         g.peers.insert(
             peer_public,
             SendPeer {
@@ -1751,6 +1774,7 @@ impl WgDevice {
                 stats,
             },
         );
+        g.sync_peer_and_co_claimants(&peer_public, &[]);
     }
 
     /// P1 (S6) — remove a peer's send triple + host route (+ clear the
@@ -1762,6 +1786,9 @@ impl WgDevice {
     /// the address's new owner by the time this peer is reaped.
     fn send_uninstall(&mut self, peer_public: &[u8; 32]) {
         let mut g = self.send.0.write().unwrap();
+        for co_pk in g.router.ha_co_claimants(peer_public, &[]) {
+            g.sync_peer_router_health(&co_pk);
+        }
         g.router.remove_by_pubkey(peer_public);
         g.peers.remove(peer_public);
         // P5/S3b — if this was the global-v6 exit peer, stop routing v6 to a
@@ -3221,15 +3248,29 @@ impl WgDevice {
     }
 
     /// B5 — update `peer_public`'s stalled flag from the carrier health sweep
-    /// and reconcile the router's sticky HA subnet owners.
+    /// and reconcile the router's sticky HA subnet owners when the peer's
+    /// health tier actually changes.
+    ///
+    /// Fast path: if `p.stats.stalled` already equals `stalled` AND the peer's
+    /// recorded `Router::peer_health` already matches its live `RouterHealth`,
+    /// returns immediately without acquiring the `SendState` write lock.
     pub fn set_peer_router_stalled(&mut self, peer_public: &[u8; 32], stalled: bool) {
-        if let Some(p) = self.peers.get(peer_public) {
-            p.stats.stalled.store(stalled, Ordering::Relaxed);
-        } else {
+        let Some(p) = self.peers.get(peer_public) else {
             return;
+        };
+        let prev_stalled = p.stats.stalled.swap(stalled, Ordering::Relaxed);
+        let new_health = compute_router_health(&p.carrier, &p.stats);
+        if prev_stalled == stalled {
+            let g = self.send.0.read().unwrap();
+            if g.router.peer_health(peer_public) == new_health {
+                return;
+            }
         }
         let mut g = self.send.0.write().unwrap();
-        g.sync_all_router_health();
+        for co_pk in g.router.ha_co_claimants(peer_public, &[]) {
+            g.sync_peer_router_health(&co_pk);
+        }
+        g.router.set_peer_health(*peer_public, new_health);
     }
 
     /// B5 — whether any peer in the crypto-router currently claims `cidr`.
@@ -3239,12 +3280,9 @@ impl WgDevice {
 
     /// B5 — the currently pinned sticky active owner for `cidr`, if any.
     pub fn active_subnet_owner(&self, cidr: &super::router::Cidr) -> Option<[u8; 32]> {
-        self.send
-            .0
-            .read()
-            .unwrap()
-            .router
-            .active_subnet_owner(cidr)
+        let g = self.send.0.read().unwrap();
+        g.router
+            .active_subnet_owner_with_live(cidr, |pk| g.live_router_health(pk))
     }
 
     /// Remove a peer (drops its `Tunn` + aborts its tasks + clears its
@@ -3282,7 +3320,7 @@ impl WgDevice {
         subnets: &[super::router::Cidr],
     ) -> Vec<(super::router::Cidr, [u8; 32])> {
         let mut g = self.send.0.write().unwrap();
-        g.sync_all_router_health();
+        g.sync_peer_and_co_claimants(&peer_public, subnets);
         g.router.set_subnets(peer_public, subnets)
     }
 
@@ -3683,7 +3721,11 @@ impl WgDevice {
             p.stats
                 .handshake_at
                 .store(mono_ms_now().max(1), Ordering::Relaxed);
-            self.send.0.write().unwrap().sync_all_router_health();
+            self.send
+                .0
+                .write()
+                .unwrap()
+                .sync_peer_and_co_claimants(peer_public, &[]);
         }
     }
 
@@ -3890,6 +3932,7 @@ pub(crate) fn decap_inbound(
         stats
             .handshake_at
             .store(mono_ms_now().max(1), Ordering::Relaxed);
+        ingress.on_handshake_latched();
     }
     (authenticated, delivered)
 }
