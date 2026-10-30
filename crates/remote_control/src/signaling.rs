@@ -2569,6 +2569,18 @@ pub enum ClientMsg {
     #[serde(rename = "rc:overlay.warm_relay_request")]
     OverlayWarmRelayRequest {},
 
+    /// B3 — node acknowledges the netmap / delta `epoch` and tenant
+    /// `auth_revision` it has applied in its local `OverlayRuntime`. The
+    /// control plane records the watermark monotonically on `OverlayNode` so
+    /// operators and multi-pod control instances can verify authority
+    /// convergence across reconnects and pod handoffs.
+    #[serde(rename = "rc:overlay.netmap_ack")]
+    OverlayNetmapAck {
+        epoch: u64,
+        #[serde(default)]
+        auth_revision: u64,
+    },
+
     // ── FR-52 P3 — external access (`rc:extauth.*`) ──────────────────────
     //
     // An OPAQUE login between someone OUTSIDE the device's organization and
@@ -2838,6 +2850,7 @@ impl ClientMsg {
             ClientMsg::OverlayPathTrialReturnAbort { .. } => "rc:overlay.path_trial_return_abort",
 
             ClientMsg::OverlayWarmRelayRequest { .. } => "rc:overlay.warm_relay_request",
+            ClientMsg::OverlayNetmapAck { .. } => "rc:overlay.netmap_ack",
             ClientMsg::ExtauthStart { .. } => "rc:extauth.start",
             ClientMsg::ExtauthFinish { .. } => "rc:extauth.finish",
             ClientMsg::ExtauthKe2 { .. } => "rc:extauth.ke2",
@@ -2922,7 +2935,8 @@ impl ClientMsg {
             | ClientMsg::OverlayPathTrialReturned { .. }
             | ClientMsg::OverlayPathTrialReturnAbort { .. }
 
-            | ClientMsg::OverlayWarmRelayRequest { .. } => Owner::Network,
+            | ClientMsg::OverlayWarmRelayRequest { .. }
+            | ClientMsg::OverlayNetmapAck { .. } => Owner::Network,
             ClientMsg::HiveStartAck { .. }
             | ClientMsg::HiveState { .. }
             | ClientMsg::HiveTurn { .. }
@@ -3053,6 +3067,7 @@ pub const CLIENT_MSG_OWNERS: &[(&str, Owner)] = &[
     ("rc:overlay.path_trial_returned", Owner::Network),
     ("rc:overlay.path_trial_return_abort", Owner::Network),
     ("rc:overlay.warm_relay_request", Owner::Network),
+    ("rc:overlay.netmap_ack", Owner::Network),
     ("rc:extauth.start", Owner::Remote),
     ("rc:extauth.finish", Owner::Remote),
     ("rc:extauth.ke2", Owner::Remote),
@@ -4246,6 +4261,11 @@ pub enum ServerMsg {
         /// recycled to someone else.
         #[serde(default)]
         epoch: u64,
+        /// B3 — tenant-wide authority revision stamped at the time this delta
+        /// was compiled. `0` on legacy servers; when `> 0`, a client rejects
+        /// any delta whose `auth_revision < applied_auth_revision`.
+        #[serde(default)]
+        auth_revision: u64,
         #[serde(default)]
         upserts: Vec<NetmapPeer>,
         #[serde(default, with = "vec_oid_hex")]
@@ -6139,6 +6159,9 @@ pub struct OverlayNetworkInfo {
     /// measures a private endpoint over its public path.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub backbone_probe_targets: Vec<RelayProbeTargetWire>,
+    /// B3 — tenant-wide authority revision carried in the full netmap.
+    #[serde(default)]
+    pub auth_revision: u64,
 }
 
 /// One relay [`OverlayNetworkInfo::relay_probe_targets`] names: what to probe,
@@ -10685,6 +10708,7 @@ mod tests {
             stun_urls: vec![],
             relay_probe_targets: vec![],
             backbone_probe_targets: vec![],
+            auth_revision: 1,
         };
         let s = serde_json::to_string(&net).unwrap();
         let back: OverlayNetworkInfo = serde_json::from_str(&s).unwrap();
@@ -10748,6 +10772,7 @@ mod tests {
                 stun_urls: vec![],
                 relay_probe_targets: vec![],
                 backbone_probe_targets: vec![],
+                auth_revision: 1,
             },
             peers: vec![],
             epoch: 7,
@@ -11582,6 +11607,7 @@ mod tests {
                 stun_urls: vec!["stun:5.9.157.221:3478".into()],
                 relay_probe_targets: vec![],
                 backbone_probe_targets: vec![],
+                auth_revision: 1,
             },
             peers: vec![NetmapPeer {
                 node_id,
@@ -12131,6 +12157,7 @@ mod tests {
         let rm = ObjectId::parse_str("507f1f77bcf86cd799439012").unwrap();
         let m = ServerMsg::OverlayNetmapDelta {
             epoch: 8,
+            auth_revision: 3,
             upserts: vec![],
             removes: vec![rm],
         };
@@ -12139,11 +12166,34 @@ mod tests {
         assert!(!s.contains("$oid"));
         assert!(s.contains("\"507f1f77bcf86cd799439012\""));
         match serde_json::from_str::<ServerMsg>(&s).unwrap() {
-            ServerMsg::OverlayNetmapDelta { removes, epoch, .. } => {
+            ServerMsg::OverlayNetmapDelta {
+                removes,
+                epoch,
+                auth_revision,
+                ..
+            } => {
                 assert_eq!(epoch, 8);
+                assert_eq!(auth_revision, 3);
                 assert_eq!(removes, vec![rm]);
             }
             other => panic!("expected OverlayNetmapDelta, got {other:?}"),
+        }
+
+        let ack = ClientMsg::OverlayNetmapAck {
+            epoch: 8,
+            auth_revision: 3,
+        };
+        let ack_wire = serde_json::to_string(&ack).unwrap();
+        assert!(ack_wire.contains(r#""t":"rc:overlay.netmap_ack""#));
+        match serde_json::from_str::<ClientMsg>(&ack_wire).unwrap() {
+            ClientMsg::OverlayNetmapAck {
+                epoch,
+                auth_revision,
+            } => {
+                assert_eq!(epoch, 8);
+                assert_eq!(auth_revision, 3);
+            }
+            other => panic!("expected OverlayNetmapAck, got {other:?}"),
         }
     }
 

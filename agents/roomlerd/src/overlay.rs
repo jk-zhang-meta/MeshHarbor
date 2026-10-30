@@ -594,6 +594,20 @@ pub fn release_org(org_key: &str) {
     release_netstack(org_key);
 }
 
+/// B3 — notify this org's persistent `OverlayRuntime` that the control-WS
+/// session disconnected (or failed to establish/authenticate), starting the
+/// bounded offline continuity lease timer (`offline_continuity_max_age`).
+pub fn note_control_detached(tenant_id: &str) {
+    let evt_tx = RUNTIME_SLOTS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(tenant_id)
+        .map(|s| s.evt_tx.clone());
+    if let Some(tx) = evt_tx {
+        let _ = tx.try_send(OverlayEvent::ControlDetached);
+    }
+}
+
 /// Hand this org's loopback SOCKS port back when its loop ends, so an org
 /// configured onto the same port can take it on its next reconnect instead
 /// of withholding forever.
@@ -1064,8 +1078,16 @@ fn intercept_with_bridge_installer(
             path_trial_v1,
         },
         ServerMsg::OverlayNetmapDelta {
-            upserts, removes, ..
-        } => OverlayEvent::NetmapDelta { upserts, removes },
+            epoch,
+            auth_revision,
+            upserts,
+            removes,
+        } => OverlayEvent::NetmapDelta {
+            epoch,
+            auth_revision,
+            upserts,
+            removes,
+        },
         // FR-47 — the server could not complete our join and said why.
         //
         // Logged at ERROR and consumed here rather than forwarded as an
@@ -1087,6 +1109,7 @@ fn intercept_with_bridge_installer(
                  address and will not appear in the mesh"
             );
             record_join_refusal(reason, &detail);
+            let _ = evt_tx.try_send(OverlayEvent::ControlDetached);
             return None;
         }
         ServerMsg::OverlayRelayGrant {

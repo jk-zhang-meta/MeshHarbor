@@ -360,12 +360,13 @@ impl AppState {
                             // kicks): idempotent hub operations every pod
                             // applies locally; the one holding the entity acts.
                             if let Some(ctrl) = envelope.get("ctrl") {
-                                // #1186 — the one state-needing ctrl event
-                                // rides its own channel to the post-
-                                // construction applier.
-                                if ctrl.get("evt").and_then(|v| v.as_str())
-                                    == Some("overlay_removes")
-                                {
+                                // #1186 + B3 — state-needing overlay ctrl events
+                                // (`overlay_removes`, `overlay_policy_sync`) ride
+                                // their own channel to the post-construction applier.
+                                if matches!(
+                                    ctrl.get("evt").and_then(|v| v.as_str()),
+                                    Some("overlay_removes" | "overlay_policy_sync")
+                                ) {
                                     if let Some(tx) = &overlay_ctrl_tx {
                                         let _ = tx.try_send(ctrl.clone());
                                     }

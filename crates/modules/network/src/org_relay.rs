@@ -3765,6 +3765,49 @@ pub async fn revoke_node(state: &NetworkState, node_id: ObjectId, reason: &str) 
 /// "spurious deny takes the mesh down" failure `load_acl` fails open to avoid.
 pub async fn reconcile_acl(state: &NetworkState, tenant_id: ObjectId) {
     state.org_relay.invalidate_eligibility();
+    if let Ok(net) = state.overlay_networks.get_or_create(tenant_id).await {
+        if net.peer_relay_mode == PeerRelayMode::Off {
+            let _ = revoke_tenant(state, tenant_id, "mode_off").await;
+            return;
+        }
+        if net.peer_relay_mode != PeerRelayMode::Auto {
+            let _ = revoke_where(state, "mode_not_auto", |s| {
+                s.tenant_id == tenant_id && s.implicit
+            })
+            .await;
+        }
+    }
+    let approved_relays: Option<
+        std::collections::HashMap<
+            ObjectId,
+            Vec<roomler_ai_remote_control::models::PeerRelayBackboneEdge>,
+        >,
+    > = state
+        .fleet
+        .agents
+        .list_relay_approved(tenant_id)
+        .await
+        .ok()
+        .map(|agents| {
+            agents
+                .into_iter()
+                .filter_map(|a| {
+                    let id = a.id?;
+                    state.org_relay.note_probe_policy_change(id);
+                    Some((id, a.peer_relay_policy.approved_backbone_edges))
+                })
+                .collect()
+        });
+    if let Some(ref approved) = approved_relays {
+        for (source_id, edges) in approved {
+            let _ = revoke_removed_backbone_edges_sync(state, tenant_id, *source_id, edges);
+        }
+    }
+    let server_agents: Option<std::collections::HashSet<ObjectId>> =
+        roomler_core::business_authority::current_server_agents(&state.core, tenant_id)
+            .await
+            .ok()
+            .map(|agents| agents.into_iter().filter_map(|a| a.id).collect());
     let acl = match try_load_acl(state, tenant_id, PolicyLoad::Always).await {
         Ok(a) => a,
         Err(e) => {
@@ -3781,17 +3824,39 @@ pub async fn reconcile_acl(state: &NetworkState, tenant_id: ObjectId) {
         .collect();
     live.extend(state.org_relay.trials.sessions_for_tenant(tenant_id));
     for s in live {
-        // Granted by role and zone, not by a policy: an edit cannot touch it.
+        // Granted by role and zone, not by a policy: an edit cannot touch it,
+        // unless the server role itself was revoked on another pod.
         if s.implicit {
+            if let Some(ref servers) = server_agents
+                && !servers.contains(&s.relay_agent_id)
+            {
+                let pk = s.pair_key.clone();
+                revoke_where(state, "role_revoked", |x| x.pair_key == pk && x.implicit).await;
+            }
+            continue;
+        }
+        if let Some(ref approved) = approved_relays
+            && !approved.contains_key(&s.relay_agent_id)
+        {
+            let pk = s.pair_key.clone();
+            revoke_where(state, "policy_revoked", |x| x.pair_key == pk && !x.implicit).await;
             continue;
         }
         // Both members must still be granted every relay of the session (a
         // line's two, as its planner requires).
         let mut granted = true;
+        let mut policy_revoked = false;
         'relays: for relay_id in s.relay_nodes() {
             let Ok(relay) = state.overlay_nodes.base.find_by_id(relay_id).await else {
                 continue;
             };
+            if let NodeRef::Agent { agent_id } = relay.node_ref
+                && let Some(ref approved) = approved_relays
+                && !approved.contains_key(&agent_id)
+            {
+                policy_revoked = true;
+                break 'relays;
+            }
             // FR-97 P0b — granted from the routes the relay OFFERS.
             let relay_routes = relay.effective_routes();
             let relay_ref = OverlayPeerRef {
@@ -3814,7 +3879,10 @@ pub async fn reconcile_acl(state: &NetworkState, tenant_id: ObjectId) {
                 }
             }
         }
-        if !granted {
+        if policy_revoked {
+            let pk = s.pair_key.clone();
+            revoke_where(state, "policy_revoked", |x| x.pair_key == pk && !x.implicit).await;
+        } else if !granted {
             let pk = s.pair_key.clone();
             revoke_where(state, "acl_revoked", |x| x.pair_key == pk).await;
         }

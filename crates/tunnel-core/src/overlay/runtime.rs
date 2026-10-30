@@ -1097,9 +1097,14 @@ pub enum OverlayEvent {
     PathTrial(roomler_ai_remote_control::signaling::ServerMsg),
     /// Incremental update.
     NetmapDelta {
+        epoch: u64,
+        auth_revision: u64,
         upserts: Vec<NetmapPeer>,
         removes: Vec<ObjectId>,
     },
+    /// B3 — control-WS session detached while the persistent runtime remains
+    /// up. Starts the bounded offline-continuity lease clock when configured.
+    ControlDetached,
     /// rc.307 (B) — a fresh control-WS session re-binding a PERSISTENT
     /// runtime: swap the outbound sender, re-send the join (the server
     /// replies with a full netmap the authoritative reconcile arm applies),
@@ -1601,12 +1606,144 @@ impl ControlTx {
     fn current(&self) -> mpsc::Sender<ClientMsg> {
         self.0.read().unwrap_or_else(|e| e.into_inner()).clone()
     }
+    pub fn is_closed(&self) -> bool {
+        self.current().is_closed()
+    }
     pub async fn send(
         &self,
         msg: ClientMsg,
     ) -> Result<(), tokio::sync::mpsc::error::SendError<ClientMsg>> {
         self.current().send(msg).await
     }
+}
+
+/// B3 — lexicographic `(auth_revision, epoch)` monotonicity guard for
+/// control-plane multi-instance consistency.
+///
+/// - `auth_revision` is the MongoDB-persisted monotonic authority counter
+///   (`OverlayNetwork.auth_revision`). Any frame carrying a non-zero
+///   `auth_revision < applied_auth_revision` is from a lagging pod or
+///   in-flight race and is rejected, even if its wall-clock `epoch` is higher.
+/// - A strictly higher `auth_revision > applied_auth_revision` is always
+///   accepted (newer authority supersedes wall-clock skew between pods) and
+///   resets the epoch baseline to `incoming_epoch`.
+/// - Within the same `auth_revision` (or when `incoming_auth_revision == 0`),
+///   a frame with a non-zero `incoming_epoch < applied_epoch` is rejected as
+///   out-of-order.
+pub fn accept_netmap_version(
+    applied_epoch: &mut u64,
+    applied_auth_revision: &mut u64,
+    incoming_epoch: u64,
+    incoming_auth_revision: u64,
+) -> bool {
+    if incoming_auth_revision > 0 && incoming_auth_revision < *applied_auth_revision {
+        return false;
+    }
+    if incoming_auth_revision > *applied_auth_revision {
+        *applied_auth_revision = incoming_auth_revision;
+        *applied_epoch = incoming_epoch;
+        return true;
+    }
+    if incoming_epoch > 0 && incoming_epoch < *applied_epoch {
+        return false;
+    }
+    if incoming_epoch > *applied_epoch {
+        *applied_epoch = incoming_epoch;
+    }
+    true
+}
+
+/// B3 — Per-peer `(auth_revision, epoch)` watermark filter for incremental
+/// `OverlayNetmapDelta` frames.
+///
+/// - `auth_revision` is a tenant-wide monotonic authority counter: any delta
+///   with a non-zero `incoming_auth_revision < *applied_auth_revision` is from
+///   a lagging pod and is rejected outright (`return false`).
+/// - Within the same `auth_revision`, concurrent deltas for DIFFERENT peers
+///   (`node_id` X at `epoch = 100` vs `node_id` Y at `epoch = 105`) must never
+///   drop each other when arriving out of wall-clock order or across pods with
+///   slight clock skew.
+/// - `epoch` ordering is therefore enforced per `node_id` in `peer_versions`:
+///   an out-of-order delta for the SAME `node_id` (`epoch < peer_epoch` at the
+///   same `auth_revision`) is filtered out for that `node_id` without dropping
+///   updates for other peers.
+pub fn filter_netmap_delta_by_peer(
+    applied_epoch: &mut u64,
+    applied_auth_revision: &mut u64,
+    peer_versions: &mut HashMap<ObjectId, (u64, u64)>,
+    incoming_epoch: u64,
+    incoming_auth_revision: u64,
+    upserts: &mut Vec<NetmapPeer>,
+    removes: &mut Vec<ObjectId>,
+) -> bool {
+    if incoming_auth_revision > 0 && incoming_auth_revision < *applied_auth_revision {
+        return false;
+    }
+    let rev_advanced = incoming_auth_revision > *applied_auth_revision;
+    if rev_advanced {
+        *applied_auth_revision = incoming_auth_revision;
+        *applied_epoch = incoming_epoch;
+    }
+
+    let mut accepted_in_packet: std::collections::HashSet<ObjectId> =
+        std::collections::HashSet::new();
+    let mut check_peer = |node_id: ObjectId| -> bool {
+        if accepted_in_packet.contains(&node_id) {
+            return true;
+        }
+        let existing = peer_versions.get(&node_id).copied();
+        let eff_rev = if incoming_auth_revision > 0 {
+            incoming_auth_revision
+        } else {
+            existing.map_or(*applied_auth_revision, |(r, _)| r)
+        };
+        let next_peer_epoch = if let Some((peer_rev, peer_epoch)) = existing {
+            if eff_rev < peer_rev {
+                return false;
+            }
+            if eff_rev == peer_rev && incoming_epoch > 0 && incoming_epoch < peer_epoch {
+                return false;
+            }
+            if eff_rev == peer_rev {
+                peer_epoch.max(incoming_epoch)
+            } else {
+                incoming_epoch
+            }
+        } else {
+            incoming_epoch
+        };
+        peer_versions.insert(node_id, (eff_rev, next_peer_epoch));
+        accepted_in_packet.insert(node_id);
+        true
+    };
+
+    removes.retain(|&node_id| check_peer(node_id));
+    upserts.retain(|peer| check_peer(peer.node_id));
+
+    let any_accepted = rev_advanced || !removes.is_empty() || !upserts.is_empty();
+    if !rev_advanced && any_accepted && incoming_epoch > *applied_epoch {
+        *applied_epoch = incoming_epoch;
+    }
+    any_accepted
+}
+
+/// B3 — optional maximum duration a persistent `OverlayRuntime` may continue
+/// forwarding over cached netmap authority while its control-WS is detached.
+///
+/// Configured via `ROOMLERD_OFFLINE_CONTINUITY_MAX_MS` (millisecond precision
+/// for deterministic tests) or `ROOMLERD_OFFLINE_CONTINUITY_MAX_SECS` (seconds).
+/// Unset or `0` = unlimited offline continuity (the rc.307 default).
+pub fn offline_continuity_max_age() -> Option<Duration> {
+    if let Some(ms) = crate::env::node_env("OFFLINE_CONTINUITY_MAX_MS")
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .filter(|&v| v > 0)
+    {
+        return Some(Duration::from_millis(ms));
+    }
+    crate::env::node_env("OFFLINE_CONTINUITY_MAX_SECS")
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .filter(|&v| v > 0)
+        .map(Duration::from_secs)
 }
 
 /// One node's overlay runtime. Construct with [`OverlayRuntime::new`] (or
@@ -2574,6 +2711,7 @@ impl OverlayRuntime {
                     continue;
                 }
                 Some(OverlayEvent::NetmapDelta { .. }) => continue, // pre-netmap; ignore
+                Some(OverlayEvent::ControlDetached) => continue,    // pre-netmap; ignore
                 Some(OverlayEvent::RelayGrant { .. }) => continue,  // pre-netmap; ignore
                 Some(OverlayEvent::WarmRelayGrant { .. }) => continue, // pre-netmap; ignore
                 Some(OverlayEvent::ForceDerp { .. }) => continue,   // pre-netmap; ignore
@@ -2589,6 +2727,14 @@ impl OverlayRuntime {
 
         let mut server_org_fallback = network.org_relay_fallback_v1;
         let mut server_org_loss = network.org_relay_loss_v1;
+        let mut applied_netmap_epoch: u64 = 0;
+        let mut applied_auth_revision: u64 = network.auth_revision;
+        let mut peer_netmap_versions: HashMap<ObjectId, (u64, u64)> = first_peers
+            .iter()
+            .map(|p| (p.node_id, (applied_auth_revision, 0)))
+            .collect();
+        let mut control_detached_at: Option<Instant> = None;
+        let mut offline_continuity_expired = false;
 
         let Ok(self_v4) = self_ip.parse::<Ipv4Addr>() else {
             warn!(%self_ip, "overlay: server sent a non-IPv4 self_ip; aborting runtime");
@@ -3203,6 +3349,15 @@ impl OverlayRuntime {
             "initial",
         )
         .await;
+        if applied_auth_revision > 0 {
+            let _ = self
+                .outbound
+                .send(ClientMsg::OverlayNetmapAck {
+                    epoch: applied_netmap_epoch,
+                    auth_revision: applied_auth_revision,
+                })
+                .await;
+        }
         // P5 exit-node — default-route capture state, reconciled after every
         // carrier change. Inert unless this node has `exit_node` configured.
         // P5 S4b — DNS-steering context for this run (immutable): whether MagicDNS
@@ -3521,6 +3676,13 @@ impl OverlayRuntime {
                 done = alloc_rx.recv() => {
                     if let Some(done) = done {
                         let t_arm = Instant::now();
+                        if offline_continuity_expired || !current_peers.contains_key(&done.node_id) {
+                            alloc_q.invalidate(&done.node_id);
+                            if let Some(r) = relay.as_mut() {
+                                r.forget(&done.node_id);
+                            }
+                            continue;
+                        }
                         if alloc_q.take_if_current(&done.node_id, done.epoch) {
                             if let Some(r) = relay.as_mut() {
                                 match done.conn {
@@ -3617,6 +3779,50 @@ impl OverlayRuntime {
                 // doesn't immediately re-upgrade it to direct).
                 _ = fallback.tick() => {
                     let t_arm = Instant::now();
+                    if self.outbound.is_closed() && control_detached_at.is_none() {
+                        control_detached_at = Some(Instant::now());
+                        info!("overlay: control-WS channel closed — entering offline continuity window");
+                        if let Some(max_age) = offline_continuity_max_age()
+                            && !offline_continuity_expired
+                        {
+                            fallback.reset_after(max_age.min(FALLBACK_TICK));
+                        }
+                    }
+                    if let (Some(detached_at), Some(max_age)) =
+                        (control_detached_at, offline_continuity_max_age())
+                        && !offline_continuity_expired
+                        && detached_at.elapsed() >= max_age
+                    {
+                        offline_continuity_expired = true;
+                        warn!(
+                            detached_ms = detached_at.elapsed().as_millis(),
+                            max_ms = max_age.as_millis(),
+                            "overlay: offline continuity lease expired while control-WS detached — failing closed and evicting installed peers until authoritative Netmap"
+                        );
+                        let mut all_ids: Vec<ObjectId> = by_node
+                            .keys()
+                            .chain(upgrade_probes.keys())
+                            .chain(current_peers.keys())
+                            .copied()
+                            .collect();
+                        all_ids.sort_unstable();
+                        all_ids.dedup();
+                        for nid in all_ids {
+                            invalidate_org_bind_identity(&nid, &mut org_q, &mut relay);
+                            self.evict_peer(
+                                nid, &mut wg, &mut by_node, &tun, &mut relay, &mut relay_bq,
+                                &mut alloc_q, &mut upgrade_probes, &mut current_peers,
+                                &mut relay_refresh_cooldown,
+                            ).await;
+                        }
+                        org_discovery.invalidate();
+                        wg.sync_peer_ingress(&current_peers);
+                        if let Some(names) = &dns_names {
+                            sync_name_map(names, &current_peers, network.self_name.as_deref(), self_v4).await;
+                        }
+                        self.reconcile_exit_routing(&mut wg, &tun, &by_node, &current_peers, &mut exit_state).await;
+                        self.publish_view(&self_ip, &by_node, &current_peers, &upgrade_probes, exit_node_status(self.exit_node.as_deref(), &exit_state), &wg, &path_trials, server_path_trial_v1);
+                    }
                     // FR-72 P2 — the resolver retries its bind, so it may come up
                     // after the bring-up wait already concluded "not bound" and
                     // WITHHELD the OS steer. Without this the retry is pointless:
@@ -4475,6 +4681,17 @@ impl OverlayRuntime {
                     // survive the re-join, and the keepalive only re-trickles
                     // on a CHANGE). Carriers/TUN/WG stay untouched — that is
                     // the point.
+                    Some(OverlayEvent::ControlDetached) => {
+                        if control_detached_at.is_none() {
+                            control_detached_at = Some(Instant::now());
+                            info!("overlay: control-WS detached — entering offline continuity window");
+                        }
+                        if let Some(max_age) = offline_continuity_max_age()
+                            && !offline_continuity_expired
+                        {
+                            fallback.reset_after(max_age.min(FALLBACK_TICK));
+                        }
+                    }
                     Some(OverlayEvent::Reattach { outbound }) => {
                         let t_arm = Instant::now();
                         path_trials.reset_observation(crate::localapi::PathTrialResetReason::Reattach);
@@ -4548,6 +4765,32 @@ impl OverlayRuntime {
                     // below applies it AUTHORITATIVELY against live state.
                     Some(OverlayEvent::Netmap { self_ip: new_self_ip, network: new_network, peers, org_relay_discovery, path_trial_v1 }) => {
                         let t_arm = Instant::now();
+                        if !accept_netmap_version(
+                            &mut applied_netmap_epoch,
+                            &mut applied_auth_revision,
+                            0,
+                            new_network.auth_revision,
+                        ) {
+                            debug!(
+                                incoming_auth_revision = new_network.auth_revision,
+                                applied_auth_revision,
+                                "overlay: ignoring stale full netmap with older auth_revision"
+                            );
+                            continue;
+                        }
+                        // A full netmap is an authoritative full-table replacement
+                        // for the newly attached control-WS session (possibly on a
+                        // pod whose wall clock is slightly behind the previous pod
+                        // at the same `auth_revision`). Re-anchor the session's
+                        // delta epoch baseline so subsequent deltas on this
+                        // session are never rejected against the old pod's clock.
+                        applied_netmap_epoch = 0;
+                        peer_netmap_versions = peers
+                            .iter()
+                            .map(|p| (p.node_id, (applied_auth_revision, 0)))
+                            .collect();
+                        control_detached_at = None;
+                        offline_continuity_expired = false;
                         // A re-join can only reconcile onto the SAME identity.
                         // A different self_ip (re-enroll / tenant renumber) or
                         // network shape (cidr → netmask/NAT guard, magic
@@ -4660,9 +4903,41 @@ impl OverlayRuntime {
                         warn_if_slow("install_peers(netmap)", t0);
                         self.reconcile_exit_routing(&mut wg, &tun, &by_node, &current_peers, &mut exit_state).await;
                         self.publish_view(&self_ip, &by_node, &current_peers, &upgrade_probes, exit_node_status(self.exit_node.as_deref(), &exit_state), &wg, &path_trials, server_path_trial_v1);
+                        if applied_auth_revision > 0 || applied_netmap_epoch > 0 {
+                            let _ = self
+                                .outbound
+                                .send(ClientMsg::OverlayNetmapAck {
+                                    epoch: applied_netmap_epoch,
+                                    auth_revision: applied_auth_revision,
+                                })
+                                .await;
+                        }
                         warn_if_slow("arm:netmap", t_arm);
                     }
-                    Some(OverlayEvent::NetmapDelta { upserts, removes }) => {
+                    Some(OverlayEvent::NetmapDelta { epoch, auth_revision, mut upserts, mut removes }) => {
+                        if offline_continuity_expired {
+                            debug!("overlay: ignoring netmap_delta after offline continuity expiry; awaiting full netmap");
+                            continue;
+                        }
+                        let prev_auth_revision = applied_auth_revision;
+                        if !filter_netmap_delta_by_peer(
+                            &mut applied_netmap_epoch,
+                            &mut applied_auth_revision,
+                            &mut peer_netmap_versions,
+                            epoch,
+                            auth_revision,
+                            &mut upserts,
+                            &mut removes,
+                        ) {
+                            debug!(
+                                incoming_epoch = epoch,
+                                incoming_auth_revision = auth_revision,
+                                applied_netmap_epoch,
+                                applied_auth_revision,
+                                "overlay: ignoring stale or out-of-order netmap_delta"
+                            );
+                            continue;
+                        }
                         path_trials.reset_observation(crate::localapi::PathTrialResetReason::NetmapDelta);
                         path_trial::clear_observation_view(&self.peer_view,path_trials.observation_runtime_id());
                         let t_arm = Instant::now();
@@ -4709,6 +4984,19 @@ impl OverlayRuntime {
                         if let Some(names) = &dns_names { sync_name_map(names, &current_peers, network.self_name.as_deref(), self_v4).await; }
                         self.reconcile_exit_routing(&mut wg, &tun, &by_node, &current_peers, &mut exit_state).await;
                         self.publish_view(&self_ip, &by_node, &current_peers, &upgrade_probes, exit_node_status(self.exit_node.as_deref(), &exit_state), &wg, &path_trials, server_path_trial_v1);
+                        // B3 — Emit `OverlayNetmapAck` on `NetmapDelta` only when
+                        // `auth_revision` advances (`applied_auth_revision > prev_auth_revision`)
+                        // so routine `endpoints` / `srflx` trickle deltas do not cause
+                        // O(N) MongoDB write amplification across the mesh.
+                        if applied_auth_revision > prev_auth_revision {
+                            let _ = self
+                                .outbound
+                                .send(ClientMsg::OverlayNetmapAck {
+                                    epoch: applied_netmap_epoch,
+                                    auth_revision: applied_auth_revision,
+                                })
+                                .await;
+                        }
                         warn_if_slow("arm:netmap_delta", t_arm);
                     }
                     Some(OverlayEvent::RelayGrant { peer_node_id, ice_servers, pair_key }) => {
@@ -8675,6 +8963,7 @@ mod tests {
             stun_urls: vec![],
             relay_probe_targets: vec![],
             backbone_probe_targets: vec![],
+            auth_revision: 0,
         }
     }
     pub(super) fn peer(kp: &WgKeypair, ip: &str) -> NetmapPeer {
@@ -9254,6 +9543,429 @@ mod tests {
             .await
             .expect("runtime must exit once the outbound pump dies")
             .unwrap();
+    }
+
+    #[test]
+    fn b3_accept_netmap_version_enforces_lexicographic_auth_revision_and_epoch_monotonicity() {
+        let mut epoch = 100u64;
+        let mut rev = 2u64;
+
+        // Stale auth_revision from a lagging pod must be rejected even if its
+        // wall-clock epoch is higher.
+        assert!(!accept_netmap_version(&mut epoch, &mut rev, 500, 1));
+        assert_eq!((epoch, rev), (100, 2));
+
+        // Out-of-order epoch within the same auth_revision is rejected.
+        assert!(!accept_netmap_version(&mut epoch, &mut rev, 99, 2));
+        assert_eq!((epoch, rev), (100, 2));
+
+        // Monotonic epoch within the same auth_revision is accepted.
+        assert!(accept_netmap_version(&mut epoch, &mut rev, 150, 2));
+        assert_eq!((epoch, rev), (150, 2));
+
+        // Strictly newer auth_revision is accepted even if wall-clock epoch across
+        // pods was slightly lower, and resets the epoch baseline to the new epoch.
+        assert!(accept_netmap_version(&mut epoch, &mut rev, 140, 3));
+        assert_eq!((epoch, rev), (140, 3));
+
+        // Full OverlayNetmap (incoming_epoch = 0) with strictly newer auth_revision
+        // resets applied_epoch to 0 so subsequent deltas at rev=4 with any epoch > 0
+        // (even < 140) are accepted.
+        assert!(accept_netmap_version(&mut epoch, &mut rev, 0, 4));
+        assert_eq!((epoch, rev), (0, 4));
+        assert!(accept_netmap_version(&mut epoch, &mut rev, 50, 4));
+        assert_eq!((epoch, rev), (50, 4));
+    }
+
+    #[test]
+    fn b3_filter_netmap_delta_by_peer_accepts_out_of_order_distinct_peers_and_rejects_same_peer_rollback() {
+        let mut epoch = 0u64;
+        let mut rev = 5u64;
+        let peer_x_id = ObjectId::new();
+        let peer_y_id = ObjectId::new();
+        let peer_z_id = ObjectId::new();
+        let mut peer_versions: HashMap<ObjectId, (u64, u64)> = HashMap::from([
+            (peer_x_id, (5, 0)),
+            (peer_y_id, (5, 0)),
+            (peer_z_id, (5, 0)),
+        ]);
+
+        let make_peer = |id: ObjectId, ip: &str| NetmapPeer {
+            node_id: id,
+            overlay_ip: ip.to_string(),
+            name: format!("peer-{id}"),
+            wg_public_key: "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=".to_string(),
+            endpoints: vec![],
+            lan_endpoints: vec![],
+            srflx_endpoints: vec![],
+            srflx_nat: None,
+            caps: None,
+            udp_dialer_ok: None,
+            relay_home: None,
+            warm_relay_endpoint: None,
+            reachable: true,
+            supports_quic: false,
+            supports_relay_single: false,
+            supports_derp: true,
+            supports_forced_derp: false,
+            supports_derp_floor: false,
+            relay_strategy: None,
+            backbone_only: false,
+            supports_overlay_echo: false,
+            supports_org_relay: false,
+            routes: vec![],
+            agent_id: None,
+            ingress_rules: None,
+        };
+
+        // 1. Peer Y delta (epoch = 105) arrives FIRST at auth_revision = 5.
+        let mut upserts_y = vec![make_peer(peer_y_id, "100.64.0.2")];
+        let mut removes_y = vec![];
+        assert!(filter_netmap_delta_by_peer(
+            &mut epoch,
+            &mut rev,
+            &mut peer_versions,
+            105,
+            5,
+            &mut upserts_y,
+            &mut removes_y,
+        ));
+        assert_eq!(upserts_y.len(), 1);
+        assert_eq!((epoch, rev), (105, 5));
+
+        // 2. Peer X delta (epoch = 100 < 105) arrives SECOND at the same auth_revision = 5:
+        // must NOT be dropped despite global epoch = 105!
+        let mut upserts_x = vec![make_peer(peer_x_id, "100.64.0.3")];
+        let mut removes_x = vec![];
+        assert!(filter_netmap_delta_by_peer(
+            &mut epoch,
+            &mut rev,
+            &mut peer_versions,
+            100,
+            5,
+            &mut upserts_x,
+            &mut removes_x,
+        ));
+        assert_eq!(upserts_x.len(), 1);
+        assert_eq!(peer_versions.get(&peer_x_id), Some(&(5, 100)));
+
+        // 3. Cross-pod remove delta for Peer Z (epoch = 102 < 105) at auth_revision = 5:
+        // must ALSO be accepted and remove Peer Z!
+        let mut upserts_z = vec![];
+        let mut removes_z = vec![peer_z_id];
+        assert!(filter_netmap_delta_by_peer(
+            &mut epoch,
+            &mut rev,
+            &mut peer_versions,
+            102,
+            5,
+            &mut upserts_z,
+            &mut removes_z,
+        ));
+        assert_eq!(removes_z, vec![peer_z_id]);
+
+        // 4. Stale out-of-order delta for the SAME Peer X (epoch = 90 < 100) at auth_revision = 5:
+        // must be filtered out and rejected!
+        let mut upserts_x_stale = vec![make_peer(peer_x_id, "100.64.0.99")];
+        let mut removes_x_stale = vec![];
+        assert!(!filter_netmap_delta_by_peer(
+            &mut epoch,
+            &mut rev,
+            &mut peer_versions,
+            90,
+            5,
+            &mut upserts_x_stale,
+            &mut removes_x_stale,
+        ));
+        assert!(upserts_x_stale.is_empty());
+        assert_eq!(peer_versions.get(&peer_x_id), Some(&(5, 100)));
+
+        // 5. Stale auth_revision = 4 from a lagging pod (even with epoch = 999) is rejected outright.
+        let mut upserts_old_rev = vec![make_peer(peer_x_id, "100.64.0.88")];
+        let mut removes_old_rev = vec![];
+        assert!(!filter_netmap_delta_by_peer(
+            &mut epoch,
+            &mut rev,
+            &mut peer_versions,
+            999,
+            4,
+            &mut upserts_old_rev,
+            &mut removes_old_rev,
+        ));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn b3_runtime_acks_netmap_rejects_stale_pod_delta_and_enforces_offline_continuity_lease() {
+        let a = WgKeypair::generate();
+        let b = WgKeypair::generate();
+
+        let sock_a = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let sock_b = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let addr_a = sock_a.local_addr().unwrap();
+        let addr_b = sock_b.local_addr().unwrap();
+
+        let (out_a, mut out_a_rx) = mpsc::channel::<ClientMsg>(32);
+        let (out_b, mut out_b_rx) = mpsc::channel::<ClientMsg>(32);
+        let (evt_a, evt_a_rx) = mpsc::channel::<OverlayEvent>(32);
+        let (evt_b, evt_b_rx) = mpsc::channel::<OverlayEvent>(32);
+
+        let (mock_a, inject_a, _del_a) = MockTun::new();
+        let (mock_b, _inj_b, mut del_b) = MockTun::new();
+        let tf_a: TunFactory = {
+            let m = mock_a.clone();
+            Box::new(move |_, _, _| Ok(m.clone() as Arc<dyn TunIo>))
+        };
+        let tf_b: TunFactory = {
+            let m = mock_b.clone();
+            Box::new(move |_, _, _| Ok(m.clone() as Arc<dyn TunIo>))
+        };
+
+        let rt_a = OverlayRuntime::new(
+            a.clone(),
+            out_a,
+            Arc::new(LoopbackLinks {
+                sock: sock_a,
+                dst: addr_b,
+            }),
+            tf_a,
+            1280,
+        );
+        let rt_b = OverlayRuntime::new(
+            b.clone(),
+            out_b,
+            Arc::new(LoopbackLinks {
+                sock: sock_b,
+                dst: addr_a,
+            }),
+            tf_b,
+            1280,
+        );
+        tokio::spawn(rt_a.run(evt_a_rx, vec![]));
+        tokio::spawn(rt_b.run(evt_b_rx, vec![]));
+        assert!(matches!(
+            out_a_rx.recv().await,
+            Some(ClientMsg::OverlayJoin { .. })
+        ));
+        assert!(matches!(
+            out_b_rx.recv().await,
+            Some(ClientMsg::OverlayJoin { .. })
+        ));
+
+        let peer_b = peer(&b, "100.64.0.2");
+        let peer_a = peer(&a, "100.64.0.1");
+        let mut net_a = net();
+        net_a.auth_revision = 2;
+        evt_a
+            .send(OverlayEvent::Netmap {
+                org_relay_discovery: false,
+                path_trial_v1: false,
+                self_ip: "100.64.0.1".into(),
+                network: net_a,
+                peers: vec![peer_b.clone()],
+            })
+            .await
+            .unwrap();
+        evt_b
+            .send(OverlayEvent::Netmap {
+                org_relay_discovery: false,
+                path_trial_v1: false,
+                self_ip: "100.64.0.2".into(),
+                network: net(),
+                peers: vec![peer_a.clone()],
+            })
+            .await
+            .unwrap();
+
+        // A must emit OverlayNetmapAck for auth_revision = 2.
+        let ack = tokio::time::timeout(Duration::from_secs(3), out_a_rx.recv())
+            .await
+            .expect("expected initial netmap_ack")
+            .unwrap();
+        assert!(matches!(
+            ack,
+            ClientMsg::OverlayNetmapAck {
+                epoch: 0,
+                auth_revision: 2,
+            }
+        ));
+
+        // Verify data plane comes up.
+        let pkt = synthetic_ipv4(IP_A, IP_B, b"b3-initial");
+        let mut up = false;
+        for _ in 0..100 {
+            let _ = inject_a.send(pkt.clone());
+            if tokio::time::timeout(Duration::from_millis(150), del_b.recv())
+                .await
+                .ok()
+                .flatten()
+                .is_some()
+            {
+                up = true;
+                break;
+            }
+        }
+        assert!(up, "pair did not come up");
+
+        // Send a stale NetmapDelta from a lagging pod (auth_revision=1, removes=[peer_b]).
+        // A must reject it and keep peer_b installed!
+        evt_a
+            .send(OverlayEvent::NetmapDelta {
+                epoch: 999,
+                auth_revision: 1,
+                upserts: vec![],
+                removes: vec![peer_b.node_id],
+            })
+            .await
+            .unwrap();
+        // Now send a valid NetmapDelta (epoch=500, auth_revision=3, upserts=[peer_b]).
+        evt_a
+            .send(OverlayEvent::NetmapDelta {
+                epoch: 500,
+                auth_revision: 3,
+                upserts: vec![peer_b.clone()],
+                removes: vec![],
+            })
+            .await
+            .unwrap();
+
+        // Only the valid delta (epoch=500, auth_revision=3) is acknowledged.
+        let ack2 = tokio::time::timeout(Duration::from_secs(3), out_a_rx.recv())
+            .await
+            .expect("expected delta netmap_ack")
+            .unwrap();
+        assert!(matches!(
+            ack2,
+            ClientMsg::OverlayNetmapAck {
+                epoch: 500,
+                auth_revision: 3,
+            }
+        ));
+
+        // Out-of-order epoch within auth_revision=3 (epoch=400, removes=[peer_b]) is also rejected.
+        evt_a
+            .send(OverlayEvent::NetmapDelta {
+                epoch: 400,
+                auth_revision: 3,
+                upserts: vec![],
+                removes: vec![peer_b.node_id],
+            })
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(out_a_rx.try_recv().is_err(), "stale epoch must not emit ack");
+
+        // Traffic still flows after both stale/out-of-order remove deltas were rejected!
+        let pkt2 = synthetic_ipv4(IP_A, IP_B, b"b3-after-stale-deltas");
+        let mut still_up = false;
+        for _ in 0..50 {
+            let _ = inject_a.send(pkt2.clone());
+            if let Ok(Some(got)) =
+                tokio::time::timeout(Duration::from_millis(150), del_b.recv()).await
+                && got == pkt2
+            {
+                still_up = true;
+                break;
+            }
+        }
+        assert!(still_up, "stale pod delta must not tear down active peer");
+
+        // Bounded offline continuity: configure a 120ms lease, detach control WS
+        // (even while `out_a_rx` is still open, e.g. on OverlayJoinRefused),
+        // verify traffic survives immediately after detach and then fails closed
+        // once the 120ms lease expires.
+        // SAFETY: test-scoped env var read by `offline_continuity_max_age`.
+        unsafe {
+            std::env::set_var("ROOMLERD_OFFLINE_CONTINUITY_MAX_MS", "120");
+        }
+        evt_a.send(OverlayEvent::ControlDetached).await.unwrap();
+
+        // Immediately after detach (within lease window), traffic still flows.
+        let pkt3 = synthetic_ipv4(IP_A, IP_B, b"b3-in-lease");
+        let _ = inject_a.send(pkt3.clone());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), del_b.recv())
+                .await
+                .ok()
+                .flatten()
+                .is_some(),
+            "traffic must continue during bounded offline continuity lease"
+        );
+
+        // Wait for the 120ms offline continuity lease to expire and drain in-flight packets.
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        while tokio::time::timeout(Duration::from_millis(50), del_b.recv())
+            .await
+            .ok()
+            .flatten()
+            .is_some()
+        {}
+        for _ in 0..5 {
+            let _ = inject_a.send(pkt3.clone());
+        }
+        assert!(
+            tokio::time::timeout(Duration::from_millis(250), del_b.recv())
+                .await
+                .ok()
+                .flatten()
+                .is_none(),
+            "expired offline continuity lease must fail closed and evict peers"
+        );
+
+        // While offline_continuity_expired is true, a stray NetmapDelta must be
+        // ignored and must NOT resurrect peers without a full Netmap.
+        evt_a
+            .send(OverlayEvent::NetmapDelta {
+                epoch: 600,
+                auth_revision: 3,
+                upserts: vec![peer_b.clone()],
+                removes: vec![],
+            })
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        assert!(
+            out_a_rx.try_recv().is_err(),
+            "NetmapDelta while offline_continuity_expired must be ignored"
+        );
+
+        // Reattach + authoritative full Netmap (auth_revision=4) restores the mesh,
+        // resets applied_netmap_epoch to 0, and emits OverlayNetmapAck { epoch: 0, auth_revision: 4 }.
+        let (out_a2, mut out_a2_rx) = mpsc::channel::<ClientMsg>(32);
+        evt_a
+            .send(OverlayEvent::Reattach { outbound: out_a2 })
+            .await
+            .unwrap();
+        assert!(matches!(
+            out_a2_rx.recv().await,
+            Some(ClientMsg::OverlayJoin { .. })
+        ));
+        let mut net_a4 = net();
+        net_a4.auth_revision = 4;
+        evt_a
+            .send(OverlayEvent::Netmap {
+                org_relay_discovery: false,
+                path_trial_v1: false,
+                self_ip: "100.64.0.1".into(),
+                network: net_a4,
+                peers: vec![peer_b.clone()],
+            })
+            .await
+            .unwrap();
+        let ack_reattach = tokio::time::timeout(Duration::from_secs(3), out_a2_rx.recv())
+            .await
+            .expect("expected reattach netmap_ack")
+            .unwrap();
+        assert!(matches!(
+            ack_reattach,
+            ClientMsg::OverlayNetmapAck {
+                epoch: 0,
+                auth_revision: 4,
+            }
+        ));
+
+        unsafe {
+            std::env::remove_var("ROOMLERD_OFFLINE_CONTINUITY_MAX_MS");
+        }
     }
 
     // ---- P5 exit-node pure helpers ----
