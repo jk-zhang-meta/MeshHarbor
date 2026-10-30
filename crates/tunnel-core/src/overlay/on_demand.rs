@@ -31,21 +31,22 @@
 //! * **Zero-loss first-packet wakeup (`Dormant -> Waking -> Active`)**: The
 //!   first outbound IP packet (or packet batch) arriving for a `Dormant` peer
 //!   transitions it to `Waking` under the per-peer `Tunn` lock, clears stale
-//!   session keys via `Tunn::set_static_private` (preserving the 24-bit peer
-//!   index, TAI64N replay watermark, and monotonic stamper), queues the
-//!   triggering packet(s) inside `boringtun::noise::Tunn`, and immediately
-//!   emits a 148-byte Handshake Initiation over the active carrier (direct UDP
-//!   or relay). When the 92-byte Handshake Response arrives, `decap_inbound`
-//!   flushes all queued packets in FIFO order with **zero packet loss**,
-//!   transitions the peer to `Active`, and records the exact first-packet
-//!   establishment latency (`last_wake_latency_ns`, `max_wake_latency_ns`).
+//!   session keys in-place via `Tunn::reset_sessions_preserving_replay_and_psk`
+//!   (preserving the 24-bit peer index, TAI64N replay watermark, B7 PQ-PSK, and
+//!   monotonic stamper), queues the triggering packet(s) inside
+//!   `boringtun::noise::Tunn`, and immediately emits a 148-byte Handshake
+//!   Initiation over the active carrier (direct UDP or relay). When the 92-byte
+//!   Handshake Response arrives, `decap_inbound` flushes all queued packets in
+//!   FIFO order with **zero packet loss**, transitions the peer to `Active`,
+//!   and records the exact first-packet establishment latency
+//!   (`last_wake_latency_ns`, `max_wake_latency_ns`).
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::time::Duration;
 
 use boringtun::noise::{Tunn, TunnResult};
-use boringtun::x25519::{PublicKey, StaticSecret};
+use boringtun::x25519::StaticSecret;
 
 /// Maximum number of packets `boringtun::noise::Tunn::queue_packet` buffers
 /// while a handshake is in flight (`MAX_QUEUE_DEPTH = 256`).
@@ -78,15 +79,22 @@ pub struct OnDemandConfig {
     /// always-on mode (`KEEPALIVE_SECS = 25` and immediate handshake on install).
     pub enabled: bool,
     /// Duration of zero business traffic (`tx_attempted` and decrypted `rx`)
-    /// after which an `Active` (or unanswered `Waking`) peer transitions to
-    /// [`OnDemandPhase::Dormant`], provided no upgrade probe, path trial, ORG
-    /// transition, or standby hold is active for that peer.
+    /// after which an `Active` peer transitions to [`OnDemandPhase::Dormant`],
+    /// provided no upgrade probe, path trial, ORG transition, or standby hold is
+    /// active for that peer.
     pub idle_timeout: Duration,
     /// When `true` (default when `enabled` is `true`), newly installed routed
     /// peers start in [`OnDemandPhase::Dormant`] without emitting an initial
     /// 148-byte Handshake Initiation until the first business packet arrives
     /// (or the remote peer initiates).
     pub defer_initial_handshake: bool,
+    /// Maximum duration an outbound wakeup (`OnDemandPhase::Waking`) waits for
+    /// a WireGuard handshake response before marking the current carrier dead
+    /// (`carrier.mark_dead()`) so `sweep_carrier_health` can trigger immediate
+    /// carrier fallback (e.g. from an expired direct NAT pinhole to relay).
+    /// Defaults to `6 s` ([`WAKING_HANDSHAKE_GRACE_NS`], covering the initial
+    /// `HandshakeInit` plus one `5 s` `REKEY_TIMEOUT` retransmission + `1 s` jitter).
+    pub waking_timeout: Duration,
 }
 
 impl Default for OnDemandConfig {
@@ -102,6 +110,7 @@ impl OnDemandConfig {
             enabled: false,
             idle_timeout: DEFAULT_ON_DEMAND_IDLE_TIMEOUT,
             defer_initial_handshake: false,
+            waking_timeout: Duration::from_nanos(WAKING_HANDSHAKE_GRACE_NS),
         }
     }
 
@@ -118,6 +127,7 @@ impl OnDemandConfig {
             enabled: true,
             idle_timeout: clamped,
             defer_initial_handshake: true,
+            waking_timeout: Duration::from_nanos(WAKING_HANDSHAKE_GRACE_NS),
         }
     }
 
@@ -127,10 +137,17 @@ impl OnDemandConfig {
         self
     }
 
+    /// Builder override for `waking_timeout` (clamped to at least 50 ms).
+    pub fn with_waking_timeout(mut self, timeout: Duration) -> Self {
+        self.waking_timeout = timeout.max(Duration::from_millis(50));
+        self
+    }
+
     /// Parse configuration from node environment variables:
     /// * `ROOMLERD_OVERLAY_ON_DEMAND` / `OVERLAY_ON_DEMAND`: `"1" | "true" | "on" | "yes"`
     /// * `ROOMLERD_OVERLAY_ON_DEMAND_IDLE_SECS` / `OVERLAY_ON_DEMAND_IDLE_SECS`: seconds (`u64`, min 1s)
     /// * `ROOMLERD_OVERLAY_ON_DEMAND_DEFER_INITIAL` / `OVERLAY_ON_DEMAND_DEFER_INITIAL`: `"0" | "false" | "off" | "no"` to disable initial deferral
+    /// * `ROOMLERD_OVERLAY_ON_DEMAND_WAKE_TIMEOUT_SECS` / `OVERLAY_ON_DEMAND_WAKE_TIMEOUT_SECS`: seconds (`u64`, min 1s)
     pub fn from_env() -> Self {
         let enabled = crate::env::node_env("OVERLAY_ON_DEMAND")
             .as_deref()
@@ -147,10 +164,16 @@ impl OnDemandConfig {
             .as_deref()
             .map(|s| !parse_bool_false(s))
             .unwrap_or(true);
+        let waking_timeout = crate::env::node_env("OVERLAY_ON_DEMAND_WAKE_TIMEOUT_SECS")
+            .as_deref()
+            .and_then(|s| s.trim().parse::<u64>().ok())
+            .map(|secs| Duration::from_secs(secs.max(1)))
+            .unwrap_or(Duration::from_nanos(WAKING_HANDSHAKE_GRACE_NS));
         Self {
             enabled: true,
             idle_timeout,
             defer_initial_handshake,
+            waking_timeout,
         }
     }
 }
@@ -206,7 +229,13 @@ impl OnDemandPhase {
 /// * Type 4 Empty Transport Data = Persistent Keepalive (32 bytes: 16B header + 0B payload + 16B tag)
 #[inline]
 pub fn is_wg_background_frame(frame: &[u8]) -> bool {
-    if frame.len() < 4 {
+    if !matches!(
+        frame.len(),
+        WG_KEEPALIVE_BYTES
+            | WG_COOKIE_REPLY_BYTES
+            | WG_HANDSHAKE_RESP_BYTES
+            | WG_HANDSHAKE_INIT_BYTES
+    ) {
         return false;
     }
     let hdr = [frame[0], frame[1], frame[2], frame[3]];
@@ -257,6 +286,8 @@ pub struct PeerOnDemandSnapshot {
     pub outbound_wake_count: u64,
     /// Number of `Dormant -> Active` transitions triggered by inbound peer initiation/data.
     pub inbound_wake_count: u64,
+    /// Number of `Waking` handshakes that exceeded `waking_timeout` and marked the carrier dead for fallback.
+    pub wake_timeout_count: u64,
     /// Number of business packets queued in `Tunn` while `Waking`.
     pub queued_on_wake_packets: u64,
     /// Number of queued business packets flushed immediately upon handshake completion.
@@ -281,10 +312,11 @@ pub(crate) enum OutboundEncap {
     Dropped,
 }
 
-/// Minimum grace period (`6 s`, covering one `5 s` WireGuard `REKEY_TIMEOUT`
-/// plus jitter) during which an in-flight `OnDemandPhase::Waking` handshake is
-/// never retired back to `Dormant`, even if `idle_timeout` is configured shorter
-/// in tests.
+/// Default `Waking` handshake timeout (`6 s`, covering the initial
+/// `HandshakeInit` plus one `5 s` WireGuard `REKEY_TIMEOUT` retransmission plus
+/// `1 s` jitter) after which an unanswered `OnDemandPhase::Waking` handshake
+/// marks the carrier dead (`carrier.mark_dead()`) so `sweep_carrier_health` can
+/// immediately fall back (e.g. from an expired direct NAT pinhole to relay).
 pub const WAKING_HANDSHAKE_GRACE_NS: u64 = 6_000_000_000;
 
 /// WireGuard `REJECT_AFTER_TIME` (`180 s`): a pre-dormancy session older than
@@ -292,25 +324,23 @@ pub const WAKING_HANDSHAKE_GRACE_NS: u64 = 6_000_000_000;
 /// runs.
 const WG_REJECT_AFTER_TIME: Duration = Duration::from_secs(180);
 
-/// Maximum duration (`90 s`, matching WireGuard `REKEY_ATTEMPT_TIME`) during
-/// which a pre-dormancy timer crossing `ConnectionExpired` while `Waking` is
-/// treated as a timer-epoch resync rather than a dead carrier.
-pub const WAKING_CONNECTION_EXPIRED_GRACE_NS: u64 = 90_000_000_000;
-
 /// Lock-free per-peer on-demand state and wire-traffic accounting embedded in
 /// [`super::wg::PeerStats`].
 pub(crate) struct PeerOnDemand {
     enabled: AtomicBool,
     phase: AtomicU8,
     idle_timeout_ns: AtomicU64,
+    waking_timeout_ns: AtomicU64,
     last_business_ns: AtomicU64,
     wake_started_ns: AtomicU64,
+    wake_timed_out: AtomicBool,
     last_wake_latency_ns: AtomicU64,
     max_wake_latency_ns: AtomicU64,
     dormant_transitions: AtomicU64,
     wake_count: AtomicU64,
     outbound_wake_count: AtomicU64,
     inbound_wake_count: AtomicU64,
+    wake_timeout_count: AtomicU64,
     queued_on_wake_packets: AtomicU64,
     flushed_on_wake_packets: AtomicU64,
     /// Additional packets queued via `TunnResult::Done` while a wake handshake
@@ -338,18 +368,10 @@ pub(crate) struct PeerOnDemand {
     background_tx_bytes: AtomicU64,
     background_rx_packets: AtomicU64,
     background_rx_bytes: AtomicU64,
-    /// Static keypair and peer identity `(local_secret, peer_public, index)`
-    /// used to reconstruct `Tunn::new` in-place under the `Tunn` lock on
-    /// `Dormant` transitions and wakeups, resetting `boringtun`'s internal
-    /// `Timers` (`time_started = Instant::now()`), `HandshakeState::None`,
-    /// `sessions`, and `packet_queue` while preserving the peer's 24-bit index
-    /// in `PlaneHandle` and `DirectDemux`.
-    static_keys: Mutex<Option<(StaticSecret, PublicKey)>>,
-    peer_identity: Mutex<Option<(StaticSecret, PublicKey, u32)>>,
     /// Bounded shadow copy of outbound business packets queued while `Waking`
-    /// (up to [`BORINGTUN_QUEUE_PACKET_CAP`]), used to re-queue packets with
-    /// zero loss if `boringtun::Tunn::update_timers` resets its internal timer
-    /// epoch (`clear_all`) during an in-flight wakeup.
+    /// (up to [`BORINGTUN_QUEUE_PACKET_CAP`]), used to carry queued wakeup
+    /// packets across a dead-carrier fallback when a direct NAT pinhole expired
+    /// during dormancy.
     wake_queue: Mutex<Vec<Vec<u8>>>,
 }
 
@@ -359,14 +381,17 @@ impl Default for PeerOnDemand {
             enabled: AtomicBool::new(false),
             phase: AtomicU8::new(OnDemandPhase::Disabled as u8),
             idle_timeout_ns: AtomicU64::new(DEFAULT_ON_DEMAND_IDLE_TIMEOUT.as_nanos() as u64),
+            waking_timeout_ns: AtomicU64::new(WAKING_HANDSHAKE_GRACE_NS),
             last_business_ns: AtomicU64::new(0),
             wake_started_ns: AtomicU64::new(0),
+            wake_timed_out: AtomicBool::new(false),
             last_wake_latency_ns: AtomicU64::new(0),
             max_wake_latency_ns: AtomicU64::new(0),
             dormant_transitions: AtomicU64::new(0),
             wake_count: AtomicU64::new(0),
             outbound_wake_count: AtomicU64::new(0),
             inbound_wake_count: AtomicU64::new(0),
+            wake_timeout_count: AtomicU64::new(0),
             queued_on_wake_packets: AtomicU64::new(0),
             flushed_on_wake_packets: AtomicU64::new(0),
             pending_flushed_tx_credit: AtomicU64::new(0),
@@ -381,8 +406,6 @@ impl Default for PeerOnDemand {
             background_tx_bytes: AtomicU64::new(0),
             background_rx_packets: AtomicU64::new(0),
             background_rx_bytes: AtomicU64::new(0),
-            static_keys: Mutex::new(None),
-            peer_identity: Mutex::new(None),
             wake_queue: Mutex::new(Vec::new()),
         }
     }
@@ -394,46 +417,19 @@ impl PeerOnDemand {
     /// `make_direct_peer`).
     pub(crate) fn set_peer_identity(
         &self,
-        secret: StaticSecret,
-        peer_public: [u8; 32],
-        index: u32,
+        _secret: StaticSecret,
+        _peer_public: [u8; 32],
+        _index: u32,
     ) {
-        *self
-            .peer_identity
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) =
-            Some((secret, PublicKey::from(peer_public), index));
     }
 
-    /// Reset `t` in-place under its `Mutex<Tunn>` lock, clearing all expired
-    /// sessions, queued packets, `HandshakeState::InitSent` / `Expired` states,
-    /// and resetting `boringtun`'s internal `Timers::time_started` to
-    /// `Instant::now()` while preserving the peer's 24-bit `index` (so all
-    /// `PlaneHandle`, `DirectDemux`, `SendPeer`, and `Carrier` registrations
-    /// remain valid in place).
+    /// Reset `t`'s active sessions, queued packets, in-flight handshake state,
+    /// and internal timers in-place under its `Mutex<Tunn>` lock while
+    /// **preserving** both `handshake.last_handshake_timestamp` (the 12-byte
+    /// TAI64N anti-replay watermark) and `handshake.params.preshared_key` (B7
+    /// post-quantum PSK).
     pub(crate) fn reset_tunn_under_lock(&self, t: &mut Tunn) {
-        if let Some((secret, peer_public, index)) = self
-            .peer_identity
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone()
-        {
-            *t = Tunn::new(
-                secret,
-                peer_public,
-                None,
-                Some(super::wg::KEEPALIVE_SECS),
-                index,
-                None,
-            );
-        } else if let Some((secret, public)) = self
-            .static_keys
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone()
-        {
-            t.set_static_private(secret, public, None);
-        }
+        t.reset_sessions_preserving_replay_and_psk();
     }
 
     /// Synchronize `t`'s timers and evict any session older than
@@ -460,34 +456,21 @@ impl PeerOnDemand {
 
     /// Synchronize `t` before processing an inbound packet while `Dormant`.
     ///
-    /// * If no valid (`< 180 s`) session exists and `is_handshake_init` is
-    ///   `true` (or an expired `>= 180 s` session is still in `t`), resets `t`
-    ///   via [`Self::reset_tunn_under_lock`] so `timers.time_started` is
-    ///   `Instant::now()` and `handshake.state` is `HandshakeState::None`.
-    /// * Otherwise (a valid `< 180 s` session exists), advances `TimeCurrent`
-    ///   via `t.update_timers` while keeping the valid session intact.
+    /// Clears any stale session/in-flight state and refreshes `t.timers` to
+    /// `Instant::now()` while **preserving** `handshake.last_handshake_timestamp`
+    /// (TAI64N anti-replay watermark) and `handshake.params.preshared_key`
+    /// (B7 PQ-PSK). Consequently, any replayed pre-dormancy `HandshakeInit` is
+    /// rejected by `boringtun` with `WireGuardError::WrongTai64nTimestamp` and
+    /// never transitions the peer out of `Dormant`.
     pub(crate) fn prepare_inbound_while_dormant_under_lock(
         &self,
         t: &mut Tunn,
-        is_handshake_init: bool,
+        _is_handshake_init: bool,
     ) {
         if !self.is_dormant() {
             return;
         }
-        let has_fresh_session = t
-            .time_since_last_handshake()
-            .is_some_and(|d| d < WG_REJECT_AFTER_TIME);
-        if has_fresh_session {
-            let mut scratch = [0u8; WG_HANDSHAKE_INIT_BYTES + 32];
-            if matches!(
-                t.update_timers(&mut scratch),
-                TunnResult::Err(boringtun::noise::errors::WireGuardError::ConnectionExpired)
-            ) {
-                self.reset_tunn_under_lock(t);
-            }
-        } else if is_handshake_init || t.time_since_last_handshake().is_some() {
-            self.reset_tunn_under_lock(t);
-        }
+        self.reset_tunn_under_lock(t);
     }
 
     /// Configure on-demand state for an installed peer. Returns `true` if the
@@ -496,19 +479,21 @@ impl PeerOnDemand {
     pub(crate) fn configure(
         &self,
         cfg: OnDemandConfig,
-        secret: StaticSecret,
+        _secret: StaticSecret,
         held: bool,
         now_ns: u64,
     ) -> bool {
-        let public = PublicKey::from(&secret);
-        *self.static_keys.lock().unwrap_or_else(|e| e.into_inner()) = Some((secret, public));
         self.external_hold.store(held, Ordering::Relaxed);
         let timeout_ns = (cfg.idle_timeout.as_nanos() as u64)
             .max(MIN_ON_DEMAND_IDLE_TIMEOUT.as_nanos() as u64);
         self.idle_timeout_ns.store(timeout_ns, Ordering::Relaxed);
+        let waking_ns = (cfg.waking_timeout.as_nanos() as u64)
+            .max(Duration::from_millis(50).as_nanos() as u64);
+        self.waking_timeout_ns.store(waking_ns, Ordering::Relaxed);
         self.last_business_ns
             .store(now_ns.max(1), Ordering::Relaxed);
         self.wake_started_ns.store(0, Ordering::Relaxed);
+        self.wake_timed_out.store(false, Ordering::Relaxed);
         let was_dormant = self.phase() == OnDemandPhase::Dormant;
         if !cfg.enabled {
             self.enabled.store(false, Ordering::Relaxed);
@@ -575,6 +560,66 @@ impl PeerOnDemand {
         }
     }
 
+    /// Returns `true` if the peer is currently in [`OnDemandPhase::Waking`] and
+    /// `waking_elapsed_ns(now_ns)` has reached `waking_timeout_ns` (`6 s` by
+    /// default). Increments `wake_timeout_count` on first observation so the
+    /// caller can immediately mark the carrier dead (`carrier.mark_dead()`) and
+    /// trigger carrier fallback (e.g. from an expired direct NAT pinhole to
+    /// relay) instead of waiting 90 s.
+    #[inline]
+    pub(crate) fn check_and_note_waking_timeout(&self, now_ns: u64) -> bool {
+        if !self.is_enabled() || !self.is_waking() {
+            return false;
+        }
+        let timeout = self.waking_timeout_ns.load(Ordering::Relaxed);
+        if self.waking_elapsed_ns(now_ns) < timeout {
+            return false;
+        }
+        if !self.wake_timed_out.swap(true, Ordering::AcqRel) {
+            self.wake_timeout_count.fetch_add(1, Ordering::Relaxed);
+        }
+        true
+    }
+
+    /// Drain buffered wakeup packets from a peer whose carrier is being
+    /// replaced during a wakeup (e.g. after a direct NAT pinhole timed out and
+    /// fell back to a relay carrier).
+    pub(crate) fn take_wake_queue(&self) -> Vec<Vec<u8>> {
+        std::mem::take(&mut *self.wake_queue.lock().unwrap_or_else(|e| e.into_inner()))
+    }
+
+    /// Seed a newly installed fallback carrier peer with buffered wakeup
+    /// packets inherited from a timed-out `Waking` carrier so the packets are
+    /// queued into `t` and flushed in FIFO order as soon as the fallback
+    /// handshake completes.
+    pub(crate) fn inherit_wake_queue(
+        &self,
+        t: &mut Tunn,
+        packets: Vec<Vec<u8>>,
+        now_ns: u64,
+    ) {
+        if packets.is_empty() {
+            return;
+        }
+        let stamp = now_ns.max(1);
+        self.last_business_ns.store(stamp, Ordering::Release);
+        for pkt in &packets {
+            t.queue_packet_only(pkt);
+        }
+        if self.is_enabled() {
+            let count = packets.len() as u64;
+            self.phase
+                .store(OnDemandPhase::Waking as u8, Ordering::Release);
+            self.wake_started_ns.store(stamp, Ordering::Release);
+            self.wake_timed_out.store(false, Ordering::Release);
+            self.queued_on_wake_packets
+                .fetch_add(count, Ordering::Relaxed);
+            self.pending_flushed_tx_credit
+                .store(count, Ordering::Release);
+            *self.wake_queue.lock().unwrap_or_else(|e| e.into_inner()) = packets;
+        }
+    }
+
     #[inline]
     pub(crate) fn has_external_hold(&self) -> bool {
         self.external_hold.load(Ordering::Relaxed)
@@ -624,12 +669,20 @@ impl PeerOnDemand {
     }
 
     /// Record one WireGuard frame transmitted on the carrier.
+    ///
+    /// When on-demand is globally disabled (`!self.is_enabled()`), non-background
+    /// transport data frames skip all atomic RMW updates on the hot send path,
+    /// while control/keepalive frames remain counted for baseline telemetry.
     #[inline]
     pub(crate) fn record_wire_tx(&self, frame: &[u8]) {
+        let is_bg = is_wg_background_frame(frame);
+        if !is_bg && !self.is_enabled() {
+            return;
+        }
         let len = frame.len() as u64;
         self.wire_tx_packets.fetch_add(1, Ordering::Relaxed);
         self.wire_tx_bytes.fetch_add(len, Ordering::Relaxed);
-        if is_wg_background_frame(frame) {
+        if is_bg {
             self.background_tx_packets.fetch_add(1, Ordering::Relaxed);
             self.background_tx_bytes.fetch_add(len, Ordering::Relaxed);
         }
@@ -639,17 +692,28 @@ impl PeerOnDemand {
     /// direct socket.
     #[inline]
     pub(crate) fn record_wire_tx_data_batch(&self, packets: u64, bytes: u64) {
+        if !self.is_enabled() {
+            return;
+        }
         self.wire_tx_packets.fetch_add(packets, Ordering::Relaxed);
         self.wire_tx_bytes.fetch_add(bytes, Ordering::Relaxed);
     }
 
     /// Record one authenticated WireGuard frame received on the carrier.
+    ///
+    /// When on-demand is globally disabled (`!self.is_enabled()`), non-background
+    /// transport data frames skip all atomic RMW updates on the hot receive path,
+    /// while control/keepalive frames remain counted for baseline telemetry.
     #[inline]
     pub(crate) fn record_wire_rx(&self, frame: &[u8]) {
+        let is_bg = is_wg_background_frame(frame);
+        if !is_bg && !self.is_enabled() {
+            return;
+        }
         let len = frame.len() as u64;
         self.wire_rx_packets.fetch_add(1, Ordering::Relaxed);
         self.wire_rx_bytes.fetch_add(len, Ordering::Relaxed);
-        if is_wg_background_frame(frame) {
+        if is_bg {
             self.background_rx_packets.fetch_add(1, Ordering::Relaxed);
             self.background_rx_bytes.fetch_add(len, Ordering::Relaxed);
         }
@@ -660,17 +724,17 @@ impl PeerOnDemand {
     ///
     /// If the peer was [`OnDemandPhase::Dormant`], transitions it to
     /// [`OnDemandPhase::Waking`], records `wake_started_ns`, clears any stale
-    /// `Tunn` sessions via `Tunn::set_static_private` (preserving `next_index`
-    /// and TAI64N replay state), refreshes `boringtun`'s internal `TimeCurrent`
-    /// timer, and returns `true` so the caller forces a fresh Handshake
-    /// Initiation if needed.
+    /// `Tunn` sessions in-place via `Tunn::reset_sessions_preserving_replay_and_psk`
+    /// (preserving `next_index`, TAI64N replay watermark, and B7 PQ-PSK),
+    /// refreshes `boringtun`'s internal `TimeCurrent` timer, and returns `true`
+    /// so the caller forces a fresh Handshake Initiation if needed.
     pub(crate) fn prepare_outbound_under_lock(&self, t: &mut Tunn, now_ns: u64) -> bool {
-        let stamp = now_ns.max(1);
-        self.last_business_ns.store(stamp, Ordering::Release);
         self.sync_tunn_if_needed_under_lock(t);
         if !self.is_enabled() {
             return false;
         }
+        let stamp = now_ns.max(1);
+        self.last_business_ns.store(stamp, Ordering::Release);
         if self
             .phase
             .compare_exchange(
@@ -683,6 +747,7 @@ impl PeerOnDemand {
         {
             self.needs_timer_sync.store(false, Ordering::Release);
             self.wake_started_ns.store(stamp, Ordering::Release);
+            self.wake_timed_out.store(false, Ordering::Release);
             self.outbound_wake_count.fetch_add(1, Ordering::Relaxed);
             self.pending_flushed_tx_credit.store(0, Ordering::Release);
             self.wake_queue
@@ -712,39 +777,6 @@ impl PeerOnDemand {
     pub(crate) fn note_wake_init_send_failed(&self) {
         self.pending_flushed_tx_credit
             .fetch_add(1, Ordering::Relaxed);
-    }
-
-    /// Re-queue buffered wake packets and emit a fresh `HandshakeInit` after
-    /// `boringtun::Tunn::update_timers` returned `ConnectionExpired` (which
-    /// called `clear_all()`, resetting all internal timers to `now` and
-    /// clearing `t.packet_queue`) during an in-flight wakeup.
-    pub(crate) fn requeue_wake_packets_after_timer_reset(
-        &self,
-        t: &mut Tunn,
-        out: &mut [u8],
-    ) -> Option<Vec<u8>> {
-        let packets = self
-            .wake_queue
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone();
-        let base = out.as_ptr() as usize;
-        let mut init_wire = None;
-        for pkt in &packets {
-            if let TunnResult::WriteToNetwork(b) = t.encapsulate(pkt, out)
-                && init_wire.is_none()
-            {
-                let (off, n) = (b.as_ptr() as usize - base, b.len());
-                init_wire = Some(out[off..off + n].to_vec());
-            }
-        }
-        if init_wire.is_none()
-            && let TunnResult::WriteToNetwork(b) = t.format_handshake_initiation(out, true)
-        {
-            let (off, n) = (b.as_ptr() as usize - base, b.len());
-            init_wire = Some(out[off..off + n].to_vec());
-        }
-        init_wire
     }
 
     /// Encapsulate a single outbound IP packet under the `Tunn` lock, handling
@@ -848,6 +880,7 @@ impl PeerOnDemand {
                 self.inbound_wake_count.fetch_add(1, Ordering::Relaxed);
                 self.wake_count.fetch_add(1, Ordering::Relaxed);
                 self.wake_started_ns.store(0, Ordering::Release);
+                self.wake_timed_out.store(false, Ordering::Release);
             }
             Err(cur) if cur == OnDemandPhase::Waking as u8 => {
                 self.last_business_ns.store(stamp, Ordering::Release);
@@ -899,6 +932,7 @@ impl PeerOnDemand {
         if prev == OnDemandPhase::Waking as u8 || prev == OnDemandPhase::Dormant as u8 {
             self.needs_timer_sync.store(false, Ordering::Release);
             self.pending_flushed_tx_credit.store(0, Ordering::Release);
+            self.wake_timed_out.store(false, Ordering::Release);
             self.wake_queue
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
@@ -918,11 +952,11 @@ impl PeerOnDemand {
     /// business IP packet (`WriteToTunnelV4` / `WriteToTunnelV6`) passes
     /// ingress checks.
     pub(crate) fn on_inbound_business_packet(&self, now_ns: u64) {
-        let stamp = now_ns.max(1);
-        self.last_business_ns.store(stamp, Ordering::Release);
         if !self.is_enabled() {
             return;
         }
+        let stamp = now_ns.max(1);
+        self.last_business_ns.store(stamp, Ordering::Release);
         let prev = self
             .phase
             .swap(OnDemandPhase::Active as u8, Ordering::AcqRel);
@@ -931,8 +965,10 @@ impl PeerOnDemand {
             self.inbound_wake_count.fetch_add(1, Ordering::Relaxed);
             self.wake_count.fetch_add(1, Ordering::Relaxed);
             self.wake_started_ns.store(0, Ordering::Release);
+            self.wake_timed_out.store(false, Ordering::Release);
         } else if prev == OnDemandPhase::Waking as u8 {
             self.pending_flushed_tx_credit.store(0, Ordering::Release);
+            self.wake_timed_out.store(false, Ordering::Release);
             self.wake_queue
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
@@ -948,21 +984,17 @@ impl PeerOnDemand {
     }
 
     /// Fast lock-free pre-check before acquiring the `Tunn` lock on the timer
-    /// path: returns `true` if the peer is currently `Active` or `Waking`, has
-    /// no hold, and its idle duration has reached `idle_timeout_ns` (or at
-    /// least [`WAKING_HANDSHAKE_GRACE_NS`] while `Waking`).
+    /// path: returns `true` if the peer is currently `Active`, has no hold, and
+    /// its idle duration has reached `idle_timeout_ns`. An unanswered `Waking`
+    /// peer is never retired to `Dormant` before `check_and_note_waking_timeout`
+    /// marks its dead carrier for fallback.
     #[inline]
     pub(crate) fn is_idle_candidate(&self, local_hold: bool, now_ns: u64) -> bool {
         if !self.is_enabled() || local_hold || self.has_external_hold() {
             return false;
         }
-        let phase = self.phase();
-        let timeout = match phase {
+        let timeout = match self.phase() {
             OnDemandPhase::Active => self.idle_timeout_ns.load(Ordering::Relaxed),
-            OnDemandPhase::Waking => self
-                .idle_timeout_ns
-                .load(Ordering::Relaxed)
-                .max(WAKING_HANDSHAKE_GRACE_NS),
             _ => return false,
         };
         let last = self.last_business_ns.load(Ordering::Acquire);
@@ -981,14 +1013,10 @@ impl PeerOnDemand {
         if !self.is_idle_candidate(local_hold, now_ns) {
             return false;
         }
-        let cur = self.phase.load(Ordering::Acquire);
-        if cur != OnDemandPhase::Active as u8 && cur != OnDemandPhase::Waking as u8 {
-            return false;
-        }
         if self
             .phase
             .compare_exchange(
-                cur,
+                OnDemandPhase::Active as u8,
                 OnDemandPhase::Dormant as u8,
                 Ordering::AcqRel,
                 Ordering::Relaxed,
@@ -997,6 +1025,7 @@ impl PeerOnDemand {
         {
             self.reset_tunn_under_lock(t);
             self.pending_flushed_tx_credit.store(0, Ordering::Release);
+            self.wake_timed_out.store(false, Ordering::Release);
             self.wake_queue
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
@@ -1031,6 +1060,7 @@ impl PeerOnDemand {
             wake_count: self.wake_count.load(Ordering::Relaxed),
             outbound_wake_count: self.outbound_wake_count.load(Ordering::Relaxed),
             inbound_wake_count: self.inbound_wake_count.load(Ordering::Relaxed),
+            wake_timeout_count: self.wake_timeout_count.load(Ordering::Relaxed),
             queued_on_wake_packets: self.queued_on_wake_packets.load(Ordering::Relaxed),
             flushed_on_wake_packets: self.flushed_on_wake_packets.load(Ordering::Relaxed),
             last_wake_latency: (last_lat != 0).then(|| Duration::from_nanos(last_lat)),
@@ -1081,5 +1111,99 @@ mod tests {
         assert!(on.enabled);
         assert!(on.defer_initial_handshake);
         assert_eq!(on.idle_timeout, MIN_ON_DEMAND_IDLE_TIMEOUT);
+    }
+
+    #[test]
+    fn dormancy_preserves_tai64n_replay_watermark_and_psk_and_rejects_replayed_handshake_init() {
+        use crate::overlay::WgKeypair;
+        use boringtun::noise::errors::WireGuardError;
+        use boringtun::x25519::PublicKey;
+
+        let a = WgKeypair::generate();
+        let b = WgKeypair::generate();
+        let psk = [0x5Au8; 32];
+        let mut tunn_a = Tunn::new(
+            a.secret.clone(),
+            PublicKey::from(b.public.to_bytes()),
+            Some(psk),
+            None,
+            1,
+            None,
+        );
+        let mut tunn_b = Tunn::new(
+            b.secret.clone(),
+            PublicKey::from(a.public.to_bytes()),
+            Some(psk),
+            None,
+            2,
+            None,
+        );
+        let od_b = PeerOnDemand::default();
+        let cfg = OnDemandConfig::enabled(Duration::from_millis(10))
+            .with_defer_initial_handshake(false);
+        od_b.configure(cfg, b.secret.clone(), false, 1_000_000);
+        assert_eq!(od_b.phase(), OnDemandPhase::Active);
+
+        // 1. Complete initial handshake before dormancy and capture the
+        //    authenticated HandshakeInit (`captured_init_1`).
+        let mut buf = vec![0u8; 2048];
+        let captured_init_1 = match tunn_a.format_handshake_initiation(&mut buf, false) {
+            TunnResult::WriteToNetwork(p) => p.to_vec(),
+            other => panic!("expected HandshakeInit, got {other:?}"),
+        };
+        let resp_1 = match tunn_b.decapsulate(None, &captured_init_1, &mut buf) {
+            TunnResult::WriteToNetwork(p) => p.to_vec(),
+            other => panic!("expected HandshakeResponse, got {other:?}"),
+        };
+        assert!(matches!(
+            tunn_a.decapsulate(None, &resp_1, &mut buf),
+            TunnResult::WriteToNetwork(_) | TunnResult::Done
+        ));
+
+        // 2. Transition `od_b` from `Active -> Dormant` via `try_enter_dormant_under_lock`.
+        assert!(od_b.try_enter_dormant_under_lock(
+            false,
+            &mut tunn_b,
+            1_000_000 + 50_000_000,
+        ));
+        assert_eq!(od_b.phase(), OnDemandPhase::Dormant);
+        assert_eq!(
+            tunn_b.preshared_key(),
+            Some(psk),
+            "B7 PQ-PSK must be preserved across Active -> Dormant transition"
+        );
+        assert!(
+            !tunn_b.has_current_session(),
+            "active transport sessions must be cleared upon entering Dormant"
+        );
+
+        // 3. Replay `captured_init_1` while `od_b` is `Dormant`:
+        //    `prepare_inbound_while_dormant_under_lock` + `tunn_b.decapsulate`
+        //    must reject it with `WrongTai64nTimestamp` and MUST NOT wake `od_b`.
+        od_b.prepare_inbound_while_dormant_under_lock(&mut tunn_b, true);
+        let replay_res = tunn_b.decapsulate(None, &captured_init_1, &mut buf);
+        assert!(
+            matches!(replay_res, TunnResult::Err(WireGuardError::WrongTai64nTimestamp)),
+            "replayed pre-dormancy HandshakeInit must be rejected with WrongTai64nTimestamp, got {replay_res:?}"
+        );
+        assert_eq!(
+            od_b.phase(),
+            OnDemandPhase::Dormant,
+            "replayed HandshakeInit must not transition peer out of Dormant"
+        );
+
+        // 4. Also verify outbound wakeup (`Dormant -> Waking`) preserves the
+        //    TAI64N watermark and PSK.
+        assert!(od_b.prepare_outbound_under_lock(&mut tunn_b, 100_000_000));
+        assert_eq!(od_b.phase(), OnDemandPhase::Waking);
+        assert_eq!(tunn_b.preshared_key(), Some(psk));
+        let replay_while_waking = tunn_b.decapsulate(None, &captured_init_1, &mut buf);
+        assert!(
+            matches!(
+                replay_while_waking,
+                TunnResult::Err(WireGuardError::WrongTai64nTimestamp)
+            ),
+            "replayed pre-dormancy HandshakeInit must still be rejected while Waking"
+        );
     }
 }

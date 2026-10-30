@@ -1344,6 +1344,9 @@ impl OverlayRuntime {
         // accumulated an entry per peer that ever churned (the monitor's
         // per-peer state is dropped by `on_peer_removed` above).
         relay_refresh_cooldown.remove(&node_id);
+        if let Some(ref e) = removed {
+            wg.clear_pending_wake_queue(&e.pubkey);
+        }
         if removed.is_some() {
             info!(peer = %node_id, "overlay: peer removed");
         }
@@ -3846,5 +3849,97 @@ mod tests {
             0,
             "sweep_carrier_health must not emit any poke packet on a dormant peer"
         );
+    }
+
+    /// MeshHarbor B6 R2 — when a peer wakes on a direct NAT carrier whose
+    /// UDP pinhole has expired during `Dormant`, `check_and_note_waking_timeout`
+    /// marks the carrier `hard_dead` once `waking_timeout` (default 6 s)
+    /// elapses, and `sweep_carrier_health` immediately convicts and removes
+    /// the dead direct carrier instead of waiting 90 s (`WAKING_CONNECTION_EXPIRED_GRACE_NS`).
+    #[tokio::test]
+    async fn b6_waking_timeout_marks_carrier_dead_and_triggers_immediate_health_sweep_conviction() {
+        let kp = WgKeypair::generate();
+        let peer_kp = WgKeypair::generate();
+        let pk = peer_kp.public.to_bytes();
+        let nid = ObjectId::new();
+        let ip = Ipv4Addr::new(100, 64, 9, 10);
+
+        let (tx, _rx) = mpsc::channel(16);
+        let tun: Arc<dyn TunIo> = Arc::new(NoopTun);
+        let tf: TunFactory = {
+            let t = tun.clone();
+            Box::new(move |_, _, _| Ok(t.clone()))
+        };
+        let rt = OverlayRuntime::new_relay(kp.clone(), tx, tf, 1280);
+
+        let (mut wg, _tun_rx) = WgDevice::new(kp.secret.clone());
+        wg.set_on_demand_config(
+            crate::overlay::on_demand::OnDemandConfig::enabled(Duration::from_millis(200))
+                .with_waking_timeout(Duration::from_millis(120)),
+        );
+
+        let sock = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let blackhole_sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let dst = blackhole_sock.local_addr().unwrap();
+        wg.ensure_direct_demux(sock.clone());
+        wg.add_direct_peer(sock, pk, ip, dst, true).await;
+        assert_eq!(wg.peer_is_dormant(&pk), Some(true));
+
+        let inst = Installed::base(pk, ip, DirectTier::Srflx, Instant::now());
+        let mut by_node = HashMap::from([(nid, inst)]);
+        let mut relay = None;
+        let mut cooldown = HashMap::new();
+        let current_peers = HashMap::new();
+
+        // Trigger outbound wakeup (`Dormant -> Waking`) with a business IPv4 packet.
+        let mut pkt = vec![0u8; 28];
+        pkt[0] = 0x45;
+        pkt[3] = 28;
+        pkt[8] = 64;
+        pkt[9] = 17;
+        pkt[12..16].copy_from_slice(&[100, 64, 9, 1]);
+        pkt[16..20].copy_from_slice(&ip.octets());
+        assert!(wg.send_ip_packet(&pkt).await);
+        assert_eq!(
+            wg.peer_on_demand_phase(&pk),
+            Some(crate::overlay::on_demand::OnDemandPhase::Waking)
+        );
+
+        // Before `waking_timeout` (120 ms) elapses, `sweep_carrier_health` keeps the waking carrier.
+        let lost_early = rt
+            .sweep_carrier_health(
+                &mut wg,
+                &mut by_node,
+                &mut relay,
+                &tun,
+                &mut cooldown,
+                &current_peers,
+                ForcedPoke::No,
+            )
+            .await;
+        assert!(!lost_early, "waking peer before waking_timeout must not be convicted");
+        assert!(by_node.contains_key(&nid));
+
+        // Wait past `waking_timeout` (120 ms): `tick_on_demand` inside
+        // `sweep_carrier_health` marks the carrier `hard_dead` and convicts it
+        // immediately, while preserving the buffered wakeup packet in
+        // `pending_wake_queues` for the fallback carrier install.
+        tokio::time::sleep(Duration::from_millis(160)).await;
+        let lost_after = rt
+            .sweep_carrier_health(
+                &mut wg,
+                &mut by_node,
+                &mut relay,
+                &tun,
+                &mut cooldown,
+                &current_peers,
+                ForcedPoke::No,
+            )
+            .await;
+        assert!(
+            lost_after,
+            "waking peer past waking_timeout must be convicted immediately for relay fallback"
+        );
+        assert!(!by_node.contains_key(&nid));
     }
 }

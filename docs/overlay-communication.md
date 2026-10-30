@@ -828,6 +828,62 @@ server. Detail and the negative-control test:
 
 ---
 
+## 8d. On-Demand Pair Tunneling (B6) & B1/B5/B6/B7 Composition
+
+By default (`ROOMLERD_OVERLAY_ON_DEMAND=off`), installed WireGuard peers
+initiate handshakes immediately and maintain 25 s persistent keepalives plus
+periodic rekeys. When `ROOMLERD_OVERLAY_ON_DEMAND=on` (`1`/`true`/`yes`,
+`crates/tunnel-core/src/overlay/on_demand.rs`), idle peer sessions transition
+through `Dormant -> Waking -> Active -> Dormant`:
+
+1. **In-place session retirement (`Tunn::reset_sessions_preserving_replay_and_psk`):**
+   - Entering `Dormant` (or waking from `Dormant`) clears active transport
+     `sessions`, queued packets, and in-flight handshake state while
+     **preserving** both `handshake.last_handshake_timestamp` (the 12-byte
+     TAI64N anti-replay watermark) and `handshake.params.preshared_key` (any B7
+     post-quantum PSK).
+   - While `Dormant`, `Tunn::update_timers` is suspended (`0` keepalives, `0`
+     rekey initiations, `0` wire bytes), while OS `/32` routes, cryptokey
+     routing entries, and direct/plane demux registrations stay installed.
+   - Any replayed pre-dormancy `HandshakeInit` arriving while `Dormant` or
+     `Waking` is rejected by `boringtun` with
+     `WireGuardError::WrongTai64nTimestamp` before `on_inbound_handshake_init`
+     can run, so replays never wake a `Dormant` peer or repoint a direct
+     carrier.
+2. **Fast `waking_timeout` fallback (`OVERLAY_ON_DEMAND_WAKE_TIMEOUT_SECS`, default `6 s`) with zero-loss `wake_queue` inheritance:**
+   - Because `Dormant` suppresses keepalives, a stateful NAT's UDP pinhole
+     (typically 30–180 s) can expire while a direct peer is `Dormant`.
+   - When an outbound wake enters `Waking` and its handshake does not complete
+     within `waking_timeout` (default `6 s`), `check_and_note_waking_timeout`
+     marks the carrier `hard_dead` (`carrier.mark_dead()`) so
+     `sweep_carrier_health` immediately convicts the dead direct carrier and
+     falls back to relay/re-punch instead of waiting 90 s.
+   - Outbound IP packets arriving during `Waking` are mirrored in `wake_queue`
+     (up to 256 packets), preserved across `remove_peer` into
+     `pending_wake_queues`, and seeded into the replacement carrier's `Tunn`
+     via `inherit_wake_queue` (`Tunn::queue_packet_only`) before its initial
+     `HandshakeInit`, delivering the full burst in FIFO order with zero packet
+     loss once the fallback handshake completes.
+3. **Cross-feature composition (`B1` / `B5` / `B6` / `B7`):**
+   - **B1 (Birthday socket & TAI64N roaming):** Both B1 (`try_repoint_direct_peer_init`,
+     `try_repoint_relay_peer_init`) and B6 (`reset_tunn_under_lock`) preserve
+     the existing `Tunn` instance and its `last_handshake_timestamp` watermark.
+     Active upgrade probes (`self.probes`) assert an `external_hold` on
+     `PeerOnDemand`, keeping the peer out of `Dormant` while a probe is in
+     flight.
+   - **B5 (Subnet-Router HA):** `sweep_carrier_health` skips `RxStale` /
+     `HandshakeDeadline` conviction and forced pokes on `Dormant` peers
+     (`take_peer_dormant_since_last_sweep`), so a healthy `Dormant` primary
+     subnet router is never falsely marked unhealthy or failed over to standby;
+     only an actual `hard_dead` carrier (including a `waking_timeout` expiry)
+     triggers failover.
+   - **B7 (Optional Post-Quantum PSK):** Both B6 (`reset_sessions_preserving_replay_and_psk`)
+     and B7 (`set_preshared_key`) mutate the existing `Tunn` in-place under its
+     `Mutex<Tunn>` lock. Dormancy transitions never overwrite `preshared_key`,
+     and B7 periodic PQ-PSK rotations skip `Dormant` peers until they wake.
+
+---
+
 ## 9. Configuration reference
 
 <!-- RETIRED-NAME-ANCHOR(4): names the legacy env prefix env::node_env still honours; an

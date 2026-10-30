@@ -72,6 +72,9 @@ exclude = [
     # Vendored upstream with TCP congestion control that actually bounds
     # bytes in flight — see the smoltcp patch note below [patch.crates-io].
     "crates/vendored/smoltcp",
+    # Vendored upstream with in-place PSK & session-reset accessors that
+    # preserve the TAI64N replay watermark — see [patch.crates-io].
+    "crates/vendored/boringtun",
 ]
 
 # Patch webrtc-rs's rtp-0.12.0 dependency with our local vendored copy
@@ -171,6 +174,7 @@ webrtc-sctp = { path = "crates/vendored/webrtc-sctp" }
 smoltcp = { path = "crates/vendored/smoltcp" }
 wintun-bindings = { path = "crates/vendored/wintun-bindings" }
 scrap = { path = "crates/vendored/scrap" }
+boringtun = { path = "crates/vendored/boringtun" }
 
 [workspace.package]
 version = "0.4.151"
