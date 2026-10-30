@@ -209,6 +209,13 @@ fn backing_device_id(n: &OverlayNode) -> ObjectId {
 #[derive(Debug, Deserialize)]
 pub struct SetApprovedRoutesRequest {
     pub approved_routes: Vec<String>,
+    /// B5 — opt-in to Subnet-Router HA: when `true`, allows approving an
+    /// identical canonical CIDR that is already approved on another live router
+    /// in the same zone (forming an active/standby HA group). Partial overlaps
+    /// (`10.0.0.0/16` vs `10.0.1.0/24`) and unrequested duplicates (`allow_ha:
+    /// false`) remain rejected with `409 Conflict`.
+    #[serde(default)]
+    pub allow_ha: bool,
 }
 
 /// GET /api/tenant/{tenant_id}/overlay-node — list the tenant's overlay nodes
@@ -342,28 +349,45 @@ pub async fn set_approved_routes(
     } else {
         None
     };
+    let effective_zone = if iso == crate::business_isolation::Mode::Enforce {
+        zone_now.or(node.routes_zone.as_deref())
+    } else {
+        None
+    };
     for r in &approved {
+        let ha_requested = body.allow_ha || node.approved_routes.contains(r);
         let overlapping: Vec<_> = nodes
             .iter()
             .filter(|n| n.id != Some(nid))
-            .filter_map(|n| {
+            .flat_map(|n| {
                 n.approved_routes
                     .iter()
-                    .find(|a| a.as_str() != DEFAULT_ROUTE_V4 && cidrs_overlap(a, r))
-                    .map(|a| (n, a))
+                    .filter(|a| a.as_str() != DEFAULT_ROUTE_V4 && cidrs_overlap(a, r))
+                    .map(move |a| (n, a))
             })
             .collect();
         for (holder, held) in overlapping {
-            if let Some(mine) = zone_now {
+            let mut same_known_zone = iso != crate::business_isolation::Mode::Enforce;
+            if let Some(mine) = effective_zone {
                 let theirs = match holder.routes_zone.clone() {
                     Some(z) => Some(z),
                     None => crate::business_isolation::zone_of(&state, iso, holder)
                         .await
                         .map(|z| crate::business_isolation::zone_tag(z).to_owned()),
                 };
-                if theirs.is_some_and(|t| t != mine) {
+                if theirs.as_deref().is_some_and(|t| t != mine) {
                     continue;
                 }
+                same_known_zone = mine != "unknown" && theirs.as_deref() == Some(mine);
+            }
+            // B5 — Subnet-Router HA: an exact canonical CIDR match (`held == r`)
+            // in the same known zone (or when business_isolation is not enforcing)
+            // is permitted when the operator explicitly opts in (`allow_ha: true`)
+            // or the route is already part of this node's approved HA set.
+            // Partial overlaps (`held != r`, e.g. 10.0.0.0/16 vs 10.0.1.0/24) and
+            // default duplicate approvals without `allow_ha` are still rejected.
+            if held == r && ha_requested && same_known_zone {
+                continue;
             }
             return Err(ApiError::Conflict(format!(
                 "route {r} overlaps {held}, already approved on live node \"{}\" ({}) — \

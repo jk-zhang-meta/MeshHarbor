@@ -670,6 +670,10 @@ impl OverlayRuntime {
             );
             // rc.276 diagnostics — mirror the latch for the peers debug view.
             e.hs_done = handshake_done;
+            // B5 — sync the carrier's stalled/bad-sweep state into the WG
+            // router so Subnet-Router HA fails over to a healthy standby
+            // router immediately when this carrier degrades.
+            wg.set_peer_router_stalled(&e.pubkey, e.stalled || v.bad_sweeps > 0);
             // Unresponsive-peer backoff — a relay carrier that completed its
             // handshake proves the peer alive: forget its death streak so
             // future re-requests are immediate again.
@@ -1185,9 +1189,22 @@ impl OverlayRuntime {
     ) -> Option<Installed> {
         let removed = by_node.remove(&node_id);
         if let Some(e) = &removed {
+            let old_subnets: Vec<crate::overlay::router::Cidr> = if os_route == PeerRoute::Drop {
+                wg.peer_subnets(&e.pubkey)
+                    .into_iter()
+                    .filter(|c| !c.is_default_route())
+                    .collect()
+            } else {
+                Vec::new()
+            };
             wg.remove_peer(&e.pubkey).await;
             if os_route == PeerRoute::Drop {
                 del_peer_route_if_unowned(tun, by_node, e.overlay_ip).await;
+                for old_c in old_subnets {
+                    if !wg.any_peer_claims_subnet(&old_c) {
+                        tun.del_cidr_route(&old_c.to_string()).await;
+                    }
+                }
             }
         }
         if let Some(r) = relay.as_mut() {
@@ -1361,7 +1378,19 @@ impl OverlayRuntime {
             // clean leave). An already-installed carrier is left alone — the
             // data plane outlives a control-plane hiccup and the health sweep
             // owns its lifecycle; removal still arrives via the leave delta.
+            // B5 — if an admin updates or revokes `approved_routes` on a router
+            // while its control-plane presence is `reachable: false`, still
+            // reconcile its subnets on any already-installed carrier so
+            // withdrawn CIDRs are immediately removed from the WG router/TUN.
             if !np.reachable {
+                if let Some(e) = by_node.get(&np.node_id)
+                    && let Some(cfg) = peer_config_from_netmap(np)
+                    && e.pubkey == cfg.public_key
+                    && e.overlay_ip == cfg.overlay_ip
+                {
+                    self.reconcile_peer_subnets(wg, tun, np.node_id, e.pubkey, &cfg.subnets)
+                        .await;
+                }
                 continue;
             }
             let Some(cfg) = peer_config_from_netmap(np) else {
@@ -1410,9 +1439,14 @@ impl OverlayRuntime {
             // `Keep`) because the OLD address's route must go — install
             // re-adds the new one, and Drop's other-claimant guard protects a
             // recycled address already owned by a different live peer.
-            if let Some(old_ip) = by_node.get(&np.node_id).map(|e| e.overlay_ip)
+            if let Some((old_ip, old_pk)) = by_node.get(&np.node_id).map(|e| (e.overlay_ip, e.pubkey))
                 && old_ip != cfg.overlay_ip
             {
+                let old_subnets: Vec<crate::overlay::router::Cidr> = wg
+                    .peer_subnets(&old_pk)
+                    .into_iter()
+                    .filter(|c| !c.is_default_route())
+                    .collect();
                 warn!(peer = %np.node_id, old_ip = %old_ip, new_ip = %cfg.overlay_ip,
                     "overlay: peer's overlay IP changed (renumber) — reinstalling its carrier");
                 self.remove_peer_state(
@@ -1427,6 +1461,11 @@ impl OverlayRuntime {
                     PeerRoute::Drop,
                 )
                 .await;
+                for old_c in old_subnets {
+                    if !cfg.subnets.contains(&old_c) && !wg.any_peer_claims_subnet(&old_c) {
+                        tun.del_cidr_route(&old_c.to_string()).await;
+                    }
+                }
             }
             // Copy-out the installed carrier's shape (all Copy), so the by_node
             // borrow ends before any mutation below.
@@ -1443,6 +1482,11 @@ impl OverlayRuntime {
             // key accepted inbound forever.
             let installed = match installed {
                 Some((_, pk, _, _)) if pk != cfg.public_key => {
+                    let old_subnets: Vec<crate::overlay::router::Cidr> = wg
+                        .peer_subnets(&pk)
+                        .into_iter()
+                        .filter(|c| !c.is_default_route())
+                        .collect();
                     warn!(peer = %np.node_id, overlay_ip = %cfg.overlay_ip,
                         "overlay: peer's WG public key changed — reinstalling its carrier");
                     // No alloc_q here (install_peers doesn't take one) and none
@@ -1460,10 +1504,22 @@ impl OverlayRuntime {
                         PeerRoute::Keep,
                     )
                     .await;
+                    for old_c in old_subnets {
+                        if !cfg.subnets.contains(&old_c) && !wg.any_peer_claims_subnet(&old_c) {
+                            tun.del_cidr_route(&old_c.to_string()).await;
+                        }
+                    }
                     None
                 }
                 other => other,
             };
+            // B5 — reconcile an already-installed peer's approved subnet routes
+            // in-place (and withdraw OS CIDR routes only when no remaining HA
+            // router claims them) before any short-circuit `continue` below.
+            if let Some((_, pk, _, _)) = installed {
+                self.reconcile_peer_subnets(wg, tun, np.node_id, pk, &cfg.subnets)
+                    .await;
+            }
             // The negotiated bilateral trial owns carrier selection, but only
             // AFTER authoritative key/IP reconciliation above. Never allow the
             // legacy relay-to-direct upgrader to split the two-member decision.
@@ -2981,8 +3037,10 @@ impl OverlayRuntime {
         if let Err(e) = tun.add_peer_route(link.overlay_ip).await {
             debug!(peer = %link.node_id, %e, "overlay: /32 peer route not installed (ok on clean hosts)");
         }
-        // Phase 1 — subnet-router peer: route its approved CIDRs to it.
-        self.install_subnets(wg, tun, link.node_id, link.public_key, &link.subnets)
+        // Phase 1 / B5 — subnet-router peer: reconcile its approved CIDRs so
+        // mid-build route withdrawals/additions and active split-default `/1`
+        // routes are preserved cleanly.
+        self.reconcile_peer_subnets(wg, tun, link.node_id, link.public_key, &link.subnets)
             .await;
         info!(peer = %link.node_id, overlay_ip = %link.overlay_ip, initiate, "overlay: peer installed");
     }

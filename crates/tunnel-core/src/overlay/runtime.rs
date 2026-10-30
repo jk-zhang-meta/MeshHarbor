@@ -3438,7 +3438,10 @@ impl OverlayRuntime {
                     if let Some(built) = built {
                         let t_arm = Instant::now();
                         if relay_bq.take_if_current(&built.link.node_id, built.epoch) && current_peers.contains_key(&built.link.node_id) && !self.path_trial_managed.lock().unwrap_or_else(|e|e.into_inner()).contains(&built.link.node_id) {
-                            let BuiltRelay { link, quic, .. } = built;
+                            let BuiltRelay { mut link, quic, .. } = built;
+                            if let Some(cfg) = current_peers.get(&link.node_id).and_then(peer_config_from_netmap) {
+                                link.subnets = cfg.subnets;
+                            }
                             self.install_built(&mut wg, &mut by_node, &tun, link, quic).await;
                             // Same tail as a synchronous relay install: a new
                             // coturn worker may need an exit exemption, and the
@@ -3526,7 +3529,10 @@ impl OverlayRuntime {
                                 match done.conn {
                                     Some(conn) => {
                                         let link = r.commit_alloc(done.node_id, conn).await;
-                                        if let Some(link) = link {
+                                        if let Some(mut link) = link {
+                                            if let Some(cfg) = current_peers.get(&link.node_id).and_then(peer_config_from_netmap) {
+                                                link.subnets = cfg.subnets;
+                                            }
                                             let t0 = Instant::now();
                                             self.install_ready(&mut wg, &mut by_node, &tun, link, &mut relay_bq).await;
                                             warn_if_slow("install_ready(spawn-or-sync)", t0);
@@ -9845,6 +9851,175 @@ mod tests {
             wg.peer_subnets(&pk)
         );
         assert!(st.split_default_installed);
+    }
+
+    /// B5 — Subnet-Router HA OS CIDR route lifecycle and active/standby failover:
+    /// 1. Two HA routers claiming `10.20.0.0/24` both register in the WG router;
+    ///    when one withdraws the route via `reconcile_peer_subnets`, the OS CIDR
+    ///    route is NOT removed while the surviving HA peer still claims it, and
+    ///    traffic fails over to the surviving router.
+    /// 2. When a peer is evicted via `remove_peer_state(..., PeerRoute::Drop)`,
+    ///    `del 10.20.0.0/24` is suppressed while another HA claimant remains and
+    ///    fires once the last claimant is evicted.
+    /// 3. `reconcile_peer_subnets` on an active exit peer preserves its `/1`
+    ///    split-default entries in the crypto-router while adding/removing LAN
+    ///    subnets in-place.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn subnet_ha_reconcile_and_evict_keep_os_cidr_route_until_last_claimant_leaves() {
+        use crate::overlay::router::Cidr;
+        let kp = WgKeypair::generate();
+        let (out_tx, _out_rx) = mpsc::channel::<ClientMsg>(16);
+        let tun = ExemptionTun::new();
+        let tf: TunFactory = {
+            let m = tun.clone();
+            Box::new(move |_, _, _| Ok(m.clone() as Arc<dyn TunIo>))
+        };
+        let id_a = exit_oid(0x41);
+        let id_b = exit_oid(0x42);
+        let server: IpAddr = "203.0.113.7".parse().unwrap();
+        let rt = OverlayRuntime::new_relay(kp.clone(), out_tx, tf, 1280)
+            .with_exit_node(Some(id_a.to_hex()), vec![server]);
+        let (mut wg, _tun_rx) = WgDevice::new(kp.secret.clone());
+        let dev: Arc<dyn TunIo> = tun.clone();
+        let sock = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let pk_a = [0x11u8; 32];
+        let pk_b = [0x22u8; 32];
+        wg.add_peer(
+            pk_a,
+            Ipv4Addr::new(100, 64, 0, 11),
+            Carrier::direct(sock.clone(), "127.0.0.1:9".parse().unwrap()),
+            false,
+        );
+        wg.add_peer(
+            pk_b,
+            Ipv4Addr::new(100, 64, 0, 12),
+            Carrier::direct(sock, "127.0.0.1:9".parse().unwrap()),
+            false,
+        );
+
+        let cidr = Cidr::parse("10.20.0.0/24").unwrap();
+        let dst = Ipv4Addr::new(10, 20, 0, 42);
+        let mut by_node = HashMap::new();
+        by_node.insert(
+            id_a,
+            Installed::base(
+                pk_a,
+                Ipv4Addr::new(100, 64, 0, 11),
+                DirectTier::Lan,
+                Instant::now(),
+            ),
+        );
+        by_node.insert(
+            id_b,
+            Installed::base(
+                pk_b,
+                Ipv4Addr::new(100, 64, 0, 12),
+                DirectTier::Lan,
+                Instant::now(),
+            ),
+        );
+
+        rt.install_subnets(&mut wg, &dev, id_a, pk_a, &[cidr]).await;
+        rt.install_subnets(&mut wg, &dev, id_b, pk_b, &[cidr]).await;
+        wg.test_latch_handshake_done(&pk_b);
+        wg.test_latch_handshake_done(&pk_a);
+        let _ = tun.take_calls();
+
+        // Both healthy direct: pk_b > pk_a wins initial election and is pinned.
+        assert_eq!(wg.test_route(&dst), Some(pk_b));
+
+        // Stalling pk_b fails over to pk_a; recovering pk_b keeps sticky pk_a.
+        wg.set_peer_router_stalled(&pk_b, true);
+        assert_eq!(wg.test_route(&dst), Some(pk_a));
+        wg.set_peer_router_stalled(&pk_b, false);
+        assert_eq!(
+            wg.test_route(&dst),
+            Some(pk_a),
+            "recovering standby must not preempt sticky active pk_a"
+        );
+
+        // Also make id_a the active exit node and verify reconcile_peer_subnets
+        // preserves its split-default /1 routes in-place.
+        let mut peers = HashMap::new();
+        peers.insert(
+            id_a,
+            exit_np(
+                id_a,
+                "exit-ha-a",
+                vec!["10.20.0.0/24".into(), "0.0.0.0/0".into()],
+            ),
+        );
+        let mut st = ExitRoutingState::default();
+        rt.reconcile_exit_routing(&mut wg, &dev, &by_node, &peers, &mut st)
+            .await;
+        assert!(!split_default_missing(&wg.peer_subnets(&pk_a)));
+        let _ = tun.take_calls();
+
+        // Router A withdraws 10.20.0.0/24 while remaining exit node; Router B still
+        // claims 10.20.0.0/24 -> no `del 10.20.0.0/24` on OS TUN, split-default kept!
+        rt.reconcile_peer_subnets(
+            &mut wg,
+            &dev,
+            id_a,
+            pk_a,
+            &[Cidr::parse("0.0.0.0/0").unwrap()],
+        )
+        .await;
+        let calls = tun.take_calls();
+        assert!(
+            !calls.iter().any(|c| c == "del 10.20.0.0/24"),
+            "OS route must stay while standby router B still claims 10.20.0.0/24: {calls:?}"
+        );
+        assert!(
+            !split_default_missing(&wg.peer_subnets(&pk_a)),
+            "in-place subnet reconcile on active exit must preserve split-default /1s"
+        );
+        assert_eq!(wg.test_route(&dst), Some(pk_b));
+
+        // Re-add 10.20.0.0/24 on Router A, then evict Router B -> OS route still kept!
+        rt.reconcile_peer_subnets(&mut wg, &dev, id_a, pk_a, &[cidr])
+            .await;
+        let _ = tun.take_calls();
+        let mut relay = None;
+        let mut bq = test_relay_bq();
+        let mut probes = HashMap::new();
+        rt.remove_peer_state(
+            id_b,
+            &mut wg,
+            &mut by_node,
+            &dev,
+            &mut relay,
+            &mut bq,
+            None,
+            &mut probes,
+            PeerRoute::Drop,
+        )
+        .await;
+        let calls = tun.take_calls();
+        assert!(
+            !calls.iter().any(|c| c == "del 10.20.0.0/24"),
+            "evicting one HA router must not delete OS CIDR route while survivor claims it: {calls:?}"
+        );
+        assert_eq!(wg.test_route(&dst), Some(pk_a));
+
+        // Evict the last claimant (Router A) -> now `del 10.20.0.0/24` MUST fire.
+        rt.remove_peer_state(
+            id_a,
+            &mut wg,
+            &mut by_node,
+            &dev,
+            &mut relay,
+            &mut bq,
+            None,
+            &mut probes,
+            PeerRoute::Drop,
+        )
+        .await;
+        let calls = tun.take_calls();
+        assert!(
+            calls.iter().any(|c| c == "del 10.20.0.0/24"),
+            "evicting the last HA claimant must delete OS CIDR route: {calls:?}"
+        );
     }
 
     /// FR-97 P1a — the uplink moves under an active exit (Wi-Fi ↔ Ethernet).
