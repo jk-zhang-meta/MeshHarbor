@@ -53,8 +53,8 @@ use roomler_ai_remote_control::{
         PeerRelayDenyReason, PeerRelayMode, RpcCap, peer_relay_limits as limits,
     },
     signaling::{
-        OrgRelayCandidateWire, OrgRelayDiscoveryCursorWire, RelayMemberWire, RelayPathWire, RelayProbeTargetWire,
-        ServerMsg,
+        OrgRelayCandidateWire, OrgRelayDiscoveryCursorWire, RelayMemberWire, RelayPathWire,
+        RelayProbeTargetWire, ServerMsg,
     },
 };
 use tracing::{debug, info, warn};
@@ -94,8 +94,8 @@ mod path_trial_plan;
 // Staged atomic admission primitive; existing mint/trial owners are not yet coordinated.
 #[allow(dead_code)]
 mod path_reservation;
-mod trial;
 mod session_zone;
+mod trial;
 /// Test-only adapter for exercising the staged candidate builder against a
 /// real isolated server fixture. It returns metadata, never grants sessions.
 #[cfg(feature = "path-planner-test-support")]
@@ -106,9 +106,18 @@ pub mod candidate_test_support {
 
     impl TrialPathSnapshot {
         pub fn edges(&self) -> Vec<(ObjectId, ObjectId, String, bool)> {
-            self.0.edges.iter().map(|edge| (
-                edge.source, edge.target, edge.endpoint.clone(), edge.requires_cross_border_approval
-            )).collect()
+            self.0
+                .edges
+                .iter()
+                .map(|edge| {
+                    (
+                        edge.source,
+                        edge.target,
+                        edge.endpoint.clone(),
+                        edge.requires_cross_border_approval,
+                    )
+                })
+                .collect()
         }
         pub fn locally_current(&self, state: &NetworkState) -> bool {
             self.0.locally_current(state)
@@ -116,38 +125,69 @@ pub mod candidate_test_support {
     }
 
     pub async fn plan_trial_path_fixture(
-        state: &NetworkState, requester: ObjectId, peer: ObjectId,
-        nodes: Vec<ObjectId>, requester_at_exit: bool,
+        state: &NetworkState,
+        requester: ObjectId,
+        peer: ObjectId,
+        nodes: Vec<ObjectId>,
+        requester_at_exit: bool,
     ) -> Result<TrialPathSnapshot, PeerRelayDenyReason> {
         let path = roomler_ai_remote_control::signaling::RelayPathWire::new(nodes)
             .map_err(|_| PeerRelayDenyReason::RequesterUnsupported)?;
-        let a = state.overlay_nodes.base.find_by_id(requester).await
+        let a = state
+            .overlay_nodes
+            .base
+            .find_by_id(requester)
+            .await
             .map_err(|_| PeerRelayDenyReason::PolicyUnreadable)?;
-        let b = state.overlay_nodes.base.find_by_id(peer).await
+        let b = state
+            .overlay_nodes
+            .base
+            .find_by_id(peer)
+            .await
             .map_err(|_| PeerRelayDenyReason::PolicyUnreadable)?;
-        path_trial_plan::plan(state, &a, &b, &path, requester_at_exit).await.map(TrialPathSnapshot)
+        path_trial_plan::plan(state, &a, &b, &path, requester_at_exit)
+            .await
+            .map(TrialPathSnapshot)
     }
 
     pub async fn reauthorize_trial_path_fixture(
-        state: &NetworkState, requester: ObjectId, peer: ObjectId, expected: &TrialPathSnapshot,
+        state: &NetworkState,
+        requester: ObjectId,
+        peer: ObjectId,
+        expected: &TrialPathSnapshot,
     ) -> Result<TrialPathSnapshot, PeerRelayDenyReason> {
-        let a = state.overlay_nodes.base.find_by_id(requester).await
+        let a = state
+            .overlay_nodes
+            .base
+            .find_by_id(requester)
+            .await
             .map_err(|_| PeerRelayDenyReason::PolicyUnreadable)?;
-        let b = state.overlay_nodes.base.find_by_id(peer).await
+        let b = state
+            .overlay_nodes
+            .base
+            .find_by_id(peer)
+            .await
             .map_err(|_| PeerRelayDenyReason::PolicyUnreadable)?;
-        path_trial_plan::reauthorize(state, &a, &b, &expected.0).await.map(TrialPathSnapshot)
+        path_trial_plan::reauthorize(state, &a, &b, &expected.0)
+            .await
+            .map(TrialPathSnapshot)
     }
     /// Insert a fixture-owned session without sending grants; integration
     /// tests use it only to exercise the server's revocation entry point.
     pub fn insert_session_fixture(state: &NetworkState, session: OrgRelaySession) -> bool {
         match state.org_relay.sessions.entry(session.pair_key.clone()) {
-            dashmap::mapref::entry::Entry::Vacant(entry) => { entry.insert(session); true }
+            dashmap::mapref::entry::Entry::Vacant(entry) => {
+                entry.insert(session);
+                true
+            }
             dashmap::mapref::entry::Entry::Occupied(_) => false,
         }
     }
     /// Make one member key in a fixture-owned active session stale.
     pub fn invalidate_session_member_key_fixture(state: &NetworkState, pair: &str) -> bool {
-        let Some(mut session) = state.org_relay.sessions.get_mut(pair) else { return false };
+        let Some(mut session) = state.org_relay.sessions.get_mut(pair) else {
+            return false;
+        };
         session.members[0].wg_public_key.push_str("-stale");
         true
     }
@@ -158,12 +198,19 @@ pub mod candidate_test_support {
         member: ObjectId,
         reports: &[(ObjectId, String, bool, Option<u32>)],
     ) -> bool {
-        let targets: Vec<_> = reports.iter().map(|(relay, endpoint, _, _)| RelayProbeTargetWire {
-            relay_node_id: *relay, endpoints: vec![endpoint.clone()],
-        }).collect();
+        let targets: Vec<_> = reports
+            .iter()
+            .map(|(relay, endpoint, _, _)| RelayProbeTargetWire {
+                relay_node_id: *relay,
+                endpoints: vec![endpoint.clone()],
+            })
+            .collect();
         state.org_relay.offer_probes(member, &targets);
-        reports.iter().all(|(relay, endpoint, reachable, rtt)|
-            state.org_relay.record_probe(member, *relay, endpoint.clone(), *reachable, *rtt))
+        reports.iter().all(|(relay, endpoint, reachable, rtt)| {
+            state
+                .org_relay
+                .record_probe(member, *relay, endpoint.clone(), *reachable, *rtt)
+        })
     }
     use std::collections::HashMap;
     use std::sync::{Mutex, OnceLock};
@@ -179,17 +226,30 @@ pub mod candidate_test_support {
     }
     /// Inject one audit failure or a pending write for an isolated trial pair.
     pub fn fail_next_trial_crossing_audit(pair: String, fault: TrialCrossingAuditFault) {
-        assert!(trial_crossing_audit_faults().lock().unwrap().insert(pair, fault).is_none());
+        assert!(
+            trial_crossing_audit_faults()
+                .lock()
+                .unwrap()
+                .insert(pair, fault)
+                .is_none()
+        );
     }
     pub(super) fn take_trial_crossing_audit_fault(pair: &str) -> Option<TrialCrossingAuditFault> {
         trial_crossing_audit_faults().lock().unwrap().remove(pair)
     }
     /// Exposes only the fixture's currently reserved trial slots.
     pub fn trial_slots_on_relay(state: &NetworkState, relay: ObjectId) -> usize {
-        state.org_relay.trials.sessions_on_relay(relay, Instant::now())
+        state
+            .org_relay
+            .trials
+            .sessions_on_relay(relay, Instant::now())
     }
     /// Fixture-only phase and member progress; no state is changed.
-    pub fn trial_member_progress(state: &NetworkState, id: ObjectId, node: ObjectId) -> Option<(u8, bool)> {
+    pub fn trial_member_progress(
+        state: &NetworkState,
+        id: ObjectId,
+        node: ObjectId,
+    ) -> Option<(u8, bool)> {
         super::trial::member_progress_fixture(state, id, node)
     }
     /// Insert a fixture-owned N-hop trial without emitting any grants. Used
@@ -211,12 +271,24 @@ pub mod candidate_test_support {
         PAUSES.get_or_init(|| Mutex::new(HashMap::new()))
     }
     /// Pause a fixture after reading the changed zones but before removal.
-    pub fn pause_trial_zone_revoke(trial: ObjectId) -> (oneshot::Receiver<()>, oneshot::Sender<()>) {
+    pub fn pause_trial_zone_revoke(
+        trial: ObjectId,
+    ) -> (oneshot::Receiver<()>, oneshot::Sender<()>) {
         let (reached_tx, reached_rx) = oneshot::channel();
         let (resume_tx, resume_rx) = oneshot::channel();
-        assert!(trial_zone_pauses().lock().unwrap().insert(trial, TrialZonePause {
-            reached: reached_tx, resume: resume_rx,
-        }).is_none());
+        assert!(
+            trial_zone_pauses()
+                .lock()
+                .unwrap()
+                .insert(
+                    trial,
+                    TrialZonePause {
+                        reached: reached_tx,
+                        resume: resume_rx,
+                    }
+                )
+                .is_none()
+        );
         (reached_rx, resume_tx)
     }
     pub(super) async fn pause_trial_zone_revoke_if_armed(trial: ObjectId) {
@@ -251,23 +323,44 @@ pub mod candidate_test_support {
         super::trial::trial_exists_fixture(state, id)
     }
     /// Exercise the same sequential party slices used by one worker batch.
-    pub async fn run_two_trial_slices_fixture(state: &NetworkState, first: ObjectId, second: ObjectId) -> (bool, bool) {
-        let a = !matches!(super::trial::recheck_trial_zone_slice(state, first, "fixture").await, super::trial::TrialZoneSlice::Complete);
-        let b = !matches!(super::trial::recheck_trial_zone_slice(state, second, "fixture").await, super::trial::TrialZoneSlice::Complete);
+    pub async fn run_two_trial_slices_fixture(
+        state: &NetworkState,
+        first: ObjectId,
+        second: ObjectId,
+    ) -> (bool, bool) {
+        let a = !matches!(
+            super::trial::recheck_trial_zone_slice(state, first, "fixture").await,
+            super::trial::TrialZoneSlice::Complete
+        );
+        let b = !matches!(
+            super::trial::recheck_trial_zone_slice(state, second, "fixture").await,
+            super::trial::TrialZoneSlice::Complete
+        );
         (a, b)
     }
     pub async fn run_one_trial_slice_fixture(state: &NetworkState, id: ObjectId) -> bool {
-        !matches!(super::trial::recheck_trial_zone_slice(state, id, "fixture").await, super::trial::TrialZoneSlice::Complete)
+        !matches!(
+            super::trial::recheck_trial_zone_slice(state, id, "fixture").await,
+            super::trial::TrialZoneSlice::Complete
+        )
     }
     fn trial_member_zone_read_failures() -> &'static Mutex<std::collections::HashSet<ObjectId>> {
         static FAILURES: OnceLock<Mutex<std::collections::HashSet<ObjectId>>> = OnceLock::new();
         FAILURES.get_or_init(|| Mutex::new(std::collections::HashSet::new()))
     }
     pub fn fail_next_trial_member_zone_read(trial: ObjectId) {
-        assert!(trial_member_zone_read_failures().lock().unwrap().insert(trial));
+        assert!(
+            trial_member_zone_read_failures()
+                .lock()
+                .unwrap()
+                .insert(trial)
+        );
     }
     pub(super) fn take_trial_member_zone_read_failure(trial: ObjectId) -> bool {
-        trial_member_zone_read_failures().lock().unwrap().remove(&trial)
+        trial_member_zone_read_failures()
+            .lock()
+            .unwrap()
+            .remove(&trial)
     }
     fn line_audit_failures() -> &'static Mutex<std::collections::HashSet<String>> {
         static FAILURES: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
@@ -293,15 +386,23 @@ pub mod candidate_test_support {
     }
     /// Populate backbone measurements via the same offer/report gates.
     pub fn record_backbone_probe_fixture(
-        state: &NetworkState, source: ObjectId,
+        state: &NetworkState,
+        source: ObjectId,
         reports: &[(ObjectId, String, bool, Option<u32>)],
     ) -> bool {
-        let targets: Vec<_> = reports.iter().map(|(relay, endpoint, _, _)| RelayProbeTargetWire {
-            relay_node_id: *relay, endpoints: vec![endpoint.clone()],
-        }).collect();
+        let targets: Vec<_> = reports
+            .iter()
+            .map(|(relay, endpoint, _, _)| RelayProbeTargetWire {
+                relay_node_id: *relay,
+                endpoints: vec![endpoint.clone()],
+            })
+            .collect();
         state.org_relay.offer_backbone_probes(source, &targets);
-        reports.iter().all(|(relay, endpoint, reachable, rtt)|
-            state.org_relay.record_probe(source, *relay, endpoint.clone(), *reachable, *rtt))
+        reports.iter().all(|(relay, endpoint, reachable, rtt)| {
+            state
+                .org_relay
+                .record_probe(source, *relay, endpoint.clone(), *reachable, *rtt)
+        })
     }
     struct NhopPreclaimPause {
         reached: oneshot::Sender<()>,
@@ -311,10 +412,24 @@ pub mod candidate_test_support {
         static PAUSES: OnceLock<Mutex<HashMap<String, NhopPreclaimPause>>> = OnceLock::new();
         PAUSES.get_or_init(|| Mutex::new(HashMap::new()))
     }
-    pub fn pause_nhop_preclaim_fixture(pair: String) -> (oneshot::Receiver<()>, oneshot::Sender<()>) {
+    pub fn pause_nhop_preclaim_fixture(
+        pair: String,
+    ) -> (oneshot::Receiver<()>, oneshot::Sender<()>) {
         let (reached_tx, reached_rx) = oneshot::channel();
         let (resume_tx, resume_rx) = oneshot::channel();
-        assert!(nhop_preclaim_pauses().lock().unwrap().insert(pair, NhopPreclaimPause { reached: reached_tx, resume: resume_rx }).is_none());
+        assert!(
+            nhop_preclaim_pauses()
+                .lock()
+                .unwrap()
+                .insert(
+                    pair,
+                    NhopPreclaimPause {
+                        reached: reached_tx,
+                        resume: resume_rx
+                    }
+                )
+                .is_none()
+        );
         (reached_rx, resume_tx)
     }
     pub(super) async fn pause_nhop_preclaim_if_armed(pair: &str) {
@@ -333,10 +448,24 @@ pub mod candidate_test_support {
         PAUSES.get_or_init(|| Mutex::new(HashMap::new()))
     }
     /// Bounded test-only pause immediately before the first send under the delivery guard.
-    pub fn pause_nhop_before_first_fixture(pair: String) -> (oneshot::Receiver<()>, std::sync::mpsc::Sender<()>) {
+    pub fn pause_nhop_before_first_fixture(
+        pair: String,
+    ) -> (oneshot::Receiver<()>, std::sync::mpsc::Sender<()>) {
         let (reached_tx, reached_rx) = oneshot::channel();
         let (resume_tx, resume_rx) = std::sync::mpsc::channel();
-        assert!(nhop_partial_pauses().lock().unwrap().insert(pair, NhopPartialPause { reached: reached_tx, resume: resume_rx }).is_none());
+        assert!(
+            nhop_partial_pauses()
+                .lock()
+                .unwrap()
+                .insert(
+                    pair,
+                    NhopPartialPause {
+                        reached: reached_tx,
+                        resume: resume_rx
+                    }
+                )
+                .is_none()
+        );
         (reached_rx, resume_tx)
     }
     pub(super) fn pause_nhop_before_first_if_armed(pair: &str) {
@@ -369,7 +498,19 @@ pub mod candidate_test_support {
     pub fn pause_nhop_repush_fixture(pair: String) -> (oneshot::Receiver<()>, oneshot::Sender<()>) {
         let (reached_tx, reached_rx) = oneshot::channel();
         let (resume_tx, resume_rx) = oneshot::channel();
-        assert!(nhop_repush_pauses().lock().unwrap().insert(pair, NhopRepushPause { reached: reached_tx, resume: resume_rx }).is_none());
+        assert!(
+            nhop_repush_pauses()
+                .lock()
+                .unwrap()
+                .insert(
+                    pair,
+                    NhopRepushPause {
+                        reached: reached_tx,
+                        resume: resume_rx
+                    }
+                )
+                .is_none()
+        );
         (reached_rx, resume_tx)
     }
     pub(super) async fn pause_nhop_repush_if_armed(pair: &str) {
@@ -384,10 +525,24 @@ pub mod candidate_test_support {
         PAUSES.get_or_init(|| Mutex::new(HashMap::new()))
     }
     /// Pause after region reads and immediately before their final decision.
-    pub fn pause_session_zone_fixture(pair: String) -> (oneshot::Receiver<()>, oneshot::Sender<()>) {
+    pub fn pause_session_zone_fixture(
+        pair: String,
+    ) -> (oneshot::Receiver<()>, oneshot::Sender<()>) {
         let (reached_tx, reached_rx) = oneshot::channel();
         let (resume_tx, resume_rx) = oneshot::channel();
-        assert!(session_zone_pauses().lock().unwrap().insert(pair, NhopRepushPause { reached: reached_tx, resume: resume_rx }).is_none());
+        assert!(
+            session_zone_pauses()
+                .lock()
+                .unwrap()
+                .insert(
+                    pair,
+                    NhopRepushPause {
+                        reached: reached_tx,
+                        resume: resume_rx
+                    }
+                )
+                .is_none()
+        );
         (reached_rx, resume_tx)
     }
     pub(super) async fn pause_session_zone_if_armed(pair: &str) {
@@ -406,12 +561,24 @@ pub mod candidate_test_support {
         PAUSES.get_or_init(|| Mutex::new(HashMap::new()))
     }
     /// Pause an established line just before its shared session claim.
-    pub fn pause_line_preclaim_fixture(pair: String) -> (oneshot::Receiver<()>, oneshot::Sender<()>) {
+    pub fn pause_line_preclaim_fixture(
+        pair: String,
+    ) -> (oneshot::Receiver<()>, oneshot::Sender<()>) {
         let (reached_tx, reached_rx) = oneshot::channel();
         let (resume_tx, resume_rx) = oneshot::channel();
-        assert!(line_preclaim_pauses().lock().unwrap().insert(pair, LinePreclaimPause {
-            reached: reached_tx, resume: resume_rx,
-        }).is_none());
+        assert!(
+            line_preclaim_pauses()
+                .lock()
+                .unwrap()
+                .insert(
+                    pair,
+                    LinePreclaimPause {
+                        reached: reached_tx,
+                        resume: resume_rx,
+                    }
+                )
+                .is_none()
+        );
         (reached_rx, resume_tx)
     }
     pub(super) async fn pause_line_preclaim_if_armed(pair: &str) {
@@ -430,12 +597,24 @@ pub mod candidate_test_support {
         PAUSES.get_or_init(|| Mutex::new(HashMap::new()))
     }
     /// Pause after constructing a cross-zone page, before its final fence.
-    pub fn pause_cross_discovery_fixture(pair: String) -> (oneshot::Receiver<()>, oneshot::Sender<()>) {
+    pub fn pause_cross_discovery_fixture(
+        pair: String,
+    ) -> (oneshot::Receiver<()>, oneshot::Sender<()>) {
         let (reached_tx, reached_rx) = oneshot::channel();
         let (resume_tx, resume_rx) = oneshot::channel();
-        assert!(cross_discovery_pauses().lock().unwrap().insert(pair, CrossDiscoveryPause {
-            reached: reached_tx, resume: resume_rx,
-        }).is_none());
+        assert!(
+            cross_discovery_pauses()
+                .lock()
+                .unwrap()
+                .insert(
+                    pair,
+                    CrossDiscoveryPause {
+                        reached: reached_tx,
+                        resume: resume_rx,
+                    }
+                )
+                .is_none()
+        );
         (reached_rx, resume_tx)
     }
     pub(super) async fn pause_cross_discovery_if_armed(pair: &str) {
@@ -454,10 +633,24 @@ pub mod candidate_test_support {
         PAUSES.get_or_init(|| Mutex::new(HashMap::new()))
     }
     /// Pause one fixture pair after claim but before any delivery.
-    pub fn pause_nhop_delivery_fixture(pair: String) -> (oneshot::Receiver<()>, oneshot::Sender<()>) {
+    pub fn pause_nhop_delivery_fixture(
+        pair: String,
+    ) -> (oneshot::Receiver<()>, oneshot::Sender<()>) {
         let (reached_tx, reached_rx) = oneshot::channel();
         let (resume_tx, resume_rx) = oneshot::channel();
-        assert!(nhop_delivery_pauses().lock().unwrap().insert(pair, NhopDeliveryPause { reached: reached_tx, resume: resume_rx }).is_none());
+        assert!(
+            nhop_delivery_pauses()
+                .lock()
+                .unwrap()
+                .insert(
+                    pair,
+                    NhopDeliveryPause {
+                        reached: reached_tx,
+                        resume: resume_rx
+                    }
+                )
+                .is_none()
+        );
         (reached_rx, resume_tx)
     }
     pub(super) async fn pause_nhop_delivery_if_armed(pair: &str) {
@@ -478,19 +671,34 @@ pub mod candidate_test_support {
     }
     /// Pause one selected identity after node lookup to force the actual
     /// displaced-connection race in an isolated integration fixture.
-    pub fn pause_next_probe(identity: ObjectId) -> (oneshot::Receiver<()>, oneshot::Sender<()>, oneshot::Receiver<bool>) {
+    pub fn pause_next_probe(
+        identity: ObjectId,
+    ) -> (
+        oneshot::Receiver<()>,
+        oneshot::Sender<()>,
+        oneshot::Receiver<bool>,
+    ) {
         let (reached_tx, reached_rx) = oneshot::channel();
         let (resume_tx, resume_rx) = oneshot::channel();
         let (finished_tx, finished_rx) = oneshot::channel();
-        let old = pauses().lock().unwrap().insert(identity, ProbePause {
-            reached: reached_tx, resume: resume_rx, finished: finished_tx,
-        });
+        let old = pauses().lock().unwrap().insert(
+            identity,
+            ProbePause {
+                reached: reached_tx,
+                resume: resume_rx,
+                finished: finished_tx,
+            },
+        );
         assert!(old.is_none(), "duplicate probe pause fixture");
         (reached_rx, resume_tx, finished_rx)
     }
     pub(super) async fn pause_probe(identity: ObjectId) -> Option<oneshot::Sender<bool>> {
         let entry = pauses().lock().unwrap().remove(&identity);
-        let ProbePause { reached, resume, finished } = entry?;
+        let ProbePause {
+            reached,
+            resume,
+            finished,
+        } = entry?;
         let _ = reached.send(());
         let _ = resume.await;
         Some(finished)
@@ -506,9 +714,19 @@ pub mod candidate_test_support {
     pub fn pause_tunnel_leave(connection_id: &str) -> (oneshot::Receiver<()>, oneshot::Sender<()>) {
         let (tx, rx) = oneshot::channel();
         let (resume_tx, resume_rx) = oneshot::channel();
-        assert!(tunnel_leave_pauses().lock().unwrap().insert(connection_id.to_owned(), TunnelLeavePause {
-            reached: tx, resume: resume_rx,
-        }).is_none());
+        assert!(
+            tunnel_leave_pauses()
+                .lock()
+                .unwrap()
+                .insert(
+                    connection_id.to_owned(),
+                    TunnelLeavePause {
+                        reached: tx,
+                        resume: resume_rx,
+                    }
+                )
+                .is_none()
+        );
         (rx, resume_tx)
     }
     pub(crate) async fn pause_tunnel_leave_if_armed(connection_id: &str) {
@@ -524,7 +742,13 @@ pub mod candidate_test_support {
     }
     pub fn observe_tunnel_bind_attempt(identity: ObjectId) -> oneshot::Receiver<()> {
         let (tx, rx) = oneshot::channel();
-        assert!(tunnel_bind_observers().lock().unwrap().insert(identity, tx).is_none());
+        assert!(
+            tunnel_bind_observers()
+                .lock()
+                .unwrap()
+                .insert(identity, tx)
+                .is_none()
+        );
         rx
     }
     pub(crate) fn tunnel_bind_attempt(identity: ObjectId) {
@@ -538,7 +762,13 @@ pub mod candidate_test_support {
     }
     pub fn observe_tunnel_bound(identity: ObjectId) -> oneshot::Receiver<()> {
         let (tx, rx) = oneshot::channel();
-        assert!(tunnel_bound_observers().lock().unwrap().insert(identity, tx).is_none());
+        assert!(
+            tunnel_bound_observers()
+                .lock()
+                .unwrap()
+                .insert(identity, tx)
+                .is_none()
+        );
         rx
     }
     pub(crate) fn tunnel_bound(identity: ObjectId) {
@@ -552,11 +782,21 @@ pub mod candidate_test_support {
     }
     pub fn observe_tunnel_cleanup(connection_id: &str) -> oneshot::Receiver<()> {
         let (tx, rx) = oneshot::channel();
-        assert!(tunnel_cleanup_observers().lock().unwrap().insert(connection_id.to_owned(), tx).is_none());
+        assert!(
+            tunnel_cleanup_observers()
+                .lock()
+                .unwrap()
+                .insert(connection_id.to_owned(), tx)
+                .is_none()
+        );
         rx
     }
     pub(crate) fn tunnel_cleanup_done(connection_id: &str) {
-        if let Some(tx) = tunnel_cleanup_observers().lock().unwrap().remove(connection_id) {
+        if let Some(tx) = tunnel_cleanup_observers()
+            .lock()
+            .unwrap()
+            .remove(connection_id)
+        {
             let _ = tx.send(());
         }
     }
@@ -564,8 +804,15 @@ pub mod candidate_test_support {
         state.org_relay.live_conn(identity)
     }
     /// Read back only fixture probe RTTs; no production route exposes this.
-    pub fn probe_rtts(state: &NetworkState, reporter: ObjectId, relay: ObjectId) -> Vec<Option<u32>> {
-        state.org_relay.probes.get(&(reporter, relay))
+    pub fn probe_rtts(
+        state: &NetworkState,
+        reporter: ObjectId,
+        relay: ObjectId,
+    ) -> Vec<Option<u32>> {
+        state
+            .org_relay
+            .probes
+            .get(&(reporter, relay))
             .map(|records| records.iter().map(|record| record.rtt_ms).collect())
             .unwrap_or_default()
     }
@@ -584,9 +831,18 @@ pub mod candidate_test_support {
         (retry.running, retry.rescan)
     }
     /// Test the real full-path reauthorization with an already-held fixture.
-    pub async fn reauthorize_nhop_fixture(state: &NetworkState, requester: ObjectId, peer: ObjectId, session: &OrgRelaySession) -> bool {
-        let Ok(a) = state.overlay_nodes.base.find_by_id(requester).await else { return false };
-        let Ok(b) = state.overlay_nodes.base.find_by_id(peer).await else { return false };
+    pub async fn reauthorize_nhop_fixture(
+        state: &NetworkState,
+        requester: ObjectId,
+        peer: ObjectId,
+        session: &OrgRelaySession,
+    ) -> bool {
+        let Ok(a) = state.overlay_nodes.base.find_by_id(requester).await else {
+            return false;
+        };
+        let Ok(b) = state.overlay_nodes.base.find_by_id(peer).await else {
+            return false;
+        };
         path_mint::reauthorize(state, &a, &b, session).await.is_ok()
     }
     pub fn remove_session_fixture(state: &NetworkState, pair: &str) -> bool {
@@ -594,9 +850,16 @@ pub mod candidate_test_support {
     }
     /// Build only relay/bridge control frames from a fixture-owned session.
     /// No authorization, resource reservation, or messages are performed.
-    pub fn delivery_frames_for_fixture(session: &OrgRelaySession) -> Result<Vec<(NodeRef, ServerMsg)>, String> {
-        let delivery = path_delivery::build(session, Instant::now()).map_err(|e| format!("{e:?}"))?;
-        Ok(delivery.relays.into_iter().chain(delivery.bridges).collect())
+    pub fn delivery_frames_for_fixture(
+        session: &OrgRelaySession,
+    ) -> Result<Vec<(NodeRef, ServerMsg)>, String> {
+        let delivery =
+            path_delivery::build(session, Instant::now()).map_err(|e| format!("{e:?}"))?;
+        Ok(delivery
+            .relays
+            .into_iter()
+            .chain(delivery.bridges)
+            .collect())
     }
     pub async fn select_path(
         state: &NetworkState,
@@ -604,14 +867,31 @@ pub mod candidate_test_support {
         peer: ObjectId,
         for_trial: bool,
     ) -> Result<Option<(Vec<ObjectId>, bool)>, PeerRelayDenyReason> {
-        let a = state.overlay_nodes.base.find_by_id(requester).await
+        let a = state
+            .overlay_nodes
+            .base
+            .find_by_id(requester)
+            .await
             .map_err(|_| PeerRelayDenyReason::PolicyUnreadable)?;
-        let b = state.overlay_nodes.base.find_by_id(peer).await
+        let b = state
+            .overlay_nodes
+            .base
+            .find_by_id(peer)
+            .await
             .map_err(|_| PeerRelayDenyReason::PolicyUnreadable)?;
         let prepared = path_candidate::prepare(state, &a, &b, for_trial).await?;
         let selected = path_select::select(state, prepared)?;
-        Ok(selected.map(|s| (s.path.path.relays.iter()
-            .map(|&i| s.prepared.graph.relays[i].agent_id).collect(), s.path.flipped)))
+        Ok(selected.map(|s| {
+            (
+                s.path
+                    .path
+                    .relays
+                    .iter()
+                    .map(|&i| s.prepared.graph.relays[i].agent_id)
+                    .collect(),
+                s.path.flipped,
+            )
+        }))
     }
     pub async fn prepare_edges(
         state: &NetworkState,
@@ -619,16 +899,32 @@ pub mod candidate_test_support {
         peer: ObjectId,
         for_trial: bool,
     ) -> Result<Vec<(ObjectId, ObjectId, String, bool)>, PeerRelayDenyReason> {
-        let a = state.overlay_nodes.base.find_by_id(requester).await
+        let a = state
+            .overlay_nodes
+            .base
+            .find_by_id(requester)
+            .await
             .map_err(|_| PeerRelayDenyReason::PolicyUnreadable)?;
-        let b = state.overlay_nodes.base.find_by_id(peer).await
+        let b = state
+            .overlay_nodes
+            .base
+            .find_by_id(peer)
+            .await
             .map_err(|_| PeerRelayDenyReason::PolicyUnreadable)?;
         let prepared = path_candidate::prepare(state, &a, &b, for_trial).await?;
-        Ok(prepared.graph.edges.iter().map(|edge| (
-            prepared.graph.relays[edge.from].agent_id,
-            prepared.graph.relays[edge.to].agent_id,
-            edge.endpoint.clone(), edge.cross_border,
-        )).collect())
+        Ok(prepared
+            .graph
+            .edges
+            .iter()
+            .map(|edge| {
+                (
+                    prepared.graph.relays[edge.from].agent_id,
+                    prepared.graph.relays[edge.to].agent_id,
+                    edge.endpoint.clone(),
+                    edge.cross_border,
+                )
+            })
+            .collect())
     }
 }
 
@@ -746,7 +1042,10 @@ impl OrgRelaySession {
             || self.hops.iter().any(|l| l.relay.node_id == node_id)
     }
     fn involves_agent(&self, agent_id: ObjectId) -> bool {
-        self.involves_device(roomler_core::business_authority::DeviceKind::Agent, agent_id)
+        self.involves_device(
+            roomler_core::business_authority::DeviceKind::Agent,
+            agent_id,
+        )
     }
 
     pub(crate) fn involves_device(
@@ -770,16 +1069,17 @@ impl OrgRelaySession {
     }
 
     fn involves_identity(&self, identity_id: ObjectId) -> bool {
-        self.involves_device(roomler_core::business_authority::DeviceKind::Agent, identity_id)
-            || self.involves_device(
-                roomler_core::business_authority::DeviceKind::TunnelClient,
-                identity_id,
-            )
+        self.involves_device(
+            roomler_core::business_authority::DeviceKind::Agent,
+            identity_id,
+        ) || self.involves_device(
+            roomler_core::business_authority::DeviceKind::TunnelClient,
+            identity_id,
+        )
     }
     /// Whether `agent_id` relays this session (either leg of a line).
     fn relayed_by_agent(&self, agent_id: ObjectId) -> bool {
-        self.relay_agent_id == agent_id
-            || self.hops.iter().any(|l| l.relay_agent_id == agent_id)
+        self.relay_agent_id == agent_id || self.hops.iter().any(|l| l.relay_agent_id == agent_id)
     }
     /// All relay nodes, in path order.
     fn relay_nodes(&self) -> impl Iterator<Item = ObjectId> + '_ {
@@ -805,12 +1105,18 @@ impl OrgRelaySession {
         approved: &[roomler_ai_remote_control::models::PeerRelayBackboneEdge],
     ) -> bool {
         self.hops.iter().enumerate().any(|(i, hop)| {
-            let predecessor = if i == 0 { self.relay_agent_id } else { self.hops[i - 1].relay_agent_id };
-            predecessor == source && !approved.iter().any(|edge| {
-                (!hop.requires_cross_border_approval || edge.cross_border)
-                    && edge.endpoint == hop.private_endpoint
-                    && ObjectId::parse_str(&edge.relay_agent_id).ok() == Some(hop.relay_agent_id)
-            })
+            let predecessor = if i == 0 {
+                self.relay_agent_id
+            } else {
+                self.hops[i - 1].relay_agent_id
+            };
+            predecessor == source
+                && !approved.iter().any(|edge| {
+                    (!hop.requires_cross_border_approval || edge.cross_border)
+                        && edge.endpoint == hop.private_endpoint
+                        && ObjectId::parse_str(&edge.relay_agent_id).ok()
+                            == Some(hop.relay_agent_id)
+                })
         })
     }
 
@@ -821,12 +1127,22 @@ impl OrgRelaySession {
             let (source, generation) = if i == 0 {
                 (&self.relay.node_ref, self.generation)
             } else {
-                (&self.hops[i - 1].relay.node_ref, self.hops[i - 1].generation)
+                (
+                    &self.hops[i - 1].relay.node_ref,
+                    self.hops[i - 1].generation,
+                )
             };
-            messages.push((hop.relay.node_ref.clone(), ServerMsg::OverlayRelayRevoke { vni: hop.vni }));
-            messages.push((source.clone(), ServerMsg::OverlayRelayBridgeRevoke {
-                trial_id: hop.bridge_id, generation,
-            }));
+            messages.push((
+                hop.relay.node_ref.clone(),
+                ServerMsg::OverlayRelayRevoke { vni: hop.vni },
+            ));
+            messages.push((
+                source.clone(),
+                ServerMsg::OverlayRelayBridgeRevoke {
+                    trial_id: hop.bridge_id,
+                    generation,
+                },
+            ));
         }
         messages
     }
@@ -876,7 +1192,8 @@ pub struct OrgRelayState {
     delivery_guard: std::sync::Mutex<()>,
     /// One process-wide worker rechecks each live trial at most once per pass.
     trial_zone_retry: std::sync::Mutex<TrialZoneRetry>,
-    trial_zone_cursors: std::sync::Mutex<std::collections::HashMap<ObjectId, trial::TrialZoneCursor>>,
+    trial_zone_cursors:
+        std::sync::Mutex<std::collections::HashMap<ObjectId, trial::TrialZoneCursor>>,
     trial_zone_inflight: std::sync::Mutex<std::collections::HashSet<ObjectId>>,
     trial_zone_io_permits: std::sync::OnceLock<std::sync::Arc<tokio::sync::Semaphore>>,
     trial_zone_io_budget: std::sync::Mutex<TrialZoneIoBudget>,
@@ -943,11 +1260,17 @@ impl OrgRelayState {
         self.invalidate_eligibility();
         let previous = match self.live_conns.entry(agent_id) {
             dashmap::mapref::entry::Entry::Occupied(mut entry) => {
-                let old = entry.insert(LiveConnection { id: conn_id.to_owned(), bound_at: Instant::now() });
+                let old = entry.insert(LiveConnection {
+                    id: conn_id.to_owned(),
+                    bound_at: Instant::now(),
+                });
                 Some(old.id)
             }
             dashmap::mapref::entry::Entry::Vacant(entry) => {
-                entry.insert(LiveConnection { id: conn_id.to_owned(), bound_at: Instant::now() });
+                entry.insert(LiveConnection {
+                    id: conn_id.to_owned(),
+                    bound_at: Instant::now(),
+                });
                 None
             }
         };
@@ -958,8 +1281,13 @@ impl OrgRelayState {
     /// Unbind only while the binding still names `conn_id`: a displaced
     /// connection's late teardown must not unbind its replacement.
     pub fn unbind_live_conn(&self, agent_id: ObjectId, conn_id: &str) -> bool {
-        let gone = self.live_conns.remove_if(&agent_id, |_, bound| bound.id == conn_id).is_some();
-        if gone { self.invalidate_eligibility(); }
+        let gone = self
+            .live_conns
+            .remove_if(&agent_id, |_, bound| bound.id == conn_id)
+            .is_some();
+        if gone {
+            self.invalidate_eligibility();
+        }
         gone
     }
 
@@ -979,8 +1307,12 @@ impl OrgRelayState {
         reachable: bool,
         rtt_ms: Option<u32>,
     ) -> bool {
-        let Some(current) = self.live_conns.get(&owner.0) else { return false };
-        if current.id != owner.1 { return false; }
+        let Some(current) = self.live_conns.get(&owner.0) else {
+            return false;
+        };
+        if current.id != owner.1 {
+            return false;
+        }
         let accepted = self.record_probe(reporter, relay, endpoint, reachable, rtt_ms);
         drop(current);
         accepted
@@ -996,14 +1328,40 @@ impl OrgRelayState {
         self.invalidate_eligibility();
     }
 
+    /// Test hook: read the recorded policy-change timestamp for `agent_id`.
+    #[doc(hidden)]
+    pub fn has_probe_policy_change(&self, agent_id: ObjectId) -> bool {
+        self.probe_policy_at.contains_key(&agent_id)
+    }
+
+    /// Test hook: check whether `tenant_id` is currently cached in `mode_cache`.
+    #[doc(hidden)]
+    pub fn has_cached_mode(&self, tenant_id: ObjectId) -> bool {
+        self.mode_cache.contains_key(&tenant_id)
+    }
+
+    /// Test hook: seed `mode_cache` for `tenant_id` without creating an
+    /// `OverlayNetwork` row in Mongo.
+    #[doc(hidden)]
+    pub fn prime_cached_mode_for_test(&self, tenant_id: ObjectId) {
+        self.mode_cache
+            .insert(tenant_id, (PeerRelayMode::Auto, Instant::now()));
+    }
+
     /// A join is usable as measurement provenance only when it belongs to the
     /// connection currently owning this identity. Hold the ownership guard
     /// across the synchronous state update so a replacement cannot interleave.
     pub(crate) fn note_join_from_connection(
-        &self, identity: ObjectId, connection_id: &str, node_id: ObjectId, extras: JoinExtras,
+        &self,
+        identity: ObjectId,
+        connection_id: &str,
+        node_id: ObjectId,
+        extras: JoinExtras,
     ) -> Option<bool> {
         let owner = self.live_conns.get(&identity)?;
-        if owner.id != connection_id { return None; }
+        if owner.id != connection_id {
+            return None;
+        }
         let changed = self.note_join(node_id, extras);
         drop(owner);
         Some(changed)
@@ -1063,7 +1421,9 @@ impl OrgRelayState {
     }
 
     fn remove_expired_session(&self, pair_key: &str, now: Instant) -> bool {
-        self.sessions.remove_if(pair_key, |_, current| current.expires_at <= now).is_some()
+        self.sessions
+            .remove_if(pair_key, |_, current| current.expires_at <= now)
+            .is_some()
     }
 
     /// Test hook: as if `pair_key`'s session had outlived its bind window.
@@ -1594,7 +1954,11 @@ async fn probe_targets_inner(
             }
             if topo.unknown_role != Mode::Off {
                 let unknown_devices = vec![iso::Lines::ref_label(&relay_ref)];
-                iso::log_unknown_role_with_peers(tenant_id, "probe_targets_relay", &unknown_devices);
+                iso::log_unknown_role_with_peers(
+                    tenant_id,
+                    "probe_targets_relay",
+                    &unknown_devices,
+                );
             }
         }
         if !agent.capabilities.has_rpc(RpcCap::RelayServer)
@@ -1769,7 +2133,8 @@ async fn backbone_probe_targets_inner(
                 continue;
             }
             if topo.unknown_role != crate::business_isolation::Mode::Off {
-                let unknown_devices = vec![crate::business_isolation::Lines::node_label(&exit_node)];
+                let unknown_devices =
+                    vec![crate::business_isolation::Lines::node_label(&exit_node)];
                 crate::business_isolation::log_unknown_role_with_peers(
                     relay.tenant_id,
                     "backbone_probe_targets_exit",
@@ -1996,8 +2361,7 @@ async fn plan_mint_candidates_with_trial_diagnostics(
     let mut servers: Vec<ObjectId> = Vec::new();
     let mut servers_unreadable = false;
     if peer_relay_mode(state, tenant_id).await == PeerRelayMode::Auto {
-        match roomler_core::business_authority::current_server_agents(&state.core, tenant_id)
-            .await
+        match roomler_core::business_authority::current_server_agents(&state.core, tenant_id).await
         {
             Ok(agents) => {
                 for agent in agents {
@@ -2089,15 +2453,18 @@ async fn plan_mint_candidates_with_trial_diagnostics(
         // GEO-04 — a relay is judged like any node: its own addresses can
         // contradict its connection's zone.
         let relay_zone = agent_zone(state, &agent).filter(|z| addresses_agree(state, &node, *z));
-        let implicit = !granted && scope == ZoneScope::Pair && servers.contains(&agent_id) && {
-            if member_zone.is_none() {
-                let a = node_zone(state, requester).await;
-                let b = node_zone(state, peer).await;
-                member_zone = Some(a.filter(|_| a == b));
-            }
-            debug!(%tenant_id, relay = %relay_id, ?relay_zone, ?member_zone, "org-relay: implicit grant zones");
-            relay_zone.is_some() && member_zone == Some(relay_zone)
-        };
+        let implicit = !granted
+            && scope == ZoneScope::Pair
+            && servers.contains(&agent_id)
+            && {
+                if member_zone.is_none() {
+                    let a = node_zone(state, requester).await;
+                    let b = node_zone(state, peer).await;
+                    member_zone = Some(a.filter(|_| a == b));
+                }
+                debug!(%tenant_id, relay = %relay_id, ?relay_zone, ?member_zone, "org-relay: implicit grant zones");
+                relay_zone.is_some() && member_zone == Some(relay_zone)
+            };
         if !granted && !implicit {
             if agent.peer_relay_policy.serve {
                 acl_denied += 1;
@@ -2113,7 +2480,8 @@ async fn plan_mint_candidates_with_trial_diagnostics(
                     && node.tenant_id == tenant_id
                     && node.network_id == requester.network_id
                     && matches!(&node.node_ref, NodeRef::Agent { agent_id: owner } if *owner == agent_id)
-                    && let Some(diagnostic) = diagnostic.as_deref_mut() {
+                    && let Some(diagnostic) = diagnostic.as_deref_mut()
+                {
                     diagnostic.filtered(agent_id);
                 }
                 zone_denied += 1;
@@ -2187,11 +2555,12 @@ fn rank_key(
 /// followed by the sum of known RTTs. Unknown/unreachable legs add no RTT,
 /// matching the existing one- and two-relay ranking policy.
 fn rank_legs(legs: impl IntoIterator<Item = ProbeVerdict>) -> (u8, u32) {
-    legs.into_iter().fold((0, 0u32), |(class, rtt), leg| match leg {
-        ProbeVerdict::Reachable(ms) => (class, rtt.saturating_add(ms)),
-        ProbeVerdict::Unknown => (class.max(1), rtt),
-        ProbeVerdict::Unreachable => (2, rtt),
-    })
+    legs.into_iter()
+        .fold((0, 0u32), |(class, rtt), leg| match leg {
+            ProbeVerdict::Reachable(ms) => (class, rtt.saturating_add(ms)),
+            ProbeVerdict::Unknown => (class.max(1), rtt),
+            ProbeVerdict::Unreachable => (2, rtt),
+        })
 }
 
 /// Whether `best` beats `current` by enough to move a live pair: both
@@ -2412,13 +2781,20 @@ pub(crate) async fn cross_border_lines_with_roles(
         if edges.peek().is_none() {
             continue;
         }
-        let Some(from) = agent_zone(state, r) else { continue };
+        let Some(from) = agent_zone(state, r) else {
+            continue;
+        };
         for e in edges {
-            let Ok(t) = ObjectId::parse_str(&e.relay_agent_id) else { continue };
+            let Ok(t) = ObjectId::parse_str(&e.relay_agent_id) else {
+                continue;
+            };
             if !role_ok(t, &mut unknown_relays) {
                 continue;
             }
-            let Some(to) = relays.iter().find(|x| x.id == Some(t)).and_then(|x| agent_zone(state, x))
+            let Some(to) = relays
+                .iter()
+                .find(|x| x.id == Some(t))
+                .and_then(|x| agent_zone(state, x))
             else {
                 continue;
             };
@@ -2502,8 +2878,10 @@ async fn plan_line(
     if network.mtu > limits::BACKBONE_MAX_OVERLAY_MTU {
         return Err(D::ZoneDenied);
     }
-    let side_a = plan_mint_candidates_reusing(state, requester, peer, None, ZoneScope::Side(za)).await;
-    let side_b = plan_mint_candidates_reusing(state, requester, peer, None, ZoneScope::Side(zb)).await;
+    let side_a =
+        plan_mint_candidates_reusing(state, requester, peer, None, ZoneScope::Side(za)).await;
+    let side_b =
+        plan_mint_candidates_reusing(state, requester, peer, None, ZoneScope::Side(zb)).await;
     // #5 step B: every usable line, ranked by the path a packet rides.
     let mut found: Vec<LinePlan> = Vec::new();
     for (ingresses, exits, flipped) in [(&side_a, &side_b, false), (&side_b, &side_a, true)] {
@@ -2511,7 +2889,9 @@ async fn plan_line(
             continue;
         };
         for ingress in ingresses {
-            let Some(ingress_id) = ingress.relay.id else { continue };
+            let Some(ingress_id) = ingress.relay.id else {
+                continue;
+            };
             if !state.org_relay.join_extras(ingress_id).relay_backbone_ready {
                 continue;
             }
@@ -2529,7 +2909,9 @@ async fn plan_line(
                 {
                     continue;
                 }
-                let Ok(target) = ObjectId::parse_str(&edge.relay_agent_id) else { continue };
+                let Ok(target) = ObjectId::parse_str(&edge.relay_agent_id) else {
+                    continue;
+                };
                 if let Some(exit) = exits.iter().find(|p| p.relay_agent_id == target) {
                     found.push(LinePlan {
                         ingress: ingress.clone(),
@@ -2607,10 +2989,14 @@ async fn maybe_mint_line(
     warn_only: bool,
 ) {
     let tenant_id = requester.tenant_id;
-    let (Some(req_id), Some(peer_id)) = (requester.id, peer.id) else { return };
+    let (Some(req_id), Some(peer_id)) = (requester.id, peer.id) else {
+        return;
+    };
     let pk = pair_key(req_id, peer_id);
     if !warn_only && let Some(s) = state.org_relay.active_session(&pk) {
-        if s.member_index(req_id).is_none() { return; }
+        if s.member_index(req_id).is_none() {
+            return;
+        }
         let zones_fit = if s.hops.is_empty() {
             false
         } else {
@@ -2634,7 +3020,7 @@ async fn maybe_mint_line(
     let mut charged_relay = None;
     match path_mint::mint(state, requester, peer, warn_only, false, &mut charged_relay).await {
         Ok(true) => return,
-        Ok(false) => {},
+        Ok(false) => {}
         Err(reason) => {
             // A failed long path is not evidence that a freshly authorized
             // established two-relay line is unusable.
@@ -2644,12 +3030,32 @@ async fn maybe_mint_line(
     }
     let line_epoch = state.org_relay.eligibility_generation();
     match plan_line(state, requester, peer, zones).await {
-        Ok(plan) => mint_line(state, requester, peer, plan, warn_only, line_epoch, charged_relay).await,
+        Ok(plan) => {
+            mint_line(
+                state,
+                requester,
+                peer,
+                plan,
+                warn_only,
+                line_epoch,
+                charged_relay,
+            )
+            .await
+        }
         Err(reason) => {
             info!(%tenant_id, requester = %req_id, peer = %peer_id, ?reason, warn_only,
                 "org-relay: cross-border line refused");
-            audit_mint(state, tenant_id, req_id, peer_id, None, None, warn_only, Some(reason))
-                .await;
+            audit_mint(
+                state,
+                tenant_id,
+                req_id,
+                peer_id,
+                None,
+                None,
+                warn_only,
+                Some(reason),
+            )
+            .await;
         }
     }
 }
@@ -2670,12 +3076,25 @@ async fn mint_line(
     charged_relay: Option<ObjectId>,
 ) {
     let tenant_id = requester.tenant_id;
-    let (Some(req_id), Some(peer_id)) = (requester.id, peer.id) else { return };
+    let (Some(req_id), Some(peer_id)) = (requester.id, peer.id) else {
+        return;
+    };
     let pk = pair_key(req_id, peer_id);
     let (Some(ingress_id), Some(exit_id)) = (plan.ingress.relay.id, plan.exit.relay.id) else {
         return;
     };
-    let refuse = |reason| audit_mint(state, tenant_id, req_id, peer_id, None, None, warn_only, Some(reason));
+    let refuse = |reason| {
+        audit_mint(
+            state,
+            tenant_id,
+            req_id,
+            peer_id,
+            None,
+            None,
+            warn_only,
+            Some(reason),
+        )
+    };
     if !warn_only
         && charged_relay != Some(ingress_id)
         && !state
@@ -2691,10 +3110,19 @@ async fn mint_line(
         let (Some(vni), Some(exit_vni)) = (
             state.org_relay.alloc_vni(ingress_id),
             state.org_relay.alloc_vni(exit_id),
-        ) else { refuse(PeerRelayDenyReason::NoRelay).await; return; };
+        ) else {
+            refuse(PeerRelayDenyReason::NoRelay).await;
+            return;
+        };
         (vni, exit_vni)
-    } else { (1, 1) };
-    let (m0, m1) = if plan.flipped { (peer, requester) } else { (requester, peer) };
+    } else {
+        (1, 1)
+    };
+    let (m0, m1) = if plan.flipped {
+        (peer, requester)
+    } else {
+        (requester, peer)
+    };
     let member = |n: &OverlayNode| SessionMember {
         party: SessionParty {
             node_id: n.id.unwrap_or_default(),
@@ -2738,9 +3166,11 @@ async fn mint_line(
     };
     // This established entry point handles precisely one bridge; longer paths
     // use path_mint and must not enter this two-relay message flow.
-    if session.hops.len() != 1 { return; }
+    if session.hops.len() != 1 {
+        return;
+    }
     match path_delivery::build(&session, Instant::now()) {
-        Ok(_) => {},
+        Ok(_) => {}
         Err(error) => {
             warn!(?error, "org-relay: invalid line delivery shape");
             refuse(PeerRelayDenyReason::PolicyUnreadable).await;
@@ -2772,7 +3202,10 @@ async fn mint_line(
     }) {
         trial::MintClaim::Existing(existing) => Some(existing),
         trial::MintClaim::Inserted => None,
-        trial::MintClaim::Full => { refuse(PeerRelayDenyReason::NoRelay).await; return; }
+        trial::MintClaim::Full => {
+            refuse(PeerRelayDenyReason::NoRelay).await;
+            return;
+        }
         trial::MintClaim::Rejected => {
             if !epoch_stale {
                 refuse(PeerRelayDenyReason::PolicyUnreadable).await;
@@ -2795,12 +3228,18 @@ async fn mint_line(
     if !audit_line(state, &session, false).await {
         // A concurrent retry could have received the just-claimed session;
         // revoke it before refusing rather than leave any unrecorded path.
-        revoke_where(state, "cross_border_audit_failed", |current| current.pair_key == pk
-            && current.vni == session.vni && current.generation == session.generation).await;
+        revoke_where(state, "cross_border_audit_failed", |current| {
+            current.pair_key == pk
+                && current.vni == session.vni
+                && current.generation == session.generation
+        })
+        .await;
         refuse(PeerRelayDenyReason::PolicyUnreadable).await;
         return;
     }
-    if !state.org_relay.active_session(&pk).is_some_and(|current| current.vni == session.vni && current.generation == session.generation) {
+    if !state.org_relay.active_session(&pk).is_some_and(|current| {
+        current.vni == session.vni && current.generation == session.generation
+    }) {
         return;
     }
     info!(%tenant_id, requester = %req_id, peer = %peer_id, ingress = %ingress_id, vni,
@@ -2819,11 +3258,18 @@ async fn mint_line(
 /// Rule 5: one `mint` row per leg of a line, each naming its relay and VNI,
 /// with reason `cross_border_line`.
 async fn audit_line(state: &NetworkState, s: &OrgRelaySession, warn_only: bool) -> bool {
-    if s.hops.is_empty() { return false; }
+    if s.hops.is_empty() {
+        return false;
+    }
     #[cfg(feature = "path-planner-test-support")]
-    if candidate_test_support::take_line_audit_failure(&s.pair_key) { return false; }
-    let relays = std::iter::once((s.relay_agent_id, s.relay.node_id, s.vni))
-        .chain(s.hops.iter().map(|hop| (hop.relay_agent_id, hop.relay.node_id, hop.vni)));
+    if candidate_test_support::take_line_audit_failure(&s.pair_key) {
+        return false;
+    }
+    let relays = std::iter::once((s.relay_agent_id, s.relay.node_id, s.vni)).chain(
+        s.hops
+            .iter()
+            .map(|hop| (hop.relay_agent_id, hop.relay.node_id, hop.vni)),
+    );
     for (agent_id, relay_node_id, vni) in relays {
         let event = PeerRelayAuditEvent {
             id: None,
@@ -2841,7 +3287,11 @@ async fn audit_line(state: &NetworkState, s: &OrgRelaySession, warn_only: bool) 
             denied: None,
             reason: Some(CROSS_BORDER_REASON.into()),
         };
-        if !matches!(tokio::time::timeout(Duration::from_secs(3), state.peer_relay_audit.record(event)).await, Ok(Ok(_))) {
+        if !matches!(
+            tokio::time::timeout(Duration::from_secs(3), state.peer_relay_audit.record(event))
+                .await,
+            Ok(Ok(_))
+        ) {
             warn!("org-relay: cross-border audit write failed or timed out");
             return false;
         }
@@ -2857,7 +3307,10 @@ async fn cross_border_hints(
     peer: &OverlayNode,
     overlay_cidr: &str,
     cursor: Option<OrgRelayDiscoveryCursorWire>,
-) -> (Vec<OrgRelayCandidateWire>, Option<OrgRelayDiscoveryCursorWire>) {
+) -> (
+    Vec<OrgRelayCandidateWire>,
+    Option<OrgRelayDiscoveryCursorWire>,
+) {
     let Some((za, zb)) = cross_border_zones(state, requester, peer).await else {
         return (Vec::new(), None);
     };
@@ -2871,24 +3324,40 @@ async fn cross_border_hints(
     else {
         return (Vec::new(), None);
     };
-    let hints = ingresses.iter().filter_map(|ingress| {
-        let ingress_id = ingress.relay.id?;
-        state.org_relay.join_extras(ingress_id).relay_backbone_ready.then_some((ingress_id, ingress))
-    }).flat_map(|(ingress_id, ingress)| {
-        let exits = &exits;
-        ingress.backbone_edges.iter().take(8).filter_map(move |edge| {
-            if !edge.cross_border || !crate::routes::peer_relay::backbone_endpoint_outside_overlay(&edge.endpoint, overlay_cidr) {
-                return None;
-            }
-            let target = ObjectId::parse_str(&edge.relay_agent_id).ok()?;
-            let exit = exits.iter().find(|p| p.relay_agent_id == target)?;
-            Some(OrgRelayCandidateWire {
-                path: RelayPathWire::new(vec![ingress_id, exit.relay.id?]).ok()?,
-                requester_at_exit: false,
-                endpoints: ingress.endpoints.iter().take(4).cloned().collect(),
-            })
+    let hints = ingresses
+        .iter()
+        .filter_map(|ingress| {
+            let ingress_id = ingress.relay.id?;
+            state
+                .org_relay
+                .join_extras(ingress_id)
+                .relay_backbone_ready
+                .then_some((ingress_id, ingress))
         })
-    });
+        .flat_map(|(ingress_id, ingress)| {
+            let exits = &exits;
+            ingress
+                .backbone_edges
+                .iter()
+                .take(8)
+                .filter_map(move |edge| {
+                    if !edge.cross_border
+                        || !crate::routes::peer_relay::backbone_endpoint_outside_overlay(
+                            &edge.endpoint,
+                            overlay_cidr,
+                        )
+                    {
+                        return None;
+                    }
+                    let target = ObjectId::parse_str(&edge.relay_agent_id).ok()?;
+                    let exit = exits.iter().find(|p| p.relay_agent_id == target)?;
+                    Some(OrgRelayCandidateWire {
+                        path: RelayPathWire::new(vec![ingress_id, exit.relay.id?]).ok()?,
+                        requester_at_exit: false,
+                        endpoints: ingress.endpoints.iter().take(4).cloned().collect(),
+                    })
+                })
+        });
     if let Some(cursor) = cursor {
         discovery_page(hints, cursor)
     } else {
@@ -2973,12 +3442,29 @@ pub async fn discover(
     let traversal =
         extras.supports_org_relay_multi_candidate && extras.supports_org_relay_discovery_cursor;
     use roomler_ai_remote_control::signaling::OrgRelayDiscoveryScanWire as Scan;
-    if traversal && let Some(Scan::Progress { scan_next: true, checkpoint, after }) = scan.as_ref() {
-        let (candidates, progress) = path_discovery_page::page(state, requester, peer, checkpoint.as_ref(), after.as_ref()).await;
-        send_to_node(state, requester, ServerMsg::OverlayOrgRelayCandidates {
-            peer_node_id: peer_id, request_id, candidates, ttl_secs: 30, next_cursor: None,
-            scan: Some(progress),
-        }).await;
+    if traversal
+        && let Some(Scan::Progress {
+            scan_next: true,
+            checkpoint,
+            after,
+        }) = scan.as_ref()
+    {
+        let (candidates, progress) =
+            path_discovery_page::page(state, requester, peer, checkpoint.as_ref(), after.as_ref())
+                .await;
+        send_to_node(
+            state,
+            requester,
+            ServerMsg::OverlayOrgRelayCandidates {
+                peer_node_id: peer_id,
+                request_id,
+                candidates,
+                ttl_secs: 30,
+                next_cursor: None,
+                scan: Some(progress),
+            },
+        )
+        .await;
         return;
     }
     let mut next_cursor = None;
@@ -3007,7 +3493,11 @@ pub async fn discover(
         };
         if let Some(path_network) = path_network.as_ref() {
             // A cross-border pair gets only its line's hints.
-            candidates.extend(cross_border_hints(state, requester, peer, &path_network.cidr, None).await.0);
+            candidates.extend(
+                cross_border_hints(state, requester, peer, &path_network.cidr, None)
+                    .await
+                    .0,
+            );
         }
         if let Some(path_network) = path_network {
             backbone_cidr = Some(path_network.cidr.clone());
@@ -3038,9 +3528,16 @@ pub async fn discover(
                         else {
                             continue;
                         };
-                        let Some(path) = exit.relay.id.and_then(|id| RelayPathWire::new(vec![ingress_id, id]).ok()) else { continue };
+                        let Some(path) = exit
+                            .relay
+                            .id
+                            .and_then(|id| RelayPathWire::new(vec![ingress_id, id]).ok())
+                        else {
+                            continue;
+                        };
                         candidates.push(OrgRelayCandidateWire {
-                            path, requester_at_exit: false,
+                            path,
+                            requester_at_exit: false,
                             endpoints: ingress.endpoints.iter().take(4).cloned().collect(),
                         });
                         if candidates.len() >= 2 {
@@ -3083,7 +3580,8 @@ pub async fn discover(
                 }
             }
         } else if let Ok(plan) = plan_mint(state, requester, peer).await
-            && let Some(relay_node_id) = plan.relay.id {
+            && let Some(relay_node_id) = plan.relay.id
+        {
             candidates.push(OrgRelayCandidateWire {
                 path: RelayPathWire::new(vec![relay_node_id]).expect("one relay"),
                 requester_at_exit: false,
@@ -3097,20 +3595,37 @@ pub async fn discover(
                 // A cross-zone pair has no Pair-scope single-relay plan. Build
                 // each page from newly authorized Side-scope lines instead.
                 let epoch = state.org_relay.eligibility_generation();
-                let current_caps = requester.id.is_some_and(|id| state.org_relay.join_extras(id).supports_path_backbone_v1)
-                    && state.org_relay.join_extras(peer_id).supports_path_backbone_v1;
+                let current_caps = requester
+                    .id
+                    .is_some_and(|id| state.org_relay.join_extras(id).supports_path_backbone_v1)
+                    && state
+                        .org_relay
+                        .join_extras(peer_id)
+                        .supports_path_backbone_v1;
                 let current_network = if current_caps {
-                    state.overlay_networks.get_or_create(requester.tenant_id).await.ok()
+                    state
+                        .overlay_networks
+                        .get_or_create(requester.tenant_id)
+                        .await
+                        .ok()
                         .filter(|n| n.mtu <= limits::BACKBONE_MAX_OVERLAY_MTU)
-                } else { None };
+                } else {
+                    None
+                };
                 if let Some(network) = current_network {
-                    (candidates, next_cursor) = cross_border_hints(state, requester, peer, &network.cidr, Some(cursor)).await;
+                    (candidates, next_cursor) =
+                        cross_border_hints(state, requester, peer, &network.cidr, Some(cursor))
+                            .await;
                 } else {
                     candidates.clear();
                 }
                 #[cfg(feature = "path-planner-test-support")]
                 if let Some(requester_id) = requester.id {
-                    candidate_test_support::pause_cross_discovery_if_armed(&pair_key(requester_id, peer_id)).await;
+                    candidate_test_support::pause_cross_discovery_if_armed(&pair_key(
+                        requester_id,
+                        peer_id,
+                    ))
+                    .await;
                 }
                 let current_zones = cross_border_zones(state, requester, peer).await;
                 let current_mode = peer_relay_mode(state, requester.tenant_id).await;
@@ -3151,7 +3666,8 @@ pub async fn discover(
                                     ) {
                                         continue;
                                     }
-                                    let Ok(target) = ObjectId::parse_str(&edge.relay_agent_id) else {
+                                    let Ok(target) = ObjectId::parse_str(&edge.relay_agent_id)
+                                    else {
                                         continue;
                                     };
                                     let Some(exit) = plans.iter().find(|p| {
@@ -3159,10 +3675,20 @@ pub async fn discover(
                                     }) else {
                                         continue;
                                     };
-                                    let Some(path) = exit.relay.id.and_then(|id| RelayPathWire::new(vec![ingress_id, id]).ok()) else { continue };
+                                    let Some(path) = exit.relay.id.and_then(|id| {
+                                        RelayPathWire::new(vec![ingress_id, id]).ok()
+                                    }) else {
+                                        continue;
+                                    };
                                     let hint = OrgRelayCandidateWire {
-                                        path, requester_at_exit: false,
-                                        endpoints: ingress.endpoints.iter().take(4).cloned().collect(),
+                                        path,
+                                        requester_at_exit: false,
+                                        endpoints: ingress
+                                            .endpoints
+                                            .iter()
+                                            .take(4)
+                                            .cloned()
+                                            .collect(),
                                     };
                                     if !backbone
                                         .iter()
@@ -3197,16 +3723,39 @@ pub async fn discover(
                 .map(discovery_cursor);
         }
     }
-    let scan_caps = extras.supports_path_trial_v1 && extras.supports_path_backbone_v1
+    let scan_caps = extras.supports_path_trial_v1
+        && extras.supports_path_backbone_v1
         && state.org_relay.join_extras(peer_id).supports_path_trial_v1
-        && state.org_relay.join_extras(peer_id).supports_path_backbone_v1;
-    let scan = if traversal && scan_caps && peer_relay_mode(state, requester.tenant_id).await == PeerRelayMode::On {
+        && state
+            .org_relay
+            .join_extras(peer_id)
+            .supports_path_backbone_v1;
+    let scan = if traversal
+        && scan_caps
+        && peer_relay_mode(state, requester.tenant_id).await == PeerRelayMode::On
+    {
         Some(match scan {
-            Some(Scan::Progress { checkpoint, after, .. }) => Scan::Progress { scan_next: true, checkpoint, after },
-            _ => Scan::Progress { scan_next: true, checkpoint: None, after: None },
+            Some(Scan::Progress {
+                checkpoint, after, ..
+            }) => Scan::Progress {
+                scan_next: true,
+                checkpoint,
+                after,
+            },
+            _ => Scan::Progress {
+                scan_next: true,
+                checkpoint: None,
+                after: None,
+            },
         })
-    } else { None };
-    let ttl_secs = if candidates.is_empty() && scan.is_none() { 0 } else { 30 };
+    } else {
+        None
+    };
+    let ttl_secs = if candidates.is_empty() && scan.is_none() {
+        0
+    } else {
+        30
+    };
     send_to_node(
         state,
         requester,
@@ -3237,11 +3786,14 @@ async fn reauthorize_concurrent_winner(
     peer: &OverlayNode,
     current: &OrgRelaySession,
 ) {
-    if path_mint::repush(state, requester, peer, current).await == path_mint::RepushOutcome::Denied {
+    if path_mint::repush(state, requester, peer, current).await == path_mint::RepushOutcome::Denied
+    {
         revoke_where(state, "nhop_reauthorization_failed", |entry| {
-            entry.pair_key == current.pair_key && entry.vni == current.vni
+            entry.pair_key == current.pair_key
+                && entry.vni == current.vni
                 && entry.generation == current.generation
-        }).await;
+        })
+        .await;
     }
 }
 
@@ -3277,8 +3829,10 @@ pub async fn maybe_mint(state: &NetworkState, requester: &OverlayNode, peer: &Ov
                 path_mint::RepushOutcome::Sent | path_mint::RepushOutcome::Unavailable => return,
                 path_mint::RepushOutcome::Denied => {}
             }
-            revoke_where(state, "nhop_reauthorization_failed", |current| current.pair_key == pk
-                && current.vni == s.vni && current.generation == s.generation).await;
+            revoke_where(state, "nhop_reauthorization_failed", |current| {
+                current.pair_key == pk && current.vni == s.vni && current.generation == s.generation
+            })
+            .await;
         } else {
             let keys_current = [(req_id, requester), (peer_id, peer)]
                 .iter()
@@ -3326,8 +3880,10 @@ pub async fn maybe_mint(state: &NetworkState, requester: &OverlayNode, peer: &Ov
     let mut charged_relay = None;
     match path_mint::mint(state, requester, peer, warn_only, true, &mut charged_relay).await {
         Ok(true) => return,
-        Ok(false) => {},
-        Err(reason) => debug!(%tenant_id, %pk, ?reason, "org-relay: multi-hop attempt failed; replan"),
+        Ok(false) => {}
+        Err(reason) => {
+            debug!(%tenant_id, %pk, ?reason, "org-relay: multi-hop attempt failed; replan")
+        }
     }
 
     // An implicit plan rests on live connections, so it mints under the
@@ -3337,7 +3893,8 @@ pub async fn maybe_mint(state: &NetworkState, requester: &OverlayNode, peer: &Ov
         let relay_id = plan.relay.id.unwrap_or_default();
         // Gate 5 belongs to minting, not metadata discovery. Preserve its
         // existing requester->relay ceiling and audited refusal behavior.
-        if plan.implicit || charged_relay == Some(relay_id)
+        if plan.implicit
+            || charged_relay == Some(relay_id)
             || state
                 .relay_rate_limiter
                 .check(req_id, relay_id, limits::MINT_RATE_LIMIT_PER_MINUTE)
@@ -3366,7 +3923,17 @@ pub async fn maybe_mint(state: &NetworkState, requester: &OverlayNode, peer: &Ov
         }
     };
     let fence = plan.implicit.then_some(epoch);
-    mint_plan(state, requester, peer, plan, warn_only, epoch, fence, charged_relay).await;
+    mint_plan(
+        state,
+        requester,
+        peer,
+        plan,
+        warn_only,
+        epoch,
+        fence,
+        charged_relay,
+    )
+    .await;
 }
 
 /// Time a re-pushed session needs to bind before the relay's bind deadline:
@@ -3375,13 +3942,23 @@ const BIND_REUSE_MARGIN: Duration = Duration::from_secs(8);
 
 /// A fallback query reauthorizes cached leases, and never allocates TURN.
 /// In particular a stale but unexpired relay lease cannot suppress reselection.
-pub async fn maybe_mint_fallback(state: &NetworkState, requester: &OverlayNode, peer: &OverlayNode) {
+pub async fn maybe_mint_fallback(
+    state: &NetworkState,
+    requester: &OverlayNode,
+    peer: &OverlayNode,
+) {
     let tenant_id = requester.tenant_id;
     let mode = peer_relay_mode(state, tenant_id).await;
-    if mode == PeerRelayMode::Off { return; }
-    let (Some(req_id), Some(peer_id)) = (requester.id, peer.id) else { return };
+    if mode == PeerRelayMode::Off {
+        return;
+    }
+    let (Some(req_id), Some(peer_id)) = (requester.id, peer.id) else {
+        return;
+    };
     let pk = pair_key(req_id, peer_id);
-    if crate::overlay::org_fallback_forced_derp(state, &pk) { return; }
+    if crate::overlay::org_fallback_forced_derp(state, &pk) {
+        return;
+    }
     if let Some(zones) = cross_border_zones(state, requester, peer).await {
         maybe_mint_line(state, requester, peer, zones, mode == PeerRelayMode::Warn).await;
         return;
@@ -3393,41 +3970,58 @@ pub async fn maybe_mint_fallback(state: &NetworkState, requester: &OverlayNode, 
             path_mint::RepushOutcome::Sent | path_mint::RepushOutcome::Unavailable => return,
             path_mint::RepushOutcome::Denied => {}
         }
-        revoke_where(state, "nhop_reauthorization_failed", |current| current.pair_key == pk
-            && current.vni == session.vni && current.generation == session.generation).await;
+        revoke_where(state, "nhop_reauthorization_failed", |current| {
+            current.pair_key == pk
+                && current.vni == session.vni
+                && current.generation == session.generation
+        })
+        .await;
     }
     if let Some(session) = cached.as_ref()
-        && (!session.hops.is_empty() || crate::business_isolation::mode(state) == crate::business_isolation::Mode::Enforce)
+        && (!session.hops.is_empty()
+            || crate::business_isolation::mode(state) == crate::business_isolation::Mode::Enforce)
     {
         match session_zone::check(state, session).await {
             session_zone::Decision::Uncertain { .. } => return,
-            session_zone::Decision::Fits => {},
+            session_zone::Decision::Fits => {}
             session_zone::Decision::Invalid => {
-                revoke_where(state, "session_region_changed", |current| current.pair_key == pk
-                    && current.vni == session.vni && current.generation == session.generation).await;
+                revoke_where(state, "session_region_changed", |current| {
+                    current.pair_key == pk
+                        && current.vni == session.vni
+                        && current.generation == session.generation
+                })
+                .await;
                 cached = None;
-            },
+            }
         }
     }
     let epoch = state.org_relay.eligibility_generation();
     let verdict =
-        plan_mint_candidates_reusing(state, requester, peer, cached.as_ref(), ZoneScope::Pair).await;
+        plan_mint_candidates_reusing(state, requester, peer, cached.as_ref(), ZoneScope::Pair)
+            .await;
     if epoch != state.org_relay.eligibility_generation()
-        || crate::overlay::org_fallback_forced_derp(state, &pk) { return; }
+        || crate::overlay::org_fallback_forced_derp(state, &pk)
+    {
+        return;
+    }
     if let Some(session) = cached {
-        let authorized = verdict.as_ref().is_ok_and(|plans| plans.iter().any(|plan| {
-            plan.relay.id == Some(session.relay.node_id)
-                && plan.relay_agent_id == session.relay_agent_id
-                && plan.relay.node_ref == session.relay.node_ref
-                && plan.endpoints == session.endpoints
-                && plan.implicit == session.implicit
-                && [(req_id, requester), (peer_id, peer)].iter().all(|(id, node)| {
-                    session.member_index(*id).is_some_and(|i| {
-                        session.members[i].wg_public_key == node.wg_public_key
-                            && session.members[i].party.node_ref == node.node_ref
-                    })
-                })
-        }));
+        let authorized = verdict.as_ref().is_ok_and(|plans| {
+            plans.iter().any(|plan| {
+                plan.relay.id == Some(session.relay.node_id)
+                    && plan.relay_agent_id == session.relay_agent_id
+                    && plan.relay.node_ref == session.relay.node_ref
+                    && plan.endpoints == session.endpoints
+                    && plan.implicit == session.implicit
+                    && [(req_id, requester), (peer_id, peer)]
+                        .iter()
+                        .all(|(id, node)| {
+                            session.member_index(*id).is_some_and(|i| {
+                                session.members[i].wg_public_key == node.wg_public_key
+                                    && session.members[i].party.node_ref == node.node_ref
+                            })
+                        })
+            })
+        });
         // A member asks again only while it has no working org link. Within
         // the bind window the same session can still bind, so re-push it;
         // past it the relay drops its Binds (an unbound session dies at its
@@ -3435,7 +4029,9 @@ pub async fn maybe_mint_fallback(state: &NetworkState, requester: &OverlayNode, 
         // other event revoked it (field, 2026-10-25: 6 and 26 minutes).
         let bindable = Instant::now() + BIND_REUSE_MARGIN < session.bind_by;
         if authorized && bindable && mode != PeerRelayMode::Warn {
-            if let Some(i) = session.member_index(req_id) { push_member(state, &session, i).await; }
+            if let Some(i) = session.member_index(req_id) {
+                push_member(state, &session, i).await;
+            }
             return;
         }
         if authorized && !bindable && mode != PeerRelayMode::Warn {
@@ -3448,28 +4044,70 @@ pub async fn maybe_mint_fallback(state: &NetworkState, requester: &OverlayNode, 
         }
         if !authorized {
             revoke_where(state, "org-fallback-reauthorization", |current| {
-                current.pair_key == pk && current.vni == session.vni
+                current.pair_key == pk
+                    && current.vni == session.vni
                     && current.generation == session.generation
-            }).await;
+            })
+            .await;
         }
     }
-    if crate::overlay::org_fallback_forced_derp(state, &pk) { return; }
+    if crate::overlay::org_fallback_forced_derp(state, &pk) {
+        return;
+    }
     let mut charged_relay = None;
-    match path_mint::mint(state, requester, peer, mode == PeerRelayMode::Warn, true, &mut charged_relay).await {
+    match path_mint::mint(
+        state,
+        requester,
+        peer,
+        mode == PeerRelayMode::Warn,
+        true,
+        &mut charged_relay,
+    )
+    .await
+    {
         Ok(true) => return,
-        Ok(false) => {},
-        Err(reason) => debug!(%tenant_id, %pk, ?reason, "org-relay: fallback multi-hop attempt failed; replan"),
+        Ok(false) => {}
+        Err(reason) => {
+            debug!(%tenant_id, %pk, ?reason, "org-relay: fallback multi-hop attempt failed; replan")
+        }
     }
     // Multi-hop selection awaits fresh reads and may observe policy changes.
     let epoch = state.org_relay.eligibility_generation();
     let verdict = plan_mint_candidates(state, requester, peer).await;
     if epoch != state.org_relay.eligibility_generation()
-        || crate::overlay::org_fallback_forced_derp(state, &pk) { return; }
-    let verdict = verdict.and_then(|plans| plans.into_iter().next().ok_or(PeerRelayDenyReason::NoRelay));
+        || crate::overlay::org_fallback_forced_derp(state, &pk)
+    {
+        return;
+    }
+    let verdict =
+        verdict.and_then(|plans| plans.into_iter().next().ok_or(PeerRelayDenyReason::NoRelay));
     match verdict {
-        Ok(plan) => mint_plan(state, requester, peer, plan, mode == PeerRelayMode::Warn, epoch, Some(epoch), charged_relay).await,
-        Err(reason) => audit_mint(state, tenant_id, req_id, peer_id, None, None,
-            mode == PeerRelayMode::Warn, Some(reason)).await,
+        Ok(plan) => {
+            mint_plan(
+                state,
+                requester,
+                peer,
+                plan,
+                mode == PeerRelayMode::Warn,
+                epoch,
+                Some(epoch),
+                charged_relay,
+            )
+            .await
+        }
+        Err(reason) => {
+            audit_mint(
+                state,
+                tenant_id,
+                req_id,
+                peer_id,
+                None,
+                None,
+                mode == PeerRelayMode::Warn,
+                Some(reason),
+            )
+            .await
+        }
     }
 }
 
@@ -3485,17 +4123,30 @@ async fn mint_plan(
     charged_relay: Option<ObjectId>,
 ) {
     let tenant_id = requester.tenant_id;
-    let (Some(req_id), Some(peer_id)) = (requester.id, peer.id) else { return };
+    let (Some(req_id), Some(peer_id)) = (requester.id, peer.id) else {
+        return;
+    };
     let pk = pair_key(req_id, peer_id);
     let relay_id = plan.relay.id.unwrap_or_default();
     let vni = if warn_only {
         let Some(vni) = state.org_relay.alloc_vni(relay_id) else {
-            audit_mint(state, tenant_id, req_id, peer_id, Some((plan.relay_agent_id, relay_id)),
-                None, true, Some(PeerRelayDenyReason::NoRelay)).await;
+            audit_mint(
+                state,
+                tenant_id,
+                req_id,
+                peer_id,
+                Some((plan.relay_agent_id, relay_id)),
+                None,
+                true,
+                Some(PeerRelayDenyReason::NoRelay),
+            )
+            .await;
             return;
         };
         vni
-    } else { 1 }; // Placeholder is replaced under the claim lock before use.
+    } else {
+        1
+    }; // Placeholder is replaced under the claim lock before use.
     let generation = state.org_relay.lamport.fetch_add(1, Ordering::Relaxed) + 1;
     let mut session = OrgRelaySession {
         tenant_id,
@@ -3533,13 +4184,35 @@ async fn mint_plan(
     };
     // Warn never claims capacity; actual mints audit only after winning.
     if warn_only {
-        if fallback_epoch.is_some() && !state.relay_rate_limiter.check(req_id, relay_id, limits::MINT_RATE_LIMIT_PER_MINUTE) {
-            audit_mint(state, tenant_id, req_id, peer_id, None, None, warn_only,
-                Some(PeerRelayDenyReason::RateLimited)).await;
+        if fallback_epoch.is_some()
+            && !state
+                .relay_rate_limiter
+                .check(req_id, relay_id, limits::MINT_RATE_LIMIT_PER_MINUTE)
+        {
+            audit_mint(
+                state,
+                tenant_id,
+                req_id,
+                peer_id,
+                None,
+                None,
+                warn_only,
+                Some(PeerRelayDenyReason::RateLimited),
+            )
+            .await;
             return;
         }
-        audit_mint(state, tenant_id, req_id, peer_id, Some((plan.relay_agent_id, relay_id)),
-            Some(vni), warn_only, None).await;
+        audit_mint(
+            state,
+            tenant_id,
+            req_id,
+            peer_id,
+            Some((plan.relay_agent_id, relay_id)),
+            Some(vni),
+            warn_only,
+            None,
+        )
+        .await;
     }
     if warn_only {
         info!(%tenant_id, requester = %req_id, peer = %peer_id, relay = %relay_id, vni, "org-relay [warn]: would mint; pushing nothing");
@@ -3547,7 +4220,10 @@ async fn mint_plan(
     }
     if let Some(epoch) = fallback_epoch
         && (epoch != state.org_relay.eligibility_generation()
-            || crate::overlay::org_fallback_forced_derp(state, &pk)) { return; }
+            || crate::overlay::org_fallback_forced_derp(state, &pk))
+    {
+        return;
+    }
     let mut refusal = None;
     let claim = trial::claim_mint(&state.org_relay, &mut session, |_| {
         if plan_epoch != state.org_relay.eligibility_generation() {
@@ -3555,8 +4231,17 @@ async fn mint_plan(
         }
         if let Some(epoch) = fallback_epoch {
             if epoch != state.org_relay.eligibility_generation()
-                || crate::overlay::org_fallback_forced_derp(state, &pk) { return false; }
-            if charged_relay != Some(relay_id) && !state.relay_rate_limiter.check(req_id, relay_id, limits::MINT_RATE_LIMIT_PER_MINUTE) {
+                || crate::overlay::org_fallback_forced_derp(state, &pk)
+            {
+                return false;
+            }
+            if charged_relay != Some(relay_id)
+                && !state.relay_rate_limiter.check(
+                    req_id,
+                    relay_id,
+                    limits::MINT_RATE_LIMIT_PER_MINUTE,
+                )
+            {
                 refusal = Some(PeerRelayDenyReason::RateLimited);
                 return false;
             }
@@ -3571,27 +4256,53 @@ async fn mint_plan(
             }
             // Fallback must reauthorize this exact winner; ordinary mint has
             // the same reuse semantics as maybe_mint's existing-session path.
-            let authorized = fallback_epoch.is_none() || (current.relay.node_id == relay_id
-                && current.relay.node_ref == plan.relay.node_ref
-                && current.endpoints == plan.endpoints && current.implicit == plan.implicit
-                && [(req_id, requester), (peer_id, peer)].iter().all(|(id,node)| {
-                    current.member_index(*id).is_some_and(|i| current.members[i].wg_public_key == node.wg_public_key
-                        && current.members[i].party.node_ref == node.node_ref)
-                })
-                && fallback_epoch == Some(state.org_relay.eligibility_generation())
-                && !crate::overlay::org_fallback_forced_derp(state, &pk));
+            let authorized = fallback_epoch.is_none()
+                || (current.relay.node_id == relay_id
+                    && current.relay.node_ref == plan.relay.node_ref
+                    && current.endpoints == plan.endpoints
+                    && current.implicit == plan.implicit
+                    && [(req_id, requester), (peer_id, peer)]
+                        .iter()
+                        .all(|(id, node)| {
+                            current.member_index(*id).is_some_and(|i| {
+                                current.members[i].wg_public_key == node.wg_public_key
+                                    && current.members[i].party.node_ref == node.node_ref
+                            })
+                        })
+                    && fallback_epoch == Some(state.org_relay.eligibility_generation())
+                    && !crate::overlay::org_fallback_forced_derp(state, &pk));
             if authorized && let Some(i) = current.member_index(req_id) {
                 push_member(state, &current, i).await;
             }
             return;
         }
         trial::MintClaim::Full => {
-            audit_mint(state, tenant_id, req_id, peer_id, None, None, false, Some(PeerRelayDenyReason::NoRelay)).await;
+            audit_mint(
+                state,
+                tenant_id,
+                req_id,
+                peer_id,
+                None,
+                None,
+                false,
+                Some(PeerRelayDenyReason::NoRelay),
+            )
+            .await;
             return;
         }
         trial::MintClaim::Rejected => {
             if let Some(reason) = refusal {
-                audit_mint(state, tenant_id, req_id, peer_id, None, None, false, Some(reason)).await;
+                audit_mint(
+                    state,
+                    tenant_id,
+                    req_id,
+                    peer_id,
+                    None,
+                    None,
+                    false,
+                    Some(reason),
+                )
+                .await;
             }
             return;
         }
@@ -3599,9 +4310,20 @@ async fn mint_plan(
     }
     let vni = session.vni;
     if fallback_epoch.is_none() {
-        audit_mint(state, tenant_id, req_id, peer_id, Some((plan.relay_agent_id, relay_id)),
-            Some(vni), false, None).await;
-        if !state.org_relay.active_session(&pk).is_some_and(|current| current.vni == session.vni && current.generation == session.generation) {
+        audit_mint(
+            state,
+            tenant_id,
+            req_id,
+            peer_id,
+            Some((plan.relay_agent_id, relay_id)),
+            Some(vni),
+            false,
+            None,
+        )
+        .await;
+        if !state.org_relay.active_session(&pk).is_some_and(|current| {
+            current.vni == session.vni && current.generation == session.generation
+        }) {
             return;
         }
     }
@@ -3633,8 +4355,17 @@ async fn mint_plan(
     push_member(state, &session, 0).await;
     push_member(state, &session, 1).await;
     if fallback_epoch.is_some() {
-        audit_mint(state, tenant_id, req_id, peer_id, Some((plan.relay_agent_id, relay_id)),
-            Some(vni), false, None).await;
+        audit_mint(
+            state,
+            tenant_id,
+            req_id,
+            peer_id,
+            Some((plan.relay_agent_id, relay_id)),
+            Some(vni),
+            false,
+            None,
+        )
+        .await;
     }
 }
 
@@ -3642,9 +4373,14 @@ async fn mint_plan(
 /// peer and carrying only its own secret and its own relay (on a line, each
 /// member's is in its own zone).
 fn member_message(s: &OrgRelaySession, i: usize) -> Option<ServerMsg> {
-    let remaining = s.expires_at.saturating_duration_since(Instant::now()).as_secs()
+    let remaining = s
+        .expires_at
+        .saturating_duration_since(Instant::now())
+        .as_secs()
         .min(u64::from(limits::MAX_LIFETIME_SECS)) as u32;
-    if remaining == 0 { return None; }
+    if remaining == 0 {
+        return None;
+    }
     let me = &s.members[i];
     let other = &s.members[1 - i];
     let leg = s.member_leg(i);
@@ -3747,7 +4483,11 @@ fn revoke_matching_sync(
     pred: impl Fn(&OrgRelaySession) -> bool,
 ) -> Vec<PeerRelayAuditEvent> {
     // Do not let N-hop grants overtake these nonblocking revocations.
-    let _delivery = state.org_relay.delivery_guard.lock().unwrap_or_else(|e| e.into_inner());
+    let _delivery = state
+        .org_relay
+        .delivery_guard
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     // Even zero current sessions must invalidate an in-flight authorization.
     state.org_relay.invalidate_eligibility();
     let victims: Vec<OrgRelaySession> = state
@@ -3773,7 +4513,11 @@ fn revoke_matching_sync(
         let revoke = |vni| ServerMsg::OverlayRelayRevoke { vni };
         push_control(state, &session.relay.node_ref, revoke(session.vni));
         for (i, member) in session.members.iter().enumerate() {
-            push_control(state, &member.party.node_ref, revoke(session.member_leg(i).vni));
+            push_control(
+                state,
+                &member.party.node_ref,
+                revoke(session.member_leg(i).vni),
+            );
         }
         for (recipient, message) in session.hop_revocations() {
             push_control(state, &recipient, message);
@@ -3921,7 +4665,9 @@ pub async fn recheck_zones(state: &NetworkState, agent_id: ObjectId, reason: &st
 /// from a mixed snapshot; retry is deduplicated per affected relay.
 pub(crate) async fn recheck_trial_zones(state: &NetworkState, agent_id: ObjectId, reason: &str) {
     let ids = trial::trial_ids_for_identity(state, agent_id);
-    if !ids.is_empty() { schedule_trial_zone_retry(state, ids); }
+    if !ids.is_empty() {
+        schedule_trial_zone_retry(state, ids);
+    }
     let ids = trial::recheck_relay_zones(state, agent_id, reason).await;
     if !ids.is_empty() {
         schedule_trial_zone_retry(state, ids);
@@ -3948,11 +4694,16 @@ struct TrialZoneIoBudget {
 
 impl TrialZoneIoBudget {
     fn admit(&mut self, now: Instant) -> bool {
-        if self.window.is_none_or(|start| now.saturating_duration_since(start) >= Duration::from_secs(1)) {
+        if self
+            .window
+            .is_none_or(|start| now.saturating_duration_since(start) >= Duration::from_secs(1))
+        {
             self.window = Some(now);
             self.starts = 0;
         }
-        if self.starts >= 16 { return false; }
+        if self.starts >= 16 {
+            return false;
+        }
         self.starts += 1;
         true
     }
@@ -3960,30 +4711,57 @@ impl TrialZoneIoBudget {
 
 impl TrialZoneRetry {
     fn enqueue(&mut self, id: ObjectId) {
-        if self.queued.contains(&id) { return; }
-        if self.pending.len() >= trial::MAX_TRIALS { self.rescan = true; return; }
+        if self.queued.contains(&id) {
+            return;
+        }
+        if self.pending.len() >= trial::MAX_TRIALS {
+            self.rescan = true;
+            return;
+        }
         self.queued.insert(id);
         self.pending.push_back(id);
     }
 
     fn request(&mut self, ids: impl IntoIterator<Item = ObjectId>) -> Option<u64> {
-        for id in ids { self.enqueue(id); }
-        if self.pending.is_empty() && !self.rescan { return None; }
-        if self.running { None } else {
+        for id in ids {
+            self.enqueue(id);
+        }
+        if self.pending.is_empty() && !self.rescan {
+            return None;
+        }
+        if self.running {
+            None
+        } else {
             self.running = true;
             self.generation = self.generation.wrapping_add(1);
             Some(self.generation)
         }
     }
 
-    fn finish_pass(&mut self, generation: u64, retry: impl IntoIterator<Item = ObjectId>, deferred: bool) -> bool {
-        if !self.running || self.generation != generation { return false; }
-        for id in retry { self.enqueue(id); }
-        if self.rescan || !self.pending.is_empty() || deferred { true } else { self.running = false; false }
+    fn finish_pass(
+        &mut self,
+        generation: u64,
+        retry: impl IntoIterator<Item = ObjectId>,
+        deferred: bool,
+    ) -> bool {
+        if !self.running || self.generation != generation {
+            return false;
+        }
+        for id in retry {
+            self.enqueue(id);
+        }
+        if self.rescan || !self.pending.is_empty() || deferred {
+            true
+        } else {
+            self.running = false;
+            false
+        }
     }
 
     fn abnormal_exit(&mut self, generation: u64) -> bool {
-        if !self.running || self.generation != generation { return false; }
+        if !self.running || self.generation != generation {
+            return false;
+        }
         self.running = false;
         // Any in-flight IDs may have been removed from the queue.
         self.rescan = true;
@@ -4000,8 +4778,16 @@ struct TrialZoneWorkerGuard {
 
 impl Drop for TrialZoneWorkerGuard {
     fn drop(&mut self) {
-        if self.completed { return; }
-        let owns_worker = self.state.org_relay.trial_zone_retry.lock().unwrap_or_else(|e| e.into_inner()).abnormal_exit(self.generation);
+        if self.completed {
+            return;
+        }
+        let owns_worker = self
+            .state
+            .org_relay
+            .trial_zone_retry
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .abnormal_exit(self.generation);
         // A polled worker that panicked or was cancelled restarts via the
         // normal delayed scheduler. A never-polled task can be dropped during
         // runtime shutdown; do not recursively spawn during shutdown.
@@ -4012,10 +4798,20 @@ impl Drop for TrialZoneWorkerGuard {
 }
 
 fn schedule_trial_zone_retry(state: &NetworkState, ids: std::collections::HashSet<ObjectId>) {
-    let generation = state.org_relay.trial_zone_retry.lock().unwrap_or_else(|e| e.into_inner()).request(ids);
+    let generation = state
+        .org_relay
+        .trial_zone_retry
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .request(ids);
     let Some(generation) = generation else { return };
     let state = state.clone();
-    let guard = TrialZoneWorkerGuard { state: state.clone(), generation, started: false, completed: false };
+    let guard = TrialZoneWorkerGuard {
+        state: state.clone(),
+        generation,
+        started: false,
+        completed: false,
+    };
     tokio::spawn(async move {
         // Capture the whole Drop guard, rather than separate Copy fields.
         let mut guard = guard;
@@ -4026,23 +4822,45 @@ fn schedule_trial_zone_retry(state: &NetworkState, ids: std::collections::HashSe
             // Productive continuation is rate-bounded, while completed
             // uncertain scans back off independently for five seconds.
             let idle = {
-                let q = state.org_relay.trial_zone_retry.lock().unwrap_or_else(|e| e.into_inner());
+                let q = state
+                    .org_relay
+                    .trial_zone_retry
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
                 q.pending.is_empty() && !q.rescan && !deferred.is_empty()
             };
-            if idle { tokio::time::sleep_until(retry_at).await; }
-            else { tokio::time::sleep(Duration::from_millis(250)).await; }
+            if idle {
+                tokio::time::sleep_until(retry_at).await;
+            } else {
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
             if !deferred.is_empty() && tokio::time::Instant::now() >= retry_at {
-                let mut q = state.org_relay.trial_zone_retry.lock().unwrap_or_else(|e| e.into_inner());
-                for id in deferred.drain() { q.enqueue(id); }
+                let mut q = state
+                    .org_relay
+                    .trial_zone_retry
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                for id in deferred.drain() {
+                    q.enqueue(id);
+                }
             }
             trial::prune_trial_zone_cursors(&state);
             trial::refill_zone_retry_if_needed(&state, generation);
             let batch = {
-                let mut retry = state.org_relay.trial_zone_retry.lock().unwrap_or_else(|e| e.into_inner());
-                if !retry.running || retry.generation != generation { guard.completed = true; return; }
+                let mut retry = state
+                    .org_relay
+                    .trial_zone_retry
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                if !retry.running || retry.generation != generation {
+                    guard.completed = true;
+                    return;
+                }
                 let mut batch = std::collections::HashSet::new();
                 for _ in 0..4 {
-                    let Some(id) = retry.pending.pop_front() else { break };
+                    let Some(id) = retry.pending.pop_front() else {
+                        break;
+                    };
                     retry.queued.remove(&id);
                     deferred.remove(&id);
                     batch.insert(id);
@@ -4052,17 +4870,37 @@ fn schedule_trial_zone_retry(state: &NetworkState, ids: std::collections::HashSe
             let mut pending = std::collections::HashSet::new();
             for id in batch {
                 match trial::recheck_trial_zone_slice(&state, id, "zone_retry").await {
-                    trial::TrialZoneSlice::Complete => {},
-                    trial::TrialZoneSlice::Continue => { pending.insert(id); },
+                    trial::TrialZoneSlice::Complete => {}
+                    trial::TrialZoneSlice::Continue => {
+                        pending.insert(id);
+                    }
                     trial::TrialZoneSlice::Retry => {
-                        if deferred.is_empty() { retry_at = tokio::time::Instant::now() + Duration::from_secs(5); }
-                        if deferred.len() < trial::MAX_TRIALS || deferred.contains(&id) { deferred.insert(id); }
-                        else { state.org_relay.trial_zone_retry.lock().unwrap_or_else(|e| e.into_inner()).rescan = true; }
-                    },
+                        if deferred.is_empty() {
+                            retry_at = tokio::time::Instant::now() + Duration::from_secs(5);
+                        }
+                        if deferred.len() < trial::MAX_TRIALS || deferred.contains(&id) {
+                            deferred.insert(id);
+                        } else {
+                            state
+                                .org_relay
+                                .trial_zone_retry
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .rescan = true;
+                        }
+                    }
                 }
             }
-            let again = state.org_relay.trial_zone_retry.lock().unwrap_or_else(|e| e.into_inner()).finish_pass(generation, pending, !deferred.is_empty());
-            if !again { guard.completed = true; break; }
+            let again = state
+                .org_relay
+                .trial_zone_retry
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .finish_pass(generation, pending, !deferred.is_empty());
+            if !again {
+                guard.completed = true;
+                break;
+            }
         }
     });
 }
@@ -4257,15 +5095,24 @@ pub async fn handle_relay_probe(
         return;
     };
     let Some(node_id) = node.id else { return };
-    if node.node_ref != ident.node_ref() { return; }
+    if node.node_ref != ident.node_ref() {
+        return;
+    }
     let identity_id = ident.connection_key();
     #[cfg(feature = "path-planner-test-support")]
     let finished = candidate_test_support::pause_probe(identity_id).await;
     let accepted = state.org_relay.record_probe_from_connection(
-        (identity_id, connection_id), node_id, relay_node_id, endpoint.clone(), reachable, rtt_ms,
+        (identity_id, connection_id),
+        node_id,
+        relay_node_id,
+        endpoint.clone(),
+        reachable,
+        rtt_ms,
     );
     #[cfg(feature = "path-planner-test-support")]
-    if let Some(finished) = finished { let _ = finished.send(accepted); }
+    if let Some(finished) = finished {
+        let _ = finished.send(accepted);
+    }
     debug!(reporter = %node_id, relay = %relay_node_id, %endpoint, reachable, ?rtt_ms, accepted,
         "org-relay: reachability report");
     if accepted {
@@ -4295,7 +5142,9 @@ mod tests {
     fn trial_zone_party_read_budget_bounds_starts_per_window() {
         let mut budget = TrialZoneIoBudget::default();
         let now = Instant::now();
-        for _ in 0..16 { assert!(budget.admit(now)); }
+        for _ in 0..16 {
+            assert!(budget.admit(now));
+        }
         assert!(!budget.admit(now));
         assert!(budget.admit(now + Duration::from_secs(1)));
     }
@@ -4303,7 +5152,9 @@ mod tests {
     #[test]
     fn trial_zone_semaphore_limits_concurrent_party_reads() {
         let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(4));
-        let guards: Vec<_> = (0..4).map(|_| sem.clone().try_acquire_owned().unwrap()).collect();
+        let guards: Vec<_> = (0..4)
+            .map(|_| sem.clone().try_acquire_owned().unwrap())
+            .collect();
         assert!(sem.clone().try_acquire_owned().is_err());
         drop(guards);
         assert!(sem.try_acquire_owned().is_ok());
@@ -4317,12 +5168,24 @@ mod tests {
             let id = ObjectId::new();
             let generation = queue.lock().unwrap().request([id]).unwrap();
             assert!(queue.lock().unwrap().request([id]).is_none());
-            { let mut q = queue.lock().unwrap(); assert_eq!(q.pending.pop_front(), Some(id)); q.queued.remove(&id); }
+            {
+                let mut q = queue.lock().unwrap();
+                assert_eq!(q.pending.pop_front(), Some(id));
+                q.queued.remove(&id);
+            }
             let barrier = Arc::new(Barrier::new(3));
-            let q = queue.clone(); let b = barrier.clone();
-            let finish = std::thread::spawn(move || { b.wait(); q.lock().unwrap().finish_pass(generation, [], false) });
-            let q = queue.clone(); let b = barrier.clone();
-            let request = std::thread::spawn(move || { b.wait(); q.lock().unwrap().request([id]) });
+            let q = queue.clone();
+            let b = barrier.clone();
+            let finish = std::thread::spawn(move || {
+                b.wait();
+                q.lock().unwrap().finish_pass(generation, [], false)
+            });
+            let q = queue.clone();
+            let b = barrier.clone();
+            let request = std::thread::spawn(move || {
+                b.wait();
+                q.lock().unwrap().request([id])
+            });
             barrier.wait();
             let kept_running = finish.join().unwrap();
             let started_again = request.join().unwrap().is_some();
@@ -4346,7 +5209,8 @@ mod tests {
         let mut retry = TrialZoneRetry::default();
         let id = ObjectId::new();
         let old = retry.request([id]).unwrap();
-        retry.pending.clear(); retry.queued.clear();
+        retry.pending.clear();
+        retry.queued.clear();
         assert!(!retry.finish_pass(old, [], false));
         let new = retry.request([id]).unwrap();
         assert_ne!(old, new);
@@ -4359,9 +5223,12 @@ mod tests {
     fn zone_retry_queue_deduplicates_and_overflow_requests_a_rescan() {
         let mut retry = TrialZoneRetry::default();
         let first = ObjectId::new();
-        retry.enqueue(first); retry.enqueue(first);
+        retry.enqueue(first);
+        retry.enqueue(first);
         assert_eq!(retry.pending.len(), 1);
-        for _ in 1..=trial::MAX_TRIALS { retry.enqueue(ObjectId::new()); }
+        for _ in 1..=trial::MAX_TRIALS {
+            retry.enqueue(ObjectId::new());
+        }
         assert_eq!(retry.pending.len(), trial::MAX_TRIALS);
         assert!(retry.rescan);
     }
@@ -4369,8 +5236,10 @@ mod tests {
     #[test]
     fn zone_retry_unfinished_trial_goes_behind_other_pending_trials() {
         let mut retry = TrialZoneRetry::default();
-        let slow = ObjectId::new(); let other = ObjectId::new();
-        retry.enqueue(slow); retry.enqueue(other);
+        let slow = ObjectId::new();
+        let other = ObjectId::new();
+        retry.enqueue(slow);
+        retry.enqueue(other);
         assert_eq!(retry.pending.pop_front(), Some(slow));
         retry.queued.remove(&slow);
         retry.enqueue(slow);
@@ -4383,7 +5252,8 @@ mod tests {
         let mut retry = TrialZoneRetry::default();
         let id = ObjectId::new();
         let generation = retry.request([id]).unwrap();
-        retry.pending.clear(); retry.queued.clear();
+        retry.pending.clear();
+        retry.queued.clear();
         assert!(retry.finish_pass(generation, [], true));
         assert!(retry.running);
         assert!(!retry.finish_pass(generation, [], false));
@@ -4454,14 +5324,29 @@ mod tests {
         use std::sync::{Arc, mpsc};
         let st = Arc::new(OrgRelayState::new());
         let relay = ObjectId::new();
-        let party = |id| SessionParty { node_id: id, node_ref: NodeRef::Agent { agent_id: id } };
-        let member = |id| SessionMember { party: party(id), wg_public_key: "k".into(), bind_secret: "s".into() };
+        let party = |id| SessionParty {
+            node_id: id,
+            node_ref: NodeRef::Agent { agent_id: id },
+        };
+        let member = |id| SessionMember {
+            party: party(id),
+            wg_public_key: "k".into(),
+            bind_secret: "s".into(),
+        };
         let now = Instant::now();
         let old = OrgRelaySession {
-            tenant_id: ObjectId::new(), pair_key: "pair".into(), vni: 21, generation: 10,
-            relay: party(relay), relay_agent_id: relay, implicit: false,
-            members: [member(ObjectId::new()), member(ObjectId::new())], endpoints: vec!["relay".into()],
-            expires_at: now - Duration::from_secs(1), bind_by: now, hops: Vec::new(),
+            tenant_id: ObjectId::new(),
+            pair_key: "pair".into(),
+            vni: 21,
+            generation: 10,
+            relay: party(relay),
+            relay_agent_id: relay,
+            implicit: false,
+            members: [member(ObjectId::new()), member(ObjectId::new())],
+            endpoints: vec!["relay".into()],
+            expires_at: now - Duration::from_secs(1),
+            bind_by: now,
+            hops: Vec::new(),
         };
         let mut replacement = old.clone();
         replacement.vni = 22;
@@ -4526,32 +5411,59 @@ mod tests {
     #[test]
     fn multi_relay_session_tracks_every_leg_and_revokes_every_bridge() {
         let ids: Vec<_> = (0..5).map(|_| ObjectId::new()).collect();
-        let party = |id| SessionParty { node_id: id, node_ref: NodeRef::Agent { agent_id: id } };
-        let member = |id| SessionMember { party: party(id), wg_public_key: "k".into(), bind_secret: "s".into() };
-        let hops: Vec<_> = (1..=3).map(|i| LineLeg {
-            relay: party(ids[i]), relay_agent_id: ids[i], vni: 10 + i as u32,
-            generation: 100 + i as u64, endpoints: vec![format!("relay{i}")],
-            private_endpoint: format!("10.0.0.{i}:1234"), requires_cross_border_approval: true, bridge_id: ObjectId::new(),
-            bridge_secrets: ["a".into(), "b".into()],
-        }).collect();
+        let party = |id| SessionParty {
+            node_id: id,
+            node_ref: NodeRef::Agent { agent_id: id },
+        };
+        let member = |id| SessionMember {
+            party: party(id),
+            wg_public_key: "k".into(),
+            bind_secret: "s".into(),
+        };
+        let hops: Vec<_> = (1..=3)
+            .map(|i| LineLeg {
+                relay: party(ids[i]),
+                relay_agent_id: ids[i],
+                vni: 10 + i as u32,
+                generation: 100 + i as u64,
+                endpoints: vec![format!("relay{i}")],
+                private_endpoint: format!("10.0.0.{i}:1234"),
+                requires_cross_border_approval: true,
+                bridge_id: ObjectId::new(),
+                bridge_secrets: ["a".into(), "b".into()],
+            })
+            .collect();
         let session = OrgRelaySession {
-            tenant_id: ObjectId::new(), pair_key: "test".into(), vni: 10, generation: 100,
-            relay: party(ids[0]), relay_agent_id: ids[0], implicit: false,
-            members: [member(ids[4]), member(ObjectId::new())], endpoints: vec!["ingress".into()],
-            expires_at: Instant::now(), bind_by: Instant::now(), hops,
+            tenant_id: ObjectId::new(),
+            pair_key: "test".into(),
+            vni: 10,
+            generation: 100,
+            relay: party(ids[0]),
+            relay_agent_id: ids[0],
+            implicit: false,
+            members: [member(ids[4]), member(ObjectId::new())],
+            endpoints: vec!["ingress".into()],
+            expires_at: Instant::now(),
+            bind_by: Instant::now(),
+            hops,
         };
         assert_eq!(session.relay_nodes().collect::<Vec<_>>(), ids[..4]);
         for (i, id) in ids[..4].iter().enumerate() {
             assert!(session.involves(*id));
             assert!(session.involves_agent(*id));
             assert!(session.relayed_by_agent(*id));
-            assert_eq!(session.vnis_on(*id).collect::<Vec<_>>(), vec![10 + i as u32]);
+            assert_eq!(
+                session.vnis_on(*id).collect::<Vec<_>>(),
+                vec![10 + i as u32]
+            );
         }
         assert_eq!(session.member_leg(0).relay_node_id, ids[0]);
         assert_eq!(session.member_leg(1).relay_node_id, ids[3]);
         assert_eq!(session.member_leg(1).vni, 13);
         let edge = |i: usize| roomler_ai_remote_control::models::PeerRelayBackboneEdge {
-            relay_agent_id: ids[i + 1].to_hex(), endpoint: session.hops[i].private_endpoint.clone(), cross_border: true,
+            relay_agent_id: ids[i + 1].to_hex(),
+            endpoint: session.hops[i].private_endpoint.clone(),
+            cross_border: true,
         };
         assert!(!session.has_removed_line_edge(ids[1], &[edge(1)]));
         assert!(session.has_removed_line_edge(ids[1], &[]));
@@ -4564,21 +5476,47 @@ mod tests {
         let mut mixed = session.clone();
         mixed.hops[1].requires_cross_border_approval = false;
         assert!(!mixed.has_removed_line_edge(ids[1], &[no_crossing]));
-        assert!(!mixed.has_removed_line_edge(ids[1], &[edge(1)]), "additional approval is allowed");
-        assert!(mixed.has_removed_line_edge(ids[1], &[]), "ordinary edge removal revokes too");
-        assert!(mixed.has_removed_line_edge(ids[1], &[changed]), "ordinary edge endpoint must still match");
-        assert!(mixed.has_removed_line_edge(ids[0], &[roomler_ai_remote_control::models::PeerRelayBackboneEdge {
-            relay_agent_id: ids[1].to_hex(), endpoint: mixed.hops[0].private_endpoint.clone(), cross_border: false,
-        }]), "a different cross-border edge retains its own requirement");
+        assert!(
+            !mixed.has_removed_line_edge(ids[1], &[edge(1)]),
+            "additional approval is allowed"
+        );
+        assert!(
+            mixed.has_removed_line_edge(ids[1], &[]),
+            "ordinary edge removal revokes too"
+        );
+        assert!(
+            mixed.has_removed_line_edge(ids[1], &[changed]),
+            "ordinary edge endpoint must still match"
+        );
+        assert!(
+            mixed.has_removed_line_edge(
+                ids[0],
+                &[roomler_ai_remote_control::models::PeerRelayBackboneEdge {
+                    relay_agent_id: ids[1].to_hex(),
+                    endpoint: mixed.hops[0].private_endpoint.clone(),
+                    cross_border: false,
+                }]
+            ),
+            "a different cross-border edge retains its own requirement"
+        );
         assert!(!session.has_removed_line_edge(ObjectId::new(), &[]));
         let messages = session.hop_revocations();
         assert_eq!(messages.len(), 6);
         for i in 0..3 {
-            assert_eq!(messages[2*i].0, NodeRef::Agent { agent_id: ids[i+1] });
-            assert!(matches!(messages[2*i].1, ServerMsg::OverlayRelayRevoke { vni } if vni == 11 + i as u32));
-            assert_eq!(messages[2*i+1].0, NodeRef::Agent { agent_id: ids[i] });
-            assert!(matches!(messages[2*i+1].1, ServerMsg::OverlayRelayBridgeRevoke { trial_id, generation }
-                if trial_id == session.hops[i].bridge_id && generation == 100 + i as u64));
+            assert_eq!(
+                messages[2 * i].0,
+                NodeRef::Agent {
+                    agent_id: ids[i + 1]
+                }
+            );
+            assert!(
+                matches!(messages[2*i].1, ServerMsg::OverlayRelayRevoke { vni } if vni == 11 + i as u32)
+            );
+            assert_eq!(messages[2 * i + 1].0, NodeRef::Agent { agent_id: ids[i] });
+            assert!(
+                matches!(messages[2*i+1].1, ServerMsg::OverlayRelayBridgeRevoke { trial_id, generation }
+                if trial_id == session.hops[i].bridge_id && generation == 100 + i as u64)
+            );
         }
     }
 
@@ -4646,24 +5584,60 @@ mod tests {
 
     #[test]
     fn scoped_probe_uses_only_current_endpoint_and_never_invents_zero_rtt() {
-        let map = DashMap::new(); let reporter = ObjectId::new(); let relay = ObjectId::new();
-        let now = Instant::now(); let active = vec!["10.0.0.2:3478".to_string()];
+        let map = DashMap::new();
+        let reporter = ObjectId::new();
+        let relay = ObjectId::new();
+        let now = Instant::now();
+        let active = vec!["10.0.0.2:3478".to_string()];
         let record = |endpoint: &str, reachable, rtt_ms, at| ProbeRecord {
-            endpoint: endpoint.into(), reachable, rtt_ms, at,
+            endpoint: endpoint.into(),
+            reachable,
+            rtt_ms,
+            at,
         };
-        map.insert((reporter, relay), vec![
-            record("10.0.0.1:3478", true, Some(1), now),
-            record("10.0.0.2:3478", false, None, now),
-            record("10.0.0.2:3478", true, None, now),
-        ]);
-        assert_eq!(scoped_probe_verdict(&map, reporter, relay, &active, Some(now), now), ProbeVerdict::Unknown);
-        map.get_mut(&(reporter,relay)).unwrap().push(record("10.0.0.2:3478", true, Some(34), now));
-        assert_eq!(scoped_probe_verdict(&map, reporter, relay, &active, Some(now), now), ProbeVerdict::Reachable(34));
+        map.insert(
+            (reporter, relay),
+            vec![
+                record("10.0.0.1:3478", true, Some(1), now),
+                record("10.0.0.2:3478", false, None, now),
+                record("10.0.0.2:3478", true, None, now),
+            ],
+        );
+        assert_eq!(
+            scoped_probe_verdict(&map, reporter, relay, &active, Some(now), now),
+            ProbeVerdict::Unknown
+        );
+        map.get_mut(&(reporter, relay))
+            .unwrap()
+            .push(record("10.0.0.2:3478", true, Some(34), now));
+        assert_eq!(
+            scoped_probe_verdict(&map, reporter, relay, &active, Some(now), now),
+            ProbeVerdict::Reachable(34)
+        );
         let stale = now + Duration::from_secs(limits::PROBE_TTL_SECS);
-        assert_eq!(scoped_probe_verdict(&map, reporter, relay, &active, Some(now), stale), ProbeVerdict::Unknown);
-        assert_eq!(scoped_probe_verdict(&map, reporter, relay, &[], Some(now), now), ProbeVerdict::Unknown);
-        assert_eq!(scoped_probe_verdict(&map, reporter, relay, &active, None, now), ProbeVerdict::Unknown);
-        assert_eq!(scoped_probe_verdict(&map, reporter, relay, &active, Some(now + Duration::from_nanos(1)), now), ProbeVerdict::Unknown);
+        assert_eq!(
+            scoped_probe_verdict(&map, reporter, relay, &active, Some(now), stale),
+            ProbeVerdict::Unknown
+        );
+        assert_eq!(
+            scoped_probe_verdict(&map, reporter, relay, &[], Some(now), now),
+            ProbeVerdict::Unknown
+        );
+        assert_eq!(
+            scoped_probe_verdict(&map, reporter, relay, &active, None, now),
+            ProbeVerdict::Unknown
+        );
+        assert_eq!(
+            scoped_probe_verdict(
+                &map,
+                reporter,
+                relay,
+                &active,
+                Some(now + Duration::from_nanos(1)),
+                now
+            ),
+            ProbeVerdict::Unknown
+        );
     }
 
     #[test]
@@ -4673,21 +5647,66 @@ mod tests {
         let reporter = ObjectId::new();
         let relay = ObjectId::new();
         let endpoint = "8.8.8.8:3478".to_string();
-        state.offer_probes(reporter, &[RelayProbeTargetWire { relay_node_id: relay, endpoints: vec![endpoint.clone()] }]);
+        state.offer_probes(
+            reporter,
+            &[RelayProbeTargetWire {
+                relay_node_id: relay,
+                endpoints: vec![endpoint.clone()],
+            }],
+        );
         assert!(state.bind_live_conn(identity, "old").is_none());
-        assert!(state.record_probe_from_connection((identity, "old"), reporter, relay, endpoint.clone(), true, Some(4)));
+        assert!(state.record_probe_from_connection(
+            (identity, "old"),
+            reporter,
+            relay,
+            endpoint.clone(),
+            true,
+            Some(4)
+        ));
         let first = state.live_conns.get(&identity).unwrap().bound_at;
-        assert_eq!(state.bind_live_conn(identity, "new"), Some("old".to_string()));
-        assert!(state.note_join_from_connection(identity, "old", reporter, JoinExtras::default()).is_none());
-        assert!(state.note_join_from_connection(identity, "new", reporter, JoinExtras::default()).is_some());
+        assert_eq!(
+            state.bind_live_conn(identity, "new"),
+            Some("old".to_string())
+        );
+        assert!(
+            state
+                .note_join_from_connection(identity, "old", reporter, JoinExtras::default())
+                .is_none()
+        );
+        assert!(
+            state
+                .note_join_from_connection(identity, "new", reporter, JoinExtras::default())
+                .is_some()
+        );
         let second = state.live_conns.get(&identity).unwrap().bound_at;
         assert!(second >= first);
-        assert!(!state.record_probe_from_connection((identity, "old"), reporter, relay, endpoint.clone(), true, Some(1)));
+        assert!(!state.record_probe_from_connection(
+            (identity, "old"),
+            reporter,
+            relay,
+            endpoint.clone(),
+            true,
+            Some(1)
+        ));
         assert_eq!(state.probes.get(&(reporter, relay)).unwrap().len(), 1);
         assert!(!state.unbind_live_conn(identity, "old"));
-        assert!(state.record_probe_from_connection((identity, "new"), reporter, relay, endpoint.clone(), true, Some(7)));
+        assert!(state.record_probe_from_connection(
+            (identity, "new"),
+            reporter,
+            relay,
+            endpoint.clone(),
+            true,
+            Some(7)
+        ));
         assert!(state.unbind_live_conn(identity, "new"));
-        assert!(!state.record_probe_from_connection((identity, "new"), reporter, relay, endpoint, true, Some(1)));
+        assert!(!state.record_probe_from_connection(
+            (identity, "new"),
+            reporter,
+            relay,
+            endpoint,
+            true,
+            Some(1)
+        ));
     }
 
     #[test]
@@ -4807,7 +5826,9 @@ mod discovery_traversal_tests {
         let (page, next) = discovery_page(all.into_iter(), discovery_cursor(&hint(4)));
         assert_eq!(next.unwrap(), discovery_cursor(&hint(2)));
         assert_eq!(
-            page.iter().map(|c| c.requester_relay_node_id()).collect::<Vec<_>>(),
+            page.iter()
+                .map(|c| c.requester_relay_node_id())
+                .collect::<Vec<_>>(),
             vec![
                 hint(5).requester_relay_node_id(),
                 hint(2).requester_relay_node_id(),

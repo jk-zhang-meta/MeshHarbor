@@ -332,8 +332,23 @@ The server cannot see the device switch, so a switched-off device is still order
   calls `order_auto_key_rotate_if_needed` so an agent advertising `key-rotate` automatically
   receives `rc:agent.key_rotate` and heals itself with a freshly minted key.
 - **Audit trigger reason (`KeyRotationAuditEvent::reason`).** `key_rotation_audit` rows
-  record `reason: Some("manual")`, `Some("auto_ttl")`, or `Some("admin_revoke")` so
-  operators can distinguish automatic TTL/fencing rotations from manual owner/admin orders.
+  record `reason: Some("manual")`, `Some("auto_ttl")`, `Some("auto_rejoin")`, or
+  `Some("admin_revoke")` so operators can distinguish periodic TTL/pre-expiry sweeps
+  (`"auto_ttl"`) from reconnect-triggered healing rotations when a returning node presents
+  an expired, retired, or epoch-fenced key (`"auto_rejoin"`), as well as manual owner/admin
+  orders (`"manual"`) and admin key revocations (`"admin_revoke"`).
+- **TTL inheritance across tombstone and re-create (`OverlayNodeDao::create`).** When a
+  node row is tombstoned (for example by the offline reaper) and later re-created on the
+  same `machine_id`, `OverlayNodeDao::create` (`crates/services/src/dao/overlay_node.rs:278-325`)
+  enforces two anti-extension rules:
+  1. If the device presents the **same** `wg_public_key` as a prior row on `(network_id, machine_id)`,
+     it inherits the earliest `key_issued_at`, `min(default_key_ttl_secs(), prior.key_ttl_secs)`,
+     and the earliest `key_expires_at` so re-creating a tombstoned row with an unchanged key
+     never extends its remaining lifetime.
+  2. If the device presents a **fresh** `wg_public_key` after rotating while tombstoned,
+     `key_issued_at` resets to `now`, while `key_ttl_secs` inherits
+     `min(default_key_ttl_secs(), latest_row_on_same_machine.key_ttl_secs)` so an operator-assigned
+     shorter per-node TTL is preserved across tombstone + re-create.
 - **Legacy agents under `ROOMLER_OVERLAY_KEY_TTL_SECS`.** `OverlayNodeDao::create` applies
   `ROOMLER_OVERLAY_KEY_TTL_SECS` (clamped to `>= 60` seconds when non-zero) to all newly
   created overlay nodes regardless of agent version. Pre-`0.4.25` agents that do not
