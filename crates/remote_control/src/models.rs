@@ -5257,6 +5257,10 @@ pub struct KeyRotationAuditEvent {
     /// The refusal's wire string; `None` when the order went out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub denied: Option<String>,
+    /// B4 — Why the rotation order was issued (e.g. `"manual"`, `"auto_ttl"`,
+    /// `"admin_revoke"`). `None` on legacy rows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 impl KeyRotationAuditEvent {

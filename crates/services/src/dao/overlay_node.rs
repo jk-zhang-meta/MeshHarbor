@@ -177,6 +177,55 @@ impl OverlayNodeDao {
             .await
     }
 
+    /// When `wg_key_taken_by_other(network_id, wg_public_key, machine_id)`
+    /// returns `true`, determine whether the rejection matched `machine_id`'s
+    /// OWN row (live or tombstoned) rather than another machine's key.
+    ///
+    /// Returns `Ok(Some(node))` only when no other machine in `network_id` has
+    /// ever held `wg_public_key` (active or retired) and `machine_id` itself
+    /// has a live or tombstoned row matching `wg_public_key` (active or
+    /// retired). Prefers a live row if one exists, otherwise the most recently
+    /// updated tombstone.
+    pub async fn find_same_machine_rejected_key_node(
+        &self,
+        network_id: ObjectId,
+        machine_id: &str,
+        wg_public_key: &str,
+    ) -> DaoResult<Option<OverlayNode>> {
+        let other_machine_match = self
+            .base
+            .find_one(doc! {
+                "network_id": network_id,
+                "machine_id": { "$ne": machine_id },
+                "$or": [
+                    { "wg_public_key": wg_public_key },
+                    { "retired_wg_keys.public_key": wg_public_key },
+                ],
+            })
+            .await?;
+        if other_machine_match.is_some() {
+            return Ok(None);
+        }
+        let rows = self
+            .base
+            .find_many(
+                doc! {
+                    "network_id": network_id,
+                    "machine_id": machine_id,
+                    "$or": [
+                        { "wg_public_key": wg_public_key },
+                        { "retired_wg_keys.public_key": wg_public_key },
+                    ],
+                },
+                Some(doc! { "updated_at": -1 }),
+            )
+            .await?;
+        if let Some(live) = rows.iter().find(|n| n.deleted_at.is_none()) {
+            return Ok(Some(live.clone()));
+        }
+        Ok(rows.into_iter().next())
+    }
+
     /// Insert a fresh node with a freshly-allocated overlay IP.
     pub async fn create(&self, new: NewOverlayNode) -> DaoResult<OverlayNode> {
         let NewOverlayNode {
@@ -228,8 +277,24 @@ impl OverlayNodeDao {
             .await?;
         let default_ttl = default_key_ttl_secs();
         let (key_issued_at, key_ttl_secs, key_expires_at) = if prior_rows.is_empty() {
-            let expires = default_ttl.map(|ttl| compute_expiry(now, ttl));
-            (Some(now), default_ttl, expires)
+            let prior_machine_rows = self
+                .base
+                .find_many(
+                    doc! {
+                        "network_id": network_id,
+                        "machine_id": &machine_id,
+                    },
+                    Some(doc! { "updated_at": -1 }),
+                )
+                .await?;
+            let mut ttl = default_ttl;
+            if let Some(latest_prev) = prior_machine_rows.first()
+                && let Some(pt) = latest_prev.key_ttl_secs
+            {
+                ttl = Some(ttl.map_or(pt, |cur| cur.min(pt)));
+            }
+            let expires = ttl.map(|t| compute_expiry(now, t));
+            (Some(now), ttl, expires)
         } else {
             let mut issued = now;
             let mut ttl: Option<u64> = default_ttl;
@@ -507,7 +572,9 @@ impl OverlayNodeDao {
             }
             break;
         }
-        Err(DaoError::Forbidden("key_retired_or_identity_changed".into()))
+        Err(DaoError::Forbidden(
+            "key_retired_or_identity_changed".into(),
+        ))
     }
 
     /// Fresh admission read for a DERP registration or post-join operation at `now`.
@@ -638,8 +705,7 @@ impl OverlayNodeDao {
                 .retired_wg_keys
                 .iter()
                 .any(|k| k.public_key == current.wg_public_key);
-            let mut filter =
-                epoch_match_filter(node_id, &current.wg_public_key, current.key_epoch);
+            let mut filter = epoch_match_filter(node_id, &current.wg_public_key, current.key_epoch);
             let mut update = doc! {
                 "$set": {
                     "key_revoked_at": current.key_revoked_at.unwrap_or(now),

@@ -2388,3 +2388,199 @@ async fn b4_evicted_node_allows_same_machine_rejoin_with_same_key_and_rejects_ot
             .unwrap()
     );
 }
+
+/// B4 R3 — When a node is evicted by an admin while offline (creating a
+/// tombstone with `deleted_at != null` and `key_expires_at > now`), and its
+/// key TTL subsequently expires while the machine is still offline
+/// (`key_expires_at <= now`), reconnecting and sending `rc:overlay.join` with
+/// the expired key must:
+/// 1. Refuse the join with `rc:overlay.join_refused` (`reason: "key_unauthorized"`);
+/// 2. Identify that the rejected key belongs to the SAME `machine_id`'s own
+///    tombstone and automatically issue `rc:agent.key_rotate` (`reason: "auto_ttl"`
+///    in `key_rotation_audit`);
+/// 3. Allow the machine to immediately re-join the mesh with its freshly
+///    rotated key (`key_epoch = 1`) and receive a new `rc:overlay.netmap`.
+#[tokio::test]
+async fn b4_offline_evicted_node_with_expired_ttl_receives_key_rotate_and_rejoins_with_new_key() {
+    use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+    use futures::{SinkExt, StreamExt};
+    use serde_json::json;
+    use std::time::Duration;
+    use tokio_tungstenite::tungstenite::Message;
+
+    let app = TestApp::spawn().await;
+    let seeded = app.seed_tenant("ovb4offevict").await;
+    let tenant_id = tid(&seeded.tenant_id);
+    let nodes_dao = OverlayNodeDao::new(&app.db);
+
+    let (agent_id, token) =
+        crate::agent_presence_tests::enroll(&app, &seeded, "mach-b4-off-evict").await;
+    let agent_oid = ObjectId::parse_str(&agent_id).unwrap();
+
+    // 1. Agent connects with `key-rotate` capability and joins overlay with key_0 (epoch 0).
+    let mut ws1 =
+        crate::peer_relay_mint_tests::connect_from(&app, &token, &["key-rotate"], None).await;
+    let key_0 = BASE64.encode([0x41u8; 32]);
+    let join_0 = json!({
+        "t": "rc:overlay.join",
+        "wg_public_key": key_0,
+        "key_epoch": 0,
+        "mtu": 1280,
+        "endpoints": ["198.51.100.10:51820"],
+        "supports_join_refusal": true,
+    });
+    ws1.send(Message::Text(join_0.to_string().into()))
+        .await
+        .expect("send initial join");
+    let netmap_0 =
+        crate::peer_relay_mint_tests::recv_t(&mut ws1, "rc:overlay.netmap", Duration::from_secs(5))
+            .await
+            .expect("initial join must succeed with netmap");
+    assert!(netmap_0["self_ip"].as_str().is_some(), "{netmap_0}");
+    let initial_node = nodes_dao
+        .find_live_by_agent(tenant_id, agent_oid)
+        .await
+        .unwrap()
+        .expect("live node after initial join");
+    let node_oid = initial_node.id.expect("initial node _id");
+    let node_id_str = node_oid.to_hex();
+
+    // 2. Admin configures a 60s TTL on the node while it is still valid.
+    let ttl_resp = app
+        .auth_put(
+            &format!(
+                "/api/tenant/{}/agent/{agent_id}/overlay-key/ttl",
+                seeded.tenant_id
+            ),
+            &seeded.admin.access_token,
+        )
+        .json(&json!({ "key_ttl_secs": 60 }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(ttl_resp.status().as_u16(), 200);
+
+    // 3. Machine goes offline (closes WebSocket).
+    let _ = ws1.close(None).await;
+    drop(ws1);
+
+    // 4. While machine is offline and key_expires_at is still in the future,
+    //    admin evicts the overlay node row (`DELETE /api/tenant/{tid}/overlay-node/{id}`).
+    let evict_resp = app
+        .auth_delete(
+            &format!(
+                "/api/tenant/{}/overlay-node/{node_id_str}",
+                seeded.tenant_id
+            ),
+            &seeded.admin.access_token,
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(evict_resp.status().as_u16(), 200);
+
+    let tombstone = nodes_dao.base.find_by_id(node_oid).await.unwrap();
+    assert!(
+        tombstone.deleted_at.is_some(),
+        "evicted node row must be tombstoned"
+    );
+    assert!(
+        !tombstone.is_key_expired_at(bson::DateTime::now()),
+        "precondition: key has not yet expired at the moment of eviction"
+    );
+
+    // 5. Time passes while the machine remains offline: the tombstone's key_expires_at expires.
+    let expired_at = bson::DateTime::from_millis(bson::DateTime::now().timestamp_millis() - 10_000);
+    nodes_dao
+        .base
+        .update_one(
+            doc! { "_id": node_oid },
+            doc! { "$set": { "key_expires_at": expired_at } },
+        )
+        .await
+        .unwrap();
+
+    // 6. Machine comes back online and attempts to rejoin with its expired key_0 (epoch 0).
+    let mut ws2 =
+        crate::peer_relay_mint_tests::connect_from(&app, &token, &["key-rotate"], None).await;
+    ws2.send(Message::Text(join_0.to_string().into()))
+        .await
+        .expect("send rejoin with expired key_0");
+
+    let mut got_refused: Option<Value> = None;
+    let mut got_rotate: Option<Value> = None;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while got_refused.is_none() || got_rotate.is_none() {
+        let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+        assert!(
+            !left.is_zero(),
+            "timed out waiting for join_refused and key_rotate; got_refused={got_refused:?}, got_rotate={got_rotate:?}"
+        );
+        if let Ok(Some(Ok(Message::Text(txt)))) = tokio::time::timeout(left, ws2.next()).await
+            && let Ok(v) = serde_json::from_str::<Value>(&txt)
+        {
+            match v["t"].as_str() {
+                Some("rc:overlay.join_refused") => got_refused = Some(v),
+                Some("rc:agent.key_rotate") => got_rotate = Some(v),
+                _ => {}
+            }
+        }
+    }
+    let refused = got_refused.unwrap();
+    assert_eq!(refused["reason"].as_str(), Some("key_unauthorized"));
+    let rotate = got_rotate.unwrap();
+    let req_id = rotate["request_id"]
+        .as_str()
+        .expect("key_rotate request_id")
+        .to_string();
+
+    // Verify the audit log recorded `reason: "auto_ttl"` and `dispatch: "pushed"`.
+    let audit_doc = app
+        .db
+        .collection::<bson::Document>("key_rotation_audit")
+        .find_one(doc! { "tenant_id": tenant_id, "agent_id": agent_oid, "request_id": &req_id })
+        .await
+        .unwrap()
+        .expect("audit row for auto_ttl rotation");
+    assert_eq!(audit_doc.get_str("dispatch").ok(), Some("pushed"));
+    assert_eq!(audit_doc.get_str("reason").ok(), Some("auto_ttl"));
+
+    // 7. Agent rotates to a fresh key_1 (epoch 1) and rejoins the mesh.
+    let key_1 = BASE64.encode([0x42u8; 32]);
+    let join_1 = json!({
+        "t": "rc:overlay.join",
+        "wg_public_key": key_1,
+        "key_epoch": 1,
+        "mtu": 1280,
+        "endpoints": ["198.51.100.10:51820"],
+        "supports_join_refusal": true,
+    });
+    ws2.send(Message::Text(join_1.to_string().into()))
+        .await
+        .expect("send join with rotated key_1");
+
+    let netmap_1 =
+        crate::peer_relay_mint_tests::recv_t(&mut ws2, "rc:overlay.netmap", Duration::from_secs(5))
+            .await
+            .expect("rejoin with rotated key_1 must succeed with netmap");
+    assert!(netmap_1["self_ip"].as_str().is_some(), "{netmap_1}");
+    let new_node = nodes_dao
+        .find_live_by_agent(tenant_id, agent_oid)
+        .await
+        .unwrap()
+        .expect("live node after rotated rejoin");
+    let new_node_id = new_node.id.expect("new node _id");
+    assert_ne!(
+        new_node_id, node_oid,
+        "must allocate a fresh OverlayNode row"
+    );
+    assert!(new_node.deleted_at.is_none());
+    assert_eq!(new_node.wg_public_key, key_1);
+    assert_eq!(new_node.key_epoch, 1);
+    assert_eq!(
+        new_node.key_ttl_secs,
+        Some(60),
+        "new node row preserves the machine's configured key_ttl_secs"
+    );
+    assert!(new_node.is_key_authorized_at(bson::DateTime::now()));
+}

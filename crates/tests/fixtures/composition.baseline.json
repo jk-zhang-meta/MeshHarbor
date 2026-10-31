@@ -937,6 +937,14 @@
       "methods": "GET,HEAD"
     },
     {
+      "path": "/api/tenant/{tenant_id}/server-link",
+      "methods": "GET,HEAD,PUT"
+    },
+    {
+      "path": "/api/tenant/{tenant_id}/server-link/{a}/{b}",
+      "methods": "DELETE"
+    },
+    {
       "path": "/api/tenant/{tenant_id}/session/{session_id}",
       "methods": "GET,HEAD"
     },

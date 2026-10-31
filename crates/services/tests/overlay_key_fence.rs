@@ -355,7 +355,11 @@ async fn b4_key_expiration_refuses_admission_and_same_key_rejoin_without_sliding
     let with_ttl = dao.set_key_ttl(node_id, Some(120)).await.unwrap();
     let initial_expiry = with_ttl.key_expires_at.expect("key_expires_at must be set");
     assert_eq!(with_ttl.key_ttl_secs, Some(120));
-    assert!(dao.accepts_current_key(node_id, "old-key", 0).await.unwrap());
+    assert!(
+        dao.accepts_current_key(node_id, "old-key", 0)
+            .await
+            .unwrap()
+    );
 
     // Reconnecting with the SAME key must NOT slide key_expires_at.
     let reconnected = join(&dao, &node, "old-key", 0).await.unwrap();
@@ -369,7 +373,9 @@ async fn b4_key_expiration_refuses_admission_and_same_key_rejoin_without_sliding
     let past = bson::DateTime::from_millis(bson::DateTime::now().timestamp_millis() - 5_000);
     dao.set_key_expires_at(node_id, Some(past)).await.unwrap();
     assert!(
-        !dao.accepts_current_key(node_id, "old-key", 0).await.unwrap(),
+        !dao.accepts_current_key(node_id, "old-key", 0)
+            .await
+            .unwrap(),
         "expired key must be rejected by accepts_current_key"
     );
     assert!(
@@ -395,7 +401,11 @@ async fn b4_key_expiration_refuses_admission_and_same_key_rejoin_without_sliding
     assert!(staged_ttl.reauth_required);
     assert_eq!(staged_ttl.key_ttl_secs, Some(300));
     assert!(!staged_ttl.is_key_authorized_at(bson::DateTime::now()));
-    assert!(!dao.accepts_current_key(node_id, "old-key", 0).await.unwrap());
+    assert!(
+        !dao.accepts_current_key(node_id, "old-key", 0)
+            .await
+            .unwrap()
+    );
 
     // Rotating to a fresh key at epoch 1 clears reauth_required and mints a fresh expiry window.
     let rotated = join(&dao, &node, "rotated-after-expiry", 1).await.unwrap();
@@ -422,7 +432,11 @@ async fn b4_key_expiration_refuses_admission_and_same_key_rejoin_without_sliding
             .await
             .unwrap()
     );
-    assert!(!dao.accepts_current_key(node_id, "old-key", 0).await.unwrap());
+    assert!(
+        !dao.accepts_current_key(node_id, "old-key", 0)
+            .await
+            .unwrap()
+    );
 }
 
 #[tokio::test]
@@ -468,7 +482,9 @@ async fn b4_immediate_key_revocation_fences_current_key_and_requires_fresh_rotat
         "revoked node must not be authorized"
     );
     assert!(
-        !dao.accepts_current_key(node_id, "old-key", 0).await.unwrap(),
+        !dao.accepts_current_key(node_id, "old-key", 0)
+            .await
+            .unwrap(),
         "revoked key must be rejected immediately"
     );
     assert!(join(&dao, &node, "old-key", 0).await.is_err());
@@ -552,5 +568,41 @@ async fn b4_retired_wg_keys_bounded_slice_and_default_ttl_floor_and_pre_expiry_w
             .unwrap()
             .is_empty(),
         "node in pre-expiry lead window must not be hard-expired before key_expires_at"
+    );
+
+    // 4. `find_same_machine_rejected_key_node` identifies same-machine tombstones with expired TTL
+    //    while returning `None` when a different machine presents that key.
+    let past = bson::DateTime::from_millis(now.timestamp_millis() - 5_000);
+    dao.set_key_expires_at(node_id, Some(past)).await.unwrap();
+    let _ = dao.release(node_id).await.unwrap();
+    assert!(
+        dao.wg_key_taken_by_other(node.network_id, &latest.wg_public_key, &node.machine_id)
+            .await
+            .unwrap(),
+        "expired key on tombstone is rejected by wg_key_taken_by_other"
+    );
+    let same_match = dao
+        .find_same_machine_rejected_key_node(
+            node.network_id,
+            &node.machine_id,
+            &latest.wg_public_key,
+        )
+        .await
+        .unwrap();
+    assert!(
+        same_match.is_some(),
+        "same machine_id must match its own expired tombstone for auto-rotation recovery"
+    );
+    let other_match = dao
+        .find_same_machine_rejected_key_node(
+            node.network_id,
+            "different-machine-id",
+            &latest.wg_public_key,
+        )
+        .await
+        .unwrap();
+    assert!(
+        other_match.is_none(),
+        "another machine_id must never match a foreign machine's tombstone"
     );
 }

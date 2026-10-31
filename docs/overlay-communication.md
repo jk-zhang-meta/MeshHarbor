@@ -159,8 +159,17 @@ Two consequences worth knowing:
   node with a fresh address and a fresh name; the tombstone is never revived.
 - **Evict is "force a new lease", not "ban".** It doesn't touch the backing
   agent / tunnel client, so a still-enrolled device rejoins on its next connect
-  with a *different* address. To remove a device for good, delete it. There is
-  deliberately no per-machine overlay denylist.
+  with a *different* address. If its WireGuard key TTL expired while the evicted
+  node was offline, the join refusal triggers `order_auto_key_rotate_if_needed`
+  so an agent supporting `key-rotate` automatically rotates its key and rejoins.
+  Evicting the node row (`DELETE /api/tenant/{tid}/overlay-node/{id}`) is also
+  the operator recovery step when a previously rotated device (`key_epoch > 0`)
+  loses its local config and reconnects with a fresh key at `key_epoch = 0`
+  (which `rehydrate` otherwise rejects as stale epoch). Note that
+  `ROOMLER_OVERLAY_KEY_TTL_SECS` applies to all newly created node rows regardless
+  of agent version; legacy agents without `key-rotate` capability require manual
+  update/intervention upon key expiry. To remove a device for good, delete it.
+  There is deliberately no per-machine overlay denylist.
 
 ### Pre-release gaps are ACCEPTED — don't "fix" them
 
