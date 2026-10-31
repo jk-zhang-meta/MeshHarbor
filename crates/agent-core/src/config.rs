@@ -3158,7 +3158,10 @@ pub fn env_bridge_bools(cfg: &AgentConfig) -> [(&'static str, Option<bool>); 95]
         ("OVERLAY_QUIC_ASYNC", cfg.overlay_quic_async),
         ("OVERLAY_VPN_VANTAGE", cfg.overlay_vpn_vantage),
         ("OVERLAY_PORTMAP", cfg.overlay_portmap),
-        ("OVERLAY_NETSTACK_TCP_PACING", cfg.overlay_netstack_tcp_pacing),
+        (
+            "OVERLAY_NETSTACK_TCP_PACING",
+            cfg.overlay_netstack_tcp_pacing,
+        ),
         ("OVERLAY_NETSTACK_TCP_SACK", cfg.overlay_netstack_tcp_sack),
         ("OVERLAY_IPV6", cfg.overlay_ipv6),
         ("NET_INVENTORY", cfg.net_inventory),
@@ -3205,9 +3208,18 @@ pub fn env_bridge_bools(cfg: &AgentConfig) -> [(&'static str, Option<bool>); 95]
 /// same fallback map).
 pub fn env_bridge_numerics(cfg: &AgentConfig) -> [(&'static str, Option<u32>); 35] {
     [
-        ("OVERLAY_NETSTACK_TCP_RX_BUF", cfg.overlay_netstack_tcp_rx_buf),
-        ("OVERLAY_NETSTACK_TCP_TX_BUF", cfg.overlay_netstack_tcp_tx_buf),
-        ("OVERLAY_NETSTACK_TCP_MIN_RTO_MS", cfg.overlay_netstack_tcp_min_rto_ms),
+        (
+            "OVERLAY_NETSTACK_TCP_RX_BUF",
+            cfg.overlay_netstack_tcp_rx_buf,
+        ),
+        (
+            "OVERLAY_NETSTACK_TCP_TX_BUF",
+            cfg.overlay_netstack_tcp_tx_buf,
+        ),
+        (
+            "OVERLAY_NETSTACK_TCP_MIN_RTO_MS",
+            cfg.overlay_netstack_tcp_min_rto_ms,
+        ),
         ("OVERLAY_IFACE_METRIC", cfg.overlay_iface_metric),
         ("RATE_FACTOR_H264", cfg.rate_factor_h264),
         ("RATE_FACTOR_HEVC", cfg.rate_factor_hevc),

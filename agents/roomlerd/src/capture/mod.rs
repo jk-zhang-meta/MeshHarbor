@@ -3766,7 +3766,10 @@ mod wayland_reason_tests {
         assert!(!root.contains("portal_capture"), "{root}");
 
         let user = wayland_hint(false);
-        assert!(user.contains("meshharbor config clear wayland_auto"), "{user}");
+        assert!(
+            user.contains("meshharbor config clear wayland_auto"),
+            "{user}"
+        );
         assert!(user.contains("portal_capture"), "{user}");
         assert!(user.contains("mutter_capture"), "{user}");
         assert!(!user.contains("sudo"), "{user}");

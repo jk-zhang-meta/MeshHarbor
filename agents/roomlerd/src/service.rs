@@ -2143,7 +2143,10 @@ mod tests {
     fn the_system_service_paths_are_the_packagings() {
         let unit = include_str!("../packaging/linux/meshharbord.service");
         assert!(
-            unit.contains(&format!("Environment=MESHHARBORD_CONFIG={}", system::CONFIG)),
+            unit.contains(&format!(
+                "Environment=MESHHARBORD_CONFIG={}",
+                system::CONFIG
+            )),
             "meshharbord.service's MESHHARBORD_CONFIG moved"
         );
         // That the update helper steps aside by THIS unit's enable link is

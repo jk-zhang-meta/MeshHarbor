@@ -836,14 +836,17 @@ pub mod backbone_test_support {
         time::Duration,
     };
     pub use tunnel_core::localapi::{PathTrialEvent, PathTrialPhase, PathTrialStatus};
+    pub use tunnel_core::overlay::orgrelay::{
+        bind::BindSecret,
+        build_data,
+        client::{OrgRelayConn, bind as bind_member},
+        parse_data,
+    };
+    pub use tunnel_core::overlay::wg::{Carrier, WgDevice};
     pub use tunnel_core::overlay::{
         WgKeypair,
         runtime::{PathTrialTestHarness, PathTrialTestSnapshot},
     };
-    pub use tunnel_core::overlay::orgrelay::{
-        bind::BindSecret, client::{bind as bind_member, OrgRelayConn}, build_data, parse_data,
-    };
-    pub use tunnel_core::overlay::wg::{Carrier, WgDevice};
     pub struct NativeRelay {
         running: Running,
         task: tokio::task::JoinHandle<()>,
@@ -913,7 +916,9 @@ pub mod backbone_test_support {
             self.running.stats.snapshot()
         }
         pub fn watch_rejected_wg_data(&self, source: SocketAddr, vni: u32, wg_len: usize) {
-            self.running.stats.fixture_watch_rejected_data(source, vni, wg_len);
+            self.running
+                .stats
+                .fixture_watch_rejected_data(source, vni, wg_len);
         }
         pub fn rejected_wg_data_count(&self) -> u64 {
             self.running.stats.fixture_rejected_data_count()
@@ -926,12 +931,15 @@ pub mod backbone_test_support {
             generation: u64,
         ) -> io::Result<(watch::Receiver<Option<[SocketAddr; 2]>>, [SocketAddr; 2])> {
             let entries = self.running.bridges.lock().unwrap();
-            let entry = entries.get(&id).ok_or_else(|| io::Error::other("bridge missing"))?;
+            let entry = entries
+                .get(&id)
+                .ok_or_else(|| io::Error::other("bridge missing"))?;
             if entry.generation != generation {
                 return Err(io::Error::other("bridge generation mismatch"));
             }
             let evidence = entry.sockets.clone();
-            let sockets = (*evidence.borrow()).ok_or_else(|| io::Error::other("bridge sockets not active"))?;
+            let sockets = (*evidence.borrow())
+                .ok_or_else(|| io::Error::other("bridge sockets not active"))?;
             Ok((evidence, sockets))
         }
         pub async fn assert_bridge_retired(
@@ -945,15 +953,21 @@ pub mod backbone_test_support {
             }
             tokio::time::timeout(Duration::from_secs(2), async {
                 while evidence.borrow_and_update().is_some() {
-                    if evidence.changed().await.is_err() { break; }
+                    if evidence.changed().await.is_err() {
+                        break;
+                    }
                 }
                 for addr in sockets {
                     loop {
-                        if tokio::net::UdpSocket::bind(addr).await.is_ok() { break; }
+                        if tokio::net::UdpSocket::bind(addr).await.is_ok() {
+                            break;
+                        }
                         tokio::task::yield_now().await;
                     }
                 }
-            }).await.map_err(|_| io::Error::other("bridge sockets did not close"))?;
+            })
+            .await
+            .map_err(|_| io::Error::other("bridge sockets did not close"))?;
             Ok(())
         }
         pub fn serve(

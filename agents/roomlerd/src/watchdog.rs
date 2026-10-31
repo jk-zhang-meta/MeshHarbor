@@ -1160,7 +1160,10 @@ mod tests {
             prerm.contains("[ \"$1\" = remove ]"),
             "prerm stops on removal only"
         );
-        assert!(prerm.contains("deb-systemd-invoke stop meshharbor-update.timer meshharbor-update.path"));
+        assert!(
+            prerm
+                .contains("deb-systemd-invoke stop meshharbor-update.timer meshharbor-update.path")
+        );
         let postrm = include_str!("../packaging/linux/debian/postrm");
         assert!(postrm.contains("deb-systemd-helper mask \"$unit\""));
         assert!(postrm.contains("deb-systemd-helper purge \"$unit\""));

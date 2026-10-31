@@ -275,7 +275,11 @@ fn lane_backoff(base: Duration, fails: u32, cap: Duration) -> Duration {
 /// in-lane failure; else P8's [`LAN_PROBE_SPACING`].
 fn lan_spacing(p: &PeerPath, lan_off: bool, now: Instant) -> Duration {
     if !lan_off && p.fast_return_until.is_some_and(|until| until > now) {
-        lane_backoff(FAST_RETURN_LAN_SPACING, p.fast_return_fails, FAST_RETURN_BACKOFF_CAP)
+        lane_backoff(
+            FAST_RETURN_LAN_SPACING,
+            p.fast_return_fails,
+            FAST_RETURN_BACKOFF_CAP,
+        )
     } else {
         LAN_PROBE_SPACING
     }
@@ -637,8 +641,11 @@ impl PathMonitor {
             // F3 — inside the lane a failed re-attempt is the outage still
             // holding, not new evidence against the tier: short penalty, no
             // strike, so the ladder never escalates on one outage.
-            let half_life =
-                lane_backoff(FAST_RETURN_HALF_LIFE, p.fast_return_fails, FAST_RETURN_BACKOFF_CAP);
+            let half_life = lane_backoff(
+                FAST_RETURN_HALF_LIFE,
+                p.fast_return_fails,
+                FAST_RETURN_BACKOFF_CAP,
+            );
             // F3c — and it keeps the lane open, backing off, up to the cap.
             if extend && let Some(since) = p.fast_return_since {
                 p.fast_return_fails = p.fast_return_fails.saturating_add(1);
@@ -1778,16 +1785,31 @@ mod tests {
                 m.on_probe_started(&a, tier, t - Duration::from_secs(12));
                 m.on_probe_result(&a, tier, ProbeOutcome::Expired, true, t);
                 let hl = lane_backoff(FAST_RETURN_HALF_LIFE, k, FAST_RETURN_BACKOFF_CAP);
-                assert!(m.fast_return_active(t), "{tier:?}: open after {} failures", k + 1);
-                assert!(!m.eligible(&a, tier, t + hl / 2), "{tier:?}: backing off ({k})");
-                assert!(m.eligible(&a, tier, t + hl + Duration::from_millis(1)), "{tier:?} ({k})");
+                assert!(
+                    m.fast_return_active(t),
+                    "{tier:?}: open after {} failures",
+                    k + 1
+                );
+                assert!(
+                    !m.eligible(&a, tier, t + hl / 2),
+                    "{tier:?}: backing off ({k})"
+                );
+                assert!(
+                    m.eligible(&a, tier, t + hl + Duration::from_millis(1)),
+                    "{tier:?} ({k})"
+                );
                 if tier == DirectTier::Lan {
-                    let want = lane_backoff(FAST_RETURN_LAN_SPACING, k + 1, FAST_RETURN_BACKOFF_CAP);
+                    let want =
+                        lane_backoff(FAST_RETURN_LAN_SPACING, k + 1, FAST_RETURN_BACKOFF_CAP);
                     assert_eq!(lan_spacing(&m.peers[&a], false, t), want);
                 }
             }
             assert!(m.fast_return_active(t0 + FAST_RETURN_WINDOW + Duration::from_secs(30)));
-            assert_eq!(m.strikes(&a, tier), 0, "{tier:?}: no strike inside the lane");
+            assert_eq!(
+                m.strikes(&a, tier),
+                0,
+                "{tier:?}: no strike inside the lane"
+            );
             // The extension is capped: failures past FAST_RETURN_MAX no longer
             // hold the lane open, and the ordinary ladder takes over.
             while t < t0 + FAST_RETURN_MAX {
@@ -1800,7 +1822,13 @@ mod tests {
         // The kill switch: the lane lapses at FAST_RETURN_WINDOW, no backoff.
         let mut m = PathMonitor::default().with_fast_return_extend(false);
         let t0 = Instant::now();
-        m.on_death(&a, DirectTier::Srflx, DeathReason::RekeyUnanswered, true, t0);
+        m.on_death(
+            &a,
+            DirectTier::Srflx,
+            DeathReason::RekeyUnanswered,
+            true,
+            t0,
+        );
         let t1 = t0 + Duration::from_secs(20);
         m.on_probe_started(&a, DirectTier::Srflx, t0);
         m.on_probe_result(&a, DirectTier::Srflx, ProbeOutcome::Expired, true, t1);
@@ -1820,7 +1848,10 @@ mod tests {
             let mut m = PathMonitor::default().with_fast_return_extend(false);
             let t0 = Instant::now();
             m.on_death(&a, tier, DeathReason::RekeyUnanswered, true, t0);
-            assert!(m.fast_return_active(t0), "{tier:?} conviction arms the lane");
+            assert!(
+                m.fast_return_active(t0),
+                "{tier:?} conviction arms the lane"
+            );
 
             let t1 = t0 + Duration::from_secs(12);
             m.on_probe_started(&a, tier, t0);
@@ -1833,21 +1864,35 @@ mod tests {
             let t2 = t1 + Duration::from_secs(16);
             m.on_death(&a, tier, DeathReason::HandshakeDeadline, true, t2);
             assert!(m.eligible(&a, tier, t2 + past_short));
-            assert_eq!(m.strikes(&a, tier), 0, "{tier:?} in-lane failures book no strike");
+            assert_eq!(
+                m.strikes(&a, tier),
+                0,
+                "{tier:?} in-lane failures book no strike"
+            );
             assert!(!m.is_sticky(&a, tier, true));
 
             let t3 = t0 + FAST_RETURN_WINDOW + Duration::from_secs(1);
             assert!(!m.fast_return_active(t3), "{tier:?} lane lapses");
             m.on_probe_started(&a, tier, t3);
             m.on_probe_result(&a, tier, ProbeOutcome::Expired, true, t3);
-            assert_eq!(m.strikes(&a, tier), 1, "{tier:?} ordinary ladder after the lane");
+            assert_eq!(
+                m.strikes(&a, tier),
+                1,
+                "{tier:?} ordinary ladder after the lane"
+            );
             assert!(!m.eligible(&a, tier, t3 + Duration::from_secs(30)));
         }
 
         // A latched probe closes the lane: a later failure books normally.
         let mut m = PathMonitor::default().with_fast_return_extend(false);
         let t0 = Instant::now();
-        m.on_death(&a, DirectTier::Srflx, DeathReason::RekeyUnanswered, true, t0);
+        m.on_death(
+            &a,
+            DirectTier::Srflx,
+            DeathReason::RekeyUnanswered,
+            true,
+            t0,
+        );
         m.on_probe_started(&a, DirectTier::Srflx, t0);
         m.on_probe_result(
             &a,
@@ -1875,27 +1920,49 @@ mod tests {
         assert_eq!(m.strikes(&a, DirectTier::Lan), 0);
         let p = &m.peers[&a];
         assert_eq!(lan_spacing(p, false, t1), FAST_RETURN_LAN_SPACING);
-        assert_eq!(lan_spacing(p, true, t1), LAN_PROBE_SPACING, "the F3b kill switch");
+        assert_eq!(
+            lan_spacing(p, true, t1),
+            LAN_PROBE_SPACING,
+            "the F3b kill switch"
+        );
         let lapsed = t0 + FAST_RETURN_WINDOW + Duration::from_secs(1);
         assert_eq!(lan_spacing(p, false, lapsed), LAN_PROBE_SPACING);
 
         // `OVERLAY_FAST_RETURN_LAN=0`: LAN keeps the P8 fixed spacing even
         // inside the lane (the pre-F3b behaviour).
-        let mut m = PathMonitor::default().with_fast_return_extend(false).with_fast_return_lan(false);
+        let mut m = PathMonitor::default()
+            .with_fast_return_extend(false)
+            .with_fast_return_lan(false);
         let t0 = Instant::now();
         m.on_death(&a, DirectTier::Lan, DeathReason::RekeyUnanswered, true, t0);
         let t1 = t0 + Duration::from_secs(12);
         m.on_probe_started(&a, DirectTier::Lan, t0);
         m.on_probe_result(&a, DirectTier::Lan, ProbeOutcome::Expired, true, t1);
         assert!(!m.eligible(&a, DirectTier::Lan, t1 + past_short));
-        assert!(m.eligible(&a, DirectTier::Lan, t1 + H_ORDINARY + Duration::from_secs(1)));
+        assert!(m.eligible(
+            &a,
+            DirectTier::Lan,
+            t1 + H_ORDINARY + Duration::from_secs(1)
+        ));
 
         // A relay-carrier conviction does not arm it, nor does the kill switch.
         let mut m = PathMonitor::default().with_fast_return_extend(false);
-        m.on_death(&a, DirectTier::Relay, DeathReason::RekeyUnanswered, true, t0);
+        m.on_death(
+            &a,
+            DirectTier::Relay,
+            DeathReason::RekeyUnanswered,
+            true,
+            t0,
+        );
         assert!(!m.fast_return_active(t0));
         let mut m = PathMonitor::with_fast_return(false);
-        m.on_death(&a, DirectTier::Srflx, DeathReason::RekeyUnanswered, true, t0);
+        m.on_death(
+            &a,
+            DirectTier::Srflx,
+            DeathReason::RekeyUnanswered,
+            true,
+            t0,
+        );
         assert!(!m.fast_return_active(t0));
         m.on_probe_started(&a, DirectTier::Srflx, t0);
         m.on_probe_result(&a, DirectTier::Srflx, ProbeOutcome::Expired, true, t0);

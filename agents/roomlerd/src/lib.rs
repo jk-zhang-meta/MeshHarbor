@@ -137,6 +137,10 @@ pub mod person_socket;
 /// so the CLI's `self-update` shares it. Re-exported, so `crate::pgp_verify`
 /// still names it.
 pub use tunnel_core::pgp_verify;
+pub mod managed_forward;
+#[cfg(target_os = "linux")]
+pub mod managed_forward_nft;
+pub mod net_inventory;
 pub mod post_install;
 pub mod preflight;
 /// FR-108 — is someone using this screen? The idle clock, less the machine's
@@ -163,10 +167,6 @@ pub mod rc_sessions;
 pub mod rc_transport;
 #[cfg(feature = "recording")]
 pub mod recording;
-pub mod managed_forward;
-#[cfg(target_os = "linux")]
-pub mod managed_forward_nft;
-pub mod net_inventory;
 pub mod relay_probe;
 /// FR-19 P1d — the org-relay reachability responder (process-wide, opt-in).
 #[cfg(any(feature = "overlay-l3", feature = "overlay-netstack"))]

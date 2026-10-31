@@ -520,7 +520,11 @@ mod tests {
             &["10.0.0.0/8".into()],
             0,
         );
-        assert_eq!(o.client_ip(), None, "trusted proxy without header is unknown");
+        assert_eq!(
+            o.client_ip(),
+            None,
+            "trusted proxy without header is unknown"
+        );
     }
 
     /// Headers an untrusted caller sends are ignored entirely, including ones

@@ -1164,17 +1164,48 @@ mod tests {
         for tier in [DirectTier::Lan, DirectTier::Public, DirectTier::Srflx] {
             let input = |age, answered, business| HealthInputs {
                 tier,
-                poke: Some(PokeState { since_poke: age, answered,
-                    from_major: false, from_business: business }),
+                poke: Some(PokeState {
+                    since_poke: age,
+                    answered,
+                    from_major: false,
+                    from_business: business,
+                }),
                 ..established()
             };
-            assert!(carrier_tick(&input(BUSINESS_POKE_DEADLINE, false, true)).death.is_none());
-            assert_eq!(carrier_tick(&input(BUSINESS_POKE_DEADLINE + Duration::from_millis(1),
-                false, true)).death, Some(DeathReason::RekeyUnanswered));
-            assert!(carrier_tick(&input(BUSINESS_POKE_DEADLINE + Duration::from_secs(1),
-                true, true)).death.is_none(), "an answered proof preserves the healthy carrier");
-            assert!(carrier_tick(&input(BUSINESS_POKE_DEADLINE + Duration::from_secs(1),
-                false, false)).death.is_none(), "periodic pokes retain the original tier deadline");
+            assert!(
+                carrier_tick(&input(BUSINESS_POKE_DEADLINE, false, true))
+                    .death
+                    .is_none()
+            );
+            assert_eq!(
+                carrier_tick(&input(
+                    BUSINESS_POKE_DEADLINE + Duration::from_millis(1),
+                    false,
+                    true
+                ))
+                .death,
+                Some(DeathReason::RekeyUnanswered)
+            );
+            assert!(
+                carrier_tick(&input(
+                    BUSINESS_POKE_DEADLINE + Duration::from_secs(1),
+                    true,
+                    true
+                ))
+                .death
+                .is_none(),
+                "an answered proof preserves the healthy carrier"
+            );
+            assert!(
+                carrier_tick(&input(
+                    BUSINESS_POKE_DEADLINE + Duration::from_secs(1),
+                    false,
+                    false
+                ))
+                .death
+                .is_none(),
+                "periodic pokes retain the original tier deadline"
+            );
         }
     }
 
@@ -1182,15 +1213,30 @@ mod tests {
     fn business_poke_window_is_an_input_and_the_kill_switch_restores_six_seconds() {
         let input = |age| HealthInputs {
             business_poke_window: BUSINESS_POKE_LEGACY_DEADLINE,
-            poke: Some(PokeState { since_poke: age, answered: false,
-                from_major: false, from_business: true }),
+            poke: Some(PokeState {
+                since_poke: age,
+                answered: false,
+                from_major: false,
+                from_business: true,
+            }),
             ..established()
         };
-        assert!(carrier_tick(&input(BUSINESS_POKE_DEADLINE + Duration::from_secs(1))).death.is_none());
-        assert_eq!(carrier_tick(&input(BUSINESS_POKE_LEGACY_DEADLINE + Duration::from_millis(1))).death,
-            Some(DeathReason::RekeyUnanswered));
-        assert!(BUSINESS_POKE_RETAP_AFTER < BUSINESS_POKE_DEADLINE / 2,
-            "the re-send must leave the second initiation most of the window");
+        assert!(
+            carrier_tick(&input(BUSINESS_POKE_DEADLINE + Duration::from_secs(1)))
+                .death
+                .is_none()
+        );
+        assert_eq!(
+            carrier_tick(&input(
+                BUSINESS_POKE_LEGACY_DEADLINE + Duration::from_millis(1)
+            ))
+            .death,
+            Some(DeathReason::RekeyUnanswered)
+        );
+        assert!(
+            BUSINESS_POKE_RETAP_AFTER < BUSINESS_POKE_DEADLINE / 2,
+            "the re-send must leave the second initiation most of the window"
+        );
     }
 
     #[test]
