@@ -111,14 +111,24 @@ impl RelayStats {
     /// Fixture-only observation; scoped to one source, VNI and WG data length.
     #[cfg(feature = "path-trial-test-support")]
     pub fn fixture_watch_rejected_data(&self, source: SocketAddr, vni: u32, wg_len: usize) {
-        *self.rejected_data_fixture.lock().unwrap_or_else(|e| e.into_inner()) =
-            Some(RejectedDataFixture { source, vni, wg_len, count: 0 });
+        *self
+            .rejected_data_fixture
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(RejectedDataFixture {
+            source,
+            vni,
+            wg_len,
+            count: 0,
+        });
     }
 
     #[cfg(feature = "path-trial-test-support")]
     pub fn fixture_rejected_data_count(&self) -> u64 {
-        self.rejected_data_fixture.lock().unwrap_or_else(|e| e.into_inner())
-            .as_ref().map_or(0, |fixture| fixture.count)
+        self.rejected_data_fixture
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .map_or(0, |fixture| fixture.count)
     }
 
     pub fn snapshot(&self) -> RelayCounts {
@@ -381,14 +391,19 @@ impl RelayServer {
                 RelayAction::Drop(r) => {
                     #[cfg(feature = "path-trial-test-support")]
                     if r == DropReason::UnknownVni
-                        && let Some(fixture) = self.stats.rejected_data_fixture.lock()
-                            .unwrap_or_else(|e| e.into_inner()).as_mut()
-                            && fixture.source == src && fixture.vni == vni
-                            && fixture.wg_len == payload.len()
-                            && payload.starts_with(&[4, 0, 0, 0])
-                        {
-                            fixture.count = fixture.count.saturating_add(1);
-                        }
+                        && let Some(fixture) = self
+                            .stats
+                            .rejected_data_fixture
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .as_mut()
+                        && fixture.source == src
+                        && fixture.vni == vni
+                        && fixture.wg_len == payload.len()
+                        && payload.starts_with(&[4, 0, 0, 0])
+                    {
+                        fixture.count = fixture.count.saturating_add(1);
+                    }
                     self.stats.record_drop(r);
                     None
                 }
@@ -512,17 +527,26 @@ mod tests {
         let mut data = vec![0u8; 48];
         data[0] = 4;
         stats.fixture_watch_rejected_data(source, VNI, data.len());
-        assert!(server.handle(source, &build_data(VNI, &data), now).is_none());
+        assert!(
+            server
+                .handle(source, &build_data(VNI, &data), now)
+                .is_none()
+        );
         assert_eq!(stats.fixture_rejected_data_count(), 1);
         server.handle(other, &build_data(VNI, &data), now);
         server.handle(source, &build_data(VNI + 1, &data), now);
         server.handle(source, &build_data(VNI, &data[..47]), now);
-        let mut wrong_type = data.clone(); wrong_type[0] = 1;
+        let mut wrong_type = data.clone();
+        wrong_type[0] = 1;
         server.handle(source, &build_data(VNI, &wrong_type), now);
         assert_eq!(stats.fixture_rejected_data_count(), 1);
         server.apply(RelayCommand::Install(Box::new(session(now))));
         server.handle(source, &build_data(VNI, &data), now);
-        assert_eq!(stats.fixture_rejected_data_count(), 1, "an existing unbound session is not UnknownVni");
+        assert_eq!(
+            stats.fixture_rejected_data_count(),
+            1,
+            "an existing unbound session is not UnknownVni"
+        );
         server.apply(RelayCommand::Revoke(VNI));
         server.handle(source, &build_data(VNI, &data), now);
         assert_eq!(stats.fixture_rejected_data_count(), 2);

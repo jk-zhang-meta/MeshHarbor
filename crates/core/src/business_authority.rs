@@ -323,7 +323,13 @@ async fn verify_current_device(
             .find_one(filter)
             .await
             .map_err(storage_error)?
-            .map(|row| Ok::<_, ApiError>((AuthenticatedDevice::from_agent(&row)?, row.status, row.owner_user_id)))
+            .map(|row| {
+                Ok::<_, ApiError>((
+                    AuthenticatedDevice::from_agent(&row)?,
+                    row.status,
+                    row.owner_user_id,
+                ))
+            })
             .transpose()?,
         DeviceKind::TunnelClient => core
             .db
@@ -331,7 +337,13 @@ async fn verify_current_device(
             .find_one(filter)
             .await
             .map_err(storage_error)?
-            .map(|row| Ok::<_, ApiError>((AuthenticatedDevice::from_tunnel_client(&row)?, row.status, row.owner_user_id)))
+            .map(|row| {
+                Ok::<_, ApiError>((
+                    AuthenticatedDevice::from_tunnel_client(&row)?,
+                    row.status,
+                    row.owner_user_id,
+                ))
+            })
             .transpose()?,
     };
     let Some((_, status, owner)) = actual.filter(|(row, _, _)| row.identity == device.identity)
@@ -663,9 +675,8 @@ async fn admitted_owner_set(
     if owner_ids.is_empty() {
         return Ok(Some(std::collections::HashSet::new()));
     }
-    let users: Vec<roomler_ai_db::models::User> = tokio::time::timeout(
-        std::time::Duration::from_secs(3),
-        async {
+    let users: Vec<roomler_ai_db::models::User> =
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
             core.db
                 .collection::<roomler_ai_db::models::User>(roomler_ai_db::models::User::COLLECTION)
                 .find(doc! { "_id": { "$in": owner_ids } })
@@ -674,10 +685,9 @@ async fn admitted_owner_set(
                 .try_collect()
                 .await
                 .map_err(storage_error)
-        },
-    )
-    .await
-    .map_err(|_| ApiError::ServiceUnavailable("Account admission lookup timed out".into()))??;
+        })
+        .await
+        .map_err(|_| ApiError::ServiceUnavailable("Account admission lookup timed out".into()))??;
     let mut admitted = std::collections::HashSet::with_capacity(users.len());
     for user in users {
         if let Some(uid) = user.id
@@ -1023,8 +1033,12 @@ pub async fn trial_server_evidence(
         Err(_) => return E::Unknown,
     };
     let key = format!("agent:{tenant_id}:{agent_id}");
-    let approval = match core.db.collection::<RoleApproval>(ROLE_APPROVALS_COLLECTION)
-        .find_one(doc! { "_id": key }).await {
+    let approval = match core
+        .db
+        .collection::<RoleApproval>(ROLE_APPROVALS_COLLECTION)
+        .find_one(doc! { "_id": key })
+        .await
+    {
         Ok(Some(approval)) => approval,
         Ok(None) => return E::MissingApproval,
         Err(_) => return E::Unknown,
@@ -1038,15 +1052,19 @@ pub async fn trial_server_evidence(
     // Match the existing server-list short circuit: approvals that cannot be
     // current Server approvals take the ordinary zone/ACL path, not a new
     // blanket denial. These are observations, not socket-role proof.
-    if approval.revoked || approval.role == DeviceUseRole::Unknown || approval.approved_by != owner {
+    if approval.revoked || approval.role == DeviceUseRole::Unknown || approval.approved_by != owner
+    {
         return E::ObservedInactive;
     }
     if approval.role == DeviceUseRole::Client {
         return E::ObservedClient;
     }
-    let agent = match core.db.collection::<Agent>(Agent::COLLECTION)
+    let agent = match core
+        .db
+        .collection::<Agent>(Agent::COLLECTION)
         .find_one(doc! { "_id": agent_id, "tenant_id": tenant_id, "deleted_at": bson::Bson::Null })
-        .await {
+        .await
+    {
         Ok(Some(agent)) => agent,
         Ok(None) => return E::ObservedInactive,
         Err(_) => return E::Unknown,
@@ -1055,7 +1073,8 @@ pub async fn trial_server_evidence(
         Ok(device) => device,
         Err(_) => return E::ObservedInactive,
     };
-    if effective_role(Some(&approval), &device, Some(owner), DateTime::now()) != DeviceUseRole::Server
+    if effective_role(Some(&approval), &device, Some(owner), DateTime::now())
+        != DeviceUseRole::Server
         || matches!(agent.status, AgentStatus::Quarantined)
     {
         return E::ObservedInactive;
@@ -1063,7 +1082,9 @@ pub async fn trial_server_evidence(
     match crate::admission::authorize_user_id(core, agent.owner_user_id, None).await {
         Ok(()) => E::ObservedServer,
         // The legacy role list excludes these confirmed admission outcomes.
-        Err(ApiError::NotFound(_) | ApiError::Forbidden(_) | ApiError::Unauthorized(_)) => E::ObservedInactive,
+        Err(ApiError::NotFound(_) | ApiError::Forbidden(_) | ApiError::Unauthorized(_)) => {
+            E::ObservedInactive
+        }
         // Includes storage, deserialization and timeout; not non-server proof.
         Err(_) => E::Unknown,
     }

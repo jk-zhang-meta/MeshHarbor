@@ -200,15 +200,23 @@ pub async fn handle_tunnel_client_socket(
         #[cfg(feature = "path-planner-test-support")]
         crate::org_relay::candidate_test_support::tunnel_bind_attempt(tunnel_client_id);
         let _lifecycle = overlay_lock.lock().await;
-        state.org_relay.bind_live_conn(tunnel_client_id, &connection_id);
+        state
+            .org_relay
+            .bind_live_conn(tunnel_client_id, &connection_id);
         #[cfg(feature = "path-planner-test-support")]
         crate::org_relay::candidate_test_support::tunnel_bound(tunnel_client_id);
-        state.overlay_nodes_by_id.insert(tunnel_client_id, outbound_tx.clone());
+        state
+            .overlay_nodes_by_id
+            .insert(tunnel_client_id, outbound_tx.clone());
     }
 
     // The opening observation belongs to the connection just bound above.
     let business_observation = roomler_core::business_authority::ObservationTask::spawn({
-        let (state, origin, connection_id) = (state.clone(), connection_origin.clone(), connection_id.clone());
+        let (state, origin, connection_id) = (
+            state.clone(),
+            connection_origin.clone(),
+            connection_id.clone(),
+        );
         async move {
             observe_business_connection(
                 &state,
@@ -321,15 +329,21 @@ pub async fn handle_tunnel_client_socket(
                 continue;
             }
             crate::overlay::relay_overlay_msg_from_node(
-                &state, crate::overlay::NodeIdentity::TunnelClient(tunnel_client_id),
-                &connection_id, parsed,
-            ).await
+                &state,
+                crate::overlay::NodeIdentity::TunnelClient(tunnel_client_id),
+                &connection_id,
+                parsed,
+            )
+            .await
         } else {
             // Probes already fence ownership at their synchronous record step.
             crate::overlay::relay_overlay_msg_from_node(
-                &state, crate::overlay::NodeIdentity::TunnelClient(tunnel_client_id),
-                &connection_id, parsed,
-            ).await
+                &state,
+                crate::overlay::NodeIdentity::TunnelClient(tunnel_client_id),
+                &connection_id,
+                parsed,
+            )
+            .await
         };
         let Some(parsed) = parsed else { continue };
 
@@ -549,14 +563,19 @@ pub async fn handle_tunnel_client_socket(
     // client never joined the overlay.
     {
         let _lifecycle = overlay_lock.lock().await;
-        if state.org_relay.unbind_live_conn(tunnel_client_id, &connection_id) {
+        if state
+            .org_relay
+            .unbind_live_conn(tunnel_client_id, &connection_id)
+        {
             #[cfg(feature = "path-planner-test-support")]
-            crate::org_relay::candidate_test_support::pause_tunnel_leave_if_armed(&connection_id).await;
+            crate::org_relay::candidate_test_support::pause_tunnel_leave_if_armed(&connection_id)
+                .await;
             state.overlay_nodes_by_id.remove(&tunnel_client_id);
             crate::overlay::handle_overlay_leave(
                 &state,
                 crate::overlay::NodeIdentity::TunnelClient(tunnel_client_id),
-            ).await;
+            )
+            .await;
         }
     }
     release_tunnel_overlay_lock(&state, tunnel_client_id, &overlay_lock);
@@ -589,7 +608,9 @@ pub async fn handle_tunnel_client_socket(
     // some other clone is still alive.
     drop(outbound_tx);
     pump.abort();
-    business_observation.finish(&state.core, &connection_id).await;
+    business_observation
+        .finish(&state.core, &connection_id)
+        .await;
     info!(%tunnel_client_id, "tunnel-client WS disconnected");
 }
 
@@ -1929,7 +1950,10 @@ async fn relay_sdp_offer_to_agent(
         debug!(%request_session_id, "SDP offer on dead session — ignoring");
         return;
     };
-    if !state.tunnel_clients_by_session.contains_key(&request_session_id) {
+    if !state
+        .tunnel_clients_by_session
+        .contains_key(&request_session_id)
+    {
         return;
     }
     if s.tunnel_session_id != request_session_id {

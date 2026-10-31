@@ -271,7 +271,9 @@ impl OverlayRuntime {
                     }
                 } else {
                     let moves = arrived.is_some_and(|a| self.is_spray_local(a))
-                        && upgrade_probes.get(&node_id).is_some_and(|p| p.local != arrived);
+                        && upgrade_probes
+                            .get(&node_id)
+                            .is_some_and(|p| p.local != arrived);
                     if !moves {
                         record_inbound(Some(path::PathAction::Keep));
                         wg.feed_direct(inb.src, inb.sock.clone(), &inb.packet).await;
@@ -383,9 +385,7 @@ impl OverlayRuntime {
         // replayed from a new source address (or onto a live spray socket) is
         // rejected by boringtun's TAI64N watermark without tearing down the
         // active direct or relay session (Notes d & e).
-        if by_node
-            .get(&node_id)
-            .is_some_and(|e| e.pubkey == pubkey)
+        if by_node.get(&node_id).is_some_and(|e| e.pubkey == pubkey)
             && wg.has_installed_peer(&pubkey)
         {
             let arrived = inb.sock.local_addr().ok();
@@ -548,12 +548,22 @@ mod tests {
     fn a_global_ipv6_source_is_public_and_a_punch_when_advertised() {
         let src = "[2001:db8:7::5]:43648".parse().unwrap();
         assert_eq!(
-            classify_inbound_src(src, &srflx(&["37.63.112.129:43649", "[2001:db8:7::5]:43648"])),
+            classify_inbound_src(
+                src,
+                &srflx(&["37.63.112.129:43649", "[2001:db8:7::5]:43648"])
+            ),
             (DirectTier::Srflx, true)
         );
-        assert_eq!(classify_inbound_src(src, &srflx(&[])), (DirectTier::Public, true));
+        assert_eq!(
+            classify_inbound_src(src, &srflx(&[])),
+            (DirectTier::Public, true)
+        );
         let ula = "[fd7a:115c:a1e0::5]:43648".parse().unwrap();
-        assert_eq!(classify_inbound_src(ula, &srflx(&[])).0, DirectTier::Lan, "ULA is not public");
+        assert_eq!(
+            classify_inbound_src(ula, &srflx(&[])).0,
+            DirectTier::Lan,
+            "ULA is not public"
+        );
     }
 
     #[test]

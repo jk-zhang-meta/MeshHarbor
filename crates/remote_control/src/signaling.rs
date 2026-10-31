@@ -5370,23 +5370,47 @@ mod relay_path_identity_tests {
         use super::{ClientMsg, OrgRelayCandidateWire, ServerMsg};
         let ids = (0..4).map(|_| ObjectId::new()).collect::<Vec<_>>();
         let path = RelayPathWire::new(ids.clone()).unwrap();
-        let candidate = OrgRelayCandidateWire { path: path.clone(), requester_at_exit: true,
-            endpoints: vec!["1.1.1.1:3478".into()] };
+        let candidate = OrgRelayCandidateWire {
+            path: path.clone(),
+            requester_at_exit: true,
+            endpoints: vec!["1.1.1.1:3478".into()],
+        };
         assert_eq!(candidate.requester_relay_node_id(), ids[3]);
         assert_eq!(candidate.cursor().path, path);
         let peer = ObjectId::new();
-        let request = ClientMsg::OverlayPathTrialRequest { peer_node_id: peer, request_id: 7,
-            path: path.clone(), requester_at_exit: true };
+        let request = ClientMsg::OverlayPathTrialRequest {
+            peer_node_id: peer,
+            request_id: 7,
+            path: path.clone(),
+            requester_at_exit: true,
+        };
         let json = serde_json::to_value(request).unwrap();
-        assert_eq!(json["path"]["relay_node_ids"], serde_json::json!(ids.iter().map(|id| id.to_hex()).collect::<Vec<_>>()));
+        assert_eq!(
+            json["path"]["relay_node_ids"],
+            serde_json::json!(ids.iter().map(|id| id.to_hex()).collect::<Vec<_>>())
+        );
         assert!(matches!(serde_json::from_value::<ClientMsg>(json).unwrap(),
             ClientMsg::OverlayPathTrialRequest { path: decoded, requester_at_exit:true, .. } if decoded == path));
-        let start = ServerMsg::OverlayPathTrialStart { trial_id: ObjectId::new(), request_id: 7,
-            peer_node_id: peer, peer_wg_public_key: "key".into(), path: path.clone(), requester_at_exit: true,
-            vni: 4, generation: 5, relay_node_id: ids[3], relay_endpoints: vec!["1.1.1.1:3478".into()],
-            bind_secret: "secret".into(), bind_secs: 30, max_lifetime_secs: 60 };
-        let decoded: ServerMsg = serde_json::from_value(serde_json::to_value(start).unwrap()).unwrap();
-        assert!(matches!(decoded, ServerMsg::OverlayPathTrialStart {path: decoded, requester_at_exit:true, ..} if decoded == path));
+        let start = ServerMsg::OverlayPathTrialStart {
+            trial_id: ObjectId::new(),
+            request_id: 7,
+            peer_node_id: peer,
+            peer_wg_public_key: "key".into(),
+            path: path.clone(),
+            requester_at_exit: true,
+            vni: 4,
+            generation: 5,
+            relay_node_id: ids[3],
+            relay_endpoints: vec!["1.1.1.1:3478".into()],
+            bind_secret: "secret".into(),
+            bind_secs: 30,
+            max_lifetime_secs: 60,
+        };
+        let decoded: ServerMsg =
+            serde_json::from_value(serde_json::to_value(start).unwrap()).unwrap();
+        assert!(
+            matches!(decoded, ServerMsg::OverlayPathTrialStart {path: decoded, requester_at_exit:true, ..} if decoded == path)
+        );
     }
 
     #[test]
@@ -5435,12 +5459,17 @@ pub struct OrgRelayCandidateWire {
 impl OrgRelayCandidateWire {
     pub fn requester_relay_node_id(&self) -> ObjectId {
         let nodes = self.path.relay_node_ids();
-        if self.requester_at_exit { nodes[nodes.len() - 1] } else { nodes[0] }
+        if self.requester_at_exit {
+            nodes[nodes.len() - 1]
+        } else {
+            nodes[0]
+        }
     }
 
     pub fn cursor(&self) -> OrgRelayDiscoveryCursorWire {
         OrgRelayDiscoveryCursorWire {
-            path: self.path.clone(), requester_at_exit: self.requester_at_exit,
+            path: self.path.clone(),
+            requester_at_exit: self.requester_at_exit,
         }
     }
 }
@@ -5480,10 +5509,21 @@ mod discovery_scan_wire_tests {
         };
         let value = serde_json::to_value(&progress).unwrap();
         assert_eq!(value["state"], "progress");
-        assert_eq!(value["checkpoint"]["relay_node_ids"].as_array().unwrap().len(),257);
-        assert_eq!(serde_json::from_value::<OrgRelayDiscoveryScanWire>(value).unwrap(),progress);
-        assert_ne!(serde_json::to_value(OrgRelayDiscoveryScanWire::Unavailable).unwrap(),
-            serde_json::to_value(OrgRelayDiscoveryScanWire::Stale).unwrap());
+        assert_eq!(
+            value["checkpoint"]["relay_node_ids"]
+                .as_array()
+                .unwrap()
+                .len(),
+            257
+        );
+        assert_eq!(
+            serde_json::from_value::<OrgRelayDiscoveryScanWire>(value).unwrap(),
+            progress
+        );
+        assert_ne!(
+            serde_json::to_value(OrgRelayDiscoveryScanWire::Unavailable).unwrap(),
+            serde_json::to_value(OrgRelayDiscoveryScanWire::Stale).unwrap()
+        );
     }
 }
 
@@ -12626,7 +12666,8 @@ mod discovery_cursor_wire_tests {
                 .unwrap(),
             reply
         );
-        new["cursor"] = serde_json::json!({"path":{"relay_node_ids":["not-an-id"]}, "requester_at_exit":false});
+        new["cursor"] =
+            serde_json::json!({"path":{"relay_node_ids":["not-an-id"]}, "requester_at_exit":false});
         assert!(serde_json::from_value::<ClientMsg>(new).is_err());
     }
 }

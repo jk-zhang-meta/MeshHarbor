@@ -59,7 +59,8 @@ async fn flag_off_credentials_are_byte_identical_legacy() {
     let body: Value = resp.json().await.unwrap();
     let servers = body["ice_servers"].as_array().unwrap();
     // [0] = the STUN warm-up entry, [1] = the TURN cred entry.
-    assert_eq!(servers[0]["urls"][0], "stun:stun.l.google.com:19302");
+    assert_eq!(servers[0]["urls"][0], "stun:stun.cloudflare.com:3478");
+    assert_eq!(servers[0]["urls"][1], "stun:stun.l.google.com:19302");
     let urls: Vec<String> = servers[1]["urls"]
         .as_array()
         .unwrap()

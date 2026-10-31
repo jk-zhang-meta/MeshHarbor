@@ -1499,9 +1499,12 @@ mod org_relay_discovery_dispatch_tests {
             (true, "not-an-object-id".into(), false),
         ] {
             let installed = std::cell::Cell::new(false);
-            assert!(intercept_with_bridge_installer(&tx, make(), primary, &identity, |_| {
-                installed.set(true);
-            }).is_none());
+            assert!(
+                intercept_with_bridge_installer(&tx, make(), primary, &identity, |_| {
+                    installed.set(true);
+                })
+                .is_none()
+            );
             assert_eq!(installed.get(), expected);
         }
     }

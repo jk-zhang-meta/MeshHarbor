@@ -111,7 +111,11 @@ pub(crate) fn fixture_mmdb() -> Vec<u8> {
 /// (128.0.0.0/1 is CN).
 fn zone_of(ip: &str) -> &'static str {
     let first = ip.split('.').next().and_then(|o| o.parse::<u8>().ok());
-    if first.is_some_and(|o| o >= 128) { "mainland" } else { "non_mainland" }
+    if first.is_some_and(|o| o >= 128) {
+        "mainland"
+    } else {
+        "non_mainland"
+    }
 }
 
 /// The fixture must actually place each connection, or every refusal test
@@ -270,7 +274,11 @@ impl AutoRig {
         let mut r = connect_from(&app, &r_tok, &["relay-server"], from[2]).await;
         // Let the hellos, and each connection's observation, land.
         tokio::time::sleep(Duration::from_millis(300)).await;
-        for (agent, ip) in [(&a_agent, from[0]), (&b_agent, from[1]), (&r_agent, from[2])] {
+        for (agent, ip) in [
+            (&a_agent, from[0]),
+            (&b_agent, from[1]),
+            (&r_agent, from[2]),
+        ] {
             assert_observed(&app, agent, ip).await;
         }
         join(&mut r, 3, Some(true), "8.8.8.8:41641").await;

@@ -80,6 +80,8 @@ mod exec_service_tests;
 // the server. ⚠️ A test file that is not registered here compiles green and
 // runs nothing (P1 shipped one that way for a day).
 #[cfg(test)]
+mod business_isolation_tests;
+#[cfg(test)]
 mod extauth_tests;
 #[cfg(test)]
 mod external_access_tests;
@@ -165,11 +167,15 @@ mod invite_tests;
 mod keep_busy_tests;
 #[cfg(test)]
 mod key_rotation_tests;
+#[cfg(test)]
+mod managed_forward_tests;
 /// FR-115 P5 — the meeting-length cap: warned at 55, ended at 60, once.
 #[cfg(test)]
 mod meeting_cap_tests;
 #[cfg(test)]
 mod member_tests;
+#[cfg(test)]
+mod net_inventory_tests;
 #[cfg(test)]
 mod newsletter_tests;
 #[cfg(test)]
@@ -195,13 +201,7 @@ mod pdf_export_tests;
 #[cfg(test)]
 mod peer_auth_key_tests;
 #[cfg(test)]
-mod business_isolation_tests;
-#[cfg(test)]
 mod peer_relay_auto_tests;
-#[cfg(test)]
-mod managed_forward_tests;
-#[cfg(test)]
-mod net_inventory_tests;
 #[cfg(test)]
 mod peer_relay_mint_tests;
 #[cfg(test)]

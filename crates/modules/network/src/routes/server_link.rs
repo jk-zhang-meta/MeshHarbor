@@ -145,12 +145,11 @@ pub async fn set(
             "a link joins two different servers".into(),
         ));
     }
-    let servers: Vec<ObjectId> =
-        business_authority::current_server_agents(&state.core, tid)
-            .await?
-            .into_iter()
-            .filter_map(|s| s.id)
-            .collect();
+    let servers: Vec<ObjectId> = business_authority::current_server_agents(&state.core, tid)
+        .await?
+        .into_iter()
+        .filter_map(|s| s.id)
+        .collect();
     for x in [a, b] {
         if !servers.contains(&x) {
             return Err(ApiError::BadRequest(format!(
@@ -211,7 +210,10 @@ static LINK_RECONCILE_SLOTS: std::sync::LazyLock<
     dashmap::DashMap<(ObjectId, ObjectId, ObjectId), std::sync::Arc<LinkReconcileSlot>>,
 > = std::sync::LazyLock::new(dashmap::DashMap::new);
 
-fn link_reconcile_key(tenant_id: ObjectId, agents: [ObjectId; 2]) -> (ObjectId, ObjectId, ObjectId) {
+fn link_reconcile_key(
+    tenant_id: ObjectId,
+    agents: [ObjectId; 2],
+) -> (ObjectId, ObjectId, ObjectId) {
     let (a, b) = if agents[0] <= agents[1] {
         (agents[0], agents[1])
     } else {
@@ -253,7 +255,10 @@ async fn apply(state: &NetworkState, tenant_id: ObjectId, agents: [ObjectId; 2])
     state.org_relay.invalidate_eligibility();
     let key = link_reconcile_key(tenant_id, agents);
     let slot = link_reconcile_slot(tenant_id, agents);
-    let my_gen = slot.generation.fetch_add(1, std::sync::atomic::Ordering::AcqRel) + 1;
+    let my_gen = slot
+        .generation
+        .fetch_add(1, std::sync::atomic::Ordering::AcqRel)
+        + 1;
     let st = state.clone();
     let handle = tokio::spawn(async move {
         let ok = {
@@ -274,13 +279,19 @@ async fn apply(state: &NetworkState, tenant_id: ObjectId, agents: [ObjectId; 2])
                     .chain(std::iter::repeat(2000u64))
                 {
                     tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
-                    if retry_slot.generation.load(std::sync::atomic::Ordering::Acquire) != my_gen {
+                    if retry_slot
+                        .generation
+                        .load(std::sync::atomic::Ordering::Acquire)
+                        != my_gen
+                    {
                         cleanup_link_reconcile_slot(key, retry_slot);
                         return;
                     }
                     let done = {
                         let _guard = retry_slot.lock.lock().await;
-                        if retry_slot.generation.load(std::sync::atomic::Ordering::Acquire)
+                        if retry_slot
+                            .generation
+                            .load(std::sync::atomic::Ordering::Acquire)
                             != my_gen
                         {
                             drop(_guard);
@@ -333,7 +344,12 @@ async fn apply_once(state: &NetworkState, tenant_id: ObjectId, agents: [ObjectId
         }
     }
     for agent_id in agents {
-        match state.fleet.agents.find_live_in_tenant(tenant_id, agent_id).await {
+        match state
+            .fleet
+            .agents
+            .find_live_in_tenant(tenant_id, agent_id)
+            .await
+        {
             Ok(agent) => match state
                 .overlay_nodes
                 .find_live_by_tenant_and_machine(tenant_id, &agent.machine_id)

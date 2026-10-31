@@ -60,16 +60,16 @@
 
 use std::any::Any;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use async_trait::async_trait;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, ReadHalf, WriteHalf};
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
-use tokio_rustls::client::TlsStream;
 use tokio_rustls::TlsConnector;
+use tokio_rustls::client::TlsStream;
 use util::{Conn, Error};
 
 /// Initial read-buffer capacity. 4 KiB covers most STUN messages
@@ -639,11 +639,11 @@ mod tests {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         use tokio::net::{TcpListener, TcpStream};
         use tokio::sync::oneshot;
-        use tokio_rustls::rustls::{
-            pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer},
-            ServerConfig,
-        };
         use tokio_rustls::TlsAcceptor;
+        use tokio_rustls::rustls::{
+            ServerConfig,
+            pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer},
+        };
         use util::Conn;
 
         let rcgen::CertifiedKey { cert, key_pair } =

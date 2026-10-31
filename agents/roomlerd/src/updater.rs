@@ -4803,7 +4803,9 @@ mod tests {
         // The stage script installs all three in one loop line — assert once,
         // not per unit (it does not vary with `unit`).
         assert!(
-            stage.contains("meshharbor-update.service meshharbor-update.timer meshharbor-update.path"),
+            stage.contains(
+                "meshharbor-update.service meshharbor-update.timer meshharbor-update.path"
+            ),
             "the tarball stage must ship the three update units"
         );
         for unit in [

@@ -1422,14 +1422,22 @@ mod tests {
         assert_eq!(got, msg, "echo must round-trip through the netstack");
     }
 
-
     #[test]
     fn small_stream_recovers_via_real_duplicate_acks_after_carrier_loss() {
-        fn node(ip: Ipv4Addr) -> (NetstackDevice, Interface, SocketSet<'static>,
-            mpsc::UnboundedReceiver<Vec<u8>>)
-        {
+        fn node(
+            ip: Ipv4Addr,
+        ) -> (
+            NetstackDevice,
+            Interface,
+            SocketSet<'static>,
+            mpsc::UnboundedReceiver<Vec<u8>>,
+        ) {
             let (out_tx, out_rx) = mpsc::unbounded_channel();
-            let mut dev = NetstackDevice { rx: VecDeque::new(), out_tx, mtu: 1280 };
+            let mut dev = NetstackDevice {
+                rx: VecDeque::new(),
+                out_tx,
+                mtu: 1280,
+            };
             let mut cfg = Config::new(HardwareAddress::Ip);
             cfg.random_seed = 7;
             let mut iface = Interface::new(cfg, &mut dev, SmolInstant::from_millis(0));
@@ -1447,7 +1455,9 @@ mod tests {
         server.listen(2222).unwrap();
         let sh = sockets_b.add(server);
         let mut client = PollLoop::new_tcp_socket();
-        client.connect(ai.context(), (IpAddress::from(b_ip), 2222), 49152).unwrap();
+        client
+            .connect(ai.context(), (IpAddress::from(b_ip), 2222), 49152)
+            .unwrap();
         let ch = sockets_a.add(client);
         let mut expected = Vec::new();
         let mut received = Vec::new();
@@ -1462,7 +1472,10 @@ mod tests {
             let lost = (5_000..13_500).contains(&ms);
             if (1_000..20_000).contains(&ms) && ms % 500 == 0 {
                 let payload = format!("record_{:03}:abcdefghijklmnopqrstuvwxyz012345\n", ms / 500);
-                sockets_b.get_mut::<tcp::Socket>(sh).send_slice(payload.as_bytes()).unwrap();
+                sockets_b
+                    .get_mut::<tcp::Socket>(sh)
+                    .send_slice(payload.as_bytes())
+                    .unwrap();
                 expected.extend_from_slice(payload.as_bytes());
             }
             for _ in 0..8 {
@@ -1475,32 +1488,49 @@ mod tests {
                             duplicate_acks += 1;
                         }
                     }
-                    if !lost { bd.rx.push_back(pkt); }
+                    if !lost {
+                        bd.rx.push_back(pkt);
+                    }
                 }
                 let _ = bi.poll(now, &mut bd, &mut sockets_b);
                 while let Ok(pkt) = b_out.try_recv() {
                     if original_seq.is_none() && ms >= 5_000 {
                         let ip = smoltcp::wire::Ipv4Packet::new_checked(pkt.as_slice()).unwrap();
                         let tcp = smoltcp::wire::TcpPacket::new_checked(ip.payload()).unwrap();
-                        if !tcp.payload().is_empty() { original_seq = Some(tcp.seq_number()); }
+                        if !tcp.payload().is_empty() {
+                            original_seq = Some(tcp.seq_number());
+                        }
                     }
-                    if !lost { ad.rx.push_back(pkt); }
+                    if !lost {
+                        ad.rx.push_back(pkt);
+                    }
                 }
             }
             if sockets_a.get::<tcp::Socket>(ch).can_recv() {
-                sockets_a.get_mut::<tcp::Socket>(ch).recv(|b| {
-                    received.extend_from_slice(b);
-                    (b.len(), ())
-                }).unwrap();
+                sockets_a
+                    .get_mut::<tcp::Socket>(ch)
+                    .recv(|b| {
+                        received.extend_from_slice(b);
+                        (b.len(), ())
+                    })
+                    .unwrap();
                 if ms >= 13_500 && first_after_recovery.is_none() {
                     first_after_recovery = Some(ms);
                 }
             }
         }
-        assert_eq!(received, expected, "the same TCP socket must deliver every byte");
-        assert!(duplicate_acks >= 3, "only real peer-generated duplicate ACKs accelerate recovery");
-        assert!(first_after_recovery.is_some_and(|ms| ms <= 14_550),
-            "small ongoing writes should recover shortly after the carrier, not wait for 20 s RTO: {first_after_recovery:?}");
+        assert_eq!(
+            received, expected,
+            "the same TCP socket must deliver every byte"
+        );
+        assert!(
+            duplicate_acks >= 3,
+            "only real peer-generated duplicate ACKs accelerate recovery"
+        );
+        assert!(
+            first_after_recovery.is_some_and(|ms| ms <= 14_550),
+            "small ongoing writes should recover shortly after the carrier, not wait for 20 s RTO: {first_after_recovery:?}"
+        );
     }
 
     /// One direction of a simulated carrier: serialization at `bytes_per_ms`
@@ -1640,11 +1670,20 @@ mod tests {
         ack_loss_ppm: u64,
         min_rto_ms: u64,
     ) -> (f64, usize, f64) {
-        fn node(ip: Ipv4Addr) -> (NetstackDevice, Interface, SocketSet<'static>,
-            mpsc::UnboundedReceiver<Vec<u8>>)
-        {
+        fn node(
+            ip: Ipv4Addr,
+        ) -> (
+            NetstackDevice,
+            Interface,
+            SocketSet<'static>,
+            mpsc::UnboundedReceiver<Vec<u8>>,
+        ) {
             let (out_tx, out_rx) = mpsc::unbounded_channel();
-            let mut dev = NetstackDevice { rx: VecDeque::new(), out_tx, mtu: 1280 };
+            let mut dev = NetstackDevice {
+                rx: VecDeque::new(),
+                out_tx,
+                mtu: 1280,
+            };
             let mut cfg = Config::new(HardwareAddress::Ip);
             cfg.random_seed = 7;
             let mut iface = Interface::new(cfg, &mut dev, SmolInstant::from_millis(0));
@@ -1661,7 +1700,9 @@ mod tests {
         server.listen(2222).unwrap();
         let sh = sockets_b.add(server);
         let mut client = PollLoop::new_tcp_socket_with(rx, tx, cc, pacing, sack, min_rto_ms);
-        client.connect(ai.context(), (IpAddress::from(b_ip), 2222), 49152).unwrap();
+        client
+            .connect(ai.context(), (IpAddress::from(b_ip), 2222), 49152)
+            .unwrap();
         let ch = sockets_a.add(client);
         // A 100 Mbit/s bottleneck both ways.
         let mut a_to_b = SimLink::new(one_way_ms, 100, queue_bytes);
@@ -1883,10 +1924,16 @@ mod tests {
             );
             if batch == 0 {
                 // A perfectly smooth ACK clock already spaces the sender.
-                assert!(paced >= 0.85 * burst, "pacing costs little: {paced:.1} vs {burst:.1}");
+                assert!(
+                    paced >= 0.85 * burst,
+                    "pacing costs little: {paced:.1} vs {burst:.1}"
+                );
             } else {
                 // Compressed ACKs release a window-sized burst; pacing spreads it.
-                assert!(paced >= 1.8 * burst, "pacing rides it: {paced:.1} vs {burst:.1}");
+                assert!(
+                    paced >= 1.8 * burst,
+                    "pacing rides it: {paced:.1} vs {burst:.1}"
+                );
             }
         }
     }

@@ -2123,7 +2123,11 @@ const AGENT_STATE_RUNS: &[&[&str]] = &[
 #[cfg(target_os = "macos")]
 const AGENT_STATE_RUNS: &[&[&str]] = &[
     &["etc", "meshharbor"],
-    &["library", "application support", "live.meshharbor.meshharbor"],
+    &[
+        "library",
+        "application support",
+        "live.meshharbor.meshharbor",
+    ],
     &["library", "caches", "live.meshharbor.meshharbor"],
     &["var", "log", "meshharbor"],
     &["etc", "roomler"],

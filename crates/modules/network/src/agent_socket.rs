@@ -353,7 +353,8 @@ impl AgentSocketLifecycle for NetworkAgentSocket {
         // Dispatch has been cancelled before this synchronous hook, releasing
         // its per-connection mutex. Leave records for the normal audit cleanup.
         if let Some(conn) = self.conns.get(&ctx.conn_id)
-            && let Ok(conn) = conn.try_lock() {
+            && let Ok(conn) = conn.try_lock()
+        {
             crate::tunnel::fence_originated_sessions(&self.state, &conn.sessions);
         }
     }

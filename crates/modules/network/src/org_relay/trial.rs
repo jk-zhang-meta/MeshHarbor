@@ -106,7 +106,8 @@ impl PathTrials {
             .flat_map(|t| {
                 let mut out: Vec<u32> = t.session.vnis_on(relay).collect();
                 if let Some(b) = t.backbone.as_ref()
-                    && b.exit.relay.node_id == relay {
+                    && b.exit.relay.node_id == relay
+                {
                     out.push(b.exit.vni);
                 }
                 out
@@ -170,8 +171,13 @@ pub(super) fn revoke_backbone_node(
                 && t.session.tenant_id == tenant
                 && (t.backbone.is_some() || !t.session.hops.is_empty())
                 && ((member_withdrawn && t.session.member_index(node).is_some())
-                    || (ingress_withdrawn && (t.session.relay.node_id == node
-                        || t.session.hops.iter().take(t.session.hops.len().saturating_sub(1)).any(|h| h.relay.node_id == node))))
+                    || (ingress_withdrawn
+                        && (t.session.relay.node_id == node
+                            || t.session
+                                .hops
+                                .iter()
+                                .take(t.session.hops.len().saturating_sub(1))
+                                .any(|h| h.relay.node_id == node))))
         })
         .map(|t| t.id)
         .collect();
@@ -196,16 +202,28 @@ pub(super) fn revoke_removed_backbone_edges(
         .entries
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    let ids: Vec<_> = entries.values().filter(|t| {
-        if returned(t) || t.session.tenant_id != tenant { return false; }
-        if t.session.has_removed_line_edge(source, approved) { return true; }
-        if t.session.relay_agent_id != source { return false; }
-        t.backbone.as_ref().is_some_and(|path| !approved.iter().any(|e| {
-            ObjectId::parse_str(&e.relay_agent_id).ok() == Some(path.exit.relay_agent_id)
-                && e.endpoint == path.private_endpoint
-                && (!path.requires_cross_border_approval || e.cross_border)
-        }))
-    }).map(|t| t.id).collect();
+    let ids: Vec<_> = entries
+        .values()
+        .filter(|t| {
+            if returned(t) || t.session.tenant_id != tenant {
+                return false;
+            }
+            if t.session.has_removed_line_edge(source, approved) {
+                return true;
+            }
+            if t.session.relay_agent_id != source {
+                return false;
+            }
+            t.backbone.as_ref().is_some_and(|path| {
+                !approved.iter().any(|e| {
+                    ObjectId::parse_str(&e.relay_agent_id).ok() == Some(path.exit.relay_agent_id)
+                        && e.endpoint == path.private_endpoint
+                        && (!path.requires_cross_border_approval || e.cross_border)
+                })
+            })
+        })
+        .map(|t| t.id)
+        .collect();
     ids.into_iter()
         .filter_map(|id| entries.remove(&id))
         .map(|t| {
@@ -219,24 +237,44 @@ pub(super) fn revoke_removed_backbone_edges(
 // independently while sharing the trial mutex and revoke ordering.
 #[path = "trial_zone.rs"]
 mod trial_zone;
-pub(super) use trial_zone::{prune_trial_zone_cursors, recheck_relay_zones, recheck_trial_zone_slice, trial_ids_for_identity, TrialZoneCursor, TrialZoneSlice};
-pub(super) use trial_zone::{current_party_zone, PartyZone};
+pub(super) use trial_zone::{PartyZone, current_party_zone};
+pub(super) use trial_zone::{
+    TrialZoneCursor, TrialZoneSlice, prune_trial_zone_cursors, recheck_relay_zones,
+    recheck_trial_zone_slice, trial_ids_for_identity,
+};
 
 #[cfg(feature = "path-planner-test-support")]
 pub(super) fn trial_exists_fixture(state: &NetworkState, id: ObjectId) -> bool {
-    state.org_relay.trials.entries.lock().unwrap_or_else(|e| e.into_inner()).contains_key(&id)
+    state
+        .org_relay
+        .trials
+        .entries
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .contains_key(&id)
 }
 
 /// Rebuild the bounded retry queue under the trial-table lock. All callers
 /// acquire locks in table -> retry order; no await occurs under either lock.
 pub(super) fn refill_zone_retry_if_needed(state: &NetworkState, generation: u64) {
-    let entries = state.org_relay.trials.entries.lock().unwrap_or_else(|e| e.into_inner());
-    let mut retry = state.org_relay.trial_zone_retry.lock().unwrap_or_else(|e| e.into_inner());
+    let entries = state
+        .org_relay
+        .trials
+        .entries
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let mut retry = state
+        .org_relay
+        .trial_zone_retry
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     if retry.running && retry.generation == generation && retry.rescan {
         retry.pending.clear();
         retry.queued.clear();
         retry.rescan = false;
-        for id in entries.keys().copied() { retry.enqueue(id); }
+        for id in entries.keys().copied() {
+            retry.enqueue(id);
+        }
     }
 }
 #[cfg(feature = "path-planner-test-support")]
@@ -304,8 +342,11 @@ fn revoke_event(trial: &Trial, reason: &str) -> PeerRelayAuditEvent {
 
 fn trial_path(trial: &Trial) -> roomler_ai_remote_control::signaling::RelayPathWire {
     let mut nodes: Vec<_> = trial.session.relay_nodes().collect();
-    if let Some(backbone) = trial.backbone.as_ref() { nodes.push(backbone.exit.relay.node_id); }
-    roomler_ai_remote_control::signaling::RelayPathWire::new(nodes).expect("admitted trial path is nonempty and unique")
+    if let Some(backbone) = trial.backbone.as_ref() {
+        nodes.push(backbone.exit.relay.node_id);
+    }
+    roomler_ai_remote_control::signaling::RelayPathWire::new(nodes)
+        .expect("admitted trial path is nonempty and unique")
 }
 
 fn start_message(trial: &Trial, index: usize) -> ServerMsg {
@@ -313,13 +354,19 @@ fn start_message(trial: &Trial, index: usize) -> ServerMsg {
         let s = &trial.session;
         let leg = s.member_leg(index);
         return ServerMsg::OverlayPathTrialStart {
-            trial_id: trial.id, request_id: trial.request_id,
-            path: trial_path(trial), requester_at_exit: trial.requester_at_exit,
+            trial_id: trial.id,
+            request_id: trial.request_id,
+            path: trial_path(trial),
+            requester_at_exit: trial.requester_at_exit,
             peer_node_id: s.members[1 - index].party.node_id,
             peer_wg_public_key: s.members[1 - index].wg_public_key.clone(),
-            vni: leg.vni, generation: leg.generation, relay_node_id: leg.relay_node_id,
-            relay_endpoints: leg.endpoints.to_vec(), bind_secret: s.members[index].bind_secret.clone(),
-            bind_secs: limits::BIND_SECS, max_lifetime_secs: limits::MAX_LIFETIME_SECS,
+            vni: leg.vni,
+            generation: leg.generation,
+            relay_node_id: leg.relay_node_id,
+            relay_endpoints: leg.endpoints.to_vec(),
+            bind_secret: s.members[index].bind_secret.clone(),
+            bind_secs: limits::BIND_SECS,
+            max_lifetime_secs: limits::MAX_LIFETIME_SECS,
         };
     }
     let s = if index == 1 {
@@ -334,7 +381,8 @@ fn start_message(trial: &Trial, index: usize) -> ServerMsg {
     ServerMsg::OverlayPathTrialStart {
         trial_id: trial.id,
         request_id: trial.request_id,
-        path: trial_path(trial), requester_at_exit: trial.requester_at_exit,
+        path: trial_path(trial),
+        requester_at_exit: trial.requester_at_exit,
         peer_node_id: s.members[1 - index].party.node_id,
         peer_wg_public_key: s.members[1 - index].wg_public_key.clone(),
         vni: s.vni,
@@ -366,53 +414,117 @@ async fn audit_trial_path(
     peer: &OverlayNode,
     plan: &path_trial_plan::TrialPathPlan,
 ) -> bool {
-    let (Some(a), Some(b)) = (requester.id, peer.id) else { return false };
+    let (Some(a), Some(b)) = (requester.id, peer.id) else {
+        return false;
+    };
     #[cfg(feature = "path-planner-test-support")]
     let pair = pair_key(a, b);
-    for (i, _) in plan.edges.iter().enumerate().filter(|(_, edge)| edge.requires_cross_border_approval) {
+    for (i, _) in plan
+        .edges
+        .iter()
+        .enumerate()
+        .filter(|(_, edge)| edge.requires_cross_border_approval)
+    {
         let source = &plan.relays[i];
         let target = &plan.relays[i + 1];
         let event = PeerRelayAuditEvent {
-            id: None, tenant_id: requester.tenant_id, action: PeerRelayAuditAction::Mint,
-            agent_id: Some(source.agent_id), user_id: None, requester_node_id: Some(a),
-            peer_node_id: Some(b), relay_node_id: Some(source.node_id), serve: None,
-            vni: None, warn_only: false, at: DateTime::now(), denied: None,
+            id: None,
+            tenant_id: requester.tenant_id,
+            action: PeerRelayAuditAction::Mint,
+            agent_id: Some(source.agent_id),
+            user_id: None,
+            requester_node_id: Some(a),
+            peer_node_id: Some(b),
+            relay_node_id: Some(source.node_id),
+            serve: None,
+            vni: None,
+            warn_only: false,
+            at: DateTime::now(),
+            denied: None,
             reason: Some(format!("cross_border_edge:{}", target.agent_id)),
         };
         let write = async {
             #[cfg(feature = "path-planner-test-support")]
             match candidate_test_support::take_trial_crossing_audit_fault(&pair) {
                 Some(candidate_test_support::TrialCrossingAuditFault::Error) => return false,
-                Some(candidate_test_support::TrialCrossingAuditFault::Timeout) => std::future::pending::<()>().await,
+                Some(candidate_test_support::TrialCrossingAuditFault::Timeout) => {
+                    std::future::pending::<()>().await
+                }
                 None => {}
             }
             state.peer_relay_audit.record(event).await.is_ok()
         };
-        if !matches!(tokio::time::timeout(Duration::from_secs(3), write).await, Ok(true)) { return false; }
+        if !matches!(
+            tokio::time::timeout(Duration::from_secs(3), write).await,
+            Ok(true)
+        ) {
+            return false;
+        }
     }
     true
 }
 
 /// The plan is freshly authorized; a retained trial must still match every
 /// node, edge, member and zone before any idempotent reply can reuse it.
-fn trial_matches_plan(trial: &Trial, plan: &path_trial_plan::TrialPathPlan, requester: &OverlayNode, peer: &OverlayNode) -> bool {
-    if trial.backbone.is_some() || trial.requester_at_exit != plan.requester_at_exit
-        || trial_path(trial) != plan.path || trial.relay_zones != plan.relays.iter().map(|relay| relay.zone).collect::<Vec<_>>()
-        || trial.member_zones != plan.member_zones { return false; }
-    let session = &trial.session;
-    let (first, last) = if plan.requester_at_exit { (peer, requester) } else { (requester, peer) };
-    for (stored, fresh) in session.members.iter().zip([first, last]) {
-        if Some(stored.party.node_id) != fresh.id || stored.party.node_ref != fresh.node_ref
-            || stored.wg_public_key != fresh.wg_public_key { return false; }
+fn trial_matches_plan(
+    trial: &Trial,
+    plan: &path_trial_plan::TrialPathPlan,
+    requester: &OverlayNode,
+    peer: &OverlayNode,
+) -> bool {
+    if trial.backbone.is_some()
+        || trial.requester_at_exit != plan.requester_at_exit
+        || trial_path(trial) != plan.path
+        || trial.relay_zones
+            != plan
+                .relays
+                .iter()
+                .map(|relay| relay.zone)
+                .collect::<Vec<_>>()
+        || trial.member_zones != plan.member_zones
+    {
+        return false;
     }
-    if plan.relays.len() != session.hops.len() + 1 || plan.edges.len() != session.hops.len() { return false; }
+    let session = &trial.session;
+    let (first, last) = if plan.requester_at_exit {
+        (peer, requester)
+    } else {
+        (requester, peer)
+    };
+    for (stored, fresh) in session.members.iter().zip([first, last]) {
+        if Some(stored.party.node_id) != fresh.id
+            || stored.party.node_ref != fresh.node_ref
+            || stored.wg_public_key != fresh.wg_public_key
+        {
+            return false;
+        }
+    }
+    if plan.relays.len() != session.hops.len() + 1 || plan.edges.len() != session.hops.len() {
+        return false;
+    }
     let first_relay = &plan.relays[0];
-    if session.relay.node_id != first_relay.node_id || session.relay.node_ref != first_relay.node_ref
-        || session.relay_agent_id != first_relay.agent_id || session.endpoints != first_relay.endpoints { return false; }
-    for ((hop, relay), edge) in session.hops.iter().zip(plan.relays.iter().skip(1)).zip(&plan.edges) {
-        if hop.relay.node_id != relay.node_id || hop.relay.node_ref != relay.node_ref
-            || hop.relay_agent_id != relay.agent_id || hop.endpoints != relay.endpoints
-            || hop.private_endpoint != edge.endpoint || hop.requires_cross_border_approval != edge.requires_cross_border_approval { return false; }
+    if session.relay.node_id != first_relay.node_id
+        || session.relay.node_ref != first_relay.node_ref
+        || session.relay_agent_id != first_relay.agent_id
+        || session.endpoints != first_relay.endpoints
+    {
+        return false;
+    }
+    for ((hop, relay), edge) in session
+        .hops
+        .iter()
+        .zip(plan.relays.iter().skip(1))
+        .zip(&plan.edges)
+    {
+        if hop.relay.node_id != relay.node_id
+            || hop.relay.node_ref != relay.node_ref
+            || hop.relay_agent_id != relay.agent_id
+            || hop.endpoints != relay.endpoints
+            || hop.private_endpoint != edge.endpoint
+            || hop.requires_cross_border_approval != edge.requires_cross_border_approval
+        {
+            return false;
+        }
     }
     true
 }
@@ -420,23 +532,33 @@ fn trial_matches_plan(trial: &Trial, plan: &path_trial_plan::TrialPathPlan, requ
 /// Admission-only evidence: inconclusive data never becomes a server-link
 /// authorization. This does not classify/revoke established sessions.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum TrialPairEvidence { Allowed, Denied, Unknown }
+enum TrialPairEvidence {
+    Allowed,
+    Denied,
+    Unknown,
+}
 
 async fn trial_pair_evidence(
-    state: &NetworkState, requester: &OverlayNode, peer: &OverlayNode,
+    state: &NetworkState,
+    requester: &OverlayNode,
+    peer: &OverlayNode,
 ) -> TrialPairEvidence {
     use crate::business_isolation::{self as iso, Mode};
     use roomler_core::business_authority::{
-        trial_device_role_evidence, trial_server_evidence, TrialServerEvidence as E,
+        TrialServerEvidence as E, trial_device_role_evidence, trial_server_evidence,
     };
-    if iso::mode(state) != Mode::Enforce { return TrialPairEvidence::Allowed; }
+    if iso::mode(state) != Mode::Enforce {
+        return TrialPairEvidence::Allowed;
+    }
     let unknown_role_mode = iso::unknown_role_mode(state);
     let (a_kind, a_id) = iso::Lines::ref_identity(&requester.node_ref);
     let (b_kind, b_id) = iso::Lines::ref_identity(&peer.node_ref);
     let facts = tokio::time::timeout(Duration::from_secs(3), async {
         if unknown_role_mode != Mode::Off {
-            let a_ev = trial_device_role_evidence(&state.core, requester.tenant_id, a_kind, a_id).await;
-            let b_ev = trial_device_role_evidence(&state.core, requester.tenant_id, b_kind, b_id).await;
+            let a_ev =
+                trial_device_role_evidence(&state.core, requester.tenant_id, a_kind, a_id).await;
+            let b_ev =
+                trial_device_role_evidence(&state.core, requester.tenant_id, b_kind, b_id).await;
             if a_ev == E::Unknown || b_ev == E::Unknown {
                 return TrialPairEvidence::Unknown;
             }
@@ -461,7 +583,10 @@ async fn trial_pair_evidence(
             }
         }
         let (NodeRef::Agent { agent_id: a }, NodeRef::Agent { agent_id: b }) =
-            (&requester.node_ref, &peer.node_ref) else { return TrialPairEvidence::Allowed };
+            (&requester.node_ref, &peer.node_ref)
+        else {
+            return TrialPairEvidence::Allowed;
+        };
         let a_role = trial_server_evidence(&state.core, requester.tenant_id, *a).await;
         let b_role = trial_server_evidence(&state.core, requester.tenant_id, *b).await;
         if a_role == E::Unknown || b_role == E::Unknown {
@@ -472,17 +597,26 @@ async fn trial_pair_evidence(
             // cannot prove the role of the current live connection.
             return TrialPairEvidence::Allowed;
         }
-        let network = match state.overlay_networks.find_for_tenant(requester.tenant_id).await {
+        let network = match state
+            .overlay_networks
+            .find_for_tenant(requester.tenant_id)
+            .await
+        {
             Ok(Some(network)) => network,
             _ => return TrialPairEvidence::Unknown,
         };
         let pair = roomler_ai_remote_control::models::ServerLink::ordered(*a, *b);
-        if network.server_links.iter().any(|link| link.enabled && (link.a, link.b) == pair) {
+        if network
+            .server_links
+            .iter()
+            .any(|link| link.enabled && (link.a, link.b) == pair)
+        {
             TrialPairEvidence::Allowed
         } else {
             TrialPairEvidence::Denied
         }
-    }).await;
+    })
+    .await;
     facts.unwrap_or(TrialPairEvidence::Unknown)
 }
 
@@ -494,10 +628,16 @@ pub async fn request(
     path: roomler_ai_remote_control::signaling::RelayPathWire,
     requester_at_exit: bool,
 ) {
-    let Some(requester) = current_node(state, ident).await else { return };
+    let Some(requester) = current_node(state, ident).await else {
+        return;
+    };
     let Some(req_id) = requester.id else { return };
-    if !state.org_relay.trials.rate.check_bounded(req_id, req_id, 2) { return; }
-    let Ok(peer) = state.overlay_nodes.base.find_by_id(peer_id).await else { return };
+    if !state.org_relay.trials.rate.check_bounded(req_id, req_id, 2) {
+        return;
+    }
+    let Ok(peer) = state.overlay_nodes.base.find_by_id(peer_id).await else {
+        return;
+    };
     if req_id == peer_id
         || peer.tenant_id != requester.tenant_id
         || peer.deleted_at.is_some()
@@ -505,18 +645,41 @@ pub async fn request(
     {
         return;
     }
-    if peer_relay_mode(state, requester.tenant_id).await != PeerRelayMode::On { return; }
-    if !state.org_relay.join_extras(req_id).supports_path_trial_v1 || !state.org_relay.join_extras(peer_id).supports_path_trial_v1 { return; }
+    if peer_relay_mode(state, requester.tenant_id).await != PeerRelayMode::On {
+        return;
+    }
+    if !state.org_relay.join_extras(req_id).supports_path_trial_v1
+        || !state.org_relay.join_extras(peer_id).supports_path_trial_v1
+    {
+        return;
+    }
     // Read exact target evidence before any new candidate is created. This is
     // not a distributed authorization fence and does not affect fallback.
-    if trial_pair_evidence(state, &requester, &peer).await != TrialPairEvidence::Allowed { return; }
+    if trial_pair_evidence(state, &requester, &peer).await != TrialPairEvidence::Allowed {
+        return;
+    }
     let nodes = path.relay_node_ids();
-    if nodes.len() == 1 && requester_at_exit { return; }
+    if nodes.len() == 1 && requester_at_exit {
+        return;
+    }
     let pair = pair_key(req_id, peer_id);
-    if crate::overlay::org_fallback_forced_derp(state, &pair) { return; }
+    if crate::overlay::org_fallback_forced_derp(state, &pair) {
+        return;
+    }
     let existing = {
-        let entries = state.org_relay.trials.entries.lock().unwrap_or_else(|e| e.into_inner());
-        entries.values().find(|t| t.session.pair_key == pair && t.requester_node_id == req_id && t.request_id == request_id)
+        let entries = state
+            .org_relay
+            .trials
+            .entries
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        entries
+            .values()
+            .find(|t| {
+                t.session.pair_key == pair
+                    && t.requester_node_id == req_id
+                    && t.request_id == request_id
+            })
             .map(|t| (t.id, t.session.clone()))
     };
     let reuse = existing.as_ref().map(|(id, session)| (*id, session));
@@ -524,18 +687,51 @@ pub async fn request(
     let mut single_plan = None;
     let epoch;
     if nodes.len() >= 2 {
-        let Ok(first) = path_trial_plan::plan_reusing(state, &requester, &peer, &path, requester_at_exit, reuse).await else { return };
-        if !audit_trial_path(state, &requester, &peer, &first).await { return; }
-        let Ok(fresh) = path_trial_plan::reauthorize_reusing(state, &requester, &peer, &first, reuse).await else { return };
+        let Ok(first) = path_trial_plan::plan_reusing(
+            state,
+            &requester,
+            &peer,
+            &path,
+            requester_at_exit,
+            reuse,
+        )
+        .await
+        else {
+            return;
+        };
+        if !audit_trial_path(state, &requester, &peer, &first).await {
+            return;
+        }
+        let Ok(fresh) =
+            path_trial_plan::reauthorize_reusing(state, &requester, &peer, &first, reuse).await
+        else {
+            return;
+        };
         epoch = fresh.epoch;
         candidate = Some(fresh);
     } else {
         let auth_epoch = state.org_relay.eligibility_generation();
-        let Ok(acl) = try_load_acl(state, requester.tenant_id, PolicyLoad::Always).await else { return };
-        let Ok(source) = try_overlay_source_of(state, &requester).await else { return };
+        let Ok(acl) = try_load_acl(state, requester.tenant_id, PolicyLoad::Always).await else {
+            return;
+        };
+        let Ok(source) = try_overlay_source_of(state, &requester).await else {
+            return;
+        };
         let routes = peer.effective_routes();
-        if acl.enforcing() && !evaluate_overlay(&acl.policies, &source,
-            OverlayPeerRef { node_id: peer_id, overlay_ip: &peer.overlay_ip, approved_routes: &routes }).visible { return; }
+        if acl.enforcing()
+            && !evaluate_overlay(
+                &acl.policies,
+                &source,
+                OverlayPeerRef {
+                    node_id: peer_id,
+                    overlay_ip: &peer.overlay_ip,
+                    approved_routes: &routes,
+                },
+            )
+            .visible
+        {
+            return;
+        }
         let mut trial_diagnostic = TrialUnknownZoneDiagnostics::default();
         let Ok(plans) = plan_mint_candidates_with_trial_diagnostics(
             state,
@@ -549,87 +745,205 @@ pub async fn request(
         else {
             return;
         };
-        let Some(plan) = plans.into_iter().find(|p| p.relay.id == Some(nodes[0])) else { return };
+        let Some(plan) = plans.into_iter().find(|p| p.relay.id == Some(nodes[0])) else {
+            return;
+        };
         epoch = auth_epoch;
         single_plan = Some(plan);
     }
     // Candidate preparation awaits DB work; re-read the target roles/link.
     // A policy mutation can still race this read and the later claim/delivery.
-    if trial_pair_evidence(state, &requester, &peer).await != TrialPairEvidence::Allowed { return; }
+    if trial_pair_evidence(state, &requester, &peer).await != TrialPairEvidence::Allowed {
+        return;
+    }
     let tenant = requester.tenant_id;
     let (trial_id, cancel_rx) = {
-        let mut entries = state.org_relay.trials.entries.lock().unwrap_or_else(|e| e.into_inner());
-        if epoch != state.org_relay.eligibility_generation() || crate::overlay::org_fallback_forced_derp(state, &pair) { return; }
-        let reserved: Vec<Vec<u32>> = nodes.iter().map(|node| entries.values().flat_map(|t| {
-            let mut held: Vec<u32> = t.session.vnis_on(*node).collect();
-            if let Some(backbone) = t.backbone.as_ref()
-                && backbone.exit.relay.node_id == *node { held.push(backbone.exit.vni); }
-            held
-        }).collect()).collect();
+        let mut entries = state
+            .org_relay
+            .trials
+            .entries
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if epoch != state.org_relay.eligibility_generation()
+            || crate::overlay::org_fallback_forced_derp(state, &pair)
+        {
+            return;
+        }
+        let reserved: Vec<Vec<u32>> = nodes
+            .iter()
+            .map(|node| {
+                entries
+                    .values()
+                    .flat_map(|t| {
+                        let mut held: Vec<u32> = t.session.vnis_on(*node).collect();
+                        if let Some(backbone) = t.backbone.as_ref()
+                            && backbone.exit.relay.node_id == *node
+                        {
+                            held.push(backbone.exit.vni);
+                        }
+                        held
+                    })
+                    .collect()
+            })
+            .collect();
         let mut delivery = None;
-        let admission = admit_trial(&state.org_relay, &mut entries, nodes, &pair, tenant, req_id, request_id,
-            epoch, state.org_relay.eligibility_generation(), || {
+        let admission = admit_trial(
+            &state.org_relay,
+            &mut entries,
+            nodes,
+            &pair,
+            tenant,
+            req_id,
+            request_id,
+            epoch,
+            state.org_relay.eligibility_generation(),
+            || {
                 let mut vnis = Vec::with_capacity(nodes.len());
                 for (node, reserved) in nodes.iter().zip(&reserved) {
                     vnis.push(state.org_relay.alloc_vni_with_reserved(*node, reserved)?);
                 }
-                let now = Instant::now(); let (cancel, _) = watch::channel(false);
+                let now = Instant::now();
+                let (cancel, _) = watch::channel(false);
                 let trial_id = ObjectId::new();
-                let (first, last) = if requester_at_exit { (&peer, &requester) } else { (&requester, &peer) };
-                let member = |n: &OverlayNode| SessionMember {
-                    party: SessionParty { node_id: n.id.unwrap_or_default(), node_ref: n.node_ref.clone() },
-                    wg_public_key: n.wg_public_key.clone(), bind_secret: random_secret(),
-                };
-                let (relay, relay_agent_id, endpoints, implicit) = if let Some(plan) = candidate.as_ref() {
-                    let r = &plan.relays[0]; (SessionParty { node_id: r.node_id, node_ref: r.node_ref.clone() }, r.agent_id, r.endpoints.clone(), false)
+                let (first, last) = if requester_at_exit {
+                    (&peer, &requester)
                 } else {
-                    let p = single_plan.as_ref()?; (SessionParty { node_id: p.relay.id?, node_ref: p.relay.node_ref.clone() }, p.relay_agent_id, p.endpoints.iter().take(4).cloned().collect(), p.implicit)
+                    (&requester, &peer)
                 };
-                let mut session = OrgRelaySession { tenant_id: tenant, pair_key: pair.clone(), vni: vnis[0],
+                let member = |n: &OverlayNode| SessionMember {
+                    party: SessionParty {
+                        node_id: n.id.unwrap_or_default(),
+                        node_ref: n.node_ref.clone(),
+                    },
+                    wg_public_key: n.wg_public_key.clone(),
+                    bind_secret: random_secret(),
+                };
+                let (relay, relay_agent_id, endpoints, implicit) =
+                    if let Some(plan) = candidate.as_ref() {
+                        let r = &plan.relays[0];
+                        (
+                            SessionParty {
+                                node_id: r.node_id,
+                                node_ref: r.node_ref.clone(),
+                            },
+                            r.agent_id,
+                            r.endpoints.clone(),
+                            false,
+                        )
+                    } else {
+                        let p = single_plan.as_ref()?;
+                        (
+                            SessionParty {
+                                node_id: p.relay.id?,
+                                node_ref: p.relay.node_ref.clone(),
+                            },
+                            p.relay_agent_id,
+                            p.endpoints.iter().take(4).cloned().collect(),
+                            p.implicit,
+                        )
+                    };
+                let mut session = OrgRelaySession {
+                    tenant_id: tenant,
+                    pair_key: pair.clone(),
+                    vni: vnis[0],
                     generation: state.org_relay.lamport.fetch_add(1, Ordering::Relaxed) + 1,
-                    relay, relay_agent_id, implicit, members: [member(first), member(last)], endpoints,
+                    relay,
+                    relay_agent_id,
+                    implicit,
+                    members: [member(first), member(last)],
+                    endpoints,
                     expires_at: now + Duration::from_secs(u64::from(limits::MAX_LIFETIME_SECS)),
-                    bind_by: now + Duration::from_secs(u64::from(limits::BIND_SECS)), hops: Vec::new() };
+                    bind_by: now + Duration::from_secs(u64::from(limits::BIND_SECS)),
+                    hops: Vec::new(),
+                };
                 if let Some(plan) = candidate.as_ref() {
-                    for (i, (relay, edge)) in plan.relays.iter().skip(1).zip(&plan.edges).enumerate() {
-                        session.hops.push(LineLeg { relay: SessionParty { node_id: relay.node_id, node_ref: relay.node_ref.clone() },
-                            relay_agent_id: relay.agent_id, vni: vnis[i + 1],
+                    for (i, (relay, edge)) in
+                        plan.relays.iter().skip(1).zip(&plan.edges).enumerate()
+                    {
+                        session.hops.push(LineLeg {
+                            relay: SessionParty {
+                                node_id: relay.node_id,
+                                node_ref: relay.node_ref.clone(),
+                            },
+                            relay_agent_id: relay.agent_id,
+                            vni: vnis[i + 1],
                             generation: state.org_relay.lamport.fetch_add(1, Ordering::Relaxed) + 1,
-                            endpoints: relay.endpoints.clone(), private_endpoint: edge.endpoint.clone(),
+                            endpoints: relay.endpoints.clone(),
+                            private_endpoint: edge.endpoint.clone(),
                             requires_cross_border_approval: edge.requires_cross_border_approval,
                             bridge_id: if i == 0 { trial_id } else { ObjectId::new() },
-                            bridge_secrets: [random_secret(), random_secret()] });
+                            bridge_secrets: [random_secret(), random_secret()],
+                        });
                     }
                 }
                 delivery = path_delivery::build(&session, now).ok();
                 delivery.as_ref()?;
-                Some(Trial { id: trial_id, request_id, requester_node_id: req_id, requester_at_exit,
-                    relay_zones: candidate.as_ref().map(|p| p.relays.iter().map(|r| r.zone).collect()).unwrap_or_default(),
-                    member_zones: candidate.as_ref().and_then(|p| p.member_zones), session, backbone: None,
-                    phase: Phase::Preparing([None, None]), started: now, return_state: None,
-                    return_ids: HashSet::new(), cancel })
-            });
+                Some(Trial {
+                    id: trial_id,
+                    request_id,
+                    requester_node_id: req_id,
+                    requester_at_exit,
+                    relay_zones: candidate
+                        .as_ref()
+                        .map(|p| p.relays.iter().map(|r| r.zone).collect())
+                        .unwrap_or_default(),
+                    member_zones: candidate.as_ref().and_then(|p| p.member_zones),
+                    session,
+                    backbone: None,
+                    phase: Phase::Preparing([None, None]),
+                    started: now,
+                    return_state: None,
+                    return_ids: HashSet::new(),
+                    cancel,
+                })
+            },
+        );
         let id = match admission {
             Admission::Rejected => return,
             Admission::Existing(id) => {
                 let existing = &entries[&id];
-                if trial_path(existing) != path || existing.requester_at_exit != requester_at_exit
-                    || candidate.as_ref().is_some_and(|plan| !trial_matches_plan(existing, plan, &requester, &peer)) { return; }
+                if trial_path(existing) != path
+                    || existing.requester_at_exit != requester_at_exit
+                    || candidate
+                        .as_ref()
+                        .is_some_and(|plan| !trial_matches_plan(existing, plan, &requester, &peer))
+                {
+                    return;
+                }
                 if let Some(plan) = single_plan.as_ref() {
                     let session = &existing.session;
-                    let matches = session.hops.is_empty() && existing.backbone.is_none()
-                        && session.relay.node_id == nodes[0] && session.relay.node_ref == plan.relay.node_ref
-                        && session.relay_agent_id == plan.relay_agent_id && session.endpoints == plan.endpoints.iter().take(4).cloned().collect::<Vec<_>>()
+                    let matches = session.hops.is_empty()
+                        && existing.backbone.is_none()
+                        && session.relay.node_id == nodes[0]
+                        && session.relay.node_ref == plan.relay.node_ref
+                        && session.relay_agent_id == plan.relay_agent_id
+                        && session.endpoints
+                            == plan.endpoints.iter().take(4).cloned().collect::<Vec<_>>()
                         && session.implicit == plan.implicit
-                        && [(&requester, req_id), (&peer, peer_id)].iter().all(|(node, id)|
-                            session.member_index(*id).is_some_and(|i| session.members[i].party.node_ref == node.node_ref
-                                && session.members[i].wg_public_key == node.wg_public_key));
-                    if !matches { return; }
+                        && [(&requester, req_id), (&peer, peer_id)]
+                            .iter()
+                            .all(|(node, id)| {
+                                session.member_index(*id).is_some_and(|i| {
+                                    session.members[i].party.node_ref == node.node_ref
+                                        && session.members[i].wg_public_key == node.wg_public_key
+                                })
+                            });
+                    if !matches {
+                        return;
+                    }
                 }
-                let message = if let Some(r) = existing.return_state.as_ref() { return_message(existing.id, r) }
-                    else if matches!(existing.phase, Phase::Finalized) { ServerMsg::OverlayPathTrialFinalize { trial_id: id } }
-                    else if matches!(existing.phase, Phase::Committing(_)) { ServerMsg::OverlayPathTrialCommit { trial_id: id } }
-                    else { let Some(index) = existing.session.member_index(req_id) else { return }; start_message(existing, index) };
+                let message = if let Some(r) = existing.return_state.as_ref() {
+                    return_message(existing.id, r)
+                } else if matches!(existing.phase, Phase::Finalized) {
+                    ServerMsg::OverlayPathTrialFinalize { trial_id: id }
+                } else if matches!(existing.phase, Phase::Committing(_)) {
+                    ServerMsg::OverlayPathTrialCommit { trial_id: id }
+                } else {
+                    let Some(index) = existing.session.member_index(req_id) else {
+                        return;
+                    };
+                    start_message(existing, index)
+                };
                 push_control(state, &requester.node_ref, message);
                 return;
             }
@@ -639,18 +953,38 @@ pub async fn request(
         let Some(delivery) = delivery else { return };
         let mut sent = true;
         for (target, message) in delivery.relays.into_iter().chain(delivery.bridges) {
-            if epoch != state.org_relay.eligibility_generation() || crate::overlay::org_fallback_forced_derp(state, &pair)
-                || !push_control(state, &target, message) { sent = false; break; }
+            if epoch != state.org_relay.eligibility_generation()
+                || crate::overlay::org_fallback_forced_derp(state, &pair)
+                || !push_control(state, &target, message)
+            {
+                sent = false;
+                break;
+            }
         }
-        let a = sent && push_control(state, &trial.session.members[0].party.node_ref, start_message(trial, 0));
-        let b = sent && push_control(state, &trial.session.members[1].party.node_ref, start_message(trial, 1));
+        let a = sent
+            && push_control(
+                state,
+                &trial.session.members[0].party.node_ref,
+                start_message(trial, 0),
+            );
+        let b = sent
+            && push_control(
+                state,
+                &trial.session.members[1].party.node_ref,
+                start_message(trial, 1),
+            );
         if !(sent && a && b) {
-            if let Some(trial) = entries.remove(&id) { notify_abort(state, &trial); }
+            if let Some(trial) = entries.remove(&id) {
+                notify_abort(state, &trial);
+            }
             return;
         }
         (id, trial.cancel.subscribe())
     };
-    let state = state.clone(); tokio::spawn(async move { timer(state, trial_id, cancel_rx).await; });
+    let state = state.clone();
+    tokio::spawn(async move {
+        timer(state, trial_id, cancel_rx).await;
+    });
 }
 
 enum Admission {
@@ -676,9 +1010,7 @@ fn admit_trial(
         return Admission::Rejected;
     }
     if let Some(existing) = entries.values().find(|t| {
-        t.session.pair_key == pair
-            && t.requester_node_id == requester
-            && t.request_id == request_id
+        t.session.pair_key == pair && t.requester_node_id == requester && t.request_id == request_id
     }) {
         return Admission::Existing(existing.id);
     }
@@ -710,32 +1042,64 @@ fn admit_trial(
     Admission::Created(id)
 }
 
-pub(super) fn path_has_capacity_reusing(state: &OrgRelayState, relay_nodes: &[ObjectId], trial_id: Option<ObjectId>) -> bool {
-    let entries = state.trials.entries.lock().unwrap_or_else(|e| e.into_inner());
+pub(super) fn path_has_capacity_reusing(
+    state: &OrgRelayState,
+    relay_nodes: &[ObjectId],
+    trial_id: Option<ObjectId>,
+) -> bool {
+    let entries = state
+        .trials
+        .entries
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     has_capacity_except(state, &entries, relay_nodes, trial_id)
 }
 
 /// Called only while `PathTrials.entries` is held. Every session creator must
 /// use the same lock for this count to be an admission guarantee.
-fn has_capacity(state: &OrgRelayState, entries: &HashMap<ObjectId, Trial>, relay_nodes: &[ObjectId]) -> bool {
+fn has_capacity(
+    state: &OrgRelayState,
+    entries: &HashMap<ObjectId, Trial>,
+    relay_nodes: &[ObjectId],
+) -> bool {
     has_capacity_except(state, entries, relay_nodes, None)
 }
 
-fn has_capacity_except(state: &OrgRelayState, entries: &HashMap<ObjectId, Trial>, relay_nodes: &[ObjectId], skip: Option<ObjectId>) -> bool {
+fn has_capacity_except(
+    state: &OrgRelayState,
+    entries: &HashMap<ObjectId, Trial>,
+    relay_nodes: &[ObjectId],
+    skip: Option<ObjectId>,
+) -> bool {
     let now = Instant::now();
     let mut seen = HashSet::new();
-    !relay_nodes.is_empty() && relay_nodes.iter().all(|relay| {
-        if !seen.insert(*relay) { return false; }
-        let active = state.sessions.iter()
-            .filter(|session| session.expires_at > now && session.relay_nodes().any(|node| node == *relay))
-            .count();
-        let trials = entries.values().filter(|trial| {
-            Some(trial.id) != skip && trial.session.expires_at > now && !returned(trial)
-                && (trial.session.relay_nodes().any(|id| id == *relay)
-                    || trial.backbone.as_ref().is_some_and(|b| b.exit.relay.node_id == *relay))
-        }).count();
-        active.saturating_add(trials) < limits::MAX_SESSIONS_PER_RELAY
-    })
+    !relay_nodes.is_empty()
+        && relay_nodes.iter().all(|relay| {
+            if !seen.insert(*relay) {
+                return false;
+            }
+            let active = state
+                .sessions
+                .iter()
+                .filter(|session| {
+                    session.expires_at > now && session.relay_nodes().any(|node| node == *relay)
+                })
+                .count();
+            let trials = entries
+                .values()
+                .filter(|trial| {
+                    Some(trial.id) != skip
+                        && trial.session.expires_at > now
+                        && !returned(trial)
+                        && (trial.session.relay_nodes().any(|id| id == *relay)
+                            || trial
+                                .backbone
+                                .as_ref()
+                                .is_some_and(|b| b.exit.relay.node_id == *relay))
+                })
+                .count();
+            active.saturating_add(trials) < limits::MAX_SESSIONS_PER_RELAY
+        })
 }
 
 pub(super) enum MintClaim {
@@ -752,9 +1116,17 @@ pub(super) fn claim_mint(
     session: &mut OrgRelaySession,
     allow: impl FnOnce(&OrgRelaySession) -> bool,
 ) -> MintClaim {
-    let entries = state.trials.entries.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(existing) = state.sessions.get(&session.pair_key).map(|entry| entry.value().clone())
-        && existing.expires_at > Instant::now() {
+    let entries = state
+        .trials
+        .entries
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if let Some(existing) = state
+        .sessions
+        .get(&session.pair_key)
+        .map(|entry| entry.value().clone())
+        && existing.expires_at > Instant::now()
+    {
         return MintClaim::Existing(Box::new(existing));
     }
     let nodes: Vec<_> = session.relay_nodes().collect();
@@ -766,12 +1138,18 @@ pub(super) fn claim_mint(
     // as in the existing trial allocator; allocations are scoped per relay.
     let mut allocated = Vec::with_capacity(nodes.len());
     for relay in &nodes {
-        let reserved: Vec<u32> = entries.values().flat_map(|trial| {
-            let mut out: Vec<u32> = trial.session.vnis_on(*relay).collect();
-            if let Some(backbone) = trial.backbone.as_ref()
-                && backbone.exit.relay.node_id == *relay { out.push(backbone.exit.vni); }
-            out
-        }).collect();
+        let reserved: Vec<u32> = entries
+            .values()
+            .flat_map(|trial| {
+                let mut out: Vec<u32> = trial.session.vnis_on(*relay).collect();
+                if let Some(backbone) = trial.backbone.as_ref()
+                    && backbone.exit.relay.node_id == *relay
+                {
+                    out.push(backbone.exit.vni);
+                }
+                out
+            })
+            .collect();
         let Some(vni) = state.alloc_vni_with_reserved(*relay, &reserved) else {
             return MintClaim::Full;
         };
@@ -791,7 +1169,9 @@ pub(super) fn claim_mint(
             }
             entry.insert(session.clone());
         }
-        dashmap::mapref::entry::Entry::Vacant(entry) => { entry.insert(session.clone()); }
+        dashmap::mapref::entry::Entry::Vacant(entry) => {
+            entry.insert(session.clone());
+        }
     }
     MintClaim::Inserted
 }
@@ -799,8 +1179,17 @@ pub(super) fn claim_mint(
 // This is a protocol rendezvous, not a server-side RTT score. Ready asserts
 // that the authenticated member's local same-metric/fresh-window check passed.
 #[cfg(feature = "path-planner-test-support")]
-pub(super) fn member_progress_fixture(state: &NetworkState, id: ObjectId, node: ObjectId) -> Option<(u8, bool)> {
-    let entries = state.org_relay.trials.entries.lock().unwrap_or_else(|e| e.into_inner());
+pub(super) fn member_progress_fixture(
+    state: &NetworkState,
+    id: ObjectId,
+    node: ObjectId,
+) -> Option<(u8, bool)> {
+    let entries = state
+        .org_relay
+        .trials
+        .entries
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let trial = entries.get(&id)?;
     let member = trial.session.member_index(node)?;
     Some(match &trial.phase {
@@ -1151,7 +1540,8 @@ fn expire_tick(state: &NetworkState, id: ObjectId) -> Option<Duration> {
     // A returned tombstone only supports bounded idempotent Finalize replay.
     // It has no allocated relay and expires without tearing down healthy direct.
     if let Some(r) = trial.return_state.as_ref()
-        && matches!(r.phase, ReturnPhase::Finalized) {
+        && matches!(r.phase, ReturnPhase::Finalized)
+    {
         let deadline = r.started + RETURN_TOMBSTONE;
         if now < deadline {
             return Some(deadline - now);
@@ -1345,11 +1735,18 @@ mod tests {
                 tenant, requester, peer, relay, request_id, vni, generation,
             ))
         };
-        let Admission::Created(id) =
-            admit_trial(&state, &mut entries, &[relay], &pair, tenant, requester, 1, 0, 0, || {
-                allocate(1)
-            })
-        else {
+        let Admission::Created(id) = admit_trial(
+            &state,
+            &mut entries,
+            &[relay],
+            &pair,
+            tenant,
+            requester,
+            1,
+            0,
+            0,
+            || allocate(1),
+        ) else {
             panic!("first admission");
         };
         assert_eq!(entries[&id].session.vni, 1);
@@ -1377,11 +1774,18 @@ mod tests {
         );
         assert_eq!(state.lamport.load(Ordering::Relaxed), 1);
         assert_eq!(*state.next_vni.get(&relay).unwrap(), 2);
-        let Admission::Created(next) =
-            admit_trial(&state, &mut entries, &[relay], &pair, tenant, requester, 2, 0, 0, || {
-                allocate(2)
-            })
-        else {
+        let Admission::Created(next) = admit_trial(
+            &state,
+            &mut entries,
+            &[relay],
+            &pair,
+            tenant,
+            requester,
+            2,
+            0,
+            0,
+            || allocate(2),
+        ) else {
             panic!("next trial");
         };
         assert_eq!(
@@ -1396,33 +1800,91 @@ mod tests {
         let state = Arc::new(OrgRelayState::new());
         let relay = ObjectId::new();
         for i in 0..limits::MAX_SESSIONS_PER_RELAY - 1 {
-            let session = fixture_trial(ObjectId::new(), ObjectId::new(), ObjectId::new(), relay, i as u64, i as u32 + 1, i as u64 + 1).session;
+            let session = fixture_trial(
+                ObjectId::new(),
+                ObjectId::new(),
+                ObjectId::new(),
+                relay,
+                i as u64,
+                i as u32 + 1,
+                i as u64 + 1,
+            )
+            .session;
             state.sessions.insert(format!("active-{i}"), session);
         }
         let barrier = Arc::new(Barrier::new(24));
         let allocations = Arc::new(AtomicUsize::new(0));
-        let threads: Vec<_> = (0..24).map(|i| {
-            let (state, barrier, allocations) = (Arc::clone(&state), Arc::clone(&barrier), Arc::clone(&allocations));
-            std::thread::spawn(move || {
-                let (tenant, requester, peer) = (ObjectId::new(), ObjectId::new(), ObjectId::new());
-                let pair = pair_key(requester, peer);
-                barrier.wait();
-                let mut entries = state.trials.entries.lock().unwrap();
-                admit_trial(&state, &mut entries, &[relay], &pair, tenant, requester, i, 0, 0, || {
-                    allocations.fetch_add(1, Ordering::Relaxed);
-                    Some(fixture_trial(tenant, requester, peer, relay, i, 1000 + i as u32, 1000 + i))
+        let threads: Vec<_> = (0..24)
+            .map(|i| {
+                let (state, barrier, allocations) = (
+                    Arc::clone(&state),
+                    Arc::clone(&barrier),
+                    Arc::clone(&allocations),
+                );
+                std::thread::spawn(move || {
+                    let (tenant, requester, peer) =
+                        (ObjectId::new(), ObjectId::new(), ObjectId::new());
+                    let pair = pair_key(requester, peer);
+                    barrier.wait();
+                    let mut entries = state.trials.entries.lock().unwrap();
+                    admit_trial(
+                        &state,
+                        &mut entries,
+                        &[relay],
+                        &pair,
+                        tenant,
+                        requester,
+                        i,
+                        0,
+                        0,
+                        || {
+                            allocations.fetch_add(1, Ordering::Relaxed);
+                            Some(fixture_trial(
+                                tenant,
+                                requester,
+                                peer,
+                                relay,
+                                i,
+                                1000 + i as u32,
+                                1000 + i,
+                            ))
+                        },
+                    )
                 })
             })
-        }).collect();
+            .collect();
         let outcomes: Vec<_> = threads.into_iter().map(|t| t.join().unwrap()).collect();
-        assert_eq!(outcomes.iter().filter(|a| matches!(a, Admission::Created(_))).count(), 1);
-        assert_eq!(outcomes.iter().filter(|a| matches!(a, Admission::Rejected)).count(), 23);
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|a| matches!(a, Admission::Created(_)))
+                .count(),
+            1
+        );
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|a| matches!(a, Admission::Rejected))
+                .count(),
+            23
+        );
         assert_eq!(allocations.load(Ordering::Relaxed), 1);
-        assert_eq!(state.sessions_on_relay(relay), limits::MAX_SESSIONS_PER_RELAY);
+        assert_eq!(
+            state.sessions_on_relay(relay),
+            limits::MAX_SESSIONS_PER_RELAY
+        );
         let mut entries = state.trials.entries.lock().unwrap();
         let trial = entries.values().next().unwrap();
-        let (id, pair, tenant, requester, request_id) = (trial.id, trial.session.pair_key.clone(), trial.session.tenant_id, trial.session.members[0].party.node_id, trial.request_id);
-        assert!(matches!(admit_trial(&state, &mut entries, &[relay], &pair, tenant, requester, request_id, 0, 0, || panic!("idempotent retry must not allocate")), Admission::Existing(existing) if existing == id));
+        let (id, pair, tenant, requester, request_id) = (
+            trial.id,
+            trial.session.pair_key.clone(),
+            trial.session.tenant_id,
+            trial.session.members[0].party.node_id,
+            trial.request_id,
+        );
+        assert!(
+            matches!(admit_trial(&state, &mut entries, &[relay], &pair, tenant, requester, request_id, 0, 0, || panic!("idempotent retry must not allocate")), Admission::Existing(existing) if existing == id)
+        );
     }
 
     #[test]
@@ -1430,16 +1892,50 @@ mod tests {
         let state = OrgRelayState::new();
         let (ingress, exit) = (ObjectId::new(), ObjectId::new());
         for i in 0..limits::MAX_SESSIONS_PER_RELAY {
-            let session = fixture_trial(ObjectId::new(), ObjectId::new(), ObjectId::new(), exit, i as u64, i as u32 + 1, i as u64 + 1).session;
+            let session = fixture_trial(
+                ObjectId::new(),
+                ObjectId::new(),
+                ObjectId::new(),
+                exit,
+                i as u64,
+                i as u32 + 1,
+                i as u64 + 1,
+            )
+            .session;
             state.sessions.insert(format!("exit-{i}"), session);
         }
         let mut entries = HashMap::new();
         let id = ObjectId::new();
-        let admission = admit_trial(&state, &mut entries, &[ingress, exit], "pair", id, id, 1, 0, 0, || panic!("full exit must not allocate"));
+        let admission = admit_trial(
+            &state,
+            &mut entries,
+            &[ingress, exit],
+            "pair",
+            id,
+            id,
+            1,
+            0,
+            0,
+            || panic!("full exit must not allocate"),
+        );
         assert!(matches!(admission, Admission::Rejected));
         assert!(entries.is_empty());
         assert!(state.next_vni.is_empty());
-        assert!(matches!(admit_trial(&state, &mut entries, &[ingress, ingress], "pair", id, id, 1, 0, 0, || panic!("duplicate relay must not allocate")), Admission::Rejected));
+        assert!(matches!(
+            admit_trial(
+                &state,
+                &mut entries,
+                &[ingress, ingress],
+                "pair",
+                id,
+                id,
+                1,
+                0,
+                0,
+                || panic!("duplicate relay must not allocate")
+            ),
+            Admission::Rejected
+        ));
     }
 
     #[test]
@@ -1448,51 +1944,140 @@ mod tests {
         let state = Arc::new(OrgRelayState::new());
         let relay = ObjectId::new();
         for i in 0..limits::MAX_SESSIONS_PER_RELAY - 1 {
-            let session = fixture_trial(ObjectId::new(), ObjectId::new(), ObjectId::new(), relay, i as u64, i as u32 + 1, i as u64 + 1).session;
+            let session = fixture_trial(
+                ObjectId::new(),
+                ObjectId::new(),
+                ObjectId::new(),
+                relay,
+                i as u64,
+                i as u32 + 1,
+                i as u64 + 1,
+            )
+            .session;
             state.sessions.insert(format!("active-{i}"), session);
         }
         let barrier = Arc::new(Barrier::new(24));
         let allocated = Arc::new(AtomicUsize::new(0));
-        let threads: Vec<_> = (0..24).map(|i| {
-            let (state, barrier, allocated) = (Arc::clone(&state), Arc::clone(&barrier), Arc::clone(&allocated));
-            std::thread::spawn(move || {
-                let (tenant, requester, peer) = (ObjectId::new(), ObjectId::new(), ObjectId::new());
-                let mut fixture = fixture_trial(tenant, requester, peer, relay, i, 1000 + i as u32, 1000 + i);
-                let pair = fixture.session.pair_key.clone();
-                barrier.wait();
-                if i % 2 == 0 {
-                    matches!(claim_mint(&state, &mut fixture.session, |_| { allocated.fetch_add(1, Ordering::Relaxed); true }), MintClaim::Inserted)
-                } else {
-                    let mut entries = state.trials.entries.lock().unwrap();
-                    matches!(admit_trial(&state, &mut entries, &[relay], &pair, tenant, requester, i, 0, 0, || {
-                        allocated.fetch_add(1, Ordering::Relaxed); Some(fixture)
-                    }), Admission::Created(_))
-                }
+        let threads: Vec<_> = (0..24)
+            .map(|i| {
+                let (state, barrier, allocated) = (
+                    Arc::clone(&state),
+                    Arc::clone(&barrier),
+                    Arc::clone(&allocated),
+                );
+                std::thread::spawn(move || {
+                    let (tenant, requester, peer) =
+                        (ObjectId::new(), ObjectId::new(), ObjectId::new());
+                    let mut fixture =
+                        fixture_trial(tenant, requester, peer, relay, i, 1000 + i as u32, 1000 + i);
+                    let pair = fixture.session.pair_key.clone();
+                    barrier.wait();
+                    if i % 2 == 0 {
+                        matches!(
+                            claim_mint(&state, &mut fixture.session, |_| {
+                                allocated.fetch_add(1, Ordering::Relaxed);
+                                true
+                            }),
+                            MintClaim::Inserted
+                        )
+                    } else {
+                        let mut entries = state.trials.entries.lock().unwrap();
+                        matches!(
+                            admit_trial(
+                                &state,
+                                &mut entries,
+                                &[relay],
+                                &pair,
+                                tenant,
+                                requester,
+                                i,
+                                0,
+                                0,
+                                || {
+                                    allocated.fetch_add(1, Ordering::Relaxed);
+                                    Some(fixture)
+                                }
+                            ),
+                            Admission::Created(_)
+                        )
+                    }
+                })
             })
-        }).collect();
-        assert_eq!(threads.into_iter().map(|t| t.join().unwrap()).filter(|won| *won).count(), 1);
+            .collect();
+        assert_eq!(
+            threads
+                .into_iter()
+                .map(|t| t.join().unwrap())
+                .filter(|won| *won)
+                .count(),
+            1
+        );
         assert_eq!(allocated.load(Ordering::Relaxed), 1);
-        assert_eq!(state.sessions_on_relay(relay), limits::MAX_SESSIONS_PER_RELAY);
+        assert_eq!(
+            state.sessions_on_relay(relay),
+            limits::MAX_SESSIONS_PER_RELAY
+        );
     }
 
     #[test]
     fn mint_pair_reuses_winner_and_full_second_leg_claims_nothing() {
         let state = OrgRelayState::new();
         let (ingress, exit) = (ObjectId::new(), ObjectId::new());
-        let mut new = fixture_trial(ObjectId::new(), ObjectId::new(), ObjectId::new(), ingress, 1, 300, 301).session;
-        assert!(matches!(claim_mint(&state, &mut new, |_| true), MintClaim::Inserted));
+        let mut new = fixture_trial(
+            ObjectId::new(),
+            ObjectId::new(),
+            ObjectId::new(),
+            ingress,
+            1,
+            300,
+            301,
+        )
+        .session;
+        assert!(matches!(
+            claim_mint(&state, &mut new, |_| true),
+            MintClaim::Inserted
+        ));
         let winner_vni = new.vni;
         let mut duplicate = new.clone();
         duplicate.vni = 301;
         duplicate.generation = 302;
-        assert!(matches!(claim_mint(&state, &mut duplicate, |_| panic!("winner must be reused")), MintClaim::Existing(existing) if existing.vni == winner_vni));
+        assert!(
+            matches!(claim_mint(&state, &mut duplicate, |_| panic!("winner must be reused")), MintClaim::Existing(existing) if existing.vni == winner_vni)
+        );
         for i in 0..limits::MAX_SESSIONS_PER_RELAY {
-            let session = fixture_trial(ObjectId::new(), ObjectId::new(), ObjectId::new(), exit, i as u64, i as u32 + 1, i as u64 + 1).session;
+            let session = fixture_trial(
+                ObjectId::new(),
+                ObjectId::new(),
+                ObjectId::new(),
+                exit,
+                i as u64,
+                i as u32 + 1,
+                i as u64 + 1,
+            )
+            .session;
             state.sessions.insert(format!("exit-{i}"), session);
         }
         new.pair_key = "new-pair".into();
-        new.hops.push(LineLeg { relay: SessionParty { node_id: exit, node_ref: NodeRef::Agent { agent_id: exit } }, relay_agent_id: exit, vni: 500, generation: 501, endpoints: vec!["exit".into()], private_endpoint: "10.0.0.2:3478".into(), requires_cross_border_approval: true, bridge_id: ObjectId::new(), bridge_secrets: ["a".into(), "b".into()] });
-        assert!(matches!(claim_mint(&state, &mut new, |_| panic!("full second leg must not allocate")), MintClaim::Full));
+        new.hops.push(LineLeg {
+            relay: SessionParty {
+                node_id: exit,
+                node_ref: NodeRef::Agent { agent_id: exit },
+            },
+            relay_agent_id: exit,
+            vni: 500,
+            generation: 501,
+            endpoints: vec!["exit".into()],
+            private_endpoint: "10.0.0.2:3478".into(),
+            requires_cross_border_approval: true,
+            bridge_id: ObjectId::new(),
+            bridge_secrets: ["a".into(), "b".into()],
+        });
+        assert!(matches!(
+            claim_mint(&state, &mut new, |_| panic!(
+                "full second leg must not allocate"
+            )),
+            MintClaim::Full
+        ));
         assert!(state.sessions.get("new-pair").is_none());
     }
 
@@ -1501,12 +2086,46 @@ mod tests {
         let state = OrgRelayState::new();
         let relay = ObjectId::new();
         state.next_vni.insert(relay, limits::VNI_MAX);
-        let old = fixture_trial(ObjectId::new(), ObjectId::new(), ObjectId::new(), relay, 1, 1, 1).session;
+        let old = fixture_trial(
+            ObjectId::new(),
+            ObjectId::new(),
+            ObjectId::new(),
+            relay,
+            1,
+            1,
+            1,
+        )
+        .session;
         state.sessions.insert(old.pair_key.clone(), old);
-        let reserved = fixture_trial(ObjectId::new(), ObjectId::new(), ObjectId::new(), relay, 2, limits::VNI_MAX, 2);
-        state.trials.entries.lock().unwrap().insert(reserved.id, reserved);
-        let mut new = fixture_trial(ObjectId::new(), ObjectId::new(), ObjectId::new(), relay, 3, 999, 3).session;
-        assert!(matches!(claim_mint(&state, &mut new, |_| true), MintClaim::Inserted));
+        let reserved = fixture_trial(
+            ObjectId::new(),
+            ObjectId::new(),
+            ObjectId::new(),
+            relay,
+            2,
+            limits::VNI_MAX,
+            2,
+        );
+        state
+            .trials
+            .entries
+            .lock()
+            .unwrap()
+            .insert(reserved.id, reserved);
+        let mut new = fixture_trial(
+            ObjectId::new(),
+            ObjectId::new(),
+            ObjectId::new(),
+            relay,
+            3,
+            999,
+            3,
+        )
+        .session;
+        assert!(matches!(
+            claim_mint(&state, &mut new, |_| true),
+            MintClaim::Inserted
+        ));
         assert_eq!(new.vni, 2);
         assert_eq!(state.sessions.get(&new.pair_key).unwrap().vni, 2);
     }
@@ -1520,14 +2139,49 @@ mod tests {
         {
             let mut entries = state.trials.entries.lock().unwrap();
             for i in 1..=(limits::MAX_SESSIONS_PER_RELAY + 4) {
-                let mut trial = fixture_trial(ObjectId::new(), ObjectId::new(), ObjectId::new(), exit, i as u64, i as u32, i as u64);
+                let mut trial = fixture_trial(
+                    ObjectId::new(),
+                    ObjectId::new(),
+                    ObjectId::new(),
+                    exit,
+                    i as u64,
+                    i as u32,
+                    i as u64,
+                );
                 trial.session.expires_at = Instant::now() - Duration::from_secs(1);
                 entries.insert(trial.id, trial);
             }
         }
-        let mut new = fixture_trial(ObjectId::new(), ObjectId::new(), ObjectId::new(), ingress, 1, 700, 701).session;
-        new.hops.push(LineLeg { relay: SessionParty { node_id: exit, node_ref: NodeRef::Agent { agent_id: exit } }, relay_agent_id: exit, vni: 800, generation: 801, endpoints: vec!["exit".into()], private_endpoint: "10.0.0.2:3478".into(), requires_cross_border_approval: true, bridge_id: ObjectId::new(), bridge_secrets: ["a".into(), "b".into()] });
-        assert!(matches!(claim_mint(&state, &mut new, |_| panic!("allocation must fail before validation")), MintClaim::Full));
+        let mut new = fixture_trial(
+            ObjectId::new(),
+            ObjectId::new(),
+            ObjectId::new(),
+            ingress,
+            1,
+            700,
+            701,
+        )
+        .session;
+        new.hops.push(LineLeg {
+            relay: SessionParty {
+                node_id: exit,
+                node_ref: NodeRef::Agent { agent_id: exit },
+            },
+            relay_agent_id: exit,
+            vni: 800,
+            generation: 801,
+            endpoints: vec!["exit".into()],
+            private_endpoint: "10.0.0.2:3478".into(),
+            requires_cross_border_approval: true,
+            bridge_id: ObjectId::new(),
+            bridge_secrets: ["a".into(), "b".into()],
+        });
+        assert!(matches!(
+            claim_mint(&state, &mut new, |_| panic!(
+                "allocation must fail before validation"
+            )),
+            MintClaim::Full
+        ));
         assert!(state.sessions.get(&new.pair_key).is_none());
         assert_eq!((new.vni, new.hops[0].vni), (700, 800));
     }

@@ -393,7 +393,9 @@ impl Carrier {
     /// Move the complete direct endpoint for a freshly authenticated probe.
     /// Every sender snapshots both fields under the same lock order.
     fn set_direct_endpoint(&self, new_sock: Arc<UdpSocket>, new_dst: SocketAddr) -> bool {
-        let Carrier::Direct { sock, dst, dead } = self else { return false };
+        let Carrier::Direct { sock, dst, dead } = self else {
+            return false;
+        };
         let mut dst = dst.write().unwrap_or_else(|e| e.into_inner());
         let mut sock = sock.write().unwrap_or_else(|e| e.into_inner());
         *sock = new_sock;
@@ -668,10 +670,7 @@ pub struct PeerStats {
     pub(crate) on_demand: super::on_demand::PeerOnDemand,
 }
 
-fn compute_router_health(
-    carrier: &Carrier,
-    stats: &PeerStats,
-) -> super::router::RouterHealth {
+fn compute_router_health(carrier: &Carrier, stats: &PeerStats) -> super::router::RouterHealth {
     use super::router::RouterHealth;
     if carrier.is_dead() || stats.stalled.load(Ordering::Relaxed) {
         RouterHealth::Stalled
@@ -1137,30 +1136,50 @@ impl WgSender {
         self.0.read().unwrap().peers.contains_key(pk)
     }
 
-    pub(crate) fn pq_peer(
-        &self,
-        pk: &[u8; 32],
-    ) -> Option<Arc<super::pq_psk::PqPeerHandle>> {
+    pub(crate) fn pq_peer(&self, pk: &[u8; 32]) -> Option<Arc<super::pq_psk::PqPeerHandle>> {
         let g = self.0.read().unwrap();
-        g.peers
-            .get(pk)
-            .and_then(|p| p.stats.pq.get().cloned())
+        g.peers.get(pk).and_then(|p| p.stats.pq.get().cloned())
     }
 
-    fn attest_active_derp(&self, public: &[u8; 32], tunn: &Arc<Mutex<Tunn>>, carrier: &Arc<Carrier>, init: &[u8; 32]) -> bool {
+    fn attest_active_derp(
+        &self,
+        public: &[u8; 32],
+        tunn: &Arc<Mutex<Tunn>>,
+        carrier: &Arc<Carrier>,
+        init: &[u8; 32],
+    ) -> bool {
         let g = self.0.read().unwrap();
-        let Some(p) = g.peers.get(public) else { return false; };
-        if !Arc::ptr_eq(&p.tunn, tunn) || !Arc::ptr_eq(&p.carrier, carrier)
+        let Some(p) = g.peers.get(public) else {
+            return false;
+        };
+        if !Arc::ptr_eq(&p.tunn, tunn)
+            || !Arc::ptr_eq(&p.carrier, carrier)
             || !p.stats.derp_role.load(Ordering::Relaxed)
-            || !p.stats.sent_inits.lock().unwrap_or_else(|e|e.into_inner()).contains(init)
-        { return false; }
-        p.stats.recovery_hold.fetch_max(mono_ms_now().saturating_add(60_000), Ordering::Relaxed);
+            || !p
+                .stats
+                .sent_inits
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .contains(init)
+        {
+            return false;
+        }
+        p.stats
+            .recovery_hold
+            .fetch_max(mono_ms_now().saturating_add(60_000), Ordering::Relaxed);
         true
     }
 
-    fn same_owner(&self, public: &[u8; 32], tunn: &Arc<Mutex<Tunn>>, carrier: &Arc<Carrier>, derp: bool) -> bool {
+    fn same_owner(
+        &self,
+        public: &[u8; 32],
+        tunn: &Arc<Mutex<Tunn>>,
+        carrier: &Arc<Carrier>,
+        derp: bool,
+    ) -> bool {
         self.0.read().unwrap().peers.get(public).is_some_and(|p| {
-            Arc::ptr_eq(&p.tunn, tunn) && Arc::ptr_eq(&p.carrier, carrier)
+            Arc::ptr_eq(&p.tunn, tunn)
+                && Arc::ptr_eq(&p.carrier, carrier)
                 && (!derp || p.stats.derp_role.load(Ordering::Relaxed))
         })
     }
@@ -1202,7 +1221,8 @@ impl WgSender {
     /// global v6 destination → the configured v6 exit.
     fn route(g: &SendState, packet: &[u8]) -> Option<[u8; 32]> {
         if let Some(dst) = Router::dst_of_ip_packet(packet) {
-            g.router.route_with_live(&dst, |pk| g.live_router_health(pk))
+            g.router
+                .route_with_live(&dst, |pk| g.live_router_health(pk))
         } else if Router::is_global_v6_dst(packet).is_some() {
             g.router.v6_exit()
         } else {
@@ -1225,7 +1245,10 @@ impl WgSender {
                 };
                 let Some(sp) = g.peers.get(&pk) else { continue };
                 g.note_outbound(&pk, p);
-                match groups.iter_mut().find(|(s, _)| Arc::ptr_eq(&s.tunn, &sp.tunn)) {
+                match groups
+                    .iter_mut()
+                    .find(|(s, _)| Arc::ptr_eq(&s.tunn, &sp.tunn))
+                {
                     Some((_, idxs)) => idxs.push(i),
                     None => groups.push((sp.clone(), vec![i])),
                 }
@@ -1286,11 +1309,7 @@ impl SendState {
     /// B5 — synchronize `pk` and any HA co-claimants sharing a subnet with `pk`
     /// (or `extra_cidrs`). For non-HA peers (`ha_co_claimants` empty), this is
     /// an $O(1)$ single-peer update.
-    fn sync_peer_and_co_claimants(
-        &mut self,
-        pk: &[u8; 32],
-        extra_cidrs: &[super::router::Cidr],
-    ) {
+    fn sync_peer_and_co_claimants(&mut self, pk: &[u8; 32], extra_cidrs: &[super::router::Cidr]) {
         for co_pk in self.router.ha_co_claimants(pk, extra_cidrs) {
             self.sync_peer_router_health(&co_pk);
         }
@@ -1303,7 +1322,9 @@ impl SendPeer {
     /// multipath scheduler (`Off`, `ActiveStandby`, `Redundant`, `Aggregate`).
     async fn send_wire_frame(&self, frame: &[u8]) -> bool {
         if !self.multipath.is_active() {
-            return send_wg_recorded(&self.carrier, &self.stats, frame).await.is_ok();
+            return send_wg_recorded(&self.carrier, &self.stats, frame)
+                .await
+                .is_ok();
         }
         let mode = self.multipath.mode();
         let targets = self.multipath.select_tx_targets(&self.carrier, frame);
@@ -1311,7 +1332,9 @@ impl SendPeer {
             super::multipath::MultipathMode::Redundant => {
                 let mut any_ok = false;
                 for (idx, (leg_id, leg_carrier)) in targets.iter().enumerate() {
-                    let ok = send_wg_recorded(leg_carrier, &self.stats, frame).await.is_ok();
+                    let ok = send_wg_recorded(leg_carrier, &self.stats, frame)
+                        .await
+                        .is_ok();
                     self.multipath
                         .record_leg_tx_outcome(*leg_id, frame.len(), ok, idx > 0);
                     if ok {
@@ -1322,7 +1345,9 @@ impl SendPeer {
             }
             _ => {
                 for (leg_id, leg_carrier) in targets.iter() {
-                    let ok = send_wg_recorded(leg_carrier, &self.stats, frame).await.is_ok();
+                    let ok = send_wg_recorded(leg_carrier, &self.stats, frame)
+                        .await
+                        .is_ok();
                     self.multipath
                         .record_leg_tx_outcome(*leg_id, frame.len(), ok, false);
                     if ok {
@@ -1553,7 +1578,9 @@ impl SendPeer {
             }
             let end = start + lens[i..j].iter().sum::<usize>();
             let ok = if j - i == 1 {
-                send_wg_recorded(&self.carrier, stats, &wire[start..end]).await.is_ok()
+                send_wg_recorded(&self.carrier, stats, &wire[start..end])
+                    .await
+                    .is_ok()
             } else {
                 let gso_ok = super::udp_batch::send_segments(&sock, dst, &wire[start..end], seg)
                     .await
@@ -1614,12 +1641,23 @@ struct DerpFollowState {
 }
 impl FollowRound {
     fn new(init: [u8; 32]) -> Self {
-        Self { nonce: follow::nonce(), init, started: Instant::now(), sent: 0, last_sent: None }
+        Self {
+            nonce: follow::nonce(),
+            init,
+            started: Instant::now(),
+            sent: 0,
+            last_sent: None,
+        }
     }
-    fn fresh(&self) -> bool { self.started.elapsed() < Duration::from_secs(3) }
+    fn fresh(&self) -> bool {
+        self.started.elapsed() < Duration::from_secs(3)
+    }
     fn due(&self) -> bool {
-        self.fresh() && self.sent < 3
-            && self.last_sent.is_none_or(|at| at.elapsed() >= Duration::from_secs(1))
+        self.fresh()
+            && self.sent < 3
+            && self
+                .last_sent
+                .is_none_or(|at| at.elapsed() >= Duration::from_secs(1))
     }
 }
 
@@ -1831,12 +1869,10 @@ impl WgDevice {
                 } else {
                     cfg
                 };
-                let defer = p.stats.on_demand.configure(
-                    effective_cfg,
-                    self.secret.clone(),
-                    held,
-                    now_ns,
-                );
+                let defer =
+                    p.stats
+                        .on_demand
+                        .configure(effective_cfg, self.secret.clone(), held, now_ns);
                 if defer {
                     p.stats.handshake.store(false, Ordering::Relaxed);
                 }
@@ -1855,7 +1891,10 @@ impl WgDevice {
                 .get(peer_public)
                 .is_some_and(|s| !s.capable || s.pending.is_some())
             || self.org_recovery_held(peer_public)
-            || self.path_trials.values().any(|t| &t.public_key == peer_public)
+            || self
+                .path_trials
+                .values()
+                .any(|t| &t.public_key == peer_public)
             || self
                 .path_trial_drains
                 .values()
@@ -2173,11 +2212,23 @@ impl WgDevice {
         multipath: Arc<super::multipath::PeerMultipathState>,
     ) {
         let mut g = self.send.0.write().unwrap();
-        Self::send_install_locked(&mut g, peer_public, overlay_ip, tunn, carrier, stats, multipath);
+        Self::send_install_locked(
+            &mut g,
+            peer_public,
+            overlay_ip,
+            tunn,
+            carrier,
+            stats,
+            multipath,
+        );
     }
     fn send_install_locked(
-        g: &mut SendState, peer_public: [u8; 32], overlay_ip: Ipv4Addr,
-        tunn: Arc<Mutex<Tunn>>, carrier: Arc<Carrier>, stats: Arc<PeerStats>,
+        g: &mut SendState,
+        peer_public: [u8; 32],
+        overlay_ip: Ipv4Addr,
+        tunn: Arc<Mutex<Tunn>>,
+        carrier: Arc<Carrier>,
+        stats: Arc<PeerStats>,
         multipath: Arc<super::multipath::PeerMultipathState>,
     ) {
         if let Some(prev) = g.router.upsert(overlay_ip, peer_public) {
@@ -2264,8 +2315,7 @@ impl WgDevice {
         let prev_waking_or_active = if let Some(old) = self.peers.get(&peer_public) {
             let was_active = matches!(
                 old.stats.on_demand.phase(),
-                super::on_demand::OnDemandPhase::Waking
-                    | super::on_demand::OnDemandPhase::Active
+                super::on_demand::OnDemandPhase::Waking | super::on_demand::OnDemandPhase::Active
             );
             let q = old.stats.on_demand.take_wake_queue();
             if !q.is_empty() {
@@ -2328,7 +2378,10 @@ impl WgDevice {
             None,
         );
 
-        let stats = Arc::new(PeerStats { recovery_hold: self.recovery_for(peer_public, overlay_ip), ..PeerStats::default() });
+        let stats = Arc::new(PeerStats {
+            recovery_hold: self.recovery_for(peer_public, overlay_ip),
+            ..PeerStats::default()
+        });
         stats
             .on_demand
             .set_peer_identity(self.secret.clone(), peer_public, index);
@@ -2400,7 +2453,8 @@ impl WgDevice {
         let recv_carrier = carrier.clone();
         let recv_sender = self.sender();
         let recv_stats = stats.clone();
-        let follow_shared = super::disco::shared_secret(&self.secret, &PublicKey::from(peer_public));
+        let follow_shared =
+            super::disco::shared_secret(&self.secret, &PublicKey::from(peer_public));
         let tun_tx = self.tun_tx.clone();
         let recv_ingress = self.ingress_for(peer_public, stats.clone(), multipath.clone());
         let disco_secret = self.secret.clone();
@@ -2417,40 +2471,109 @@ impl WgDevice {
                     }
                 };
                 if follow::shaped(&buf[..n]) {
-                    if let Some(frame) = follow::decode(&buf[..n], &peer_public, disco_public.as_bytes(), &follow_shared) {
+                    if let Some(frame) = follow::decode(
+                        &buf[..n],
+                        &peer_public,
+                        disco_public.as_bytes(),
+                        &follow_shared,
+                    ) {
                         match frame.kind {
                             follow::Kind::HelloAck => {
-                                *recv_stats.follow_ack.lock().unwrap_or_else(|e|e.into_inner()) = Some(frame);
+                                *recv_stats
+                                    .follow_ack
+                                    .lock()
+                                    .unwrap_or_else(|e| e.into_inner()) = Some(frame);
                             }
                             follow::Kind::Proof => {
-                                *recv_stats.follow_proof.lock().unwrap_or_else(|e|e.into_inner()) = Some(frame);
+                                *recv_stats
+                                    .follow_proof
+                                    .lock()
+                                    .unwrap_or_else(|e| e.into_inner()) = Some(frame);
                             }
                             follow::Kind::Hello | follow::Kind::Challenge => {
                                 let challenge = frame.kind == follow::Kind::Challenge;
                                 let allowed = if challenge {
-                                    recv_sender.same_owner(&peer_public, &recv_tunn, &recv_carrier, true)
-                                        && recv_stats.sent_inits.lock().unwrap_or_else(|e|e.into_inner()).contains(&frame.init)
+                                    recv_sender.same_owner(
+                                        &peer_public,
+                                        &recv_tunn,
+                                        &recv_carrier,
+                                        true,
+                                    ) && recv_stats
+                                        .sent_inits
+                                        .lock()
+                                        .unwrap_or_else(|e| e.into_inner())
+                                        .contains(&frame.init)
                                 } else {
                                     recv_stats.org_role.load(Ordering::Relaxed)
-                                        && recv_sender.same_owner(&peer_public, &recv_tunn, &recv_carrier, false)
+                                        && recv_sender.same_owner(
+                                            &peer_public,
+                                            &recv_tunn,
+                                            &recv_carrier,
+                                            false,
+                                        )
                                 };
                                 let now = mono_ms_now().max(1);
                                 let last = recv_stats.follow_reply_at.load(Ordering::Relaxed);
-                                if allowed && (last == 0 || now.saturating_sub(last) >= 1_000)
-                                    && recv_stats.follow_reply_at.compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed).is_ok()
+                                if allowed
+                                    && (last == 0 || now.saturating_sub(last) >= 1_000)
+                                    && recv_stats
+                                        .follow_reply_at
+                                        .compare_exchange(
+                                            last,
+                                            now,
+                                            Ordering::Relaxed,
+                                            Ordering::Relaxed,
+                                        )
+                                        .is_ok()
                                     && let Ok(permit) = disco_replies.clone().try_acquire_owned()
                                 {
-                                    let reply = follow::Frame { kind: if challenge { follow::Kind::Proof } else { follow::Kind::HelloAck }, ..frame };
-                                    if let Some(bytes) = follow::encode(&reply, disco_public.as_bytes(), &peer_public, &follow_shared) {
-                                        let (sender, tunn, carrier, stats) = (recv_sender.clone(), recv_tunn.clone(), recv_carrier.clone(), recv_stats.clone());
+                                    let reply = follow::Frame {
+                                        kind: if challenge {
+                                            follow::Kind::Proof
+                                        } else {
+                                            follow::Kind::HelloAck
+                                        },
+                                        ..frame
+                                    };
+                                    if let Some(bytes) = follow::encode(
+                                        &reply,
+                                        disco_public.as_bytes(),
+                                        &peer_public,
+                                        &follow_shared,
+                                    ) {
+                                        let (sender, tunn, carrier, stats) = (
+                                            recv_sender.clone(),
+                                            recv_tunn.clone(),
+                                            recv_carrier.clone(),
+                                            recv_stats.clone(),
+                                        );
                                         tokio::spawn(async move {
                                             let _permit = permit;
                                             // Recheck after queueing: a stale owner never attests DERP.
                                             if challenge {
-                                                if !sender.attest_active_derp(&peer_public, &tunn, &carrier, &reply.init) { return; }
+                                                if !sender.attest_active_derp(
+                                                    &peer_public,
+                                                    &tunn,
+                                                    &carrier,
+                                                    &reply.init,
+                                                ) {
+                                                    return;
+                                                }
                                             } else if !stats.org_role.load(Ordering::Relaxed)
-                                                || !sender.same_owner(&peer_public, &tunn, &carrier, false) { return; }
-                                            let _ = tokio::time::timeout(Duration::from_millis(100), carrier.send(&bytes)).await;
+                                                || !sender.same_owner(
+                                                    &peer_public,
+                                                    &tunn,
+                                                    &carrier,
+                                                    false,
+                                                )
+                                            {
+                                                return;
+                                            }
+                                            let _ = tokio::time::timeout(
+                                                Duration::from_millis(100),
+                                                carrier.send(&bytes),
+                                            )
+                                            .await;
                                         });
                                     }
                                 }
@@ -2659,12 +2782,25 @@ impl WgDevice {
     /// Start only over the exact current non-direct incumbent. Both ends
     /// initiate: a responder-only session is insufficient promotion proof.
     pub(crate) fn start_org_upgrade(
-        &mut self, public: [u8; 32], ip: Ipv4Addr, carrier: Arc<Carrier>,
+        &mut self,
+        public: [u8; 32],
+        ip: Ipv4Addr,
+        carrier: Arc<Carrier>,
     ) -> bool {
-        if self.org_recovery_held(&public) { return false; }
-        let Some(active) = self.peers.get(&public) else { return false; };
-        if active.carrier.is_direct() || active.overlay_ip != ip { return false; }
-        if self.org_upgrades.get(&public).is_some_and(|u| Arc::ptr_eq(&u.candidate.carrier, &carrier)) {
+        if self.org_recovery_held(&public) {
+            return false;
+        }
+        let Some(active) = self.peers.get(&public) else {
+            return false;
+        };
+        if active.carrier.is_direct() || active.overlay_ip != ip {
+            return false;
+        }
+        if self
+            .org_upgrades
+            .get(&public)
+            .is_some_and(|u| Arc::ptr_eq(&u.candidate.carrier, &carrier))
+        {
             return false; // an identical completion never re-arms its handshake
         }
         let incumbent_tunn = Arc::downgrade(&active.tunn);
@@ -2680,39 +2816,60 @@ impl WgDevice {
         );
         candidate.stats.org_role.store(true, Ordering::Relaxed);
         Self::drive_initiator_proof(&mut candidate);
-        self.org_upgrades.insert(public, OrgUpgradePeer { candidate, incumbent_tunn });
+        self.org_upgrades.insert(
+            public,
+            OrgUpgradePeer {
+                candidate,
+                incumbent_tunn,
+            },
+        );
         self.sync_peer_on_demand_hold(&public);
         true
     }
 
     fn recovery_for(&mut self, public: [u8; 32], ip: Ipv4Addr) -> Arc<AtomicU64> {
-        self.recovery.retain(|_, (_, hold)| hold.load(Ordering::Relaxed) > mono_ms_now() || Arc::strong_count(hold) > 1);
-        let entry = self.recovery.entry(public).or_insert_with(|| (ip, Arc::new(AtomicU64::new(0))));
-        if entry.0 != ip { *entry = (ip, Arc::new(AtomicU64::new(0))); }
+        self.recovery.retain(|_, (_, hold)| {
+            hold.load(Ordering::Relaxed) > mono_ms_now() || Arc::strong_count(hold) > 1
+        });
+        let entry = self
+            .recovery
+            .entry(public)
+            .or_insert_with(|| (ip, Arc::new(AtomicU64::new(0))));
+        if entry.0 != ip {
+            *entry = (ip, Arc::new(AtomicU64::new(0)));
+        }
         entry.1.clone()
     }
     pub(crate) fn org_recovery_until(&self, public: &[u8; 32]) -> Option<Instant> {
         let at = self.recovery.get(public)?.1.load(Ordering::Relaxed);
         (at != 0).then(|| wg_epoch() + Duration::from_millis(at))
     }
-    pub(crate) fn finish_org_recovery_query(&self, public: &[u8;32]) -> bool {
-        let Some((_,hold))=self.recovery.get(public) else {return true;};
-        let at=hold.load(Ordering::Relaxed);
-        if at>mono_ms_now() {return false;}
-        hold.compare_exchange(at,0,Ordering::Relaxed,Ordering::Relaxed).is_ok()
+    pub(crate) fn finish_org_recovery_query(&self, public: &[u8; 32]) -> bool {
+        let Some((_, hold)) = self.recovery.get(public) else {
+            return true;
+        };
+        let at = hold.load(Ordering::Relaxed);
+        if at > mono_ms_now() {
+            return false;
+        }
+        hold.compare_exchange(at, 0, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
     }
     pub(crate) fn org_recovery_held(&self, public: &[u8; 32]) -> bool {
-        self.org_recovery_until(public).is_some_and(|until| Instant::now() < until)
+        self.org_recovery_until(public)
+            .is_some_and(|until| Instant::now() < until)
     }
 
     #[cfg(test)]
-    pub(crate) fn test_follow_capable(&self, public: &[u8;32]) -> bool {
-        self.derp_follow.get(public).is_some_and(|s|s.capable)
+    pub(crate) fn test_follow_capable(&self, public: &[u8; 32]) -> bool {
+        self.derp_follow.get(public).is_some_and(|s| s.capable)
     }
     #[cfg(test)]
-    pub(crate) fn test_expire_recovery_hold(&self, public: &[u8;32]) {
+    pub(crate) fn test_expire_recovery_hold(&self, public: &[u8; 32]) {
         // Clock-boundary fixture only; never creates an INIT, proof or authorization.
-        if let Some((_,at))=self.recovery.get(public) {at.store(mono_ms_now().saturating_sub(1).max(1),Ordering::Relaxed);}
+        if let Some((_, at)) = self.recovery.get(public) {
+            at.store(mono_ms_now().saturating_sub(1).max(1), Ordering::Relaxed);
+        }
     }
     pub(crate) fn set_peer_relay_role(&self, public: &[u8; 32], derp: bool, org: bool) {
         if let Some(p) = self.peers.get(public) {
@@ -2724,13 +2881,22 @@ impl WgDevice {
     pub(crate) fn cancel_derp_follow(&mut self, public: &[u8; 32]) {
         self.derp_follow.remove(public);
         if let Some(p) = self.org_floor_receivers.get(public) {
-            *p.stats.follow_init.lock().unwrap_or_else(|e|e.into_inner()) = None;
-            *p.stats.follow_proof.lock().unwrap_or_else(|e|e.into_inner()) = None;
+            *p.stats
+                .follow_init
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = None;
+            *p.stats
+                .follow_proof
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = None;
         }
         self.sync_peer_on_demand_hold(public);
     }
 
-    pub(crate) fn peer_relay_addrs(&self, public: &[u8; 32]) -> (Option<SocketAddr>, Option<SocketAddr>) {
+    pub(crate) fn peer_relay_addrs(
+        &self,
+        public: &[u8; 32],
+    ) -> (Option<SocketAddr>, Option<SocketAddr>) {
         match self.peers.get(public).map(|p| p.carrier.as_ref()) {
             Some(Carrier::Relay { conn, dst, .. }) => (conn.local_addr().ok(), Some(*dst)),
             _ => (None, None),
@@ -2740,33 +2906,57 @@ impl WgDevice {
     /// Cheap control-loop poll. It never changes routing for an unanswered
     /// capability exchange, challenge, late packet, or bad authentication.
     pub(crate) fn poll_derp_follow(&mut self, public: &[u8; 32]) -> bool {
-        let Some(active) = self.peers.get(public) else { return false; };
+        let Some(active) = self.peers.get(public) else {
+            return false;
+        };
         if active.stats.on_demand.is_dormant() {
             return false;
         }
-        let Some(floor) = self.org_floor_receivers.get(public) else { return false; };
-        let Some(state) = self.derp_follow.get_mut(public) else { return false; };
+        let Some(floor) = self.org_floor_receivers.get(public) else {
+            return false;
+        };
+        let Some(state) = self.derp_follow.get_mut(public) else {
+            return false;
+        };
         if !active.stats.org_role.load(Ordering::Relaxed)
             || !floor.stats.derp_role.load(Ordering::Relaxed)
             || !std::sync::Weak::ptr_eq(&state.org, &Arc::downgrade(&active.tunn))
             || !std::sync::Weak::ptr_eq(&state.floor, &Arc::downgrade(&floor.tunn))
-        { return false; }
+        {
+            return false;
+        }
         let prev_hold = !state.capable || state.pending.is_some();
-        if let Some(ack) = active.stats.follow_ack.lock().unwrap_or_else(|e|e.into_inner()).take()
-            && state.hello.fresh() && state.hello.sent > 0
-            && ack.kind == follow::Kind::HelloAck && ack.nonce == state.hello.nonce
+        if let Some(ack) = active
+            .stats
+            .follow_ack
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+            && state.hello.fresh()
+            && state.hello.sent > 0
+            && ack.kind == follow::Kind::HelloAck
+            && ack.nonce == state.hello.nonce
             && ack.init == [0; 32]
-        { state.capable = true; }
+        {
+            state.capable = true;
+        }
 
         let shared = super::disco::shared_secret(&self.secret, &PublicKey::from(*public));
         let send = self.send.clone();
         let self_public = self.public.to_bytes();
-        let emit = |frame: follow::Frame, carrier: Arc<Carrier>, org: Arc<Mutex<Tunn>>, org_carrier: Arc<Carrier>| {
+        let emit = |frame: follow::Frame,
+                    carrier: Arc<Carrier>,
+                    org: Arc<Mutex<Tunn>>,
+                    org_carrier: Arc<Carrier>| {
             if let Some(bytes) = follow::encode(&frame, &self_public, public, &shared) {
-                let send = send.clone(); let public = *public;
+                let send = send.clone();
+                let public = *public;
                 tokio::spawn(async move {
-                    if !send.same_owner(&public, &org, &org_carrier, false) { return; }
-                    let _ = tokio::time::timeout(Duration::from_millis(100), carrier.send(&bytes)).await;
+                    if !send.same_owner(&public, &org, &org_carrier, false) {
+                        return;
+                    }
+                    let _ = tokio::time::timeout(Duration::from_millis(100), carrier.send(&bytes))
+                        .await;
                 });
             }
         };
@@ -2775,36 +2965,74 @@ impl WgDevice {
                 state.hello = FollowRound::new([0; 32]);
             }
             if state.hello.due() {
-                let frame = follow::Frame { kind: follow::Kind::Hello, nonce: state.hello.nonce, init: [0; 32] };
-                state.hello.sent += 1; state.hello.last_sent = Some(Instant::now());
-                emit(frame, active.carrier.clone(), active.tunn.clone(), active.carrier.clone());
+                let frame = follow::Frame {
+                    kind: follow::Kind::Hello,
+                    nonce: state.hello.nonce,
+                    init: [0; 32],
+                };
+                state.hello.sent += 1;
+                state.hello.last_sent = Some(Instant::now());
+                emit(
+                    frame,
+                    active.carrier.clone(),
+                    active.tunn.clone(),
+                    active.carrier.clone(),
+                );
             }
             // Unknown/old peer: no new packet is ever sent on DERP. Ordinary
             // carrier health remains solely responsible for fallback.
             return false;
         }
-        let proof = floor.stats.follow_proof.lock().unwrap_or_else(|e|e.into_inner()).take();
+        let proof = floor
+            .stats
+            .follow_proof
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
         if let Some(proof) = proof
             && let Some(round) = state.pending.as_ref()
-            && round.fresh() && round.sent > 0
-            && proof.kind == follow::Kind::Proof && proof.nonce == round.nonce && proof.init == round.init
+            && round.fresh()
+            && round.sent > 0
+            && proof.kind == follow::Kind::Proof
+            && proof.nonce == round.nonce
+            && proof.init == round.init
         {
             // Exclusive device owner; neither current Tunn can change between
             // the exact-owner check above and this atomic sender restoration.
             return self.restore_org_floor(public);
         }
-        if state.pending.as_ref().is_some_and(|r| !r.fresh()) { state.pending = None; }
-        if state.pending.is_none() && Instant::now() >= state.next_round
-            && let Some((digest, at)) = floor.stats.follow_init.lock().unwrap_or_else(|e|e.into_inner()).take()
+        if state.pending.as_ref().is_some_and(|r| !r.fresh()) {
+            state.pending = None;
+        }
+        if state.pending.is_none()
+            && Instant::now() >= state.next_round
+            && let Some((digest, at)) = floor
+                .stats
+                .follow_init
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .take()
             && at.elapsed() < Duration::from_secs(5)
         {
             state.pending = Some(FollowRound::new(digest));
             state.next_round = Instant::now() + Duration::from_secs(5);
         }
-        if let Some(round) = state.pending.as_mut() && round.due() {
-            let frame = follow::Frame { kind: follow::Kind::Challenge, nonce: round.nonce, init: round.init };
-            round.sent += 1; round.last_sent = Some(Instant::now());
-            emit(frame, floor.carrier.clone(), active.tunn.clone(), active.carrier.clone());
+        if let Some(round) = state.pending.as_mut()
+            && round.due()
+        {
+            let frame = follow::Frame {
+                kind: follow::Kind::Challenge,
+                nonce: round.nonce,
+                init: round.init,
+            };
+            round.sent += 1;
+            round.last_sent = Some(Instant::now());
+            emit(
+                frame,
+                floor.carrier.clone(),
+                active.tunn.clone(),
+                active.carrier.clone(),
+            );
         }
         let new_hold = !state.capable || state.pending.is_some();
         if new_hold != prev_hold {
@@ -2814,8 +3042,13 @@ impl WgDevice {
     }
 
     fn restore_org_floor(&mut self, public: &[u8; 32]) -> bool {
-        let Some(mut floor) = self.org_floor_receivers.remove(public) else { return false; };
-        floor.stats.recovery_hold.fetch_max(mono_ms_now().saturating_add(60_000), Ordering::Relaxed);
+        let Some(mut floor) = self.org_floor_receivers.remove(public) else {
+            return false;
+        };
+        floor
+            .stats
+            .recovery_hold
+            .fetch_max(mono_ms_now().saturating_add(60_000), Ordering::Relaxed);
         self.derp_follow.remove(public); // consume nonce before any new owner
         self.cancel_org_upgrade(public);
         floor.tasks.push(Self::spawn_carrier_timer(
@@ -2831,13 +3064,14 @@ impl WgDevice {
             floor.stats.clone(),
             floor.multipath.clone(),
         );
-        if let Some(old_org) = self.peers.insert(*public, floor) { self.unregister_plane_route(&old_org); }
+        if let Some(old_org) = self.peers.insert(*public, floor) {
+            self.unregister_plane_route(&old_org);
+        }
         self.send_install(*public, ip, tunn, carrier, stats, multipath);
         self.sync_promoted_peer_on_demand(public);
         self.debug_assert_send_synced();
         true
     }
-
 
     pub(crate) fn org_upgrade_ready(&self, public: &[u8; 32]) -> bool {
         self.org_upgrades.get(public).is_some_and(|u| {
@@ -2869,7 +3103,9 @@ impl WgDevice {
     pub(crate) fn promote_org_upgrade(&mut self, public: &[u8; 32]) -> bool {
         let sender = self.send.clone();
         let mut locked = sender.0.write().unwrap();
-        if !self.org_upgrade_ready(public) { return false; }
+        if !self.org_upgrade_ready(public) {
+            return false;
+        }
         let u = self.org_upgrades.remove(public).expect("ready candidate");
         let candidate = u.candidate;
         let (ip, tunn, carrier, stats, multipath) = (
@@ -2883,15 +3119,29 @@ impl WgDevice {
             // make_carrier_peer owns [receive, timer, reorder]. Retain receive only;
             // old keepalives/retries must not imply that DERP remains active.
             old.multipath.clear_secondary_legs();
-            for timer in old.tasks.drain(1..) { timer.abort(); }
+            for timer in old.tasks.drain(1..) {
+                timer.abort();
+            }
             self.drop_org_floor_receiver(public);
-            *old.stats.follow_init.lock().unwrap_or_else(|e| e.into_inner()) = None;
-            *old.stats.follow_proof.lock().unwrap_or_else(|e| e.into_inner()) = None;
-            self.derp_follow.insert(*public, DerpFollowState {
-                org: Arc::downgrade(&tunn), floor: Arc::downgrade(&old.tunn),
-                hello: FollowRound::new([0; 32]), capable: false, pending: None,
-                next_round: Instant::now(),
-            });
+            *old.stats
+                .follow_init
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = None;
+            *old.stats
+                .follow_proof
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = None;
+            self.derp_follow.insert(
+                *public,
+                DerpFollowState {
+                    org: Arc::downgrade(&tunn),
+                    floor: Arc::downgrade(&old.tunn),
+                    hello: FollowRound::new([0; 32]),
+                    capable: false,
+                    pending: None,
+                    next_round: Instant::now(),
+                },
+            );
             self.org_floor_receivers.insert(*public, old);
         }
         Self::send_install_locked(&mut locked, *public, ip, tunn, carrier, stats, multipath);
@@ -3123,12 +3373,7 @@ impl WgDevice {
         // Reuse the CURRENT authenticated/roamed endpoint and its existing
         // interface socket. Socket/NIC rebuild belongs to the existing direct
         // plane executor, not a second network scheduler here.
-        let (sock, dst, public, ip) = (
-            sock,
-            dst,
-            t.public_key,
-            old.overlay_ip,
-        );
+        let (sock, dst, public, ip) = (sock, dst, t.public_key, old.overlay_ip);
         let Some(fresh) = self
             .make_direct_peer(
                 sock,
@@ -3611,8 +3856,7 @@ impl WgDevice {
         let prev_waking_or_active = if let Some(old) = self.peers.get(&peer_public) {
             let was_active = matches!(
                 old.stats.on_demand.phase(),
-                super::on_demand::OnDemandPhase::Waking
-                    | super::on_demand::OnDemandPhase::Active
+                super::on_demand::OnDemandPhase::Waking | super::on_demand::OnDemandPhase::Active
             );
             let q = old.stats.on_demand.take_wake_queue();
             if !q.is_empty() {
@@ -3691,7 +3935,10 @@ impl WgDevice {
             None,
         );
 
-        let stats = Arc::new(PeerStats { recovery_hold: self.recovery_for(peer_public, overlay_ip), ..PeerStats::default() });
+        let stats = Arc::new(PeerStats {
+            recovery_hold: self.recovery_for(peer_public, overlay_ip),
+            ..PeerStats::default()
+        });
         stats
             .on_demand
             .set_peer_identity(self.secret.clone(), peer_public, index);
@@ -3944,11 +4191,13 @@ impl WgDevice {
         peer_public: &[u8; 32],
         packet: &[u8],
     ) -> bool {
-        let Some(last) = self
-            .peers
-            .get(peer_public)
-            .and_then(|p| p.stats.last_init.lock().unwrap_or_else(|e| e.into_inner()).clone())
-        else {
+        let Some(last) = self.peers.get(peer_public).and_then(|p| {
+            p.stats
+                .last_init
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone()
+        }) else {
             return true;
         };
         let mut probe = Tunn::new(
@@ -4580,8 +4829,10 @@ impl WgDevice {
 
     pub(crate) fn peer_business_traffic(&self, peer_public: &[u8; 32]) -> Option<(u64, u64)> {
         let p = self.peers.get(peer_public)?;
-        Some((p.stats.tx_attempted.load(Ordering::Relaxed),
-            p.stats.rx.load(Ordering::Relaxed)))
+        Some((
+            p.stats.tx_attempted.load(Ordering::Relaxed),
+            p.stats.rx.load(Ordering::Relaxed),
+        ))
     }
 
     pub fn peer_take_rx_any(&self, peer_public: &[u8; 32]) -> u64 {
@@ -4615,7 +4866,9 @@ impl WgDevice {
     #[cfg(feature = "path-trial-test-support")]
     pub fn fixture_relay_receive_task_live(&self, peer_public: &[u8; 32]) -> Option<bool> {
         let peer = self.peers.get(peer_public)?;
-        if peer.direct_src.is_some() { return None; }
+        if peer.direct_src.is_some() {
+            return None;
+        }
         Some(!peer.tasks.first()?.is_finished())
     }
 
@@ -5019,14 +5272,20 @@ impl WgDevice {
     }
 }
 
-pub(crate) async fn send_wg_recorded(carrier: &Arc<Carrier>, stats: &PeerStats, bytes: &[u8]) -> io::Result<usize> {
+pub(crate) async fn send_wg_recorded(
+    carrier: &Arc<Carrier>,
+    stats: &PeerStats,
+    bytes: &[u8],
+) -> io::Result<usize> {
     let n = carrier.send(bytes).await?;
     if n == bytes.len() {
         stats.on_demand.record_wire_tx(&bytes[..n]);
         if let Some(digest) = follow::init_digest(bytes) {
-            let mut sent = stats.sent_inits.lock().unwrap_or_else(|e|e.into_inner());
+            let mut sent = stats.sent_inits.lock().unwrap_or_else(|e| e.into_inner());
             if !sent.contains(&digest) {
-                if sent.len() == 4 { sent.pop_front(); }
+                if sent.len() == 4 {
+                    sent.pop_front();
+                }
                 sent.push_back(digest);
             }
         }
@@ -5095,7 +5354,10 @@ pub(crate) fn decap_standby(t: &mut Tunn, datagram: &[u8], ingress: &Ingress) ->
     // The packet arrived, whichever carrier delivered it: it is not loss.
     ingress.stats.note_rx_counter(datagram);
     let delivered = if ingress.permits(src, pkt) {
-        ingress.stats.on_demand.on_inbound_business_packet(mono_ns_now());
+        ingress
+            .stats
+            .on_demand
+            .on_inbound_business_packet(mono_ns_now());
         let (at, len) = (pkt.as_ptr() as usize, pkt.len());
         let span = (at - out.as_ptr() as usize, len);
         Some(into_packet(out, span))
@@ -5148,7 +5410,8 @@ pub(crate) fn decap_inbound(
     if authenticated_init {
         *stats.last_init.lock().unwrap_or_else(|e| e.into_inner()) = Some(buf[..n].to_vec());
         if let Some(digest) = follow::init_digest(&buf[..n]) {
-            *stats.follow_init.lock().unwrap_or_else(|e|e.into_inner()) = Some((digest, Instant::now()));
+            *stats.follow_init.lock().unwrap_or_else(|e| e.into_inner()) =
+                Some((digest, Instant::now()));
         }
     }
     let authenticated = n > 0 && !matches!(res, TunnResult::Err(_));
@@ -5527,9 +5790,7 @@ async fn run_direct_demux(
             let sender_pk = super::pq_psk::claimed_sender(&buf[..n]);
             let pq_handle = {
                 let g = routes.lock().await;
-                let by_src = g
-                    .get(&src)
-                    .and_then(|(_, ing)| ing.stats.pq.get().cloned());
+                let by_src = g.get(&src).and_then(|(_, ing)| ing.stats.pq.get().cloned());
                 by_src
                     .or_else(|| {
                         sender_pk.and_then(|pk| {
@@ -6647,7 +6908,9 @@ mod tests {
         );
         mux_b.deliver(&frame);
         assert!(
-            tokio::time::timeout(Duration::from_millis(300), rx_b.recv()).await.is_err(),
+            tokio::time::timeout(Duration::from_millis(300), rx_b.recv())
+                .await
+                .is_err(),
             "a replayed copy is dropped"
         );
     }
@@ -8437,7 +8700,10 @@ mod tests {
         let env = |k: &str, d: &str| std::env::var(k).unwrap_or_else(|_| d.to_string());
         let n: usize = env("MH_BENCH_PACKETS", "200000").parse().unwrap();
         let size: usize = env("MH_BENCH_SIZE", "1280").parse().unwrap();
-        let (bind_a, bind_b) = (env("MH_BENCH_A", "127.0.0.1"), env("MH_BENCH_B", "127.0.0.1"));
+        let (bind_a, bind_b) = (
+            env("MH_BENCH_A", "127.0.0.1"),
+            env("MH_BENCH_B", "127.0.0.1"),
+        );
         let a = WgKeypair::generate();
         let b = WgKeypair::generate();
         let sock_a = Arc::new(UdpSocket::bind(format!("{bind_a}:0")).await.unwrap());
@@ -8448,17 +8714,31 @@ mod tests {
         let (addr_a, addr_b) = (sock_a.local_addr().unwrap(), sock_b.local_addr().unwrap());
         let (mut dev_a, _rx_a) = WgDevice::new(a.secret.clone());
         let (mut dev_b, mut rx_b) = WgDevice::new(b.secret.clone());
-        dev_a.add_peer(b.public.to_bytes(), IP_B, Carrier::direct(sock_a.clone(), addr_b), true);
-        dev_b.add_peer(a.public.to_bytes(), IP_A, Carrier::direct(sock_b.clone(), addr_a), false);
+        dev_a.add_peer(
+            b.public.to_bytes(),
+            IP_B,
+            Carrier::direct(sock_a.clone(), addr_b),
+            true,
+        );
+        dev_b.add_peer(
+            a.public.to_bytes(),
+            IP_A,
+            Carrier::direct(sock_b.clone(), addr_a),
+            false,
+        );
         let pk_b = b.public.to_bytes();
         wait_connected(&dev_a, &pk_b).await;
         let pkt = synthetic_ipv4(IP_A, IP_B, &vec![0x5a; size.saturating_sub(20)]);
         send_until_ok(&dev_a, &pk_b, &pkt).await;
-        while tokio::time::timeout(Duration::from_millis(200), rx_b.recv()).await.is_ok() {}
+        while tokio::time::timeout(Duration::from_millis(200), rx_b.recv())
+            .await
+            .is_ok()
+        {}
 
         let counter = tokio::spawn(async move {
             let (mut got, mut bytes, mut last) = (0usize, 0usize, Instant::now());
-            while let Ok(Some(p)) = tokio::time::timeout(Duration::from_secs(2), rx_b.recv()).await {
+            while let Ok(Some(p)) = tokio::time::timeout(Duration::from_secs(2), rx_b.recv()).await
+            {
                 got += 1;
                 bytes += p.len();
                 last = Instant::now();
@@ -8611,7 +8891,10 @@ mod tests {
                 break;
             }
         }
-        assert!(saw_ab, "expected direct A->B payload over ML-KEM-768 session");
+        assert!(
+            saw_ab,
+            "expected direct A->B payload over ML-KEM-768 session"
+        );
 
         let pkt_ba = synthetic_ipv4(IP_B, IP_A, b"ml-kem-768 direct payload B->A");
         send_until_ok(&dev_b, &pk_a, &pkt_ba).await;
@@ -8993,7 +9276,9 @@ mod tests {
             }
         })
         .await
-        .expect("expired key must increment expired_count and recover via fresh ML-KEM-768 exchange");
+        .expect(
+            "expired key must increment expired_count and recover via fresh ML-KEM-768 exchange",
+        );
 
         wait_connected(&dev_a, &pk_b).await;
         wait_connected(&dev_b2, &pk_a).await;
@@ -9183,15 +9468,16 @@ mod tests {
 
         let snap_classic_a = classic_a.peer_on_demand_snapshot(&pk_b).unwrap();
         let snap_classic_b = classic_b.peer_on_demand_snapshot(&pk_a).unwrap();
-        assert_eq!(snap_classic_a.phase, super::super::on_demand::OnDemandPhase::Disabled);
+        assert_eq!(
+            snap_classic_a.phase,
+            super::super::on_demand::OnDemandPhase::Disabled
+        );
         assert!(
-            snap_classic_a.background_tx_packets >= 1
-                && snap_classic_a.background_tx_bytes >= 148,
+            snap_classic_a.background_tx_packets >= 1 && snap_classic_a.background_tx_bytes >= 148,
             "classic initiator must emit at least the 148-byte Handshake Initiation at install: {snap_classic_a:?}"
         );
         assert!(
-            snap_classic_b.background_tx_packets >= 1
-                && snap_classic_b.background_tx_bytes >= 92,
+            snap_classic_b.background_tx_packets >= 1 && snap_classic_b.background_tx_bytes >= 92,
             "classic responder must emit at least the 92-byte Handshake Response at install: {snap_classic_b:?}"
         );
         assert_eq!(classic_a.peer_traffic(&pk_b), Some((0, 0)));
@@ -9220,7 +9506,11 @@ mod tests {
         od_b.add_direct_peer(sock_od_b, pk_a, IP_A, od_addr_a, true)
             .await;
 
-        assert_eq!(od_a.test_route(&IP_B), Some(pk_b), "cryptokey route must stay installed while Dormant");
+        assert_eq!(
+            od_a.test_route(&IP_B),
+            Some(pk_b),
+            "cryptokey route must stay installed while Dormant"
+        );
         assert_eq!(od_b.test_route(&IP_A), Some(pk_a));
         assert_eq!(
             od_a.peer_on_demand_phase(&pk_b),
@@ -9235,10 +9525,22 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(600)).await;
         let snap_od_a = od_a.peer_on_demand_snapshot(&pk_b).unwrap();
         let snap_od_b = od_b.peer_on_demand_snapshot(&pk_a).unwrap();
-        assert_eq!(snap_od_a.phase, super::super::on_demand::OnDemandPhase::Dormant);
-        assert_eq!(snap_od_b.phase, super::super::on_demand::OnDemandPhase::Dormant);
-        assert_eq!(snap_od_a.wire_tx_packets, 0, "Dormant peer must emit 0 wire packets");
-        assert_eq!(snap_od_a.wire_tx_bytes, 0, "Dormant peer must emit 0 wire bytes");
+        assert_eq!(
+            snap_od_a.phase,
+            super::super::on_demand::OnDemandPhase::Dormant
+        );
+        assert_eq!(
+            snap_od_b.phase,
+            super::super::on_demand::OnDemandPhase::Dormant
+        );
+        assert_eq!(
+            snap_od_a.wire_tx_packets, 0,
+            "Dormant peer must emit 0 wire packets"
+        );
+        assert_eq!(
+            snap_od_a.wire_tx_bytes, 0,
+            "Dormant peer must emit 0 wire bytes"
+        );
         assert_eq!(snap_od_a.background_tx_packets, 0);
         assert_eq!(snap_od_a.background_tx_bytes, 0);
         assert_eq!(snap_od_b.wire_tx_packets, 0);
@@ -9282,26 +9584,41 @@ mod tests {
             .map(|i| synthetic_ipv4(IP_A, IP_B, &[b'w', b'a', b'k', b'e', i]))
             .collect();
         let sent = dev_a.send_ip_batch(&burst).await;
-        assert_eq!(sent, burst.len(), "all packets in the wake burst must be accepted");
+        assert_eq!(
+            sent,
+            burst.len(),
+            "all packets in the wake burst must be accepted"
+        );
 
         for expected in &burst {
             let got = tokio::time::timeout(Duration::from_secs(2), rx_b.recv())
                 .await
                 .expect("burst packet must arrive after on-demand wake")
                 .unwrap();
-            assert_eq!(&got, expected, "FIFO delivery with zero packet loss on wake");
+            assert_eq!(
+                &got, expected,
+                "FIFO delivery with zero packet loss on wake"
+            );
         }
 
         let snap_a1 = dev_a.peer_on_demand_snapshot(&pk_b).unwrap();
         let snap_b1 = dev_b.peer_on_demand_snapshot(&pk_a).unwrap();
-        assert_eq!(snap_a1.phase, super::super::on_demand::OnDemandPhase::Active);
-        assert_eq!(snap_b1.phase, super::super::on_demand::OnDemandPhase::Active);
+        assert_eq!(
+            snap_a1.phase,
+            super::super::on_demand::OnDemandPhase::Active
+        );
+        assert_eq!(
+            snap_b1.phase,
+            super::super::on_demand::OnDemandPhase::Active
+        );
         assert_eq!(snap_a1.outbound_wake_count, 1);
         assert_eq!(snap_a1.wake_count, 1);
         assert_eq!(snap_a1.queued_on_wake_packets, 5);
         assert_eq!(snap_a1.flushed_on_wake_packets, 5);
         assert!(
-            snap_a1.last_wake_latency.is_some_and(|d| !d.is_zero() && d < Duration::from_secs(1)),
+            snap_a1
+                .last_wake_latency
+                .is_some_and(|d| !d.is_zero() && d < Duration::from_secs(1)),
             "first-packet wake establishment latency must be quantified: {:?}",
             snap_a1.last_wake_latency
         );
@@ -9324,21 +9641,26 @@ mod tests {
         .expect("peers must transition from Active to Dormant after idle_timeout");
 
         let snap_dormant = dev_a.peer_on_demand_snapshot(&pk_b).unwrap();
-        assert_eq!(snap_dormant.phase, super::super::on_demand::OnDemandPhase::Dormant);
+        assert_eq!(
+            snap_dormant.phase,
+            super::super::on_demand::OnDemandPhase::Dormant
+        );
         assert_eq!(snap_dormant.dormant_transitions, 1);
-        assert_eq!(dev_a.test_route(&IP_B), Some(pk_b), "route preserved across Dormant transition");
+        assert_eq!(
+            dev_a.test_route(&IP_B),
+            Some(pk_b),
+            "route preserved across Dormant transition"
+        );
 
         // Verify zero wire emissions while `Dormant`.
         tokio::time::sleep(Duration::from_millis(550)).await;
         let snap_dormant_after = dev_a.peer_on_demand_snapshot(&pk_b).unwrap();
         assert_eq!(
-            snap_dormant_after.wire_tx_packets,
-            snap_dormant.wire_tx_packets,
+            snap_dormant_after.wire_tx_packets, snap_dormant.wire_tx_packets,
             "zero wire packets emitted while Dormant"
         );
         assert_eq!(
-            snap_dormant_after.background_tx_bytes,
-            snap_dormant.background_tx_bytes,
+            snap_dormant_after.background_tx_bytes, snap_dormant.background_tx_bytes,
             "zero background bytes emitted while Dormant"
         );
 
@@ -9358,8 +9680,14 @@ mod tests {
 
         let snap_b2 = dev_b.peer_on_demand_snapshot(&pk_a).unwrap();
         let snap_a2 = dev_a.peer_on_demand_snapshot(&pk_b).unwrap();
-        assert_eq!(snap_b2.phase, super::super::on_demand::OnDemandPhase::Active);
-        assert_eq!(snap_a2.phase, super::super::on_demand::OnDemandPhase::Active);
+        assert_eq!(
+            snap_b2.phase,
+            super::super::on_demand::OnDemandPhase::Active
+        );
+        assert_eq!(
+            snap_a2.phase,
+            super::super::on_demand::OnDemandPhase::Active
+        );
         assert_eq!(snap_b2.outbound_wake_count, 1);
         assert_eq!(snap_b2.flushed_on_wake_packets, 1);
         assert!(snap_b2.last_wake_latency.is_some());
@@ -9504,8 +9832,10 @@ mod tests {
         let burst_ba: Vec<Vec<u8>> = (0..3u8)
             .map(|i| synthetic_ipv4(IP_B, IP_A, &[b'b', b'2', b'a', i]))
             .collect();
-        let (sent_ab, sent_ba) =
-            tokio::join!(dev_a.send_ip_batch(&burst_ab), dev_b.send_ip_batch(&burst_ba));
+        let (sent_ab, sent_ba) = tokio::join!(
+            dev_a.send_ip_batch(&burst_ab),
+            dev_b.send_ip_batch(&burst_ba)
+        );
         assert_eq!(sent_ab, 3);
         assert_eq!(sent_ba, 3);
 
@@ -9514,14 +9844,20 @@ mod tests {
                 .await
                 .expect("A->B simultaneous wake packet must arrive")
                 .unwrap();
-            assert_eq!(&got, expected, "A->B FIFO order preserved on simultaneous wake");
+            assert_eq!(
+                &got, expected,
+                "A->B FIFO order preserved on simultaneous wake"
+            );
         }
         for expected in &burst_ba {
             let got = tokio::time::timeout(Duration::from_secs(2), rx_a.recv())
                 .await
                 .expect("B->A simultaneous wake packet must arrive")
                 .unwrap();
-            assert_eq!(&got, expected, "B->A FIFO order preserved on simultaneous wake");
+            assert_eq!(
+                &got, expected,
+                "B->A FIFO order preserved on simultaneous wake"
+            );
         }
 
         // 3. Background `poke_handshake` (silence/rekey) while `Active` must NOT
@@ -9541,7 +9877,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn b6_on_demand_replay_rejected_while_dormant_and_expired_nat_pinhole_falls_back_with_zero_packet_loss()
-    {
+     {
         use crate::transport::relay::UdpRelayConn;
         use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -9674,7 +10010,13 @@ mod tests {
         //    then marks its dead direct carrier after `waking_timeout` (180 ms).
         pinhole_expired.store(true, Ordering::Release);
         let burst: Vec<Vec<u8>> = (0..4u8)
-            .map(|i| synthetic_ipv4(IP_A, IP_B, &[b'f', b'a', b'l', b'l', b'b', b'a', b'c', b'k', i]))
+            .map(|i| {
+                synthetic_ipv4(
+                    IP_A,
+                    IP_B,
+                    &[b'f', b'a', b'l', b'l', b'b', b'a', b'c', b'k', i],
+                )
+            })
             .collect();
         let sent = dev_a.send_ip_batch(&burst).await;
         assert_eq!(sent, 4);
@@ -9692,7 +10034,11 @@ mod tests {
         .await
         .expect("expired direct NAT pinhole must mark carrier dead within waking_timeout");
         assert!(
-            dev_a.peer_on_demand_snapshot(&pk_b).unwrap().wake_timeout_count >= 1,
+            dev_a
+                .peer_on_demand_snapshot(&pk_b)
+                .unwrap()
+                .wake_timeout_count
+                >= 1,
             "wake_timeout_count must record the waking timeout"
         );
 
@@ -9723,9 +10069,14 @@ mod tests {
         for expected in &burst {
             let got = tokio::time::timeout(Duration::from_secs(2), rx_b.recv())
                 .await
-                .expect("buffered wake packet must arrive over fallback relay carrier with zero loss")
+                .expect(
+                    "buffered wake packet must arrive over fallback relay carrier with zero loss",
+                )
                 .unwrap();
-            assert_eq!(&got, expected, "FIFO order preserved across direct->relay wake fallback");
+            assert_eq!(
+                &got, expected,
+                "FIFO order preserved across direct->relay wake fallback"
+            );
         }
         proxy_task.abort();
     }
@@ -10028,7 +10379,6 @@ NFT
         });
     }
 
-
     #[tokio::test]
     async fn b8_active_standby_fails_over_on_primary_death_and_fails_back_without_rekey() {
         use super::super::multipath::{MultipathConfig, MultipathMode};
@@ -10087,14 +10437,18 @@ NFT
             1,
         ));
 
-        assert!(dev_a.set_peer_multipath_config(
-            &pk_b,
-            MultipathConfig::new(MultipathMode::ActiveStandby),
-        ));
-        assert!(dev_b.set_peer_multipath_config(
-            &pk_a,
-            MultipathConfig::new(MultipathMode::ActiveStandby),
-        ));
+        assert!(
+            dev_a.set_peer_multipath_config(
+                &pk_b,
+                MultipathConfig::new(MultipathMode::ActiveStandby),
+            )
+        );
+        assert!(
+            dev_b.set_peer_multipath_config(
+                &pk_a,
+                MultipathConfig::new(MultipathMode::ActiveStandby),
+            )
+        );
 
         // 1. Primary leg 0 is healthy: traffic rides leg 0.
         let p0 = synthetic_ipv4(IP_A, IP_B, b"on-primary-leg-0");
@@ -10166,7 +10520,8 @@ NFT
     }
 
     #[tokio::test]
-    async fn b8_redundant_duplicate_send_survives_single_leg_blackhole_and_deduplicates_both_legs() {
+    async fn b8_redundant_duplicate_send_survives_single_leg_blackhole_and_deduplicates_both_legs()
+    {
         use super::super::multipath::{MultipathConfig, MultipathMode};
 
         let a = WgKeypair::generate();
@@ -10203,14 +10558,12 @@ NFT
             10,
             1,
         ));
-        assert!(dev_a.set_peer_multipath_config(
-            &pk_b,
-            MultipathConfig::new(MultipathMode::Redundant),
-        ));
-        assert!(dev_b.set_peer_multipath_config(
-            &pk_a,
-            MultipathConfig::new(MultipathMode::Redundant),
-        ));
+        assert!(
+            dev_a.set_peer_multipath_config(&pk_b, MultipathConfig::new(MultipathMode::Redundant),)
+        );
+        assert!(
+            dev_b.set_peer_multipath_config(&pk_a, MultipathConfig::new(MultipathMode::Redundant),)
+        );
         let leg0_rx_baseline = dev_b.peer_multipath_snapshot(&pk_a).unwrap().legs[0].rx_packets;
 
         // Send 20 packets duplicated across both leg 0 and leg 1.
@@ -10226,7 +10579,10 @@ NFT
         // Let all in-flight second copies settle on the receiver.
         tokio::time::sleep(Duration::from_millis(40)).await;
         // Receiver TUN channel must have ZERO duplicate packets queued!
-        assert!(rx_b.try_recv().is_err(), "duplicate copy must never reach TUN");
+        assert!(
+            rx_b.try_recv().is_err(),
+            "duplicate copy must never reach TUN"
+        );
 
         let snap_a = dev_a.peer_multipath_snapshot(&pk_b).unwrap();
         assert_eq!(snap_a.redundant_extra_tx_packets, 20);
@@ -10261,7 +10617,8 @@ NFT
     }
 
     #[tokio::test]
-    async fn b8_aggregate_weighted_striping_and_asymmetric_rtt_reorder_buffer_delivers_strict_in_order() {
+    async fn b8_aggregate_weighted_striping_and_asymmetric_rtt_reorder_buffer_delivers_strict_in_order()
+     {
         use super::super::multipath::{MultipathConfig, MultipathMode};
 
         let a = WgKeypair::generate();
@@ -10305,8 +10662,18 @@ NFT
         let (mut dev_a, _rx_a) = WgDevice::new(a.secret.clone());
         let (mut dev_b, mut rx_b) = WgDevice::new(b.secret.clone());
 
-        dev_a.add_peer(pk_b, IP_B, Carrier::direct(sock_a0.clone(), addr_proxy), true);
-        dev_b.add_peer(pk_a, IP_A, Carrier::direct(sock_b0.clone(), addr_proxy), false);
+        dev_a.add_peer(
+            pk_b,
+            IP_B,
+            Carrier::direct(sock_a0.clone(), addr_proxy),
+            true,
+        );
+        dev_b.add_peer(
+            pk_a,
+            IP_A,
+            Carrier::direct(sock_b0.clone(), addr_proxy),
+            false,
+        );
         wait_connected(&dev_a, &pk_b).await;
 
         // Attach fast leg 1 with weight = 2 (primary slow leg 0 has weight = 1).
@@ -10328,12 +10695,14 @@ NFT
             &pk_b,
             MultipathConfig::new(MultipathMode::Aggregate).with_primary_weight(1),
         ));
-        assert!(dev_b.set_peer_multipath_config(
-            &pk_a,
-            MultipathConfig::new(MultipathMode::Aggregate)
-                .with_max_reorder_depth(64)
-                .with_reorder_hold_timeout(Duration::from_millis(80)),
-        ));
+        assert!(
+            dev_b.set_peer_multipath_config(
+                &pk_a,
+                MultipathConfig::new(MultipathMode::Aggregate)
+                    .with_max_reorder_depth(64)
+                    .with_reorder_hold_timeout(Duration::from_millis(80)),
+            )
+        );
 
         // Send a burst of 30 packets via `send_ip_batch`.
         let mut batch = Vec::with_capacity(30);
@@ -10409,11 +10778,13 @@ NFT
             &pk_b,
             MultipathConfig::new(MultipathMode::Aggregate).with_primary_weight(1),
         ));
-        assert!(dev_b.set_peer_multipath_config(
-            &pk_a,
-            MultipathConfig::new(MultipathMode::Aggregate)
-                .with_reorder_hold_timeout(Duration::from_millis(30)),
-        ));
+        assert!(
+            dev_b.set_peer_multipath_config(
+                &pk_a,
+                MultipathConfig::new(MultipathMode::Aggregate)
+                    .with_reorder_hold_timeout(Duration::from_millis(30)),
+            )
+        );
 
         // Blackhole leg 0 so packet #0 (sent on leg 0 by WRR) is LOST, while packets #1 and #2
         // (sent on leg 1 by WRR) arrive at dev_b and are parked waiting for counter #0.

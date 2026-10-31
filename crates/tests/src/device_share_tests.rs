@@ -1105,12 +1105,18 @@ async fn shared_ssh_next(ws: &mut SharedSshWs) -> roomler_ai_remote_control::sig
     use futures::StreamExt;
     tokio::time::timeout(std::time::Duration::from_secs(6), async {
         loop {
-            let message = ws.next().await.expect("shared SSH socket closed before expected message")
+            let message = ws
+                .next()
+                .await
+                .expect("shared SSH socket closed before expected message")
                 .expect("shared SSH transport failed before expected message");
             if let tokio_tungstenite::tungstenite::Message::Text(t) = message {
                 break serde_json::from_str(&t).unwrap();
             }
-            assert!(!matches!(message, tokio_tungstenite::tungstenite::Message::Close(_)), "shared SSH closed before expected message");
+            assert!(
+                !matches!(message, tokio_tungstenite::tungstenite::Message::Close(_)),
+                "shared SSH closed before expected message"
+            );
         }
     })
     .await
@@ -1153,18 +1159,33 @@ async fn device_share_shared_ssh_metadata_caps_and_bearer_only_recipient_boundar
     assert_eq!(value["host_pubkey"], shared_ssh_public_key());
     assert!(value.get("tenant_id").is_none());
     assert!(value.get("token").is_none());
-    let hidden = f.app
-        .auth_get(&format!("/api/device-shares/{grant}/ssh"), &f.outsider.token)
-        .send().await.unwrap();
+    let hidden = f
+        .app
+        .auth_get(
+            &format!("/api/device-shares/{grant}/ssh"),
+            &f.outsider.token,
+        )
+        .send()
+        .await
+        .unwrap();
     assert_eq!(hidden.status().as_u16(), 404);
     let hidden_body = hidden.bytes().await.unwrap();
     let missing_grant = ObjectId::new();
-    let missing = f.app
-        .auth_get(&format!("/api/device-shares/{missing_grant}/ssh"), &f.outsider.token)
-        .send().await.unwrap();
+    let missing = f
+        .app
+        .auth_get(
+            &format!("/api/device-shares/{missing_grant}/ssh"),
+            &f.outsider.token,
+        )
+        .send()
+        .await
+        .unwrap();
     assert_eq!(missing.status().as_u16(), 404);
     let missing_body = missing.bytes().await.unwrap();
-    assert_eq!(hidden_body, missing_body, "wrong-recipient and missing-grant HTTP bodies must be byte-identical");
+    assert_eq!(
+        hidden_body, missing_body,
+        "wrong-recipient and missing-grant HTTP bodies must be byte-identical"
+    );
     assert_eq!(
         serde_json::from_slice::<Value>(&hidden_body).unwrap(),
         json!({"error":"not_found","message":"Resource not found"}),
@@ -1221,12 +1242,18 @@ async fn device_share_shared_ssh_metadata_caps_and_bearer_only_recipient_boundar
         "Authorization",
         format!("Bearer {}", f.outsider.token).parse().unwrap(),
     );
-    let absent = tokio_tungstenite::connect_async(absent_request).await.unwrap_err();
+    let absent = tokio_tungstenite::connect_async(absent_request)
+        .await
+        .unwrap_err();
     let tokio_tungstenite::tungstenite::Error::Http(absent) = absent else {
         panic!("expected a missing-grant WebSocket handshake to fail at HTTP authorization");
     };
     assert_eq!(absent.status().as_u16(), 404);
-    assert_eq!(absent.body(), denied.body(), "WebSocket rejection must not reveal grant existence");
+    assert_eq!(
+        absent.body(),
+        denied.body(),
+        "WebSocket rejection must not reveal grant existence"
+    );
     f.app
         .db
         .collection::<Agent>("agents")
@@ -1393,11 +1420,15 @@ async fn device_share_shared_ssh_live_revoke_stops_scope_and_lease_echo() {
         tokio::time::timeout(std::time::Duration::from_secs(6), async {
             loop {
                 match ws.next().await {
-                    None | Some(Err(_)) | Some(Ok(tokio_tungstenite::tungstenite::Message::Close(_))) => break,
+                    None
+                    | Some(Err(_))
+                    | Some(Ok(tokio_tungstenite::tungstenite::Message::Close(_))) => break,
                     Some(Ok(_)) => {}
                 }
             }
-        }).await.expect("revoked shared SSH origin socket must close");
+        })
+        .await
+        .expect("revoked shared SSH origin socket must close");
     }
     assert!(
         !f.app

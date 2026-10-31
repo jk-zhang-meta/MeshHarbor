@@ -34,7 +34,8 @@ use super::{Mapping, Proto};
 use crate::overlay::direct::is_public_v4;
 
 pub(super) const SSDP_PORT: u16 = 1900;
-const SSDP_MULTICAST: SocketAddrV4 = SocketAddrV4::new(Ipv4Addr::new(239, 255, 255, 250), SSDP_PORT);
+const SSDP_MULTICAST: SocketAddrV4 =
+    SocketAddrV4::new(Ipv4Addr::new(239, 255, 255, 250), SSDP_PORT);
 const SEARCH_TARGETS: [&str; 2] = [
     "urn:schemas-upnp-org:device:InternetGatewayDevice:1",
     "urn:schemas-upnp-org:device:InternetGatewayDevice:2",
@@ -83,9 +84,12 @@ pub(super) async fn map(
         Some(c) => c,
         None => discover(ssdp, local, wait).await?,
     };
-    let ip: Ipv4Addr = tag(&soap(&ctl, "GetExternalIPAddress", "").await.ok()?, "NewExternalIPAddress")?
-        .parse()
-        .ok()?;
+    let ip: Ipv4Addr = tag(
+        &soap(&ctl, "GetExternalIPAddress", "").await.ok()?,
+        "NewExternalIPAddress",
+    )?
+    .parse()
+    .ok()?;
     if !is_public_v4(ip) {
         debug!(%ip, "portmap: the IGD's external address is not public (a second NAT?); not mapping");
         return None;
@@ -200,7 +204,9 @@ async fn soap(ctl: &Ctl, action: &str, args: &str) -> Result<String, u16> {
     );
     match http(ctl.at, req.as_bytes()).await {
         Some((200, b)) => Ok(b),
-        Some((_, b)) => Err(tag(&b, "errorCode").and_then(|c| c.parse().ok()).unwrap_or(0)),
+        Some((_, b)) => Err(tag(&b, "errorCode")
+            .and_then(|c| c.parse().ok())
+            .unwrap_or(0)),
         None => Err(0),
     }
 }
@@ -255,7 +261,8 @@ fn parse_response(buf: &[u8]) -> Option<(u16, String)> {
     let mut body = buf[h + 4..].to_vec();
     if header(&head, "transfer-encoding").is_some_and(|v| v.eq_ignore_ascii_case("chunked")) {
         body = dechunk(&body)?;
-    } else if let Some(len) = header(&head, "content-length").and_then(|l| l.parse::<usize>().ok()) {
+    } else if let Some(len) = header(&head, "content-length").and_then(|l| l.parse::<usize>().ok())
+    {
         body.truncate(len);
     }
     Some((status, String::from_utf8_lossy(&body).into_owned()))
@@ -291,7 +298,10 @@ fn header<'a>(head: &'a str, name: &str) -> Option<&'a str> {
 /// `http://a.b.c.d[:port]/path` → (`a.b.c.d:port`, `/path`). Only IPv4
 /// literal hosts: a gateway's URLs name its own address.
 fn parse_url(u: &str) -> Option<(SocketAddrV4, String)> {
-    let rest = u.get(..7).filter(|p| p.eq_ignore_ascii_case("http://")).map(|_| &u[7..])?;
+    let rest = u
+        .get(..7)
+        .filter(|p| p.eq_ignore_ascii_case("http://"))
+        .map(|_| &u[7..])?;
     let (hostport, path) = match rest.find('/') {
         Some(i) => (&rest[..i], rest[i..].to_string()),
         None => (rest, "/".to_string()),
@@ -306,14 +316,20 @@ fn parse_url(u: &str) -> Option<(SocketAddrV4, String)> {
 /// Resolve a control URL against the description's location: absolute,
 /// host-relative (`/ctl`) or path-relative (`ctl`).
 fn resolve((at, base): &(SocketAddrV4, String), control: &str) -> Option<(SocketAddrV4, String)> {
-    if control.get(..7).is_some_and(|p| p.eq_ignore_ascii_case("http://")) {
+    if control
+        .get(..7)
+        .is_some_and(|p| p.eq_ignore_ascii_case("http://"))
+    {
         return parse_url(control);
     }
     if control.starts_with('/') {
         return Some((*at, control.to_string()));
     }
     let dir = &base[..base.rfind('/').map_or(0, |i| i + 1)];
-    Some((*at, format!("{}{control}", if dir.is_empty() { "/" } else { dir })))
+    Some((
+        *at,
+        format!("{}{control}", if dir.is_empty() { "/" } else { dir }),
+    ))
 }
 
 /// The preferred WAN connection service in a device description, and its
@@ -340,7 +356,11 @@ fn tag<'a>(xml: &'a str, name: &str) -> Option<&'a str> {
         };
         let prefix = &xml[lt + 1..s];
         let opening = !prefix.starts_with('/')
-            && (prefix.is_empty() || (prefix.ends_with(':') && prefix.bytes().all(|c| c.is_ascii_alphanumeric() || c == b':')));
+            && (prefix.is_empty()
+                || (prefix.ends_with(':')
+                    && prefix
+                        .bytes()
+                        .all(|c| c.is_ascii_alphanumeric() || c == b':')));
         if !opening || !matches!(xml.as_bytes().get(e), Some(b'>') | Some(b' ')) {
             continue;
         }
@@ -394,86 +414,164 @@ pub(super) mod tests {
                 loop {
                     let k = s.read(&mut buf[n..]).await.unwrap_or(0);
                     n += k;
-                    if k == 0 || response_complete(&buf[..n]) || (n >= 4 && buf[..n].ends_with(b"\r\n\r\n") && buf.starts_with(b"GET")) {
+                    if k == 0
+                        || response_complete(&buf[..n])
+                        || (n >= 4 && buf[..n].ends_with(b"\r\n\r\n") && buf.starts_with(b"GET"))
+                    {
                         break;
                     }
                 }
                 let req = String::from_utf8_lossy(&buf[..n]).into_owned();
                 log.lock().unwrap().push(req.clone());
-                let control = if kind == Igd::ForeignControl { "http://127.0.0.2:1/ctl/IPConn" } else { "/ctl/IPConn" };
+                let control = if kind == Igd::ForeignControl {
+                    "http://127.0.0.2:1/ctl/IPConn"
+                } else {
+                    "/ctl/IPConn"
+                };
                 let (status, body) = if req.starts_with("GET /rootDesc.xml") {
                     (200, DESC.replace("CONTROL", control))
                 } else if req.contains("#GetExternalIPAddress") {
-                    (200, format!("<s:Envelope><s:Body><u:GetExternalIPAddressResponse><NewExternalIPAddress>{EXTERNAL}</NewExternalIPAddress></u:GetExternalIPAddressResponse></s:Body></s:Envelope>"))
+                    (
+                        200,
+                        format!(
+                            "<s:Envelope><s:Body><u:GetExternalIPAddressResponse><NewExternalIPAddress>{EXTERNAL}</NewExternalIPAddress></u:GetExternalIPAddressResponse></s:Body></s:Envelope>"
+                        ),
+                    )
                 } else if req.contains("#AddPortMapping") {
                     let internal = tag(&req, "NewInternalPort").unwrap_or("").to_string();
                     let external = tag(&req, "NewExternalPort").unwrap_or("").to_string();
                     let refuse = match kind {
-                        Igd::PermanentOnly if tag(&req, "NewLeaseDuration") != Some("0") => Some(ERR_ONLY_PERMANENT),
+                        Igd::PermanentOnly if tag(&req, "NewLeaseDuration") != Some("0") => {
+                            Some(ERR_ONLY_PERMANENT)
+                        }
                         Igd::Conflict if internal == external => Some(ERR_CONFLICT),
                         _ => None,
                     };
                     match refuse {
-                        Some(code) => (500, format!("<s:Envelope><s:Body><s:Fault><detail><UPnPError xmlns=\"urn:schemas-upnp-org:control-1-0\"><errorCode>{code}</errorCode></UPnPError></detail></s:Fault></s:Body></s:Envelope>")),
-                        None => (200, String::from("<s:Envelope><s:Body><u:AddPortMappingResponse/></s:Body></s:Envelope>")),
+                        Some(code) => (
+                            500,
+                            format!(
+                                "<s:Envelope><s:Body><s:Fault><detail><UPnPError xmlns=\"urn:schemas-upnp-org:control-1-0\"><errorCode>{code}</errorCode></UPnPError></detail></s:Fault></s:Body></s:Envelope>"
+                            ),
+                        ),
+                        None => (
+                            200,
+                            String::from(
+                                "<s:Envelope><s:Body><u:AddPortMappingResponse/></s:Body></s:Envelope>",
+                            ),
+                        ),
                     }
                 } else if req.contains("#DeletePortMapping") {
-                    (200, String::from("<s:Envelope><s:Body><u:DeletePortMappingResponse/></s:Body></s:Envelope>"))
+                    (
+                        200,
+                        String::from(
+                            "<s:Envelope><s:Body><u:DeletePortMappingResponse/></s:Body></s:Envelope>",
+                        ),
+                    )
                 } else {
                     (404, String::new())
                 };
-                let resp = format!("HTTP/1.1 {status} X\r\nContent-Type: text/xml\r\nContent-Length: {}\r\n\r\n{body}", body.len());
+                let resp = format!(
+                    "HTTP/1.1 {status} X\r\nContent-Type: text/xml\r\nContent-Length: {}\r\n\r\n{body}",
+                    body.len()
+                );
                 let _ = s.write_all(resp.as_bytes()).await;
             }
         });
         let ssdp = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-        let SocketAddr::V4(to) = ssdp.local_addr().unwrap() else { unreachable!() };
+        let SocketAddr::V4(to) = ssdp.local_addr().unwrap() else {
+            unreachable!()
+        };
         tokio::spawn(async move {
             let mut buf = [0u8; 1024];
             while let Ok((n, from)) = ssdp.recv_from(&mut buf).await {
                 if buf[..n].starts_with(b"M-SEARCH") {
-                    let reply = format!("HTTP/1.1 200 OK\r\nCACHE-CONTROL: max-age=120\r\nST: {}\r\nLOCATION: http://{http_at}/rootDesc.xml\r\n\r\n", SEARCH_TARGETS[0]);
+                    let reply = format!(
+                        "HTTP/1.1 200 OK\r\nCACHE-CONTROL: max-age=120\r\nST: {}\r\nLOCATION: http://{http_at}/rootDesc.xml\r\n\r\n",
+                        SEARCH_TARGETS[0]
+                    );
                     let _ = ssdp.send_to(reply.as_bytes(), from).await;
                 }
             }
         });
-        (Ssdp { to, multicast: false }, seen)
+        (
+            Ssdp {
+                to,
+                multicast: false,
+            },
+            seen,
+        )
     }
 
     const WAIT: Duration = Duration::from_millis(400);
 
     fn adds(seen: &Mutex<Vec<String>>) -> Vec<String> {
-        seen.lock().unwrap().iter().filter(|r| r.contains("#AddPortMapping")).cloned().collect()
+        seen.lock()
+            .unwrap()
+            .iter()
+            .filter(|r| r.contains("#AddPortMapping"))
+            .cloned()
+            .collect()
     }
 
     #[tokio::test]
     async fn an_igd_maps_the_port_at_its_external_address() {
         let (ssdp, seen) = igd(Igd::Grants).await;
-        let m = map(ssdp, Ipv4Addr::LOCALHOST, 43648, None, 7200, WAIT).await.expect("mapped");
-        assert_eq!((m.proto, m.external), (Proto::Upnp, SocketAddrV4::new(EXTERNAL, 43648)));
+        let m = map(ssdp, Ipv4Addr::LOCALHOST, 43648, None, 7200, WAIT)
+            .await
+            .expect("mapped");
+        assert_eq!(
+            (m.proto, m.external),
+            (Proto::Upnp, SocketAddrV4::new(EXTERNAL, 43648))
+        );
         let add = adds(&seen).pop().unwrap();
-        assert!(add.contains("SOAPAction: \"urn:schemas-upnp-org:service:WANIPConnection:1#AddPortMapping\""), "{add}");
+        assert!(
+            add.contains(
+                "SOAPAction: \"urn:schemas-upnp-org:service:WANIPConnection:1#AddPortMapping\""
+            ),
+            "{add}"
+        );
         assert_eq!(tag(&add, "NewInternalClient"), Some("127.0.0.1"));
         assert_eq!(tag(&add, "NewProtocol"), Some("UDP"));
         assert_eq!(tag(&add, "NewLeaseDuration"), Some("7200"));
-        assert!(add.starts_with("POST /ctl/IPConn "), "the WAN service's control URL, not Layer3Forwarding's");
+        assert!(
+            add.starts_with("POST /ctl/IPConn "),
+            "the WAN service's control URL, not Layer3Forwarding's"
+        );
         assert!(unmap(&m).await);
-        assert!(seen.lock().unwrap().last().unwrap().contains("#DeletePortMapping"));
+        assert!(
+            seen.lock()
+                .unwrap()
+                .last()
+                .unwrap()
+                .contains("#DeletePortMapping")
+        );
     }
 
     #[tokio::test]
     async fn a_permanent_only_igd_is_asked_again_with_lease_zero() {
         let (ssdp, seen) = igd(Igd::PermanentOnly).await;
-        let m = map(ssdp, Ipv4Addr::LOCALHOST, 43648, None, 7200, WAIT).await.expect("mapped");
-        assert_eq!(m.lifetime, Duration::from_secs(7200), "still refreshed on our schedule");
-        let leases: Vec<String> = adds(&seen).iter().filter_map(|r| tag(r, "NewLeaseDuration").map(str::to_string)).collect();
+        let m = map(ssdp, Ipv4Addr::LOCALHOST, 43648, None, 7200, WAIT)
+            .await
+            .expect("mapped");
+        assert_eq!(
+            m.lifetime,
+            Duration::from_secs(7200),
+            "still refreshed on our schedule"
+        );
+        let leases: Vec<String> = adds(&seen)
+            .iter()
+            .filter_map(|r| tag(r, "NewLeaseDuration").map(str::to_string))
+            .collect();
         assert_eq!(leases, ["7200", "0"]);
     }
 
     #[tokio::test]
     async fn a_taken_external_port_moves_to_another() {
         let (ssdp, _) = igd(Igd::Conflict).await;
-        let m = map(ssdp, Ipv4Addr::LOCALHOST, 43648, None, 7200, WAIT).await.expect("mapped");
+        let m = map(ssdp, Ipv4Addr::LOCALHOST, 43648, None, 7200, WAIT)
+            .await
+            .expect("mapped");
         assert_ne!(m.external.port(), 43648);
         assert!(m.external.port() >= 1024);
     }
@@ -481,42 +579,107 @@ pub(super) mod tests {
     #[tokio::test]
     async fn a_refresh_reuses_the_control_url_and_external_port() {
         let (ssdp, seen) = igd(Igd::Conflict).await;
-        let first = map(ssdp, Ipv4Addr::LOCALHOST, 43648, None, 7200, WAIT).await.unwrap();
+        let first = map(ssdp, Ipv4Addr::LOCALHOST, 43648, None, 7200, WAIT)
+            .await
+            .unwrap();
         let n = seen.lock().unwrap().len();
-        let again = map(ssdp, Ipv4Addr::LOCALHOST, 43648, Some(&first), 7200, WAIT).await.unwrap();
+        let again = map(ssdp, Ipv4Addr::LOCALHOST, 43648, Some(&first), 7200, WAIT)
+            .await
+            .unwrap();
         assert_eq!(again.external, first.external);
         let seen = seen.lock().unwrap();
-        assert!(!seen[n..].iter().any(|r| r.starts_with("GET")), "no rediscovery");
+        assert!(
+            !seen[n..].iter().any(|r| r.starts_with("GET")),
+            "no rediscovery"
+        );
     }
 
     #[tokio::test]
     async fn a_control_url_off_the_gateway_is_refused() {
         let (ssdp, seen) = igd(Igd::ForeignControl).await;
-        assert!(map(ssdp, Ipv4Addr::LOCALHOST, 43648, None, 7200, WAIT).await.is_none());
+        assert!(
+            map(ssdp, Ipv4Addr::LOCALHOST, 43648, None, 7200, WAIT)
+                .await
+                .is_none()
+        );
         assert!(adds(&seen).is_empty());
     }
 
     #[tokio::test]
     async fn no_igd_costs_one_wait() {
         let sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-        let SocketAddr::V4(to) = sock.local_addr().unwrap() else { unreachable!() };
+        let SocketAddr::V4(to) = sock.local_addr().unwrap() else {
+            unreachable!()
+        };
         let t = std::time::Instant::now();
-        assert!(map(Ssdp { to, multicast: false }, Ipv4Addr::LOCALHOST, 43648, None, 7200, WAIT).await.is_none());
-        assert!(t.elapsed() < WAIT + Duration::from_millis(200), "took {:?}", t.elapsed());
+        assert!(
+            map(
+                Ssdp {
+                    to,
+                    multicast: false
+                },
+                Ipv4Addr::LOCALHOST,
+                43648,
+                None,
+                7200,
+                WAIT
+            )
+            .await
+            .is_none()
+        );
+        assert!(
+            t.elapsed() < WAIT + Duration::from_millis(200),
+            "took {:?}",
+            t.elapsed()
+        );
     }
 
     #[test]
     fn the_parsers_handle_real_router_shapes() {
-        assert_eq!(tag("<m:NewExternalIPAddress>1.2.3.4</m:NewExternalIPAddress>", "NewExternalIPAddress"), Some("1.2.3.4"));
+        assert_eq!(
+            tag(
+                "<m:NewExternalIPAddress>1.2.3.4</m:NewExternalIPAddress>",
+                "NewExternalIPAddress"
+            ),
+            Some("1.2.3.4")
+        );
         assert_eq!(tag("<errorCode >718</errorCode>", "errorCode"), Some("718"));
-        assert_eq!(tag("<NewExternalIPAddressX>no</NewExternalIPAddressX>", "NewExternalIPAddress"), None);
-        assert_eq!(dechunk(b"5\r\nhello\r\n6;x=y\r\n world\r\n0\r\n\r\n").unwrap(), b"hello world");
+        assert_eq!(
+            tag(
+                "<NewExternalIPAddressX>no</NewExternalIPAddressX>",
+                "NewExternalIPAddress"
+            ),
+            None
+        );
+        assert_eq!(
+            dechunk(b"5\r\nhello\r\n6;x=y\r\n world\r\n0\r\n\r\n").unwrap(),
+            b"hello world"
+        );
         let loc = parse_url("HTTP://192.168.1.1:5000/desc/root.xml").unwrap();
-        assert_eq!(loc, (SocketAddrV4::new(Ipv4Addr::new(192, 168, 1, 1), 5000), "/desc/root.xml".into()));
+        assert_eq!(
+            loc,
+            (
+                SocketAddrV4::new(Ipv4Addr::new(192, 168, 1, 1), 5000),
+                "/desc/root.xml".into()
+            )
+        );
         assert_eq!(resolve(&loc, "ctl/IPConn").unwrap().1, "/desc/ctl/IPConn");
         assert_eq!(resolve(&loc, "/upnp/control").unwrap().1, "/upnp/control");
-        assert_eq!(resolve(&loc, "http://192.168.1.1:49152/c").unwrap().0.port(), 49152);
-        assert_eq!(parse_url("http://router.lan/x"), None, "only IPv4 literal hosts");
-        assert_eq!(header("HTTP/1.1 200 OK\r\nLocation: http://a\r\n", "LOCATION"), Some("http://a"));
+        assert_eq!(
+            resolve(&loc, "http://192.168.1.1:49152/c")
+                .unwrap()
+                .0
+                .port(),
+            49152
+        );
+        assert_eq!(
+            parse_url("http://router.lan/x"),
+            None,
+            "only IPv4 literal hosts"
+        );
+        assert_eq!(
+            header("HTTP/1.1 200 OK\r\nLocation: http://a\r\n", "LOCATION"),
+            Some("http://a")
+        );
     }
 }

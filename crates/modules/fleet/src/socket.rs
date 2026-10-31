@@ -1497,7 +1497,6 @@ fn mesh_link_doc(l: &roomler_ai_remote_control::signaling::PeerLink) -> bson::Do
     }
 }
 
-
 /// The `/ws?role=agent` upgrade (FR-69 P7b, from the host): verify the agent
 /// JWT, the affinity key and the row, say why on refusal, then run the loop.
 /// The host keeps the `/ws` route and the role gate and hands the token here.

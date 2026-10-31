@@ -3344,22 +3344,25 @@ async fn handle_server_msg(
     match msg {
         ServerMsg::SharedSshSetup { session_id, setup } => {
             let accepted = {
-            #[cfg(feature = "ssh-server")]
-            {
-            let descriptor = setup.shared_lease.clone();
-            let services = crate::ssh::SessionServices {
-                power_activity: Some(crate::power::shared_activity().clone()),
-                asker: crate::ssh::Asker::Here {
-                    broker: consent_broker.clone(),
-                    indicator: indicator.clone(),
-                },
-                activity: crate::ssh::ActivitySink::new(agent_cfg, outbound_tx.clone()),
-            };
-            shared_ssh.note(session_id, setup, agent_cfg, services)
-                && shared_leases.note_ssh(session_id, descriptor)
-            }
-            #[cfg(not(feature = "ssh-server"))]
-            { let _ = setup; false }
+                #[cfg(feature = "ssh-server")]
+                {
+                    let descriptor = setup.shared_lease.clone();
+                    let services = crate::ssh::SessionServices {
+                        power_activity: Some(crate::power::shared_activity().clone()),
+                        asker: crate::ssh::Asker::Here {
+                            broker: consent_broker.clone(),
+                            indicator: indicator.clone(),
+                        },
+                        activity: crate::ssh::ActivitySink::new(agent_cfg, outbound_tx.clone()),
+                    };
+                    shared_ssh.note(session_id, setup, agent_cfg, services)
+                        && shared_leases.note_ssh(session_id, descriptor)
+                }
+                #[cfg(not(feature = "ssh-server"))]
+                {
+                    let _ = setup;
+                    false
+                }
             };
             if !accepted {
                 shared_ssh.end(session_id);

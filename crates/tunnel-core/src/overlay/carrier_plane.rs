@@ -358,7 +358,10 @@ impl CarrierPlane {
         let ifaces = direct::gather_lan_interfaces();
         #[cfg(test)]
         let ifaces: Vec<_> = match self.lan_only.lock().unwrap().as_ref() {
-            Some(keep) => ifaces.into_iter().filter(|(ip, _)| keep.contains(ip)).collect(),
+            Some(keep) => ifaces
+                .into_iter()
+                .filter(|(ip, _)| keep.contains(ip))
+                .collect(),
             None => ifaces,
         };
         let my_ips: Vec<Ipv4Addr> = ifaces.iter().map(|(ip, _)| *ip).collect();
@@ -1137,12 +1140,7 @@ impl CarrierPlane {
         }
     }
 
-    fn probe_uses_other_socket(
-        &self,
-        engine: u64,
-        src: SocketAddr,
-        sock: &Arc<UdpSocket>,
-    ) -> bool {
+    fn probe_uses_other_socket(&self, engine: u64, src: SocketAddr, sock: &Arc<UdpSocket>) -> bool {
         let st = self.lock();
         st.by_src
             .get(&(engine, src))
@@ -1208,11 +1206,7 @@ impl CarrierPlane {
         None
     }
 
-    fn pq_psk_handles(
-        &self,
-        pkt: &[u8],
-        src: SocketAddr,
-    ) -> Vec<Arc<super::pq_psk::PqPeerHandle>> {
+    fn pq_psk_handles(&self, pkt: &[u8], src: SocketAddr) -> Vec<Arc<super::pq_psk::PqPeerHandle>> {
         let Some(sender) = super::pq_psk::claimed_sender(pkt) else {
             return Vec::new();
         };
@@ -1326,7 +1320,12 @@ impl InboundRun {
     /// Release the session, then hand its packets to the TUN channel back to
     /// back, in order.
     async fn deliver(self) {
-        let Self { tunn, tun_tx, packets, .. } = self;
+        let Self {
+            tunn,
+            tun_tx,
+            packets,
+            ..
+        } = self;
         drop(tunn);
         for p in packets {
             if tun_tx.send(p).await.is_err() {
@@ -1366,9 +1365,7 @@ impl PlaneHandle {
             return false;
         };
         b.socks.iter().any(|(_, s)| Arc::ptr_eq(s, sock))
-            || b.public_sock
-                .as_ref()
-                .is_some_and(|s| Arc::ptr_eq(s, sock))
+            || b.public_sock.as_ref().is_some_and(|s| Arc::ptr_eq(s, sock))
             || b.v6.as_ref().is_some_and(|s| Arc::ptr_eq(s, sock))
     }
 
@@ -1996,7 +1993,10 @@ impl CarrierPlane {
                 super::portmap::PortMapper::start(&punch, &state.candidates, &portmap_key).await;
             if pm.is_some() {
                 state.generation += 1;
-                plane.lock().srflx_watch.send_replace(state.published(pm.as_ref()));
+                plane
+                    .lock()
+                    .srflx_watch
+                    .send_replace(state.published(pm.as_ref()));
             }
             // W6 — poke-storm floor (see SEEKING): a poked query here is only
             // an ACCELERATION of the ≤`secs` tick, so under an interface-event
@@ -2113,7 +2113,10 @@ impl CarrierPlane {
                 }
                 if publish {
                     state.generation += 1;
-                    plane.lock().srflx_watch.send_replace(state.published(pm.as_ref()));
+                    plane
+                        .lock()
+                        .srflx_watch
+                        .send_replace(state.published(pm.as_ref()));
                 }
             }
         });
@@ -2946,7 +2949,11 @@ mod tests {
         );
         assert_eq!(p.my_nat.as_deref(), Some("cone"));
         assert_eq!(p.portmap.as_deref(), Some("pcp 203.0.113.7:41641"));
-        assert_eq!(state.candidates, vec!["203.0.113.7:1111".to_string()], "state untouched");
+        assert_eq!(
+            state.candidates,
+            vec!["203.0.113.7:1111".to_string()],
+            "state untouched"
+        );
         let none = state.published(None);
         assert_eq!(none.candidates, state.candidates);
         assert_eq!((none.my_nat, none.portmap), (state.my_nat.clone(), None));
@@ -3088,8 +3095,10 @@ mod tests {
         let (mut a, _ra) = engine(&plane_a, &kp_a).await;
         let (mut b, mut rb) = engine(&plane_b, &kp_b).await;
         let (ip_a, ip_b) = (Ipv4Addr::new(100, 65, 9, 1), Ipv4Addr::new(100, 65, 9, 2));
-        b.add_direct_peer(sock_b.clone(), kp_a.public.to_bytes(), ip_a, addr_a, false).await;
-        a.add_direct_peer(sock_a.clone(), kp_b.public.to_bytes(), ip_b, addr_b, true).await;
+        b.add_direct_peer(sock_b.clone(), kp_a.public.to_bytes(), ip_a, addr_a, false)
+            .await;
+        a.add_direct_peer(sock_a.clone(), kp_b.public.to_bytes(), ip_b, addr_b, true)
+            .await;
         pump_until_delivered(&a, &mut rb, &synthetic_ipv4(ip_a, ip_b, b"warm")).await;
         while timeout(Duration::from_millis(200), rb.recv()).await.is_ok() {}
 
@@ -3098,7 +3107,10 @@ mod tests {
             .collect();
         a.send_ip_batch(&burst).await;
         for (i, want) in burst.iter().enumerate() {
-            let got = timeout(Duration::from_secs(2), rb.recv()).await.expect("delivered").unwrap();
+            let got = timeout(Duration::from_secs(2), rb.recv())
+                .await
+                .expect("delivered")
+                .unwrap();
             assert_eq!(&got, want, "packet {i} lost, reordered or altered");
         }
     }
@@ -3124,11 +3136,22 @@ mod tests {
         let n: usize = env("MH_BENCH_PACKETS", "200000").parse().unwrap();
         let size: usize = env("MH_BENCH_SIZE", "1280").parse().unwrap();
         let batch: usize = env("MH_BENCH_BATCH", "1").parse().unwrap();
-        let (bind_a, bind_b) = (env("MH_BENCH_A", "127.0.0.1"), env("MH_BENCH_B", "127.0.0.1"));
+        let (bind_a, bind_b) = (
+            env("MH_BENCH_A", "127.0.0.1"),
+            env("MH_BENCH_B", "127.0.0.1"),
+        );
         let (kp_a, kp_b) = (WgKeypair::generate(), WgKeypair::generate());
         let (plane_a, plane_b) = (CarrierPlane::new(), CarrierPlane::new());
-        let sock_a = Arc::new(tokio::net::UdpSocket::bind(format!("{bind_a}:0")).await.unwrap());
-        let sock_b = Arc::new(tokio::net::UdpSocket::bind(format!("{bind_b}:0")).await.unwrap());
+        let sock_a = Arc::new(
+            tokio::net::UdpSocket::bind(format!("{bind_a}:0"))
+                .await
+                .unwrap(),
+        );
+        let sock_b = Arc::new(
+            tokio::net::UdpSocket::bind(format!("{bind_b}:0"))
+                .await
+                .unwrap(),
+        );
         for s in [&sock_a, &sock_b] {
             super::super::sockbuf::tune_carrier(s, "bench");
         }
@@ -3138,8 +3161,10 @@ mod tests {
         let (mut a, _ra) = engine(&plane_a, &kp_a).await;
         let (mut b, mut rb) = engine(&plane_b, &kp_b).await;
         let (ip_a, ip_b) = (Ipv4Addr::new(100, 65, 9, 1), Ipv4Addr::new(100, 65, 9, 2));
-        b.add_direct_peer(sock_b.clone(), kp_a.public.to_bytes(), ip_a, addr_a, false).await;
-        a.add_direct_peer(sock_a.clone(), kp_b.public.to_bytes(), ip_b, addr_b, true).await;
+        b.add_direct_peer(sock_b.clone(), kp_a.public.to_bytes(), ip_a, addr_a, false)
+            .await;
+        a.add_direct_peer(sock_a.clone(), kp_b.public.to_bytes(), ip_b, addr_b, true)
+            .await;
         let pkt = synthetic_ipv4(ip_a, ip_b, &vec![0x5a; size.saturating_sub(20)]);
         pump_until_delivered(&a, &mut rb, &pkt).await;
         while timeout(Duration::from_millis(200), rb.recv()).await.is_ok() {}

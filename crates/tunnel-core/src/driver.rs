@@ -2422,12 +2422,25 @@ mod tests {
             async fn send(&self, msg: ClientMsg) -> Result<()> {
                 if let ClientMsg::TcpForwardRequest { flow_id, .. } = msg {
                     assert_eq!(flow_id, FLOW);
-                    self.dc.send(&Bytes::from(crate::mux::encode(FLOW, BANNER))).await?;
-                    self.dc.send(&Bytes::from(crate::mux::encode(PROBE, b"prefix-processed"))).await?;
-                    assert_eq!(self.probe.lock().await.recv().await.unwrap().as_ref(), b"prefix-processed");
+                    self.dc
+                        .send(&Bytes::from(crate::mux::encode(FLOW, BANNER)))
+                        .await?;
+                    self.dc
+                        .send(&Bytes::from(crate::mux::encode(PROBE, b"prefix-processed")))
+                        .await?;
+                    assert_eq!(
+                        self.probe.lock().await.recv().await.unwrap().as_ref(),
+                        b"prefix-processed"
+                    );
                     self.ready.lock().await.take().unwrap().send(()).unwrap();
                     self.release.lock().await.take().unwrap().await.unwrap();
-                    self.registry.lock().await.remove(&FLOW).unwrap().send(ForwardReply::Accept { dc_index: INDEX }).unwrap();
+                    self.registry
+                        .lock()
+                        .await
+                        .remove(&FLOW)
+                        .unwrap()
+                        .send(ForwardReply::Accept { dc_index: INDEX })
+                        .unwrap();
                 }
                 Ok(())
             }
@@ -2437,20 +2450,36 @@ mod tests {
         let target_pc = target.peer_connection();
         origin.on_local_ice_candidate(move |candidate| {
             let pc = target_pc.clone();
-            Box::pin(async move { if let Some(candidate) = candidate { let _ = pc.add_ice_candidate(candidate.to_json().unwrap()).await; } })
+            Box::pin(async move {
+                if let Some(candidate) = candidate {
+                    let _ = pc.add_ice_candidate(candidate.to_json().unwrap()).await;
+                }
+            })
         });
         let origin_pc = origin.peer_connection();
         target.on_local_ice_candidate(move |candidate| {
             let pc = origin_pc.clone();
-            Box::pin(async move { if let Some(candidate) = candidate { let _ = pc.add_ice_candidate(candidate.to_json().unwrap()).await; } })
+            Box::pin(async move {
+                if let Some(candidate) = candidate {
+                    let _ = pc.add_ice_candidate(candidate.to_json().unwrap()).await;
+                }
+            })
         });
         let offer = origin.create_offer().await.unwrap();
         let answer = target.accept_offer(&offer.sdp).await.unwrap();
         origin.accept_answer(&answer.sdp).await.unwrap();
-        tokio::time::timeout(Duration::from_secs(15), origin.wait_pool_open()).await.unwrap().unwrap();
-        tokio::time::timeout(Duration::from_secs(15), target.wait_pool_open()).await.unwrap().unwrap();
+        tokio::time::timeout(Duration::from_secs(15), origin.wait_pool_open())
+            .await
+            .unwrap()
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(15), target.wait_pool_open())
+            .await
+            .unwrap()
+            .unwrap();
         let mut demuxes = Vec::new();
-        for idx in 0..origin.pool_size() { demuxes.push(FlowDemux::install(origin.dc(idx).unwrap(), None).await); }
+        for idx in 0..origin.pool_size() {
+            demuxes.push(FlowDemux::install(origin.dc(idx).unwrap(), None).await);
+        }
         let demuxes = Arc::new(demuxes);
         let (probe, _) = demuxes[INDEX as usize].register(PROBE).await;
         let remote = FlowDemux::install(target.dc(INDEX).unwrap(), None).await;
@@ -2462,34 +2491,81 @@ mod tests {
         let kex = tokio::spawn(async move {
             let bytes = client_prefix.recv().await.unwrap();
             assert!(bytes.starts_with(b"SSH-2.0-"));
-            remote_dc.send(&Bytes::from(crate::mux::encode(FLOW, &[0u8; 64]))).await.unwrap();
+            remote_dc
+                .send(&Bytes::from(crate::mux::encode(FLOW, &[0u8; 64])))
+                .await
+                .unwrap();
         });
         let local = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let mut app = tokio::net::TcpStream::connect(local.local_addr().unwrap()).await.unwrap();
+        let mut app = tokio::net::TcpStream::connect(local.local_addr().unwrap())
+            .await
+            .unwrap();
         let (tcp, peer_addr) = local.accept().await.unwrap();
         let registry: ReplyRegistry = Arc::new(Mutex::new(HashMap::new()));
         let (reply_tx, reply_rx) = oneshot::channel();
         registry.lock().await.insert(FLOW, reply_tx);
         let (ready_tx, ready_rx) = oneshot::channel();
         let (release_tx, release_rx) = oneshot::channel();
-        let sink = Arc::new(DelayedAccept { dc: target.dc(INDEX).unwrap(), probe: Mutex::new(probe), ready: Mutex::new(Some(ready_tx)), release: Mutex::new(Some(release_rx)), registry: registry.clone() });
+        let sink = Arc::new(DelayedAccept {
+            dc: target.dc(INDEX).unwrap(),
+            probe: Mutex::new(probe),
+            ready: Mutex::new(Some(ready_tx)),
+            release: Mutex::new(Some(release_rx)),
+            registry: registry.clone(),
+        });
         let cancellation = FlowCanceller::new();
-        let flow = tokio::spawn(handle_local_connection(tcp, peer_addr, FLOW, 0, ObjectId::new(), "embedded-ssh", 22, sink, reply_rx, registry, Arc::new(Mutex::new(HashMap::new())), demuxes.clone(), false, Arc::new(AtomicU32::new(0)), Arc::new(Notify::new()), cancellation.handle()));
-        tokio::time::timeout(Duration::from_secs(5), ready_rx).await.unwrap().unwrap();
+        let flow = tokio::spawn(handle_local_connection(
+            tcp,
+            peer_addr,
+            FLOW,
+            0,
+            ObjectId::new(),
+            "embedded-ssh",
+            22,
+            sink,
+            reply_rx,
+            registry,
+            Arc::new(Mutex::new(HashMap::new())),
+            demuxes.clone(),
+            false,
+            Arc::new(AtomicU32::new(0)),
+            Arc::new(Notify::new()),
+            cancellation.handle(),
+        ));
+        tokio::time::timeout(Duration::from_secs(5), ready_rx)
+            .await
+            .unwrap()
+            .unwrap();
         let mut no_early_release = [0u8; 1];
-        assert_eq!(app.try_read(&mut no_early_release).unwrap_err().kind(), std::io::ErrorKind::WouldBlock, "DC bytes cannot reach TCP before accepted scope");
+        assert_eq!(
+            app.try_read(&mut no_early_release).unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock,
+            "DC bytes cannot reach TCP before accepted scope"
+        );
         release_tx.send(()).unwrap();
-        app.write_all(b"SSH-2.0-regression-client\r\n").await.unwrap();
+        app.write_all(b"SSH-2.0-regression-client\r\n")
+            .await
+            .unwrap();
         let mut received = vec![0u8; BANNER.len()];
-        let received_result = tokio::time::timeout(Duration::from_secs(3), app.read_exact(&mut received)).await;
+        let received_result =
+            tokio::time::timeout(Duration::from_secs(3), app.read_exact(&mut received)).await;
         let kex_result = tokio::time::timeout(Duration::from_secs(3), kex).await;
         cancellation.cancel();
-        let _ = tokio::time::timeout(Duration::from_secs(3), flow).await.unwrap();
+        let _ = tokio::time::timeout(Duration::from_secs(3), flow)
+            .await
+            .unwrap();
         kex_result.unwrap().unwrap();
         origin.close().await;
         target.close().await;
-        assert!(matches!(received_result, Ok(Ok(_))), "SSH prefix did not arrive intact");
-        assert_eq!(received.as_slice(), BANNER, "server-first SSH banner lost before WS Accept; binary KEX exposed");
+        assert!(
+            matches!(received_result, Ok(Ok(_))),
+            "SSH prefix did not arrive intact"
+        );
+        assert_eq!(
+            received.as_slice(),
+            BANNER,
+            "server-first SSH banner lost before WS Accept; binary KEX exposed"
+        );
     }
 
     #[tokio::test]
@@ -2626,7 +2702,8 @@ mod tests {
             dc: Arc<webrtc::data_channel::RTCDataChannel>,
             probe: Mutex<mpsc::Receiver<Bytes>>,
             registry: ReplyRegistry,
-            #[allow(clippy::type_complexity)] // Record the existing close callback fields verbatim.
+            #[allow(clippy::type_complexity)]
+            // Record the existing close callback fields verbatim.
             closed: Mutex<Vec<(ObjectId, u32, CloseReason, u64, u64)>>,
         }
         #[async_trait]
