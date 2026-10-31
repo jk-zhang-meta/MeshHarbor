@@ -555,7 +555,8 @@ async fn handle_derp_socket(state: NetworkState, socket: WebSocket, agent_id: Ob
                         .await
                         .unwrap_or(current);
                     super::overlay::enforce_node_key_revocation_or_expiry(&state, &evicted).await;
-                    super::overlay::order_auto_key_rotate_if_needed(&state, &evicted).await;
+                    super::overlay::order_auto_key_rotate_if_needed(&state, &evicted, "auto_ttl")
+                        .await;
                 }
                 return;
             }

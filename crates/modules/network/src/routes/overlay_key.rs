@@ -455,9 +455,9 @@ pub async fn set_overlay_key_ttl(
             updated = revoked;
         }
         crate::overlay::enforce_node_key_revocation_or_expiry(&state, &updated).await;
-        crate::overlay::order_auto_key_rotate_if_needed(&state, &updated).await;
+        crate::overlay::order_auto_key_rotate_if_needed(&state, &updated, "auto_ttl").await;
     } else if updated.should_pre_rotate_key_at(now) {
-        crate::overlay::order_auto_key_rotate_if_needed(&state, &updated).await;
+        crate::overlay::order_auto_key_rotate_if_needed(&state, &updated, "auto_ttl").await;
     }
 
     Ok(Json(SetKeyTtlResult {

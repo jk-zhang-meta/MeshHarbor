@@ -336,8 +336,19 @@ pub async fn set_policy(
         tenant = %tenant_id, agent = %agent_id, admin = %auth.user_id,
         serve = requested.serve, "peer-relay: device approval changed"
     );
-    crate::overlay::publish_and_refan_tenant_authority(&state, tid, true, "peer_relay_policy")
-        .await;
+    // `peer_relay_policy` does not re-fan `OverlayNetmapDelta` (it only
+    // invalidates mode/eligibility caches and reconciles org-relay ACL), so we
+    // leave `auth_revision` unchanged (`bump_revision = false`) while carrying
+    // `Some(aid)` so other control-plane pods record `note_probe_policy_change`
+    // specifically for this agent.
+    crate::overlay::publish_and_refan_tenant_authority_for_agent(
+        &state,
+        tid,
+        false,
+        "peer_relay_policy",
+        Some(aid),
+    )
+    .await;
     Ok(Json(requested))
 }
 

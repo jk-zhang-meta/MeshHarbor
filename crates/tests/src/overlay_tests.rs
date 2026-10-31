@@ -2667,16 +2667,16 @@ async fn b4_offline_evicted_node_with_expired_ttl_receives_key_rotate_and_rejoin
         .expect("key_rotate request_id")
         .to_string();
 
-    // Verify the audit log recorded `reason: "auto_ttl"` and `dispatch: "pushed"`.
+    // Verify the audit log recorded `reason: "auto_rejoin"` and `dispatch: "pushed"`.
     let audit_doc = app
         .db
         .collection::<bson::Document>("key_rotation_audit")
         .find_one(doc! { "tenant_id": tenant_id, "agent_id": agent_oid, "request_id": &req_id })
         .await
         .unwrap()
-        .expect("audit row for auto_ttl rotation");
+        .expect("audit row for auto_rejoin rotation");
     assert_eq!(audit_doc.get_str("dispatch").ok(), Some("pushed"));
-    assert_eq!(audit_doc.get_str("reason").ok(), Some("auto_ttl"));
+    assert_eq!(audit_doc.get_str("reason").ok(), Some("auto_rejoin"));
 
     // 7. Agent rotates to a fresh key_1 (epoch 1) and rejoins the mesh.
     let key_1 = BASE64.encode([0x42u8; 32]);
@@ -2716,4 +2716,229 @@ async fn b4_offline_evicted_node_with_expired_ttl_receives_key_rotate_and_rejoin
         "new node row preserves the machine's configured key_ttl_secs"
     );
     assert!(new_node.is_key_authorized_at(bson::DateTime::now()));
+}
+
+/// B3 R4 — `apply_policy_sync_ctrl` and `apply_removes_ctrl` must ignore
+/// control messages originating from a different MongoDB database (`"db"`
+/// mismatch), apply messages with a matching `"db"` (or no `"db"` for rolling
+/// upgrade compatibility), record `note_probe_policy_change(agent_id)` only
+/// for the `agent_id` carried in `overlay_policy_sync`, and invalidate
+/// pod-local caches (`invalidate_mode`) even when the tenant has no
+/// `OverlayNetwork` row yet.
+#[tokio::test]
+async fn b3_ctrl_db_isolation_and_targeted_agent_probe_policy_invalidation() {
+    use roomler_ai_mod_network::overlay::{apply_policy_sync_ctrl, apply_removes_ctrl};
+    use serde_json::json;
+
+    let app = TestApp::spawn().await;
+    let seeded = app.seed_tenant("ovb3dbiso").await;
+    let tenant_id = tid(&seeded.tenant_id);
+    let net_state = app.state.network();
+    let db_name = app.db.name().to_string();
+
+    let agent_target = ObjectId::new();
+    let agent_other = ObjectId::new();
+
+    // Prime `mode_cache` on a tenant that has NO `OverlayNetwork` row yet.
+    net_state.org_relay.prime_cached_mode_for_test(tenant_id);
+    assert!(
+        net_state.org_relay.has_cached_mode(tenant_id),
+        "precondition: tenant mode must be cached before policy sync"
+    );
+    assert!(
+        net_state
+            .overlay_networks
+            .find_for_tenant(tenant_id)
+            .await
+            .unwrap()
+            .is_none(),
+        "precondition: no OverlayNetwork row exists yet"
+    );
+
+    // 1. Mismatched `db` on `overlay_policy_sync` must be ignored completely:
+    //    `mode_cache` stays intact and `note_probe_policy_change` is not called.
+    apply_policy_sync_ctrl(
+        net_state,
+        &json!({
+            "evt": "overlay_policy_sync",
+            "db": "foreign_test_db_999",
+            "tenant_id": tenant_id.to_hex(),
+            "agent_id": agent_target.to_hex(),
+            "auth_revision": 2,
+            "reason": "peer_relay_policy",
+        }),
+    )
+    .await;
+    assert!(
+        net_state.org_relay.has_cached_mode(tenant_id),
+        "mismatched db must not invalidate local mode_cache"
+    );
+    assert!(
+        !net_state.org_relay.has_probe_policy_change(agent_target),
+        "mismatched db must not mark probe_policy_at"
+    );
+
+    // 2. Matching `db` on `overlay_policy_sync`:
+    //    - marks `note_probe_policy_change` ONLY for `agent_target` (not `agent_other`);
+    //    - invalidates `mode_cache` even though no `OverlayNetwork` row exists;
+    //    - does NOT create an `OverlayNetwork` row as a side effect.
+    apply_policy_sync_ctrl(
+        net_state,
+        &json!({
+            "evt": "overlay_policy_sync",
+            "db": db_name,
+            "tenant_id": tenant_id.to_hex(),
+            "agent_id": agent_target.to_hex(),
+            "auth_revision": 1,
+            "reason": "peer_relay_policy",
+        }),
+    )
+    .await;
+    assert!(
+        !net_state.org_relay.has_cached_mode(tenant_id),
+        "matching db must invalidate mode_cache even before OverlayNetwork exists"
+    );
+    assert!(
+        net_state.org_relay.has_probe_policy_change(agent_target),
+        "matching db with agent_id must mark probe_policy_at for agent_target"
+    );
+    assert!(
+        !net_state.org_relay.has_probe_policy_change(agent_other),
+        "other agents must not have probe_policy_at marked"
+    );
+    assert!(
+        net_state
+            .overlay_networks
+            .find_for_tenant(tenant_id)
+            .await
+            .unwrap()
+            .is_none(),
+        "apply_policy_sync_ctrl must not create an OverlayNetwork row"
+    );
+
+    // 3. Mismatched `db` on `overlay_removes` must also be a no-op.
+    apply_removes_ctrl(
+        net_state,
+        &json!({
+            "evt": "overlay_removes",
+            "db": "foreign_test_db_999",
+            "tenant_id": tenant_id.to_hex(),
+            "network_id": ObjectId::new().to_hex(),
+            "node_id": ObjectId::new().to_hex(),
+            "epoch": 5,
+            "auth_revision": 2,
+        }),
+    )
+    .await;
+}
+
+/// B3 R4 — `publish_and_refan_tenant_authority_for_agent` with `"peer_relay_policy"`
+/// or `"peer_relay_mode"` must:
+/// 1. Not create an `OverlayNetwork` row when none exists (`"peer_relay_policy"`);
+/// 2. Not bump `auth_revision` when called with `bump_revision = false`
+///    (as `PUT /peer-relay-policy` and `PUT /peer-relay-mode` do);
+/// 3. Skip local netmap refan on the initiating pod (connected overlay peers do
+///    not receive a redundant `rc:overlay.netmap_delta` on `peer_relay_policy`
+///    or `peer_relay_mode`).
+#[tokio::test]
+async fn b3_peer_relay_policy_and_mode_skip_local_refan_and_preserve_auth_revision() {
+    use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+    use futures::{SinkExt, StreamExt};
+    use roomler_ai_mod_network::overlay::publish_and_refan_tenant_authority_for_agent;
+    use serde_json::json;
+    use std::time::Duration;
+    use tokio_tungstenite::tungstenite::Message;
+
+    let app = TestApp::spawn().await;
+    let seeded = app.seed_tenant("ovb3skiprefan").await;
+    let tenant_id = tid(&seeded.tenant_id);
+    let net_state = app.state.network();
+
+    // 1. Before any overlay network exists, `peer_relay_policy` returns 1 and
+    //    does NOT create an `OverlayNetwork` row.
+    let rev_before = publish_and_refan_tenant_authority_for_agent(
+        net_state,
+        tenant_id,
+        false,
+        "peer_relay_policy",
+        Some(ObjectId::new()),
+    )
+    .await;
+    assert_eq!(rev_before, 1);
+    assert!(
+        net_state
+            .overlay_networks
+            .find_for_tenant(tenant_id)
+            .await
+            .unwrap()
+            .is_none(),
+        "peer_relay_policy must not create an OverlayNetwork when none exists"
+    );
+
+    // 2. Join a live node so an `OverlayNetwork` exists and holds a live WS.
+    let (agent_id, token) =
+        crate::agent_presence_tests::enroll(&app, &seeded, "mach-b3-skip-refan").await;
+    let agent_oid = ObjectId::parse_str(&agent_id).unwrap();
+    let mut ws = crate::peer_relay_mint_tests::connect_from(&app, &token, &[], None).await;
+    let join = json!({
+        "t": "rc:overlay.join",
+        "wg_public_key": BASE64.encode([0x51u8; 32]),
+        "key_epoch": 0,
+        "mtu": 1280,
+        "endpoints": ["198.51.100.20:51820"],
+    });
+    ws.send(Message::Text(join.to_string().into()))
+        .await
+        .unwrap();
+    let netmap =
+        crate::peer_relay_mint_tests::recv_t(&mut ws, "rc:overlay.netmap", Duration::from_secs(5))
+            .await
+            .expect("initial netmap");
+    let initial_rev = netmap["network"]["auth_revision"].as_u64().unwrap();
+    assert_eq!(initial_rev, 1);
+
+    // 3. Call `publish_and_refan_tenant_authority_for_agent` for both
+    //    `peer_relay_policy` and `peer_relay_mode` with `bump_revision = false`.
+    let rev_policy = publish_and_refan_tenant_authority_for_agent(
+        net_state,
+        tenant_id,
+        false,
+        "peer_relay_policy",
+        Some(agent_oid),
+    )
+    .await;
+    assert_eq!(
+        rev_policy, initial_rev,
+        "peer_relay_policy must not bump auth_revision"
+    );
+
+    let rev_mode = publish_and_refan_tenant_authority_for_agent(
+        net_state,
+        tenant_id,
+        false,
+        "peer_relay_mode",
+        None,
+    )
+    .await;
+    assert_eq!(
+        rev_mode, initial_rev,
+        "peer_relay_mode must not bump auth_revision"
+    );
+
+    // Verify no `rc:overlay.netmap_delta` was pushed to the local socket.
+    let unexpected = tokio::time::timeout(Duration::from_millis(200), async {
+        while let Some(Ok(Message::Text(txt))) = ws.next().await {
+            if let Ok(v) = serde_json::from_str::<Value>(&txt)
+                && v["t"].as_str() == Some("rc:overlay.netmap_delta")
+            {
+                return Some(v);
+            }
+        }
+        None
+    })
+    .await;
+    assert!(
+        matches!(unexpected, Err(_) | Ok(None)),
+        "peer_relay_policy / peer_relay_mode must not refan local netmap_delta: {unexpected:?}"
+    );
 }

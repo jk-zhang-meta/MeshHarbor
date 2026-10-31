@@ -68,7 +68,9 @@ pub enum NodeIdentity {
 
 impl NodeIdentity {
     pub(crate) fn connection_key(self) -> ObjectId {
-        match self { Self::Agent(id) | Self::TunnelClient(id) => id }
+        match self {
+            Self::Agent(id) | Self::TunnelClient(id) => id,
+        }
     }
 
     pub(crate) fn node_ref(self) -> NodeRef {
@@ -188,11 +190,19 @@ pub async fn relay_overlay_msg_from_node(
             .await;
             None
         }
-        ClientMsg::OverlayOrgRelayFallbackRequest { peer_node_id, request_id } => {
+        ClientMsg::OverlayOrgRelayFallbackRequest {
+            peer_node_id,
+            request_id,
+        } => {
             handle_org_relay_fallback_request(state, ident, peer_node_id, request_id).await;
             None
         }
-        ClientMsg::OverlayOrgRelayLoss { peer_node_id, vni, packets, lost } => {
+        ClientMsg::OverlayOrgRelayLoss {
+            peer_node_id,
+            vni,
+            packets,
+            lost,
+        } => {
             handle_org_relay_loss(state, ident, peer_node_id, vni, packets, lost).await;
             None
         }
@@ -521,7 +531,7 @@ async fn handle_overlay_join(
                 }
                 same_node.node_ref = node_ref.clone();
                 same_node.wg_public_key = wg_public_key.clone();
-                order_auto_key_rotate_if_needed(state, &same_node).await;
+                order_auto_key_rotate_if_needed(state, &same_node, "auto_rejoin").await;
             }
             refuse(
                 OverlayJoinRefusal::KeyUnauthorized,
@@ -595,11 +605,11 @@ async fn handle_overlay_join(
                             .await
                             .unwrap_or(existing);
                         enforce_node_key_revocation_or_expiry(state, &evicted).await;
-                        order_auto_key_rotate_if_needed(state, &evicted).await;
+                        order_auto_key_rotate_if_needed(state, &evicted, "auto_rejoin").await;
                     } else if matches!(&e, DaoError::Forbidden(_)) {
                         let mut target = existing;
                         target.node_ref = node_ref.clone();
-                        order_auto_key_rotate_if_needed(state, &target).await;
+                        order_auto_key_rotate_if_needed(state, &target, "auto_rejoin").await;
                     }
                     let refusal_reason = match &e {
                         DaoError::Forbidden(_) | DaoError::Validation(_) => {
@@ -744,7 +754,9 @@ async fn handle_overlay_join(
     if let Some(id) = self_node.id {
         let previous = state.org_relay.join_extras(id);
         let Some(listener_changed) = state.org_relay.note_join_from_connection(
-            ident.connection_key(), connection_id, id,
+            ident.connection_key(),
+            connection_id,
+            id,
             crate::org_relay::JoinExtras {
                 org_primary,
                 relay_port,
@@ -770,7 +782,9 @@ async fn handle_overlay_join(
         if (previous.supports_backbone_only_v1 && !supports_backbone_only_v1)
             || (previous.relay_backbone_ready && !relay_backbone_ready)
         {
-            withdrawn.extend(crate::org_relay::revoke_line_node_sync(state, tenant_id, id));
+            withdrawn.extend(crate::org_relay::revoke_line_node_sync(
+                state, tenant_id, id,
+            ));
         }
         if listener_changed && let NodeRef::Agent { agent_id } = &self_node.node_ref {
             // The authenticated node withdrew or replaced its actual listener.
@@ -794,7 +808,7 @@ async fn handle_overlay_join(
         .await
     {
         for exp_soon in &expiring_soon {
-            order_auto_key_rotate_if_needed(state, exp_soon).await;
+            order_auto_key_rotate_if_needed(state, exp_soon, "auto_ttl").await;
         }
     }
     if let Ok(expired) = state
@@ -804,7 +818,7 @@ async fn handle_overlay_join(
     {
         for exp_node in &expired {
             enforce_node_key_revocation_or_expiry(state, exp_node).await;
-            order_auto_key_rotate_if_needed(state, exp_node).await;
+            order_auto_key_rotate_if_needed(state, exp_node, "auto_ttl").await;
         }
     }
 
@@ -820,7 +834,10 @@ async fn handle_overlay_join(
         }
     };
     if self_node.id.is_none() || !all.iter().any(|n| n.id == self_node.id) {
-        debug!(?ident, "overlay.join: node was tombstoned during join; aborting fan-out");
+        debug!(
+            ?ident,
+            "overlay.join: node was tombstoned during join; aborting fan-out"
+        );
         return;
     }
 
@@ -895,11 +912,7 @@ async fn handle_overlay_join(
             node = %self_node.name,
             "overlay.join: role approval read failed; withholding degraded full netmap and peer deltas to preserve live peers, scheduling retry"
         );
-        if state
-            .org_relay
-            .live_conn(ident.connection_key())
-            .as_deref()
-            == Some(connection_id)
+        if state.org_relay.live_conn(ident.connection_key()).as_deref() == Some(connection_id)
             && let Some(self_id) = self_node.id
         {
             schedule_join_netmap_retry(state, tenant_id, network_id, self_id);
@@ -1073,7 +1086,8 @@ fn cleanup_join_netmap_retry_slot(
 async fn cancel_join_netmap_retry(tenant_id: ObjectId, self_id: ObjectId) {
     let key = (tenant_id, self_id);
     if let Some(slot) = JOIN_NETMAP_RETRY_SLOTS.get(&key).map(|e| e.value().clone()) {
-        slot.generation.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        slot.generation
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
         let _guard = slot.lock.lock().await;
         drop(_guard);
         cleanup_join_netmap_retry_slot(key, slot);
@@ -1096,7 +1110,10 @@ fn schedule_join_netmap_retry(
             })
         })
         .clone();
-    let my_gen = slot.generation.fetch_add(1, std::sync::atomic::Ordering::AcqRel) + 1;
+    let my_gen = slot
+        .generation
+        .fetch_add(1, std::sync::atomic::Ordering::AcqRel)
+        + 1;
     let retry_state = state.clone();
     tokio::spawn(async move {
         for delay_ms in [200u64, 500, 1000]
@@ -1297,14 +1314,20 @@ async fn try_complete_join_netmap(
             joiner_zone,
             business_isolation::rides_lines(state, peer),
         );
-        let (upserts, removes) =
-            match shape_peer(&acl, &peer_src, &self_node, joiner_ingress, self_reachable, zones) {
-                Some(mut u) => {
-                    stamp_verdict(&mut u, verdict);
-                    (vec![u], vec![])
-                }
-                None => (vec![], vec![self_node.id.unwrap_or_default()]),
-            };
+        let (upserts, removes) = match shape_peer(
+            &acl,
+            &peer_src,
+            &self_node,
+            joiner_ingress,
+            self_reachable,
+            zones,
+        ) {
+            Some(mut u) => {
+                stamp_verdict(&mut u, verdict);
+                (vec![u], vec![])
+            }
+            None => (vec![], vec![self_node.id.unwrap_or_default()]),
+        };
         send_to_node(
             state,
             peer,
@@ -1509,7 +1532,8 @@ pub fn revoke_agent_admission(state: &NetworkState, agent_id: ObjectId) {
             }
         }
         if let Ok(bytes) = BASE64.decode(&node.wg_public_key)
-            && let Ok(key) = <[u8; 32]>::try_from(bytes.as_slice()) {
+            && let Ok(key) = <[u8; 32]>::try_from(bytes.as_slice())
+        {
             state.derp_registry.remove(&(node.network_id, key));
             if let Some(cancel) = state.derp_cancels.get(&(node.network_id, key)) {
                 cancel.notify_one();
@@ -1547,7 +1571,7 @@ pub async fn handle_overlay_leave(state: &NetworkState, ident: NodeIdentity) {
             .await
             .unwrap_or(self_node);
         enforce_node_key_revocation_or_expiry(state, &evicted).await;
-        order_auto_key_rotate_if_needed(state, &evicted).await;
+        order_auto_key_rotate_if_needed(state, &evicted, "auto_ttl").await;
         return;
     }
     let epoch = next_epoch();
@@ -1646,14 +1670,21 @@ async fn handle_org_relay_fallback_request(
     peer_node_id: ObjectId,
     request_id: u64,
 ) {
-    let Some(requester) = current_node(state, ident).await else { return };
-    let Some(requester_id) = requester.id else { return };
+    let Some(requester) = current_node(state, ident).await else {
+        return;
+    };
+    let Some(requester_id) = requester.id else {
+        return;
+    };
     // One bounded key per authenticated requester, distinct from discovery's
     // self-key and every real requester->relay mint key. No arbitrary peer
     // lookup can grow the limiter; retries cannot bypass the mint ceiling.
     // A client queues at most 64 per 60s. Two adjacent batches may arrive
     // inside one server window; keep query admission separate from mint's 30.
-    if !state.relay_rate_limiter.check_bounded(requester_id, ObjectId::from_bytes([0; 12]), 128) {
+    if !state
+        .relay_rate_limiter
+        .check_bounded(requester_id, ObjectId::from_bytes([0; 12]), 128)
+    {
         return;
     }
     let peer = match state.overlay_nodes.base.find_by_id(peer_node_id).await {
@@ -1668,14 +1699,30 @@ async fn handle_org_relay_fallback_request(
         _ => return,
     };
     let pk = pair_key(requester_id, peer_node_id);
-    if org_fallback_forced_derp(state, &pk) { return; }
-    let Ok(acl) = try_load_acl(state, requester.tenant_id, PolicyLoad::Always).await else { return };
+    if org_fallback_forced_derp(state, &pk) {
+        return;
+    }
+    let Ok(acl) = try_load_acl(state, requester.tenant_id, PolicyLoad::Always).await else {
+        return;
+    };
     if acl.enforcing() {
-        let Ok(source) = try_overlay_source_of(state, &requester).await else { return };
+        let Ok(source) = try_overlay_source_of(state, &requester).await else {
+            return;
+        };
         let routes = peer.effective_routes();
-        if !evaluate_overlay(&acl.policies, &source, OverlayPeerRef {
-            node_id: peer_node_id, overlay_ip: &peer.overlay_ip, approved_routes: &routes,
-        }).visible { return; }
+        if !evaluate_overlay(
+            &acl.policies,
+            &source,
+            OverlayPeerRef {
+                node_id: peer_node_id,
+                overlay_ip: &peer.overlay_ip,
+                approved_routes: &routes,
+            },
+        )
+        .visible
+        {
+            return;
+        }
     }
     debug!(requester = %requester_id, peer = %peer_node_id, request_id,
         "org-relay: ORG-only fallback requested");
@@ -1684,7 +1731,10 @@ async fn handle_org_relay_fallback_request(
 
 /// Read-only: ORG queries never consume a TURN grant or clear/refresh its pin.
 pub(crate) fn org_fallback_forced_derp(state: &NetworkState, pk: &str) -> bool {
-    state.relay_pair_churn.get(pk).is_some_and(|pc| forced_active(&pc, Instant::now()))
+    state
+        .relay_pair_churn
+        .get(pk)
+        .is_some_and(|pc| forced_active(&pc, Instant::now()))
 }
 
 /// Mint symmetric coturn creds for a relay leg to `peer_node_id`.
@@ -2209,11 +2259,7 @@ const ORG_LOSS_PIN_TTL: Duration = Duration::from_secs(600);
 pub fn org_loss_fails(packets: u64, lost: u64) -> bool {
     (packets >= ORG_LOSS_MIN_PACKETS
         && lost.min(packets).saturating_mul(100) >= packets.saturating_mul(ORG_LOSS_FAIL_PCT))
-        || tunnel_core::loss::loss_clearly_at_least(
-            packets,
-            lost,
-            ORG_LOSS_FAIL_PCT as f64,
-        )
+        || tunnel_core::loss::loss_clearly_at_least(packets, lost, ORG_LOSS_FAIL_PCT as f64)
 }
 
 /// Pure: pin a pair for an ORG loss verdict. Never shortens a pin already
@@ -2264,9 +2310,16 @@ async fn handle_org_relay_loss(
     packets: u64,
     lost: u64,
 ) {
-    let Some(reporter) = current_node(state, ident).await else { return };
-    let Some(reporter_id) = reporter.id else { return };
-    let loss_pct = format!("{:.1}", lost.min(packets) as f64 * 100.0 / packets.max(1) as f64);
+    let Some(reporter) = current_node(state, ident).await else {
+        return;
+    };
+    let Some(reporter_id) = reporter.id else {
+        return;
+    };
+    let loss_pct = format!(
+        "{:.1}",
+        lost.min(packets) as f64 * 100.0 / packets.max(1) as f64
+    );
     let Some(session) = crate::org_relay::reported_session(state, reporter_id, peer_node_id, vni)
     else {
         debug!(reporter = %reporter_id, peer = %peer_node_id, vni, packets, %loss_pct,
@@ -2341,7 +2394,11 @@ async fn handle_org_relay_loss(
     // revoke that follows then finds its session already gone, and frees
     // the relay's.
     org_loss_pin(
-        state.relay_pair_churn.entry(pk.clone()).or_default().value_mut(),
+        state
+            .relay_pair_churn
+            .entry(pk.clone())
+            .or_default()
+            .value_mut(),
         Instant::now(),
     );
     let derp_url = pair_derp_url(state, &reporter, &peer, &pk);
@@ -2349,7 +2406,14 @@ async fn handle_org_relay_loss(
         relay = derp_url.as_deref().unwrap_or("central"),
         "overlay relay: ORG carrier lossy, pinning the pair to DERP for {}s",
         ORG_LOSS_PIN_TTL.as_secs());
-    push_pair_pin(state, (&reporter, reporter_id), (&peer, peer_node_id), &pk, derp_url).await;
+    push_pair_pin(
+        state,
+        (&reporter, reporter_id),
+        (&peer, peer_node_id),
+        &pk,
+        derp_url,
+    )
+    .await;
     crate::org_relay::revoke_where(state, "org_relay_lossy", |s| {
         s.pair_key == pk && s.vni == session.vni && s.generation == session.generation
     })
@@ -2673,15 +2737,16 @@ pub fn invalidate_tenant_acl_cache(tenant_id: ObjectId) {
 
 /// B3 — re-fan local sockets, rebuild local DERP ACL, and reconcile local
 /// org-relay state for `tenant_id` on this pod.
-pub async fn refan_tenant_authority_local(
-    state: &NetworkState,
-    tenant_id: ObjectId,
-    reason: &str,
-) {
+pub async fn refan_tenant_authority_local(state: &NetworkState, tenant_id: ObjectId, reason: &str) {
+    // Invalidate pod-local org-relay mode and eligibility caches BEFORE
+    // checking whether an `OverlayNetwork` row exists so tenants without an
+    // initialized overlay network still invalidate pod-local caches without
+    // allocating a new `OverlayNetwork` row via `get_or_create`.
+    state.org_relay.invalidate_mode(tenant_id);
+    state.org_relay.invalidate_eligibility();
     let Ok(Some(network)) = state.overlay_networks.find_for_tenant(tenant_id).await else {
         return;
     };
-    let Some(network_id) = network.id else { return };
     // B3 + #18 — Refresh `LAST_GOOD_ACL` in place only when MongoDB succeeds;
     // never evict `LAST_GOOD_ACL` before reading, so a transient MongoDB blip
     // during authority refan preserves the last known-good policy instead of
@@ -2689,8 +2754,7 @@ pub async fn refan_tenant_authority_local(
     if let Ok(fresh_acl) = try_load_acl(state, tenant_id, PolicyLoad::WhenGating).await {
         LAST_GOOD_ACL.insert(tenant_id, fresh_acl);
     }
-    state.org_relay.invalidate_mode(tenant_id);
-    state.org_relay.invalidate_eligibility();
+    let Some(network_id) = network.id else { return };
     let Ok(nodes) = state
         .overlay_nodes
         .list_active_in_network(tenant_id, network_id)
@@ -2732,6 +2796,20 @@ pub async fn publish_and_refan_tenant_authority(
     bump_revision: bool,
     reason: &str,
 ) -> u64 {
+    publish_and_refan_tenant_authority_for_agent(state, tenant_id, bump_revision, reason, None)
+        .await
+}
+
+/// B3 — like [`publish_and_refan_tenant_authority`], with an optional `agent_id`
+/// carried in `overlay_policy_sync` so receiving pods call
+/// `note_probe_policy_change` specifically for that agent.
+pub async fn publish_and_refan_tenant_authority_for_agent(
+    state: &NetworkState,
+    tenant_id: ObjectId,
+    bump_revision: bool,
+    reason: &str,
+    agent_id: Option<ObjectId>,
+) -> u64 {
     if matches!(
         reason,
         "agent_updated" | "member_removed" | "peer_relay_policy"
@@ -2761,17 +2839,18 @@ pub async fn publish_and_refan_tenant_authority(
     if !matches!(reason, "peer_relay_policy" | "peer_relay_mode") {
         refan_tenant_authority_local(state, tenant_id, reason).await;
     }
-    roomler_ai_mod_fleet::ctrl::publish_rc_ctrl(
-        state,
-        "overlay_policy_sync",
-        serde_json::json!({
-            "db": state.core.db.name(),
-            "tenant_id": tenant_id.to_hex(),
-            "auth_revision": auth_revision,
-            "reason": reason,
-        }),
-    )
-    .await;
+    let mut payload = serde_json::json!({
+        "db": state.core.db.name(),
+        "tenant_id": tenant_id.to_hex(),
+        "auth_revision": auth_revision,
+        "reason": reason,
+    });
+    if let Some(aid) = agent_id
+        && let Some(obj) = payload.as_object_mut()
+    {
+        obj.insert("agent_id".to_string(), serde_json::json!(aid.to_hex()));
+    }
+    roomler_ai_mod_fleet::ctrl::publish_rc_ctrl(state, "overlay_policy_sync", payload).await;
     auth_revision
 }
 
@@ -2792,6 +2871,13 @@ pub async fn apply_policy_sync_ctrl(state: &NetworkState, ctrl: &serde_json::Val
     else {
         return;
     };
+    if let Some(aid) = ctrl
+        .get("agent_id")
+        .and_then(|v| v.as_str())
+        .and_then(|s| ObjectId::parse_str(s).ok())
+    {
+        state.org_relay.note_probe_policy_change(aid);
+    }
     let auth_revision = ctrl
         .get("auth_revision")
         .and_then(|v| v.as_u64())
@@ -2915,8 +3001,8 @@ async fn fan_upsert_shaped(
     // delta re-stamping its outgoing edges whenever it is present and
     // U2-capable (verdicts are the only per-edge data its change moves;
     // pre-U2 nodes ignore stamps, so the delta would be pure noise there).
-    let reverse =
-        reachable && (node.supports_server_relay_strategy || iso == business_isolation::Mode::Enforce);
+    let reverse = reachable
+        && (node.supports_server_relay_strategy || iso == business_isolation::Mode::Enforce);
     let (node_recip_src, peer_reach) = if reverse {
         (
             Some(overlay_source_of(state, node).await),
@@ -3323,7 +3409,11 @@ pub async fn enforce_node_key_revocation_or_expiry(state: &NetworkState, node: &
 /// B4 — Ensure an agent node whose key expired or was revoked has an active
 /// `KeyRotationRequest` and receives `ServerMsg::KeyRotate` (rate-bounded by
 /// `should_redeliver` so repeated ticks do not spam duplicate rotation orders).
-pub async fn order_auto_key_rotate_if_needed(state: &NetworkState, node: &OverlayNode) {
+pub async fn order_auto_key_rotate_if_needed(
+    state: &NetworkState,
+    node: &OverlayNode,
+    reason: &str,
+) {
     let NodeRef::Agent { agent_id } = node.node_ref else {
         return;
     };
@@ -3392,7 +3482,7 @@ pub async fn order_auto_key_rotate_if_needed(state: &NetworkState, node: &Overla
             &request_id,
             Some(if delivered { "pushed" } else { "queued" }),
             None,
-            Some("auto_ttl"),
+            Some(reason),
         )
         .await;
 }
@@ -3428,13 +3518,13 @@ pub fn spawn_key_expiry_reaper(state: NetworkState) {
                     .await
                 {
                     for exp_soon in &expiring_soon {
-                        order_auto_key_rotate_if_needed(&state, exp_soon).await;
+                        order_auto_key_rotate_if_needed(&state, exp_soon, "auto_ttl").await;
                     }
                 }
                 if let Ok(expired) = state.overlay_nodes.expire_keys_due(network_id, now).await {
                     for exp_node in &expired {
                         enforce_node_key_revocation_or_expiry(&state, exp_node).await;
-                        order_auto_key_rotate_if_needed(&state, exp_node).await;
+                        order_auto_key_rotate_if_needed(&state, exp_node, "auto_ttl").await;
                     }
                 }
             }
@@ -5208,7 +5298,6 @@ mod tests {
         );
     }
 
-
     /// Pure settings/builder coverage: no state, network, secret read or mint.
     fn overlay_stun_test_settings(
         url: Option<&str>,
@@ -5507,7 +5596,10 @@ mod tests {
         let mut pc = PairChurn::default();
         org_loss_pin(&mut pc, t0);
         assert_eq!(pc.forced_until, Some(t0 + ORG_LOSS_PIN_TTL));
-        assert!(forced_active(&pc, t0 + ORG_LOSS_PIN_TTL - Duration::from_secs(1)));
+        assert!(forced_active(
+            &pc,
+            t0 + ORG_LOSS_PIN_TTL - Duration::from_secs(1)
+        ));
         assert!(
             churn_note_request(&mut pc, t0 + Duration::from_secs(60)),
             "a TURN request inside the pin is re-escalated, not granted"
