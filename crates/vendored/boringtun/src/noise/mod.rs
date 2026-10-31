@@ -286,14 +286,6 @@ impl Tunn {
         self.timers.clear();
     }
 
-    /// Refresh internal timer watermarks to `Instant::now()` after a dormancy
-    /// period during which `update_timers` was suspended, without disturbing
-    /// `handshake.last_handshake_timestamp`, `handshake.params.preshared_key`,
-    /// or any in-flight handshake state.
-    pub fn refresh_timers_after_dormancy(&mut self) {
-        self.timers.clear();
-    }
-
     /// Encapsulate a single packet from the tunnel interface.
     /// Returns TunnResult.
     ///
