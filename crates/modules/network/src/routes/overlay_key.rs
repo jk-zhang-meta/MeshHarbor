@@ -312,13 +312,14 @@ pub async fn revoke_overlay_key(
         let delivered = supports_rotation && existing_req.delivered_at.is_some();
         let _ = state
             .key_rotation_audit
-            .record(
+            .record_with_reason(
                 tid,
                 aid,
                 auth.user_id,
                 &existing_req.request_id,
                 Some(if delivered { "pushed" } else { "queued" }),
                 None,
+                Some("admin_revoke"),
             )
             .await;
         return Ok(Json(RevokeKeyResult {
@@ -365,13 +366,14 @@ pub async fn revoke_overlay_key(
     }
     let _ = state
         .key_rotation_audit
-        .record(
+        .record_with_reason(
             tid,
             aid,
             auth.user_id,
             &request_id,
             Some(if delivered { "pushed" } else { "queued" }),
             None,
+            Some("admin_revoke"),
         )
         .await;
 

@@ -43,6 +43,31 @@ impl KeyRotationAuditDao {
         dispatch: Option<&str>,
         denied: Option<&str>,
     ) -> DaoResult<ObjectId> {
+        self.record_with_reason(
+            tenant_id,
+            agent_id,
+            user_id,
+            request_id,
+            dispatch,
+            denied,
+            Some("manual"),
+        )
+        .await
+    }
+
+    /// Record one decision with an explicit trigger reason (`"manual"`,
+    /// `"auto_ttl"`, `"admin_revoke"`).
+    #[allow(clippy::too_many_arguments)]
+    pub async fn record_with_reason(
+        &self,
+        tenant_id: ObjectId,
+        agent_id: ObjectId,
+        user_id: ObjectId,
+        request_id: &str,
+        dispatch: Option<&str>,
+        denied: Option<&str>,
+        reason: Option<&str>,
+    ) -> DaoResult<ObjectId> {
         let event = KeyRotationAuditEvent {
             id: None,
             tenant_id,
@@ -52,6 +77,7 @@ impl KeyRotationAuditDao {
             request_id: request_id.to_string(),
             dispatch: dispatch.map(|s| s.to_string()),
             denied: denied.map(|s| s.to_string()),
+            reason: reason.map(|s| s.to_string()),
         };
         self.base.insert_one(&event).await
     }

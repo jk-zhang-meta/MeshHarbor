@@ -474,6 +474,26 @@ async fn handle_overlay_join(
         .await
     {
         Ok(true) => {
+            if let Ok(Some(mut same_node)) = state
+                .overlay_nodes
+                .find_same_machine_rejected_key_node(network_id, &machine_id, &wg_public_key)
+                .await
+            {
+                if same_node.deleted_at.is_none()
+                    && !same_node.is_key_authorized_at(bson::DateTime::now())
+                    && let Some(id) = same_node.id
+                {
+                    same_node = state
+                        .overlay_nodes
+                        .revoke_current_key(id, "expired")
+                        .await
+                        .unwrap_or(same_node);
+                    enforce_node_key_revocation_or_expiry(state, &same_node).await;
+                }
+                same_node.node_ref = node_ref.clone();
+                same_node.wg_public_key = wg_public_key.clone();
+                order_auto_key_rotate_if_needed(state, &same_node).await;
+            }
             refuse(
                 OverlayJoinRefusal::KeyUnauthorized,
                 "wg_public_key already held by another node or retired in network".to_string(),
@@ -547,6 +567,10 @@ async fn handle_overlay_join(
                             .unwrap_or(existing);
                         enforce_node_key_revocation_or_expiry(state, &evicted).await;
                         order_auto_key_rotate_if_needed(state, &evicted).await;
+                    } else if matches!(&e, DaoError::Forbidden(_)) {
+                        let mut target = existing;
+                        target.node_ref = node_ref.clone();
+                        order_auto_key_rotate_if_needed(state, &target).await;
                     }
                     let refusal_reason = match &e {
                         DaoError::Forbidden(_) | DaoError::Validation(_) => {
@@ -2785,13 +2809,14 @@ pub async fn order_auto_key_rotate_if_needed(state: &NetworkState, node: &Overla
     }
     let _ = state
         .key_rotation_audit
-        .record(
+        .record_with_reason(
             node.tenant_id,
             agent_id,
             agent.owner_user_id,
             &request_id,
             Some(if delivered { "pushed" } else { "queued" }),
             None,
+            Some("auto_ttl"),
         )
         .await;
 }
