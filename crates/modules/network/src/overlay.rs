@@ -2558,6 +2558,7 @@ pub async fn release_overlay_node(
         state,
         "overlay_removes",
         serde_json::json!({
+            "db": state.core.db.name(),
             "tenant_id": before.tenant_id.to_hex(),
             "network_id": before.network_id.to_hex(),
             "node_id": node_id.to_hex(),
@@ -2606,6 +2607,13 @@ pub async fn release_overlay_node(
 /// ITSELF also hears the delta when its socket is homed here (mirroring the
 /// local path's second send).
 pub async fn apply_removes_ctrl(state: &NetworkState, ctrl: &serde_json::Value) {
+    if ctrl
+        .get("db")
+        .and_then(|v| v.as_str())
+        .is_some_and(|db| db != state.core.db.name())
+    {
+        return;
+    }
     let (Some(tid), Some(net), Some(node_id)) = (
         ctrl.get("tenant_id")
             .and_then(|v| v.as_str())
@@ -2670,6 +2678,10 @@ pub async fn refan_tenant_authority_local(
     tenant_id: ObjectId,
     reason: &str,
 ) {
+    let Ok(Some(network)) = state.overlay_networks.find_for_tenant(tenant_id).await else {
+        return;
+    };
+    let Some(network_id) = network.id else { return };
     // B3 + #18 — Refresh `LAST_GOOD_ACL` in place only when MongoDB succeeds;
     // never evict `LAST_GOOD_ACL` before reading, so a transient MongoDB blip
     // during authority refan preserves the last known-good policy instead of
@@ -2679,10 +2691,6 @@ pub async fn refan_tenant_authority_local(
     }
     state.org_relay.invalidate_mode(tenant_id);
     state.org_relay.invalidate_eligibility();
-    let Ok(network) = state.overlay_networks.get_or_create(tenant_id).await else {
-        return;
-    };
-    let Some(network_id) = network.id else { return };
     let Ok(nodes) = state
         .overlay_nodes
         .list_active_in_network(tenant_id, network_id)
@@ -2690,10 +2698,12 @@ pub async fn refan_tenant_authority_local(
     else {
         return;
     };
-    for n in &nodes {
-        refan_node(state, n).await;
+    if !matches!(reason, "peer_relay_policy" | "peer_relay_mode") {
+        for n in &nodes {
+            refan_node(state, n).await;
+        }
+        crate::derp_acl::rebuild(state, tenant_id, network_id).await;
     }
-    crate::derp_acl::rebuild(state, tenant_id, network_id).await;
     crate::org_relay::reconcile_acl(state, tenant_id).await;
     if matches!(
         reason,
@@ -2722,6 +2732,19 @@ pub async fn publish_and_refan_tenant_authority(
     bump_revision: bool,
     reason: &str,
 ) -> u64 {
+    if matches!(
+        reason,
+        "agent_updated" | "member_removed" | "peer_relay_policy"
+    ) && state
+        .overlay_networks
+        .find_for_tenant(tenant_id)
+        .await
+        .ok()
+        .flatten()
+        .is_none()
+    {
+        return 1;
+    }
     let auth_revision = if bump_revision {
         state
             .overlay_networks
@@ -2735,11 +2758,14 @@ pub async fn publish_and_refan_tenant_authority(
             .await
             .unwrap_or(1)
     };
-    refan_tenant_authority_local(state, tenant_id, reason).await;
+    if !matches!(reason, "peer_relay_policy" | "peer_relay_mode") {
+        refan_tenant_authority_local(state, tenant_id, reason).await;
+    }
     roomler_ai_mod_fleet::ctrl::publish_rc_ctrl(
         state,
         "overlay_policy_sync",
         serde_json::json!({
+            "db": state.core.db.name(),
             "tenant_id": tenant_id.to_hex(),
             "auth_revision": auth_revision,
             "reason": reason,
@@ -2752,6 +2778,13 @@ pub async fn publish_and_refan_tenant_authority(
 /// B3 — apply an `overlay_policy_sync` control event received from another
 /// pod on the cluster Redis channel.
 pub async fn apply_policy_sync_ctrl(state: &NetworkState, ctrl: &serde_json::Value) {
+    if ctrl
+        .get("db")
+        .and_then(|v| v.as_str())
+        .is_some_and(|db| db != state.core.db.name())
+    {
+        return;
+    }
     let Some(tid) = ctrl
         .get("tenant_id")
         .and_then(|v| v.as_str())
