@@ -834,7 +834,10 @@ cryptographic session (`leg_id = 0` primary carrier + up to `MAX_MULTIPATH_LEGS 
 secondary legs):
 
 * **`MultipathMode::Off` (default)** — single primary carrier; `is_active()` is a
-  single `Relaxed` atomic load that short-circuits on the hot path.
+  single `Relaxed` atomic load that stays `false` whenever `mode == Off` or no
+  healthy secondary leg is attached (and no parked reorder packets remain),
+  short-circuiting on both TX and RX hot paths with zero lock, clock, or
+  reorder-buffer overhead.
 * **`MultipathMode::ActiveStandby` (主备切换)** — sends on `leg_id = 0` while
   `!primary.is_dead() && primary_healthy`; switches in `O(1)` on the very next
   packet to the highest-priority (`priority`, then `weight`, then `leg_id`)
@@ -859,10 +862,12 @@ secondary legs):
   places authenticated, ingress-permitted packets into a bounded per-session
   `BTreeMap<u64, BufferedPacket>` (`max_reorder_depth`, default `64`;
   `reorder_hold_timeout`, default `25 ms`) and releases packets in strict
-  ascending WireGuard `counter` order. Authenticated Type-4 empty keepalives
-  advance `expected_next_counter` so keepalives never create a phantom gap, and
-  `spawn_reorder_flush_task` wakes on `Notify` to flush parked tail packets if
-  an earlier packet is genuinely lost.
+  ascending WireGuard `counter` order. Authenticated Type-4 empty keepalives and
+  F2 standby-decapsulated packets advance `expected_next_counter` so neither
+  creates a phantom gap, and `ensure_reorder_flush_task` lazily spawns a
+  `Weak<PeerMultipathState>` timer task (only when `Aggregate` mode is active
+  with a secondary leg) that wakes on `Notify` to flush parked tail packets on
+  timeout and exits cleanly when the peer is dropped.
 
 ---
 
