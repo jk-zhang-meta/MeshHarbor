@@ -463,8 +463,11 @@ pub async fn plan(
         native_checks(state, tenant_id, id, agent, spec, &mut checks).await;
     }
 
+    let mode = business_isolation::mode(state);
+    let topo = business_isolation::lines(state, mode, tenant_id).await;
+
     let path = match (ingress, ingress_agent.as_ref()) {
-        (Some(id), Some(_)) => overlay_path(state, tenant_id, id, spec, &mut checks).await,
+        (Some(id), Some(_)) => overlay_path(state, tenant_id, id, spec, &topo, &mut checks).await,
         _ => None,
     };
 
@@ -487,7 +490,6 @@ pub async fn plan(
     );
 
     // Hard regional isolation over ingress and destination.
-    let mode = business_isolation::mode(state);
     if mode == Mode::Off {
         check(
             &mut checks,
@@ -495,9 +497,16 @@ pub async fn plan(
             Verdict::Pass,
             "business_isolation is off",
         );
+    } else if topo.roles_read_failed && mode == Mode::Enforce {
+        check(
+            &mut checks,
+            "region",
+            Verdict::Unknown,
+            "role approvals are unreadable",
+        );
     } else {
         // Two servers meet by their topology link, any other pair by one zone
-        // (`business_isolation::permit_refs`).
+        // (`business_isolation::permit_refs_with_lines`).
         let ingress_ref = ingress.map(|agent_id| NodeRef::Agent { agent_id });
         let dest_ref = match (spec.dest_agent_id.as_deref(), &path) {
             (Some(d), _) => oid(d).map(|agent_id| NodeRef::Agent { agent_id }),
@@ -508,7 +517,8 @@ pub async fn plan(
         };
         let permit = match (&ingress_ref, &dest_ref) {
             (Some(a), Some(b)) => {
-                business_isolation::permit_refs(state, mode, tenant_id, a, b).await
+                business_isolation::permit_refs_with_lines(state, mode, &topo, tenant_id, a, b)
+                    .await
             }
             _ => business_isolation::Permit::Denied,
         };
@@ -594,6 +604,7 @@ async fn overlay_path(
     tenant_id: ObjectId,
     ingress_agent: ObjectId,
     spec: &ForwardSpec,
+    topo: &business_isolation::Lines,
     checks: &mut Vec<Check>,
 ) -> Option<roomler_ai_remote_control::models::OverlayNode> {
     use roomler_ai_remote_control::models::{OverlayAclMode, OverlayNode};
@@ -684,7 +695,17 @@ async fn overlay_path(
         Verdict::Pass,
         format!("dialled through the ingress's overlay: {where_}"),
     );
-    source_region(state, tenant_id, &nodes, &ingress, &dest_node, spec, checks).await;
+    source_region(
+        state,
+        tenant_id,
+        &nodes,
+        &ingress,
+        &dest_node,
+        spec,
+        topo,
+        checks,
+    )
+    .await;
 
     let acl =
         match crate::overlay::try_load_acl(state, tenant_id, crate::overlay::PolicyLoad::Always)
@@ -811,6 +832,7 @@ async fn overlay_path(
 /// The destination sees the ingress, so a source the rule keeps from the
 /// destination (another zone, no server link) is refused here as the ingress
 /// itself is by "region", whatever the overlay ACL's mode.
+#[allow(clippy::too_many_arguments)]
 async fn source_region(
     state: &NetworkState,
     tenant_id: ObjectId,
@@ -818,10 +840,20 @@ async fn source_region(
     ingress: &roomler_ai_remote_control::models::OverlayNode,
     dest_node: &roomler_ai_remote_control::models::OverlayNode,
     spec: &ForwardSpec,
+    topo: &business_isolation::Lines,
     checks: &mut Vec<Check>,
 ) {
     let mode = business_isolation::mode(state);
     if mode == Mode::Off {
+        return;
+    }
+    if topo.roles_read_failed && mode == Mode::Enforce {
+        check(
+            checks,
+            "source region",
+            Verdict::Unknown,
+            "role approvals are unreadable",
+        );
         return;
     }
     let sources: Vec<(IpAddr, u8)> = spec.sources.iter().filter_map(|s| parse_cidr(s)).collect();
@@ -836,9 +868,10 @@ async fn source_region(
         if !sources.iter().any(|c| in_net(ip, *c)) {
             continue;
         }
-        let permit = business_isolation::permit_refs(
+        let permit = business_isolation::permit_refs_with_lines(
             state,
             mode,
+            topo,
             tenant_id,
             &n.node_ref,
             &dest_node.node_ref,
@@ -1131,26 +1164,99 @@ pub async fn audit(
     }
 }
 
+/// Re-evaluate and push every ingress agent's managed forwards in `tenant_id`.
+/// Returns `false` if a transient storage/role read failure prevented a
+/// complete evaluation so the caller can retry without withdrawing active forwards.
+pub async fn reconcile_tenant_forwards(state: &NetworkState, tenant_id: ObjectId) -> bool {
+    let Ok(forwards) = list(state, tenant_id).await else {
+        return false;
+    };
+    let mut ingresses = std::collections::BTreeSet::new();
+    for f in forwards {
+        if let Ok(id) = ObjectId::parse_str(f.spec.ingress_agent_id.trim()) {
+            ingresses.insert(id);
+        }
+    }
+    let mut ok = true;
+    for ingress_id in ingresses {
+        if !push_to_checked(state, tenant_id, ingress_id).await {
+            ok = false;
+        }
+    }
+    ok
+}
+
 /// Push `agent_id` the whole set it should run, when it is online and
 /// advertises [`RpcCap::ManagedForward`]. The hard region gate is checked
 /// again at every push: a zone that changed since the forward was planned
 /// withdraws it (fails closed under `enforce`).
+static PUSH_TO_RETRY_GEN: std::sync::LazyLock<
+    dashmap::DashMap<(ObjectId, ObjectId), std::sync::Arc<std::sync::atomic::AtomicU64>>,
+> = std::sync::LazyLock::new(dashmap::DashMap::new);
+
+fn cleanup_push_to_retry_gen(
+    key: (ObjectId, ObjectId),
+    cell: std::sync::Arc<std::sync::atomic::AtomicU64>,
+) {
+    drop(cell);
+    PUSH_TO_RETRY_GEN.remove_if(&key, |_, existing| {
+        std::sync::Arc::strong_count(existing) == 1
+    });
+}
+
 pub async fn push_to(state: &NetworkState, tenant_id: ObjectId, agent_id: ObjectId) {
-    let Ok(agent) = state
+    let key = (tenant_id, agent_id);
+    let cell = PUSH_TO_RETRY_GEN
+        .entry(key)
+        .or_insert_with(|| std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)))
+        .clone();
+    let my_gen = cell.fetch_add(1, std::sync::atomic::Ordering::AcqRel) + 1;
+    if !push_to_checked(state, tenant_id, agent_id).await {
+        let retry_state = state.clone();
+        tokio::spawn(async move {
+            for delay_ms in [200u64, 500, 1000]
+                .into_iter()
+                .chain(std::iter::repeat(2000u64))
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                if cell.load(std::sync::atomic::Ordering::Acquire) != my_gen {
+                    cleanup_push_to_retry_gen(key, cell);
+                    return;
+                }
+                if push_to_checked(&retry_state, tenant_id, agent_id).await {
+                    tracing::info!(
+                        %tenant_id,
+                        %agent_id,
+                        "managed forward: push_to succeeded on retry"
+                    );
+                    cleanup_push_to_retry_gen(key, cell);
+                    return;
+                }
+            }
+        });
+    } else {
+        cleanup_push_to_retry_gen(key, cell);
+    }
+}
+
+async fn push_to_checked(state: &NetworkState, tenant_id: ObjectId, agent_id: ObjectId) -> bool {
+    let agent = match state
         .fleet
         .agents
         .find_live_in_tenant(tenant_id, agent_id)
         .await
-    else {
-        return;
+    {
+        Ok(agent) => agent,
+        Err(roomler_ai_services::dao::base::DaoError::NotFound) => return true,
+        Err(_) => return false,
     };
     if !agent.capabilities.has_rpc(RpcCap::ManagedForward)
         || !state.fleet.rc_hub.is_agent_online(agent_id)
     {
-        return;
+        return true;
     }
     let Ok(all) = list(state, tenant_id).await else {
-        return;
+        return false;
     };
     let (hex, now) = (agent_id.to_hex(), DateTime::now().timestamp_millis());
     let mut forwards = Vec::new();
@@ -1160,6 +1266,19 @@ pub async fn push_to(state: &NetworkState, tenant_id: ObjectId, agent_id: Object
             && f.spec.expires_at_ms.is_none_or(|e| e > now)
     }) {
         let p = plan(state, tenant_id, &f.spec, Some(f.id)).await;
+        if let Some(c) = p.checks.iter().find(|c| {
+            matches!(
+                c.name,
+                "region" | "overlay acl" | "source principals" | "source region"
+            ) && c.verdict == Verdict::Unknown
+        }) {
+            tracing::warn!(
+                forward = %f.id,
+                check = c.name,
+                "managed forward: gate unreadable at push; keeping existing forwards and retrying"
+            );
+            return false;
+        }
         // The gates a later change can close: zones, the native backend's
         // capability, and the overlay ACL (a policy edit withdraws a forward
         // that would now carry someone past it).
@@ -1193,6 +1312,7 @@ pub async fn push_to(state: &NetworkState, tenant_id: ObjectId, agent_id: Object
     {
         tracing::debug!(%agent_id, %e, "managed forward: push failed");
     }
+    true
 }
 
 /// Record the agent's ack. Each entry lands only on a forward of THIS

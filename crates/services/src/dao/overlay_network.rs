@@ -99,7 +99,25 @@ impl OverlayNetworkDao {
     /// CIDR/MTU on first use. Race-safe via the `(tenant_id)` unique
     /// index: a losing concurrent insert re-reads the winner's row.
     pub async fn get_or_create(&self, tenant_id: ObjectId) -> DaoResult<OverlayNetwork> {
-        if let Some(net) = self.base.find_one(doc! { "tenant_id": tenant_id }).await? {
+        if let Some(mut net) = self.base.find_one(doc! { "tenant_id": tenant_id }).await? {
+            if net.auth_revision == 0 {
+                if let Some(id) = net.id {
+                    let _ = self
+                        .base
+                        .update_one(
+                            doc! {
+                                "_id": id,
+                                "$or": [
+                                    { "auth_revision": { "$exists": false } },
+                                    { "auth_revision": { "$lt": 1i64 } },
+                                ],
+                            },
+                            doc! { "$set": { "auth_revision": 1i64 } },
+                        )
+                        .await;
+                }
+                net.auth_revision = 1;
+            }
             return self.ensure_block(net).await;
         }
         let now = DateTime::now();
@@ -116,6 +134,7 @@ impl OverlayNetworkDao {
             acl_mode: OverlayAclMode::default(),
             peer_relay_mode: Default::default(),
             server_links: Vec::new(),
+            auth_revision: 1,
             created_at: now,
             updated_at: now,
         };
@@ -260,6 +279,7 @@ impl OverlayNetworkDao {
             )
             .await?;
         let Some(enabled) = enabled else {
+            self.bump_auth_revision(tenant_id).await?;
             return Ok(true);
         };
         self.base
@@ -267,10 +287,36 @@ impl OverlayNetworkDao {
                 doc! { "tenant_id": tenant_id },
                 doc! {
                     "$push": { "server_links": { "a": a, "b": b, "enabled": enabled } },
+                    "$inc": { "auth_revision": 1i64 },
                     "$set": { "updated_at": DateTime::now() },
                 },
             )
             .await
+    }
+
+    /// B3 — atomically increment and return the tenant's `auth_revision`.
+    pub async fn bump_auth_revision(&self, tenant_id: ObjectId) -> DaoResult<u64> {
+        self.get_or_create(tenant_id).await?;
+        let updated = self
+            .base
+            .collection()
+            .find_one_and_update(
+                doc! { "tenant_id": tenant_id },
+                doc! {
+                    "$inc": { "auth_revision": 1i64 },
+                    "$set": { "updated_at": DateTime::now() },
+                },
+            )
+            .return_document(ReturnDocument::After)
+            .await?
+            .ok_or(DaoError::NotFound)?;
+        Ok(updated.auth_revision.max(1))
+    }
+
+    /// B3 — read the tenant's current `auth_revision` (1 for a fresh network).
+    pub async fn current_auth_revision(&self, tenant_id: ObjectId) -> DaoResult<u64> {
+        let net = self.get_or_create(tenant_id).await?;
+        Ok(net.auth_revision.max(1))
     }
 
     pub async fn set_acl_mode(&self, tenant_id: ObjectId, mode: OverlayAclMode) -> DaoResult<bool> {
@@ -278,10 +324,13 @@ impl OverlayNetworkDao {
         self.base
             .update_one(
                 doc! { "tenant_id": tenant_id },
-                doc! { "$set": {
-                    "acl_mode": bson::to_bson(&mode).unwrap_or(bson::Bson::Null),
-                    "updated_at": DateTime::now(),
-                }},
+                doc! {
+                    "$set": {
+                        "acl_mode": bson::to_bson(&mode).unwrap_or(bson::Bson::Null),
+                        "updated_at": DateTime::now(),
+                    },
+                    "$inc": { "auth_revision": 1i64 },
+                },
             )
             .await
     }
@@ -358,10 +407,13 @@ impl OverlayNetworkDao {
         self.base
             .update_one(
                 doc! { "tenant_id": tenant_id },
-                doc! { "$set": {
-                    "peer_relay_mode": bson::to_bson(&mode).unwrap_or(bson::Bson::Null),
-                    "updated_at": DateTime::now(),
-                }},
+                doc! {
+                    "$set": {
+                        "peer_relay_mode": bson::to_bson(&mode).unwrap_or(bson::Bson::Null),
+                        "updated_at": DateTime::now(),
+                    },
+                    "$inc": { "auth_revision": 1i64 },
+                },
             )
             .await
     }

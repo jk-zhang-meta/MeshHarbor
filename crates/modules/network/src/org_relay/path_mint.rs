@@ -95,6 +95,7 @@ pub(super) async fn mint(
         .find_by_id(b)
         .await
         .map_err(|_| Deny::PolicyUnreadable)?;
+    let now_dt = bson::DateTime::now();
     if fresh_a.node_ref != requester.node_ref
         || fresh_b.node_ref != peer.node_ref
         || fresh_a.wg_public_key != requester.wg_public_key
@@ -103,6 +104,8 @@ pub(super) async fn mint(
         || fresh_b.tenant_id != peer.tenant_id
         || fresh_a.network_id != requester.network_id
         || fresh_b.network_id != peer.network_id
+        || !fresh_a.is_key_authorized_at(now_dt)
+        || !fresh_b.is_key_authorized_at(now_dt)
     {
         return Err(Deny::PolicyUnreadable);
     }
@@ -486,7 +489,9 @@ pub(super) async fn reauthorize(
     }
     match super::session_zone::check(state, session).await {
         super::session_zone::Decision::Fits => {}
-        super::session_zone::Decision::Uncertain => return Err(ReauthorizationError::Unavailable),
+        super::session_zone::Decision::Uncertain { .. } => {
+            return Err(ReauthorizationError::Unavailable);
+        }
         super::session_zone::Decision::Invalid => return Err(ReauthorizationError::Denied),
     }
     let fresh_a = state
@@ -501,12 +506,14 @@ pub(super) async fn reauthorize(
         .find_by_id(b)
         .await
         .map_err(|_| ReauthorizationError::Unavailable)?;
+    let now_dt = bson::DateTime::now();
     for (old, fresh) in [(requester, &fresh_a), (peer, &fresh_b)] {
         if fresh.id != old.id
             || fresh.node_ref != old.node_ref
             || fresh.wg_public_key != old.wg_public_key
             || fresh.tenant_id != old.tenant_id
             || fresh.network_id != old.network_id
+            || !fresh.is_key_authorized_at(now_dt)
         {
             return Err(ReauthorizationError::Denied);
         }

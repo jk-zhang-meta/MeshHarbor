@@ -330,7 +330,36 @@ pub async fn relay_overlay_msg_from_node(
             .await;
             None
         }
+        ClientMsg::OverlayNetmapAck {
+            epoch,
+            auth_revision,
+        } => {
+            handle_overlay_netmap_ack(state, ident, epoch, auth_revision).await;
+            None
+        }
         other => Some(other),
+    }
+}
+
+/// B3 — record a node's monotonic acknowledgement of the netmap epoch and
+/// tenant `auth_revision` it has applied locally.
+async fn handle_overlay_netmap_ack(
+    state: &NetworkState,
+    ident: NodeIdentity,
+    epoch: u64,
+    auth_revision: u64,
+) {
+    let Some(self_node) = current_node(state, ident).await else {
+        debug!(?ident, "overlay.netmap_ack before join; ignoring");
+        return;
+    };
+    let Some(node_id) = self_node.id else { return };
+    if let Err(e) = state
+        .overlay_nodes
+        .record_applied_auth_revision(node_id, epoch, auth_revision)
+        .await
+    {
+        warn!(%node_id, epoch, auth_revision, %e, "overlay: failed to persist netmap_ack");
     }
 }
 
@@ -474,9 +503,34 @@ async fn handle_overlay_join(
         .await
     {
         Ok(true) => {
+            if let Ok(Some(mut same_node)) = state
+                .overlay_nodes
+                .find_same_machine_rejected_key_node(network_id, &machine_id, &wg_public_key)
+                .await
+            {
+                if same_node.deleted_at.is_none()
+                    && !same_node.is_key_authorized_at(bson::DateTime::now())
+                    && let Some(id) = same_node.id
+                {
+                    same_node = state
+                        .overlay_nodes
+                        .revoke_current_key(id, "expired")
+                        .await
+                        .unwrap_or(same_node);
+                    enforce_node_key_revocation_or_expiry(state, &same_node).await;
+                }
+                same_node.node_ref = node_ref.clone();
+                same_node.wg_public_key = wg_public_key.clone();
+                order_auto_key_rotate_if_needed(state, &same_node).await;
+            }
+            refuse(
+                OverlayJoinRefusal::KeyUnauthorized,
+                "wg_public_key already held by another node or retired in network".to_string(),
+            )
+            .await;
             warn!(
                 %tenant_id, %machine_id,
-                "overlay.join: refused — wg_public_key already held by another live node"
+                "overlay.join: refused — wg_public_key already held by another node or retired in network"
             );
             return;
         }
@@ -503,6 +557,7 @@ async fn handle_overlay_join(
             } else {
                 existing.name.clone()
             };
+            let prev_wg_key = existing.wg_public_key.clone();
             match state
                 .overlay_nodes
                 .rehydrate(
@@ -525,8 +580,34 @@ async fn handle_overlay_join(
                 )
                 .await
             {
-                Ok(n) => n,
+                Ok(n) => {
+                    if prev_wg_key != n.wg_public_key {
+                        super::derp::evict_pubkey(state, network_id, &prev_wg_key);
+                        crate::org_relay::revoke_node(state, id, "key_rotated").await;
+                    }
+                    n
+                }
                 Err(e) => {
+                    if !existing.is_key_authorized_at(bson::DateTime::now()) {
+                        let evicted = state
+                            .overlay_nodes
+                            .revoke_current_key(id, "expired")
+                            .await
+                            .unwrap_or(existing);
+                        enforce_node_key_revocation_or_expiry(state, &evicted).await;
+                        order_auto_key_rotate_if_needed(state, &evicted).await;
+                    } else if matches!(&e, DaoError::Forbidden(_)) {
+                        let mut target = existing;
+                        target.node_ref = node_ref.clone();
+                        order_auto_key_rotate_if_needed(state, &target).await;
+                    }
+                    let refusal_reason = match &e {
+                        DaoError::Forbidden(_) | DaoError::Validation(_) => {
+                            OverlayJoinRefusal::KeyUnauthorized
+                        }
+                        _ => OverlayJoinRefusal::StoreUnavailable,
+                    };
+                    refuse(refusal_reason, format!("{e}")).await;
                     warn!(%tenant_id, %e, "overlay.join: rehydrate failed");
                     return;
                 }
@@ -706,6 +787,27 @@ async fn handle_overlay_join(
         }
     }
 
+    let sweep_now = bson::DateTime::now();
+    if let Ok(expiring_soon) = state
+        .overlay_nodes
+        .list_keys_expiring_soon(network_id, sweep_now)
+        .await
+    {
+        for exp_soon in &expiring_soon {
+            order_auto_key_rotate_if_needed(state, exp_soon).await;
+        }
+    }
+    if let Ok(expired) = state
+        .overlay_nodes
+        .expire_keys_due(network_id, sweep_now)
+        .await
+    {
+        for exp_node in &expired {
+            enforce_node_key_revocation_or_expiry(state, exp_node).await;
+            order_auto_key_rotate_if_needed(state, exp_node).await;
+        }
+    }
+
     let all = match state
         .overlay_nodes
         .list_active_in_network(tenant_id, network_id)
@@ -717,8 +819,11 @@ async fn handle_overlay_join(
             return;
         }
     };
+    if self_node.id.is_none() || !all.iter().any(|n| n.id == self_node.id) {
+        debug!(?ident, "overlay.join: node was tombstoned during join; aborting fan-out");
+        return;
+    }
 
-    let epoch = next_epoch();
     // P9 — presence: ghost rows (clean-leave Offline, or an agent whose
     // heartbeat went stale) ship `reachable = false` in the FULL netmap
     // instead of resurrecting as dialable peers on every rejoin.
@@ -751,7 +856,7 @@ async fn handle_overlay_join(
         acl,
         self_src: joiner_src,
         peers,
-    } = shape_full_netmap(state, &self_node, &all, &reach).await;
+    } = shape_full_netmap_with_lines(state, &self_node, &all, &reach, Some(&lines)).await;
 
     // FR-40 — stamp what this device PRESENTED, as verified above, onto its
     // agent row: the server's own record of the device's current overlay
@@ -778,6 +883,35 @@ async fn handle_overlay_join(
         });
     }
 
+    if let Some(id) = self_node.id {
+        state.admission_nodes.insert(id, self_node.clone());
+        // Before the netmap, so the node's first requests already count afresh.
+        forget_restarted_grants(state, id, instance.as_deref());
+    }
+
+    if lines.roles_read_failed && iso == business_isolation::Mode::Enforce {
+        warn!(
+            tenant_id = %self_node.tenant_id,
+            node = %self_node.name,
+            "overlay.join: role approval read failed; withholding degraded full netmap and peer deltas to preserve live peers, scheduling retry"
+        );
+        if state
+            .org_relay
+            .live_conn(ident.connection_key())
+            .as_deref()
+            == Some(connection_id)
+            && let Some(self_id) = self_node.id
+        {
+            schedule_join_netmap_retry(state, tenant_id, network_id, self_id);
+        }
+        repush_forced_pairs_on_join(state, &self_node).await;
+        return;
+    }
+
+    if let Some(self_id) = self_node.id {
+        cancel_join_netmap_retry(tenant_id, self_id).await;
+    }
+
     // Overlay ACL — refresh the DERP relay allow table off the join path. A
     // join is when a NEW pubkey can enter the network, and the table is keyed by
     // pubkey, so it would otherwise stay stale (fail-open) for that node until
@@ -785,10 +919,7 @@ async fn handle_overlay_join(
     // not wait on that to get its netmap. #21 enforce needs the table for its
     // zones even when the ACL is off.
     if acl.gating() || iso == business_isolation::Mode::Enforce {
-        let st = state.clone();
-        tokio::spawn(async move {
-            super::derp_acl::rebuild(&st, tenant_id, network_id).await;
-        });
+        schedule_derp_acl_rebuild(state, tenant_id, network_id);
     }
 
     // Phase 2 MagicDNS — carry the tenant's DNS suffix + upstreams so the node
@@ -809,12 +940,7 @@ async fn handle_overlay_join(
     // near it, and a node that grew the space during its own join would hold a
     // list captured before the block it caused.
     let join_blocks = state.overlay_networks.block_list(&network).await;
-
-    if let Some(id) = self_node.id {
-        state.admission_nodes.insert(id, self_node.clone());
-        // Before the netmap, so the node's first requests already count afresh.
-        forget_restarted_grants(state, id, instance.as_deref());
-    }
+    let epoch = next_epoch();
 
     // Full netmap → joiner.
     send_to_node(
@@ -855,9 +981,19 @@ async fn handle_overlay_join(
                 // coturn workers (a `turn:host:port` UDP listener also answers
                 // STUN Binding). Empty when TURN is unconfigured → srflx inert.
                 stun_urls: stun_urls_from_turn(state),
-                relay_probe_targets: crate::org_relay::probe_targets(state, &self_node).await,
-                backbone_probe_targets: crate::org_relay::backbone_probe_targets(state, &self_node)
-                    .await,
+                relay_probe_targets: crate::org_relay::probe_targets(
+                    state,
+                    &self_node,
+                    Some(&lines),
+                )
+                .await,
+                backbone_probe_targets: crate::org_relay::backbone_probe_targets(
+                    state,
+                    &self_node,
+                    Some(&lines),
+                )
+                .await,
+                auth_revision: network.auth_revision.max(1),
             },
             peers,
             epoch,
@@ -865,6 +1001,7 @@ async fn handle_overlay_join(
     )
     .await;
 
+    let auth_revision = network.auth_revision.max(1);
     // Upsert delta → every peer, shaped PER RECIPIENT. The joiner is live by
     // construction. A recipient that may not see the joiner gets an explicit
     // `removes` rather than mere omission: omitting a peer (or shipping
@@ -877,14 +1014,14 @@ async fn handle_overlay_join(
         // U2 — this recipient's edge is `peer → self_node` (the joiner).
         let verdict = server_relay_verdict(state, peer, &self_node);
         let recipient_zone = business_isolation::zone_of(state, iso, peer).await;
-        let zones = Zones {
-            mode: iso,
-            recipient: recipient_zone,
-            peer: joiner_zone,
-            line: lines.connects(recipient_zone, joiner_zone)
-                && business_isolation::rides_lines(state, peer),
-            servers: lines.server_pair(peer, &self_node),
-        };
+        let zones = lines.zones_for(
+            iso,
+            peer,
+            recipient_zone,
+            &self_node,
+            joiner_zone,
+            business_isolation::rides_lines(state, peer),
+        );
         let (upserts, removes) =
             match shape_peer(&acl, &peer_src, &self_node, joiner_ingress, true, zones) {
                 Some(mut u) => {
@@ -898,6 +1035,7 @@ async fn handle_overlay_join(
             peer,
             ServerMsg::OverlayNetmapDelta {
                 epoch,
+                auth_revision,
                 upserts,
                 removes,
             },
@@ -911,6 +1049,276 @@ async fn handle_overlay_join(
     // the ONLY re-delivery path a single-relay DIALER has — it never sends a
     // relay_request, so it can't pick the pin back up reactively.
     repush_forced_pairs_on_join(state, &self_node).await;
+}
+
+struct JoinNetmapRetrySlot {
+    generation: std::sync::atomic::AtomicU64,
+    lock: tokio::sync::Mutex<()>,
+}
+
+static JOIN_NETMAP_RETRY_SLOTS: std::sync::LazyLock<
+    dashmap::DashMap<(ObjectId, ObjectId), std::sync::Arc<JoinNetmapRetrySlot>>,
+> = std::sync::LazyLock::new(dashmap::DashMap::new);
+
+fn cleanup_join_netmap_retry_slot(
+    key: (ObjectId, ObjectId),
+    slot: std::sync::Arc<JoinNetmapRetrySlot>,
+) {
+    drop(slot);
+    JOIN_NETMAP_RETRY_SLOTS.remove_if(&key, |_, existing| {
+        std::sync::Arc::strong_count(existing) == 1
+    });
+}
+
+async fn cancel_join_netmap_retry(tenant_id: ObjectId, self_id: ObjectId) {
+    let key = (tenant_id, self_id);
+    if let Some(slot) = JOIN_NETMAP_RETRY_SLOTS.get(&key).map(|e| e.value().clone()) {
+        slot.generation.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        let _guard = slot.lock.lock().await;
+        drop(_guard);
+        cleanup_join_netmap_retry_slot(key, slot);
+    }
+}
+
+fn schedule_join_netmap_retry(
+    state: &NetworkState,
+    tenant_id: ObjectId,
+    network_id: ObjectId,
+    self_id: ObjectId,
+) {
+    let key = (tenant_id, self_id);
+    let slot = JOIN_NETMAP_RETRY_SLOTS
+        .entry(key)
+        .or_insert_with(|| {
+            std::sync::Arc::new(JoinNetmapRetrySlot {
+                generation: std::sync::atomic::AtomicU64::new(0),
+                lock: tokio::sync::Mutex::new(()),
+            })
+        })
+        .clone();
+    let my_gen = slot.generation.fetch_add(1, std::sync::atomic::Ordering::AcqRel) + 1;
+    let retry_state = state.clone();
+    tokio::spawn(async move {
+        for delay_ms in [200u64, 500, 1000]
+            .into_iter()
+            .chain(std::iter::repeat(2000u64))
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+            if slot.generation.load(std::sync::atomic::Ordering::Acquire) != my_gen {
+                cleanup_join_netmap_retry_slot(key, slot);
+                return;
+            }
+            let done = {
+                let _guard = slot.lock.lock().await;
+                if slot.generation.load(std::sync::atomic::Ordering::Acquire) != my_gen {
+                    drop(_guard);
+                    cleanup_join_netmap_retry_slot(key, slot);
+                    return;
+                }
+                try_complete_join_netmap(
+                    &retry_state,
+                    tenant_id,
+                    network_id,
+                    self_id,
+                    &slot.generation,
+                    my_gen,
+                )
+                .await
+            };
+            if done {
+                tracing::info!(
+                    %tenant_id,
+                    %self_id,
+                    "overlay.join: deferred full netmap and peer fan-out succeeded on retry"
+                );
+                cleanup_join_netmap_retry_slot(key, slot);
+                return;
+            }
+        }
+    });
+}
+
+static DERP_REBUILD_RETRY_SLOTS: std::sync::LazyLock<
+    dashmap::DashMap<(ObjectId, ObjectId), std::sync::Arc<std::sync::atomic::AtomicU64>>,
+> = std::sync::LazyLock::new(dashmap::DashMap::new);
+
+fn cleanup_derp_rebuild_retry_slot(
+    key: (ObjectId, ObjectId),
+    cell: std::sync::Arc<std::sync::atomic::AtomicU64>,
+) {
+    drop(cell);
+    DERP_REBUILD_RETRY_SLOTS.remove_if(&key, |_, existing| {
+        std::sync::Arc::strong_count(existing) == 1
+    });
+}
+
+fn schedule_derp_acl_rebuild(state: &NetworkState, tenant_id: ObjectId, network_id: ObjectId) {
+    let key = (tenant_id, network_id);
+    let cell = DERP_REBUILD_RETRY_SLOTS
+        .entry(key)
+        .or_insert_with(|| std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)))
+        .clone();
+    let my_gen = cell.fetch_add(1, std::sync::atomic::Ordering::AcqRel) + 1;
+    let st = state.clone();
+    tokio::spawn(async move {
+        if !super::derp_acl::rebuild(&st, tenant_id, network_id).await {
+            for delay_ms in [200u64, 500, 1000]
+                .into_iter()
+                .chain(std::iter::repeat(2000u64))
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                if cell.load(std::sync::atomic::Ordering::Acquire) != my_gen {
+                    cleanup_derp_rebuild_retry_slot(key, cell);
+                    return;
+                }
+                if super::derp_acl::rebuild(&st, tenant_id, network_id).await {
+                    break;
+                }
+            }
+        }
+        cleanup_derp_rebuild_retry_slot(key, cell);
+    });
+}
+
+async fn try_complete_join_netmap(
+    state: &NetworkState,
+    tenant_id: ObjectId,
+    network_id: ObjectId,
+    self_id: ObjectId,
+    generation: &std::sync::atomic::AtomicU64,
+    my_gen: u64,
+) -> bool {
+    let self_node = match state.overlay_nodes.base.find_by_id(self_id).await {
+        Ok(n) => n,
+        Err(roomler_ai_services::dao::base::DaoError::NotFound) => return true,
+        Err(_) => return false,
+    };
+    if self_node.deleted_at.is_some() || !matches!(self_node.status, AgentStatus::Online) {
+        return true;
+    }
+    let Ok(network) = state.overlay_networks.get_or_create(tenant_id).await else {
+        return false;
+    };
+    let Ok(all) = state
+        .overlay_nodes
+        .list_active_in_network(tenant_id, network_id)
+        .await
+    else {
+        return false;
+    };
+    let iso = business_isolation::mode(state);
+    let joiner_zone = business_isolation::joiner_zone(state, iso, &self_node).await;
+    let identity_id = match &self_node.node_ref {
+        NodeRef::Agent { agent_id } => *agent_id,
+        NodeRef::TunnelClient { tunnel_client_id } => *tunnel_client_id,
+    };
+    if iso == business_isolation::Mode::Enforce || joiner_zone.is_some() {
+        if !crate::org_relay::recheck_zones(state, identity_id, "zone_changed").await {
+            return false;
+        }
+    } else {
+        crate::org_relay::recheck_trial_zones(state, identity_id, "zone_changed").await;
+    }
+    let lines = business_isolation::lines(state, iso, tenant_id).await;
+    if lines.roles_read_failed && iso == business_isolation::Mode::Enforce {
+        return false;
+    }
+    let reach = reachability(state, &all).await;
+    let ShapedNetmap {
+        acl,
+        self_src: joiner_src,
+        peers,
+    } = shape_full_netmap_with_lines(state, &self_node, &all, &reach, Some(&lines)).await;
+    if (acl.gating() || iso == business_isolation::Mode::Enforce)
+        && !super::derp_acl::rebuild(state, tenant_id, network_id).await
+    {
+        return false;
+    }
+    let (magic_domain, nameservers) = match state.tenants.base.find_by_id(tenant_id).await {
+        Ok(t) => (
+            t.settings.magic_dns_domain.clone(),
+            t.settings.magic_dns_nameservers.clone(),
+        ),
+        Err(_) => (None, Vec::new()),
+    };
+    let join_blocks = state.overlay_networks.block_list(&network).await;
+    let relay_probe_targets =
+        crate::org_relay::probe_targets(state, &self_node, Some(&lines)).await;
+    let backbone_probe_targets =
+        crate::org_relay::backbone_probe_targets(state, &self_node, Some(&lines)).await;
+    if generation.load(std::sync::atomic::Ordering::Acquire) != my_gen {
+        return false;
+    }
+    let epoch = next_epoch();
+    send_to_node(
+        state,
+        &self_node,
+        ServerMsg::OverlayNetmap {
+            org_relay_discovery: true,
+            path_trial_v1: true,
+            self_ip: self_node.overlay_ip.clone(),
+            network: OverlayNetworkInfo {
+                cidr: join_blocks
+                    .cidr_for_ip(&self_node.overlay_ip)
+                    .unwrap_or(&network.cidr)
+                    .to_string(),
+                cidrs: join_blocks.cidrs().to_vec(),
+                org_relay_fallback_v1: true,
+                org_relay_loss_v1: true,
+                mtu: network.mtu,
+                magic_domain,
+                nameservers,
+                self_name: (!self_node.name.is_empty()).then(|| self_node.name.clone()),
+                stun_urls: stun_urls_from_turn(state),
+                relay_probe_targets,
+                backbone_probe_targets,
+                auth_revision: network.auth_revision.max(1),
+            },
+            peers,
+            epoch,
+        },
+    )
+    .await;
+    let auth_revision = network.auth_revision.max(1);
+    let self_reachable = is_reachable(&reach, &self_node);
+    for peer in all.iter().filter(|n| n.id != self_node.id) {
+        if generation.load(std::sync::atomic::Ordering::Acquire) != my_gen {
+            return false;
+        }
+        let peer_src = overlay_source_of(state, peer).await;
+        let joiner_ingress = acl.enforcing().then_some(&joiner_src);
+        let verdict = server_relay_verdict(state, peer, &self_node);
+        let recipient_zone = business_isolation::zone_of(state, iso, peer).await;
+        let zones = lines.zones_for(
+            iso,
+            peer,
+            recipient_zone,
+            &self_node,
+            joiner_zone,
+            business_isolation::rides_lines(state, peer),
+        );
+        let (upserts, removes) =
+            match shape_peer(&acl, &peer_src, &self_node, joiner_ingress, self_reachable, zones) {
+                Some(mut u) => {
+                    stamp_verdict(&mut u, verdict);
+                    (vec![u], vec![])
+                }
+                None => (vec![], vec![self_node.id.unwrap_or_default()]),
+            };
+        send_to_node(
+            state,
+            peer,
+            ServerMsg::OverlayNetmapDelta {
+                epoch,
+                auth_revision,
+                upserts,
+                removes,
+            },
+        )
+        .await;
+    }
+    repush_forced_pairs_on_join(state, &self_node).await;
+    true
 }
 
 /// Trickle: update the node's candidates → fan an upsert delta so peers
@@ -1080,6 +1488,7 @@ pub fn revoke_agent_admission(state: &NetworkState, agent_id: ObjectId) {
         state.admission_nodes.remove(&id);
         let msg = ServerMsg::OverlayNetmapDelta {
             epoch: next_epoch(),
+            auth_revision: 0,
             upserts: vec![],
             removes: vec![id],
         };
@@ -1110,7 +1519,15 @@ pub fn revoke_agent_admission(state: &NetworkState, agent_id: ObjectId) {
 }
 
 pub async fn handle_overlay_leave(state: &NetworkState, ident: NodeIdentity) {
-    let Some(self_node) = current_node(state, ident).await else {
+    let Some((tenant_id, machine_id, _name)) = resolve_tenant_and_machine(state, ident).await
+    else {
+        return;
+    };
+    let Ok(Some(self_node)) = state
+        .overlay_nodes
+        .find_live_by_tenant_and_machine(tenant_id, &machine_id)
+        .await
+    else {
         return; // never joined the overlay — nothing to tear down
     };
     let Some(self_id) = self_node.id else { return };
@@ -1123,6 +1540,16 @@ pub async fn handle_overlay_leave(state: &NetworkState, ident: NodeIdentity) {
         .overlay_nodes
         .mark_status(self_id, AgentStatus::Offline)
         .await;
+    if !self_node.is_key_authorized_at(bson::DateTime::now()) {
+        let evicted = state
+            .overlay_nodes
+            .revoke_current_key(self_id, "expired")
+            .await
+            .unwrap_or(self_node);
+        enforce_node_key_revocation_or_expiry(state, &evicted).await;
+        order_auto_key_rotate_if_needed(state, &evicted).await;
+        return;
+    }
     let epoch = next_epoch();
     // Grey the row out; do NOT delete it. A `removes` delta made every
     // connected peer drop the node from `current_peers` entirely, so a host
@@ -1174,7 +1601,14 @@ async fn handle_org_relay_discover(
         return;
     }
     let peer = match state.overlay_nodes.base.find_by_id(peer_node_id).await {
-        Ok(peer) if peer.tenant_id == requester.tenant_id && peer_node_id != requester_id => peer,
+        Ok(peer)
+            if peer.tenant_id == requester.tenant_id
+                && peer_node_id != requester_id
+                && peer.deleted_at.is_none()
+                && peer.is_key_authorized_at(bson::DateTime::now()) =>
+        {
+            peer
+        }
         _ => return,
     };
     // Same pair visibility guard as relay_request, with unreadable policy
@@ -1223,8 +1657,14 @@ async fn handle_org_relay_fallback_request(
         return;
     }
     let peer = match state.overlay_nodes.base.find_by_id(peer_node_id).await {
-        Ok(peer) if peer.tenant_id == requester.tenant_id
-            && peer_node_id != requester_id && peer.deleted_at.is_none() => peer,
+        Ok(peer)
+            if peer.tenant_id == requester.tenant_id
+                && peer_node_id != requester_id
+                && peer.deleted_at.is_none()
+                && peer.is_key_authorized_at(bson::DateTime::now()) =>
+        {
+            peer
+        }
         _ => return,
     };
     let pk = pair_key(requester_id, peer_node_id);
@@ -1260,12 +1700,24 @@ async fn handle_overlay_relay_request(
     };
     let Some(self_id) = self_node.id else { return };
 
-    // Cross-tenant gate: the peer must be in the requester's tenant.
+    // Cross-tenant & live/authorized-key gate: the peer must be live and
+    // key-authorized in the requester's tenant.
     let peer = match state.overlay_nodes.base.find_by_id(peer_node_id).await {
-        Ok(p) if p.tenant_id == self_node.tenant_id => p,
-        Ok(p) => {
+        Ok(p)
+            if p.tenant_id == self_node.tenant_id
+                && peer_node_id != self_id
+                && p.deleted_at.is_none()
+                && p.is_key_authorized_at(bson::DateTime::now()) =>
+        {
+            p
+        }
+        Ok(p) if p.tenant_id != self_node.tenant_id => {
             warn!(%self_id, peer = %peer_node_id, peer_tenant = %p.tenant_id,
                 "overlay.relay_request across tenants; refusing");
+            return;
+        }
+        Ok(_) => {
+            debug!(peer = %peer_node_id, "overlay.relay_request: peer deleted or key unauthorized; refusing");
             return;
         }
         Err(e) => {
@@ -1840,7 +2292,13 @@ async fn handle_org_relay_loss(
         return;
     }
     let peer = match state.overlay_nodes.base.find_by_id(peer_node_id).await {
-        Ok(p) if p.tenant_id == reporter.tenant_id && p.deleted_at.is_none() => p,
+        Ok(p)
+            if p.tenant_id == reporter.tenant_id
+                && p.deleted_at.is_none()
+                && p.is_key_authorized_at(bson::DateTime::now()) =>
+        {
+            p
+        }
         _ => return,
     };
     let pk = session.pair_key.clone();
@@ -1906,11 +2364,11 @@ async fn handle_org_relay_loss(
 /// when something OUT of band changes the node's wire shape (Phase 1: an admin
 /// approving/revoking its subnet `routes`), so peers pick it up immediately
 /// instead of waiting for the next join. Best-effort.
-pub async fn refan_node(state: &NetworkState, node: &OverlayNode) {
+pub async fn refan_node(state: &NetworkState, node: &OverlayNode) -> bool {
     // P9 — an out-of-band refan (admin route approval) can target a node
     // that is currently offline; carry its real presence, not a blanket true.
     let reach = reachability(state, std::slice::from_ref(node)).await;
-    fan_upsert_shaped(state, node, next_epoch(), is_reachable(&reach, node)).await;
+    fan_upsert_shaped(state, node, next_epoch(), is_reachable(&reach, node)).await
 }
 
 /// Propagate a fleet-level device rename onto the device's live overlay node:
@@ -2059,12 +2517,27 @@ pub async fn release_overlay_node(
 
     // 4 — tell the peers, then the node itself.
     let epoch = next_epoch();
-    fan_delta_to(state, &peers, Some(node_id), epoch, vec![], vec![node_id]).await;
+    let auth_revision = state
+        .overlay_networks
+        .bump_auth_revision(before.tenant_id)
+        .await
+        .unwrap_or(1);
+    fan_delta_to(
+        state,
+        &peers,
+        Some(node_id),
+        epoch,
+        auth_revision,
+        vec![],
+        vec![node_id],
+    )
+    .await;
     send_to_node(
         state,
         &before,
         ServerMsg::OverlayNetmapDelta {
             epoch,
+            auth_revision,
             upserts: vec![],
             removes: vec![node_id],
         },
@@ -2089,6 +2562,7 @@ pub async fn release_overlay_node(
             "network_id": before.network_id.to_hex(),
             "node_id": node_id.to_hex(),
             "epoch": epoch,
+            "auth_revision": auth_revision,
         }),
     )
     .await;
@@ -2146,19 +2620,33 @@ pub async fn apply_removes_ctrl(state: &NetworkState, ctrl: &serde_json::Value) 
         return;
     };
     let epoch = ctrl.get("epoch").and_then(|v| v.as_u64()).unwrap_or(0);
+    let auth_revision = ctrl
+        .get("auth_revision")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
 
     let peers = state
         .overlay_nodes
         .list_active_in_network(tid, net)
         .await
         .unwrap_or_default();
-    fan_delta_to(state, &peers, Some(node_id), epoch, vec![], vec![node_id]).await;
+    fan_delta_to(
+        state,
+        &peers,
+        Some(node_id),
+        epoch,
+        auth_revision,
+        vec![],
+        vec![node_id],
+    )
+    .await;
     if let Ok(tombstone) = state.overlay_nodes.base.find_by_id(node_id).await {
         send_to_node(
             state,
             &tombstone,
             ServerMsg::OverlayNetmapDelta {
                 epoch,
+                auth_revision,
                 upserts: vec![],
                 removes: vec![node_id],
             },
@@ -2169,18 +2657,133 @@ pub async fn apply_removes_ctrl(state: &NetworkState, ctrl: &serde_json::Value) 
         "overlay: removes re-fanned from another pod's removal");
 }
 
-/// #1186 — drain the channel the redis ctrl subscriber feeds `overlay_removes`
-/// envelopes into. A channel + late spawn rather than handling inline because
-/// the subscriber loop is spawned mid-`AppState::new` and cannot capture the
-/// full state the re-fan needs (`apply_rc_ctrl` is hub-only by the same
-/// constraint).
+/// B3 — invalidate the local pod's cached tenant ACL so the next read queries
+/// MongoDB directly.
+pub fn invalidate_tenant_acl_cache(tenant_id: ObjectId) {
+    LAST_GOOD_ACL.remove(&tenant_id);
+}
+
+/// B3 — re-fan local sockets, rebuild local DERP ACL, and reconcile local
+/// org-relay state for `tenant_id` on this pod.
+pub async fn refan_tenant_authority_local(
+    state: &NetworkState,
+    tenant_id: ObjectId,
+    reason: &str,
+) {
+    // B3 + #18 — Refresh `LAST_GOOD_ACL` in place only when MongoDB succeeds;
+    // never evict `LAST_GOOD_ACL` before reading, so a transient MongoDB blip
+    // during authority refan preserves the last known-good policy instead of
+    // failing closed with an empty policy set and tearing down the mesh.
+    if let Ok(fresh_acl) = try_load_acl(state, tenant_id, PolicyLoad::WhenGating).await {
+        LAST_GOOD_ACL.insert(tenant_id, fresh_acl);
+    }
+    state.org_relay.invalidate_mode(tenant_id);
+    state.org_relay.invalidate_eligibility();
+    let Ok(network) = state.overlay_networks.get_or_create(tenant_id).await else {
+        return;
+    };
+    let Some(network_id) = network.id else { return };
+    let Ok(nodes) = state
+        .overlay_nodes
+        .list_active_in_network(tenant_id, network_id)
+        .await
+    else {
+        return;
+    };
+    for n in &nodes {
+        refan_node(state, n).await;
+    }
+    crate::derp_acl::rebuild(state, tenant_id, network_id).await;
+    crate::org_relay::reconcile_acl(state, tenant_id).await;
+    if matches!(
+        reason,
+        "server_link_changed" | "role_changed" | "business_authority" | "acl_updated"
+    ) {
+        crate::tunnel::reconcile_tunnel_sessions(state, tenant_id).await;
+        crate::managed_forward::reconcile_tenant_forwards(state, tenant_id).await;
+        for n in &nodes {
+            let identity_id = match n.node_ref {
+                NodeRef::Agent { agent_id } => agent_id,
+                NodeRef::TunnelClient { tunnel_client_id } => tunnel_client_id,
+            };
+            crate::org_relay::recheck_zones(state, identity_id, reason).await;
+        }
+    }
+}
+
+/// B3 — bump `OverlayNetwork.auth_revision` (when `bump_revision` is true and
+/// the DAO method hasn't already bumped it), apply the authority change on
+/// this pod, and publish `overlay_policy_sync` over Redis pub/sub so every
+/// other control-plane pod invalidates its caches, rebuilds its DERP allow
+/// table, reconciles its org-relay sessions, and re-fans the sockets it holds.
+pub async fn publish_and_refan_tenant_authority(
+    state: &NetworkState,
+    tenant_id: ObjectId,
+    bump_revision: bool,
+    reason: &str,
+) -> u64 {
+    let auth_revision = if bump_revision {
+        state
+            .overlay_networks
+            .bump_auth_revision(tenant_id)
+            .await
+            .unwrap_or(1)
+    } else {
+        state
+            .overlay_networks
+            .current_auth_revision(tenant_id)
+            .await
+            .unwrap_or(1)
+    };
+    refan_tenant_authority_local(state, tenant_id, reason).await;
+    roomler_ai_mod_fleet::ctrl::publish_rc_ctrl(
+        state,
+        "overlay_policy_sync",
+        serde_json::json!({
+            "tenant_id": tenant_id.to_hex(),
+            "auth_revision": auth_revision,
+            "reason": reason,
+        }),
+    )
+    .await;
+    auth_revision
+}
+
+/// B3 — apply an `overlay_policy_sync` control event received from another
+/// pod on the cluster Redis channel.
+pub async fn apply_policy_sync_ctrl(state: &NetworkState, ctrl: &serde_json::Value) {
+    let Some(tid) = ctrl
+        .get("tenant_id")
+        .and_then(|v| v.as_str())
+        .and_then(|s| ObjectId::parse_str(s).ok())
+    else {
+        return;
+    };
+    let auth_revision = ctrl
+        .get("auth_revision")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let reason = ctrl
+        .get("reason")
+        .and_then(|v| v.as_str())
+        .unwrap_or("policy_sync");
+    refan_tenant_authority_local(state, tid, reason).await;
+    debug!(%tid, auth_revision, reason,
+        "overlay: policy sync applied from another pod");
+}
+
+/// #1186 + B3 — drain the channel the redis ctrl subscriber feeds
+/// `overlay_removes` and `overlay_policy_sync` envelopes into.
 pub fn spawn_removes_applier(
     state: NetworkState,
     mut rx: tokio::sync::mpsc::Receiver<serde_json::Value>,
 ) {
     tokio::spawn(async move {
         while let Some(ctrl) = rx.recv().await {
-            apply_removes_ctrl(&state, &ctrl).await;
+            match ctrl.get("evt").and_then(|v| v.as_str()) {
+                Some("overlay_policy_sync") => apply_policy_sync_ctrl(&state, &ctrl).await,
+                _ => apply_removes_ctrl(&state, &ctrl).await,
+            }
         }
     });
 }
@@ -2223,7 +2826,17 @@ pub async fn release_overlay_node_for(
 /// being skipped — omitting a peer from a delta (or shipping it with
 /// `reachable: false`) does NOT tear down an already-installed peer; only the
 /// removes branch drops the WG peer, its route and its carrier.
-async fn fan_upsert_shaped(state: &NetworkState, node: &OverlayNode, epoch: u64, reachable: bool) {
+async fn fan_upsert_shaped(
+    state: &NetworkState,
+    node: &OverlayNode,
+    epoch: u64,
+    reachable: bool,
+) -> bool {
+    let auth_revision = state
+        .overlay_networks
+        .current_auth_revision(node.tenant_id)
+        .await
+        .unwrap_or(1);
     let peers = match state
         .overlay_nodes
         .list_active_in_network(node.tenant_id, node.network_id)
@@ -2232,13 +2845,25 @@ async fn fan_upsert_shaped(state: &NetworkState, node: &OverlayNode, epoch: u64,
         Ok(v) => v,
         Err(e) => {
             warn!(%e, "overlay: peer list for delta fan-out failed");
-            return;
+            return false;
         }
     };
+    if node.id.is_none() || !peers.iter().any(|p| p.id == node.id) {
+        debug!(node = ?node.id, "overlay: skipping delta fan-out for tombstoned node");
+        return true;
+    }
     let acl = load_acl(state, node.tenant_id).await;
     let iso = business_isolation::mode(state);
     let node_zone = business_isolation::zone_of(state, iso, node).await;
     let lines = business_isolation::lines(state, iso, node.tenant_id).await;
+    if lines.roles_read_failed && iso == business_isolation::Mode::Enforce {
+        warn!(
+            tenant_id = %node.tenant_id,
+            node = %node.name,
+            "overlay: role approval read failed during delta fan-out; preserving existing peer netmaps"
+        );
+        return false;
+    }
     // P4 — the fanned node is the SHAPED peer for every recipient, so its
     // identity is resolved once, not per recipient.
     let node_src = if acl.enforcing() {
@@ -2257,7 +2882,8 @@ async fn fan_upsert_shaped(state: &NetworkState, node: &OverlayNode, epoch: u64,
     // delta re-stamping its outgoing edges whenever it is present and
     // U2-capable (verdicts are the only per-edge data its change moves;
     // pre-U2 nodes ignore stamps, so the delta would be pure noise there).
-    let reverse = reachable && node.supports_server_relay_strategy;
+    let reverse =
+        reachable && (node.supports_server_relay_strategy || iso == business_isolation::Mode::Enforce);
     let (node_recip_src, peer_reach) = if reverse {
         (
             Some(overlay_source_of(state, node).await),
@@ -2266,21 +2892,23 @@ async fn fan_upsert_shaped(state: &NetworkState, node: &OverlayNode, epoch: u64,
     } else {
         (None, HashMap::new())
     };
+    let epoch = epoch.max(next_epoch());
     let mut reverse_rows: Vec<NetmapPeer> = Vec::new();
+    let mut reverse_removes: Vec<ObjectId> = Vec::new();
     for peer in peers.iter().filter(|p| p.id != node.id) {
         let src = overlay_source_of(state, peer).await;
         // U2 — the edge is `recipient=peer → this fanned node`; both full
         // rows are in hand, so stamp the server verdict onto the shaped peer.
         let verdict = server_relay_verdict(state, peer, node);
         let peer_zone = business_isolation::zone_of(state, iso, peer).await;
-        let zones = Zones {
-            mode: iso,
-            recipient: peer_zone,
-            peer: node_zone,
-            line: lines.connects(peer_zone, node_zone)
-                && business_isolation::rides_lines(state, peer),
-            servers: lines.server_pair(peer, node),
-        };
+        let zones = lines.zones_for(
+            iso,
+            peer,
+            peer_zone,
+            node,
+            node_zone,
+            business_isolation::rides_lines(state, peer),
+        );
         let (upserts, removes) =
             match shape_peer(&acl, &src, node, node_src.as_ref(), reachable, zones) {
                 Some(mut u) => {
@@ -2294,6 +2922,7 @@ async fn fan_upsert_shaped(state: &NetworkState, node: &OverlayNode, epoch: u64,
             peer,
             ServerMsg::OverlayNetmapDelta {
                 epoch,
+                auth_revision,
                 upserts,
                 removes,
             },
@@ -2306,14 +2935,14 @@ async fn fan_upsert_shaped(state: &NetworkState, node: &OverlayNode, epoch: u64,
         if let Some(rsrc) = node_recip_src.as_ref() {
             let rev_verdict = server_relay_verdict(state, node, peer);
             let peer_src_arg = if acl.enforcing() { Some(&src) } else { None };
-            let back = Zones {
-                mode: iso,
-                recipient: node_zone,
-                peer: peer_zone,
-                line: lines.connects(node_zone, peer_zone)
-                    && business_isolation::rides_lines(state, node),
-                servers: lines.server_pair(node, peer),
-            };
+            let back = lines.zones_for(
+                iso,
+                node,
+                node_zone,
+                peer,
+                peer_zone,
+                business_isolation::rides_lines(state, node),
+            );
             if let Some(mut r) = shape_peer(
                 &acl,
                 rsrc,
@@ -2324,13 +2953,18 @@ async fn fan_upsert_shaped(state: &NetworkState, node: &OverlayNode, epoch: u64,
             ) {
                 stamp_verdict(&mut r, rev_verdict);
                 reverse_rows.push(r);
+            } else if iso == business_isolation::Mode::Enforce
+                && let Some(pid) = peer.id
+            {
+                reverse_removes.push(pid);
             }
         }
     }
-    if !reverse_rows.is_empty() {
+    if !reverse_rows.is_empty() || !reverse_removes.is_empty() {
         debug!(
             node = %node.name,
             rows = reverse_rows.len(),
+            removes = reverse_removes.len(),
             epoch,
             "overlay: reverse verdict delta — re-stamping the changed node's outgoing edges (D0)"
         );
@@ -2339,12 +2973,14 @@ async fn fan_upsert_shaped(state: &NetworkState, node: &OverlayNode, epoch: u64,
             node,
             ServerMsg::OverlayNetmapDelta {
                 epoch,
+                auth_revision,
                 upserts: reverse_rows,
-                removes: vec![],
+                removes: reverse_removes,
             },
         )
         .await;
     }
+    true
 }
 
 /// D2 — re-stamp ONE pair's verdicts on both ends, now.
@@ -2357,6 +2993,11 @@ async fn fan_upsert_shaped(state: &NetworkState, node: &OverlayNode, epoch: u64,
 /// [`fan_upsert_shaped`] maintains on ordinary changes.
 async fn fan_pair_verdicts(state: &NetworkState, a: &OverlayNode, b: &OverlayNode) {
     let acl = load_acl(state, a.tenant_id).await;
+    let auth_revision = state
+        .overlay_networks
+        .current_auth_revision(a.tenant_id)
+        .await
+        .unwrap_or(1);
     let a_src = overlay_source_of(state, a).await;
     let b_src = overlay_source_of(state, b).await;
     let reach = reachability(state, std::slice::from_ref(b)).await;
@@ -2372,6 +3013,15 @@ async fn fan_pair_verdicts(state: &NetworkState, a: &OverlayNode, b: &OverlayNod
         business_isolation::zone_of(state, iso, b).await,
     );
     let lines = business_isolation::lines(state, iso, a.tenant_id).await;
+    if lines.roles_read_failed && iso == business_isolation::Mode::Enforce {
+        warn!(
+            tenant_id = %a.tenant_id,
+            a = %a.name,
+            b = %b.name,
+            "overlay: role approval read failed during pair verdict fan-out; skipping"
+        );
+        return;
+    }
     if a.supports_server_relay_strategy
         && let Some(mut row) = shape_peer(
             &acl,
@@ -2379,13 +3029,14 @@ async fn fan_pair_verdicts(state: &NetworkState, a: &OverlayNode, b: &OverlayNod
             b,
             if enforcing { Some(&b_src) } else { None },
             b_reach,
-            Zones {
-                mode: iso,
-                recipient: a_zone,
-                peer: b_zone,
-                line: lines.connects(a_zone, b_zone) && business_isolation::rides_lines(state, a),
-                servers: lines.server_pair(a, b),
-            },
+            lines.zones_for(
+                iso,
+                a,
+                a_zone,
+                b,
+                b_zone,
+                business_isolation::rides_lines(state, a),
+            ),
         )
     {
         stamp_verdict(&mut row, server_relay_verdict(state, a, b));
@@ -2394,6 +3045,7 @@ async fn fan_pair_verdicts(state: &NetworkState, a: &OverlayNode, b: &OverlayNod
             a,
             ServerMsg::OverlayNetmapDelta {
                 epoch,
+                auth_revision,
                 upserts: vec![row],
                 removes: vec![],
             },
@@ -2407,13 +3059,14 @@ async fn fan_pair_verdicts(state: &NetworkState, a: &OverlayNode, b: &OverlayNod
             a,
             if enforcing { Some(&a_src) } else { None },
             true,
-            Zones {
-                mode: iso,
-                recipient: b_zone,
-                peer: a_zone,
-                line: lines.connects(b_zone, a_zone) && business_isolation::rides_lines(state, b),
-                servers: lines.server_pair(b, a),
-            },
+            lines.zones_for(
+                iso,
+                b,
+                b_zone,
+                a,
+                a_zone,
+                business_isolation::rides_lines(state, b),
+            ),
         )
     {
         stamp_verdict(&mut row, server_relay_verdict(state, b, a));
@@ -2422,6 +3075,7 @@ async fn fan_pair_verdicts(state: &NetworkState, a: &OverlayNode, b: &OverlayNod
             b,
             ServerMsg::OverlayNetmapDelta {
                 epoch,
+                auth_revision,
                 upserts: vec![row],
                 removes: vec![],
             },
@@ -2445,6 +3099,7 @@ async fn fan_delta_to(
     peers: &[OverlayNode],
     exclude: Option<ObjectId>,
     epoch: u64,
+    auth_revision: u64,
     upserts: Vec<NetmapPeer>,
     removes: Vec<ObjectId>,
 ) {
@@ -2454,6 +3109,7 @@ async fn fan_delta_to(
             peer,
             ServerMsg::OverlayNetmapDelta {
                 epoch,
+                auth_revision,
                 upserts: upserts.clone(),
                 removes: removes.clone(),
             },
@@ -2554,13 +3210,203 @@ async fn resolve_tenant_and_machine(
 /// below is redundant now that the lookup is scoped; kept as belt and braces.
 pub async fn current_node(state: &NetworkState, ident: NodeIdentity) -> Option<OverlayNode> {
     let (tenant_id, machine_id, _name) = resolve_tenant_and_machine(state, ident).await?;
+    let now = bson::DateTime::now();
     state
         .overlay_nodes
         .find_live_by_tenant_and_machine(tenant_id, &machine_id)
         .await
         .ok()
         .flatten()
-        .filter(|n| n.deleted_at.is_none())
+        .filter(|n| n.is_key_authorized_at(now))
+}
+
+/// B4 — Immediately evict a node whose current WireGuard key has been revoked
+/// or expired: drop its admission cache entry, revoke active org-relay sessions,
+/// evict its DERP registration/socket, rebuild the network's DERP allow table,
+/// broadcast `removes: [node_id]` to all peers in its network (locally and
+/// across pods), and clear the node's own peer list.
+pub async fn enforce_node_key_revocation_or_expiry(state: &NetworkState, node: &OverlayNode) {
+    let Some(node_id) = node.id else { return };
+    state.admission_nodes.remove(&node_id);
+    crate::org_relay::revoke_node(state, node_id, "key_revoked_or_expired").await;
+    super::derp::evict_pubkey(state, node.network_id, &node.wg_public_key);
+    super::derp_acl::rebuild(state, node.tenant_id, node.network_id).await;
+
+    let peers = state
+        .overlay_nodes
+        .list_active_in_network(node.tenant_id, node.network_id)
+        .await
+        .unwrap_or_default();
+    let epoch = next_epoch();
+    let auth_revision = state
+        .overlay_networks
+        .bump_auth_revision(node.tenant_id)
+        .await
+        .unwrap_or(1);
+    let mut peer_ids_for_self = Vec::new();
+    for peer in peers.iter().filter(|p| p.id != Some(node_id)) {
+        if let Some(pid) = peer.id {
+            peer_ids_for_self.push(pid);
+        }
+        send_to_node(
+            state,
+            peer,
+            ServerMsg::OverlayNetmapDelta {
+                epoch,
+                auth_revision,
+                upserts: Vec::new(),
+                removes: vec![node_id],
+            },
+        )
+        .await;
+    }
+    if !peer_ids_for_self.is_empty() {
+        send_to_node(
+            state,
+            node,
+            ServerMsg::OverlayNetmapDelta {
+                epoch,
+                auth_revision,
+                upserts: Vec::new(),
+                removes: peer_ids_for_self,
+            },
+        )
+        .await;
+    }
+    roomler_ai_mod_fleet::ctrl::publish_rc_ctrl(
+        state,
+        "overlay_removes",
+        serde_json::json!({
+            "tenant_id": node.tenant_id.to_hex(),
+            "network_id": node.network_id.to_hex(),
+            "node_id": node_id.to_hex(),
+            "epoch": epoch,
+            "auth_revision": auth_revision,
+        }),
+    )
+    .await;
+}
+
+/// B4 — Ensure an agent node whose key expired or was revoked has an active
+/// `KeyRotationRequest` and receives `ServerMsg::KeyRotate` (rate-bounded by
+/// `should_redeliver` so repeated ticks do not spam duplicate rotation orders).
+pub async fn order_auto_key_rotate_if_needed(state: &NetworkState, node: &OverlayNode) {
+    let NodeRef::Agent { agent_id } = node.node_ref else {
+        return;
+    };
+    let Ok(agent) = state
+        .fleet
+        .agents
+        .find_live_in_tenant(node.tenant_id, agent_id)
+        .await
+    else {
+        return;
+    };
+    let now = bson::DateTime::now();
+    if let Some(req) = &agent.key_rotation
+        && !roomler_ai_remote_control::models::order_is_satisfied(
+            req,
+            agent.overlay_identity.as_ref(),
+        )
+        && !roomler_ai_remote_control::models::should_redeliver(
+            req,
+            agent.key_rotation_report.as_ref(),
+            now,
+        )
+    {
+        return;
+    }
+    let request_id = ObjectId::new().to_hex();
+    let request = roomler_ai_remote_control::models::KeyRotationRequest {
+        request_id: request_id.clone(),
+        requested_by: agent.owner_user_id,
+        requested_at: now,
+        delivered_at: None,
+        public_key_before: Some(node.wg_public_key.clone()),
+    };
+    let _ = state
+        .fleet
+        .agents
+        .record_key_rotation_request(node.tenant_id, agent_id, &request)
+        .await;
+    let supports_rotation = agent
+        .capabilities
+        .has_rpc(roomler_ai_remote_control::models::RpcCap::KeyRotate);
+    let delivered = supports_rotation
+        && state
+            .fleet
+            .rc_hub
+            .send_to_agent(
+                agent_id,
+                ServerMsg::KeyRotate {
+                    request_id: request_id.clone(),
+                },
+            )
+            .is_ok();
+    if delivered {
+        let _ = state
+            .fleet
+            .agents
+            .mark_key_rotation_delivered(node.tenant_id, agent_id, &request_id)
+            .await;
+    }
+    let _ = state
+        .key_rotation_audit
+        .record_with_reason(
+            node.tenant_id,
+            agent_id,
+            agent.owner_user_id,
+            &request_id,
+            Some(if delivered { "pushed" } else { "queued" }),
+            None,
+            Some("auto_ttl"),
+        )
+        .await;
+}
+
+/// B4 — Background reaper that sweeps active networks for:
+/// 1. Pre-expiry make-before-break key rotation (`list_keys_expiring_soon`),
+///    pushing `ServerMsg::KeyRotate` to online agents before `key_expires_at`
+///    is reached so they rotate without losing connectivity or being evicted.
+/// 2. Hard expiration (`expire_keys_due`), evicting peers whose `key_expires_at`
+///    passed without rotating.
+pub fn spawn_key_expiry_reaper(state: NetworkState) {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(5));
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            ticker.tick().await;
+            let mut network_ids: std::collections::HashSet<ObjectId> = state
+                .admission_nodes
+                .iter()
+                .map(|entry| entry.value().network_id)
+                .collect();
+            for entry in state.derp_registry.iter() {
+                network_ids.insert(entry.key().0);
+            }
+            if network_ids.is_empty() {
+                continue;
+            }
+            let now = bson::DateTime::now();
+            for network_id in network_ids {
+                if let Ok(expiring_soon) = state
+                    .overlay_nodes
+                    .list_keys_expiring_soon(network_id, now)
+                    .await
+                {
+                    for exp_soon in &expiring_soon {
+                        order_auto_key_rotate_if_needed(&state, exp_soon).await;
+                    }
+                }
+                if let Ok(expired) = state.overlay_nodes.expire_keys_due(network_id, now).await {
+                    for exp_node in &expired {
+                        enforce_node_key_revocation_or_expiry(&state, exp_node).await;
+                        order_auto_key_rotate_if_needed(&state, exp_node).await;
+                    }
+                }
+            }
+        }
+    });
 }
 
 /// Sanitize a display name to a single DNS label — lowercase `[a-z0-9-]`, no
@@ -3103,22 +3949,42 @@ pub async fn shape_full_netmap(
     all: &[OverlayNode],
     reach: &HashMap<ObjectId, bool>,
 ) -> ShapedNetmap {
+    shape_full_netmap_with_lines(state, self_node, all, reach, None).await
+}
+
+pub async fn shape_full_netmap_with_lines(
+    state: &NetworkState,
+    self_node: &OverlayNode,
+    all: &[OverlayNode],
+    reach: &HashMap<ObjectId, bool>,
+    preloaded_lines: Option<&business_isolation::Lines>,
+) -> ShapedNetmap {
     let acl = load_acl(state, self_node.tenant_id).await;
     let self_src = overlay_source_of(state, self_node).await;
+    if !self_node.is_key_authorized_at(bson::DateTime::now()) {
+        return ShapedNetmap {
+            acl,
+            self_src,
+            peers: Vec::new(),
+        };
+    }
     let iso = business_isolation::mode(state);
     let self_zone = business_isolation::zone_of(state, iso, self_node).await;
-    let lines = business_isolation::lines(state, iso, self_node.tenant_id).await;
+    let owned_lines;
+    let lines = match preloaded_lines {
+        Some(l) => l,
+        None => {
+            owned_lines = business_isolation::lines(state, iso, self_node.tenant_id).await;
+            &owned_lines
+        }
+    };
     let rides = business_isolation::rides_lines(state, self_node);
     let mut peers: Vec<NetmapPeer> = Vec::new();
+    let mut unknown_with_peers: Vec<String> = Vec::new();
+    let self_role_known = lines.node_role_known(self_node);
     for n in all.iter().filter(|n| n.id != self_node.id) {
         let peer_zone = business_isolation::zone_of(state, iso, n).await;
-        let zones = Zones {
-            mode: iso,
-            recipient: self_zone,
-            peer: peer_zone,
-            line: rides && lines.connects(self_zone, peer_zone),
-            servers: lines.server_pair(self_node, n),
-        };
+        let zones = lines.zones_for(iso, self_node, self_zone, n, peer_zone, rides);
         // P4 — resolving the peer's own identity costs up to 2 reads, so do it
         // ONLY when the tenant is enforcing and the rules will actually ship.
         // An `off`/`warn` tenant's join path is unchanged.
@@ -3135,10 +4001,35 @@ pub async fn shape_full_netmap(
             is_reachable(reach, n),
             zones,
         ) {
+            if !lines.roles_read_failed
+                && lines.unknown_role == business_isolation::Mode::Warn
+                && !lines.node_role_known(n)
+            {
+                let label = business_isolation::Lines::node_label(n);
+                if !unknown_with_peers.contains(&label) {
+                    unknown_with_peers.push(label);
+                }
+            }
             // U2 — the recipient's full-netmap edge is `self_node → n`.
             stamp_verdict(&mut p, server_relay_verdict(state, self_node, n));
             peers.push(p);
         }
+    }
+    if !lines.roles_read_failed
+        && lines.unknown_role == business_isolation::Mode::Warn
+        && !peers.is_empty()
+    {
+        if !self_role_known {
+            let self_label = business_isolation::Lines::node_label(self_node);
+            if !unknown_with_peers.contains(&self_label) {
+                unknown_with_peers.insert(0, self_label);
+            }
+        }
+        business_isolation::log_unknown_role_with_peers(
+            self_node.tenant_id,
+            "netmap",
+            &unknown_with_peers,
+        );
     }
     ShapedNetmap {
         acl,
@@ -3155,6 +4046,9 @@ fn shape_peer(
     reachable: bool,
     zones: Zones,
 ) -> Option<NetmapPeer> {
+    if !peer.is_key_authorized_at(bson::DateTime::now()) {
+        return None;
+    }
     let unbound;
     let peer = match routes_outside_their_zone(peer, zones) {
         Some(p) => {
@@ -3167,6 +4061,14 @@ fn shape_peer(
     // is shaped like any other (the ACL still decides), then stripped to the
     // line: no address to dial, no DERP or TURN to try.
     if zones.line_only() {
+        if zones.unknown_role_denies() {
+            debug!(
+                source = %src.node_id,
+                peer = %peer.name,
+                ?zones,
+                "business isolation [warn]: would refuse: unknown_role"
+            );
+        }
         debug!(source = %src.node_id, peer = %peer.name, ?zones,
             "business isolation: peer shown backbone-only (an approved cross-border line)");
         return shape_peer_zoned(acl, src, peer, peer_src, reachable, Zones::OFF).map(line_only);
@@ -3228,12 +4130,26 @@ fn shape_peer_zoned(
     // ACL: no grant, share or relay can make a peer across it visible.
     if zones.denies() {
         if zones.withholds() {
-            debug!(source = %src.node_id, peer = %peer.name, ?zones,
-                "business isolation: WITHHOLD peer (zones differ or unknown, or servers without a link)");
+            if zones.unknown_role_withholds() {
+                debug!(source = %src.node_id, peer = %peer.name, ?zones,
+                    "business isolation: WITHHOLD peer (refusing: unknown_role)");
+            } else {
+                debug!(source = %src.node_id, peer = %peer.name, ?zones,
+                    "business isolation: WITHHOLD peer (zones differ or unknown, or servers without a link)");
+            }
             return None;
         }
-        debug!(source = %src.node_id, peer = %peer.name, ?zones,
-            "business isolation [warn]: would WITHHOLD peer (zones differ or unknown, or servers without a link)");
+        if zones.unknown_role_denies() {
+            debug!(
+                source = %src.node_id,
+                peer = %peer.name,
+                ?zones,
+                "business isolation [warn]: would refuse: unknown_role"
+            );
+        } else {
+            debug!(source = %src.node_id, peer = %peer.name, ?zones,
+                "business isolation [warn]: would WITHHOLD peer (zones differ or unknown, or servers without a link)");
+        }
     }
     // Two linked servers: the link IS the decision, both ways, every port —
     // the topology view shows exactly what connects. Only under `enforce`;
@@ -3707,6 +4623,12 @@ mod tests {
             overlay_ip: ip.into(),
             wg_public_key: "cHVia2V5".into(),
             key_epoch: 0,
+            retired_wg_keys: vec![],
+            key_issued_at: Some(now),
+            key_ttl_secs: None,
+            key_expires_at: None,
+            key_revoked_at: None,
+            reauth_required: false,
             endpoints: vec!["1.2.3.4:1234".into()],
             lan_endpoints: vec!["192.168.1.5:41641".into()],
             srflx_endpoints: vec!["5.6.7.8:5678".into()],
@@ -3731,6 +4653,9 @@ mod tests {
             route_offer_withheld: None,
             status: AgentStatus::Online,
             last_seen_at: now,
+            applied_auth_revision: 0,
+            applied_netmap_epoch: 0,
+            applied_auth_at: None,
             created_at: now,
             updated_at: now,
             deleted_at: None,
@@ -3853,6 +4778,46 @@ mod tests {
         let mut line = line_only(to_netmap_peer(&n, true));
         stamp_verdict(&mut line, Some(RelayStrategyWire::Derp));
         assert_eq!(line.relay_strategy, None);
+    }
+
+    #[test]
+    fn b4_shape_peer_withholds_expired_and_revoked_node_keys() {
+        let acl = AclCtx {
+            mode: OverlayAclMode::Off,
+            policies: vec![],
+        };
+        let src = OverlaySource {
+            node_id: ObjectId::new(),
+            owner_user_id: None,
+            role_ids: vec![],
+        };
+        let mut peer = node("peer-b4", "100.64.0.42");
+        assert!(
+            shape_peer(&acl, &src, &peer, None, true, Zones::OFF).is_some(),
+            "authorized peer key must be shaped"
+        );
+
+        // Expired key must be withheld from netmap shaping.
+        peer.key_expires_at = Some(bson::DateTime::from_millis(
+            bson::DateTime::now().timestamp_millis() - 1_000,
+        ));
+        assert!(
+            shape_peer(&acl, &src, &peer, None, true, Zones::OFF).is_none(),
+            "expired peer key must be withheld from netmap"
+        );
+
+        // Future expiry restores shaping.
+        peer.key_expires_at = Some(bson::DateTime::from_millis(
+            bson::DateTime::now().timestamp_millis() + 60_000,
+        ));
+        assert!(shape_peer(&acl, &src, &peer, None, true, Zones::OFF).is_some());
+
+        // Explicit revocation (`reauth_required` / `key_revoked_at`) withholds peer.
+        peer.reauth_required = true;
+        assert!(shape_peer(&acl, &src, &peer, None, true, Zones::OFF).is_none());
+        peer.reauth_required = false;
+        peer.key_revoked_at = Some(bson::DateTime::now());
+        assert!(shape_peer(&acl, &src, &peer, None, true, Zones::OFF).is_none());
     }
 
     /// #18 — an unreadable policy never shapes as "ACL off": the last one read

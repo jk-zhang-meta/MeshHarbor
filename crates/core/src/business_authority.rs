@@ -25,7 +25,7 @@ pub const OBSERVATION_TTL_MILLIS: i64 = 60_000;
 /// security evidence: zones fail closed until the image is rebuilt.
 pub const MAX_GEOIP_DATASET_AGE_SECS: u64 = 120 * 24 * 3600;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DeviceKind {
     Agent,
@@ -239,14 +239,34 @@ impl ConnectionObservation {
 /// its source address. Written only after the row is persisted, and dropped
 /// when that connection's observation is closed.
 #[derive(Clone, Default)]
-pub struct LiveZones(std::sync::Arc<dashmap::DashMap<String, (DeviceIdentity, BusinessZone)>>);
+pub struct LiveZones {
+    map: std::sync::Arc<dashmap::DashMap<String, (DeviceIdentity, BusinessZone)>>,
+    generation: std::sync::Arc<std::sync::atomic::AtomicU64>,
+}
 
 impl LiveZones {
     fn get(&self, key: &str, device: &AuthenticatedDevice) -> Option<BusinessZone> {
-        self.0
+        self.map
             .get(key)
             .filter(|e| e.0 == device.identity)
             .map(|e| e.1)
+    }
+
+    fn insert(&self, key: String, value: (DeviceIdentity, BusinessZone)) {
+        self.map.insert(key, value);
+        self.generation
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+    }
+
+    fn remove(&self, key: &str) {
+        if self.map.remove(key).is_some() {
+            self.generation
+                .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        }
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.generation.load(std::sync::atomic::Ordering::Acquire)
     }
 }
 
@@ -492,7 +512,6 @@ pub async fn record_connection_observation(
         .filter(|_| row.is_current_for(device, connection_id, DateTime::now()))
     {
         core.business_zones
-            .0
             .insert(row.id.clone(), (device.identity.clone(), zone));
     }
     Ok(row)
@@ -555,7 +574,6 @@ pub async fn close_connection_observation(
         ));
     }
     core.business_zones
-        .0
         .remove(&observation_key(device, connection_id));
     let identity = bson::to_bson(&device.identity)
         .map_err(|_| ApiError::Internal("Device identity serialization failed".into()))?;
@@ -605,10 +623,77 @@ pub async fn approve_device_role(
 /// each re-checked against its live registration (identity and token
 /// generation, quarantine, the owner's admission), never the stored row alone.
 /// One direction only: serving as a relay never makes a device a Server.
+static TEST_FAIL_ROLE_READ_TENANTS: std::sync::LazyLock<
+    std::sync::RwLock<std::collections::HashSet<ObjectId>>,
+> = std::sync::LazyLock::new(|| std::sync::RwLock::new(std::collections::HashSet::new()));
+
+/// Test hook to simulate transient storage failure in `current_approved_roles`
+/// and `current_server_agents` for a specific `tenant_id`.
+pub fn set_test_force_role_read_fail(tenant_id: ObjectId, fail: bool) {
+    let mut guard = TEST_FAIL_ROLE_READ_TENANTS
+        .write()
+        .unwrap_or_else(|e| e.into_inner());
+    if fail {
+        guard.insert(tenant_id);
+    } else {
+        guard.remove(&tenant_id);
+    }
+}
+
+fn check_test_role_read_fail(tenant_id: ObjectId) -> Result<(), ApiError> {
+    if TEST_FAIL_ROLE_READ_TENANTS
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .contains(&tenant_id)
+    {
+        return Err(ApiError::ServiceUnavailable(
+            "Simulated role approval storage failure".into(),
+        ));
+    }
+    Ok(())
+}
+
+async fn admitted_owner_set(
+    core: &Core,
+    owner_ids: &[ObjectId],
+) -> Result<Option<std::collections::HashSet<ObjectId>>, ApiError> {
+    if !core.settings.auth.account_approval.enabled {
+        return Ok(None);
+    }
+    if owner_ids.is_empty() {
+        return Ok(Some(std::collections::HashSet::new()));
+    }
+    let users: Vec<roomler_ai_db::models::User> = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        async {
+            core.db
+                .collection::<roomler_ai_db::models::User>(roomler_ai_db::models::User::COLLECTION)
+                .find(doc! { "_id": { "$in": owner_ids } })
+                .await
+                .map_err(storage_error)?
+                .try_collect()
+                .await
+                .map_err(storage_error)
+        },
+    )
+    .await
+    .map_err(|_| ApiError::ServiceUnavailable("Account admission lookup timed out".into()))??;
+    let mut admitted = std::collections::HashSet::with_capacity(users.len());
+    for user in users {
+        if let Some(uid) = user.id
+            && crate::admission::require_user(core, &user, None).is_ok()
+        {
+            admitted.insert(uid);
+        }
+    }
+    Ok(Some(admitted))
+}
+
 pub async fn current_server_agents(
     core: &Core,
     tenant_id: ObjectId,
 ) -> Result<Vec<Agent>, ApiError> {
+    check_test_role_read_fail(tenant_id)?;
     let Some(owner) = current_owner(core)? else {
         return Ok(Vec::new());
     };
@@ -624,16 +709,35 @@ pub async fn current_server_agents(
         .try_collect()
         .await
         .map_err(storage_error)?;
+    if approvals.is_empty() {
+        return Ok(Vec::new());
+    }
+    let agent_ids: Vec<ObjectId> = approvals.iter().map(|a| a.identity.device_id).collect();
+    let agents: Vec<Agent> = core
+        .db
+        .collection::<Agent>(Agent::COLLECTION)
+        .find(doc! {
+            "_id": { "$in": &agent_ids },
+            "tenant_id": tenant_id,
+            "deleted_at": bson::Bson::Null,
+        })
+        .await
+        .map_err(storage_error)?
+        .try_collect()
+        .await
+        .map_err(storage_error)?;
+    let mut agent_map: std::collections::HashMap<ObjectId, Agent> = agents
+        .into_iter()
+        .filter_map(|a| Some((a.id?, a)))
+        .collect();
+    let mut owner_ids: Vec<ObjectId> = agent_map.values().map(|a| a.owner_user_id).collect();
+    owner_ids.sort_unstable();
+    owner_ids.dedup();
+    let admitted = admitted_owner_set(core, &owner_ids).await?;
     let now = DateTime::now();
     let mut out = Vec::new();
     for approval in approvals {
-        let Some(agent) = core
-            .db
-            .collection::<Agent>(Agent::COLLECTION)
-            .find_one(doc! { "_id": approval.identity.device_id, "tenant_id": tenant_id, "deleted_at": bson::Bson::Null })
-            .await
-            .map_err(storage_error)?
-        else {
+        let Some(agent) = agent_map.remove(&approval.identity.device_id) else {
             continue;
         };
         let Ok(device) = AuthenticatedDevice::from_agent(&agent) else {
@@ -641,15 +745,252 @@ pub async fn current_server_agents(
         };
         if effective_role(Some(&approval), &device, Some(owner), now) != DeviceUseRole::Server
             || matches!(agent.status, AgentStatus::Quarantined)
-            || crate::admission::authorize_user_id(core, agent.owner_user_id, None)
-                .await
-                .is_err()
+            || admitted
+                .as_ref()
+                .is_some_and(|set| !set.contains(&agent.owner_user_id))
         {
             continue;
         }
         out.push(agent);
     }
     Ok(out)
+}
+
+/// Every device (`Agent` or `TunnelClient`) in `tenant_id` whose current
+/// effective role is approved (`Client` or `Server`), re-checked against its
+/// live registration (`machine_id`, `token_generation`, `deleted_at`, agent
+/// quarantine, and the device owner's admission) using batch `$in` queries.
+pub async fn current_approved_roles(
+    core: &Core,
+    tenant_id: ObjectId,
+) -> Result<std::collections::HashMap<(DeviceKind, ObjectId), DeviceUseRole>, ApiError> {
+    check_test_role_read_fail(tenant_id)?;
+    let Some(owner) = current_owner(core)? else {
+        return Ok(std::collections::HashMap::new());
+    };
+    let approvals: Vec<RoleApproval> = core
+        .db
+        .collection::<RoleApproval>(ROLE_APPROVALS_COLLECTION)
+        .find(doc! {
+            "identity.tenant_id": tenant_id,
+            "role": { "$in": ["client", "server"] },
+            "revoked": false,
+            "approved_by": owner,
+        })
+        .await
+        .map_err(storage_error)?
+        .try_collect()
+        .await
+        .map_err(storage_error)?;
+    if approvals.is_empty() {
+        return Ok(std::collections::HashMap::new());
+    }
+    let mut agent_ids = Vec::new();
+    let mut client_ids = Vec::new();
+    for a in &approvals {
+        match a.identity.kind {
+            DeviceKind::Agent => agent_ids.push(a.identity.device_id),
+            DeviceKind::TunnelClient => client_ids.push(a.identity.device_id),
+        }
+    }
+    let agents: std::collections::HashMap<ObjectId, Agent> = if agent_ids.is_empty() {
+        std::collections::HashMap::new()
+    } else {
+        let rows: Vec<Agent> = core
+            .db
+            .collection::<Agent>(Agent::COLLECTION)
+            .find(doc! {
+                "_id": { "$in": &agent_ids },
+                "tenant_id": tenant_id,
+                "deleted_at": bson::Bson::Null,
+            })
+            .await
+            .map_err(storage_error)?
+            .try_collect()
+            .await
+            .map_err(storage_error)?;
+        rows.into_iter().filter_map(|a| Some((a.id?, a))).collect()
+    };
+    let clients: std::collections::HashMap<ObjectId, TunnelClient> = if client_ids.is_empty() {
+        std::collections::HashMap::new()
+    } else {
+        let rows: Vec<TunnelClient> = core
+            .db
+            .collection::<TunnelClient>(TunnelClient::COLLECTION)
+            .find(doc! {
+                "_id": { "$in": &client_ids },
+                "tenant_id": tenant_id,
+                "deleted_at": bson::Bson::Null,
+            })
+            .await
+            .map_err(storage_error)?
+            .try_collect()
+            .await
+            .map_err(storage_error)?;
+        rows.into_iter().filter_map(|c| Some((c.id?, c))).collect()
+    };
+    let mut owner_ids: Vec<ObjectId> = agents
+        .values()
+        .map(|a| a.owner_user_id)
+        .chain(clients.values().map(|c| c.owner_user_id))
+        .collect();
+    owner_ids.sort_unstable();
+    owner_ids.dedup();
+    let admitted = admitted_owner_set(core, &owner_ids).await?;
+    let now = DateTime::now();
+    let mut out = std::collections::HashMap::with_capacity(approvals.len());
+    for approval in approvals {
+        let device_id = approval.identity.device_id;
+        let (device, owner_user_id) = match approval.identity.kind {
+            DeviceKind::Agent => {
+                let Some(agent) = agents.get(&device_id) else {
+                    continue;
+                };
+                if matches!(agent.status, AgentStatus::Quarantined) {
+                    continue;
+                }
+                let Ok(device) = AuthenticatedDevice::from_agent(agent) else {
+                    continue;
+                };
+                (device, agent.owner_user_id)
+            }
+            DeviceKind::TunnelClient => {
+                let Some(client) = clients.get(&device_id) else {
+                    continue;
+                };
+                if matches!(client.status, AgentStatus::Quarantined) {
+                    continue;
+                }
+                let Ok(device) = AuthenticatedDevice::from_tunnel_client(client) else {
+                    continue;
+                };
+                (device, client.owner_user_id)
+            }
+        };
+        let role = effective_role(Some(&approval), &device, Some(owner), now);
+        if role != approval.role
+            || role == DeviceUseRole::Unknown
+            || admitted
+                .as_ref()
+                .is_some_and(|set| !set.contains(&owner_user_id))
+        {
+            continue;
+        }
+        out.insert((approval.identity.kind, device_id), role);
+    }
+    Ok(out)
+}
+
+/// Target-scoped live role evidence for either an `Agent` or a `TunnelClient`.
+/// Unlike `trial_server_evidence`'s legacy `Client` short-circuit, this verifies
+/// the live device row, token/machine generation, quarantine, and owner
+/// admission for both `Client` and `Server` roles so `business_unknown_role = enforce`
+/// never admits a stale or revoked device role.
+pub async fn trial_device_role_evidence(
+    core: &Core,
+    tenant_id: ObjectId,
+    kind: DeviceKind,
+    device_id: ObjectId,
+) -> TrialServerEvidence {
+    use TrialServerEvidence as E;
+    if check_test_role_read_fail(tenant_id).is_err() {
+        return E::Unknown;
+    }
+    let owner = match current_owner(core) {
+        Ok(Some(owner)) => owner,
+        Ok(None) => return E::ApprovalDisabled,
+        Err(_) => return E::Unknown,
+    };
+    let key = format!(
+        "{}:{tenant_id}:{device_id}",
+        match kind {
+            DeviceKind::Agent => "agent",
+            DeviceKind::TunnelClient => "tunnel_client",
+        }
+    );
+    let approval = match core
+        .db
+        .collection::<RoleApproval>(ROLE_APPROVALS_COLLECTION)
+        .find_one(doc! { "_id": key })
+        .await
+    {
+        Ok(Some(approval)) => approval,
+        Ok(None) => return E::MissingApproval,
+        Err(_) => return E::Unknown,
+    };
+    if approval.identity.kind != kind
+        || approval.identity.tenant_id != tenant_id
+        || approval.identity.device_id != device_id
+    {
+        return E::Unknown;
+    }
+    if approval.revoked || approval.role == DeviceUseRole::Unknown || approval.approved_by != owner
+    {
+        return E::ObservedInactive;
+    }
+    let (device, owner_user_id) = match kind {
+        DeviceKind::Agent => {
+            let agent = match core
+                .db
+                .collection::<Agent>(Agent::COLLECTION)
+                .find_one(doc! {
+                    "_id": device_id,
+                    "tenant_id": tenant_id,
+                    "deleted_at": bson::Bson::Null,
+                })
+                .await
+            {
+                Ok(Some(agent)) => agent,
+                Ok(None) => return E::ObservedInactive,
+                Err(_) => return E::Unknown,
+            };
+            if matches!(agent.status, AgentStatus::Quarantined) {
+                return E::ObservedInactive;
+            }
+            let Ok(device) = AuthenticatedDevice::from_agent(&agent) else {
+                return E::ObservedInactive;
+            };
+            (device, agent.owner_user_id)
+        }
+        DeviceKind::TunnelClient => {
+            let client = match core
+                .db
+                .collection::<TunnelClient>(TunnelClient::COLLECTION)
+                .find_one(doc! {
+                    "_id": device_id,
+                    "tenant_id": tenant_id,
+                    "deleted_at": bson::Bson::Null,
+                })
+                .await
+            {
+                Ok(Some(client)) => client,
+                Ok(None) => return E::ObservedInactive,
+                Err(_) => return E::Unknown,
+            };
+            if matches!(client.status, AgentStatus::Quarantined) {
+                return E::ObservedInactive;
+            }
+            let Ok(device) = AuthenticatedDevice::from_tunnel_client(&client) else {
+                return E::ObservedInactive;
+            };
+            (device, client.owner_user_id)
+        }
+    };
+    let role = effective_role(Some(&approval), &device, Some(owner), DateTime::now());
+    if role != approval.role || role == DeviceUseRole::Unknown {
+        return E::ObservedInactive;
+    }
+    match crate::admission::authorize_user_id(core, owner_user_id, None).await {
+        Ok(()) => match role {
+            DeviceUseRole::Server => E::ObservedServer,
+            DeviceUseRole::Client => E::ObservedClient,
+            DeviceUseRole::Unknown => E::ObservedInactive,
+        },
+        Err(ApiError::NotFound(_) | ApiError::Forbidden(_) | ApiError::Unauthorized(_)) => {
+            E::ObservedInactive
+        }
+        Err(_) => E::Unknown,
+    }
 }
 
 /// Target-scoped observations for admitting a *new* trial. None of these
@@ -673,6 +1014,9 @@ pub async fn trial_server_evidence(
     agent_id: ObjectId,
 ) -> TrialServerEvidence {
     use TrialServerEvidence as E;
+    if check_test_role_read_fail(tenant_id).is_err() {
+        return E::Unknown;
+    }
     let owner = match current_owner(core) {
         Ok(Some(owner)) => owner,
         Ok(None) => return E::ApprovalDisabled,

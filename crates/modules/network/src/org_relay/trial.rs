@@ -426,11 +426,42 @@ async fn trial_pair_evidence(
     state: &NetworkState, requester: &OverlayNode, peer: &OverlayNode,
 ) -> TrialPairEvidence {
     use crate::business_isolation::{self as iso, Mode};
-    use roomler_core::business_authority::{trial_server_evidence, TrialServerEvidence as E};
+    use roomler_core::business_authority::{
+        trial_device_role_evidence, trial_server_evidence, TrialServerEvidence as E,
+    };
     if iso::mode(state) != Mode::Enforce { return TrialPairEvidence::Allowed; }
-    let (NodeRef::Agent { agent_id: a }, NodeRef::Agent { agent_id: b }) =
-        (&requester.node_ref, &peer.node_ref) else { return TrialPairEvidence::Allowed };
+    let unknown_role_mode = iso::unknown_role_mode(state);
+    let (a_kind, a_id) = iso::Lines::ref_identity(&requester.node_ref);
+    let (b_kind, b_id) = iso::Lines::ref_identity(&peer.node_ref);
     let facts = tokio::time::timeout(Duration::from_secs(3), async {
+        if unknown_role_mode != Mode::Off {
+            let a_ev = trial_device_role_evidence(&state.core, requester.tenant_id, a_kind, a_id).await;
+            let b_ev = trial_device_role_evidence(&state.core, requester.tenant_id, b_kind, b_id).await;
+            if a_ev == E::Unknown || b_ev == E::Unknown {
+                return TrialPairEvidence::Unknown;
+            }
+            let a_approved = matches!(a_ev, E::ObservedClient | E::ObservedServer);
+            let b_approved = matches!(b_ev, E::ObservedClient | E::ObservedServer);
+            if !a_approved || !b_approved {
+                if unknown_role_mode == Mode::Enforce {
+                    return TrialPairEvidence::Denied;
+                }
+                let mut unknown_devices = Vec::new();
+                if !a_approved {
+                    unknown_devices.push(iso::Lines::node_label(requester));
+                }
+                if !b_approved {
+                    unknown_devices.push(iso::Lines::node_label(peer));
+                }
+                iso::log_unknown_role_with_peers(
+                    requester.tenant_id,
+                    "trial_pair_evidence",
+                    &unknown_devices,
+                );
+            }
+        }
+        let (NodeRef::Agent { agent_id: a }, NodeRef::Agent { agent_id: b }) =
+            (&requester.node_ref, &peer.node_ref) else { return TrialPairEvidence::Allowed };
         let a_role = trial_server_evidence(&state.core, requester.tenant_id, *a).await;
         let b_role = trial_server_evidence(&state.core, requester.tenant_id, *b).await;
         if a_role == E::Unknown || b_role == E::Unknown {
@@ -467,7 +498,13 @@ pub async fn request(
     let Some(req_id) = requester.id else { return };
     if !state.org_relay.trials.rate.check_bounded(req_id, req_id, 2) { return; }
     let Ok(peer) = state.overlay_nodes.base.find_by_id(peer_id).await else { return };
-    if req_id == peer_id || peer.tenant_id != requester.tenant_id || peer.deleted_at.is_some() { return; }
+    if req_id == peer_id
+        || peer.tenant_id != requester.tenant_id
+        || peer.deleted_at.is_some()
+        || !peer.is_key_authorized_at(bson::DateTime::now())
+    {
+        return;
+    }
     if peer_relay_mode(state, requester.tenant_id).await != PeerRelayMode::On { return; }
     if !state.org_relay.join_extras(req_id).supports_path_trial_v1 || !state.org_relay.join_extras(peer_id).supports_path_trial_v1 { return; }
     // Read exact target evidence before any new candidate is created. This is

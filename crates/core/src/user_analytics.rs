@@ -86,6 +86,7 @@ pub fn parse_ua(ua: &str) -> UaInfo {
 /// `None`, which surfaces as `unknown` — never a fabricated country.
 pub struct GeoIp {
     reader: Option<maxminddb::Reader<Vec<u8>>>,
+    dataset_epoch: std::sync::atomic::AtomicU64,
 }
 
 /// The loaded reader's own version metadata, not an IP label or a guessed
@@ -166,12 +167,28 @@ impl GeoIp {
                 None
             }
         });
-        Self { reader }
+        Self {
+            reader,
+            dataset_epoch: std::sync::atomic::AtomicU64::new(1),
+        }
+    }
+
+    /// Monotonic generation bumped when the GeoIP dataset freshness is
+    /// re-evaluated or reloaded so cached tunnel/forward zone verdicts
+    /// re-verify against current dataset validity.
+    pub fn dataset_generation(&self) -> u64 {
+        self.dataset_epoch.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    pub fn bump_dataset_generation(&self) {
+        self.dataset_epoch
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
     }
 
     /// Report the loaded reader's security freshness without inspecting or
     /// logging any address. This does not reload the reader or grant access.
     pub fn warn_if_dataset_stale(&self) {
+        self.bump_dataset_generation();
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |duration| duration.as_secs());

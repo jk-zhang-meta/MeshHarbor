@@ -191,7 +191,7 @@ pub async fn create(
             body.destinations,
         )
         .await?;
-    refan_tenant(&state, tid).await;
+    crate::overlay::publish_and_refan_tenant_authority(&state, tid, true, "policy_create").await;
     Ok(Json(created.into()))
 }
 
@@ -245,7 +245,8 @@ pub async fn update(
         )
         .await?;
     if changed {
-        refan_tenant(&state, tid).await;
+        crate::overlay::publish_and_refan_tenant_authority(&state, tid, true, "policy_update")
+            .await;
     }
     // The refetch is live too: a removal that raced the write is a 404, not
     // a 200 carrying the tombstone.
@@ -275,7 +276,7 @@ pub async fn delete(
     if !removed {
         return Err(ApiError::NotFound("Overlay policy not found".into()));
     }
-    refan_tenant(&state, tid).await;
+    crate::overlay::publish_and_refan_tenant_authority(&state, tid, true, "policy_delete").await;
     Ok(Json(serde_json::json!({ "deleted": true })))
 }
 
@@ -297,38 +298,6 @@ pub async fn set_mode(
 ) -> Result<Json<AclModeResponse>, ApiError> {
     let tid = gate(&state, &tenant_id, &auth).await?;
     state.overlay_networks.set_acl_mode(tid, body.mode).await?;
-    refan_tenant(&state, tid).await;
+    crate::overlay::publish_and_refan_tenant_authority(&state, tid, false, "acl_mode").await;
     Ok(Json(AclModeResponse { mode: body.mode }))
-}
-
-/// Re-fan every node in the tenant so a policy edit takes effect immediately,
-/// and refresh the DERP relay allow table with it.
-///
-/// `refan_node` is single-node; a policy change can alter what EVERY node
-/// sees of every other, so the whole network has to be re-evaluated. Nodes are
-/// re-fanned one at a time (each fan-out is itself per-recipient), which is
-/// fine at fleet scale and keeps the write path simple — netmap edits are rare.
-///
-/// The DERP rebuild is NOT optional here: reshaping netmaps alone would leave a
-/// denied pair still able to relay by pubkey, which is the bypass the gate
-/// exists to close. It runs AFTER the fan so the two never disagree in the
-/// permissive direction — a peer loses its netmap entry before it loses relay.
-async fn refan_tenant(state: &NetworkState, tenant_id: ObjectId) {
-    let Ok(network) = state.overlay_networks.get_or_create(tenant_id).await else {
-        return;
-    };
-    let Some(network_id) = network.id else { return };
-    let Ok(nodes) = state
-        .overlay_nodes
-        .list_active_in_network(tenant_id, network_id)
-        .await
-    else {
-        return;
-    };
-    for n in &nodes {
-        crate::overlay::refan_node(state, n).await;
-    }
-    crate::derp_acl::rebuild(state, tenant_id, network_id).await;
-    // FR-19 — a policy edit can un-grant a live relay session; revoke those.
-    crate::org_relay::reconcile_acl(state, tenant_id).await;
 }

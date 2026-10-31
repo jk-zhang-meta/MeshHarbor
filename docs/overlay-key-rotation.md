@@ -321,16 +321,33 @@ The server cannot see the device switch, so a switched-off device is still order
 | kill switch · epoch | `crates/agent-core/src/config.rs:980-868`, `:1575`, `:1576-1578`; `config_surface.rs:1096-1069` |
 | UI: action, dialog, chip, store | `ui/src/components/admin/AgentsSection.vue:177`, `:1199-1226`, `:1995-2096`; `ui/src/stores/agents.ts:948-902` |
 
+## B4: Retired keys, TTL fencing, and recovery notes
+
+- **Retired keys and monotonic epoch fencing.** `OverlayNodeDao::rehydrate` appends the
+  previous key to `retired_wg_keys[]` (bounded to the most recent 64 keys via `$slice: -64`)
+  in the same document CAS that advances `key_epoch`, and `wg_key_retired_in_network` /
+  `wg_key_taken_by_other` reject any join or DERP registration presenting a retired,
+  revoked, or expired key (`OverlayJoinRefusal::KeyUnauthorized`). When a join is refused
+  because of the **same `machine_id`'s** own row (live or tombstoned), `handle_overlay_join`
+  calls `order_auto_key_rotate_if_needed` so an agent advertising `key-rotate` automatically
+  receives `rc:agent.key_rotate` and heals itself with a freshly minted key.
+- **Audit trigger reason (`KeyRotationAuditEvent::reason`).** `key_rotation_audit` rows
+  record `reason: Some("manual")`, `Some("auto_ttl")`, or `Some("admin_revoke")` so
+  operators can distinguish automatic TTL/fencing rotations from manual owner/admin orders.
+- **Legacy agents under `ROOMLER_OVERLAY_KEY_TTL_SECS`.** `OverlayNodeDao::create` applies
+  `ROOMLER_OVERLAY_KEY_TTL_SECS` (clamped to `>= 60` seconds when non-zero) to all newly
+  created overlay nodes regardless of agent version. Pre-`0.4.25` agents that do not
+  advertise `key-rotate` cannot execute automatic `rc:agent.key_rotate` orders and require
+  manual agent update or operator intervention when their key TTL expires.
+- **Recovery when a rotated device (`key_epoch > 0`) loses its local config.** If a device
+  whose `OverlayNode` row has `key_epoch > 0` loses its local `config.toml` and reconnects
+  with a newly minted key at `key_epoch = 0`, `rehydrate` rejects the join under the
+  monotonic `key_epoch < current.key_epoch` fence. The operator recovery procedure is to
+  evict the node row (`DELETE /api/tenant/{tid}/overlay-node/{id}`); the next join then
+  creates a fresh `OverlayNode` lease at the device's current `key_epoch`.
+
 ## Not built
 
-- **Retired keys (P2).** Today `wg_key_taken_by_other` is live-scoped and a retired
-  key neither blocks nor is refused: a `.prev` rollback, or an attacker holding both
-  the old WireGuard key and the agent token, could present it again. P2 appends the
-  old key to the node row's `retired_keys[]` on a key change, refuses a join or a DERP
-  registration presenting one (`key_retired`), and — for a device that advertises the
-  verb — answers the refusal with a `KeyRotate` order so a rolled-back device heals
-  itself instead of sitting on the control plane and off the mesh. Also owed: an
-  index on `(network_id, wg_public_key)`.
 - **`roomler overlay rotate-key [--org]` (P3)** over LocalAPI — the break-glass path
   for when the control plane is the compromised thing — and rotation for tunnel-only
   clients.
