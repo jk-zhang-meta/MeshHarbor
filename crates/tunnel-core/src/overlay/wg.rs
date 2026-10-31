@@ -2330,6 +2330,10 @@ impl WgDevice {
         } else {
             self.on_demand
         };
+        let incumbent_pq = self
+            .peers
+            .get(&peer_public)
+            .and_then(|p| p.stats.pq.get().cloned());
         let peer = self.make_carrier_peer(
             peer_public,
             overlay_ip,
@@ -2338,6 +2342,7 @@ impl WgDevice {
             self.disco_events_tx.clone(),
             on_demand_cfg,
             carried_wake_pkts,
+            incumbent_pq,
         );
         let (tunn, carrier, stats, multipath) = (
             peer.tunn.clone(),
@@ -2365,6 +2370,7 @@ impl WgDevice {
         disco_sink: mpsc::Sender<super::disco::DiscoInbound>,
         on_demand_cfg: super::on_demand::OnDemandConfig,
         carried_wake_pkts: Vec<Vec<u8>>,
+        incumbent_pq: Option<Arc<super::pq_psk::PqPeerHandle>>,
     ) -> Peer {
         let index = self.alloc_index();
         let initial_psk = super::pq_psk::PqPeerHandle::initial_tunn_psk(&self.pq_psk);
@@ -2397,17 +2403,22 @@ impl WgDevice {
                 .inherit_wake_queue(&mut tunn_inner, carried_wake_pkts, mono_ns_now());
         }
         let tunn = Arc::new(Mutex::new(tunn_inner));
-        let pq_handle = super::pq_psk::PqPeerHandle::new(
-            self.pq_psk.clone(),
-            self.secret.clone(),
-            self.public.to_bytes(),
-            peer_public,
-            index,
-            Some(KEEPALIVE_SECS),
-            tunn.clone(),
-            carrier.clone(),
-            stats.clone(),
-        );
+        let pq_handle = if let Some(existing_pq) = incumbent_pq {
+            existing_pq.rebind_primary(index, &tunn, &carrier, &stats);
+            existing_pq
+        } else {
+            super::pq_psk::PqPeerHandle::new(
+                self.pq_psk.clone(),
+                self.secret.clone(),
+                self.public.to_bytes(),
+                peer_public,
+                index,
+                Some(KEEPALIVE_SECS),
+                tunn.clone(),
+                carrier.clone(),
+                stats.clone(),
+            )
+        };
         let _ = stats.pq.set(pq_handle.clone());
         let multipath = Arc::new(super::multipath::PeerMultipathState::default());
 
@@ -2705,7 +2716,9 @@ impl WgDevice {
                     // or periodic PQ-PSK rotations.
                     continue;
                 }
-                if let Some(pq) = stats.pq.get() {
+                if let Some(pq) = stats.pq.get()
+                    && pq.is_primary_stats(&stats)
+                {
                     pq.tick_timer().await;
                 }
                 if stats.pq_guard_active.load(Ordering::Acquire) {
@@ -2813,6 +2826,7 @@ impl WgDevice {
             self.disco_events_tx.clone(),
             super::on_demand::OnDemandConfig::disabled(),
             Vec::new(),
+            None,
         );
         candidate.stats.org_role.store(true, Ordering::Relaxed);
         Self::drive_initiator_proof(&mut candidate);
@@ -3238,6 +3252,7 @@ impl WgDevice {
             tx,
             super::on_demand::OnDemandConfig::disabled(),
             Vec::new(),
+            None,
         );
         Self::drive_initiator_proof(&mut candidate);
         self.path_trials.insert(
@@ -3954,17 +3969,43 @@ impl WgDevice {
                 .inherit_wake_queue(&mut tunn_inner, carried_wake_pkts, mono_ns_now());
         }
         let tunn = Arc::new(Mutex::new(tunn_inner));
-        let pq_handle = super::pq_psk::PqPeerHandle::new(
-            self.pq_psk.clone(),
-            self.secret.clone(),
-            self.public.to_bytes(),
-            peer_public,
-            index,
-            Some(KEEPALIVE_SECS),
-            tunn.clone(),
-            carrier.clone(),
-            stats.clone(),
-        );
+        let in_committed_trial = self
+            .path_trials
+            .values()
+            .any(|t| t.public_key == peer_public && t.committed && !t.returned);
+        let incumbent_pq = if probing || !in_committed_trial {
+            self.peers
+                .get(&peer_public)
+                .and_then(|p| p.stats.pq.get().cloned())
+        } else {
+            None
+        };
+        let (pq_handle, attached_to_incumbent) = if let Some(existing_pq) = incumbent_pq {
+            if probing {
+                existing_pq
+                    .attach_shadow_probe(index, &tunn, &carrier, &stats, initiate && !defer_init)
+                    .await;
+                (existing_pq, true)
+            } else {
+                existing_pq.rebind_primary(index, &tunn, &carrier, &stats);
+                (existing_pq, false)
+            }
+        } else {
+            (
+                super::pq_psk::PqPeerHandle::new(
+                    self.pq_psk.clone(),
+                    self.secret.clone(),
+                    self.public.to_bytes(),
+                    peer_public,
+                    index,
+                    Some(KEEPALIVE_SECS),
+                    tunn.clone(),
+                    carrier.clone(),
+                    stats.clone(),
+                ),
+                false,
+            )
+        };
         let _ = stats.pq.set(pq_handle.clone());
         let multipath = Arc::new(super::multipath::PeerMultipathState::default());
         let ingress = self.ingress_for(peer_public, stats.clone(), multipath.clone());
@@ -4018,7 +4059,8 @@ impl WgDevice {
             multipath.clone(),
         );
 
-        if !defer_init
+        if !attached_to_incumbent
+            && !defer_init
             && self.pq_psk.mode != super::pq_psk::PqPskMode::Off
             && (initiate || pq_handle.is_primary_initiator())
         {
@@ -4390,6 +4432,10 @@ impl WgDevice {
     pub fn promote_direct_probe(&mut self, peer_public: &[u8; 32]) -> bool {
         if let Some(probe) = self.probes.remove(peer_public) {
             let identity = probe.direct_identity();
+            let probe_idx = probe.plane_idx.or(probe.direct_index).unwrap_or(0);
+            if let Some(pq) = probe.stats.pq.get() {
+                pq.promote_shadow_to_primary(probe_idx, &probe.tunn, &probe.carrier, &probe.stats);
+            }
             let handshake_done = probe.stats.handshake.load(Ordering::Relaxed);
             self.cancel_org_upgrade(peer_public);
             self.drop_org_floor_receiver(peer_public);
@@ -4429,9 +4475,26 @@ impl WgDevice {
     /// is untouched, so there is no stall. No-op if there is no probe.
     pub async fn drop_direct_probe(&mut self, peer_public: &[u8; 32]) {
         if let Some(probe) = self.probes.remove(peer_public) {
+            if let Some(pq) = probe.stats.pq.get() {
+                pq.clear_shadow_probe(&probe.stats);
+            }
             self.unregister_direct(&probe).await;
         }
         self.sync_peer_on_demand_hold(peer_public);
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn peer_tunn_psk(&self, peer_public: &[u8; 32]) -> Option<Option<[u8; 32]>> {
+        let p = self.peers.get(peer_public)?;
+        let psk = p.tunn.lock().await.preshared_key();
+        Some(psk)
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn probe_tunn_psk(&self, peer_public: &[u8; 32]) -> Option<Option<[u8; 32]>> {
+        let p = self.probes.get(peer_public)?;
+        let psk = p.tunn.lock().await.preshared_key();
+        Some(psk)
     }
 
     /// Did an MBB upgrade probe hear ANYTHING back from the far end?
@@ -5434,7 +5497,9 @@ pub(crate) fn decap_inbound(
         // boringtun authenticated it (mac1/cookie), so a spoofed flood
         // cannot bump this.
         if is_handshake_init {
-            stats.reinit_seen.fetch_add(1, Ordering::Relaxed);
+            if !stats.on_demand.is_dormant_or_waking() {
+                stats.reinit_seen.fetch_add(1, Ordering::Relaxed);
+            }
             stats.on_demand.on_inbound_handshake_init(now_ns);
         }
         // Stage 2 — a HANDSHAKE RESPONSE (type 2) that decapsulated without
@@ -9436,6 +9501,335 @@ mod tests {
         pump_ab.abort();
         pump_ba.abort();
         let _ = &mut rx_a;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pq_psk_direct_probe_shares_handle_and_preserves_psk_across_promotion_and_rotation() {
+        use super::super::pq_psk::{PqPeerStatus, PqPskConfig, PqPskMode};
+
+        let a = WgKeypair::generate();
+        let b = WgKeypair::generate();
+        let pk_a = a.public.to_bytes();
+        let pk_b = b.public.to_bytes();
+
+        // Relay carrier sockets for initial incumbent peer installation.
+        let relay_sock_a = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let relay_sock_b = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let relay_addr_a = relay_sock_a.local_addr().unwrap();
+        let relay_addr_b = relay_sock_b.local_addr().unwrap();
+
+        // Direct demux sockets for make-before-break shadow direct probes.
+        let direct_sock_a = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let direct_sock_b = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let direct_addr_a = direct_sock_a.local_addr().unwrap();
+        let direct_addr_b = direct_sock_b.local_addr().unwrap();
+
+        let (mut dev_a, mut rx_a) = WgDevice::new(a.secret.clone());
+        let (mut dev_b, mut rx_b) = WgDevice::new(b.secret.clone());
+        let cfg = PqPskConfig {
+            mode: PqPskMode::Required,
+            rekey_interval: Duration::from_secs(60),
+            max_lifetime: Duration::from_secs(300),
+            retry_interval: Duration::from_millis(100),
+            max_retries: 6,
+            configured_psk: None,
+        };
+        dev_a.set_pq_psk_config(cfg.clone());
+        dev_b.set_pq_psk_config(cfg);
+
+        dev_a.ensure_direct_demux(direct_sock_a.clone());
+        dev_b.ensure_direct_demux(direct_sock_b.clone());
+
+        dev_a.add_peer(
+            pk_b,
+            IP_B,
+            Carrier::direct(relay_sock_a.clone(), relay_addr_b),
+            true,
+        );
+        dev_b.add_peer(
+            pk_a,
+            IP_A,
+            Carrier::direct(relay_sock_b, relay_addr_a),
+            false,
+        );
+
+        let fp1 = tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let sa = dev_a.peer_pq_psk_snapshot(&pk_b).await.unwrap();
+                let sb = dev_b.peer_pq_psk_snapshot(&pk_a).await.unwrap();
+                if sa.current_epoch == 1
+                    && sb.current_epoch == 1
+                    && matches!(sa.status, PqPeerStatus::Established { epoch: 1 })
+                    && matches!(sb.status, PqPeerStatus::Established { epoch: 1 })
+                {
+                    assert_eq!(sa.psk_fingerprint, sb.psk_fingerprint);
+                    return sa.psk_fingerprint.unwrap();
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("epoch 1 must establish on relay carrier");
+
+        let psk1_a = dev_a.peer_tunn_psk(&pk_b).await.unwrap().expect("psk1");
+        let psk1_b = dev_b.peer_tunn_psk(&pk_a).await.unwrap().expect("psk1");
+        assert_eq!(psk1_a, psk1_b);
+
+        // Start shadow direct probe on B first and verify a classical (`PSK = None`)
+        // HandshakeInit fails to complete because the shadow probe uses `Some(psk1_b)`.
+        dev_b
+            .start_direct_probe(direct_sock_b.clone(), pk_a, IP_A, direct_addr_a, false)
+            .await;
+        assert_eq!(dev_b.probe_tunn_psk(&pk_a).await.unwrap(), Some(psk1_b));
+        {
+            let mut classical_attacker =
+                Tunn::new(a.secret.clone(), b.public, None, None, 999, None);
+            let mut buf_att = vec![0u8; WG_BUF];
+            let mut buf_probe = vec![0u8; WG_BUF];
+            let classical_init =
+                match classical_attacker.format_handshake_initiation(&mut buf_att, false) {
+                    TunnResult::WriteToNetwork(b) => b.to_vec(),
+                    other => panic!("expected classical HandshakeInit, got {other:?}"),
+                };
+            let probe_tunn = dev_b.probes.get(&pk_a).unwrap().tunn.clone();
+            let resp_bytes = {
+                let mut pt = probe_tunn.lock().await;
+                match pt.decapsulate(None, &classical_init, &mut buf_probe) {
+                    TunnResult::WriteToNetwork(b) => b.to_vec(),
+                    other => panic!("expected HandshakeResponse, got {other:?}"),
+                }
+            };
+            assert!(
+                matches!(
+                    classical_attacker.decapsulate(None, &resp_bytes, &mut buf_att),
+                    TunnResult::Err(_)
+                ),
+                "classical PSK=None peer must never complete a handshake with a Required-mode shadow probe"
+            );
+        }
+
+        // Now start fresh shadow direct probes (`probing = true`) on both sides.
+        dev_b
+            .start_direct_probe(direct_sock_b.clone(), pk_a, IP_A, direct_addr_a, false)
+            .await;
+        dev_a
+            .start_direct_probe(direct_sock_a.clone(), pk_b, IP_B, direct_addr_b, true)
+            .await;
+
+        // Verify shadow probes immediately inherited `psk1` (not classical `None` and not a random guard PSK).
+        assert_eq!(dev_a.probe_tunn_psk(&pk_b).await.unwrap(), Some(psk1_a));
+        assert_eq!(dev_b.probe_tunn_psk(&pk_a).await.unwrap(), Some(psk1_b));
+
+        // Wait for the PQ-keyed shadow direct probe handshake to latch bidirectionally.
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if dev_a.probe_handshake_done(&pk_b) == Some(true)
+                    && dev_b.probe_handshake_done(&pk_a) == Some(true)
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("shadow direct probe must complete WG handshake using inherited PQ-PSK");
+
+        // Trigger a live PQ-PSK rotation to epoch = 2 WHILE the shadow probe is still in `probes` (before promotion).
+        assert!(dev_a.rotate_peer_pq_psk(&pk_b).await);
+        let fp2 = tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let sa = dev_a.peer_pq_psk_snapshot(&pk_b).await.unwrap();
+                let sb = dev_b.peer_pq_psk_snapshot(&pk_a).await.unwrap();
+                if sa.current_epoch == 2 && sb.current_epoch == 2 {
+                    assert_eq!(sa.psk_fingerprint, sb.psk_fingerprint);
+                    return sa.psk_fingerprint.unwrap();
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("rotation to epoch 2 while probe is in flight must succeed");
+        assert_ne!(fp1, fp2);
+
+        // Both the incumbent `Peer` AND the shadow `probe` must now hold the rotated `epoch = 2` PSK!
+        let psk2_a = dev_a.peer_tunn_psk(&pk_b).await.unwrap().expect("psk2");
+        let psk2_b = dev_b.peer_tunn_psk(&pk_a).await.unwrap().expect("psk2");
+        assert_eq!(psk2_a, psk2_b);
+        assert_ne!(psk2_a, psk1_a);
+        assert_eq!(dev_a.probe_tunn_psk(&pk_b).await.unwrap(), Some(psk2_a));
+        assert_eq!(dev_b.probe_tunn_psk(&pk_a).await.unwrap(), Some(psk2_b));
+
+        // Rebuild the primary relay Peer in-place (`add_peer`) while the shadow probe is active
+        // and verify `rebind_primary` preserves the shared `PqPeerHandle`, `epoch = 2`, and `psk2_a`.
+        dev_a.add_peer(
+            pk_b,
+            IP_B,
+            Carrier::direct(relay_sock_a.clone(), relay_addr_b),
+            true,
+        );
+        assert_eq!(
+            dev_a
+                .peer_pq_psk_snapshot(&pk_b)
+                .await
+                .unwrap()
+                .current_epoch,
+            2
+        );
+        assert_eq!(dev_a.peer_tunn_psk(&pk_b).await.unwrap(), Some(psk2_a));
+        assert_eq!(dev_a.probe_tunn_psk(&pk_b).await.unwrap(), Some(psk2_a));
+
+        // Promote the shadow direct probes on both sides and verify epoch = 2, rotations_completed = 1,
+        // and `peer_tunn_psk == Some(psk2)` are preserved on the promoted direct peers.
+        assert!(dev_a.promote_direct_probe(&pk_b));
+        assert!(dev_b.promote_direct_probe(&pk_a));
+
+        let sa_after = dev_a.peer_pq_psk_snapshot(&pk_b).await.unwrap();
+        let sb_after = dev_b.peer_pq_psk_snapshot(&pk_a).await.unwrap();
+        assert_eq!(sa_after.current_epoch, 2);
+        assert_eq!(sb_after.current_epoch, 2);
+        assert_eq!(sa_after.rotations_completed, 1);
+        assert_eq!(sb_after.rotations_completed, 1);
+        assert_eq!(sa_after.psk_fingerprint, Some(fp2));
+        assert_eq!(sb_after.psk_fingerprint, Some(fp2));
+        assert_eq!(dev_a.peer_tunn_psk(&pk_b).await.unwrap(), Some(psk2_a));
+        assert_eq!(dev_b.peer_tunn_psk(&pk_a).await.unwrap(), Some(psk2_b));
+
+        // Verify data traffic flows over the promoted direct carrier and a subsequent rotation (epoch = 3) succeeds.
+        assert!(dev_a.rotate_peer_pq_psk(&pk_b).await);
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let sa = dev_a.peer_pq_psk_snapshot(&pk_b).await.unwrap();
+                let sb = dev_b.peer_pq_psk_snapshot(&pk_a).await.unwrap();
+                if sa.current_epoch == 3 && sb.current_epoch == 3 {
+                    assert_eq!(sa.psk_fingerprint, sb.psk_fingerprint);
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("rotation to epoch 3 on promoted direct peer must succeed");
+
+        wait_connected(&dev_a, &pk_b).await;
+        let payload = synthetic_ipv4(IP_A, IP_B, b"direct-promoted-pq-psk-epoch3");
+        send_until_ok(&dev_a, &pk_b, &payload).await;
+        let got = tokio::time::timeout(Duration::from_secs(2), rx_b.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(got, payload);
+        let _ = &mut rx_a;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pq_psk_direct_probe_created_during_initial_guard_blocks_classical_and_unlocks_on_establish()
+     {
+        use super::super::pq_psk::{PqPeerStatus, PqPskConfig, PqPskMode};
+
+        let a = WgKeypair::generate();
+        let b = WgKeypair::generate();
+        let pk_a = a.public.to_bytes();
+        let pk_b = b.public.to_bytes();
+
+        // Bind dead/unconnected relay sockets first so initial PQ negotiation stays in `Negotiating { epoch: 1 }`
+        // with `guard_active == true`.
+        let dead_sock_a = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let dead_sock_b = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let blackhole_dst: SocketAddr = "127.0.0.1:9".parse().unwrap();
+
+        let direct_sock_a = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let direct_sock_b = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let direct_addr_a = direct_sock_a.local_addr().unwrap();
+        let direct_addr_b = direct_sock_b.local_addr().unwrap();
+
+        let (mut dev_a, _rx_a) = WgDevice::new(a.secret.clone());
+        let (mut dev_b, _rx_b) = WgDevice::new(b.secret.clone());
+        let cfg = PqPskConfig {
+            mode: PqPskMode::Required,
+            rekey_interval: Duration::from_secs(60),
+            max_lifetime: Duration::from_secs(300),
+            retry_interval: Duration::from_millis(80),
+            max_retries: 10,
+            configured_psk: None,
+        };
+        dev_a.set_pq_psk_config(cfg.clone());
+        dev_b.set_pq_psk_config(cfg);
+        dev_a.ensure_direct_demux(direct_sock_a.clone());
+        dev_b.ensure_direct_demux(direct_sock_b.clone());
+
+        dev_a.add_peer(
+            pk_b,
+            IP_B,
+            Carrier::direct(dead_sock_a.clone(), blackhole_dst),
+            true,
+        );
+        dev_b.add_peer(
+            pk_a,
+            IP_A,
+            Carrier::direct(dead_sock_b.clone(), blackhole_dst),
+            false,
+        );
+
+        // Start shadow direct probes WHILE `epoch = 1` is still `Negotiating` (`guard_active == true`).
+        dev_b
+            .start_direct_probe(direct_sock_b.clone(), pk_a, IP_A, direct_addr_a, false)
+            .await;
+        dev_a
+            .start_direct_probe(direct_sock_a.clone(), pk_b, IP_B, direct_addr_b, true)
+            .await;
+
+        assert!(
+            dev_a.probe_tunn_psk(&pk_b).await.unwrap().is_some(),
+            "shadow probe created under Required guard must have a non-None guard PSK"
+        );
+        assert!(
+            dev_b.probe_tunn_psk(&pk_a).await.unwrap().is_some(),
+            "shadow probe created under Required guard must have a non-None guard PSK"
+        );
+        assert_eq!(dev_a.probe_handshake_done(&pk_b), Some(false));
+
+        // Now connect the incumbent carriers by pointing them at the direct sockets so the
+        // in-flight `epoch = 1` PQ-PSK retry completes, and verify the shadow probe automatically
+        // receives the negotiated `epoch = 1` PSK and completes its direct WG handshake!
+        dev_a
+            .peers
+            .get(&pk_b)
+            .unwrap()
+            .carrier
+            .set_direct_endpoint(direct_sock_a.clone(), direct_addr_b);
+        dev_b
+            .peers
+            .get(&pk_a)
+            .unwrap()
+            .carrier
+            .set_direct_endpoint(direct_sock_b.clone(), direct_addr_a);
+
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let sa = dev_a.peer_pq_psk_snapshot(&pk_b).await.unwrap();
+                let sb = dev_b.peer_pq_psk_snapshot(&pk_a).await.unwrap();
+                if matches!(sa.status, PqPeerStatus::Established { epoch: 1 })
+                    && matches!(sb.status, PqPeerStatus::Established { epoch: 1 })
+                    && dev_a.probe_handshake_done(&pk_b) == Some(true)
+                    && dev_b.probe_handshake_done(&pk_a) == Some(true)
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("shadow probe must unlock and complete WG handshake once epoch 1 establishes");
+
+        let negotiated_psk = dev_a.peer_tunn_psk(&pk_b).await.unwrap().expect("psk");
+        assert_eq!(
+            dev_a.probe_tunn_psk(&pk_b).await.unwrap(),
+            Some(negotiated_psk)
+        );
+        assert_eq!(
+            dev_b.probe_tunn_psk(&pk_a).await.unwrap(),
+            Some(negotiated_psk)
+        );
     }
 
     // -----------------------------------------------------------------------

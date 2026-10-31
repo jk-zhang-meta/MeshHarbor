@@ -377,14 +377,29 @@ impl OverlayRuntime {
         wg: &mut WgDevice,
         by_node: &mut HashMap<ObjectId, Installed>,
         samples: &mut HashMap<ObjectId, BusinessTrafficSample>,
-    ) {
+    ) -> bool {
         wg.tick_on_demand();
+        let on_demand_on = wg.on_demand_config().enabled;
+        let mut view_changed = false;
         samples.retain(|nid, _| by_node.contains_key(nid));
         let now = Instant::now();
         for (nid, e) in by_node.iter_mut() {
+            let hs_done = wg.peer_handshake_done(&e.pubkey).unwrap_or(false);
+            if on_demand_on && e.hs_done != hs_done {
+                e.hs_done = hs_done;
+                if let Some((tx, rx)) = wg.peer_traffic(&e.pubkey) {
+                    e.last_traffic = (tx, rx);
+                }
+                if wg.peer_is_dormant_or_waking(&e.pubkey) == Some(true) {
+                    e.stalled = false;
+                    e.bad_sweeps = 0;
+                    e.poke = None;
+                }
+                view_changed = true;
+            }
             if wg.peer_is_dormant_or_waking(&e.pubkey) == Some(true)
                 || !e.is_direct
-                || !wg.peer_handshake_done(&e.pubkey).unwrap_or(false)
+                || !hs_done
                 || now.saturating_duration_since(e.since) < crate::overlay::lifecycle::DIRECT_GRACE
             {
                 samples.remove(nid);
@@ -446,6 +461,7 @@ impl OverlayRuntime {
                     "overlay: unanswered business traffic — fast validation of the direct carrier");
             }
         }
+        view_changed
     }
 
     /// F2 — standby upkeep, once per scout tick. Every peer on a direct
@@ -604,6 +620,8 @@ impl OverlayRuntime {
                 e.stalled = false;
                 e.hs_done = handshake_done;
                 e.poke = None;
+                e.reinit_recent = 0;
+                e.reinit_window_from = now;
                 if dormant_or_waking {
                     continue;
                 }
@@ -4178,5 +4196,105 @@ mod tests {
             "waking peer past waking_timeout must be convicted immediately for relay fallback"
         );
         assert!(!by_node.contains_key(&nid));
+    }
+
+    /// MeshHarbor B6 R2 — an inbound `HandshakeInit` that wakes a `Dormant`
+    /// peer must not increment `reinit_seen` (`#22` rapid re-initiation
+    /// pressure against an established session), and `scout_business_traffic`
+    /// must immediately synchronize `Installed::hs_done` and return `true`
+    /// (`view_changed`) on both `Active -> Dormant` (`hs_done: true -> false`)
+    /// and `Dormant -> Active` (`hs_done: false -> true`) transitions.
+    #[tokio::test]
+    async fn b6_dormant_inbound_wake_does_not_trip_reinit_pressure_and_scout_syncs_hs_done() {
+        let kp_a = WgKeypair::generate();
+        let kp_b = WgKeypair::generate();
+        let pk_a = kp_a.public.to_bytes();
+        let pk_b = kp_b.public.to_bytes();
+        let nid_a = ObjectId::new();
+        let ip_a = Ipv4Addr::new(100, 64, 9, 21);
+        let ip_b = Ipv4Addr::new(100, 64, 9, 22);
+
+        let (tx, _rx) = mpsc::channel(16);
+        let tun: Arc<dyn TunIo> = Arc::new(NoopTun);
+        let tf: TunFactory = {
+            let t = tun.clone();
+            Box::new(move |_, _, _| Ok(t.clone()))
+        };
+        let rt_b = OverlayRuntime::new_relay(kp_b.clone(), tx, tf, 1280);
+
+        let (mut wg_a, _rx_a) = WgDevice::new(kp_a.secret.clone());
+        let (mut wg_b, _rx_b) = WgDevice::new(kp_b.secret.clone());
+        let cfg = crate::overlay::on_demand::OnDemandConfig::enabled(Duration::from_millis(120));
+        wg_a.set_on_demand_config(cfg);
+        wg_b.set_on_demand_config(cfg);
+
+        let sock_a = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let sock_b = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let addr_a = sock_a.local_addr().unwrap();
+        let addr_b = sock_b.local_addr().unwrap();
+        wg_a.ensure_direct_demux(sock_a.clone());
+        wg_b.ensure_direct_demux(sock_b.clone());
+        wg_a.add_direct_peer(sock_a.clone(), pk_b, ip_b, addr_b, true)
+            .await;
+        wg_b.add_direct_peer(sock_b.clone(), pk_a, ip_a, addr_a, true)
+            .await;
+
+        let mut inst_a = Installed::base(pk_a, ip_a, DirectTier::Srflx, Instant::now());
+        inst_a.hs_done = false;
+        let mut by_node = HashMap::from([(nid_a, inst_a)]);
+        let mut samples = HashMap::new();
+
+        // Repeatedly wake `wg_b` from `Dormant` via outbound packet from `wg_a`
+        // (6 times > REINIT_PRESSURE_THRESHOLD = 5) and verify `wg_b` never
+        // accumulates `reinit_seen` from legitimate dormant wakeups.
+        for _ in 0..6 {
+            assert_eq!(wg_b.peer_is_dormant(&pk_a), Some(true));
+            let mut pkt = vec![0u8; 28];
+            pkt[0] = 0x45;
+            pkt[3] = 28;
+            pkt[8] = 64;
+            pkt[9] = 17;
+            pkt[12..16].copy_from_slice(&ip_a.octets());
+            pkt[16..20].copy_from_slice(&ip_b.octets());
+            assert!(wg_a.send_ip_packet(&pkt).await);
+
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while Instant::now() < deadline {
+                if wg_b.peer_handshake_done(&pk_a) == Some(true) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            assert_eq!(wg_b.peer_handshake_done(&pk_a), Some(true));
+            assert_eq!(
+                wg_b.peer_take_reinits(&pk_a),
+                0,
+                "inbound HandshakeInit waking a Dormant peer must not bump reinit_seen"
+            );
+
+            // `scout_business_traffic` immediately observes `hs_done: false -> true`.
+            assert!(
+                rt_b.scout_business_traffic(&mut wg_b, &mut by_node, &mut samples),
+                "scout_business_traffic must report view_changed on Dormant -> Active"
+            );
+            assert!(by_node[&nid_a].hs_done);
+
+            // Wait for both peers to return to `Dormant`.
+            let d_deadline = Instant::now() + Duration::from_secs(2);
+            while Instant::now() < d_deadline {
+                if wg_a.peer_is_dormant(&pk_b) == Some(true)
+                    && wg_b.peer_is_dormant(&pk_a) == Some(true)
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            assert_eq!(wg_b.peer_is_dormant(&pk_a), Some(true));
+            assert!(
+                rt_b.scout_business_traffic(&mut wg_b, &mut by_node, &mut samples),
+                "scout_business_traffic must report view_changed on Active -> Dormant"
+            );
+            assert!(!by_node[&nid_a].hs_done);
+        }
     }
 }
