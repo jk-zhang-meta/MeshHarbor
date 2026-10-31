@@ -4089,8 +4089,8 @@ pub async fn revoke_node(state: &NetworkState, node_id: ObjectId, reason: &str) 
 pub async fn reconcile_acl(state: &NetworkState, tenant_id: ObjectId) -> bool {
     state.org_relay.invalidate_eligibility();
     let mut ok = true;
-    match state.overlay_networks.get_or_create(tenant_id).await {
-        Ok(net) => {
+    match state.overlay_networks.find_for_tenant(tenant_id).await {
+        Ok(Some(net)) => {
             if net.peer_relay_mode == PeerRelayMode::Off {
                 let _ = revoke_tenant(state, tenant_id, "mode_off").await;
                 return true;
@@ -4102,6 +4102,7 @@ pub async fn reconcile_acl(state: &NetworkState, tenant_id: ObjectId) -> bool {
                 .await;
             }
         }
+        Ok(None) => return true,
         Err(_) => {
             ok = false;
         }
@@ -4117,7 +4118,6 @@ pub async fn reconcile_acl(state: &NetworkState, tenant_id: ObjectId) -> bool {
                 .into_iter()
                 .filter_map(|a| {
                     let id = a.id?;
-                    state.org_relay.note_probe_policy_change(id);
                     Some((id, a.peer_relay_policy.approved_backbone_edges))
                 })
                 .collect(),
