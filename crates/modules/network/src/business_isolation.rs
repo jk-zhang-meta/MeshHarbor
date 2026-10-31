@@ -213,9 +213,10 @@ pub struct Lines {
 impl Lines {
     pub fn ref_identity(r: &NodeRef) -> (roomler_core::business_authority::DeviceKind, ObjectId) {
         match r {
-            NodeRef::Agent { agent_id } => {
-                (roomler_core::business_authority::DeviceKind::Agent, *agent_id)
-            }
+            NodeRef::Agent { agent_id } => (
+                roomler_core::business_authority::DeviceKind::Agent,
+                *agent_id,
+            ),
             NodeRef::TunnelClient { tunnel_client_id } => (
                 roomler_core::business_authority::DeviceKind::TunnelClient,
                 *tunnel_client_id,
@@ -226,7 +227,9 @@ impl Lines {
     pub fn ref_label(r: &NodeRef) -> String {
         match r {
             NodeRef::Agent { agent_id } => format!("agent:{agent_id}"),
-            NodeRef::TunnelClient { tunnel_client_id } => format!("tunnel_client:{tunnel_client_id}"),
+            NodeRef::TunnelClient { tunnel_client_id } => {
+                format!("tunnel_client:{tunnel_client_id}")
+            }
         }
     }
 

@@ -600,8 +600,7 @@ impl OverlayRuntime {
             .copied()
             .filter(|c| !c.is_default_route())
             .collect();
-        let (filtered, dropped) =
-            screen_subnets(subnets, &super::super::direct::local_lan_cidrs());
+        let (filtered, dropped) = screen_subnets(subnets, &super::super::direct::local_lan_cidrs());
         if current_non_default == filtered {
             return;
         }

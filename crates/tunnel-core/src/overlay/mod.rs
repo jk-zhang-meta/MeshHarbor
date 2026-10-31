@@ -53,9 +53,6 @@ pub mod multipath;
 pub mod nat;
 pub mod netcheck;
 pub mod netmap;
-/// MeshHarbor B6 — on-demand pair tunneling (idle dormancy, first-packet
-/// zero-loss wakeup, wire background traffic accounting, and hold coordination).
-pub mod on_demand;
 /// Userspace TCP/IP stack (smoltcp) presented as a [`tun::TunIo`] — the
 /// OS-free twin of [`tun::SystemTun`]. Feature `overlay-netstack`.
 #[cfg(feature = "overlay-netstack")]
@@ -68,6 +65,9 @@ pub mod netstack_socks;
 /// subscription, typed snapshots/deltas, non-blocking fan-out). Public: the
 /// agent's signaling loop subscribes for its probe-then-cycle arm.
 pub mod netstate;
+/// MeshHarbor B6 — on-demand pair tunneling (idle dormancy, first-packet
+/// zero-loss wakeup, wire background traffic accounting, and hold coordination).
+pub mod on_demand;
 /// FR-19 P1 — org-relay wire framing (Geneve `Opt Len 0`, pinned protocol,
 /// 24-bit VNI). Framing and shape rules only: nothing here forwards, binds or
 /// holds session state.

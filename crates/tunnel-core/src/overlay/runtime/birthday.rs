@@ -927,10 +927,15 @@ mod tests {
         let older = crate::overlay::wg::test_genuine_init(&remote_key.secret, our_pk);
         tokio::time::sleep(Duration::from_millis(2)).await;
         let accepted = crate::overlay::wg::test_genuine_init(&remote_key.secret, our_pk);
-        far.send_to(&accepted, main.local_addr().unwrap()).await.unwrap();
+        far.send_to(&accepted, main.local_addr().unwrap())
+            .await
+            .unwrap();
         let mut wire = vec![0u8; 2048];
-        let (n, reply_from) = tokio::time::timeout(Duration::from_secs(2), far.recv_from(&mut wire))
-            .await.unwrap().unwrap();
+        let (n, reply_from) =
+            tokio::time::timeout(Duration::from_secs(2), far.recv_from(&mut wire))
+                .await
+                .unwrap()
+                .unwrap();
         assert_eq!(reply_from, main.local_addr().unwrap());
         assert_eq!((n, &wire[..4]), (92, &[2, 0, 0, 0][..]));
 
@@ -938,19 +943,40 @@ mod tests {
         let tun: Arc<dyn TunIo> = tun;
         let mut relay = None;
         let (tx, _rx) = mpsc::channel(4);
-        let mut bq = RelayBuildQueue { in_flight: HashMap::new(), epoch: 0, tx };
+        let mut bq = RelayBuildQueue {
+            in_flight: HashMap::new(),
+            epoch: 0,
+            tx,
+        };
         for stale in [&accepted, &older] {
             far.send_to(stale, local).await.unwrap();
-            if let Ok(Some(event)) = tokio::time::timeout(Duration::from_millis(150), inbound.recv()).await {
+            if let Ok(Some(event)) =
+                tokio::time::timeout(Duration::from_millis(150), inbound.recv()).await
+            {
                 rt.handle_direct_inbound(
-                    &mut wg, &mut installed, &mut relay, &tun, &current, &mut probes, &mut bq, event,
-                ).await;
+                    &mut wg,
+                    &mut installed,
+                    &mut relay,
+                    &tun,
+                    &current,
+                    &mut probes,
+                    &mut bq,
+                    event,
+                )
+                .await;
             }
-            assert_eq!(wg.direct_probe_identity(&pk), Some(old_identity),
-                "an accepted or older INIT must not replace/move the pending probe");
+            assert_eq!(
+                wg.direct_probe_identity(&pk),
+                Some(old_identity),
+                "an accepted or older INIT must not replace/move the pending probe"
+            );
             assert_eq!(probes[&node].local, main.local_addr().ok());
-            assert!(tokio::time::timeout(Duration::from_millis(100), far.recv_from(&mut wire)).await.is_err(),
-                "a replayed INIT must not receive a new handshake response");
+            assert!(
+                tokio::time::timeout(Duration::from_millis(100), far.recv_from(&mut wire))
+                    .await
+                    .is_err(),
+                "a replayed INIT must not receive a new handshake response"
+            );
         }
 
         // The remote has no competing recv loop: every genuine WG packet is
@@ -1134,7 +1160,9 @@ mod tests {
             attacker.send_to(stale, local2).await.unwrap();
             let ev_a2b = tokio::time::timeout(Duration::from_secs(1), inbound.recv())
                 .await
-                .expect("different-source residual probe on main must forward spray2 INIT to runtime")
+                .expect(
+                    "different-source residual probe on main must forward spray2 INIT to runtime",
+                )
                 .unwrap();
             rt.handle_direct_inbound(
                 &mut wg,
@@ -1281,10 +1309,11 @@ mod tests {
         );
         assert_eq!((roamed_identity.1, roamed_identity.2), (local, roamed_src));
         assert_eq!(installed[&node].carrier_dst, Some(roamed_src));
-        let (rn, rfrom) = tokio::time::timeout(Duration::from_secs(2), roamed_far.recv_from(&mut wire))
-            .await
-            .expect("fresh unknown-source INIT must receive a handshake response")
-            .unwrap();
+        let (rn, rfrom) =
+            tokio::time::timeout(Duration::from_secs(2), roamed_far.recv_from(&mut wire))
+                .await
+                .expect("fresh unknown-source INIT must receive a handshake response")
+                .unwrap();
         assert_eq!(rfrom, local);
         assert_eq!((rn, &wire[..4]), (92, &[2, 0, 0, 0][..]));
 
@@ -2104,7 +2133,9 @@ mod tests {
         let node = np.node_id;
         let ip = "100.64.0.17".parse().unwrap();
         wg.add_peer(pk, ip, our_relay, false);
-        let relay_session_idx = wg.peer_session_index(&pk).expect("relay peer has session index");
+        let relay_session_idx = wg
+            .peer_session_index(&pk)
+            .expect("relay peer has session index");
         assert!(wg.direct_peer_identity(&pk).is_none());
 
         let mut installed = HashMap::from([(
@@ -2255,7 +2286,7 @@ mod tests {
 
     #[tokio::test]
     async fn note_f_direct_incumbent_preserves_and_promotes_active_pathmon_probe_under_inbound_inits()
-    {
+     {
         use super::super::tests::MockTun;
         use crate::overlay::carrier_plane::CarrierPlane;
 

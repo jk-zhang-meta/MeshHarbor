@@ -344,11 +344,7 @@ struct ActiveSubnets(std::sync::Mutex<HashMap<Cidr, [u8; 32]>>);
 
 impl Clone for ActiveSubnets {
     fn clone(&self) -> Self {
-        let map = self
-            .0
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone();
+        let map = self.0.lock().unwrap_or_else(|e| e.into_inner()).clone();
         Self(std::sync::Mutex::new(map))
     }
 }
@@ -537,13 +533,16 @@ impl Router {
             }
             claimants >= 2
                 && owner_claims
-                && self.peer_health.get(owner).copied().unwrap_or_default().is_healthy()
+                && self
+                    .peer_health
+                    .get(owner)
+                    .copied()
+                    .unwrap_or_default()
+                    .is_healthy()
         });
         let mut ha_cidrs: Vec<Cidr> = Vec::new();
         for (i, (c, _)) in self.subnets.iter().enumerate() {
-            if !ha_cidrs.contains(c)
-                && self.subnets[i + 1..].iter().any(|(other, _)| other == c)
-            {
+            if !ha_cidrs.contains(c) && self.subnets[i + 1..].iter().any(|(other, _)| other == c) {
                 ha_cidrs.push(*c);
             }
         }

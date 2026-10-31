@@ -186,7 +186,8 @@ impl MultipathConfig {
     }
 
     pub fn with_reorder_hold_timeout(mut self, timeout: Duration) -> Self {
-        self.reorder_hold_timeout = timeout.clamp(Duration::from_millis(1), Duration::from_millis(500));
+        self.reorder_hold_timeout =
+            timeout.clamp(Duration::from_millis(1), Duration::from_millis(500));
         self
     }
 
@@ -290,7 +291,8 @@ impl LegCounters {
     pub fn record_tx(&self, bytes: usize) {
         self.tx_packets.fetch_add(1, Ordering::Relaxed);
         self.tx_bytes.fetch_add(bytes as u64, Ordering::Relaxed);
-        self.last_tx_ms.store(mono_ms_now().max(1), Ordering::Relaxed);
+        self.last_tx_ms
+            .store(mono_ms_now().max(1), Ordering::Relaxed);
     }
 
     pub fn record_tx_error(&self) {
@@ -303,7 +305,8 @@ impl LegCounters {
         if is_dedup_hit {
             self.rx_dedup_hits.fetch_add(1, Ordering::Relaxed);
         }
-        self.last_rx_ms.store(mono_ms_now().max(1), Ordering::Relaxed);
+        self.last_rx_ms
+            .store(mono_ms_now().max(1), Ordering::Relaxed);
     }
 
     pub fn record_rtt(&self, rtt: Duration) {
@@ -462,8 +465,8 @@ impl MultipathDedupTable {
         for entry in self.entries.iter_mut().rev() {
             if entry.session == session && entry.counter == counter {
                 if entry.len == len_u16 && bool::from(entry.tag.ct_eq(tag)) {
-                    let fresh = now.saturating_duration_since(entry.recorded_at)
-                        <= DEDUP_LIVENESS_MAX_AGE;
+                    let fresh =
+                        now.saturating_duration_since(entry.recorded_at) <= DEDUP_LIVENESS_MAX_AGE;
                     let first_on_leg =
                         fresh && leg_bit != 0 && (entry.seen_legs_mask & leg_bit) == 0;
                     entry.seen_legs_mask |= leg_bit;
@@ -572,7 +575,10 @@ impl MultipathReorderBuffer {
     }
 
     fn buffered_data_count(&self) -> usize {
-        self.buffered.values().filter(|e| e.packet.is_some()).count()
+        self.buffered
+            .values()
+            .filter(|e| e.packet.is_some())
+            .count()
     }
 
     /// Flush all buffered packets unconditionally into `ready_overflow` (used on
@@ -887,16 +893,14 @@ impl PeerMultipathState {
         MultipathMode::from_u8(self.mode.load(Ordering::Relaxed))
     }
 
-    fn refresh_active_flag(
-        &self,
-        st: &SchedulerState,
-    ) {
+    fn refresh_active_flag(&self, st: &SchedulerState) {
         let has_effective_secondary = st.legs.iter().any(|l| l.is_effective_up());
         let active = (st.config.mode != MultipathMode::Off && has_effective_secondary)
             || !st.reorder.buffered.is_empty()
             || !st.reorder.ready_overflow.is_empty();
         self.active_flag.store(active, Ordering::Relaxed);
-        self.has_legs_flag.store(!st.legs.is_empty(), Ordering::Relaxed);
+        self.has_legs_flag
+            .store(!st.legs.is_empty(), Ordering::Relaxed);
     }
 
     fn flush_parked_reorder_locked(&self, st: &mut SchedulerState) {
@@ -950,7 +954,9 @@ impl PeerMultipathState {
     /// exists.
     pub fn set_leg_healthy(&self, leg_id: u32, healthy: bool) -> bool {
         if leg_id == 0 {
-            self.primary_counters.healthy.store(healthy, Ordering::Relaxed);
+            self.primary_counters
+                .healthy
+                .store(healthy, Ordering::Relaxed);
             return true;
         }
         let mut st = self.inner.lock().unwrap_or_else(|e| e.into_inner());
@@ -969,7 +975,9 @@ impl PeerMultipathState {
     pub fn set_leg_policy(&self, leg_id: u32, priority: u8, weight: u16) -> bool {
         let clamped_weight = weight.clamp(1, 256);
         if leg_id == 0 {
-            self.primary_counters.priority.store(priority, Ordering::Relaxed);
+            self.primary_counters
+                .priority
+                .store(priority, Ordering::Relaxed);
             self.primary_counters
                 .weight
                 .store(clamped_weight, Ordering::Relaxed);
@@ -1145,8 +1153,7 @@ impl PeerMultipathState {
             self.primary_counters.healthy.load(Ordering::Relaxed) && !primary_carrier.is_dead();
         // A content-free keepalive is exactly WG_TYPE4_MIN_LEN (32) bytes;
         // a Type-4 data frame carrying an encrypted IP packet is strictly > 32 bytes.
-        let is_data_frame =
-            wire_frame.len() > WG_TYPE4_MIN_LEN && wire_frame[..4] == [4, 0, 0, 0];
+        let is_data_frame = wire_frame.len() > WG_TYPE4_MIN_LEN && wire_frame[..4] == [4, 0, 0, 0];
 
         let mut st = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         if !st.legs.iter().any(|l| l.is_effective_up()) {
@@ -1182,7 +1189,10 @@ impl PeerMultipathState {
                 if primary_up {
                     out.push(0, primary_carrier.clone());
                 }
-                let max_sec = st.config.max_redundant_secondary_legs.clamp(1, MAX_MULTIPATH_LEGS);
+                let max_sec = st
+                    .config
+                    .max_redundant_secondary_legs
+                    .clamp(1, MAX_MULTIPATH_LEGS);
                 for leg in st.legs.iter().filter(|l| l.is_effective_up()).take(max_sec) {
                     out.push(leg.leg_id, leg.carrier.clone());
                 }
@@ -1276,9 +1286,16 @@ impl PeerMultipathState {
     }
 
     /// Record the outcome of transmitting `bytes_len` on `leg_id`.
-    pub fn record_leg_tx_outcome(&self, leg_id: u32, bytes_len: usize, ok: bool, is_extra_copy: bool) {
+    pub fn record_leg_tx_outcome(
+        &self,
+        leg_id: u32,
+        bytes_len: usize,
+        ok: bool,
+        is_extra_copy: bool,
+    ) {
         if is_extra_copy && ok {
-            self.redundant_extra_tx_packets.fetch_add(1, Ordering::Relaxed);
+            self.redundant_extra_tx_packets
+                .fetch_add(1, Ordering::Relaxed);
         }
         if leg_id == 0 {
             if ok {
@@ -1308,7 +1325,13 @@ impl PeerMultipathState {
         }
     }
 
-    fn record_leg_rx_locked(&self, st: &SchedulerState, leg_id: u32, bytes: usize, is_dedup_hit: bool) {
+    fn record_leg_rx_locked(
+        &self,
+        st: &SchedulerState,
+        leg_id: u32,
+        bytes: usize,
+        is_dedup_hit: bool,
+    ) {
         if leg_id == 0 {
             self.primary_counters.record_rx(bytes, is_dedup_hit);
         } else if let Some(leg) = st.legs.iter().find(|l| l.leg_id == leg_id) {
@@ -1433,8 +1456,8 @@ impl PeerMultipathState {
         st.dedup
             .record_authenticated(session, counter, datagram.len(), tag, leg_bit, now);
 
-        let aggregate_with_secondary =
-            st.config.mode == MultipathMode::Aggregate && st.legs.iter().any(|l| l.is_effective_up());
+        let aggregate_with_secondary = st.config.mode == MultipathMode::Aggregate
+            && st.legs.iter().any(|l| l.is_effective_up());
         if !aggregate_with_secondary {
             if !st.reorder.buffered.is_empty() {
                 let flushed = st.reorder.flush_all();
@@ -1552,10 +1575,7 @@ impl PeerMultipathState {
     /// running for this peer. Called only when multipath is configured or a
     /// secondary leg is attached, avoiding background task overhead for default
     /// single-path peers.
-    pub fn ensure_reorder_flush_task(
-        self: &Arc<Self>,
-        tun_tx: tokio::sync::mpsc::Sender<Vec<u8>>,
-    ) {
+    pub fn ensure_reorder_flush_task(self: &Arc<Self>, tun_tx: tokio::sync::mpsc::Sender<Vec<u8>>) {
         let mut st = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         if st
             .reorder_flush_task
@@ -1815,14 +1835,17 @@ mod tests {
         mp.set_config(MultipathConfig::new(MultipathMode::Off));
         let flushed_pkt = tokio::time::timeout(Duration::from_millis(200), tun_rx.recv())
             .await
-            .expect("mode switch away from Aggregate must wake flush task and deliver parked packet")
+            .expect(
+                "mode switch away from Aggregate must wake flush task and deliver parked packet",
+            )
             .unwrap();
         assert_eq!(flushed_pkt, vec![4]);
         flush_task.abort();
     }
 
     #[tokio::test]
-    async fn single_path_without_healthy_secondary_leg_stays_inactive_and_never_buffers_loss_and_flush_task_exits_on_drop() {
+    async fn single_path_without_healthy_secondary_leg_stays_inactive_and_never_buffers_loss_and_flush_task_exits_on_drop()
+     {
         let sock = Arc::new(tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap());
         let dst = sock.local_addr().unwrap();
         let primary = Carrier::direct(sock.clone(), dst);
@@ -1864,7 +1887,10 @@ mod tests {
             .expect("marking sole secondary leg unhealthy must immediately flush parked packets")
             .unwrap();
         assert_eq!(flushed, vec![3]);
-        assert!(!mp.is_active(), "must become inactive once sole secondary leg is unhealthy and overflow drains");
+        assert!(
+            !mp.is_active(),
+            "must become inactive once sole secondary leg is unhealthy and overflow drains"
+        );
 
         // 4. Dropping the last external `Arc<PeerMultipathState>` must wake `reorder_notify`
         // and cause `spawn_reorder_flush_task` to exit cleanly without `abort()`.

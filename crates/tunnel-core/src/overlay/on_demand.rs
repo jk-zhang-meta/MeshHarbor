@@ -484,11 +484,11 @@ impl PeerOnDemand {
         now_ns: u64,
     ) -> bool {
         self.external_hold.store(held, Ordering::Relaxed);
-        let timeout_ns = (cfg.idle_timeout.as_nanos() as u64)
-            .max(MIN_ON_DEMAND_IDLE_TIMEOUT.as_nanos() as u64);
+        let timeout_ns =
+            (cfg.idle_timeout.as_nanos() as u64).max(MIN_ON_DEMAND_IDLE_TIMEOUT.as_nanos() as u64);
         self.idle_timeout_ns.store(timeout_ns, Ordering::Relaxed);
-        let waking_ns = (cfg.waking_timeout.as_nanos() as u64)
-            .max(Duration::from_millis(50).as_nanos() as u64);
+        let waking_ns =
+            (cfg.waking_timeout.as_nanos() as u64).max(Duration::from_millis(50).as_nanos() as u64);
         self.waking_timeout_ns.store(waking_ns, Ordering::Relaxed);
         self.last_business_ns
             .store(now_ns.max(1), Ordering::Relaxed);
@@ -592,12 +592,7 @@ impl PeerOnDemand {
     /// packets inherited from a timed-out `Waking` carrier so the packets are
     /// queued into `t` and flushed in FIFO order as soon as the fallback
     /// handshake completes.
-    pub(crate) fn inherit_wake_queue(
-        &self,
-        t: &mut Tunn,
-        packets: Vec<Vec<u8>>,
-        now_ns: u64,
-    ) {
+    pub(crate) fn inherit_wake_queue(&self, t: &mut Tunn, packets: Vec<Vec<u8>>, now_ns: u64) {
         if packets.is_empty() {
             return;
         }
@@ -1139,8 +1134,8 @@ mod tests {
             None,
         );
         let od_b = PeerOnDemand::default();
-        let cfg = OnDemandConfig::enabled(Duration::from_millis(10))
-            .with_defer_initial_handshake(false);
+        let cfg =
+            OnDemandConfig::enabled(Duration::from_millis(10)).with_defer_initial_handshake(false);
         od_b.configure(cfg, b.secret.clone(), false, 1_000_000);
         assert_eq!(od_b.phase(), OnDemandPhase::Active);
 
@@ -1161,11 +1156,7 @@ mod tests {
         ));
 
         // 2. Transition `od_b` from `Active -> Dormant` via `try_enter_dormant_under_lock`.
-        assert!(od_b.try_enter_dormant_under_lock(
-            false,
-            &mut tunn_b,
-            1_000_000 + 50_000_000,
-        ));
+        assert!(od_b.try_enter_dormant_under_lock(false, &mut tunn_b, 1_000_000 + 50_000_000,));
         assert_eq!(od_b.phase(), OnDemandPhase::Dormant);
         assert_eq!(
             tunn_b.preshared_key(),
@@ -1183,7 +1174,10 @@ mod tests {
         od_b.prepare_inbound_while_dormant_under_lock(&mut tunn_b, true);
         let replay_res = tunn_b.decapsulate(None, &captured_init_1, &mut buf);
         assert!(
-            matches!(replay_res, TunnResult::Err(WireGuardError::WrongTai64nTimestamp)),
+            matches!(
+                replay_res,
+                TunnResult::Err(WireGuardError::WrongTai64nTimestamp)
+            ),
             "replayed pre-dormancy HandshakeInit must be rejected with WrongTai64nTimestamp, got {replay_res:?}"
         );
         assert_eq!(
