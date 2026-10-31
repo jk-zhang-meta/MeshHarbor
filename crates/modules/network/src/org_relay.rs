@@ -1329,19 +1329,24 @@ impl OrgRelayState {
     }
 
     /// Test hook: read the recorded policy-change timestamp for `agent_id`.
+    /// Integration-test only (`path-planner-test-support`); never compiled in production builds.
+    #[cfg(feature = "path-planner-test-support")]
     #[doc(hidden)]
     pub fn has_probe_policy_change(&self, agent_id: ObjectId) -> bool {
         self.probe_policy_at.contains_key(&agent_id)
     }
 
     /// Test hook: check whether `tenant_id` is currently cached in `mode_cache`.
+    /// Integration-test only (`path-planner-test-support`); never compiled in production builds.
+    #[cfg(feature = "path-planner-test-support")]
     #[doc(hidden)]
     pub fn has_cached_mode(&self, tenant_id: ObjectId) -> bool {
         self.mode_cache.contains_key(&tenant_id)
     }
 
     /// Test hook: seed `mode_cache` for `tenant_id` without creating an
-    /// `OverlayNetwork` row in Mongo.
+    /// `OverlayNetwork` row in Mongo. Integration-test only (`path-planner-test-support`).
+    #[cfg(feature = "path-planner-test-support")]
     #[doc(hidden)]
     pub fn prime_cached_mode_for_test(&self, tenant_id: ObjectId) {
         self.mode_cache

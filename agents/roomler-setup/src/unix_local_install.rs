@@ -3,7 +3,6 @@
 //! No new UI role is exposed until reviewed platform artifacts and elevation
 //! are available. No latest/download fallback, alternate startup framework,
 //! fabricated OS success, or host effects from preparing an invocation.
-#![allow(dead_code)]
 use std::io::Write;
 use std::process::{Command, Stdio};
 
