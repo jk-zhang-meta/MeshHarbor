@@ -442,7 +442,7 @@ impl OverlayRuntime {
             if let Err(e) = tun.add_peer_route(cfg.overlay_ip).await {
                 debug!(peer = %node_id, %e, "overlay: /32 peer route not installed (ok on clean hosts)");
             }
-            self.install_subnets(wg, tun, node_id, pubkey, &cfg.subnets)
+            self.reconcile_peer_subnets(wg, tun, node_id, pubkey, &cfg.subnets)
                 .await;
             info!(peer = %node_id, src = %inb.src, ?tier, "overlay: repointed direct peer in-place from authenticated inbound handshake");
             return;

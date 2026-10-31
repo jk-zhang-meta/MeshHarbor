@@ -159,8 +159,17 @@ Two consequences worth knowing:
   node with a fresh address and a fresh name; the tombstone is never revived.
 - **Evict is "force a new lease", not "ban".** It doesn't touch the backing
   agent / tunnel client, so a still-enrolled device rejoins on its next connect
-  with a *different* address. To remove a device for good, delete it. There is
-  deliberately no per-machine overlay denylist.
+  with a *different* address. If its WireGuard key TTL expired while the evicted
+  node was offline, the join refusal triggers `order_auto_key_rotate_if_needed`
+  so an agent supporting `key-rotate` automatically rotates its key and rejoins.
+  Evicting the node row (`DELETE /api/tenant/{tid}/overlay-node/{id}`) is also
+  the operator recovery step when a previously rotated device (`key_epoch > 0`)
+  loses its local config and reconnects with a fresh key at `key_epoch = 0`
+  (which `rehydrate` otherwise rejects as stale epoch). Note that
+  `ROOMLER_OVERLAY_KEY_TTL_SECS` applies to all newly created node rows regardless
+  of agent version; legacy agents without `key-rotate` capability require manual
+  update/intervention upon key expiry. To remove a device for good, delete it.
+  There is deliberately no per-machine overlay denylist.
 
 ### Pre-release gaps are ACCEPTED — don't "fix" them
 
@@ -825,6 +834,224 @@ server. Detail and the negative-control test:
   #1405). The remaining lever is routes we ADD, more specific than `/96`,
   which AnyConnect tolerates for v4. Nothing opens overlay-v6 sockets today
   (#1405), so that stays unbuilt until something does.
+
+### 8e. Multipath & Link Aggregation (B8)
+
+`crates/tunnel-core/src/overlay/multipath.rs` provides per-peer multipath and
+link aggregation (`PeerMultipathState`) over a single shared WireGuard `Tunn`
+cryptographic session (`leg_id = 0` primary carrier + up to `MAX_MULTIPATH_LEGS = 4`
+secondary legs):
+
+* **`MultipathMode::Off` (default)** — single primary carrier; `is_active()` is a
+  single `Relaxed` atomic load that stays `false` whenever `mode == Off` or no
+  healthy secondary leg is attached (and no parked reorder packets remain),
+  short-circuiting on both TX and RX hot paths with zero lock, clock, or
+  reorder-buffer overhead.
+* **`MultipathMode::ActiveStandby` (主备切换)** — sends on `leg_id = 0` while
+  `!primary.is_dead() && primary_healthy`; switches in `O(1)` on the very next
+  packet to the highest-priority (`priority`, then `weight`, then `leg_id`)
+  healthy secondary leg without resetting `Tunn` or re-handshaking, and fails
+  back automatically when the primary leg recovers.
+* **`MultipathMode::Redundant` (`1+1` / `1+N` 双发冗余降抖动)** — encapsulates
+  each outbound WireGuard packet once under the `Tunn` lock and transmits the
+  identical Type-4 ciphertext over both the primary leg and up to
+  `max_redundant_secondary_legs` healthy secondary legs. On the receiver,
+  `post_decap_record` records `(session, counter, len, poly1305_tag)` in
+  `MultipathDedupTable` only *after* `Tunn::decapsulate` authenticates the first
+  copy. When a redundant copy arrives on a slower leg, `pre_decap_check`
+  verifies the 16-byte Poly1305 tag in constant time (`subtle::ConstantTimeEq`)
+  before `boringtun`'s replay window would reject it, dropping the duplicate
+  without delivering a second packet to `tun_tx` while crediting the slower
+  leg's receive counters at most once per `(session, counter)` via
+  `seen_legs_mask`.
+* **`MultipathMode::Aggregate` (按权重带宽聚合 + 保序重组缓冲)** — stripes
+  outbound Type-4 data frames across all healthy legs via weighted round-robin
+  (`primary_weight` + per-leg `weight`, with automatic immediate fallback to the
+  next healthy leg if a send errors). On the receiver, `MultipathReorderBuffer`
+  places authenticated, ingress-permitted packets into a bounded per-session
+  `BTreeMap<u64, BufferedPacket>` (`max_reorder_depth`, default `64`;
+  `reorder_hold_timeout`, default `25 ms`) and releases packets in strict
+  ascending WireGuard `counter` order. Authenticated Type-4 empty keepalives and
+  F2 standby-decapsulated packets advance `expected_next_counter` so neither
+  creates a phantom gap, and `ensure_reorder_flush_task` lazily spawns a
+  `Weak<PeerMultipathState>` timer task (only when `Aggregate` mode is active
+  with a secondary leg) that wakes on `Notify` to flush parked tail packets on
+  timeout and exits cleanly when the peer is dropped.
+
+---
+
+## 8b. Subnet-Router High Availability (B5)
+
+Two or more subnet routers in the same network (and, when regional enforcement
+is active, the same known region) may advertise and be approved for the **exact
+same canonical CIDR** when the administrator explicitly passes `"allow_ha": true`
+to `PUT /api/tenant/{tenant_id}/overlay-node/{node_id}/approved-routes`. Partial CIDR
+overlaps or duplicate approvals without `"allow_ha": true` continue to be
+rejected with HTTP `409 Conflict`.
+
+### Client-side active/standby election and non-preemptive stickiness
+
+* **Election key** — When two or more peers claim the same longest-matching
+  prefix `C`, the client's crypto-router (`Router::route_with_live`) elects an
+  active router by maximizing `(live_health(pk), cached_health(pk), pk)`, where
+  `RouterHealth` is ordered `Stalled < Unproven < HealthyRelay < HealthyDirect`.
+* **Non-preemptive sticky pinning** — Once a healthy claimant (`HealthyRelay`
+  or `HealthyDirect`) is elected for `C`, it is pinned in `ActiveSubnets`. As
+  long as the pinned active router still claims `C` and remains healthy, all
+  packets to `C` stay on that incumbent. Even if the previous primary recovers
+  or a standby upgrades to a higher health tier (`HealthyDirect`) or has a
+  higher public key, the client **does not preempt** the healthy active router.
+  This prevents stateful NAT/firewall sessions and TCP flows traversing the
+  active subnet router from being reset by route flapping.
+* **Single-claimant lock-free fast path** — When a CIDR has only one claimant
+  (including non-HA subnet routes and exit-node `/1` split-default routes),
+  `route_with_live` returns that sole claimant directly without locking
+  `ActiveSubnets`.
+* **Failover timing** — Failover occurs on the first outbound packet or carrier
+  health sweep after the active router's carrier is marked dead (`Carrier::is_dead()`)
+  or flagged stalled / one-way (`bad_sweeps > 0`) by `sweep_carrier_health`.
+* **OS route lifecycle** — An OS CIDR route is retained across peer evictions
+  and route withdrawals until the **last** claimant for that prefix leaves
+  (`any_peer_claims_subnet`).
+
+### Reverse-path filtering (RPF) and return-path symmetry
+
+* **RPF authority** — `Router::rpf_check` permits inbound packets sourced from
+  any peer that claims a matching subnet at the **maximum** prefix length
+  covering the source IP. Both the active and standby HA routers for `C` pass
+  RPF, while any peer holding only a shorter prefix (such as an exit node's
+  `/1` split-default or a broader summary route) is still denied (`OtherPeer`).
+* **SNAT / symmetric return routing** — Subnet-Router HA assumes either:
+  1. Both HA subnet routers perform **SNAT / MASQUERADE** toward the LAN
+     (Roomler's default in `overlay::nat::enable`), so LAN hosts always reply
+     to the specific router that forwarded the packet; or
+  2. In no-SNAT deployments, LAN return routing is symmetric or stateless across
+     the router pair. If LAN hosts reply via the standby router while the
+     active router holds stateful firewall state, LAN-side stateful firewalls
+     must share state or permit asymmetric return paths; on the overlay side,
+     Roomler's RPF already accepts return packets from all equal-prefix HA
+     claimants.
+
+---
+
+## 8c. Optional Post-Quantum WireGuard PSK (B7)
+
+By default (`ROOMLERD_OVERLAY_PQ_PSK=off`), WireGuard peers use `preshared_key = None`
+and emit zero post-quantum control frames. Operators can enable out-of-band
+ML-KEM-768 (NIST FIPS 203) hybrid pre-shared key negotiation and periodic
+rotation (`crates/tunnel-core/src/overlay/pq_psk.rs`) in two modes:
+
+* **`Optional` / `Preferred` (`ROOMLERD_OVERLAY_PQ_PSK=optional` or `preferred`):**
+  Negotiates an ML-KEM-768 hybrid PSK with peers that support B7, and downgrades
+  cleanly to classical `PSK=None` only when the remote peer replies with an
+  authenticated `REJECT_MODE_OFF` (`HMAC-SHA256` keyed by the domain-separated
+  static X25519 shared secret `X25519(self_secret, peer_public)`).
+  * **Trust model note:** `Optional` / `Preferred` protects against passive
+    "harvest-now, decrypt-later" quantum adversaries and against active
+    network attackers that do not possess either peer's static X25519 private
+    key. Because `REJECT_MODE_OFF` is authenticated by the classical X25519
+    static DH key, an adversary that has *already* compromised a peer's static
+    X25519 key in real time could forge `REJECT_MODE_OFF`; deployments requiring
+    mandatory post-quantum authentication must use `Required`.
+* **`Required` (`ROOMLERD_OVERLAY_PQ_PSK=required` / `1` / `true`):**
+  Fail-closed mode. On peer installation, `Tunn` is initialized with a fresh
+  32-byte CSPRNG guard PSK (`initial_tunn_psk`) so no classical `PSK=None`
+  WireGuard handshake can succeed before ML-KEM-768 agreement completes. On key
+  lifetime expiration (`max_lifetime`, default 300 s) or PSK confirmation
+  mismatch (`REJECT_PSK_MISMATCH`), `Tunn` is immediately re-locked with a fresh
+  random guard PSK and active transport sessions are cleared via
+  `Tunn::reset_sessions_preserving_replay_and_psk()`.
+
+### Wire protocol (`RMPQPSK1`) and sub-700 B MTU fragmentation
+
+1. **Four-step authenticated KEM handshake:**
+   - `KIND_INIT (1)` (`1282 B` logical frame): Initiator generates an ephemeral
+     ML-KEM-768 keypair `(dk, ek)`, `init_nonce`, and `epoch`, authenticated by
+     `HMAC-SHA256(auth_key, header || ek)`.
+   - `KIND_RESP (2)` (`1202 B` logical frame): Responder verifies the MAC,
+     encapsulates `(ct, k_pq)` via FIPS 203 Algorithm 20, selects monotonic
+     `effective_epoch = max(local_epoch + 1, req_epoch)`, derives the hybrid
+     `candidate_psk = HKDF(k_pq, auth_key, configured_psk, transcript)`, and
+     replies with `ct` + `HMAC-SHA256(auth_key, header || ct || SHA256(ek))`
+     without mutating its active `Tunn`.
+   - `KIND_CONFIRM (4)` (`114 B`): Initiator decapsulates `ct`, derives
+     `candidate_psk`, and sends `confirm_tag` keyed by `candidate_psk`.
+   - `KIND_ACK (5)` (`114 B`): Responder verifies `confirm_tag` in constant
+     time, updates its `Tunn` PSK in-place (`Tunn::set_preshared_key`), and sends
+     `KIND_ACK`. Upon receiving `KIND_ACK`, Initiator updates its `Tunn` PSK
+     in-place and triggers a fresh WireGuard handshake.
+2. **Authenticated fragmentation (`KIND_FRAG = 6`, `<= 680 B` on wire):**
+   - Because unfragmented `KIND_INIT` (`1282 B`) and `KIND_RESP` (`1202 B`)
+     exceed a `1280 B` IPv6 minimum MTU or tunnel/relay MTU once UDP/IPv6/relay
+     headers are added, `PqPeerHandle::fragment_control_frame` splits any control
+     frame `> 680 B` into 3 `KIND_FRAG` datagrams (`MAX_FRAG_PAYLOAD = 580 B`,
+     max wire frame `680 B < 700 B`).
+   - Every `KIND_FRAG` datagram carries its own 32-byte `HMAC-SHA256` tag under
+     `auth_key`, verified **before** locking or allocating in the bounded
+     per-peer reassembly ring (`MAX_REASSEMBLY_SLOTS = 4`).
+3. **In-place `Tunn::set_preshared_key` rotation:**
+   - Normal PQ-PSK establishment and periodic rotation (`rekey_interval`, default
+     120 s) update `Tunn`'s `preshared_key` in-place via
+     `boringtun::noise::Tunn::set_preshared_key`, preserving both
+     `handshake.last_handshake_timestamp` (the TAI64N anti-replay watermark) and
+     existing transport `sessions` (`[Option<Session>; N_SESSIONS]`), achieving
+     zero packet loss for in-flight traffic during the rotation window.
+
+---
+
+## 8d. On-Demand Pair Tunneling (B6) & B1/B5/B6/B7 Composition
+
+By default (`ROOMLERD_OVERLAY_ON_DEMAND=off`), installed WireGuard peers
+initiate handshakes immediately and maintain 25 s persistent keepalives plus
+periodic rekeys. When `ROOMLERD_OVERLAY_ON_DEMAND=on` (`1`/`true`/`yes`,
+`crates/tunnel-core/src/overlay/on_demand.rs`), idle peer sessions transition
+through `Dormant -> Waking -> Active -> Dormant`:
+
+1. **In-place session retirement (`Tunn::reset_sessions_preserving_replay_and_psk`):**
+   - Entering `Dormant` (or waking from `Dormant`) clears active transport
+     `sessions`, queued packets, and in-flight handshake state while
+     **preserving** both `handshake.last_handshake_timestamp` (the 12-byte
+     TAI64N anti-replay watermark) and `handshake.params.preshared_key` (any B7
+     post-quantum PSK).
+   - While `Dormant`, `Tunn::update_timers` is suspended (`0` keepalives, `0`
+     rekey initiations, `0` wire bytes), while OS `/32` routes, cryptokey
+     routing entries, and direct/plane demux registrations stay installed.
+   - Any replayed pre-dormancy `HandshakeInit` arriving while `Dormant` or
+     `Waking` is rejected by `boringtun` with
+     `WireGuardError::WrongTai64nTimestamp` before `on_inbound_handshake_init`
+     can run, so replays never wake a `Dormant` peer or repoint a direct
+     carrier.
+2. **Fast `waking_timeout` fallback (`OVERLAY_ON_DEMAND_WAKE_TIMEOUT_SECS`, default `6 s`) with zero-loss `wake_queue` inheritance:**
+   - Because `Dormant` suppresses keepalives, a stateful NAT's UDP pinhole
+     (typically 30–180 s) can expire while a direct peer is `Dormant`.
+   - When an outbound wake enters `Waking` and its handshake does not complete
+     within `waking_timeout` (default `6 s`), `check_and_note_waking_timeout`
+     marks the carrier `hard_dead` (`carrier.mark_dead()`) so
+     `sweep_carrier_health` immediately convicts the dead direct carrier and
+     falls back to relay/re-punch instead of waiting 90 s.
+   - Outbound IP packets arriving during `Waking` are mirrored in `wake_queue`
+     (up to 256 packets), preserved across `remove_peer` into
+     `pending_wake_queues`, and seeded into the replacement carrier's `Tunn`
+     via `inherit_wake_queue` (`Tunn::queue_packet_only`) before its initial
+     `HandshakeInit`, delivering the full burst in FIFO order with zero packet
+     loss once the fallback handshake completes.
+3. **Cross-feature composition (`B1` / `B5` / `B6` / `B7`):**
+   - **B1 (Birthday socket & TAI64N roaming):** Both B1 (`try_repoint_direct_peer_init`,
+     `try_repoint_relay_peer_init`) and B6 (`reset_tunn_under_lock`) preserve
+     the existing `Tunn` instance and its `last_handshake_timestamp` watermark.
+     Active upgrade probes (`self.probes`) assert an `external_hold` on
+     `PeerOnDemand`, keeping the peer out of `Dormant` while a probe is in
+     flight.
+   - **B5 (Subnet-Router HA):** `sweep_carrier_health` skips `RxStale` /
+     `HandshakeDeadline` conviction and forced pokes on `Dormant` peers
+     (`take_peer_dormant_since_last_sweep`), so a healthy `Dormant` primary
+     subnet router is never falsely marked unhealthy or failed over to standby;
+     only an actual `hard_dead` carrier (including a `waking_timeout` expiry)
+     triggers failover.
+   - **B7 (Optional Post-Quantum PSK):** Both B6 (`reset_sessions_preserving_replay_and_psk`)
+     and B7 (`set_preshared_key`) mutate the existing `Tunn` in-place under its
+     `Mutex<Tunn>` lock. Dormancy transitions never overwrite `preshared_key`,
+     and B7 periodic PQ-PSK rotations skip `Dormant` peers until they wake.
 
 ---
 

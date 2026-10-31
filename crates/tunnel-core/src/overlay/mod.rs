@@ -48,9 +48,14 @@ pub mod ingress;
 /// with the prefix's two on-link halves. Never routes around a capture.
 pub mod lan_repair;
 pub(crate) mod lifecycle;
+/// B8 — Multi-path & link aggregation (`ActiveStandby`, `Redundant`, `Aggregate`).
+pub mod multipath;
 pub mod nat;
 pub mod netcheck;
 pub mod netmap;
+/// MeshHarbor B6 — on-demand pair tunneling (idle dormancy, first-packet
+/// zero-loss wakeup, wire background traffic accounting, and hold coordination).
+pub mod on_demand;
 /// Userspace TCP/IP stack (smoltcp) presented as a [`tun::TunIo`] — the
 /// OS-free twin of [`tun::SystemTun`]. Feature `overlay-netstack`.
 #[cfg(feature = "overlay-netstack")]
@@ -73,6 +78,9 @@ pub(crate) mod pf;
 /// MeshHarbor §6 item 5 — UDP port mapping on the local gateway (PCP, then
 /// NAT-PMP). One exchange per call; the caller owns refresh and release.
 pub mod portmap;
+/// B7 — optional post-quantum WireGuard pre-shared key agreement (ML-KEM-768)
+/// and rotation, default off.
+pub mod pq_psk;
 pub mod relay_link;
 pub mod router;
 pub mod runtime;

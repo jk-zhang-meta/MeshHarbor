@@ -951,6 +951,8 @@ pub async fn run(
             &mut carrier_ready_rx,
         )
         .await;
+        #[cfg(any(feature = "overlay-l3", feature = "overlay-netstack"))]
+        crate::overlay::note_control_detached(&cfg.tenant_id);
         if !matches!(attempt, Err(ConnectError::AuthRejected)) {
             recovered_last = false;
         }

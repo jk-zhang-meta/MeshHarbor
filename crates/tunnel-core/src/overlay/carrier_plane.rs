@@ -684,6 +684,7 @@ impl CarrierPlane {
             if let (_, Some(p)) = decap_inbound(&mut r.tunn, n, dg, &r.reply, &r.ingress) {
                 r.packets.push(p);
             }
+            r.ingress.multipath.drain_ready_into(&mut r.packets);
         }
         if let Some(r) = run.take() {
             r.deliver().await;
@@ -728,6 +729,19 @@ impl CarrierPlane {
                     let _ = s.send_to(&pong, src).await;
                 });
                 crate::evidence::DISCO_ANSWERED.fetch_add(1, Ordering::Relaxed);
+            }
+            return;
+        }
+        if super::pq_psk::is_pq_psk_shaped(&buf[..n]) {
+            let handles = self.pq_psk_handles(&buf[..n], src);
+            if !handles.is_empty() {
+                let pkt = buf[..n].to_vec();
+                let reply = Carrier::direct(sock.clone(), src);
+                tokio::spawn(async move {
+                    for pq in handles {
+                        pq.handle_inbound(&pkt, &reply).await;
+                    }
+                });
             }
             return;
         }
@@ -999,13 +1013,25 @@ impl CarrierPlane {
                 ingress: r.ingress.clone(),
                 tun_tx: r.tun_tx.clone(),
             },
+            Some(r) if let Some(leg_id) = r.ingress.multipath.leg_id_for_direct_src(src) => {
+                Routed::Session {
+                    tunn: r.tunn.clone(),
+                    ingress: r.ingress.clone().with_leg_id(leg_id),
+                    tun_tx: r.tun_tx.clone(),
+                }
+            }
             // A3 — a known session (by receiver index) from a NEW source:
             // route it to the session's Tunn as a ROAM CANDIDATE. Adoption
             // commits only if the payload authenticates (handle_datagram
             // calls `commit_roam` on success), so a forged index can spend
             // one decap but never move an endpoint. Rate-limited per session.
+            // When secondary multipath legs are attached and expected_src is
+            // already populated, do not clobber the primary endpoint with an
+            // unconfigured secondary source.
             Some(r)
                 if direct::roam_enabled()
+                    && (!r.ingress.multipath.has_secondary_legs()
+                        || r.expected_src.ip().is_unspecified())
                     && r.last_roam
                         .is_none_or(|t| t.elapsed() >= direct::ROAM_MIN_INTERVAL) =>
             {
@@ -1182,6 +1208,58 @@ impl CarrierPlane {
         None
     }
 
+    fn pq_psk_handles(
+        &self,
+        pkt: &[u8],
+        src: SocketAddr,
+    ) -> Vec<Arc<super::pq_psk::PqPeerHandle>> {
+        let Some(sender) = super::pq_psk::claimed_sender(pkt) else {
+            return Vec::new();
+        };
+        let mut out: Vec<Arc<super::pq_psk::PqPeerHandle>> = Vec::new();
+        let st = self.lock();
+        for r in st.routes.values() {
+            if r.ingress.peer == sender
+                && r.expected_src == src
+                && let Some(pq) = r.ingress.stats.pq.get()
+                && !out.iter().any(|x| Arc::ptr_eq(x, pq))
+            {
+                out.push(pq.clone());
+            }
+        }
+        if !out.is_empty() {
+            return out;
+        }
+        for r in st.routes.values() {
+            if r.ingress.peer == sender
+                && !r.expected_src.ip().is_unspecified()
+                && let Some(pq) = r.ingress.stats.pq.get()
+                && !out.iter().any(|x| Arc::ptr_eq(x, pq))
+            {
+                out.push(pq.clone());
+            }
+        }
+        if !out.is_empty() {
+            return out;
+        }
+        for r in st.routes.values() {
+            if r.ingress.peer == sender
+                && let Some(pq) = r.ingress.stats.pq.get()
+                && !out.iter().any(|x| Arc::ptr_eq(x, pq))
+            {
+                out.push(pq.clone());
+            }
+        }
+        for e in &st.engines {
+            if let Some(pq) = e.send.pq_peer(&sender)
+                && !out.iter().any(|x| Arc::ptr_eq(x, &pq))
+            {
+                out.push(pq);
+            }
+        }
+        out
+    }
+
     /// Try each attached engine's static against a handshake initiation.
     /// Engines are snapshotted out of the lock — the crypto runs unlocked.
     /// `preferred` engines (the ones with a `by_src` session at the packet's
@@ -1279,6 +1357,19 @@ impl PlaneHandle {
     /// ownership). The caller aborts the returned task to close it.
     pub(crate) fn adopt_ephemeral(&self, sock: Arc<UdpSocket>) -> JoinHandle<()> {
         self.plane.adopt_socket_with(sock, None, true)
+    }
+
+    /// Check whether `sock` is one of the plane's bound demux sockets.
+    pub(crate) fn owns_socket(&self, sock: &Arc<UdpSocket>) -> bool {
+        let st = self.plane.lock();
+        let Some(b) = &st.binds else {
+            return false;
+        };
+        b.socks.iter().any(|(_, s)| Arc::ptr_eq(s, sock))
+            || b.public_sock
+                .as_ref()
+                .is_some_and(|s| Arc::ptr_eq(s, sock))
+            || b.v6.as_ref().is_some_and(|s| Arc::ptr_eq(s, sock))
     }
 
     /// Register the session route for an index handed out by
@@ -3088,5 +3179,48 @@ mod tests {
             cpu / (bytes as f64 * 8.0 / 1e9).max(1e-9),
         );
         drop((a, b));
+    }
+
+    #[tokio::test]
+    async fn plane_routes_pq_psk_negotiation_and_delivers_encrypted_traffic() {
+        use super::super::pq_psk::{PqPeerStatus, PqPskConfig, PqPskMode};
+
+        let (kp_a, kp_b) = (WgKeypair::generate(), WgKeypair::generate());
+        let (plane_a, plane_b) = (CarrierPlane::new(), CarrierPlane::new());
+        let sock_a = Arc::new(tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let sock_b = Arc::new(tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let (addr_a, addr_b) = (sock_a.local_addr().unwrap(), sock_b.local_addr().unwrap());
+        plane_a.adopt_socket(sock_a.clone());
+        plane_b.adopt_socket(sock_b.clone());
+        let (mut a, mut ra) = engine(&plane_a, &kp_a).await;
+        let (mut b, mut rb) = engine(&plane_b, &kp_b).await;
+
+        let cfg = PqPskConfig {
+            mode: PqPskMode::Required,
+            configured_psk: Some([0x77; 32]),
+            ..PqPskConfig::default()
+        };
+        a.set_pq_psk_config(cfg.clone());
+        b.set_pq_psk_config(cfg);
+
+        let (ip_a, ip_b) = (Ipv4Addr::new(100, 65, 9, 10), Ipv4Addr::new(100, 65, 9, 11));
+        let pk_a = kp_a.public.to_bytes();
+        let pk_b = kp_b.public.to_bytes();
+        b.add_direct_peer(sock_b.clone(), pk_a, ip_a, addr_a, false)
+            .await;
+        a.add_direct_peer(sock_a.clone(), pk_b, ip_b, addr_b, true)
+            .await;
+
+        let pkt_ab = synthetic_ipv4(ip_a, ip_b, b"plane pq-psk payload A->B");
+        pump_until_delivered(&a, &mut rb, &pkt_ab).await;
+        let pkt_ba = synthetic_ipv4(ip_b, ip_a, b"plane pq-psk payload B->A");
+        pump_until_delivered(&b, &mut ra, &pkt_ba).await;
+
+        let sa = a.peer_pq_psk_snapshot(&pk_b).await.unwrap();
+        let sb = b.peer_pq_psk_snapshot(&pk_a).await.unwrap();
+        assert_eq!(sa.status, PqPeerStatus::Established { epoch: 1 });
+        assert_eq!(sb.status, PqPeerStatus::Established { epoch: 1 });
+        assert!(sa.psk_fingerprint.is_some());
+        assert_eq!(sa.psk_fingerprint, sb.psk_fingerprint);
     }
 }

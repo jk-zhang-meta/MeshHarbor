@@ -565,8 +565,16 @@
       "methods": "GET,HEAD,POST"
     },
     {
+      "path": "/api/tenant/{tenant_id}/agent/{agent_id}/overlay-key/revoke",
+      "methods": "POST"
+    },
+    {
       "path": "/api/tenant/{tenant_id}/agent/{agent_id}/overlay-key/rotate",
       "methods": "POST"
+    },
+    {
+      "path": "/api/tenant/{tenant_id}/agent/{agent_id}/overlay-key/ttl",
+      "methods": "PUT"
     },
     {
       "path": "/api/tenant/{tenant_id}/agent/{agent_id}/peer-relay-policy",
@@ -927,6 +935,14 @@
     {
       "path": "/api/tenant/{tenant_id}/search",
       "methods": "GET,HEAD"
+    },
+    {
+      "path": "/api/tenant/{tenant_id}/server-link",
+      "methods": "GET,HEAD,PUT"
+    },
+    {
+      "path": "/api/tenant/{tenant_id}/server-link/{a}/{b}",
+      "methods": "DELETE"
     },
     {
       "path": "/api/tenant/{tenant_id}/session/{session_id}",
@@ -5834,6 +5850,7 @@
     "rc:overlay.org_relay_fallback_request",
     "rc:overlay.org_relay_loss",
     "rc:overlay.warm_relay_request",
+    "rc:overlay.netmap_ack",
     "rc:extauth.start",
     "rc:extauth.finish",
     "rc:extauth.ke2",
@@ -5985,6 +6002,7 @@
     "rc:overlay.join": "network",
     "rc:overlay.leave": "network",
     "rc:overlay.netcheck": "network",
+    "rc:overlay.netmap_ack": "network",
     "rc:overlay.org_relay_discover": "network",
     "rc:overlay.org_relay_fallback_request": "network",
     "rc:overlay.org_relay_loss": "network",

@@ -70,12 +70,20 @@ pub struct DerpAllowTable {
     /// both orders): two servers relay to each other exactly when linked.
     servers: HashSet<DerpPubKey>,
     links: HashSet<(DerpPubKey, DerpPubKey)>,
+    /// Under `business_isolation = enforce` + `business_unknown_role = enforce`,
+    /// the pubkeys of devices with an approved role (`Client` or `Server`).
+    approved_roles: Option<HashSet<DerpPubKey>>,
 }
 
 impl DerpAllowTable {
     /// May `src` relay a frame to `dst`? Always `true` when neither the ACL
     /// nor the isolation is enforced.
     pub fn permits(&self, src: &DerpPubKey, dst: &DerpPubKey) -> bool {
+        if let Some(approved) = &self.approved_roles
+            && (!approved.contains(src) || !approved.contains(dst))
+        {
+            return false;
+        }
         if self.zones.is_some() && self.servers.contains(src) && self.servers.contains(dst) {
             return self.links.contains(&(*src, *dst));
         }
@@ -150,7 +158,7 @@ fn pubkey_of(node: &OverlayNode) -> Option<DerpPubKey> {
 /// gate at all). O(N²) over the network's nodes, but it runs only on policy
 /// changes and joins — never per datagram, and never on an endpoint trickle,
 /// which cannot change an ACL decision.
-pub async fn rebuild(state: &NetworkState, tenant_id: ObjectId, network_id: ObjectId) {
+pub async fn rebuild(state: &NetworkState, tenant_id: ObjectId, network_id: ObjectId) -> bool {
     let acl = super::overlay::load_acl(state, tenant_id).await;
     let isolating =
         super::business_isolation::mode(state) == super::business_isolation::Mode::Enforce;
@@ -158,19 +166,23 @@ pub async fn rebuild(state: &NetworkState, tenant_id: ObjectId, network_id: Obje
     // dropping the entry keeps a disabled tenant's memory at zero.
     if !acl.gating() && !isolating {
         state.derp_acl.remove(&network_id);
-        return;
+        return true;
     }
-    let nodes = match state
+    let now = bson::DateTime::now();
+    let nodes: Vec<_> = match state
         .overlay_nodes
         .list_active_in_network(tenant_id, network_id)
         .await
     {
-        Ok(v) => v,
+        Ok(v) => v
+            .into_iter()
+            .filter(|n| n.is_key_authorized_at(now))
+            .collect(),
         Err(e) => {
             // Keep the PREVIOUS table rather than dropping to fail-open on a
             // transient Mongo blip.
             tracing::error!(%tenant_id, %e, "derp acl: node list failed; keeping the previous table");
-            return;
+            return false;
         }
     };
 
@@ -222,10 +234,13 @@ pub async fn rebuild(state: &NetworkState, tenant_id: ObjectId, network_id: Obje
         }
     }
 
-    // The server topology: which keys are servers, and which server pairs are
-    // linked (both orders, so `permits` needs one lookup).
+    // The server topology and approved-role set: which keys are servers, which
+    // server pairs are linked, and which keys hold an approved role.
     let mut servers = HashSet::new();
     let mut links = HashSet::new();
+    let mut approved_roles = None;
+    let mut warn_unknown: Vec<(&OverlayNode, DerpPubKey)> = Vec::new();
+    let mut all_keyed: Vec<(&OverlayNode, DerpPubKey)> = Vec::new();
     if isolating {
         let topo = super::business_isolation::lines(
             state,
@@ -233,12 +248,20 @@ pub async fn rebuild(state: &NetworkState, tenant_id: ObjectId, network_id: Obje
             tenant_id,
         )
         .await;
-        let keyed: Vec<(&OverlayNode, DerpPubKey)> = nodes
+        if topo.roles_read_failed {
+            tracing::error!(
+                %tenant_id,
+                %network_id,
+                "derp acl: role approval read failed; keeping the previous table"
+            );
+            return false;
+        }
+        all_keyed = nodes
             .iter()
             .filter_map(|n| Some((n, pubkey_of(n)?)))
             .collect();
-        for (x, xk) in &keyed {
-            for (y, yk) in &keyed {
+        for (x, xk) in &all_keyed {
+            for (y, yk) in &all_keyed {
                 if let Some(linked) = topo.server_pair(x, y) {
                     servers.insert(*xk);
                     servers.insert(*yk);
@@ -248,26 +271,64 @@ pub async fn rebuild(state: &NetworkState, tenant_id: ObjectId, network_id: Obje
                 }
             }
         }
+        match topo.unknown_role {
+            super::business_isolation::Mode::Enforce => {
+                let mut approved = HashSet::new();
+                for (n, pk) in &all_keyed {
+                    if topo.node_role_known(n) {
+                        approved.insert(*pk);
+                    }
+                }
+                approved_roles = Some(approved);
+            }
+            super::business_isolation::Mode::Warn => {
+                for (n, pk) in &all_keyed {
+                    if !topo.node_role_known(n) {
+                        warn_unknown.push((n, *pk));
+                    }
+                }
+            }
+            super::business_isolation::Mode::Off => {}
+        }
     }
 
     let pairs: usize = allow.values().map(|s| s.len()).sum();
+    let table = Arc::new(DerpAllowTable {
+        enforcing: acl.enforcing(),
+        allow,
+        zones,
+        servers,
+        links,
+        approved_roles,
+    });
+    if !warn_unknown.is_empty() {
+        let mut unknown_with_peers = Vec::new();
+        for (n, pk) in &warn_unknown {
+            if all_keyed
+                .iter()
+                .any(|(other, opk)| other.id != n.id && table.permits(pk, opk))
+            {
+                let label = super::business_isolation::Lines::node_label(n);
+                if !unknown_with_peers.contains(&label) {
+                    unknown_with_peers.push(label);
+                }
+            }
+        }
+        super::business_isolation::log_unknown_role_with_peers(
+            tenant_id,
+            "derp_acl",
+            &unknown_with_peers,
+        );
+    }
     tracing::info!(
         %tenant_id, %network_id,
         nodes = nodes.len(), pairs,
-        enforcing = acl.enforcing(),
-        zoned = zones.as_ref().map(|z| z.len()),
+        enforcing = table.enforcing,
+        zoned = table.zones.as_ref().map(|z| z.len()),
         "derp acl: allow table rebuilt"
     );
-    state.derp_acl.insert(
-        network_id,
-        Arc::new(DerpAllowTable {
-            enforcing: acl.enforcing(),
-            allow,
-            zones,
-            servers,
-            links,
-        }),
-    );
+    state.derp_acl.insert(network_id, table);
+    true
 }
 
 #[cfg(test)]
@@ -280,6 +341,26 @@ mod tests {
 
     fn table(enforcing: bool, pairs: &[(DerpPubKey, DerpPubKey)]) -> DerpAllowTable {
         DerpAllowTable::for_test(enforcing, pairs)
+    }
+
+    #[test]
+    fn unknown_role_enforce_denies_unapproved_derp_pubkey() {
+        use BusinessZone::NonMainland;
+        let (approved_a, approved_b, unapproved) = (pk(10), pk(11), pk(12));
+        let mut t = DerpAllowTable::for_test_servers(
+            &[
+                (approved_a, NonMainland),
+                (approved_b, NonMainland),
+                (unapproved, NonMainland),
+            ],
+            &[],
+            &[],
+        );
+        assert!(t.permits(&approved_a, &unapproved), "before approved_roles filter");
+        t.approved_roles = Some(HashSet::from([approved_a, approved_b]));
+        assert!(t.permits(&approved_a, &approved_b));
+        assert!(!t.permits(&approved_a, &unapproved), "unapproved dst denied");
+        assert!(!t.permits(&unapproved, &approved_a), "unapproved src denied");
     }
 
     #[test]

@@ -449,6 +449,19 @@ pub async fn derp_upgrade(
         .max_frame_size(roomler_core::ws::upgrade::MAX_WS_MESSAGE_BYTES)
         .on_upgrade(move |socket| handle_derp_socket(state, socket, agent_id))
 }
+/// Immediately evict a WireGuard public key from the local DERP registry and
+/// notify its active socket loop (`derp_cancels`) to close.
+pub fn evict_pubkey(state: &NetworkState, network_id: ObjectId, wg_public_key_b64: &str) {
+    if let Ok(bytes) = BASE64.decode(wg_public_key_b64)
+        && let Ok(pk) = <[u8; 32]>::try_from(bytes.as_slice())
+    {
+        state.derp_registry.remove(&(network_id, pk));
+        if let Some(cancel) = state.derp_cancels.get(&(network_id, pk)) {
+            cancel.notify_one();
+        }
+    }
+}
+
 /// Drive one DERP connection: resolve the agent's node, validate its
 /// registration pubkey, add it to the registry, then pump frames until the
 /// socket closes.
@@ -484,7 +497,15 @@ async fn handle_derp_socket(state: NetworkState, socket: WebSocket, agent_id: Ob
             return;
         }
     };
-    if BASE64.encode(self_pubkey) != node.wg_public_key {
+    let Some(node_id) = node.id else {
+        return;
+    };
+    let self_pubkey_b64 = BASE64.encode(self_pubkey);
+    let admitted = state
+        .overlay_nodes
+        .accepts_current_key(node_id, &self_pubkey_b64, node.key_epoch)
+        .await;
+    if !matches!(admitted, Ok(true)) {
         warn!(
             %agent_id, %network_id, node = %node_hex,
             got = %pk8(&self_pubkey),
@@ -511,13 +532,36 @@ async fn handle_derp_socket(state: NetworkState, socket: WebSocket, agent_id: Ob
     {
         return;
     }
+    let key_epoch = node.key_epoch;
     let admission_watchdog = async {
-        if !state.settings.auth.account_approval.enabled {
-            std::future::pending::<()>().await;
-        }
         loop {
             tokio::time::sleep(Duration::from_secs(5)).await;
-            if !matches!(admission_check().await, Ok(Ok(_))) {
+            let key_ok = tokio::time::timeout(
+                Duration::from_secs(3),
+                state
+                    .overlay_nodes
+                    .accepts_current_key(node_id, &self_pubkey_b64, key_epoch),
+            )
+            .await;
+            if matches!(key_ok, Ok(Ok(false))) {
+                if let Ok(current) = state.overlay_nodes.base.find_by_id(node_id).await
+                    && current.deleted_at.is_none()
+                    && current.wg_public_key == self_pubkey_b64
+                    && !current.is_key_authorized_at(bson::DateTime::now())
+                {
+                    let evicted = state
+                        .overlay_nodes
+                        .revoke_current_key(node_id, "expired")
+                        .await
+                        .unwrap_or(current);
+                    super::overlay::enforce_node_key_revocation_or_expiry(&state, &evicted).await;
+                    super::overlay::order_auto_key_rotate_if_needed(&state, &evicted).await;
+                }
+                return;
+            }
+            if state.settings.auth.account_approval.enabled
+                && !matches!(admission_check().await, Ok(Ok(_)))
+            {
                 return;
             }
         }

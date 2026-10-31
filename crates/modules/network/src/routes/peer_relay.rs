@@ -198,6 +198,7 @@ pub async fn set_mode(
         tenant = %tenant_id, admin = %auth.user_id, mode = ?body.mode,
         "peer-relay: org switch changed"
     );
+    crate::overlay::publish_and_refan_tenant_authority(&state, tid, false, "peer_relay_mode").await;
     Ok(Json(PeerRelayModeBody { mode: body.mode }))
 }
 
@@ -335,6 +336,8 @@ pub async fn set_policy(
         tenant = %tenant_id, agent = %agent_id, admin = %auth.user_id,
         serve = requested.serve, "peer-relay: device approval changed"
     );
+    crate::overlay::publish_and_refan_tenant_authority(&state, tid, true, "peer_relay_policy")
+        .await;
     Ok(Json(requested))
 }
 
