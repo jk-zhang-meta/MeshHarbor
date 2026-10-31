@@ -100,7 +100,10 @@ pub async fn approve(
     state.org_relay.invalidate_eligibility();
     let key = (tenant_id, device_kind, device_id);
     let slot = device_reconcile_slot(tenant_id, device_kind, device_id);
-    let my_gen = slot.generation.fetch_add(1, std::sync::atomic::Ordering::AcqRel) + 1;
+    let my_gen = slot
+        .generation
+        .fetch_add(1, std::sync::atomic::Ordering::AcqRel)
+        + 1;
     let st = state.clone();
     // Spawn the post-approval reconcile on the runtime so an HTTP caller that
     // disconnects mid-request cannot cancel revocation/re-fan, and schedule
@@ -115,7 +118,11 @@ pub async fn approve(
             }
             apply_immediate_in_memory_revocations(&st, tenant_id, device_kind, device_id, new_role)
                 .await;
-            let bumped = st.overlay_networks.bump_auth_revision(tenant_id).await.is_ok();
+            let bumped = st
+                .overlay_networks
+                .bump_auth_revision(tenant_id)
+                .await
+                .is_ok();
             let reconciled = run_role_change_reconcile(&st, tenant_id, device_id).await;
             (reconciled && bumped, bumped)
         };
@@ -128,13 +135,19 @@ pub async fn approve(
                     .chain(std::iter::repeat(2000u64))
                 {
                     tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
-                    if retry_slot.generation.load(std::sync::atomic::Ordering::Acquire) != my_gen {
+                    if retry_slot
+                        .generation
+                        .load(std::sync::atomic::Ordering::Acquire)
+                        != my_gen
+                    {
                         cleanup_device_reconcile_slot(key, retry_slot);
                         return;
                     }
                     let done = {
                         let _guard = retry_slot.lock.lock().await;
-                        if retry_slot.generation.load(std::sync::atomic::Ordering::Acquire)
+                        if retry_slot
+                            .generation
+                            .load(std::sync::atomic::Ordering::Acquire)
                             != my_gen
                         {
                             drop(_guard);

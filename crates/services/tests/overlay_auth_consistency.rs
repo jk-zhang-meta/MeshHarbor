@@ -5,7 +5,7 @@
 
 use bson::oid::ObjectId;
 use mongodb::Client;
-use roomler_ai_remote_control::models::{ NodeRef, OverlayAclMode, PeerRelayMode };
+use roomler_ai_remote_control::models::{NodeRef, OverlayAclMode, PeerRelayMode};
 use roomler_ai_services::dao::{
     overlay_network::OverlayNetworkDao,
     overlay_node::{NewOverlayNode, OverlayNodeDao},
@@ -29,7 +29,10 @@ async fn b3_overlay_network_auth_revision_monotonic_across_authority_mutations()
     let tenant_id = ObjectId::new();
 
     let net = networks.get_or_create(tenant_id).await.unwrap();
-    assert_eq!(net.auth_revision, 1, "freshly created network starts at auth_revision=1");
+    assert_eq!(
+        net.auth_revision, 1,
+        "freshly created network starts at auth_revision=1"
+    );
     assert_eq!(networks.current_auth_revision(tenant_id).await.unwrap(), 1);
 
     networks

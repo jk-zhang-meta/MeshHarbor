@@ -696,14 +696,7 @@ async fn overlay_path(
         format!("dialled through the ingress's overlay: {where_}"),
     );
     source_region(
-        state,
-        tenant_id,
-        &nodes,
-        &ingress,
-        &dest_node,
-        spec,
-        topo,
-        checks,
+        state, tenant_id, &nodes, &ingress, &dest_node, spec, topo, checks,
     )
     .await;
 

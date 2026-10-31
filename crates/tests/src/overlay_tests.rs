@@ -2363,11 +2363,19 @@ async fn subnet_router_ha_allows_equal_cidr_with_opt_in_and_rejects_partial_over
     };
 
     // 1. Primary router approves SUB_24.
-    let resp = put(r1_id.clone(), serde_json::json!({ "approved_routes": [SUB_24] })).await;
+    let resp = put(
+        r1_id.clone(),
+        serde_json::json!({ "approved_routes": [SUB_24] }),
+    )
+    .await;
     assert_eq!(resp.status().as_u16(), 200);
 
     // 2. Without `allow_ha`, secondary router is still rejected with 409 naming `ha-router-1`.
-    let resp = put(r2_id.clone(), serde_json::json!({ "approved_routes": [SUB_24] })).await;
+    let resp = put(
+        r2_id.clone(),
+        serde_json::json!({ "approved_routes": [SUB_24] }),
+    )
+    .await;
     assert_eq!(resp.status().as_u16(), 409);
     assert!(resp.text().await.unwrap().contains("ha-router-1"));
 
@@ -2428,7 +2436,10 @@ async fn subnet_router_ha_allows_equal_cidr_with_opt_in_and_rejects_partial_over
     let r1_row = items.iter().find(|i| i["id"] == r1_id).unwrap();
     let r2_row = items.iter().find(|i| i["id"] == r2_id).unwrap();
     assert_eq!(r1_row["approved_routes"], serde_json::json!([]));
-    assert_eq!(r2_row["approved_routes"], serde_json::json!([SUB_24, EXTRA]));
+    assert_eq!(
+        r2_row["approved_routes"],
+        serde_json::json!([SUB_24, EXTRA])
+    );
 }
 
 /// B4 — Evicting a node (`DELETE /api/tenant/{tid}/overlay-node/{id}` -> `release`)

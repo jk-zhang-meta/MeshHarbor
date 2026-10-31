@@ -356,11 +356,20 @@ mod tests {
             &[],
             &[],
         );
-        assert!(t.permits(&approved_a, &unapproved), "before approved_roles filter");
+        assert!(
+            t.permits(&approved_a, &unapproved),
+            "before approved_roles filter"
+        );
         t.approved_roles = Some(HashSet::from([approved_a, approved_b]));
         assert!(t.permits(&approved_a, &approved_b));
-        assert!(!t.permits(&approved_a, &unapproved), "unapproved dst denied");
-        assert!(!t.permits(&unapproved, &approved_a), "unapproved src denied");
+        assert!(
+            !t.permits(&approved_a, &unapproved),
+            "unapproved dst denied"
+        );
+        assert!(
+            !t.permits(&unapproved, &approved_a),
+            "unapproved src denied"
+        );
     }
 
     #[test]

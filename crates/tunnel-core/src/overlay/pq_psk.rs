@@ -62,10 +62,7 @@ use std::time::{Duration, Instant};
 use boringtun::noise::{Tunn, TunnResult};
 use boringtun::x25519::{PublicKey, StaticSecret};
 use hmac::{Hmac, Mac};
-use ml_kem::{
-    B32, DecapsulationKey768, EncapsulationKey768, KeyExport, Seed,
-    kem::Decapsulate,
-};
+use ml_kem::{B32, DecapsulationKey768, EncapsulationKey768, KeyExport, Seed, kem::Decapsulate};
 use rand::RngCore;
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
@@ -530,7 +527,10 @@ impl fmt::Debug for PqPeerInner {
             .field("config", &self.config)
             .field("status", &self.status)
             .field("current_epoch", &self.current_epoch)
-            .field("active_psk", &self.active_psk.as_ref().map(|_| "[REDACTED]"))
+            .field(
+                "active_psk",
+                &self.active_psk.as_ref().map(|_| "[REDACTED]"),
+            )
             .field("rotations_completed", &self.rotations_completed)
             .field("mismatch_count", &self.mismatch_count)
             .field("downgraded_count", &self.downgraded_count)
@@ -612,9 +612,7 @@ impl PqPeerHandle {
         };
         let mode = config.mode;
         let guard_active = mode == PqPskMode::Required;
-        stats
-            .pq_guard_active
-            .store(guard_active, Ordering::Release);
+        stats.pq_guard_active.store(guard_active, Ordering::Release);
         Arc::new(Self {
             mode,
             self_public,
@@ -972,7 +970,13 @@ impl PqPeerHandle {
         frame
     }
 
-    fn build_reject_frame(&self, mode: PqPskMode, epoch: u64, init_nonce: &[u8; 16], reason: u8) -> Vec<u8> {
+    fn build_reject_frame(
+        &self,
+        mode: PqPskMode,
+        epoch: u64,
+        init_nonce: &[u8; 16],
+        reason: u8,
+    ) -> Vec<u8> {
         let mut frame = Vec::with_capacity(REJECT_FRAME_LEN);
         frame.extend_from_slice(MAGIC);
         frame.push(KIND_REJECT);
@@ -1050,7 +1054,8 @@ impl PqPeerHandle {
                     return;
                 }
             } else if inner_kind == KIND_RESP {
-                let matches_pending_init = g.pending_init.as_ref().is_some_and(|p| epoch >= p.epoch);
+                let matches_pending_init =
+                    g.pending_init.as_ref().is_some_and(|p| epoch >= p.epoch);
                 let matches_pending_confirm = g
                     .pending_confirm
                     .as_ref()
@@ -1146,10 +1151,8 @@ impl PqPeerHandle {
             } else if g.committed_init_nonces.contains(&init_nonce) {
                 // Reject replayed KIND_INIT from an already-committed exchange.
                 None
-            } else if let Some(existing) = g
-                .pending_resps
-                .iter()
-                .find(|r| r.init_nonce == init_nonce)
+            } else if let Some(existing) =
+                g.pending_resps.iter().find(|r| r.init_nonce == init_nonce)
             {
                 // Deduplicate retransmitted KIND_INIT for an already-cached response
                 Some(existing.resp_frame.clone())
@@ -1364,11 +1367,9 @@ impl PqPeerHandle {
                 && ack.resp_nonce == resp_nonce
             {
                 Some(ack.ack_frame.clone())
-            } else if let Some(pos) = g
-                .pending_resps
-                .iter()
-                .position(|r| r.epoch == epoch && r.init_nonce == init_nonce && r.resp_nonce == resp_nonce)
-            {
+            } else if let Some(pos) = g.pending_resps.iter().position(|r| {
+                r.epoch == epoch && r.init_nonce == init_nonce && r.resp_nonce == resp_nonce
+            }) {
                 let resp = g.pending_resps.remove(pos).expect("position checked");
                 let expected = confirm_tag(
                     &resp.candidate_psk,
@@ -1805,7 +1806,11 @@ mod tests {
         };
         assert_eq!(raw_init.len(), INIT_FRAME_LEN);
         let frags = handle_a.fragment_control_frame(&raw_init);
-        assert_eq!(frags.len(), 3, "1282 B KIND_INIT must split into 3 sub-700B fragments");
+        assert_eq!(
+            frags.len(),
+            3,
+            "1282 B KIND_INIT must split into 3 sub-700B fragments"
+        );
         for f in &frags {
             assert!(
                 f.len() <= MAX_WIRE_CONTROL_FRAME_LEN && f.len() < 700,

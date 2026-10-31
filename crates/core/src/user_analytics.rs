@@ -177,7 +177,8 @@ impl GeoIp {
     /// re-evaluated or reloaded so cached tunnel/forward zone verdicts
     /// re-verify against current dataset validity.
     pub fn dataset_generation(&self) -> u64 {
-        self.dataset_epoch.load(std::sync::atomic::Ordering::Acquire)
+        self.dataset_epoch
+            .load(std::sync::atomic::Ordering::Acquire)
     }
 
     pub fn bump_dataset_generation(&self) {
