@@ -1,0 +1,111 @@
+diff -ruN --strip-trailing-cr /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/boringtun-0.7.1/src/noise/handshake.rs /root/.agent-work/runtime/pac/roomler-ai-20261022/codex-on-demand-b6-20261030/crates/vendored/boringtun/src/noise/handshake.rs
+--- /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/boringtun-0.7.1/src/noise/handshake.rs	2006-07-24 09:21:28.000000000 +0800
++++ /root/.agent-work/runtime/pac/roomler-ai-20261022/codex-on-demand-b6-20261030/crates/vendored/boringtun/src/noise/handshake.rs	2026-10-30 21:49:33.656723495 +0800
+@@ -252,7 +252,10 @@
+             .field("peer_static_public", &self.peer_static_public)
+             .field("static_shared", &"<redacted>")
+             .field("sending_mac1_key", &self.sending_mac1_key)
+-            .field("preshared_key", &self.preshared_key)
++            .field(
++                "preshared_key",
++                &self.preshared_key.as_ref().map(|_| "<redacted>"),
++            )
+             .finish()
+     }
+ }
+@@ -478,6 +481,21 @@
+         self.params.set_static_private(private_key, public_key)
+     }
+ 
++    pub(crate) fn set_preshared_key(&mut self, psk: Option<[u8; 32]>) {
++        self.params.preshared_key = psk;
++        self.previous = HandshakeState::None;
++        self.state = HandshakeState::None;
++    }
++
++    pub(crate) fn preshared_key(&self) -> Option<[u8; 32]> {
++        self.params.preshared_key
++    }
++
++    pub(crate) fn clear_in_flight(&mut self) {
++        self.previous = HandshakeState::None;
++        self.state = HandshakeState::None;
++    }
++
+     pub(super) fn receive_handshake_initialization<'a>(
+         &mut self,
+         packet: HandshakeInit,
+diff -ruN --strip-trailing-cr /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/boringtun-0.7.1/src/noise/mod.rs /root/.agent-work/runtime/pac/roomler-ai-20261022/codex-on-demand-b6-20261030/crates/vendored/boringtun/src/noise/mod.rs
+--- /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/boringtun-0.7.1/src/noise/mod.rs	2006-07-24 09:21:28.000000000 +0800
++++ /root/.agent-work/runtime/pac/roomler-ai-20261022/codex-on-demand-b6-20261030/crates/vendored/boringtun/src/noise/mod.rs	2026-10-31 10:02:15.974738860 +0800
+@@ -241,6 +241,51 @@
+         }
+     }
+ 
++    /// Update the preshared key in-place for future handshakes while preserving
++    /// both `handshake.last_handshake_timestamp` (TAI64N anti-replay watermark)
++    /// and any currently established transport `sessions`.
++    pub fn set_preshared_key(&mut self, psk: Option<[u8; 32]>) {
++        let has_active_session = self.sessions.iter().any(Option::is_some);
++        if self.handshake.is_expired() || !has_active_session {
++            self.timers.clear();
++        } else {
++            self.timers.sync_current_time();
++        }
++        self.handshake.set_preshared_key(psk);
++    }
++
++    /// Return the currently configured preshared key, if any.
++    pub fn preshared_key(&self) -> Option<[u8; 32]> {
++        self.handshake.preshared_key()
++    }
++
++    /// Return `true` if the current transport session slot is populated.
++    pub fn has_current_session(&self) -> bool {
++        self.sessions[self.current % N_SESSIONS].is_some()
++    }
++
++    /// Return `true` if any outbound packets are queued awaiting a session.
++    pub fn has_queued_packets(&self) -> bool {
++        !self.packet_queue.is_empty()
++    }
++
++    /// Queue an outbound IP packet without initiating a WireGuard handshake.
++    pub fn queue_packet_only(&mut self, packet: &[u8]) {
++        self.queue_packet(packet);
++    }
++
++    /// Clear all active transport sessions, queued packets, timers, and
++    /// in-flight handshake state while preserving `handshake.last_handshake_timestamp`
++    /// (TAI64N anti-replay watermark) and `handshake.params.preshared_key`.
++    pub fn reset_sessions_preserving_replay_and_psk(&mut self) {
++        self.handshake.clear_in_flight();
++        for s in &mut self.sessions {
++            *s = None;
++        }
++        self.packet_queue.clear();
++        self.timers.clear();
++    }
++
+     /// Encapsulate a single packet from the tunnel interface.
+     /// Returns TunnResult.
+     ///
+diff -ruN --strip-trailing-cr /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/boringtun-0.7.1/src/noise/timers.rs /root/.agent-work/runtime/pac/roomler-ai-20261022/codex-on-demand-b6-20261030/crates/vendored/boringtun/src/noise/timers.rs
+--- /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/boringtun-0.7.1/src/noise/timers.rs	2006-07-24 09:21:28.000000000 +0800
++++ /root/.agent-work/runtime/pac/roomler-ai-20261022/codex-on-demand-b6-20261030/crates/vendored/boringtun/src/noise/timers.rs	2026-10-30 22:09:56.808631439 +0800
+@@ -90,9 +90,15 @@
+         for t in &mut self.timers[..] {
+             *t = now;
+         }
++        self.session_timers = [now; super::N_SESSIONS];
++        self.is_initiator = false;
+         self.want_handshake = false;
+         self.want_keepalive = false;
+     }
++
++    pub(super) fn sync_current_time(&mut self) {
++        self[TimeCurrent] = Instant::now().duration_since(self.time_started);
++    }
+ }
+ 
+ impl Index<TimerName> for Timers {
