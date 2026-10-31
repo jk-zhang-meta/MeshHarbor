@@ -106,3 +106,14 @@ If you want to contribute to this project, please read our [`CONTRIBUTING.md`].
 
 ---
 <sub><sub><sub><sub>WireGuard is a registered trademark of Jason A. Donenfeld. BoringTun is not sponsored or endorsed by Jason A. Donenfeld.</sub></sub></sub></sub>
+
+
+---
+
+## Roomler Vendored Provenance (`crates/vendored/boringtun.patch`)
+
+- **Upstream crate**: `boringtun` `0.7.1` (`https://github.com/cloudflare/boringtun`, VCS commit `051c9d47dc9c5cb36e461b7d36dcd673820dc98b`)
+- **Local patch (`crates/vendored/boringtun.patch`)**:
+  - `src/noise/handshake.rs`: adds `Handshake::set_preshared_key`, `Handshake::preshared_key`, and `Handshake::clear_in_flight` so `Tunn` can update its `Q` preshared-key slot and clear in-flight handshake state without resetting `last_handshake_timestamp` (TAI64N anti-replay watermark).
+  - `src/noise/timers.rs`: adds `Timers::sync_current_time` to keep timer watermarks synchronized when updating PSK on a live session.
+  - `src/noise/mod.rs`: exposes `Tunn::set_preshared_key`, `Tunn::preshared_key`, `Tunn::has_current_session`, `Tunn::has_queued_packets`, `Tunn::queue_packet_only`, and `Tunn::reset_sessions_preserving_replay_and_psk` for B7 PQ-PSK negotiation and B6 on-demand dormancy/wake without re-allocating `Tunn`.
