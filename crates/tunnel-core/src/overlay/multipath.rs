@@ -1,9 +1,17 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (C) 2026 G ROX EOOD
-//! B8 — Multi-path & link aggregation for the userspace WireGuard overlay.
+//! B8 — Multi-path & link aggregation data-plane foundation for the userspace
+//! WireGuard overlay.
 //!
 //! Operates at the encrypted WireGuard Type-4 transport frame layer while
-//! sharing a single per-peer [`boringtun::noise::Tunn`] cryptographic session:
+//! sharing a single per-peer [`boringtun::noise::Tunn`] cryptographic session.
+//!
+//! By default every peer starts in [`MultipathMode::Off`] with zero secondary
+//! legs (`is_active() == false`), adding zero atomic writes, zero clock reads,
+//! zero locks, and zero background tasks to the single-path hot path. Multipath
+//! scheduling and receiver reassembly activate only when a non-`Off` mode is
+//! explicitly configured **and** at least one healthy, live secondary leg is
+//! attached:
 //!
 //! 1. [`MultipathMode::Off`] — single primary carrier, zero hot-path overhead.
 //! 2. [`MultipathMode::ActiveStandby`] — primary/standby fast failover: sends
@@ -228,20 +236,45 @@ pub struct MultipathPeerSnapshot {
 }
 
 /// Lock-free atomic counters for a single leg (primary or secondary).
-#[derive(Default)]
+///
+/// TX and RX atomic counters are separated across 64-byte cache-line boundaries
+/// so concurrent outbound pump and inbound receive tasks never bounce the same
+/// cache line when multipath is active.
+#[repr(C, align(64))]
 pub struct LegCounters {
     pub healthy: AtomicBool,
     pub priority: AtomicU8,
     pub weight: AtomicU16,
+    pub rtt_ewma_us: AtomicU64,
     pub tx_packets: AtomicU64,
     pub tx_bytes: AtomicU64,
     pub tx_errors: AtomicU64,
+    pub last_tx_ms: AtomicU64,
+    _tx_rx_pad: [u8; 64],
     pub rx_packets: AtomicU64,
     pub rx_bytes: AtomicU64,
     pub rx_dedup_hits: AtomicU64,
-    pub last_tx_ms: AtomicU64,
     pub last_rx_ms: AtomicU64,
-    pub rtt_ewma_us: AtomicU64,
+}
+
+impl Default for LegCounters {
+    fn default() -> Self {
+        Self {
+            healthy: AtomicBool::new(false),
+            priority: AtomicU8::new(0),
+            weight: AtomicU16::new(1),
+            rtt_ewma_us: AtomicU64::new(0),
+            tx_packets: AtomicU64::new(0),
+            tx_bytes: AtomicU64::new(0),
+            tx_errors: AtomicU64::new(0),
+            last_tx_ms: AtomicU64::new(0),
+            _tx_rx_pad: [0u8; 64],
+            rx_packets: AtomicU64::new(0),
+            rx_bytes: AtomicU64::new(0),
+            rx_dedup_hits: AtomicU64::new(0),
+            last_rx_ms: AtomicU64::new(0),
+        }
+    }
 }
 
 impl LegCounters {
@@ -755,12 +788,14 @@ struct SchedulerState {
     wrr_quantum_remaining: u16,
     dedup: MultipathDedupTable,
     reorder: MultipathReorderBuffer,
+    reorder_flush_task: Option<JoinHandle<()>>,
 }
 
 /// Per-peer multipath controller shared between `Peer`, `SendPeer`, and `Ingress`.
 pub struct PeerMultipathState {
     mode: AtomicU8,
     active_flag: AtomicBool,
+    has_legs_flag: AtomicBool,
     primary_counters: LegCounters,
     active_tx_leg_id: AtomicU32,
     failover_switches: AtomicU64,
@@ -772,15 +807,24 @@ pub struct PeerMultipathState {
     reorder_timeout_flushed: AtomicU64,
     reorder_capacity_flushed: AtomicU64,
     reorder_late_delivered: AtomicU64,
-    last_rx_session_plus_one: AtomicU64,
-    last_rx_counter: AtomicU64,
-    reorder_notify: Notify,
+    reorder_notify: Arc<Notify>,
     inner: Mutex<SchedulerState>,
 }
 
 impl Default for PeerMultipathState {
     fn default() -> Self {
-        Self::new(MultipathConfig::from_env())
+        Self::new(MultipathConfig::default())
+    }
+}
+
+impl Drop for PeerMultipathState {
+    fn drop(&mut self) {
+        self.reorder_notify.notify_waiters();
+        if let Ok(mut st) = self.inner.lock()
+            && let Some(task) = st.reorder_flush_task.take()
+        {
+            task.abort();
+        }
     }
 }
 
@@ -793,7 +837,10 @@ impl PeerMultipathState {
         let hold_timeout = config.reorder_hold_timeout;
         Self {
             mode: AtomicU8::new(mode as u8),
-            active_flag: AtomicBool::new(mode != MultipathMode::Off),
+            // Starts inactive (`false`) until a non-Off mode AND at least one
+            // healthy, live secondary leg are present.
+            active_flag: AtomicBool::new(false),
+            has_legs_flag: AtomicBool::new(false),
             primary_counters: LegCounters::new(0, primary_weight, true),
             active_tx_leg_id: AtomicU32::new(0),
             failover_switches: AtomicU64::new(0),
@@ -805,9 +852,7 @@ impl PeerMultipathState {
             reorder_timeout_flushed: AtomicU64::new(0),
             reorder_capacity_flushed: AtomicU64::new(0),
             reorder_late_delivered: AtomicU64::new(0),
-            last_rx_session_plus_one: AtomicU64::new(0),
-            last_rx_counter: AtomicU64::new(0),
-            reorder_notify: Notify::new(),
+            reorder_notify: Arc::new(Notify::new()),
             inner: Mutex::new(SchedulerState {
                 config,
                 legs: Vec::new(),
@@ -815,36 +860,23 @@ impl PeerMultipathState {
                 wrr_quantum_remaining: primary_weight,
                 dedup: MultipathDedupTable::new(dedup_cap),
                 reorder: MultipathReorderBuffer::new(max_depth, hold_timeout),
+                reorder_flush_task: None,
             }),
         }
     }
 
-    #[inline]
-    fn note_rx_counter_fast(&self, datagram: &[u8]) {
-        if let Some((session, counter, _)) = Self::parse_type4_header_and_tag(datagram) {
-            let sess_enc = u64::from(session) + 1;
-            let prev_sess = self.last_rx_session_plus_one.load(Ordering::Relaxed);
-            if prev_sess != sess_enc {
-                self.last_rx_counter.store(counter, Ordering::Relaxed);
-                self.last_rx_session_plus_one
-                    .store(sess_enc, Ordering::Release);
-            } else {
-                let _ = self.last_rx_counter.fetch_max(counter, Ordering::Relaxed);
-            }
-        }
+    /// Seed the highest authenticated WireGuard Type-4 `(session, counter)` observed
+    /// on the single-path fast path before multipath was activated, so a mid-session
+    /// transition into [`MultipathMode::Aggregate`] starts `expected_next_counter`
+    /// at `counter + 1`.
+    pub fn seed_rx_counter(&self, session: u32, counter: u64) {
+        let mut st = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        st.reorder.note_counter(session, counter);
     }
 
-    #[inline]
-    fn seed_reorder_from_fast_counter(&self, st: &mut SchedulerState) {
-        let sess_enc = self.last_rx_session_plus_one.load(Ordering::Acquire);
-        if sess_enc > 0 {
-            let ctr = self.last_rx_counter.load(Ordering::Relaxed);
-            st.reorder.note_counter((sess_enc - 1) as u32, ctr);
-        }
-    }
-
-    /// Fast-path check: `false` when `MultipathMode::Off` and no secondary legs
-    /// are attached. Single `Relaxed` atomic load.
+    /// Fast-path check: `true` only when a non-`Off` mode is configured with at
+    /// least one healthy, live secondary leg (or while draining residual reorder
+    /// buffer entries). Single `Relaxed` atomic load.
     #[inline]
     pub fn is_active(&self) -> bool {
         self.active_flag.load(Ordering::Relaxed)
@@ -859,19 +891,33 @@ impl PeerMultipathState {
         &self,
         st: &SchedulerState,
     ) {
-        let active = st.config.mode != MultipathMode::Off
-            || !st.legs.is_empty()
+        let has_effective_secondary = st.legs.iter().any(|l| l.is_effective_up());
+        let active = (st.config.mode != MultipathMode::Off && has_effective_secondary)
             || !st.reorder.buffered.is_empty()
             || !st.reorder.ready_overflow.is_empty();
         self.active_flag.store(active, Ordering::Relaxed);
+        self.has_legs_flag.store(!st.legs.is_empty(), Ordering::Relaxed);
+    }
+
+    fn flush_parked_reorder_locked(&self, st: &mut SchedulerState) {
+        if !st.reorder.buffered.is_empty() {
+            let flushed = st.reorder.flush_all();
+            if flushed > 0 {
+                self.reorder_timeout_flushed
+                    .fetch_add(flushed as u64, Ordering::Relaxed);
+            }
+            if !st.reorder.ready_overflow.is_empty() {
+                self.reorder_notify.notify_one();
+            }
+        }
     }
 
     /// Update the peer's multipath configuration in place. If switching away
-    /// from [`MultipathMode::Aggregate`], any packets currently parked in the
-    /// reorder buffer are immediately flushed into the ready queue and woken.
+    /// from [`MultipathMode::Aggregate`] (or when no healthy secondary leg is
+    /// present), any packets currently parked in the reorder buffer are
+    /// immediately flushed into the ready queue and woken.
     pub fn set_config(&self, config: MultipathConfig) {
         let mut st = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        self.seed_reorder_from_fast_counter(&mut st);
         let old_mode = st.config.mode;
         let new_mode = config.mode;
         self.primary_counters
@@ -882,16 +928,14 @@ impl PeerMultipathState {
         st.reorder.hold_timeout = config
             .reorder_hold_timeout
             .clamp(Duration::from_millis(1), Duration::from_millis(500));
-        if old_mode == MultipathMode::Aggregate && new_mode != MultipathMode::Aggregate {
-            let flushed = st.reorder.flush_all();
-            st.reorder.current_session = None;
-            st.reorder.prev_session = None;
-            if flushed > 0 {
-                self.reorder_timeout_flushed
-                    .fetch_add(flushed as u64, Ordering::Relaxed);
-            }
-            if !st.reorder.ready_overflow.is_empty() {
-                self.reorder_notify.notify_one();
+        let has_effective_secondary = st.legs.iter().any(|l| l.is_effective_up());
+        if (old_mode == MultipathMode::Aggregate && new_mode != MultipathMode::Aggregate)
+            || !has_effective_secondary
+        {
+            self.flush_parked_reorder_locked(&mut st);
+            if new_mode != MultipathMode::Aggregate {
+                st.reorder.current_session = None;
+                st.reorder.prev_session = None;
             }
         }
         st.config = config;
@@ -909,11 +953,15 @@ impl PeerMultipathState {
             self.primary_counters.healthy.store(healthy, Ordering::Relaxed);
             return true;
         }
-        let st = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let mut st = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let Some(leg) = st.legs.iter().find(|l| l.leg_id == leg_id) else {
             return false;
         };
         leg.counters.healthy.store(healthy, Ordering::Relaxed);
+        if !st.legs.iter().any(|l| l.is_effective_up()) {
+            self.flush_parked_reorder_locked(&mut st);
+        }
+        self.refresh_active_flag(&st);
         true
     }
 
@@ -975,7 +1023,6 @@ impl PeerMultipathState {
             return false;
         }
         let mut st = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        self.seed_reorder_from_fast_counter(&mut st);
         if let Some(existing) = st.legs.iter_mut().find(|l| l.leg_id == leg_id) {
             let slot_bit = existing.slot_bit;
             *existing = SecondaryLeg {
@@ -1026,16 +1073,27 @@ impl PeerMultipathState {
         let removed = st.legs.len() != before;
         if removed {
             st.wrr_cursor = 0;
+            if !st.legs.iter().any(|l| l.is_effective_up()) {
+                self.flush_parked_reorder_locked(&mut st);
+            }
             self.refresh_active_flag(&st);
         }
         removed
     }
 
-    /// Remove all secondary legs.
+    /// Remove all secondary legs (and abort any lazy reorder flush task once
+    /// no parked/ready reorder packets remain).
     pub fn clear_secondary_legs(&self) {
         let mut st = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         st.legs.clear();
         st.wrr_cursor = 0;
+        self.flush_parked_reorder_locked(&mut st);
+        if st.reorder.buffered.is_empty()
+            && st.reorder.ready_overflow.is_empty()
+            && let Some(task) = st.reorder_flush_task.take()
+        {
+            task.abort();
+        }
         self.refresh_active_flag(&st);
     }
 
@@ -1050,15 +1108,7 @@ impl PeerMultipathState {
     /// Fast check whether any secondary legs are attached.
     #[inline]
     pub fn has_secondary_legs(&self) -> bool {
-        if !self.is_active() {
-            return false;
-        }
-        !self
-            .inner
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .legs
-            .is_empty()
+        self.has_legs_flag.load(Ordering::Relaxed)
     }
 
     /// Return the `leg_id` of a secondary direct leg whose remote `dst` matches
@@ -1066,7 +1116,7 @@ impl PeerMultipathState {
     /// `DirectDemux`) so secondary-leg datagrams on a shared socket are
     /// attributed to their leg without triggering A3 endpoint roaming.
     pub fn leg_id_for_direct_src(&self, src: std::net::SocketAddr) -> Option<u32> {
-        if !self.is_active() {
+        if !self.has_legs_flag.load(Ordering::Relaxed) {
             return None;
         }
         let st = self.inner.lock().unwrap_or_else(|e| e.into_inner());
@@ -1099,6 +1149,10 @@ impl PeerMultipathState {
             wire_frame.len() > WG_TYPE4_MIN_LEN && wire_frame[..4] == [4, 0, 0, 0];
 
         let mut st = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        if !st.legs.iter().any(|l| l.is_effective_up()) {
+            self.flush_parked_reorder_locked(&mut st);
+            self.refresh_active_flag(&st);
+        }
         match st.config.mode {
             MultipathMode::Off => {
                 self.active_tx_leg_id.store(0, Ordering::Relaxed);
@@ -1319,13 +1373,14 @@ impl PeerMultipathState {
     /// Called inside `decap_inbound` AFTER `Tunn::decapsulate` authenticated
     /// `datagram` (and after `ingress.permits` approved any decrypted IP packet).
     ///
-    /// - Records per-leg receive statistics.
+    /// - Records per-leg receive statistics when multipath is active.
     /// - Records the authenticated Type-4 `(session, counter, len, tag)` in
     ///   [`MultipathDedupTable`] so subsequent redundant copies on slower legs
     ///   are recognized.
-    /// - In [`MultipathMode::Aggregate`], routes decrypted IP packets (and
-    ///   keepalive counters) through [`MultipathReorderBuffer`] so packets are
-    ///   released to `tun_tx` in ascending WireGuard counter order.
+    /// - In [`MultipathMode::Aggregate`] (with at least one healthy secondary leg),
+    ///   routes decrypted IP packets (and keepalive counters) through
+    ///   [`MultipathReorderBuffer`] so packets are released to `tun_tx` in
+    ///   ascending WireGuard counter order.
     pub fn post_decap_record(
         &self,
         datagram: &[u8],
@@ -1333,31 +1388,69 @@ impl PeerMultipathState {
         delivered: Option<Vec<u8>>,
     ) -> Option<Vec<u8>> {
         if !self.is_active() {
-            self.note_rx_counter_fast(datagram);
-            self.primary_counters.record_rx(datagram.len(), false);
             return delivered;
         }
+        self.post_decap_record_inner(datagram, Some(leg_id), delivered)
+    }
+
+    /// Called inside `decap_standby` (F2 DERP standby copy) when multipath is
+    /// active: records the authenticated Type-4 packet in [`MultipathDedupTable`]
+    /// and advances [`MultipathReorderBuffer`] without crediting any carrier
+    /// leg's receive counters (preserving F2's no-rx-stat invariant while
+    /// preventing 25 ms counter holes in [`MultipathMode::Aggregate`]).
+    pub fn post_decap_standby_record(
+        &self,
+        datagram: &[u8],
+        delivered: Option<Vec<u8>>,
+    ) -> Option<Vec<u8>> {
+        if !self.is_active() {
+            return delivered;
+        }
+        self.post_decap_record_inner(datagram, None, delivered)
+    }
+
+    fn post_decap_record_inner(
+        &self,
+        datagram: &[u8],
+        leg_id: Option<u32>,
+        delivered: Option<Vec<u8>>,
+    ) -> Option<Vec<u8>> {
         let type4 = Self::parse_type4_header_and_tag(datagram);
         let now = Instant::now();
         let mut st = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        self.seed_reorder_from_fast_counter(&mut st);
-        let leg_bit = Self::leg_bit_locked(&st, leg_id);
-        self.record_leg_rx_locked(&st, leg_id, datagram.len(), false);
+        let leg_bit = match leg_id {
+            Some(id) => {
+                self.record_leg_rx_locked(&st, id, datagram.len(), false);
+                Self::leg_bit_locked(&st, id)
+            }
+            None => 0,
+        };
 
         let Some((session, counter, tag)) = type4 else {
             return delivered;
         };
-        self.note_rx_counter_fast(datagram);
 
         st.dedup
             .record_authenticated(session, counter, datagram.len(), tag, leg_bit, now);
 
-        if st.config.mode != MultipathMode::Aggregate && st.reorder.buffered.is_empty() {
+        let aggregate_with_secondary =
+            st.config.mode == MultipathMode::Aggregate && st.legs.iter().any(|l| l.is_effective_up());
+        if !aggregate_with_secondary {
+            if !st.reorder.buffered.is_empty() {
+                let flushed = st.reorder.flush_all();
+                if flushed > 0 {
+                    self.reorder_timeout_flushed
+                        .fetch_add(flushed as u64, Ordering::Relaxed);
+                }
+            }
             st.reorder.note_counter(session, counter);
             if let Some(pkt) = delivered {
                 st.reorder.ready_overflow.push_back(pkt);
             }
             let out = st.reorder.ready_overflow.pop_front();
+            if !st.reorder.ready_overflow.is_empty() {
+                self.reorder_notify.notify_one();
+            }
             self.refresh_active_flag(&st);
             return out;
         }
@@ -1455,10 +1548,32 @@ impl PeerMultipathState {
         out
     }
 
+    /// Lazily spawn and retain the background reorder-flush task if not already
+    /// running for this peer. Called only when multipath is configured or a
+    /// secondary leg is attached, avoiding background task overhead for default
+    /// single-path peers.
+    pub fn ensure_reorder_flush_task(
+        self: &Arc<Self>,
+        tun_tx: tokio::sync::mpsc::Sender<Vec<u8>>,
+    ) {
+        let mut st = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        if st
+            .reorder_flush_task
+            .as_ref()
+            .is_none_or(|t| t.is_finished())
+        {
+            st.reorder_flush_task = Some(self.spawn_reorder_flush_task(tun_tx));
+        }
+    }
+
     /// Spawn a background task that wakes whenever a packet is parked in the
     /// reorder buffer (or flushed into `ready_overflow` on mode change) and
     /// flushes it to `tun_tx` as soon as `reorder_hold_timeout` expires (even if
     /// no subsequent packet arrives).
+    ///
+    /// Never holds a strong `Arc<PeerMultipathState>` across an `.await`, so
+    /// dropping the last external `Arc<PeerMultipathState>` wakes `reorder_notify`
+    /// and causes this task to exit immediately via `Weak::upgrade() == None`.
     pub fn spawn_reorder_flush_task(
         self: &Arc<Self>,
         tun_tx: tokio::sync::mpsc::Sender<Vec<u8>>,
@@ -1469,15 +1584,17 @@ impl PeerMultipathState {
                 let Some(mp) = weak.upgrade() else {
                     break;
                 };
-                let (has_overflow, next_deadline) = {
+                let (has_overflow, next_deadline, notify) = {
                     let st = mp.inner.lock().unwrap_or_else(|e| e.into_inner());
                     (
                         !st.reorder.ready_overflow.is_empty(),
                         st.reorder.next_expiry(),
+                        mp.reorder_notify.clone(),
                     )
                 };
                 if has_overflow {
                     let ready = mp.flush_expired_reorder(Instant::now());
+                    drop(mp);
                     for pkt in ready {
                         if tun_tx.send(pkt).await.is_err() {
                             return;
@@ -1488,13 +1605,18 @@ impl PeerMultipathState {
                 match next_deadline {
                     Some(deadline) => {
                         let now = Instant::now();
+                        drop(mp);
                         if deadline > now {
                             tokio::select! {
                                 _ = tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)) => {}
-                                _ = mp.reorder_notify.notified() => {}
+                                _ = notify.notified() => {}
                             }
                         }
+                        let Some(mp) = weak.upgrade() else {
+                            break;
+                        };
                         let ready = mp.flush_expired_reorder(Instant::now());
+                        drop(mp);
                         for pkt in ready {
                             if tun_tx.send(pkt).await.is_err() {
                                 return;
@@ -1502,8 +1624,10 @@ impl PeerMultipathState {
                         }
                     }
                     None => {
-                        // Park with zero CPU overhead until an out-of-order packet enters the buffer.
-                        mp.reorder_notify.notified().await;
+                        drop(mp);
+                        // Park with zero strong reference held until an out-of-order packet
+                        // enters the buffer or PeerMultipathState is dropped.
+                        notify.notified().await;
                     }
                 }
             }
@@ -1612,12 +1736,15 @@ mod tests {
     #[tokio::test]
     async fn aggregate_reorder_buffer_restores_counter_order_and_flushes_on_timeout() {
         let sock = Arc::new(tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap());
-        let primary = Carrier::direct(sock.clone(), sock.local_addr().unwrap());
+        let dst = sock.local_addr().unwrap();
+        let primary = Carrier::direct(sock.clone(), dst);
+        let sec = Carrier::direct(sock, dst);
 
         let cfg = MultipathConfig::new(MultipathMode::Aggregate)
             .with_max_reorder_depth(8)
             .with_reorder_hold_timeout(Duration::from_millis(20));
         let mp = PeerMultipathState::new(cfg);
+        assert!(mp.upsert_secondary_leg(1, sec, 10, 1, Vec::new()));
 
         let w0 = make_type4_packet(11, 0, &[0], 1);
         let w1 = make_type4_packet(11, 1, &[1], 2);
@@ -1652,12 +1779,15 @@ mod tests {
     #[tokio::test]
     async fn aggregate_reorder_handles_out_of_order_keepalives_and_mode_switch_flush() {
         let sock = Arc::new(tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap());
-        let primary = Carrier::direct(sock.clone(), sock.local_addr().unwrap());
+        let dst = sock.local_addr().unwrap();
+        let primary = Carrier::direct(sock.clone(), dst);
+        let sec = Carrier::direct(sock, dst);
 
         let cfg = MultipathConfig::new(MultipathMode::Aggregate)
             .with_max_reorder_depth(16)
             .with_reorder_hold_timeout(Duration::from_millis(100));
         let mp = Arc::new(PeerMultipathState::new(cfg));
+        assert!(mp.upsert_secondary_leg(1, sec, 10, 1, Vec::new()));
         let (tun_tx, mut tun_rx) = tokio::sync::mpsc::channel(16);
         let flush_task = mp.spawn_reorder_flush_task(tun_tx);
 
@@ -1689,6 +1819,60 @@ mod tests {
             .unwrap();
         assert_eq!(flushed_pkt, vec![4]);
         flush_task.abort();
+    }
+
+    #[tokio::test]
+    async fn single_path_without_healthy_secondary_leg_stays_inactive_and_never_buffers_loss_and_flush_task_exits_on_drop() {
+        let sock = Arc::new(tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let dst = sock.local_addr().unwrap();
+        let primary = Carrier::direct(sock.clone(), dst);
+        let sec = Carrier::direct(sock, dst);
+
+        // 1. Default state is Off and inactive.
+        let mp_default = PeerMultipathState::default();
+        assert_eq!(mp_default.mode(), MultipathMode::Off);
+        assert!(!mp_default.is_active());
+
+        // 2. Configuring Aggregate without any secondary leg attached MUST stay inactive
+        // (`!mp.is_active()`), so a lost counter (#0) on a single link never parks #1 in
+        // `MultipathReorderBuffer` for 25 ms!
+        let cfg = MultipathConfig::new(MultipathMode::Aggregate)
+            .with_reorder_hold_timeout(Duration::from_millis(250));
+        let mp = Arc::new(PeerMultipathState::new(cfg));
+        assert!(!mp.is_active());
+        let w1 = make_type4_packet(31, 1, &[1], 2);
+        assert_eq!(
+            mp.post_decap_record(&w1, 0, Some(vec![1])),
+            Some(vec![1]),
+            "Aggregate without a secondary leg must deliver packets immediately without reorder buffering"
+        );
+        assert_eq!(mp.snapshot(&primary).reorder_buffered, 0);
+
+        // 3. Attaching a healthy secondary leg activates Aggregate mode; marking that
+        // secondary leg unhealthy immediately flushes parked packets and deactivates!
+        assert!(mp.upsert_secondary_leg(1, sec, 10, 1, Vec::new()));
+        assert!(mp.is_active());
+        let w3 = make_type4_packet(31, 3, &[3], 4);
+        assert_eq!(mp.post_decap_record(&w3, 1, Some(vec![3])), None);
+        assert_eq!(mp.snapshot(&primary).reorder_current_depth, 1);
+
+        let (tun_tx, mut tun_rx) = tokio::sync::mpsc::channel(16);
+        let flush_task = mp.spawn_reorder_flush_task(tun_tx);
+        assert!(mp.set_leg_healthy(1, false));
+        let flushed = tokio::time::timeout(Duration::from_millis(200), tun_rx.recv())
+            .await
+            .expect("marking sole secondary leg unhealthy must immediately flush parked packets")
+            .unwrap();
+        assert_eq!(flushed, vec![3]);
+        assert!(!mp.is_active(), "must become inactive once sole secondary leg is unhealthy and overflow drains");
+
+        // 4. Dropping the last external `Arc<PeerMultipathState>` must wake `reorder_notify`
+        // and cause `spawn_reorder_flush_task` to exit cleanly without `abort()`.
+        drop(mp);
+        tokio::time::timeout(Duration::from_millis(200), flush_task)
+            .await
+            .expect("spawn_reorder_flush_task must exit when last external Arc<PeerMultipathState> is dropped")
+            .expect("task panicked");
     }
 
     #[tokio::test]

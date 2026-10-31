@@ -1170,10 +1170,7 @@ impl SendPeer {
     /// multipath scheduler (`Off`, `ActiveStandby`, `Redundant`, `Aggregate`).
     async fn send_wire_frame(&self, frame: &[u8]) -> bool {
         if !self.multipath.is_active() {
-            let ok = send_wg_recorded(&self.carrier, &self.stats, frame).await.is_ok();
-            self.multipath
-                .record_leg_tx_outcome(0, frame.len(), ok, false);
-            return ok;
+            return send_wg_recorded(&self.carrier, &self.stats, frame).await.is_ok();
         }
         let mode = self.multipath.mode();
         let targets = self.multipath.select_tx_targets(&self.carrier, frame);
@@ -2039,13 +2036,12 @@ impl WgDevice {
             stats.clone(),
             multipath.clone(),
         );
-        let reorder_task = multipath.spawn_reorder_flush_task(self.tun_tx.clone());
 
         let peer = Peer {
             tunn: tunn.clone(),
             carrier: carrier.clone(),
             overlay_ip,
-            tasks: vec![recv_task, timer_task, reorder_task],
+            tasks: vec![recv_task, timer_task],
             stats: stats.clone(),
             direct_src: None,
             plane_idx: self.plane.as_ref().map(|_| index),
@@ -2287,11 +2283,6 @@ impl WgDevice {
             floor.stats.clone(),
             floor.multipath.clone(),
         ));
-        floor.tasks.push(
-            floor
-                .multipath
-                .spawn_reorder_flush_task(self.tun_tx.clone()),
-        );
         let (ip, tunn, carrier, stats, multipath) = (
             floor.overlay_ip,
             floor.tunn.clone(),
@@ -3100,15 +3091,15 @@ impl WgDevice {
             }
         };
 
-        // Timer task + reorder flush task — no recv task; the shared demux loop
-        // delivers this peer's inbound.
+        // Timer task — no recv task; the shared demux loop delivers this peer's
+        // inbound. Reorder flush task is spawned lazily only when multipath is
+        // configured or a secondary leg is attached.
         let timer_task = Self::spawn_carrier_timer(
             tunn.clone(),
             carrier.clone(),
             stats.clone(),
             multipath.clone(),
         );
-        let reorder_task = multipath.spawn_reorder_flush_task(self.tun_tx.clone());
 
         if initiate {
             let it = tunn.clone();
@@ -3134,7 +3125,7 @@ impl WgDevice {
             tunn,
             carrier,
             overlay_ip,
-            tasks: vec![timer_task, reorder_task],
+            tasks: vec![timer_task],
             stats,
             direct_src: Some(dst),
             plane_idx,
@@ -3581,6 +3572,13 @@ impl WgDevice {
                 {
                     break;
                 }
+                if ingress.multipath.is_active() {
+                    for extra in ingress.multipath.drain_ready_packets() {
+                        if tun_tx.send(extra).await.is_err() {
+                            return;
+                        }
+                    }
+                }
             }
         }));
         true
@@ -3798,7 +3796,15 @@ impl WgDevice {
         let Some(p) = self.peers.get(peer_public) else {
             return false;
         };
+        let sess_plus_one = p.stats.rx_ctr_session.load(Ordering::Relaxed);
+        if sess_plus_one > 0 {
+            let hi = p.stats.rx_ctr_hi.load(Ordering::Relaxed);
+            p.multipath.seed_rx_counter((sess_plus_one - 1) as u32, hi);
+        }
         p.multipath.set_config(config);
+        if p.multipath.is_active() {
+            p.multipath.ensure_reorder_flush_task(self.tun_tx.clone());
+        }
         true
     }
 
@@ -3869,6 +3875,8 @@ impl WgDevice {
                         Ok(n) => n,
                         Err(e) => {
                             debug!(%e, leg_id, "wg multipath secondary leg recv ended");
+                            recv_carrier.mark_dead();
+                            leg_ingress.multipath.set_leg_healthy(leg_id, false);
                             break;
                         }
                     };
@@ -3910,7 +3918,16 @@ impl WgDevice {
             tasks.push(recv_task);
         }
 
-        multipath.upsert_secondary_leg(leg_id, carrier, priority, weight, tasks)
+        let sess_plus_one = peer.stats.rx_ctr_session.load(Ordering::Relaxed);
+        if sess_plus_one > 0 {
+            let hi = peer.stats.rx_ctr_hi.load(Ordering::Relaxed);
+            multipath.seed_rx_counter((sess_plus_one - 1) as u32, hi);
+        }
+        let ok = multipath.upsert_secondary_leg(leg_id, carrier, priority, weight, tasks);
+        if ok && multipath.mode() == super::multipath::MultipathMode::Aggregate {
+            multipath.ensure_reorder_flush_task(self.tun_tx.clone());
+        }
+        ok
     }
 
     /// B8 — Remove a secondary multipath leg (`leg_id > 0`) from `peer_public`.
@@ -3918,7 +3935,11 @@ impl WgDevice {
         let Some(p) = self.peers.get(peer_public) else {
             return false;
         };
-        p.multipath.remove_secondary_leg(leg_id)
+        let removed = p.multipath.remove_secondary_leg(leg_id);
+        if removed && p.multipath.is_active() {
+            p.multipath.ensure_reorder_flush_task(self.tun_tx.clone());
+        }
+        removed
     }
 
     /// B8 — Remove all secondary multipath legs from `peer_public`.
@@ -3927,6 +3948,9 @@ impl WgDevice {
             return false;
         };
         p.multipath.clear_secondary_legs();
+        if p.multipath.is_active() {
+            p.multipath.ensure_reorder_flush_task(self.tun_tx.clone());
+        }
         true
     }
 
@@ -3941,7 +3965,11 @@ impl WgDevice {
         let Some(p) = self.peers.get(peer_public) else {
             return false;
         };
-        p.multipath.set_leg_healthy(leg_id, healthy)
+        let ok = p.multipath.set_leg_healthy(leg_id, healthy);
+        if ok && p.multipath.is_active() {
+            p.multipath.ensure_reorder_flush_task(self.tun_tx.clone());
+        }
+        ok
     }
 
     /// B8 — Update the priority and weight of `leg_id` (`0` = primary carrier,
@@ -4025,8 +4053,10 @@ pub(crate) async fn process_inbound(
     if let Some(p) = packet {
         let _ = tun_tx.send(p).await;
     }
-    for extra in ingress.multipath.drain_ready_packets() {
-        let _ = tun_tx.send(extra).await;
+    if ingress.multipath.is_active() {
+        for extra in ingress.multipath.drain_ready_packets() {
+            let _ = tun_tx.send(extra).await;
+        }
     }
     authenticated
 }
@@ -4055,12 +4085,20 @@ pub(crate) fn decap_standby(t: &mut Tunn, datagram: &[u8], ingress: &Ingress) ->
     };
     // The packet arrived, whichever carrier delivered it: it is not loss.
     ingress.stats.note_rx_counter(datagram);
-    if !ingress.permits(src, pkt) {
-        return None;
+    let delivered = if ingress.permits(src, pkt) {
+        let (at, len) = (pkt.as_ptr() as usize, pkt.len());
+        let span = (at - out.as_ptr() as usize, len);
+        Some(into_packet(out, span))
+    } else {
+        None
+    };
+    if ingress.multipath.is_active() {
+        ingress
+            .multipath
+            .post_decap_standby_record(datagram, delivered)
+    } else {
+        delivered
     }
-    let (at, len) = (pkt.as_ptr() as usize, pkt.len());
-    let span = (at - out.as_ptr() as usize, len);
-    Some(into_packet(out, span))
 }
 
 pub(crate) fn decap_inbound(
@@ -4071,8 +4109,9 @@ pub(crate) fn decap_inbound(
     ingress: &Ingress,
 ) -> (bool, Option<Vec<u8>>) {
     let stats = &ingress.stats;
-    if let super::multipath::PreDecapVerdict::AuthenticatedDuplicate { first_on_leg } =
-        ingress.multipath.pre_decap_check(&buf[..n], ingress.leg_id)
+    if ingress.multipath.is_active()
+        && let super::multipath::PreDecapVerdict::AuthenticatedDuplicate { first_on_leg } =
+            ingress.multipath.pre_decap_check(&buf[..n], ingress.leg_id)
     {
         if first_on_leg {
             stats.rx_any.fetch_add(1, Ordering::Relaxed);
@@ -4175,7 +4214,7 @@ pub(crate) fn decap_inbound(
         TunnResult::Done => {}
         TunnResult::Err(e) => debug!(?e, "wg decapsulate error"),
     }
-    if authenticated {
+    if authenticated && ingress.multipath.is_active() {
         delivered = ingress
             .multipath
             .post_decap_record(&buf[..n], ingress.leg_id, delivered);
