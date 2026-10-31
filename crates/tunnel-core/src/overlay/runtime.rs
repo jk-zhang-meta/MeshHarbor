@@ -1800,6 +1800,10 @@ pub struct OverlayRuntime {
     key_epoch: u32,
     /// FR-19 P4b — see [`Self::with_org_primary`].
     org_primary: bool,
+    /// Per-node override for multi-hop backbone path trials (see
+    /// [`Self::with_backbone_enabled`]). Allows per-node/per-harness opt-in
+    /// without mutating process-wide environment variables.
+    backbone_enabled: bool,
     path_trial_managed: std::sync::Mutex<HashSet<ObjectId>>,
     /// The birthday spray's open sockets, by local address — the inbound
     /// accept path needs to know an init arrived on one (`birthday`).
@@ -2088,6 +2092,7 @@ impl OverlayRuntime {
             route_offer_withheld: None,
             peer_view: None,
             org_primary: false,
+            backbone_enabled: false,
             path_trial_managed: std::sync::Mutex::new(HashSet::new()),
             spray_locals: std::sync::Mutex::new(HashSet::new()),
             relay_listener_readiness: None,
@@ -2126,6 +2131,7 @@ impl OverlayRuntime {
             route_offer_withheld: None,
             peer_view: None,
             org_primary: false,
+            backbone_enabled: false,
             path_trial_managed: std::sync::Mutex::new(HashSet::new()),
             spray_locals: std::sync::Mutex::new(HashSet::new()),
             relay_listener_readiness: None,
@@ -2233,6 +2239,13 @@ impl OverlayRuntime {
     /// never handed a session.
     pub fn with_org_primary(mut self, primary: bool) -> Self {
         self.org_primary = primary;
+        self
+    }
+
+    /// Enable or disable multi-hop backbone path trials for this specific
+    /// runtime instance without relying on process-wide environment mutation.
+    pub fn with_backbone_enabled(mut self, enabled: bool) -> Self {
+        self.backbone_enabled = enabled;
         self
     }
 
@@ -2653,7 +2666,7 @@ impl OverlayRuntime {
             supports_path_backbone_v1: path_trial::enabled()
                 && self.org_primary
                 && self.mtu <= roomler_ai_remote_control::models::peer_relay_limits::BACKBONE_MAX_OVERLAY_MTU
-                && super::orgrelay::backbone::path_enabled(),
+                && (super::orgrelay::backbone::path_enabled() || self.backbone_enabled),
             relay_backbone_ready: self.org_primary
                 && self.ready_relay_port().is_some()
                 && super::orgrelay::backbone::configured_local_policy().is_some(),

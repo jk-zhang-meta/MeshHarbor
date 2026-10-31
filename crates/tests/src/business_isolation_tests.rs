@@ -6416,12 +6416,6 @@ async fn staged_trial_live_relay_zone_recheck_retires_two_relays_moving_together
 /// and Engine request path; an incorrect middle hop must not consume its Start.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn staged_graph_multihop_discovery_actual_client_request_and_middle_fence() {
-    if std::env::var_os("ROOMLERD_OVERLAY_BACKBONE_ENABLED").is_none() {
-        // SAFETY: multi-hop backbone discovery client tests explicitly exercise
-        // the `ROOMLERD_OVERLAY_BACKBONE_ENABLED` client gate when CI runs
-        // without the environment variable set.
-        unsafe { std::env::set_var("ROOMLERD_OVERLAY_BACKBONE_ENABLED", "1") };
-    }
     use roomler_ai_remote_control::signaling::{ClientMsg, NetmapPeer, ServerMsg};
     use roomlerd::relay_server::backbone_test_support::{PathTrialTestHarness, WgKeypair};
     use std::sync::Arc;
@@ -6502,8 +6496,9 @@ async fn staged_graph_multihop_discovery_actual_client_request_and_middle_fence(
         .unwrap();
     let socket = Arc::new(tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap());
     let dst = socket.local_addr().unwrap();
-    let (mut client, mut out) =
+    let (client, mut out) =
         PathTrialTestHarness::new(WgKeypair::generate(), peer, socket, dst, true).await;
+    let mut client = client.with_backbone_enabled(true);
     let now = std::time::Instant::now();
     let wait = Duration::from_secs(8);
     let mut received_paths = Vec::new();
@@ -8235,12 +8230,6 @@ async fn staged_graph_multihop_discovery_bilateral_client_wg_commit_return_at_ex
 
 #[cfg(target_os = "linux")]
 async fn run_multihop_discovery_bilateral_client_wg(flipped: bool) {
-    if std::env::var_os("ROOMLERD_OVERLAY_BACKBONE_ENABLED").is_none() {
-        // SAFETY: multi-hop backbone discovery client tests explicitly exercise
-        // the `ROOMLERD_OVERLAY_BACKBONE_ENABLED` client gate when CI runs
-        // without the environment variable set.
-        unsafe { std::env::set_var("ROOMLERD_OVERLAY_BACKBONE_ENABLED", "1") };
-    }
     tokio::time::timeout(Duration::from_secs(180), async {
         use crate::peer_relay_mint_tests::{CompositeDirectLink, composite_ip};
         use roomler_ai_mod_network::org_relay::candidate_test_support as support;
@@ -8321,8 +8310,24 @@ async fn run_multihop_discovery_bilateral_client_wg(flipped: bool) {
         let peer=|id:ObjectId,ip:Ipv4Addr,key:String|serde_json::from_value::<NetmapPeer>(json!({
             "node_id":id.to_hex(),"overlay_ip":ip.to_string(),"wg_public_key":key,"reachable":true,
             "supports_org_relay":true,"supports_overlay_echo":true})).unwrap();
-        let (mut a,mut a_out)=PathTrialTestHarness::new(key_a.clone(),peer(b_id,b_ip,key_b.public_base64()),socket_a,direct.a,true).await;
-        let (mut b,mut b_out)=PathTrialTestHarness::new(key_b,peer(a_id,a_ip,key_a.public_base64()),socket_b,direct.b,false).await;
+        let (a, mut a_out) = PathTrialTestHarness::new(
+            key_a.clone(),
+            peer(b_id, b_ip, key_b.public_base64()),
+            socket_a,
+            direct.a,
+            true,
+        )
+        .await;
+        let mut a = a.with_backbone_enabled(true);
+        let (b, mut b_out) = PathTrialTestHarness::new(
+            key_b,
+            peer(a_id, a_ip, key_a.public_base64()),
+            socket_b,
+            direct.b,
+            false,
+        )
+        .await;
+        let mut b = b.with_backbone_enabled(true);
         tokio::time::timeout(Duration::from_secs(8),async {while !a.handshake_done()||!b.handshake_done(){tokio::time::sleep(Duration::from_millis(10)).await;}}).await.expect("real incumbent bilateral WG handshake");
         let direct_packet=composite_ip(a_ip,b_ip,b"native client incumbent WG before discovery");
         assert!(a.send_packet(&direct_packet).await);assert_eq!(b.receive_packet().await.unwrap(),direct_packet);

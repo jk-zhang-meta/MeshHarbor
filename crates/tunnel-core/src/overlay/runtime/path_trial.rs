@@ -1094,7 +1094,7 @@ impl Engine {
             .min_by_key(|(id, _, _)| *id);
         if let Some((peer, _, candidate)) = choice {
             if candidate.path.relay_node_ids().len() > 1
-                && !crate::overlay::orgrelay::backbone::path_enabled()
+                && !(crate::overlay::orgrelay::backbone::path_enabled() || ctx.backbone_enabled)
             {
                 return;
             }
@@ -1898,6 +1898,10 @@ pub mod test_support {
                 },
                 rx,
             )
+        }
+        pub fn with_backbone_enabled(mut self, enabled: bool) -> Self {
+            self.ctx = self.ctx.with_backbone_enabled(enabled);
+            self
         }
         pub fn handshake_done(&self) -> bool {
             self.wg.peer_handshake_done(&self.peer_key) == Some(true)
