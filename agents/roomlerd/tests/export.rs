@@ -304,7 +304,7 @@ async fn the_media_process_probes_and_exports() {
     )
     .unwrap();
 
-    let exe = env!("CARGO_BIN_EXE_roomlerd");
+    let exe = env!("CARGO_BIN_EXE_meshharbord");
     let run = |args: &[&str]| {
         let out = std::process::Command::new(exe)
             .args(args)
@@ -591,7 +591,7 @@ async fn the_probe_says_a_hardware_recording_is_editable_only_with_the_decoder()
     use roomlerd::recording::child::parse_event_line;
     use roomlerd::recording::decode::h264_decoder_available;
     for f in &FIXTURES {
-        let out = std::process::Command::new(env!("CARGO_BIN_EXE_roomlerd"))
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_meshharbord"))
             .args(["media", "probe"])
             .arg(fixture_path(f.name))
             .stdin(std::process::Stdio::null())
