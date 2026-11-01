@@ -844,6 +844,12 @@ mod tests {
                 failure_at: None,
             });
             dev.set_on_demand_config(OnDemandConfig::disabled());
+            let p = &dev.peers[&key];
+            // Consume the same deferred-config synchronization as the sole
+            // carrier timer before issuing the first test-owned WG INIT.
+            p.stats
+                .on_demand
+                .sync_tunn_if_needed_under_lock(&mut *p.tunn.lock().await);
         }
         assert!(da.poke_handshake(&kb));
         connected(&da, &kb).await;
