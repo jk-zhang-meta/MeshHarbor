@@ -892,7 +892,7 @@ mod tests {
             p
         );
         da.remove_peer(&kb).await;
-        assert!(da.sender().0.read().unwrap().peers.get(&kb).is_none());
+        assert!(!da.sender().0.read().unwrap().peers.contains_key(&kb));
     }
 
     #[tokio::test]
