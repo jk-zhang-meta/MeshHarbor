@@ -1647,7 +1647,13 @@ impl SendPeer {
                 .stats
                 .on_demand
                 .prepare_outbound_under_lock(&mut t, mono_ns_now());
-            if !t.has_current_session() {
+            if !t.has_current_session()
+                && self
+                    .stats
+                    .mp_control
+                    .get()
+                    .is_some_and(|c| c.binding().is_some())
+            {
                 self.stats.multipath_session_reset();
             }
             if just_woke {
@@ -6012,7 +6018,12 @@ pub(crate) fn decap_inbound(
     stats
         .on_demand
         .prepare_inbound_while_dormant_under_lock(t, is_handshake_init);
-    if !t.has_current_session() {
+    if !t.has_current_session()
+        && stats
+            .mp_control
+            .get()
+            .is_some_and(|c| c.binding().is_some())
+    {
         stats.multipath_session_reset();
     }
     // Decapsulate writes into a separate scratch buffer so the borrow on
