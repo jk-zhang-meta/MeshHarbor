@@ -834,6 +834,7 @@ impl Ingress {
         if let Some(control) = self.stats.mp_control.get() {
             control.role_changed();
             self.multipath.clear_crypto_observations();
+            self.multipath.set_leg_healthy(1, false);
         }
     }
 
@@ -1618,6 +1619,9 @@ impl SendPeer {
         // the timer tasks): never hold the Tunn lock across a carrier send.
         let (encap, just_woke, binding) = {
             let mut t = self.tunn.lock().await;
+            if releasing_hold && self.stats.on_demand.is_dormant_or_waking() {
+                return false;
+            }
             let just_woke = self
                 .stats
                 .on_demand
@@ -1627,6 +1631,7 @@ impl SendPeer {
                 if let Some(control) = self.stats.mp_control.get() {
                     control.role_changed();
                     self.multipath.clear_crypto_observations();
+                    self.multipath.set_leg_healthy(1, false);
                 }
             }
             if let Some(control) = self.stats.mp_control.get() {
@@ -4711,6 +4716,7 @@ impl WgDevice {
         {
             control.role_changed();
             peer.multipath.clear_crypto_observations();
+            peer.multipath.set_leg_healthy(1, false);
             *peer
                 .stats
                 .mp_primary
@@ -5984,6 +5990,7 @@ pub(crate) fn decap_inbound(
             );
             if before != control.binding() {
                 ingress.multipath.clear_crypto_observations();
+                ingress.multipath.set_leg_healthy(1, false);
             }
             if control.is_current_transport(&buf[..n]) || is_handshake_init || is_handshake_resp {
                 stats.note_primary_rx(&buf[..n], ingress.leg_id);

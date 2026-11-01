@@ -404,8 +404,9 @@ impl Control {
         }
         if bytes.len() == 148 && bytes[..4] == [1, 0, 0, 0] {
             Self::remember(&mut st.sent, bytes, leg, now);
-        } else if bytes.len() == 92 && bytes[..4] == [2, 0, 0, 0] {
-            if let Some((init, same_leg)) = st
+        } else if bytes.len() == 92
+            && bytes[..4] == [2, 0, 0, 0]
+            && let Some((init, same_leg)) = st
                 .received
                 .iter()
                 .find(|p| p.bytes[4..8] == bytes[8..12])
@@ -415,14 +416,12 @@ impl Control {
                         p.legs[leg].is_some_and(|at| fresh(now, at, WAIT)),
                     )
                 })
-            {
-                if let Some(mut session) = Self::record_session(&mut st, &init, bytes, false) {
-                    if same_leg {
-                        session.response_sent[leg] = Some(now);
-                    }
-                    Self::store_session(&mut st, session);
-                }
+            && let Some(mut session) = Self::record_session(&mut st, &init, bytes, false)
+        {
+            if same_leg {
+                session.response_sent[leg] = Some(now);
             }
+            Self::store_session(&mut st, session);
         }
     }
 
@@ -499,14 +498,13 @@ impl Control {
                         p.legs[leg_index].is_some_and(|at| fresh(now, at, WAIT)),
                     )
                 })
+                && let Some(mut session) = Self::record_session(&mut st, &init, bytes, true)
             {
-                if let Some(mut session) = Self::record_session(&mut st, &init, bytes, true) {
-                    if same_leg {
-                        session.round_trip[leg_index] = Some(now);
-                    }
-                    Self::store_session(&mut st, session.clone());
-                    Self::activate(&mut st, session, now);
+                if same_leg {
+                    session.round_trip[leg_index] = Some(now);
                 }
+                Self::store_session(&mut st, session.clone());
+                Self::activate(&mut st, session, now);
             }
         } else if bytes.len() >= 32 && bytes[..4] == [4, 0, 0, 0] {
             let receiver = u32::from_le_bytes(bytes[4..8].try_into().expect("transport"));
@@ -807,9 +805,9 @@ impl Control {
         let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if st.retired
             || st.primary_fallback
-            || !st
+            || st
                 .primary_started
-                .is_some_and(|at| now.saturating_duration_since(at) >= cycle)
+                .is_none_or(|at| now.saturating_duration_since(at) < cycle)
         {
             return false;
         }
@@ -846,9 +844,9 @@ impl Control {
 
     fn expire_hold_locked(st: &mut State, now: Instant) -> bool {
         if !st.holding
-            || !st
+            || st
                 .hold_since
-                .is_some_and(|at| now.saturating_duration_since(at) >= HOLD_TIME)
+                .is_none_or(|at| now.saturating_duration_since(at) < HOLD_TIME)
         {
             return false;
         }
@@ -908,6 +906,7 @@ impl Control {
         Some(true)
     }
 
+    #[cfg(test)]
     pub(crate) fn pop_held(&self) -> Option<HeldPacket> {
         self.pop_held_at(Instant::now())
     }
@@ -1364,6 +1363,7 @@ mod tests {
         let now = Instant::now();
         let off = Control::new(MultipathMode::Off, [1; 32], [2; 32], [9; 32]);
         off.begin_hold(now);
+        assert!(off.pop_held().is_none());
         off.note_tx_handshake(&handshake(1, 2).0, 0, now);
         assert_eq!(off.queue_if_held(&[1], now), None);
         let state = off.state.lock().unwrap();
