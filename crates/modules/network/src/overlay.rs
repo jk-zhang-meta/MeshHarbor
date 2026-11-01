@@ -2763,10 +2763,17 @@ pub async fn refan_tenant_authority_local(state: &NetworkState, tenant_id: Objec
         return;
     };
     if !matches!(reason, "peer_relay_policy" | "peer_relay_mode") {
+        // B3 R7 — the relay allow table is an ENFORCEMENT point, so it must
+        // reflect the new authority BEFORE any node is told about it. Refanning
+        // first let a grant (deny→allow) reach both nodes while this pod's DERP
+        // table still denied the pair: their first WG initiations were dropped
+        // here ("dropped a frame the overlay ACL … denies") and the pair sat
+        // dark for a full REKEY_TIMEOUT (~5 s). For a revoke, tightening the
+        // relay first is the safe direction too.
+        crate::derp_acl::rebuild(state, tenant_id, network_id).await;
         for n in &nodes {
             refan_node(state, n).await;
         }
-        crate::derp_acl::rebuild(state, tenant_id, network_id).await;
     }
     crate::org_relay::reconcile_acl(state, tenant_id).await;
     if matches!(
