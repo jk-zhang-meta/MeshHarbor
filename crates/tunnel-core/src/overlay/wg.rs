@@ -697,6 +697,45 @@ fn compute_router_health(carrier: &Carrier, stats: &PeerStats) -> super::router:
 }
 
 impl PeerStats {
+    /// Outer None is the unchanged B7 path; Some(None) freezes an initial
+    /// B8 session which has not activated yet, rather than waiving the fence.
+    pub(super) fn multipath_pending_binding(
+        &self,
+    ) -> Option<Option<super::multipath_control::Binding>> {
+        self.mp_control.get().map(|c| c.binding())
+    }
+
+    /// Release B7 IPs through the current installed primary and normal B8
+    /// authorization, never the carrier on which a PQ confirmation arrived.
+    pub(super) async fn release_multipath_pending(
+        self: &Arc<Self>,
+        tunn: &Arc<Mutex<Tunn>>,
+        binding: Option<super::multipath_control::Binding>,
+        packets: &[Vec<u8>],
+    ) -> usize {
+        let peer = self.mp_owner.get().and_then(|(key, mirror)| {
+            let mirror = mirror.upgrade()?;
+            let g = mirror.read().unwrap();
+            g.peers
+                .get(key)
+                .filter(|p| Arc::ptr_eq(&p.tunn, tunn) && Arc::ptr_eq(&p.stats, self))
+                .cloned()
+        });
+        let Some(peer) = peer else {
+            return packets.len();
+        };
+        let mut dropped = 0;
+        for packet in packets {
+            if !peer
+                .send_inner(packet, SendAuthorization::PqPending(binding))
+                .await
+            {
+                dropped += 1;
+            }
+        }
+        dropped
+    }
+
     /// Call while holding this owner's Tunn lock, immediately at an actual
     /// session reset. Ordinary in-place PSK rotation does not call this.
     pub(crate) fn multipath_session_reset(&self) {
@@ -1122,6 +1161,13 @@ struct SendPeer {
     carrier: Arc<Carrier>,
     stats: Arc<PeerStats>,
     multipath: Arc<super::multipath::PeerMultipathState>,
+}
+
+#[derive(Clone, Copy)]
+enum SendAuthorization {
+    Normal,
+    Held(super::multipath_control::Binding),
+    PqPending(Option<super::multipath_control::Binding>),
 }
 
 /// P1 (S6) — everything the outbound data path needs, shared between the
@@ -1623,15 +1669,16 @@ impl SendPeer {
     /// The single encapsulate-and-send implementation (moved verbatim from
     /// the pre-P1 `WgDevice::send_to_peer`).
     async fn send(&self, packet: &[u8]) -> bool {
-        self.send_inner(packet, None).await
+        self.send_inner(packet, SendAuthorization::Normal).await
     }
 
-    async fn send_inner(
-        &self,
-        packet: &[u8],
-        hold_binding: Option<super::multipath_control::Binding>,
-    ) -> bool {
-        let releasing_hold = hold_binding.is_some();
+    async fn send_inner(&self, packet: &[u8], authorization: SendAuthorization) -> bool {
+        let releasing_hold = matches!(authorization, SendAuthorization::Held(_));
+        let expected_binding = match authorization {
+            SendAuthorization::Normal => None,
+            SendAuthorization::Held(binding) => Some(Some(binding)),
+            SendAuthorization::PqPending(binding) => Some(binding),
+        };
         if self.stats.mp_control.get().is_none()
             && self.stats.pq_guard_active.load(Ordering::Acquire)
         {
@@ -1645,8 +1692,21 @@ impl SendPeer {
         // the timer tasks): never hold the Tunn lock across a carrier send.
         let (encap, just_woke, binding) = {
             let mut t = self.tunn.lock().await;
-            if let Some(binding) = hold_binding
-                && self.stats.mp_control.get().and_then(|c| c.binding()) != Some(binding)
+            if let Some(binding) = expected_binding
+                && self.stats.mp_control.get().and_then(|c| c.binding()) != binding
+            {
+                return false;
+            }
+            // An older B7 batch must not jump ahead of, or be appended behind,
+            // the recovery FIFO. The caller counts these explicit drops.
+            if let SendAuthorization::PqPending(binding) = authorization
+                && (self.stats.on_demand.is_dormant_or_waking()
+                    || self.stats.mp_control.get().is_none_or(|c| {
+                        c.retired()
+                            || c.holding()
+                            || (!t.has_current_session() && c.recovery_allowed())
+                    })
+                    || !self.multipath_target_current(binding, 0, &self.carrier))
             {
                 return false;
             }
@@ -1728,7 +1788,8 @@ impl SendPeer {
                     .on_demand
                     .encapsulate_for_send(&mut t, packet, &mut buf, just_woke),
                 just_woke,
-                self.stats.mp_control.get().and_then(|c| c.binding()),
+                expected_binding
+                    .unwrap_or_else(|| self.stats.mp_control.get().and_then(|c| c.binding())),
             )
         };
         match encap {

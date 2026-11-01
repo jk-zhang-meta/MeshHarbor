@@ -353,11 +353,12 @@ impl WgDevice {
     /// The existing business sampler already retries legacy INITs. B8's
     /// first-cycle fallback is consumed by peer_initiator_hs_answered, once.
     pub(crate) fn retap_carrier_revalidation(&self, key: &[u8; 32]) -> bool {
-        if self
-            .peers
-            .get(key)
-            .is_some_and(|p| p.stats.mp_control.get().is_some())
-        {
+        if self.peers.get(key).is_some_and(|p| {
+            p.stats
+                .mp_control
+                .get()
+                .is_some_and(|c| c.peer_on(Instant::now()))
+        }) {
             false
         } else {
             self.poke_handshake(key)
@@ -557,7 +558,10 @@ impl WgDevice {
             {
                 break;
             }
-            if !peer.send_inner(packet.bytes(), Some(binding)).await {
+            if !peer
+                .send_inner(packet.bytes(), SendAuthorization::Held(binding))
+                .await
+            {
                 control.requeue_held(packet);
                 break;
             }
@@ -710,6 +714,264 @@ mod tests {
                 MultipathFailure::Unavailable
             ));
         }
+    }
+
+    #[tokio::test]
+    async fn runtime_retap_unconfirmed_or_off_peer_sends_real_legacy_init() {
+        for remote in [MultipathMode::Off, MultipathMode::Redundant] {
+            let (da, _db, _rx, _) = pair(MultipathMode::Redundant, remote).await;
+            let key = *da.peers.keys().next().unwrap();
+            let stats = da.peers[&key].stats.clone();
+            assert!(!stats.mp_control.get().unwrap().peer_on(Instant::now()));
+            stats.hs_response_at.store(0, Ordering::Release);
+            assert!(da.retap_carrier_revalidation(&key));
+            tokio::time::timeout(Duration::from_secs(2), async {
+                while stats.hs_response_at.load(Ordering::Acquire) == 0 {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("production retap INIT must receive a real authenticated WG response");
+        }
+        let (mut da, mut db, _, _) = pair(MultipathMode::Redundant, MultipathMode::Redundant).await;
+        negotiated(&mut da, &mut db, false).await;
+        assert!(!da.retap_carrier_revalidation(&db.public.to_bytes()));
+    }
+
+    /// An ordinary UDP transport with bounded control-frame delay/drop. It
+    /// never changes a packet, sender address, or authenticated protocol state.
+    struct PqGate {
+        socket: UdpSocket,
+        drop_init: AtomicBool,
+        block_confirm: AtomicBool,
+        confirm: std::sync::Mutex<Option<(Vec<u8>, SocketAddr)>>,
+        business: AtomicU64,
+    }
+
+    impl PqGate {
+        async fn new() -> Arc<Self> {
+            Arc::new(Self {
+                socket: UdpSocket::bind("127.0.0.1:0").await.unwrap(),
+                drop_init: AtomicBool::new(true),
+                block_confirm: AtomicBool::new(false),
+                confirm: std::sync::Mutex::new(None),
+                business: AtomicU64::new(0),
+            })
+        }
+
+        async fn release_confirm(&self) {
+            self.block_confirm.store(false, Ordering::Release);
+            let (bytes, dst) = self.confirm.lock().unwrap().take().unwrap();
+            self.socket.send_to(&bytes, dst).await.unwrap();
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl crate::transport::relay::RelayConn for PqGate {
+        async fn send_to(&self, bytes: &[u8], dst: SocketAddr) -> io::Result<usize> {
+            if bytes.starts_with(super::super::super::pq_psk::MAGIC) {
+                // Existing wire kinds: INIT=1, CONFIRM=4, FRAG=6.
+                if self.drop_init.load(Ordering::Acquire)
+                    && (bytes[8] == 1 || bytes[8] == 6 && bytes[9] == 1)
+                {
+                    return Ok(bytes.len());
+                }
+                if bytes[8] == 4 && self.block_confirm.load(Ordering::Acquire) {
+                    *self.confirm.lock().unwrap() = Some((bytes.to_vec(), dst));
+                    return Ok(bytes.len());
+                }
+            }
+            if bytes.len() > 32 && bytes[..4] == [4, 0, 0, 0] {
+                self.business.fetch_add(1, Ordering::Relaxed);
+            }
+            self.socket.send_to(bytes, dst).await
+        }
+        async fn recv_from(&self, bytes: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
+            self.socket.recv_from(bytes).await
+        }
+        fn local_addr(&self) -> io::Result<SocketAddr> {
+            self.socket.local_addr()
+        }
+    }
+
+    #[tokio::test]
+    async fn runtime_secondary_pq_confirm_drops_nonempty_b7_batch_during_b8_hold() {
+        use super::super::super::on_demand::OnDemandConfig;
+        use super::super::super::pq_psk::{PqPeerStatus, PqPskConfig, PqPskMode};
+
+        let (a, b) = loop {
+            let a = WgKeypair::generate();
+            let b = WgKeypair::generate();
+            // B wins existing simultaneous-PQ-initiation glare; A receives
+            // the actual CONFIRM and owns the nonempty B7 pending queue.
+            if a.public.as_bytes() > b.public.as_bytes() {
+                break (a, b);
+            }
+        };
+        let sa = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let sb = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let (aa, ab) = (sa.local_addr().unwrap(), sb.local_addr().unwrap());
+        let (mut da, _) = WgDevice::new(a.secret);
+        let (mut db, mut rx) = WgDevice::new(b.secret);
+        let ka = da.public.to_bytes();
+        let kb = db.public.to_bytes();
+        for dev in [&mut da, &mut db] {
+            dev.multipath_mode = MultipathMode::Redundant;
+            dev.set_pq_psk_config(PqPskConfig {
+                mode: PqPskMode::Optional,
+                ..PqPskConfig::default()
+            });
+            dev.set_on_demand_config(OnDemandConfig::enabled(Duration::from_secs(60)));
+        }
+        // Defer automatic initial work until the controlled transports own
+        // the PQ exchanges. Classical Optional WG still uses real direct UDP.
+        db.add_peer(ka, A, Carrier::direct(sb, aa), false);
+        da.add_peer(kb, B, Carrier::direct(sa, ab), true);
+        let ga = PqGate::new().await;
+        let gb = PqGate::new().await;
+        let ca = Carrier::relay(ga.clone(), gb.local_addr().unwrap());
+        let cb = Carrier::relay(gb.clone(), ga.local_addr().unwrap());
+        let pqa = da.peers[&kb].stats.pq.get().unwrap().clone();
+        let pqb = db.peers[&ka].stats.pq.get().unwrap().clone();
+        pqa.set_carrier(&ca);
+        pqb.set_carrier(&cb);
+        for (dev, key, carrier) in [(&mut da, kb, ca), (&mut db, ka, cb)] {
+            dev.peers.get_mut(&key).unwrap().retained = Some(RetainedMultipathCarrier {
+                carrier,
+                kind: RelayKind::Turn,
+                attached: false,
+                was_ready: false,
+                failure_at: None,
+            });
+            dev.set_on_demand_config(OnDemandConfig::disabled());
+        }
+        assert!(da.poke_handshake(&kb));
+        connected(&da, &kb).await;
+        negotiated(&mut da, &mut db, true).await;
+        assert_eq!(pqa.snapshot().await.current_epoch, 0);
+        assert!(da.send_to_peer(&kb, &packet(70)).await);
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), rx.recv())
+                .await
+                .unwrap()
+                .unwrap(),
+            packet(70)
+        );
+        for value in [77, 78, 79] {
+            assert!(pqa.buffer_outbound_if_negotiating(&packet(value)).await);
+        }
+        gb.block_confirm.store(true, Ordering::Release);
+        gb.drop_init.store(false, Ordering::Release);
+        assert!(pqb.start_or_rotate().await);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while gb.confirm.lock().unwrap().is_none() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("real ML-KEM response must produce a valid delayed CONFIRM");
+
+        let stats = da.peers[&kb].stats.clone();
+        let tunn = da.peers[&kb].tunn.clone();
+        let control = stats.mp_control.get().unwrap().clone();
+        pqa.reinstall_tunn_psk(Some([9; 32]), true, false, Vec::new(), None)
+            .await;
+        assert!(!tunn.lock().await.has_current_session());
+        assert!(control.holding() && !control.ready(Instant::now()));
+        assert!(da.send_to_peer(&kb, &packet(80)).await);
+        assert_eq!(control.hold_snapshot().packets, 1);
+        ga.business.store(0, Ordering::Relaxed);
+        gb.release_confirm().await;
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !matches!(
+                pqa.snapshot().await.status,
+                PqPeerStatus::Established { .. }
+            ) || !matches!(
+                pqb.snapshot().await.status,
+                PqPeerStatus::Established { .. }
+            ) || !tunn.lock().await.has_current_session()
+            {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("secondary receiver must verify CONFIRM, install PSK and complete real WG");
+        assert_eq!(pqa.pending_multipath_drops(), 3);
+        assert_eq!(ga.business.load(Ordering::Relaxed), 0);
+        assert_eq!(control.hold_snapshot().packets, 1);
+        assert!(control.holding() && !control.ready(Instant::now()));
+        assert!(rx.try_recv().is_err());
+
+        // B7 drops must not leak later from Tunn's native queue. Only the
+        // separately held IP may leave after actual primary authentication.
+        pqa.set_carrier(&da.peers[&kb].carrier);
+        pqb.set_carrier(&db.peers[&ka].carrier);
+        assert!(da.poke_handshake(&kb));
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                da.poll_multipath(&Default::default()).await;
+                if !control.holding() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("existing primary recovery authorizes B8 FIFO release");
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), rx.recv())
+                .await
+                .unwrap()
+                .unwrap(),
+            packet(80)
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), rx.recv())
+                .await
+                .is_err()
+        );
+        assert!(Arc::ptr_eq(&tunn, &da.peers[&kb].tunn));
+        assert!(Arc::ptr_eq(&pqa, da.peers[&kb].stats.pq.get().unwrap()));
+    }
+
+    #[tokio::test]
+    async fn runtime_initial_pq_pending_without_b8_session_uses_current_primary() {
+        use super::super::super::on_demand::OnDemandConfig;
+        use super::super::super::pq_psk::{PqPskConfig, PqPskMode};
+
+        let a = WgKeypair::generate();
+        let b = WgKeypair::generate();
+        let sa = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let sb = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let (aa, ab) = (sa.local_addr().unwrap(), sb.local_addr().unwrap());
+        let (mut da, _) = WgDevice::new(a.secret);
+        let (mut db, mut rx) = WgDevice::new(b.secret);
+        let ka = da.public.to_bytes();
+        let kb = db.public.to_bytes();
+        for dev in [&mut da, &mut db] {
+            dev.multipath_mode = MultipathMode::Redundant;
+            dev.set_on_demand_config(OnDemandConfig::disabled());
+            dev.set_pq_psk_config(PqPskConfig {
+                mode: PqPskMode::Required,
+                ..PqPskConfig::default()
+            });
+        }
+        db.add_peer(ka, A, Carrier::direct(sb, aa), false);
+        da.add_peer(kb, B, Carrier::direct(sa, ab), true);
+        let stats = da.peers[&kb].stats.clone();
+        let pq = stats.pq.get().unwrap();
+        assert_eq!(stats.multipath_pending_binding(), Some(None));
+        assert!(pq.buffer_outbound_if_negotiating(&packet(81)).await);
+        connected(&da, &kb).await;
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(2), rx.recv())
+                .await
+                .unwrap()
+                .unwrap(),
+            packet(81)
+        );
+        assert_eq!(pq.pending_multipath_drops(), 0);
+        assert_eq!(da.peer_multipath_snapshot(&kb).unwrap().legs.len(), 1);
     }
 
     #[derive(Default)]

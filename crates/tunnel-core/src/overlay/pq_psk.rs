@@ -596,6 +596,9 @@ pub(crate) struct PqPeerHandle {
     /// handshakes (`Required` mode before PQ establishment).
     guard_active: std::sync::atomic::AtomicBool,
     epoch_atomic: AtomicU64,
+    /// Explicitly discarded B7 IPs whose B8 owner/binding or FIFO no longer
+    /// authorizes release. No packet contents or key material are recorded.
+    pending_multipath_drops: AtomicU64,
 }
 
 impl fmt::Debug for PqPeerHandle {
@@ -695,6 +698,7 @@ impl PqPeerHandle {
             cached_tunn_psk: std::sync::Mutex::new(initial_psk),
             guard_active: std::sync::atomic::AtomicBool::new(guard_active),
             epoch_atomic: AtomicU64::new(0),
+            pending_multipath_drops: AtomicU64::new(0),
         })
     }
 
@@ -721,6 +725,11 @@ impl PqPeerHandle {
             .unwrap_or_else(|e| e.into_inner())
             .primary
             .carrier = Arc::downgrade(carrier);
+    }
+
+    #[cfg(test)]
+    pub(super) fn pending_multipath_drops(&self) -> u64 {
+        self.pending_multipath_drops.load(Ordering::Relaxed)
     }
 
     fn upgrade_carrier(&self) -> Option<Arc<Carrier>> {
@@ -1847,7 +1856,7 @@ impl PqPeerHandle {
             primary_binding.tunn.upgrade(),
             primary_binding.stats.upgrade(),
         ) {
-            let out_packets = {
+            let (out_packets, pending_binding) = {
                 let mut t = tunn.lock().await;
                 // B7 in-place PSK update: update `handshake.params.preshared_key`
                 // without reconstructing `Tunn`, preserving `last_handshake_timestamp`
@@ -1863,7 +1872,7 @@ impl PqPeerHandle {
                     stats.handshake.store(false, Ordering::Release);
                     stats.handshake_at.store(0, Ordering::Release);
                     stats.hs_response_at.store(0, Ordering::Release);
-                    Vec::new()
+                    (Vec::new(), stats.multipath_pending_binding())
                 } else {
                     // If downgrading to classical WG (`psk.is_none()`), clear any
                     // stale PQ-keyed transport sessions while preserving the TAI64N
@@ -1883,16 +1892,22 @@ impl PqPeerHandle {
                     {
                         outs.push(b.to_vec());
                     }
-                    for pkt in &queued_packets {
-                        if t.has_current_session() {
-                            if let TunnResult::WriteToNetwork(b) = t.encapsulate(pkt, &mut buf) {
-                                outs.push(b.to_vec());
+                    let pending_binding = stats.multipath_pending_binding();
+                    if pending_binding.is_none() {
+                        // Default Off retains the original B7 buffering and
+                        // reply-carrier behavior byte for byte.
+                        for pkt in &queued_packets {
+                            if t.has_current_session() {
+                                if let TunnResult::WriteToNetwork(b) = t.encapsulate(pkt, &mut buf)
+                                {
+                                    outs.push(b.to_vec());
+                                }
+                            } else {
+                                t.queue_packet_only(pkt);
                             }
-                        } else {
-                            t.queue_packet_only(pkt);
                         }
                     }
-                    outs
+                    (outs, pending_binding)
                 }
             };
             if !out_packets.is_empty() {
@@ -1901,6 +1916,29 @@ impl PqPeerHandle {
                     for pkt in &out_packets {
                         let _ = super::wg::send_wg_recorded(out_carrier, &stats, pkt).await;
                     }
+                }
+            }
+            if let Some(binding) = pending_binding
+                && !queued_packets.is_empty()
+            {
+                let dropped = if guard_after {
+                    queued_packets.len()
+                } else {
+                    stats
+                        .release_multipath_pending(&tunn, binding, &queued_packets)
+                        .await
+                };
+                if dropped > 0 {
+                    let total = self
+                        .pending_multipath_drops
+                        .fetch_add(dropped as u64, Ordering::Relaxed)
+                        .saturating_add(dropped as u64);
+                    warn!(
+                        event = "pq_pending_multipath_drop",
+                        dropped_packets = dropped,
+                        total_dropped_packets = total,
+                        "overlay pq-psk: B8 owner, binding or recovery FIFO refused pending IPs"
+                    );
                 }
             }
         }
