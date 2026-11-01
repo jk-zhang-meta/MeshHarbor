@@ -90,6 +90,10 @@ const EVENT_QUEUE: usize = 32;
 // demoted. This stays wire-shape-only because the mux does not own WG keys;
 // the live WG owner performs the actual HMAC/nonce/epoch checks.
 fn is_follow_control(payload: &[u8]) -> bool {
+    #[cfg(feature = "overlay")]
+    if crate::overlay::multipath_control::shaped(payload) {
+        return true;
+    }
     payload.len() == 160
         && payload.starts_with(b"RMDISCO1")
         && matches!(payload[8], 3..=6)

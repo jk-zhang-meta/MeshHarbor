@@ -309,6 +309,54 @@ pub(super) struct UpgradeProbe {
 }
 
 impl OverlayRuntime {
+    fn apply_multipath_promotion(e: &mut Installed, wg: &WgDevice, kind: RelayKind) {
+        let (local, dst) = wg.peer_relay_addrs(&e.pubkey);
+        *e = Installed {
+            initiated: e.initiated,
+            hs_done: true,
+            relay_kind: Some(kind),
+            carrier_local: local,
+            carrier_dst: dst,
+            relay_local: local,
+            relay_dst: dst,
+            rx_denied: e.rx_denied,
+            rx_denied_noroute: e.rx_denied_noroute,
+            ..Installed::base(e.pubkey, e.overlay_ip, DirectTier::Relay, Instant::now())
+        };
+    }
+
+    /// B8 runs on the existing scout clock. Coordinator allocations stay
+    /// owned while their exact carrier is retained by the active peer.
+    pub(super) async fn sweep_multipath(
+        &self,
+        wg: &mut WgDevice,
+        by_node: &mut HashMap<ObjectId, Installed>,
+        relay: &mut Option<RelayCoordinator>,
+    ) -> bool {
+        if !wg.multipath_enabled() {
+            return false;
+        }
+        let allowed = by_node
+            .iter()
+            .filter(|(id, _)| relay.as_ref().is_some_and(|r| r.holds_org_session(id)))
+            .map(|(_, e)| e.pubkey)
+            .collect();
+        let changes = wg.poll_multipath(&allowed).await;
+        let mut promoted = false;
+        for (key, kind) in changes {
+            if let Some((nid, e)) = by_node.iter_mut().find(|(_, e)| e.pubkey == key) {
+                if let Some(kind) = kind {
+                    Self::apply_multipath_promotion(e, wg, kind);
+                    promoted = true;
+                } else if e.is_direct
+                    && let Some(r) = relay.as_mut()
+                {
+                    r.forget(nid);
+                }
+            }
+        }
+        promoted
+    }
     /// rc.137/139 — find carriers that are one-way / dead and repair them.
     /// Health is LOCK-FREE: each sweep snapshots `(tx, rx)` (atomic reads — no
     /// `Tunn` lock, so it can't stall the packet path like the rc.136
@@ -441,7 +489,7 @@ impl OverlayRuntime {
                     && now.saturating_duration_since(p.at)
                         >= crate::overlay::lifecycle::BUSINESS_POKE_RETAP_AFTER
                     && !wg.peer_initiator_hs_answered(&e.pubkey, p.at)
-                    && wg.poke_handshake(&e.pubkey)
+                    && wg.retap_carrier_revalidation(&e.pubkey)
                 {
                     if let Some(s) = samples.get_mut(nid) {
                         s.retapped = Some(p.at);
@@ -451,7 +499,7 @@ impl OverlayRuntime {
                 }
                 continue;
             }
-            if wg.poke_handshake(&e.pubkey) {
+            if wg.request_carrier_revalidation(&e.pubkey) {
                 e.poke = Some(PokeArm {
                     at: now,
                     from_major: false,
@@ -557,7 +605,7 @@ impl OverlayRuntime {
         let mbb = crate::overlay::direct::make_before_break_enabled();
         let mut dead: Vec<(ObjectId, DirectTier, DeathReason)> = Vec::new();
         for (nid, e) in by_node.iter_mut() {
-            let Some((tx, rx)) = wg.peer_traffic(&e.pubkey) else {
+            let Some((tx, rx)) = wg.peer_primary_traffic(&e.pubkey) else {
                 continue;
             };
             let (last_tx, last_rx) = e.last_traffic;
@@ -807,9 +855,24 @@ impl OverlayRuntime {
             let business_rearm =
                 unanswered_traffic && e.poke.is_some_and(|p| !p.from_major && !p.from_business);
             if let Some(reason) = v.death {
-                dead.push((*nid, e.tier, reason));
+                match wg
+                    .multipath_primary_failed(
+                        &e.pubkey,
+                        relay.as_ref().is_some_and(|r| r.holds_org_session(nid)),
+                    )
+                    .await
+                {
+                    crate::overlay::wg::MultipathFailure::Promoted(kind) => {
+                        Self::apply_multipath_promotion(e, wg, kind);
+                        carrier_lost = true;
+                    }
+                    crate::overlay::wg::MultipathFailure::Pending => {}
+                    crate::overlay::wg::MultipathFailure::Unavailable => {
+                        dead.push((*nid, e.tier, reason))
+                    }
+                }
             } else if forced {
-                if wg.poke_handshake(&e.pubkey) {
+                if wg.request_carrier_revalidation(&e.pubkey) {
                     let rearmed = e.poke.is_some();
                     // Only a MAJOR earns the tight conviction window — see
                     // `ForcedPoke::AddrIface` for why the chatty cause must not.
@@ -832,7 +895,7 @@ impl OverlayRuntime {
                     );
                 }
             } else if business_rearm {
-                if wg.poke_handshake(&e.pubkey) {
+                if wg.request_carrier_revalidation(&e.pubkey) {
                     e.poke = Some(PokeArm {
                         at: now,
                         from_major: false,
@@ -865,7 +928,7 @@ impl OverlayRuntime {
                 if (pressured
                     || unanswered_traffic
                     || should_poke(handshake_done, false, since_last_rx, since_proof))
-                    && wg.poke_handshake(&e.pubkey)
+                    && wg.request_carrier_revalidation(&e.pubkey)
                 {
                     // Business data on an established direct path gets a
                     // liveness-sized window. Periodic/pressure-only pokes keep
@@ -2455,7 +2518,11 @@ impl OverlayRuntime {
                 // Bidirectional direct proven → cut over. `promote_direct_probe`
                 // drops the old relay carrier; forget its coturn allocation and
                 // retag `by_node` as the direct tier.
-                if wg.promote_direct_probe(&p.pubkey) {
+                let retained_kind = by_node.get(nid).and_then(|e| e.relay_kind);
+                if wg
+                    .promote_direct_probe_multipath(&p.pubkey, retained_kind)
+                    .await
+                {
                     // P3 PR-A — the latch is the tier's proof: Q credit +
                     // strike clear in the monitor (≡ the `*_fails.remove`
                     // below), and any recent monitor refusal of this tier
@@ -2470,7 +2537,9 @@ impl OverlayRuntime {
                         );
                         s.establishment(nid, p.tier, now);
                     });
-                    if let Some(r) = relay.as_mut() {
+                    if !wg.retains_multipath_carrier(&p.pubkey)
+                        && let Some(r) = relay.as_mut()
+                    {
                         r.forget(nid);
                     }
                     // P9 — a fresh-install LAN probe can latch while the
