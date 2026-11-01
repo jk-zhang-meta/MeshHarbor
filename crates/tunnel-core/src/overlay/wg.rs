@@ -697,6 +697,15 @@ fn compute_router_health(carrier: &Carrier, stats: &PeerStats) -> super::router:
 }
 
 impl PeerStats {
+    /// Call while holding this owner's Tunn lock, immediately at an actual
+    /// session reset. Ordinary in-place PSK rotation does not call this.
+    pub(crate) fn multipath_session_reset(&self) {
+        if let Some(control) = self.mp_control.get() {
+            control.session_reset(Instant::now());
+            self.mp_primary_hs_response.store(0, Ordering::Relaxed);
+            self.mp_primary_rx_any.store(0, Ordering::Relaxed);
+        }
+    }
     fn multipath_tx_allowed(&self) -> bool {
         self.mp_control
             .get()
@@ -1638,6 +1647,9 @@ impl SendPeer {
                 .stats
                 .on_demand
                 .prepare_outbound_under_lock(&mut t, mono_ns_now());
+            if !t.has_current_session() {
+                self.stats.multipath_session_reset();
+            }
             if just_woke {
                 self.stats.handshake.store(false, Ordering::Relaxed);
                 if let Some(control) = self.stats.mp_control.get() {
@@ -1653,9 +1665,7 @@ impl SendPeer {
                 if !t.has_current_session() && control.recovery_allowed() {
                     control.begin_hold(Instant::now());
                 }
-                if !releasing_hold
-                    && !self.stats.on_demand.is_dormant_or_waking()
-                    && let Some(held) = control.queue_if_held(packet, Instant::now())
+                if !releasing_hold && let Some(held) = control.queue_if_held(packet, Instant::now())
                 {
                     if held {
                         self.stats.tx_attempted.fetch_add(1, Ordering::Relaxed);
@@ -1670,6 +1680,18 @@ impl SendPeer {
                                 global_bytes = snapshot.global_bytes,
                                 "overlay: bounded multipath recovery queue rejected packet"
                             );
+                        }
+                    }
+                    if held && just_woke {
+                        // The existing B6 wake may send its INIT, but the new
+                        // business packet stays behind older B8-held packets.
+                        let wake = match t.format_handshake_initiation(&mut buf, true) {
+                            TunnResult::WriteToNetwork(out) => Some(out.to_vec()),
+                            _ => None,
+                        };
+                        drop(t);
+                        if let Some(wake) = wake {
+                            let _ = send_wg_recorded(&self.carrier, &self.stats, &wake).await;
                         }
                     }
                     return held;
@@ -3125,6 +3147,7 @@ impl WgDevice {
                             .try_enter_dormant_under_lock(local_hold, &mut t, now_ns)
                     {
                         stats.handshake.store(false, Ordering::Relaxed);
+                        stats.multipath_session_reset();
                         None
                     } else {
                         match t.update_timers(&mut buf) {
@@ -5794,7 +5817,19 @@ impl WgDevice {
         peer_public: &[u8; 32],
     ) -> Option<super::multipath::MultipathPeerSnapshot> {
         let p = self.peers.get(peer_public)?;
-        Some(p.multipath.snapshot(&p.carrier))
+        let mut snapshot = p.multipath.snapshot(&p.carrier);
+        if p.stats
+            .mp_control
+            .get()
+            .is_some_and(|c| !c.ready(Instant::now()))
+            || p.stats.pq_guard_active.load(Ordering::Acquire)
+        {
+            for leg in snapshot.legs.iter_mut().filter(|l| l.leg_id != 0) {
+                leg.healthy = false;
+                leg.effective_up = false;
+            }
+        }
+        Some(snapshot)
     }
 
     /// B8 — Manually flush any expired packets in `peer_public`'s reorder buffer.
@@ -5977,6 +6012,9 @@ pub(crate) fn decap_inbound(
     stats
         .on_demand
         .prepare_inbound_while_dormant_under_lock(t, is_handshake_init);
+    if !t.has_current_session() {
+        stats.multipath_session_reset();
+    }
     // Decapsulate writes into a separate scratch buffer so the borrow on
     // the result doesn't alias the inbound `buf`.
     let mut out = vec![0u8; WG_BUF];

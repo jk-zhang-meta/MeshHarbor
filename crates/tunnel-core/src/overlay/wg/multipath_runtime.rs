@@ -972,4 +972,116 @@ mod tests {
             p
         );
     }
+
+    #[tokio::test]
+    async fn runtime_real_pq_guard_reset_invalidates_proof_and_preserves_held_fifo() {
+        let (mut da, mut db, mut rx, _) =
+            pair(MultipathMode::Redundant, MultipathMode::Redundant).await;
+        retain_pair(&mut da, &mut db).await;
+        negotiated(&mut da, &mut db, true).await;
+        let kb = db.public.to_bytes();
+        let tunn = da.peers[&kb].tunn.clone();
+        let stats = da.peers[&kb].stats.clone();
+        let pq = stats.pq.get().unwrap().clone();
+        let control = stats.mp_control.get().unwrap().clone();
+        let original = control.binding();
+        // Exercise the real B7 installation method. An ordinary in-place
+        // PSK update preserves live WG sessions and must preserve B8 binding.
+        pq.reinstall_tunn_psk(Some([7; 32]), false, false, Vec::new(), None)
+            .await;
+        assert_eq!(control.binding(), original);
+        assert!(control.ready(Instant::now()));
+        pq.reinstall_tunn_psk(Some([9; 32]), true, false, Vec::new(), None)
+            .await;
+        assert!(!tunn.lock().await.has_current_session());
+        assert!(control.binding().is_none());
+        assert!(!control.ready(Instant::now()));
+        assert!(control.recovery_allowed());
+        assert!(control.holding());
+        assert!(!da.peer_multipath_snapshot(&kb).unwrap().legs[1].healthy);
+        for v in [55, 56] {
+            assert!(da.send_to_peer(&kb, &packet(v)).await);
+        }
+        assert_eq!(control.hold_snapshot().packets, 2);
+        assert!(rx.try_recv().is_err());
+        // The real classical-downgrade reset must retain this same bounded
+        // FIFO, then release it only after a new authenticated primary RTT.
+        pq.reinstall_tunn_psk(None, false, true, Vec::new(), None)
+            .await;
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                da.poll_multipath(&Default::default()).await;
+                if !control.holding() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("current primary recovery drains original FIFO");
+        for v in [55, 56] {
+            assert_eq!(
+                tokio::time::timeout(Duration::from_secs(1), rx.recv())
+                    .await
+                    .unwrap()
+                    .unwrap(),
+                packet(v)
+            );
+        }
+        assert!(Arc::ptr_eq(&tunn, &da.peers[&kb].tunn));
+        assert!(Arc::ptr_eq(&pq, da.peers[&kb].stats.pq.get().unwrap()));
+        assert_eq!(control.hold_snapshot().packets, 0);
+    }
+
+    #[tokio::test]
+    async fn runtime_b6_dormant_is_silent_and_wake_preserves_b8_fifo() {
+        let (mut da, mut db, mut rx, _) =
+            pair(MultipathMode::Redundant, MultipathMode::Redundant).await;
+        retain_pair(&mut da, &mut db).await;
+        negotiated(&mut da, &mut db, true).await;
+        let ka = da.public.to_bytes();
+        let kb = db.public.to_bytes();
+        let cfg =
+            super::super::super::on_demand::OnDemandConfig::enabled(Duration::from_millis(300))
+                .with_defer_initial_handshake(false);
+        da.set_on_demand_config(cfg);
+        db.set_on_demand_config(cfg);
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while da.peer_is_dormant(&kb) != Some(true) || db.peer_is_dormant(&ka) != Some(true) {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let a = da.peer_on_demand_snapshot(&kb).unwrap().wire_tx_packets;
+        let b = db.peer_on_demand_snapshot(&ka).unwrap().wire_tx_packets;
+        for _ in 0..5 {
+            da.poll_multipath(&Default::default()).await;
+            db.poll_multipath(&Default::default()).await;
+            tokio::time::sleep(Duration::from_millis(30)).await;
+        }
+        assert_eq!(da.peer_on_demand_snapshot(&kb).unwrap().wire_tx_packets, a);
+        assert_eq!(db.peer_on_demand_snapshot(&ka).unwrap().wire_tx_packets, b);
+        for v in [70, 71] {
+            assert!(da.send_to_peer(&kb, &packet(v)).await);
+        }
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while da.peers[&kb].stats.mp_control.get().unwrap().holding() {
+                da.poll_multipath(&Default::default()).await;
+                db.poll_multipath(&Default::default()).await;
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("existing B6 handshake wakes and authorizes same-primary FIFO");
+        for v in [70, 71] {
+            assert_eq!(
+                tokio::time::timeout(Duration::from_secs(1), rx.recv())
+                    .await
+                    .unwrap()
+                    .unwrap(),
+                packet(v)
+            );
+        }
+    }
 }

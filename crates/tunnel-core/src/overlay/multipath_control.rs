@@ -304,6 +304,26 @@ impl Control {
         Self::current_binding(&self.state.lock().unwrap_or_else(|e| e.into_inner()))
     }
 
+    /// Call under the owner's Tunn lock only for an actual session reset,
+    /// never an ordinary PSK update. Preserve the existing hold/fallback arm.
+    pub(crate) fn session_reset(&self, now: Instant) {
+        if self.mode == MultipathMode::Off {
+            return;
+        }
+        let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if st.retired {
+            return;
+        }
+        if st.active.is_some() && st.had_proven_secondary {
+            Self::start_hold(&mut st, now);
+        }
+        Self::reset_proof(&mut st);
+        st.active = None;
+        st.sent.clear();
+        st.received.clear();
+        st.sessions.clear();
+    }
+
     /// Shape/session attribution only; caller MUST already have AEAD or an
     /// exact-full-ciphertext authenticated duplicate receipt on this owner.
     pub(crate) fn is_current_transport(&self, bytes: &[u8]) -> bool {
@@ -1171,6 +1191,82 @@ mod tests {
         assert!(!a.recovery_allowed());
         assert!(!a.recovery_ready(now + Duration::from_millis(10)));
         assert!(a.holding()); // Only caller's committed primary can release FIFO.
+    }
+
+    #[test]
+    fn actual_session_reset_invalidates_old_proof_and_retains_fifo_recovery_and_arm() {
+        let _serial = HOLD_TEST_LOCK.lock().unwrap();
+        let (a, b) = endpoints();
+        let now = Instant::now();
+        consent(&a, &b, now);
+        secondary(&a, &b, now, 70);
+        let old_binding = a.binding().unwrap();
+        let wire = transport(29, 71);
+        let challenge = a.primary_challenge(&wire, now).unwrap();
+        b.note_authenticated(&wire, 0, now);
+        let old_proof = b.receive(&challenge, 0, now).unwrap();
+        let old_offer = encode(
+            &Frame {
+                kind: Kind::Offer,
+                mode: b.mode,
+                nonce: [3; 16],
+                transcript: a.state.lock().unwrap().active.as_ref().unwrap().digest,
+                digest: [0; 32],
+            },
+            &b.local,
+            &a.local,
+            &a.shared,
+        )
+        .unwrap();
+        let reset_at = now + Duration::from_millis(100);
+        a.session_reset(reset_at);
+        assert!(a.binding().is_none());
+        assert!(!a.ready(reset_at));
+        assert!(!a.peer_on(reset_at));
+        assert!(a.recovery_allowed());
+        assert!(!a.recovery_ready(reset_at));
+        assert!(a.holding());
+        assert_eq!(a.queue_if_held(&[7, 8], reset_at), Some(true));
+        assert!(a.receive(&old_offer, 0, reset_at).is_none());
+        assert!(a.receive(&old_proof, 0, reset_at).is_none());
+        a.note_authenticated(&transport(17, 72), 1, reset_at);
+        assert!(a.binding().is_none());
+        assert!(!a.is_current_transport(&transport(17, 72)));
+        assert!(!a.primary_answered_since(now));
+        a.session_reset(now + Duration::from_millis(400));
+        assert_eq!(a.state.lock().unwrap().hold_since, Some(reset_at));
+        assert_eq!(a.hold_snapshot().packets, 1);
+        assert!(
+            a.take_primary_fallback(now + Duration::from_millis(800), Duration::from_millis(800))
+        );
+        start_session(&a, &b, 1, now + Duration::from_secs(1));
+        let new_binding = a.binding().unwrap();
+        assert!(new_binding.session_generation > old_binding.session_generation);
+        assert_eq!(new_binding.role_generation, old_binding.role_generation);
+        assert!(a.recovery_ready(now + Duration::from_secs(1)));
+        assert!(!a.ready(now + Duration::from_secs(1)));
+        let packet = a.pop_held_at(now + Duration::from_secs(1)).unwrap();
+        assert_eq!(packet.bytes(), [7, 8]);
+        drop(packet);
+        assert!(a.finish_hold());
+    }
+
+    #[test]
+    fn initial_or_off_session_reset_cannot_create_hold_or_reactivate_cached_session() {
+        let (a, _) = endpoints();
+        let now = Instant::now();
+        a.session_reset(now);
+        assert!(!a.holding());
+        assert!(!a.recovery_allowed());
+        a.note_authenticated(&transport(17, 1), 0, now);
+        assert!(a.binding().is_none());
+        let off = Control::new(MultipathMode::Off, [1; 32], [2; 32], [9; 32]);
+        off.session_reset(now);
+        assert!(off.state.lock().unwrap().hold_budget.is_none());
+        a.retire();
+        a.session_reset(now);
+        assert!(a.retired());
+        assert!(!a.holding());
     }
 
     #[test]
