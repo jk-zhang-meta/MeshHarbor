@@ -1710,6 +1710,15 @@ impl SendPeer {
             {
                 return false;
             }
+            if matches!(authorization, SendAuthorization::PqPending(_)) && !t.has_current_session()
+            {
+                // Initial B7 establishment (never a proven B8 recovery) keeps
+                // its existing bounded native FIFO. Encapsulate can enqueue
+                // while returning Done during an outstanding INIT; treating
+                // that as a drop would miscount an IP later flushed by WG.
+                t.queue_packet_only(packet);
+                return true;
+            }
             if releasing_hold && self.stats.on_demand.is_dormant_or_waking() {
                 return false;
             }
