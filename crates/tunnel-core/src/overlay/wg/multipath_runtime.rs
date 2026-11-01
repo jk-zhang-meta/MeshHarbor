@@ -222,7 +222,12 @@ impl WgDevice {
             }
             // A healthy restarted primary may answer the fallback INIT within
             // this same PokeArm. Release only on current-session roundtrip.
-            if control.holding() && control.current_primary_roundtrip(Instant::now()) {
+            if control.holding()
+                && (control.current_primary_roundtrip(Instant::now())
+                    || control
+                        .primary_answer_age(Instant::now())
+                        .is_some_and(|age| age < Duration::from_secs(2)))
+            {
                 self.drain_multipath_hold(&key).await;
             }
             if self
@@ -729,48 +734,56 @@ mod tests {
 
     #[tokio::test]
     async fn runtime_role_invalidated_during_primary_await_never_sends_secondary_business() {
-        let (mut da, mut db, mut rx, _) =
-            pair(MultipathMode::Redundant, MultipathMode::Redundant).await;
-        retain_pair(&mut da, &mut db).await;
-        negotiated(&mut da, &mut db, true).await;
-        let kb = db.public.to_bytes();
-        let block = Arc::new(BlockingPrimary::default());
-        // Only the transport is substituted: use the actual production
-        // WgSender -> encapsulate -> select targets -> awaited dispatch path,
-        // the real negotiated Control and the real authenticated secondary.
-        let carrier = Carrier::relay(block.clone(), "127.0.0.1:2".parse().unwrap());
-        let p = da.peers.get_mut(&kb).unwrap();
-        p.carrier = carrier.clone();
-        *p.stats.mp_primary.lock().unwrap() = Arc::downgrade(&carrier);
-        let (ip, tunn, stats, mp) = (
-            p.overlay_ip,
-            p.tunn.clone(),
-            p.stats.clone(),
-            p.multipath.clone(),
-        );
-        da.send_install(kb, ip, tunn, carrier, stats.clone(), mp);
-        let before = da.peer_multipath_snapshot(&kb).unwrap().legs[1].tx_packets;
-        let sender = da.sender();
-        let sending = tokio::spawn(async move { sender.send_to_peer(&kb, &packet(42)).await });
-        tokio::time::timeout(Duration::from_secs(1), block.entered.notified())
-            .await
-            .unwrap();
-        stats.mp_control.get().unwrap().role_changed();
-        block.release.notify_one();
-        assert!(
-            sending.await.unwrap(),
-            "first transport's completed send is still reported"
-        );
-        assert_eq!(
-            da.peer_multipath_snapshot(&kb).unwrap().legs[1].tx_packets,
-            before
-        );
-        assert!(
-            tokio::time::timeout(Duration::from_millis(100), rx.recv())
+        for withdraw_owner in [false, true] {
+            let (mut da, mut db, mut rx, _) =
+                pair(MultipathMode::Redundant, MultipathMode::Redundant).await;
+            retain_pair(&mut da, &mut db).await;
+            negotiated(&mut da, &mut db, true).await;
+            let kb = db.public.to_bytes();
+            let block = Arc::new(BlockingPrimary::default());
+            // Only the transport is substituted: use the actual production
+            // WgSender -> encapsulate -> select targets -> awaited dispatch path,
+            // the real negotiated Control and the real authenticated secondary.
+            let carrier = Carrier::relay(block.clone(), "127.0.0.1:2".parse().unwrap());
+            let p = da.peers.get_mut(&kb).unwrap();
+            p.carrier = carrier.clone();
+            *p.stats.mp_primary.lock().unwrap() = Arc::downgrade(&carrier);
+            let (ip, tunn, stats, mp) = (
+                p.overlay_ip,
+                p.tunn.clone(),
+                p.stats.clone(),
+                p.multipath.clone(),
+            );
+            da.send_install(kb, ip, tunn, carrier, stats.clone(), mp);
+            let before = da.peer_multipath_snapshot(&kb).unwrap().legs[1].tx_packets;
+            let sender = da.sender();
+            let sending = tokio::spawn(async move { sender.send_to_peer(&kb, &packet(42)).await });
+            tokio::time::timeout(Duration::from_secs(1), block.entered.notified())
                 .await
-                .is_err(),
-            "real remote secondary must receive zero business packets"
-        );
+                .unwrap();
+            if withdraw_owner {
+                // Keep Peer alive to exercise the real uninstall-before-async-
+                // cleanup interval, rather than relying on Peer::drop retirement.
+                da.send_uninstall(&kb);
+            } else {
+                stats.mp_control.get().unwrap().role_changed();
+            }
+            block.release.notify_one();
+            assert!(
+                sending.await.unwrap(),
+                "first transport's completed send is still reported"
+            );
+            assert_eq!(
+                da.peer_multipath_snapshot(&kb).unwrap().legs[1].tx_packets,
+                before
+            );
+            assert!(
+                tokio::time::timeout(Duration::from_millis(100), rx.recv())
+                    .await
+                    .is_err(),
+                "real remote secondary must receive zero business packets"
+            );
+        }
     }
 
     #[tokio::test]

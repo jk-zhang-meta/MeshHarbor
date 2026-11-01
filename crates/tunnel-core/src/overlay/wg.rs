@@ -567,6 +567,7 @@ impl StandbyTee {
 #[derive(Default)]
 pub struct PeerStats {
     mp_owned: AtomicBool,
+    mp_owner: std::sync::OnceLock<([u8; 32], std::sync::Weak<std::sync::RwLock<SendState>>)>,
     mp_control: std::sync::OnceLock<Arc<super::multipath_control::Control>>,
     mp_replies: std::sync::OnceLock<Arc<Semaphore>>,
     mp_primary: std::sync::Mutex<std::sync::Weak<Carrier>>,
@@ -1523,7 +1524,18 @@ impl SendPeer {
         let Some(control) = self.stats.mp_control.get() else {
             return true;
         };
-        !control.retired()
+        let owned = self.stats.mp_owner.get().is_some_and(|(key, mirror)| {
+            mirror.upgrade().is_some_and(|mirror| {
+                let g = mirror.read().unwrap();
+                g.peers.get(key).is_some_and(|p| {
+                    Arc::ptr_eq(&p.tunn, &self.tunn)
+                        && Arc::ptr_eq(&p.stats, &self.stats)
+                        && Arc::ptr_eq(&p.carrier, &self.carrier)
+                })
+            })
+        });
+        owned
+            && !control.retired()
             && control.binding() == binding
             && !self.stats.pq_guard_active.load(Ordering::Acquire)
             && !self.stats.on_demand.is_dormant()
@@ -2082,6 +2094,7 @@ impl WgDevice {
             return;
         }
         *stats.mp_primary.lock().unwrap_or_else(|e| e.into_inner()) = Arc::downgrade(carrier);
+        let _ = stats.mp_owner.set((peer, Arc::downgrade(&self.send.0)));
         let shared = super::disco::shared_secret(&self.secret, &PublicKey::from(peer));
         let _ = stats
             .mp_control
@@ -2571,6 +2584,15 @@ impl WgDevice {
         multipath: Arc<super::multipath::PeerMultipathState>,
     ) {
         stats.mp_owned.store(true, Ordering::Release);
+        if let Some(old) = g.peers.get(&peer_public)
+            && !Arc::ptr_eq(&old.stats, &stats)
+            && let Some(control) = old.stats.mp_control.get()
+        {
+            // A restored trial owner must negotiate fresh role evidence too.
+            control.role_changed();
+            old.multipath.clear_crypto_observations();
+            old.multipath.set_leg_healthy(1, false);
+        }
         if let Some(prev) = g.router.upsert(overlay_ip, peer_public) {
             // Expected once, right after the server recycled a removed device's
             // address to a new machine and we haven't reaped the old peer yet.
