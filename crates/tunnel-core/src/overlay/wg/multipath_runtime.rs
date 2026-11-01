@@ -912,6 +912,7 @@ mod tests {
         let kb = db.public.to_bytes();
         let ka = da.public.to_bytes();
         let tunn = da.peers[&kb].tunn.clone();
+        let pq = da.peers[&kb].stats.pq.get().unwrap().clone();
         let binding = da.peers[&kb]
             .stats
             .mp_control
@@ -945,6 +946,7 @@ mod tests {
             MultipathFailure::Promoted(RelayKind::Turn)
         ));
         assert!(Arc::ptr_eq(&tunn, &da.peers[&kb].tunn));
+        assert!(Arc::ptr_eq(&pq, da.peers[&kb].stats.pq.get().unwrap()));
         assert!(!da.peers[&kb].carrier.is_direct());
         assert_eq!(
             da.peers[&kb].tasks.len(),
@@ -981,6 +983,8 @@ mod tests {
         let ka = da.public.to_bytes();
         let kb = db.public.to_bytes();
         let primary = da.peers[&kb].carrier.clone();
+        let tunn = da.peers[&kb].tunn.clone();
+        let pq = da.peers[&kb].stats.pq.get().unwrap().clone();
         let binding = da.peers[&kb]
             .stats
             .mp_control
@@ -1011,6 +1015,8 @@ mod tests {
         .await
         .expect("healthy restarted primary answers ordinary INIT");
         assert!(Arc::ptr_eq(&primary, &da.peers[&kb].carrier));
+        assert!(Arc::ptr_eq(&tunn, &da.peers[&kb].tunn));
+        assert!(Arc::ptr_eq(&pq, da.peers[&kb].stats.pq.get().unwrap()));
         let next = da.peers[&kb]
             .stats
             .mp_control
