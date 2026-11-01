@@ -1116,6 +1116,7 @@ impl CarrierPlane {
         if let Some(c) = r.carrier.upgrade() {
             c.set_direct_dst(new_src);
         }
+        r.ingress.multipath_path_changed();
         let r = st.routes.get_mut(&idx).expect("checked above");
         r.expected_src = new_src;
         r.last_roam = Some(Instant::now());

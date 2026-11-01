@@ -102,6 +102,16 @@ impl WgDevice {
                 continue;
             }
             let now = Instant::now();
+            if control.holding() {
+                let before = control.hold_snapshot();
+                control.expire_hold(now);
+                let after = control.hold_snapshot();
+                if after.expired > before.expired {
+                    warn!(event="multipath_hold_expired", peer_key=%hex::encode(key), expired=after.expired,
+                        packets=after.packets, bytes=after.bytes, global_bytes=after.global_bytes,
+                        "overlay: expired bounded multipath recovery queue");
+                }
+            }
             let remove = peer.retained.as_ref().is_some_and(|r| {
                 r.carrier.is_dead()
                     || r.kind == super::super::relay_link::RelayKind::Org
@@ -191,6 +201,8 @@ impl WgDevice {
                     )
                     .await
                     .is_ok_and(|r| r.is_ok())
+                    && control.binding() == binding
+                    && self.sender().owns_multipath_carrier(&key, &tunn, &carrier)
                     && let Some(challenge) = control.challenge(&wire, Instant::now())
                 {
                     let _ = tokio::time::timeout(
@@ -210,7 +222,7 @@ impl WgDevice {
             }
             // A healthy restarted primary may answer the fallback INIT within
             // this same PokeArm. Release only on current-session roundtrip.
-            if control.current_primary_roundtrip(Instant::now()) {
+            if control.holding() && control.current_primary_roundtrip(Instant::now()) {
                 self.drain_multipath_hold(&key).await;
             }
             if self
