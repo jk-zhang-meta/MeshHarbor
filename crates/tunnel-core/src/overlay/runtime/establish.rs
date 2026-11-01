@@ -437,6 +437,7 @@ impl OverlayRuntime {
                 e.hs_done = hs_done;
                 if let Some((tx, rx)) = wg.peer_traffic(&e.pubkey) {
                     e.last_traffic = (tx, rx);
+                    e.primary_traffic = wg.peer_primary_traffic(&e.pubkey).unwrap_or((tx, rx));
                 }
                 if wg.peer_is_dormant_or_waking(&e.pubkey) == Some(true) {
                     e.stalled = false;
@@ -608,8 +609,13 @@ impl OverlayRuntime {
             let Some((tx, rx)) = wg.peer_primary_traffic(&e.pubkey) else {
                 continue;
             };
-            let (last_tx, last_rx) = e.last_traffic;
-            e.last_traffic = (tx, rx);
+            let (last_tx, last_rx) = if wg.multipath_enabled() {
+                e.primary_traffic
+            } else {
+                e.last_traffic
+            };
+            e.primary_traffic = (tx, rx);
+            e.last_traffic = wg.peer_traffic(&e.pubkey).unwrap_or((tx, rx));
             // P3b-3 / rc.206 — "last heard from this peer" advances on ANY
             // authenticated inbound packet, INCLUDING content-free WG keepalives.
             // The IP-data `rx` counter alone froze on a mostly-idle-but-alive

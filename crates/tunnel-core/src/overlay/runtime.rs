@@ -382,6 +382,8 @@ struct Installed {
     /// Last `(tx, rx)` snapshot from the previous sweep (rc.137 lock-free
     /// health). Only meaningful for direct carriers.
     last_traffic: (u64, u64),
+    /// B8 health-only snapshot; public traffic remains the delivered totals.
+    primary_traffic: (u64, u64),
     /// Consecutive sweeps where we sent but received nothing (tx grew, rx
     /// flat). A few in a row ⇒ the direct carrier is one-way / dead.
     bad_sweeps: u32,
@@ -514,6 +516,7 @@ impl Installed {
             is_direct: !matches!(tier, DirectTier::Relay),
             since: now,
             last_traffic: (0, 0),
+            primary_traffic: (0, 0),
             bad_sweeps: 0,
             poke: None,
             stalled: false,

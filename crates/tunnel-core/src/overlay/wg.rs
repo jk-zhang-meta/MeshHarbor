@@ -830,6 +830,13 @@ pub(crate) struct Ingress {
 }
 
 impl Ingress {
+    pub(crate) fn multipath_path_changed(&self) {
+        if let Some(control) = self.stats.mp_control.get() {
+            control.role_changed();
+            self.multipath.clear_crypto_observations();
+        }
+    }
+
     /// B5 — called from `decap_inbound` the moment a peer's `handshake_done`
     /// latch flips from `false` to `true`, so `Router::peer_health` is updated
     /// immediately without waiting for the 5-second carrier health sweep.
@@ -1214,7 +1221,10 @@ impl WgSender {
         Arc::ptr_eq(&peer.stats, stats)
             && (Arc::ptr_eq(&peer.carrier, carrier)
                 || match (peer.carrier.direct_parts(), carrier.direct_parts()) {
-                    (Some((a, x)), Some((b, y))) => Arc::ptr_eq(&a, &b) && x == y,
+                    // Existing A3 first authenticates a changed UDP tuple on
+                    // this exact current Tunn/owner, then commits the roam.
+                    (Some((a, _)), Some((b, _))) => Arc::ptr_eq(&a, &b),
+                    (None, Some(_)) => true,
                     _ => false,
                 }
                 || stats
@@ -1632,6 +1642,18 @@ impl SendPeer {
                 {
                     if held {
                         self.stats.tx_attempted.fetch_add(1, Ordering::Relaxed);
+                    } else {
+                        let snapshot = control.hold_snapshot();
+                        if snapshot.overflow.is_power_of_two() {
+                            warn!(
+                                event = "multipath_hold_overflow",
+                                overflow = snapshot.overflow,
+                                packets = snapshot.packets,
+                                bytes = snapshot.bytes,
+                                global_bytes = snapshot.global_bytes,
+                                "overlay: bounded multipath recovery queue rejected packet"
+                            );
+                        }
                     }
                     return held;
                 }
@@ -4683,6 +4705,19 @@ impl WgDevice {
             Arc::downgrade(&new_carrier)
         };
         let old_src = peer.direct_src.replace(src);
+        if !in_probes
+            && old_src != Some(src)
+            && let Some(control) = peer.stats.mp_control.get()
+        {
+            control.role_changed();
+            peer.multipath.clear_crypto_observations();
+            *peer
+                .stats
+                .mp_primary
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = Arc::downgrade(&peer.carrier);
+            peer.stats.mp_primary_leg.store(0, Ordering::Release);
+        }
         let plane_idx = peer.plane_idx;
         let direct_index = peer.direct_index;
         let tunn = peer.tunn.clone();
@@ -6404,6 +6439,7 @@ async fn run_direct_demux(
                                     .await
                             };
                             if authenticated {
+                                ingress.multipath_path_changed();
                                 {
                                     let mut r = routes.lock().await;
                                     if let Some(e) = r.remove(&old_src) {
