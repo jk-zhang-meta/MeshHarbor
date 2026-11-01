@@ -690,6 +690,127 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct BlockingPrimary {
+        entered: tokio::sync::Notify,
+        release: tokio::sync::Notify,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::transport::relay::RelayConn for BlockingPrimary {
+        async fn send_to(&self, bytes: &[u8], _: SocketAddr) -> io::Result<usize> {
+            if bytes.len() > 32 && bytes[..4] == [4, 0, 0, 0] {
+                self.entered.notify_one();
+                self.release.notified().await;
+            }
+            Ok(bytes.len())
+        }
+        async fn recv_from(&self, _: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
+            std::future::pending().await
+        }
+        fn local_addr(&self) -> io::Result<SocketAddr> {
+            Ok("127.0.0.1:1".parse().unwrap())
+        }
+    }
+
+    #[tokio::test]
+    async fn runtime_role_invalidated_during_primary_await_never_sends_secondary_business() {
+        let (mut da, mut db, mut rx, _) =
+            pair(MultipathMode::Redundant, MultipathMode::Redundant).await;
+        retain_pair(&mut da, &mut db).await;
+        negotiated(&mut da, &mut db, true).await;
+        let kb = db.public.to_bytes();
+        let block = Arc::new(BlockingPrimary::default());
+        // Only the transport is substituted: use the actual production
+        // WgSender -> encapsulate -> select targets -> awaited dispatch path,
+        // the real negotiated Control and the real authenticated secondary.
+        let carrier = Carrier::relay(block.clone(), "127.0.0.1:2".parse().unwrap());
+        let p = da.peers.get_mut(&kb).unwrap();
+        p.carrier = carrier.clone();
+        *p.stats.mp_primary.lock().unwrap() = Arc::downgrade(&carrier);
+        let (ip, tunn, stats, mp) = (
+            p.overlay_ip,
+            p.tunn.clone(),
+            p.stats.clone(),
+            p.multipath.clone(),
+        );
+        da.send_install(kb, ip, tunn, carrier, stats.clone(), mp);
+        let before = da.peer_multipath_snapshot(&kb).unwrap().legs[1].tx_packets;
+        let sender = da.sender();
+        let sending = tokio::spawn(async move { sender.send_to_peer(&kb, &packet(42)).await });
+        tokio::time::timeout(Duration::from_secs(1), block.entered.notified())
+            .await
+            .unwrap();
+        stats.mp_control.get().unwrap().role_changed();
+        block.release.notify_one();
+        assert!(
+            sending.await.unwrap(),
+            "first transport's completed send is still reported"
+        );
+        assert_eq!(
+            da.peer_multipath_snapshot(&kb).unwrap().legs[1].tx_packets,
+            before
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), rx.recv())
+                .await
+                .is_err(),
+            "real remote secondary must receive zero business packets"
+        );
+    }
+
+    #[tokio::test]
+    async fn runtime_probation_replay_and_previous_session_empty_frames_never_make_leg_healthy() {
+        let (mut da, mut db, _, _) = pair(MultipathMode::Redundant, MultipathMode::Redundant).await;
+        negotiated(&mut da, &mut db, false).await;
+        retain_pair(&mut da, &mut db).await;
+        let ka = da.public.to_bytes();
+        let kb = db.public.to_bytes();
+        let candidate_a = da.peers[&kb].retained.as_ref().unwrap().carrier.clone();
+        let candidate_b = db.peers[&ka].retained.as_ref().unwrap().carrier.clone();
+        let stats_b = db.peers[&ka].stats.clone();
+        *stats_b.mp_secondary.lock().unwrap() = Arc::downgrade(&candidate_b);
+        assert!(db.add_multipath_leg_with_health(&ka, 1, candidate_b, 10, 1, false));
+        let mut frames = Vec::new();
+        {
+            let mut tunn = da.peers[&kb].tunn.lock().await;
+            let mut buf = vec![0; WG_BUF];
+            for _ in 0..2 {
+                if let TunnResult::WriteToNetwork(out) = tunn.encapsulate(&[], &mut buf) {
+                    frames.push(out.to_vec());
+                }
+            }
+        }
+        assert_eq!(frames.len(), 2);
+        candidate_a.send(&frames[0]).await.unwrap();
+        candidate_a.send(&frames[0]).await.unwrap(); // replay alone is no proof roundtrip
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert!(!stats_b.mp_control.get().unwrap().ready(Instant::now()));
+        assert!(!db.peer_multipath_snapshot(&ka).unwrap().legs[1].healthy);
+        let old = stats_b.mp_control.get().unwrap().binding().unwrap();
+        assert!(da.poke_handshake(&kb));
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while stats_b.mp_control.get().unwrap().binding() == Some(old) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let current = stats_b.mp_control.get().unwrap().binding();
+        let primary_rx = stats_b.mp_primary_rx_any.load(Ordering::Relaxed);
+        // This is fresh (unused counter), AEAD-valid in boringtun's retained
+        // previous session; it cannot roll B8's active transcript backwards.
+        candidate_a.send(&frames[1]).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert_eq!(stats_b.mp_control.get().unwrap().binding(), current);
+        assert_eq!(
+            stats_b.mp_primary_rx_any.load(Ordering::Relaxed),
+            primary_rx
+        );
+        assert!(!stats_b.mp_control.get().unwrap().ready(Instant::now()));
+        assert!(!db.peer_multipath_snapshot(&ka).unwrap().legs[1].healthy);
+    }
+
     #[tokio::test]
     async fn runtime_authenticated_secondary_survives_primary_loss_and_transfers_same_tunn() {
         let (mut da, mut db, mut rx, _) =
