@@ -41,6 +41,7 @@ use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU16, AtomicU32, AtomicU64, O
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 use tokio::sync::Notify;
 use tokio::task::JoinHandle;
@@ -353,6 +354,9 @@ pub struct SecondaryLeg {
 }
 
 impl SecondaryLeg {
+    pub(crate) fn take_tasks(&mut self) -> Vec<JoinHandle<()>> {
+        std::mem::take(&mut self.tasks)
+    }
     pub fn is_effective_up(&self) -> bool {
         self.counters.healthy.load(Ordering::Relaxed) && !self.carrier.is_dead()
     }
@@ -407,7 +411,8 @@ pub enum PreDecapVerdict {
     /// Not a known duplicate — proceed with `Tunn::decapsulate`.
     Proceed,
     /// Cryptographically verified duplicate of an already-decapsulated packet
-    /// (constant-time 16-byte Poly1305 tag match). `first_on_leg` is true iff
+    /// (constant-time Poly1305 tag AND full ciphertext SHA-256 match against
+    /// a prior successful AEAD). `first_on_leg` is true iff
     /// this leg had not yet received a copy of this `(session, counter)`.
     AuthenticatedDuplicate { first_on_leg: bool },
 }
@@ -418,6 +423,7 @@ struct DedupEntry {
     counter: u64,
     len: u16,
     tag: [u8; 16],
+    digest: [u8; 32],
     seen_legs_mask: u64,
     recorded_at: Instant,
 }
@@ -456,15 +462,18 @@ impl MultipathDedupTable {
         session: u32,
         counter: u64,
         len: usize,
-        tag: &[u8; 16],
+        authenticated: (&[u8; 16], &[u8; 32]),
         leg_bit: u64,
         now: Instant,
     ) -> Option<bool> {
+        let (tag, digest) = authenticated;
         let len_u16 = u16::try_from(len).ok()?;
         // Search from newest to oldest since duplicate copies arrive closely in time.
         for entry in self.entries.iter_mut().rev() {
             if entry.session == session && entry.counter == counter {
-                if entry.len == len_u16 && bool::from(entry.tag.ct_eq(tag)) {
+                if entry.len == len_u16
+                    && bool::from(entry.tag.ct_eq(tag) & entry.digest.ct_eq(digest))
+                {
                     let fresh =
                         now.saturating_duration_since(entry.recorded_at) <= DEDUP_LIVENESS_MAX_AGE;
                     let first_on_leg =
@@ -472,7 +481,7 @@ impl MultipathDedupTable {
                     entry.seen_legs_mask |= leg_bit;
                     return Some(first_on_leg);
                 }
-                // Same (session, counter) but mismatched length or Poly1305 tag:
+                // Same (session, counter) but mismatched length, tag, or full ciphertext:
                 // forged/corrupted packet — do not match!
                 return None;
             }
@@ -487,10 +496,11 @@ impl MultipathDedupTable {
         session: u32,
         counter: u64,
         len: usize,
-        tag: [u8; 16],
+        authenticated: ([u8; 16], [u8; 32]),
         leg_bit: u64,
         now: Instant,
     ) {
+        let (tag, digest) = authenticated;
         let Ok(len_u16) = u16::try_from(len) else {
             return;
         };
@@ -498,6 +508,7 @@ impl MultipathDedupTable {
             if entry.session == session && entry.counter == counter {
                 entry.len = len_u16;
                 entry.tag = tag;
+                entry.digest = digest;
                 entry.seen_legs_mask = leg_bit;
                 entry.recorded_at = now;
                 return;
@@ -511,6 +522,7 @@ impl MultipathDedupTable {
             counter,
             len: len_u16,
             tag,
+            digest,
             seen_legs_mask: leg_bit,
             recorded_at: now,
         });
@@ -1024,6 +1036,18 @@ impl PeerMultipathState {
         weight: u16,
         tasks: Vec<JoinHandle<()>>,
     ) -> bool {
+        self.upsert_secondary_leg_with_health(leg_id, carrier, priority, weight, tasks, true)
+    }
+
+    pub(crate) fn upsert_secondary_leg_with_health(
+        &self,
+        leg_id: u32,
+        carrier: Arc<Carrier>,
+        priority: u8,
+        weight: u16,
+        tasks: Vec<JoinHandle<()>>,
+        healthy: bool,
+    ) -> bool {
         if leg_id == 0 || leg_id >= 64 {
             for t in tasks {
                 t.abort();
@@ -1037,7 +1061,7 @@ impl PeerMultipathState {
                 leg_id,
                 slot_bit,
                 carrier,
-                counters: Arc::new(LegCounters::new(priority, weight, true)),
+                counters: Arc::new(LegCounters::new(priority, weight, healthy)),
                 tasks,
             };
         } else {
@@ -1055,7 +1079,7 @@ impl PeerMultipathState {
                 leg_id,
                 slot_bit,
                 carrier,
-                counters: Arc::new(LegCounters::new(priority, weight, true)),
+                counters: Arc::new(LegCounters::new(priority, weight, healthy)),
                 tasks,
             });
         }
@@ -1089,6 +1113,17 @@ impl PeerMultipathState {
         removed
     }
 
+    /// Transfer receiver ownership during an already-authorized primary role
+    /// commit. Taking does not abort the leg; its new Peer owner takes tasks.
+    pub(crate) fn take_secondary_leg(&self, leg_id: u32) -> Option<SecondaryLeg> {
+        let mut st = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let i = st.legs.iter().position(|leg| leg.leg_id == leg_id)?;
+        let leg = st.legs.remove(i);
+        st.wrr_cursor = 0;
+        self.refresh_active_flag(&st);
+        Some(leg)
+    }
+
     /// Remove all secondary legs (and abort any lazy reorder flush task once
     /// no parked/ready reorder packets remain).
     pub fn clear_secondary_legs(&self) {
@@ -1111,6 +1146,17 @@ impl PeerMultipathState {
             .unwrap_or_else(|e| e.into_inner())
             .legs
             .len()
+    }
+
+    /// A current-session/role transition cannot reuse old duplicate liveness
+    /// evidence. Reordering delivery remains separately counter/session bound.
+    pub(crate) fn clear_crypto_observations(&self) {
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .dedup
+            .entries
+            .clear();
     }
 
     /// Fast check whether any secondary legs are attached.
@@ -1380,10 +1426,15 @@ impl PeerMultipathState {
         let now = Instant::now();
         let mut st = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let leg_bit = Self::leg_bit_locked(&st, leg_id);
-        if let Some(first_on_leg) =
-            st.dedup
-                .check_duplicate(session, counter, datagram.len(), &tag, leg_bit, now)
-        {
+        let digest: [u8; 32] = Sha256::digest(datagram).into();
+        if let Some(first_on_leg) = st.dedup.check_duplicate(
+            session,
+            counter,
+            datagram.len(),
+            (&tag, &digest),
+            leg_bit,
+            now,
+        ) {
             self.dedup_dropped.fetch_add(1, Ordering::Relaxed);
             if first_on_leg {
                 self.record_leg_rx_locked(&st, leg_id, datagram.len(), true);
@@ -1453,8 +1504,14 @@ impl PeerMultipathState {
             return delivered;
         };
 
-        st.dedup
-            .record_authenticated(session, counter, datagram.len(), tag, leg_bit, now);
+        st.dedup.record_authenticated(
+            session,
+            counter,
+            datagram.len(),
+            (tag, Sha256::digest(datagram).into()),
+            leg_bit,
+            now,
+        );
 
         let aggregate_with_secondary = st.config.mode == MultipathMode::Aggregate
             && st.legs.iter().any(|l| l.is_effective_up());
@@ -1727,6 +1784,20 @@ mod tests {
         let snap_after_forged = mp.snapshot(&primary);
         assert_eq!(snap_after_forged.dedup_dropped, 0);
         assert_eq!(snap_after_forged.legs[1].rx_packets, 0);
+
+        // DEFECT-B8-DEDUP-TAG-ONLY-01: a copied valid tag/header with a changed
+        // ciphertext body is NOT an authenticated duplicate. It must fall
+        // through to normal AEAD and cannot earn any leg receive accounting.
+        let mut copied_tag_forgery = wire.clone();
+        copied_tag_forgery[16] ^= 0x80;
+        assert_eq!(
+            mp.pre_decap_check(&copied_tag_forgery, 1),
+            PreDecapVerdict::Proceed
+        );
+        let after_copied_tag = mp.snapshot(&primary);
+        assert_eq!(after_copied_tag.dedup_dropped, 0);
+        assert_eq!(after_copied_tag.legs[1].rx_packets, 0);
+        assert_eq!(after_copied_tag.legs[1].rx_dedup_hits, 0);
 
         // Now the genuine redundant copy arrives on leg 1: tag matches in constant time,
         // packet is deduplicated, and leg 1 is credited once.

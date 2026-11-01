@@ -715,6 +715,13 @@ impl CarrierPlane {
         if let Some(s) = stat {
             s.bump();
         }
+        if super::multipath_control::shaped(&buf[..n]) {
+            let st = self.lock();
+            for engine in &st.engines {
+                engine.send.receive_multipath_control(&buf[..n], src);
+            }
+            return;
+        }
         // C1 — disco: the out-of-tunnel carrier echo, answered
         // unconditionally. Shape-disjoint from WG and STUN by
         // construction (see `overlay::disco`), so it can never steal a

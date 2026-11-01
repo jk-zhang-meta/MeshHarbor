@@ -24,7 +24,7 @@ use std::collections::HashMap;
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use boringtun::noise::errors::WireGuardError;
@@ -43,6 +43,9 @@ use super::router::{LocalScope, Router, RpfMode, RpfVerdict};
 use crate::transport::quic::QuicPeer;
 use crate::transport::relay::{RelayConn, RelayUdpSocket};
 use roomler_ai_remote_control::models::OverlayRule;
+
+mod multipath_runtime;
+pub(crate) use multipath_runtime::MultipathFailure;
 
 /// Scratch buffer size for encap/decap + carrier I/O. The overlay MTU is
 /// 1280; a WG datagram adds ~32 B of overhead, so 2048 is comfortable
@@ -563,6 +566,15 @@ impl StandbyTee {
 
 #[derive(Default)]
 pub struct PeerStats {
+    mp_owned: AtomicBool,
+    mp_control: std::sync::OnceLock<Arc<super::multipath_control::Control>>,
+    mp_replies: std::sync::OnceLock<Arc<Semaphore>>,
+    mp_primary: std::sync::Mutex<std::sync::Weak<Carrier>>,
+    mp_secondary: std::sync::Mutex<std::sync::Weak<Carrier>>,
+    mp_primary_leg: AtomicU32,
+    mp_primary_rx: AtomicU64,
+    mp_primary_rx_any: AtomicU64,
+    mp_primary_hs_response: AtomicU64,
     /// F2 — see [`StandbyTee`].
     standby: StandbyTee,
     // Carrier role is set by the runtime on this exact owner, never inherited
@@ -684,6 +696,39 @@ fn compute_router_health(carrier: &Carrier, stats: &PeerStats) -> super::router:
 }
 
 impl PeerStats {
+    fn multipath_tx_allowed(&self) -> bool {
+        self.mp_control
+            .get()
+            .is_none_or(|c| c.ready(Instant::now()))
+    }
+
+    fn wire_leg(&self, carrier: &Arc<Carrier>) -> u32 {
+        let current = self
+            .mp_primary
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .upgrade();
+        let primary = current.is_some_and(|p| {
+            Arc::ptr_eq(&p, carrier)
+                || p.direct_parts()
+                    .zip(carrier.direct_parts())
+                    .is_some_and(|((a, dst_a), (b, dst_b))| Arc::ptr_eq(&a, &b) && dst_a == dst_b)
+        });
+        if primary { 0 } else { 1 }
+    }
+
+    fn inbound_leg(&self, physical_leg: u32) -> u32 {
+        u32::from(physical_leg != self.mp_primary_leg.load(Ordering::Acquire))
+    }
+
+    fn note_primary_rx(&self, wire: &[u8], physical_leg: u32) {
+        if self.mp_control.get().is_some() && self.inbound_leg(physical_leg) == 0 {
+            self.mp_primary_rx_any.fetch_add(1, Ordering::Relaxed);
+            if wire.len() > 32 && wire.get(..4) == Some(&[4, 0, 0, 0]) {
+                self.mp_primary_rx.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
     #[inline]
     pub(crate) fn has_local_hold(&self) -> bool {
         self.standby.armed() || self.recovery_hold.load(Ordering::Relaxed) > mono_ms_now()
@@ -979,6 +1024,15 @@ struct Peer {
     /// B8 — per-peer multipath scheduler, cryptographic deduplicator, and
     /// counter-ordered reassembly state.
     multipath: Arc<super::multipath::PeerMultipathState>,
+    retained: Option<RetainedMultipathCarrier>,
+}
+
+struct RetainedMultipathCarrier {
+    carrier: Arc<Carrier>,
+    kind: super::relay_link::RelayKind,
+    attached: bool,
+    was_ready: bool,
+    failure_at: Option<Instant>,
 }
 
 /// A3 — one session's roaming state in the device demux's index side-map:
@@ -1004,6 +1058,9 @@ impl Peer {
 
 impl Drop for Peer {
     fn drop(&mut self) {
+        if let Some(control) = self.stats.mp_control.get() {
+            control.retire();
+        }
         self.multipath.clear_secondary_legs();
         for t in &self.tasks {
             t.abort();
@@ -1099,6 +1156,134 @@ struct SendState {
 pub struct WgSender(Arc<std::sync::RwLock<SendState>>);
 
 impl WgSender {
+    /// Shared-socket B8 receive seam. Only the exact active direct owner may
+    /// negotiate; old/Off peers allocate no control and silently ignore frames.
+    pub(crate) fn receive_multipath_control(&self, bytes: &[u8], src: SocketAddr) {
+        let Some(key) = super::multipath_control::claimed_sender(bytes) else {
+            return;
+        };
+        let peer = self.0.read().unwrap().peers.get(&key).cloned();
+        let Some(peer) = peer else { return };
+        if !peer.carrier.is_direct()
+            || peer.carrier.direct_dst() != Some(src)
+            || peer.stats.on_demand.is_dormant_or_waking()
+            || peer.stats.pq_guard_active.load(Ordering::Acquire)
+        {
+            return;
+        }
+        self.receive_multipath_leg(
+            &key,
+            &peer.tunn,
+            &peer.carrier,
+            peer.stats.mp_primary_leg.load(Ordering::Acquire),
+            bytes,
+        );
+    }
+
+    fn owns_multipath_carrier(
+        &self,
+        key: &[u8; 32],
+        tunn: &Arc<Mutex<Tunn>>,
+        carrier: &Arc<Carrier>,
+    ) -> bool {
+        let g = self.0.read().unwrap();
+        let Some(peer) = g.peers.get(key) else {
+            return false;
+        };
+        Arc::ptr_eq(&peer.tunn, tunn)
+            && (Arc::ptr_eq(&peer.carrier, carrier)
+                || peer
+                    .stats
+                    .mp_secondary
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .upgrade()
+                    .is_some_and(|secondary| Arc::ptr_eq(&secondary, carrier)))
+    }
+
+    fn owns_multipath_ingress(
+        &self,
+        key: &[u8; 32],
+        stats: &Arc<PeerStats>,
+        carrier: &Arc<Carrier>,
+    ) -> bool {
+        let g = self.0.read().unwrap();
+        let Some(peer) = g.peers.get(key) else {
+            return false;
+        };
+        Arc::ptr_eq(&peer.stats, stats)
+            && (Arc::ptr_eq(&peer.carrier, carrier)
+                || match (peer.carrier.direct_parts(), carrier.direct_parts()) {
+                    (Some((a, x)), Some((b, y))) => Arc::ptr_eq(&a, &b) && x == y,
+                    _ => false,
+                }
+                || stats
+                    .mp_secondary
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .upgrade()
+                    .is_some_and(|c| Arc::ptr_eq(&c, carrier)))
+    }
+
+    fn receive_multipath_leg(
+        &self,
+        key: &[u8; 32],
+        tunn: &Arc<Mutex<Tunn>>,
+        carrier: &Arc<Carrier>,
+        physical_leg: u32,
+        bytes: &[u8],
+    ) {
+        if !self.owns_multipath_carrier(key, tunn, carrier) {
+            return;
+        }
+        let Some(peer) = self.0.read().unwrap().peers.get(key).cloned() else {
+            return;
+        };
+        if peer.stats.on_demand.is_dormant_or_waking()
+            || peer.stats.pq_guard_active.load(Ordering::Acquire)
+        {
+            return;
+        }
+        let leg = peer.stats.inbound_leg(physical_leg);
+        if matches!(bytes.get(8), Some(0x20 | 0x21)) && (leg != 0 || !carrier.is_direct()) {
+            return;
+        }
+        let Some(control) = peer.stats.mp_control.get().cloned() else {
+            return;
+        };
+        let Some(binding) = control.binding() else {
+            return;
+        };
+        let response = control.receive(bytes, leg, Instant::now());
+        if response.is_some() || control.peer_on(Instant::now()) {
+            peer.multipath
+                .set_config(super::multipath::MultipathConfig::new(control.mode()));
+        }
+        let Some(response) = response else { return };
+        let Some(limit) = peer.stats.mp_replies.get() else {
+            return;
+        };
+        let Ok(permit) = limit.clone().try_acquire_owned() else {
+            return;
+        };
+        let sender = self.clone();
+        let key = *key;
+        let tunn = tunn.clone();
+        let carrier = carrier.clone();
+        tokio::spawn(async move {
+            let _permit = permit;
+            if control.binding() != Some(binding)
+                || control.retired()
+                || !sender.owns_multipath_carrier(&key, &tunn, &carrier)
+                || peer.stats.on_demand.is_dormant_or_waking()
+                || peer.stats.pq_guard_active.load(Ordering::Acquire)
+            {
+                return;
+            }
+            let _ = tokio::time::timeout(Duration::from_millis(100), carrier.send_disco(&response))
+                .await;
+        });
+    }
     /// Send the same authenticated, out-of-tunnel disco frame over the
     /// CURRENT carrier, direct or relay. The runtime still treats these as
     /// diagnostics; a response is not a quality-based promotion grant.
@@ -1318,10 +1503,48 @@ impl SendState {
 }
 
 impl SendPeer {
+    fn multipath_target_current(
+        &self,
+        binding: Option<super::multipath_control::Binding>,
+        leg: u32,
+        carrier: &Arc<Carrier>,
+    ) -> bool {
+        let Some(control) = self.stats.mp_control.get() else {
+            return true;
+        };
+        !control.retired()
+            && control.binding() == binding
+            && !self.stats.pq_guard_active.load(Ordering::Acquire)
+            && !self.stats.on_demand.is_dormant()
+            && self
+                .stats
+                .mp_primary
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .upgrade()
+                .is_some_and(|p| Arc::ptr_eq(&p, &self.carrier))
+            && (leg == 0
+                || control.ready(Instant::now())
+                    && self
+                        .stats
+                        .mp_secondary
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .upgrade()
+                        .is_some_and(|p| Arc::ptr_eq(&p, carrier)))
+    }
+
     /// Dispatch a single encapsulated WireGuard frame according to the peer's
     /// multipath scheduler (`Off`, `ActiveStandby`, `Redundant`, `Aggregate`).
-    async fn send_wire_frame(&self, frame: &[u8]) -> bool {
-        if !self.multipath.is_active() {
+    async fn send_wire_frame(
+        &self,
+        frame: &[u8],
+        binding: Option<super::multipath_control::Binding>,
+    ) -> bool {
+        if !self.multipath_target_current(binding, 0, &self.carrier) {
+            return false;
+        }
+        if !self.multipath.is_active() || !self.stats.multipath_tx_allowed() {
             return send_wg_recorded(&self.carrier, &self.stats, frame)
                 .await
                 .is_ok();
@@ -1332,6 +1555,9 @@ impl SendPeer {
             super::multipath::MultipathMode::Redundant => {
                 let mut any_ok = false;
                 for (idx, (leg_id, leg_carrier)) in targets.iter().enumerate() {
+                    if !self.multipath_target_current(binding, *leg_id, leg_carrier) {
+                        continue;
+                    }
                     let ok = send_wg_recorded(leg_carrier, &self.stats, frame)
                         .await
                         .is_ok();
@@ -1345,6 +1571,9 @@ impl SendPeer {
             }
             _ => {
                 for (leg_id, leg_carrier) in targets.iter() {
+                    if !self.multipath_target_current(binding, *leg_id, leg_carrier) {
+                        continue;
+                    }
                     let ok = send_wg_recorded(leg_carrier, &self.stats, frame)
                         .await
                         .is_ok();
@@ -1362,7 +1591,13 @@ impl SendPeer {
     /// The single encapsulate-and-send implementation (moved verbatim from
     /// the pre-P1 `WgDevice::send_to_peer`).
     async fn send(&self, packet: &[u8]) -> bool {
-        if self.stats.pq_guard_active.load(Ordering::Acquire) {
+        self.send_inner(packet, false).await
+    }
+
+    async fn send_inner(&self, packet: &[u8], releasing_hold: bool) -> bool {
+        if self.stats.mp_control.get().is_none()
+            && self.stats.pq_guard_active.load(Ordering::Acquire)
+        {
             if let Some(pq) = self.stats.pq.get() {
                 return pq.buffer_outbound_if_negotiating(packet).await;
             }
@@ -1371,7 +1606,7 @@ impl SendPeer {
         let mut buf = vec![0u8; WG_BUF];
         // rc.211 — encapsulate UNDER the lock, send AFTER releasing it (see
         // the timer tasks): never hold the Tunn lock across a carrier send.
-        let (encap, just_woke) = {
+        let (encap, just_woke, binding) = {
             let mut t = self.tunn.lock().await;
             let just_woke = self
                 .stats
@@ -1379,18 +1614,52 @@ impl SendPeer {
                 .prepare_outbound_under_lock(&mut t, mono_ns_now());
             if just_woke {
                 self.stats.handshake.store(false, Ordering::Relaxed);
+                if let Some(control) = self.stats.mp_control.get() {
+                    control.role_changed();
+                    self.multipath.clear_crypto_observations();
+                }
+            }
+            if let Some(control) = self.stats.mp_control.get() {
+                if control.retired() {
+                    return false;
+                }
+                if !t.has_current_session() && control.recovery_allowed() {
+                    control.begin_hold(Instant::now());
+                }
+                if !releasing_hold
+                    && !self.stats.on_demand.is_dormant_or_waking()
+                    && let Some(held) = control.queue_if_held(packet, Instant::now())
+                {
+                    if held {
+                        self.stats.tx_attempted.fetch_add(1, Ordering::Relaxed);
+                    }
+                    return held;
+                }
+                if self.stats.pq_guard_active.load(Ordering::Acquire) {
+                    drop(t);
+                    if releasing_hold {
+                        return false;
+                    }
+                    if let Some(pq) = self.stats.pq.get() {
+                        return pq.buffer_outbound_if_negotiating(packet).await;
+                    }
+                    return false;
+                }
             }
             (
                 self.stats
                     .on_demand
                     .encapsulate_for_send(&mut t, packet, &mut buf, just_woke),
                 just_woke,
+                self.stats.mp_control.get().and_then(|c| c.binding()),
             )
         };
         match encap {
             super::on_demand::OutboundEncap::SendWire(n) => {
-                self.stats.tx_attempted.fetch_add(1, Ordering::Relaxed);
-                let ok = self.send_wire_frame(&buf[..n]).await;
+                if !releasing_hold {
+                    self.stats.tx_attempted.fetch_add(1, Ordering::Relaxed);
+                }
+                let ok = self.send_wire_frame(&buf[..n], binding).await;
                 if ok {
                     self.stats.tx.fetch_add(1, Ordering::Relaxed);
                 } else if just_woke && buf[0] == 1 {
@@ -1400,7 +1669,9 @@ impl SendPeer {
                 ok
             }
             super::on_demand::OutboundEncap::QueuedForWake => {
-                self.stats.tx_attempted.fetch_add(1, Ordering::Relaxed);
+                if !releasing_hold {
+                    self.stats.tx_attempted.fetch_add(1, Ordering::Relaxed);
+                }
                 true
             }
             super::on_demand::OutboundEncap::Dropped => false,
@@ -1414,6 +1685,15 @@ impl SendPeer {
     /// recorded single send; a refused GSO send is retried datagram by
     /// datagram, so every path still ends in [`Carrier::send`]'s semantics.
     async fn send_batch(&self, packets: &[Vec<u8>], idxs: &[usize]) -> usize {
+        if self.stats.mp_control.get().is_some() {
+            let mut sent = 0;
+            for &i in idxs {
+                if self.send(&packets[i]).await {
+                    sent += 1;
+                }
+            }
+            return sent;
+        }
         if self.stats.pq_guard_active.load(Ordering::Acquire) {
             let mut buffered = 0;
             if let Some(pq) = self.stats.pq.get() {
@@ -1477,7 +1757,7 @@ impl SendPeer {
                 .fetch_add((frames.len() + queued_for_wake) as u64, Ordering::Relaxed);
             let mut sent = 0;
             for f in &frames {
-                if self.send_wire_frame(f).await {
+                if self.send_wire_frame(f, None).await {
                     sent += 1;
                 } else if woke_on_batch && f.first() == Some(&1) {
                     self.stats.on_demand.note_wake_init_send_failed();
@@ -1751,6 +2031,7 @@ pub struct WgDevice {
     pq_psk: super::pq_psk::PqPskConfig,
     /// MeshHarbor B6 — device-wide on-demand pair tunneling configuration.
     on_demand: super::on_demand::OnDemandConfig,
+    multipath_mode: super::multipath::MultipathMode,
 }
 
 impl Drop for WgDevice {
@@ -1764,6 +2045,27 @@ impl Drop for WgDevice {
 }
 
 impl WgDevice {
+    fn initialize_multipath_control(
+        &self,
+        stats: &Arc<PeerStats>,
+        carrier: &Arc<Carrier>,
+        peer: [u8; 32],
+    ) {
+        if self.multipath_mode == super::multipath::MultipathMode::Off {
+            return;
+        }
+        *stats.mp_primary.lock().unwrap_or_else(|e| e.into_inner()) = Arc::downgrade(carrier);
+        let shared = super::disco::shared_secret(&self.secret, &PublicKey::from(peer));
+        let _ = stats
+            .mp_control
+            .set(Arc::new(super::multipath_control::Control::new(
+                self.multipath_mode,
+                self.public.to_bytes(),
+                peer,
+                shared,
+            )));
+        let _ = stats.mp_replies.set(Arc::new(Semaphore::new(1)));
+    }
     /// Build a device from a static secret. Returns the device plus the
     /// receiver for decrypted inbound IP packets (the TUN bridge / tests
     /// drain it).
@@ -1777,6 +2079,15 @@ impl WgDevice {
         let (stun_events_tx, stun_events_rx) = mpsc::channel(16);
         let rpf = RpfMode::parse(crate::env::node_env("OVERLAY_RPF").as_deref());
         let on_demand = super::on_demand::OnDemandConfig::from_env();
+        let multipath_mode = crate::env::node_env("OVERLAY_MULTIPATH_MODE")
+            .and_then(|raw| {
+                let parsed = super::multipath::MultipathMode::parse_str(&raw);
+                if parsed.is_none() {
+                    warn!("overlay: invalid local multipath mode; keeping Off");
+                }
+                parsed
+            })
+            .unwrap_or_default();
         tracing::info!(
             mode = rpf.as_str(),
             on_demand_enabled = on_demand.enabled,
@@ -1810,6 +2121,7 @@ impl WgDevice {
                 plane: None,
                 pq_psk: super::pq_psk::PqPskConfig::default(),
                 on_demand,
+                multipath_mode,
             },
             tun_rx,
         )
@@ -2231,6 +2543,7 @@ impl WgDevice {
         stats: Arc<PeerStats>,
         multipath: Arc<super::multipath::PeerMultipathState>,
     ) {
+        stats.mp_owned.store(true, Ordering::Release);
         if let Some(prev) = g.router.upsert(overlay_ip, peer_public) {
             // Expected once, right after the server recycled a removed device's
             // address to a new machine and we haven't reaped the old peer yet.
@@ -2422,6 +2735,8 @@ impl WgDevice {
         let _ = stats.pq.set(pq_handle.clone());
         let multipath = Arc::new(super::multipath::PeerMultipathState::default());
 
+        self.initialize_multipath_control(&stats, &carrier, peer_public);
+
         // Multi-org v2 — register this session on the plane's receiver-index
         // demux even though it is NOT a direct install.
         //
@@ -2481,6 +2796,16 @@ impl WgDevice {
                         break;
                     }
                 };
+                if super::multipath_control::shaped(&buf[..n]) {
+                    recv_sender.receive_multipath_leg(
+                        &peer_public,
+                        &recv_tunn,
+                        &recv_carrier,
+                        recv_ingress.leg_id,
+                        &buf[..n],
+                    );
+                    continue;
+                }
                 if follow::shaped(&buf[..n]) {
                     if let Some(frame) = follow::decode(
                         &buf[..n],
@@ -2657,6 +2982,7 @@ impl WgDevice {
             plane_idx: self.plane.as_ref().map(|_| index),
             direct_index: self.plane.is_none().then_some(index),
             multipath,
+            retained: None,
         };
         if !defer_init
             && self.pq_psk.mode != super::pq_psk::PqPskMode::Off
@@ -2768,7 +3094,7 @@ impl WgDevice {
                     }
                 };
                 if let Some(b) = out {
-                    if timer_multipath.is_active() {
+                    if timer_multipath.is_active() && stats.mp_control.get().is_none() {
                         let mode = timer_multipath.mode();
                         let is_redundant = mode == super::multipath::MultipathMode::Redundant;
                         let targets = timer_multipath.select_tx_targets(&timer_carrier, &b);
@@ -4008,6 +4334,7 @@ impl WgDevice {
         };
         let _ = stats.pq.set(pq_handle.clone());
         let multipath = Arc::new(super::multipath::PeerMultipathState::default());
+        self.initialize_multipath_control(&stats, &carrier, peer_public);
         let ingress = self.ingress_for(peer_public, stats.clone(), multipath.clone());
         // Register for demux BEFORE the handshake so inbound is routed —
         // on the plane by session index (unique across every attached
@@ -4102,6 +4429,7 @@ impl WgDevice {
             plane_idx,
             direct_index,
             multipath,
+            retained: None,
         })
     }
 
@@ -4829,6 +5157,10 @@ impl WgDevice {
         let Some(p) = self.peers.get(peer_public) else {
             return false;
         };
+        if p.stats.mp_control.get().is_some() {
+            p.stats.standby.set(None);
+            return false;
+        }
         let armed = mux.is_some();
         p.stats.standby.set(mux.map(|m| (m, *peer_public)));
         if armed {
@@ -4894,13 +5226,24 @@ impl WgDevice {
         let p = self.peers.get(peer_public)?;
         Some((
             p.stats.tx_attempted.load(Ordering::Relaxed),
-            p.stats.rx.load(Ordering::Relaxed),
+            if p.stats.mp_control.get().is_some() {
+                p.stats.mp_primary_rx.load(Ordering::Relaxed)
+            } else {
+                p.stats.rx.load(Ordering::Relaxed)
+            },
         ))
     }
 
     pub fn peer_take_rx_any(&self, peer_public: &[u8; 32]) -> u64 {
         match self.peers.get(peer_public) {
-            Some(p) => p.stats.rx_any.swap(0, Ordering::Relaxed),
+            Some(p) => {
+                let all = p.stats.rx_any.swap(0, Ordering::Relaxed);
+                if p.stats.mp_control.get().is_some() {
+                    p.stats.mp_primary_rx_any.swap(0, Ordering::Relaxed)
+                } else {
+                    all
+                }
+            }
             None => 0,
         }
     }
@@ -4962,7 +5305,22 @@ impl WgDevice {
         let Some(p) = self.peers.get(peer_public) else {
             return false;
         };
-        let at = p.stats.hs_response_at.load(Ordering::Relaxed);
+        let at = if let Some(control) = p.stats.mp_control.get() {
+            let at = p.stats.mp_primary_hs_response.load(Ordering::Relaxed);
+            if control.primary_answered_since(since)
+                || at != 0 && at >= since.saturating_duration_since(wg_epoch()).as_millis() as u64
+            {
+                return true;
+            }
+            if control
+                .take_primary_fallback(Instant::now(), super::lifecycle::BUSINESS_POKE_RETAP_AFTER)
+            {
+                self.poke_handshake(peer_public);
+            }
+            at
+        } else {
+            p.stats.hs_response_at.load(Ordering::Relaxed)
+        };
         at != 0 && at >= since.saturating_duration_since(wg_epoch()).as_millis() as u64
     }
 
@@ -4970,6 +5328,17 @@ impl WgDevice {
     /// for `peer_public` (`None` = never, or unknown peer). Drives the
     /// stale-proof poke trigger (`lifecycle::should_poke`).
     pub fn peer_initiator_hs_age(&self, peer_public: &[u8; 32]) -> Option<Duration> {
+        if let Some(p) = self.peers.get(peer_public)
+            && let Some(control) = p.stats.mp_control.get()
+        {
+            let at = p.stats.mp_primary_hs_response.load(Ordering::Relaxed);
+            let handshake =
+                (at != 0).then(|| Duration::from_millis(mono_ms_now().saturating_sub(at)));
+            return match (handshake, control.primary_answer_age(Instant::now())) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (a, b) => a.or(b),
+            };
+        }
         let at = self
             .peers
             .get(peer_public)?
@@ -5016,7 +5385,7 @@ impl WgDevice {
                 }
             };
             if let Some(b) = out {
-                if multipath.is_active() {
+                if multipath.is_active() && stats.mp_control.get().is_none() {
                     let is_redundant =
                         multipath.mode() == super::multipath::MultipathMode::Redundant;
                     let targets = multipath.select_tx_targets(&carrier, &b);
@@ -5143,6 +5512,18 @@ impl WgDevice {
         priority: u8,
         weight: u16,
     ) -> bool {
+        self.add_multipath_leg_with_health(peer_public, leg_id, carrier, priority, weight, true)
+    }
+
+    fn add_multipath_leg_with_health(
+        &mut self,
+        peer_public: &[u8; 32],
+        leg_id: u32,
+        carrier: Arc<Carrier>,
+        priority: u8,
+        weight: u16,
+        healthy: bool,
+    ) -> bool {
         if leg_id == 0 || leg_id >= 64 {
             return false;
         }
@@ -5172,6 +5553,7 @@ impl WgDevice {
         if !shared_demux_socket {
             let recv_tunn = peer.tunn.clone();
             let recv_carrier = carrier.clone();
+            let recv_sender = self.sender();
             let stats = peer.stats.clone();
             let tun_tx = self.tun_tx.clone();
             let leg_ingress = self
@@ -5195,6 +5577,16 @@ impl WgDevice {
                             break;
                         }
                     };
+                    if super::multipath_control::shaped(&buf[..n]) {
+                        recv_sender.receive_multipath_leg(
+                            &expected_peer,
+                            &recv_tunn,
+                            &recv_carrier,
+                            leg_id,
+                            &buf[..n],
+                        );
+                        continue;
+                    }
                     if super::disco::is_disco_shaped(&buf[..n]) {
                         match super::disco::classify(
                             &buf[..n],
@@ -5225,6 +5617,21 @@ impl WgDevice {
                         }
                         continue;
                     }
+                    if super::pq_psk::is_pq_psk_shaped(&buf[..n]) {
+                        if let Some(pq) = leg_ingress.stats.pq.get() {
+                            pq.handle_inbound(&buf[..n], &recv_carrier).await;
+                        }
+                        continue;
+                    }
+                    if leg_ingress.stats.mp_control.get().is_some()
+                        && !recv_sender.owns_multipath_carrier(
+                            &expected_peer,
+                            &recv_tunn,
+                            &recv_carrier,
+                        )
+                    {
+                        break;
+                    }
                     let mut t = recv_tunn.lock().await;
                     process_inbound(&mut t, n, &mut buf, &recv_carrier, &tun_tx, &leg_ingress)
                         .await;
@@ -5238,7 +5645,8 @@ impl WgDevice {
             let hi = peer.stats.rx_ctr_hi.load(Ordering::Relaxed);
             multipath.seed_rx_counter((sess_plus_one - 1) as u32, hi);
         }
-        let ok = multipath.upsert_secondary_leg(leg_id, carrier, priority, weight, tasks);
+        let ok = multipath
+            .upsert_secondary_leg_with_health(leg_id, carrier, priority, weight, tasks, healthy);
         if ok && multipath.mode() == super::multipath::MultipathMode::Aggregate {
             multipath.ensure_reorder_flush_task(self.tun_tx.clone());
         }
@@ -5340,6 +5748,15 @@ pub(crate) async fn send_wg_recorded(
     stats: &PeerStats,
     bytes: &[u8],
 ) -> io::Result<usize> {
+    if let Some(control) = stats.mp_control.get() {
+        if control.retired() {
+            return Err(io::Error::new(
+                io::ErrorKind::NotConnected,
+                "retired multipath peer",
+            ));
+        }
+        control.note_tx_handshake(bytes, stats.wire_leg(carrier), Instant::now());
+    }
     let n = carrier.send(bytes).await?;
     if n == bytes.len() {
         stats.on_demand.record_wire_tx(&bytes[..n]);
@@ -5444,6 +5861,27 @@ pub(crate) fn decap_inbound(
     ingress: &Ingress,
 ) -> (bool, Option<Vec<u8>>) {
     let stats = &ingress.stats;
+    if let Some(control) = stats.mp_control.get()
+        && stats
+            .mp_secondary
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .upgrade()
+            .is_some_and(|p| Arc::ptr_eq(&p, carrier))
+        && !control.ready(Instant::now())
+        && (n > 32 && buf[..4] == [4, 0, 0, 0]
+            || n >= 4 && matches!(buf[0], 1..=3) && !control.recovery_allowed())
+    {
+        return (false, None);
+    }
+    if stats.mp_control.get().is_some()
+        && stats.mp_owned.load(Ordering::Acquire)
+        && !ingress
+            .send
+            .owns_multipath_ingress(&ingress.peer, stats, carrier)
+    {
+        return (false, None);
+    }
     if stats.pq_guard_active.load(Ordering::Acquire) {
         return (false, None);
     }
@@ -5453,6 +5891,18 @@ pub(crate) fn decap_inbound(
     {
         if first_on_leg {
             stats.rx_any.fetch_add(1, Ordering::Relaxed);
+            if let Some(control) = stats.mp_control.get()
+                && control.is_current_transport(&buf[..n])
+            {
+                // The production dedup table now requires the complete
+                // ciphertext digest from prior successful AEAD, not just tag.
+                stats.note_primary_rx(&buf[..n], ingress.leg_id);
+                control.note_authenticated(
+                    &buf[..n],
+                    stats.inbound_leg(ingress.leg_id),
+                    Instant::now(),
+                );
+            }
         }
         // Return `authenticated = false` so a duplicate/replayed Type-4 datagram
         // can never authorize an A3 endpoint roam (`commit_roam` / `set_direct_dst`).
@@ -5488,6 +5938,27 @@ pub(crate) fn decap_inbound(
     // flush loop below relies on), but a 0-byte UDP payload is never a real WG
     // packet, so it must not count as liveness. `Err` (replay / garbage) isn't.
     if authenticated {
+        if let Some(control) = stats.mp_control.get()
+            && (!is_handshake_init || authenticated_init)
+        {
+            let before = control.binding();
+            control.note_authenticated(
+                &buf[..n],
+                stats.inbound_leg(ingress.leg_id),
+                Instant::now(),
+            );
+            if before != control.binding() {
+                ingress.multipath.clear_crypto_observations();
+            }
+            if control.is_current_transport(&buf[..n]) || is_handshake_init || is_handshake_resp {
+                stats.note_primary_rx(&buf[..n], ingress.leg_id);
+            }
+            if is_handshake_resp && stats.inbound_leg(ingress.leg_id) == 0 {
+                stats
+                    .mp_primary_hs_response
+                    .store(mono_ms_now().max(1), Ordering::Relaxed);
+            }
+        }
         stats.rx_any.fetch_add(1, Ordering::Relaxed);
         stats.note_rx_counter(&buf[..n]);
         stats.on_demand.record_wire_rx(&buf[..n]);
@@ -5497,7 +5968,9 @@ pub(crate) fn decap_inbound(
         // boringtun authenticated it (mac1/cookie), so a spoofed flood
         // cannot bump this.
         if is_handshake_init {
-            if !stats.on_demand.is_dormant_or_waking() {
+            if !stats.on_demand.is_dormant_or_waking()
+                && (stats.mp_control.get().is_none() || stats.inbound_leg(ingress.leg_id) == 0)
+            {
                 stats.reinit_seen.fetch_add(1, Ordering::Relaxed);
             }
             stats.on_demand.on_inbound_handshake_init(now_ns);
@@ -5820,6 +6293,10 @@ async fn run_direct_demux(
         // by the daemon (no OS, no firewall, no tunnel session). Its shape is
         // disjoint from WG and STUN by construction (see `overlay::disco`), so
         // this can never steal a live datagram.
+        if super::multipath_control::shaped(&buf[..n]) {
+            disco_routes.receive_multipath_control(&buf[..n], src);
+            continue;
+        }
         if super::disco::is_disco_shaped(&buf[..n]) {
             // Use `classify`, NOT `respond`. `respond` only yields a value for
             // a PING; a PONG arriving here returned `None` and fell through to

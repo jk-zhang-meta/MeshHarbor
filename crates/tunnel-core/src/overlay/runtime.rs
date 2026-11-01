@@ -3609,6 +3609,7 @@ impl OverlayRuntime {
                     }
                 }
                 _ = business_scout.tick() => {
+                    let multipath_promoted = self.sweep_multipath(&mut wg, &mut by_node, &mut relay).await;
                     let hs_changed = self.scout_business_traffic(&mut wg, &mut by_node, &mut business_samples);
                     // F1 — a proof armed here is convicted at its own deadline, not
                     // at whichever fallback tick comes next: only the fallback arm
@@ -3641,7 +3642,7 @@ impl OverlayRuntime {
                     {
                         self.sweep_standby(&mut wg, &by_node, &mux, &mut standby_peers).await;
                     }
-                    if followed || promoted || latched || hs_changed {
+                    if followed || promoted || latched || hs_changed || multipath_promoted {
                         self.reconcile_exit_routing(&mut wg, &tun, &by_node, &current_peers, &mut exit_state).await;
                         self.publish_view(&self_ip, &by_node, &current_peers, &upgrade_probes, exit_node_status(self.exit_node.as_deref(), &exit_state), &wg, &path_trials, server_path_trial_v1);
                     }
