@@ -977,6 +977,12 @@ mod tests {
             packet(81)
         );
         assert_eq!(pq.pending_multipath_drops(), 0);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), rx.recv())
+                .await
+                .is_err(),
+            "the authorized initial pending IP is delivered exactly once"
+        );
         assert_eq!(da.peer_multipath_snapshot(&kb).unwrap().legs.len(), 1);
     }
 

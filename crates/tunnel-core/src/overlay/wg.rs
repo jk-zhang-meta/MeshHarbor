@@ -1701,6 +1701,7 @@ impl SendPeer {
             // the recovery FIFO. The caller counts these explicit drops.
             if let SendAuthorization::PqPending(binding) = authorization
                 && (self.stats.on_demand.is_dormant_or_waking()
+                    || !t.has_current_session() && binding.is_some()
                     || self.stats.mp_control.get().is_none_or(|c| {
                         c.retired()
                             || c.holding()
@@ -1710,7 +1711,8 @@ impl SendPeer {
             {
                 return false;
             }
-            if matches!(authorization, SendAuthorization::PqPending(_)) && !t.has_current_session()
+            if matches!(authorization, SendAuthorization::PqPending(None))
+                && !t.has_current_session()
             {
                 // Initial B7 establishment (never a proven B8 recovery) keeps
                 // its existing bounded native FIFO. Encapsulate can enqueue
