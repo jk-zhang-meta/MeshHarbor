@@ -455,55 +455,57 @@ impl WgDevice {
         let kind = retained.kind;
         let mut leg = p.multipath.take_secondary_leg(1)?;
         self.unregister_direct(p).await;
-        let mut mirror = self.send.0.write().unwrap();
-        let p = self
-            .peers
-            .get_mut(key)
-            .expect("exclusive runtime peer owner");
-        p.carrier = leg.carrier.clone();
-        p.tasks = leg.take_tasks();
-        p.direct_src = None;
-        p.plane_idx = None;
-        p.direct_index = None;
-        *p.stats.mp_primary.lock().unwrap_or_else(|e| e.into_inner()) = Arc::downgrade(&p.carrier);
-        *p.stats
-            .mp_secondary
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = std::sync::Weak::new();
-        p.stats.mp_primary_leg.store(1, Ordering::Release);
-        p.stats.mp_primary_rx.store(0, Ordering::Relaxed);
-        p.stats.mp_primary_rx_any.store(0, Ordering::Relaxed);
-        p.stats.mp_primary_hs_response.store(0, Ordering::Relaxed);
-        p.stats.derp_role.store(
-            kind == super::super::relay_link::RelayKind::Derp,
-            Ordering::Relaxed,
-        );
-        p.stats.org_role.store(
-            kind == super::super::relay_link::RelayKind::Org,
-            Ordering::Relaxed,
-        );
-        p.multipath.clear_crypto_observations();
-        control.role_changed();
-        if let Some(pq) = p.stats.pq.get() {
-            pq.set_carrier(&p.carrier);
+        {
+            let mut mirror = self.send.0.write().unwrap();
+            let p = self
+                .peers
+                .get_mut(key)
+                .expect("exclusive runtime peer owner");
+            p.carrier = leg.carrier.clone();
+            p.tasks = leg.take_tasks();
+            p.direct_src = None;
+            p.plane_idx = None;
+            p.direct_index = None;
+            *p.stats.mp_primary.lock().unwrap_or_else(|e| e.into_inner()) =
+                Arc::downgrade(&p.carrier);
+            *p.stats
+                .mp_secondary
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = std::sync::Weak::new();
+            p.stats.mp_primary_leg.store(1, Ordering::Release);
+            p.stats.mp_primary_rx.store(0, Ordering::Relaxed);
+            p.stats.mp_primary_rx_any.store(0, Ordering::Relaxed);
+            p.stats.mp_primary_hs_response.store(0, Ordering::Relaxed);
+            p.stats.derp_role.store(
+                kind == super::super::relay_link::RelayKind::Derp,
+                Ordering::Relaxed,
+            );
+            p.stats.org_role.store(
+                kind == super::super::relay_link::RelayKind::Org,
+                Ordering::Relaxed,
+            );
+            p.multipath.clear_crypto_observations();
+            control.role_changed();
+            if let Some(pq) = p.stats.pq.get() {
+                pq.set_carrier(&p.carrier);
+            }
+            p.retained = None;
+            p.tasks.push(Self::spawn_carrier_timer(
+                p.tunn.clone(),
+                p.carrier.clone(),
+                p.stats.clone(),
+                p.multipath.clone(),
+            ));
+            Self::send_install_locked(
+                &mut mirror,
+                *key,
+                p.overlay_ip,
+                p.tunn.clone(),
+                p.carrier.clone(),
+                p.stats.clone(),
+                p.multipath.clone(),
+            );
         }
-        p.retained = None;
-        p.tasks.push(Self::spawn_carrier_timer(
-            p.tunn.clone(),
-            p.carrier.clone(),
-            p.stats.clone(),
-            p.multipath.clone(),
-        ));
-        Self::send_install_locked(
-            &mut mirror,
-            *key,
-            p.overlay_ip,
-            p.tunn.clone(),
-            p.carrier.clone(),
-            p.stats.clone(),
-            p.multipath.clone(),
-        );
-        drop(mirror);
         drop(_tunn_guard);
         self.drain_multipath_hold(key).await;
         info!(event="multipath_primary_promoted", peer_key=%hex::encode(key), ?kind, "overlay: authenticated secondary committed at existing primary failure verdict");
