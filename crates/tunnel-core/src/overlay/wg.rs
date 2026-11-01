@@ -1623,10 +1623,15 @@ impl SendPeer {
     /// The single encapsulate-and-send implementation (moved verbatim from
     /// the pre-P1 `WgDevice::send_to_peer`).
     async fn send(&self, packet: &[u8]) -> bool {
-        self.send_inner(packet, false).await
+        self.send_inner(packet, None).await
     }
 
-    async fn send_inner(&self, packet: &[u8], releasing_hold: bool) -> bool {
+    async fn send_inner(
+        &self,
+        packet: &[u8],
+        hold_binding: Option<super::multipath_control::Binding>,
+    ) -> bool {
+        let releasing_hold = hold_binding.is_some();
         if self.stats.mp_control.get().is_none()
             && self.stats.pq_guard_active.load(Ordering::Acquire)
         {
@@ -1640,6 +1645,11 @@ impl SendPeer {
         // the timer tasks): never hold the Tunn lock across a carrier send.
         let (encap, just_woke, binding) = {
             let mut t = self.tunn.lock().await;
+            if let Some(binding) = hold_binding
+                && self.stats.mp_control.get().and_then(|c| c.binding()) != Some(binding)
+            {
+                return false;
+            }
             if releasing_hold && self.stats.on_demand.is_dormant_or_waking() {
                 return false;
             }

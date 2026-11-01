@@ -536,6 +536,9 @@ impl WgDevice {
         let Some(control) = peer.stats.mp_control.get() else {
             return;
         };
+        let Some(binding) = control.binding() else {
+            return;
+        };
         if peer.stats.pq_guard_active.load(Ordering::Acquire)
             || peer.stats.on_demand.is_dormant_or_waking()
         {
@@ -554,7 +557,7 @@ impl WgDevice {
             {
                 break;
             }
-            if !peer.send_inner(packet.bytes(), true).await {
+            if !peer.send_inner(packet.bytes(), Some(binding)).await {
                 control.requeue_held(packet);
                 break;
             }
@@ -783,6 +786,68 @@ mod tests {
                     .is_err(),
                 "real remote secondary must receive zero business packets"
             );
+        }
+    }
+
+    #[tokio::test]
+    async fn runtime_hold_drain_never_reauthorizes_remaining_fifo_after_binding_change() {
+        for reset_session in [false, true] {
+            let (mut da, mut db, _, _) =
+                pair(MultipathMode::Redundant, MultipathMode::Redundant).await;
+            negotiated(&mut da, &mut db, false).await;
+            let kb = db.public.to_bytes();
+            let block = Arc::new(BlockingPrimary::default());
+            let carrier = Carrier::relay(block.clone(), "127.0.0.1:2".parse().unwrap());
+            let p = da.peers.get_mut(&kb).unwrap();
+            p.carrier = carrier.clone();
+            *p.stats.mp_primary.lock().unwrap() = Arc::downgrade(&carrier);
+            let (ip, tunn, stats, mp) = (
+                p.overlay_ip,
+                p.tunn.clone(),
+                p.stats.clone(),
+                p.multipath.clone(),
+            );
+            let reset_tunn = tunn.clone();
+            da.send_install(kb, ip, tunn, carrier, stats.clone(), mp);
+            let control = stats.mp_control.get().unwrap().clone();
+            control.begin_hold(Instant::now());
+            for v in [80, 81] {
+                assert!(da.send_to_peer(&kb, &packet(v)).await);
+            }
+            let draining = tokio::spawn(async move {
+                da.drain_multipath_hold(&kb).await;
+                da
+            });
+            tokio::time::timeout(Duration::from_secs(1), block.entered.notified())
+                .await
+                .unwrap();
+            // Changed role invalidates entry authorization while the first
+            // packet is in flight. It cannot authorize the second packet.
+            if reset_session {
+                let mut tunn = reset_tunn.lock().await;
+                tunn.reset_sessions_preserving_replay_and_psk();
+                stats.multipath_session_reset();
+            } else {
+                control.role_changed();
+            }
+            block.release.notify_one();
+            let _da = tokio::time::timeout(Duration::from_secs(1), draining)
+                .await
+                .unwrap()
+                .unwrap();
+            let snapshot = control.hold_snapshot();
+            assert!(control.holding());
+            assert_eq!(snapshot.packets, 1);
+            assert_eq!(snapshot.bytes, packet(81).len());
+            let held = control.pop_held_at(Instant::now()).unwrap();
+            assert_eq!(held.bytes(), packet(81));
+            assert_eq!(
+                control.hold_snapshot().packets,
+                1,
+                "in-flight reservation retained"
+            );
+            drop(held);
+            assert!(control.finish_hold());
         }
     }
 
