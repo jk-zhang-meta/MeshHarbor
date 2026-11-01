@@ -1825,7 +1825,7 @@ impl PqPeerHandle {
         }
     }
 
-    async fn reinstall_tunn_psk(
+    pub(super) async fn reinstall_tunn_psk(
         &self,
         psk: Option<[u8; 32]>,
         guard_after: bool,
@@ -1859,6 +1859,7 @@ impl PqPeerHandle {
                     // drop active transport sessions immediately while preserving
                     // the TAI64N replay watermark.
                     t.reset_sessions_preserving_replay_and_psk();
+                    stats.multipath_session_reset();
                     stats.handshake.store(false, Ordering::Release);
                     stats.handshake_at.store(0, Ordering::Release);
                     stats.hs_response_at.store(0, Ordering::Release);
@@ -1869,6 +1870,7 @@ impl PqPeerHandle {
                     // replay watermark so outbound traffic uses the classical session.
                     if psk.is_none() {
                         t.reset_sessions_preserving_replay_and_psk();
+                        stats.multipath_session_reset();
                     }
                     // Normal PQ-PSK establishment or rotation: keep any already-active
                     // transport `sessions` intact so in-flight data packets suffer
@@ -1911,6 +1913,7 @@ impl PqPeerHandle {
                 st.set_preshared_key(psk);
                 if guard_after {
                     st.reset_sessions_preserving_replay_and_psk();
+                    s_stats.multipath_session_reset();
                     s_stats.handshake.store(false, Ordering::Release);
                     s_stats.handshake_at.store(0, Ordering::Release);
                     s_stats.hs_response_at.store(0, Ordering::Release);
@@ -1918,6 +1921,7 @@ impl PqPeerHandle {
                 } else {
                     if psk.is_none() {
                         st.reset_sessions_preserving_replay_and_psk();
+                        s_stats.multipath_session_reset();
                     }
                     let mut buf = vec![0u8; WG_BUF];
                     let should_initiate_shadow = initiate_wg
