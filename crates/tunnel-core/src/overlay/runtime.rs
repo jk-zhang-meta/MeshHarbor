@@ -952,6 +952,10 @@ fn org_bind_needed(tracking: bool, installed: Option<&Installed>) -> bool {
 
 /// Accept a true replacement without losing the pre-replacement tracking
 /// reason. A duplicate mint must preserve the current bind epoch and carrier.
+///
+/// `standby`: the peer is direct and B8 wants this session's carrier as its
+/// standby leg ([`WgDevice::wants_multipath_standby`]); it never demotes direct.
+#[allow(clippy::too_many_arguments)]
 fn accept_org_bind_session(
     peer: ObjectId,
     session: super::orgrelay::member::OrgSession,
@@ -960,6 +964,7 @@ fn accept_org_bind_session(
     alloc_queue: &mut RelayAllocQueue,
     peers: &HashMap<ObjectId, NetmapPeer>,
     installed: &HashMap<ObjectId, Installed>,
+    standby: bool,
 ) -> bool {
     if relay.org_relay_pinned(&peer)
         || installed.get(&peer).is_some_and(|e| {
@@ -970,7 +975,7 @@ fn accept_org_bind_session(
     {
         return false;
     }
-    let needed = org_bind_needed(relay.is_tracking(&peer), installed.get(&peer));
+    let needed = org_bind_needed(relay.is_tracking(&peer), installed.get(&peer)) || standby;
     if !relay.org_session_accept(peer, session) {
         return false;
     }
@@ -1023,12 +1028,15 @@ fn invalidate_org_bind_identity(
 /// captured identity and direct priority AFTER the async bind, not just when
 /// it starts. Rejected current work releases its session/tracking; stale work
 /// must not touch a newer session. A rejected relay carrier is marked closed before its completion is dropped.
+/// `standby` admits a direct peer whose B8 standby leg this bind supplies;
+/// the caller then adopts the link as that leg, never as the primary.
 fn commit_current_org_bind(
     done: OrgBindDone,
     queue: &mut OrgBindQueue,
     peers: &HashMap<ObjectId, NetmapPeer>,
     installed: &HashMap<ObjectId, Installed>,
     relay: &mut RelayCoordinator,
+    standby: bool,
 ) -> Option<ReadyLink> {
     if !queue.take_if_current(&done.node_id, done.epoch) {
         if let Some(conn) = done.conn {
@@ -1041,7 +1049,7 @@ fn commit_current_org_bind(
     if relay.org_relay_pinned(&done.node_id)
         || !identity_matches
         || installed.get(&done.node_id).is_some_and(|p| {
-            p.is_direct
+            p.is_direct && !standby
                 || p.org_recovery_until
                     .is_some_and(|until| Instant::now() < until)
                 || p.org_recovery_needs_query
@@ -3827,14 +3835,24 @@ impl OverlayRuntime {
                                 .await;
                         }
                         if let Some(r) = relay.as_mut() {
+                            let standby = by_node.get(&done.node_id).is_some_and(|e| {
+                                e.is_direct && wg.wants_multipath_standby(&e.pubkey)
+                            });
                             if let Some(link) = commit_current_org_bind(
-                                done, &mut org_q, &current_peers, &by_node, r,
+                                done, &mut org_q, &current_peers, &by_node, r, standby,
                             ) {
-                                let t0 = Instant::now();
-                                self.install_ready(&mut wg, &mut by_node, &tun, link, &mut relay_bq).await;
-                                warn_if_slow("install_ready(org-relay)", t0);
-                                self.reconcile_exit_routing(&mut wg, &tun, &by_node, &current_peers, &mut exit_state).await;
-                                self.publish_view(&self_ip, &by_node, &current_peers, &upgrade_probes, exit_node_status(self.exit_node.as_deref(), &exit_state), &wg, &path_trials, server_path_trial_v1);
+                                if by_node.get(&link.node_id).is_some_and(|e| e.is_direct) {
+                                    // B8 standby for a healthy direct peer: never the primary.
+                                    if !wg.adopt_multipath_standby(&link.public_key, link.carrier.clone(), RelayKind::Org) {
+                                        r.org_bind_failed(&link.node_id);
+                                    }
+                                } else {
+                                    let t0 = Instant::now();
+                                    self.install_ready(&mut wg, &mut by_node, &tun, link, &mut relay_bq).await;
+                                    warn_if_slow("install_ready(org-relay)", t0);
+                                    self.reconcile_exit_routing(&mut wg, &tun, &by_node, &current_peers, &mut exit_state).await;
+                                    self.publish_view(&self_ip, &by_node, &current_peers, &upgrade_probes, exit_node_status(self.exit_node.as_deref(), &exit_state), &wg, &path_trials, server_path_trial_v1);
+                                }
                             }
                         } else if let Some(conn) = done.conn {
                             conn.close();
@@ -5249,9 +5267,12 @@ impl OverlayRuntime {
                         if let Some(r) = relay.as_mut() {
                             match crate::overlay::orgrelay::member::OrgSession::from_wire(vni, generation, relay_node_id, &relay_endpoints, &bind_secret, bind_secs, max_lifetime_secs) {
                                 Some(session) => {
+                                    let standby = by_node.get(&peer_node_id).is_some_and(|e| {
+                                        e.is_direct && wg.wants_multipath_standby(&e.pubkey)
+                                    });
                                     if accept_org_bind_session(
                                         peer_node_id, session, r, &mut org_q,
-                                        &mut alloc_q, &current_peers, &by_node,
+                                        &mut alloc_q, &current_peers, &by_node, standby,
                                     ) {
                                         cancel_org_upgrade_candidate(&peer_node_id, &mut wg, &mut by_node);
                                     }
@@ -11185,7 +11206,9 @@ mod tests {
             !org_bind_needed(true, by_node.get(&nid)),
             "stale tracking cannot demote direct"
         );
-        assert!(commit_current_org_bind(done, &mut q, &peers, &by_node, &mut relay).is_none());
+        assert!(
+            commit_current_org_bind(done, &mut q, &peers, &by_node, &mut relay, false).is_none()
+        );
         assert!(by_node[&nid].is_direct);
         assert_eq!(by_node[&nid].pubkey, kp.public.to_bytes());
         assert_eq!(wg.peer_count(), 1);
@@ -11281,7 +11304,8 @@ mod tests {
                     &mut q,
                     &peers,
                     &HashMap::new(),
-                    relay.as_mut().unwrap()
+                    relay.as_mut().unwrap(),
+                    false
                 )
                 .is_none(),
                 "{case}"
@@ -11304,7 +11328,8 @@ mod tests {
         let _ = relay.force_derp(nid, Duration::from_secs(60), None);
         assert!(relay.org_relay_pinned(&nid));
         assert!(
-            commit_current_org_bind(done, &mut q, &peers, &HashMap::new(), &mut relay).is_none()
+            commit_current_org_bind(done, &mut q, &peers, &HashMap::new(), &mut relay, false)
+                .is_none()
         );
         assert!(
             !conn.is_alive(),
@@ -11335,6 +11360,7 @@ mod tests {
             &mut alloc,
             &peers,
             &HashMap::new(),
+            false,
         );
         assert!(
             relay.take_org_jobs().is_empty(),
@@ -11354,15 +11380,17 @@ mod tests {
             pending_org_test_bind(&mut relay, nid, &peers[&nid], 7, 2).await;
         done.generation = 1;
         assert!(
-            commit_current_org_bind(done, &mut q, &peers, &HashMap::new(), &mut relay).is_none()
+            commit_current_org_bind(done, &mut q, &peers, &HashMap::new(), &mut relay, false)
+                .is_none()
         );
         assert!(
             !conn.is_alive(),
             "same VNI with stale session generation is refused"
         );
         let (done, mut q, conn) = pending_org_test_bind(&mut relay, nid, &peers[&nid], 8, 3).await;
-        let link = commit_current_org_bind(done, &mut q, &peers, &HashMap::new(), &mut relay)
-            .expect("no direct: current relay remains valid fallback");
+        let link =
+            commit_current_org_bind(done, &mut q, &peers, &HashMap::new(), &mut relay, false)
+                .expect("no direct: current relay remains valid fallback");
         assert_eq!(link.relay_kind, RelayKind::Org);
         assert_eq!(link.public_key, kp.public.to_bytes());
         assert!(conn.is_alive());
@@ -11406,6 +11434,7 @@ mod tests {
             &mut alloc,
             &peers,
             &HashMap::new(),
+            false,
         );
         assert_eq!(q.in_flight.get(&nid), Some(&epoch));
         assert!(
@@ -11417,7 +11446,8 @@ mod tests {
             "duplicate does not restart a bind"
         );
         assert!(
-            commit_current_org_bind(done, &mut q, &peers, &HashMap::new(), &mut relay).is_some()
+            commit_current_org_bind(done, &mut q, &peers, &HashMap::new(), &mut relay, false)
+                .is_some()
         );
         accept_org_bind_session(
             nid,
@@ -11427,6 +11457,7 @@ mod tests {
             &mut alloc,
             &peers,
             &HashMap::new(),
+            false,
         );
         assert!(
             conn.is_alive(),
@@ -11472,6 +11503,7 @@ mod tests {
             &mut alloc,
             &peers,
             &HashMap::new(),
+            false,
         );
         let job = relay
             .take_org_jobs()
@@ -11482,7 +11514,8 @@ mod tests {
         conn.close();
         done.conn = None; // the old asynchronous bind failed, after replacement
         assert!(
-            commit_current_org_bind(done, &mut q, &peers, &HashMap::new(), &mut relay).is_none()
+            commit_current_org_bind(done, &mut q, &peers, &HashMap::new(), &mut relay, false)
+                .is_none()
         );
         assert!(
             relay.is_tracking(&nid),
@@ -12578,7 +12611,8 @@ mod org_upgrade_tests {
             &mut q,
             &mut alloc,
             &a.peers,
-            &a.installed
+            &a.installed,
+            false
         ));
         // Isolate expiry-boundary testing from packet authentication: only the
         // monotonic hold clock is advanced, no WG/proof counter is fabricated.
@@ -12593,7 +12627,8 @@ mod org_upgrade_tests {
                 &mut q,
                 &mut alloc,
                 &a.peers,
-                &a.installed
+                &a.installed,
+                false
             ),
             "expiry alone cannot revive a lease"
         );
@@ -12636,7 +12671,8 @@ mod org_upgrade_tests {
                 &mut q,
                 &mut alloc,
                 &a.peers,
-                &a.installed
+                &a.installed,
+                false
             ),
             "fresh request permits a new bind, not an old pending completion"
         );
@@ -12646,7 +12682,8 @@ mod org_upgrade_tests {
                 &mut q,
                 &a.peers,
                 &a.installed,
-                a.relay.as_mut().unwrap()
+                a.relay.as_mut().unwrap(),
+                false
             )
             .is_none(),
             "pre-fence completion cannot overwrite fresh admission after expiry"
