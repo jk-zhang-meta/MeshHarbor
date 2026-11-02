@@ -68,6 +68,7 @@ impl WgDevice {
                 attached: false,
                 was_ready: false,
                 failure_at: None,
+                exhausted_in: None,
             });
             info!(event="multipath_standby_adopted", peer_key=%hex::encode(key), source="org_candidate",
                 "overlay: unproven org-relay candidate kept as the B8 standby leg of the promoted direct peer");
@@ -105,6 +106,7 @@ impl WgDevice {
             attached: false,
             was_ready: false,
             failure_at: None,
+            exhausted_in: None,
         });
         true
     }
@@ -154,6 +156,7 @@ impl WgDevice {
             attached: false,
             was_ready: false,
             failure_at: None,
+            exhausted_in: None,
         });
         info!(event="multipath_standby_adopted", peer_key=%hex::encode(key), source="late_relay", ?kind, replaced_derp,
             "overlay: relay carrier adopted as the B8 standby leg of a direct peer");
@@ -209,15 +212,33 @@ impl WgDevice {
                         "overlay: expired bounded multipath recovery queue");
                 }
             }
+            let generation = control.binding().map_or(0, |b| b.session_generation);
+            let exhausted = control.exhausted(now) && !control.recovery_allowed();
+            let mut first_exhaustion = false;
             let remove = peer.retained.as_ref().is_some_and(|r| {
                 r.carrier.is_dead()
                     || r.kind == super::super::relay_link::RelayKind::Org
                         && !org_allowed.contains(&key)
-                    || control.exhausted(now) && !control.recovery_allowed()
+                    || control.retired()
+                    || exhausted
+                        && match r.exhausted_in {
+                            // Ran out in an earlier session and again in a newer one.
+                            Some(first) => generation > first,
+                            None => {
+                                first_exhaustion = true;
+                                false
+                            }
+                        }
             });
             if remove {
                 self.drop_retained_multipath(&key);
                 released.push((key, None));
+            } else if first_exhaustion
+                && let Some(r) = self.peers.get_mut(&key).and_then(|p| p.retained.as_mut())
+            {
+                r.exhausted_in = Some(generation);
+                info!(event="multipath_standby_kept_after_exhaustion", peer_key=%hex::encode(key), kind=?r.kind, session_generation=generation,
+                    "overlay: B8 negotiation ran out in this session; standby kept until a newer session also runs out");
             }
             let Some(peer) = self.peers.get(&key) else {
                 continue;
@@ -737,6 +758,7 @@ mod tests {
                 attached: false,
                 was_ready: false,
                 failure_at: None,
+                exhausted_in: None,
             });
         db.peers.get_mut(&da.public.to_bytes()).unwrap().retained =
             Some(RetainedMultipathCarrier {
@@ -745,6 +767,7 @@ mod tests {
                 attached: false,
                 was_ready: false,
                 failure_at: None,
+                exhausted_in: None,
             });
     }
 
@@ -943,6 +966,7 @@ mod tests {
                 attached: false,
                 was_ready: false,
                 failure_at: None,
+                exhausted_in: None,
             });
             dev.set_on_demand_config(OnDemandConfig::disabled());
             let p = &dev.peers[&key];
@@ -1797,5 +1821,52 @@ mod tests {
                 dev.cancel_org_upgrade(&pk);
             }
         }
+    }
+
+    #[tokio::test]
+    async fn first_session_exhaustion_keeps_the_standby_until_a_newer_session_exhausts_too() {
+        // B8 on one end only: every offer goes unanswered, as it does when crossed
+        // bring-up handshakes leave the ends on different sessions.
+        let (mut da, mut db, _rx, _) = pair(MultipathMode::Redundant, MultipathMode::Off).await;
+        retain_pair(&mut da, &mut db).await;
+        let kb = db.public.to_bytes();
+        let control = da.peers[&kb].stats.mp_control.get().unwrap().clone();
+        let first = control.binding().unwrap().session_generation;
+        let drive = |deadline: Instant| async move {
+            assert!(Instant::now() < deadline, "negotiation never ran out");
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        };
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while !control.exhausted(Instant::now()) {
+            da.poll_multipath(&Default::default()).await;
+            db.poll_multipath(&Default::default()).await;
+            drive(deadline).await;
+        }
+        for _ in 0..3 {
+            assert!(da.poll_multipath(&Default::default()).await.is_empty());
+        }
+        assert!(
+            da.retains_multipath_carrier(&kb),
+            "one session's exhaustion must not release the standby leg"
+        );
+        assert!(da.poke_handshake(&kb));
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while control.binding().unwrap().session_generation <= first {
+            da.poll_multipath(&Default::default()).await;
+            db.poll_multipath(&Default::default()).await;
+            drive(deadline).await;
+        }
+        assert!(
+            da.retains_multipath_carrier(&kb),
+            "a newer session restarts negotiation before any release"
+        );
+        let deadline = Instant::now() + Duration::from_secs(15);
+        let mut released = Vec::new();
+        while da.retains_multipath_carrier(&kb) {
+            released.extend(da.poll_multipath(&Default::default()).await);
+            db.poll_multipath(&Default::default()).await;
+            drive(deadline).await;
+        }
+        assert_eq!(released, vec![(kb, None)]);
     }
 }
