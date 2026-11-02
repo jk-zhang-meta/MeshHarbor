@@ -39,6 +39,16 @@
 //! socket the member now sends from — same VNI, same secret, new source. The
 //! runtime re-binds on every carrier (re)build, which is where a roam
 //! surfaces.
+//!
+//! A member carrier built [`OrgRelayConn::with_rebind`] also re-binds IN
+//! BAND, on its own socket, when it sends after [`IDLE_REBIND`] of silence:
+//! the relay's NAT-mapping assumption is a 25 s WireGuard keepalive, and a
+//! B6-dormant peer (or a quiet B8 standby leg) sends nothing for minutes. A
+//! NAT that re-creates the mapping on a new port after that silence would
+//! otherwise strand the leg both ways: the relay forwards to the dead old
+//! source and drops the member's frames from the unbound new one (lab R8
+//! lc-odlate-as, handoff 267). The Bind carries a fresh nonce; the receive
+//! path answers only the Challenge that echoes it.
 
 use std::io;
 use std::net::SocketAddr;
@@ -59,6 +69,13 @@ use crate::transport::relay::{RelayConn, RelayTransport};
 /// Receive buffer for control frames. A challenge is one fixed-size frame; a
 /// larger buffer only means a stray datagram is read whole and dropped.
 const CTRL_BUF: usize = 256;
+/// Silence after which a member's next send re-binds in band — under the
+/// 25 s keepalive the relay's NAT-mapping assumption rests on.
+pub const IDLE_REBIND: Duration = Duration::from_secs(20);
+/// An unanswered in-band re-bind is retried this often, at most
+/// [`REBIND_ATTEMPTS`] times per silence, and only while the member sends.
+const REBIND_RETRY: Duration = Duration::from_secs(1);
+const REBIND_ATTEMPTS: u32 = 4;
 /// Data frames: the overlay MTU plus WireGuard and org-relay overhead, with
 /// headroom. Anything larger is not ours.
 const DATA_BUF: usize = 2048;
@@ -307,6 +324,82 @@ pub struct OrgRelayConn {
     /// `relay_via`.
     label: String,
     alive: AtomicBool,
+    /// In-band re-bind after silence ([`Self::with_rebind`]); `None` keeps
+    /// the carrier exactly as bound.
+    rebind: Option<Rebind>,
+}
+
+/// What a member carrier needs to re-bind itself, and its one outstanding
+/// attempt.
+struct Rebind {
+    generation: u64,
+    secret: BindSecret,
+    idle_after: Duration,
+    /// Monotonic milliseconds since `born` of the last send.
+    last_tx_ms: std::sync::atomic::AtomicU64,
+    born: Instant,
+    pending: std::sync::Mutex<Option<PendingRebind>>,
+}
+
+#[derive(Clone, Copy)]
+struct PendingRebind {
+    nonce: Nonce,
+    at: Instant,
+    attempts: u32,
+}
+
+impl Rebind {
+    /// The Bind to send before the frame being sent now, if this send ends a
+    /// silence or retries an unanswered re-bind.
+    fn bind_before_send(&self, vni: u32) -> Option<[u8; super::wire::CONTROL_FRAME_LEN]> {
+        let now_ms = u64::try_from(self.born.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let last = self.last_tx_ms.swap(now_ms, Ordering::AcqRel);
+        let idle = now_ms.saturating_sub(last)
+            >= u64::try_from(self.idle_after.as_millis()).unwrap_or(u64::MAX);
+        let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+        let attempts = match *pending {
+            _ if idle => 1,
+            Some(p) if p.attempts < REBIND_ATTEMPTS && p.at.elapsed() >= REBIND_RETRY => {
+                p.attempts + 1
+            }
+            _ => return None,
+        };
+        let nonce = fresh_nonce();
+        *pending = Some(PendingRebind {
+            nonce,
+            at: Instant::now(),
+            attempts,
+        });
+        Some(
+            ControlFrame::Bind {
+                nonce,
+                tag1: tag1(&self.secret, vni, self.generation, &nonce),
+            }
+            .encode(vni),
+        )
+    }
+
+    /// The Answer to a Challenge echoing the outstanding attempt's nonce.
+    fn answer(
+        &self,
+        vni: u32,
+        nonce: Nonce,
+        cookie: super::bind::Mac,
+    ) -> Option<[u8; super::wire::CONTROL_FRAME_LEN]> {
+        let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+        if pending.is_none_or(|p| p.nonce != nonce) {
+            return None;
+        }
+        *pending = None;
+        Some(
+            ControlFrame::Answer {
+                nonce,
+                cookie,
+                tag2: tag2(&self.secret, &cookie, &nonce),
+            }
+            .encode(vni),
+        )
+    }
 }
 
 impl OrgRelayConn {
@@ -325,7 +418,30 @@ impl OrgRelayConn {
             synth_peer,
             label,
             alive: AtomicBool::new(true),
+            rebind: None,
         }
+    }
+
+    /// Re-bind in band after [`IDLE_REBIND`] of silence (module docs). The
+    /// carrier was just bound, so the silence clock starts now.
+    pub fn with_rebind(mut self, generation: u64, secret: BindSecret) -> Self {
+        self.rebind = Some(Rebind {
+            generation,
+            secret,
+            idle_after: IDLE_REBIND,
+            last_tx_ms: std::sync::atomic::AtomicU64::new(0),
+            born: Instant::now(),
+            pending: std::sync::Mutex::new(None),
+        });
+        self
+    }
+
+    #[cfg(test)]
+    fn rebind_after(mut self, idle_after: Duration) -> Self {
+        if let Some(r) = self.rebind.as_mut() {
+            r.idle_after = idle_after;
+        }
+        self
     }
 
     pub fn synth_peer(&self) -> SocketAddr {
@@ -361,6 +477,13 @@ impl RelayConn for OrgRelayConn {
                 "org-relay session closed",
             ));
         }
+        if let Some(bind) = self
+            .rebind
+            .as_ref()
+            .and_then(|r| r.bind_before_send(self.vni))
+        {
+            self.sock.send_to(&bind, self.relay).await?;
+        }
         self.sock
             .send_to(&build_data(self.vni, buf), self.relay)
             .await?;
@@ -381,6 +504,17 @@ impl RelayConn for OrgRelayConn {
             // re-challenge, a probe echo) and anything from elsewhere are
             // not the peer's ciphertext and never reach the decapsulator.
             if from != self.relay {
+                continue;
+            }
+            if let Some(r) = &self.rebind
+                && let Some((vni, ControlFrame::Challenge { nonce, cookie })) =
+                    ControlFrame::decode(&tmp[..n])
+            {
+                if vni == self.vni
+                    && let Some(answer) = r.answer(vni, nonce, cookie)
+                {
+                    let _ = self.sock.send_to(&answer, self.relay).await;
+                }
                 continue;
             }
             let Some((vni, payload)) = parse_data(&tmp[..n]) else {
@@ -854,6 +988,132 @@ mod tests {
         // Closing makes the carrier report dead on its next use.
         b.close();
         assert!(b.send_to(b"x", b.synth_peer()).await.is_err());
+    }
+
+    async fn bound_count(stats: &RelayStats, at_least: u64) -> bool {
+        timeout(Duration::from_secs(5), async {
+            while stats.snapshot().bound < at_least {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .is_ok()
+    }
+
+    /// The NAT re-created a silent member's mapping on a new port (B6
+    /// dormancy, lab R8 lc-odlate-as): the relay still forwards to the old
+    /// source. The member's first send after the silence re-binds in band,
+    /// on its own socket, and the relay forwards to the new source again.
+    #[tokio::test]
+    async fn a_silent_member_rebinds_in_band_from_a_remapped_source() {
+        let (relay, stats) = relay_with_session([[1; 32], [2; 32]]).await;
+        let sa = BindSecret::from_bytes([1; 32]);
+        let sb = BindSecret::from_bytes([2; 32]);
+        let a_old = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let b_sock = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        bind(&a_old, relay, VNI, GEN, &sa, Duration::from_secs(5))
+            .await
+            .unwrap();
+        bind(&b_sock, relay, VNI, GEN, &sb, Duration::from_secs(5))
+            .await
+            .unwrap();
+        assert!(bound_count(&stats, 2).await);
+        // The remap: a's traffic now leaves from a socket the relay never saw.
+        let a_new = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let a = Arc::new(
+            OrgRelayConn::new(a_new, relay, VNI, "r".into())
+                .with_rebind(GEN, sa)
+                .rebind_after(Duration::from_millis(200)),
+        );
+        let b = OrgRelayConn::new(b_sock, relay, VNI, "r".into());
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        let reader = a.clone();
+        tokio::spawn(async move {
+            let mut buf = [0u8; 256];
+            while let Ok((n, _)) = reader.recv_from(&mut buf).await {
+                if tx.send(buf[..n].to_vec()).await.is_err() {
+                    break;
+                }
+            }
+        });
+        b.send_to(b"to the old source", b.synth_peer())
+            .await
+            .unwrap();
+        assert!(
+            timeout(Duration::from_millis(300), rx.recv())
+                .await
+                .is_err(),
+            "before a re-binds, the relay forwards to the dead old source"
+        );
+        a.send_to(b"after the silence", a.synth_peer())
+            .await
+            .unwrap();
+        assert!(
+            bound_count(&stats, 3).await,
+            "the in-band re-bind was applied"
+        );
+        b.send_to(b"to the new source", b.synth_peer())
+            .await
+            .unwrap();
+        let got = timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("the relay forwards to a's new source")
+            .unwrap();
+        assert_eq!(got, b"to the new source");
+    }
+
+    /// A member that keeps sending never re-binds, and a re-bind from an
+    /// unchanged source leaves forwarding as it was.
+    #[tokio::test]
+    async fn a_busy_member_never_rebinds_and_an_unchanged_source_keeps_forwarding() {
+        let (relay, stats) = relay_with_session([[1; 32], [2; 32]]).await;
+        let sa = BindSecret::from_bytes([1; 32]);
+        let sb = BindSecret::from_bytes([2; 32]);
+        let a_sock = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let b_sock = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        bind(&a_sock, relay, VNI, GEN, &sa, Duration::from_secs(5))
+            .await
+            .unwrap();
+        bind(&b_sock, relay, VNI, GEN, &sb, Duration::from_secs(5))
+            .await
+            .unwrap();
+        assert!(bound_count(&stats, 2).await);
+        let a = Arc::new(
+            OrgRelayConn::new(a_sock, relay, VNI, "r".into())
+                .with_rebind(GEN, sa)
+                .rebind_after(Duration::from_millis(400)),
+        );
+        let b = OrgRelayConn::new(b_sock, relay, VNI, "r".into());
+        let reader = a.clone();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(32);
+        tokio::spawn(async move {
+            let mut buf = [0u8; 256];
+            while let Ok((n, _)) = reader.recv_from(&mut buf).await {
+                if tx.send(buf[..n].to_vec()).await.is_err() {
+                    break;
+                }
+            }
+        });
+        for _ in 0..5 {
+            a.send_to(b"busy", a.synth_peer()).await.unwrap();
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(stats.snapshot().bound, 2, "no re-bind while busy");
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        a.send_to(b"after the silence", a.synth_peer())
+            .await
+            .unwrap();
+        assert!(
+            bound_count(&stats, 3).await,
+            "re-bound from the same source"
+        );
+        b.send_to(b"still here", b.synth_peer()).await.unwrap();
+        let got = timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("forwarding unchanged")
+            .unwrap();
+        assert_eq!(got, b"still here");
     }
 
     /// A symmetric NAT remaps a member: it re-binds from a NEW source with the

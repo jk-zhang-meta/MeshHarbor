@@ -1105,12 +1105,10 @@ fn spawn_org_bind(
         .await
         {
             Ok((sock, relay, outcomes)) => (
-                Some(Arc::new(OrgRelayConn::new(
-                    Arc::new(sock),
-                    relay,
-                    job.vni,
-                    relay_label,
-                ))),
+                Some(Arc::new(
+                    OrgRelayConn::new(Arc::new(sock), relay, job.vni, relay_label)
+                        .with_rebind(job.generation, job.secret.clone()),
+                )),
                 outcomes,
             ),
             Err((e, outcomes)) => {
