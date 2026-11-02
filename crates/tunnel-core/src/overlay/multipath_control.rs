@@ -544,7 +544,13 @@ impl Control {
                 Self::store_session(&mut st, session.clone());
                 Self::activate(&mut st, session, now);
             }
+            // Only an EMPTY (32-byte) transport frame can attest a challenge:
+            // `challenge_on` refuses any other length, so a challenged digest
+            // is always of 32 bytes. Hashing every data frame here cost a full
+            // SHA-256 per received packet and, under load, pushed the one
+            // frame a pending challenge waits for out of this 8-entry window.
             if leg <= 1
+                && bytes.len() == 32
                 && st
                     .active
                     .as_ref()
@@ -1091,6 +1097,24 @@ mod tests {
             changed[offset] ^= 1;
             assert!(decode(&changed, &[1; 32], &[2; 32], &[9; 32]).is_none());
         }
+    }
+
+    #[test]
+    fn data_frames_never_evict_the_empty_frame_a_challenge_attests() {
+        let (a, b) = endpoints();
+        let now = Instant::now();
+        consent(&a, &b, now);
+        let wire = transport(29, 4);
+        let challenge = a.challenge(&wire, now).unwrap();
+        b.note_authenticated(&wire, 1, now);
+        for counter in 5..40 {
+            let mut data = transport(29, counter);
+            data.resize(1452, 7);
+            b.note_authenticated(&data, 1, now);
+        }
+        let proof = b.receive(&challenge, 1, now).unwrap();
+        a.receive(&proof, 1, now);
+        assert!(a.ready(now));
     }
 
     #[test]
