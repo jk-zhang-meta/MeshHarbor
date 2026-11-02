@@ -1096,6 +1096,13 @@ struct RetainedMultipathCarrier {
     attached: bool,
     was_ready: bool,
     failure_at: Option<Instant>,
+    /// Session generation in which B8 negotiation first ran out on this leg.
+    /// The leg is released only if negotiation runs out again in a NEWER
+    /// session: crossed bring-up handshakes can leave the two ends on
+    /// different current sessions for a while, and every control frame is
+    /// bound to its sender's session, so one session's exhaustion is not
+    /// evidence that the peer lacks B8 (real network, R6 rn-fo-r).
+    exhausted_in: Option<u64>,
 }
 
 /// A3 — one session's roaming state in the device demux's index side-map:
