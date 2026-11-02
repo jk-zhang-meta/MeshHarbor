@@ -41,7 +41,6 @@ use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU16, AtomicU32, AtomicU64, O
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 use tokio::sync::Notify;
 use tokio::task::JoinHandle;
@@ -411,17 +410,21 @@ pub enum PreDecapVerdict {
     /// Not a known duplicate — proceed with `Tunn::decapsulate`.
     Proceed,
     /// Cryptographically verified duplicate of an already-decapsulated packet
-    /// (constant-time Poly1305 tag AND full ciphertext SHA-256 match against
+    /// (constant-time Poly1305 tag AND full ciphertext byte match against
     /// a prior successful AEAD). `first_on_leg` is true iff
     /// this leg had not yet received a copy of this `(session, counter)`.
     AuthenticatedDuplicate { first_on_leg: bool },
 }
 
-#[derive(Clone, Copy)]
 struct DedupEntry {
     len: u16,
     tag: [u8; 16],
-    digest: [u8; 32],
+    /// The complete authenticated ciphertext. A later copy must equal it
+    /// byte for byte (compared in constant time) to count as a duplicate —
+    /// the same "full ciphertext" requirement a SHA-256 digest stood for,
+    /// without hashing every received packet to keep one. Buffers are
+    /// recycled from evicted entries.
+    wire: Vec<u8>,
     seen_legs_mask: u64,
     recorded_at: Instant,
 }
@@ -429,6 +432,42 @@ struct DedupEntry {
 /// Maximum age after initial authentication during which a redundant copy on a
 /// different leg may credit that leg's receive counters (`first_on_leg`).
 const DEDUP_LIVENESS_MAX_AGE: Duration = Duration::from_secs(5);
+
+/// Multiply-rotate hasher for the dedup index. Keys enter the index only
+/// after AEAD authentication, so it cannot be flooded with chosen keys and
+/// SipHash's flood resistance bought nothing per packet.
+#[derive(Default, Clone, Copy)]
+struct DedupKeyHasher(u64);
+
+impl DedupKeyHasher {
+    #[inline]
+    fn add(&mut self, v: u64) {
+        self.0 = (self.0.rotate_left(5) ^ v).wrapping_mul(0x517c_c1b7_2722_0a95);
+    }
+}
+
+impl std::hash::Hasher for DedupKeyHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        for b in bytes {
+            self.add(u64::from(*b));
+        }
+    }
+    fn write_u32(&mut self, v: u32) {
+        self.add(u64::from(v));
+    }
+    fn write_u64(&mut self, v: u64) {
+        self.add(v);
+    }
+}
+
+type DedupIndex = std::collections::HashMap<
+    (u32, u64),
+    DedupEntry,
+    std::hash::BuildHasherDefault<DedupKeyHasher>,
+>;
 
 /// Bounded window of recently authenticated Type-4 packets for
 /// constant-time Poly1305-verified deduplication in [`MultipathMode::Redundant`].
@@ -439,7 +478,7 @@ const DEDUP_LIVENESS_MAX_AGE: Duration = Duration::from_secs(5);
 /// linear scan of the window (up to 2048 entries) per packet, twice, was the
 /// dominant receive cost of an enabled peer at line rate.
 struct MultipathDedupTable {
-    entries: std::collections::HashMap<(u32, u64), DedupEntry>,
+    entries: DedupIndex,
     order: VecDeque<(u32, u64)>,
     capacity: usize,
 }
@@ -448,7 +487,7 @@ impl MultipathDedupTable {
     fn new(capacity: usize) -> Self {
         let cap = capacity.clamp(32, 2048);
         Self {
-            entries: std::collections::HashMap::with_capacity(cap),
+            entries: DedupIndex::with_capacity_and_hasher(cap, Default::default()),
             order: VecDeque::with_capacity(cap),
             capacity: cap,
         }
@@ -468,34 +507,30 @@ impl MultipathDedupTable {
         self.order.clear();
     }
 
-    /// Check whether `(session, counter, len, tag)` and the full ciphertext
-    /// digest match an already authenticated Type-4 packet. Never inserts a
-    /// new entry. `digest` is evaluated only for a candidate, an entry with
-    /// this exact `(session, counter)` and length — both public header facts —
-    /// so a datagram that is not a copy is never hashed.
-    #[allow(clippy::too_many_arguments)]
+    /// Check whether `datagram` (with its parsed `session`, `counter` and
+    /// `tag`) is a byte-identical copy of an already authenticated Type-4
+    /// packet. Never inserts a new entry. Only a candidate — an entry with
+    /// this exact `(session, counter)` and length, all public header facts —
+    /// is compared, and only a candidate reads the clock.
     fn check_duplicate(
         &mut self,
         session: u32,
         counter: u64,
-        len: usize,
+        datagram: &[u8],
         tag: &[u8; 16],
-        digest: impl FnOnce() -> [u8; 32],
         leg_bit: u64,
-        now: Instant,
+        now: impl FnOnce() -> Instant,
     ) -> Option<bool> {
-        let len_u16 = u16::try_from(len).ok()?;
+        let len_u16 = u16::try_from(datagram.len()).ok()?;
         let entry = self.entries.get_mut(&(session, counter))?;
         // Same (session, counter) but mismatched length, tag, or full
         // ciphertext: forged/corrupted packet — do not match!
-        if entry.len != len_u16 {
+        if entry.len != len_u16
+            || !bool::from(entry.tag.ct_eq(tag) & entry.wire.as_slice().ct_eq(datagram))
+        {
             return None;
         }
-        let digest = digest();
-        if !bool::from(entry.tag.ct_eq(tag) & entry.digest.ct_eq(&digest)) {
-            return None;
-        }
-        let fresh = now.saturating_duration_since(entry.recorded_at) <= DEDUP_LIVENESS_MAX_AGE;
+        let fresh = now().saturating_duration_since(entry.recorded_at) <= DEDUP_LIVENESS_MAX_AGE;
         let first_on_leg = fresh && leg_bit != 0 && (entry.seen_legs_mask & leg_bit) == 0;
         entry.seen_legs_mask |= leg_bit;
         Some(first_on_leg)
@@ -507,35 +542,39 @@ impl MultipathDedupTable {
         &mut self,
         session: u32,
         counter: u64,
-        len: usize,
-        authenticated: ([u8; 16], [u8; 32]),
+        datagram: &[u8],
+        tag: [u8; 16],
         leg_bit: u64,
         now: Instant,
     ) {
-        let (tag, digest) = authenticated;
-        let Ok(len_u16) = u16::try_from(len) else {
+        let Ok(len_u16) = u16::try_from(datagram.len()) else {
             return;
         };
         if let Some(entry) = self.entries.get_mut(&(session, counter)) {
             entry.len = len_u16;
             entry.tag = tag;
-            entry.digest = digest;
+            entry.wire.clear();
+            entry.wire.extend_from_slice(datagram);
             entry.seen_legs_mask = leg_bit;
             entry.recorded_at = now;
             return;
         }
+        let mut wire = Vec::new();
         if self.order.len() >= self.capacity
             && let Some(oldest) = self.order.pop_front()
+            && let Some(evicted) = self.entries.remove(&oldest)
         {
-            self.entries.remove(&oldest);
+            wire = evicted.wire;
         }
+        wire.clear();
+        wire.extend_from_slice(datagram);
         self.order.push_back((session, counter));
         self.entries.insert(
             (session, counter),
             DedupEntry {
                 len: len_u16,
                 tag,
-                digest,
+                wire,
                 seen_legs_mask: leg_bit,
                 recorded_at: now,
             },
@@ -1436,20 +1475,14 @@ impl PeerMultipathState {
         let Some((session, counter, tag)) = Self::parse_type4_header_and_tag(datagram) else {
             return PreDecapVerdict::Proceed;
         };
-        let now = Instant::now();
         let mut st = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let leg_bit = Self::leg_bit_locked(&st, leg_id);
-        // The full-ciphertext digest is computed only for a candidate copy
-        // (see `check_duplicate`): outside Redundant nothing here is hashed.
-        if let Some(first_on_leg) = st.dedup.check_duplicate(
-            session,
-            counter,
-            datagram.len(),
-            &tag,
-            || Sha256::digest(datagram).into(),
-            leg_bit,
-            now,
-        ) {
+        // Only a candidate copy (see `check_duplicate`) is compared in full or
+        // reads the clock: outside Redundant this is one index probe.
+        if let Some(first_on_leg) =
+            st.dedup
+                .check_duplicate(session, counter, datagram, &tag, leg_bit, Instant::now)
+        {
             self.dedup_dropped.fetch_add(1, Ordering::Relaxed);
             if first_on_leg {
                 self.record_leg_rx_locked(&st, leg_id, datagram.len(), true);
@@ -1476,10 +1509,22 @@ impl PeerMultipathState {
         leg_id: u32,
         delivered: Option<Vec<u8>>,
     ) -> Option<Vec<u8>> {
+        self.post_decap_record_at(datagram, leg_id, delivered, Instant::now())
+    }
+
+    /// [`Self::post_decap_record`] at a caller-supplied instant, so the
+    /// receive path reads the clock once per datagram, not once per hook.
+    pub fn post_decap_record_at(
+        &self,
+        datagram: &[u8],
+        leg_id: u32,
+        delivered: Option<Vec<u8>>,
+        now: Instant,
+    ) -> Option<Vec<u8>> {
         if !self.is_active() {
             return delivered;
         }
-        self.post_decap_record_inner(datagram, Some(leg_id), delivered)
+        self.post_decap_record_inner(datagram, Some(leg_id), delivered, now)
     }
 
     /// Called inside `decap_standby` (F2 DERP standby copy) when multipath is
@@ -1495,7 +1540,7 @@ impl PeerMultipathState {
         if !self.is_active() {
             return delivered;
         }
-        self.post_decap_record_inner(datagram, None, delivered)
+        self.post_decap_record_inner(datagram, None, delivered, Instant::now())
     }
 
     fn post_decap_record_inner(
@@ -1503,11 +1548,9 @@ impl PeerMultipathState {
         datagram: &[u8],
         leg_id: Option<u32>,
         delivered: Option<Vec<u8>>,
+        now: Instant,
     ) -> Option<Vec<u8>> {
         let type4 = Self::parse_type4_header_and_tag(datagram);
-        // Hashed before the scheduler lock is taken, never while holding it.
-        let digest: Option<[u8; 32]> = type4.map(|_| Sha256::digest(datagram).into());
-        let now = Instant::now();
         let mut st = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let leg_bit = match leg_id {
             Some(id) => {
@@ -1517,18 +1560,12 @@ impl PeerMultipathState {
             None => 0,
         };
 
-        let (Some((session, counter, tag)), Some(digest)) = (type4, digest) else {
+        let Some((session, counter, tag)) = type4 else {
             return delivered;
         };
 
-        st.dedup.record_authenticated(
-            session,
-            counter,
-            datagram.len(),
-            (tag, digest),
-            leg_bit,
-            now,
-        );
+        st.dedup
+            .record_authenticated(session, counter, datagram, tag, leg_bit, now);
 
         let aggregate_with_secondary = st.config.mode == MultipathMode::Aggregate
             && st.legs.iter().any(|l| l.is_effective_up());
