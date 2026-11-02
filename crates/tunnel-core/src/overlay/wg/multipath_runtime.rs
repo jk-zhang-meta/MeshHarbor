@@ -27,6 +27,49 @@ impl WgDevice {
         key: &[u8; 32],
         kind: Option<super::super::relay_link::RelayKind>,
     ) -> bool {
+        // A direct probe can latch while the peer's ORG link is still an
+        // unproven upgrade candidate: a restarted peer re-binds its org
+        // session and proves direct within milliseconds. The plain path
+        // cancels that candidate and leaves the pair with no standby leg
+        // for as long as direct stays healthy. Keep its carrier instead;
+        // B8's own leg proof still gates every use of it.
+        if self.multipath_enabled()
+            && self.probes.contains_key(key)
+            && !self.path_trials.values().any(|t| &t.public_key == key)
+            && self
+                .org_upgrades
+                .get(key)
+                .is_some_and(|u| !u.candidate.carrier.is_dead())
+            && self.peers.get(key).is_some_and(|p| !p.carrier.is_direct())
+        {
+            let mut upgrade = self.org_upgrades.remove(key).expect("checked candidate");
+            self.unregister_plane_route(&upgrade.candidate);
+            let carrier = upgrade.candidate.carrier.clone();
+            // The candidate's receiver must be gone before the leg spawns
+            // its own: no relay receiver is read twice.
+            for task in &upgrade.candidate.tasks {
+                task.abort();
+            }
+            for task in upgrade.candidate.tasks.drain(..) {
+                let _ = task.await;
+            }
+            drop(upgrade);
+            self.sync_peer_on_demand_hold(key);
+            if !self.promote_direct_probe(key) {
+                return false;
+            }
+            let peer = self.peers.get_mut(key).expect("promoted peer");
+            peer.retained = Some(RetainedMultipathCarrier {
+                carrier,
+                kind: super::super::relay_link::RelayKind::Org,
+                attached: false,
+                was_ready: false,
+                failure_at: None,
+            });
+            info!(event="multipath_standby_adopted", peer_key=%hex::encode(key), source="org_candidate",
+                "overlay: unproven org-relay candidate kept as the B8 standby leg of the promoted direct peer");
+            return true;
+        }
         if !self.multipath_enabled()
             || kind.is_none()
             || self.path_trials.values().any(|t| &t.public_key == key)
@@ -60,6 +103,44 @@ impl WgDevice {
             was_ready: false,
             failure_at: None,
         });
+        true
+    }
+
+    /// A healthy direct peer that lost its relay incumbent before direct
+    /// latched has no standby leg. A later ORG session for it may supply one.
+    pub(crate) fn wants_multipath_standby(&self, key: &[u8; 32]) -> bool {
+        self.multipath_enabled()
+            && !self.probes.contains_key(key)
+            && !self.org_upgrades.contains_key(key)
+            && !self.path_trials.values().any(|t| &t.public_key == key)
+            && self.peers.get(key).is_some_and(|p| {
+                p.carrier.is_direct()
+                    && !p.carrier.is_dead()
+                    && p.retained.is_none()
+                    && p.stats.mp_control.get().is_some_and(|c| !c.retired())
+            })
+    }
+
+    /// Keep `carrier` as `key`'s unattached standby leg. It carries nothing
+    /// until B8 proves the current shared session over it.
+    pub(crate) fn adopt_multipath_standby(
+        &mut self,
+        key: &[u8; 32],
+        carrier: Arc<Carrier>,
+        kind: super::super::relay_link::RelayKind,
+    ) -> bool {
+        if !self.wants_multipath_standby(key) || carrier.is_dead() {
+            return false;
+        }
+        self.peers.get_mut(key).expect("checked peer").retained = Some(RetainedMultipathCarrier {
+            carrier,
+            kind,
+            attached: false,
+            was_ready: false,
+            failure_at: None,
+        });
+        info!(event="multipath_standby_adopted", peer_key=%hex::encode(key), source="late_relay", ?kind,
+            "overlay: relay carrier adopted as the B8 standby leg of a direct peer");
         true
     }
 
@@ -216,9 +297,13 @@ impl WgDevice {
             mp.set_leg_healthy(1, ready);
             if let Some(retained) = self.peers.get_mut(&key).and_then(|p| p.retained.as_mut()) {
                 if ready && !retained.was_ready {
-                    info!(event="multipath_validated", peer_key=%hex::encode(key), mode=?control.mode(), "overlay: current shared-session secondary validated");
+                    info!(event="multipath_validated", peer_key=%hex::encode(key), mode=?control.mode(),
+                        session_generation=control.binding().map(|b| b.session_generation),
+                        "overlay: current shared-session secondary validated");
                 }
-                retained.was_ready |= ready;
+                // Readiness on the previous poll: every new session's proof
+                // (rekey, peer restart) is reported, not only the first.
+                retained.was_ready = ready;
             }
             // A healthy restarted primary may answer the fallback INIT within
             // this same PokeArm. Release only on current-session roundtrip.
@@ -1488,5 +1573,121 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+
+    fn udp_relay(sock: UdpSocket, dst: SocketAddr) -> Arc<Carrier> {
+        Carrier::relay(Arc::new(UdpRelayConn(sock)), dst)
+    }
+
+    /// Lifecycle (peer restart): the relay incumbent is gone and direct is
+    /// healthy. A later relay carrier is adopted once, unattached, and B8
+    /// proves the current shared session over it before it carries anything.
+    #[tokio::test]
+    async fn runtime_late_standby_is_adopted_once_and_validates_on_a_direct_peer() {
+        let (mut off_a, _off_b, _, _) = pair(MultipathMode::Off, MultipathMode::Off).await;
+        let off_key = *off_a.peers.keys().next().unwrap();
+        let s = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        assert!(
+            !off_a.wants_multipath_standby(&off_key),
+            "default Off never wants a standby"
+        );
+        assert!(!off_a.adopt_multipath_standby(
+            &off_key,
+            udp_relay(s, "127.0.0.1:9".parse().unwrap()),
+            RelayKind::Org
+        ));
+
+        let (mut da, mut db, _, _) =
+            pair(MultipathMode::ActiveStandby, MultipathMode::ActiveStandby).await;
+        let (ka, kb) = (da.public.to_bytes(), db.public.to_bytes());
+        let sa = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let sb = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let (aa, ab) = (sa.local_addr().unwrap(), sb.local_addr().unwrap());
+        assert!(da.wants_multipath_standby(&kb));
+        let ca = udp_relay(sa, ab);
+        assert!(da.adopt_multipath_standby(&kb, ca.clone(), RelayKind::Turn));
+        assert!(!da.wants_multipath_standby(&kb), "one standby leg per peer");
+        let spare = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        assert!(!da.adopt_multipath_standby(&kb, udp_relay(spare, ab), RelayKind::Turn));
+        assert!(Arc::ptr_eq(
+            &da.peers[&kb].retained.as_ref().unwrap().carrier,
+            &ca
+        ));
+        assert!(!da.peers[&kb].retained.as_ref().unwrap().attached);
+        assert!(db.adopt_multipath_standby(&ka, udp_relay(sb, aa), RelayKind::Turn));
+        assert!(
+            da.peers[&kb].carrier.is_direct(),
+            "adoption never touches the primary"
+        );
+        negotiated(&mut da, &mut db, true).await;
+        assert!(da.peers[&kb].retained.as_ref().unwrap().attached);
+        assert!(da.peers[&kb].carrier.is_direct());
+    }
+
+    /// Readiness is tracked per poll, so a proof reset (rekey, restart) and
+    /// the next proof are each reported, not only the first one ever.
+    #[tokio::test]
+    async fn runtime_validated_readiness_rearms_after_a_proof_reset() {
+        let (mut da, mut db, _, _) = pair(MultipathMode::Redundant, MultipathMode::Redundant).await;
+        let kb = db.public.to_bytes();
+        retain_pair(&mut da, &mut db).await;
+        negotiated(&mut da, &mut db, true).await;
+        da.poll_multipath(&Default::default()).await;
+        assert!(da.peers[&kb].retained.as_ref().unwrap().was_ready);
+        da.peers[&kb].stats.mp_control.get().unwrap().role_changed();
+        da.poll_multipath(&Default::default()).await;
+        assert!(!da.peers[&kb].retained.as_ref().unwrap().was_ready);
+        negotiated(&mut da, &mut db, true).await;
+        da.poll_multipath(&Default::default()).await;
+        assert!(da.peers[&kb].retained.as_ref().unwrap().was_ready);
+    }
+
+    /// Lifecycle (peer restart): direct latches while the ORG link is still an
+    /// unproven upgrade candidate. B8 keeps that carrier as the standby leg;
+    /// default Off keeps the original cancel-and-promote path unchanged.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn promotion_keeps_an_unproven_org_candidate_as_the_standby_leg() {
+        for mode in [MultipathMode::ActiveStandby, MultipathMode::Off] {
+            let kp = WgKeypair::generate();
+            let peer = WgKeypair::generate();
+            let (mut dev, _rx) = WgDevice::new(kp.secret.clone());
+            dev.multipath_mode = mode;
+            dev.set_on_demand_config(super::super::super::on_demand::OnDemandConfig::disabled());
+            let pk = peer.public.to_bytes();
+            let floor = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+            dev.add_peer(
+                pk,
+                B,
+                udp_relay(floor, "127.0.0.1:9".parse().unwrap()),
+                false,
+            );
+            let org_sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+            let org = udp_relay(org_sock, "127.0.0.1:9".parse().unwrap());
+            assert!(dev.start_org_upgrade(pk, B, org.clone()));
+            let sock = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+            dev.ensure_direct_demux(sock.clone());
+            dev.start_direct_probe(sock, pk, B, "127.0.0.1:9".parse().unwrap(), true)
+                .await;
+            dev.test_latch_probe_handshake_done(&pk);
+            assert!(
+                dev.promote_direct_probe_multipath(&pk, Some(RelayKind::Derp))
+                    .await
+            );
+            assert!(dev.peers[&pk].carrier.is_direct());
+            assert!(
+                !dev.org_upgrades.contains_key(&pk),
+                "the candidate never outlives promotion"
+            );
+            match mode {
+                MultipathMode::Off => assert!(dev.peers[&pk].retained.is_none()),
+                _ => {
+                    let r = dev.peers[&pk].retained.as_ref().expect("standby leg kept");
+                    assert!(Arc::ptr_eq(&r.carrier, &org));
+                    assert_eq!(r.kind, RelayKind::Org);
+                    assert!(!r.attached && !r.was_ready);
+                    assert!(!org.is_dead());
+                }
+            }
+        }
     }
 }
