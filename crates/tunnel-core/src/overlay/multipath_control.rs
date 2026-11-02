@@ -324,6 +324,44 @@ impl Control {
         st.sessions.clear();
     }
 
+    /// B6 Dormant entry: the session is cleared on purpose after an idle
+    /// period, not lost, so nothing is in flight to protect. Unlike
+    /// [`Self::session_reset`] this arms no recovery hold and ends any hold
+    /// still armed. A hold armed here would already be past [`HOLD_TIME`]
+    /// when a wake came (the idle period alone outlasts it), and an expired
+    /// hold refuses every packet for as long as it stays armed: the wake then
+    /// never initiated (real network, R8 rn-od: no WireGuard frame on any
+    /// path after the wake until the B6 waking timeout fell back to a relay).
+    pub(crate) fn idle_reset(&self) {
+        if self.mode == MultipathMode::Off {
+            return;
+        }
+        let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if st.retired {
+            return;
+        }
+        Self::reset_proof(&mut st);
+        st.active = None;
+        st.sent.clear();
+        st.received.clear();
+        st.sessions.clear();
+        st.hold_expired = st.hold_expired.saturating_add(st.held.len() as u64);
+        st.held.clear();
+        st.holding = false;
+        st.hold_since = None;
+        st.hold_budget = None;
+    }
+
+    /// Test hook: age an armed hold past [`HOLD_TIME`].
+    #[cfg(test)]
+    pub(crate) fn expire_hold_now(&self) {
+        let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        st.hold_since = st.hold_since.map(|at| {
+            at.checked_sub(HOLD_TIME)
+                .expect("monotonic clock past HOLD_TIME")
+        });
+    }
+
     /// Shape/session attribution only; caller MUST already have AEAD or an
     /// exact-full-ciphertext authenticated duplicate receipt on this owner.
     pub(crate) fn is_current_transport(&self, bytes: &[u8]) -> bool {
@@ -1284,6 +1322,38 @@ mod tests {
         assert!(!a.recovery_allowed());
         assert!(!a.recovery_ready(now + Duration::from_millis(10)));
         assert!(a.holding()); // Only caller's committed primary can release FIFO.
+    }
+
+    #[test]
+    fn dormant_entry_arms_no_hold_so_a_late_wake_is_not_refused() {
+        let _serial = HOLD_TEST_LOCK.lock().unwrap();
+        let now = Instant::now();
+        let wake = now + HOLD_TIME + Duration::from_secs(12);
+        // A generic session reset arms the hold; a wake after HOLD_TIME finds
+        // it expired and still armed, and every packet is refused.
+        let (c, d) = endpoints();
+        consent(&c, &d, now);
+        secondary(&c, &d, now, 70);
+        c.session_reset(now);
+        c.begin_hold(wake);
+        assert_eq!(c.queue_if_held(&[1], wake), Some(false));
+        // Dormant entry ends that hold too.
+        c.idle_reset();
+        assert!(!c.holding());
+        // Dormant entry clears the session without arming a hold, so a hold
+        // the wake arms is its own, and admits.
+        let (a, b) = endpoints();
+        consent(&a, &b, now);
+        secondary(&a, &b, now, 70);
+        a.idle_reset();
+        assert!(a.binding().is_none());
+        assert!(!a.holding());
+        assert!(a.recovery_allowed());
+        assert_eq!(a.queue_if_held(&[1], wake), None);
+        a.begin_hold(wake);
+        assert_eq!(a.queue_if_held(&[1], wake), Some(true));
+        drop(a.pop_held_at(wake));
+        assert!(a.finish_hold());
     }
 
     #[test]
