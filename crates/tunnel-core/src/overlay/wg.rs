@@ -6416,6 +6416,9 @@ pub(crate) fn decap_inbound(
     // decapsulates to `Done` (boringtun's poll-for-queued-output shape — what the
     // flush loop below relies on), but a 0-byte UDP payload is never a real WG
     // packet, so it must not count as liveness. `Err` (replay / garbage) isn't.
+    // One clock read shared by every B8 hook below (only when B8 is live).
+    let mp_now =
+        (stats.mp_control.get().is_some() || ingress.multipath.is_active()).then(Instant::now);
     if authenticated {
         if let Some(control) = stats.mp_control.get()
             && (!is_handshake_init || authenticated_init)
@@ -6424,7 +6427,7 @@ pub(crate) fn decap_inbound(
             control.note_authenticated(
                 &buf[..n],
                 stats.inbound_leg(ingress.leg_id),
-                Instant::now(),
+                mp_now.unwrap_or_else(Instant::now),
             );
             if before != control.binding() {
                 ingress.multipath.clear_crypto_observations();
@@ -6592,9 +6595,12 @@ pub(crate) fn decap_inbound(
         TunnResult::Err(e) => debug!(?e, "wg decapsulate error"),
     }
     if authenticated && ingress.multipath.is_active() {
-        delivered = ingress
-            .multipath
-            .post_decap_record(&buf[..n], ingress.leg_id, delivered);
+        delivered = ingress.multipath.post_decap_record_at(
+            &buf[..n],
+            ingress.leg_id,
+            delivered,
+            mp_now.unwrap_or_else(Instant::now),
+        );
     }
     // Phase C — latch "handshake completed" the moment this peer's session is
     // live. `process_inbound` only runs on a packet FROM the peer, so a set flag
