@@ -487,12 +487,15 @@ impl Engine {
                     )
                     .await
                     {
-                        Ok((sock, relay, _)) => Some(Arc::new(OrgRelayConn::new(
-                            Arc::new(sock),
-                            relay,
-                            session.vni,
-                            "path-trial".into(),
-                        ))),
+                        Ok((sock, relay, _)) => Some(Arc::new(
+                            OrgRelayConn::new(
+                                Arc::new(sock),
+                                relay,
+                                session.vni,
+                                "path-trial".into(),
+                            )
+                            .with_rebind(session.generation, session.secret.clone()),
+                        )),
                         Err((error, _)) => {
                             // Log typed metadata only, never error/credential context.
                             let (failure_class, io_error) = match &error {
