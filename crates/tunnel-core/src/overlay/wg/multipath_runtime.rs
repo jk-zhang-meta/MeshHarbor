@@ -1429,4 +1429,64 @@ mod tests {
             );
         }
     }
+
+    fn batch(n: u8) -> Vec<Vec<u8>> {
+        (0..n).map(packet).collect()
+    }
+
+    /// B8 throughput fix (handoff 222): a controlled batch takes ONE locked
+    /// decision pass and per-leg grouped emission, yet every mode still
+    /// delivers each packet exactly once and in order on a real negotiated
+    /// two-leg session.
+    #[tokio::test]
+    async fn runtime_controlled_batch_delivers_every_packet_once_in_order_in_every_mode() {
+        for mode in [
+            MultipathMode::ActiveStandby,
+            MultipathMode::Redundant,
+            MultipathMode::Aggregate,
+        ] {
+            let (mut da, mut db, mut rx, _) = pair(mode, mode).await;
+            retain_pair(&mut da, &mut db).await;
+            negotiated(&mut da, &mut db, true).await;
+            let kb = db.public.to_bytes();
+            assert!(da.peers[&kb].stats.mp_control.get().is_some());
+            let burst = batch(64);
+            assert_eq!(da.send_ip_batch(&burst).await, 64, "{mode:?}");
+            for (i, want) in burst.iter().enumerate() {
+                let got = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+                    .await
+                    .unwrap_or_else(|_| panic!("{mode:?}: packet {i} lost"))
+                    .unwrap();
+                assert_eq!(&got, want, "{mode:?}: packet {i} reordered or altered");
+            }
+            assert!(
+                tokio::time::timeout(Duration::from_millis(200), rx.recv())
+                    .await
+                    .is_err(),
+                "{mode:?}: a packet was delivered twice"
+            );
+        }
+    }
+
+    /// While B8 holds for recovery, a batch is queued behind the hold exactly
+    /// as N single sends would be: counted as sent, nothing reaches the wire.
+    #[tokio::test]
+    async fn runtime_controlled_batch_during_hold_queues_every_packet_and_sends_none() {
+        let (mut da, mut db, mut rx, _) =
+            pair(MultipathMode::ActiveStandby, MultipathMode::ActiveStandby).await;
+        retain_pair(&mut da, &mut db).await;
+        negotiated(&mut da, &mut db, true).await;
+        let kb = db.public.to_bytes();
+        let control = da.peers[&kb].stats.mp_control.get().unwrap().clone();
+        control.begin_hold(Instant::now());
+        assert!(control.holding());
+        let before = control.hold_snapshot().packets;
+        assert_eq!(da.send_ip_batch(&batch(3)).await, 3);
+        assert_eq!(control.hold_snapshot().packets, before + 3);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), rx.recv())
+                .await
+                .is_err()
+        );
+    }
 }

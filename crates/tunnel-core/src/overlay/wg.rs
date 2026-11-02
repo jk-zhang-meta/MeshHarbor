@@ -1170,6 +1170,28 @@ enum SendAuthorization {
     PqPending(Option<super::multipath_control::Binding>),
 }
 
+/// B8 — one target leg's share of a controlled batch: the leg, its carrier,
+/// and (frame index, position in that frame's target list) for each frame.
+type LegGroup = (u32, Arc<Carrier>, Vec<(usize, usize)>);
+
+/// B8 — what one packet's locked send decision ([`PeerHandle::send_step_locked`])
+/// leaves to do after the Tunn lock is released.
+enum SendStep {
+    /// Finished: this is the packet's send result.
+    Done(bool),
+    /// Held behind the B8 recovery FIFO (counts as sent); send this B6 wake
+    /// INIT first if the hold began on a wake.
+    HeldWake(Option<Vec<u8>>),
+    /// Buffer behind the B7 PQ negotiation.
+    PqBuffer,
+    /// Emit this encapsulated WireGuard frame.
+    Frame {
+        frame: Vec<u8>,
+        just_woke: bool,
+        binding: Option<super::multipath_control::Binding>,
+    },
+}
+
 /// P1 (S6) — everything the outbound data path needs, shared between the
 /// loop-owned [`WgDevice`] (sole writer, via its `&mut self` mutators) and
 /// the outbound pump task (reader). The [`Router`] lives HERE — single
@@ -1673,12 +1695,6 @@ impl SendPeer {
     }
 
     async fn send_inner(&self, packet: &[u8], authorization: SendAuthorization) -> bool {
-        let releasing_hold = matches!(authorization, SendAuthorization::Held(_));
-        let expected_binding = match authorization {
-            SendAuthorization::Normal => None,
-            SendAuthorization::Held(binding) => Some(Some(binding)),
-            SendAuthorization::PqPending(binding) => Some(binding),
-        };
         if self.stats.mp_control.get().is_none()
             && self.stats.pq_guard_active.load(Ordering::Acquire)
         {
@@ -1690,141 +1706,416 @@ impl SendPeer {
         let mut buf = vec![0u8; WG_BUF];
         // rc.211 — encapsulate UNDER the lock, send AFTER releasing it (see
         // the timer tasks): never hold the Tunn lock across a carrier send.
-        let (encap, just_woke, binding) = {
+        let step = {
             let mut t = self.tunn.lock().await;
-            if let Some(binding) = expected_binding
-                && self.stats.mp_control.get().and_then(|c| c.binding()) != binding
-            {
-                return false;
-            }
-            // An older B7 batch must not jump ahead of, or be appended behind,
-            // the recovery FIFO. The caller counts these explicit drops.
-            if let SendAuthorization::PqPending(binding) = authorization
-                && (self.stats.on_demand.is_dormant_or_waking()
-                    || !t.has_current_session() && binding.is_some()
-                    || self.stats.mp_control.get().is_none_or(|c| {
-                        c.retired()
-                            || c.holding()
-                            || (!t.has_current_session() && c.recovery_allowed())
-                    })
-                    || !self.multipath_target_current(binding, 0, &self.carrier))
-            {
-                return false;
-            }
-            if matches!(authorization, SendAuthorization::PqPending(None))
-                && !t.has_current_session()
-            {
-                // Initial B7 establishment (never a proven B8 recovery) keeps
-                // its existing bounded native FIFO. Encapsulate can enqueue
-                // while returning Done during an outstanding INIT; treating
-                // that as a drop would miscount an IP later flushed by WG.
-                t.queue_packet_only(packet);
-                return true;
-            }
-            if releasing_hold && self.stats.on_demand.is_dormant_or_waking() {
-                return false;
-            }
-            let just_woke = self
-                .stats
-                .on_demand
-                .prepare_outbound_under_lock(&mut t, mono_ns_now());
-            if !t.has_current_session()
-                && self
-                    .stats
-                    .mp_control
-                    .get()
-                    .is_some_and(|c| c.binding().is_some())
-            {
-                self.stats.multipath_session_reset();
-            }
-            if just_woke {
-                self.stats.handshake.store(false, Ordering::Relaxed);
-                if let Some(control) = self.stats.mp_control.get() {
-                    control.role_changed();
-                    self.multipath.clear_crypto_observations();
-                    self.multipath.set_leg_healthy(1, false);
-                }
-            }
-            if let Some(control) = self.stats.mp_control.get() {
-                if control.retired() {
-                    return false;
-                }
-                if !t.has_current_session() && control.recovery_allowed() {
-                    control.begin_hold(Instant::now());
-                }
-                if !releasing_hold && let Some(held) = control.queue_if_held(packet, Instant::now())
-                {
-                    if held {
-                        self.stats.tx_attempted.fetch_add(1, Ordering::Relaxed);
-                    } else {
-                        let snapshot = control.hold_snapshot();
-                        if snapshot.overflow.is_power_of_two() {
-                            warn!(
-                                event = "multipath_hold_overflow",
-                                overflow = snapshot.overflow,
-                                packets = snapshot.packets,
-                                bytes = snapshot.bytes,
-                                global_bytes = snapshot.global_bytes,
-                                "overlay: bounded multipath recovery queue rejected packet"
-                            );
-                        }
-                    }
-                    if held && just_woke {
-                        // The existing B6 wake may send its INIT, but the new
-                        // business packet stays behind older B8-held packets.
-                        let wake = match t.format_handshake_initiation(&mut buf, true) {
-                            TunnResult::WriteToNetwork(out) => Some(out.to_vec()),
-                            _ => None,
-                        };
-                        drop(t);
-                        if let Some(wake) = wake {
-                            let _ = send_wg_recorded(&self.carrier, &self.stats, &wake).await;
-                        }
-                    }
-                    return held;
-                }
-                if self.stats.pq_guard_active.load(Ordering::Acquire) {
-                    drop(t);
-                    if releasing_hold {
-                        return false;
-                    }
-                    if let Some(pq) = self.stats.pq.get() {
-                        return pq.buffer_outbound_if_negotiating(packet).await;
-                    }
-                    return false;
-                }
-            }
-            (
-                self.stats
-                    .on_demand
-                    .encapsulate_for_send(&mut t, packet, &mut buf, just_woke),
-                just_woke,
-                expected_binding
-                    .unwrap_or_else(|| self.stats.mp_control.get().and_then(|c| c.binding())),
-            )
+            self.send_step_locked(&mut t, packet, authorization, &mut buf)
         };
+        self.finish_send_step(step, packet).await
+    }
+
+    /// The locked half of [`Self::send_inner`] for ONE packet: every B6/B7/B8
+    /// gate, hold and encapsulation decision, with no await. The single-packet
+    /// path and the batched path ([`Self::send_batch_controlled`]) both run
+    /// exactly this function, so a batch cannot decide differently from N
+    /// single sends; only the carrier emission after unlock is batched.
+    fn send_step_locked(
+        &self,
+        t: &mut Tunn,
+        packet: &[u8],
+        authorization: SendAuthorization,
+        buf: &mut [u8],
+    ) -> SendStep {
+        let releasing_hold = matches!(authorization, SendAuthorization::Held(_));
+        let expected_binding = match authorization {
+            SendAuthorization::Normal => None,
+            SendAuthorization::Held(binding) => Some(Some(binding)),
+            SendAuthorization::PqPending(binding) => Some(binding),
+        };
+        if let Some(binding) = expected_binding
+            && self.stats.mp_control.get().and_then(|c| c.binding()) != binding
+        {
+            return SendStep::Done(false);
+        }
+        // An older B7 batch must not jump ahead of, or be appended behind,
+        // the recovery FIFO. The caller counts these explicit drops.
+        if let SendAuthorization::PqPending(binding) = authorization
+            && (self.stats.on_demand.is_dormant_or_waking()
+                || !t.has_current_session() && binding.is_some()
+                || self.stats.mp_control.get().is_none_or(|c| {
+                    c.retired() || c.holding() || (!t.has_current_session() && c.recovery_allowed())
+                })
+                || !self.multipath_target_current(binding, 0, &self.carrier))
+        {
+            return SendStep::Done(false);
+        }
+        if matches!(authorization, SendAuthorization::PqPending(None)) && !t.has_current_session() {
+            // Initial B7 establishment (never a proven B8 recovery) keeps
+            // its existing bounded native FIFO. Encapsulate can enqueue
+            // while returning Done during an outstanding INIT; treating
+            // that as a drop would miscount an IP later flushed by WG.
+            t.queue_packet_only(packet);
+            return SendStep::Done(true);
+        }
+        if releasing_hold && self.stats.on_demand.is_dormant_or_waking() {
+            return SendStep::Done(false);
+        }
+        let just_woke = self
+            .stats
+            .on_demand
+            .prepare_outbound_under_lock(t, mono_ns_now());
+        if !t.has_current_session()
+            && self
+                .stats
+                .mp_control
+                .get()
+                .is_some_and(|c| c.binding().is_some())
+        {
+            self.stats.multipath_session_reset();
+        }
+        if just_woke {
+            self.stats.handshake.store(false, Ordering::Relaxed);
+            if let Some(control) = self.stats.mp_control.get() {
+                control.role_changed();
+                self.multipath.clear_crypto_observations();
+                self.multipath.set_leg_healthy(1, false);
+            }
+        }
+        if let Some(control) = self.stats.mp_control.get() {
+            if control.retired() {
+                return SendStep::Done(false);
+            }
+            if !t.has_current_session() && control.recovery_allowed() {
+                control.begin_hold(Instant::now());
+            }
+            if !releasing_hold && let Some(held) = control.queue_if_held(packet, Instant::now()) {
+                if held {
+                    self.stats.tx_attempted.fetch_add(1, Ordering::Relaxed);
+                } else {
+                    let snapshot = control.hold_snapshot();
+                    if snapshot.overflow.is_power_of_two() {
+                        warn!(
+                            event = "multipath_hold_overflow",
+                            overflow = snapshot.overflow,
+                            packets = snapshot.packets,
+                            bytes = snapshot.bytes,
+                            global_bytes = snapshot.global_bytes,
+                            "overlay: bounded multipath recovery queue rejected packet"
+                        );
+                    }
+                }
+                if held && just_woke {
+                    // The existing B6 wake may send its INIT, but the new
+                    // business packet stays behind older B8-held packets.
+                    let wake = match t.format_handshake_initiation(buf, true) {
+                        TunnResult::WriteToNetwork(out) => Some(out.to_vec()),
+                        _ => None,
+                    };
+                    return SendStep::HeldWake(wake);
+                }
+                return SendStep::Done(held);
+            }
+            if self.stats.pq_guard_active.load(Ordering::Acquire) {
+                if releasing_hold {
+                    return SendStep::Done(false);
+                }
+                return SendStep::PqBuffer;
+            }
+        }
+        let (encap, just_woke, binding) = (
+            self.stats
+                .on_demand
+                .encapsulate_for_send(t, packet, buf, just_woke),
+            just_woke,
+            expected_binding
+                .unwrap_or_else(|| self.stats.mp_control.get().and_then(|c| c.binding())),
+        );
         match encap {
             super::on_demand::OutboundEncap::SendWire(n) => {
                 if !releasing_hold {
                     self.stats.tx_attempted.fetch_add(1, Ordering::Relaxed);
                 }
-                let ok = self.send_wire_frame(&buf[..n], binding).await;
-                if ok {
-                    self.stats.tx.fetch_add(1, Ordering::Relaxed);
-                } else if just_woke && buf[0] == 1 {
-                    self.stats.on_demand.note_wake_init_send_failed();
+                SendStep::Frame {
+                    frame: buf[..n].to_vec(),
+                    just_woke,
+                    binding,
                 }
-                self.stats.standby.copy(&buf[..n]);
-                ok
             }
             super::on_demand::OutboundEncap::QueuedForWake => {
                 if !releasing_hold {
                     self.stats.tx_attempted.fetch_add(1, Ordering::Relaxed);
                 }
+                SendStep::Done(true)
+            }
+            super::on_demand::OutboundEncap::Dropped => SendStep::Done(false),
+        }
+    }
+
+    /// The unlocked half of [`Self::send_inner`]: carry out what the locked
+    /// decision left to do, in the same order the original single path did.
+    async fn finish_send_step(&self, step: SendStep, packet: &[u8]) -> bool {
+        match step {
+            SendStep::Done(result) => result,
+            SendStep::HeldWake(wake) => {
+                if let Some(wake) = wake {
+                    let _ = send_wg_recorded(&self.carrier, &self.stats, &wake).await;
+                }
                 true
             }
-            super::on_demand::OutboundEncap::Dropped => false,
+            SendStep::PqBuffer => match self.stats.pq.get() {
+                Some(pq) => pq.buffer_outbound_if_negotiating(packet).await,
+                None => false,
+            },
+            SendStep::Frame {
+                frame,
+                just_woke,
+                binding,
+            } => {
+                let ok = self.send_wire_frame(&frame, binding).await;
+                if ok {
+                    self.stats.tx.fetch_add(1, Ordering::Relaxed);
+                } else if just_woke && frame.first() == Some(&1) {
+                    self.stats.on_demand.note_wake_init_send_failed();
+                }
+                self.stats.standby.copy(&frame);
+                ok
+            }
         }
+    }
+
+    /// B8 — [`Self::send`] for a batch while multipath control is installed.
+    /// Every packet runs the SAME locked decision as a single send
+    /// ([`Self::send_step_locked`]), all under ONE Tunn lock; afterwards each
+    /// run of consecutive frames with one binding is emitted together
+    /// ([`Self::send_wire_frames`]: GSO per target leg where the leg is a direct
+    /// carrier). Holds, PQ buffering and wake INITs keep their order relative
+    /// to the frames around them. Before this, a controlled batch was N
+    /// separate lock/encapsulate/sendmsg round trips, which cost ~80% of
+    /// goodput in the B8 throughput lane (handoff 222).
+    async fn send_batch_controlled(&self, packets: &[Vec<u8>], idxs: &[usize]) -> usize {
+        let mut buf = vec![0u8; WG_BUF];
+        let steps: Vec<(usize, SendStep)> = {
+            let mut t = self.tunn.lock().await;
+            idxs.iter()
+                .map(|&i| {
+                    let step = self.send_step_locked(
+                        &mut t,
+                        &packets[i],
+                        SendAuthorization::Normal,
+                        &mut buf,
+                    );
+                    (i, step)
+                })
+                .collect()
+        };
+        let mut sent = 0;
+        let mut run: Vec<(Vec<u8>, bool)> = Vec::new();
+        let mut run_binding = None;
+        for (i, step) in steps {
+            match step {
+                SendStep::Frame {
+                    frame,
+                    just_woke,
+                    binding,
+                } => {
+                    if !run.is_empty() && run_binding != binding {
+                        sent += self
+                            .emit_controlled_run(std::mem::take(&mut run), run_binding)
+                            .await;
+                    }
+                    run_binding = binding;
+                    run.push((frame, just_woke));
+                }
+                other => {
+                    sent += self
+                        .emit_controlled_run(std::mem::take(&mut run), run_binding)
+                        .await;
+                    if self.finish_send_step(other, &packets[i]).await {
+                        sent += 1;
+                    }
+                }
+            }
+        }
+        sent + self.emit_controlled_run(run, run_binding).await
+    }
+
+    /// Emit one run of frames and apply the per-frame accounting the single
+    /// path applies in [`Self::finish_send_step`].
+    async fn emit_controlled_run(
+        &self,
+        run: Vec<(Vec<u8>, bool)>,
+        binding: Option<super::multipath_control::Binding>,
+    ) -> usize {
+        if run.is_empty() {
+            return 0;
+        }
+        let frames: Vec<&[u8]> = run.iter().map(|(f, _)| f.as_slice()).collect();
+        let oks = self.send_wire_frames(&frames, binding).await;
+        let mut sent = 0;
+        for ((frame, just_woke), ok) in run.iter().zip(oks) {
+            if ok {
+                self.stats.tx.fetch_add(1, Ordering::Relaxed);
+                sent += 1;
+            } else if *just_woke && frame.first() == Some(&1) {
+                self.stats.on_demand.note_wake_init_send_failed();
+            }
+            self.stats.standby.copy(frame);
+        }
+        sent
+    }
+
+    /// [`Self::send_wire_frame`] for several frames sharing one binding:
+    /// identical target selection, binding checks, leg accounting and
+    /// in-frame failover, but each leg's frames leave together
+    /// ([`Self::emit_frames_on`]). Per-leg order is preserved.
+    async fn send_wire_frames(
+        &self,
+        frames: &[&[u8]],
+        binding: Option<super::multipath_control::Binding>,
+    ) -> Vec<bool> {
+        let mut oks = vec![false; frames.len()];
+        if !self.multipath_target_current(binding, 0, &self.carrier) {
+            return oks;
+        }
+        if !self.multipath.is_active() || !self.stats.multipath_tx_allowed() {
+            return self.emit_frames_on(&self.carrier, frames).await;
+        }
+        let redundant = matches!(
+            self.multipath.mode(),
+            super::multipath::MultipathMode::Redundant
+        );
+        // Each frame's ordered targets, as send_wire_frame would see them.
+        let targets: Vec<Vec<(u32, Arc<Carrier>)>> = frames
+            .iter()
+            .map(|f| {
+                self.multipath
+                    .select_tx_targets(&self.carrier, f)
+                    .iter()
+                    .map(|(leg, c)| (*leg, c.clone()))
+                    .collect()
+            })
+            .collect();
+        // (leg, carrier, [(frame index, position in that frame's targets)])
+        let mut groups: Vec<LegGroup> = Vec::new();
+        let mut next_try: Vec<usize> = vec![0; frames.len()];
+        for (k, list) in targets.iter().enumerate() {
+            for (pos, (leg, carrier)) in list.iter().enumerate() {
+                if !self.multipath_target_current(binding, *leg, carrier) {
+                    continue;
+                }
+                match groups
+                    .iter_mut()
+                    .find(|(l, c, _)| *l == *leg && Arc::ptr_eq(c, carrier))
+                {
+                    Some((_, _, members)) => members.push((k, pos)),
+                    None => groups.push((*leg, carrier.clone(), vec![(k, pos)])),
+                }
+                next_try[k] = pos + 1;
+                if !redundant {
+                    break;
+                }
+            }
+        }
+        for (leg, carrier, members) in &groups {
+            let batch: Vec<&[u8]> = members.iter().map(|(k, _)| frames[*k]).collect();
+            let sent = self.emit_frames_on(carrier, &batch).await;
+            for ((k, pos), ok) in members.iter().zip(sent) {
+                self.multipath.record_leg_tx_outcome(
+                    *leg,
+                    frames[*k].len(),
+                    ok,
+                    redundant && *pos > 0,
+                );
+                oks[*k] |= ok;
+            }
+        }
+        if !redundant {
+            // In-frame failover, exactly as send_wire_frame: a frame whose
+            // chosen leg refused it tries its remaining targets in order.
+            for k in 0..frames.len() {
+                if oks[k] {
+                    continue;
+                }
+                for (leg, carrier) in targets[k].iter().skip(next_try[k]) {
+                    if !self.multipath_target_current(binding, *leg, carrier) {
+                        continue;
+                    }
+                    let ok = send_wg_recorded(carrier, &self.stats, frames[k])
+                        .await
+                        .is_ok();
+                    self.multipath
+                        .record_leg_tx_outcome(*leg, frames[k].len(), ok, false);
+                    if ok {
+                        oks[k] = true;
+                        break;
+                    }
+                }
+            }
+        }
+        oks
+    }
+
+    /// Emit frames on ONE carrier in order. Runs of equal-size WG data frames
+    /// on a direct carrier leave as GSO `sendmsg`s (the same run builder and
+    /// fallback as the uncontrolled batch path); anything else, or a refused
+    /// GSO run, goes datagram by datagram through `send_wg_recorded`.
+    async fn emit_frames_on(&self, carrier: &Arc<Carrier>, frames: &[&[u8]]) -> Vec<bool> {
+        let mut oks = vec![false; frames.len()];
+        let max_segs = super::udp_batch::max_send_segments();
+        let all_data = frames.iter().all(|f| f.first() == Some(&4));
+        let direct = carrier.direct_parts();
+        let Some((sock, dst)) = direct.filter(|_| max_segs >= 2 && frames.len() >= 2 && all_data)
+        else {
+            for (k, f) in frames.iter().enumerate() {
+                oks[k] = send_wg_recorded(carrier, &self.stats, f).await.is_ok();
+            }
+            return oks;
+        };
+        let wire: Vec<u8> = frames.concat();
+        let lens: Vec<usize> = frames.iter().map(|f| f.len()).collect();
+        let mut start = 0;
+        let mut i = 0;
+        while i < lens.len() {
+            let seg = lens[i];
+            let cap = max_segs.min((u16::MAX as usize - 512) / seg).max(1);
+            let mut j = i + 1;
+            while j < lens.len() && j - i < cap && lens[j] <= seg {
+                let last = lens[j] < seg;
+                j += 1;
+                if last {
+                    break;
+                }
+            }
+            let end = start + lens[i..j].iter().sum::<usize>();
+            let ok = if j - i == 1 {
+                send_wg_recorded(carrier, &self.stats, &wire[start..end])
+                    .await
+                    .is_ok()
+            } else {
+                let gso_ok = super::udp_batch::send_segments(&sock, dst, &wire[start..end], seg)
+                    .await
+                    .is_ok();
+                if gso_ok {
+                    self.stats
+                        .on_demand
+                        .record_wire_tx_data_batch((j - i) as u64, (end - start) as u64);
+                }
+                gso_ok
+            };
+            if ok {
+                oks[i..j].iter_mut().for_each(|o| *o = true);
+            } else if j - i > 1 {
+                let mut off = start;
+                for k in i..j {
+                    oks[k] = send_wg_recorded(carrier, &self.stats, &wire[off..off + lens[k]])
+                        .await
+                        .is_ok();
+                    off += lens[k];
+                }
+            }
+            start = end;
+            i = j;
+        }
+        oks
     }
 
     /// [`Self::send`] for several packets to this peer, in order. All are
@@ -1835,13 +2126,7 @@ impl SendPeer {
     /// datagram, so every path still ends in [`Carrier::send`]'s semantics.
     async fn send_batch(&self, packets: &[Vec<u8>], idxs: &[usize]) -> usize {
         if self.stats.mp_control.get().is_some() {
-            let mut sent = 0;
-            for &i in idxs {
-                if self.send(&packets[i]).await {
-                    sent += 1;
-                }
-            }
-            return sent;
+            return self.send_batch_controlled(packets, idxs).await;
         }
         if self.stats.pq_guard_active.load(Ordering::Acquire) {
             let mut buffered = 0;
