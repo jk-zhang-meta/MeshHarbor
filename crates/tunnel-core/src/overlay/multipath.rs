@@ -424,15 +424,17 @@ pub enum PreDecapVerdict {
     AuthenticatedDuplicate { first_on_leg: bool },
 }
 
-struct DedupEntry {
+/// Bytes one dedup slot holds: the largest WireGuard datagram this crate
+/// builds or reads into one buffer (`wg::WG_BUF`). A longer datagram is never
+/// recorded, so a copy of it is never treated as a duplicate (it then meets
+/// WireGuard's own replay window instead).
+const DEDUP_SLOT_BYTES: usize = super::wg::WG_BUF;
+
+#[derive(Clone, Copy)]
+struct DedupSlot {
+    key: (u32, u64),
     len: u16,
     tag: [u8; 16],
-    /// The complete authenticated ciphertext. A later copy must equal it
-    /// byte for byte (compared in constant time) to count as a duplicate —
-    /// the same "full ciphertext" requirement a SHA-256 digest stood for,
-    /// without hashing every received packet to keep one. Buffers are
-    /// recycled from evicted entries.
-    wire: Vec<u8>,
     seen_legs_mask: u64,
     recorded_at: Instant,
 }
@@ -471,23 +473,26 @@ impl std::hash::Hasher for DedupKeyHasher {
     }
 }
 
-type DedupIndex = std::collections::HashMap<
-    (u32, u64),
-    DedupEntry,
-    std::hash::BuildHasherDefault<DedupKeyHasher>,
->;
+type DedupIndex =
+    std::collections::HashMap<(u32, u64), usize, std::hash::BuildHasherDefault<DedupKeyHasher>>;
 
 /// Bounded window of recently authenticated Type-4 packets for
 /// constant-time Poly1305-verified deduplication in [`MultipathMode::Redundant`].
 ///
-/// Keyed by `(session, counter)` (unique: a re-record updates in place), with
-/// a FIFO of keys for oldest-first eviction. Every received Type-4 datagram is
-/// looked up and every authenticated one recorded, so both must be O(1): a
-/// linear scan of the window (up to 2048 entries) per packet, twice, was the
-/// dominant receive cost of an enabled peer at line rate.
+/// A ring of `capacity` fixed slots over ONE slab holding each recorded
+/// datagram's complete ciphertext; `(session, counter)` indexes its slot. A
+/// re-record updates its slot in place; a new record overwrites the slot the
+/// cursor reaches, which is always the oldest — the FIFO eviction the window
+/// has always had. Every received Type-4 datagram is looked up and every
+/// authenticated one recorded, so both are O(1) and allocation-free: a
+/// per-entry buffer churned the allocator under line-rate receive (lab
+/// profile, handoff 230).
 struct MultipathDedupTable {
-    entries: DedupIndex,
-    order: VecDeque<(u32, u64)>,
+    index: DedupIndex,
+    slots: Vec<Option<DedupSlot>>,
+    /// `capacity * DEDUP_SLOT_BYTES`, allocated on the first record.
+    wire: Vec<u8>,
+    next: usize,
     capacity: usize,
 }
 
@@ -495,24 +500,61 @@ impl MultipathDedupTable {
     fn new(capacity: usize) -> Self {
         let cap = capacity.clamp(32, 2048);
         Self {
-            entries: DedupIndex::with_capacity_and_hasher(cap, Default::default()),
-            order: VecDeque::with_capacity(cap),
+            index: DedupIndex::with_capacity_and_hasher(cap, Default::default()),
+            slots: vec![None; cap],
+            wire: Vec::new(),
+            next: 0,
             capacity: cap,
         }
     }
 
+    fn slot_bytes(&self, slot: usize, len: usize) -> &[u8] {
+        let start = slot * DEDUP_SLOT_BYTES;
+        &self.wire[start..start + len]
+    }
+
+    /// Keep the newest `capacity` entries in their original order.
     fn set_capacity(&mut self, capacity: usize) {
-        self.capacity = capacity.clamp(32, 2048);
-        while self.order.len() > self.capacity {
-            if let Some(oldest) = self.order.pop_front() {
-                self.entries.remove(&oldest);
+        let cap = capacity.clamp(32, 2048);
+        if cap == self.capacity {
+            return;
+        }
+        let mut live: Vec<(DedupSlot, Vec<u8>)> = Vec::new();
+        for i in 0..self.capacity {
+            let slot = (self.next + i) % self.capacity;
+            if let Some(entry) = self.slots[slot] {
+                live.push((
+                    entry,
+                    self.slot_bytes(slot, usize::from(entry.len)).to_vec(),
+                ));
             }
+        }
+        *self = Self::new(cap);
+        let skip = live.len().saturating_sub(cap);
+        for (entry, bytes) in live.into_iter().skip(skip) {
+            self.insert_new(entry, &bytes);
         }
     }
 
     fn clear(&mut self) {
-        self.entries.clear();
-        self.order.clear();
+        self.index.clear();
+        self.slots.iter_mut().for_each(|s| *s = None);
+        self.next = 0;
+    }
+
+    fn insert_new(&mut self, entry: DedupSlot, datagram: &[u8]) {
+        if self.wire.is_empty() {
+            self.wire = vec![0u8; self.capacity * DEDUP_SLOT_BYTES];
+        }
+        let slot = self.next;
+        if let Some(old) = self.slots[slot].take() {
+            self.index.remove(&old.key);
+        }
+        let start = slot * DEDUP_SLOT_BYTES;
+        self.wire[start..start + datagram.len()].copy_from_slice(datagram);
+        self.slots[slot] = Some(entry);
+        self.index.insert(entry.key, slot);
+        self.next = (slot + 1) % self.capacity;
     }
 
     /// Check whether `datagram` (with its parsed `session`, `counter` and
@@ -530,17 +572,22 @@ impl MultipathDedupTable {
         now: impl FnOnce() -> Instant,
     ) -> Option<bool> {
         let len_u16 = u16::try_from(datagram.len()).ok()?;
-        let entry = self.entries.get_mut(&(session, counter))?;
+        let slot = *self.index.get(&(session, counter))?;
+        let entry = self.slots[slot]?;
         // Same (session, counter) but mismatched length, tag, or full
         // ciphertext: forged/corrupted packet — do not match!
         if entry.len != len_u16
-            || !bool::from(entry.tag.ct_eq(tag) & entry.wire.as_slice().ct_eq(datagram))
+            || !bool::from(
+                entry.tag.ct_eq(tag) & self.slot_bytes(slot, datagram.len()).ct_eq(datagram),
+            )
         {
             return None;
         }
         let fresh = now().saturating_duration_since(entry.recorded_at) <= DEDUP_LIVENESS_MAX_AGE;
         let first_on_leg = fresh && leg_bit != 0 && (entry.seen_legs_mask & leg_bit) == 0;
-        entry.seen_legs_mask |= leg_bit;
+        if let Some(stored) = self.slots[slot].as_mut() {
+            stored.seen_legs_mask |= leg_bit;
+        }
         Some(first_on_leg)
     }
 
@@ -555,38 +602,26 @@ impl MultipathDedupTable {
         leg_bit: u64,
         now: Instant,
     ) {
+        if datagram.len() > DEDUP_SLOT_BYTES {
+            return;
+        }
         let Ok(len_u16) = u16::try_from(datagram.len()) else {
             return;
         };
-        if let Some(entry) = self.entries.get_mut(&(session, counter)) {
-            entry.len = len_u16;
-            entry.tag = tag;
-            entry.wire.clear();
-            entry.wire.extend_from_slice(datagram);
-            entry.seen_legs_mask = leg_bit;
-            entry.recorded_at = now;
+        let entry = DedupSlot {
+            key: (session, counter),
+            len: len_u16,
+            tag,
+            seen_legs_mask: leg_bit,
+            recorded_at: now,
+        };
+        if let Some(&slot) = self.index.get(&(session, counter)) {
+            let start = slot * DEDUP_SLOT_BYTES;
+            self.wire[start..start + datagram.len()].copy_from_slice(datagram);
+            self.slots[slot] = Some(entry);
             return;
         }
-        let mut wire = Vec::new();
-        if self.order.len() >= self.capacity
-            && let Some(oldest) = self.order.pop_front()
-            && let Some(evicted) = self.entries.remove(&oldest)
-        {
-            wire = evicted.wire;
-        }
-        wire.clear();
-        wire.extend_from_slice(datagram);
-        self.order.push_back((session, counter));
-        self.entries.insert(
-            (session, counter),
-            DedupEntry {
-                len: len_u16,
-                tag,
-                wire,
-                seen_legs_mask: leg_bit,
-                recorded_at: now,
-            },
-        );
+        self.insert_new(entry, datagram);
     }
 }
 
@@ -1937,6 +1972,40 @@ mod tests {
         assert_eq!(mp.pre_decap_check(&longer, 1), PreDecapVerdict::Proceed);
         mp.clear_crypto_observations();
         assert_eq!(mp.pre_decap_check(&wires[9], 1), PreDecapVerdict::Proceed);
+    }
+
+    #[test]
+    fn dedup_slab_ring_shrinks_to_newest_evicts_oldest_and_skips_oversize() {
+        let now = Instant::now();
+        let parse = |w: &[u8]| PeerMultipathState::parse_type4_header_and_tag(w).unwrap();
+        let mut t = MultipathDedupTable::new(64);
+        let wires: Vec<_> = (0..64u64)
+            .map(|c| make_type4_packet(7, c, &[3; 40], 0x21))
+            .collect();
+        for w in &wires {
+            let (s, c, tag) = parse(w);
+            t.record_authenticated(s, c, w, tag, 1, now);
+        }
+        let check = |t: &mut MultipathDedupTable, w: &[u8]| {
+            let (s, c, tag) = parse(w);
+            t.check_duplicate(s, c, w, &tag, 2, || now)
+        };
+        t.set_capacity(32);
+        assert_eq!(check(&mut t, &wires[31]), None);
+        assert_eq!(check(&mut t, &wires[32]), Some(true));
+        assert_eq!(check(&mut t, &wires[63]), Some(true));
+        // The next record overwrites the oldest survivor's slot.
+        let w = make_type4_packet(7, 64, &[3; 40], 0x21);
+        let (s, c, tag) = parse(&w);
+        t.record_authenticated(s, c, &w, tag, 1, now);
+        assert_eq!(check(&mut t, &wires[32]), None);
+        assert_eq!(check(&mut t, &w), Some(true));
+        assert_eq!(check(&mut t, &wires[33]), Some(true));
+        // A datagram longer than a slot is never recorded.
+        let big = make_type4_packet(7, 65, &vec![1; DEDUP_SLOT_BYTES], 0x21);
+        let (s, c, tag) = parse(&big);
+        t.record_authenticated(s, c, &big, tag, 1, now);
+        assert_eq!(check(&mut t, &big), None);
     }
 
     #[tokio::test]
