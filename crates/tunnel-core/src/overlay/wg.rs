@@ -3184,6 +3184,7 @@ impl WgDevice {
             on_demand_cfg,
             carried_wake_pkts,
             incumbent_pq,
+            false,
         );
         let (tunn, carrier, stats, multipath) = (
             peer.tunn.clone(),
@@ -3212,9 +3213,13 @@ impl WgDevice {
         on_demand_cfg: super::on_demand::OnDemandConfig,
         carried_wake_pkts: Vec<Vec<u8>>,
         incumbent_pq: Option<Arc<super::pq_psk::PqPeerHandle>>,
+        pq_candidate: bool,
     ) -> Peer {
         let index = self.alloc_index();
-        let initial_psk = super::pq_psk::PqPeerHandle::initial_tunn_psk(&self.pq_psk);
+        let initial_psk = match (&incumbent_pq, pq_candidate) {
+            (Some(h), true) => h.provisional_tunn_psk(),
+            _ => super::pq_psk::PqPeerHandle::initial_tunn_psk(&self.pq_psk),
+        };
 
         let mut tunn_inner = Tunn::new(
             self.secret.clone(),
@@ -3245,7 +3250,11 @@ impl WgDevice {
         }
         let tunn = Arc::new(Mutex::new(tunn_inner));
         let pq_handle = if let Some(existing_pq) = incumbent_pq {
-            existing_pq.rebind_primary(index, &tunn, &carrier, &stats);
+            // A candidate is attached by its caller (`attach_candidate`, under
+            // the handle's lock); only a real install rebinds the primary.
+            if !pq_candidate {
+                existing_pq.rebind_primary(index, &tunn, &carrier, &stats);
+            }
             existing_pq
         } else {
             super::pq_psk::PqPeerHandle::new(
@@ -3649,7 +3658,7 @@ impl WgDevice {
 
     /// Start only over the exact current non-direct incumbent. Both ends
     /// initiate: a responder-only session is insufficient promotion proof.
-    pub(crate) fn start_org_upgrade(
+    pub(crate) async fn start_org_upgrade(
         &mut self,
         public: [u8; 32],
         ip: Ipv4Addr,
@@ -3672,6 +3681,7 @@ impl WgDevice {
             return false; // an identical completion never re-arms its handshake
         }
         let incumbent_tunn = Arc::downgrade(&active.tunn);
+        let incumbent_pq = active.stats.pq.get().cloned();
         self.cancel_org_upgrade(&public);
         let mut candidate = self.make_carrier_peer(
             public,
@@ -3681,8 +3691,18 @@ impl WgDevice {
             self.disco_events_tx.clone(),
             super::on_demand::OnDemandConfig::disabled(),
             Vec::new(),
-            None,
+            incumbent_pq.clone(),
+            true,
         );
+        if let Some(pq) = &incumbent_pq {
+            pq.attach_candidate(
+                candidate.plane_idx.unwrap_or(0),
+                &candidate.tunn,
+                &candidate.carrier,
+                &candidate.stats,
+            )
+            .await;
+        }
         candidate.stats.org_role.store(true, Ordering::Relaxed);
         Self::drive_initiator_proof(&mut candidate);
         self.org_upgrades.insert(
@@ -3956,6 +3976,9 @@ impl WgDevice {
 
     pub(crate) fn cancel_org_upgrade(&mut self, public: &[u8; 32]) {
         if let Some(u) = self.org_upgrades.remove(public) {
+            if let Some(pq) = u.candidate.stats.pq.get() {
+                pq.clear_candidate(&u.candidate.stats);
+            }
             self.unregister_plane_route(&u.candidate);
         }
         self.sync_peer_on_demand_hold(public);
@@ -3977,6 +4000,9 @@ impl WgDevice {
         }
         let u = self.org_upgrades.remove(public).expect("ready candidate");
         let candidate = u.candidate;
+        if let Some(pq) = candidate.stats.pq.get() {
+            pq.promote_candidate_to_primary(&candidate.stats);
+        }
         let (ip, tunn, carrier, stats, multipath) = (
             candidate.overlay_ip,
             candidate.tunn.clone(),
@@ -4108,6 +4134,7 @@ impl WgDevice {
             super::on_demand::OnDemandConfig::disabled(),
             Vec::new(),
             None,
+            false,
         );
         Self::drive_initiator_proof(&mut candidate);
         self.path_trials.insert(

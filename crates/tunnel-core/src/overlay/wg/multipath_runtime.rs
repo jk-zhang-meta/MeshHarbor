@@ -43,6 +43,9 @@ impl WgDevice {
             && self.peers.get(key).is_some_and(|p| !p.carrier.is_direct())
         {
             let mut upgrade = self.org_upgrades.remove(key).expect("checked candidate");
+            if let Some(pq) = upgrade.candidate.stats.pq.get() {
+                pq.clear_candidate(&upgrade.candidate.stats);
+            }
             self.unregister_plane_route(&upgrade.candidate);
             let carrier = upgrade.candidate.carrier.clone();
             // The candidate's receiver must be gone before the leg spawns
@@ -1663,7 +1666,7 @@ mod tests {
             );
             let org_sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
             let org = udp_relay(org_sock, "127.0.0.1:9".parse().unwrap());
-            assert!(dev.start_org_upgrade(pk, B, org.clone()));
+            assert!(dev.start_org_upgrade(pk, B, org.clone()).await);
             let sock = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
             dev.ensure_direct_demux(sock.clone());
             dev.start_direct_probe(sock, pk, B, "127.0.0.1:9".parse().unwrap(), true)
@@ -1687,6 +1690,73 @@ mod tests {
                     assert!(!r.attached && !r.was_ready);
                     assert!(!org.is_dead());
                 }
+            }
+        }
+    }
+
+    /// B7 x org upgrade: the org-relay candidate shares the incumbent's PQ
+    /// handle (one PSK lineage per peer), every rotation reaches the candidate
+    /// Tunn, and promotion/cancellation move or clear exactly that binding.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn org_candidate_shares_the_incumbent_pq_handle_and_receives_rotations() {
+        use super::super::super::pq_psk::{PqPskConfig, PqPskMode};
+        let kp = WgKeypair::generate();
+        let peer = WgKeypair::generate();
+        let (mut dev, _rx) = WgDevice::new(kp.secret.clone());
+        dev.set_pq_psk_config(PqPskConfig {
+            mode: PqPskMode::Required,
+            configured_psk: Some([0x42; 32]),
+            ..PqPskConfig::default()
+        });
+        dev.set_on_demand_config(super::super::super::on_demand::OnDemandConfig::disabled());
+        let pk = peer.public.to_bytes();
+        let floor = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        dev.add_peer(
+            pk,
+            B,
+            udp_relay(floor, "127.0.0.1:9".parse().unwrap()),
+            false,
+        );
+        let incumbent = dev.peers[&pk].stats.pq.get().cloned().expect("pq handle");
+        for round in 0..2 {
+            let org_sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+            assert!(
+                dev.start_org_upgrade(pk, B, udp_relay(org_sock, "127.0.0.1:9".parse().unwrap()))
+                    .await
+            );
+            let cand = &dev.org_upgrades[&pk].candidate;
+            assert!(
+                Arc::ptr_eq(cand.stats.pq.get().unwrap(), &incumbent),
+                "one PSK lineage per peer"
+            );
+            let rotated = [0x50 + round as u8; 32];
+            incumbent
+                .reinstall_tunn_psk(Some(rotated), false, false, Vec::new(), None)
+                .await;
+            let cand = &dev.org_upgrades[&pk].candidate;
+            assert_eq!(
+                cand.tunn.lock().await.preshared_key(),
+                Some(rotated),
+                "rotation reaches the candidate"
+            );
+            assert_eq!(
+                dev.peers[&pk].tunn.lock().await.preshared_key(),
+                Some(rotated)
+            );
+            let stats = cand.stats.clone();
+            if round == 0 {
+                dev.cancel_org_upgrade(&pk);
+                assert!(
+                    !incumbent.promote_candidate_to_primary(&stats),
+                    "cancel cleared the binding"
+                );
+            } else {
+                assert!(incumbent.promote_candidate_to_primary(&stats));
+                assert!(
+                    !incumbent.promote_candidate_to_primary(&stats),
+                    "promoted exactly once"
+                );
+                dev.cancel_org_upgrade(&pk);
             }
         }
     }

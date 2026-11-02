@@ -3189,7 +3189,10 @@ impl OverlayRuntime {
                     && e.relay_kind == Some(RelayKind::Derp)
             })
         {
-            if wg.start_org_upgrade(link.public_key, link.overlay_ip, carrier) {
+            if wg
+                .start_org_upgrade(link.public_key, link.overlay_ip, carrier)
+                .await
+            {
                 let node_id = link.node_id;
                 by_node
                     .get_mut(&node_id)

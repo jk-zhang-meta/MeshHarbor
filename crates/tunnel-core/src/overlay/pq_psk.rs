@@ -570,6 +570,13 @@ struct PqPeerBinding {
 struct PqPeerBindings {
     primary: PqPeerBinding,
     shadow: Option<PqPeerBinding>,
+    /// An org-relay upgrade candidate (`WgDevice::start_org_upgrade`) shares
+    /// the incumbent's handle so each end keeps ONE PSK lineage for the peer.
+    /// A candidate with its own handle negotiated a second, independent PSK;
+    /// the two ends promote their candidates at different instants, so a
+    /// direct probe attached to "the current primary handle" used a different
+    /// PSK at each end and could not complete its handshake.
+    candidate: Option<PqPeerBinding>,
 }
 
 /// Shared handle for one peer's PQ-PSK state machine and [`Tunn`] binding.
@@ -674,6 +681,7 @@ impl PqPeerHandle {
                     initiate_when_ready: false,
                 },
                 shadow: None,
+                candidate: None,
             }),
             inner: Mutex::new(PqPeerInner {
                 config,
@@ -704,17 +712,18 @@ impl PqPeerHandle {
 
     fn set_guard_active(&self, active: bool) {
         self.guard_active.store(active, Ordering::Release);
-        let (primary_stats, shadow_stats) = {
+        let (primary_stats, shadow_stats, candidate_stats) = {
             let b = self.bindings.read().unwrap_or_else(|e| e.into_inner());
             (
                 b.primary.stats.upgrade(),
                 b.shadow.as_ref().and_then(|s| s.stats.upgrade()),
+                b.candidate.as_ref().and_then(|s| s.stats.upgrade()),
             )
         };
-        if let Some(stats) = primary_stats {
-            stats.pq_guard_active.store(active, Ordering::Release);
-        }
-        if let Some(stats) = shadow_stats {
+        for stats in [primary_stats, shadow_stats, candidate_stats]
+            .into_iter()
+            .flatten()
+        {
             stats.pq_guard_active.store(active, Ordering::Release);
         }
     }
@@ -839,6 +848,87 @@ impl PqPeerHandle {
             initiate_when_ready: false,
         };
         b.shadow = None;
+    }
+
+    /// The PSK a freshly built candidate `Tunn` starts with before
+    /// [`Self::attach_candidate`] installs the authoritative one under `inner`.
+    pub(crate) fn provisional_tunn_psk(&self) -> Option<[u8; 32]> {
+        if self.guard_active.load(Ordering::Acquire) {
+            Some(random_bytes::<32>())
+        } else {
+            *self
+                .cached_tunn_psk
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+        }
+    }
+
+    /// Attach an org-relay upgrade candidate to this handle, exactly as
+    /// [`Self::attach_shadow_probe`] attaches a direct probe: register first,
+    /// then install the current PSK under `inner` so no rotation slips between.
+    pub(crate) async fn attach_candidate(
+        &self,
+        tunn_index: u32,
+        tunn: &Arc<Mutex<Tunn>>,
+        carrier: &Arc<Carrier>,
+        stats: &Arc<PeerStats>,
+    ) {
+        {
+            let mut b = self.bindings.write().unwrap_or_else(|e| e.into_inner());
+            b.candidate = Some(PqPeerBinding {
+                tunn_index,
+                tunn: Arc::downgrade(tunn),
+                carrier: Arc::downgrade(carrier),
+                stats: Arc::downgrade(stats),
+                initiate_when_ready: true,
+            });
+        }
+        let g = self.inner.lock().await;
+        let guard_active = self.guard_active.load(Ordering::Acquire);
+        let target_psk = if guard_active {
+            Some(random_bytes::<32>())
+        } else if let Some(active) = g.active_psk {
+            Some(active)
+        } else if matches!(g.status, PqPeerStatus::DowngradedToClassical) {
+            None
+        } else {
+            Self::initial_tunn_psk(&g.config)
+        };
+        stats.pq_guard_active.store(guard_active, Ordering::Release);
+        let mut t = tunn.lock().await;
+        t.set_preshared_key(target_psk);
+    }
+
+    /// The candidate became the peer's carrier (`promote_org_upgrade`).
+    pub(crate) fn promote_candidate_to_primary(&self, stats: &Arc<PeerStats>) -> bool {
+        let mut b = self.bindings.write().unwrap_or_else(|e| e.into_inner());
+        match b.candidate.take() {
+            Some(c) if c.stats.as_ptr() == Arc::as_ptr(stats) => {
+                stats
+                    .pq_guard_active
+                    .store(self.guard_active.load(Ordering::Acquire), Ordering::Release);
+                b.primary = PqPeerBinding {
+                    initiate_when_ready: false,
+                    ..c
+                };
+                true
+            }
+            other => {
+                b.candidate = other;
+                false
+            }
+        }
+    }
+
+    /// The candidate was cancelled or consumed without becoming the primary.
+    pub(crate) fn clear_candidate(&self, stats: &Arc<PeerStats>) {
+        let mut b = self.bindings.write().unwrap_or_else(|e| e.into_inner());
+        if b.candidate
+            .as_ref()
+            .is_some_and(|s| s.stats.as_ptr() == Arc::as_ptr(stats))
+        {
+            b.candidate = None;
+        }
     }
 
     /// Detach a discarded shadow direct probe when [`WgDevice::drop_direct_probe`]
@@ -1842,9 +1932,9 @@ impl PqPeerHandle {
         queued_packets: Vec<Vec<u8>>,
         reply_carrier: Option<&Arc<Carrier>>,
     ) {
-        let (primary_binding, shadow_binding) = {
+        let (primary_binding, shadow_binding, candidate_binding) = {
             let b = self.bindings.read().unwrap_or_else(|e| e.into_inner());
-            (b.primary.clone(), b.shadow.clone())
+            (b.primary.clone(), b.shadow.clone(), b.candidate.clone())
         };
         *self
             .cached_tunn_psk
@@ -1943,42 +2033,42 @@ impl PqPeerHandle {
             }
         }
 
-        if let Some(shadow) = shadow_binding
-            && let (Some(s_tunn), Some(s_stats)) = (shadow.tunn.upgrade(), shadow.stats.upgrade())
-        {
-            let shadow_out = {
-                let mut st = s_tunn.lock().await;
-                st.set_preshared_key(psk);
-                if guard_after {
-                    st.reset_sessions_preserving_replay_and_psk();
-                    s_stats.multipath_session_reset();
-                    s_stats.handshake.store(false, Ordering::Release);
-                    s_stats.handshake_at.store(0, Ordering::Release);
-                    s_stats.hs_response_at.store(0, Ordering::Release);
-                    None
-                } else {
-                    if psk.is_none() {
+        for shadow in [shadow_binding, candidate_binding].into_iter().flatten() {
+            if let (Some(s_tunn), Some(s_stats)) = (shadow.tunn.upgrade(), shadow.stats.upgrade()) {
+                let shadow_out = {
+                    let mut st = s_tunn.lock().await;
+                    st.set_preshared_key(psk);
+                    if guard_after {
                         st.reset_sessions_preserving_replay_and_psk();
                         s_stats.multipath_session_reset();
-                    }
-                    let mut buf = vec![0u8; WG_BUF];
-                    let should_initiate_shadow = initiate_wg
-                        || (shadow.initiate_when_ready
-                            && !s_stats.handshake.load(Ordering::Acquire));
-                    if should_initiate_shadow
-                        && let TunnResult::WriteToNetwork(b) =
-                            st.format_handshake_initiation(&mut buf, true)
-                    {
-                        Some(b.to_vec())
-                    } else {
+                        s_stats.handshake.store(false, Ordering::Release);
+                        s_stats.handshake_at.store(0, Ordering::Release);
+                        s_stats.hs_response_at.store(0, Ordering::Release);
                         None
+                    } else {
+                        if psk.is_none() {
+                            st.reset_sessions_preserving_replay_and_psk();
+                            s_stats.multipath_session_reset();
+                        }
+                        let mut buf = vec![0u8; WG_BUF];
+                        let should_initiate_shadow = initiate_wg
+                            || (shadow.initiate_when_ready
+                                && !s_stats.handshake.load(Ordering::Acquire));
+                        if should_initiate_shadow
+                            && let TunnResult::WriteToNetwork(b) =
+                                st.format_handshake_initiation(&mut buf, true)
+                        {
+                            Some(b.to_vec())
+                        } else {
+                            None
+                        }
                     }
+                };
+                if let Some(pkt) = shadow_out
+                    && let Some(s_carrier) = shadow.carrier.upgrade()
+                {
+                    let _ = super::wg::send_wg_recorded(&s_carrier, &s_stats, &pkt).await;
                 }
-            };
-            if let Some(pkt) = shadow_out
-                && let Some(s_carrier) = shadow.carrier.upgrade()
-            {
-                let _ = super::wg::send_wg_recorded(&s_carrier, &s_stats, &pkt).await;
             }
         }
     }
