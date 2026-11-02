@@ -111,6 +111,12 @@ impl WgDevice {
 
     /// A healthy direct peer that lost its relay incumbent before direct
     /// latched has no standby leg. A later ORG session for it may supply one.
+    /// A DERP standby is replaced too: an end that promoted direct while its
+    /// incumbent was still the DERP floor kept DERP, while the other end of
+    /// the same pair kept the ORG link it already had. Mismatched standby
+    /// transports can never prove a shared-session leg (B8 lifecycle R4:
+    /// both restart cases), and the server pushes one ORG session to both
+    /// ends, so preferring ORG makes both ends converge.
     pub(crate) fn wants_multipath_standby(&self, key: &[u8; 32]) -> bool {
         self.multipath_enabled()
             && !self.probes.contains_key(key)
@@ -119,7 +125,9 @@ impl WgDevice {
             && self.peers.get(key).is_some_and(|p| {
                 p.carrier.is_direct()
                     && !p.carrier.is_dead()
-                    && p.retained.is_none()
+                    && p.retained
+                        .as_ref()
+                        .is_none_or(|r| r.kind == super::super::relay_link::RelayKind::Derp)
                     && p.stats.mp_control.get().is_some_and(|c| !c.retired())
             })
     }
@@ -135,6 +143,11 @@ impl WgDevice {
         if !self.wants_multipath_standby(key) || carrier.is_dead() {
             return false;
         }
+        let replaced_derp = self.retains_multipath_carrier(key);
+        if replaced_derp {
+            // Its leg (and receive task) goes before the new carrier's leg can attach.
+            self.drop_retained_multipath(key);
+        }
         self.peers.get_mut(key).expect("checked peer").retained = Some(RetainedMultipathCarrier {
             carrier,
             kind,
@@ -142,7 +155,7 @@ impl WgDevice {
             was_ready: false,
             failure_at: None,
         });
-        info!(event="multipath_standby_adopted", peer_key=%hex::encode(key), source="late_relay", ?kind,
+        info!(event="multipath_standby_adopted", peer_key=%hex::encode(key), source="late_relay", ?kind, replaced_derp,
             "overlay: relay carrier adopted as the B8 standby leg of a direct peer");
         true
     }
@@ -1624,6 +1637,31 @@ mod tests {
         );
         negotiated(&mut da, &mut db, true).await;
         assert!(da.peers[&kb].retained.as_ref().unwrap().attached);
+        assert!(da.peers[&kb].carrier.is_direct());
+    }
+
+    /// R4: one end kept the DERP floor as its standby (direct latched first),
+    /// the other end the ORG link. A late ORG carrier replaces DERP so both
+    /// ends converge; an ORG standby is never replaced.
+    #[tokio::test]
+    async fn late_org_carrier_replaces_a_derp_standby_but_never_an_org_one() {
+        let (mut da, _db, _, _) =
+            pair(MultipathMode::ActiveStandby, MultipathMode::ActiveStandby).await;
+        let kb = *da.peers.keys().next().unwrap();
+        let sock = |_: ()| async { UdpSocket::bind("127.0.0.1:0").await.unwrap() };
+        let dst: SocketAddr = "127.0.0.1:9".parse().unwrap();
+        let derp = udp_relay(sock(()).await, dst);
+        assert!(da.adopt_multipath_standby(&kb, derp.clone(), RelayKind::Derp));
+        assert!(
+            da.wants_multipath_standby(&kb),
+            "a DERP standby still wants ORG"
+        );
+        let org = udp_relay(sock(()).await, dst);
+        assert!(da.adopt_multipath_standby(&kb, org.clone(), RelayKind::Org));
+        let r = da.peers[&kb].retained.as_ref().unwrap();
+        assert!(Arc::ptr_eq(&r.carrier, &org) && r.kind == RelayKind::Org && !r.attached);
+        assert!(!da.wants_multipath_standby(&kb), "an ORG standby is final");
+        assert!(!da.adopt_multipath_standby(&kb, udp_relay(sock(()).await, dst), RelayKind::Org));
         assert!(da.peers[&kb].carrier.is_direct());
     }
 
