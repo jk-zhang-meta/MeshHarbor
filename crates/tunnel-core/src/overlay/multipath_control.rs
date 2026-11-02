@@ -497,11 +497,40 @@ impl Control {
     /// Call ONLY after this owner's Tunn cryptographically accepts the actual
     /// nonempty packet. A static HMAC or an old tunnel never enters here.
     pub(crate) fn note_authenticated(&self, bytes: &[u8], leg: u32, now: Instant) {
+        let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        self.note_authenticated_in(&mut st, bytes, leg, now);
+    }
+
+    /// [`Self::note_authenticated`] plus the two facts the receive path
+    /// needs from the same state — whether the binding changed and whether
+    /// `bytes` is current-session transport — under ONE lock, where the
+    /// receive path used to take four (binding before, note, binding after,
+    /// `is_current_transport`) for every datagram.
+    pub(crate) fn note_authenticated_observed(
+        &self,
+        bytes: &[u8],
+        leg: u32,
+        now: Instant,
+    ) -> (bool, bool) {
+        let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let before = Self::current_binding(&st);
+        self.note_authenticated_in(&mut st, bytes, leg, now);
+        let changed = before != Self::current_binding(&st);
+        let current = !st.retired
+            && bytes.len() >= 32
+            && bytes[..4] == [4, 0, 0, 0]
+            && st
+                .active
+                .as_ref()
+                .is_some_and(|s| bytes[4..8] == s.local_index.to_le_bytes());
+        (changed, current)
+    }
+
+    fn note_authenticated_in(&self, st: &mut State, bytes: &[u8], leg: u32, now: Instant) {
         if self.mode == MultipathMode::Off || leg > 1 {
             return;
         }
         let leg_index = leg as usize;
-        let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if st.retired {
             return;
         }
@@ -518,13 +547,13 @@ impl Control {
                         p.legs[leg_index].is_some_and(|at| fresh(now, at, WAIT)),
                     )
                 })
-                && let Some(mut session) = Self::record_session(&mut st, &init, bytes, true)
+                && let Some(mut session) = Self::record_session(st, &init, bytes, true)
             {
                 if same_leg {
                     session.round_trip[leg_index] = Some(now);
                 }
-                Self::store_session(&mut st, session.clone());
-                Self::activate(&mut st, session, now);
+                Self::store_session(st, session.clone());
+                Self::activate(st, session, now);
             }
         } else if bytes.len() >= 32 && bytes[..4] == [4, 0, 0, 0] {
             let receiver = u32::from_le_bytes(bytes[4..8].try_into().expect("transport"));
@@ -541,8 +570,8 @@ impl Control {
                     // Consume the responder's round-trip witness once.
                     session.response_sent[leg_index] = None;
                 }
-                Self::store_session(&mut st, session.clone());
-                Self::activate(&mut st, session, now);
+                Self::store_session(st, session.clone());
+                Self::activate(st, session, now);
             }
             // Only an EMPTY (32-byte) transport frame can attest a challenge:
             // `challenge_on` refuses any other length, so a challenged digest
@@ -889,7 +918,18 @@ impl Control {
     }
 
     /// None = ordinary send; true = retained; false = counted failure.
+    #[cfg(test)]
     pub(crate) fn queue_if_held(&self, bytes: &[u8], now: Instant) -> Option<bool> {
+        self.queue_if_held_with(bytes, || now)
+    }
+
+    /// [`Self::queue_if_held`] reading the clock only while a hold is
+    /// actually armed: every ordinary send used to pay a clock read here.
+    pub(crate) fn queue_if_held_with(
+        &self,
+        bytes: &[u8],
+        now: impl FnOnce() -> Instant,
+    ) -> Option<bool> {
         if self.mode == MultipathMode::Off {
             return None;
         }
@@ -900,7 +940,7 @@ impl Control {
         if !st.holding {
             return None;
         }
-        if Self::expire_hold_locked(&mut st, now) {
+        if Self::expire_hold_locked(&mut st, now()) {
             st.hold_expired = st.hold_expired.saturating_add(1);
             return Some(false);
         }
@@ -1096,6 +1136,35 @@ mod tests {
             let mut changed = raw.clone();
             changed[offset] ^= 1;
             assert!(decode(&changed, &[1; 32], &[2; 32], &[9; 32]).is_none());
+        }
+    }
+
+    #[test]
+    fn observed_note_matches_the_four_call_sequence_it_replaces() {
+        let (a1, b1) = endpoints();
+        let (a2, b2) = endpoints();
+        let now = Instant::now();
+        let (init, response) = handshake(51, 63);
+        let mut steps: Vec<(Vec<u8>, u32)> = vec![
+            (transport(29, 7), 0),
+            (transport(30, 8), 0),
+            (transport(29, 9), 1),
+        ];
+        for (a, b) in [(&a1, &b1), (&a2, &b2)] {
+            a.note_tx_handshake(&init, 0, now);
+            b.note_tx_handshake(&response, 0, now);
+        }
+        steps.push((init.clone(), 0));
+        steps.push((transport(63, 0), 0));
+        steps.push((transport(63, 1), 1));
+        steps.push((transport(29, 10), 0));
+        for (bytes, leg) in &steps {
+            let before = b1.binding();
+            b1.note_authenticated(bytes, *leg, now);
+            let old = (before != b1.binding(), b1.is_current_transport(bytes));
+            let new = b2.note_authenticated_observed(bytes, *leg, now);
+            assert_eq!(old, new, "step {:?}", &bytes[..8]);
+            assert_eq!(b1.binding(), b2.binding());
         }
     }
 

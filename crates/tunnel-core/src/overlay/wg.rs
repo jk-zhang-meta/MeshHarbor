@@ -1787,7 +1787,8 @@ impl SendPeer {
             if !t.has_current_session() && control.recovery_allowed() {
                 control.begin_hold(Instant::now());
             }
-            if !releasing_hold && let Some(held) = control.queue_if_held(packet, Instant::now()) {
+            if !releasing_hold && let Some(held) = control.queue_if_held_with(packet, Instant::now)
+            {
                 if held {
                     self.stats.tx_attempted.fetch_add(1, Ordering::Relaxed);
                 } else {
@@ -1997,9 +1998,25 @@ impl SendPeer {
         // (leg, carrier, [(frame index, position in that frame's targets)])
         let mut groups: Vec<LegGroup> = Vec::new();
         let mut next_try: Vec<usize> = vec![0; frames.len()];
+        // The grouping below is synchronous, so one batch asks each distinct
+        // (leg, carrier) target once instead of once per frame (each ask is
+        // a mirror read lock, a peer-map hash and several mutexes). The
+        // failover pass after the sends still re-asks per frame.
+        let mut checked: Vec<(u32, Arc<Carrier>, bool)> = vec![(0, self.carrier.clone(), true)];
         for (k, list) in targets.iter().enumerate() {
             for (pos, (leg, carrier)) in list.iter().enumerate() {
-                if !self.multipath_target_current(binding, *leg, carrier) {
+                let current = match checked
+                    .iter()
+                    .find(|(l, c, _)| *l == *leg && Arc::ptr_eq(c, carrier))
+                {
+                    Some((_, _, ok)) => *ok,
+                    None => {
+                        let ok = self.multipath_target_current(binding, *leg, carrier);
+                        checked.push((*leg, carrier.clone(), ok));
+                        ok
+                    }
+                };
+                if !current {
                     continue;
                 }
                 match groups
@@ -6423,17 +6440,16 @@ pub(crate) fn decap_inbound(
         if let Some(control) = stats.mp_control.get()
             && (!is_handshake_init || authenticated_init)
         {
-            let before = control.binding();
-            control.note_authenticated(
+            let (binding_changed, current_transport) = control.note_authenticated_observed(
                 &buf[..n],
                 stats.inbound_leg(ingress.leg_id),
                 mp_now.unwrap_or_else(Instant::now),
             );
-            if before != control.binding() {
+            if binding_changed {
                 ingress.multipath.clear_crypto_observations();
                 ingress.multipath.set_leg_healthy(1, false);
             }
-            if control.is_current_transport(&buf[..n]) || is_handshake_init || is_handshake_resp {
+            if current_transport || is_handshake_init || is_handshake_resp {
                 stats.note_primary_rx(&buf[..n], ingress.leg_id);
             }
             if is_handshake_resp && stats.inbound_leg(ingress.leg_id) == 0 {
