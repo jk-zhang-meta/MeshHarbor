@@ -1024,6 +1024,19 @@ fn invalidate_org_bind_identity(
     }
 }
 
+/// B8: a late relay link may become (or replace) a direct peer's standby leg
+/// only while that direct carrier is not under suspicion. Swapping legs while
+/// a revalidation poke is outstanding or the sweep already counts it bad can
+/// discard the proven standby in the very tick the primary is convicted, and
+/// a new leg is unproven, so B8 has nothing to commit to (real network R8
+/// rn-fo-org: the late ORG link replaced the validated DERP leg 17 ms before
+/// the conviction, and the pair fell back to the legacy relay rebuild). The
+/// refused link is closed and requested again later; the healthy-primary
+/// preference for ORG over DERP is unchanged.
+fn direct_standby_window(e: &Installed) -> bool {
+    e.is_direct && e.poke.is_none() && e.bad_sweeps == 0 && !e.stalled
+}
+
 /// The actual org completion convergence point. Re-check live membership,
 /// captured identity and direct priority AFTER the async bind, not just when
 /// it starts. Rejected current work releases its session/tracking; stale work
@@ -3836,7 +3849,7 @@ impl OverlayRuntime {
                         }
                         if let Some(r) = relay.as_mut() {
                             let standby = by_node.get(&done.node_id).is_some_and(|e| {
-                                e.is_direct && wg.wants_multipath_standby(&e.pubkey)
+                                direct_standby_window(e) && wg.wants_multipath_standby(&e.pubkey)
                             });
                             if let Some(link) = commit_current_org_bind(
                                 done, &mut org_q, &current_peers, &by_node, r, standby,
@@ -5473,6 +5486,59 @@ mod tests {
 
     use super::*;
     use std::io;
+
+    #[test]
+    fn a_suspect_direct_carrier_takes_no_new_standby_leg() {
+        let now = Instant::now();
+        let healthy = Installed::base(
+            [1; 32],
+            Ipv4Addr::new(100, 64, 0, 9),
+            DirectTier::Srflx,
+            now,
+        );
+        assert!(direct_standby_window(&healthy));
+        let poked = Installed {
+            poke: Some(PokeArm {
+                at: now,
+                from_major: false,
+                from_business: true,
+            }),
+            ..Installed::base(
+                [1; 32],
+                Ipv4Addr::new(100, 64, 0, 9),
+                DirectTier::Srflx,
+                now,
+            )
+        };
+        assert!(!direct_standby_window(&poked));
+        let bad = Installed {
+            bad_sweeps: 1,
+            ..Installed::base(
+                [1; 32],
+                Ipv4Addr::new(100, 64, 0, 9),
+                DirectTier::Srflx,
+                now,
+            )
+        };
+        assert!(!direct_standby_window(&bad));
+        let stalled = Installed {
+            stalled: true,
+            ..Installed::base(
+                [1; 32],
+                Ipv4Addr::new(100, 64, 0, 9),
+                DirectTier::Srflx,
+                now,
+            )
+        };
+        assert!(!direct_standby_window(&stalled));
+        let relayed = Installed::base(
+            [1; 32],
+            Ipv4Addr::new(100, 64, 0, 9),
+            DirectTier::Relay,
+            now,
+        );
+        assert!(!direct_standby_window(&relayed));
+    }
 
     /// W2 — the resolver's name map must include the node ITSELF (the
     /// netmap's peer list excludes self, so before this fix
