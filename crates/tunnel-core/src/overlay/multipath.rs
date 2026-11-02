@@ -45,7 +45,7 @@ use subtle::ConstantTimeEq;
 use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 
-use super::wg::{Carrier, mono_ms_now};
+use super::wg::{Carrier, mono_ms_at, mono_ms_now};
 
 /// Maximum number of secondary multipath legs per peer (in addition to the
 /// primary carrier at `leg_id = 0`).
@@ -289,10 +289,14 @@ impl LegCounters {
     }
 
     pub fn record_tx(&self, bytes: usize) {
+        self.record_tx_at(bytes, mono_ms_now());
+    }
+
+    /// [`Self::record_tx`] stamped with a caller-read `mono_ms_now()`.
+    pub fn record_tx_at(&self, bytes: usize, now_ms: u64) {
         self.tx_packets.fetch_add(1, Ordering::Relaxed);
         self.tx_bytes.fetch_add(bytes as u64, Ordering::Relaxed);
-        self.last_tx_ms
-            .store(mono_ms_now().max(1), Ordering::Relaxed);
+        self.last_tx_ms.store(now_ms.max(1), Ordering::Relaxed);
     }
 
     pub fn record_tx_error(&self) {
@@ -300,13 +304,17 @@ impl LegCounters {
     }
 
     pub fn record_rx(&self, bytes: usize, is_dedup_hit: bool) {
+        self.record_rx_at(bytes, is_dedup_hit, mono_ms_now());
+    }
+
+    /// [`Self::record_rx`] stamped with a caller-read `mono_ms_now()`.
+    pub fn record_rx_at(&self, bytes: usize, is_dedup_hit: bool, now_ms: u64) {
         self.rx_packets.fetch_add(1, Ordering::Relaxed);
         self.rx_bytes.fetch_add(bytes as u64, Ordering::Relaxed);
         if is_dedup_hit {
             self.rx_dedup_hits.fetch_add(1, Ordering::Relaxed);
         }
-        self.last_rx_ms
-            .store(mono_ms_now().max(1), Ordering::Relaxed);
+        self.last_rx_ms.store(now_ms.max(1), Ordering::Relaxed);
     }
 
     pub fn record_rtt(&self, rtt: Duration) {
@@ -1391,13 +1399,26 @@ impl PeerMultipathState {
         ok: bool,
         is_extra_copy: bool,
     ) {
+        self.record_leg_tx_outcome_at(leg_id, bytes_len, ok, is_extra_copy, mono_ms_now());
+    }
+
+    /// [`Self::record_leg_tx_outcome`] stamped with a caller-read
+    /// `mono_ms_now()`, so a batch reads the clock once.
+    pub fn record_leg_tx_outcome_at(
+        &self,
+        leg_id: u32,
+        bytes_len: usize,
+        ok: bool,
+        is_extra_copy: bool,
+        now_ms: u64,
+    ) {
         if is_extra_copy && ok {
             self.redundant_extra_tx_packets
                 .fetch_add(1, Ordering::Relaxed);
         }
         if leg_id == 0 {
             if ok {
-                self.primary_counters.record_tx(bytes_len);
+                self.primary_counters.record_tx_at(bytes_len, now_ms);
             } else {
                 self.primary_counters.record_tx_error();
             }
@@ -1406,7 +1427,7 @@ impl PeerMultipathState {
         let st = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(leg) = st.legs.iter().find(|l| l.leg_id == leg_id) {
             if ok {
-                leg.counters.record_tx(bytes_len);
+                leg.counters.record_tx_at(bytes_len, now_ms);
             } else {
                 leg.counters.record_tx_error();
             }
@@ -1429,11 +1450,13 @@ impl PeerMultipathState {
         leg_id: u32,
         bytes: usize,
         is_dedup_hit: bool,
+        now_ms: u64,
     ) {
         if leg_id == 0 {
-            self.primary_counters.record_rx(bytes, is_dedup_hit);
+            self.primary_counters
+                .record_rx_at(bytes, is_dedup_hit, now_ms);
         } else if let Some(leg) = st.legs.iter().find(|l| l.leg_id == leg_id) {
-            leg.counters.record_rx(bytes, is_dedup_hit);
+            leg.counters.record_rx_at(bytes, is_dedup_hit, now_ms);
         }
     }
 
@@ -1485,7 +1508,7 @@ impl PeerMultipathState {
         {
             self.dedup_dropped.fetch_add(1, Ordering::Relaxed);
             if first_on_leg {
-                self.record_leg_rx_locked(&st, leg_id, datagram.len(), true);
+                self.record_leg_rx_locked(&st, leg_id, datagram.len(), true, mono_ms_now());
             }
             return PreDecapVerdict::AuthenticatedDuplicate { first_on_leg };
         }
@@ -1554,7 +1577,7 @@ impl PeerMultipathState {
         let mut st = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let leg_bit = match leg_id {
             Some(id) => {
-                self.record_leg_rx_locked(&st, id, datagram.len(), false);
+                self.record_leg_rx_locked(&st, id, datagram.len(), false, mono_ms_at(now));
                 Self::leg_bit_locked(&st, id)
             }
             None => 0,

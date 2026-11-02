@@ -829,6 +829,12 @@ pub(crate) fn mono_ms_now() -> u64 {
     wg_epoch().elapsed().as_millis() as u64
 }
 
+/// [`mono_ms_now`] for an instant the caller already read, so a hot path that
+/// holds one `Instant` per datagram or batch does not read the clock again.
+pub(crate) fn mono_ms_at(at: Instant) -> u64 {
+    at.saturating_duration_since(wg_epoch()).as_millis() as u64
+}
+
 /// Nanoseconds of `wg_epoch()` elapsed — the high-resolution on-demand wakeup
 /// latency and idle-timeout clock.
 fn mono_ns_now() -> u64 {
@@ -1184,9 +1190,10 @@ enum SendStep {
     HeldWake(Option<Vec<u8>>),
     /// Buffer behind the B7 PQ negotiation.
     PqBuffer,
-    /// Emit this encapsulated WireGuard frame.
+    /// Emit the encapsulated WireGuard frame the caller's buffer now holds
+    /// in its first `len` bytes.
     Frame {
-        frame: Vec<u8>,
+        len: usize,
         just_woke: bool,
         binding: Option<super::multipath_control::Binding>,
     },
@@ -1710,7 +1717,7 @@ impl SendPeer {
             let mut t = self.tunn.lock().await;
             self.send_step_locked(&mut t, packet, authorization, &mut buf)
         };
-        self.finish_send_step(step, packet).await
+        self.finish_send_step(step, packet, &buf).await
     }
 
     /// The locked half of [`Self::send_inner`] for ONE packet: every B6/B7/B8
@@ -1836,7 +1843,7 @@ impl SendPeer {
                     self.stats.tx_attempted.fetch_add(1, Ordering::Relaxed);
                 }
                 SendStep::Frame {
-                    frame: buf[..n].to_vec(),
+                    len: n,
                     just_woke,
                     binding,
                 }
@@ -1853,7 +1860,7 @@ impl SendPeer {
 
     /// The unlocked half of [`Self::send_inner`]: carry out what the locked
     /// decision left to do, in the same order the original single path did.
-    async fn finish_send_step(&self, step: SendStep, packet: &[u8]) -> bool {
+    async fn finish_send_step(&self, step: SendStep, packet: &[u8], wire: &[u8]) -> bool {
         match step {
             SendStep::Done(result) => result,
             SendStep::HeldWake(wake) => {
@@ -1867,17 +1874,18 @@ impl SendPeer {
                 None => false,
             },
             SendStep::Frame {
-                frame,
+                len,
                 just_woke,
                 binding,
             } => {
-                let ok = self.send_wire_frame(&frame, binding).await;
+                let frame = &wire[..len];
+                let ok = self.send_wire_frame(frame, binding).await;
                 if ok {
                     self.stats.tx.fetch_add(1, Ordering::Relaxed);
                 } else if just_woke && frame.first() == Some(&1) {
                     self.stats.on_demand.note_wake_init_send_failed();
                 }
-                self.stats.standby.copy(&frame);
+                self.stats.standby.copy(frame);
                 ok
             }
         }
@@ -1893,66 +1901,77 @@ impl SendPeer {
     /// separate lock/encapsulate/sendmsg round trips, which cost ~80% of
     /// goodput in the B8 throughput lane (handoff 222).
     async fn send_batch_controlled(&self, packets: &[Vec<u8>], idxs: &[usize]) -> usize {
-        let mut buf = vec![0u8; WG_BUF];
-        let steps: Vec<(usize, SendStep)> = {
+        // Frames are encapsulated straight into one arena, back to back, as
+        // the uncontrolled batch path does: a run of frames is then already
+        // the contiguous GSO buffer — no per-frame allocation, no second copy.
+        let mut arena: Vec<u8> = Vec::with_capacity(idxs.len() * WG_BUF);
+        let steps: Vec<(usize, SendStep, usize)> = {
             let mut t = self.tunn.lock().await;
-            idxs.iter()
-                .map(|&i| {
-                    let step = self.send_step_locked(
-                        &mut t,
-                        &packets[i],
-                        SendAuthorization::Normal,
-                        &mut buf,
-                    );
-                    (i, step)
-                })
-                .collect()
+            let mut steps = Vec::with_capacity(idxs.len());
+            for &i in idxs {
+                let off = arena.len();
+                arena.resize(off + WG_BUF, 0);
+                let step = self.send_step_locked(
+                    &mut t,
+                    &packets[i],
+                    SendAuthorization::Normal,
+                    &mut arena[off..],
+                );
+                match &step {
+                    SendStep::Frame { len, .. } => arena.truncate(off + len),
+                    _ => arena.truncate(off),
+                }
+                steps.push((i, step, off));
+            }
+            steps
         };
         let mut sent = 0;
-        let mut run: Vec<(Vec<u8>, bool)> = Vec::new();
+        let mut run: Vec<(std::ops::Range<usize>, bool)> = Vec::new();
         let mut run_binding = None;
-        for (i, step) in steps {
+        for (i, step, off) in steps {
             match step {
                 SendStep::Frame {
-                    frame,
+                    len,
                     just_woke,
                     binding,
                 } => {
                     if !run.is_empty() && run_binding != binding {
                         sent += self
-                            .emit_controlled_run(std::mem::take(&mut run), run_binding)
+                            .emit_controlled_run(&arena, std::mem::take(&mut run), run_binding)
                             .await;
                     }
                     run_binding = binding;
-                    run.push((frame, just_woke));
+                    run.push((off..off + len, just_woke));
                 }
                 other => {
                     sent += self
-                        .emit_controlled_run(std::mem::take(&mut run), run_binding)
+                        .emit_controlled_run(&arena, std::mem::take(&mut run), run_binding)
                         .await;
-                    if self.finish_send_step(other, &packets[i]).await {
+                    if self.finish_send_step(other, &packets[i], &[]).await {
                         sent += 1;
                     }
                 }
             }
         }
-        sent + self.emit_controlled_run(run, run_binding).await
+        sent + self.emit_controlled_run(&arena, run, run_binding).await
     }
 
     /// Emit one run of frames and apply the per-frame accounting the single
     /// path applies in [`Self::finish_send_step`].
     async fn emit_controlled_run(
         &self,
-        run: Vec<(Vec<u8>, bool)>,
+        arena: &[u8],
+        run: Vec<(std::ops::Range<usize>, bool)>,
         binding: Option<super::multipath_control::Binding>,
     ) -> usize {
         if run.is_empty() {
             return 0;
         }
-        let frames: Vec<&[u8]> = run.iter().map(|(f, _)| f.as_slice()).collect();
-        let oks = self.send_wire_frames(&frames, binding).await;
+        let ranges: Vec<std::ops::Range<usize>> = run.iter().map(|(r, _)| r.clone()).collect();
+        let oks = self.send_wire_frames(arena, &ranges, binding).await;
         let mut sent = 0;
-        for ((frame, just_woke), ok) in run.iter().zip(oks) {
+        for ((range, just_woke), ok) in run.iter().zip(oks) {
+            let frame = &arena[range.clone()];
             if ok {
                 self.stats.tx.fetch_add(1, Ordering::Relaxed);
                 sent += 1;
@@ -1967,18 +1986,23 @@ impl SendPeer {
     /// [`Self::send_wire_frame`] for several frames sharing one binding:
     /// identical target selection, binding checks, leg accounting and
     /// in-frame failover, but each leg's frames leave together
-    /// ([`Self::emit_frames_on`]). Per-leg order is preserved.
+    /// ([`Self::emit_members_on`]). Per-leg order is preserved.
     async fn send_wire_frames(
         &self,
-        frames: &[&[u8]],
+        arena: &[u8],
+        ranges: &[std::ops::Range<usize>],
         binding: Option<super::multipath_control::Binding>,
     ) -> Vec<bool> {
+        let frames: Vec<&[u8]> = ranges.iter().map(|r| &arena[r.clone()]).collect();
         let mut oks = vec![false; frames.len()];
         if !self.multipath_target_current(binding, 0, &self.carrier) {
             return oks;
         }
         if !self.multipath.is_active() || !self.stats.multipath_tx_allowed() {
-            return self.emit_frames_on(&self.carrier, frames).await;
+            let members: Vec<(usize, usize)> = (0..frames.len()).map(|k| (k, 0)).collect();
+            return self
+                .emit_members_on(&self.carrier, arena, ranges, &members)
+                .await;
         }
         let redundant = matches!(
             self.multipath.mode(),
@@ -2033,14 +2057,16 @@ impl SendPeer {
             }
         }
         for (leg, carrier, members) in &groups {
-            let batch: Vec<&[u8]> = members.iter().map(|(k, _)| frames[*k]).collect();
-            let sent = self.emit_frames_on(carrier, &batch).await;
+            let sent = self.emit_members_on(carrier, arena, ranges, members).await;
+            // One clock read per leg run, not one per frame.
+            let sent_ms = mono_ms_now();
             for ((k, pos), ok) in members.iter().zip(sent) {
-                self.multipath.record_leg_tx_outcome(
+                self.multipath.record_leg_tx_outcome_at(
                     *leg,
                     frames[*k].len(),
                     ok,
                     redundant && *pos > 0,
+                    sent_ms,
                 );
                 oks[*k] |= ok;
             }
@@ -2075,20 +2101,61 @@ impl SendPeer {
     /// on a direct carrier leave as GSO `sendmsg`s (the same run builder and
     /// fallback as the uncontrolled batch path); anything else, or a refused
     /// GSO run, goes datagram by datagram through `send_wg_recorded`.
-    async fn emit_frames_on(&self, carrier: &Arc<Carrier>, frames: &[&[u8]]) -> Vec<bool> {
-        let mut oks = vec![false; frames.len()];
+    /// Emit the frames `members` (indices into `ranges` over `arena`) on ONE
+    /// carrier in order. A contiguous ascending run — every active-standby
+    /// run — is handed to [`Self::emit_wire_on`] as the arena slice itself;
+    /// otherwise (frames of another leg interleaved) it is gathered first.
+    async fn emit_members_on(
+        &self,
+        carrier: &Arc<Carrier>,
+        arena: &[u8],
+        ranges: &[std::ops::Range<usize>],
+        members: &[(usize, usize)],
+    ) -> Vec<bool> {
+        let lens: Vec<usize> = members.iter().map(|(k, _)| ranges[*k].len()).collect();
+        let contiguous = members
+            .windows(2)
+            .all(|w| ranges[w[0].0].end == ranges[w[1].0].start);
+        match (members.first(), members.last()) {
+            (Some(first), Some(last)) if contiguous => {
+                let wire = &arena[ranges[first.0].start..ranges[last.0].end];
+                self.emit_wire_on(carrier, wire, &lens).await
+            }
+            _ => {
+                let wire: Vec<u8> = members
+                    .iter()
+                    .flat_map(|(k, _)| arena[ranges[*k].clone()].iter().copied())
+                    .collect();
+                self.emit_wire_on(carrier, &wire, &lens).await
+            }
+        }
+    }
+
+    /// Emit `wire`, the frames of lengths `lens` back to back, on ONE carrier
+    /// in order. Runs of equal-size WG data frames on a direct carrier leave
+    /// as GSO `sendmsg`s; anything else, or a refused GSO run, goes datagram
+    /// by datagram through `send_wg_recorded`.
+    async fn emit_wire_on(&self, carrier: &Arc<Carrier>, wire: &[u8], lens: &[usize]) -> Vec<bool> {
+        let mut oks = vec![false; lens.len()];
         let max_segs = super::udp_batch::max_send_segments();
-        let all_data = frames.iter().all(|f| f.first() == Some(&4));
+        let mut all_data = true;
+        let mut off = 0;
+        for len in lens {
+            all_data &= wire.get(off) == Some(&4);
+            off += len;
+        }
         let direct = carrier.direct_parts();
-        let Some((sock, dst)) = direct.filter(|_| max_segs >= 2 && frames.len() >= 2 && all_data)
+        let Some((sock, dst)) = direct.filter(|_| max_segs >= 2 && lens.len() >= 2 && all_data)
         else {
-            for (k, f) in frames.iter().enumerate() {
-                oks[k] = send_wg_recorded(carrier, &self.stats, f).await.is_ok();
+            let mut off = 0;
+            for (k, len) in lens.iter().enumerate() {
+                oks[k] = send_wg_recorded(carrier, &self.stats, &wire[off..off + len])
+                    .await
+                    .is_ok();
+                off += len;
             }
             return oks;
         };
-        let wire: Vec<u8> = frames.concat();
-        let lens: Vec<usize> = frames.iter().map(|f| f.len()).collect();
         let mut start = 0;
         let mut i = 0;
         while i < lens.len() {
