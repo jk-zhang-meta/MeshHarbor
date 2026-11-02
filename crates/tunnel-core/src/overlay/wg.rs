@@ -1818,10 +1818,18 @@ impl SendPeer {
                         );
                     }
                 }
-                if held && just_woke {
+                if held && (just_woke || !t.has_current_session()) {
                     // The existing B6 wake may send its INIT, but the new
                     // business packet stays behind older B8-held packets.
-                    let wake = match t.format_handshake_initiation(buf, true) {
+                    // Without a current session a held packet must still
+                    // start a handshake, as an unheld one does inside
+                    // `encapsulate`: a peer brought out of Dormant by a hold
+                    // (`set_external_hold`/`note_hold_active`, never
+                    // `just_woke`) has had its sessions cleared, and nothing
+                    // else would ever initiate (real network, R6 rn-od: no
+                    // initiation on any path for ~10 s after the wake). An
+                    // initiation already in flight is not repeated.
+                    let wake = match t.format_handshake_initiation(buf, just_woke) {
                         TunnResult::WriteToNetwork(out) => Some(out.to_vec()),
                         _ => None,
                     };

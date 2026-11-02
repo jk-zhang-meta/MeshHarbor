@@ -1869,4 +1869,43 @@ mod tests {
         }
         assert_eq!(released, vec![(kb, None)]);
     }
+
+    #[tokio::test]
+    async fn a_held_packet_without_a_session_starts_a_handshake_even_when_not_just_woken() {
+        // B8 proved a secondary, then the session was cleared the way B6 Dormant
+        // entry clears it; the peer is Active again without a wake (B6 off here).
+        let (mut da, mut db, mut rx, _) =
+            pair(MultipathMode::Redundant, MultipathMode::Redundant).await;
+        retain_pair(&mut da, &mut db).await;
+        negotiated(&mut da, &mut db, true).await;
+        let kb = db.public.to_bytes();
+        let (tunn, stats) = {
+            let p = &da.peers[&kb];
+            (p.tunn.clone(), p.stats.clone())
+        };
+        {
+            let mut t = tunn.lock().await;
+            t.reset_sessions_preserving_replay_and_psk();
+            stats.multipath_session_reset();
+        }
+        let control = stats.mp_control.get().unwrap().clone();
+        assert!(control.holding() && control.recovery_allowed());
+        let before = da.peer_on_demand_snapshot(&kb).unwrap().wire_tx_packets;
+        assert!(da.send_to_peer(&kb, &packet(90)).await);
+        assert!(control.hold_snapshot().packets >= 1, "the packet is held");
+        assert!(
+            da.peer_on_demand_snapshot(&kb).unwrap().wire_tx_packets > before,
+            "a held packet with no session must emit a handshake initiation"
+        );
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !tunn.lock().await.has_current_session() {
+                da.poll_multipath(&Default::default()).await;
+                db.poll_multipath(&Default::default()).await;
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("the initiation re-established a session");
+        drop(rx.try_recv());
+    }
 }
