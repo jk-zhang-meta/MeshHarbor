@@ -1871,6 +1871,84 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_packet_an_expired_hold_refuses_without_a_session_still_starts_a_handshake() {
+        let (mut da, mut db, mut rx, _) =
+            pair(MultipathMode::Redundant, MultipathMode::Redundant).await;
+        retain_pair(&mut da, &mut db).await;
+        negotiated(&mut da, &mut db, true).await;
+        let kb = db.public.to_bytes();
+        let (tunn, stats) = {
+            let p = &da.peers[&kb];
+            (p.tunn.clone(), p.stats.clone())
+        };
+        {
+            let mut t = tunn.lock().await;
+            t.reset_sessions_preserving_replay_and_psk();
+            stats.multipath_session_reset();
+        }
+        let control = stats.mp_control.get().unwrap().clone();
+        assert!(control.holding());
+        control.expire_hold_now();
+        let before = da.peer_on_demand_snapshot(&kb).unwrap().wire_tx_packets;
+        assert!(
+            !da.send_to_peer(&kb, &packet(91)).await,
+            "an expired hold refuses the packet"
+        );
+        assert!(
+            da.peer_on_demand_snapshot(&kb).unwrap().wire_tx_packets > before,
+            "a refused packet with no session must still emit a handshake initiation"
+        );
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !tunn.lock().await.has_current_session() {
+                da.poll_multipath(&Default::default()).await;
+                db.poll_multipath(&Default::default()).await;
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("the initiation re-established a session");
+        drop(rx.try_recv());
+    }
+
+    #[tokio::test]
+    async fn dormant_entry_leaves_no_hold_and_the_next_packet_initiates() {
+        let (mut da, mut db, mut rx, _) =
+            pair(MultipathMode::Redundant, MultipathMode::Redundant).await;
+        retain_pair(&mut da, &mut db).await;
+        negotiated(&mut da, &mut db, true).await;
+        let kb = db.public.to_bytes();
+        let (tunn, stats) = {
+            let p = &da.peers[&kb];
+            (p.tunn.clone(), p.stats.clone())
+        };
+        {
+            // What the B6 timer does on Dormant entry.
+            let mut t = tunn.lock().await;
+            t.reset_sessions_preserving_replay_and_psk();
+            stats.multipath_idle_reset();
+        }
+        let control = stats.mp_control.get().unwrap().clone();
+        assert!(!control.holding(), "Dormant entry arms no recovery hold");
+        assert!(control.binding().is_none());
+        let before = da.peer_on_demand_snapshot(&kb).unwrap().wire_tx_packets;
+        assert!(da.send_to_peer(&kb, &packet(92)).await);
+        assert!(
+            da.peer_on_demand_snapshot(&kb).unwrap().wire_tx_packets > before,
+            "the first packet after Dormant must emit a handshake initiation"
+        );
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !tunn.lock().await.has_current_session() {
+                da.poll_multipath(&Default::default()).await;
+                db.poll_multipath(&Default::default()).await;
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("the initiation re-established a session");
+        drop(rx.try_recv());
+    }
+
+    #[tokio::test]
     async fn a_held_packet_without_a_session_starts_a_handshake_even_when_not_just_woken() {
         // B8 proved a secondary, then the session was cleared the way B6 Dormant
         // entry clears it; the peer is Active again without a wake (B6 off here).

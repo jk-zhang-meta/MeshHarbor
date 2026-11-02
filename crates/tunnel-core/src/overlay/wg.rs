@@ -745,6 +745,16 @@ impl PeerStats {
             self.mp_primary_rx_any.store(0, Ordering::Relaxed);
         }
     }
+
+    /// [`Self::multipath_session_reset`] for B6 Dormant entry: no recovery
+    /// hold is armed ([`super::multipath_control::Control::idle_reset`]).
+    pub(crate) fn multipath_idle_reset(&self) {
+        if let Some(control) = self.mp_control.get() {
+            control.idle_reset();
+            self.mp_primary_hs_response.store(0, Ordering::Relaxed);
+            self.mp_primary_rx_any.store(0, Ordering::Relaxed);
+        }
+    }
     fn multipath_tx_allowed(&self) -> bool {
         self.mp_control
             .get()
@@ -1192,9 +1202,10 @@ type LegGroup = (u32, Arc<Carrier>, Vec<(usize, usize)>);
 enum SendStep {
     /// Finished: this is the packet's send result.
     Done(bool),
-    /// Held behind the B8 recovery FIFO (counts as sent); send this B6 wake
-    /// INIT first if the hold began on a wake.
-    HeldWake(Option<Vec<u8>>),
+    /// Offered to the B8 recovery FIFO with no current session: send this
+    /// handshake initiation, if one was formatted; the bool is whether the
+    /// FIFO retained the packet (counts as sent).
+    HeldWake(Option<Vec<u8>>, bool),
     /// Buffer behind the B7 PQ negotiation.
     PqBuffer,
     /// Emit the encapsulated WireGuard frame the caller's buffer now holds
@@ -1818,22 +1829,24 @@ impl SendPeer {
                         );
                     }
                 }
-                if held && (just_woke || !t.has_current_session()) {
+                if just_woke || !t.has_current_session() {
                     // The existing B6 wake may send its INIT, but the new
                     // business packet stays behind older B8-held packets.
-                    // Without a current session a held packet must still
-                    // start a handshake, as an unheld one does inside
-                    // `encapsulate`: a peer brought out of Dormant by a hold
-                    // (`set_external_hold`/`note_hold_active`, never
+                    // Without a current session a packet offered to the hold
+                    // must still start a handshake, as an unheld one does
+                    // inside `encapsulate`: a peer brought out of Dormant by a
+                    // hold (`set_external_hold`/`note_hold_active`, never
                     // `just_woke`) has had its sessions cleared, and nothing
                     // else would ever initiate (real network, R6 rn-od: no
-                    // initiation on any path for ~10 s after the wake). An
-                    // initiation already in flight is not repeated.
+                    // initiation on any path for ~10 s after the wake). That
+                    // holds when the hold refuses the packet too (expired or
+                    // full): refusal must not also mean silence. An initiation
+                    // already in flight is not repeated.
                     let wake = match t.format_handshake_initiation(buf, just_woke) {
                         TunnResult::WriteToNetwork(out) => Some(out.to_vec()),
                         _ => None,
                     };
-                    return SendStep::HeldWake(wake);
+                    return SendStep::HeldWake(wake, held);
                 }
                 return SendStep::Done(held);
             }
@@ -1878,11 +1891,11 @@ impl SendPeer {
     async fn finish_send_step(&self, step: SendStep, packet: &[u8], wire: &[u8]) -> bool {
         match step {
             SendStep::Done(result) => result,
-            SendStep::HeldWake(wake) => {
+            SendStep::HeldWake(wake, held) => {
                 if let Some(wake) = wake {
                     let _ = send_wg_recorded(&self.carrier, &self.stats, &wake).await;
                 }
-                true
+                held
             }
             SendStep::PqBuffer => match self.stats.pq.get() {
                 Some(pq) => pq.buffer_outbound_if_negotiating(packet).await,
@@ -3628,7 +3641,7 @@ impl WgDevice {
                             .try_enter_dormant_under_lock(local_hold, &mut t, now_ns)
                     {
                         stats.handshake.store(false, Ordering::Relaxed);
-                        stats.multipath_session_reset();
+                        stats.multipath_idle_reset();
                         None
                     } else {
                         match t.update_timers(&mut buf) {
