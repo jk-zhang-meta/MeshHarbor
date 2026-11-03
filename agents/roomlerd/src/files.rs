@@ -4886,6 +4886,10 @@ mod seat_user_tests {
             if !root() {
                 return;
             }
+            // The person's drop folder is resolved through the process-global
+            // `files_dir` (and its gate creates the folder): serialise with
+            // the tests that set it, or a parallel run lands here mid-test.
+            let _lock = crate::files::FILES_DIR_TEST_LOCK.lock().await;
             let (home, person) = nobodys_home();
             let h = FilesHandler::new();
             let id = format!("p3d-born-{}", std::process::id());
@@ -4929,6 +4933,7 @@ mod seat_user_tests {
             if !root() {
                 return;
             }
+            let _lock = crate::files::FILES_DIR_TEST_LOCK.lock().await;
             let (home, person) = nobodys_home();
             let roots_only = tempfile::tempdir().unwrap();
             std::fs::set_permissions(roots_only.path(), std::fs::Permissions::from_mode(0o700))
@@ -4970,6 +4975,7 @@ mod seat_user_tests {
             if !root() {
                 return;
             }
+            let _lock = crate::files::FILES_DIR_TEST_LOCK.lock().await;
             let (home, person) = nobodys_home();
             let theirs = |p: &std::path::Path| {
                 std::fs::create_dir_all(p).unwrap();
