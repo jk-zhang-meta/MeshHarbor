@@ -12271,10 +12271,34 @@ async fn handle_files_control(
             }
         },
         crate::files::FilesIncoming::Get { id, path } => {
+            if let Err(reason) = crate::files::path_addressed_allowed() {
+                warn!(%session_id, %id, path = %path, "files: get refused — remote browse disabled");
+                send_files_json(
+                    &dc,
+                    &crate::files::FilesOutgoing::Error {
+                        id: &id,
+                        message: reason,
+                    },
+                )
+                .await;
+                return;
+            }
             info!(%session_id, %id, path = %path, "files: get (download requested)");
             spawn_outgoing_pump(dc.clone(), handler, session_id, id, path);
         }
         crate::files::FilesIncoming::GetFolder { id, path, format } => {
+            if let Err(reason) = crate::files::path_addressed_allowed() {
+                warn!(%session_id, %id, path = %path, "files: get-folder refused — remote browse disabled");
+                send_files_json(
+                    &dc,
+                    &crate::files::FilesOutgoing::Error {
+                        id: &id,
+                        message: reason,
+                    },
+                )
+                .await;
+                return;
+            }
             // v1 only honours `format=zip` (or unset, treated as zip).
             if let Some(f) = format.as_deref()
                 && f != "zip"
