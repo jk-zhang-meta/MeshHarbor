@@ -165,7 +165,8 @@
         "desktop": "桌面",
         "control": "控制",
         "filesRw": "文件读写",
-        "filesRo": "文件只读（不支持）"
+        "filesRo": "文件只读（不支持）",
+        "sshAs": "SSH（账号 {account}）"
       },
       "record": {
         "revoked": "已撤销",
@@ -183,7 +184,11 @@
         "scope": "SSH 以设备上配置的操作系统账号运行终端和命令，不是沙箱。此分享不包括 SFTP、SSH 转发、局域网访问或组织成员身份。命令行每次连接都会重新检查授权；分享被撤销或过期后，新的访问会被拒绝，已有的分享会话也会被终止。"
       },
       "revokeTitle": "撤销这条设备分享？",
-      "revokeBody": "新的访问会被拒绝。服务器的实时检查会终止依赖此分享的远程会话。"
+      "revokeBody": "新的访问会被拒绝。服务器的实时检查会终止依赖此分享的远程会话。",
+      "sshAccount": "SSH 使用的设备账号",
+      "sshAccountHint": "该设备上已有的 Linux/macOS 用户。对方的 SSH 会话只能以这个账号运行。",
+      "sshAccountInvalid": "请填写 SSH 使用的设备账号：Linux/macOS 用户名（小写字母、数字、_ 和 -）。",
+      "sshRootWarning": "root 等于把这台设备的完全控制权交给对方，建议给对方单独的账号。"
     },
     "topo": {
       "title": "服务器拓扑",

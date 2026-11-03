@@ -23,6 +23,9 @@
         <v-select data-testid="share-device-id" v-model="deviceId" :items="ownedChoices" :loading="ownedLoading" :label="$t('mh.shares.device')" :no-data-text="$t('mh.shares.noOwned')" required />
         <v-text-field data-testid="share-recipient-id" v-model="recipientId" :label="$t('mh.shares.recipient')" :hint="$t('mh.shares.recipientHint')" persistent-hint autocomplete="off" required />
         <v-checkbox data-testid="share-ssh-permission" v-model="ssh" :label="$t('mh.shares.permSsh')" />
+        <!-- The account the recipient's SSH runs as: chosen here, never the device policy's (root). -->
+        <v-text-field v-if="ssh" data-testid="share-ssh-account" v-model="sshAccount" :label="$t('mh.shares.sshAccount')" :hint="$t('mh.shares.sshAccountHint')" persistent-hint autocomplete="off" class="mb-2" />
+        <v-alert v-if="ssh && sshAccount.trim() === 'root'" type="warning" variant="tonal" density="compact" class="mb-2" data-testid="share-ssh-root-warning">{{ $t('mh.shares.sshRootWarning') }}</v-alert>
         <v-checkbox data-testid="share-desktop-permission" v-model="desktopView" :label="$t('mh.shares.permView')" /><v-checkbox v-model="desktopControl" :disabled="!desktopView" :label="$t('mh.shares.permControl')" />
         <v-checkbox data-testid="share-files-permission" v-model="files" :label="$t('mh.shares.permFiles')" />
         <v-text-field v-model.number="hours" :label="$t('mh.shares.hours')" type="number" min="1" max="720" />
@@ -43,7 +46,7 @@
             <p class="mt-2">{{ $t('mh.shares.ssh.hostKey') }}</p>
             <pre class="text-wrap" data-testid="shared-ssh-host-key">{{ sshDevice.host_pubkey }}</pre>
             <p class="mt-3">{{ $t('mh.shares.ssh.run') }}</p>
-            <pre class="text-wrap" data-testid="shared-ssh-command">roomlerd cli share-ssh --server YOUR_SERVER_BASE_URL --share {{ sshShare?.id }} --login --username YOUR_ACCOUNT_USERNAME</pre>
+            <pre class="text-wrap" data-testid="shared-ssh-command">meshharbord cli share-ssh --server YOUR_SERVER_BASE_URL --share {{ sshShare?.id }} --login --username YOUR_ACCOUNT_USERNAME</pre>
             <v-alert type="warning" variant="tonal" class="mt-3">{{ $t('mh.shares.ssh.warning') }}</v-alert>
             <p class="mt-2">{{ $t('mh.shares.ssh.scope') }}</p>
           </template>
@@ -68,7 +71,9 @@ const now = ref(Date.now()), recordClock = setInterval(() => { now.value = Date.
 function sharedRemoteUrl(share: DeviceShare) { return `${appOrigin(window.location.origin).replace(/\/$/, '')}/device-shares/${encodeURIComponent(share.id)}/remote` }
 const direction = ref<'received' | 'sent'>(route.query.direction === 'sent' ? 'sent' : 'received'), page = ref(1), total = ref(0)
 const items = ref<DeviceShare[]>([]), loading = ref(false), saving = ref(false), error = ref('')
-const deviceId = ref(''), recipientId = ref(''), hours = ref(24), desktopView = ref(true), desktopControl = ref(false), files = ref(false), ssh = ref(false)
+const deviceId = ref(''), recipientId = ref(''), hours = ref(24), desktopView = ref(true), desktopControl = ref(false), files = ref(false), ssh = ref(false), sshAccount = ref('')
+// The server's rule for a share account (a portable POSIX user name), checked here to answer early.
+const SHARE_ACCOUNT = /^[a-z_][a-z0-9_-]{0,31}$/
 const pendingRevoke = ref<DeviceShare | null>(null)
 // The share form picks from the devices this account owns — no one should need to know an id.
 interface OwnedDevice { id: string; name: string; status: string }
@@ -114,7 +119,7 @@ async function openSsh(share: DeviceShare) {
   finally { if (alive && attempt === sshGeneration && identity === identityGeneration && auth.user?.id === user) sshLoading.value = false }
 }
 let generation = 0, identityGeneration = 0, alive = true
-function clearIdentity() { closeSsh(); ssh.value = false; identityGeneration++; generation++; items.value = []; total.value = 0; error.value = ''; pendingRevoke.value = null; deviceId.value = ''; recipientId.value = ''; saving.value = false; loading.value = false }
+function clearIdentity() { closeSsh(); ssh.value = false; sshAccount.value = ''; identityGeneration++; generation++; items.value = []; total.value = 0; error.value = ''; pendingRevoke.value = null; deviceId.value = ''; recipientId.value = ''; saving.value = false; loading.value = false }
 async function load() {
   const attempt = ++generation; const user = auth.user?.id
   if (!user) { clearIdentity(); return }
@@ -125,15 +130,17 @@ async function load() {
   } catch (e) { if (attempt === generation && alive) error.value = (e as Error).message }
   finally { if (attempt === generation && alive) loading.value = false }
 }
-function serviceLabel(s: DeviceShare) { return [s.permissions.desktop_view ? t('mh.shares.svc.desktop') : '', s.permissions.desktop_control ? t('mh.shares.svc.control') : '', s.permissions.files_read && s.permissions.files_write ? t('mh.shares.svc.filesRw') : s.permissions.files_read ? t('mh.shares.svc.filesRo') : '', s.permissions.ssh ? 'SSH' : '', ...s.tcp_ports.map(p => `TCP ${p}`)].filter(Boolean).join(' · ') }
+function serviceLabel(s: DeviceShare) { return [s.permissions.desktop_view ? t('mh.shares.svc.desktop') : '', s.permissions.desktop_control ? t('mh.shares.svc.control') : '', s.permissions.files_read && s.permissions.files_write ? t('mh.shares.svc.filesRw') : s.permissions.files_read ? t('mh.shares.svc.filesRo') : '', s.permissions.ssh ? (s.ssh_account ? t('mh.shares.svc.sshAs', { account: s.ssh_account }) : 'SSH') : '', ...s.tcp_ports.map(p => `TCP ${p}`)].filter(Boolean).join(' · ') }
 const RECORD_STATE_KEYS = { 'Revoked': 'mh.shares.record.revoked', 'Expired': 'mh.shares.record.expired', 'Unrevoked / unexpired': 'mh.shares.record.live' } as const
 function recordStateLabel(state: keyof typeof RECORD_STATE_KEYS) { return t(RECORD_STATE_KEYS[state]) }
 async function create() {
   if (saving.value) return
   const recipient = recipientId.value.trim()
   if (!OBJECT_ID.test(deviceId.value ?? '') || !recipient || recipient.length > 320 || !Number.isInteger(hours.value) || hours.value < 1 || hours.value > 720 || (!desktopView.value && !files.value && !ssh.value)) { error.value = t('mh.shares.invalid'); return }
+  const account = sshAccount.value.trim()
+  if (ssh.value && !SHARE_ACCOUNT.test(account)) { error.value = t('mh.shares.sshAccountInvalid'); return }
   const user = auth.user?.id, identity = identityGeneration, attempt = generation; saving.value = true; error.value = ''
-  try { await api.post('/device-shares', { device_id: deviceId.value, recipient, permissions: { ssh: ssh.value, desktop_view: desktopView.value, desktop_control: desktopView.value && desktopControl.value, files_read: files.value, files_write: files.value }, tcp_ports: [], expires_in_secs: hours.value * 3600 })
+  try { await api.post('/device-shares', { device_id: deviceId.value, recipient, permissions: { ssh: ssh.value, desktop_view: desktopView.value, desktop_control: desktopView.value && desktopControl.value, files_read: files.value, files_write: files.value }, tcp_ports: [], expires_in_secs: hours.value * 3600, ...(ssh.value ? { ssh_account: account } : {}) })
     if (!alive || attempt !== generation || identity !== identityGeneration || auth.user?.id !== user) return
     direction.value = 'sent'; page.value = 1; await load()
   } catch (e) { if (alive && identity === identityGeneration && attempt === generation && auth.user?.id === user) error.value = (e as Error).message }

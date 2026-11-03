@@ -34,6 +34,7 @@ async function form() {
   await w.findAllComponents({ name: 'VSelect' }).find(c => c.props('label') === 'Device (one you own)')!.setValue(device)
   await w.findAllComponents({ name: 'VTextField' }).find(c => c.props('label') === 'Recipient username or email')!.get('input').setValue(recipient)
 }
+async function account(name: string) { await wrapper!.get('[data-testid="share-ssh-account"] input').setValue(name) }
 async function checkbox(id: string, value: boolean) { const labels: Record<string, string> = { 'share-desktop-permission': 'View desktop', 'share-ssh-permission': 'SSH shell / exec (native client)', 'share-files-permission': 'Bidirectional file transfer (read AND write)' }; const control = wrapper!.findAllComponents({ name: 'VCheckbox' }).find(c => c.props('label') === labels[id]); expect(control, `explicit checkbox ${labels[id]}`).toBeDefined(); await control!.get('input').setValue(value) }
 beforeEach(() => {
   vi.clearAllMocks(); auth.user = { id: '444444444444444444444444' }
@@ -44,9 +45,25 @@ beforeEach(() => {
 afterEach(() => { wrapper?.unmount(); wrapper = undefined; vi.unstubAllGlobals() })
 describe('single-device SSH share authorization and truthful native instructions', () => {
   it('creates an SSH-only grant without silently enabling desktop, files or TCP ports', async () => {
-    await open(); await form(); await checkbox('share-desktop-permission', false); await checkbox('share-ssh-permission', true)
+    await open(); await form(); await checkbox('share-desktop-permission', false); await checkbox('share-ssh-permission', true); await account(' alice ')
     await wrapper!.get('form').trigger('submit'); await flushPromises()
-    expect(api.post).toHaveBeenCalledWith('/device-shares', { device_id: device, recipient, permissions: { ...no, ssh: true }, tcp_ports: [], expires_in_secs: 86400 })
+    expect(api.post).toHaveBeenCalledWith('/device-shares', { device_id: device, recipient, permissions: { ...no, ssh: true }, tcp_ports: [], expires_in_secs: 86400, ssh_account: 'alice' })
+  })
+  it('asks for the device account only with SSH, and refuses a missing or malformed one without calling the server', async () => {
+    await open(); await form()
+    expect(wrapper!.find('[data-testid="share-ssh-account"]').exists()).toBe(false)
+    await checkbox('share-ssh-permission', true)
+    for (const bad of ['', 'Alice', '../etc', 'a b']) {
+      await account(bad); await wrapper!.get('form').trigger('submit'); await flushPromises()
+      expect(api.post).not.toHaveBeenCalled()
+      expect(wrapper!.text()).toContain('Enter the device account for SSH')
+    }
+    await account('root'); await flushPromises()
+    expect(wrapper!.find('[data-testid="share-ssh-root-warning"]').exists()).toBe(true)
+  })
+  it('sends no device account on a share without SSH', async () => {
+    await open(); await form(); await wrapper!.get('form').trigger('submit'); await flushPromises()
+    expect(vi.mocked(api.post).mock.calls[0]![1]).not.toHaveProperty('ssh_account')
   })
   it('offers the devices this account owns and names the recipient, never asking for raw ids', async () => {
     await open(); await wrapper!.get('.v-expansion-panel-title').trigger('click'); await flushPromises()
@@ -77,7 +94,7 @@ describe('single-device SSH share authorization and truthful native instructions
     expect(api.post).not.toHaveBeenCalled(); expect(wrapper!.text()).toContain('a supported capability')
   })
   it('preserves explicit desktop and bidirectional file permissions when SSH is also selected', async () => {
-    await open(); await form(); await checkbox('share-ssh-permission', true); await checkbox('share-files-permission', true)
+    await open(); await form(); await checkbox('share-ssh-permission', true); await account('alice'); await checkbox('share-files-permission', true)
     await wrapper!.get('form').trigger('submit'); await flushPromises()
     expect(api.post).toHaveBeenCalledWith('/device-shares', expect.objectContaining({ permissions: { ...no, ssh: true, desktop_view: true, files_read: true, files_write: true }, tcp_ports: [] }))
   })

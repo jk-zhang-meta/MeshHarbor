@@ -730,7 +730,8 @@
         "desktop": "Desktop",
         "control": "Control",
         "filesRw": "Files read/write",
-        "filesRo": "Files read-only (unsupported)"
+        "filesRo": "Files read-only (unsupported)",
+        "sshAs": "SSH as {account}"
       },
       "record": {
         "revoked": "Revoked",
@@ -748,7 +749,11 @@
         "scope": "SSH grants shell/exec as the device’s configured OS account, not a sandbox. This share does not grant SFTP, SSH forwarding, LAN access, or organization membership. The CLI rechecks authorization when it connects; revocation or expiry refuses new access and terminates share-bound sessions."
       },
       "revokeTitle": "Revoke this device share?",
-      "revokeBody": "New access will be refused. Share-bound remote sessions are terminated by live server checks."
+      "revokeBody": "New access will be refused. Share-bound remote sessions are terminated by live server checks.",
+      "sshAccount": "Device account for SSH",
+      "sshAccountHint": "An existing Linux/macOS user on that device. The recipient's SSH sessions run as this account, and only this one.",
+      "sshAccountInvalid": "Enter the device account for SSH: a Linux/macOS user name (lowercase letters, digits, _ and -).",
+      "sshRootWarning": "root gives the recipient full control of this device. Prefer an account of its own."
     },
     "topo": {
       "title": "Server topology",

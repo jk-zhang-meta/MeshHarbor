@@ -5,6 +5,8 @@ export interface DeviceSharePermissions {
 export interface DeviceShare {
   id: string; device_id: string; owner_user_id: string; recipient_user_id: string
   permissions: DeviceSharePermissions; tcp_ports: number[]; created_at_ms?: number; expires_at_ms: number; revoked_at_ms: number | null; revision: number
+  /** The device account an SSH share runs as. */
+  ssh_account?: string
   /** Display names resolved by the server when it reads the record; ids stay the identity. */
   device_name?: string; owner_username?: string; recipient_username?: string
 }
