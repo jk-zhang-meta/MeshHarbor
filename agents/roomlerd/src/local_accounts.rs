@@ -447,6 +447,96 @@ mod tests {
         );
     }
 
+    /// The real thing, against the real `useradd`/`dscl`, `visudo` and `sudo`: run ONLY in a
+    /// disposable root (an overlay over `/`, a VM), as root, with
+    /// `MESHHARBOR_LIVE_ACCOUNTS=1`. It creates `mhshare1` (administrator) and `mhshare2`.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    #[ignore = "creates real OS accounts: disposable root only"]
+    fn live_create_lists_and_grants_exactly_what_was_asked() {
+        assert_eq!(
+            std::env::var("MESHHARBOR_LIVE_ACCOUNTS").as_deref(),
+            Ok("1"),
+            "refusing: this creates real accounts"
+        );
+        let mut cfg = crate::config::test_fixture();
+        cfg.ssh_enabled = true;
+        let create = |name: &str, admin: bool| {
+            handle(
+                &cfg,
+                &LocalAccountOp::Create {
+                    name: name.into(),
+                    admin,
+                },
+            )
+        };
+        let after = create("mhshare1", true).expect("create administrator");
+        assert!(
+            after.iter().any(|a| a.name == "mhshare1" && a.admin),
+            "{after:?}"
+        );
+        let after = create("mhshare2", false).expect("create plain account");
+        assert!(
+            after.iter().any(|a| a.name == "mhshare2" && !a.admin),
+            "{after:?}"
+        );
+        assert!(
+            create("mhshare1", false)
+                .unwrap_err()
+                .contains("already exists")
+        );
+        let listed = handle(&cfg, &LocalAccountOp::List).unwrap();
+        assert!(listed.iter().any(|a| a.name == "mhshare1" && a.admin));
+        assert!(listed.iter().any(|a| a.name == "mhshare2" && !a.admin));
+
+        let sh = |user: &str, cmd: &str| {
+            std::process::Command::new("/usr/bin/su")
+                .args(["-s", "/bin/sh", user, "-c", cmd])
+                .output()
+                .unwrap()
+        };
+        let root = sh("mhshare1", "sudo -n id -u");
+        assert!(root.status.success(), "{root:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&root.stdout).trim(),
+            "0",
+            "administrator becomes root without a password"
+        );
+        assert!(
+            !sh("mhshare2", "sudo -n true").status.success(),
+            "a plain account cannot"
+        );
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(sudoers_path("mhshare1"))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o440);
+            assert!(!sudoers_path("mhshare2").exists());
+            let status = std::process::Command::new("/usr/bin/passwd")
+                .args(["-S", "mhshare1"])
+                .output()
+                .unwrap();
+            let status = String::from_utf8_lossy(&status.stdout).to_string();
+            assert_eq!(
+                status.split_whitespace().nth(1),
+                Some("L"),
+                "no usable password: {status}"
+            );
+            assert!(std::path::Path::new("/home/mhshare1").is_dir());
+            let whole = std::process::Command::new("/usr/sbin/visudo")
+                .arg("-c")
+                .output()
+                .unwrap();
+            assert!(
+                whole.status.success(),
+                "the machine's sudo configuration stays valid"
+            );
+        }
+    }
+
     #[cfg(target_os = "macos")]
     #[test]
     fn macos_lists_local_people_not_service_accounts() {
