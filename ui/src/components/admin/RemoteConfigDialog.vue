@@ -8,7 +8,7 @@
         <!-- The span shrinks with an ellipsis (min-width: 0), so the title's own
              buttons stay on screen: a title never wraps, and a long device name
              used to push Close or Refresh past the edge on a phone. -->
-        <span class="text-truncate" style="min-width: 0">Device configuration — {{ deviceLabel(agent) }}</span>
+        <span class="text-truncate" style="min-width: 0">{{ tr('mh.rcfg.title', { name: deviceLabel(agent) }) }}</span>
       </v-card-title>
 
       <v-card-text>
@@ -23,10 +23,9 @@
           class="mb-4"
           icon="mdi-transfer-right"
         >
-          This records what you want the device to run. The device applies it
-          the next time it connects — and it may refuse: these switches belong
-          to whoever holds the machine, and a device only accepts them after
-          someone enables <code>remote_config_enabled</code> on it directly.
+          <i18n-t keypath="mh.rcfg.intro" tag="span" scope="global">
+            <template #key><code>remote_config_enabled</code></template>
+          </i18n-t>
         </v-alert>
 
         <!-- Where the last request actually got to. This is the whole reason
@@ -43,10 +42,10 @@
           <div class="font-weight-medium">{{ status.title }}</div>
           <div class="text-body-2 mt-1">{{ status.detail }}</div>
           <div v-if="reportedKeys.live.length" class="text-body-2 mt-2">
-            In force now: <strong>{{ reportedKeys.live.join(', ') }}</strong>
+            {{ tr('mh.rcfg.inForce') }} <strong>{{ reportedKeys.live.join(', ') }}</strong>
           </div>
           <div v-if="reportedKeys.needsRestart.length" class="text-body-2 mt-1">
-            Saved on the device, waiting for a restart:
+            {{ tr('mh.rcfg.waitingRestart') }}
             <strong>{{ reportedKeys.needsRestart.join(', ') }}</strong>
           </div>
           <div v-if="report?.detail" class="text-body-2 mt-2 font-italic">
@@ -55,22 +54,23 @@
         </v-alert>
 
         <!-- ── Remote execution ──────────────────────────────────────────── -->
-        <div class="text-subtitle-2 mb-1">Remote execution</div>
+        <div class="text-subtitle-2 mb-1">{{ tr('mh.rcfg.exec') }}</div>
         <ManagedSwitch
           v-model="draft.exec_enabled"
           :disabled="!mayGrantExec"
-          label="Accept remote commands (exec_enabled)"
+          :label="tr('mh.rcfg.execSwitch')"
         />
         <div class="text-caption text-medium-emphasis mb-1 ml-1">
-          Commands run as the daemon: <strong>root</strong> under systemd; on
-          Windows the <strong>signed-in user</strong> (an attended install) or
-          <strong>SYSTEM</strong> (SystemContext mode). Takes effect immediately
-          on the device; no restart.
+          <i18n-t keypath="mh.rcfg.execHint" tag="span" scope="global">
+            <template #root><strong>root</strong></template>
+            <template #signedIn><strong>{{ tr('mh.exec.signedIn') }}</strong></template>
+            <template #system><strong>SYSTEM</strong></template>
+          </i18n-t>
         </div>
         <div v-if="!mayGrantExec" class="text-caption text-error mb-4 ml-1">
-          You need the <strong>EXEC_DEVICE</strong> permission to change this.
-          Opening a door you cannot walk through is the same escalation as
-          granting yourself the key.
+          <i18n-t keypath="mh.rcfg.needExec" tag="span" scope="global">
+            <template #perm><strong>EXEC_DEVICE</strong></template>
+          </i18n-t>
         </div>
         <div v-else class="mb-4" />
 
@@ -79,7 +79,7 @@
         <ManagedSwitch
           v-model="draft.ssh_enabled"
           :disabled="!mayGrantSsh"
-          label="Run the SSH server (ssh_enabled)"
+          :label="tr('mh.rcfg.sshSwitch')"
         />
 
         <v-expand-transition>
@@ -87,7 +87,7 @@
             <v-textarea
               v-model="authorizedKeysText"
               :disabled="!mayGrantSsh"
-              label="Authorized keys — one OpenSSH public key per line"
+              :label="tr('mh.rcfg.keys')"
               placeholder="ssh-ed25519 AAAAC3Nza… you@laptop"
               rows="3"
               density="compact"
@@ -97,15 +97,16 @@
               persistent-placeholder
             />
             <div class="text-caption text-medium-emphasis mb-3 ml-1">
-              Leave the box untouched to keep whatever the device already has.
-              An empty list means <strong>nobody</strong>.
+              <i18n-t keypath="mh.rcfg.keysHint" tag="span" scope="global">
+                <template #nobody><strong>{{ tr('mh.rcfg.nobody') }}</strong></template>
+              </i18n-t>
             </div>
 
             <v-select
               v-model="draft.ssh_account_mode"
               :disabled="!mayGrantSsh"
               :items="accountOptions"
-              label="Key-list sessions run as"
+              :label="tr('mh.rcfg.accountMode')"
               density="compact"
               variant="outlined"
               clearable
@@ -113,16 +114,16 @@
               class="mb-1"
             />
             <div class="text-caption text-medium-emphasis mb-3 ml-1">
-              Cleared = not managed. Unset <em>on the device</em> means a
-              key-list session authenticates and then runs
-              <strong>nothing</strong> — deliberately, so an unread setting
-              cannot quietly hand out SYSTEM/root.
+              <i18n-t keypath="mh.rcfg.accountHint" tag="span" scope="global">
+                <template #onDevice><em>{{ tr('mh.rcfg.onDevice') }}</em></template>
+                <template #nothing><strong>{{ tr('mh.rcfg.nothing') }}</strong></template>
+              </i18n-t>
             </div>
 
             <v-text-field
               v-model="sshPortText"
               :disabled="!mayGrantSsh"
-              label="SSH port (blank = not managed; the device's default is 2222)"
+              :label="tr('mh.rcfg.port')"
               density="compact"
               variant="outlined"
               type="number"
@@ -130,23 +131,24 @@
               class="mb-1"
             />
             <div class="text-caption text-medium-emphasis mb-3 ml-1">
-              2222 rather than 22 so an existing <code>sshd</code> keeps serving
-              the overlay address.
+              <i18n-t keypath="mh.rcfg.portHint" tag="span" scope="global">
+                <template #sshd><code>sshd</code></template>
+              </i18n-t>
             </div>
           </div>
         </v-expand-transition>
 
         <div v-if="!mayGrantSsh" class="text-caption text-error mb-4 ml-1">
-          You need the <strong>SSH_DEVICE</strong> permission to change any of
-          these. Handing out authorized keys or an account mode is granting SSH
-          just as much as flipping the switch is.
+          <i18n-t keypath="mh.rcfg.needSsh" tag="span" scope="global">
+            <template #perm><strong>SSH_DEVICE</strong></template>
+          </i18n-t>
         </div>
 
         <!-- ── Video encoders (FR-77) ───────────────────────────────────── -->
-        <div class="text-subtitle-2 mb-1 mt-2">Video encoders</div>
+        <div class="text-subtitle-2 mb-1 mt-2">{{ tr('mh.rcfg.encoders') }}</div>
         <v-text-field
           v-model="encoderDenyText"
-          label="Encoder cells to deny (encoder_cells_deny)"
+          :label="tr('mh.rcfg.cellsDeny')"
           placeholder="hevc_qsv:yuv444, hevc_vaapi:yuv444"
           density="compact"
           variant="outlined"
@@ -155,16 +157,15 @@
           class="mb-1"
         />
         <div class="text-caption text-medium-emphasis mb-4 ml-1">
-          Comma-separated <code>name:chroma</code> cells the device must not
-          open or advertise — the cell matrix's kill switch. Blank = not
-          managed (the device keeps its own list, built-in
-          <code>hevc_qsv:yuv444, hevc_vaapi:yuv444</code>);
-          <code>none</code> = deny nothing. It only ever removes cells, so no
-          extra permission bit; takes effect at the next daemon restart.
+          <i18n-t keypath="mh.rcfg.cellsHint" tag="span" scope="global">
+            <template #form><code>name:chroma</code></template>
+            <template #builtin><code>hevc_qsv:yuv444, hevc_vaapi:yuv444</code></template>
+            <template #none><code>none</code></template>
+          </i18n-t>
         </div>
         <v-text-field
           v-model="fpsDenyText"
-          label="Frame rates to deny (fps_deny)"
+          :label="tr('mh.rcfg.fpsDeny')"
           placeholder="hevc_qsv:120, *:144"
           density="compact"
           variant="outlined"
@@ -173,11 +174,11 @@
           class="mb-1"
         />
         <div class="text-caption text-medium-emphasis mb-4 ml-1">
-          Comma-separated <code>name:fps</code> rates above 60 the device must
-          not grant, <code>*</code> for every encoder. Blank = not managed (the
-          device keeps its own, which denies nothing unless set there);
-          <code>none</code> = deny nothing. It only ever removes rates, so no
-          extra permission bit; takes effect at the next daemon restart.
+          <i18n-t keypath="mh.rcfg.fpsHint" tag="span" scope="global">
+            <template #form><code>name:fps</code></template>
+            <template #star><code>*</code></template>
+            <template #none><code>none</code></template>
+          </i18n-t>
         </div>
 
         <!-- The combination checks. Each of these produces a device that is
@@ -206,8 +207,7 @@
           density="compact"
           class="mb-2"
         >
-          Remote execution is switched off for the whole organization, so this
-          device will still refuse. An org owner enables it in Settings.
+          {{ tr('mh.exec.orgOff') }}
         </v-alert>
         <v-alert
           v-if="orgSshDisabled && draft.ssh_enabled === true"
@@ -216,8 +216,7 @@
           density="compact"
           class="mb-2"
         >
-          SSH is switched off for the whole organization — a separate switch
-          from remote execution. An org owner enables it in Settings.
+          {{ tr('mh.rcfg.sshOrgOff') }}
         </v-alert>
 
         <v-alert
@@ -241,12 +240,12 @@
           :loading="clearing"
           @click="clearAll"
         >
-          Stop managing
+          {{ tr('mh.rcfg.stop') }}
         </v-btn>
         <v-spacer />
-        <v-btn variant="text" @click="close">Cancel</v-btn>
+        <v-btn variant="text" @click="close">{{ tr('common.cancel') }}</v-btn>
         <v-btn color="primary" :loading="saving" :disabled="!dirty" @click="save">
-          Request
+          {{ tr('mh.rcfg.request') }}
         </v-btn>
       </v-card-actions>
     </v-card>
@@ -255,6 +254,7 @@
 
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useResponsiveDialog } from '@/composables/useResponsiveDialog'
 import { deviceLabel } from '@/composables/useHideDeviceName'
 import { useAgentStore, type Agent, type DesiredConfig } from '@/stores/agents'
@@ -273,6 +273,7 @@ const emit = defineEmits<{
   (e: 'saved'): void
 }>()
 
+const { t: tr } = useI18n()
 const { fullscreen } = useResponsiveDialog()
 const open = computed({
   get: () => props.modelValue,
@@ -352,16 +353,15 @@ const status = computed<{ type: 'success' | 'info' | 'warning' | 'error'; icon: 
       return {
         type: 'success',
         icon: 'mdi-check-circle-outline',
-        title: 'Applied',
-        detail: 'The device confirmed this configuration and it is in force.',
+        title: tr('mh.rcfg.st.applied'),
+        detail: tr('mh.rcfg.st.appliedDetail'),
       }
     case 'needs_restart':
       return {
         type: 'warning',
         icon: 'mdi-restart-alert',
-        title: 'Saved on the device — restart required',
-        detail:
-          'These keys are written to disk but not yet in effect. The SSH server is spliced into the packet path when the daemon starts, so it will not serve sessions until then.',
+        title: tr('mh.rcfg.st.restart'),
+        detail: tr('mh.rcfg.st.restartDetail'),
       }
     case 'refused':
       return {
@@ -369,41 +369,40 @@ const status = computed<{ type: 'success' | 'info' | 'warning' | 'error'; icon: 
         icon: 'mdi-hand-back-left-outline',
         title:
           report.value?.outcome === 'not_primary'
-            ? 'Refused — this organization is a secondary on that host'
-            : 'Refused — the device has not opted in',
+            ? tr('mh.rcfg.st.secondary')
+            : tr('mh.rcfg.st.notOptedIn'),
         detail:
           report.value?.outcome === 'not_primary'
-            ? 'These keys are machine-wide, so only the device’s primary enrollment may change them. Ask an admin of that organization, or configure the host directly.'
-            : 'Someone with access to the machine must run `roomler config set remote_config_enabled true` on it. That switch cannot be set from here — which is the point: it is what keeps a compromised server from opening your devices.',
+            ? tr('mh.rcfg.st.secondaryDetail')
+            : tr('mh.rcfg.st.notOptedInDetail', { cmd: '`roomler config set remote_config_enabled true`' }),
       }
     case 'failed':
       return {
         type: 'error',
         icon: 'mdi-alert-circle-outline',
-        title: 'The device tried and failed',
-        detail: 'It could not write its configuration. Usually a permissions or disk problem on the host.',
+        title: tr('mh.rcfg.st.failed'),
+        detail: tr('mh.rcfg.st.failedDetail'),
       }
     case 'pending':
       return {
         type: 'info',
         icon: 'mdi-clock-outline',
-        title: 'Waiting for the device',
-        detail:
-          'Requested. The device reconciles when it next connects — an offline device picks this up on its own, nothing needs re-sending.',
+        title: tr('mh.rcfg.st.pending'),
+        detail: tr('mh.rcfg.st.pendingDetail'),
       }
     case 'reports_unsupported':
       return {
         type: 'info',
         icon: 'mdi-help-circle-outline',
-        title: 'This device cannot report back',
-        detail: `Agent ${agent.value?.agent_version ?? '?'} understands a pushed configuration but not how to say what it did with it. It may well have applied this — there is no way to tell from here. Update the device to find out.`,
+        title: tr('mh.rcfg.st.noReport'),
+        detail: tr('mh.rcfg.st.noReportDetail', { v: agent.value?.agent_version ?? '?' }),
       }
     case 'push_unsupported':
       return {
         type: 'warning',
         icon: 'mdi-update',
-        title: 'This device is too old',
-        detail: `Agent ${agent.value?.agent_version ?? '?'} predates remote configuration, so nothing is sent to it at all. Update it, or set these keys on the host directly.`,
+        title: tr('mh.rcfg.st.tooOld'),
+        detail: tr('mh.rcfg.st.tooOldDetail', { v: agent.value?.agent_version ?? '?' }),
       }
     default:
       return null
@@ -417,18 +416,12 @@ const combinationWarnings = computed<string[]>(() => {
   if (d.ssh_enabled === true) {
     const keys = d.ssh_authorized_keys
     if (keys && keys.length === 0) {
-      out.push(
-        'SSH is on with an empty key list, which means nobody can connect. Add a key, or leave the key list unmanaged to keep the device’s own.',
-      )
+      out.push(tr('mh.rcfg.warn.emptyKeys'))
     }
     if (keys === undefined && !d.ssh_account_mode) {
-      out.push(
-        'Turning SSH on grants nothing by itself: the device also needs authorized keys and an account mode. If it already has them, ignore this.',
-      )
+      out.push(tr('mh.rcfg.warn.sshAlone'))
     } else if (keys && keys.length > 0 && !d.ssh_account_mode) {
-      out.push(
-        'You are sending keys but not an account mode. A key-list session on a device whose account mode is unset authenticates and then runs nothing.',
-      )
+      out.push(tr('mh.rcfg.warn.noAccount'))
     }
   }
   return out
@@ -477,10 +470,10 @@ const fpsDenyText = computed({
     draft.value.fps_deny = t === '' ? undefined : t
   },
 })
-const accountOptions = [
-  { title: 'The signed-in user at the device', value: 'console_user' },
-  { title: 'The daemon account (SYSTEM / root)', value: 'daemon' },
-]
+const accountOptions = computed(() => [
+  { title: tr('mh.sshp.opt.signedIn'), value: 'console_user' },
+  { title: tr('mh.rcfg.daemonAccount'), value: 'daemon' },
+])
 
 const dirty = computed(() => JSON.stringify(draft.value) !== original.value)
 
@@ -516,7 +509,7 @@ async function submit(body: Draft) {
     // A 403 here is the "you cannot grant what you do not hold" rule, and the
     // dialog stays OPEN so the admin sees which bit they are missing rather
     // than walking away believing the change landed.
-    error.value = e instanceof Error ? e.message : 'Could not record the request.'
+    error.value = e instanceof Error ? e.message : tr('mh.rcfg.saveFailed')
   }
 }
 

@@ -8,7 +8,7 @@
         <!-- The span shrinks with an ellipsis (min-width: 0), so the title's own
              buttons stay on screen: a title never wraps, and a long device name
              used to push Close or Refresh past the edge on a phone. -->
-        <span class="text-truncate" style="min-width: 0">External access — {{ deviceLabel(agent) }}</span>
+        <span class="text-truncate" style="min-width: 0">{{ t('mh.ext.title', { name: deviceLabel(agent) }) }}</span>
       </v-card-title>
 
       <v-card-text>
@@ -22,11 +22,10 @@
           class="mb-4"
           icon="mdi-shield-account-outline"
         >
-          This lets someone who is <strong>not a member of your
-          organization</strong> control this device. They will need its
-          connect code and the password set <strong>on the machine
-          itself</strong> — and whoever is at the device is still asked before
-          a session starts.
+          <i18n-t keypath="mh.ext.warn" tag="span" scope="global">
+            <template #notMember><strong>{{ t('mh.ext.notMember') }}</strong></template>
+            <template #onMachine><strong>{{ t('mh.ext.onMachine') }}</strong></template>
+          </i18n-t>
         </v-alert>
 
         <v-switch
@@ -35,32 +34,31 @@
           hide-details
           density="compact"
           :disabled="!supported && !alreadyApproved"
-          label="Allow people outside this organization to control this device"
+          :label="t('mh.ext.allow')"
         />
         <div class="text-caption text-medium-emphasis mb-4 ml-10">
-          Off by default. Approving is the second of five gates — on its own it
-          opens nothing.
+          {{ t('mh.ext.allowHint') }}
         </div>
 
         <v-select
           v-model="ceiling"
           :items="ceilingOptions"
-          label="An outside session may at most"
+          :label="t('mh.ext.ceiling')"
           density="compact"
           variant="outlined"
           class="mt-4"
           hide-details
         />
         <div class="text-caption text-medium-emphasis mb-4">
-          A ceiling, not a grant — the device can be more restrictive, never
-          less. <strong>View only</strong> is the safe answer for anyone you
-          are letting watch rather than work.
+          <i18n-t keypath="mh.ext.ceilingHint" tag="span" scope="global">
+            <template #viewOnly><strong>{{ t('mh.ext.viewOnly') }}</strong></template>
+          </i18n-t>
         </div>
 
         <v-text-field
           v-model="expiryLocal"
           type="datetime-local"
-          label="Approval expires (optional)"
+          :label="t('mh.ext.expires')"
           density="compact"
           variant="outlined"
           class="mt-4"
@@ -68,19 +66,16 @@
           clearable
         />
         <div class="text-caption text-medium-emphasis mb-4">
-          Leave empty and the approval stands until someone clears it. Most
-          reasons for granting this — a contractor, a support engagement — have
-          an end date, and an approval nobody has to remember to revoke is one
-          that outlives its reason.
+          {{ t('mh.ext.expiresHint') }}
         </div>
 
         <!-- The connect code. Not a secret, but it IS the address, so it sits
              behind this dialog rather than on the device list. -->
         <v-divider class="my-4" />
-        <div class="text-subtitle-2 mb-1">Connect code</div>
+        <div class="text-subtitle-2 mb-1">{{ t('mh.ext.code') }}</div>
         <div class="d-flex align-center flex-wrap ga-2 mb-1">
           <code v-if="connectCode" class="text-h6">{{ connectCode }}</code>
-          <span v-else class="text-medium-emphasis">Not yet created</span>
+          <span v-else class="text-medium-emphasis">{{ t('mh.ext.codeNone') }}</span>
           <v-spacer />
           <v-btn
             size="small"
@@ -89,21 +84,17 @@
             prepend-icon="mdi-autorenew"
             @click="rotate"
           >
-            {{ connectCode ? 'Rotate' : 'Create' }}
+            {{ connectCode ? t('mh.ext.rotate') : t('mh.ext.create') }}
           </v-btn>
         </div>
         <div class="text-caption text-medium-emphasis mb-4">
-          This is what an outside person types to reach this device. Rotating
-          it is how you take a leaked code out of circulation — the old one
-          stops working immediately.
+          {{ t('mh.ext.codeHint') }}
         </div>
 
         <!-- The three gates this dialog cannot set. Without these an admin
              sets everything here and then wonders why nobody can connect. -->
         <v-alert v-if="orgDisabled" type="info" variant="tonal" density="compact" class="mt-4">
-          External access is switched off for the whole organization, so this
-          device will still refuse. An org owner enables it in Settings. It is
-          a separate switch from remote execution and SSH.
+          {{ t('mh.ext.orgOff') }}
         </v-alert>
         <v-alert
           v-if="!supported"
@@ -112,15 +103,12 @@
           density="compact"
           class="mt-4"
         >
-          This device's agent is too old for external access — it cannot tell
-          the person at the machine that the controller is from outside your
-          organization. Update the agent first.
+          {{ t('mh.ext.tooOld') }}
         </v-alert>
         <v-alert type="info" variant="tonal" density="compact" class="mt-4">
-          The device itself must also allow it, and must hold the password:
-          <code>roomler rc password set</code> on the host. That belongs to
-          whoever holds the machine and cannot be set from here — which is the
-          point: the password never reaches this server.
+          <i18n-t keypath="mh.ext.devicePassword" tag="span" scope="global">
+            <template #cmd><code>roomler rc password set</code></template>
+          </i18n-t>
         </v-alert>
 
         <v-alert v-if="error" type="error" variant="tonal" density="compact" class="mt-4">
@@ -130,8 +118,8 @@
 
       <v-card-actions>
         <v-spacer />
-        <v-btn variant="text" @click="close">Cancel</v-btn>
-        <v-btn color="primary" :loading="saving" @click="save">Save</v-btn>
+        <v-btn variant="text" @click="close">{{ t('common.cancel') }}</v-btn>
+        <v-btn color="primary" :loading="saving" @click="save">{{ t('common.save') }}</v-btn>
       </v-card-actions>
     </v-card>
   </v-dialog>
@@ -139,6 +127,7 @@
 
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useResponsiveDialog } from '@/composables/useResponsiveDialog'
 import { deviceLabel } from '@/composables/useHideDeviceName'
 import { useAgentStore, type Agent, type ExternalAccessPolicy } from '@/stores/agents'
@@ -154,6 +143,7 @@ const emit = defineEmits<{
   (e: 'saved'): void
 }>()
 
+const { t } = useI18n()
 const { fullscreen } = useResponsiveDialog()
 const open = computed({
   get: () => props.modelValue,
@@ -189,12 +179,12 @@ const draft = ref<ExternalAccessPolicy>(emptyPolicy())
 
 /** The ceiling as a plain choice. `null` means "the server's default", which
  *  IS view+input — so the option says so rather than reading as "unset". */
-const ceilingOptions = [
-  { title: 'View and control (default)', value: 'VIEW | INPUT' },
-  { title: 'View only — no keyboard or mouse', value: 'VIEW' },
-  { title: 'View, control and clipboard', value: 'VIEW | INPUT | CLIPBOARD' },
-  { title: 'View, control, clipboard and file transfer', value: 'VIEW | INPUT | CLIPBOARD | FILES' },
-]
+const ceilingOptions = computed(() => [
+  { title: t('mh.ext.ceil.viewInput'), value: 'VIEW | INPUT' },
+  { title: t('mh.ext.ceil.view'), value: 'VIEW' },
+  { title: t('mh.ext.ceil.clipboard'), value: 'VIEW | INPUT | CLIPBOARD' },
+  { title: t('mh.ext.ceil.files'), value: 'VIEW | INPUT | CLIPBOARD | FILES' },
+])
 
 const ceiling = computed({
   get: () => draft.value.max_permissions ?? 'VIEW | INPUT',
@@ -245,7 +235,7 @@ async function rotate() {
   try {
     connectCode.value = await agentStore.rotateConnectCode(props.tenantId, agent.value.id)
   } catch (e) {
-    error.value = e instanceof Error ? e.message : 'Could not create a connect code.'
+    error.value = e instanceof Error ? e.message : t('mh.ext.rotateFailed')
   } finally {
     rotating.value = false
   }
@@ -263,7 +253,7 @@ async function save() {
     // Keep the dialog OPEN on a refusal. The server refuses an approval on a
     // device whose agent is too old, and on a caller without REMOTE_CONTROL —
     // closing silently would leave the admin believing a stranger can connect.
-    error.value = e instanceof Error ? e.message : 'Could not save the policy.'
+    error.value = e instanceof Error ? e.message : t('mh.ext.saveFailed')
   } finally {
     saving.value = false
   }

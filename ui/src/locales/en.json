@@ -1296,6 +1296,304 @@
         "oldPush": "This agent predates remote configuration; nothing is sent to it.",
         "oldReport": "This agent applies pushed config but cannot report what it did."
       }
+    },
+    "common": {
+      "close": "Close"
+    },
+    "ago": {
+      "now": "just now",
+      "m": "{n}m ago",
+      "h": "{n}h ago",
+      "d": "{n}d ago",
+      "mo": "{n}mo ago",
+      "y": "{n}y ago"
+    },
+    "devEdit": {
+      "title": "Edit device",
+      "name": "Device name",
+      "displayName": "Display name (optional)",
+      "displayNameHint": "Friendly label shown in lists — never propagates anywhere. Leave empty to show the device name.",
+      "tags": "Tags",
+      "tagsHint": "Free-form labels for filtering and search (max 16, 40 chars each). Press Enter to add.",
+      "nameHintAgent": "Propagates to the overlay + MagicDNS label. Peers selecting this device as an exit node BY NAME must update their config — pin by node-id hex to be rename-proof.",
+      "nameHintClient": "Propagates to the overlay + MagicDNS label (server-side rename — the CLI keeps its local machine name).",
+      "nameEmpty": "Device name must not be empty.",
+      "dnsRenamed": "MagicDNS label is now \"{name}\" — peers resolve it immediately; the device itself picks up its new self-name on its next reconnect.",
+      "dnsKept": "The fleet name changed, but the overlay DNS label could not be updated (kept its old value)."
+    },
+    "policy": {
+      "consent": {
+        "prompt": "Prompt on host (attended)",
+        "auto": "Auto-grant (unattended)",
+        "email": "Email the owner",
+        "push": "Push to the owner",
+        "prompt_then_email": "Prompt host + email owner"
+      },
+      "input": {
+        "free": "Free-for-all (fenced)",
+        "exclusive": "Exclusive (one controller)"
+      },
+      "idle": {
+        "orgOnly": "Idle: org limit only",
+        "minutes": "Idle: {m} min",
+        "hint": "End a remote-desktop session to this device after this long with no input and no change on its screen. The shorter of this and the organization’s limit applies, so it can only tighten the org’s. The device keeps it: an agent that predates it does not. Applies to the next session."
+      },
+      "lock": {
+        "never": "Lock: the device decides",
+        "auto": "Lock: if locked or idle at the start",
+        "always": "Lock: always",
+        "hint": "Lock this device’s screen when the last remote-desktop session to it ends. “If locked or idle at the start” locks it again only if it was locked, or nobody was at it, when the session began. The device takes the stricter of this and its owner’s own setting, so this can only tighten it. Honoured by service installs on Windows and Linux, where a session can unlock the screen again; a per-user install, or an agent that predates it, does not take it. Applies to the next session."
+      },
+      "rcOverlay": {
+        "hint": "Off (default): remote desktop never rides the WireGuard mesh; it connects over the LAN, a direct path or a TURN relay. On: it may take the mesh when that is the best path, and inherits the mesh’s outages. Applies to the next session."
+      },
+      "owner": {
+        "applies": "Ask me too (you own this device; \"{mode}\" applies to you)",
+        "skipped": "Ask me too (you own this device, so consent is skipped for you)"
+      },
+      "short": {
+        "prompt": "Prompt on host",
+        "auto": "Auto-grant",
+        "email": "Email owner",
+        "push": "Push owner",
+        "prompt_then_email": "Prompt + email",
+        "skippedForYou": "skipped for you",
+        "oneController": "one controller",
+        "idle": "idle {m} min",
+        "lockIfLocked": "lock if locked at start",
+        "lockAtEnd": "lock at end",
+        "overMesh": "over the mesh"
+      },
+      "label": {
+        "consent": "Consent",
+        "input": "Input",
+        "idle": "Idle limit",
+        "lock": "Lock when sessions end",
+        "rcOverlay": "Remote desktop over the mesh"
+      },
+      "aria": {
+        "consent": "Consent mode for {name}",
+        "owner": "Apply the consent mode to me, the owner of {name}",
+        "input": "Input mode for {name}",
+        "idle": "Idle limit for {name}",
+        "lock": "Lock {name} when its remote sessions end",
+        "rcOverlay": "Let remote desktop to {name} use the mesh (overlay)"
+      },
+      "hideHints": "Hide what these do",
+      "showHints": "What do these do?"
+    },
+    "devMenu": {
+      "sec": {
+        "maintenance": "Maintenance",
+        "diagnostics": "Diagnostics",
+        "access": "Access",
+        "network": "Network"
+      },
+      "update": "Update now",
+      "rotateKey": "Rotate overlay key…",
+      "crashes": "Crash reports",
+      "logs": "Agent logs",
+      "console": "Device console",
+      "edit": "Edit name & tags",
+      "joinOrg": "Add to another organization",
+      "reassign": "Reassign owner",
+      "execPolicy": "Execution policy",
+      "sshPolicy": "SSH policy",
+      "externalAccess": "External access",
+      "remoteConfig": "Device configuration",
+      "routes": "Tunnel mesh routes",
+      "overlayRoutes": "Overlay routes",
+      "overlayAcl": "Overlay ACL",
+      "delete": "Delete device",
+      "deleteTunnel": "Delete tunnel client",
+      "evict": "Evict / reassign overlay address",
+      "removeMesh": "Remove from mesh",
+      "aria": "Actions for {name}"
+    },
+    "ext": {
+      "title": "External access — {name}",
+      "warn": "This lets someone who is {notMember} control this device. They will need its connect code and the password set {onMachine} — and whoever is at the device is still asked before a session starts.",
+      "notMember": "not a member of your organization",
+      "onMachine": "on the machine itself",
+      "allow": "Allow people outside this organization to control this device",
+      "allowHint": "Off by default. Approving is the second of five gates — on its own it opens nothing.",
+      "ceiling": "An outside session may at most",
+      "ceilingHint": "A ceiling, not a grant — the device can be more restrictive, never less. {viewOnly} is the safe answer for anyone you are letting watch rather than work.",
+      "viewOnly": "View only",
+      "expires": "Approval expires (optional)",
+      "expiresHint": "Leave empty and the approval stands until someone clears it. Most reasons for granting this — a contractor, a support engagement — have an end date, and an approval nobody has to remember to revoke is one that outlives its reason.",
+      "code": "Connect code",
+      "codeNone": "Not yet created",
+      "rotate": "Rotate",
+      "create": "Create",
+      "codeHint": "This is what an outside person types to reach this device. Rotating it is how you take a leaked code out of circulation — the old one stops working immediately.",
+      "orgOff": "External access is switched off for the whole organization, so this device will still refuse. An org owner enables it in Settings. It is a separate switch from remote execution and SSH.",
+      "tooOld": "This device's agent is too old for external access — it cannot tell the person at the machine that the controller is from outside your organization. Update the agent first.",
+      "devicePassword": "The device itself must also allow it, and must hold the password: {cmd} on the host. That belongs to whoever holds the machine and cannot be set from here — which is the point: the password never reaches this server.",
+      "ceil": {
+        "viewInput": "View and control (default)",
+        "view": "View only — no keyboard or mouse",
+        "clipboard": "View, control and clipboard",
+        "files": "View, control, clipboard and file transfer"
+      },
+      "rotateFailed": "Could not create a connect code.",
+      "saveFailed": "Could not save the policy."
+    },
+    "crash": {
+      "title": "Crash reports — {name}",
+      "refresh": "Refresh crash list",
+      "none": "No crashes reported. Nice.",
+      "col": {
+        "when": "When",
+        "reason": "Reason",
+        "summary": "Summary"
+      },
+      "host": "Host:",
+      "agent": "Agent:",
+      "os": "OS:",
+      "pid": "PID:",
+      "reported": "Reported:",
+      "noTail": "(no log tail attached)",
+      "reason": {
+        "panic": "Panic",
+        "watchdog": "Watchdog stall",
+        "supervisor": "Supervisor"
+      }
+    },
+    "logs": {
+      "title": "Agent logs — {name}",
+      "refresh": "Refresh logs",
+      "minLevel": "Min level",
+      "filter": "Target / message contains",
+      "throughput": "Tunnel throughput only",
+      "count": "{shown} / {total} lines",
+      "none": "No logs uploaded yet.",
+      "noneHint": "The agent uploads logs in batches; if it just started or has been idle, give it a minute and hit refresh.",
+      "noMatch": "No lines match the current filter.",
+      "batches": "{n} batch(es) · newest {age}",
+      "copy": "Copy visible"
+    },
+    "exec": {
+      "title": "Execution policy — {name}",
+      "warn": "Allowing remote execution on this device lets permitted users run commands as {root} (Linux) or, on Windows, as {system} once the device is anchored (otherwise as the {signedIn} on an attended install, and as SYSTEM in SystemContext mode). It is a separate power from remote control, which is consent-gated and visible on screen.",
+      "signedIn": "signed-in user",
+      "anchored": "Anchored {when}: commands run as {system} through this device's service.",
+      "unanchor": "Un-anchor",
+      "notAnchored": "Not anchored: commands run as the {signedIn} (an attended install) or as SYSTEM (SystemContext mode). To run them as SYSTEM, on the device, from an elevated prompt:",
+      "accept": "Accept remote commands on this device",
+      "originate": "Allow this device to run commands on OTHER devices (roomler exec)",
+      "originateHint": "Off by default. Without it, a compromised copy of this device could use its owner's permissions across the whole fleet.",
+      "runAs": "Run commands as",
+      "runAsWin": "{system} is the default. {signedIn} runs each command as whoever is signed in at the console, and is refused when nobody is. Both go through the device's service, so the device must be anchored.",
+      "runAsSignedIn": "The signed-in user",
+      "runAsUnix": "{root} is the default. {person} runs each command as whoever is signed in at its own screen, and is refused when nobody is.",
+      "runAsPerson": "The person at the device's screen",
+      "runAsTooOld": "This device's agent cannot do that yet: update it, or choose root.",
+      "consentHint": "{prompt} asks whoever is at the device and denies after 30 s of silence — right for workstations. {unattended} runs immediately — right for servers with nobody sitting at them.",
+      "prompt": "Prompt",
+      "unattended": "Unattended",
+      "users": "Restrict to these users (empty = anyone with the permission)",
+      "shells": "Allowed shells (empty = any the host supports)",
+      "orgOff": "Remote execution is switched off for the whole organization, so this device will still refuse. An org owner enables it in Settings.",
+      "deviceSwitch": "The device itself must also allow it: {cmd} on the host, then restart the service. That switch belongs to whoever holds the machine and cannot be set from here.",
+      "anchorSwitch": "An anchored device's service checks its own switch as well ({cmd}, elevated).",
+      "consent": {
+        "prompt": "Prompt at the device (recommended)",
+        "auto": "Unattended — run immediately"
+      },
+      "opt": {
+        "system": "SYSTEM (default)",
+        "signedIn": "The signed-in user",
+        "root": "root (default)",
+        "person": "The person at the device's screen"
+      }
+    },
+    "sshp": {
+      "title": "SSH policy — {name}",
+      "warn": "Allowing SSH lets permitted users open an {shell} on this device. It is a separate power from remote execution — a session lasts, and it is not one bounded command you can read back afterwards.",
+      "shell": "interactive shell",
+      "accept": "Accept SSH sessions on this device",
+      "originate": "Allow this device to open sessions on OTHER devices",
+      "runAs": "Sessions run as",
+      "coerced": "This device had been set to {signedIn}, which its agent cannot do — it refuses it, so every session was failing at connect time. Update the agent, or pick an account and save to fix it.",
+      "signedInLower": "the signed-in user",
+      "signedIn": "The signed-in user",
+      "systemService": "SYSTEM service",
+      "daemon": "The daemon account",
+      "idService": "This device serves SSH through its {service}. {signedIn} is whoever is at its console, and a session is refused while nobody is; it is the least surprising choice on a workstation. {daemon} is {system}: choosing it grants full control of this device.",
+      "idAgent": "{daemon} is the agent's own: {system} on a service install, but {signedInLower} on an attended one. {signedIn} works on a service install; an attended install serves it only through the device's SYSTEM service, which an administrator turns on there with {cmd}.",
+      "idUnixNamed": "{named} is the least surprising choice on a server.",
+      "namedAccount": "A named account",
+      "idUnixPerson": "{person} is whoever is signed in at its own screen, and a session is refused while nobody is.",
+      "idUnixDaemon": "{daemon} means {root} — choosing it grants root on this device.",
+      "personNeedsNewer": "\"The person at the device's screen\" needs a newer agent on this device.",
+      "accountName": "Account name",
+      "accountPlaceholder": "e.g. deploy",
+      "unixOnly": "Unix only — a Windows device refuses this mode rather than quietly falling back to another account.",
+      "consentHint": "{prompt} asks whoever is at the device and denies after 30 s of silence — right for workstations. {unattended} opens immediately — right for servers with nobody sitting at them. A denied prompt burns the grant, so the caller must request a new one rather than re-dialling.",
+      "orgOff": "SSH is switched off for the whole organization, so this device will still refuse. An org owner enables it in Settings. It is a separate switch from remote execution.",
+      "opt": {
+        "signedIn": "The signed-in user at the device",
+        "daemonRoot": "The daemon account (root)",
+        "daemonSystem": "The daemon account (SYSTEM)",
+        "daemonAgent": "The daemon account (the agent's own)",
+        "named": "A named Unix account…"
+      },
+      "consentAuto": "Unattended — open immediately"
+    },
+    "rcfg": {
+      "title": "Device configuration — {name}",
+      "intro": "This records what you want the device to run. The device applies it the next time it connects — and it may refuse: these switches belong to whoever holds the machine, and a device only accepts them after someone enables {key} on it directly.",
+      "inForce": "In force now:",
+      "waitingRestart": "Saved on the device, waiting for a restart:",
+      "exec": "Remote execution",
+      "execSwitch": "Accept remote commands (exec_enabled)",
+      "execHint": "Commands run as the daemon: {root} under systemd; on Windows the {signedIn} (an attended install) or {system} (SystemContext mode). Takes effect immediately on the device; no restart.",
+      "needExec": "You need the {perm} permission to change this. Opening a door you cannot walk through is the same escalation as granting yourself the key.",
+      "sshSwitch": "Run the SSH server (ssh_enabled)",
+      "keys": "Authorized keys — one OpenSSH public key per line",
+      "keysHint": "Leave the box untouched to keep whatever the device already has. An empty list means {nobody}.",
+      "nobody": "nobody",
+      "accountMode": "Key-list sessions run as",
+      "accountHint": "Cleared = not managed. Unset {onDevice} means a key-list session authenticates and then runs {nothing} — deliberately, so an unread setting cannot quietly hand out SYSTEM/root.",
+      "onDevice": "on the device",
+      "nothing": "nothing",
+      "port": "SSH port (blank = not managed; the device's default is 2222)",
+      "portHint": "2222 rather than 22 so an existing {sshd} keeps serving the overlay address.",
+      "needSsh": "You need the {perm} permission to change any of these. Handing out authorized keys or an account mode is granting SSH just as much as flipping the switch is.",
+      "encoders": "Video encoders",
+      "cellsDeny": "Encoder cells to deny (encoder_cells_deny)",
+      "cellsHint": "Comma-separated {form} cells the device must not open or advertise — the cell matrix's kill switch. Blank = not managed (the device keeps its own list, built-in {builtin}); {none} = deny nothing. It only ever removes cells, so no extra permission bit; takes effect at the next daemon restart.",
+      "fpsDeny": "Frame rates to deny (fps_deny)",
+      "fpsHint": "Comma-separated {form} rates above 60 the device must not grant, {star} for every encoder. Blank = not managed (the device keeps its own, which denies nothing unless set there); {none} = deny nothing. It only ever removes rates, so no extra permission bit; takes effect at the next daemon restart.",
+      "sshOrgOff": "SSH is switched off for the whole organization — a separate switch from remote execution. An org owner enables it in Settings.",
+      "stop": "Stop managing",
+      "request": "Request",
+      "st": {
+        "applied": "Applied",
+        "appliedDetail": "The device confirmed this configuration and it is in force.",
+        "restart": "Saved on the device — restart required",
+        "restartDetail": "These keys are written to disk but not yet in effect. The SSH server is spliced into the packet path when the daemon starts, so it will not serve sessions until then.",
+        "secondary": "Refused — this organization is a secondary on that host",
+        "notOptedIn": "Refused — the device has not opted in",
+        "secondaryDetail": "These keys are machine-wide, so only the device’s primary enrollment may change them. Ask an admin of that organization, or configure the host directly.",
+        "notOptedInDetail": "Someone with access to the machine must run {cmd} on it. That switch cannot be set from here — which is the point: it is what keeps a compromised server from opening your devices.",
+        "failed": "The device tried and failed",
+        "failedDetail": "It could not write its configuration. Usually a permissions or disk problem on the host.",
+        "pending": "Waiting for the device",
+        "pendingDetail": "Requested. The device reconciles when it next connects — an offline device picks this up on its own, nothing needs re-sending.",
+        "noReport": "This device cannot report back",
+        "noReportDetail": "Agent {v} understands a pushed configuration but not how to say what it did with it. It may well have applied this — there is no way to tell from here. Update the device to find out.",
+        "tooOld": "This device is too old",
+        "tooOldDetail": "Agent {v} predates remote configuration, so nothing is sent to it at all. Update it, or set these keys on the host directly."
+      },
+      "warn": {
+        "emptyKeys": "SSH is on with an empty key list, which means nobody can connect. Add a key, or leave the key list unmanaged to keep the device’s own.",
+        "sshAlone": "Turning SSH on grants nothing by itself: the device also needs authorized keys and an account mode. If it already has them, ignore this.",
+        "noAccount": "You are sending keys but not an account mode. A key-list session on a device whose account mode is unset authenticates and then runs nothing."
+      },
+      "daemonAccount": "The daemon account (SYSTEM / root)",
+      "saveFailed": "Could not record the request."
     }
   }
 }

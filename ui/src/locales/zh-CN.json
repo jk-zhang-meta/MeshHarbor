@@ -731,6 +731,304 @@
       "enrollWith": "注册命令：",
       "mint": "生成",
       "done": "完成"
+    },
+    "common": {
+      "close": "关闭"
+    },
+    "ago": {
+      "now": "刚刚",
+      "m": "{n} 分钟前",
+      "h": "{n} 小时前",
+      "d": "{n} 天前",
+      "mo": "{n} 个月前",
+      "y": "{n} 年前"
+    },
+    "devEdit": {
+      "title": "编辑设备",
+      "name": "设备名称",
+      "displayName": "显示名称（可选）",
+      "displayNameHint": "仅在列表中显示的友好名称，不会同步到任何地方。留空则显示设备名称。",
+      "tags": "标签",
+      "tagsHint": "用于筛选和搜索的自由标签（最多 16 个，每个 40 字符）。按回车添加。",
+      "nameHintAgent": "会同步到覆盖网络和 MagicDNS 名称。按名称把此设备选为出口节点的对端需要更新配置；用节点 ID（十六进制）固定可不受改名影响。",
+      "nameHintClient": "会同步到覆盖网络和 MagicDNS 名称（仅服务器端改名，命令行客户端保留本机名称）。",
+      "nameEmpty": "设备名称不能为空。",
+      "dnsRenamed": "MagicDNS 名称已改为“{name}”。对端立即可以解析；设备本身在下次重连时使用新名称。",
+      "dnsKept": "设备名称已修改，但覆盖网络 DNS 名称未能更新（仍为旧值）。"
+    },
+    "policy": {
+      "consent": {
+        "prompt": "在设备上询问（有人值守）",
+        "auto": "自动允许（无人值守）",
+        "email": "邮件通知所有者",
+        "push": "推送给所有者",
+        "prompt_then_email": "设备询问 + 邮件通知所有者"
+      },
+      "input": {
+        "free": "多人同时操作（有隔离）",
+        "exclusive": "独占（同时一人控制）"
+      },
+      "idle": {
+        "orgOnly": "闲置：仅按组织限制",
+        "minutes": "闲置：{m} 分钟",
+        "hint": "远程桌面会话在这段时间内既没有输入、屏幕也没有变化时自动结束。此值与组织限制取较短者，所以只能比组织更严格。设置保存在设备上；早于此功能的客户端不支持。从下一个会话开始生效。"
+      },
+      "lock": {
+        "never": "锁屏：由设备决定",
+        "auto": "锁屏：开始时已锁定或无人时",
+        "always": "锁屏：总是",
+        "hint": "最后一个远程桌面会话结束时锁定此设备的屏幕。“开始时已锁定或无人时”只在会话开始时屏幕已锁定或无人使用的情况下重新锁定。设备会在此设置与所有者自己的设置中取更严格者，所以这里只能收紧。Windows 和 Linux 的服务安装方式支持（会话可以重新解锁屏幕）；按用户安装或较旧的客户端不支持。从下一个会话开始生效。"
+      },
+      "rcOverlay": {
+        "hint": "关闭（默认）：远程桌面不走 WireGuard 网状网络，而是通过局域网、直连或 TURN 中继连接。开启：当网状网络是最佳路径时可以使用它，但也会受其故障影响。从下一个会话开始生效。"
+      },
+      "owner": {
+        "applies": "也询问我（你是此设备的所有者；“{mode}”对你同样适用）",
+        "skipped": "也询问我（你是此设备的所有者，因此对你跳过确认）"
+      },
+      "short": {
+        "prompt": "设备询问",
+        "auto": "自动允许",
+        "email": "邮件通知所有者",
+        "push": "推送所有者",
+        "prompt_then_email": "询问 + 邮件",
+        "skippedForYou": "对你跳过",
+        "oneController": "单人控制",
+        "idle": "闲置 {m} 分钟",
+        "lockIfLocked": "开始时锁定则锁屏",
+        "lockAtEnd": "结束时锁屏",
+        "overMesh": "经网状网络"
+      },
+      "label": {
+        "consent": "确认方式",
+        "input": "输入",
+        "idle": "闲置限制",
+        "lock": "会话结束时锁屏",
+        "rcOverlay": "远程桌面走网状网络"
+      },
+      "aria": {
+        "consent": "{name} 的确认方式",
+        "owner": "对我（{name} 的所有者）也应用确认方式",
+        "input": "{name} 的输入模式",
+        "idle": "{name} 的闲置限制",
+        "lock": "{name} 的远程会话结束时锁屏",
+        "rcOverlay": "允许到 {name} 的远程桌面使用网状网络（覆盖网络）"
+      },
+      "hideHints": "隐藏说明",
+      "showHints": "这些设置有什么作用？"
+    },
+    "devMenu": {
+      "sec": {
+        "maintenance": "维护",
+        "diagnostics": "诊断",
+        "access": "访问",
+        "network": "网络"
+      },
+      "update": "立即更新",
+      "rotateKey": "轮换覆盖网络密钥…",
+      "crashes": "崩溃报告",
+      "logs": "客户端日志",
+      "console": "设备控制台",
+      "edit": "编辑名称和标签",
+      "joinOrg": "加入另一个组织",
+      "reassign": "更换所有者",
+      "execPolicy": "命令执行策略",
+      "sshPolicy": "SSH 策略",
+      "externalAccess": "外部访问",
+      "remoteConfig": "设备配置",
+      "routes": "隧道网状路由",
+      "overlayRoutes": "覆盖网络路由",
+      "overlayAcl": "覆盖网络 ACL",
+      "delete": "删除设备",
+      "deleteTunnel": "删除隧道客户端",
+      "evict": "驱逐 / 重新分配覆盖网络地址",
+      "removeMesh": "移出网状网络",
+      "aria": "{name} 的操作"
+    },
+    "ext": {
+      "title": "外部访问 — {name}",
+      "warn": "这允许{notMember}的人控制此设备。对方需要连接码和{onMachine}设置的密码；会话开始前仍会询问设备前的人。",
+      "notMember": "不属于你的组织",
+      "onMachine": "在设备本机上",
+      "allow": "允许组织外的人控制此设备",
+      "allowHint": "默认关闭。批准只是五道关卡中的第二道，单独开启不会放行任何人。",
+      "ceiling": "外部会话最多可以",
+      "ceilingHint": "这是上限而不是授权：设备可以更严格，但不会更宽松。对只需观看、不需操作的人，{viewOnly}是稳妥的选择。",
+      "viewOnly": "仅查看",
+      "expires": "批准到期时间（可选）",
+      "expiresHint": "留空则批准一直有效，直到有人清除。大多数授权理由（外包人员、技术支持）都有结束日期；设置到期时间可以避免批准在不再需要后仍然有效。",
+      "code": "连接码",
+      "codeNone": "尚未创建",
+      "rotate": "轮换",
+      "create": "创建",
+      "codeHint": "外部人员输入此码来连接此设备。轮换可以让泄露的码失效，旧码会立即停止工作。",
+      "orgOff": "整个组织已关闭外部访问，所以此设备仍会拒绝。组织所有者可在设置中开启。它与远程执行和 SSH 是不同的开关。",
+      "tooOld": "此设备的客户端版本太旧，不支持外部访问：它无法告诉设备前的人控制者来自组织外。请先更新客户端。",
+      "devicePassword": "设备本身也必须允许，并且设置密码：在设备上运行 {cmd}。这由设备持有人决定，无法在这里设置，这正是设计目的：密码永远不会到达服务器。",
+      "ceil": {
+        "viewInput": "查看和控制（默认）",
+        "view": "仅查看（无键盘鼠标）",
+        "clipboard": "查看、控制和剪贴板",
+        "files": "查看、控制、剪贴板和文件传输"
+      },
+      "rotateFailed": "无法创建连接码。",
+      "saveFailed": "无法保存策略。"
+    },
+    "crash": {
+      "title": "崩溃报告 — {name}",
+      "refresh": "刷新崩溃列表",
+      "none": "没有崩溃报告。",
+      "col": {
+        "when": "时间",
+        "reason": "原因",
+        "summary": "摘要"
+      },
+      "host": "主机：",
+      "agent": "客户端：",
+      "os": "系统：",
+      "pid": "PID：",
+      "reported": "上报：",
+      "noTail": "（未附带日志）",
+      "reason": {
+        "panic": "崩溃（panic）",
+        "watchdog": "看门狗超时",
+        "supervisor": "守护进程检测"
+      }
+    },
+    "logs": {
+      "title": "客户端日志 — {name}",
+      "refresh": "刷新日志",
+      "minLevel": "最低级别",
+      "filter": "目标 / 消息包含",
+      "throughput": "仅隧道吞吐",
+      "count": "{shown} / {total} 行",
+      "none": "尚未上传日志。",
+      "noneHint": "客户端分批上传日志；如果刚启动或一直空闲，请稍等一分钟再刷新。",
+      "noMatch": "没有符合当前筛选的行。",
+      "batches": "{n} 批 · 最新 {age}",
+      "copy": "复制可见内容"
+    },
+    "exec": {
+      "title": "命令执行策略 — {name}",
+      "warn": "允许远程执行后，获准的用户可以以 {root}（Linux）身份运行命令；在 Windows 上，设备锚定后以 {system} 身份运行（否则在有人值守安装中以{signedIn}身份运行，在 SystemContext 模式下以 SYSTEM 运行）。这与远程控制是不同的权限，远程控制需要确认且在屏幕上可见。",
+      "signedIn": "当前登录用户",
+      "anchored": "已于 {when} 锚定：命令通过此设备的服务以 {system} 身份运行。",
+      "unanchor": "取消锚定",
+      "notAnchored": "未锚定：命令以{signedIn}身份（有人值守安装）或 SYSTEM 身份（SystemContext 模式）运行。要以 SYSTEM 运行，请在设备上以管理员身份执行：",
+      "accept": "允许在此设备上执行远程命令",
+      "originate": "允许此设备在其他设备上执行命令（roomler exec）",
+      "originateHint": "默认关闭。这样即使此设备被入侵，也无法借用其所有者的权限访问所有设备。",
+      "runAs": "命令运行身份",
+      "runAsWin": "默认为 {system}。{signedIn}以控制台当前登录的人运行命令，无人登录时拒绝。两者都通过设备的服务运行，因此设备必须已锚定。",
+      "runAsSignedIn": "当前登录用户",
+      "runAsUnix": "默认为 {root}。{person}以设备屏幕前当前登录的人运行命令，无人登录时拒绝。",
+      "runAsPerson": "设备屏幕前的用户",
+      "runAsTooOld": "此设备的客户端尚不支持：请更新，或选择 root。",
+      "consentHint": "{prompt}会询问设备前的人，30 秒无应答则拒绝，适合工作站。{unattended}立即运行，适合无人值守的服务器。",
+      "prompt": "询问",
+      "unattended": "无人值守",
+      "users": "仅限这些用户（留空 = 所有有权限的人）",
+      "shells": "允许的 shell（留空 = 设备支持的任意 shell）",
+      "orgOff": "整个组织已关闭远程执行，所以此设备仍会拒绝。组织所有者可在设置中开启。",
+      "deviceSwitch": "设备本身也必须允许：在设备上运行 {cmd}，然后重启服务。这个开关属于设备持有人，无法在这里设置。",
+      "anchorSwitch": "已锚定设备的服务还会检查自己的开关（以管理员身份运行 {cmd}）。",
+      "consent": {
+        "prompt": "在设备上询问（推荐）",
+        "auto": "无人值守：立即运行"
+      },
+      "opt": {
+        "system": "SYSTEM（默认）",
+        "signedIn": "当前登录用户",
+        "root": "root（默认）",
+        "person": "设备屏幕前的用户"
+      }
+    },
+    "sshp": {
+      "title": "SSH 策略 — {name}",
+      "warn": "允许 SSH 后，获准的用户可以在此设备上打开{shell}。这与远程执行是不同的权限：会话会持续存在，而不是一条事后可查看的单独命令。",
+      "shell": "交互式 shell",
+      "accept": "允许此设备接受 SSH 会话",
+      "originate": "允许此设备在其他设备上打开会话",
+      "runAs": "会话运行身份",
+      "coerced": "此设备曾被设置为{signedIn}，但其客户端不支持，会拒绝，所以每个会话都在连接时失败。请更新客户端，或选择一个账号并保存。",
+      "signedInLower": "当前登录用户",
+      "signedIn": "当前登录用户",
+      "systemService": "SYSTEM 服务",
+      "daemon": "守护进程账号",
+      "idService": "此设备通过其 {service}提供 SSH。{signedIn}是控制台前的人，无人时拒绝会话；这是工作站上最稳妥的选择。{daemon}即 {system}：选择它等于授予此设备的完全控制权。",
+      "idAgent": "{daemon}是客户端自身的账号：服务安装时为 {system}，有人值守安装时为{signedInLower}。{signedIn}在服务安装中可用；有人值守安装只能通过设备的 SYSTEM 服务提供，管理员需在设备上运行 {cmd} 开启。",
+      "idUnixNamed": "在服务器上，{named}是最稳妥的选择。",
+      "namedAccount": "指定账号",
+      "idUnixPerson": "{person}是设备屏幕前当前登录的人，无人时拒绝会话。",
+      "idUnixDaemon": "{daemon}即 {root}：选择它等于授予此设备的 root 权限。",
+      "personNeedsNewer": "“设备屏幕前的用户”需要此设备安装更新的客户端。",
+      "accountName": "账号名",
+      "accountPlaceholder": "例如 deploy",
+      "unixOnly": "仅限 Unix：Windows 设备会拒绝此模式，而不会悄悄改用其他账号。",
+      "consentHint": "{prompt}会询问设备前的人，30 秒无应答则拒绝，适合工作站。{unattended}立即打开，适合无人值守的服务器。被拒绝后授权即作废，调用方必须重新申请，而不能直接重连。",
+      "orgOff": "整个组织已关闭 SSH，所以此设备仍会拒绝。组织所有者可在设置中开启。它与远程执行是不同的开关。",
+      "opt": {
+        "signedIn": "设备上的当前登录用户",
+        "daemonRoot": "守护进程账号（root）",
+        "daemonSystem": "守护进程账号（SYSTEM）",
+        "daemonAgent": "守护进程账号（客户端自身）",
+        "named": "指定 Unix 账号…"
+      },
+      "consentAuto": "无人值守：立即打开"
+    },
+    "rcfg": {
+      "title": "设备配置 — {name}",
+      "intro": "这里记录你希望设备运行的配置。设备会在下次连接时应用，也可能拒绝：这些开关属于设备持有人，只有在设备本机上开启 {key} 之后，设备才会接受。",
+      "inForce": "当前生效：",
+      "waitingRestart": "已保存在设备上，等待重启：",
+      "exec": "远程执行",
+      "execSwitch": "接受远程命令（exec_enabled）",
+      "execHint": "命令以守护进程身份运行：systemd 下为 {root}；Windows 上为{signedIn}（有人值守安装）或 {system}（SystemContext 模式）。在设备上立即生效，无需重启。",
+      "needExec": "需要 {perm} 权限才能修改。为自己无权进入的门开锁，与给自己发钥匙是同样的越权。",
+      "sshSwitch": "运行 SSH 服务（ssh_enabled）",
+      "keys": "授权公钥：每行一个 OpenSSH 公钥",
+      "keysHint": "不修改此框则保留设备现有的公钥。空列表表示{nobody}。",
+      "nobody": "任何人都不能连接",
+      "accountMode": "公钥会话运行身份",
+      "accountHint": "清空 = 不管理。{onDevice}未设置时，公钥会话认证后{nothing}，这是有意的设计，避免一个没人看过的设置悄悄交出 SYSTEM/root。",
+      "onDevice": "设备上",
+      "nothing": "不运行任何程序",
+      "port": "SSH 端口（留空 = 不管理；设备默认 2222）",
+      "portHint": "使用 2222 而不是 22，以便现有的 {sshd} 继续服务覆盖网络地址。",
+      "needSsh": "需要 {perm} 权限才能修改这些设置。分发授权公钥或账号模式和打开开关一样，都是在授予 SSH 权限。",
+      "encoders": "视频编码器",
+      "cellsDeny": "禁用的编码器组合（encoder_cells_deny）",
+      "cellsHint": "逗号分隔的 {form} 组合，设备不得打开或公布，这是编码器组合矩阵的紧急开关。留空 = 不管理（设备保留自己的列表，内置 {builtin}）；{none} = 不禁用任何组合。它只会移除组合，因此不需要额外权限；在守护进程下次重启时生效。",
+      "fpsDeny": "禁用的帧率（fps_deny）",
+      "fpsHint": "逗号分隔的 {form}，设备不得提供的 60 以上帧率，{star} 表示所有编码器。留空 = 不管理（设备保留自己的设置，默认不禁用）；{none} = 不禁用任何帧率。它只会移除帧率，因此不需要额外权限；在守护进程下次重启时生效。",
+      "sshOrgOff": "整个组织已关闭 SSH（与远程执行是不同的开关）。组织所有者可在设置中开启。",
+      "stop": "停止管理",
+      "request": "发送请求",
+      "st": {
+        "applied": "已应用",
+        "appliedDetail": "设备已确认此配置，并且已生效。",
+        "restart": "已保存在设备上：需要重启",
+        "restartDetail": "这些设置已写入磁盘但尚未生效。SSH 服务在守护进程启动时接入数据包路径，所以重启前不会提供会话。",
+        "secondary": "已拒绝：此组织在该设备上是次要组织",
+        "notOptedIn": "已拒绝：设备尚未开启远程配置",
+        "secondaryDetail": "这些设置作用于整台设备，只有设备的主组织可以修改。请联系该组织的管理员，或直接在设备上配置。",
+        "notOptedInDetail": "需要能接触设备的人在设备上运行 {cmd}。这个开关无法在这里设置，这正是设计目的：即使服务器被入侵，也无法借此打开你的设备。",
+        "failed": "设备尝试应用但失败",
+        "failedDetail": "设备无法写入配置，通常是设备上的权限或磁盘问题。",
+        "pending": "等待设备",
+        "pendingDetail": "已发送请求。设备会在下次连接时同步；离线设备上线后会自动获取，无需重新发送。",
+        "noReport": "此设备无法回报结果",
+        "noReportDetail": "客户端 {v} 能接收推送的配置，但不能回报处理结果。它可能已经应用，但这里无法确认。请更新设备客户端。",
+        "tooOld": "此设备版本太旧",
+        "tooOldDetail": "客户端 {v} 早于远程配置功能，因此不会向它发送任何内容。请更新，或直接在设备上设置。"
+      },
+      "warn": {
+        "emptyKeys": "SSH 已开启但公钥列表为空，意味着任何人都无法连接。请添加公钥，或不管理公钥列表以保留设备自己的设置。",
+        "sshAlone": "仅开启 SSH 不会授予任何访问：设备还需要授权公钥和账号模式。如果设备已有，可忽略此提示。",
+        "noAccount": "你发送了公钥但没有账号模式。账号模式未设置的设备上，公钥会话认证后不会运行任何程序。"
+      },
+      "daemonAccount": "守护进程账号（SYSTEM / root）",
+      "saveFailed": "无法记录请求。"
     }
   }
 }

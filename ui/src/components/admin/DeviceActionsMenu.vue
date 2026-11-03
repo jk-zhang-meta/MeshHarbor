@@ -13,14 +13,14 @@
         icon="mdi-dots-vertical"
         size="small"
         variant="text"
-        :aria-label="`Actions for ${label}`"
+        :aria-label="t('mh.devMenu.aria', { name: label })"
       />
     </template>
     <v-list density="compact" min-width="230">
-      <v-list-subheader>Maintenance</v-list-subheader>
+      <v-list-subheader>{{ t('mh.devMenu.sec.maintenance') }}</v-list-subheader>
       <v-list-item
         prepend-icon="mdi-update"
-        title="Update now"
+        :title="t('mh.devMenu.update')"
         :subtitle="updateBlocked"
         :disabled="updateBusy || !!updateBlocked"
         @click="emit('action', 'update')"
@@ -28,51 +28,51 @@
       <v-list-item
         v-if="networkMounted"
         prepend-icon="mdi-key-change"
-        title="Rotate overlay key…"
+        :title="t('mh.devMenu.rotateKey')"
         :disabled="rotateKeyBusy"
         @click="emit('action', 'rotate-key')"
       />
-      <v-list-subheader>Diagnostics</v-list-subheader>
+      <v-list-subheader>{{ t('mh.devMenu.sec.diagnostics') }}</v-list-subheader>
       <v-list-item
         prepend-icon="mdi-alert-circle-outline"
-        title="Crash reports"
+        :title="t('mh.devMenu.crashes')"
         @click="emit('action', 'crashes')"
       />
       <v-list-item
         prepend-icon="mdi-text-box-search-outline"
-        title="Agent logs"
+        :title="t('mh.devMenu.logs')"
         @click="emit('action', 'logs')"
       />
       <v-list-item
         prepend-icon="mdi-console"
-        title="Device console"
+        :title="t('mh.devMenu.console')"
         @click="emit('action', 'console')"
       />
-      <v-list-subheader>Access</v-list-subheader>
+      <v-list-subheader>{{ t('mh.devMenu.sec.access') }}</v-list-subheader>
       <v-list-item
         prepend-icon="mdi-rename-box"
-        title="Edit name &amp; tags"
+        :title="t('mh.devMenu.edit')"
         @click="emit('action', 'edit')"
       />
       <v-list-item
         prepend-icon="mdi-domain-plus"
-        title="Add to another organization"
+        :title="t('mh.devMenu.joinOrg')"
         @click="emit('action', 'join-org')"
       />
       <v-list-item
         prepend-icon="mdi-account-switch"
-        title="Reassign owner"
+        :title="t('mh.devMenu.reassign')"
         @click="emit('action', 'reassign')"
       />
       <v-list-item
         prepend-icon="mdi-shield-key-outline"
-        title="Execution policy"
+        :title="t('mh.devMenu.execPolicy')"
         @click="emit('action', 'exec-policy')"
       />
       <v-list-item
         v-if="networkMounted"
         prepend-icon="mdi-console-network-outline"
-        title="SSH policy"
+        :title="t('mh.devMenu.sshPolicy')"
         @click="emit('action', 'ssh-policy')"
       />
       <!-- FR-52 gate 2. Distinct from every policy above it: those decide
@@ -80,7 +80,7 @@
            organization. -->
       <v-list-item
         prepend-icon="mdi-account-arrow-right-outline"
-        title="External access"
+        :title="t('mh.devMenu.externalAccess')"
         @click="emit('action', 'external-access')"
       />
       <!-- Writes an INTENT the device may refuse (step 5 of
@@ -89,36 +89,36 @@
            difference. -->
       <v-list-item
         prepend-icon="mdi-cog-transfer-outline"
-        title="Device configuration"
+        :title="t('mh.devMenu.remoteConfig')"
         @click="emit('action', 'remote-config')"
       />
-      <v-list-subheader>Network</v-list-subheader>
+      <v-list-subheader>{{ t('mh.devMenu.sec.network') }}</v-list-subheader>
       <v-list-item
         prepend-icon="mdi-ip-network-outline"
-        title="Tunnel mesh routes"
+        :title="t('mh.devMenu.routes')"
         @click="emit('action', 'routes')"
       />
       <v-list-item
         v-if="node"
         prepend-icon="mdi-lan-disconnect"
-        :title="node.will_rejoin ? 'Evict / reassign overlay address' : 'Remove from mesh'"
+        :title="node.will_rejoin ? t('mh.devMenu.evict') : t('mh.devMenu.removeMesh')"
         @click="emit('action', 'evict')"
       />
       <v-list-item
         v-if="node"
         prepend-icon="mdi-lan-connect"
-        title="Overlay routes"
+        :title="t('mh.devMenu.overlayRoutes')"
         :to="{ path: `/tenant/${tenantId}/network/subnet-routes`, query: { node: node.id } }"
       />
       <v-list-item
         prepend-icon="mdi-shield-lock-outline"
-        title="Overlay ACL"
+        :title="t('mh.devMenu.overlayAcl')"
         :to="{ path: `/tenant/${tenantId}/network/acl`, query: { tab: 'overlay' } }"
       />
       <v-divider />
       <v-list-item
         prepend-icon="mdi-delete"
-        title="Delete device"
+        :title="t('mh.devMenu.delete')"
         base-color="error"
         @click="emit('action', 'delete')"
       />
@@ -131,27 +131,27 @@
         icon="mdi-dots-vertical"
         size="small"
         variant="text"
-        :aria-label="`Actions for ${label}`"
+        :aria-label="t('mh.devMenu.aria', { name: label })"
       />
     </template>
     <v-list density="compact" min-width="230">
       <v-list-item
         prepend-icon="mdi-rename-box"
-        title="Edit name &amp; tags"
+        :title="t('mh.devMenu.edit')"
         @click="emit('action', 'edit')"
       />
-      <v-list-subheader>Network</v-list-subheader>
+      <v-list-subheader>{{ t('mh.devMenu.sec.network') }}</v-list-subheader>
       <v-list-item
         v-if="node"
         prepend-icon="mdi-lan-disconnect"
-        :title="node.will_rejoin ? 'Evict / reassign overlay address' : 'Remove from mesh'"
+        :title="node.will_rejoin ? t('mh.devMenu.evict') : t('mh.devMenu.removeMesh')"
         @click="emit('action', 'evict')"
       />
       <v-divider />
       <v-list-item
         v-if="client"
         prepend-icon="mdi-delete"
-        title="Delete tunnel client"
+        :title="t('mh.devMenu.deleteTunnel')"
         base-color="error"
         @click="emit('action', 'delete-tunnel')"
       />
@@ -161,6 +161,7 @@
 
 <script setup lang="ts">
 import { computed } from 'vue'
+import { useI18n } from 'vue-i18n'
 import type { Agent } from '@/stores/agents'
 import type { DeviceRow } from '@/stores/devices'
 import type { OverlayNode } from '@/stores/overlayRoutes'
@@ -205,6 +206,7 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{ action: [action: DeviceAction] }>()
+const { t } = useI18n()
 
 const label = computed(() => props.row.display_name || props.row.name)
 </script>
