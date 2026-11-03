@@ -24,8 +24,8 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
-use bson::{DateTime, oid::ObjectId};
-use roomler_ai_db::models::{AgentLogBatch, LogLine, LogSource};
+use bson::{DateTime, Document, oid::ObjectId};
+use roomler_ai_db::models::{AgentLogBatch, LogLevel, LogLine, LogSource};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -77,7 +77,32 @@ pub struct AgentLogBatchView {
     pub agent_version: Option<String>,
     pub line_count: u32,
     pub created_at: String,
-    pub lines: Vec<LogLine>,
+    pub lines: Vec<LogLineView>,
+}
+
+/// One line as the SPA reads it: `ts` as RFC 3339, like `created_at`. A bare
+/// `bson::DateTime` serialises to JSON as `{"$date": …}`, which the logs dialog
+/// printed verbatim in place of the time.
+#[derive(Debug, Serialize)]
+pub struct LogLineView {
+    pub ts: String,
+    pub level: LogLevel,
+    pub target: String,
+    pub msg: String,
+    #[serde(skip_serializing_if = "Document::is_empty")]
+    pub fields: Document,
+}
+
+impl From<LogLine> for LogLineView {
+    fn from(l: LogLine) -> Self {
+        Self {
+            ts: l.ts.try_to_rfc3339_string().unwrap_or_default(),
+            level: l.level,
+            target: l.target,
+            msg: l.msg,
+            fields: l.fields,
+        }
+    }
 }
 
 impl From<AgentLogBatch> for AgentLogBatchView {
@@ -92,7 +117,7 @@ impl From<AgentLogBatch> for AgentLogBatchView {
             agent_version: b.agent_version,
             line_count: b.line_count,
             created_at: b.created_at.try_to_rfc3339_string().unwrap_or_default(),
-            lines: b.lines,
+            lines: b.lines.into_iter().map(Into::into).collect(),
         }
     }
 }
@@ -347,7 +372,32 @@ fn scrub_tokens(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use roomler_ai_db::models::LogLevel;
+
+    #[test]
+    fn listed_lines_carry_an_rfc3339_time_not_a_bson_date() {
+        let mut line = sample_line("hello");
+        line.ts = DateTime::from_millis(1_793_734_833_625);
+        line.fields = bson::doc! { "k": 1 };
+        let batch = AgentLogBatch {
+            id: Some(ObjectId::new()),
+            tenant_id: ObjectId::new(),
+            source: LogSource::Agent,
+            agent_id: Some(ObjectId::new()),
+            user_id: None,
+            session_id: None,
+            host_id_hash: None,
+            agent_version: None,
+            line_count: 1,
+            created_at: DateTime::now(),
+            lines: vec![line],
+        };
+        let v = serde_json::to_value(AgentLogBatchView::from(batch)).unwrap();
+        let l = &v["lines"][0];
+        assert_eq!(l["ts"], "2026-11-03T19:40:33.625Z", "{l}");
+        assert_eq!(l["level"], "INFO");
+        assert_eq!(l["msg"], "hello");
+        assert_eq!(l["fields"]["k"], 1);
+    }
 
     fn sample_line(msg: &str) -> LogLine {
         LogLine {
