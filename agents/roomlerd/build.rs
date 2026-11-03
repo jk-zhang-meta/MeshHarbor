@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (C) 2026 G ROX EOOD
 // RETIRED-NAME-ANCHOR(3): records the OLD -> NEW mapping, so it must name both sides.
-//! Embeds a Windows VERSIONINFO resource into `roomlerd.exe`.
+//! Embeds a Windows VERSIONINFO resource into `meshharbord.exe`.
 //!
 //! Authenticode says *who* signed a binary. VERSIONINFO is what Explorer's
 //! Details tab, Task Manager's Publisher column, `Get-Process | Select
 //! Company`, and most corporate AV/EDR consoles actually read. Until this
-//! landed, `roomlerd.exe` -- a binary that runs as a LocalSystem service on
+//! landed, `meshharbord.exe` -- a binary that runs as a LocalSystem service on
 //! managed corporate fleets -- had NO version resource at all: no
 //! CompanyName, no ProductName, no FileVersion, no copyright. That is an
 //! independent AV heuristic signal on top of being unsigned, and it makes
@@ -23,8 +23,8 @@
 //! via `tauri_build::build()`. The result would be two RT_VERSION resources
 //! in each of those EXEs, with the winner decided by linker order.
 //!
-//! `embed_resource::compile_for(rc, ["roomlerd"], NONE)` emits
-//! `cargo:rustc-link-arg-bin=roomlerd=...` -- scoped to one binary of one
+//! `embed_resource::compile_for(rc, ["meshharbord"], NONE)` emits
+//! `cargo:rustc-link-arg-bin=meshharbord=...` -- scoped to one binary of one
 //! package, and structurally incapable of leaking. It is also already in the
 //! dependency graph (pulled by tauri-build), so it adds no supply-chain
 //! surface.
@@ -62,7 +62,7 @@ fn main() {
 /// grows. Threads created with an explicit size (std's, tokio's) are
 /// unaffected; any thread the OS creates at the image default gets the same
 /// reserve. Keyed on the TARGET, like [`hive_host`]: a build script runs on the
-/// host. `-bin=roomlerd` scopes it to this one binary, as the version resource
+/// host. `-bin=meshharbord` scopes it to this one binary, as the version resource
 /// below is.
 fn windows_main_stack() {
     const STACK_BYTES: u64 = 8 * 1024 * 1024;
@@ -70,9 +70,9 @@ fn windows_main_stack() {
         return;
     }
     match std::env::var("CARGO_CFG_TARGET_ENV").as_deref() {
-        Ok("msvc") => println!("cargo:rustc-link-arg-bin=roomlerd=/STACK:{STACK_BYTES}"),
+        Ok("msvc") => println!("cargo:rustc-link-arg-bin=meshharbord=/STACK:{STACK_BYTES}"),
         Ok("gnu") | Ok("gnullvm") => {
-            println!("cargo:rustc-link-arg-bin=roomlerd=-Wl,--stack,{STACK_BYTES}")
+            println!("cargo:rustc-link-arg-bin=meshharbord=-Wl,--stack,{STACK_BYTES}")
         }
         _ => {}
     }
@@ -168,9 +168,9 @@ BEGIN
             VALUE "CompanyName", "G ROX LTD"
             VALUE "FileDescription", "Roomler Daemon"
             VALUE "FileVersion", "{file_version_str}"
-            VALUE "InternalName", "roomlerd"
+            VALUE "InternalName", "meshharbord"
             VALUE "LegalCopyright", "Copyright (C) 2026 G ROX LTD"
-            VALUE "OriginalFilename", "roomlerd.exe"
+            VALUE "OriginalFilename", "meshharbord.exe"
             VALUE "ProductName", "Roomler"
             VALUE "ProductVersion", "{pkg_version}"
         END
@@ -187,7 +187,7 @@ END
         let rc_path = out_dir.join("roomlerd-version.rc");
         fs::write(&rc_path, rc).expect("failed to write the VERSIONINFO resource script");
 
-        let result = embed_resource::compile_for(&rc_path, ["roomlerd"], embed_resource::NONE);
+        let result = embed_resource::compile_for(&rc_path, ["meshharbord"], embed_resource::NONE);
 
         // A missing rc.exe/llvm-rc must not break a developer's local build,
         // but it must never silently ship a release binary with no version
