@@ -6,16 +6,14 @@
        not an ACL grant; a route here is no evidence a path works. -->
   <div>
     <p class="text-body-2 text-medium-emphasis mb-3">
-      Reported configuration: what each node read from its own kernel (host network namespace
-      only). It is not evidence that a path works and grants no access; the overlay ACL decides
-      that. Freshness is the server's clock.
+      {{ $t('mh.inv.intro') }}
     </p>
     <v-alert v-if="store.error" type="error" variant="tonal" class="mb-3" data-testid="inv-error">
       {{ store.error }}
     </v-alert>
     <v-progress-linear v-if="store.loading" indeterminate class="mb-2" />
     <p v-if="!store.loading && !store.error && store.items.length === 0" class="text-medium-emphasis" data-testid="inv-empty">
-      No node has reported an inventory yet.
+      {{ $t('mh.inv.empty') }}
     </p>
     <v-expansion-panels v-model="open" multiple>
       <v-expansion-panel v-for="n in store.items" :key="n.agent_id" :value="n.agent_id" :data-testid="`inv-node-${n.agent_id}`">
@@ -23,26 +21,26 @@
           <div class="d-flex flex-wrap align-center ga-2">
             <strong>{{ nameOf(n.agent_id) }}</strong>
             <v-chip :color="n.fresh ? 'success' : 'warning'" size="x-small" label>
-              {{ n.fresh ? 'fresh' : 'stale' }}
+              {{ n.fresh ? $t('mh.inv.fresh') : $t('mh.inv.stale') }}
             </v-chip>
-            <span class="text-caption text-medium-emphasis">reported {{ when(n.received_at) }} · {{ n.os }}</span>
+            <span class="text-caption text-medium-emphasis">{{ $t('mh.inv.reported', { when: when(n.received_at) }) }} · {{ n.os }}</span>
             <v-chip
               v-for="s in SECTIONS"
               :key="s"
               :color="stateColor(n[s].state)"
               size="x-small"
               variant="tonal"
-              :title="`${n[s].state}: ${n[s].reported} of ${n[s].total}`"
+              :title="$t('mh.inv.sectionTitle', { state: stateText(n[s].state), reported: n[s].reported, total: n[s].total })"
             >
-              {{ label[s] }} {{ n[s].state === 'complete' ? n[s].total : `${n[s].reported}/${n[s].total} ${n[s].state}` }}
+              {{ label[s] }} {{ n[s].state === 'complete' ? n[s].total : `${n[s].reported}/${n[s].total} ${stateText(n[s].state)}` }}
             </v-chip>
           </div>
         </v-expansion-panel-title>
         <v-expansion-panel-text>
           <template v-if="store.details[n.agent_id]">
             <div class="text-caption mb-2">
-              forwarding: IPv4 {{ flag(inv(n).forwarding.ipv4) }}, IPv6 {{ flag(inv(n).forwarding.ipv6) }} ·
-              namespaces: {{ inv(n).namespaces }}
+              {{ $t('mh.inv.forwarding', { v4: flag(inv(n).forwarding.ipv4), v6: flag(inv(n).forwarding.ipv6) }) }} ·
+              {{ $t('mh.inv.namespaces', { n: inv(n).namespaces }) }}
             </div>
             <v-tabs v-model="tab[n.agent_id]" density="compact" color="primary">
               <v-tab v-for="s in SECTIONS" :key="s" :value="s">{{ label[s] }}</v-tab>
@@ -67,7 +65,8 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref, watch } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useAgentStore } from '@/stores/agents'
 import {
   SECTIONS,
@@ -84,16 +83,18 @@ const agents = useAgentStore()
 const open = ref<string[]>([])
 const tab = reactive<Record<string, SectionName>>({})
 
-const label: Record<SectionName, string> = {
-  interfaces: 'interfaces',
-  routes: 'routes',
-  rules: 'rules',
-  listeners: 'listeners',
-  firewall_chains: 'fw chains',
-  firewall_rules: 'fw rules',
-}
+const { t, te } = useI18n()
+const label = computed<Record<SectionName, string>>(() => ({
+  interfaces: t('mh.inv.sec.interfaces'),
+  routes: t('mh.inv.sec.routes'),
+  rules: t('mh.inv.sec.rules'),
+  listeners: t('mh.inv.sec.listeners'),
+  firewall_chains: t('mh.inv.sec.fwChains'),
+  firewall_rules: t('mh.inv.sec.fwRules'),
+}))
 
-const columns: Record<SectionName, string[]> = {
+// Column keys stay the kernel's vocabulary; only the heading a person reads is translated.
+const COLUMN_KEYS: Record<SectionName, string[]> = {
   interfaces: ['name', 'kind', 'up', 'mtu', 'addresses'],
   routes: ['family', 'table', 'destination', 'type', 'gateway', 'device', 'protocol', 'metric'],
   rules: ['family', 'priority', 'selector', 'action'],
@@ -101,9 +102,15 @@ const columns: Record<SectionName, string[]> = {
   firewall_chains: ['owner', 'family', 'table', 'chain', 'hook', 'type', 'priority', 'policy'],
   firewall_rules: ['owner', 'family', 'table', 'chain', 'matches', 'verdict', 'target', 'packets'],
 }
+const columns = computed(() =>
+  Object.fromEntries(
+    Object.entries(COLUMN_KEYS).map(([s, cs]) => [s, cs.map((c) => (te(`mh.inv.col.${c}`) ? t(`mh.inv.col.${c}`) : c))]),
+  ) as Record<SectionName, string[]>,
+)
+const stateText = (state: string) => (te(`mh.inv.state.${state}`) ? t(`mh.inv.state.${state}`) : state)
 
 const dash = (v: unknown) => (v === undefined || v === null || v === '' ? '—' : String(v))
-const flag = (v?: boolean) => (v === undefined ? 'unknown' : v ? 'on' : 'off')
+const flag = (v?: boolean) => (v === undefined ? t('mh.inv.unknown') : v ? t('mh.topo.on') : t('mh.topo.off'))
 const when = (iso: string) => new Date(iso).toLocaleString()
 const nameOf = (id: string) => {
   const a = agents.agents.find((x) => x.id === id)

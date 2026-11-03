@@ -9,8 +9,8 @@
        give operators the single place the old split IA lacked. -->
   <div>
     <v-tabs v-model="tab" class="mb-3" color="primary">
-      <v-tab value="overlay">Overlay ACL</v-tab>
-      <v-tab value="tunnel">Tunnel ACL</v-tab>
+      <v-tab value="overlay">{{ $t('mh.acl.title') }}</v-tab>
+      <v-tab value="tunnel">{{ $t('mh.acl.tunnelTitle') }}</v-tab>
     </v-tabs>
     <v-window v-model="tab">
       <v-window-item value="overlay">

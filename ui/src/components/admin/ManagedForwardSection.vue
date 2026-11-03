@@ -7,14 +7,11 @@
        inventory shows the forward in effect). -->
   <div>
     <p class="text-body-2 text-medium-emphasis mb-3">
-      A managed forward listens on one address of an ingress node, admits only its source CIDRs and
-      relays to a destination. Every change is checked first: port collisions, overlaps, loops, the
-      regional gate and, for the nft backend, the ingress's forwarding settings, which MeshHarbor
-      reports and never changes.
+      {{ $t('mh.fwd.intro') }}
     </p>
     <div class="d-flex mb-3">
       <v-spacer />
-      <v-btn color="primary" prepend-icon="mdi-plus" data-testid="mf-new" @click="openNew">New forward</v-btn>
+      <v-btn color="primary" prepend-icon="mdi-plus" data-testid="mf-new" @click="openNew">{{ $t('mh.fwd.new') }}</v-btn>
     </div>
     <v-alert v-if="store.error" type="error" variant="tonal" class="mb-3" data-testid="mf-error">
       {{ store.error }}
@@ -24,20 +21,20 @@
     </v-alert>
     <v-progress-linear v-if="store.loading" indeterminate class="mb-2" />
     <p v-if="!store.loading && !store.error && store.items.length === 0" class="text-medium-emphasis" data-testid="mf-empty">
-      No managed forward yet.
+      {{ $t('mh.fwd.empty') }}
     </p>
     <v-table v-if="store.items.length" density="compact">
       <thead>
         <tr>
-          <th>name</th>
-          <th>ingress</th>
-          <th>listen</th>
-          <th>sources</th>
-          <th>destination</th>
-          <th>backend</th>
-          <th>applied</th>
-          <th>verified</th>
-          <th>enabled</th>
+          <th>{{ $t('mh.fwd.col.name') }}</th>
+          <th>{{ $t('mh.fwd.col.ingress') }}</th>
+          <th>{{ $t('mh.fwd.col.listen') }}</th>
+          <th>{{ $t('mh.fwd.col.sources') }}</th>
+          <th>{{ $t('mh.fwd.col.destination') }}</th>
+          <th>{{ $t('mh.fwd.col.backend') }}</th>
+          <th>{{ $t('mh.fwd.col.applied') }}</th>
+          <th>{{ $t('mh.fwd.col.verified') }}</th>
+          <th>{{ $t('mh.fwd.col.enabled') }}</th>
           <th />
         </tr>
       </thead>
@@ -48,14 +45,14 @@
           <td><code>{{ f.spec.proto }} {{ endpoint(f.spec.bind_addr, f.spec.port) }}</code></td>
           <td><code>{{ f.spec.sources.join(' ') }}</code></td>
           <td><code>{{ endpoint(f.spec.dest_addr, f.spec.dest_port) }}</code></td>
-          <td>{{ f.spec.backend }} · {{ f.spec.nat === 'masquerade' ? 'masquerade' : 'source kept' }}</td>
+          <td>{{ f.spec.backend }} · {{ f.spec.nat === 'masquerade' ? $t('mh.fwd.masq') : $t('mh.fwd.sourceKept') }}</td>
           <td>
             <v-chip :color="appliedColor(f.status.applied)" size="x-small" label :title="f.status.error ?? ''">
-              {{ f.status.applied.replace('_', ' ') }}
+              {{ statusText('applied', f.status.applied) }}
             </v-chip>
           </td>
           <td>
-            <v-chip :color="verifiedColor(f.status.verified)" size="x-small" label>{{ f.status.verified }}</v-chip>
+            <v-chip :color="verifiedColor(f.status.verified)" size="x-small" label>{{ statusText('verified', f.status.verified) }}</v-chip>
           </td>
           <td>
             <v-switch
@@ -78,38 +75,38 @@
 
     <v-dialog v-model="dialog" max-width="720">
       <v-card>
-        <v-card-title>{{ editing ? `Edit ${editing.spec.name}` : 'New forward' }}</v-card-title>
+        <v-card-title>{{ editing ? $t('mh.fwd.edit', { name: editing.spec.name }) : $t('mh.fwd.new') }}</v-card-title>
         <v-card-text>
           <v-row dense>
-            <v-col cols="12" sm="6"><v-text-field v-model="form.name" label="Name" density="compact" /></v-col>
+            <v-col cols="12" sm="6"><v-text-field v-model="form.name" :label="$t('mh.fwd.f.name')" density="compact" /></v-col>
             <v-col cols="12" sm="6">
-              <v-select v-model="form.ingress_agent_id" :items="agentItems" label="Ingress node" density="compact" />
+              <v-select v-model="form.ingress_agent_id" :items="agentItems" :label="$t('mh.fwd.f.ingress')" density="compact" />
             </v-col>
-            <v-col cols="12" sm="5"><v-text-field v-model="form.bind_addr" label="Listen address" density="compact" /></v-col>
-            <v-col cols="6" sm="4"><v-text-field v-model.number="form.port" type="number" label="Listen port" density="compact" /></v-col>
-            <v-col cols="6" sm="3"><v-select v-model="form.proto" :items="['tcp', 'udp']" label="Protocol" density="compact" /></v-col>
+            <v-col cols="12" sm="5"><v-text-field v-model="form.bind_addr" :label="$t('mh.fwd.f.listenAddr')" density="compact" /></v-col>
+            <v-col cols="6" sm="4"><v-text-field v-model.number="form.port" type="number" :label="$t('mh.fwd.f.listenPort')" density="compact" /></v-col>
+            <v-col cols="6" sm="3"><v-select v-model="form.proto" :items="['tcp', 'udp']" :label="$t('mh.fwd.f.proto')" density="compact" /></v-col>
             <v-col cols="12">
-              <v-text-field v-model="sources" label="Allowed sources (CIDRs, space or comma separated)" density="compact" />
+              <v-text-field v-model="sources" :label="$t('mh.fwd.f.sources')" density="compact" />
             </v-col>
-            <v-col cols="12" sm="8"><v-text-field v-model="form.dest_addr" label="Destination address" density="compact" /></v-col>
-            <v-col cols="12" sm="4"><v-text-field v-model.number="form.dest_port" type="number" label="Destination port" density="compact" /></v-col>
+            <v-col cols="12" sm="8"><v-text-field v-model="form.dest_addr" :label="$t('mh.fwd.f.destAddr')" density="compact" /></v-col>
+            <v-col cols="12" sm="4"><v-text-field v-model.number="form.dest_port" type="number" :label="$t('mh.fwd.f.destPort')" density="compact" /></v-col>
             <v-col cols="12" sm="6">
-              <v-select v-model="form.backend" :items="backendItems" label="Backend" density="compact" />
+              <v-select v-model="form.backend" :items="backendItems" :label="$t('mh.fwd.f.backend')" density="compact" />
             </v-col>
             <v-col cols="12" sm="6">
-              <v-select v-model="form.nat" :items="natItems" label="Source address" density="compact" />
+              <v-select v-model="form.nat" :items="natItems" :label="$t('mh.fwd.f.nat')" density="compact" />
             </v-col>
             <v-col cols="12">
               <v-checkbox
                 v-model="form.public_listener"
-                label="Public listener (needed for a wildcard address; sources must still be narrower than /0)"
+                :label="$t('mh.fwd.f.public')"
                 density="compact"
                 hide-details
               />
             </v-col>
           </v-row>
           <v-alert v-if="result" :type="result.ok ? 'success' : 'error'" variant="tonal" density="compact" class="mt-2" data-testid="mf-plan">
-            {{ result.ok ? `Plan passes (${result.backend} backend).` : 'Plan refused; nothing was stored or sent to a node.' }}
+            {{ result.ok ? $t('mh.fwd.planOk', { backend: result.backend }) : $t('mh.fwd.planRefused') }}
           </v-alert>
           <v-list v-if="result" density="compact">
             <v-list-item v-for="c in result.checks" :key="c.name" :data-testid="`mf-check-${c.name.replace(/ /g, '-')}`">
@@ -124,10 +121,10 @@
         </v-card-text>
         <v-card-actions>
           <v-spacer />
-          <v-btn variant="text" @click="dialog = false">Cancel</v-btn>
-          <v-btn variant="tonal" :loading="checking" data-testid="mf-check" @click="check">Check plan</v-btn>
+          <v-btn variant="text" @click="dialog = false">{{ $t('common.cancel') }}</v-btn>
+          <v-btn variant="tonal" :loading="checking" data-testid="mf-check" @click="check">{{ $t('mh.fwd.check') }}</v-btn>
           <v-btn color="primary" :disabled="!result?.ok || !planFresh" :loading="saving" data-testid="mf-save" @click="save">
-            {{ editing ? 'Save' : 'Create' }}
+            {{ editing ? $t('common.save') : $t('mh.fwd.create') }}
           </v-btn>
         </v-card-actions>
       </v-card>
@@ -137,6 +134,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useAgentStore } from '@/stores/agents'
 import {
   appliedColor,
@@ -161,10 +159,13 @@ const icon: Record<Verdict, string> = {
   fail: 'mdi-close-circle',
   unknown: 'mdi-help-circle',
 }
-const backendItems = [
-  { title: 'userspace relay (any OS)', value: 'userspace' },
-  { title: 'nft DNAT (Linux, root, commit-confirm)', value: 'nft' },
-]
+const { t, te } = useI18n()
+const statusText = (kind: 'applied' | 'verified', v: string) =>
+  te(`mh.fwd.${kind}.${v}`) ? t(`mh.fwd.${kind}.${v}`) : v.replace('_', ' ')
+const backendItems = computed(() => [
+  { title: t('mh.fwd.backendUserspace'), value: 'userspace' },
+  { title: t('mh.fwd.backendNft'), value: 'nft' },
+])
 
 const blank = (): ForwardSpec => ({
   name: '',
@@ -198,8 +199,8 @@ const busy = ref<string | null>(null)
 // Keeping the client's source needs the native backend; the userspace relay
 // would have to masquerade, and the planner refuses rather than convert.
 const natItems = computed(() => [
-  { title: 'masquerade (the destination sees the ingress)', value: 'masquerade' },
-  { title: 'keep the client address (nft only)', value: 'preserve_source', props: { disabled: form.value.backend !== 'nft' } },
+  { title: t('mh.fwd.natMasq'), value: 'masquerade' },
+  { title: t('mh.fwd.natKeep'), value: 'preserve_source', props: { disabled: form.value.backend !== 'nft' } },
 ])
 const agentItems = computed(() => agents.agents.map((a) => ({ title: a.display_name ?? a.name, value: a.id })))
 
@@ -256,7 +257,7 @@ async function check() {
     result.value = p
     planFresh.value = true
   } else {
-    formError.value = store.error ?? 'The plan could not be made.'
+    formError.value = store.error ?? t('mh.fwd.planFailed')
   }
 }
 
@@ -268,10 +269,10 @@ function settle(out: MutationResult | null, inDialog: boolean): boolean {
       result.value = out.plan
       planFresh.value = true
     } else {
-      notice.value = `Refused: ${out.plan.checks.filter((c) => c.verdict === 'fail' || c.verdict === 'unknown').map((c) => `${c.name} (${c.detail})`).join('; ')}`
+      notice.value = t('mh.fwd.refused') + `${out.plan.checks.filter((c) => c.verdict === 'fail' || c.verdict === 'unknown').map((c) => `${c.name} (${c.detail})`).join('; ')}`
     }
   } else if (out.kind === 'conflict') {
-    notice.value = 'This forward changed since it was loaded; the list was reloaded. Check it again.'
+    notice.value = t('mh.fwd.changed')
     if (inDialog) dialog.value = false
   } else if (inDialog) {
     formError.value = out.message
@@ -296,7 +297,7 @@ async function toggle(f: ForwardView, on: boolean) {
 }
 
 async function remove(f: ForwardView) {
-  if (!window.confirm(`Remove the forward "${f.spec.name}"? The ingress node stops it at once.`)) return
+  if (!window.confirm(t('mh.fwd.confirmRemove', { name: f.spec.name }))) return
   busy.value = f.id
   settle(await store.remove(props.tenantId, f), false)
   busy.value = null
