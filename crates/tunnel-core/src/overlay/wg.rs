@@ -11679,6 +11679,12 @@ mod tests {
             let script = r#"
                 set -eu
                 ip link set lo up
+                # Keep the namespace files on a tmpfs private to this mount
+                # namespace: `ip netns add` otherwise creates /run/netns/<ns> on
+                # the host filesystem, and the empty files left behind failed
+                # every later run in the same instance with "File exists".
+                mkdir -p /run/netns
+                mount -t tmpfs netns-b6 /run/netns
                 for ns in ns_a ns_wan ns_b; do
                     ip netns add "$ns"
                     ip -n "$ns" link set lo up
