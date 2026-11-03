@@ -5001,6 +5001,32 @@ impl WgDevice {
                     let _ = send_wg_recorded(&ic, &init_stats, &b).await;
                 }
             });
+        } else if initiate && !defer_init {
+            // B7 — under the `Required` guard the INIT waits for the PQ PSK,
+            // which rides the relay and lands 1.5–3 s later. Without the INIT
+            // this side sent NOTHING toward `dst` for that long, while the
+            // peer (told of us by the same netmap fan-out) was already
+            // sending to our srflx. Behind a Linux NAT (MASQUERADE) the
+            // peer's packet that arrives first is confirmed as an unreplied
+            // local flow on exactly the tuple our later send needs, so our
+            // send leaves from ANOTHER public port, the peer's NAT drops it,
+            // and the peer's own retries keep that entry alive past the 30 s
+            // UDP timeout — the direct path never forms (realnet rn-pq, 7/7).
+            // Open the mapping NOW with one authenticated disco ping from the
+            // same socket, as the classical INIT does. An unmatched pong is
+            // ignored by every prober, so the ping has no other effect.
+            let shared = super::disco::shared_secret(&self.secret, &PublicKey::from(peer_public));
+            let punch = super::disco::build(
+                super::disco::KIND_PING,
+                rand::random(),
+                self.public.as_bytes(),
+                None,
+                &shared,
+            );
+            let pc = carrier.clone();
+            tokio::spawn(async move {
+                let _ = pc.send(&punch).await;
+            });
         }
 
         Some(Peer {
@@ -10931,6 +10957,70 @@ mod tests {
         assert_eq!(
             dev_b.probe_tunn_psk(&pk_a).await.unwrap(),
             Some(negotiated_psk)
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pq_required_probe_punches_its_nat_mapping_before_the_psk_lands() {
+        // Realnet rn-pq: with the INIT deferred until the PQ PSK, the probing
+        // side sent nothing toward the peer for 1.5–3 s, so the peer's first
+        // packet reached our Linux NAT first and took the tuple. The probe
+        // must open its mapping at once with an authenticated disco ping.
+        use super::super::disco;
+        use super::super::pq_psk::{PqPskConfig, PqPskMode};
+
+        let a = WgKeypair::generate();
+        let b = WgKeypair::generate();
+        let pk_a = a.public.to_bytes();
+        let pk_b = b.public.to_bytes();
+        // A dead relay keeps epoch 1 `Negotiating`, i.e. the guard active.
+        let dead = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let probe_sock = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let peer_sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let peer_addr = peer_sock.local_addr().unwrap();
+
+        let (mut dev_a, _rx_a) = WgDevice::new(a.secret.clone());
+        dev_a.set_pq_psk_config(PqPskConfig {
+            mode: PqPskMode::Required,
+            rekey_interval: Duration::from_secs(60),
+            max_lifetime: Duration::from_secs(300),
+            retry_interval: Duration::from_secs(30),
+            max_retries: 10,
+            configured_psk: None,
+        });
+        dev_a.ensure_direct_demux(probe_sock.clone());
+        dev_a.add_peer(
+            pk_b,
+            IP_B,
+            Carrier::direct(dead.clone(), "127.0.0.1:9".parse().unwrap()),
+            true,
+        );
+        dev_a
+            .start_direct_probe(probe_sock.clone(), pk_b, IP_B, peer_addr, true)
+            .await;
+
+        let mut buf = [0u8; 2048];
+        let (n, from) =
+            tokio::time::timeout(Duration::from_millis(500), peer_sock.recv_from(&mut buf))
+                .await
+                .expect(
+                    "the probe sent nothing toward the peer while the PQ guard deferred its INIT",
+                )
+                .unwrap();
+        assert_eq!(
+            from,
+            probe_sock.local_addr().unwrap(),
+            "punch must leave the probe's own socket"
+        );
+        let shared = disco::shared_secret(&b.secret, &a.public);
+        let ping = disco::parse(&buf[..n], &shared).expect("an authenticated disco frame");
+        assert_eq!((ping.kind, ping.sender), (disco::KIND_PING, pk_a));
+        // The guard still holds: no classical INIT followed the punch.
+        let more =
+            tokio::time::timeout(Duration::from_millis(300), peer_sock.recv_from(&mut buf)).await;
+        assert!(
+            more.is_err(),
+            "nothing but the punch may leave while the guard is active"
         );
     }
 
