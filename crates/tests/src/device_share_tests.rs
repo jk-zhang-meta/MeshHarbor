@@ -257,6 +257,83 @@ async fn device_share_exact_recipient_device_service_and_port_not_membership() {
             .unwrap()
     );
 }
+/// A person shares a device by naming the recipient — username, or email in any case — and
+/// reads names, not ids, back. Every reason a NAMED recipient cannot be used answers the SAME
+/// refusal, so the form is no oracle for which accounts exist or what state they are in.
+#[tokio::test]
+async fn device_share_names_the_recipient_and_lists_names_without_an_account_oracle() {
+    let f = fixture().await;
+    let post = |body: Value| {
+        let f = &f;
+        async move {
+            let r = f
+                .app
+                .auth_post("/api/device-shares", &f.owner.token)
+                .json(&body)
+                .send()
+                .await
+                .unwrap();
+            let status = r.status().as_u16();
+            (status, r.json::<Value>().await.unwrap_or(Value::Null))
+        }
+    };
+    let named = |recipient: &str| {
+        json!({"device_id":f.device.to_hex(),"recipient":recipient,
+               "permissions":{"ssh":true},"tcp_ports":[22],"expires_in_secs":60})
+    };
+
+    let (status, v) = post(named("share_recipient")).await;
+    assert_eq!(status, 200, "{v}");
+    assert_eq!(v["recipient_user_id"], f.recipient.id.to_hex());
+    assert_eq!(v["recipient_username"], "share_recipient");
+    assert_eq!(v["owner_username"], "share_owner");
+    assert_eq!(v["device_name"], "One shared box");
+
+    // Addresses match whatever case the person types.
+    let (status, v) = post(named("  SHARE_RECIPIENT@share.example.test ")).await;
+    assert_eq!(status, 200, "{v}");
+    assert_eq!(v["recipient_user_id"], f.recipient.id.to_hex());
+
+    // No account, a pending account, and a deleted-looking typo all read the same.
+    let (s_unknown, unknown) = post(named("nobody_by_this_name")).await;
+    let (s_pending, pending) = post(named("share_pending")).await;
+    assert_eq!((s_unknown, s_pending), (400, 400));
+    assert_eq!(unknown, pending, "the refusal must not tell the two apart");
+
+    // Exactly one way of naming the recipient.
+    let mut both = named("share_recipient");
+    both["recipient_user_id"] = json!(f.recipient.id.to_hex());
+    assert_eq!(post(both).await.0, 400);
+    let mut neither = named("share_recipient");
+    neither.as_object_mut().unwrap().remove("recipient");
+    assert_eq!(post(neither).await.0, 400);
+
+    // The id form is unchanged.
+    let by_id = create(&f).await;
+    assert_eq!(by_id["recipient_username"], "share_recipient");
+
+    // Both sides read names back in their lists.
+    for (token, direction) in [(&f.owner.token, "sent"), (&f.recipient.token, "received")] {
+        let page: Value = f
+            .app
+            .auth_get(&format!("/api/device-shares?direction={direction}"), token)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let items = page["items"].as_array().unwrap();
+        assert_eq!(items.len(), 3, "{direction}: {page}");
+        assert!(
+            items.iter().all(|i| i["device_name"] == "One shared box"
+                && i["owner_username"] == "share_owner"
+                && i["recipient_username"] == "share_recipient"),
+            "{direction}: {page}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn device_share_creation_refuses_nonowner_pending_and_broad_scope() {
     let f = fixture().await;

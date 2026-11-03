@@ -8,7 +8,7 @@
     <v-btn class="my-3" :loading="loading" @click="load">Refresh</v-btn>
     <v-progress-linear v-if="loading" indeterminate />
     <v-table><thead><tr><th>Device</th><th>Owner → Recipient</th><th>Services</th><th>Created</th><th>Expires</th><th>Record state</th><th>Revoked</th><th>Actions</th></tr></thead><tbody>
-      <tr v-for="s in items" :key="s.id"><td>{{ s.device_id }}</td><td>{{ s.owner_user_id }} → {{ s.recipient_user_id }}</td><td>{{ serviceLabel(s) }}</td><td>{{ s.created_at_ms === undefined ? 'Not reported by this server' : new Date(s.created_at_ms).toLocaleString() }}</td><td>{{ new Date(s.expires_at_ms).toLocaleString() }}</td><td :data-testid="'share-state-' + s.id">{{ shareRecordState(s, now) }}<br /><small>Grant {{ s.id }} · revision {{ s.revision }}</small></td><td>{{ s.revoked_at_ms === null ? '—' : new Date(s.revoked_at_ms).toLocaleString() }}</td><td>
+      <tr v-for="s in items" :key="s.id"><td>{{ s.device_name ?? s.device_id }}<br v-if="s.device_name" /><small v-if="s.device_name"><code>{{ s.device_id }}</code></small></td><td>{{ s.owner_username ?? s.owner_user_id }} → {{ s.recipient_username ?? s.recipient_user_id }}</td><td>{{ serviceLabel(s) }}</td><td>{{ s.created_at_ms === undefined ? 'Not reported by this server' : new Date(s.created_at_ms).toLocaleString() }}</td><td>{{ new Date(s.expires_at_ms).toLocaleString() }}</td><td :data-testid="'share-state-' + s.id">{{ shareRecordState(s, now) }}<br /><small>Grant {{ s.id }} · revision {{ s.revision }}</small></td><td>{{ s.revoked_at_ms === null ? '—' : new Date(s.revoked_at_ms).toLocaleString() }}</td><td>
         <v-btn v-if="direction === 'received'" size="small" :disabled="!shareLive(s, now) || !sharedRemotePermissions(s.permissions)" :to="nativeDesktop ? undefined : { name: 'shared-remote', params: { shareId: s.id } }" :href="nativeDesktop ? sharedRemoteUrl(s) : undefined" :target="nativeDesktop ? '_blank' : undefined" :rel="nativeDesktop ? 'noopener noreferrer' : undefined">Open desktop / files</v-btn>
         <v-btn v-if="direction === 'received' && s.permissions.ssh" size="small" class="ml-2" data-testid="shared-ssh-open" :data-share-id="s.id" :disabled="!shareLive(s, now)" @click="openSsh(s)">SSH (native client)</v-btn>
         <v-btn v-if="direction === 'sent' && s.revoked_at_ms === null" size="small" color="error" :disabled="saving" @click="pendingRevoke = s">Revoke</v-btn>
@@ -18,10 +18,10 @@
     </tbody></v-table>
     <p class="text-body-2 mt-2">{{ total }} retained sharing records in this direction, not a unique-device count. Expired and revoked records remain visible. Each record identifies the device, grantor/recipient, permissions, creation, expiry, revocation and revision. Record state does not override device policy or consent.</p>
     <v-pagination v-model="page" :length="Math.max(1, Math.ceil(total / 20))" :disabled="loading" />
-    <v-expansion-panels class="mt-4"><v-expansion-panel title="Share a device I own"><v-expansion-panel-text>
+    <v-expansion-panels v-model="panel" class="mt-4"><v-expansion-panel value="share" title="Share a device I own"><v-expansion-panel-text>
       <v-form @submit.prevent="create">
-        <v-text-field data-testid="share-device-id" v-model="deviceId" label="Device ID (one device you own)" required />
-        <v-text-field data-testid="share-recipient-id" v-model="recipientId" label="Approved recipient user ID" required />
+        <v-select data-testid="share-device-id" v-model="deviceId" :items="ownedChoices" :loading="ownedLoading" label="Device (one you own)" no-data-text="No devices owned by this account" required />
+        <v-text-field data-testid="share-recipient-id" v-model="recipientId" label="Recipient username or email" hint="The person must have an approved, verified account." persistent-hint autocomplete="off" required />
         <v-checkbox data-testid="share-ssh-permission" v-model="ssh" label="SSH shell / exec (native client)" />
         <v-checkbox data-testid="share-desktop-permission" v-model="desktopView" label="View desktop" /><v-checkbox v-model="desktopControl" :disabled="!desktopView" label="Control desktop" />
         <v-checkbox data-testid="share-files-permission" v-model="files" label="Bidirectional file transfer (read AND write)" />
@@ -69,6 +69,30 @@ const direction = ref<'received' | 'sent'>(route.query.direction === 'sent' ? 's
 const items = ref<DeviceShare[]>([]), loading = ref(false), saving = ref(false), error = ref('')
 const deviceId = ref(''), recipientId = ref(''), hours = ref(24), desktopView = ref(true), desktopControl = ref(false), files = ref(false), ssh = ref(false)
 const pendingRevoke = ref<DeviceShare | null>(null)
+// The share form picks from the devices this account owns — no one should need to know an id.
+interface OwnedDevice { id: string; name: string; status: string }
+const owned = ref<OwnedDevice[]>([]), ownedLoading = ref(false), panel = ref<string[]>([])
+const ownedChoices = computed(() => owned.value.map(d => ({ title: `${d.name} (${d.status})`, value: d.id })))
+const OBJECT_ID = /^[a-f\d]{24}$/i
+async function loadOwned() {
+  const user = auth.user?.id; if (!user) return
+  const identity = identityGeneration; ownedLoading.value = true
+  try {
+    const all: OwnedDevice[] = []
+    // The directory pages by 25; four pages is far beyond a personal fleet.
+    for (let p = 1; p <= 4; p++) {
+      const r = await api.get<{ items: OwnedDevice[]; total: number }>(`/account/devices?page=${p}&per_page=25`)
+      all.push(...r.items)
+      if (all.length >= r.total || r.items.length === 0) break
+    }
+    if (alive && identity === identityGeneration && auth.user?.id === user) owned.value = all
+  } catch (e) { if (alive && identity === identityGeneration) error.value = (e as Error).message }
+  finally { if (alive && identity === identityGeneration) ownedLoading.value = false }
+}
+function preselect() {
+  const wanted = route.query.share_device
+  if (typeof wanted === 'string' && OBJECT_ID.test(wanted)) { deviceId.value = wanted; panel.value = ['share'] }
+}
 interface SharedSshDevice { id: string; name: string; host_pubkey: string }
 const sshShare = ref<DeviceShare | null>(null), sshDevice = ref<SharedSshDevice | null>(null), sshLoading = ref(false), sshError = ref('')
 const sshServerBase = appOrigin(window.location.origin)
@@ -103,9 +127,10 @@ async function load() {
 function serviceLabel(s: DeviceShare) { return [s.permissions.desktop_view ? 'Desktop' : '', s.permissions.desktop_control ? 'Control' : '', s.permissions.files_read && s.permissions.files_write ? 'Files read/write' : s.permissions.files_read ? 'Files read-only (unsupported)' : '', s.permissions.ssh ? 'SSH' : '', ...s.tcp_ports.map(p => `TCP ${p}`)].filter(Boolean).join(' · ') }
 async function create() {
   if (saving.value) return
-  if (!/^[a-f\d]{24}$/i.test(deviceId.value) || !/^[a-f\d]{24}$/i.test(recipientId.value) || !Number.isInteger(hours.value) || hours.value < 1 || hours.value > 720 || (!desktopView.value && !files.value && !ssh.value)) { error.value = 'Provide exact device/user IDs, a supported capability, and an expiry of 1–720 hours.'; return }
+  const recipient = recipientId.value.trim()
+  if (!OBJECT_ID.test(deviceId.value ?? '') || !recipient || recipient.length > 320 || !Number.isInteger(hours.value) || hours.value < 1 || hours.value > 720 || (!desktopView.value && !files.value && !ssh.value)) { error.value = 'Choose a device, name the recipient by username or email, pick a supported capability, and an expiry of 1–720 hours.'; return }
   const user = auth.user?.id, identity = identityGeneration, attempt = generation; saving.value = true; error.value = ''
-  try { await api.post('/device-shares', { device_id: deviceId.value, recipient_user_id: recipientId.value, permissions: { ssh: ssh.value, desktop_view: desktopView.value, desktop_control: desktopView.value && desktopControl.value, files_read: files.value, files_write: files.value }, tcp_ports: [], expires_in_secs: hours.value * 3600 })
+  try { await api.post('/device-shares', { device_id: deviceId.value, recipient, permissions: { ssh: ssh.value, desktop_view: desktopView.value, desktop_control: desktopView.value && desktopControl.value, files_read: files.value, files_write: files.value }, tcp_ports: [], expires_in_secs: hours.value * 3600 })
     if (!alive || attempt !== generation || identity !== identityGeneration || auth.user?.id !== user) return
     direction.value = 'sent'; page.value = 1; await load()
   } catch (e) { if (alive && identity === identityGeneration && attempt === generation && auth.user?.id === user) error.value = (e as Error).message }
@@ -123,6 +148,7 @@ async function revoke() {
 watch(() => route.query.direction, value => { if (value === 'received' || value === 'sent') direction.value = value })
 watch(direction, () => { closeSsh(); page.value = 1; void load() })
 watch(page, () => { void load() })
-watch(() => auth.user?.id, () => { clearIdentity(); void load() }, { immediate: true })
+watch(() => auth.user?.id, () => { clearIdentity(); owned.value = []; void load(); void loadOwned(); preselect() }, { immediate: true })
+watch(() => route.query.share_device, () => preselect())
 onBeforeUnmount(() => { alive = false; clearInterval(recordClock); clearIdentity() })
 </script>

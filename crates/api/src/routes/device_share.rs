@@ -5,19 +5,29 @@ use axum::{
     extract::{Path, Query, State},
 };
 use bson::{DateTime, doc, oid::ObjectId};
-use roomler_ai_db::models::{DeviceShareGrant, DeviceShareOperation, DeviceSharePermissions};
+use roomler_ai_db::models::{DeviceShareGrant, DeviceShareOperation, DeviceSharePermissions, User};
 use roomler_ai_remote_control::models::AgentStatus;
 use roomler_ai_services::dao::{
-    agent::AgentDao, base::PaginationParams, device_share::DeviceShareDao,
+    agent::AgentDao,
+    base::{DaoError, PaginationParams},
+    device_share::DeviceShareDao,
 };
 use roomler_core::{ApiError, Core, extractors::auth::AuthUser};
 use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CreateShare {
     pub device_id: String,
+    /// The recipient's account id. Leave it empty and name them by [`Self::recipient`] instead;
+    /// exactly one of the two must be given.
+    #[serde(default)]
     pub recipient_user_id: String,
+    /// The recipient's exact username, or their email address, resolved here so a person
+    /// never has to know an account id to share a device.
+    #[serde(default)]
+    pub recipient: Option<String>,
     pub permissions: DeviceSharePermissions,
     #[serde(default)]
     pub tcp_ports: Vec<u16>,
@@ -35,6 +45,14 @@ pub struct ShareView {
     pub expires_at_ms: i64,
     pub revoked_at_ms: Option<i64>,
     pub revision: u32,
+    /// Display names, resolved when the record is read; absent once the row is gone. The ids
+    /// above stay the identity — a name is only what a person reads.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owner_username: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recipient_username: Option<String>,
 }
 impl From<DeviceShareGrant> for ShareView {
     fn from(g: DeviceShareGrant) -> Self {
@@ -49,8 +67,92 @@ impl From<DeviceShareGrant> for ShareView {
             expires_at_ms: g.expires_at.timestamp_millis(),
             revoked_at_ms: g.revoked_at.map(|d| d.timestamp_millis()),
             revision: g.revision,
+            device_name: None,
+            owner_username: None,
+            recipient_username: None,
         }
     }
+}
+/// Attach device and account names to share records in two batched reads.
+async fn named(core: &Core, grants: Vec<DeviceShareGrant>) -> Result<Vec<ShareView>, ApiError> {
+    let devices: Vec<ObjectId> = grants
+        .iter()
+        .map(|g| g.device_id)
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+    let people: Vec<ObjectId> = grants
+        .iter()
+        .flat_map(|g| [g.owner_user_id, g.recipient_user_id])
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+    let device_names: HashMap<ObjectId, String> = if devices.is_empty() {
+        HashMap::new()
+    } else {
+        AgentDao::new(&core.db)
+            .base
+            .find_by_ids(&devices)
+            .await?
+            .into_iter()
+            .filter_map(|a| a.id.map(|id| (id, a.name)))
+            .collect()
+    };
+    let usernames: HashMap<ObjectId, String> = if people.is_empty() {
+        HashMap::new()
+    } else {
+        core.users
+            .base
+            .find_by_ids(&people)
+            .await?
+            .into_iter()
+            .filter_map(|u| u.id.map(|id| (id, u.username)))
+            .collect()
+    };
+    Ok(grants
+        .into_iter()
+        .map(|g| {
+            let (device, owner, recipient) = (g.device_id, g.owner_user_id, g.recipient_user_id);
+            let mut view = ShareView::from(g);
+            view.device_name = device_names.get(&device).cloned();
+            view.owner_username = usernames.get(&owner).cloned();
+            view.recipient_username = usernames.get(&recipient).cloned();
+            view
+        })
+        .collect())
+}
+/// One refusal for every reason a NAMED recipient cannot be used — no account, not approved,
+/// not verified, deleted — so the share form cannot be used to learn which usernames or
+/// addresses hold an account, or what state it is in. A storage failure is still a 500.
+const NO_SUCH_RECIPIENT: &str = "No approved, verified account matches that username or email";
+async fn named_recipient(core: &Core, login: &str) -> Result<User, ApiError> {
+    let login = login.trim();
+    let refuse = || ApiError::BadRequest(NO_SUCH_RECIPIENT.into());
+    if login.is_empty() || login.len() > 320 {
+        return Err(refuse());
+    }
+    let lookup = |candidate: String| async move {
+        if candidate.contains('@') {
+            core.users.find_by_email(&candidate).await
+        } else {
+            core.users.find_by_username(&candidate).await
+        }
+    };
+    let found = match lookup(login.to_string()).await {
+        // Addresses are stored as typed at registration; a differently-cased entry falls back
+        // to the lowercase form most accounts were created with.
+        Err(DaoError::NotFound) if login.contains('@') && login != login.to_lowercase() => {
+            lookup(login.to_lowercase()).await
+        }
+        other => other,
+    };
+    let user = match found {
+        Ok(user) => user,
+        Err(DaoError::NotFound) => return Err(refuse()),
+        Err(e) => return Err(e.into()),
+    };
+    roomler_core::device_share::require_recipient(&user).map_err(|_| refuse())?;
+    Ok(user)
 }
 fn oid(id: &str) -> Result<ObjectId, ApiError> {
     ObjectId::parse_str(id).map_err(|_| ApiError::BadRequest("Invalid object ID".into()))
@@ -88,12 +190,26 @@ pub async fn create(
     roomler_core::device_share::require_enabled(&core)?;
     validate(&mut body)?;
     let device = oid(&body.device_id)?;
-    let recipient = oid(&body.recipient_user_id)?;
-    if recipient == auth.user_id {
-        return Err(ApiError::BadRequest(
-            "A share must name another account".into(),
-        ));
-    }
+    let named_login = match (body.recipient_user_id.is_empty(), body.recipient.as_deref()) {
+        (false, None) => None,
+        (true, Some(login)) => Some(login.to_string()),
+        _ => {
+            return Err(ApiError::BadRequest(
+                "Name the recipient by exactly one of recipient_user_id or recipient".into(),
+            ));
+        }
+    };
+    let by_id = if named_login.is_none() {
+        let recipient = oid(&body.recipient_user_id)?;
+        if recipient == auth.user_id {
+            return Err(ApiError::BadRequest(
+                "A share must name another account".into(),
+            ));
+        }
+        Some(recipient)
+    } else {
+        None
+    };
     let agent = AgentDao::new(&core.db).base.find_by_id(device).await?;
     // Only actual ownership, never MANAGE_AGENTS, org admin, or platform admin.
     if agent.owner_user_id != auth.user_id
@@ -109,8 +225,26 @@ pub async fn create(
     if !owner.is_verified {
         return Err(ApiError::Forbidden("Device owner must verify email".into()));
     }
-    let user = core.users.base.find_by_id(recipient).await?;
-    roomler_core::device_share::require_recipient(&user)?;
+    let recipient = match (by_id, named_login) {
+        (Some(id), _) => {
+            let user = core.users.base.find_by_id(id).await?;
+            roomler_core::device_share::require_recipient(&user)?;
+            id
+        }
+        (None, Some(login)) => {
+            let user = named_recipient(&core, &login).await?;
+            let id = user
+                .id
+                .ok_or_else(|| ApiError::Internal("recipient row without an id".into()))?;
+            if id == auth.user_id {
+                return Err(ApiError::BadRequest(
+                    "A share must name another account".into(),
+                ));
+            }
+            id
+        }
+        (None, None) => unreachable!("one recipient form was required above"),
+    };
     let tenant = core.tenants.base.find_by_id(agent.tenant_id).await?;
     if tenant.deleted_at.is_some() || tenant.is_archived {
         return Err(ApiError::Forbidden(
@@ -144,7 +278,8 @@ pub async fn create(
     };
     let dao = DeviceShareDao::new(&core.db);
     let id = dao.base.insert_one(&grant).await?;
-    Ok(Json(dao.base.find_by_id(id).await?.into()))
+    let stored = dao.base.find_by_id(id).await?;
+    Ok(Json(named(&core, vec![stored]).await?.remove(0)))
 }
 #[derive(Deserialize, Default)]
 pub struct ShareListQuery {
@@ -196,7 +331,7 @@ pub async fn list(
         )
         .await?;
     Ok(Json(SharePage {
-        items: result.items.into_iter().map(Into::into).collect(),
+        items: named(&core, result.items).await?,
         page,
         total: result.total,
     }))
@@ -284,6 +419,7 @@ mod tests {
         CreateShare {
             device_id: ObjectId::new().to_hex(),
             recipient_user_id: ObjectId::new().to_hex(),
+            recipient: None,
             permissions: DeviceSharePermissions {
                 ssh: true,
                 ..Default::default()
