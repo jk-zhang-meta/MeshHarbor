@@ -855,9 +855,15 @@ fn warn_if_slow(stage: &'static str, t0: Instant) {
 /// P1 (S6) test hook — when non-zero, the Netmap arm sleeps this long at its
 /// top (async — the arm is genuinely busy on the loop for the duration).
 /// Lets `control_stall_does_not_delay_outbound` prove a fat control arm can
-/// no longer delay outbound packets. Zero (inert) outside tests.
+/// no longer delay outbound packets. `None` (inert) outside tests.
+///
+/// Keyed by the stalled runtime's OWN public key: the static is process-wide,
+/// and an unscoped stall froze every runtime in the test binary — a parallel
+/// test's netmap prune landed ~4 s late (two netmaps × 2 s) and
+/// `reattach_rejoins_reconciles_and_then_prunes` failed whenever the two
+/// overlapped.
 #[cfg(test)]
-static TEST_NETMAP_STALL_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static TEST_NETMAP_STALL: std::sync::Mutex<Option<([u8; 32], u64)>> = std::sync::Mutex::new(None);
 
 /// rc.211 — a finished OFF-LOOP QUIC-over-TURN carrier build (see
 /// [`RelayBuildQueue`]). `quic: None` = the QUIC handshake failed/timed out →
@@ -4943,7 +4949,12 @@ impl OverlayRuntime {
                         }
                         #[cfg(test)]
                         {
-                            let stall = TEST_NETMAP_STALL_MS.load(std::sync::atomic::Ordering::Relaxed);
+                            let me = self.keypair.public.to_bytes();
+                            let stall = TEST_NETMAP_STALL
+                                .lock()
+                                .unwrap()
+                                .filter(|(k, _)| *k == me)
+                                .map_or(0, |(_, ms)| ms);
                             if stall > 0 {
                                 tokio::time::sleep(Duration::from_millis(stall)).await;
                             }
@@ -9940,7 +9951,7 @@ mod tests {
     }
 
     /// P1 (S6) — the permanent RE-COUPLING TRIPWIRE. A fat control arm (a
-    /// 2 s Netmap handler, via [`TEST_NETMAP_STALL_MS`]) must not delay
+    /// 2 s Netmap handler, via [`TEST_NETMAP_STALL`]) must not delay
     /// outbound packets: the data plane runs on the dedicated pump, off the
     /// select! loop. Pre-P1 this fails by construction — the outbound arm
     /// shared the loop, so every packet injected during the stall queued for
@@ -10050,7 +10061,7 @@ mod tests {
 
         // Arm the 2 s stall and hand A a DUPLICATE netmap (same peer ⇒ the
         // already-installed carrier is kept — the arm just sits busy).
-        TEST_NETMAP_STALL_MS.store(2000, std::sync::atomic::Ordering::Relaxed);
+        *TEST_NETMAP_STALL.lock().unwrap() = Some((a.public.to_bytes(), 2000));
         evt_a
             .send(OverlayEvent::Netmap {
                 org_relay_discovery: false,
@@ -10081,7 +10092,7 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
         let arrivals = collector.await.unwrap();
-        TEST_NETMAP_STALL_MS.store(0, std::sync::atomic::Ordering::Relaxed);
+        *TEST_NETMAP_STALL.lock().unwrap() = None;
 
         assert!(
             arrivals.len() >= 35,
