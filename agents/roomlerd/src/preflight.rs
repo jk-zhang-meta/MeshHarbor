@@ -333,6 +333,23 @@ mod tests {
 
     #[tokio::test]
     async fn dns_check_against_unreachable_host_yields_finding() {
+        // A fake-IP DNS proxy (Clash/Mihomo-style, 198.18.0.0/15) or a hijacking
+        // resolver answers even RFC 6761 `.invalid` names, so the failure this
+        // test needs cannot happen there (measured on a dev host: every run).
+        // Probe with a second reserved name first; ROOMLERD_TEST_REQUIRE_DNS
+        // turns the skip into a failure where a clean resolver is expected.
+        let probe = format!("preflight-probe-{}.invalid:443", std::process::id());
+        if tokio::net::lookup_host(probe).await.is_ok() {
+            if std::env::var_os("ROOMLERD_TEST_REQUIRE_DNS").is_some() {
+                panic!(
+                    "ROOMLERD_TEST_REQUIRE_DNS is set and this host's resolver answers .invalid names"
+                );
+            }
+            eprintln!(
+                "skipping: this host's resolver answers .invalid names (fake-IP DNS proxy or hijack)"
+            );
+            return;
+        }
         // RFC 2606 reserved test TLD — guaranteed not to resolve.
         let f = check_dns("roomler.invalid".into(), 443).await;
         assert!(
