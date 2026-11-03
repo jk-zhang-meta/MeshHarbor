@@ -1,67 +1,68 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 <template>
   <v-container>
-    <h1 class="text-h5 mb-3">Device shares</h1>
-    <p class="mb-3">An explicit share grants one approved person access to one device. It does not add organization membership, LAN access, exit routing or resharing.</p>
+    <h1 class="text-h5 mb-3">{{ $t('mh.shares.title') }}</h1>
+    <p class="mb-3">{{ $t('mh.shares.intro') }}</p>
     <v-alert v-if="error" type="error" class="mb-3">{{ error }}</v-alert>
-    <v-tabs v-model="direction"><v-tab value="received">Shared with me</v-tab><v-tab value="sent">Shared by me</v-tab></v-tabs>
-    <v-btn class="my-3" :loading="loading" @click="load">Refresh</v-btn>
+    <v-tabs v-model="direction"><v-tab value="received">{{ $t('mh.shares.tabReceived') }}</v-tab><v-tab value="sent">{{ $t('mh.shares.tabSent') }}</v-tab></v-tabs>
+    <v-btn class="my-3" :loading="loading" @click="load">{{ $t('common.refresh') }}</v-btn>
     <v-progress-linear v-if="loading" indeterminate />
-    <v-table><thead><tr><th>Device</th><th>Owner → Recipient</th><th>Services</th><th>Created</th><th>Expires</th><th>Record state</th><th>Revoked</th><th>Actions</th></tr></thead><tbody>
-      <tr v-for="s in items" :key="s.id"><td>{{ s.device_name ?? s.device_id }}<br v-if="s.device_name" /><small v-if="s.device_name"><code>{{ s.device_id }}</code></small></td><td>{{ s.owner_username ?? s.owner_user_id }} → {{ s.recipient_username ?? s.recipient_user_id }}</td><td>{{ serviceLabel(s) }}</td><td>{{ s.created_at_ms === undefined ? 'Not reported by this server' : new Date(s.created_at_ms).toLocaleString() }}</td><td>{{ new Date(s.expires_at_ms).toLocaleString() }}</td><td :data-testid="'share-state-' + s.id">{{ shareRecordState(s, now) }}<br /><small>Grant {{ s.id }} · revision {{ s.revision }}</small></td><td>{{ s.revoked_at_ms === null ? '—' : new Date(s.revoked_at_ms).toLocaleString() }}</td><td>
-        <v-btn v-if="direction === 'received'" size="small" :disabled="!shareLive(s, now) || !sharedRemotePermissions(s.permissions)" :to="nativeDesktop ? undefined : { name: 'shared-remote', params: { shareId: s.id } }" :href="nativeDesktop ? sharedRemoteUrl(s) : undefined" :target="nativeDesktop ? '_blank' : undefined" :rel="nativeDesktop ? 'noopener noreferrer' : undefined">Open desktop / files</v-btn>
-        <v-btn v-if="direction === 'received' && s.permissions.ssh" size="small" class="ml-2" data-testid="shared-ssh-open" :data-share-id="s.id" :disabled="!shareLive(s, now)" @click="openSsh(s)">SSH (native client)</v-btn>
-        <v-btn v-if="direction === 'sent' && s.revoked_at_ms === null" size="small" color="error" :disabled="saving" @click="pendingRevoke = s">Revoke</v-btn>
-        <span v-if="s.revoked_at_ms !== null">Revoked</span>
+    <v-table><thead><tr><th>{{ $t('mh.shares.col.device') }}</th><th>{{ $t('mh.shares.col.parties') }}</th><th>{{ $t('mh.shares.col.services') }}</th><th>{{ $t('mh.shares.col.created') }}</th><th>{{ $t('mh.shares.col.expires') }}</th><th>{{ $t('mh.shares.col.state') }}</th><th>{{ $t('mh.shares.col.revoked') }}</th><th>{{ $t('mh.shares.col.actions') }}</th></tr></thead><tbody>
+      <tr v-for="s in items" :key="s.id"><td>{{ s.device_name ?? s.device_id }}<br v-if="s.device_name" /><small v-if="s.device_name"><code>{{ s.device_id }}</code></small></td><td>{{ s.owner_username ?? s.owner_user_id }} → {{ s.recipient_username ?? s.recipient_user_id }}</td><td>{{ serviceLabel(s) }}</td><td>{{ s.created_at_ms === undefined ? $t('mh.shares.notReported') : new Date(s.created_at_ms).toLocaleString() }}</td><td>{{ new Date(s.expires_at_ms).toLocaleString() }}</td><td :data-testid="'share-state-' + s.id">{{ recordStateLabel(shareRecordState(s, now)) }}<br /><small>{{ $t('mh.shares.grantRevision', { id: s.id, revision: s.revision }) }}</small></td><td>{{ s.revoked_at_ms === null ? '—' : new Date(s.revoked_at_ms).toLocaleString() }}</td><td>
+        <v-btn v-if="direction === 'received'" size="small" :disabled="!shareLive(s, now) || !sharedRemotePermissions(s.permissions)" :to="nativeDesktop ? undefined : { name: 'shared-remote', params: { shareId: s.id } }" :href="nativeDesktop ? sharedRemoteUrl(s) : undefined" :target="nativeDesktop ? '_blank' : undefined" :rel="nativeDesktop ? 'noopener noreferrer' : undefined">{{ $t('mh.shares.openRemote') }}</v-btn>
+        <v-btn v-if="direction === 'received' && s.permissions.ssh" size="small" class="ml-2" data-testid="shared-ssh-open" :data-share-id="s.id" :disabled="!shareLive(s, now)" @click="openSsh(s)">{{ $t('mh.shares.openSsh') }}</v-btn>
+        <v-btn v-if="direction === 'sent' && s.revoked_at_ms === null" size="small" color="error" :disabled="saving" @click="pendingRevoke = s">{{ $t('mh.shares.revoke') }}</v-btn>
+        <span v-if="s.revoked_at_ms !== null">{{ $t('mh.shares.revoked') }}</span>
       </td></tr>
-      <tr v-if="!loading && !items.length"><td colspan="8">No shares in this view.</td></tr>
+      <tr v-if="!loading && !items.length"><td colspan="8">{{ $t('mh.shares.empty') }}</td></tr>
     </tbody></v-table>
-    <p class="text-body-2 mt-2">{{ total }} retained sharing records in this direction, not a unique-device count. Expired and revoked records remain visible. Each record identifies the device, grantor/recipient, permissions, creation, expiry, revocation and revision. Record state does not override device policy or consent.</p>
+    <p class="text-body-2 mt-2">{{ $t('mh.shares.listNote', { total }) }}</p>
     <v-pagination v-model="page" :length="Math.max(1, Math.ceil(total / 20))" :disabled="loading" />
-    <v-expansion-panels v-model="panel" class="mt-4"><v-expansion-panel value="share" title="Share a device I own"><v-expansion-panel-text>
+    <v-expansion-panels v-model="panel" class="mt-4"><v-expansion-panel value="share" :title="$t('mh.shares.formTitle')"><v-expansion-panel-text>
       <v-form @submit.prevent="create">
-        <v-select data-testid="share-device-id" v-model="deviceId" :items="ownedChoices" :loading="ownedLoading" label="Device (one you own)" no-data-text="No devices owned by this account" required />
-        <v-text-field data-testid="share-recipient-id" v-model="recipientId" label="Recipient username or email" hint="The person must have an approved, verified account." persistent-hint autocomplete="off" required />
-        <v-checkbox data-testid="share-ssh-permission" v-model="ssh" label="SSH shell / exec (native client)" />
-        <v-checkbox data-testid="share-desktop-permission" v-model="desktopView" label="View desktop" /><v-checkbox v-model="desktopControl" :disabled="!desktopView" label="Control desktop" />
-        <v-checkbox data-testid="share-files-permission" v-model="files" label="Bidirectional file transfer (read AND write)" />
-        <v-text-field v-model.number="hours" label="Expiry in hours (maximum 720)" type="number" min="1" max="720" />
-        <v-alert type="info" variant="tonal" class="mb-3">Device consent and service settings still apply. Read-only file transfer is not supported by the current native file protocol. SSH sharing does not enable the device’s SSH service or organization policy. The approved recipient signs in through the native client with a hidden password prompt; a manually provisioned token file is optional. It does not enable desktop access or TCP forwarding.</v-alert>
-        <v-btn data-testid="share-create" type="submit" color="primary" :loading="saving">Create explicit share</v-btn>
+        <v-select data-testid="share-device-id" v-model="deviceId" :items="ownedChoices" :loading="ownedLoading" :label="$t('mh.shares.device')" :no-data-text="$t('mh.shares.noOwned')" required />
+        <v-text-field data-testid="share-recipient-id" v-model="recipientId" :label="$t('mh.shares.recipient')" :hint="$t('mh.shares.recipientHint')" persistent-hint autocomplete="off" required />
+        <v-checkbox data-testid="share-ssh-permission" v-model="ssh" :label="$t('mh.shares.permSsh')" />
+        <v-checkbox data-testid="share-desktop-permission" v-model="desktopView" :label="$t('mh.shares.permView')" /><v-checkbox v-model="desktopControl" :disabled="!desktopView" :label="$t('mh.shares.permControl')" />
+        <v-checkbox data-testid="share-files-permission" v-model="files" :label="$t('mh.shares.permFiles')" />
+        <v-text-field v-model.number="hours" :label="$t('mh.shares.hours')" type="number" min="1" max="720" />
+        <v-alert type="info" variant="tonal" class="mb-3">{{ $t('mh.shares.formNote') }}</v-alert>
+        <v-btn data-testid="share-create" type="submit" color="primary" :loading="saving">{{ $t('mh.shares.create') }}</v-btn>
       </v-form>
     </v-expansion-panel-text></v-expansion-panel></v-expansion-panels>
     <v-dialog :model-value="sshShare !== null" max-width="760" @update:model-value="v => { if (!v) closeSsh() }">
       <v-card data-testid="shared-ssh-instructions">
-        <v-card-title>SSH through the native client</v-card-title>
+        <v-card-title>{{ $t('mh.shares.ssh.title') }}</v-card-title>
         <v-card-text>
-          <v-alert type="info" variant="tonal" class="mb-3">This is an access check and instructions, not an SSH session or a browser terminal. Device consent and SSH policy still apply. The device runs its built-in SSH server; it does not need a system sshd.</v-alert>
+          <v-alert type="info" variant="tonal" class="mb-3">{{ $t('mh.shares.ssh.intro') }}</v-alert>
           <v-progress-linear v-if="sshLoading" indeterminate data-testid="shared-ssh-loading" />
           <v-alert v-if="sshError" type="error" data-testid="shared-ssh-error">{{ sshError }}</v-alert>
           <template v-if="sshDevice">
-            <p data-testid="shared-ssh-device">Shared device: {{ sshDevice.name }} ({{ sshDevice.id }})</p>
-            <p>Server base URL: <code>{{ sshServerBase }}</code></p>
-            <p class="mt-2">Public host key (the native client verifies this identity):</p>
+            <p data-testid="shared-ssh-device">{{ $t('mh.shares.ssh.device', { name: sshDevice.name, id: sshDevice.id }) }}</p>
+            <p>{{ $t('mh.shares.ssh.base') }} <code>{{ sshServerBase }}</code></p>
+            <p class="mt-2">{{ $t('mh.shares.ssh.hostKey') }}</p>
             <pre class="text-wrap" data-testid="shared-ssh-host-key">{{ sshDevice.host_pubkey }}</pre>
-            <p class="mt-3">Run the native CLI locally, replacing the server URL and account-name placeholders:</p>
+            <p class="mt-3">{{ $t('mh.shares.ssh.run') }}</p>
             <pre class="text-wrap" data-testid="shared-ssh-command">roomlerd cli share-ssh --server YOUR_SERVER_BASE_URL --share {{ sshShare?.id }} --login --username YOUR_ACCOUNT_USERNAME</pre>
-            <v-alert type="warning" variant="tonal" class="mt-3">The CLI still needs a local SSH client. With --login, enter your MeshHarbor account password at its hidden terminal prompt; the token remains in process memory. This page does not export your HttpOnly web session or launch a command. Never put a password or access token in a command, URL, or shared clipboard. MFA-required native access fails closed until a supported MFA handoff is available.</v-alert>
-            <p class="mt-2">SSH grants shell/exec as the device’s configured OS account, not a sandbox. This share does not grant SFTP, SSH forwarding, LAN access, or organization membership. The CLI rechecks authorization when it connects; revocation or expiry refuses new access and terminates share-bound sessions.</p>
+            <v-alert type="warning" variant="tonal" class="mt-3">{{ $t('mh.shares.ssh.warning') }}</v-alert>
+            <p class="mt-2">{{ $t('mh.shares.ssh.scope') }}</p>
           </template>
         </v-card-text>
-        <v-card-actions><v-spacer /><v-btn data-testid="shared-ssh-close" @click="closeSsh">Close</v-btn></v-card-actions>
+        <v-card-actions><v-spacer /><v-btn data-testid="shared-ssh-close" @click="closeSsh">{{ $t('common.close') }}</v-btn></v-card-actions>
       </v-card>
     </v-dialog>
-    <v-dialog :model-value="pendingRevoke !== null" max-width="480" @update:model-value="v => { if (!v && !saving) pendingRevoke = null }"><v-card><v-card-title>Revoke this device share?</v-card-title><v-card-text>New access will be refused. Share-bound remote sessions are terminated by live server checks.</v-card-text><v-card-actions><v-spacer /><v-btn :disabled="saving" @click="pendingRevoke = null">Cancel</v-btn><v-btn color="error" :loading="saving" @click="revoke">Revoke</v-btn></v-card-actions></v-card></v-dialog>
+    <v-dialog :model-value="pendingRevoke !== null" max-width="480" @update:model-value="v => { if (!v && !saving) pendingRevoke = null }"><v-card><v-card-title>{{ $t('mh.shares.revokeTitle') }}</v-card-title><v-card-text>{{ $t('mh.shares.revokeBody') }}</v-card-text><v-card-actions><v-spacer /><v-btn :disabled="saving" @click="pendingRevoke = null">{{ $t('common.cancel') }}</v-btn><v-btn color="error" :loading="saving" @click="revoke">{{ $t('mh.shares.revoke') }}</v-btn></v-card-actions></v-card></v-dialog>
   </v-container>
 </template>
 <script setup lang="ts">
 import { computed, ref, watch, onBeforeUnmount } from 'vue'
 import { useRoute } from 'vue-router'
+import { useI18n } from 'vue-i18n'
 import { api } from '@/api/client'
 import { useAuthStore } from '@/stores/auth'
 import { appOrigin } from '@/utils/deployment'
 import { sharedRemotePermissions, shareLive, shareRecordState, type DeviceShare } from '@/utils/deviceShare'
-const auth = useAuthStore(), route = useRoute()
+const auth = useAuthStore(), route = useRoute(), { t } = useI18n()
 const nativeDesktop = computed(() => route.query.desktop === '1')
 const now = ref(Date.now()), recordClock = setInterval(() => { now.value = Date.now() }, 1000)
 function sharedRemoteUrl(share: DeviceShare) { return `${appOrigin(window.location.origin).replace(/\/$/, '')}/device-shares/${encodeURIComponent(share.id)}/remote` }
@@ -124,11 +125,13 @@ async function load() {
   } catch (e) { if (attempt === generation && alive) error.value = (e as Error).message }
   finally { if (attempt === generation && alive) loading.value = false }
 }
-function serviceLabel(s: DeviceShare) { return [s.permissions.desktop_view ? 'Desktop' : '', s.permissions.desktop_control ? 'Control' : '', s.permissions.files_read && s.permissions.files_write ? 'Files read/write' : s.permissions.files_read ? 'Files read-only (unsupported)' : '', s.permissions.ssh ? 'SSH' : '', ...s.tcp_ports.map(p => `TCP ${p}`)].filter(Boolean).join(' · ') }
+function serviceLabel(s: DeviceShare) { return [s.permissions.desktop_view ? t('mh.shares.svc.desktop') : '', s.permissions.desktop_control ? t('mh.shares.svc.control') : '', s.permissions.files_read && s.permissions.files_write ? t('mh.shares.svc.filesRw') : s.permissions.files_read ? t('mh.shares.svc.filesRo') : '', s.permissions.ssh ? 'SSH' : '', ...s.tcp_ports.map(p => `TCP ${p}`)].filter(Boolean).join(' · ') }
+const RECORD_STATE_KEYS = { 'Revoked': 'mh.shares.record.revoked', 'Expired': 'mh.shares.record.expired', 'Unrevoked / unexpired': 'mh.shares.record.live' } as const
+function recordStateLabel(state: keyof typeof RECORD_STATE_KEYS) { return t(RECORD_STATE_KEYS[state]) }
 async function create() {
   if (saving.value) return
   const recipient = recipientId.value.trim()
-  if (!OBJECT_ID.test(deviceId.value ?? '') || !recipient || recipient.length > 320 || !Number.isInteger(hours.value) || hours.value < 1 || hours.value > 720 || (!desktopView.value && !files.value && !ssh.value)) { error.value = 'Choose a device, name the recipient by username or email, pick a supported capability, and an expiry of 1–720 hours.'; return }
+  if (!OBJECT_ID.test(deviceId.value ?? '') || !recipient || recipient.length > 320 || !Number.isInteger(hours.value) || hours.value < 1 || hours.value > 720 || (!desktopView.value && !files.value && !ssh.value)) { error.value = t('mh.shares.invalid'); return }
   const user = auth.user?.id, identity = identityGeneration, attempt = generation; saving.value = true; error.value = ''
   try { await api.post('/device-shares', { device_id: deviceId.value, recipient, permissions: { ssh: ssh.value, desktop_view: desktopView.value, desktop_control: desktopView.value && desktopControl.value, files_read: files.value, files_write: files.value }, tcp_ports: [], expires_in_secs: hours.value * 3600 })
     if (!alive || attempt !== generation || identity !== identityGeneration || auth.user?.id !== user) return

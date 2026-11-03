@@ -1,0 +1,217 @@
+{
+  "app": {
+    "name": "MeshHarbor · 织港"
+  },
+  "auth": {
+    "login": "登录",
+    "orLoginWith": "或使用以下方式登录",
+    "register": "注册",
+    "logout": "退出登录",
+    "email": "邮箱",
+    "password": "密码",
+    "username": "用户名",
+    "displayName": "显示名称",
+    "forgotPassword": "忘记密码？",
+    "noAccount": "还没有账号？",
+    "hasAccount": "已有账号？",
+    "orRegisterWith": "或使用以下方式注册"
+  },
+  "common": {
+    "save": "保存",
+    "cancel": "取消",
+    "confirm": "确认",
+    "search": "搜索",
+    "loading": "加载中…",
+    "close": "关闭",
+    "loadMore": "加载更多",
+    "refresh": "刷新",
+    "yes": "是",
+    "no": "否"
+  },
+  "nav": {
+    "dashboard": "概览",
+    "devices": "设备",
+    "network": "网络",
+    "tunnelAcl": "访问控制（ACL）",
+    "subnetRoutes": "叠加网络路由",
+    "magicDns": "MagicDNS",
+    "netInventory": "网络清单",
+    "managedForwards": "托管转发",
+    "serverTopology": "服务器拓扑",
+    "analytics": "统计分析",
+    "observability": "可观测性",
+    "invites": "邀请",
+    "tutorial": "使用教程",
+    "admin": "管理",
+    "settings": "设置",
+    "members": "成员",
+    "roles": "角色",
+    "audit": "审计",
+    "execAudit": "命令审计",
+    "sshAudit": "SSH 审计",
+    "sshActivity": "SSH 活动"
+  },
+  "mh": {
+    "lang": {
+      "label": "语言"
+    },
+    "nav": {
+      "myDevices": "我的设备与分享",
+      "deviceShares": "设备分享",
+      "accountApprovals": "账号审批"
+    },
+    "approval": {
+      "title": "账号审批",
+      "intro": "中心账号准入。组织角色、设备注册和操作系统权限分别管理。",
+      "checking": "正在检查审批权限",
+      "notEnabled": "此服务器未启用账号审批。",
+      "ownerOnly": "只有中心审批负责人可以使用此控制台。",
+      "tab": {
+        "pending": "待审核",
+        "approved": "已批准",
+        "rejected": "已拒绝",
+        "suspended": "已停用"
+      },
+      "summary": "共 {total} 个账号 · 每页 {perPage} 个",
+      "includesLegacy": " · 包含尚未审核的已有账号",
+      "loading": "正在加载账号",
+      "col": {
+        "account": "账号",
+        "email": "邮箱",
+        "status": "状态",
+        "emailVerified": "邮箱已验证",
+        "revision": "版本",
+        "review": "审核"
+      },
+      "state": {
+        "legacy_unreviewed": "已有账号（未审核）",
+        "pending": "待审核",
+        "approved": "已批准",
+        "rejected": "已拒绝",
+        "suspended": "已停用"
+      },
+      "approve": "批准",
+      "reject": "拒绝",
+      "suspend": "停用",
+      "empty": "此视图中没有账号。",
+      "confirmTitle": "确定{action}该账号？",
+      "revisionNote": "服务器接受版本 {revision} 后，状态才会改变。",
+      "revokeWarning": "这会撤销账号准入。已有的网络和设备会话按各自的撤销规则处理。",
+      "confirmAction": "确认{action}"
+    },
+    "mine": {
+      "title": "我的设备与分享",
+      "intro": "这里只列出本账号拥有的设备（涵盖你所在的全部有效组织）。能在组织里看到某台设备，不代表你拥有它。",
+      "refresh": "刷新账号记录",
+      "myDevices": "我的设备",
+      "ownedHint": "在已加入的有效组织中你拥有的设备。",
+      "distinctHint": "有未撤销、未过期分享的设备数（去重）。",
+      "grants": "当前授权 {current} 条 · 保留记录 {retained} 条",
+      "expiredRevoked": "已过期 {expired} 条 · 已撤销 {revoked} 条",
+      "countNote": "同一台设备被多次分享时，每个方向只计一次。保留记录包括已过期和已撤销的分享。这些只是分享记录的状态，不代表设备在线，也不代表其服务策略允许连接。",
+      "ownedTable": "我拥有的设备",
+      "col": {
+        "device": "设备 / ID",
+        "registered": "注册名称",
+        "os": "系统",
+        "status": "状态",
+        "org": "组织",
+        "access": "访问"
+      },
+      "openDesktop": "打开桌面",
+      "share": "分享",
+      "noneOwned": "在已加入的有效组织中，本账号没有任何设备。",
+      "nonePage": "本页没有设备。请刷新或换一页。",
+      "footer": "设备 ID 和分享记录与连接状态相互独立。访问桌面仍需符合设备当前的服务策略，并经过设备端同意。",
+      "refreshFailed": "无法刷新个人设备和分享记录。若仍显示旧记录，可能已过时；服务器可能需要更新。"
+    },
+    "shares": {
+      "title": "设备分享",
+      "intro": "一条分享只允许一位已批准的人访问一台设备，不会让对方加入组织，也不开放局域网访问、出口路由或再次分享。",
+      "tabReceived": "分享给我的",
+      "tabSent": "我分享的",
+      "col": {
+        "device": "设备",
+        "parties": "所有者 → 接收者",
+        "services": "服务",
+        "created": "创建时间",
+        "expires": "到期时间",
+        "state": "记录状态",
+        "revoked": "撤销时间",
+        "actions": "操作"
+      },
+      "notReported": "此服务器未提供",
+      "grantRevision": "授权 {id} · 版本 {revision}",
+      "openRemote": "打开桌面 / 文件",
+      "openSsh": "SSH（原生客户端）",
+      "revoke": "撤销",
+      "revoked": "已撤销",
+      "empty": "此视图中没有分享。",
+      "listNote": "此方向共保留 {total} 条分享记录（不是去重后的设备数）。已过期和已撤销的记录仍会显示。每条记录都写明设备、分享者/接收者、权限、创建、到期、撤销时间和版本。记录状态不能替代设备策略或设备端同意。",
+      "formTitle": "分享我拥有的设备",
+      "device": "设备（须为你拥有的）",
+      "noOwned": "本账号没有任何设备",
+      "recipient": "接收者的用户名或邮箱",
+      "recipientHint": "对方须有已批准且已验证的账号。",
+      "permSsh": "SSH 终端 / 命令（原生客户端）",
+      "permView": "查看桌面",
+      "permControl": "控制桌面",
+      "permFiles": "双向文件传输（可读可写）",
+      "hours": "有效期（小时，最多 720）",
+      "formNote": "设备端同意和服务设置依然有效。当前的原生文件协议不支持只读文件传输。分享 SSH 不会替设备开启 SSH 服务，也不会改变组织策略。接收者通过原生客户端登录，密码在隐藏的提示中输入；也可以手动准备令牌文件（可选）。SSH 分享不开放桌面访问或 TCP 转发。",
+      "create": "创建分享",
+      "invalid": "请选择设备，填写接收者的用户名或邮箱，勾选至少一项支持的权限，并把有效期设为 1–720 小时。",
+      "svc": {
+        "desktop": "桌面",
+        "control": "控制",
+        "filesRw": "文件读写",
+        "filesRo": "文件只读（不支持）"
+      },
+      "record": {
+        "revoked": "已撤销",
+        "expired": "已过期",
+        "live": "未撤销 / 未过期"
+      },
+      "ssh": {
+        "title": "通过原生客户端 SSH",
+        "intro": "这里只做访问检查并给出操作说明，不是 SSH 会话，也不是浏览器终端。设备端同意和 SSH 策略依然有效。设备使用内置的 SSH 服务，不需要系统 sshd。",
+        "device": "分享的设备：{name}（{id}）",
+        "base": "服务器地址：",
+        "hostKey": "主机公钥（原生客户端会校验这个身份）：",
+        "run": "在本机运行原生命令行，把其中的服务器地址和账号名占位符替换成实际值：",
+        "warning": "命令行仍需要本机的 SSH 客户端。使用 --login 时，在隐藏的终端提示中输入你的 MeshHarbor 账号密码，令牌只保存在进程内存中。本页面不会导出你的网页会话，也不会替你执行命令。切勿把密码或访问令牌写进命令、网址或共享剪贴板。需要多因素认证的原生访问会被拒绝，直到支持相应的多因素认证交接为止。",
+        "scope": "SSH 以设备上配置的操作系统账号运行终端和命令，不是沙箱。此分享不包括 SFTP、SSH 转发、局域网访问或组织成员身份。命令行每次连接都会重新检查授权；分享被撤销或过期后，新的访问会被拒绝，已有的分享会话也会被终止。"
+      },
+      "revokeTitle": "撤销这条设备分享？",
+      "revokeBody": "新的访问会被拒绝。服务器的实时检查会终止依赖此分享的远程会话。"
+    },
+    "topo": {
+      "title": "服务器拓扑",
+      "intro": "两台服务器之间有一条已启用的连线时才直接互连，与所在业务区域无关；没有连线就互相不可见，即使在同一区域。先点一台服务器、再点另一台即可添加连线；点击连线可关闭或删除它。地图上不显示客户端，客户端仍按区域规则。连线在",
+      "introWarn1": " 时强制执行；在 ",
+      "introWarn2": " 下只记录日志。",
+      "noServers": "还没有设备获得中心角色“服务器”。请先在业务授权中批准一台。",
+      "mainland": "中国大陆",
+      "nonMainland": "非中国大陆",
+      "zoneUnknown": "区域未知",
+      "edgeOn": "连线已开启",
+      "edgeOff": "连线已关闭",
+      "selected": "已选中 {name}：请再点击另一台服务器",
+      "svgTitle": "服务器拓扑：按国家分布的服务器及其之间的连线",
+      "on": "开",
+      "off": "关",
+      "noCountry": "国家未知",
+      "online": "在线",
+      "offline": "离线",
+      "noLocation": "位置未知：",
+      "removeEdge": "删除连线",
+      "removeEdgeAria": "删除连线 {a} — {b}",
+      "col": {
+        "edge": "连线",
+        "state": "状态",
+        "actions": "操作"
+      },
+      "noEdges": "没有连线：每台服务器都各自独立。"
+    }
+  }
+}

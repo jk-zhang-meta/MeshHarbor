@@ -19,6 +19,7 @@ export default defineConfig({
   test: {
     environment: 'jsdom',
     globals: true,
+    setupFiles: ['src/__tests__/setup-i18n.ts'],
     // `docs/**` is FR-60's static documentation generator. Its specs live
     // next to it rather than under src/, because it is a build-time tool
     // and not part of the SPA bundle.

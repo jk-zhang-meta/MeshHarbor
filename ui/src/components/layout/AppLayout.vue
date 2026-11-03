@@ -407,13 +407,13 @@
 
 
       <v-list density="compact">
-        <v-list-item :to="{ path: '/my-devices', query: route.query.desktop === '1' ? { desktop: '1' } : {} }" prepend-icon="mdi-account-multiple" title="My devices &amp; sharing" data-testid="personal-devices-nav" />
-        <v-list-item :to="{ path: '/device-shares', query: route.query.desktop === '1' ? { desktop: '1' } : {} }" prepend-icon="mdi-share-variant" title="Device shares" data-testid="device-shares-nav" />
+        <v-list-item :to="{ path: '/my-devices', query: route.query.desktop === '1' ? { desktop: '1' } : {} }" prepend-icon="mdi-account-multiple" :title="$t('mh.nav.myDevices')" data-testid="personal-devices-nav" />
+        <v-list-item :to="{ path: '/device-shares', query: route.query.desktop === '1' ? { desktop: '1' } : {} }" prepend-icon="mdi-share-variant" :title="$t('mh.nav.deviceShares')" data-testid="device-shares-nav" />
       </v-list>
 
       <!-- Central approval is global; never hide it behind tenant membership. -->
       <v-list v-if="accountApproval.isOwner" density="compact">
-        <v-list-item to="/account-approval" prepend-icon="mdi-account-check" title="Account approvals" data-testid="account-approval-nav" />
+        <v-list-item to="/account-approval" prepend-icon="mdi-account-check" :title="$t('mh.nav.accountApprovals')" data-testid="account-approval-nav" />
       </v-list>
 
       <template #append>
@@ -593,6 +593,28 @@
           :aria-label="isDark ? 'Light mode' : 'Dark mode'"
           @click="toggleTheme"
         />
+        <v-menu>
+          <template #activator="{ props: langProps }">
+            <v-btn
+              icon="mdi-translate"
+              size="small"
+              v-bind="langProps"
+              :title="$t('mh.lang.label')"
+              :aria-label="$t('mh.lang.label')"
+              data-testid="language-menu"
+            />
+          </template>
+          <v-list density="compact">
+            <v-list-item
+              v-for="l in LOCALES"
+              :key="l.code"
+              :title="l.label"
+              :active="currentLocale === l.code"
+              :data-testid="`language-${l.code}`"
+              @click="setLocale(l.code)"
+            />
+          </v-list>
+        </v-menu>
         <v-menu v-model="showNotifications" :close-on-content-click="false">
           <template #activator="{ props: menuProps }">
             <v-btn icon size="small" v-bind="menuProps">
@@ -731,6 +753,8 @@ import { appPath } from '@/utils/deployment'
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useTheme, useDisplay } from 'vuetify'
+import { useI18n } from 'vue-i18n'
+import { LOCALES, setLocale } from '@/plugins/i18n'
 import { useAuth } from '@/composables/useAuth'
 import { useAccountApprovalStore } from '@/stores/accountApproval'
 import { useBrand } from '@/composables/useBrand'
@@ -1139,11 +1163,12 @@ const settingsRoute = computed(() =>
   tenantId.value ? `/tenant/${tenantId.value}/admin` : '/',
 )
 
+const { t, locale: currentLocale } = useI18n()
 const pageTitle = computed(() => {
   const name = route.name as string
-  if (name === 'my-devices') return 'My devices & sharing'
-  if (name === 'device-shares' || name === 'shared-remote') return 'Device shares'
-  if (name === 'account-approval') return 'Account approvals'
+  if (name === 'my-devices') return t('mh.nav.myDevices')
+  if (name === 'device-shares' || name === 'shared-remote') return t('mh.nav.deviceShares')
+  if (name === 'account-approval') return t('mh.nav.accountApprovals')
   if (name === 'room-chat') return 'Chat'
   if (name === 'room-call') return 'Call'
   return (route.meta.title as string) || PRODUCT_TITLE

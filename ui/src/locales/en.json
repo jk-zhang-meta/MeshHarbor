@@ -202,7 +202,10 @@
     "search": "Search",
     "loading": "Loading...",
     "close": "Close",
-    "loadMore": "Load more"
+    "loadMore": "Load more",
+    "refresh": "Refresh",
+    "yes": "Yes",
+    "no": "No"
   },
   "grid": {
     "columns": "Columns",
@@ -611,6 +614,169 @@
         "device": "What the device itself reported on a heartbeat: a claim, seen at the 30-second heartbeat, never a server decision.",
         "server": "The server's own record of an admin's change."
       }
+    }
+  },
+  "mh": {
+    "lang": {
+      "label": "Language"
+    },
+    "nav": {
+      "myDevices": "My devices & sharing",
+      "deviceShares": "Device shares",
+      "accountApprovals": "Account approvals"
+    },
+    "approval": {
+      "title": "Account approvals",
+      "intro": "Central account admission. Organization roles, device enrollment and operating-system permissions are separate.",
+      "checking": "Checking approval access",
+      "notEnabled": "Account approval is not enabled on this server.",
+      "ownerOnly": "Only the central approval owner can access this console.",
+      "tab": {
+        "pending": "Pending review",
+        "approved": "Approved",
+        "rejected": "Rejected",
+        "suspended": "Suspended"
+      },
+      "summary": "{total} accounts · {perPage} per page",
+      "includesLegacy": " · Includes existing unreviewed accounts",
+      "loading": "Loading accounts",
+      "col": {
+        "account": "Account",
+        "email": "Email",
+        "status": "Status",
+        "emailVerified": "Email verified",
+        "revision": "Revision",
+        "review": "Review"
+      },
+      "state": {
+        "legacy_unreviewed": "Existing — unreviewed",
+        "pending": "pending",
+        "approved": "approved",
+        "rejected": "rejected",
+        "suspended": "suspended"
+      },
+      "approve": "Approve",
+      "reject": "Reject",
+      "suspend": "Suspend",
+      "empty": "No accounts in this view.",
+      "confirmTitle": "{action} account?",
+      "revisionNote": "The server must accept revision {revision} before any status changes.",
+      "revokeWarning": "This revokes account admission. Existing network and device sessions have their own revocation rules.",
+      "confirmAction": "Confirm {action}"
+    },
+    "mine": {
+      "title": "My devices & sharing",
+      "intro": "Only devices owned by this account, across your active organizations. Organization-wide visibility is not ownership.",
+      "refresh": "Refresh account records",
+      "myDevices": "My devices",
+      "ownedHint": "Owned devices in active, joined organizations.",
+      "distinctHint": "Distinct devices with unrevoked, unexpired shares.",
+      "grants": "{current} current grants · {retained} retained records",
+      "expiredRevoked": "{expired} expired · {revoked} revoked",
+      "countNote": "A device shared more than once is counted once per direction. Retained records include expired and revoked shares. These are sharing-record states, not proof that a device is online or its service policy permits a connection.",
+      "ownedTable": "Devices owned by me",
+      "col": {
+        "device": "Device / ID",
+        "registered": "Registered name",
+        "os": "OS",
+        "status": "Status",
+        "org": "Organization",
+        "access": "Access"
+      },
+      "openDesktop": "Open desktop",
+      "share": "Share",
+      "noneOwned": "No devices owned by this account in active, joined organizations.",
+      "nonePage": "No devices on this page. Refresh or choose another page.",
+      "footer": "Device IDs and sharing records remain separate from connection state. Desktop access still requires the device's current service policy and consent.",
+      "refreshFailed": "Could not refresh personal device and sharing records. Previous records, if shown, may be stale. The server may need an update."
+    },
+    "shares": {
+      "title": "Device shares",
+      "intro": "An explicit share grants one approved person access to one device. It does not add organization membership, LAN access, exit routing or resharing.",
+      "tabReceived": "Shared with me",
+      "tabSent": "Shared by me",
+      "col": {
+        "device": "Device",
+        "parties": "Owner → Recipient",
+        "services": "Services",
+        "created": "Created",
+        "expires": "Expires",
+        "state": "Record state",
+        "revoked": "Revoked",
+        "actions": "Actions"
+      },
+      "notReported": "Not reported by this server",
+      "grantRevision": "Grant {id} · revision {revision}",
+      "openRemote": "Open desktop / files",
+      "openSsh": "SSH (native client)",
+      "revoke": "Revoke",
+      "revoked": "Revoked",
+      "empty": "No shares in this view.",
+      "listNote": "{total} retained sharing records in this direction, not a unique-device count. Expired and revoked records remain visible. Each record identifies the device, grantor/recipient, permissions, creation, expiry, revocation and revision. Record state does not override device policy or consent.",
+      "formTitle": "Share a device I own",
+      "device": "Device (one you own)",
+      "noOwned": "No devices owned by this account",
+      "recipient": "Recipient username or email",
+      "recipientHint": "The person must have an approved, verified account.",
+      "permSsh": "SSH shell / exec (native client)",
+      "permView": "View desktop",
+      "permControl": "Control desktop",
+      "permFiles": "Bidirectional file transfer (read AND write)",
+      "hours": "Expiry in hours (maximum 720)",
+      "formNote": "Device consent and service settings still apply. Read-only file transfer is not supported by the current native file protocol. SSH sharing does not enable the device’s SSH service or organization policy. The approved recipient signs in through the native client with a hidden password prompt; a manually provisioned token file is optional. It does not enable desktop access or TCP forwarding.",
+      "create": "Create explicit share",
+      "invalid": "Choose a device, name the recipient by username or email, pick a supported capability, and an expiry of 1–720 hours.",
+      "svc": {
+        "desktop": "Desktop",
+        "control": "Control",
+        "filesRw": "Files read/write",
+        "filesRo": "Files read-only (unsupported)"
+      },
+      "record": {
+        "revoked": "Revoked",
+        "expired": "Expired",
+        "live": "Unrevoked / unexpired"
+      },
+      "ssh": {
+        "title": "SSH through the native client",
+        "intro": "This is an access check and instructions, not an SSH session or a browser terminal. Device consent and SSH policy still apply. The device runs its built-in SSH server; it does not need a system sshd.",
+        "device": "Shared device: {name} ({id})",
+        "base": "Server base URL:",
+        "hostKey": "Public host key (the native client verifies this identity):",
+        "run": "Run the native CLI locally, replacing the server URL and account-name placeholders:",
+        "warning": "The CLI still needs a local SSH client. With --login, enter your MeshHarbor account password at its hidden terminal prompt; the token remains in process memory. This page does not export your HttpOnly web session or launch a command. Never put a password or access token in a command, URL, or shared clipboard. MFA-required native access fails closed until a supported MFA handoff is available.",
+        "scope": "SSH grants shell/exec as the device’s configured OS account, not a sandbox. This share does not grant SFTP, SSH forwarding, LAN access, or organization membership. The CLI rechecks authorization when it connects; revocation or expiry refuses new access and terminates share-bound sessions."
+      },
+      "revokeTitle": "Revoke this device share?",
+      "revokeBody": "New access will be refused. Share-bound remote sessions are terminated by live server checks."
+    },
+    "topo": {
+      "title": "Server topology",
+      "intro": "Two servers connect directly exactly when an enabled edge joins them, whatever their business zones; without one they do not see each other, even in one zone. Click a server, then another, to add an edge; click an edge to switch it off or remove it. Clients are not drawn: they keep the zone rule. Edges are enforced under",
+      "introWarn1": "; under ",
+      "introWarn2": " they are only logged.",
+      "noServers": "No device has the central role Server yet. Approve one under Business authority first.",
+      "mainland": "Mainland",
+      "nonMainland": "Non-mainland",
+      "zoneUnknown": "Zone unknown",
+      "edgeOn": "Edge on",
+      "edgeOff": "Edge off",
+      "selected": "{name} selected: click a second server",
+      "svgTitle": "Server topology: servers by country and the edges between them",
+      "on": "On",
+      "off": "Off",
+      "noCountry": "no country",
+      "online": "online",
+      "offline": "offline",
+      "noLocation": "No known location:",
+      "removeEdge": "Remove edge",
+      "removeEdgeAria": "Remove edge {a} — {b}",
+      "col": {
+        "edge": "Edge",
+        "state": "State",
+        "actions": "Actions"
+      },
+      "noEdges": "No edges: every server is on its own."
     }
   }
 }
