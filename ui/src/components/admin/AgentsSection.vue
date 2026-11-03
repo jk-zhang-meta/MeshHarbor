@@ -2240,17 +2240,17 @@ function fmtRelative(iso: string): string {
   const d = new Date(iso)
   if (Number.isNaN(d.getTime())) return iso
   const diff = Date.now() - d.getTime()
-  if (diff < 0) return 'just now'
+  if (diff < 0) return tr('mh.ago.now')
   const mins = Math.floor(diff / 60000)
-  if (mins < 1) return 'just now'
-  if (mins < 60) return `${mins}m ago`
+  if (mins < 1) return tr('mh.ago.now')
+  if (mins < 60) return tr('mh.ago.m', { n: mins })
   const hours = Math.floor(mins / 60)
-  if (hours < 24) return `${hours}h ago`
+  if (hours < 24) return tr('mh.ago.h', { n: hours })
   const days = Math.floor(hours / 24)
-  if (days < 30) return `${days}d ago`
+  if (days < 30) return tr('mh.ago.d', { n: days })
   const months = Math.floor(days / 30)
-  if (months < 12) return `${months}mo ago`
-  return `${Math.floor(months / 12)}y ago`
+  if (months < 12) return tr('mh.ago.mo', { n: months })
+  return tr('mh.ago.y', { n: Math.floor(months / 12) })
 }
 
 // FR-12 — `/devices?enroll=1` opens this dialog, so a tutorial step can land

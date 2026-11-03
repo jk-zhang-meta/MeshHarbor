@@ -959,7 +959,7 @@
       "idAgent": "{daemon}是客户端自身的账号：服务安装时为 {system}，有人值守安装时为{signedInLower}。{signedIn}在服务安装中可用；有人值守安装只能通过设备的 SYSTEM 服务提供，管理员需在设备上运行 {cmd} 开启。",
       "idUnixNamed": "在服务器上，{named}是最稳妥的选择。",
       "namedAccount": "指定账号",
-      "idUnixPerson": "{person}是设备屏幕前当前登录的人，无人时拒绝会话。",
+      "idUnixPerson": "{person}指当前登录在该设备屏幕上的人，无人登录时拒绝会话。",
       "idUnixDaemon": "{daemon}即 {root}：选择它等于授予此设备的 root 权限。",
       "personNeedsNewer": "“设备屏幕前的用户”需要此设备安装更新的客户端。",
       "accountName": "账号名",
@@ -1029,6 +1029,49 @@
       },
       "daemonAccount": "守护进程账号（SYSTEM / root）",
       "saveFailed": "无法记录请求。"
+    },
+    "managed": {
+      "leave": "不管理",
+      "off": "关闭",
+      "on": "开启"
+    },
+    "stall": {
+      "chip": "未更新",
+      "behindPlus": "{n}+ 个版本",
+      "behindOne": "1 个版本",
+      "behindN": "{n} 个版本",
+      "days": "{n} 天",
+      "hours": "{n} 小时",
+      "tooltip": "v{version} 落后 {behind}：{first} 已发布 {ago}，此设备在线但尚未安装。",
+      "remedyLinux": "0.4.138 之前按用户安装的 Linux 客户端无法自行更新。请在设备上手动安装一次当前版本（sudo apt install ./roomlerd.deb、软件中心，或重新运行安装脚本），之后它会自动更新。如果是系统安装且停止了更新，请在设备上检查 'roomler config ls' 中的 auto_update 和日志（'roomler logs --grep update'）。",
+      "remedyOther": "请在设备上检查 'roomler config ls' 中的 auto_update 和日志（'roomler logs --grep update'）。"
+    },
+    "cred": {
+      "today": "凭据今天过期",
+      "inDays": "凭据 {days} 天后过期",
+      "soonTip": "设备令牌将于 {on} 过期。0.4.135 及以上版本的客户端会提前 180 天自动续期，这么接近过期说明它没有续期：请更新客户端，或检查它是否已被移除并在别处重新注册。",
+      "expired": "凭据已过期",
+      "renewableTip": "设备令牌已于 {on} 过期。设备升级到 0.4.135 或以上版本后，服务器在接下来 {days} 天内仍会为其续期；之后需要重新注册。",
+      "lostTip": "设备令牌已于 {on} 过期，超过 {grace} 天：请重新注册设备。"
+    },
+    "refusal": {
+      "primary_org": "其更新由另一个组织管理",
+      "auto_update_off": "设备上已关闭自动更新",
+      "pin_downgrade": "固定版本会导致降级",
+      "other": "已拒绝"
+    },
+    "codec": {
+      "hw": "硬件加速 {codec} 编码器",
+      "sw": "软件 {codec} 编码器",
+      "yuv444": "，支持 4:4:4（全色度分辨率）",
+      "hwAvailable": "可用硬件加速 {codec} 编码器",
+      "swAvailable": "可用软件 {codec} 编码器"
+    },
+    "perm": {
+      "noScreen": "无屏幕权限",
+      "noScreenTip": "系统未授予此设备屏幕录制权限，远程画面将是空白。macOS：系统设置 → 隐私与安全性 → 屏幕录制。",
+      "noInput": "无输入权限",
+      "noInputTip": "系统未授予此设备输入注入权限，远程键盘和鼠标将不起作用。macOS：系统设置 → 隐私与安全性 → 辅助功能。"
     }
   }
 }

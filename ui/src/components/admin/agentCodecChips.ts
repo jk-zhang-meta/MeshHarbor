@@ -2,6 +2,12 @@
 // Copyright (C) 2026 G ROX EOOD
 import type { Agent } from '@/stores/agents'
 import { cellsFromCaps, type CellCodec } from '@/composables/videoCells'
+import i18n from '@/plugins/i18n'
+
+/** Read at call time, so a caller re-renders in the current language. */
+function t(key: string, named?: Record<string, unknown>): string {
+  return named ? i18n.global.t(key, named) : i18n.global.t(key)
+}
 
 export interface CodecChip {
   label: string
@@ -38,7 +44,10 @@ export function codecChips(a: Agent): CodecChip[] {
         return {
           label: `${display} ${isHw ? 'HW' : 'SW'}${has444 ? ' 4:4:4' : ''}`,
           color: isHw ? 'primary' : 'default',
-          tooltip: `${isHw ? 'Hardware-accelerated' : 'Software'} ${display} encoder${backends ? ` (${backends})` : ''}${has444 ? ' — can emit 4:4:4 (full colour resolution)' : ''}`,
+          tooltip:
+            t(isHw ? 'mh.codec.hw' : 'mh.codec.sw', { codec: display }) +
+            (backends ? ` (${backends})` : '') +
+            (has444 ? t('mh.codec.yuv444') : ''),
         }
       })
   }
@@ -64,9 +73,7 @@ export function codecChips(a: Agent): CodecChip[] {
     return {
       label: `${display} ${isHw ? 'HW' : 'SW'}`,
       color: isHw ? 'primary' : 'default',
-      tooltip: isHw
-        ? `Hardware-accelerated ${display} encoder available`
-        : `Software ${display} encoder available`,
+      tooltip: t(isHw ? 'mh.codec.hwAvailable' : 'mh.codec.swAvailable', { codec: display }),
     }
   })
 }
@@ -99,16 +106,14 @@ export function permissionWarnings(a: Agent): PermissionWarning[] {
   const out: PermissionWarning[] = []
   if (!perms.includes('screen-capture')) {
     out.push({
-      label: 'No screen access',
-      tooltip:
-        'The OS has not granted this device screen-capture permission, so the remote screen will be blank. On macOS: System Settings → Privacy & Security → Screen Recording.',
+      label: t('mh.perm.noScreen'),
+      tooltip: t('mh.perm.noScreenTip'),
     })
   }
   if (!perms.includes('input')) {
     out.push({
-      label: 'No input access',
-      tooltip:
-        'The OS has not granted this device input-injection permission, so remote keyboard and mouse will do nothing. On macOS: System Settings → Privacy & Security → Accessibility.',
+      label: t('mh.perm.noInput'),
+      tooltip: t('mh.perm.noInputTip'),
     })
   }
   return out

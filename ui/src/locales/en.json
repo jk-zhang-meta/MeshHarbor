@@ -1594,6 +1594,49 @@
       },
       "daemonAccount": "The daemon account (SYSTEM / root)",
       "saveFailed": "Could not record the request."
+    },
+    "managed": {
+      "leave": "Leave alone",
+      "off": "Off",
+      "on": "On"
+    },
+    "stall": {
+      "chip": "not updating",
+      "behindPlus": "{n}+ releases",
+      "behindOne": "1 release",
+      "behindN": "{n} releases",
+      "days": "{n} d",
+      "hours": "{n} h",
+      "tooltip": "v{version} is {behind} behind: {first} came out {ago} ago and this device, online, has not installed it.",
+      "remedyLinux": "A per-user Linux install made before 0.4.138 cannot install updates by itself. Install the current release on it once (sudo apt install ./roomlerd.deb, the Software app, or a re-run of the install script), and it updates itself from then on. On a system install that stopped, check auto_update in 'roomler config ls' and the log ('roomler logs --grep update') on it.",
+      "remedyOther": "Check auto_update in 'roomler config ls' and the log ('roomler logs --grep update') on it."
+    },
+    "cred": {
+      "today": "credential expires today",
+      "inDays": "credential expires in {days} d",
+      "soonTip": "Its agent token expires on {on}. A device on agent 0.4.135 or later renews it itself 180 days early, so one this close is not renewing: update its agent, or check whether it was removed and re-enrolled elsewhere.",
+      "expired": "credential expired",
+      "renewableTip": "Its agent token expired on {on}. The server still renews it for {days} more day(s) once the device runs agent 0.4.135 or later; after that, re-enroll it.",
+      "lostTip": "Its agent token expired on {on}, more than {grace} days ago: re-enroll the device."
+    },
+    "refusal": {
+      "primary_org": "another organization manages its updates",
+      "auto_update_off": "auto-update is off on the device",
+      "pin_downgrade": "the pin would downgrade it",
+      "other": "refused"
+    },
+    "codec": {
+      "hw": "Hardware-accelerated {codec} encoder",
+      "sw": "Software {codec} encoder",
+      "yuv444": " — can emit 4:4:4 (full colour resolution)",
+      "hwAvailable": "Hardware-accelerated {codec} encoder available",
+      "swAvailable": "Software {codec} encoder available"
+    },
+    "perm": {
+      "noScreen": "No screen access",
+      "noScreenTip": "The OS has not granted this device screen-capture permission, so the remote screen will be blank. On macOS: System Settings → Privacy & Security → Screen Recording.",
+      "noInput": "No input access",
+      "noInputTip": "The OS has not granted this device input-injection permission, so remote keyboard and mouse will do nothing. On macOS: System Settings → Privacy & Security → Accessibility."
     }
   }
 }
