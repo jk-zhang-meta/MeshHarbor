@@ -489,11 +489,14 @@ mod tests {
         assert!(listed.iter().any(|a| a.name == "mhshare1" && a.admin));
         assert!(listed.iter().any(|a| a.name == "mhshare2" && !a.admin));
 
+        // macOS `su` has no `-s`; the account's own shell (zsh) runs the command there.
         let sh = |user: &str, cmd: &str| {
-            std::process::Command::new("/usr/bin/su")
-                .args(["-s", "/bin/sh", user, "-c", cmd])
-                .output()
-                .unwrap()
+            let args: Vec<&str> = if cfg!(target_os = "macos") {
+                vec![user, "-c", cmd]
+            } else {
+                vec!["-s", "/bin/sh", user, "-c", cmd]
+            };
+            std::process::Command::new("/usr/bin/su").args(args).output().unwrap()
         };
         let root = sh("mhshare1", "sudo -n id -u");
         assert!(root.status.success(), "{root:?}");
