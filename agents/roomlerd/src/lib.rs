@@ -339,4 +339,45 @@ mod tests {
     fn a_running_daemon_keeps_its_routes() {
         assert!(!super::purge_exit_routes_unless_owned(true));
     }
+
+    /// The MeshHarbor rename moved the daemon's `[[bin]]` to `meshharbord`, but
+    /// build.rs kept scoping its Windows link args (the 8 MiB main-thread stack
+    /// and the VERSIONINFO resource) to `roomlerd` — and cargo refuses a
+    /// `rustc-link-arg-bin` for a bin the package does not have, so EVERY
+    /// Windows build of the daemon failed. Linux/macOS never run those arms,
+    /// so nothing else could see it. Every bin build.rs names must exist.
+    #[test]
+    fn build_script_scopes_only_to_real_bins() {
+        let manifest = include_str!("../Cargo.toml");
+        let build = include_str!("../build.rs");
+        let mut bins = Vec::new();
+        let mut in_bin = false;
+        for line in manifest.lines().map(str::trim) {
+            if line.starts_with('[') {
+                in_bin = line == "[[bin]]";
+            } else if in_bin && let Some(v) = line.strip_prefix("name = ") {
+                bins.push(v.trim_matches('"').to_string());
+            }
+        }
+        assert!(!bins.is_empty(), "no [[bin]] parsed from Cargo.toml");
+        let mut named = Vec::new();
+        for (i, _) in build.match_indices("rustc-link-arg-bin=") {
+            let rest = &build[i + "rustc-link-arg-bin=".len()..];
+            named.push(rest.split('=').next().unwrap().to_string());
+        }
+        for (i, _) in build.match_indices("compile_for(&rc_path, [\"") {
+            let rest = &build[i + "compile_for(&rc_path, [\"".len()..];
+            named.push(rest.split('"').next().unwrap().to_string());
+        }
+        assert!(
+            named.len() >= 3,
+            "expected the stack + resource scopes, found {named:?}"
+        );
+        for n in &named {
+            assert!(
+                bins.contains(n),
+                "build.rs scopes to bin `{n}`, but the bins are {bins:?}"
+            );
+        }
+    }
 }
