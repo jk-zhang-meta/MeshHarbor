@@ -471,8 +471,17 @@ impl OverlayRuntime {
                 || now.saturating_duration_since(e.since) < crate::overlay::lifecycle::DIRECT_GRACE
             {
                 samples.remove(nid);
+                e.confirm_due = None;
                 continue;
             }
+            // #280 — an answered handshake still waiting for its keepalive:
+            // book when it comes due so the sweep is pulled forward to judge it.
+            e.confirm_due = super::responder_confirm()
+                .then(|| wg.peer_responder_unconfirmed_age(&e.pubkey))
+                .flatten()
+                .map(|age| {
+                    now + crate::overlay::lifecycle::RESPONDER_CONFIRM_DEADLINE.saturating_sub(age)
+                });
             let Some(traffic) = wg.peer_business_traffic(&e.pubkey) else {
                 samples.remove(nid);
                 continue;
@@ -889,7 +898,29 @@ impl OverlayRuntime {
                 && should_poke_on_netchange(handshake_done);
             let business_rearm =
                 unanswered_traffic && e.poke.is_some_and(|p| !p.from_major && !p.from_business);
-            if let Some(reason) = v.death {
+            // #280 — beside the one transition: an answered handshake the
+            // initiator never confirmed on this direct carrier.
+            let unconfirmed = if v.death.is_none() && super::responder_confirm() && !hard_dead {
+                let age = wg.peer_responder_unconfirmed_age(&e.pubkey);
+                crate::overlay::lifecycle::responder_unconfirmed(
+                    e.is_direct,
+                    handshake_done,
+                    e.since.elapsed(),
+                    age,
+                )
+                .then_some(age)
+                .flatten()
+            } else {
+                None
+            };
+            if let Some(age) = unconfirmed {
+                warn!(
+                    peer = %nid, tier = ?e.tier, unconfirmed_ms = age.as_millis() as u64,
+                    "overlay: a handshake we answered was never confirmed on the direct carrier (the initiator's keepalive did not arrive — one-way path) — rebuilding via relay (#280)"
+                );
+            }
+            let death = v.death.or(unconfirmed.map(|_| DeathReason::OneWay));
+            if let Some(reason) = death {
                 if let Some(age) = data_pending_age.filter(|_| reason == DeathReason::OneWay) {
                     warn!(
                         peer = %nid, tier = ?e.tier, waited_ms = age.as_millis() as u64,

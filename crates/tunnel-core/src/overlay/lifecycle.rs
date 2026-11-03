@@ -280,6 +280,29 @@ pub(crate) const BUSINESS_POKE_RETAP_AFTER: Duration = Duration::from_millis(800
 /// so a healthy ONE-WAY stream is never convicted. The standby tee keeps
 /// business moving over DERP while this window is open.
 pub(crate) const BUSINESS_DATA_DEADLINE: Duration = Duration::from_secs(12);
+/// #280 — how long a handshake WE answered may stay unconfirmed. The initiator
+/// sends its keepalive the moment our response arrives, so a healthy path
+/// confirms within one round trip; this is generous for any real RTT.
+pub(crate) const RESPONDER_CONFIRM_DEADLINE: Duration = Duration::from_secs(3);
+
+/// #280 — the responder-confirmation verdict, beside [`carrier_tick`] (which
+/// it does not change): an ESTABLISHED direct carrier past its warm-up grace,
+/// with a handshake we answered and no authenticated transport datagram since
+/// for longer than [`RESPONDER_CONFIRM_DEADLINE`], dropped the response or the
+/// confirmation — one-way. Field 2026-11-03: the peer's data was lost while
+/// its handshakes kept completing; this signal fires in ~3 s where the
+/// business proof (receiving end) took 12 s and the sending end never could.
+pub(crate) fn responder_unconfirmed(
+    is_direct: bool,
+    handshake_done: bool,
+    since_install: Duration,
+    unconfirmed_age: Option<Duration>,
+) -> bool {
+    is_direct
+        && handshake_done
+        && since_install >= DIRECT_GRACE
+        && unconfirmed_age.is_some_and(|a| a > RESPONDER_CONFIRM_DEADLINE)
+}
 
 /// Why a carrier died. Precedence when several signals co-trip (mirrors the
 /// pre-P2 log selection, which keyed off `(hard_dead, rx_stale)` in this
@@ -1180,6 +1203,35 @@ mod tests {
     fn should_poke_on_netchange_matrix() {
         assert!(should_poke_on_netchange(true));
         assert!(!should_poke_on_netchange(false), "pre-handshake");
+    }
+
+    /// #280 — an unconfirmed answered handshake convicts a direct carrier past
+    /// grace and deadline only; never a relay, an installing carrier, or one
+    /// inside its warm-up grace.
+    #[test]
+    fn an_answered_handshake_must_be_confirmed_on_a_direct_carrier() {
+        let late = Some(RESPONDER_CONFIRM_DEADLINE + Duration::from_millis(1));
+        let old = Duration::from_secs(60);
+        assert!(responder_unconfirmed(true, true, old, late));
+        assert!(!responder_unconfirmed(
+            true,
+            true,
+            old,
+            Some(RESPONDER_CONFIRM_DEADLINE)
+        ));
+        assert!(!responder_unconfirmed(true, true, old, None), "confirmed");
+        assert!(
+            !responder_unconfirmed(false, true, old, late),
+            "a relay carrier is not judged here"
+        );
+        assert!(
+            !responder_unconfirmed(true, false, old, late),
+            "still installing"
+        );
+        assert!(
+            !responder_unconfirmed(true, true, DIRECT_GRACE - Duration::from_millis(1), late),
+            "warm-up grace"
+        );
     }
 
     /// #279 — a business proof whose handshake answered but whose data path is

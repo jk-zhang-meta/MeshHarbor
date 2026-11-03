@@ -393,6 +393,10 @@ struct Installed {
     /// — `WgDevice::peer_initiator_hs_answered`); an unanswered poke past its
     /// window is a `DeathReason::RekeyUnanswered`.
     poke: Option<PokeArm>,
+    /// #280 — when an answered-but-unconfirmed handshake on this direct
+    /// carrier comes due (`RESPONDER_CONFIRM_DEADLINE` after we answered); the
+    /// 1 s scout sets it so [`business_poke_recheck`] pulls the sweep forward.
+    confirm_due: Option<Instant>,
     /// rc.275 honesty — the health sweep's verdict that this carrier is
     /// SILENTLY ONE-WAY: installed past the warm-up grace with either no
     /// completed WG handshake ever (the pre-handshake zombie whose tx/rx
@@ -519,6 +523,7 @@ impl Installed {
             primary_traffic: (0, 0),
             bad_sweeps: 0,
             poke: None,
+            confirm_due: None,
             stalled: false,
             initiated: false,
             hs_done: false,
@@ -707,6 +712,14 @@ fn business_poke_fast() -> bool {
 /// #279 — `OVERLAY_BUSINESS_DATA_PROOF` (default ON): a business proof is
 /// settled only once DATA comes back on the direct carrier, not by a handshake
 /// alone. `0` restores the handshake-only answer.
+/// #280 — `OVERLAY_RESPONDER_CONFIRM` (default ON): a handshake we answered
+/// on a direct carrier must be confirmed by the initiator's keepalive within
+/// `RESPONDER_CONFIRM_DEADLINE`, else the carrier is convicted one-way.
+fn responder_confirm() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| crate::env::flag("OVERLAY_RESPONDER_CONFIRM", true))
+}
+
 fn business_data_proof() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| crate::env::flag("OVERLAY_BUSINESS_DATA_PROOF", true))
@@ -726,6 +739,13 @@ fn business_poke_recheck(by_node: &HashMap<ObjectId, Installed>, now: Instant) -
         .filter_map(|e| e.poke)
         .filter(|p| p.from_business && !p.from_major)
         .map(|p| p.at + business_poke_window() + Duration::from_millis(250))
+        // #280 — an answered handshake coming due for its confirmation.
+        .chain(
+            by_node
+                .values()
+                .filter_map(|e| e.confirm_due)
+                .map(|d| d + Duration::from_millis(250)),
+        )
         .min()?;
     let wait = deadline
         .saturating_duration_since(now)
@@ -6992,6 +7012,95 @@ mod tests {
             "data back on the direct carrier settles B's proof"
         );
         assert!(by_node.contains_key(&nb), "and B keeps its direct carrier");
+    }
+
+    /// #280 — the scout books an answered-but-unconfirmed handshake's due
+    /// instant (which pulls the next tick forward), and the sweep convicts a
+    /// direct carrier whose answered handshake stayed unconfirmed past
+    /// RESPONDER_CONFIRM_DEADLINE, while a confirmed one keeps its carrier.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_unconfirmed_answered_handshake_convicts_the_direct_carrier() {
+        let kp = WgKeypair::generate();
+        let (out_tx, _out_rx) = mpsc::channel::<ClientMsg>(16);
+        let (tun_mock, _inj, _del) = MockTun::new();
+        let tf: TunFactory = {
+            let m = tun_mock.clone();
+            Box::new(move |_, _, _| Ok(m.clone() as Arc<dyn TunIo>))
+        };
+        let rt = OverlayRuntime::new_relay(kp.clone(), out_tx, tf, 1280);
+        let (mut wg, _tun_rx) = WgDevice::new(kp.secret.clone());
+        let sock = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        wg.ensure_direct_demux(sock.clone());
+        let dead: SocketAddr = "127.0.0.1:9".parse().unwrap();
+        let deadline = crate::overlay::lifecycle::RESPONDER_CONFIRM_DEADLINE;
+        let a = WgKeypair::generate().public.to_bytes();
+        let b = WgKeypair::generate().public.to_bytes();
+        let na = ObjectId::from_bytes([80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+        let nb = ObjectId::from_bytes([80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
+        let mut by_node = HashMap::new();
+        for (nid, pk, ip) in [
+            (na, a, Ipv4Addr::new(100, 64, 0, 7)),
+            (nb, b, Ipv4Addr::new(100, 64, 0, 8)),
+        ] {
+            wg.add_direct_peer(sock.clone(), pk, ip, dead, true).await;
+            wg.test_latch_handshake_done(&pk);
+            by_node.insert(
+                nid,
+                Installed {
+                    since: Instant::now().checked_sub(Duration::from_secs(60)).unwrap(),
+                    last_rx_at: Instant::now(),
+                    ..Installed::base(pk, ip, DirectTier::Srflx, Instant::now())
+                },
+            );
+        }
+        // A and B both answered an initiation just now; neither confirmed yet.
+        // (Real waiting, not backdating: a test process's monotonic epoch is
+        // near zero, so a backdated stamp would saturate.)
+        wg.test_stamp_responder_hs(&a, Duration::ZERO);
+        wg.test_stamp_responder_hs(&b, Duration::ZERO);
+        let mut samples = HashMap::new();
+        rt.scout_business_traffic(&mut wg, &mut by_node, &mut samples);
+        let now = Instant::now();
+        let due = by_node[&na]
+            .confirm_due
+            .expect("an unconfirmed answer is booked");
+        assert!(
+            due > now && due <= now + deadline,
+            "due within the confirmation window"
+        );
+        let wait =
+            business_poke_recheck(&by_node, now).expect("the due instant pulls the tick forward");
+        assert!(
+            wait <= deadline + Duration::from_millis(300) && wait < FALLBACK_TICK,
+            "rechecked at the confirmation deadline, not on the 5 s grid: {wait:?}"
+        );
+        // B's initiator keepalive arrives; A's never does.
+        wg.test_stamp_data_rx(&b);
+        tokio::time::sleep(deadline + Duration::from_millis(300)).await;
+        let tun: Arc<dyn TunIo> = tun_mock;
+        let mut relay = None;
+        let mut refresh = HashMap::new();
+        let peers = HashMap::new();
+        let lost = rt
+            .sweep_carrier_health(
+                &mut wg,
+                &mut by_node,
+                &mut relay,
+                &tun,
+                &mut refresh,
+                &peers,
+                ForcedPoke::No,
+            )
+            .await;
+        assert!(
+            lost,
+            "an answered handshake never confirmed convicts the direct carrier"
+        );
+        assert!(!by_node.contains_key(&na), "A rebuilds via relay");
+        assert!(
+            by_node.contains_key(&nb),
+            "a confirmed answer keeps B's direct carrier"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]

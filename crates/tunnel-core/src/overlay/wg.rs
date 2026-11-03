@@ -651,6 +651,14 @@ pub struct PeerStats {
     /// Standby copies (`decap_standby`) never stamp this: a copy is not
     /// evidence for the direct carrier.
     pub(crate) data_rx_at: AtomicU64,
+    /// #280 — the instant (mono ms, `0` = never) we last ANSWERED an
+    /// authenticated handshake initiation on the primary leg. The initiator
+    /// sends a keepalive on the new session the moment our response lands
+    /// (boringtun `handle_handshake_response`: "Send a keepalive as a
+    /// response"), so a [`Self::data_rx_at`] still older than this after a
+    /// round trip means the path dropped the response or the confirmation —
+    /// broken in at least one direction.
+    pub(crate) resp_hs_at: AtomicU64,
     /// P4 — inbound IP packets from this peer whose SOURCE address it does not
     /// own ([`Router::rpf_check`]). Counted in `warn` AND `enforce` (only
     /// `enforce` also drops), so a fleet read of this counter is exactly the
@@ -5970,6 +5978,17 @@ impl WgDevice {
         at != 0 && at >= since.saturating_duration_since(wg_epoch()).as_millis() as u64
     }
 
+    /// #280 — how long ago we answered a handshake initiation that no
+    /// authenticated transport datagram has confirmed since (`None` = no
+    /// answered init, or it was confirmed).
+    pub fn peer_responder_unconfirmed_age(&self, peer_public: &[u8; 32]) -> Option<Duration> {
+        let p = self.peers.get(peer_public)?;
+        let resp = p.stats.resp_hs_at.load(Ordering::Relaxed);
+        let data = p.stats.data_rx_at.load(Ordering::Relaxed);
+        (resp != 0 && data < resp)
+            .then(|| Duration::from_millis(mono_ms_now().saturating_sub(resp)))
+    }
+
     /// Stage 2 — how long since the last INITIATOR-role handshake completion
     /// for `peer_public` (`None` = never, or unknown peer). Drives the
     /// stale-proof poke trigger (`lifecycle::should_poke`).
@@ -6073,6 +6092,17 @@ impl WgDevice {
             p.stats
                 .hs_response_at
                 .store(mono_ms_now().max(1), Ordering::Relaxed);
+        }
+    }
+
+    /// Test-only: stamp `peer_public`'s answered-initiation instant to NOW.
+    #[cfg(test)]
+    pub fn test_stamp_responder_hs(&self, peer_public: &[u8; 32], ago: Duration) {
+        if let Some(p) = self.peers.get(peer_public) {
+            p.stats.resp_hs_at.store(
+                mono_ms_now().saturating_sub(ago.as_millis() as u64).max(1),
+                Ordering::Relaxed,
+            );
         }
     }
 
@@ -6598,6 +6628,12 @@ pub(crate) fn decap_inbound(
     let authenticated_init = matches!(&res, TunnResult::WriteToNetwork(p)
         if p.len() == 92 && p[..4] == [2, 0, 0, 0]);
     if authenticated_init {
+        // #280 — we answered this initiation; its keepalive must follow.
+        if stats.mp_control.get().is_none() || stats.inbound_leg(ingress.leg_id) == 0 {
+            stats
+                .resp_hs_at
+                .store(mono_ms_now().max(1), Ordering::Relaxed);
+        }
         *stats.last_init.lock().unwrap_or_else(|e| e.into_inner()) = Some(buf[..n].to_vec());
         if let Some(digest) = follow::init_digest(&buf[..n]) {
             *stats.follow_init.lock().unwrap_or_else(|e| e.into_inner()) =
@@ -9350,6 +9386,55 @@ mod tests {
         assert_eq!(db.peer_count(), 1);
         da.remove_peer(&b.public.to_bytes()).await;
         db.remove_peer(&a.public.to_bytes()).await;
+    }
+
+    /// #280 — a completed handshake is confirmed on the RESPONDER by the
+    /// initiator's immediate keepalive, with no application data at all.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn responder_session_is_confirmed_by_the_initiators_keepalive() {
+        use crate::transport::relay::UdpRelayConn;
+        let a = WgKeypair::generate();
+        let b = WgKeypair::generate();
+        let sa = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let sb = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let aa = sa.local_addr().unwrap();
+        let ab = sb.local_addr().unwrap();
+        let (mut da, _ra) = WgDevice::new(a.secret.clone());
+        let (mut db, _rb) = WgDevice::new(b.secret.clone());
+        da.add_peer(
+            b.public.to_bytes(),
+            IP_B,
+            Carrier::relay(Arc::new(UdpRelayConn(sa)), ab),
+            true,
+        );
+        db.add_peer(
+            a.public.to_bytes(),
+            IP_A,
+            Carrier::relay(Arc::new(UdpRelayConn(sb)), aa),
+            false,
+        );
+        wait_connected(&da, &b.public.to_bytes()).await;
+        let pa = a.public.to_bytes();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while db.peer_responder_unconfirmed_age(&pa).is_some() && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(
+            db.peer_responder_unconfirmed_age(&pa).is_none(),
+            "B answered A's init and A's keepalive confirmed it"
+        );
+        assert_ne!(
+            db.peers
+                .get(&pa)
+                .unwrap()
+                .stats
+                .resp_hs_at
+                .load(Ordering::Relaxed),
+            0,
+            "B did record answering an initiation"
+        );
+        da.remove_peer(&b.public.to_bytes()).await;
+        db.remove_peer(&pa).await;
     }
 
     /// #279 — the data-path stamp moves on an authenticated TRANSPORT datagram
