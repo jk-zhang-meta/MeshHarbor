@@ -985,6 +985,129 @@
         "cidr": "Every destination needs a CIDR.",
         "notCidr": "\"{cidr}\" is not a CIDR — a single address needs a prefix, e.g. 10.0.0.5/32."
       }
+    },
+    "tp": {
+      "title": "Tunnel ACL",
+      "newPolicy": "New policy",
+      "empty": "No tunnel policies defined yet. Server-side ACL is default-deny — until you add at least one policy, every {cmd} request will be rejected with {code}.",
+      "col": {
+        "name": "Name",
+        "subjects": "Subjects",
+        "targets": "Targets",
+        "allowlist": "Allowlist",
+        "ceilings": "Ceilings",
+        "actions": "Actions"
+      },
+      "flows": "flows:",
+      "bytes": "bytes:",
+      "editTitle": "Edit tunnel policy",
+      "newTitle": "New tunnel policy",
+      "namePlaceholder": "e.g. ops-team-prod-postgres",
+      "subjectsHint": "Who this policy applies to. First-match-wins across all policies.",
+      "addSubject": "Add subject",
+      "catchAllUsers": "(catch-all — matches every user in the tenant)",
+      "targetsHint": "Which agents this policy lets the subjects reach.",
+      "addTarget": "Add target",
+      "catchAllAgents": "(catch-all — matches every agent in the tenant)",
+      "allowlistTitle": "Destination allowlist",
+      "allowlistHint": "Host + port-range patterns the subjects may reach via the targets.",
+      "addRule": "Add rule",
+      "match": "Match",
+      "portLow": "Port (low)",
+      "portHigh": "Port (high)",
+      "proto": "Proto",
+      "protoAny": "Any",
+      "ceilingsTitle": "Per-session ceilings",
+      "ceilingsHint": "Leave blank for unlimited.",
+      "maxFlows": "Max concurrent flows",
+      "flowsPlaceholder": "e.g. 64",
+      "maxBytes": "Max bytes / session",
+      "bytesPlaceholder": "e.g. 10737418240 (10 GiB)",
+      "saveChanges": "Save changes",
+      "createPolicy": "Create policy",
+      "deleteTitle": "Delete tunnel policy?",
+      "deleteBody": "This will soft-delete {name}. Live tunnel sessions keep working; new {req}s relying on this policy alone will start being rejected with {code}.",
+      "delete": "Delete",
+      "required": "Required.",
+      "kind": {
+        "all_users": "All users",
+        "user_id": "User",
+        "role_id": "Role",
+        "tunnel_client_id": "Tunnel client",
+        "agent_id": "Agent",
+        "all_agents": "All agents"
+      },
+      "host": {
+        "exact": "Exact",
+        "wildcard": "Wildcard"
+      },
+      "hostValue": {
+        "exact": "Hostname (e.g. db.intranet)",
+        "wildcard": "Wildcard (e.g. *.intranet)",
+        "cidr": "CIDR (e.g. 10.0.0.0/24)",
+        "other": "Value"
+      },
+      "err": {
+        "name": "Name is required.",
+        "subjects": "At least one subject is required.",
+        "targets": "At least one target is required.",
+        "allowlist": "At least one allowlist rule is required.",
+        "subjectId": "Each non-AllUsers subject needs an ID.",
+        "targetId": "Agent-ID targets need an Agent ID.",
+        "host": "Each allowlist rule needs a host value.",
+        "portSet": "Port range must be set.",
+        "portLow": "Port-range low must be 1-65535.",
+        "portOrder": "Port-range high must be ≥ low.",
+        "portHigh": "Port-range high must be ≤ 65535."
+      },
+      "label": {
+        "user": "User {name}",
+        "role": "Role {name}",
+        "client": "Client {name}",
+        "agent": "Agent {name}"
+      }
+    },
+    "ek": {
+      "title": "Ephemeral enrollment keys",
+      "mintKey": "Mint key",
+      "intro": "A reusable credential that enrolls {selfRemoving} devices — CI runners, containers, autoscaled workers. Devices it mints are reaped after inactivity (or immediately on a clean stop), and a restart is a {new} device. Revoking a key stops new enrollments on the next use; devices it already minted die by their own deadline.",
+      "selfRemoving": "self-removing",
+      "new": "new",
+      "col": {
+        "label": "Label",
+        "uses": "Uses",
+        "expires": "Expires",
+        "ttl": "Device TTL",
+        "state": "State"
+      },
+      "unnamed": "(unnamed)",
+      "minted": "minted {when}",
+      "default": "default",
+      "state": {
+        "revoked": "revoked",
+        "expired": "expired",
+        "exhausted": "exhausted",
+        "active": "active"
+      },
+      "revoke": "Revoke",
+      "revokeAria": "Revoke key {key}",
+      "empty": "No keys minted yet.",
+      "shownOnce": "Ephemeral key — shown once",
+      "mintTitle": "Mint ephemeral enrollment key",
+      "labelHint": "Display only — name the fleet this key serves",
+      "maxUses": "Max uses",
+      "maxUsesHint": "1–10 000; each enrollment consumes one",
+      "expiresDays": "Expires in (days)",
+      "expiresHint": "Up to 90 days; the key is dead after this whatever its uses",
+      "ttlLabel": "Device inactivity deadline (seconds, optional)",
+      "ttlHint": "60s–7d; blank = server default (15 min). How long a silent device lives before the reaper removes it",
+      "copyNow": "Copy it now — the key is {notStored} and cannot be shown again. Losing it means minting a new key.",
+      "notStored": "not stored",
+      "copied": "Copied",
+      "copyKey": "Copy key",
+      "enrollWith": "Enroll with:",
+      "mint": "Mint",
+      "done": "Done"
     }
   }
 }

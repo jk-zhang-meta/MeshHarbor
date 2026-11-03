@@ -420,6 +420,129 @@
         "cidr": "每个目的地都需要填写网段。",
         "notCidr": "“{cidr}”不是网段——单个地址也需要前缀，例如 10.0.0.5/32。"
       }
+    },
+    "tp": {
+      "title": "隧道访问控制（ACL）",
+      "newPolicy": "新建策略",
+      "empty": "尚未定义隧道策略。服务器端 ACL 默认拒绝：在添加至少一条策略之前，所有 {cmd} 请求都会被拒绝，返回 {code}。",
+      "col": {
+        "name": "名称",
+        "subjects": "主体",
+        "targets": "目标",
+        "allowlist": "允许列表",
+        "ceilings": "上限",
+        "actions": "操作"
+      },
+      "flows": "连接数：",
+      "bytes": "字节数：",
+      "editTitle": "编辑隧道策略",
+      "newTitle": "新建隧道策略",
+      "namePlaceholder": "例如 ops-team-prod-postgres",
+      "subjectsHint": "此策略适用于谁。所有策略中第一条匹配的生效。",
+      "addSubject": "添加主体",
+      "catchAllUsers": "（全部匹配：组织内所有用户）",
+      "targetsHint": "此策略允许主体访问哪些设备。",
+      "addTarget": "添加目标",
+      "catchAllAgents": "（全部匹配：组织内所有设备）",
+      "allowlistTitle": "目的地允许列表",
+      "allowlistHint": "主体经由目标可访问的主机与端口范围。",
+      "addRule": "添加规则",
+      "match": "匹配方式",
+      "portLow": "起始端口",
+      "portHigh": "结束端口",
+      "proto": "协议",
+      "protoAny": "任意",
+      "ceilingsTitle": "每会话上限",
+      "ceilingsHint": "留空表示不限制。",
+      "maxFlows": "最大并发连接数",
+      "flowsPlaceholder": "例如 64",
+      "maxBytes": "每会话最大字节数",
+      "bytesPlaceholder": "例如 10737418240（10 GiB）",
+      "saveChanges": "保存更改",
+      "createPolicy": "创建策略",
+      "deleteTitle": "删除隧道策略？",
+      "deleteBody": "将软删除 {name}。现有隧道会话不受影响；之后仅依赖此策略的新 {req} 请求会被拒绝，返回 {code}。",
+      "delete": "删除",
+      "required": "必填。",
+      "kind": {
+        "all_users": "所有用户",
+        "user_id": "用户",
+        "role_id": "角色",
+        "tunnel_client_id": "隧道客户端",
+        "agent_id": "设备",
+        "all_agents": "所有设备"
+      },
+      "host": {
+        "exact": "精确",
+        "wildcard": "通配符"
+      },
+      "hostValue": {
+        "exact": "主机名（例如 db.intranet）",
+        "wildcard": "通配符（例如 *.intranet）",
+        "cidr": "CIDR（例如 10.0.0.0/24）",
+        "other": "值"
+      },
+      "err": {
+        "name": "名称为必填项。",
+        "subjects": "至少需要一个主体。",
+        "targets": "至少需要一个目标。",
+        "allowlist": "至少需要一条允许规则。",
+        "subjectId": "除“所有用户”外，每个主体都需要选择具体对象。",
+        "targetId": "“设备”类型的目标需要选择具体设备。",
+        "host": "每条允许规则都需要填写主机。",
+        "portSet": "必须设置端口范围。",
+        "portLow": "起始端口必须在 1-65535 之间。",
+        "portOrder": "结束端口必须 ≥ 起始端口。",
+        "portHigh": "结束端口必须 ≤ 65535。"
+      },
+      "label": {
+        "user": "用户 {name}",
+        "role": "角色 {name}",
+        "client": "客户端 {name}",
+        "agent": "设备 {name}"
+      }
+    },
+    "ek": {
+      "title": "临时注册密钥",
+      "mintKey": "生成密钥",
+      "intro": "一种可重复使用的凭据，用来注册{selfRemoving}的设备，例如 CI 构建机、容器、自动扩缩的工作节点。这些设备闲置后会被清理（正常停止时立即清理），重启后算作一台{new}设备。吊销密钥后，下次使用即无法再注册；已注册的设备按各自的期限失效。",
+      "selfRemoving": "会自动移除",
+      "new": "新",
+      "col": {
+        "label": "标签",
+        "uses": "已用次数",
+        "expires": "过期时间",
+        "ttl": "设备存活期",
+        "state": "状态"
+      },
+      "unnamed": "（未命名）",
+      "minted": "生成于 {when}",
+      "default": "默认",
+      "state": {
+        "revoked": "已吊销",
+        "expired": "已过期",
+        "exhausted": "已用完",
+        "active": "有效"
+      },
+      "revoke": "吊销",
+      "revokeAria": "吊销密钥 {key}",
+      "empty": "尚未生成密钥。",
+      "shownOnce": "临时密钥（仅显示一次）",
+      "mintTitle": "生成临时注册密钥",
+      "labelHint": "仅用于显示：写明此密钥服务的设备群",
+      "maxUses": "最大使用次数",
+      "maxUsesHint": "1–10000；每次注册消耗一次",
+      "expiresDays": "有效期（天）",
+      "expiresHint": "最长 90 天；到期后无论剩余次数都失效",
+      "ttlLabel": "设备闲置期限（秒，可选）",
+      "ttlHint": "60 秒到 7 天；留空为服务器默认（15 分钟）。设备无响应多久后被清理",
+      "copyNow": "请立即复制：密钥{notStored}，无法再次显示。丢失后只能重新生成。",
+      "notStored": "不会被保存",
+      "copied": "已复制",
+      "copyKey": "复制密钥",
+      "enrollWith": "注册命令：",
+      "mint": "生成",
+      "done": "完成"
     }
   }
 }
