@@ -4079,6 +4079,11 @@ mod tests {
     /// the updater defers for.
     #[tokio::test]
     async fn a_session_end_stops_the_download() {
+        // An upload whose dest is refused falls back to the drop folder,
+        // which reads the process-global `files_dir` and creates it: hold
+        // the lock the tests that set it hold (a parallel run caught one
+        // creating `configured_files_dir_is_used…`'s folder mid-test).
+        let _lock = FILES_DIR_TEST_LOCK.lock().await;
         let base = std::env::temp_dir().join(format!(
             "roomler-session-end-{}",
             std::time::SystemTime::now()
@@ -4218,6 +4223,7 @@ mod tests {
 
     #[tokio::test]
     async fn begin_creates_staging_dir_with_meta_json() {
+        let _lock = FILES_DIR_TEST_LOCK.lock().await;
         let dest = stage_tmpdir().await;
         let h = FilesHandler::new();
         let id = format!(
@@ -4277,6 +4283,7 @@ mod tests {
 
     #[tokio::test]
     async fn end_renames_staging_to_final_and_cleans_dir() {
+        let _lock = FILES_DIR_TEST_LOCK.lock().await;
         let dest = stage_tmpdir().await;
         let h = FilesHandler::new();
         let id = format!(
@@ -4316,6 +4323,7 @@ mod tests {
 
     #[tokio::test]
     async fn begin_rejects_existing_partial_dir_for_same_id() {
+        let _lock = FILES_DIR_TEST_LOCK.lock().await;
         let dest = stage_tmpdir().await;
         let h = FilesHandler::new();
         let id = format!(
@@ -4360,6 +4368,7 @@ mod tests {
 
     #[tokio::test]
     async fn chunk_syncs_data_at_fsync_threshold_boundary() {
+        let _lock = FILES_DIR_TEST_LOCK.lock().await;
         // rc.24 — was named "..._at_one_mib_boundary" when
         // FSYNC_THRESHOLD_BYTES was 1 MiB. After lowering to 256 KiB
         // (so sub-1-MiB uploads can survive a process kill), the
@@ -4422,6 +4431,7 @@ mod tests {
 
     #[tokio::test]
     async fn resume_round_trips_after_partial_upload() {
+        let _lock = FILES_DIR_TEST_LOCK.lock().await;
         let dest = stage_tmpdir().await;
         let h = FilesHandler::new();
         let id = format!(
@@ -4467,6 +4477,7 @@ mod tests {
 
     #[tokio::test]
     async fn resume_truncates_when_disk_size_below_requested() {
+        let _lock = FILES_DIR_TEST_LOCK.lock().await;
         let dest = stage_tmpdir().await;
         let h = FilesHandler::new();
         let id = format!(
@@ -4508,6 +4519,7 @@ mod tests {
 
     #[tokio::test]
     async fn resume_unknown_id_errors() {
+        let _lock = FILES_DIR_TEST_LOCK.lock().await;
         // Use a per-test unique id so a sibling test couldn't have
         // inserted it. No need to reset the registry (which would
         // race with parallel tests).
@@ -4528,6 +4540,7 @@ mod tests {
 
     #[tokio::test]
     async fn end_recomputes_unique_path_when_collision_appears_mid_upload() {
+        let _lock = FILES_DIR_TEST_LOCK.lock().await;
         // M4 fix: re-run unique_path at rename time. If the operator
         // creates a file at the begin-time reservation BETWEEN begin
         // and end, the rename target shifts to the next unique slot.
@@ -4570,6 +4583,7 @@ mod tests {
 
     #[tokio::test]
     async fn cancel_incoming_removes_staging_dir_and_registry() {
+        let _lock = FILES_DIR_TEST_LOCK.lock().await;
         let dest = stage_tmpdir().await;
         let h = FilesHandler::new();
         let id = format!(
