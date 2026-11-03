@@ -188,7 +188,18 @@
       "sshAccount": "SSH 使用的设备账号",
       "sshAccountHint": "该设备上已有的 Linux/macOS 用户。对方的 SSH 会话只能以这个账号运行。",
       "sshAccountInvalid": "请填写 SSH 使用的设备账号：Linux/macOS 用户名（小写字母、数字、_ 和 -）。",
-      "sshRootWarning": "root 等于把这台设备的完全控制权交给对方，建议给对方单独的账号。"
+      "sshRootRefused": "不能直接分享 root。请为对方新建一个管理员账号。",
+      "acct": {
+        "existing": "设备上的账号：",
+        "admin": "管理员",
+        "none": "设备没有可登录的账号，可以在下面新建一个。",
+        "unavailable": "无法列出设备上的账号（{reason}）。仍可手动填写已有的账号名。",
+        "created": "已在设备上创建账号 {name} 并选中。",
+        "newName": "新账号名",
+        "newAdmin": "管理员（可免密码 sudo 成为 root）",
+        "create": "在设备上创建",
+        "note": "新账号没有密码，只能通过 MeshHarbor 登录。设备本机没开启 SSH 时不会创建任何账号；设备禁止 root 会话时不会创建管理员账号。"
+      }
     },
     "topo": {
       "title": "服务器拓扑",

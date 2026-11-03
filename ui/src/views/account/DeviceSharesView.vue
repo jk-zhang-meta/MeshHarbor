@@ -25,7 +25,25 @@
         <v-checkbox data-testid="share-ssh-permission" v-model="ssh" :label="$t('mh.shares.permSsh')" />
         <!-- The account the recipient's SSH runs as: chosen here, never the device policy's (root). -->
         <v-text-field v-if="ssh" data-testid="share-ssh-account" v-model="sshAccount" :label="$t('mh.shares.sshAccount')" :hint="$t('mh.shares.sshAccountHint')" persistent-hint autocomplete="off" class="mb-2" />
-        <v-alert v-if="ssh && sshAccount.trim() === 'root'" type="warning" variant="tonal" density="compact" class="mb-2" data-testid="share-ssh-root-warning">{{ $t('mh.shares.sshRootWarning') }}</v-alert>
+        <!-- The device's own login accounts, asked of the device itself; or a new one it creates. -->
+        <div v-if="ssh && deviceId" class="mb-3" data-testid="share-ssh-accounts">
+          <v-progress-linear v-if="accountsLoading" indeterminate class="mb-1" />
+          <div v-if="accounts.length" class="d-flex flex-wrap align-center ga-1">
+            <span class="text-caption mr-1">{{ $t('mh.shares.acct.existing') }}</span>
+            <v-chip v-for="a in accounts" :key="a.name" size="small" :color="sshAccount.trim() === a.name ? 'primary' : undefined" :data-testid="`share-ssh-account-${a.name}`" @click="sshAccount = a.name">
+              {{ a.name }}<span v-if="a.admin" class="ml-1 text-caption">({{ $t('mh.shares.acct.admin') }})</span>
+            </v-chip>
+          </div>
+          <p v-else-if="!accountsLoading && !accountsError" class="text-caption">{{ $t('mh.shares.acct.none') }}</p>
+          <v-alert v-if="accountsError" type="info" variant="tonal" density="compact" class="mt-1" data-testid="share-ssh-accounts-error">{{ $t('mh.shares.acct.unavailable', { reason: accountsError }) }}</v-alert>
+          <v-alert v-if="accountNotice" type="success" variant="tonal" density="compact" class="mt-1" data-testid="share-ssh-account-created">{{ accountNotice }}</v-alert>
+          <div class="d-flex flex-wrap align-center ga-2 mt-2">
+            <v-text-field v-model="newAccount" data-testid="share-new-account" :label="$t('mh.shares.acct.newName')" density="compact" hide-details autocomplete="off" style="max-width: 240px" />
+            <v-checkbox v-model="newAdmin" data-testid="share-new-account-admin" :label="$t('mh.shares.acct.newAdmin')" density="compact" hide-details />
+            <v-btn data-testid="share-new-account-create" variant="tonal" size="small" :loading="creatingAccount" @click="createAccount">{{ $t('mh.shares.acct.create') }}</v-btn>
+          </div>
+          <p class="text-caption mt-1">{{ $t('mh.shares.acct.note') }}</p>
+        </div>
         <v-checkbox data-testid="share-desktop-permission" v-model="desktopView" :label="$t('mh.shares.permView')" /><v-checkbox v-model="desktopControl" :disabled="!desktopView" :label="$t('mh.shares.permControl')" />
         <v-checkbox data-testid="share-files-permission" v-model="files" :label="$t('mh.shares.permFiles')" />
         <v-text-field v-model.number="hours" :label="$t('mh.shares.hours')" type="number" min="1" max="720" />
@@ -74,6 +92,37 @@ const items = ref<DeviceShare[]>([]), loading = ref(false), saving = ref(false),
 const deviceId = ref(''), recipientId = ref(''), hours = ref(24), desktopView = ref(true), desktopControl = ref(false), files = ref(false), ssh = ref(false), sshAccount = ref('')
 // The server's rule for a share account (a portable POSIX user name), checked here to answer early.
 const SHARE_ACCOUNT = /^[a-z_][a-z0-9_-]{0,31}$/
+interface LocalAccount { name: string; uid: number; admin: boolean }
+const accounts = ref<LocalAccount[]>([]), accountsLoading = ref(false), accountsError = ref(''), accountNotice = ref('')
+const newAccount = ref(''), newAdmin = ref(false), creatingAccount = ref(false)
+let accountsGeneration = 0
+/** Ask the device itself for its login accounts, for the device just chosen. */
+async function loadAccounts() {
+  const id = deviceId.value, attempt = ++accountsGeneration
+  accounts.value = []; accountsError.value = ''; accountNotice.value = ''; accountsLoading.value = false
+  if (!ssh.value || !OBJECT_ID.test(id ?? '')) return
+  accountsLoading.value = true
+  try {
+    const r = await api.get<{ accounts?: LocalAccount[] }>(`/account/devices/${encodeURIComponent(id)}/local-accounts`)
+    if (alive && attempt === accountsGeneration) accounts.value = r?.accounts ?? []
+  } catch (e) { if (alive && attempt === accountsGeneration) accountsError.value = (e as Error).message }
+  finally { if (alive && attempt === accountsGeneration) accountsLoading.value = false }
+}
+/** Have the device create an account — with or without the right to become root — and pick it. */
+async function createAccount() {
+  const name = newAccount.value.trim(), id = deviceId.value
+  if (name === 'root' || !SHARE_ACCOUNT.test(name)) { accountsError.value = t('mh.shares.sshAccountInvalid'); return }
+  if (creatingAccount.value || !OBJECT_ID.test(id ?? '')) return
+  const attempt = ++accountsGeneration
+  creatingAccount.value = true; accountsError.value = ''; accountNotice.value = ''
+  try {
+    const r = await api.post<{ accounts?: LocalAccount[] }>(`/account/devices/${encodeURIComponent(id)}/local-accounts`, { name, admin: newAdmin.value })
+    if (!alive || attempt !== accountsGeneration) return
+    accounts.value = r?.accounts ?? []; sshAccount.value = name; newAccount.value = ''; newAdmin.value = false
+    accountNotice.value = t('mh.shares.acct.created', { name })
+  } catch (e) { if (alive && attempt === accountsGeneration) accountsError.value = (e as Error).message }
+  finally { if (alive) creatingAccount.value = false }
+}
 const pendingRevoke = ref<DeviceShare | null>(null)
 // The share form picks from the devices this account owns — no one should need to know an id.
 interface OwnedDevice { id: string; name: string; status: string }
@@ -138,6 +187,7 @@ async function create() {
   const recipient = recipientId.value.trim()
   if (!OBJECT_ID.test(deviceId.value ?? '') || !recipient || recipient.length > 320 || !Number.isInteger(hours.value) || hours.value < 1 || hours.value > 720 || (!desktopView.value && !files.value && !ssh.value)) { error.value = t('mh.shares.invalid'); return }
   const account = sshAccount.value.trim()
+  if (ssh.value && account === 'root') { error.value = t('mh.shares.sshRootRefused'); return }
   if (ssh.value && !SHARE_ACCOUNT.test(account)) { error.value = t('mh.shares.sshAccountInvalid'); return }
   const user = auth.user?.id, identity = identityGeneration, attempt = generation; saving.value = true; error.value = ''
   try { await api.post('/device-shares', { device_id: deviceId.value, recipient, permissions: { ssh: ssh.value, desktop_view: desktopView.value, desktop_control: desktopView.value && desktopControl.value, files_read: files.value, files_write: files.value }, tcp_ports: [], expires_in_secs: hours.value * 3600, ...(ssh.value ? { ssh_account: account } : {}) })
@@ -158,6 +208,7 @@ async function revoke() {
 watch(() => route.query.direction, value => { if (value === 'received' || value === 'sent') direction.value = value })
 watch(direction, () => { closeSsh(); page.value = 1; void load() })
 watch(page, () => { void load() })
+watch([ssh, deviceId], () => { void loadAccounts() })
 watch(() => auth.user?.id, () => { clearIdentity(); owned.value = []; void load(); void loadOwned(); preselect() }, { immediate: true })
 watch(() => route.query.share_device, () => preselect())
 onBeforeUnmount(() => { alive = false; clearInterval(recordClock); clearIdentity() })

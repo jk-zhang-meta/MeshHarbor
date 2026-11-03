@@ -20,6 +20,7 @@ const grant = '111111111111111111111111', device = '222222222222222222222222', r
 const ownedPage = { items: [{ id: device, name: 'Fixture box', status: 'online' }], page: 1, total: 1 }
 const no = { ssh: false, desktop_view: false, desktop_control: false, files_read: false, files_write: false }
 const shared = () => ({ id: grant, device_id: device, owner_user_id: '333333333333333333333333', recipient_user_id: auth.user!.id, permissions: { ...no, ssh: true }, tcp_ports: [], expires_at_ms: Date.now() + 60_000, revoked_at_ms: null, revision: 0 })
+const deviceAccounts = { accounts: [{ name: 'alice', uid: 1000, admin: false }, { name: 'ops', uid: 1001, admin: true }] }
 const metadata = { id: device, name: 'Fixture shared SSH device', host_pubkey: 'ssh-ed25519 AAAAFIXTUREPUBLICKEY' }
 let wrapper: VueWrapper | undefined
 async function open(at = '/') {
@@ -39,7 +40,7 @@ async function checkbox(id: string, value: boolean) { const labels: Record<strin
 beforeEach(() => {
   vi.clearAllMocks(); auth.user = { id: '444444444444444444444444' }
   vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} })
-  vi.mocked(api.get).mockImplementation(async path => String(path).endsWith('/ssh') ? metadata : String(path).startsWith('/account/devices') ? ownedPage : { items: [shared()], total: 1 })
+  vi.mocked(api.get).mockImplementation(async path => String(path).endsWith('/ssh') ? metadata : String(path).endsWith('/local-accounts') ? deviceAccounts : String(path).startsWith('/account/devices') ? ownedPage : { items: [shared()], total: 1 })
   vi.mocked(api.post).mockResolvedValue({})
 })
 afterEach(() => { wrapper?.unmount(); wrapper = undefined; vi.unstubAllGlobals() })
@@ -58,8 +59,37 @@ describe('single-device SSH share authorization and truthful native instructions
       expect(api.post).not.toHaveBeenCalled()
       expect(wrapper!.text()).toContain('Enter the device account for SSH')
     }
-    await account('root'); await flushPromises()
-    expect(wrapper!.find('[data-testid="share-ssh-root-warning"]').exists()).toBe(true)
+    await account('root'); await wrapper!.get('form').trigger('submit'); await flushPromises()
+    expect(api.post).not.toHaveBeenCalled(); expect(wrapper!.text()).toContain('root cannot be shared directly')
+  })
+  it('asks the device for its accounts and lets one be picked instead of typed', async () => {
+    await open(); await form(); await checkbox('share-desktop-permission', false); await checkbox('share-ssh-permission', true); await flushPromises()
+    expect(api.get).toHaveBeenCalledWith(`/account/devices/${device}/local-accounts`)
+    expect(wrapper!.get('[data-testid="share-ssh-account-ops"]').text()).toContain('administrator')
+    await wrapper!.get('[data-testid="share-ssh-account-alice"]').trigger('click')
+    await wrapper!.get('form').trigger('submit'); await flushPromises()
+    expect(api.post).toHaveBeenCalledWith('/device-shares', expect.objectContaining({ ssh_account: 'alice' }))
+  })
+  it('has the device create an administrator account and shares SSH as it', async () => {
+    vi.mocked(api.post).mockImplementation(async path => String(path).endsWith('/local-accounts') ? { accounts: [...deviceAccounts.accounts, { name: 'share1', uid: 1002, admin: true }] } : {})
+    await open(); await form(); await checkbox('share-desktop-permission', false); await checkbox('share-ssh-permission', true); await flushPromises()
+    await wrapper!.get('[data-testid="share-new-account"] input').setValue('root')
+    await wrapper!.get('[data-testid="share-new-account-create"]').trigger('click'); await flushPromises()
+    expect(api.post).not.toHaveBeenCalled()
+    await wrapper!.get('[data-testid="share-new-account"] input').setValue('share1')
+    await wrapper!.get('[data-testid="share-new-account-admin"] input').setValue(true)
+    await wrapper!.get('[data-testid="share-new-account-create"]').trigger('click'); await flushPromises()
+    expect(api.post).toHaveBeenCalledWith(`/account/devices/${device}/local-accounts`, { name: 'share1', admin: true })
+    expect(wrapper!.get('[data-testid="share-ssh-account-created"]').text()).toContain('share1')
+    await wrapper!.get('form').trigger('submit'); await flushPromises()
+    expect(api.post).toHaveBeenLastCalledWith('/device-shares', expect.objectContaining({ ssh_account: 'share1', permissions: { ...no, ssh: true } }))
+  })
+  it('still allows typing an account when the device cannot list them', async () => {
+    vi.mocked(api.get).mockImplementation(async path => { if (String(path).endsWith('/local-accounts')) throw new Error('The device is not connected to this server'); return String(path).startsWith('/account/devices') ? ownedPage : { items: [shared()], total: 1 } })
+    await open(); await form(); await checkbox('share-ssh-permission', true); await flushPromises()
+    expect(wrapper!.get('[data-testid="share-ssh-accounts-error"]').text()).toContain('not connected')
+    await account('alice'); await wrapper!.get('form').trigger('submit'); await flushPromises()
+    expect(api.post).toHaveBeenCalledWith('/device-shares', expect.objectContaining({ ssh_account: 'alice' }))
   })
   it('sends no device account on a share without SSH', async () => {
     await open(); await form(); await wrapper!.get('form').trigger('submit'); await flushPromises()

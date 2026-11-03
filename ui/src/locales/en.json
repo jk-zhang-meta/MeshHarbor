@@ -753,7 +753,18 @@
       "sshAccount": "Device account for SSH",
       "sshAccountHint": "An existing Linux/macOS user on that device. The recipient's SSH sessions run as this account, and only this one.",
       "sshAccountInvalid": "Enter the device account for SSH: a Linux/macOS user name (lowercase letters, digits, _ and -).",
-      "sshRootWarning": "root gives the recipient full control of this device. Prefer an account of its own."
+      "sshRootRefused": "root cannot be shared directly. Create an administrator account for the recipient instead.",
+      "acct": {
+        "existing": "Accounts on this device:",
+        "admin": "administrator",
+        "none": "The device reported no login accounts. Create one below.",
+        "unavailable": "Could not list the device's accounts ({reason}). You can still type an existing account name.",
+        "created": "Created {name} on the device and chose it.",
+        "newName": "New account name",
+        "newAdmin": "Administrator (may become root with sudo, no password)",
+        "create": "Create on device",
+        "note": "A new account has no password: it is reached only through MeshHarbor. The device creates nothing unless its own SSH is enabled, and no administrator if it forbids root sessions."
+      }
     },
     "topo": {
       "title": "Server topology",
