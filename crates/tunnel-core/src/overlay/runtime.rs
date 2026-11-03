@@ -704,6 +704,14 @@ fn business_poke_fast() -> bool {
     *FAST.get_or_init(|| crate::env::flag("OVERLAY_BUSINESS_POKE_FAST", true))
 }
 
+/// #279 — `OVERLAY_BUSINESS_DATA_PROOF` (default ON): a business proof is
+/// settled only once DATA comes back on the direct carrier, not by a handshake
+/// alone. `0` restores the handshake-only answer.
+fn business_data_proof() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| crate::env::flag("OVERLAY_BUSINESS_DATA_PROOF", true))
+}
+
 fn business_poke_window() -> Duration {
     if business_poke_fast() {
         crate::overlay::lifecycle::BUSINESS_POKE_DEADLINE
@@ -6883,6 +6891,109 @@ mod tests {
         }
     }
 
+    /// #279 — field 2026-11-03 (native Windows ↔ WSL node, ~40 s blackhole):
+    /// handshakes kept completing while every DATA packet was lost, so each
+    /// business proof read "answered", was cleared, and the scout re-armed a
+    /// new one, forever. A business proof whose handshake answered but whose
+    /// data path is silent must stay pending (so the standby tee stays wanted),
+    /// convict after BUSINESS_DATA_DEADLINE, and settle as soon as an
+    /// authenticated transport datagram arrives.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn sweep_business_proof_needs_data_not_only_a_handshake() {
+        let kp = WgKeypair::generate();
+        let (out_tx, _out_rx) = mpsc::channel::<ClientMsg>(16);
+        let (tun_mock, _inj, _del) = MockTun::new();
+        let tf: TunFactory = {
+            let m = tun_mock.clone();
+            Box::new(move |_, _, _| Ok(m.clone() as Arc<dyn TunIo>))
+        };
+        let rt = OverlayRuntime::new_relay(kp.clone(), out_tx, tf, 1280);
+        let (mut wg, _tun_rx) = WgDevice::new(kp.secret.clone());
+        let sock = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        wg.ensure_direct_demux(sock.clone());
+        let dead: SocketAddr = "127.0.0.1:9".parse().unwrap();
+        let window = crate::overlay::lifecycle::BUSINESS_DATA_DEADLINE;
+        // peer A: proof armed past the data window; peer B: proof armed just now.
+        let a = WgKeypair::generate().public.to_bytes();
+        let b = WgKeypair::generate().public.to_bytes();
+        let (ia, ib) = (Ipv4Addr::new(100, 64, 0, 5), Ipv4Addr::new(100, 64, 0, 6));
+        let (na, nb) = (
+            ObjectId::from_bytes([79, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]),
+            ObjectId::from_bytes([79, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]),
+        );
+        let mut by_node = HashMap::new();
+        for (nid, pk, ip, poke_age) in [
+            (na, a, ia, window + Duration::from_secs(2)),
+            (nb, b, ib, Duration::from_secs(1)),
+        ] {
+            wg.add_direct_peer(sock.clone(), pk, ip, dead, true).await;
+            wg.test_latch_handshake_done(&pk);
+            by_node.insert(
+                nid,
+                Installed {
+                    since: Instant::now().checked_sub(Duration::from_secs(60)).unwrap(),
+                    last_rx_at: Instant::now(),
+                    poke: Some(PokeArm {
+                        at: Instant::now().checked_sub(poke_age).unwrap(),
+                        from_major: false,
+                        from_business: true,
+                    }),
+                    ..Installed::base(pk, ip, DirectTier::Srflx, Instant::now())
+                },
+            );
+            // The handshake answered (stamped after each arm instant); no data.
+            wg.test_stamp_initiator_hs(&pk);
+        }
+        let tun: Arc<dyn TunIo> = tun_mock;
+        let mut relay = None;
+        let mut refresh = HashMap::new();
+        let peers = HashMap::new();
+        assert_eq!(
+            establish::poke_settled(&wg, &b, true, by_node[&nb].poke.unwrap()),
+            (false, true),
+            "a handshake alone leaves a business proof pending on data (tee stays wanted)"
+        );
+        let lost = rt
+            .sweep_carrier_health(
+                &mut wg,
+                &mut by_node,
+                &mut relay,
+                &tun,
+                &mut refresh,
+                &peers,
+                ForcedPoke::No,
+            )
+            .await;
+        assert!(
+            lost,
+            "handshake-only answers past the data window convict the carrier"
+        );
+        assert!(
+            !by_node.contains_key(&na),
+            "A's direct carrier is torn down for a relay rebuild"
+        );
+        assert!(
+            by_node[&nb].poke.is_some(),
+            "B is inside its window: still pending, not settled by the handshake"
+        );
+        wg.test_stamp_data_rx(&b);
+        rt.sweep_carrier_health(
+            &mut wg,
+            &mut by_node,
+            &mut relay,
+            &tun,
+            &mut refresh,
+            &peers,
+            ForcedPoke::No,
+        )
+        .await;
+        assert!(
+            by_node[&nb].poke.is_none(),
+            "data back on the direct carrier settles B's proof"
+        );
+        assert!(by_node.contains_key(&nb), "and B keeps its direct carrier");
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn sweep_business_poke_before_silence_and_through_tcp_backoff() {
         let kp = WgKeypair::generate();
@@ -7195,6 +7306,9 @@ mod tests {
             "only the normal sweep settles an answered proof"
         );
         wg.test_set_ip_traffic(&pk, 12, 11);
+        // #279 — the healthy path's reply arrived as an authenticated transport
+        // datagram; a business proof is settled by that, not by the handshake.
+        wg.test_stamp_data_rx(&pk);
         rt.sweep_carrier_health(
             &mut wg,
             &mut by_node,

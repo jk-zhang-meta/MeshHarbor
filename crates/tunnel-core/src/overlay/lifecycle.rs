@@ -273,6 +273,13 @@ pub(crate) const BUSINESS_POKE_LEGACY_DEADLINE: Duration = Duration::from_secs(6
 /// its single extra initiation. Below the 1 s scout tick, so tick jitter
 /// cannot push the re-send past the window.
 pub(crate) const BUSINESS_POKE_RETAP_AFTER: Duration = Duration::from_millis(800);
+/// #279 — after a business proof's HANDSHAKE came back, how long the data path
+/// gets to deliver one authenticated transport datagram before the carrier is
+/// convicted one-way. Longer than WireGuard's passive keepalive (10 s: a peer
+/// that received data and has nothing to send still answers with a keepalive),
+/// so a healthy ONE-WAY stream is never convicted. The standby tee keeps
+/// business moving over DERP while this window is open.
+pub(crate) const BUSINESS_DATA_DEADLINE: Duration = Duration::from_secs(12);
 
 /// Why a carrier died. Precedence when several signals co-trip (mirrors the
 /// pre-P2 log selection, which keyed off `(hard_dead, rx_stale)` in this
@@ -371,6 +378,13 @@ pub(crate) struct PokeState {
     pub(crate) from_major: bool,
     /// Proof for an established direct path with unanswered application data.
     pub(crate) from_business: bool,
+    /// #279 — a business proof whose handshake came back but whose data path
+    /// has not delivered an authenticated transport datagram since the poke.
+    /// Not `answered`; judged on [`BUSINESS_DATA_DEADLINE`], convicting
+    /// [`DeathReason::OneWay`] (a strike), not `RekeyUnanswered` (the
+    /// handshake DID answer, so an immediate free re-upgrade would just
+    /// re-promote the same broken path).
+    pub(crate) data_pending: bool,
 }
 
 /// Everything [`carrier_tick`] needs about one installed carrier, gathered by
@@ -459,10 +473,18 @@ pub(crate) fn carrier_tick(i: &HealthInputs) -> HealthVerdict {
                 } else {
                     i.tier.handshake_deadline()
                 };
-                !p.answered && p.since_poke > window
+                !p.answered && !p.data_pending && p.since_poke > window
             }),
         ),
     };
+    // #279 — handshake answered, data path silent past its window.
+    let data_unanswered = matches!(
+        CarrierPhase::of(i.handshake_done, i.tier),
+        CarrierPhase::Established
+    ) && i
+        .poke
+        .as_ref()
+        .is_some_and(|p| p.data_pending && p.since_poke > BUSINESS_DATA_DEADLINE);
 
     // Warm-up grace: let the handshake + first packets flow — no counter
     // update, no judgment. (A blown handshake deadline is > grace by
@@ -491,7 +513,8 @@ pub(crate) fn carrier_tick(i: &HealthInputs) -> HealthVerdict {
         || i.hard_dead
         || punch_dead
         || rx_stale
-        || rekey_unanswered;
+        || rekey_unanswered
+        || data_unanswered;
     let death = if !tripped {
         None
     } else if !i.is_direct && i.relay_refresh_held {
@@ -1159,6 +1182,38 @@ mod tests {
         assert!(!should_poke_on_netchange(false), "pre-handshake");
     }
 
+    /// #279 — a business proof whose handshake answered but whose data path is
+    /// silent is NOT settled: no verdict inside BUSINESS_DATA_DEADLINE (a
+    /// healthy one-way stream answers with a keepalive within 10 s), a OneWay
+    /// conviction after it — never RekeyUnanswered, and never on the 2 s
+    /// handshake window.
+    #[test]
+    fn business_proof_with_a_handshake_but_no_data_convicts_one_way_after_its_window() {
+        for tier in [DirectTier::Lan, DirectTier::Public, DirectTier::Srflx] {
+            let input = |age| HealthInputs {
+                tier,
+                poke: Some(PokeState {
+                    since_poke: age,
+                    answered: false,
+                    from_major: false,
+                    from_business: true,
+                    data_pending: true,
+                }),
+                ..established()
+            };
+            assert!(
+                carrier_tick(&input(BUSINESS_POKE_DEADLINE * 3))
+                    .death
+                    .is_none()
+            );
+            assert!(carrier_tick(&input(BUSINESS_DATA_DEADLINE)).death.is_none());
+            assert_eq!(
+                carrier_tick(&input(BUSINESS_DATA_DEADLINE + Duration::from_millis(1))).death,
+                Some(DeathReason::OneWay)
+            );
+        }
+    }
+
     #[test]
     fn business_poke_has_an_established_path_window_and_requires_failed_proof() {
         for tier in [DirectTier::Lan, DirectTier::Public, DirectTier::Srflx] {
@@ -1169,6 +1224,7 @@ mod tests {
                     answered,
                     from_major: false,
                     from_business: business,
+                    data_pending: false,
                 }),
                 ..established()
             };
@@ -1218,6 +1274,7 @@ mod tests {
                 answered: false,
                 from_major: false,
                 from_business: true,
+                data_pending: false,
             }),
             ..established()
         };
@@ -1273,6 +1330,7 @@ mod tests {
                     answered,
                     from_major: false,
                     from_business: false,
+                    data_pending: false,
                 }),
                 ..established()
             };
@@ -1305,6 +1363,7 @@ mod tests {
                 answered: false,
                 from_major: false,
                 from_business: false,
+                data_pending: false,
             }),
             ..established()
         };
@@ -1319,6 +1378,7 @@ mod tests {
                 answered: false,
                 from_major: false,
                 from_business: false,
+                data_pending: false,
             }),
             ..established()
         };
@@ -1350,6 +1410,7 @@ mod tests {
                     answered,
                     from_major,
                     from_business: false,
+                    data_pending: false,
                 }),
                 ..established()
             };
@@ -1393,6 +1454,7 @@ mod tests {
                 answered: false,
                 from_major: true,
                 from_business: false,
+                data_pending: false,
             }),
             ..established()
         };
@@ -1437,6 +1499,7 @@ mod tests {
                 answered: false,
                 from_major: false,
                 from_business: false,
+                data_pending: false,
             }),
             ..established()
         };
@@ -1459,6 +1522,7 @@ mod tests {
                 answered: false,
                 from_major: false,
                 from_business: false,
+                data_pending: false,
             }),
             ..established()
         };

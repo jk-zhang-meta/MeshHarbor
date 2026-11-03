@@ -641,6 +641,16 @@ pub struct PeerStats {
     /// hammers initiations at us every ~5 s, so an either-role stamp would
     /// read permanently alive.
     pub(crate) hs_response_at: AtomicU64,
+    /// #279 — the instant (mono ms, `0` = never) the PRIMARY carrier last
+    /// delivered an authenticated WireGuard TRANSPORT datagram (type 4: data,
+    /// or a content-free keepalive). [`Self::hs_response_at`] proves the
+    /// handshake path only, and the two are routed differently — type 1/2 by
+    /// key, type 4 by receiver index — so one can work while the other drops.
+    /// Field 2026-11-03 (native Windows ↔ WSL node): business probes were
+    /// "answered" by handshakes for ~40 s while every data packet was lost.
+    /// Standby copies (`decap_standby`) never stamp this: a copy is not
+    /// evidence for the direct carrier.
+    pub(crate) data_rx_at: AtomicU64,
     /// P4 — inbound IP packets from this peer whose SOURCE address it does not
     /// own ([`Router::rpf_check`]). Counted in `warn` AND `enforce` (only
     /// `enforce` also drops), so a fleet read of this counter is exactly the
@@ -5948,6 +5958,18 @@ impl WgDevice {
         at != 0 && at >= since.saturating_duration_since(wg_epoch()).as_millis() as u64
     }
 
+    /// #279 — whether `peer_public`'s primary carrier delivered an
+    /// authenticated transport datagram (data or keepalive) at-or-after
+    /// `since` (the [`PeerStats::data_rx_at`] stamp). A business proof is
+    /// settled by this AND [`Self::peer_initiator_hs_answered`].
+    pub fn peer_data_rx_since(&self, peer_public: &[u8; 32], since: Instant) -> bool {
+        let Some(p) = self.peers.get(peer_public) else {
+            return false;
+        };
+        let at = p.stats.data_rx_at.load(Ordering::Relaxed);
+        at != 0 && at >= since.saturating_duration_since(wg_epoch()).as_millis() as u64
+    }
+
     /// Stage 2 — how long since the last INITIATOR-role handshake completion
     /// for `peer_public` (`None` = never, or unknown peer). Drives the
     /// stale-proof poke trigger (`lifecycle::should_poke`).
@@ -6050,6 +6072,17 @@ impl WgDevice {
         if let Some(p) = self.peers.get(peer_public) {
             p.stats
                 .hs_response_at
+                .store(mono_ms_now().max(1), Ordering::Relaxed);
+        }
+    }
+
+    /// Test-only: stamp `peer_public`'s data-path proof to NOW, as if an
+    /// authenticated transport datagram had just arrived on the primary leg.
+    #[cfg(test)]
+    pub fn test_stamp_data_rx(&self, peer_public: &[u8; 32]) {
+        if let Some(p) = self.peers.get(peer_public) {
+            p.stats
+                .data_rx_at
                 .store(mono_ms_now().max(1), Ordering::Relaxed);
         }
     }
@@ -6607,6 +6640,16 @@ pub(crate) fn decap_inbound(
             }
         }
         stats.rx_any.fetch_add(1, Ordering::Relaxed);
+        // #279 — data-path proof: an authenticated transport datagram (header
+        // 16 + tag 16 = 32 bytes for a bare keepalive) on the primary leg.
+        if n >= 32
+            && buf[..4] == [4, 0, 0, 0]
+            && (stats.mp_control.get().is_none() || stats.inbound_leg(ingress.leg_id) == 0)
+        {
+            stats
+                .data_rx_at
+                .store(mono_ms_now().max(1), Ordering::Relaxed);
+        }
         stats.note_rx_counter(&buf[..n]);
         stats.on_demand.record_wire_rx(&buf[..n]);
         // #22 — a HANDSHAKE INITIATION (type 1) from the peer: counted so
@@ -9305,6 +9348,58 @@ mod tests {
         );
         assert_eq!(da.peer_count(), 1);
         assert_eq!(db.peer_count(), 1);
+        da.remove_peer(&b.public.to_bytes()).await;
+        db.remove_peer(&a.public.to_bytes()).await;
+    }
+
+    /// #279 — the data-path stamp moves on an authenticated TRANSPORT datagram
+    /// only: a completed handshake (types 1/2) leaves it where it was.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn data_rx_stamp_needs_transport_data_not_a_handshake() {
+        use crate::transport::relay::UdpRelayConn;
+        let a = WgKeypair::generate();
+        let b = WgKeypair::generate();
+        let sa = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let sb = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let aa = sa.local_addr().unwrap();
+        let ab = sb.local_addr().unwrap();
+        let (mut da, _ra) = WgDevice::new(a.secret.clone());
+        let (mut db, mut rb) = WgDevice::new(b.secret.clone());
+        da.add_peer(
+            b.public.to_bytes(),
+            IP_B,
+            Carrier::relay(Arc::new(UdpRelayConn(sa)), ab),
+            true,
+        );
+        db.add_peer(
+            a.public.to_bytes(),
+            IP_A,
+            Carrier::relay(Arc::new(UdpRelayConn(sb)), aa),
+            false,
+        );
+        let before = Instant::now();
+        wait_connected(&da, &b.public.to_bytes()).await;
+        // A initiated: its handshake response is in, but B has sent A no data.
+        assert!(da.peer_initiator_hs_answered(&b.public.to_bytes(), before));
+        let quiet = Instant::now();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            !db.peer_data_rx_since(&a.public.to_bytes(), quiet),
+            "nothing has arrived at B since"
+        );
+        let pkt = synthetic_ipv4(IP_A, IP_B, b"business data proves the data path");
+        send_until_ok(&da, &b.public.to_bytes(), &pkt).await;
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(2), rb.recv())
+                .await
+                .unwrap()
+                .unwrap(),
+            pkt
+        );
+        assert!(
+            db.peer_data_rx_since(&a.public.to_bytes(), quiet),
+            "an authenticated transport datagram stamps the data path"
+        );
         da.remove_peer(&b.public.to_bytes()).await;
         db.remove_peer(&a.public.to_bytes()).await;
     }
