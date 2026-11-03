@@ -386,6 +386,10 @@ pub fn build_router(state: AppState) -> Router {
                 "/account/devices/summary",
                 get(routes::account_devices::summary),
             )
+            .route(
+                "/account/devices/{id}/local-accounts",
+                get(routes::local_accounts::list).post(routes::local_accounts::create),
+            )
     } else {
         api
     };

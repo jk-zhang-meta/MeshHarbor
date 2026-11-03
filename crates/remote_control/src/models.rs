@@ -1244,6 +1244,9 @@ pub enum RpcCap {
     SharedSessionLease,
     /// Typed single-use embedded SSH stream, no generic forwarding.
     SharedSshStream,
+    /// MeshHarbor — `rc:accounts.request`: the device lists its login accounts
+    /// and creates one for an SSH share (Linux and macOS).
+    LocalAccounts,
     /// MeshHarbor #20 — `rc:forward.set`: the agent runs managed forwards on
     /// its userspace backend and answers with `rc:forward.status`. The
     /// server pushes a forward set only to a device that advertises this.
@@ -1307,11 +1310,12 @@ impl RpcCap {
             Self::PeerAuth => "peer-auth",
             Self::SharedSessionLease => "shared-session-lease-v1",
             Self::SharedSshStream => "shared-ssh-stream-v1",
+            Self::LocalAccounts => "local-accounts-v1",
         }
     }
 
     /// Every verb THIS build knows about.
-    pub const ALL: [RpcCap; 42] = [
+    pub const ALL: [RpcCap; 43] = [
         Self::Exec,
         Self::Originate,
         Self::Ssh,
@@ -1352,6 +1356,7 @@ impl RpcCap {
         Self::PeerAuth,
         Self::SharedSessionLease,
         Self::SharedSshStream,
+        Self::LocalAccounts,
         Self::ManagedForward,
         Self::ManagedForwardNft,
     ];

@@ -205,6 +205,14 @@ fn validate(body: &mut CreateShare) -> Result<(), ApiError> {
                 "A device account is chosen only for an SSH share".into(),
             ));
         }
+        // The device refuses to become uid 0 by name (`exec.rs`), so a root share could
+        // never connect: root rights come from an administrator account instead.
+        (Some(a), true) if a == "root" => {
+            return Err(ApiError::BadRequest(
+                "root cannot be shared directly; create an administrator account for the recipient"
+                    .into(),
+            ));
+        }
         (Some(a), true) if !valid_share_account(a) => {
             return Err(ApiError::BadRequest(
                 "The device account must be a Linux/macOS user name (lowercase letters, digits, _ and -)"

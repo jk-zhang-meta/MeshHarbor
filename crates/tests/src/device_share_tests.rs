@@ -2233,7 +2233,7 @@ async fn native_shared_ssh_composed_hidden_prompt_nonce_live_revoke_and_reopen()
         );
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
-    let response=f.app.auth_post("/api/device-shares",&f.owner.token).json(&json!({"device_id":device.to_hex(),"recipient_user_id":f.recipient.id.to_hex(),"permissions":{"ssh":true},"tcp_ports":[],"expires_in_secs":120,"ssh_account":"root"})).send().await.unwrap();
+    let response=f.app.auth_post("/api/device-shares",&f.owner.token).json(&json!({"device_id":device.to_hex(),"recipient_user_id":f.recipient.id.to_hex(),"permissions":{"ssh":true},"tcp_ports":[],"expires_in_secs":120,"ssh_account":std::env::var("MESHHARBOR_SHARED_SSH_TEST_ACCOUNT").unwrap_or_else(|_| "nobody".into())})).send().await.unwrap();
     assert_eq!(response.status().as_u16(), 200);
     let share: Value = response.json().await.unwrap();
     let grant = share["id"].as_str().unwrap();
@@ -2430,7 +2430,7 @@ async fn device_share_ssh_requires_its_own_account_and_never_inherits_the_policy
     };
     let ssh = json!({"ssh":true});
     assert_eq!(post(body(ssh.clone(), None)).await, 400, "no account");
-    for bad in ["", "  ", "Root", "../etc", "a b", "a:b", "x\ny"] {
+    for bad in ["", "  ", "root", "Root", "../etc", "a b", "a:b", "x\ny"] {
         assert_eq!(post(body(ssh.clone(), Some(bad))).await, 400, "{bad:?}");
     }
     assert_eq!(
@@ -2441,12 +2441,18 @@ async fn device_share_ssh_requires_its_own_account_and_never_inherits_the_policy
     let agents = f.app.db.collection::<bson::Document>("agents");
     let os = |k: OsKind| bson::to_bson(&k).unwrap();
     agents
-        .update_one(doc! {"_id":f.device}, doc! {"$set":{"os":os(OsKind::Windows)}})
+        .update_one(
+            doc! {"_id":f.device},
+            doc! {"$set":{"os":os(OsKind::Windows)}},
+        )
         .await
         .unwrap();
     assert_eq!(post(body(ssh.clone(), Some("alice"))).await, 400, "Windows");
     agents
-        .update_one(doc! {"_id":f.device}, doc! {"$set":{"os":os(OsKind::Linux)}})
+        .update_one(
+            doc! {"_id":f.device},
+            doc! {"$set":{"os":os(OsKind::Linux)}},
+        )
         .await
         .unwrap();
     let r = f
@@ -2499,7 +2505,15 @@ async fn device_share_ssh_requires_its_own_account_and_never_inherits_the_policy
         .as_ref()
         .unwrap()
         .rc_hub
-        .register_agent(f.device, f.tenant, f.owner.id, OsKind::Linux, 4, false, false);
+        .register_agent(
+            f.device,
+            f.tenant,
+            f.owner.id,
+            OsKind::Linux,
+            4,
+            false,
+            false,
+        );
     let ok = v["id"].as_str().unwrap();
     let meta = |id: String| {
         let f = &f;
@@ -2513,6 +2527,137 @@ async fn device_share_ssh_requires_its_own_account_and_never_inherits_the_policy
                 .as_u16()
         }
     };
-    assert_eq!(meta(ok.to_string()).await, 200, "a share with its own account");
+    assert_eq!(
+        meta(ok.to_string()).await,
+        200,
+        "a share with its own account"
+    );
     assert_eq!(meta(id.to_hex()).await, 403, "a legacy share without one");
+}
+
+/// MeshHarbor — the owner lists, and creates, the device's accounts through the device itself:
+/// the route pushes `rc:accounts.request` to the connected device and answers with what the
+/// device said, its refusal included. Only the owner; only a device that advertises it; a
+/// name the server refuses never reaches the device.
+#[tokio::test]
+async fn local_accounts_reach_the_device_for_its_owner_only() {
+    use roomler_ai_remote_control::signaling::{LocalAccount, LocalAccountOp, ServerMsg};
+    let f = fixture().await;
+    let path = format!("/api/account/devices/{}/local-accounts", f.device.to_hex());
+    let get = |token: String| {
+        let (f, path) = (&f, path.clone());
+        async move {
+            let r = f.app.auth_get(&path, &token).send().await.unwrap();
+            let status = r.status().as_u16();
+            (status, r.json::<Value>().await.unwrap_or(Value::Null))
+        }
+    };
+    let post = |body: Value| {
+        let (f, path) = (&f, path.clone());
+        async move {
+            let r = f
+                .app
+                .auth_post(&path, &f.owner.token)
+                .json(&body)
+                .send()
+                .await
+                .unwrap();
+            let status = r.status().as_u16();
+            (status, r.json::<Value>().await.unwrap_or(Value::Null))
+        }
+    };
+    assert_eq!(
+        get(f.owner.token.clone()).await.0,
+        400,
+        "no capability advertised"
+    );
+    f.app
+        .db
+        .collection::<bson::Document>("agents")
+        .update_one(
+            doc! {"_id":f.device},
+            doc! {"$set":{"capabilities.rpc":["local-accounts-v1"]}},
+        )
+        .await
+        .unwrap();
+    assert_eq!(get(f.recipient.token.clone()).await.0, 403, "not the owner");
+    assert_eq!(get(f.owner.token.clone()).await.0, 409, "not connected");
+
+    let hub = f.app.state.modules.fleet.as_ref().unwrap().rc_hub.clone();
+    let (_tx, _, mut target) = hub.register_agent(
+        f.device,
+        f.tenant,
+        f.owner.id,
+        OsKind::Linux,
+        4,
+        false,
+        false,
+    );
+    let device = tokio::spawn(async move {
+        let mut seen = Vec::new();
+        while seen.len() < 3 {
+            let Some(msg) = target.recv().await else {
+                break;
+            };
+            let ServerMsg::LocalAccountsRequest { request_id, op } = msg else {
+                continue;
+            };
+            let answer = match &op {
+                LocalAccountOp::List => Ok(vec![LocalAccount {
+                    name: "alice".into(),
+                    uid: 1000,
+                    admin: false,
+                }]),
+                LocalAccountOp::Create { name, .. } if name == "taken" => {
+                    Err("an account named taken already exists; choose it instead".to_string())
+                }
+                LocalAccountOp::Create { name, admin } => Ok(vec![LocalAccount {
+                    name: name.clone(),
+                    uid: 1001,
+                    admin: *admin,
+                }]),
+            };
+            hub.deliver_local_accounts(&request_id, answer);
+            seen.push(op);
+        }
+        seen
+    });
+    let (status, v) = get(f.owner.token.clone()).await;
+    assert_eq!(status, 200, "{v}");
+    assert_eq!(v["accounts"][0]["name"], "alice");
+    for bad in ["root", "Bad", "../x", ""] {
+        assert_eq!(
+            post(json!({"name":bad,"admin":true})).await.0,
+            400,
+            "{bad:?}"
+        );
+    }
+    let (status, v) = post(json!({"name":"share1","admin":true})).await;
+    assert_eq!(status, 200, "{v}");
+    assert_eq!(
+        v["accounts"][0],
+        json!({"name":"share1","uid":1001,"admin":true})
+    );
+    let (status, v) = post(json!({"name":"taken"})).await;
+    assert_eq!(status, 400);
+    assert!(v.to_string().contains("The device refused"), "{v}");
+    let seen = tokio::time::timeout(std::time::Duration::from_secs(5), device)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        seen,
+        vec![
+            LocalAccountOp::List,
+            LocalAccountOp::Create {
+                name: "share1".into(),
+                admin: true
+            },
+            LocalAccountOp::Create {
+                name: "taken".into(),
+                admin: false
+            },
+        ],
+        "only valid names reached the device"
+    );
 }

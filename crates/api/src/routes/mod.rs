@@ -44,3 +44,5 @@ pub mod device_share;
 
 #[cfg(feature = "fleet")]
 pub mod account_devices;
+#[cfg(feature = "fleet")]
+pub mod local_accounts;

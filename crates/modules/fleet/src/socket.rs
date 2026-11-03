@@ -757,6 +757,22 @@ pub async fn handle_agent_socket(
                                         }
                                         continue;
                                     }
+                                    // MeshHarbor — a device's answer about its
+                                    // accounts, to the owner parked on it.
+                                    ClientMsg::LocalAccountsResult {
+                                        request_id,
+                                        accounts,
+                                        error,
+                                    } => {
+                                        let answer = match error {
+                                            Some(e) => Err(e),
+                                            None => Ok(accounts),
+                                        };
+                                        if !state.rc_hub.deliver_local_accounts(&request_id, answer) {
+                                            debug!(%agent_id, %request_id, "rc:accounts.result nobody awaits");
+                                        }
+                                        continue;
+                                    }
                                     // A device asking to run something on ANOTHER
                                     // device (`roomler exec`). Spawned: the
                                     // target's command can take minutes and this

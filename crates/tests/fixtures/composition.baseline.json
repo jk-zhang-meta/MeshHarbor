@@ -9,6 +9,10 @@
       "methods": "GET,HEAD"
     },
     {
+      "path": "/api/account/devices/{id}/local-accounts",
+      "methods": "GET,HEAD,POST"
+    },
+    {
       "path": "/api/admin/business-authority/{kind}/{tenant_id}/{device_id}",
       "methods": "GET,HEAD,PUT"
     },
@@ -5760,6 +5764,7 @@
   "wire": [
     "rc:share.ssh.connect",
     "rc:share.ssh.prepared",
+    "rc:accounts.result",
     "rc:share.ssh.lease.challenge",
     "rc:share.lease.challenge",
     "rc:agent.hello",
@@ -5856,6 +5861,7 @@
     "rc:extauth.ke2",
     "rc:extauth.outcome",
     "rc:extauth.session",
+    "rc:accounts.request",
     "rc:share.ssh.setup",
     "rc:share.ssh.forward",
     "rc:share.ssh.lease.renewal",
@@ -5963,6 +5969,7 @@
     "rc:overlay.netmap"
   ],
   "namespaces": {
+    "rc:accounts.result": "fleet",
     "rc:agent.config_status": "fleet",
     "rc:agent.heartbeat": "fleet",
     "rc:agent.hello": "fleet",

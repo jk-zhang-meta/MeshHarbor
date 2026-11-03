@@ -1984,6 +1984,10 @@ fn rpc_caps() -> Vec<String> {
     caps.push(RpcCap::KeyRotate);
     // MeshHarbor #20 — every build runs managed forwards (userspace backend).
     caps.push(RpcCap::ManagedForward);
+    // MeshHarbor — list/create login accounts for an SSH share. A property of
+    // the BUILD; the device still refuses unless its own `ssh_enabled` is on.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    caps.push(RpcCap::LocalAccounts);
     // ... and on its owned nftables table: Linux, as root, with `nft`.
     #[cfg(target_os = "linux")]
     if crate::managed_forward_nft::available() {

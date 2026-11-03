@@ -2730,6 +2730,31 @@ async fn connect_once(
                                 format!("ws.text:{}", server_msg_tag(&text).unwrap_or("?")),
                             );
                             let parsed = match parsed {
+                                // MeshHarbor — the owner's account request. Off the
+                                // pump (it may run useradd/dscl) and always answered,
+                                // because the owner's request is parked on it.
+                                ServerMsg::LocalAccountsRequest { request_id, op } => {
+                                    let cfg = cfg.clone();
+                                    let tx = outbound_tx.clone();
+                                    tokio::spawn(async move {
+                                        let result = tokio::task::spawn_blocking(move || {
+                                            crate::local_accounts::handle(&cfg, &op)
+                                        })
+                                        .await
+                                        .unwrap_or_else(|e| Err(format!("account task failed: {e}")));
+                                        let (accounts, error) = match result {
+                                            Ok(a) => (a, None),
+                                            Err(e) => {
+                                                warn!(%e, "local accounts: request refused");
+                                                (Vec::new(), Some(e))
+                                            }
+                                        };
+                                        let _ = tx
+                                            .send(ClientMsg::LocalAccountsResult { request_id, accounts, error })
+                                            .await;
+                                    });
+                                    continue;
+                                }
                                 ServerMsg::ManagedForwardSet { forwards } => {
                                     if managed_forward_tx
                                         .try_send(crate::managed_forward::Cmd::Set(forwards))
