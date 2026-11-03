@@ -136,6 +136,25 @@ pub(super) const LAN_DEAD_STRIKES: u32 = 3;
 /// [`STANDBY_ARM_AFTER`], and only to a peer that takes copies. A healthy
 /// path answers within one RTT, so the recurring proofs of a healthy one-way
 /// stream never copy anything.
+/// #279 — settle a pending poke: `(answered, data_pending)`. A business proof
+/// on a direct carrier needs its handshake answered AND an authenticated
+/// transport datagram since the poke (`OVERLAY_BUSINESS_DATA_PROOF=0` restores
+/// the handshake-only answer). Every other proof is the handshake alone.
+pub(super) fn poke_settled(
+    wg: &WgDevice,
+    pubkey: &[u8; 32],
+    is_direct: bool,
+    p: PokeArm,
+) -> (bool, bool) {
+    let hs = wg.peer_initiator_hs_answered(pubkey, p.at);
+    let data_pending = hs
+        && p.from_business
+        && is_direct
+        && super::business_data_proof()
+        && !wg.peer_data_rx_since(pubkey, p.at);
+    (hs && !data_pending, data_pending)
+}
+
 pub(super) fn standby_tee_wanted(
     poke: Option<PokeArm>,
     answered: bool,
@@ -578,9 +597,11 @@ impl OverlayRuntime {
     ) {
         let now = Instant::now();
         for e in by_node.values().filter(|e| e.is_direct) {
+            // #279 — a proof still waiting for DATA keeps the tee on, so
+            // business rides DERP while the direct data path is judged.
             let answered = e
                 .poke
-                .is_some_and(|p| wg.peer_initiator_hs_answered(&e.pubkey, p.at));
+                .is_some_and(|p| poke_settled(wg, &e.pubkey, e.is_direct, p).0);
             let capable = crate::overlay::disco::standby_capable(&e.pubkey, now);
             let tee = standby_tee_wanted(e.poke, answered, capable, now);
             wg.set_standby_tee(&e.pubkey, tee.then(|| mux.clone()));
@@ -686,12 +707,20 @@ impl OverlayRuntime {
             // `PeerStats::hs_response_at`). An answered poke clears, re-arming
             // the triggers; an unanswered one rides into the tick, which
             // kills it once the tier's handshake-deadline window closes.
-            let poke = e.poke.map(|p| PokeState {
-                since_poke: now.saturating_duration_since(p.at),
-                answered: wg.peer_initiator_hs_answered(&e.pubkey, p.at),
-                from_major: p.from_major,
-                from_business: p.from_business,
+            let poke = e.poke.map(|p| {
+                let (answered, data_pending) = poke_settled(wg, &e.pubkey, e.is_direct, p);
+                PokeState {
+                    since_poke: now.saturating_duration_since(p.at),
+                    answered,
+                    from_major: p.from_major,
+                    from_business: p.from_business,
+                    data_pending,
+                }
             });
+            let data_pending_age = poke
+                .as_ref()
+                .filter(|p| p.data_pending)
+                .map(|p| p.since_poke);
             // Diagnostic — capture poke state before `poke` moves into
             // `carrier_tick` (see `OVERLAY_SESSION_TRACE`).
             let trace_poke = poke
@@ -861,6 +890,12 @@ impl OverlayRuntime {
             let business_rearm =
                 unanswered_traffic && e.poke.is_some_and(|p| !p.from_major && !p.from_business);
             if let Some(reason) = v.death {
+                if let Some(age) = data_pending_age.filter(|_| reason == DeathReason::OneWay) {
+                    warn!(
+                        peer = %nid, tier = ?e.tier, waited_ms = age.as_millis() as u64,
+                        "overlay: business proof — the handshake answered but no data came back on the direct carrier (one-way data path) — rebuilding via relay (#279)"
+                    );
+                }
                 match wg
                     .multipath_primary_failed(
                         &e.pubkey,
