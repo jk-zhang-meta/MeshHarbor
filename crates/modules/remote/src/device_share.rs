@@ -336,6 +336,7 @@ mod tests {
             expires_at: now,
             revoked_at: None,
             revision: 0,
+            ssh_account: None,
         };
         g.permissions.files_read = true;
         assert!(!within_grant(&g, Permissions::FILES));

@@ -15,7 +15,7 @@ use axum::{
 use bson::oid::ObjectId;
 use roomler_ai_db::models::DeviceShareOperation;
 use roomler_ai_remote_control::{
-    models::{ConsentMode, RpcCap, SshMode, SshPolicy, ssh_limits},
+    models::{ConsentMode, OsKind, RpcCap, SshAccountMode, SshMode, SshPolicy, ssh_limits},
     signaling::{ClientMsg, CloseReason, ServerMsg, SharedSessionLease, SharedSshSetup},
 };
 use roomler_core::{AgentCtx, ApiError, device_share::authorize_grant, extractors::auth::AuthUser};
@@ -57,6 +57,13 @@ pub struct ConnectQuery {
 fn deny(message: &str) -> ApiError {
     ApiError::Forbidden(message.into())
 }
+/// The account a shared session becomes: the share's own, re-validated on every read.
+fn shared_account(grant: &roomler_ai_db::models::DeviceShareGrant) -> Option<String> {
+    grant
+        .ssh_account
+        .clone()
+        .filter(|a| roomler_ai_db::models::device_share::valid_share_account(a))
+}
 /// Role membership is NOT inferred. An explicit approved-recipient SSH grant is
 /// this route's authority; all target/org/local SSH policies still restrict it.
 async fn pdp(
@@ -71,8 +78,12 @@ async fn pdp(
             || state.fleet.rc_hub.agent_org(access.grant.device_id)!=Some(a.tenant_id) {return Err(deny("Shared SSH requires this device on this server; no cross-pod fallback"));}
         let tenant=state.tenants.base.find_by_id(a.tenant_id).await?;
         if !tenant.settings.remote_ssh_enabled {return Err(deny("The organization has disabled embedded SSH"));}
-        let (gates,spec)=a.ssh_policy.clone().split();
-        if crate::routes::agent_ssh::routes_ssh_via_service(state,a,spec.account_mode,false) {return Err(deny("This device policy requires its SYSTEM-service SSH bridge, which sharing does not yet support"));}
+        // The share's own account, never the device policy's (often the daemon's root). A row
+        // without one predates the choice and is refused rather than silently inheriting root.
+        if shared_account(&access.grant).is_none() {return Err(deny("This SSH share names no device account; ask the owner to share it again"));}
+        if a.os==OsKind::Windows {return Err(deny("SSH sharing is available for Linux and macOS devices"));}
+        let (gates,_)=a.ssh_policy.clone().split();
+        if crate::routes::agent_ssh::routes_ssh_via_service(state,a,SshAccountMode::Named,false) {return Err(deny("This device policy requires its SYSTEM-service SSH bridge, which sharing does not yet support"));}
         if gates.mode!=SshMode::On || !gates.allows_caller(&user,&[]) {return Err(deny("The device's SSH policy does not permit this recipient"));}
         // A role-only allowlist does not turn an external recipient into a member.
         let p=&a.access_policy;
@@ -283,6 +294,9 @@ async fn run(
     }
     let session_secs = ssh_limits::clamp_session_secs(q.session_secs).min(secs_left);
     let (_, spec) = access.agent.ssh_policy.split();
+    let Some(account) = shared_account(&access.grant) else {
+        return;
+    };
     let setup = SharedSshSetup {
         device_id: s.device,
         owner_user_id: access.grant.owner_user_id,
@@ -291,8 +305,8 @@ async fn run(
         ssh_grant_id: ObjectId::new().to_hex(),
         public_key: q.public_key,
         caller: format!("approved recipient {user} / share {grant}"),
-        account_mode: spec.account_mode,
-        account: spec.account,
+        account_mode: SshAccountMode::Named,
+        account: Some(account),
         consent_mode: Some(if spec.consent_mode == Some(ConsentMode::Auto) {
             ConsentMode::Auto
         } else {

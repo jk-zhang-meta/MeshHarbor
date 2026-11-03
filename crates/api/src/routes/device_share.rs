@@ -5,8 +5,11 @@ use axum::{
     extract::{Path, Query, State},
 };
 use bson::{DateTime, doc, oid::ObjectId};
-use roomler_ai_db::models::{DeviceShareGrant, DeviceShareOperation, DeviceSharePermissions, User};
-use roomler_ai_remote_control::models::AgentStatus;
+use roomler_ai_db::models::{
+    DeviceShareGrant, DeviceShareOperation, DeviceSharePermissions, User,
+    device_share::valid_share_account,
+};
+use roomler_ai_remote_control::models::{AgentStatus, OsKind};
 use roomler_ai_services::dao::{
     agent::AgentDao,
     base::{DaoError, PaginationParams},
@@ -32,6 +35,9 @@ pub struct CreateShare {
     #[serde(default)]
     pub tcp_ports: Vec<u16>,
     pub expires_in_secs: u64,
+    /// The device account an SSH share runs as. Required with `permissions.ssh`, refused without.
+    #[serde(default)]
+    pub ssh_account: Option<String>,
 }
 #[derive(Serialize)]
 pub struct ShareView {
@@ -45,6 +51,8 @@ pub struct ShareView {
     pub expires_at_ms: i64,
     pub revoked_at_ms: Option<i64>,
     pub revision: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ssh_account: Option<String>,
     /// Display names, resolved when the record is read; absent once the row is gone. The ids
     /// above stay the identity — a name is only what a person reads.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -67,6 +75,7 @@ impl From<DeviceShareGrant> for ShareView {
             expires_at_ms: g.expires_at.timestamp_millis(),
             revoked_at_ms: g.revoked_at.map(|d| d.timestamp_millis()),
             revision: g.revision,
+            ssh_account: g.ssh_account,
             device_name: None,
             owner_username: None,
             recipient_username: None,
@@ -180,6 +189,30 @@ fn validate(body: &mut CreateShare) -> Result<(), ApiError> {
             "At least one explicit service or TCP port is required".into(),
         ));
     }
+    body.ssh_account = body
+        .ssh_account
+        .take()
+        .map(|a| a.trim().to_string())
+        .filter(|a| !a.is_empty());
+    match (&body.ssh_account, body.permissions.ssh) {
+        (None, true) => {
+            return Err(ApiError::BadRequest(
+                "Choose the device account this SSH share runs as".into(),
+            ));
+        }
+        (Some(_), false) => {
+            return Err(ApiError::BadRequest(
+                "A device account is chosen only for an SSH share".into(),
+            ));
+        }
+        (Some(a), true) if !valid_share_account(a) => {
+            return Err(ApiError::BadRequest(
+                "The device account must be a Linux/macOS user name (lowercase letters, digits, _ and -)"
+                    .into(),
+            ));
+        }
+        _ => {}
+    }
     Ok(())
 }
 pub async fn create(
@@ -218,6 +251,12 @@ pub async fn create(
     {
         return Err(ApiError::Forbidden(
             "Only the active device owner may share it".into(),
+        ));
+    }
+    // A chosen account is a Unix account: Windows cannot become one without its password.
+    if body.permissions.ssh && agent.os == OsKind::Windows {
+        return Err(ApiError::BadRequest(
+            "SSH sharing is available for Linux and macOS devices".into(),
         ));
     }
     let owner = core.users.base.find_by_id(auth.user_id).await?;
@@ -275,6 +314,7 @@ pub async fn create(
         ),
         revoked_at: None,
         revision: 0,
+        ssh_account: body.ssh_account,
     };
     let dao = DeviceShareDao::new(&core.db);
     let id = dao.base.insert_one(&grant).await?;
@@ -426,6 +466,7 @@ mod tests {
             },
             tcp_ports: vec![22, 22],
             expires_in_secs: 60,
+            ssh_account: Some("alice".into()),
         }
     }
     #[test]

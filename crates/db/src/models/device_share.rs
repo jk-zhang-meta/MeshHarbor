@@ -42,6 +42,22 @@ pub struct DeviceShareGrant {
     pub expires_at: DateTime,
     pub revoked_at: Option<DateTime>,
     pub revision: u32,
+    /// The local Linux/macOS account an SSH share runs as, chosen by the owner when sharing.
+    /// Required for SSH: the device's own SSH policy account is NEVER inherited (it is often
+    /// the daemon's root). `None` on a row from before the choice existed, which shared SSH refuses.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ssh_account: Option<String>,
+}
+/// A portable POSIX account name (`useradd`'s default rule, at most 32 bytes): what a share may
+/// name. Anything else is refused before it can reach a device as an account to become.
+pub fn valid_share_account(name: &str) -> bool {
+    let b = name.as_bytes();
+    !b.is_empty()
+        && b.len() <= 32
+        && (b[0].is_ascii_lowercase() || b[0] == b'_')
+        && b[1..]
+            .iter()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'_' || *c == b'-')
 }
 impl DeviceShareGrant {
     pub const COLLECTION: &'static str = "device_share_grants";
@@ -79,6 +95,27 @@ pub enum DeviceShareOperation {
 mod tests {
     use super::*;
     #[test]
+    fn share_account_names_are_portable_posix_names_only() {
+        for ok in ["alice", "_svc", "a1-b_c", "root", &"a".repeat(32)] {
+            assert!(valid_share_account(ok), "{ok}");
+        }
+        for bad in [
+            "",
+            "Alice",
+            "1abc",
+            "-x",
+            "a b",
+            "a/b",
+            "../x",
+            "a:b",
+            "é",
+            &"a".repeat(33),
+            "x\n",
+        ] {
+            assert!(!valid_share_account(bad), "{bad}");
+        }
+    }
+    #[test]
     fn device_share_permissions_never_imply_another_service() {
         let now = DateTime::from_millis(1000);
         let mut g = DeviceShareGrant {
@@ -96,6 +133,7 @@ mod tests {
             expires_at: DateTime::from_millis(2000),
             revoked_at: None,
             revision: 0,
+            ssh_account: Some("alice".into()),
         };
         assert!(g.allows(DeviceShareOperation::Ssh));
         assert!(g.allows(DeviceShareOperation::TcpConnect(22)));

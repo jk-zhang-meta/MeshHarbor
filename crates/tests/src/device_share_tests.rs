@@ -128,7 +128,7 @@ async fn fixture() -> Fixture {
     }
 }
 fn create_body(f: &Fixture) -> Value {
-    json!({"device_id":f.device.to_hex(),"recipient_user_id":f.recipient.id.to_hex(),"permissions":{"ssh":true},"tcp_ports":[22],"expires_in_secs":60})
+    json!({"device_id":f.device.to_hex(),"recipient_user_id":f.recipient.id.to_hex(),"permissions":{"ssh":true},"tcp_ports":[22],"expires_in_secs":60,"ssh_account":"alice"})
 }
 async fn create(f: &Fixture) -> Value {
     let r = f
@@ -279,7 +279,7 @@ async fn device_share_names_the_recipient_and_lists_names_without_an_account_ora
     };
     let named = |recipient: &str| {
         json!({"device_id":f.device.to_hex(),"recipient":recipient,
-               "permissions":{"ssh":true},"tcp_ports":[22],"expires_in_secs":60})
+               "permissions":{"ssh":true},"tcp_ports":[22],"expires_in_secs":60,"ssh_account":"alice"})
     };
 
     let (status, v) = post(named("share_recipient")).await;
@@ -540,6 +540,7 @@ async fn device_share_remote_real_ws_session_and_live_revoke() {
     let mut body = create_body(&f);
     body["permissions"] =
         json!({"desktop_view":true,"desktop_control":true,"files_read":true,"files_write":true});
+    body.as_object_mut().unwrap().remove("ssh_account");
     let grant: Value = f
         .app
         .auth_post("/api/device-shares", &f.owner.token)
@@ -705,6 +706,7 @@ async fn device_share_remote_escalation_and_unshared_org_request_are_denied() {
     let f = fixture().await;
     let mut body = create_body(&f);
     body["permissions"] = json!({"desktop_view":true,"files_read":true});
+    body.as_object_mut().unwrap().remove("ssh_account");
     let g: Value = f
         .app
         .auth_post("/api/device-shares", &f.owner.token)
@@ -768,6 +770,7 @@ async fn device_share_remote_distinct_grants_do_not_coalesce_and_live_allowlist_
     f.app.set_plan(&f.tenant.to_hex(), "business").await;
     let mut body = create_body(&f);
     body["permissions"] = json!({"desktop_view":true});
+    body.as_object_mut().unwrap().remove("ssh_account");
     let mut grants = Vec::new();
     for _ in 0..2 {
         let g: Value = f
@@ -871,6 +874,7 @@ async fn device_share_shared_lease_exact_agent_scope_and_live_policy_pdp() {
     let f = fixture().await;
     let mut body = create_body(&f);
     body["permissions"] = json!({"desktop_view":true});
+    body.as_object_mut().unwrap().remove("ssh_account");
     let grant: Value = f
         .app
         .auth_post("/api/device-shares", &f.owner.token)
@@ -1137,6 +1141,12 @@ async fn shared_ssh_start(
     assert_eq!(setup.device_id, f.device);
     assert_eq!(setup.owner_user_id, f.owner.id);
     assert_eq!(setup.recipient_user_id, f.recipient.id);
+    // The share's account crosses to the device, never the policy's (the fixture's is daemon).
+    assert_eq!(
+        setup.account_mode,
+        roomler_ai_remote_control::models::SshAccountMode::Named
+    );
+    assert_eq!(setup.account.as_deref(), Some("alice"));
     let ctx = roomler_core::AgentCtx {
         conn_id: format!("shared-ssh-test-{sid}"),
         agent_id: f.device,
@@ -2223,7 +2233,7 @@ async fn native_shared_ssh_composed_hidden_prompt_nonce_live_revoke_and_reopen()
         );
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
-    let response=f.app.auth_post("/api/device-shares",&f.owner.token).json(&json!({"device_id":device.to_hex(),"recipient_user_id":f.recipient.id.to_hex(),"permissions":{"ssh":true},"tcp_ports":[],"expires_in_secs":120})).send().await.unwrap();
+    let response=f.app.auth_post("/api/device-shares",&f.owner.token).json(&json!({"device_id":device.to_hex(),"recipient_user_id":f.recipient.id.to_hex(),"permissions":{"ssh":true},"tcp_ports":[],"expires_in_secs":120,"ssh_account":"root"})).send().await.unwrap();
     assert_eq!(response.status().as_u16(), 200);
     let share: Value = response.json().await.unwrap();
     let grant = share["id"].as_str().unwrap();
@@ -2389,4 +2399,120 @@ async fn native_shared_ssh_composed_hidden_prompt_nonce_live_revoke_and_reopen()
             .await
             .unwrap()
     );
+}
+
+/// An SSH share names the device account it runs as. Without one, with a malformed one, on a
+/// Windows device, or on a share that is not SSH, creation is refused; and a row from before the
+/// choice existed is refused at use rather than inheriting the device policy's account (root).
+#[tokio::test]
+async fn device_share_ssh_requires_its_own_account_and_never_inherits_the_policy_account() {
+    let f = shared_ssh_fixture().await;
+    let post = |body: Value| {
+        let f = &f;
+        async move {
+            f.app
+                .auth_post("/api/device-shares", &f.owner.token)
+                .json(&body)
+                .send()
+                .await
+                .unwrap()
+                .status()
+                .as_u16()
+        }
+    };
+    let body = |permissions: Value, account: Option<&str>| {
+        let mut b = json!({"device_id":f.device.to_hex(),"recipient_user_id":f.recipient.id.to_hex(),
+                           "permissions":permissions,"expires_in_secs":60});
+        if let Some(a) = account {
+            b["ssh_account"] = json!(a);
+        }
+        b
+    };
+    let ssh = json!({"ssh":true});
+    assert_eq!(post(body(ssh.clone(), None)).await, 400, "no account");
+    for bad in ["", "  ", "Root", "../etc", "a b", "a:b", "x\ny"] {
+        assert_eq!(post(body(ssh.clone(), Some(bad))).await, 400, "{bad:?}");
+    }
+    assert_eq!(
+        post(body(json!({"desktop_view":true}), Some("alice"))).await,
+        400,
+        "an account on a share that is not SSH"
+    );
+    let agents = f.app.db.collection::<bson::Document>("agents");
+    let os = |k: OsKind| bson::to_bson(&k).unwrap();
+    agents
+        .update_one(doc! {"_id":f.device}, doc! {"$set":{"os":os(OsKind::Windows)}})
+        .await
+        .unwrap();
+    assert_eq!(post(body(ssh.clone(), Some("alice"))).await, 400, "Windows");
+    agents
+        .update_one(doc! {"_id":f.device}, doc! {"$set":{"os":os(OsKind::Linux)}})
+        .await
+        .unwrap();
+    let r = f
+        .app
+        .auth_post("/api/device-shares", &f.owner.token)
+        .json(&body(ssh.clone(), Some(" alice ")))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status().as_u16(), 200);
+    let v: Value = r.json().await.unwrap();
+    assert_eq!(v["ssh_account"], "alice", "trimmed and returned");
+
+    // A legacy row: SSH permission, no account. The policy says daemon (root); it must not apply.
+    let now = bson::DateTime::now();
+    let legacy = roomler_ai_db::models::DeviceShareGrant {
+        id: None,
+        device_id: f.device,
+        tenant_id: f.tenant,
+        owner_user_id: f.owner.id,
+        recipient_user_id: f.recipient.id,
+        permissions: roomler_ai_db::models::DeviceSharePermissions {
+            ssh: true,
+            ..Default::default()
+        },
+        tcp_ports: vec![],
+        created_at: now,
+        expires_at: bson::DateTime::from_millis(now.timestamp_millis() + 60_000),
+        revoked_at: None,
+        revision: 0,
+        ssh_account: None,
+    };
+    let id = f
+        .app
+        .db
+        .collection::<roomler_ai_db::models::DeviceShareGrant>(
+            roomler_ai_db::models::DeviceShareGrant::COLLECTION,
+        )
+        .insert_one(&legacy)
+        .await
+        .unwrap()
+        .inserted_id
+        .as_object_id()
+        .unwrap();
+    let _registered = f
+        .app
+        .state
+        .modules
+        .fleet
+        .as_ref()
+        .unwrap()
+        .rc_hub
+        .register_agent(f.device, f.tenant, f.owner.id, OsKind::Linux, 4, false, false);
+    let ok = v["id"].as_str().unwrap();
+    let meta = |id: String| {
+        let f = &f;
+        async move {
+            f.app
+                .auth_get(&format!("/api/device-shares/{id}/ssh"), &f.recipient.token)
+                .send()
+                .await
+                .unwrap()
+                .status()
+                .as_u16()
+        }
+    };
+    assert_eq!(meta(ok.to_string()).await, 200, "a share with its own account");
+    assert_eq!(meta(id.to_hex()).await, 403, "a legacy share without one");
 }

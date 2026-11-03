@@ -313,6 +313,7 @@ async fn grant(
         expires_at: DateTime::from_millis(expires),
         revoked_at: revoked.then(|| DateTime::from_millis(created)),
         revision: u32::from(revoked),
+        ssh_account: Some("alice".into()),
     };
     f.app
         .db
