@@ -259,19 +259,37 @@ mod imp {
 mod imp {
     use super::*;
 
-    /// Accounts from the LOCAL directory node only (`dscl .`), uid ≥ 501 and
-    /// not a `_service` account.
+    /// Accounts from the LOCAL directory node only (`dscl .`): uid ≥ 501, not a
+    /// `_service` account, and one that can log in (as on Linux: a package's
+    /// account with `/usr/bin/false` is no one to share SSH as).
     pub fn list() -> Result<Vec<LocalAccount>, String> {
         let users = run("/usr/bin/dscl", &[".", "-list", "/Users", "UniqueID"])?;
+        let shells = run("/usr/bin/dscl", &[".", "-list", "/Users", "UserShell"])?;
         let admins = run(
             "/usr/bin/dscl",
             &[".", "-read", "/Groups/admin", "GroupMembership"],
         )
         .unwrap_or_default();
-        Ok(parse(&users, &admins, |n| sudoers_path(n).exists()))
+        Ok(parse(&users, &shells, &admins, |n| {
+            sudoers_path(n).exists()
+        }))
     }
 
-    pub fn parse(users: &str, admins: &str, has_rule: impl Fn(&str) -> bool) -> Vec<LocalAccount> {
+    pub fn parse(
+        users: &str,
+        shells: &str,
+        admins: &str,
+        has_rule: impl Fn(&str) -> bool,
+    ) -> Vec<LocalAccount> {
+        let no_login: Vec<&str> = shells
+            .lines()
+            .filter_map(|l| {
+                let mut it = l.split_whitespace();
+                let (name, shell) = (it.next()?, it.next().unwrap_or(""));
+                (shell.is_empty() || shell.ends_with("false") || shell.ends_with("nologin"))
+                    .then_some(name)
+            })
+            .collect();
         let admins: Vec<&str> = admins
             .split_whitespace()
             .filter(|w| *w != "GroupMembership:")
@@ -282,7 +300,8 @@ mod imp {
                 let mut it = l.split_whitespace();
                 let name = it.next()?;
                 let uid: u32 = it.next()?.parse().ok()?;
-                (uid >= 501 && uid < 60000 && valid_name(name)).then(|| LocalAccount {
+                let login = !no_login.contains(&name);
+                (uid >= 501 && uid < 60000 && valid_name(name) && login).then(|| LocalAccount {
                     name: name.to_string(),
                     uid,
                     admin: admins.contains(&name) || has_rule(name),
@@ -496,7 +515,10 @@ mod tests {
             } else {
                 vec!["-s", "/bin/sh", user, "-c", cmd]
             };
-            std::process::Command::new("/usr/bin/su").args(args).output().unwrap()
+            std::process::Command::new("/usr/bin/su")
+                .args(args)
+                .output()
+                .unwrap()
         };
         let root = sh("mhshare1", "sudo -n id -u");
         assert!(root.status.success(), "{root:?}");
@@ -543,9 +565,10 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn macos_lists_local_people_not_service_accounts() {
-        let users = "_spotlight 89\nroot 0\nnobody -2\njane 501\nkim 502\n";
+        let users = "_spotlight 89\nroot 0\nnobody -2\njane 501\nkim 502\nmacports 503\n";
+        let shells = "jane /bin/zsh\nkim /bin/bash\nmacports /usr/bin/false\n";
         let admins = "GroupMembership: root jane\n";
-        let got = imp::parse(users, admins, |_| false);
+        let got = imp::parse(users, shells, admins, |_| false);
         let names: Vec<(&str, bool)> = got.iter().map(|a| (a.name.as_str(), a.admin)).collect();
         assert_eq!(names, vec![("jane", true), ("kim", false)]);
     }
