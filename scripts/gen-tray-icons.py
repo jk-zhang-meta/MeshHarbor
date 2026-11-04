@@ -23,9 +23,9 @@ have not moved to the new logo, so `ui/public/favicon.svg` no longer matches.
     python3 scripts/gen-tray-icons.py                   # the companion (default)
     python3 scripts/gen-tray-icons.py --target setup    # the setup wizard
 
-Requires Pillow. `desktop` writes agents/roomler-desktop/icons/ (app icon,
+Requires Pillow. `desktop` writes agents/meshharbor-desktop/icons/ (app icon,
 menu-bar template, the tray while a recording runs, .ico). `setup` writes
-agents/roomler-setup/icons/ — the same R on GREEN (#2E7D32), so a wizard and
+agents/meshharbor-setup/icons/ — the same R on GREEN (#2E7D32), so a wizard and
 a companion side by side in a taskbar are told apart at a glance; app icon +
 .ico only, the wizard has no tray. CI asserts both sets are real (ci.yml
 "Assert the icons are real").
@@ -48,8 +48,8 @@ RED = (229, 57, 53, 255)  # #E53935 — the dot on the tray while recording (FR-
 
 # target → (output dir, background, whether a menu-bar/tray icon is written)
 TARGETS = {
-    "desktop": (ROOT / "agents/roomler-desktop/icons", BRAND, True),
-    "setup": (ROOT / "agents/roomler-setup/icons", SETUP, False),
+    "desktop": (ROOT / "agents/meshharbor-desktop/icons", BRAND, True),
+    "setup": (ROOT / "agents/meshharbor-setup/icons", SETUP, False),
 }
 
 # The classic Windows sizes, in one file. 256 is stored with a width byte of
@@ -140,7 +140,7 @@ def main(argv=None) -> None:
 
         # FR-85 — the tray while a recording runs. NOT a template: the
         # system tints a template to the menu bar, and this one has to stay
-        # red. roomler-desktop swaps it in (tray.rs) and back out after.
+        # red. meshharbor-desktop swaps it in (tray.rs) and back out after.
         _recording_mark(44).save(out / "tray-recording.png")
         written.append("tray-recording.png")
 

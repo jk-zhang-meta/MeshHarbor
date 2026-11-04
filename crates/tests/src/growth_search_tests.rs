@@ -41,14 +41,14 @@ use axum::{
 use bson::{Document, doc};
 use chrono::{Duration, NaiveDate};
 use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Validation};
-use roomler_ai_config::GrowthSettings;
-use roomler_ai_mod_saas::{
+use meshharbor_config::GrowthSettings;
+use meshharbor_mod_saas::{
     bing_pull::{self, BingClient},
     content_pull,
     search_console::{SCOPE, ScClient},
     search_pull,
 };
-use roomler_ai_services::dao::{
+use meshharbor_services::dao::{
     growth::{BING_SOURCE, BING_WEEKLY_SOURCE, GROWTH_DAILY, GROWTH_PULLS, SEARCH_CONSOLE_SOURCE},
     growth_content::GROWTH_CONTENT,
 };
@@ -962,9 +962,9 @@ fn bing(base: &str, key: &str) -> BingClient {
 }
 
 /// The digest's Bing part for `day`, as JSON.
-async fn read(state: &roomler_ai_api::state::AppState, day: NaiveDate) -> Value {
+async fn read(state: &meshharbor_api::state::AppState, day: NaiveDate) -> Value {
     serde_json::to_value(
-        roomler_ai_api::growth::search::bing(state, day)
+        meshharbor_api::growth::search::bing(state, day)
             .await
             .unwrap(),
     )
@@ -979,7 +979,7 @@ async fn read(state: &roomler_ai_api::state::AppState, day: NaiveDate) -> Value 
 async fn bing_lands_at_its_own_grain_and_a_refused_key_is_recorded() {
     let (base, fake) = fake_bing().await;
     let with_key = |key: &'static str| {
-        move |s: &mut roomler_ai_config::Settings| s.growth.bing_api_key = key.into()
+        move |s: &mut meshharbor_config::Settings| s.growth.bing_api_key = key.into()
     };
     let app = TestApp::spawn_with_settings(with_key("good")).await;
     let t = today();
@@ -1245,10 +1245,10 @@ async fn the_content_table_and_the_digest_read_what_the_pullers_stored() {
 
     // The digest's Search section for yesterday: Google through its newest
     // final day, Bing not configured.
-    let sections = roomler_ai_api::growth::digest::compute(
+    let sections = meshharbor_api::growth::digest::compute(
         &app.state,
         t - Duration::days(1),
-        &roomler_core::growth::ExclusionSet::none(),
+        &meshharbor_core::growth::ExclusionSet::none(),
         bson::DateTime::now(),
     )
     .await

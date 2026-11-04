@@ -33,7 +33,7 @@ use chacha20poly1305::{
     Key, XChaCha20Poly1305, XNonce,
     aead::{Aead, AeadCore, KeyInit, OsRng, Payload, rand_core::RngCore},
 };
-use roomler_ai_config::VaultSettings;
+use meshharbor_config::VaultSettings;
 use zeroize::Zeroizing;
 
 /// The length of a data key.
@@ -314,7 +314,7 @@ pub enum DeviceSealError {
 /// look alike on the wire.
 pub fn seal_for_device(key_b64: &str, value: &[u8]) -> Result<Vec<u8>, DeviceSealError> {
     use base64::Engine;
-    if !roomler_ai_remote_control::signaling::vault_key_is_well_formed(key_b64) {
+    if !meshharbor_remote_control::signaling::vault_key_is_well_formed(key_b64) {
         return Err(DeviceSealError::BadKey);
     }
     let bytes = base64::engine::general_purpose::STANDARD

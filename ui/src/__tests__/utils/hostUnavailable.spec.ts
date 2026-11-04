@@ -14,7 +14,7 @@ import {
  * FR-97 P0c — the device's own "not here", as the viewer reads it. The shape
  * is `AgentCaps.unavailable` in `crates/remote_control/src/models.rs`, locked
  * there by `unavailable_wire_shape_is_locked`; the codes are the ones
- * `with_honest_words` (`agents/roomlerd/src/encode/caps.rs`) sends.
+ * `with_honest_words` (`agents/meshharbord/src/encode/caps.rs`) sends.
  */
 describe('hostUnavailable', () => {
   // As a P0c agent's row comes back from GET /tenant/{id}/agent.

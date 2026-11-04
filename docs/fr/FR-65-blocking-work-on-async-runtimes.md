@@ -75,7 +75,7 @@ loop), rather than three wraps.
 >
 > 🔑 **Why the extraction, and not a test where the code was:** the decision
 > lived inline in `media_pump_ffmpeg_dc`, which is behind `ffmpeg-encoder` — a
-> NON-default feature, so `cargo test -p roomlerd --lib` compiled none of it.
+> NON-default feature, so `cargo test -p meshharbord --lib` compiled none of it.
 > The rule deciding whether an operator ever sees a stall was unreachable in
 > the lane everyone runs, which is the same shape as the defect this FR exists
 > to fix: an instrument nobody can check is not an instrument.
@@ -235,7 +235,7 @@ of each is to produce a number.
       detection — `an_encoder_open_is_a_stall_and_is_attributed_to_open`,
       `a_gate_skip_is_attributed_to_gate_not_to_other`,
       `an_untimed_phase_surfaces_as_other_and_blames_nobody`. Re-run locally
-      2026-09-23: `cargo test -p roomlerd --lib` → **11 `encode::stall` tests, all
+      2026-09-23: `cargo test -p meshharbord --lib` → **11 `encode::stall` tests, all
       ok**.*
       *The **negative controls** are what make that set mean anything, and they
       are named here so nobody has to rediscover which ones they are:
@@ -251,7 +251,7 @@ of each is to produce a number.
       and none of them can be closed this way.*
       ⚠️ The reason this needed a PR at all is the FR's own subject: the rule
       lived inline behind `ffmpeg-encoder`, **not a default feature**, so
-      `cargo test -p roomlerd --lib` compiled none of it — the instrument this FR
+      `cargo test -p meshharbord --lib` compiled none of it — the instrument this FR
       exists to turn on was unreachable in the lane everyone runs. `pub mod stall`
       is now declared unconditionally; verified on master, not assumed, because a
       checked-out test file that no module registers runs nothing and still

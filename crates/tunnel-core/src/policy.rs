@@ -2,7 +2,7 @@
 // Copyright (C) 2026 G ROX EOOD
 //! ACL evaluation primitives.
 //!
-//! Data shapes are canonical in `roomler_ai_remote_control::models`
+//! Data shapes are canonical in `meshharbor_remote_control::models`
 //! (single source of truth for both the DB rows and the eval logic).
 //! This module re-exports them and adds the pure-function evaluator.
 //!
@@ -20,11 +20,11 @@
 
 use bson::oid::ObjectId;
 
-pub use roomler_ai_remote_control::models::{
+pub use meshharbor_remote_control::models::{
     Agent, AgentStatus, DestinationRule, HostPattern, PolicySubject, PolicyTarget, PortRange,
     ProtocolKind, TunnelPolicy,
 };
-pub use roomler_ai_remote_control::signaling::RejectKind;
+pub use meshharbor_remote_control::signaling::RejectKind;
 
 /// The concrete principal that ORIGINATED a tunnel request. Historically
 /// this was always a `TunnelClient`; the node-stack unification (P3b-2) lets
@@ -280,10 +280,10 @@ pub fn check_forward_request(
 
 // `dst_matches` / `host_matches` moved to `remote_control::models` in P3e
 // lever E — the matcher now lives next to the shapes it matches over, and
-// `roomler-node-core`'s ACL can call it without this crate's data plane.
+// `meshharbor-node-core`'s ACL can call it without this crate's data plane.
 // Re-exported here so every existing `policy::dst_matches` caller (the
 // forward gate, the agent ACL tests, T2.3's evaluate flow) is unchanged.
-pub use roomler_ai_remote_control::models::{dst_matches, host_matches};
+pub use meshharbor_remote_control::models::{dst_matches, host_matches};
 
 // ────────────────────────────────────────────────────────────────────────────
 // Overlay L3 ACL
@@ -305,7 +305,7 @@ pub use roomler_ai_remote_control::models::{dst_matches, host_matches};
 // Same skeleton as [`evaluate`] though: first match wins, default-deny, and
 // soft-deleted rows are skipped.
 
-pub use roomler_ai_remote_control::models::{
+pub use meshharbor_remote_control::models::{
     OverlayAclMode, OverlayPolicy, OverlayRule, OverlaySelector, OverlayTarget,
 };
 
@@ -1008,7 +1008,7 @@ mod tests {
 
     // ─── Server-side gate (T2.4) ─────────────────────────────────────
 
-    use roomler_ai_remote_control::models::{AgentCaps, OsKind};
+    use meshharbor_remote_control::models::{AgentCaps, OsKind};
 
     fn agent_for(tenant_id: ObjectId, status: AgentStatus, deleted: bool) -> Agent {
         Agent {

@@ -45,7 +45,7 @@ pub enum FileStorage {
 }
 
 impl FileStorage {
-    pub fn from_settings(s3: &roomler_ai_config::S3Settings) -> anyhow::Result<Self> {
+    pub fn from_settings(s3: &meshharbor_config::S3Settings) -> anyhow::Result<Self> {
         if !s3.enabled {
             return Ok(Self::Local {
                 base: local_upload_dir(),

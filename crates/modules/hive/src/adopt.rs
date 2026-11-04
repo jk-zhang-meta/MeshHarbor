@@ -36,11 +36,11 @@
 use std::collections::HashSet;
 
 use bson::{DateTime, doc, oid::ObjectId};
-use roomler_ai_remote_control::{
+use meshharbor_remote_control::{
     hive::{HARNESS_CLAUDE_CODE, HiveAdoptRefusal, hive_limits},
     signaling::ServerMsg,
 };
-use roomler_ai_services::dao::base::escape_regex;
+use meshharbor_services::dao::base::escape_regex;
 use tracing::{info, warn};
 
 use crate::model::{AgentSession, HarnessRef, SessionLocation, SessionOrigin, SessionStatus};
@@ -293,7 +293,7 @@ async fn decide(
 async fn people(
     state: &HiveState,
     keys: &[String],
-) -> Result<HashSet<ObjectId>, roomler_ai_services::dao::base::DaoError> {
+) -> Result<HashSet<ObjectId>, meshharbor_services::dao::base::DaoError> {
     let mut found = HashSet::new();
     for key in keys {
         let key = key.trim();

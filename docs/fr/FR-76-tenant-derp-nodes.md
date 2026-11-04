@@ -86,7 +86,7 @@ that is not a lever at all.
 
 ## The gap, precisely
 
-`agents/roomlerd/src/derp.rs:89` derives the DERP URL from the control WS URL:
+`agents/meshharbord/src/derp.rs:89` derives the DERP URL from the control WS URL:
 
 ```rust
 /// Derive the `/derp` WSS URL from the control `ws_url` (`wss://host/ws`).

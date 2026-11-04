@@ -18,7 +18,7 @@
 
 use std::collections::{BTreeMap, HashSet};
 
-use roomler_ai_remote_control::vault::providers::{self, Provider};
+use meshharbor_remote_control::vault::providers::{self, Provider};
 use serde::Serialize;
 use tracing::{info, warn};
 use zeroize::Zeroizing;

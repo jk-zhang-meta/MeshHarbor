@@ -1475,7 +1475,7 @@ describe('the clipboard follows the grant (FR-52 P4e)', () => {
 describe('clipboard FNV-1a 64 hashes (clipboard v2)', () => {
   it('matches the published FNV-1a 64 vectors the agent locks too', () => {
     // Same vectors as clipboard::tests::fnv1a64_matches_published_vectors
-    // in agents/roomlerd/src/clipboard.rs — echo suppression
+    // in agents/meshharbord/src/clipboard.rs — echo suppression
     // silently breaks if either side drifts.
     expect(hashClipboardBytes(new Uint8Array(0))).toBe('cbf29ce484222325')
     expect(hashClipboardBytes(new TextEncoder().encode('a'))).toBe('af63dc4c8601ec8c')
@@ -1699,7 +1699,7 @@ describe('buildClipboardImageFrames (clipboard v2)', () => {
 
 describe('VP9_444_DC_LABEL + videoDcOptions', () => {
   // The agent's `on_data_channel` arm matches on `"video-bytes"`
-  // exactly (see agents/roomlerd/src/peer.rs:494). A typo on
+  // exactly (see agents/meshharbord/src/peer.rs:494). A typo on
   // either side silently turns the entire VP9-444 path into a
   // log-only dead end, so lock the value here.
   it('uses the exact label the agent matches on', () => {

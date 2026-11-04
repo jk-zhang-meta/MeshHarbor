@@ -59,7 +59,7 @@ through rather than at the beginning.
 |---|---|
 | `roomlerd.exe` | The agent — remote-desktop target, mesh node, tunnel endpoint, SSH server |
 | `roomler.exe` | The command-line tool. A small shim that re-execs the daemon's own command surface, so the CLI and the daemon can never disagree about their version |
-| `roomler-desktop.exe` | The tray companion: status, tunnels, and consent prompts |
+| `meshharbor-desktop.exe` | The tray companion: status, tunnels, and consent prompts |
 | `wintun.dll` + the VC runtime | The virtual network adapter and its C runtime dependency |
 
 Two MSI flavours exist — **per-user** and **per-machine**. The wizard and the

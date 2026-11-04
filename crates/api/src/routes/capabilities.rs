@@ -11,7 +11,7 @@
 //! `modules` is what THIS server mounts (P8: the profile it was built as,
 //! minus any `[modules]` switch); `compiled` is what the build linked. Per-
 //! tenant capabilities (plan limits, tenant settings, the module's own flags)
-//! arrive with each module (`roomler_core::Module::capabilities`) and are
+//! arrive with each module (`meshharbor_core::Module::capabilities`) and are
 //! mirrored into `/api/auth/me`, so a signed-in client pays no extra request
 //! for them.
 //!

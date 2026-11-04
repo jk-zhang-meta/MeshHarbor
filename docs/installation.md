@@ -16,7 +16,7 @@ flowchart TB
 
     DAEMON --> OS1{"OS?"}
     OS1 -->|Windows| WGUI{"GUI or terminal?"}
-    WGUI -->|GUI| WIZ["roomler-setup wizard<br/>role picker → MSI"]
+    WGUI -->|GUI| WIZ["meshharbor-setup wizard<br/>role picker → MSI"]
     WGUI -->|terminal| PS1["irm roomler.ai/api/setup/install.ps1 | iex"]
     OS1 -->|Linux| SH["curl roomler.ai/api/setup/install.sh | sh<br/>--role daemon (.deb x86_64/arm64)"]
     OS1 -->|macOS| PKG["install.sh --role daemon (.pkg, arm64)<br/>(the wizard's daemon roles are Windows-only)"]
@@ -54,8 +54,8 @@ wizard's and `install.ps1`'s) and the tunnel CLI's installers do
 which is GitHub's (`github.com/…/releases/download/…`, redirected to
 `release-assets.githubusercontent.com`, measured 2026-10-18):
 - `install.sh`'s daemon and companion packages (`.deb`, `.rpm`, tarball, `.pkg`);
-- `install.ps1`'s companion, `roomler-desktop.exe` (`scripts/install.ps1:325`);
-- every self-update (`download_asset`, `agents/roomlerd/src/updater.rs:1555`).
+- `install.ps1`'s companion, `meshharbor-desktop.exe` (`scripts/install.ps1:325`);
+- every self-update (`download_asset`, `agents/meshharbord/src/updater.rs:1555`).
 
 A host behind an allow-list needs both GitHub hosts for those. `install.ps1`
 also fetches the Visual C++ runtime from `aka.ms` when it is missing
@@ -117,7 +117,7 @@ flowchart TD
 Before FR-66, two callers that expect to find nothing went through `load` and
 printed the destructive remedy about perfectly healthy hosts: the Windows
 supervisor's `netd_enabled()` flag probe
-(`agents/roomlerd/src/win_service/supervisor.rs:977`), on **every service
+(`agents/meshharbord/src/win_service/supervisor.rs:977`), on **every service
 start** of every user-context install; and enrollment itself, reusing an
 existing `machine_id` — during the very operation that enrolls the machine.
 The noise also buried the genuine case, which prints the identical line.
@@ -133,7 +133,7 @@ question; two moved to `read_if_present`.
 
 ## Windows
 
-**Recommended: the `roomler-setup` wizard** (signed EXE, downloadable from the
+**Recommended: the `meshharbor-setup` wizard** (signed EXE, downloadable from the
 admin UI or `https://roomler.ai/api/setup/windows-x86_64`). One wizard, four
 roles:
 
@@ -177,7 +177,7 @@ Details worth knowing:
   declined prompt leaves the install complete and unanchored, and the Done page
   carries the command to anchor later. Details: [`fleet-rpc.md`](./fleet-rpc.md)
   § Anchoring a device.
-- Daemon installs also place **`roomler-desktop`** (tray companion: status,
+- Daemon installs also place **`meshharbor-desktop`** (tray companion: status,
   tunnels pane, consent prompts) and **`roomler.exe`** — a small shim that
   re-execs `roomlerd cli`, so CLI and daemon can never version-skew.
 - Terminal alternative: `irm https://roomler.ai/api/setup/install.ps1 | iex`
@@ -324,7 +324,7 @@ curl -fsSL https://roomler.ai/api/setup/install.sh | sh -s -- \
   a config the unit would restart every 5 s. It warns when a per-user daemon also runs (one daemon per machine),
   and it leaves the update helper alone, because the helper steps aside by itself while the system unit is
   enabled. `service uninstall|status|start|stop --as-service` complete it; uninstall keeps the config
-  (`agents/roomlerd/src/service.rs`, `pub mod system`).
+  (`agents/meshharbord/src/service.rs`, `pub mod system`).
 - Useful flags: `--download-only`, `--no-enroll`; and `--uninstall
   [--keep-config]` removes it all again ([below](#uninstall-every-platform)).
 - Headless servers: the daemon's virtual-desktop mode gives the machine a
@@ -519,7 +519,7 @@ command reports "daemon not running", you are probably asking the wrong half.
 
 Video encodes in hardware through VideoToolbox, H.264 and HEVC: the FFmpeg
 cascades carry `h264_videotoolbox` and `hevc_videotoolbox`
-(`agents/roomlerd/src/encode/ffmpeg/encoder.rs:115`, `:179`), and the macOS
+(`agents/meshharbord/src/encode/ffmpeg/encoder.rs:115`, `:179`), and the macOS
 release builds `ffmpeg-encoder`; a MacBook's probe advertises both cells
 ([encoders.md](encoders.md)). Software H.264 (openh264) and VP9-4:4:4 (libvpx)
 are offered too. There is no AV1 encode: Apple ships AV1 decode only. Remote
@@ -554,9 +554,9 @@ the tray (**Welcome tour…**) and Settings.
 
 | Install path | Who opens it after install | Login start |
 |---|---|---|
-| Windows perMachine — wizard, `install.ps1`, MSI | the **SCM service host** (LocalSystem), into the console session with the console user's own **non-elevated** token (`WTSQueryUserToken` + `CreateProcessAsUserW`, no inherited handles) | `HKLM\Software\Microsoft\Windows\CurrentVersion\Run\Roomler Desktop` = `"<install dir>\roomler-desktop.exe" --autostart` — written by the elevated `service install --as-service` (MSI custom action), self-healed at every service start, removed by `service uninstall --as-service` |
+| Windows perMachine — wizard, `install.ps1`, MSI | the **SCM service host** (LocalSystem), into the console session with the console user's own **non-elevated** token (`WTSQueryUserToken` + `CreateProcessAsUserW`, no inherited handles) | `HKLM\Software\Microsoft\Windows\CurrentVersion\Run\Roomler Desktop` = `"<install dir>\meshharbor-desktop.exe" --autostart` — written by the elevated `service install --as-service` (MSI custom action), self-healed at every service start, removed by `service uninstall --as-service` |
 | Windows perUser — wizard, `install.ps1 -Role daemon-user` | the **worker** (the Scheduled Task, as the user) — `CreateProcessW` with `bInheritHandles = FALSE` | `HKCU\…\Run\Roomler Desktop` — written by the per-user `service install`, the worker at each start and the companion's first run; removed by `service uninstall` |
-| Ubuntu / Debian — `install.sh` (user or `--system`) | the **daemon**, via `systemd-run` as its own transient unit (never in the daemon's cgroup) into the active `Class=user` graphical session — it waits for the companion `.deb`, which `install.sh` installs after the daemon's | the package's `/etc/xdg/autostart/roomler-desktop.desktop` (`--autostart`) |
+| Ubuntu / Debian — `install.sh` (user or `--system`) | the **daemon**, via `systemd-run` as its own transient unit (never in the daemon's cgroup) into the active `Class=user` graphical session — it waits for the companion `.deb`, which `install.sh` installs after the daemon's | the package's `/etc/xdg/autostart/meshharbor-desktop.desktop` (`--autostart`) |
 | Fedora / RHEL family / openSUSE — `install.sh` (FR-93 P6d) | the same: the daemon from the tarball, then the companion **`.rpm`**, which `install.sh` installs with `dnf` (`zypper`, `yum`) so its libraries come from the distro's own repositories | the same autostart file, from the `.rpm` |
 | macOS — `.pkg` | the package's postinstall (the `com.roomler.desktop` LaunchAgent) — unchanged | the same LaunchAgent (`RunAtLoad`) |
 
@@ -577,7 +577,7 @@ flowchart TD
   R -- no --> L[write marker FIRST, then launch --first-run]
 ```
 
-The rules that matter (`agents/roomlerd/src/companion/launch_once.rs`, `decide`):
+The rules that matter (`agents/meshharbord/src/companion/launch_once.rs`, `decide`):
 
 - ⚠️ **One launch per install, never a resurrection.** The marker
   (`companion-first-launch.json`: `%PROGRAMDATA%\roomler\roomler\` for the SCM
@@ -602,7 +602,7 @@ The rules that matter (`agents/roomlerd/src/companion/launch_once.rs`, `decide`)
 **Opting out.** A person: the companion's **Start at login** toggle (Settings, or
 the tour) — per-user Windows deletes the `HKCU` value; per-machine Windows records
 the choice and an `--autostart` launch exits at once; Linux writes
-`~/.config/autostart/roomler-desktop.desktop` with `Hidden=true`; macOS points at
+`~/.config/autostart/meshharbor-desktop.desktop` with `Hidden=true`; macOS points at
 **System Settings → General → Login Items**. The whole device:
 **`companion_autostart = false`** (Settings → Device configuration, or `roomler
 config set companion_autostart false`) — no post-install launch, the Windows Run
@@ -618,7 +618,7 @@ when one is needed (FR-27).
 |---|---|
 | `roomlerd` (daemon hosts) | Self-updater polls `/api/agent/latest-release` (4 h timer + startup cooldown; a check that fails on the NETWORK — DNS, connect, timeout — rechecks after 5, 15, then 60 min instead of the full interval, #1755, while a verdict such as a 403 rate limit keeps the interval), verifies SHA-256, hands off to MSI / `dpkg` / `installer` and restarts. A per-user Linux daemon cannot write `/usr`: there a root update helper (`roomler-update.service`) installs, and the daemon restarts onto the new binary once nothing it serves would be cut (FR-96). Admins can force it fleet-wide or per device (`POST …/agent/update`); ⚠️ `delivered: true` means only that the push reached the device's live socket — a device with `auto_update = false` ignores it and logs `update trigger dropped — auto-update is off on this device` (#1689). Crash-looping updates roll back to the last known-good version |
 | `roomler` CLI (tunnel-only hosts) | `roomler self-update` (same proxy origin): since FR-97 P6b the release's `.asc` is checked against the pinned key on every OS, and Linux and macOS install too, the tarball or (where dpkg owns the binary) the `.deb` ([`tunnel-install.md` §10](tunnel-install.md)). On daemon hosts the MSI/.deb owns the binaries — the shim's `self-update` refuses by design |
-| `roomler-desktop` | Not in either MSI: the daemon refreshes it itself at start when the companion's recorded version differs from its own — downloads the signed asset, stages it beside the old EXE, stops the running companion **by PID** (found by the path it was started from, never by image name), promotes the new file and starts it again in the same session (`agents/roomlerd/src/companion.rs`, `swap`). ⚠️ **One refresher per install**: on a Windows service install that is the service host — the worker it spawns skips, because two refreshers raced and left the old companion running, holding the single-instance lock (#1686) |
+| `meshharbor-desktop` | Not in either MSI: the daemon refreshes it itself at start when the companion's recorded version differs from its own — downloads the signed asset, stages it beside the old EXE, stops the running companion **by PID** (found by the path it was started from, never by image name), promotes the new file and starts it again in the same session (`agents/meshharbord/src/companion.rs`, `swap`). ⚠️ **One refresher per install**: on a Windows service install that is the service host — the worker it spawns skips, because two refreshers raced and left the old companion running, holding the single-instance lock (#1686) |
 | wizard | Fetch-latest by nature; `setup-v<V>` is cut with every `agent-v<V>` (the lockstep job in `release-agent.yml`) |
 
 ## Verifying what you install
@@ -680,13 +680,13 @@ flowchart TD
 | Step | Linux | macOS |
 |---|---|---|
 | 1 · stop | `roomler-update.timer` + `.path`, a `roomler-update.service` run still in `SubState=start` waited out, then `roomlerd.service`, then each account's `roomler.service` on its user bus (`stop_unit`, `:1149`) | `com.roomler.update` once it is no longer `state = running`, every account's `gui/<uid>/com.roomler.{desktop,agent}`, then `com.roomler.daemon` (`:1340`) |
-| 1b · sweep | `roomlerd` and `roomler-desktop` by exact name — `pgrep -x`, or `/proc/*/comm` where procps is absent (`stop_leftovers`, `:1078`) | the same; it also reaches a companion opened from Finder, which runs under LaunchServices, out of any bootout's reach |
-| 2 · programs | `dpkg --purge` of the companion, the daemon, the tunnel CLI and the two names the daemon's `.deb` replaced (dependent first, one call); `rpm -e roomler-desktop`; the tarball payload of `scripts/stage-linux-tarball.sh` and the tunnel CLI's `/usr/local/bin` (`:1248`); every account's `roomler.service` enable links and the companion's own autostart entry (`X-Roomler-Managed`) | the two privacy grants, the two LaunchDaemons, every account's LaunchAgents, `/Library/Roomler`, `/Applications/Roomler.app`, `/usr/local/bin/roomler{,d}`, the `com.roomler.*` package receipts |
+| 1b · sweep | `roomlerd` and `meshharbor-desktop` by exact name — `pgrep -x`, or `/proc/*/comm` where procps is absent (`stop_leftovers`, `:1078`) | the same; it also reaches a companion opened from Finder, which runs under LaunchServices, out of any bootout's reach |
+| 2 · programs | `dpkg --purge` of the companion, the daemon, the tunnel CLI and the two names the daemon's `.deb` replaced (dependent first, one call); `rpm -e meshharbor-desktop`; the tarball payload of `scripts/stage-linux-tarball.sh` and the tunnel CLI's `/usr/local/bin` (`:1248`); every account's `roomler.service` enable links and the companion's own autostart entry (`X-Roomler-Managed`) | the two privacy grants, the two LaunchDaemons, every account's LaunchAgents, `/Library/Roomler`, `/Applications/Roomler.app`, `/usr/local/bin/roomler{,d}`, the `com.roomler.*` package receipts |
 | 3 · config | `/etc/roomler`, `/etc/default/roomlerd`, `roomlerd.service.d/`; for the caller (the account behind `sudo`) and root: `~/.config/roomler`, `~/.local/share/roomler`, `~/.local/state/roomler`, the tunnel CLI's tree, the pre-rename trees | `/etc/roomler`, `/var/log/roomler`, the `/tmp` logs; for the caller, the console user and root: `~/Library/Application Support/live.roomler.roomler`, the tunnel CLI's tree, the pre-rename trees |
 
 ⚠️ **Stop through the manager before any file goes.** The stop is a SIGTERM,
 the daemon's clean stop: it takes back the exit routes and the DNS steer it put
-in the host (FR-97 P0e's `purge_after_daemon`, `agents/roomlerd/src/main.rs:1961`),
+in the host (FR-97 P0e's `purge_after_daemon`, `agents/meshharbord/src/main.rs:1961`),
 and an ephemeral device unenrolls itself. Delete the files first and the host
 keeps pins and a steer that nothing installed will ever heal.
 

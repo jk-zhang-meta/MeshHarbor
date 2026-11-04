@@ -1,4 +1,4 @@
-# FR-69: Modular monolith — pillar modules behind `roomler-core`, composed per build profile
+# FR-69: Modular monolith — pillar modules behind `meshharbor-core`, composed per build profile
 
 **Status**: **CLOSED 2026-09-05** (#1307 — every acceptance criterion ticked; the first prod roll
 field-verified; reopens on evidence) · P0 – P9 shipped (#1309 · #1311 · #1312 · #1315 · #1317 · #1318 · #1320 · #1323 ·
@@ -26,7 +26,7 @@ diagrams, under the standing rule that closing an FR requires its docs (CLAUDE.m
 
 Decouple the server into pillar modules behind one small core, as a **modular monolith**:
 
-- **one core crate** (`roomler-core`) owning identity, tenancy, plans, notifications, storage,
+- **one core crate** (`meshharbor-core`) owning identity, tenancy, plans, notifications, storage,
   the WebSocket socket and its fan-out, the cluster bus, TURN credentials and the metering sink;
 - **six modules** (`fleet`, `chat`, `conference`, `remote`, `network`, `saas`), each a crate behind
   one uniform `Module` contract, composed by a thin host;
@@ -52,7 +52,7 @@ places where the pillars are actually coupled.
 
 | Surface | Today | Consequence |
 |---|---|---|
-| `roomler-ai-api` | 46 250 lines; `[features] default = []` (`crates/api/Cargo.toml:17`); depends on `mediasoup`, `roomler-ai-tunnel-core` and `roomler-ai-remote-control` unconditionally | Every server build compiles every pillar. |
+| `meshharbor-api` | 46 250 lines; `[features] default = []` (`crates/api/Cargo.toml:17`); depends on `mediasoup`, `meshharbor-tunnel-core` and `meshharbor-remote-control` unconditionally | Every server build compiles every pillar. |
 | `AppState` | **83** public fields (`crates/api/src/state.rs:58`), a 1 497-line file; **216** `State<AppState>` and **206** `&AppState` sites | Every handler takes everything; the crate recompiles as one unit. |
 | `build_router` | `crates/api/src/lib.rs:94–882`, ~790 lines nesting 48 route files (24 072 lines) | Every route in the product is edited in one function. |
 | WebSocket | `ws/` 14 747 lines; one upgrade with a role gate (`ws/handler.rs:68`) for user, agent and tunnel-client; the user socket dispatches typing, presence, `media:*` and `rc:*` (`handler.rs:661`, `:777`, `:695`); ~750 lines of media signalling inline from `handler.rs:895`; `overlay.rs` 3 330 · `remote_control.rs` 2 507 · `tunnel.rs` 1 948 · `org_relay.rs` 1 019 · `derp.rs` 1 002 | The socket and gate are the right shape; only the arms need to move. |
@@ -84,8 +84,8 @@ And two facts that make the program cheaper than it looks:
 
 The five open questions in the plan were answered before P0 started:
 
-1. **Rename `agent-core` so the server core can take `roomler-core`.** The daemon's shared crate
-   becomes **`roomler-node-core`** — FR-21 D3 already described it as "the node's shared core,
+1. **Rename `agent-core` so the server core can take `meshharbor-core`.** The daemon's shared crate
+   becomes **`meshharbor-node-core`** — FR-21 D3 already described it as "the node's shared core,
    not the daemon's", and the crate's pre-FR-21 name is one FR-21 **retired**, which
    `scripts/name-audit.sh --strict` rejects on sight. The directory stays `crates/agent-core`.
 2. **`saas` is extracted in this program**, as an add-on feature over any profile (never in a
@@ -123,20 +123,20 @@ Considered: keep the monolith · **modular monolith** · microservices · dynami
   Dynamic plugins fail on Rust itself: no stable ABI, and WASM cannot touch mediasoup, WebRTC or a
   TUN device. Nothing in the product needs third-party plugins.
 
-### D2 — Names: `roomler-core` for the server core, `roomler-node-core` for the daemon's shared crate
+### D2 — Names: `meshharbor-core` for the server core, `meshharbor-node-core` for the daemon's shared crate
 
-- `crates/core` → package **`roomler-core`**, lib `roomler_core`, AGPL-3.0-only (server side).
-- `crates/agent-core` → package **`roomler-node-core`**, lib `roomler_node_core`, MPL-2.0
-  (unchanged licence, unchanged directory). Until this FR it was `roomler-core` (FR-21 P2a).
+- `crates/core` → package **`meshharbor-core`**, lib `meshharbor_core`, AGPL-3.0-only (server side).
+- `crates/agent-core` → package **`meshharbor-node-core`**, lib `meshharbor_node_core`, MPL-2.0
+  (unchanged licence, unchanged directory). Until this FR it was `meshharbor-core` (FR-21 P2a).
 - Module crates → `crates/modules/<name>` = package **`roomler-ai-mod-<name>`**, lib
-  `roomler_ai_mod_<name>`. The `mod-` infix marks the layer and keeps `roomler-ai-mod-remote`
-  from being confused with the existing `roomler-ai-remote-control` wire crate.
+  `roomler_ai_mod_<name>`. The `mod-` infix marks the layer and keeps `meshharbor-mod-remote`
+  from being confused with the existing `meshharbor-remote-control` wire crate.
 - *Cons accepted*: the server-side prefix `roomler-ai-*` is a **side** marker, not a licence
-  marker (`roomler-ai-remote-control` and `roomler-ai-tunnel-core` are MPL because agents link
+  marker (`meshharbor-remote-control` and `meshharbor-tunnel-core` are MPL because agents link
   them); `scripts/licence-classes.sh` is the source of truth and gains both new names.
 - *Why*: the operator's call (decision 1). The rename is one mechanical PR, and it buys a free
   structural guard: the licensing workflow asserts that no `SERVER_CRATES` entry appears in any
-  shipped agent's dependency graph, so `roomler-core` **cannot** leak into `roomlerd` without CI
+  shipped agent's dependency graph, so `meshharbor-core` **cannot** leak into `roomlerd` without CI
   failing (AC10).
 
 ### D3 — Boundaries: one core, six modules
@@ -272,7 +272,7 @@ namespace map** · keep the 1 718-line handler.
   `location = /ws` and `/derp` with `proxy_next_upstream off` and `max_fails=0`; that
   infrastructure is untouched. The exhaustive map is the structural replacement for the `_ =>`
   catch-all hazard: a new variant does not compile until it names an owner.
-- *Cons*: the wire enum stays in `roomler-ai-remote-control` (MPL, agent-linked) and is compiled
+- *Cons*: the wire enum stays in `meshharbor-remote-control` (MPL, agent-linked) and is compiled
   into every profile — types only, since `mongodb` is already behind its `server` feature and the
   Hub leaves the crate in P5, which makes it wire-only. Namespace and owner do not always agree
   by prefix (`rc:consent.*` is fleet, `rc:relay.*` is network), so the map is explicit per
@@ -300,7 +300,7 @@ compute capabilities per request**.
 
 ### D9 — Profiles: seven features on the host, five tested profiles, one add-on
 
-`roomler-ai-api` gains features `chat`, `conference = ["chat"]`, `fleet`, `remote = ["fleet"]`,
+`meshharbor-api` gains features `chat`, `conference = ["chat"]`, `fleet`, `remote = ["fleet"]`,
 `network = ["fleet"]`, `saas`, and the aggregates `profile-full`, `profile-collab`,
 `profile-remote`, `profile-mesh`, `profile-access`; `default = ["profile-full"]`.
 `services/media` moves into `conference`, so `mediasoup` leaves `services`; `tunnel-core` becomes
@@ -357,7 +357,7 @@ every prefix. No micro-frontends, no module federation, one `bun run build`, one
 
 ### D12 — Config: one `Settings`; modules own sections; warn on configured-but-absent
 
-`roomler-ai-config` stays whole (930 lines, `crates/config/src/settings.rs`). Each module reads
+`meshharbor-config` stays whole (930 lines, `crates/config/src/settings.rs`). Each module reads
 its section. At boot, core logs a WARN for any non-default section whose module is not compiled
 (`ROOMLER__MEDIASOUP__*` on a `mesh` image). P1 adds one section, `[modules]`, holding the
 per-module runtime switches.
@@ -374,7 +374,7 @@ per-module runtime switches.
   `roomler-ai:<tag>` for `full` and add `-collab`, `-remote`, `-mesh`, `-access`.
 - `publish-selfhost-image.yml` gains a `profile` axis: `full` on every tag; the others on dispatch
   until a trigger (each is a separate ~20-minute build).
-- `ci.yml` gains a `profiles` job: `cargo check -p roomler-ai-api --no-default-features
+- `ci.yml` gains a `profiles` job: `cargo check -p meshharbor-api --no-default-features
   --features profile-<p>` for the five profiles plus `cargo tree` assertions (AC3), sharing the
   cache. The integration lane stays on `full`. The existing "the image must actually serve" smoke
   in the publish workflow becomes the per-profile boot test (`/health` modules,
@@ -389,7 +389,7 @@ per-module runtime switches.
 No `roomlerd` change in P0–P9. A later phase (its own FR) introduces a `Subsystem` trait and
 peels `main.rs` (5 199 lines) into `subsystems/{control_ws, overlay, tunnels, rc, ssh, updater}`;
 `peer.rs` (10 562 lines) stays untouched. The daemon's profiles (`default` signalling-only,
-`media`, `full`, `full-hw`, the overlay features, `ssh-server`; `roomler-cli` as the tunnel-only
+`media`, `full`, `full-hw`, the overlay features, `ssh-server`; `meshharbor-cli` as the tunnel-only
 binary) already deliver the product property. It is the fleet blast radius and is mid-arc on
 FR-59, FR-63 and FR-65.
 
@@ -409,7 +409,7 @@ The baseline records, for the `full` profile:
   is self-tested against the pinned axum so a format change fails loudly);
 - **indexes**: the index plan for both `multi_block` values — every collection, every
   `IndexModel`, and the pre-creation ops (the `network_id_1` drop) — from
-  `roomler_ai_db::indexes::index_plan`, which `ensure_indexes` applies unchanged;
+  `meshharbor_db::indexes::index_plan`, which `ensure_indexes` applies unchanged;
 - **wire**: every `#[serde(rename = "…")]` name in `ClientMsg` and `ServerMsg`, in source order.
 
 Deliberately **not** baselined: settings keys (the config crate is untouched by the program, D12)
@@ -435,7 +435,7 @@ documents; do not change any wire (`rc:*`, LocalAPI, the netmap, the socket URLs
 
 ```mermaid
 graph BT
-  core["core · roomler-core<br/>identity · tenancy · plans · notifications · storage<br/>WS socket + fan-out · cluster · TURN creds · metering"]
+  core["core · meshharbor-core<br/>identity · tenancy · plans · notifications · storage<br/>WS socket + fan-out · cluster · TURN creds · metering"]
   fleet["fleet<br/>agents · enrollment · presence · Hub · consent · exec · releases"]
   chat["chat<br/>rooms · messages · files · search · export"]
   conference["conference<br/>mediasoup · media:* · recordings"]
@@ -460,14 +460,14 @@ is the smallest and exercises the whole contract (`unlimited_routes` for the Str
 
 | Phase | Delivers | Gate | Kill switch | Complexity | Days |
 |---|---|---|---|---|---:|
-| **P0** ✅ | FR claimed; `agent-core` → `roomler-node-core`; `crates/core` (`roomler-core`) contract types; composition baseline + test — #1309, #1311, #1312 | CI green; baseline committed and reproducible (recorded by the lane itself, see the field log) | none needed (docs + a rename + an unused crate) | low | 2–3 |
-| **P1** ✅ | `Core` extraction, state split, `[modules]` settings, `GET /api/capabilities` — P1a #1315 (the split, in place), P1b #1317 (the move into `roomler-core`), P1c + P1d #1318 (core-owned handlers on `State<Core>`; `ApiError`, cookies, origin and the core extractors below the api crate) | baseline identical (P1a: +1 route, intended); integration lane; prod roll | revert | high | 5–8 |
+| **P0** ✅ | FR claimed; `agent-core` → `meshharbor-node-core`; `crates/core` (`meshharbor-core`) contract types; composition baseline + test — #1309, #1311, #1312 | CI green; baseline committed and reproducible (recorded by the lane itself, see the field log) | none needed (docs + a rename + an unused crate) | low | 2–3 |
+| **P1** ✅ | `Core` extraction, state split, `[modules]` settings, `GET /api/capabilities` — P1a #1315 (the split, in place), P1b #1317 (the move into `meshharbor-core`), P1c + P1d #1318 (core-owned handlers on `State<Core>`; `ApiError`, cookies, origin and the core extractors below the api crate) | baseline identical (P1a: +1 route, intended); integration lane; prod roll | revert | high | 5–8 |
 | **P2** ✅ | `saas` module — #1320: the first module crate, plus the host composition (`crates/api/src/compose.rs`) that mounts it | baseline identical (index sets re-sorted, intended); integration lane; prod roll | `[modules] saas = false` (real from this PR on) | low | 1–2 |
 | **P3** ✅ | `chat` module — #1323: rooms, messages, reactions, files, search, export, Giphy, the unread summary, and `typing:*` as the first module-owned WebSocket namespace; the call endpoints stay in the host as `routes/call.rs` for P4 | baseline identical; integration lane (the tenant-scoping tests included); prod roll | `chat = false` | medium | 2–3 |
 | **P4** ✅ | `conference` module — #1325: the SFU room manager + worker pool (from `services/media`), the media cluster, the sampler, the call lifecycle, recordings, and `media:*` as a module namespace; **mediasoup links in this one crate only**; the contract's stateful surfaces used for the first time (`WsHandler::closed`, `Module::jobs` under the host's startup lease, `Module::shutdown`) | baseline identical; integration lane; prod roll. AC4's Docker measurement waits for the profiles (P8) — the mechanism is in place | `conference = false` | medium | 3–4 |
 | **P5a** ✅ | `fleet` module — #1329: the Hub out of `remote_control`, `AuthAgent`, every fleet HTTP path, presence, the nudge machinery, consent and its consumer, the removal sequence; `Core.hooks` (the D6 registry) with the host's transitional `network` hooks so the agent cascade already runs in `HOOK_ORDER`. The agent socket stays in the host on `Arc` aliases of the module's handles | baseline identical; integration lane; prod roll | none — `fleet` is a required dependency until the socket moves; `fleet = false` refuses to boot | high | 2–3 |
 | **P5b** ✅ | #1332 — `Owner { Fleet, Remote, Network }` + the exhaustive `ClientMsg::namespace()` and `wire_tag()` matches + the 44-entry `CLIENT_MSG_OWNERS` table in the wire crate, locked four ways (the enum's own renames, the match on buildable variants, the D7 placements, the module graph); the composition baseline gained a `namespaces` section | baseline re-recorded for the new section only — routes, index sets and wire names byte-identical | none (a pure function) | low | 1 |
-| **P5c** ✅ (CI) | the agent socket into `fleet` (`roomler_ai_mod_fleet::socket`) behind `Core::agent_socket` — per-owner message handlers + per-module lifecycles (`hello` / `heartbeat` / `closing` / `closed(removal_was_ours)`), dispatch by `ClientMsg::namespace()`; the host registers its `remote`/`network` halves transitionally (`ws/agent_socket_host.rs`). The `AppState` aliases and the required dependency STAY until the host code that reads them moves (P6/P7) | baseline identical; integration lane; **prod roll with no dip in online agents — not yet run** | redeploy previous tag | high | 3–4 |
+| **P5c** ✅ (CI) | the agent socket into `fleet` (`meshharbor_mod_fleet::socket`) behind `Core::agent_socket` — per-owner message handlers + per-module lifecycles (`hello` / `heartbeat` / `closing` / `closed(removal_was_ours)`), dispatch by `ClientMsg::namespace()`; the host registers its `remote`/`network` halves transitionally (`ws/agent_socket_host.rs`). The `AppState` aliases and the required dependency STAY until the host code that reads them moves (P6/P7) | baseline identical; integration lane; **prod roll with no dip in online agents — not yet run** | redeploy previous tag | high | 3–4 |
 | **P6** ✅ (CI) | `remote` module (`crates/modules/remote`, feature `remote`, in `default`): the session routes + TURN credentials + relay regions, the controller's `rc:*` dispatch with its authz gate (`controller.rs`), the cross-pod RC relay (`relay.rs`), the session-stats agent-socket half. `Module::Deps` is born here: `remote`'s is `FleetState` (the Hub is one live object), supplied by the host in composition order. The host keeps the user socket and calls `Modules::remote_controller_frame` with the connection's Hub sender | baseline identical; integration lane; **one RC session per carrier class on a prod roll — not yet run** | `remote = false` | medium | 2–3 |
 | **P7a** ✅ (CI) | `network` module, part one (`crates/modules/network`, `NetworkState` built on `FleetState`): the engine (`overlay.rs`, `org_relay.rs`, `derp_acl.rs` + the DERP registry types), the seven route files + the per-device sub-routes at the host's old paths, the hooks (`NetworkHooks`), the eleven index sets through `Module::indexes_for(multi_block)` (born here); `is_global_unicast` and the TURN builders moved to core first. `network` REQUIRED: the host's sockets reach the engine through `AppState::network()`. Field log: "P7a" | baseline identical; integration lane; **overlay/tunnel field sweep on a prod roll — not yet run** | previous tag | high | — |
 | **P7b** ✅ (CI) | the sockets (the tunnel-client upgrade + loop, `/derp` as the module's `UpgradeSpec`, the DERP cluster + census + usage flush, the ephemeral reaper, the agent-socket network half + the rest of `ws/remote_control.rs`) and the agent upgrade into `fleet` — the host keeps the role gate and calls `Modules::agent_upgrade` / `tunnel_client_upgrade` (503 when unmounted); the `AgentBusy` query hook (a reason, not a bool); the tenant archive through `TenantLifecycle`; the local gauges through `fleet_gauges` / `network_gauges`; the device listing into `network` (a two-module view); **`AppState` is `{ core, modules }`**; `fleet` + `network` are features. Field log: "P7b" | baseline identical; integration lane; **overlay/tunnel field sweep on a prod roll — not yet run** | `network = false` / `fleet = false` (unmounts now) | high | — |
@@ -479,15 +479,15 @@ is the smallest and exercises the whole contract (`unlimited_routes` for the Str
 **P0 in detail** (three PRs, merged in this order):
 
 1. *Claim* — this spec, the ledger row, the ADR section in `docs/architecture.md`.
-2. *Rename* — `crates/agent-core` package `roomler-core` → `roomler-node-core` (lib
-   `roomler_node_core`); consumers `roomlerd` and `roomler-desktop`; the two comments in
+2. *Rename* — `crates/agent-core` package `meshharbor-core` → `meshharbor-node-core` (lib
+   `meshharbor_node_core`); consumers `roomlerd` and `meshharbor-desktop`; the two comments in
    `remote_control/src/models.rs` and `tunnel-core/src/policy.rs`; `scripts/licence-classes.sh`;
    FR-21's naming record gains a dated note. Directory unchanged.
 3. *Contract + baseline* — `crates/core` with the `Module`, `Hooks`, `WsRegistration`,
-   `IndexSpec`, `Job`, `Capabilities` types and no behaviour; `roomler_ai_db::indexes::index_plan`
-   (a behaviour-preserving refactor of `ensure_indexes`); `roomler_core::composition` (the route
+   `IndexSpec`, `Job`, `Capabilities` types and no behaviour; `meshharbor_db::indexes::index_plan`
+   (a behaviour-preserving refactor of `ensure_indexes`); `meshharbor_core::composition` (the route
    and wire extractors, self-tested); `composition_tests` + the baseline JSON;
-   `scripts/licence-classes.sh` gains `crates/core` / `roomler-core` on the SERVER side.
+   `scripts/licence-classes.sh` gains `crates/core` / `meshharbor-core` on the SERVER side.
 
 ## Acceptance criteria
 
@@ -500,7 +500,7 @@ is the smallest and exercises the whole contract (`unlimited_routes` for the Str
       407 passed / 0 failed on the P7a, P7b and P8 PR merge refs (runs 33908175773,
       33914646001, 33916479511), zero leaked databases; the two skips unchanged.
 - [x] **AC3** `cargo tree` shows `remote`, `mesh` and `access` link neither `mediasoup` nor
-      `mediasoup-sys`, and `collab` does not link `roomler-ai-tunnel-core`. — Measured by the
+      `mediasoup-sys`, and `collab` does not link `meshharbor-tunnel-core`. — Measured by the
       `profiles` CI job on #1348: `profile-remote` 411 crates, `profile-mesh` 471,
       `profile-access` 472 (no `mediasoup`), `profile-collab` 433 (no tunnel-core); the
       positive controls found both crates in the full graph. Re-asserted on every PR.
@@ -550,10 +550,10 @@ is the smallest and exercises the whole contract (`unlimited_routes` for the Str
       host's (`crates/api/src/lib.rs`), `/derp` is mounted by the network module's
       `UpgradeSpec` at the same path (P7b) and is in the baseline's route set; `ClientMsg` /
       `ServerMsg` never left `remote_control/src/signaling.rs` (rule 4).
-- [x] **AC10** (`scripts/licence-classes.sh` lists `crates/core` / `roomler-core` on the server
+- [x] **AC10** (`scripts/licence-classes.sh` lists `crates/core` / `meshharbor-core` on the server
       side and inverts `cargo tree` from every agent binary; the "Licence split integrity"
       check has been green on every PR since P0 #1312.) The licensing dependency-graph
-      assertion proves `roomler-core` (AGPL) never enters
+      assertion proves `meshharbor-core` (AGPL) never enters
       a shipped agent binary.
 
 ## Open decisions
@@ -584,11 +584,11 @@ Both settled by what shipped:
 
 - FR-69 claimed (#1309, squash `2b7c3d3d`); #1307 opened; the plan's five open questions
   answered by the operator (see above).
-- `crates/agent-core` renamed `roomler-core` → `roomler-node-core` (#1311, squash `ae1f5d2c`).
-  Build-graph identity only. `cargo check -p roomler-node-core -p roomlerd -p roomler-desktop`
+- `crates/agent-core` renamed `meshharbor-core` → `meshharbor-node-core` (#1311, squash `ae1f5d2c`).
+  Build-graph identity only. `cargo check -p meshharbor-node-core -p meshharbord -p meshharbor-desktop`
   clean; the retired-name audit `--strict` clean; the one CI red was rustfmt's import order
-  (`roomler_localapi` now sorts before `roomler_node_core`), fixed in the same PR.
-- `crates/core` (`roomler-core`), `index_plan`, the composition test and the baseline (#1312).
+  (`meshharbor_localapi` now sorts before `meshharbor_node_core`), fixed in the same PR.
+- `crates/core` (`meshharbor-core`), `index_plan`, the composition test and the baseline (#1312).
   **Baseline recorded from the integration lane itself** (run 33849884647, dispatched with
   `filter=composition_matches_baseline` on the branch at `c4da281c`), not from a dev box: this
   Windows box has no Linux server toolchain, and the lane is the environment the gate runs in.
@@ -629,15 +629,15 @@ Rust job and exercised by the integration lane rather than locally.
 - **P1b (#1317)** — the move: `ws/{storage,dispatcher,redis_pubsub}`,
   `cluster/{identity,directory,bus}` + the counters half of `cluster/metrics`, `storage`,
   `user_analytics` (its two `&AppState` functions now take `&Core`; callers deref),
-  `rate_limit`, `relay_load`, and `Core` itself (`roomler_core::state::Core`) — with `git mv`,
+  `rate_limit`, `relay_load`, and `Core` itself (`meshharbor_core::state::Core`) — with `git mv`,
   unchanged. None of them referenced anything else in the api crate, which is what made them
   core. The api crate re-exports every moved module under its old path, so the diff outside the
   moved files is a handful of `pub use` lines. Two things stay by design: the metrics
   **snapshot** (reads module-owned counters) and `impl FromRef<AppState> for Core` (orphan
-  rules; `roomler-core` never learns `AppState` exists). The api crate drops five dependencies
-  nothing in it references any more; CI now runs `roomler-core`'s unit tests, which no lane ran
+  rules; `meshharbor-core` never learns `AppState` exists). The api crate drops five dependencies
+  nothing in it references any more; CI now runs `meshharbor-core`'s unit tests, which no lane ran
   before. Baseline untouched.
-- ⚠️ Side effect worth knowing: `roomler-core` now depends on `roomler-ai-services`, which
+- ⚠️ Side effect worth knowing: `meshharbor-core` now depends on `meshharbor-services`, which
   links `mediasoup` — so the contract crate's unit tests can no longer run on a box without the
   server toolchain either. That is temporary by construction: P4 moves `services/media` into
   the `conference` module and the dependency disappears with it.
@@ -651,14 +651,14 @@ Rust job and exercised by the integration lane rather than locally.
   converting, not assumed: the non-core readers were `user.rs` (`rooms`) and `tenant.rs`
   (`agents` + the archive cascade), both left alone. No call site outside those files changed.
 - **P1d (same PR)** — `ApiError`, the cookie helpers, the origin policy and the core-only
-  extractors moved into `roomler-core` with `git mv`; the api re-exports each under its old
+  extractors moved into `meshharbor-core` with `git mv`; the api re-exports each under its old
   path. The reason is structural: a module crate cannot depend on the crate that composes it,
   so everything a module's handler needs had to live below it before the first module.
 - Green on the first run. Baseline untouched.
 
 ### 2026-09-04 — P2: `saas`, the first module crate
 
-- **#1320** — `crates/modules/saas` = `roomler-ai-mod-saas` (Stripe, the public updates list
+- **#1320** — `crates/modules/saas` = `meshharbor-mod-saas` (Stripe, the public updates list
   and the newsletter, plan compliance), an **add-on feature** on the host (`saas`, in
   `default`), never in a profile. `SaasState` = `Core` + its three DAOs, derefs to `Core`,
   `impl FromRef<SaasState> for Core`; `impl Module for SaasState` — `init` from `core.db`,
@@ -670,7 +670,7 @@ Rust job and exercised by the integration lane rather than locally.
   module behind its feature; `init` in composition order; `mount` / `mount_unlimited` — a
   module's `Router<()>` joins the host's via `with_state(())`; `index_sets`, applied after the
   core plan by `main.rs` and the test fixture). `AppState` carries `modules`; the three saas
-  fields left it. The platform-admin guards moved into `roomler_core::guards`; the db index
+  fields left it. The platform-admin guards moved into `meshharbor_core::guards`; the db index
   helpers became `pub`; `Module::init` takes `Core` by value.
 - **The snapshot now sorts index sets by collection.** A module PR moves sets between crates
   and must not change them; the definition-order snapshot would have flagged every move. The
@@ -689,7 +689,7 @@ Rust job and exercised by the integration lane rather than locally.
 
 ### 2026-09-04 — P3: `chat`, and the first module-owned WebSocket namespace
 
-- **#1323** — `crates/modules/chat` = `roomler-ai-mod-chat`: room CRUD and membership, messages,
+- **#1323** — `crates/modules/chat` = `meshharbor-mod-chat`: room CRUD and membership, messages,
   reactions, files (with the upload sniffing helper), search, the xlsx export, the Giphy proxy,
   `/user/unread-summary` (it counts messages), and the typing indicator. Eight files moved with
   history, changed only in imports and the state type. `ChatState` = `Core` + four DAOs + the
@@ -703,8 +703,8 @@ Rust job and exercised by the integration lane rather than locally.
   keeps its copy of the two room guards for the same reason. The PDF export builds its own
   `MessageDao` until it follows the xlsx export into chat.
 - Two things moved down to serve both chat and the host: the six notification helpers into
-  `roomler_core::notify` (mentions for chat, call starts for conference) and
-  `require_permission` into `roomler_core::guards` (the room routes gate on `MANAGE_CHANNELS`
+  `meshharbor_core::notify` (mentions for chat, call starts for conference) and
+  `require_permission` into `meshharbor_core::guards` (the room routes gate on `MANAGE_CHANNELS`
   through it; every device-management surface keeps calling it through the old re-export).
 - The stacked branch's first lane run caught exactly two things the grep-based inventory
   missed: a **multi-line method chain** reading `state.files` in the socket's play-audio
@@ -716,10 +716,10 @@ Rust job and exercised by the integration lane rather than locally.
 
 ### 2026-09-04 — P4: `conference`, and the contract's stateful surfaces
 
-- **#1325** — `crates/modules/conference` = `roomler-ai-mod-conference`, and from this PR on
+- **#1325** — `crates/modules/conference` = `meshharbor-mod-conference`, and from this PR on
   **the only crate in the workspace that links `mediasoup`**: `services/media` (the room
   manager over the worker pool, the signalling types) moved in with history, the `mediasoup`
-  dependency left `services` and the api crate, and `roomler-core` — which had inherited the
+  dependency left `services` and the api crate, and `meshharbor-core` — which had inherited the
   C++ worker build through `services` since P1b — no longer carries it either. That is D9's
   mechanism: a profile without `conference` never compiles the worker. The measurement (AC4)
   waits for the profiles themselves.
@@ -742,7 +742,7 @@ Rust job and exercised by the integration lane rather than locally.
   snapshot reads the media gauges through `Modules::media_gauges()`, and the stats rollup loop
   calls `Modules::close_orphaned_call_state()` every cycle — a build without the module has no
   call sessions to close. `MEDIA_BELT_FALLBACK_TOTAL` joined its siblings in
-  `roomler_core::cluster::metrics` (conference bumps it, the snapshot reads it).
+  `meshharbor_core::cluster::metrics` (conference bumps it, the snapshot reads it).
 - `conference → chat` is the first module-to-module edge exercised: chat's room guards gained
   `_with(tenants, rooms, …)` forms so both modules run ONE visibility rule, and the host's
   `routes/helpers.rs` — the copy kept for the call and recording handlers — is gone.
@@ -757,14 +757,14 @@ Rust job and exercised by the integration lane rather than locally.
 
 ### 2026-09-04 — P5a: `fleet`, the Hub's move, and the first hooks
 
-- **#1329** — `crates/modules/fleet` = `roomler-ai-mod-fleet`. Sixteen files moved with
+- **#1329** — `crates/modules/fleet` = `meshharbor-mod-fleet`. Sixteen files moved with
   history: the Hub (3.1k lines, with its unit tests — CI now runs them in the new crate),
   `AuthAgent`, eleven route files, the agent half of `routes/remote_control.rs` (its
   session/TURN/relay half stays as the host's `routes/remote_session.rs` for P6), device
   presence and the nudge machinery. The device LISTING went and came back: it joins agents
   with tunnel clients and overlay nodes — a cross-pillar view, the host's until `network`
   exists (the lane said so in five `E0609`s before any reasoning did). `FleetState` = `Core` + exactly the fourteen fields D3
-  assigned to fleet. `roomler-ai-remote-control` is wire-only for the server now; its
+  assigned to fleet. `meshharbor-remote-control` is wire-only for the server now; its
   `server` feature keeps just the Mongo audit sink.
 - **P5 is three PRs, not one.** The socket cannot move with the routes: its `rc:*` arms call
   overlay, tunnel and org-relay code that is still the host's, and a module cannot name the
@@ -861,7 +861,7 @@ The shape that keeps every one of those properties:
   extracted the HOST registers their handlers and lifecycles (the P5a transitional shape for
   hooks, applied to the socket); P6 and P7 then move each registration into its module.
 - **Fleet owns the loop and the order.** `handle_agent_socket` moves to
-  `roomler_ai_mod_fleet::socket` unchanged in its sequence: hello → hub register → presence →
+  `meshharbor_mod_fleet::socket` unchanged in its sequence: hello → hub register → presence →
   lifecycles' `hello` → read loop (dispatch) → `closing` for every registered lifecycle →
   unregister → `closed(ours)` → offline + presence. The `removal_was_ours` gate stays a value
   fleet computes and passes; no module re-derives it.
@@ -869,7 +869,7 @@ The shape that keeps every one of those properties:
   the socket, D7); the agent branch calls the fleet module's entry through `Modules`, so the
   wire, the URL and the LB pinning are untouched.
 - **The aliases leave with it.** With the socket in the module, `AppState` drops the fourteen
-  fleet aliases, `roomler-ai-mod-fleet` becomes an optional feature like the others, and
+  fleet aliases, `meshharbor-mod-fleet` becomes an optional feature like the others, and
   `[modules] fleet = false` unmounts instead of refusing to boot — the state P5a deferred.
 
 Gate and rollout: the composition baseline (the wire is untouched by construction), the full
@@ -882,7 +882,7 @@ cannot be unmounted under a fleet that is dialing it.
 
 - The move followed the plan above line by line: `handle_agent_socket` and its fleet helpers
   (the exec request, the config report, the exec-target resolver, the RTT ladder, the frame
-  reader, the pump, the heartbeat docs with their tests) are `roomler_ai_mod_fleet::socket`;
+  reader, the pump, the heartbeat docs with their tests) are `meshharbor_mod_fleet::socket`;
   `Core::agent_socket` is the registry (`AgentCtx`, `AgentMsgHandler`, `AgentSocketLifecycle`,
   `AgentSocketHooks`, `AgentSocketRegistry`); the host's `ws/agent_socket_host.rs` is the
   transitional `network` half (the two tunnel relays, the overlay relay, the probe report, the
@@ -896,7 +896,7 @@ cannot be unmounted under a fleet that is dialing it.
   before. The relays' per-connection locals became the network lifecycle's state, keyed by a
   connection id the socket mints — never the agent id, because a displacing connection's
   teardown must not find its successor's sessions.
-- **The teardown order is written once**, in `roomler_core::agent_socket`'s docs and in the
+- **The teardown order is written once**, in `meshharbor_core::agent_socket`'s docs and in the
   loop: `closing` for every lifecycle (tunnel teardown, sessions targeting the agent) → the
   Hub's unregister answering `removal_was_ours` → `closed(ours)` for every lifecycle (the
   overlay leave, only if ours) → fleet's Offline write, presence compare-DEL and OFFLINE
@@ -917,7 +917,7 @@ cannot be unmounted under a fleet that is dialing it.
 
 ### 2026-09-04 — P6: `remote`, the first module built on another
 
-- `crates/modules/remote` = `roomler-ai-mod-remote`, feature `remote` (in `default`), switch
+- `crates/modules/remote` = `meshharbor-mod-remote`, feature `remote` (in `default`), switch
   `[modules] remote = false`. Moves: `routes/remote_session.rs` → `routes.rs` (session get /
   terminate / audit, `/turn/credentials`, `/relay/regions` — the same three mounts);
   `ws/rc_relay.rs` → `relay.rs` (the PR-2 cross-pod relay, its proxy controllers and the
@@ -962,7 +962,7 @@ routes and the hooks with `network` REQUIRED (the host's sockets still call into
 they called fleet's handles between P5a and P5c); **P7b** moves the sockets, drops every
 alias, and makes both `fleet` and `network` features. Nothing on the wire moves in either.
 
-**P7a — `crates/modules/network` = `roomler-ai-mod-network`, `NetworkState` built on
+**P7a — `crates/modules/network` = `meshharbor-mod-network`, `NetworkState` built on
 `FleetState` (the P6 `Module::Deps` seam, reused as is).** Moves: `ws/overlay.rs` (the
 overlay engine: join, netmap, leases, relay grants, key rotation — every route and socket
 arm calls into it, so it goes first), `ws/org_relay.rs`, `ws/derp_acl.rs`, the seven route
@@ -1027,8 +1027,8 @@ carrier class, a DERP-floor host, an SSH session — read from the fleet, not fr
   the module — `overlay_ctrl_tx` on its state, the applier from its init — and the host's
   Redis subscriber only holds the sender; a module cannot receive a channel through
   `Module::init`, so it owns both ends. (3) `build_turn_config`/`build_turn_map` moved to
-  core (`roomler_core::turn`) next to the map they fill, alongside `is_global_unicast`
-  (`roomler_core::net`).
+  core (`meshharbor_core::turn`) next to the map they fill, alongside `is_global_unicast`
+  (`meshharbor_core::net`).
 - **`Module::indexes_for(multi_block)`** is the one contract addition: `overlay_blocks` has
   two mutually exclusive schemas (FR-47 P5c), the composition snapshot records both, and
   `Module::indexes` answers for the running deployment's setting only. The baseline stayed
@@ -1052,14 +1052,14 @@ carrier class, a DERP-floor host, an SSH session — read from the fleet, not fr
 ### 2026-09-04 — P7b: the sockets, the end of the aliases, `fleet` + `network` as features
 
 - As planned, with four departures the code decided. (1) The tunnel-client UPGRADE moved
-  whole — `roomler_ai_mod_network::tunnel::ws_upgrade_tunnel_client` (token, `tid`, row
-  check, Goodbye) — and so did the agent's (`roomler_ai_mod_fleet::socket::ws_upgrade_agent`);
+  whole — `meshharbor_mod_network::tunnel::ws_upgrade_tunnel_client` (token, `tid`, row
+  check, Goodbye) — and so did the agent's (`meshharbor_mod_fleet::socket::ws_upgrade_agent`);
   the host keeps only the role gate and calls `Modules::agent_upgrade` /
   `Modules::tunnel_client_upgrade`, which answer **503** when the module is not mounted. The
   plan's "the host keeps the upgrade and hands over the socket" would have left the row check
   and the Goodbye in a crate that no longer links the DAO. The four helpers both upgrades
   share (`MAX_WS_MESSAGE_BYTES`, `WsParams`, `tid_matches_claim`, `send_goodbye_and_close`)
-  moved to core first (`roomler_core::ws::upgrade`); the host re-exports them. (2) The
+  moved to core first (`meshharbor_core::ws::upgrade`); the host re-exports them. (2) The
   `AgentBusy` query answers a **reason**, not a bool — `agent_busy(agent_id) ->
   Option<&'static str>` — because the nudge handler's outcome names WHY it did not cycle the
   socket (`origin_busy` / `tunnel_busy`), and a bool would have thrown the reason away on the
@@ -1106,8 +1106,8 @@ carrier class, a DERP-floor host, an SSH session — read from the fleet, not fr
   where the image is MADE: the publish workflow passes `SAAS=0` and its boot smoke asserts the
   mounted set never contains `saas` (FR-47's lesson: a default that must be remembered is not a
   default).
-- **The build line is package-qualified**: `cargo build -p roomler-ai-api -p derp-relay
-  --no-default-features --features roomler-ai-api/profile-$PROFILE[,roomler-ai-api/saas]`.
+- **The build line is package-qualified**: `cargo build -p meshharbor-api -p derp-relay
+  --no-default-features --features meshharbor-api/profile-$PROFILE[,meshharbor-api/saas]`.
   `derp-relay` has no features, so one line serves both packages.
 - **`/health` and `/api/capabilities` were reporting `graph::MODULES`** — the DAG every build
   knows, so a `mesh` image would have answered all six and the profile smoke would have
@@ -1116,7 +1116,7 @@ carrier class, a DERP-floor host, an SSH session — read from the fleet, not fr
 - **The `profiles` CI job** checks the four reduced profiles per package (`cargo clippy
   --workspace` unifies features and can never see one) and asserts AC3 from `cargo tree`:
   `remote`/`mesh`/`access` list no `mediasoup`/`mediasoup-sys`, `collab` no
-  `roomler-ai-tunnel-core` — each against a tree that must list ≥100 crates, and with a
+  `meshharbor-tunnel-core` — each against a tree that must list ≥100 crates, and with a
   positive control on the full graph, because an absence assertion that cannot fail proves
   nothing. One sequential job, not a matrix: the module crates are shared artifacts.
 - **The self-host publish gains the `profile` input**: `<tag>` for full, `<tag>-<profile>`
@@ -1124,7 +1124,7 @@ carrier class, a DERP-floor host, an SSH session — read from the fleet, not fr
   for a non-full profile, the build cache scoped per arch AND profile, and the smoke asserts the
   module set. Compose passes `PROFILE=${ROOMLER_PROFILE:-full}` + `SAAS=0`; the env example
   documents both ways of choosing (tag for a pull, `ROOMLER_PROFILE` for a build).
-- Outcomes: the composition baseline stayed byte-identical (run 33916410333 — the `full` profile is the feature set it always was); PR #1348 green on all thirteen checks (Rust checks 25 min cold, the suite 15 min 43 s at 407/0, the new `profiles` job 8 min 21 s); AC3 measured on the PR: `profile-remote` 411 crates, `profile-mesh` 471, `profile-access` 472 — none lists `mediasoup`; `profile-collab` 433 crates, no `roomler-ai-tunnel-core`; both positive controls found their crate in the full graph. Merged as `618c763e`.
+- Outcomes: the composition baseline stayed byte-identical (run 33916410333 — the `full` profile is the feature set it always was); PR #1348 green on all thirteen checks (Rust checks 25 min cold, the suite 15 min 43 s at 407/0, the new `profiles` job 8 min 21 s); AC3 measured on the PR: `profile-remote` 411 crates, `profile-mesh` 471, `profile-access` 472 — none lists `mediasoup`; `profile-collab` 433 crates, no `meshharbor-tunnel-core`; both positive controls found their crate in the full graph. Merged as `618c763e`.
 - **Still open**: AC4 (the Docker build-time measurement for a non-conference profile — two
   publish dry-runs, `full` vs `mesh`) and the daemon half of AC5 (a `mesh` image boots under
   the smoke; "a daemon enrolls and joins the overlay against it" is a vmtest cell the
@@ -1166,7 +1166,7 @@ carrier class, a DERP-floor host, an SSH session — read from the fleet, not fr
 ### 2026-09-04 — after P9: the device listing returns to the host, and the profile numbers
 
 - **A composition gap the profiles exposed.** P7b moved `GET /tenant/{tenant_id}/device` into
-  `roomler-ai-mod-network` ("a view that reads two modules belongs to the one that depends on
+  `meshharbor-mod-network` ("a view that reads two modules belongs to the one that depends on
   the other") — correct for the DAG, wrong for the product: the `remote` profile (fleet +
   remote, no network) has a devices page whose listing 404'd. The P7 plan had said "the
   device listing STAYS in the host as the composition view it is: fleet rows always, tunnel-
@@ -1250,10 +1250,10 @@ The cell: the `mesh` image built from master `89ea3128` through the self-host co
 | enroll | `POST /api/agent/enroll` → agent token written to the config | `agents` row `ac5-cell`, `os: linux`, `version: 0.4.65` |
 | control socket | `connecting to signaling server (role=agent) server=ws://127.0.0.1:80/ws` → `rc:agent.hello sent` | device listing: `status: online`, `presence: online` |
 | overlay join | `overlay: rc:overlay.join sent` → `overlay netstack: userspace stack up (OS-free) ip=100.65.0.1 socks_port=1080` → `overlay: TUN up self_v4=100.65.0.1 mtu=1280` | `overlay blocks: carved a tenant block … cidr=100.65.0.0/22`; overlay node `ac5-cell` `overlay_ip: 100.65.0.1`, `online: true`, `will_rejoin: true`; the device listing carries `overlay_ip`, `magic_dns_name: ac5-cell`, `overlay_key_epoch: 0` |
-| the DERP floor | `overlay derp: /derp WS connected + registered relay=central` | `roomler_ai_mod_network::derp: derp: node registered agent_id=… node=… pk=ca46d1db` → `derp registry census … entries=1 networks=1` |
+| the DERP floor | `overlay derp: /derp WS connected + registered relay=central` | `meshharbor_mod_network::derp: derp: node registered agent_id=… node=… pk=ca46d1db` → `derp registry census … entries=1 networks=1` |
 | the server verdict | `carrier plane: srflx gather yielded NO public candidate` (no STUN reachable from the cell — expected) | `overlay.netcheck: capability vector changed … stun_udp=false relay_band_udp=Some(false)` |
 
-Three things this proves at once: the `mesh` image (fleet + network, nothing else) takes an enrollment, a control socket and an overlay join from an unmodified release daemon; **`/derp` mounted by the network module's `UpgradeSpec` (P7b) serves a real daemon** — the log target is `roomler_ai_mod_network::derp`; and the device listing back in the host (#1352) reads the network module's overlay rows for that agent.
+Three things this proves at once: the `mesh` image (fleet + network, nothing else) takes an enrollment, a control socket and an overlay join from an unmodified release daemon; **`/derp` mounted by the network module's `UpgradeSpec` (P7b) serves a real daemon** — the log target is `meshharbor_mod_network::derp`; and the device listing back in the host (#1352) reads the network module's overlay rows for that agent.
 
 Not covered: a second node and traffic between them (one node is what AC5 asks: enrol + join), and the same against a `mesh` server across a real network. The cell was torn down afterwards (`down -v`, the daemon container and its image removed).
 

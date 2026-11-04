@@ -39,7 +39,7 @@ on:
   push:
     branches: [master]
     paths:
-      - 'agents/roomlerd/**'
+      - 'agents/meshharbord/**'
       - '.github/workflows/installer-smoke.yml'
       - 'scripts/macos-productbuild-gated.sh'
   # Also on PRs — but only those touching the INSTALLER surface, not the whole
@@ -52,7 +52,7 @@ on:
   # windows-latest job, and Windows runner contention in this repo is real —
   # rc.424's MSI job sat QUEUED for 70 minutes behind a release burst. Measured
   # over the last 90 days, these paths carry 29 commits against 316 for
-  # `agents/roomlerd/**`, so this fires on roughly one agent PR in ten:
+  # `agents/meshharbord/**`, so this fires on roughly one agent PR in ten:
   # the ones where the installer itself changed.
   #
   # ⚠️ If you change what the MSI SHIPS (a new native dependency, a wxs
@@ -60,19 +60,19 @@ on:
   # audit silently stops covering the change that needed it most.
   pull_request:
     paths:
-      - 'agents/roomlerd/wix/**'
-      - 'agents/roomlerd/wix-perMachine/**'
-      - 'agents/roomlerd/packaging/windows/**'
+      - 'agents/meshharbord/wix/**'
+      - 'agents/meshharbord/wix-perMachine/**'
+      - 'agents/meshharbord/packaging/windows/**'
       # The macOS packaging was missing here, so the postinstall — the script
       # that decides whether the root daemon lives or is DELETED — could change
       # without this job ever running on the PR. That is the hole the warning
       # above describes, and it cost a real regression: an rc.458 -> rc.460
       # self-update silently removed the daemon on a field MacBook.
-      - 'agents/roomlerd/packaging/macos/**'
-      - 'agents/roomlerd/build.rs'
+      - 'agents/meshharbord/packaging/macos/**'
+      - 'agents/meshharbord/build.rs'
       # #1727 — the per-Machine MSI runs `roomlerd keep-system-context`, which
       # decides from this module; a change to it changes what an install does.
-      - 'agents/roomlerd/src/win_service/system_context_attempt.rs'
+      - 'agents/meshharbord/src/win_service/system_context_attempt.rs'
       - '.github/workflows/installer-smoke.yml'
       - 'scripts/macos-productbuild-gated.sh'
   workflow_dispatch: {}
@@ -153,7 +153,7 @@ jobs:
         # runtime behaviour only.
         shell: pwsh
         run: |
-          cargo build -p roomlerd --release `
+          cargo build -p meshharbord --release `
             --features "mf-encoder,scrap-capture,openh264-encoder,enigo-input,clipboard,viewer-indicator,system-context"
 
       - name: Build the roomler CLI shim for the MSI bundle (P3e lever D)
@@ -166,7 +166,7 @@ jobs:
           # ~150 KB shim that re-execs `roomlerd cli`; the INSTALLED name is
           # still roomler.exe, which is what the payload assert below checks.
           # Mirrors release-agent.yml's shim build step.
-          cargo build -p roomler-cli-shim --release
+          cargo build -p meshharbor-cli-shim --release
           if (-not (Test-Path target\release\roomler-shim.exe)) {
             Write-Host "::error::roomler-shim.exe not produced — TunnelExe harvest would fail (LGHT0103)"
             exit 1
@@ -261,7 +261,7 @@ jobs:
           # who finds it on a machine knows it's a smoke artifact.
           SMOKE_VERSION: 0.0.0-smoke.1
         run: |
-          cargo wix -p roomlerd --nocapture --no-build --install-version $env:SMOKE_VERSION
+          cargo wix -p meshharbord --nocapture --no-build --install-version $env:SMOKE_VERSION
           $msi = Get-ChildItem 'target/wix/*.msi' | Select-Object -First 1
           if (-not $msi) { throw 'MSI not produced by cargo-wix' }
           'MSI_PATH=' + $msi.FullName | Out-File -FilePath $env:GITHUB_ENV -Append
@@ -294,7 +294,7 @@ jobs:
           # where <packed> is the Windows-Installer-compressed encoding
           # of the UpgradeCode GUID. The MSI we just built carries
           # UpgradeCode `1F2D7B1C-8B2F-4D2E-B1A3-6B1E2C7E4D91` (see
-          # `agents/roomlerd/Cargo.toml::package.metadata.wix`).
+          # `agents/meshharbord/Cargo.toml::package.metadata.wix`).
           #
           # First attempt used `Get-Package -Provider msi` but the
           # PackageManagement `msi` provider isn't available on
@@ -614,7 +614,7 @@ jobs:
           Copy-Item "$wixDir\main.wxs" "$wixDir\main.wxs.bak" -Force
           Copy-Item $pmSrc "$wixDir\main.wxs" -Force
           try {
-            cargo wix -p roomlerd --nocapture --no-build --install-version $env:SMOKE_VERSION
+            cargo wix -p meshharbord --nocapture --no-build --install-version $env:SMOKE_VERSION
           } finally {
             Move-Item "$wixDir\main.wxs.bak" "$wixDir\main.wxs" -Force
           }
@@ -656,7 +656,7 @@ jobs:
           Copy-Item "agents\roomlerd\wix-perMachine\main.wxs" "$wixDir\main.wxs" -Force
           try {
             foreach ($n in 1..4) {
-              cargo wix -p roomlerd --nocapture --no-build --install-version "0.0.$n-smoke.1"
+              cargo wix -p meshharbord --nocapture --no-build --install-version "0.0.$n-smoke.1"
               if ($LASTEXITCODE -ne 0) { throw "cargo wix failed for v$n" }
               $msi = Get-ChildItem 'target/wix/*.msi' | Sort-Object LastWriteTime -Descending | Select-Object -First 1
               Move-Item $msi.FullName (Join-Path $out "pm-$n.msi") -Force
@@ -796,11 +796,11 @@ jobs:
           CMAKE_POLICY_VERSION_MINIMUM: "3.5"
         run: |
           set -euo pipefail
-          cargo build -p roomlerd --release \
+          cargo build -p meshharbord --release \
             --features "media,vp9-444,vp9-444-bindgen,overlay-l3" \
             --target aarch64-apple-darwin
-          cargo build -p roomler-cli-shim --release --target aarch64-apple-darwin
-          cargo build -p roomler-desktop --release --target aarch64-apple-darwin
+          cargo build -p meshharbor-cli-shim --release --target aarch64-apple-darwin
+          cargo build -p meshharbor-desktop --release --target aarch64-apple-darwin
 
       - name: Stage + build the pkg
         run: |
@@ -837,10 +837,10 @@ jobs:
           find "$APP" -type f \( -name '*.dylib' -o -name 'roomlerd' \) \
             -exec codesign --force --sign - {} \;
 
-          cp agents/roomlerd/packaging/macos/com.roomler.agent.plist "$APP/Contents/Resources/"
-          cp agents/roomlerd/packaging/macos/com.roomler.daemon.plist "$APP/Contents/Resources/"
-          cp agents/roomlerd/packaging/macos/com.roomler.desktop.plist "$APP/Contents/Resources/"
-          cp agents/roomlerd/packaging/macos/com.roomler.update.plist "$APP/Contents/Resources/"
+          cp agents/meshharbord/packaging/macos/com.roomler.agent.plist "$APP/Contents/Resources/"
+          cp agents/meshharbord/packaging/macos/com.roomler.daemon.plist "$APP/Contents/Resources/"
+          cp agents/meshharbord/packaging/macos/com.roomler.desktop.plist "$APP/Contents/Resources/"
+          cp agents/meshharbord/packaging/macos/com.roomler.update.plist "$APP/Contents/Resources/"
           cat > "$APP/Contents/Info.plist" <<PLIST
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -865,12 +865,12 @@ jobs:
           # The companion, staged the same way the release lane does it.
           DESK=stage/Roomler.app
           mkdir -p "$DESK/Contents/MacOS" "$DESK/Contents/Resources"
-          cp target/aarch64-apple-darwin/release/roomler-desktop "$DESK/Contents/MacOS/roomler-desktop"
+          cp target/aarch64-apple-darwin/release/meshharbor-desktop "$DESK/Contents/MacOS/meshharbor-desktop"
           cat > "$DESK/Contents/Info.plist" <<PLIST
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
           <plist version="1.0"><dict>
-            <key>CFBundleExecutable</key><string>roomler-desktop</string>
+            <key>CFBundleExecutable</key><string>meshharbor-desktop</string>
             <key>CFBundleIdentifier</key><string>ai.roomler.agent-tray</string>
             <key>CFBundleName</key><string>Roomler</string>
             <key>CFBundleVersion</key><string>${VERSION}</string>
@@ -887,7 +887,7 @@ jobs:
           chmod 755 payload/usr/local/bin/roomler
           ln -s /Library/Roomler/roomlerd.app/Contents/MacOS/roomlerd \
             payload/usr/local/bin/roomlerd
-          cp agents/roomlerd/packaging/macos/postinstall scripts/postinstall
+          cp agents/meshharbord/packaging/macos/postinstall scripts/postinstall
           chmod 755 scripts/postinstall
           # pkgbuild THEN productbuild — the same two steps release-agent.yml
           # runs, and not an optimisation to skip.
@@ -1088,7 +1088,7 @@ jobs:
           # macOS had no companion at all before rc.456 — the platform where the
           # OS silently withholds capture and input was the one with nowhere to
           # SAY so.
-          test -x /Applications/Roomler.app/Contents/MacOS/roomler-desktop \
+          test -x /Applications/Roomler.app/Contents/MacOS/meshharbor-desktop \
             || { echo "::error::the companion .app is missing"; exit 1; }
           # LSUIElement is what keeps a menu-bar app out of the Dock; without it
           # the user gets a Dock tile for something that has no main window.

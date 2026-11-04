@@ -45,12 +45,12 @@ equal.
 selector reaches knows a display name: the server's exec/SSH target resolver
 (`crates/modules/fleet/src/socket.rs:1115` `resolve_exec_target`: hex id → exact
 `agents.name` → case-insensitive `agents.name`) or the daemon's ping resolver
-(`agents/roomlerd/src/localapi_state.rs:485` `resolve_overlay`: literal address
+(`agents/meshharbord/src/localapi_state.rs:485` `resolve_overlay`: literal address
 → mesh label, whole or first label). The CLI closes the gap **on the client**,
 by joining the device list the daemon already fetches for this device
 (`roomler devices`, FR-84 D5b) onto the peer list — the same two join keys the
 `devices` CONN column uses, overlay node id then backing agent id
-(`agents/roomler-cli/src/names.rs:47`, `:61`). Nothing on the wire changes and
+(`agents/meshharbor-cli/src/names.rs:47`, `:61`). Nothing on the wire changes and
 the server is not consulted for the translation; it resolves and gates whatever
 selector it is sent exactly as before. The join, the filter and the selector
 rule are pure functions (`names.rs:101` `name_peers`, `:124` `filter_by_names`,
@@ -61,7 +61,7 @@ rule are pure functions (`names.rs:101` `name_peers`, `:124` `filter_by_names`,
 | `roomler peers --display-name` | NAME shows the display name where one is set, else the mesh name (the column widens to fit and is cut at 34, like `devices`); `--json` gains a `display_name` per peer, `null` when unknown — without the flag the JSON is the wire verbatim | each printed org section's own; `--org` narrows (`localclient.rs:314` `device_lists_for`) |
 | `roomler peers NAME…` | only the peers whose mesh name **or** display name equals an argument, case-insensitively, in argument order; an argument that matches nothing is one stderr warning, and the exit is non-zero only when none matched | same |
 | `roomler ping <display name>` | sent as the device's overlay IPv4 — with `-6`, the derived IPv6 the local peer view publishes for it; the output line keeps the **typed** target (`localclient.rs:423` `ping_target`) | the primary's: the daemon's `ping` reads only the primary's mesh (`localapi_state.rs:485`) |
-| `roomler exec` / `roomler ssh` / `roomler diag <display name>` | sent as the device's hex agent id (`localclient.rs:404` `agent_selector`) | the primary's: both ride the primary enrollment's control WS — `DaemonState.tunnel_hub` is the ONE hub `agents/roomlerd/src/main.rs:3763` shares with the primary loop, while every secondary loop gets an isolated one (`main.rs:4134`) — so the server resolves within that org |
+| `roomler exec` / `roomler ssh` / `roomler diag <display name>` | sent as the device's hex agent id (`localclient.rs:404` `agent_selector`) | the primary's: both ride the primary enrollment's control WS — `DaemonState.tunnel_hub` is the ONE hub `agents/meshharbord/src/main.rs:3763` shares with the primary loop, while every secondary loop gets an isolated one (`main.rs:4134`) — so the server resolves within that org |
 
 ### The selector rule — a display name never shadows what works today
 

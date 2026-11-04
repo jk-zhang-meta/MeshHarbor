@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 G ROX EOOD
 /**
- * FR-85 P5c — roomler-desktop's Edit view, driven in jsdom against a mocked
+ * FR-85 P5c — meshharbor-desktop's Edit view, driven in jsdom against a mocked
  * Tauri `invoke`.
  *
  * Like `recordings.spec.ts`, it loads the REAL `index.html` section and the
  * REAL `editor.js` and evaluates them the way the webview does. What it pins
  * is what the view promises: pieces that always cover the recording, split
  * and cut and sped up from the timeline; every change saved as the edit list
- * roomlerd reads (the SAME file `agents/roomlerd/src/recording/edit.rs`
+ * roomlerd reads (the SAME file `agents/meshharbord/src/recording/edit.rs`
  * parses in its own test, so the two ends cannot drift apart); an export
  * that waits for the last save, reports its progress, and says how it ended
  * in words.
@@ -19,7 +19,7 @@ import { fileURLToPath } from 'node:url'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
-const DESKTOP = join(HERE, '..', '..', '..', '..', 'agents', 'roomler-desktop')
+const DESKTOP = join(HERE, '..', '..', '..', '..', 'agents', 'meshharbor-desktop')
 const FRONT = join(DESKTOP, 'src', 'front')
 const HTML = readFileSync(join(FRONT, 'index.html'), 'utf8')
 const EDITOR = readFileSync(join(FRONT, 'editor.js'), 'utf8')

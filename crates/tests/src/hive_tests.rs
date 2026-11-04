@@ -21,7 +21,7 @@ use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async, tungsten
 use crate::fixtures::seed::SeededTenant;
 use crate::fixtures::test_app::TestApp;
 use crate::tunnel_tests::{enroll_agent, read_until, wait_agent_online};
-use roomler_ai_remote_control::hive::hive_limits;
+use meshharbor_remote_control::hive::hive_limits;
 
 type AgentWs = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 
@@ -798,7 +798,7 @@ async fn a_session_is_a_secret_room_its_device_writes_stubs_into() {
     let in_org = doc! { "tenant_id": ObjectId::parse_str(&tid).unwrap() };
     let mut live = doc! { "deleted_at": null };
     live.extend(in_org.clone());
-    let mut channels = roomler_ai_services::dao::room::RoomDao::channel_filter();
+    let mut channels = meshharbor_services::dao::room::RoomDao::channel_filter();
     channels.extend(in_org);
     let seeded_rooms = seeded.rooms.len() as u64;
     assert_eq!(rooms.count_documents(live).await.unwrap(), seeded_rooms + 1);
@@ -2847,8 +2847,8 @@ async fn a_primary_that_does_not_drain_keeps_the_session_and_its_word() {
 /// back applies once, to the fence after the member's.
 #[tokio::test]
 async fn the_promotions_compare_and_sets_move_the_lease_once() {
-    use roomler_ai_mod_hive::dao::AgentSessionDao;
-    use roomler_ai_mod_hive::model::{DrainedTip, MemberState, Promotion, PromotionState};
+    use meshharbor_mod_hive::dao::AgentSessionDao;
+    use meshharbor_mod_hive::model::{DrainedTip, MemberState, Promotion, PromotionState};
     let app = promote_app().await;
     let m = promotable(&app, "promotecas", 0, PROMOTES).await;
     let dao = AgentSessionDao::new(&app.db);
@@ -2915,7 +2915,7 @@ async fn the_promotions_compare_and_sets_move_the_lease_once() {
         moved.promotion.as_ref().map(|p| p.state),
         Some(PromotionState::Moving)
     );
-    let mark = |fence| roomler_ai_mod_hive::model::FenceMark {
+    let mark = |fence| meshharbor_mod_hive::model::FenceMark {
         fence,
         seq: 5,
         hash: hash("ab"),
@@ -3298,7 +3298,7 @@ async fn heard_until(ws: &mut AgentWs, kinds: &[&str]) -> Vec<Value> {
 /// the old primary holds the session up to the end.
 #[tokio::test]
 async fn an_unreachable_primary_is_waited_out_then_moved_away_from_with_no_drain() {
-    use roomler_ai_remote_control::hive::promote_limits::UNREACHABLE_SECS;
+    use meshharbor_remote_control::hive::promote_limits::UNREACHABLE_SECS;
     let app = promote_app().await;
     let mut m = promotable(&app, "unreach", 1, PROMOTES).await;
     let (tid, admin, sid) = (m.tid.clone(), m.admin.clone(), m.sid.clone());
@@ -3530,7 +3530,7 @@ async fn an_unreachable_primary_is_waited_out_then_moved_away_from_with_no_drain
 /// primary is.
 #[tokio::test]
 async fn a_move_away_from_an_unreachable_primary_refuses_what_it_cannot_trust() {
-    use roomler_ai_remote_control::hive::promote_limits::UNREACHABLE_SECS;
+    use meshharbor_remote_control::hive::promote_limits::UNREACHABLE_SECS;
     let app = promote_app().await;
     let mut m = promotable(&app, "unreachgate", 0, PROMOTES).await;
     let (tid, admin, sid) = (m.tid.clone(), m.admin.clone(), m.sid.clone());
@@ -3695,7 +3695,7 @@ fn move_of(frames: &[Value]) -> &Value {
 /// Moved to B, which hears its start and never answers it; A, demoted, takes
 /// its member's copy at fence 2; B gone, and unreachable for 230 s.
 async fn moved_to_a_silent_b(app: &TestApp, m: &mut Moving) {
-    use roomler_ai_remote_control::hive::promote_limits::UNREACHABLE_SECS;
+    use meshharbor_remote_control::hive::promote_limits::UNREACHABLE_SECS;
     let (tid, admin, sid, a_id, b_id) = (
         m.tid.clone(),
         m.admin.clone(),
@@ -3733,7 +3733,7 @@ async fn moved_to_a_silent_b(app: &TestApp, m: &mut Moving) {
 /// and given nothing to run.
 #[tokio::test]
 async fn a_target_that_never_answered_is_waited_out_then_moved_on() {
-    use roomler_ai_remote_control::hive::promote_limits::UNREACHABLE_SECS;
+    use meshharbor_remote_control::hive::promote_limits::UNREACHABLE_SECS;
     let app = promote_app().await;
     let mut m = promotable(&app, "silent", 0, PROMOTES).await;
     let (tid, admin, sid) = (m.tid.clone(), m.admin.clone(), m.sid.clone());
@@ -3839,7 +3839,7 @@ async fn a_target_that_never_answered_is_waited_out_then_moved_on() {
 /// the session, so that back, the device takes it over from its own copy.
 #[tokio::test]
 async fn a_failed_move_on_keeps_where_the_silent_targets_start_came_from() {
-    use roomler_ai_remote_control::hive::promote_limits::UNREACHABLE_SECS;
+    use meshharbor_remote_control::hive::promote_limits::UNREACHABLE_SECS;
     let app = promote_app().await;
     let mut m = promotable(&app, "silentkeep", 0, PROMOTES).await;
     let sid = m.sid.clone();
@@ -3986,7 +3986,7 @@ async fn a_promotion_is_refused_by_the_gate_it_failed() {
                 .unwrap();
         }
     };
-    let max = roomler_ai_remote_control::hive::replica_limits::MAX_FENCE_MARKS;
+    let max = meshharbor_remote_control::hive::replica_limits::MAX_FENCE_MARKS;
     set_marks(max - 1).await;
     refused(&try_to(m.more[0].agent_id.clone()).await, "moved_too_often");
     set_marks(0).await;
@@ -7472,7 +7472,7 @@ async fn a_reservation_a_crash_left_behind_is_recounted_once_quiet() {
     let tid = seeded.tenant_id.clone();
     let admin = seeded.admin.access_token.clone();
     let ids = keep_org_facts(&app, &tid, &admin, 5).await;
-    let quiet = ms_ago((roomler_ai_mod_hive::brain::RECOUNT_QUIET_SECS + 60) * 1000);
+    let quiet = ms_ago((meshharbor_mod_hive::brain::RECOUNT_QUIET_SECS + 60) * 1000);
     set_org_counter(
         &app,
         &tid,
@@ -9834,7 +9834,7 @@ async fn the_sources_refusal_or_silence_reaches_the_member() {
         .expect("a second grant");
     let gid = grant["grant_id"].as_str().unwrap().to_string();
     let silent = Duration::from_secs(
-        roomler_ai_remote_control::hive::stream_limits::GRANT_ACK_TIMEOUT_SECS + 5,
+        meshharbor_remote_control::hive::stream_limits::GRANT_ACK_TIMEOUT_SECS + 5,
     );
     let no = arrives(&mut member.ws, "rc:hive.replica.refused", silent)
         .await
@@ -11749,7 +11749,7 @@ async fn a_purged_session_is_read_by_nobody() {
 /// record naming another one is no tombstone.
 #[tokio::test]
 async fn a_purge_no_tombstone_names_is_never_sent() {
-    use roomler_ai_mod_hive::{dao::AgentSessionDao, model::PurgedMark};
+    use meshharbor_mod_hive::{dao::AgentSessionDao, model::PurgedMark};
 
     let app = replicaset_app().await;
     let mut p = purgeable(&app, "purge-orphan", &[]).await;
@@ -12002,7 +12002,7 @@ async fn an_org_that_keeps_its_sessions_for_ever_is_never_swept() {
 
 /// [`replicaset_app`]'s settings, for two pods sharing one database and Redis
 /// ([`TestApp::spawn_pair`]).
-fn replicaset_settings(s: &mut roomler_ai_config::Settings) {
+fn replicaset_settings(s: &mut meshharbor_config::Settings) {
     s.modules.hive = true;
     s.hive.replicaset = true;
     s.app.rate_limit_per_sec = 100;
@@ -12151,7 +12151,7 @@ async fn a_device_that_asks_hears_what_keeps_each_copy_its_record_gives_it() {
     );
 
     // Too many to be any device's: no answer at all.
-    let many: Vec<String> = (0..=roomler_ai_remote_control::hive::retain_limits::MAX_RETAIN_ASK)
+    let many: Vec<String> = (0..=meshharbor_remote_control::hive::retain_limits::MAX_RETAIN_ASK)
         .map(|_| ObjectId::new().to_hex())
         .collect();
     let many: Vec<&str> = many.iter().map(String::as_str).collect();
@@ -12780,7 +12780,7 @@ async fn a_member_whose_purge_went_is_never_taken_back_and_hears_it_later() {
 
     // A placement that read the member before its purge took cannot take it
     // back after: the take-back holds only while no purge names the row.
-    let took_back = roomler_ai_mod_hive::dao::AgentSessionDao::new(&app.db)
+    let took_back = meshharbor_mod_hive::dao::AgentSessionDao::new(&app.db)
         .rejoin(
             ObjectId::parse_str(&sid).unwrap(),
             ObjectId::parse_str(&l.m.agent_id).unwrap(),
@@ -13015,7 +13015,7 @@ async fn a_member_a_fork_is_made_from_keeps_its_copy_until_the_forks_start_is_an
     );
     assert!(purges_of(&app, &sid).await.is_empty(), "no purge is issued");
     // A purge that read the row before the fork was named cannot take it.
-    let took = roomler_ai_mod_hive::dao::AgentSessionDao::new(&app.db)
+    let took = meshharbor_mod_hive::dao::AgentSessionDao::new(&app.db)
         .mark_purging(
             ObjectId::parse_str(&sid).unwrap(),
             ObjectId::parse_str(&c.agent_id).unwrap(),
@@ -13886,7 +13886,7 @@ async fn a_search_is_paced_per_connection_and_per_minute() {
     for g in &grants {
         user_send(&mut ws, "hive:view.close", json!({"grant_id": g})).await;
     }
-    let rate = roomler_ai_remote_control::hive::search_limits::OPEN_RATE_PER_MINUTE;
+    let rate = meshharbor_remote_control::hive::search_limits::OPEN_RATE_PER_MINUTE;
     for _ in 4..rate {
         user_send(&mut ws, "hive:search.open", json!({"tenant_id": tid})).await;
         let g = read_until(&mut s.archives[0].ws, "rc:hive.search.grant")

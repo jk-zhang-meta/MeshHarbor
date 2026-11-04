@@ -27,8 +27,8 @@ use axum::{
     extract::{Path, State},
 };
 use bson::{doc, oid::ObjectId};
-use roomler_ai_db::models::role::permissions;
-use roomler_ai_remote_control::models::{
+use meshharbor_db::models::role::permissions;
+use meshharbor_remote_control::models::{
     NodeRef, OVERLAY_BLOCK_MAX_PREFIX, OVERLAY_BLOCK_MIN_PREFIX, OverlayNetwork, OverlayNode,
     cidr_max_host, overlay_host, overlay_ip,
 };
@@ -36,8 +36,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use tracing::{info, warn};
 
-use roomler_core::guards::require_permission;
-use roomler_core::{ApiError, extractors::auth::AuthUser};
+use meshharbor_core::guards::require_permission;
+use meshharbor_core::{ApiError, extractors::auth::AuthUser};
 
 use crate::NetworkState;
 
@@ -70,7 +70,7 @@ pub struct BlockStatusResponse {
     /// blocks are never re-issued, so `burned` only grows; reporting it is
     /// what turns "4032 slots is plenty" from a belief into something an
     /// operator can check (docs/multi-org.md §12).
-    pub headroom: roomler_ai_services::dao::overlay_block::BlockHeadroom,
+    pub headroom: meshharbor_services::dao::overlay_block::BlockHeadroom,
 }
 
 #[derive(Debug, Serialize)]
@@ -346,9 +346,9 @@ pub async fn get_block(
             slot: b.slot,
             slots: b.slots,
             state: match b.state {
-                roomler_ai_remote_control::models::OverlayBlockState::Assigned => "assigned",
-                roomler_ai_remote_control::models::OverlayBlockState::Quarantined => "quarantined",
-                roomler_ai_remote_control::models::OverlayBlockState::Reclaimed => "reclaimed",
+                meshharbor_remote_control::models::OverlayBlockState::Assigned => "assigned",
+                meshharbor_remote_control::models::OverlayBlockState::Quarantined => "quarantined",
+                meshharbor_remote_control::models::OverlayBlockState::Reclaimed => "reclaimed",
             }
             .to_string(),
             released_reason: b.released_reason,
@@ -593,7 +593,7 @@ pub async fn renumber(
                     // Local first (the common single-pod case), then the ctrl
                     // lane for whichever pod actually holds the socket.
                     state.fleet.rc_hub.cycle_agent_ws(agent_id);
-                    roomler_ai_mod_fleet::ctrl::publish_rc_ctrl(
+                    meshharbor_mod_fleet::ctrl::publish_rc_ctrl(
                         &state,
                         "overlay_cycle",
                         serde_json::json!({ "agent_id": agent_id.to_hex() }),
@@ -684,7 +684,7 @@ async fn resolve_versions(
             version: a.agent_version,
             online: matches!(
                 a.status,
-                roomler_ai_remote_control::models::AgentStatus::Online
+                meshharbor_remote_control::models::AgentStatus::Online
             ),
         }));
     }
@@ -704,7 +704,7 @@ async fn resolve_versions(
             version: c.client_version,
             online: matches!(
                 c.status,
-                roomler_ai_remote_control::models::AgentStatus::Online
+                meshharbor_remote_control::models::AgentStatus::Online
             ),
         }));
     }
@@ -899,7 +899,7 @@ pub struct ReclaimResponse {
     pub reclaimed: Vec<ReclaimCandidate>,
     /// Quarantined blocks that are NOT eligible, each with its reason.
     pub skipped: Vec<ReclaimCandidate>,
-    pub headroom: roomler_ai_services::dao::overlay_block::BlockHeadroom,
+    pub headroom: meshharbor_services::dao::overlay_block::BlockHeadroom,
 }
 
 /// POST /api/admin/overlay-block/reclaim — return quarantined ranges to the

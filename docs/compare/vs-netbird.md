@@ -50,7 +50,7 @@ table. See [`../overlay-nat-traversal.md`](../overlay-nat-traversal.md).
 address below the OS and terminates it in an in-process netstack, so there is no
 `sshd` to install and no port bound — on Windows as well as Unix, and on hosts
 where port 22 is already taken or an EDR agent kills `sshd` as a service. See
-[`../roomler-ssh.md`](../roomler-ssh.md).
+[`../meshharbor-ssh.md`](../meshharbor-ssh.md).
 
 **Chat, rooms and video conferencing** on the same server and accounts.
 

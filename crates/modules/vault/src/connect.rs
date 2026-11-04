@@ -54,11 +54,11 @@
 //! become audit rows.
 
 use bson::{DateTime, oid::ObjectId};
-use roomler_ai_remote_control::{
+use meshharbor_remote_control::{
     models::{Agent, RpcCap},
     vault::{LeaseRefusal, lease_limits},
 };
-use roomler_ai_services::dao::base::DaoError;
+use meshharbor_services::dao::base::DaoError;
 use tracing::warn;
 
 use crate::VaultState;

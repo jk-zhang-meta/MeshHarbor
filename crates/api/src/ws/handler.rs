@@ -15,12 +15,12 @@ use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use crate::state::AppState;
-use roomler_core::client_ip::{ConnectionOrigin, PeerAddr};
+use meshharbor_core::client_ip::{ConnectionOrigin, PeerAddr};
 
 // FR-69 P7b — what every upgrade shares moved to core: the query shape, the
 // affinity check and the "say why, then close" refusal. Re-exported so the
 // paths in this crate read as before.
-pub use roomler_core::ws::upgrade::{WsParams, send_goodbye_and_close, tid_matches_claim};
+pub use meshharbor_core::ws::upgrade::{WsParams, send_goodbye_and_close, tid_matches_claim};
 
 pub async fn ws_upgrade(
     State(state): State<AppState>,
@@ -164,7 +164,7 @@ async fn ws_upgrade_user(
 
     // A valid signature is not current account admission. This is deliberately
     // shared with HTTP/OAuth/refresh, rather than a separate socket policy.
-    if roomler_core::admission::authorize_claims(&state.core, &claims)
+    if meshharbor_core::admission::authorize_claims(&state.core, &claims)
         .await
         .is_err()
     {
@@ -233,7 +233,7 @@ async fn handle_socket(
     // kept for the cross-pod direction rule. None = key-less dial that
     // hashed on client IP.
     dialed_tid: Option<String>,
-    claims: roomler_ai_services::auth::Claims,
+    claims: meshharbor_services::auth::Claims,
 ) {
     // Close the upgrade-to-registration race before registering any controller.
     if !admission_current(&state.core, &claims).await {
@@ -369,9 +369,9 @@ async fn handle_socket(
     // FR-69 P4 — the modules' per-connection state: conference drops this
     // connection's transports (local, or at the owning pod) and closes its
     // call session — a leave the client never sent.
-    let ctx = roomler_core::WsCtx {
+    let ctx = meshharbor_core::WsCtx {
         connection_id: connection_id.clone(),
-        role: roomler_core::Role::User,
+        role: meshharbor_core::Role::User,
         principal: user_id,
         tenant_id: dialed_tid
             .as_deref()
@@ -395,8 +395,8 @@ async fn run_until_revoked(
 }
 
 async fn admission_current(
-    core: &roomler_core::Core,
-    claims: &roomler_ai_services::auth::Claims,
+    core: &meshharbor_core::Core,
+    claims: &meshharbor_services::auth::Claims,
 ) -> bool {
     if !core.settings.auth.account_approval.enabled {
         return true;
@@ -405,7 +405,7 @@ async fn admission_current(
     if claims.exp <= chrono::Utc::now().timestamp() {
         return false;
     }
-    roomler_core::admission::authorize_claims(core, claims)
+    meshharbor_core::admission::authorize_claims(core, claims)
         .await
         .is_ok()
 }
@@ -416,7 +416,7 @@ async fn handle_client_message(
     user_id: &ObjectId,
     connection_id: &str,
     username: &str,
-    rc_controller_tx: Option<&roomler_ai_remote_control::session::ClientTx>,
+    rc_controller_tx: Option<&meshharbor_remote_control::session::ClientTx>,
     text: &str,
     dialed_tid: Option<&str>,
     conn_established_ms: i64,
@@ -488,10 +488,10 @@ async fn handle_client_message(
         _ => {
             // FR-69 — a module's namespace (`typing:*` is chat's). The host
             // knows the socket; the module knows the message.
-            if let Some(handler) = state.modules.ws_handler(roomler_core::Role::User, msg_type) {
-                let ctx = roomler_core::WsCtx {
+            if let Some(handler) = state.modules.ws_handler(meshharbor_core::Role::User, msg_type) {
+                let ctx = meshharbor_core::WsCtx {
                     connection_id: connection_id.to_string(),
-                    role: roomler_core::Role::User,
+                    role: meshharbor_core::Role::User,
                     principal: *user_id,
                     tenant_id: dialed_tid.and_then(|t| ObjectId::parse_str(t).ok()),
                 };

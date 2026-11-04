@@ -10,7 +10,7 @@ shipped for exactly that reason and was found by a **human** doing a field
 install. vmtest boots a **lean throwaway VM** per cell on the fleet hosts,
 installs from the **real served scripts and release assets**, enrols against
 production in a dedicated org, proves **remote desktop, the overlay and
-`roomler-desktop`**, and destroys the VM. Its run-and-tweak phase found 35 field
+`meshharbor-desktop`**, and destroys the VM. Its run-and-tweak phase found 35 field
 defects in its first day; since 0.4.75 the whole matrix has been green in one
 pass on every release it was pointed at.
 
@@ -28,7 +28,7 @@ flowchart TB
     D --> L["orchestrator lifts VMTEST-RESULT lines<br/>into results.tsv"]
     L --> O["device online in the org listing"]
     O --> RD["remote desktop: Playwright in a container<br/>decodes ADVANCING frames from the new agent"]
-    RD --> DK["roomler-desktop: all 5 views render<br/>(Windows: WebView2 CDP DOM · Linux: screendumps)"]
+    RD --> DK["meshharbor-desktop: all 5 views render<br/>(Windows: WebView2 CDP DOM · Linux: screendumps)"]
     DK --> T["graceful shutdown → ephemeral row self-unenrols<br/>→ destroy · org back at baseline"]
 ```
 
@@ -43,7 +43,7 @@ Every check is a result id `lane/method/type@host#check`, recorded `PASS`,
 | `overlay-reverse` | anchor → VM | best-effort `WARN`; the forward round-trip already proves both ways |
 | `wayland` | the Linux GUI session really is `seat0 … wayland` — the lane's premise | `loginctl` in the guest |
 | `rd` | a real browser decodes frames that **advance** | [`ui/e2e/vmtest-remote.spec.ts`](../ui/e2e/vmtest-remote.spec.ts) run in the pinned Playwright image, agent selected by **exact name** (`:36`) so parallel VMs cannot cross-match |
-| `desktop` | all five `roomler-desktop` views render | CDP DOM asserts on Windows; `--view` second-launch + `virsh screendump`, pairwise-distinct, on Linux |
+| `desktop` | all five `meshharbor-desktop` views render | CDP DOM asserts on Windows; `--view` second-launch + `virsh screendump`, pairwise-distinct, on Linux |
 | `teardown/org-baseline` | the run leaked no rows (`count ≤ baseline`; the reaper cleaning older leftovers is fine) | polled for 3 min at the end of the run |
 
 ⚠️ **The RD oracle is transport-agnostic on purpose.** A software-encode agent

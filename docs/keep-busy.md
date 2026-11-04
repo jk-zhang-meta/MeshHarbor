@@ -43,7 +43,7 @@ clicking, typing or scrolling. It resumes once they have been idle for
 It stays on across disconnects, self-updates and reboots, until someone
 switches it off. It resumes at the **same person's** next login.
 
-The sleep assertions of FR-55 (`agents/roomlerd/src/power.rs`) cannot do this.
+The sleep assertions of FR-55 (`agents/meshharbord/src/power.rs`) cannot do this.
 They keep the machine from **sleeping**, but they never reset the
 **user-idle clock** that the screensaver, the idle lock and presence read. Only
 input resets that clock. So keep busy produces real input, and only one kind:
@@ -391,8 +391,8 @@ does not spawn `loginctl` forever.
 
 | Surface | What |
 |---|---|
-| **Tray** (`roomler-desktop`, `tray.rs` L47) | A toggle, polled every 3 s: "Stop keep busy (Heart · paused)" while it is on, whoever turned it on; **"Start keep busy"** while it is off and can run here (P10, the product default pattern); "Keep busy: unavailable", disabled, where it cannot. The click reads the state at that moment |
-| **CLI** (`roomler-cli/src/cli.rs` L336) | `roomler keep-busy status\|off [--json]`, and (P10) `roomler keep-busy on [--pattern P] [--size s\|m\|l] [--speed slow\|normal\|fast] [--resume-after SECONDS] [--auto-off MINUTES]` |
+| **Tray** (`meshharbor-desktop`, `tray.rs` L47) | A toggle, polled every 3 s: "Stop keep busy (Heart · paused)" while it is on, whoever turned it on; **"Start keep busy"** while it is off and can run here (P10, the product default pattern); "Keep busy: unavailable", disabled, where it cannot. The click reads the state at that moment |
+| **CLI** (`meshharbor-cli/src/cli.rs` L336) | `roomler keep-busy status\|off [--json]`, and (P10) `roomler keep-busy on [--pattern P] [--size s\|m\|l] [--speed slow\|normal\|fast] [--resume-after SECONDS] [--auto-off MINUTES]` |
 | **LocalAPI** | All three verbs are on the person-socket allowlist, so a Linux system install's companion reaches them. Off is open to every peer the endpoint admits, because it is the safe direction (`roomler exec` included). **On** is the console person's alone (below). On a supervised Mac the root daemon asks the GUI worker for status and off (below) |
 
 **Who may turn it ON here (P10).** Whoever stands where the person does: the

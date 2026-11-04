@@ -15,7 +15,7 @@ members = [
     # so the vendored tree is a mechanical patch. Consumed by tunnel-core AND
     # (via path dep) the vendored webrtc-ice's gather arm.
     "crates/tcp-turn-conn",
-    "crates/roomler-setup-core",
+    "crates/meshharbor-setup-core",
     # Standalone regional DERP relay (one per relay PoP; ticket-authenticated,
     # DB-free — see crates/derp-relay/src/main.rs).
     "crates/derp-relay",
@@ -40,11 +40,11 @@ members = [
     "crates/api",
     "crates/tests",
 
-    "agents/roomlerd",
-    "agents/roomler-desktop",
-    "agents/roomler-cli-shim",
-    "agents/roomler-setup",
-    "agents/roomler-cli",
+    "agents/meshharbord",
+    "agents/meshharbor-desktop",
+    "agents/meshharbor-cli-shim",
+    "agents/meshharbor-setup",
+    "agents/meshharbor-cli",
 ]
 exclude = [
     # Vendored upstream (kept verbatim except the H265 payloader fix);

@@ -14,11 +14,11 @@
 //! rather than the allocator.
 
 use bson::{doc, oid::ObjectId};
-use roomler_ai_db::indexes::apply_index_sets;
-use roomler_ai_remote_control::models::{NodeRef, OverlayNetwork, OverlayNode};
-use roomler_ai_services::dao::base::DaoError;
-use roomler_ai_services::dao::overlay_network::OverlayNetworkDao;
-use roomler_ai_services::dao::overlay_node::{NewOverlayNode, OverlayNodeDao};
+use meshharbor_db::indexes::apply_index_sets;
+use meshharbor_remote_control::models::{NodeRef, OverlayNetwork, OverlayNode};
+use meshharbor_services::dao::base::DaoError;
+use meshharbor_services::dao::overlay_network::OverlayNetworkDao;
+use meshharbor_services::dao::overlay_node::{NewOverlayNode, OverlayNodeDao};
 use serde_json::Value;
 
 use crate::fixtures::test_app::TestApp;
@@ -145,8 +145,8 @@ fn tid(hex: &str) -> ObjectId {
 
 /// The default `/10`'s block ceiling (multi-org P2a bound).
 fn default_max_host() -> u32 {
-    roomler_ai_remote_control::models::cidr_max_host(
-        roomler_ai_remote_control::models::OverlayNetwork::DEFAULT_CIDR,
+    meshharbor_remote_control::models::cidr_max_host(
+        meshharbor_remote_control::models::OverlayNetwork::DEFAULT_CIDR,
     )
     .expect("default CIDR has a ceiling")
 }
@@ -1526,7 +1526,7 @@ async fn renumber_moves_the_tenant_onto_its_own_block() {
     // back to its ordinal under the NEW cidr.
     for n in &nodes {
         assert!(
-            roomler_ai_remote_control::models::overlay_host(&net.cidr, &n.overlay_ip).is_some(),
+            meshharbor_remote_control::models::overlay_host(&net.cidr, &n.overlay_ip).is_some(),
             "{} must invert inside {}",
             n.overlay_ip,
             net.cidr
@@ -1968,7 +1968,7 @@ async fn a_networks_block_list_is_its_assigned_blocks_in_allocation_order() {
     assert_eq!(bl.capacity(), 1022);
     // Identical to the bare pair it generalizes.
     for h in [1u32, 7, 1022] {
-        let want = roomler_ai_remote_control::models::overlay_ip(&net.cidr, h).unwrap();
+        let want = meshharbor_remote_control::models::overlay_ip(&net.cidr, h).unwrap();
         assert_eq!(bl.ip_for_ordinal(h).as_deref(), Some(want.as_str()));
         assert_eq!(bl.ordinal_for_ip(&want), Some(h));
     }
@@ -2055,7 +2055,7 @@ async fn a_full_network_grows_instead_of_refusing_and_moves_no_address() {
     // "100.65.0.0" reduces to "100.65" and a prefix test then matches the
     // second block too — which is how the first version of this assertion
     // failed against perfectly correct behaviour.
-    use roomler_ai_remote_control::models::overlay_host;
+    use meshharbor_remote_control::models::overlay_host;
     let ip_new = after.ip_for_ordinal(host).unwrap();
     assert!(
         overlay_host(&first_cidr, &ip_new).is_none(),
@@ -2143,7 +2143,7 @@ async fn the_orphan_detector_finds_a_vanished_tenant_and_spares_an_archived_one(
         .create_node("live-mach", "live-box", "100.64.0.1")
         .await
         .unwrap();
-    roomler_ai_services::dao::tenant::TenantDao::new(&app.db)
+    meshharbor_services::dao::tenant::TenantDao::new(&app.db)
         .set_archived(tid(&b.tenant_id), true)
         .await
         .unwrap();
@@ -2727,7 +2727,7 @@ async fn b4_offline_evicted_node_with_expired_ttl_receives_key_rotate_and_rejoin
 /// `OverlayNetwork` row yet.
 #[tokio::test]
 async fn b3_ctrl_db_isolation_and_targeted_agent_probe_policy_invalidation() {
-    use roomler_ai_mod_network::overlay::{apply_policy_sync_ctrl, apply_removes_ctrl};
+    use meshharbor_mod_network::overlay::{apply_policy_sync_ctrl, apply_removes_ctrl};
     use serde_json::json;
 
     let app = TestApp::spawn().await;
@@ -2844,7 +2844,7 @@ async fn b3_ctrl_db_isolation_and_targeted_agent_probe_policy_invalidation() {
 async fn b3_peer_relay_policy_and_mode_skip_local_refan_and_preserve_auth_revision() {
     use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
     use futures::{SinkExt, StreamExt};
-    use roomler_ai_mod_network::overlay::publish_and_refan_tenant_authority_for_agent;
+    use meshharbor_mod_network::overlay::publish_and_refan_tenant_authority_for_agent;
     use serde_json::json;
     use std::time::Duration;
     use tokio_tungstenite::tungstenite::Message;

@@ -1,5 +1,5 @@
 [package]
-name = "roomler-hive-node"
+name = "meshharbor-hive-node"
 license = "MPL-2.0"
 publish = false
 version.workspace = true
@@ -7,7 +7,7 @@ edition.workspace = true
 description = "FR-90 — Hive on the device: transcript events and their hash chain, the Claude Code stream-json adapter, the replica store (SQLite + FTS5), the harness launch spec, and folder confinement."
 
 [lib]
-name = "roomler_hive_node"
+name = "meshharbor_hive_node"
 path = "src/lib.rs"
 
 # Device-side only. The server never reads a transcript — FR-90 D1 keeps them on a

@@ -4,21 +4,21 @@
 //!
 //! Only the device's actual owner — never `MANAGE_AGENTS`, an org admin or a
 //! platform admin, the same rule as sharing itself. The device keeps the last
-//! word (`agents/roomlerd/src/local_accounts.rs`): nothing unless its own
+//! word (`agents/meshharbord/src/local_accounts.rs`): nothing unless its own
 //! `ssh_enabled` is on, and no administrator under its root ceiling.
 use axum::{
     Json,
     extract::{Path, State},
 };
 use bson::oid::ObjectId;
-use roomler_ai_db::models::device_share::valid_share_account;
-use roomler_ai_remote_control::{
+use meshharbor_db::models::device_share::valid_share_account;
+use meshharbor_remote_control::{
     error::Error as RcError,
     models::{Agent, AgentStatus, OsKind, RpcCap},
     signaling::{LocalAccount, LocalAccountOp},
 };
-use roomler_ai_services::dao::agent::AgentDao;
-use roomler_core::{ApiError, extractors::auth::AuthUser};
+use meshharbor_services::dao::agent::AgentDao;
+use meshharbor_core::{ApiError, extractors::auth::AuthUser};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
@@ -50,7 +50,7 @@ async fn owned_device(state: &AppState, auth: &AuthUser, id: &str) -> Result<Age
         ));
     }
     let owner = state.users.base.find_by_id(auth.user_id).await?;
-    roomler_core::admission::require_user(state, &owner, None)?;
+    meshharbor_core::admission::require_user(state, &owner, None)?;
     if agent.os == OsKind::Windows {
         return Err(ApiError::BadRequest(
             "Choosing an account for SSH sharing is available on Linux and macOS devices".into(),

@@ -42,7 +42,7 @@ WORKDIR /src
 COPY . .
 # No capture, no input, no TUN: `hive` holds the copies, `overlay-netstack` is
 # the overlay without a TUN. `--locked` pins Cargo.lock.
-RUN cargo build --release -p roomlerd --locked \
+RUN cargo build --release -p meshharbord --locked \
     --no-default-features \
     --features hive,overlay-netstack
 

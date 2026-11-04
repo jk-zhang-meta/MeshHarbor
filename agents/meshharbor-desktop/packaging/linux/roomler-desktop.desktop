@@ -1,0 +1,17 @@
+[Desktop Entry]
+Type=Application
+Name=Roomler
+GenericName=Remote access companion
+Comment=Device status, network peers, tunnel routes, and remote-control consent prompts
+Exec=/usr/bin/meshharbor-desktop
+Icon=meshharbor-desktop
+Terminal=false
+Categories=Network;RemoteAccess;Utility;
+Keywords=roomler;remote;mesh;vpn;tunnel;
+
+# The launcher entry (/usr/share/applications). The login start is its sibling
+# meshharbor-desktop-autostart.desktop, installed as
+# /etc/xdg/autostart/meshharbor-desktop.desktop — same file name, one extra
+# argument (`--autostart`, stay in the tray). Before FR-84 D6 this one file was
+# installed in both places, so a login start and a person opening the app could
+# not be told apart.

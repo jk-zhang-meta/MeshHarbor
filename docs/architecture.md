@@ -12,12 +12,12 @@ flowchart TB
     subgraph clients["Clients"]
         SPA["Vue 3 SPA<br/>chat · calls · remote viewer<br/>admin · observability"]
         CLI["roomler CLI<br/>forward · socks5 · exec · ping"]
-        DESK["roomler-desktop<br/>tray companion (Tauri)"]
+        DESK["meshharbor-desktop<br/>tray companion (Tauri)"]
     end
 
     subgraph server["roomler.ai — Axum API pod(s)"]
         NG["nginx<br/>SPA + /api + /ws + /derp proxy"]
-        API["roomler-ai-api<br/>REST + WebSocket + signalling"]
+        API["meshharbor-api<br/>REST + WebSocket + signalling"]
         SFU["mediasoup SFU<br/>(in-process workers)"]
         DERPD["/derp relay<br/>(pubkey-addressed WSS)"]
     end
@@ -101,13 +101,13 @@ agent stack layers on shared leaf crates so thin clients never link the world.
 flowchart BT
     config["crates/config<br/>settings (ROOMLER__ env)"]
     db["crates/db<br/>Mongo models + indexes"]
-    core["crates/core → roomler-core<br/>Core · module contract · composition snapshot"]
-    saas["crates/modules/saas → roomler-ai-mod-saas<br/>Stripe · newsletter · plan compliance (add-on)"]
-    chat["crates/modules/chat → roomler-ai-mod-chat<br/>rooms · messages · files · search · typing"]
-    conference["crates/modules/conference → roomler-ai-mod-conference<br/>mediasoup SFU · media:* · calls · recordings"]
-    fleet["crates/modules/fleet → roomler-ai-mod-fleet<br/>agents · enrollment · presence · Hub · consent · exec · releases"]
-    remote["crates/modules/remote → roomler-ai-mod-remote<br/>RC sessions · controller rc:* dispatch · cross-pod rc relay · TURN creds"]
-    network["crates/modules/network → roomler-ai-mod-network<br/>overlay engine · tunnels · peer relays · SSH · key rotation · DERP ACL"]
+    core["crates/core → meshharbor-core<br/>Core · module contract · composition snapshot"]
+    saas["crates/modules/saas → meshharbor-mod-saas<br/>Stripe · newsletter · plan compliance (add-on)"]
+    chat["crates/modules/chat → meshharbor-mod-chat<br/>rooms · messages · files · search · typing"]
+    conference["crates/modules/conference → meshharbor-mod-conference<br/>mediasoup SFU · media:* · calls · recordings"]
+    fleet["crates/modules/fleet → meshharbor-mod-fleet<br/>agents · enrollment · presence · Hub · consent · exec · releases"]
+    remote["crates/modules/remote → meshharbor-mod-remote<br/>RC sessions · controller rc:* dispatch · cross-pod rc relay · TURN creds"]
+    network["crates/modules/network → meshharbor-mod-network<br/>overlay engine · tunnels · peer relays · SSH · key rotation · DERP ACL"]
     rc["crates/remote_control<br/>signalling · consent · wire types¹ · ACL shapes"]
     services["crates/services<br/>DAOs · auth · billing · export"]
     api["crates/api<br/>Axum: core REST + /ws · composes the modules (/derp is network's)"]
@@ -118,13 +118,13 @@ flowchart BT
     tunnelcore["crates/tunnel-core<br/>tunnels · transports · overlay (WG)"]
     tcpturn["crates/tcp-turn-conn<br/>TURNS/TCP adapter"]
     derprelay["crates/derp-relay<br/>standalone DERP PoP"]
-    setupcore["crates/roomler-setup-core<br/>installer mechanics"]
+    setupcore["crates/meshharbor-setup-core<br/>installer mechanics"]
 
-    roomlerd["agents/roomlerd → roomlerd<br/>the daemon"]
-    tunnel["agents/roomler-cli → roomler<br/>tunnel CLI (surface lives in its lib)"]
-    shim["agents/roomler-cli-shim<br/>roomler.exe on daemon hosts → re-execs roomlerd cli"]
-    tray["agents/roomler-desktop → roomler-desktop"]
-    setup["agents/roomler-setup<br/>install wizard (Tauri)"]
+    roomlerd["agents/meshharbord → roomlerd<br/>the daemon"]
+    tunnel["agents/meshharbor-cli → roomler<br/>tunnel CLI (surface lives in its lib)"]
+    shim["agents/meshharbor-cli-shim<br/>roomler.exe on daemon hosts → re-execs roomlerd cli"]
+    tray["agents/meshharbor-desktop → meshharbor-desktop"]
+    setup["agents/meshharbor-setup<br/>install wizard (Tauri)"]
 
     db --> config
     core --> services
@@ -175,7 +175,7 @@ contract, the profiles, the wire ownership, the hooks and the composition gate i
 
 ```mermaid
 flowchart BT
-    core["crates/core → roomler-core<br/>identity · tenancy · plans · notifications · storage<br/>/ws socket + fan-out · cluster · TURN creds · metering"]
+    core["crates/core → meshharbor-core<br/>identity · tenancy · plans · notifications · storage<br/>/ws socket + fan-out · cluster · TURN creds · metering"]
     fleet["modules/fleet<br/>agents · enrollment · presence · Hub · consent · exec · releases"]
     chat["modules/chat<br/>rooms · messages · files · search · export"]
     conference["modules/conference<br/>mediasoup · media:* · recordings"]
@@ -192,7 +192,7 @@ flowchart BT
 
 The rules that keep it a monolith rather than a pile of crates:
 
-- **One contract.** Every module implements `roomler_core::Module` — routes, WebSocket
+- **One contract.** Every module implements `meshharbor_core::Module` — routes, WebSocket
   namespaces, index specs, jobs, lifecycle hooks, capabilities — and the host composes the
   concrete types under `#[cfg(feature)]`. No dynamic loading, no runtime registry.
 - **A DAG, not peers.** Any module may call core; `conference → chat`, `remote → fleet`,
@@ -210,9 +210,9 @@ The rules that keep it a monolith rather than a pile of crates:
   index plan, the wire names — is asserted byte-identical after each module PR.
 
 **Crate naming, as of FR-69.** Server-side crates are `roomler-ai-*`; the server core is
-**`roomler-core`** (`crates/core`, AGPL-3.0-only); module crates are `roomler-ai-mod-<name>`.
+**`meshharbor-core`** (`crates/core`, AGPL-3.0-only); module crates are `roomler-ai-mod-<name>`.
 The daemon's shared building blocks — config, enrollment, machine-id, logging — are
-**`roomler-node-core`** (`crates/agent-core`, MPL-2.0), which held the name `roomler-core` from
+**`meshharbor-node-core`** (`crates/agent-core`, MPL-2.0), which held the name `meshharbor-core` from
 FR-21 until FR-69. Its pre-FR-21 name is retired (FR-21); do not bring it back.
 
 ## The native stack on an enrolled machine
@@ -220,9 +220,9 @@ FR-21 until FR-69. Its pre-FR-21 name is retired (FR-21); do not bring it back.
 | Binary | Role |
 |---|---|
 | **`roomlerd`** | The daemon: WS signalling, per-session WebRTC peers, capture → encode → RTP/DC, input injection, clipboard/file/apps/audio channels, tunnel *target* and tunnel *client* sides, overlay node runtime, LocalAPI server, loopback TURN host, watchdog, self-updater, Windows SCM/SystemContext machinery |
-| **`roomler`** | The CLI. On tunnel-only hosts it is the full standalone binary; on daemon hosts the MSI/.deb installs a ~150 KB shim that re-execs `roomlerd cli` — one command surface (`roomler_cli::cli`), never version-skewed against the daemon |
-| **`roomler-desktop`** | Tauri tray companion: node status, peers, tunnels, consent prompts — a thin LocalAPI client with zero transport crates |
-| **`roomler-setup`** | The unified install wizard ([installation.md](installation.md)) |
+| **`roomler`** | The CLI. On tunnel-only hosts it is the full standalone binary; on daemon hosts the MSI/.deb installs a ~150 KB shim that re-execs `roomlerd cli` — one command surface (`meshharbor_cli::cli`), never version-skewed against the daemon |
+| **`meshharbor-desktop`** | Tauri tray companion: node status, peers, tunnels, consent prompts — a thin LocalAPI client with zero transport crates |
+| **`meshharbor-setup`** | The unified install wizard ([installation.md](installation.md)) |
 
 The **LocalAPI** (named pipe `\\.\pipe\roomler` on Windows, `$XDG_RUNTIME_DIR/roomler.sock`
 elsewhere) is the on-host control surface all three clients share — status, peers,

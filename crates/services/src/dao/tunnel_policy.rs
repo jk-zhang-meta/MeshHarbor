@@ -2,7 +2,7 @@
 // Copyright (C) 2026 G ROX EOOD
 use bson::{DateTime, doc, oid::ObjectId};
 use mongodb::Database;
-use roomler_ai_remote_control::models::{
+use meshharbor_remote_control::models::{
     DestinationRule, PolicySubject, PolicyTarget, TunnelPolicy,
 };
 

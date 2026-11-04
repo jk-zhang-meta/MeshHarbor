@@ -7,7 +7,7 @@
 //! |---|---|---|---|
 //! | Windows perMachine | `HKLM\…\Run\Roomler Desktop` | the elevated `service install --as-service` (MSI CA), self-healed by the SCM host at every start | the companion's per-user state; an `--autostart` launch exits |
 //! | Windows perUser | `HKCU\…\Run\Roomler Desktop` | the per-user `service install` (MSI CA) and the companion itself | the companion deletes the value and records the choice |
-//! | Linux (.deb) | `/etc/xdg/autostart/roomler-desktop.desktop` | the package | `~/.config/autostart/roomler-desktop.desktop` with `Hidden=true` |
+//! | Linux (.deb) | `/etc/xdg/autostart/meshharbor-desktop.desktop` | the package | `~/.config/autostart/meshharbor-desktop.desktop` with `Hidden=true` |
 //! | macOS (.pkg) | the `com.roomler.desktop` LaunchAgent (`RunAtLoad`) | the package's postinstall | macOS Login Items — not ours to write |
 //!
 //! Shared by the daemon and the companion so both spell the value, the
@@ -35,9 +35,9 @@ pub const WINDOWS_RUN_VALUE_NAME: &str = "Roomler Desktop";
 /// The companion's desktop-entry file name — the system autostart entry and
 /// the per-user override MUST share it, since XDG autostart matches the two
 /// by file name.
-pub const XDG_ENTRY_FILE: &str = "roomler-desktop.desktop";
+pub const XDG_ENTRY_FILE: &str = "meshharbor-desktop.desktop";
 /// Where the `.deb` installs the system-wide autostart entry.
-pub const XDG_SYSTEM_AUTOSTART: &str = "/etc/xdg/autostart/roomler-desktop.desktop";
+pub const XDG_SYSTEM_AUTOSTART: &str = "/etc/xdg/autostart/meshharbor-desktop.desktop";
 
 /// The data of the Windows Run value: the quoted EXE path, then
 /// [`AUTOSTART_ARG`]. Quoted always — `C:\Program Files\…` has a space, and an
@@ -186,7 +186,7 @@ pub fn xdg_user_entry(exe: &str, hidden: bool) -> String {
          Name=Roomler\n\
          Comment=Start the Roomler companion at login\n\
          Exec={exec} {AUTOSTART_ARG}\n\
-         Icon=roomler-desktop\n\
+         Icon=meshharbor-desktop\n\
          Terminal=false\n\
          X-GNOME-Autostart-Phase=Applications\n\
          X-GNOME-Autostart-Delay=5\n\
@@ -355,22 +355,22 @@ mod tests {
 
     #[test]
     fn run_command_quotes_a_path_with_spaces() {
-        let exe = Path::new(r"C:\Program Files\Roomler\roomler-desktop.exe");
+        let exe = Path::new(r"C:\Program Files\Roomler\meshharbor-desktop.exe");
         assert_eq!(
             windows_run_command(exe),
-            r#""C:\Program Files\Roomler\roomler-desktop.exe" --autostart"#
+            r#""C:\Program Files\Roomler\meshharbor-desktop.exe" --autostart"#
         );
         // Quoted even without a space: one shape, so a comparison with what
         // is in the registry never flips on the install path.
         assert_eq!(
-            windows_run_command(Path::new(r"D:\r\roomler-desktop.exe")),
-            r#""D:\r\roomler-desktop.exe" --autostart"#
+            windows_run_command(Path::new(r"D:\r\meshharbor-desktop.exe")),
+            r#""D:\r\meshharbor-desktop.exe" --autostart"#
         );
     }
 
     #[test]
     fn desired_value_table() {
-        let exe = Path::new(r"C:\Program Files\Roomler\roomler-desktop.exe");
+        let exe = Path::new(r"C:\Program Files\Roomler\meshharbor-desktop.exe");
         let on = Some(windows_run_command(exe));
         // (device_enabled, exe_exists, user_opted_out) → desired
         let table = [
@@ -392,12 +392,12 @@ mod tests {
     #[test]
     fn plan_table() {
         use RunKeyAction::*;
-        let v = r#""C:\x\roomler-desktop.exe" --autostart"#;
+        let v = r#""C:\x\meshharbor-desktop.exe" --autostart"#;
         assert_eq!(plan_run_key(None, None), Keep);
         assert_eq!(plan_run_key(Some(v), Some(v)), Keep);
         assert_eq!(plan_run_key(None, Some(v)), Write(v.to_string()));
         assert_eq!(
-            plan_run_key(Some(r#""C:\old\roomler-desktop.exe" --autostart"#), Some(v)),
+            plan_run_key(Some(r#""C:\old\meshharbor-desktop.exe" --autostart"#), Some(v)),
             Write(v.to_string()),
             "a moved install rewrites the value"
         );
@@ -412,14 +412,14 @@ mod tests {
         ];
         assert_eq!(
             windows_scope_for_exe(
-                Path::new(r"C:\Program Files\Roomler\roomler-desktop.exe"),
+                Path::new(r"C:\Program Files\Roomler\meshharbor-desktop.exe"),
                 &pf
             ),
             InstallScope::Machine
         );
         assert_eq!(
             windows_scope_for_exe(
-                Path::new(r"c:/program files/ROOMLER/roomler-desktop.exe"),
+                Path::new(r"c:/program files/ROOMLER/meshharbor-desktop.exe"),
                 &pf
             ),
             InstallScope::Machine,
@@ -427,14 +427,14 @@ mod tests {
         );
         assert_eq!(
             windows_scope_for_exe(
-                Path::new(r"C:\Users\ana\AppData\Local\Programs\Roomler\roomler-desktop.exe"),
+                Path::new(r"C:\Users\ana\AppData\Local\Programs\Roomler\meshharbor-desktop.exe"),
                 &pf
             ),
             InstallScope::User
         );
         assert_eq!(
             windows_scope_for_exe(
-                Path::new(r"C:\Program Files Extra\roomler-desktop.exe"),
+                Path::new(r"C:\Program Files Extra\meshharbor-desktop.exe"),
                 &pf
             ),
             InstallScope::User,
@@ -442,7 +442,7 @@ mod tests {
         );
         assert_eq!(
             windows_scope_for_exe(
-                Path::new(r"C:\Program Files\Roomler\roomler-desktop.exe"),
+                Path::new(r"C:\Program Files\Roomler\meshharbor-desktop.exe"),
                 &[]
             ),
             InstallScope::User,
@@ -486,19 +486,19 @@ mod tests {
 
     #[test]
     fn user_entry_round_trips_through_the_parser() {
-        let off = xdg_user_entry("/usr/bin/roomler-desktop", true);
+        let off = xdg_user_entry("/usr/bin/meshharbor-desktop", true);
         assert!(off.starts_with("[Desktop Entry]\n"), "{off}");
         assert!(
-            off.contains("Exec=/usr/bin/roomler-desktop --autostart\n"),
+            off.contains("Exec=/usr/bin/meshharbor-desktop --autostart\n"),
             "{off}"
         );
         assert!(off.contains("X-Roomler-Managed=true\n"), "{off}");
         assert!(xdg_entry_hidden(&off));
-        let on = xdg_user_entry("/usr/bin/roomler-desktop", false);
+        let on = xdg_user_entry("/usr/bin/meshharbor-desktop", false);
         assert!(!xdg_entry_hidden(&on));
-        let spaced = xdg_user_entry("/opt/My Apps/roomler-desktop", false);
+        let spaced = xdg_user_entry("/opt/My Apps/meshharbor-desktop", false);
         assert!(
-            spaced.contains("Exec=\"/opt/My Apps/roomler-desktop\" --autostart\n"),
+            spaced.contains("Exec=\"/opt/My Apps/meshharbor-desktop\" --autostart\n"),
             "{spaced}"
         );
     }
@@ -518,7 +518,7 @@ mod tests {
                 .as_nanos()
         );
         delete_tree(Hive::CurrentUser, &scratch);
-        let v = windows_run_command(Path::new(r"C:\Program Files\Roomler\roomler-desktop.exe"));
+        let v = windows_run_command(Path::new(r"C:\Program Files\Roomler\meshharbor-desktop.exe"));
 
         assert_eq!(
             read_value(Hive::CurrentUser, &scratch, WINDOWS_RUN_VALUE_NAME).unwrap(),

@@ -7,13 +7,13 @@
 
 use async_trait::async_trait;
 use bson::oid::ObjectId;
-use roomler_ai_remote_control::models::{
+use meshharbor_remote_control::models::{
     PrivacyActivityEvent, PrivacyActivityKind, RecordingActivityEvent, RecordingActivityKind,
     TransferActivityEvent, TransferActivityKind,
 };
-use roomler_ai_remote_control::permissions::Permissions;
-use roomler_ai_remote_control::signaling::{ClientMsg, TransferDirection, Transfers};
-use roomler_core::{AgentCtx, AgentMsgHandler};
+use meshharbor_remote_control::permissions::Permissions;
+use meshharbor_remote_control::signaling::{ClientMsg, TransferDirection, Transfers};
+use meshharbor_core::{AgentCtx, AgentMsgHandler};
 use tracing::{debug, warn};
 
 use crate::RemoteState;
@@ -78,7 +78,7 @@ impl AgentMsgHandler for RemoteAgentSocket {
                 if self.state.settings.stats.enabled
                     && let Some(sid) = sid
                 {
-                    let stats = roomler_ai_remote_control::models::SessionStats {
+                    let stats = meshharbor_remote_control::models::SessionStats {
                         bytes_sent,
                         bytes_recv,
                         peak_fps: fps,
@@ -93,7 +93,7 @@ impl AgentMsgHandler for RemoteAgentSocket {
                     // stays as it was (unknown, never direct).
                     let carrier = carrier
                         .as_deref()
-                        .and_then(roomler_ai_remote_control::models::session_carrier_label);
+                        .and_then(meshharbor_remote_control::models::session_carrier_label);
                     if let Err(e) = self
                         .state
                         .remote_sessions

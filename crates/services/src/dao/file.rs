@@ -2,8 +2,8 @@
 // Copyright (C) 2026 G ROX EOOD
 use bson::{DateTime, doc, oid::ObjectId};
 use mongodb::Database;
-use roomler_ai_db::models::recording::{StorageProvider, Visibility};
-use roomler_ai_db::models::{self, FileContext, ScanStatus};
+use meshharbor_db::models::recording::{StorageProvider, Visibility};
+use meshharbor_db::models::{self, FileContext, ScanStatus};
 
 use super::base::{BaseDao, DaoResult, PaginatedResult, PaginationParams};
 

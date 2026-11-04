@@ -318,7 +318,7 @@ async fn fetches_count_by_client_class_and_never_the_updater() {
         .await
         .unwrap();
     get("/api/setup/install.ps1", Some(PS51)).await.unwrap();
-    get("/api/setup/install.sh", Some("roomler-setup/0.4.136"))
+    get("/api/setup/install.sh", Some("meshharbor-setup/0.4.136"))
         .await
         .unwrap();
     get("/api/setup/install.sh", Some(CHROME_WIN))
@@ -414,7 +414,7 @@ async fn fetches_count_by_client_class_and_never_the_updater() {
         for leak in [
             "Mozilla",
             "curl/",
-            "roomler-setup/",
+            "meshharbor-setup/",
             "PowerShell",
             "127.0.0.1",
         ] {
@@ -457,10 +457,10 @@ async fn the_release_manifest_counts_before_the_upstream_read() {
 /// today; `compute` takes any day, the routes only closed ones).
 async fn todays_install(app: &TestApp) -> Value {
     let today = chrono::Utc::now().date_naive();
-    let sections = roomler_ai_api::growth::digest::compute(
+    let sections = meshharbor_api::growth::digest::compute(
         &app.state,
         today,
-        &roomler_core::growth::ExclusionSet::none(),
+        &meshharbor_core::growth::ExclusionSet::none(),
         bson::DateTime::now(),
     )
     .await

@@ -7,7 +7,7 @@ use mediasoup::types::data_structures::DtlsState;
 use mediasoup::webrtc_transport::{
     WebRtcTransportListenInfos, WebRtcTransportOptions, WebRtcTransportRemoteParameters,
 };
-use roomler_ai_config::MediasoupSettings;
+use meshharbor_config::MediasoupSettings;
 use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
 use std::num::NonZero;

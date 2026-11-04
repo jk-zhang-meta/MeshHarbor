@@ -211,10 +211,10 @@ async fn members_without_manage_agents_and_foreign_tenants_are_refused() {
 /// not change that (the first field run).
 #[tokio::test]
 async fn a_verified_identity_change_resolves_rotated_without_a_report() {
-    use roomler_ai_remote_control::models::{
+    use meshharbor_remote_control::models::{
         KeyRotationOutcome, KeyRotationReport, OverlayIdentity,
     };
-    use roomler_ai_services::dao::agent::AgentDao;
+    use meshharbor_services::dao::agent::AgentDao;
 
     let app = TestApp::spawn().await;
     let t = app.seed_tenant("fr40f").await;
@@ -297,8 +297,8 @@ async fn a_verified_identity_change_resolves_rotated_without_a_report() {
 /// report about a different order, or a later `rotated`, still replaces it.
 #[tokio::test]
 async fn a_refusal_never_overwrites_a_rotated_report_for_the_same_order() {
-    use roomler_ai_remote_control::models::{KeyRotationOutcome, KeyRotationReport};
-    use roomler_ai_services::dao::agent::AgentDao;
+    use meshharbor_remote_control::models::{KeyRotationOutcome, KeyRotationReport};
+    use meshharbor_services::dao::agent::AgentDao;
 
     let app = TestApp::spawn().await;
     let t = app.seed_tenant("fr40e").await;

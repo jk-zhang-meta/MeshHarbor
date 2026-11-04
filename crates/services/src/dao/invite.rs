@@ -2,7 +2,7 @@
 // Copyright (C) 2026 G ROX EOOD
 use bson::{DateTime, doc, oid::ObjectId};
 use mongodb::Database;
-use roomler_ai_db::models::{Invite, InviteStatus};
+use meshharbor_db::models::{Invite, InviteStatus};
 
 use super::base::{BaseDao, DaoError, DaoResult, PaginatedResult, PaginationParams};
 

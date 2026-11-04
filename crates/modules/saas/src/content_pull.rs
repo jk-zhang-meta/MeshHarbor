@@ -33,12 +33,12 @@
 //!   `url_inspection:<day>` (the UTC day of the read).
 
 use bson::DateTime;
-use roomler_ai_services::dao::{
+use meshharbor_services::dao::{
     base::DaoResult,
     growth::{GrowthDao, PulledDay},
     growth_content::{FeedPost, GrowthContentDao, Inspection},
 };
-use roomler_core::Core;
+use meshharbor_core::Core;
 use serde::Serialize;
 use tracing::warn;
 
@@ -49,7 +49,7 @@ use crate::{
 
 /// The `growth_pulls` sources of a feed read and of a day's URL inspections,
 /// spelled in the core DAO so the host's alert rules read the same rows.
-pub use roomler_ai_services::dao::growth::{
+pub use meshharbor_services::dao::growth::{
     CONTENT_SOURCE, URL_INSPECTION_SOURCE as INSPECTION_SOURCE,
 };
 pub const CYCLE_HOUR_UTC: u32 = 2;
@@ -263,7 +263,7 @@ async fn read_feed(url: &str) -> Result<Vec<FeedPost>, String> {
         );
     }
     let http = reqwest::Client::builder()
-        .user_agent(concat!("roomler-ai-api/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("meshharbor-api/", env!("CARGO_PKG_VERSION")))
         .timeout(FEED_TIMEOUT)
         // A redirect is the site moving its feed: said, never followed.
         .redirect(reqwest::redirect::Policy::none())
@@ -333,11 +333,11 @@ pub async fn run_once(
     let content = GrowthContentDao::new(&core.db);
     let mut report = ContentReport::default();
     let today = day_str(pull_schedule::date_of(now));
-    let due = |pulls: &[roomler_ai_services::dao::growth::GrowthPull]| {
+    let due = |pulls: &[meshharbor_services::dao::growth::GrowthPull]| {
         now.timestamp_millis() >= pull_schedule::cycle_start_ms(now, CYCLE_HOUR_UTC)
             && pulls
                 .first()
-                .is_none_or(|p| p.status != roomler_ai_services::dao::growth::PullStatus::Ok)
+                .is_none_or(|p| p.status != meshharbor_services::dao::growth::PullStatus::Ok)
     };
 
     if due(&dao.pulls_between(CONTENT_SOURCE, &today, &today).await?) {

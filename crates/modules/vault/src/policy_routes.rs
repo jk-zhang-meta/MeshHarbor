@@ -25,9 +25,9 @@ use axum::{
     http::StatusCode,
 };
 use bson::{DateTime, Document, doc, oid::ObjectId};
-use roomler_ai_remote_control::{models::SshAccountMode, vault::canonical_net_host};
-use roomler_ai_services::dao::base::DaoError;
-use roomler_core::{ApiError, extractors::auth::AuthUser};
+use meshharbor_remote_control::{models::SshAccountMode, vault::canonical_net_host};
+use meshharbor_services::dao::base::DaoError;
+use meshharbor_core::{ApiError, extractors::auth::AuthUser};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -281,9 +281,9 @@ async fn admin_only(state: &VaultState, tid: ObjectId, auth: &AuthUser) -> Resul
         .tenants
         .get_member_permissions(tid, auth.user_id)
         .await?;
-    if roomler_ai_db::models::role::permissions::has(
+    if meshharbor_db::models::role::permissions::has(
         perms,
-        roomler_ai_db::models::role::permissions::ADMINISTRATOR,
+        meshharbor_db::models::role::permissions::ADMINISTRATOR,
     ) {
         Ok(())
     } else {

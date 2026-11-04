@@ -84,7 +84,7 @@ peer. A search (`hive:search.open`, P2i-2) is a grant of the same kind toward an
 archive replica, naming the sessions the asker may read whose copy it holds; its
 query and what it finds travel only over its peer. The server's half is
 [`crates/modules/hive/src/view.rs`](../crates/modules/hive/src/view.rs), the
-device's `agents/roomlerd/src/hive/view.rs`.
+device's `agents/meshharbord/src/hive/view.rs`.
 
 ## The `rc:*` plane (agents, tunnel clients, controllers)
 

@@ -6,7 +6,7 @@
 
 use bson::{doc, oid::ObjectId};
 use mongodb::Database;
-use roomler_ai_remote_control::models::TransferActivityEvent;
+use meshharbor_remote_control::models::TransferActivityEvent;
 
 use super::base::{BaseDao, DaoResult, PaginatedResult, PaginationParams};
 

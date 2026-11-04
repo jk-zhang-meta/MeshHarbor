@@ -14,8 +14,8 @@
 //! the dev Windows machine, so the full backend can't compile there.
 
 use crate::fixtures::test_app::TestApp;
-use roomlerd::crash_recorder::{Payload as AgentCrashPayload, Reason as CrashReason};
-use roomlerd::{config::AgentConfig, enrollment};
+use meshharbord::crash_recorder::{Payload as AgentCrashPayload, Reason as CrashReason};
+use meshharbord::{config::AgentConfig, enrollment};
 use serde_json::Value;
 
 /// Enrol a fresh agent. Returns the `AgentConfig` (carries

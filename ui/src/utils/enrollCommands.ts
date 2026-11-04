@@ -79,7 +79,7 @@ export const DEVICE_ID_PLACEHOLDER = '<device-id>'
  * and manual paths; Roomler Setup runs it itself.
  *
  * FR-97 D5: Roomler Setup installs the agent on Windows only — on Linux and
- * macOS it installs the tunnel client (`agents/roomler-setup`), so an agent
+ * macOS it installs the tunnel client (`agents/meshharbor-setup`), so an agent
  * enrollment there offers the script and the manual path, never the wizard.
  */
 export function enrollCommands(

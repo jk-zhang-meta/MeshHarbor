@@ -27,19 +27,19 @@ timeout; the command lives exactly as long as the channel does. Everything that 
 | When | What |
 |---|---|
 | 2026-10-06 | `ssh <node> cat f > f` of a 4.4 MB MP4 arrived as 1.9 MB of U+FFFD noise — fixed by #1819 (bytes, not text). The same run then stopped at exactly 1 MiB: the engine's ceiling. On macOS the command died of `SIGPIPE` when the reader dropped the pipe and `ssh` exited 1 — with no word about why until #1819 added the stderr notice. |
-| since P5b | The managed corporate laptops run SSH sessions as `console_user`; `scp`/`sftp` **refuse** for Windows non-daemon accounts (`agents/roomlerd/src/ssh.rs:910-930`). So those hosts have had **no way to move a file over 1 MiB**: exec is capped, sftp refuses. |
+| since P5b | The managed corporate laptops run SSH sessions as `console_user`; `scp`/`sftp` **refuse** for Windows non-daemon accounts (`agents/meshharbord/src/ssh.rs:910-930`). So those hosts have had **no way to move a file over 1 MiB**: exec is capped, sftp refuses. |
 | since P2 | `docs/roomler-ssh.md:110-135` documents the cap as deliberate: *"output arrives when the command finishes rather than streaming, because the engine buffers to enforce its ceiling"*. A command that prompts waits on a question the caller cannot see; `tail -f` returns nothing for five minutes and then the last 1 MiB. |
 
 ## The mechanism, in the code (`origin/rec-demo-ssh-bytes-mac-banner`, #1819, the branch this builds on)
 
 | What | Where | Why it blocks streaming |
 |---|---|---|
-| The SSH exec handler hands the command to the Fleet-RPC engine with the engine's maxima | `agents/roomlerd/src/ssh.rs:2078` `run_exec` → `:2134-2135` (`timeout_ms: MAX_TIMEOUT_MS`, `max_output_bytes: MAX_OUTPUT_BYTES`) → `:2141-2143` `run_fed` | the engine returns ONE `ExecOutcome` when the process is gone |
+| The SSH exec handler hands the command to the Fleet-RPC engine with the engine's maxima | `agents/meshharbord/src/ssh.rs:2078` `run_exec` → `:2134-2135` (`timeout_ms: MAX_TIMEOUT_MS`, `max_output_bytes: MAX_OUTPUT_BYTES`) → `:2141-2143` `run_fed` | the engine returns ONE `ExecOutcome` when the process is gone |
 | The whole output is sent after the run, then the ceiling notice | `ssh.rs:2041-2048`, `:2052-2064` | nothing reaches the channel while the command runs |
-| The engine re-clamps timeout and ceiling, takes the permit, registers cancel | `agents/roomlerd/src/exec.rs:1024` `run_fed`, `:1037-1038` | the clamps are for a wire the server bounded; SSH never needed them |
+| The engine re-clamps timeout and ceiling, takes the permit, registers cancel | `agents/meshharbord/src/exec.rs:1024` `run_fed`, `:1037-1038` | the clamps are for a wire the server bounded; SSH never needed them |
 | Both pipes are drained into a `Vec` against ONE shared budget | `exec.rs:1140-1144`, `read_capped` `:1209` | the reader stops at the budget; past it the child dies of SIGPIPE / `ERROR_NO_DATA` |
 | The process waits in a `select!` over `wait` / `sleep(timeout)` / `cancel` | `exec.rs:1149-1162` | a fixed wall clock kills a long transfer |
-| Windows `console_user`: `CreateProcessAsUserW` with three pipes, two blocking drain threads to EOF | `exec.rs:1909` `win_console::run`, `:1977-1980`; `agents/roomlerd/src/win_service/supervisor.rs:1896` `spawn_in_session_captured`, `:2096` `read_pipe_to_end` | the drain is "read everything, then return" — but the pipes are there; only the drain shape buffers |
+| Windows `console_user`: `CreateProcessAsUserW` with three pipes, two blocking drain threads to EOF | `exec.rs:1909` `win_console::run`, `:1977-1980`; `agents/meshharbord/src/win_service/supervisor.rs:1896` `spawn_in_session_captured`, `:2096` `read_pipe_to_end` | the drain is "read everything, then return" — but the pipes are there; only the drain shape buffers |
 | The one-hour blocking `wait_for_exit` backstop | `exec.rs:2006-2008` | sized against `MAX_TIMEOUT_MS`; a command with no wall clock can outlive it |
 | The pty path streams with no ceiling and no timeout, and its lifetime is the channel's | `ssh.rs:1094` `start_pty_session`, the pump `:1200-1233` | the shape exec should have, minus the terminal |
 | The session deadline's doc says an exec in flight "is bounded by the engine's own wall-clock ceiling" | `ssh.rs:819-823`, `arm_session_deadline` `:850` | true today, false after this — the disconnect must cancel the command |

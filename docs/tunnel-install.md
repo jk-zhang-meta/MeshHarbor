@@ -136,16 +136,16 @@ Verify in **Admin → Tenant → Agents** that the row turned green (`status: on
 ```powershell
 Invoke-WebRequest `
   "https://roomler.ai/api/tunnel/installer/windows-x86_64?version=latest" `
-  -OutFile "$env:USERPROFILE\Downloads\roomler-cli.zip"
-Expand-Archive "$env:USERPROFILE\Downloads\roomler-cli.zip" `
-  -DestinationPath "$env:LOCALAPPDATA\roomler-cli"
+  -OutFile "$env:USERPROFILE\Downloads\meshharbor-cli.zip"
+Expand-Archive "$env:USERPROFILE\Downloads\meshharbor-cli.zip" `
+  -DestinationPath "$env:LOCALAPPDATA\meshharbor-cli"
 # RETIRED-NAME-ANCHOR(4): the ARCHIVE directory keeps the roomler-tunnel
 # prefix by contract (release-tunnel.yml). Only the binary inside it was
 # renamed to `roomler`.
 # Optional — add to PATH:
 [Environment]::SetEnvironmentVariable(
   "Path",
-  "$env:Path;$env:LOCALAPPDATA\roomler-cli\roomler-tunnel-0.3.0-rc.46-x86_64-pc-windows-msvc",
+  "$env:Path;$env:LOCALAPPDATA\meshharbor-cli\roomler-tunnel-0.3.0-rc.46-x86_64-pc-windows-msvc",
   "User"
 )
 ```
@@ -153,9 +153,9 @@ Expand-Archive "$env:USERPROFILE\Downloads\roomler-cli.zip" `
 **Linux (.deb):**
 
 ```bash
-curl -fsSL -o /tmp/roomler-cli.deb \
+curl -fsSL -o /tmp/meshharbor-cli.deb \
   "https://roomler.ai/api/tunnel/installer/linux-deb?version=latest"
-sudo dpkg -i /tmp/roomler-cli.deb
+sudo dpkg -i /tmp/meshharbor-cli.deb
 # `roomler` is now on $PATH at /usr/bin/roomler
 ```
 
@@ -173,26 +173,26 @@ sudo dpkg -i /tmp/roomler-cli.deb
 > unconfigured, and `apt-get -f install` removes it again. Use the plain tarball
 > below. `install.sh --role tunnel` checks that `roomler` runs and falls back
 > to the tarball on its own. The CLI now declares both names
-> (`agents/roomler-cli/Cargo.toml`), so from tunnel-v0.4.149 on, the `.deb` is
+> (`agents/meshharbor-cli/Cargo.toml`), so from tunnel-v0.4.149 on, the `.deb` is
 > built to install on both generations.
 
 **Linux (plain tarball):**
 
 ```bash
-curl -fsSL -o /tmp/roomler-cli.tar.gz \
+curl -fsSL -o /tmp/meshharbor-cli.tar.gz \
   "https://roomler.ai/api/tunnel/installer/linux-x86_64?version=latest"
 # RETIRED-NAME-ANCHOR(2): archive directory name, frozen (see above).
-mkdir -p ~/.local/opt && tar -C ~/.local/opt -xzf /tmp/roomler-cli.tar.gz
+mkdir -p ~/.local/opt && tar -C ~/.local/opt -xzf /tmp/meshharbor-cli.tar.gz
 ln -sf ~/.local/opt/roomler-tunnel-*-x86_64-unknown-linux-gnu/roomler ~/.local/bin/
 ```
 
 **macOS (universal tarball):**
 
 ```bash
-curl -fsSL -o /tmp/roomler-cli.tar.gz \
+curl -fsSL -o /tmp/meshharbor-cli.tar.gz \
   "https://roomler.ai/api/tunnel/installer/macos?version=latest"
 # RETIRED-NAME-ANCHOR(2): archive directory name, frozen (see above).
-mkdir -p ~/.local/opt && tar -C ~/.local/opt -xzf /tmp/roomler-cli.tar.gz
+mkdir -p ~/.local/opt && tar -C ~/.local/opt -xzf /tmp/meshharbor-cli.tar.gz
 ln -sf ~/.local/opt/roomler-tunnel-*-universal-apple-darwin/roomler ~/.local/bin/
 ```
 
@@ -222,7 +222,7 @@ roomler enroll `
 <!-- RETIRED-NAME-ANCHOR(5): the CLI resolves its config through
      ProjectDirs::from("ai", "roomler", "roomler-tunnel"). That segment is
      frozen: it holds the ENROLLED credential on tunnel only hosts, and
-     renaming it strands every one of them. agents/roomler-cli/src/config.rs -->
+     renaming it strands every one of them. agents/meshharbor-cli/src/config.rs -->
 This writes the long-lived `TunnelClient` JWT to:
 
 - Windows: `%APPDATA%\roomler\roomler-tunnel\config.toml`
@@ -391,7 +391,7 @@ longest-prefix LAN routing, transports): [tunnels.md](tunnels.md).
 ```powershell
 # RETIRED-NAME-ANCHOR: names the tracing target of pre-FR-21 builds. Renaming
 # a lib renames its target, so an operator on an older CLI needs the old one.
-$env:RUST_LOG = "roomler_cli=debug,tunnel_core=info"   # pre-FR-21 builds: roomler_tunnel=debug
+$env:RUST_LOG = "meshharbor_cli=debug,tunnel_core=info"   # pre-FR-21 builds: roomler_tunnel=debug
 roomler forward --agent … --local 5432 --remote db.intranet:5432
 ```
 

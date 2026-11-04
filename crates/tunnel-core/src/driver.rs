@@ -33,11 +33,11 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use bson::oid::ObjectId;
-use roomler_ai_remote_control::signaling::{
+use meshharbor_remote_control::signaling::{
     ClientMsg, CloseReason, Direction, IceServer, REJECT_REASON_NO_SESSION,
     REJECT_REASON_SESSION_GONE, REJECT_REASON_SESSION_MISMATCH, RejectKind, ServerMsg, TunnelRole,
 };
-use roomler_ai_remote_control::vault::NET_GRANT_REFUSED;
+use meshharbor_remote_control::vault::NET_GRANT_REFUSED;
 use tokio::net::TcpListener;
 use tokio::sync::{Mutex, Notify, oneshot, watch};
 use tracing::{debug, error, info, warn};
@@ -866,7 +866,7 @@ fn tune_local_socket(tcp: &tokio::net::TcpStream, peer_addr: std::net::SocketAdd
     // P0 throughput fix (rc.64, field-repro 2026-05-26): disable
     // Nagle on the local listener's accepted TCP socket. The agent
     // side already sets TCP_NODELAY on its outbound (corp-side)
-    // dialer (see agents/roomlerd/src/tunnel/dialer.rs); the
+    // dialer (see agents/meshharbord/src/tunnel/dialer.rs); the
     // asymmetry meant TDS row tokens flowing FROM the server,
     // through the DC, OUT to the local SSMS/psql/JDBC client got
     // Nagle-coalesced on this socket. Under MSSQL TDS the small
@@ -2020,7 +2020,7 @@ async fn setup_quic_over_relay(
         // Dial the grant's own UDP port on the pinned IP (regional PoPs may
         // serve TURN off 3478; the granted url list is authoritative).
         let udp_port =
-            roomler_ai_remote_control::turn_url::first_udp_port(urls.iter().map(String::as_str));
+            meshharbor_remote_control::turn_url::first_udp_port(urls.iter().map(String::as_str));
         alloc_urls.push(format!("turn:{host}:{udp_port}?transport=udp"));
         info!(%ip, "QUIC client: pinning relay to the agent's coturn worker (hairpin)");
     }

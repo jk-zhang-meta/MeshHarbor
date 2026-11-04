@@ -49,7 +49,7 @@ use crate::localapi::{
     PeerWhy, TierWhy,
 };
 use crate::transport::derp::DerpMux;
-use roomler_ai_remote_control::signaling::{ClientMsg, IceServer, NetmapPeer, OverlayNetworkInfo};
+use meshharbor_remote_control::signaling::{ClientMsg, IceServer, NetmapPeer, OverlayNetworkInfo};
 
 // rc.284 — the god-file split. The establishment half, the inbound-adopt
 // handler, and the route-ownership/exit-routing half live in CHILD modules of
@@ -1189,7 +1189,7 @@ pub enum OverlayEvent {
         org_relay_discovery: bool,
         path_trial_v1: bool,
     },
-    PathTrial(roomler_ai_remote_control::signaling::ServerMsg),
+    PathTrial(meshharbor_remote_control::signaling::ServerMsg),
     /// Incremental update.
     NetmapDelta {
         epoch: u64,
@@ -1264,9 +1264,9 @@ pub enum OverlayEvent {
     OrgRelayCandidates {
         peer_node_id: ObjectId,
         request_id: u64,
-        candidates: Vec<roomler_ai_remote_control::signaling::OrgRelayCandidateWire>,
-        next_cursor: Option<roomler_ai_remote_control::signaling::OrgRelayDiscoveryCursorWire>,
-        scan: Option<roomler_ai_remote_control::signaling::OrgRelayDiscoveryScanWire>,
+        candidates: Vec<meshharbor_remote_control::signaling::OrgRelayCandidateWire>,
+        next_cursor: Option<meshharbor_remote_control::signaling::OrgRelayDiscoveryCursorWire>,
+        scan: Option<meshharbor_remote_control::signaling::OrgRelayDiscoveryScanWire>,
         ttl_secs: u32,
     },
     /// R3/R4 — the embedder observed a LAN-address-set change on a
@@ -2719,11 +2719,11 @@ impl OverlayRuntime {
             // `OVERLAY_BACKBONE_ONLY=0` opts out.
             supports_backbone_only_v1: super::direct::org_relay_enabled()
                 && self.org_primary
-                && self.mtu <= roomler_ai_remote_control::models::peer_relay_limits::BACKBONE_MAX_OVERLAY_MTU
+                && self.mtu <= meshharbor_remote_control::models::peer_relay_limits::BACKBONE_MAX_OVERLAY_MTU
                 && crate::env::flag("OVERLAY_BACKBONE_ONLY", true),
             supports_path_backbone_v1: path_trial::enabled()
                 && self.org_primary
-                && self.mtu <= roomler_ai_remote_control::models::peer_relay_limits::BACKBONE_MAX_OVERLAY_MTU
+                && self.mtu <= meshharbor_remote_control::models::peer_relay_limits::BACKBONE_MAX_OVERLAY_MTU
                 && (super::orgrelay::backbone::path_enabled() || self.backbone_enabled),
             relay_backbone_ready: self.org_primary
                 && self.ready_relay_port().is_some()
@@ -5230,7 +5230,7 @@ impl OverlayRuntime {
                                 if let Some((v, _age)) = super::netcheck::current() {
                                     let _ = advert_tx
                                         .send(ClientMsg::OverlayNetcheck {
-                                            caps: roomler_ai_remote_control::signaling::CapVectorWire {
+                                            caps: meshharbor_remote_control::signaling::CapVectorWire {
                                                 stun_udp: v.stun_udp,
                                                 relay_band_udp: v.relay_band_udp,
                                                 derp_ws_ok: v.derp_ws_ok,
@@ -11919,7 +11919,7 @@ mod tests {
 #[cfg(test)]
 mod org_fallback_tests {
     use super::*;
-    use roomler_ai_remote_control::signaling::OrgRelayCandidateWire;
+    use meshharbor_remote_control::signaling::OrgRelayCandidateWire;
 
     async fn fixture() -> (
         ObjectId,
@@ -11967,7 +11967,7 @@ mod org_fallback_tests {
                 id,
                 request_id,
                 vec![OrgRelayCandidateWire {
-                    path: roomler_ai_remote_control::signaling::RelayPathWire::new(vec![
+                    path: meshharbor_remote_control::signaling::RelayPathWire::new(vec![
                         ObjectId::new()
                     ])
                     .unwrap(),

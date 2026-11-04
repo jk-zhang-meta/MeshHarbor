@@ -334,7 +334,7 @@ itself on the affected run's page. Baseline when the program started: releases t
   blanks member versions and skips the workspace's own `Cargo.lock` entries, so four
   version bumps (0.4.108 → 0.4.113) kept `ci-lint`'s key, while #1741 and #1752 (a
   dependency each in `crates/api/Cargo.toml`) and #1744 (a feature in
-  `agents/roomlerd/Cargo.toml`) each rotated it. #587 added its `key` beside an
+  `agents/meshharbord/Cargo.toml`) each rotated it. #587 added its `key` beside an
   existing `shared-key: ci-linux`, so it was dead from the first run. The likeliest end
   of the 08-21 lockout is #590, which changed a member manifest 42 min after #587
   merged (an eviction and re-save would also have refreshed the entry). A
@@ -497,13 +497,13 @@ itself on the affected run's page. Baseline when the program started: releases t
   - rust-cache's `cleanRegistry` (v2) keeps the extracted sources of `-sys` crates. A
     re-extraction would bump directory mtimes that their build scripts watch. So the trim
     deletes only the `.crate` files and keeps the directories, which that cleanup scans.
-  - `cargo tree -p roomlerd -e normal,build,dev --target x86_64-unknown-linux-gnu`: the plain
+  - `cargo tree -p meshharbord -e normal,build,dev --target x86_64-unknown-linux-gnu`: the plain
     recorder graph and the `+audio` graph differ in roomlerd itself and 7 audio-only crates
     (alsa, alsa-sys, audiopus, audiopus_sys, cmake, cpal, dasp_sample), and in nothing else.
     ⚠ That comparison covered the TEST graphs only. On the PR (run 38081437008) the plain
     lane restored `v0-rust-ci-recorder-audio-…` and still compiled 40 crates against
     master's 15. The extra 25 (tokio, hyper, reqwest, quinn, openssl, webrtc-dtls, …) are
-    the variant its non-test `cargo build -p roomlerd` needs: resolver v2 unifies no
+    the variant its non-test `cargo build -p meshharbord` needs: resolver v2 unifies no
     dev-dependency features there, and the audio lane never builds it. The lane took 273 s
     against 221–295 s over master's last six runs, off the CI critical path. The trim logged
     `dropped 183 MB of .crate archives`.

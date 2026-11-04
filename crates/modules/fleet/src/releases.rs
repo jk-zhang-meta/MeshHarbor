@@ -44,7 +44,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
-use roomler_core::ApiError;
+use meshharbor_core::ApiError;
 
 use crate::{FleetState, agent_release::AgentRelease};
 
@@ -241,7 +241,7 @@ pub async fn cached(state: &FleetState) -> Result<Vec<AgentRelease>, ApiError> {
 async fn fetch_release_by_tag(tag: &str) -> anyhow::Result<AgentRelease> {
     let url = format!("https://api.github.com/repos/{RELEASES_REPO}/releases/tags/{tag}");
     let client = reqwest::Client::builder()
-        .user_agent(concat!("roomler-ai-api/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("meshharbor-api/", env!("CARGO_PKG_VERSION")))
         .timeout(FETCH_TIMEOUT)
         .build()?;
     let resp = client
@@ -338,7 +338,7 @@ async fn fetch_tags_with_prefix(prefix: &str) -> anyhow::Result<Vec<String>> {
     let url =
         format!("https://api.github.com/repos/{RELEASES_REPO}/git/matching-refs/tags/{prefix}");
     let client = reqwest::Client::builder()
-        .user_agent(concat!("roomler-ai-api/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("meshharbor-api/", env!("CARGO_PKG_VERSION")))
         .timeout(FETCH_TIMEOUT)
         .build()?;
     let resp = client
@@ -362,7 +362,7 @@ async fn fetch_release_page() -> anyhow::Result<Vec<AgentRelease>> {
         "https://api.github.com/repos/{RELEASES_REPO}/releases?per_page={RELEASES_PER_PAGE}"
     );
     let client = reqwest::Client::builder()
-        .user_agent(concat!("roomler-ai-api/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("meshharbor-api/", env!("CARGO_PKG_VERSION")))
         .timeout(FETCH_TIMEOUT)
         .build()?;
     let resp = client
@@ -672,7 +672,7 @@ mod tests {
     /// The real repo, over the network: every family the routes serve comes
     /// back, however deep its newest release sits. Not in CI (GitHub's
     /// unauthenticated quota); run it after touching the fetch:
-    /// `cargo test -p roomler-ai-mod-fleet --lib releases -- --ignored`.
+    /// `cargo test -p meshharbor-mod-fleet --lib releases -- --ignored`.
     #[tokio::test]
     #[ignore = "network: the real GitHub API"]
     async fn the_real_repo_serves_every_family() {

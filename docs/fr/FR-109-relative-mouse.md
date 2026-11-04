@@ -22,14 +22,14 @@ Nothing to install on the controlling side stays true: Pointer Lock is a web API
 
 | What | Where |
 |---|---|
-| Every move is absolute: `mouse_move {x, y, mon}`, normalised `0..1` per monitor, so a resolution change mid-session needs no resync | [`input/mod.rs:320`](../../agents/roomlerd/src/input/mod.rs#L320) `InputMsg` |
-| enigo moves to an absolute pixel | [`enigo_backend.rs:152`](../../agents/roomlerd/src/input/enigo_backend.rs#L152) `Coordinate::Abs` |
-| The uinput device is an absolute tablet **by design**: "a relative device would force us to track the pointer and guess at acceleration" | [`uinput_backend.rs:18`](../../agents/roomlerd/src/input/uinput_backend.rs#L18), axes at `:312` |
-| The portal path moves with `NotifyPointerMotionAbsolute` on the stream | [`portal/input.rs:468`](../../agents/roomlerd/src/capture/portal/input.rs#L468) |
+| Every move is absolute: `mouse_move {x, y, mon}`, normalised `0..1` per monitor, so a resolution change mid-session needs no resync | [`input/mod.rs:320`](../../agents/meshharbord/src/input/mod.rs#L320) `InputMsg` |
+| enigo moves to an absolute pixel | [`enigo_backend.rs:152`](../../agents/meshharbord/src/input/enigo_backend.rs#L152) `Coordinate::Abs` |
+| The uinput device is an absolute tablet **by design**: "a relative device would force us to track the pointer and guess at acceleration" | [`uinput_backend.rs:18`](../../agents/meshharbord/src/input/uinput_backend.rs#L18), axes at `:312` |
+| The portal path moves with `NotifyPointerMotionAbsolute` on the stream | [`portal/input.rs:468`](../../agents/meshharbord/src/capture/portal/input.rs#L468) |
 | The viewer coalesces pointer moves at the input gap and sends the last position | [`useRemoteControl.ts:6215`](../../ui/src/composables/useRemoteControl.ts#L6215), the gap's key at `:2389` |
 | The agent already says when the host hides its cursor (`cursor:hide`); the viewer only drops its ghost cursor | `useRemoteControl.ts:9398` |
 | No Pointer Lock anywhere in the viewer | `git grep requestPointerLock ui/src`: nothing |
-| `AgentCaps.input` today: `arbiter`, `exclusive`, `ghost-cursor` | [`caps.rs:1640`](../../agents/roomlerd/src/encode/caps.rs#L1640) |
+| `AgentCaps.input` today: `arbiter`, `exclusive`, `ghost-cursor` | [`caps.rs:1640`](../../agents/meshharbord/src/encode/caps.rs#L1640) |
 
 ## 3. Design
 
@@ -75,7 +75,7 @@ sequenceDiagram
 | Backend | Relative motion | P0 checks |
 |---|---|---|
 | enigo, Windows (user worker) | `Coordinate::Rel` → `SendInput` with `MOUSEEVENTF_MOVE` and no `ABSOLUTE` | a raw-input reader sees the injected deltas; what pointer acceleration does to the cursor and to raw input |
-| SystemContext (SYSTEM in the console session) | the same enigo, on its dedicated thread ([`system_context_backend.rs:5`](../../agents/roomlerd/src/input/system_context_backend.rs#L5)) | the same, from that worker |
+| SystemContext (SYSTEM in the console session) | the same enigo, on its dedicated thread ([`system_context_backend.rs:5`](../../agents/meshharbord/src/input/system_context_backend.rs#L5)) | the same, from that worker |
 | enigo, X11 | XTest relative motion | an XInput2 raw reader sees them |
 | enigo, macOS | enigo's relative move | whether apps read the deltas, or a `CGEvent` needs the delta fields set (open decision 2). **Answered** (rows 30–31): enigo's relative move already sets the delta fields to the counts sent. A session event tap reads every event with exactly that delta, and so does an app's `NSEvent`, with the cursor coupled or decoupled |
 | uinput (system installs) | a **second**, relative-only device (`REL_X`, `REL_Y`), made on first use. The absolute tablet stays as it is | how libinput classifies it beside the tablet, on GNOME and KDE. **Answered** (rows 15–16): a pointer on both, its unaccelerated deltas handed on 1:1 |
@@ -85,7 +85,7 @@ sequenceDiagram
 
 `mouse_rel` is movement. Only the session holding input injects it, the same as `mouse_move`.
 Held-button tracking, the modifier fence and release-all on teardown are unchanged
-([`arbiter.rs:17`](../../agents/roomlerd/src/input/arbiter.rs#L17)): a drag in relative mode is a held
+([`arbiter.rs:17`](../../agents/meshharbord/src/input/arbiter.rs#L17)): a drag in relative mode is a held
 button plus deltas.
 
 ### 3d. The viewer
@@ -133,7 +133,7 @@ happens while the host is locked.
 The agent only injects. It never reads input, so there is no hook, no raw-input sink and no key polling, by
 FR-92's rule. The field probes that read raw input (§5) are test scripts on throwaway guests, never part
 of `roomlerd`. A unit test holds this
-([`input/mod.rs:846`](../../agents/roomlerd/src/input/mod.rs#L846) `fr109_relative_mouse_reads_no_input`,
+([`input/mod.rs:846`](../../agents/meshharbord/src/input/mod.rs#L846) `fr109_relative_mouse_reads_no_input`,
 AC6). It scans the six files relative mode touches for hooks, raw-input registration and reads,
 keyboard-state reads, an evdev grab, XRecord, XI2 event selection and a macOS event tap. It allows exactly
 one key-state call: FR-92's own keep-busy check for a held mouse button (`buttons_held_now`), and only

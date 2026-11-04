@@ -10,7 +10,7 @@ use crate::agent_presence_tests::enroll;
 use crate::fixtures::test_app::TestApp;
 use crate::peer_relay_mint_tests::{Ws, connect_from};
 use futures::SinkExt;
-use roomler_ai_remote_control::net_inventory::{Family, NetInventory, Route, Section};
+use meshharbor_remote_control::net_inventory::{Family, NetInventory, Route, Section};
 use serde_json::{Value, json};
 use std::time::Duration;
 use tokio_tungstenite::tungstenite::Message;

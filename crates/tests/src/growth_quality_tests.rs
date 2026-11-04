@@ -22,9 +22,9 @@
 
 use bson::{Bson, DateTime, Document, doc, oid::ObjectId};
 use chrono::NaiveDate;
-use roomler_ai_api::growth::{cohorts::week_start, digest, quality, weekly};
-use roomler_ai_services::dao::growth_quality::{ALL_VERSIONS, GROWTH_QUALITY_DAILY, Scope};
-use roomler_core::growth::ExclusionSet;
+use meshharbor_api::growth::{cohorts::week_start, digest, quality, weekly};
+use meshharbor_services::dao::growth_quality::{ALL_VERSIONS, GROWTH_QUALITY_DAILY, Scope};
+use meshharbor_core::growth::ExclusionSet;
 use serde_json::{Value, json};
 
 use crate::{
@@ -149,7 +149,7 @@ async fn agent_batch(
     let mut d = doc! {
         "tenant_id": tenant, "source": "agent", "agent_id": agent_id,
         "agent_version": version, "line_count": 1_i32, "created_at": at,
-        "lines": [ { "ts": at, "level": "INFO", "target": "roomlerd::peer", "msg": "input dispatch", "fields": {} } ],
+        "lines": [ { "ts": at, "level": "INFO", "target": "meshharbord::peer", "msg": "input dispatch", "fields": {} } ],
     };
     if let Some(s) = session_id {
         d.insert("session_id", s.to_hex());

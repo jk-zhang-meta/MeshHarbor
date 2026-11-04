@@ -252,7 +252,7 @@ export const TUTORIAL_CHAPTERS: TutorialChapter[] = [
     detail: [
       {
         label: 'Install',
-        text: 'One line per platform, or the roomler-setup wizard for a GUI. Windows MSI (per-user or per-machine, signed), Linux .deb/tarball with systemd, macOS .pkg.',
+        text: 'One line per platform, or the meshharbor-setup wizard for a GUI. Windows MSI (per-user or per-machine, signed), Linux .deb/tarball with systemd, macOS .pkg.',
       },
       {
         label: 'Status',

@@ -15,7 +15,7 @@
 //!
 //! It lives in `tunnel-core` since FR-97 P6b, so the tunnel CLI's
 //! `roomler self-update` refuses its own artifacts the same way, on every
-//! OS. The agent re-exports it as `roomlerd::pgp_verify`.
+//! OS. The agent re-exports it as `meshharbord::pgp_verify`.
 //!
 //! Scope is deliberately narrow — this is NOT an OpenPGP implementation.
 //! It verifies exactly the shape our CI emits (`gpg --armor --detach-sign`
@@ -476,7 +476,7 @@ hV/0cAHGFizJ3Gl+qz5YZ4IEbnnXtgs=\n\
     /// gh release download agent-v0.3.0-rc.475 --repo gjovanov/roomler-ai \
     ///   --pattern 'roomler-agent-*aarch64-apple-darwin.pkg*' --dir /tmp/rel
     /// ROOMLER_TEST_ARTIFACT=/tmp/rel/roomler-agent-0.3.0-rc.475-aarch64-apple-darwin.pkg \
-    ///   cargo test -p roomler-ai-tunnel-core --lib -- --ignored real_published_asc
+    ///   cargo test -p meshharbor-tunnel-core --lib -- --ignored real_published_asc
     /// ```
     #[test]
     #[ignore = "needs a published release artifact; see the doc comment"]

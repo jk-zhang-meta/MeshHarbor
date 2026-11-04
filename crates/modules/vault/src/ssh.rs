@@ -41,10 +41,10 @@
 //! row, nothing `rc:vault.revoke` names; its end bounds it.
 
 use bson::{DateTime, oid::ObjectId};
-use roomler_ai_remote_control::models::SshAccountMode;
-use roomler_ai_remote_control::vault::{LeaseRefusal, lease_limits};
-use roomler_ai_services::auth::SshTicket;
-use roomler_ai_services::dao::base::DaoError;
+use meshharbor_remote_control::models::SshAccountMode;
+use meshharbor_remote_control::vault::{LeaseRefusal, lease_limits};
+use meshharbor_services::auth::SshTicket;
+use meshharbor_services::dao::base::DaoError;
 use tracing::warn;
 
 use crate::VaultState;

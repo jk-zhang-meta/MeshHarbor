@@ -5,7 +5,7 @@
 # WHY THIS EXISTS
 #
 #   The docs point into the code by line: `crates/localapi/src/lib.rs:2759`, a range
-#   `agents/roomlerd/src/main.rs:4849-4856`, or a link `[…](../x.rs#L100-L120)`. Every
+#   `agents/meshharbord/src/main.rs:4849-4856`, or a link `[…](../x.rs#L100-L120)`. Every
 #   change that moves code moves those numbers, and they are re-shifted at merge time.
 #   A shift that moves only the FIRST number of a range leaves `:2088-2087`, which points
 #   at nothing a reader can follow, and no build, test or link checker notices: the file

@@ -38,7 +38,7 @@ fn legacy_urls() -> Vec<String> {
     .collect()
 }
 
-fn relay_settings(s: &mut roomler_ai_config::Settings, enabled: bool) {
+fn relay_settings(s: &mut meshharbor_config::Settings, enabled: bool) {
     s.turn.url = Some("turn:coturn.example:3478".into());
     s.turn.shared_secret = Some("integration-test-secret".into());
     s.relay.regions_enabled = enabled;
@@ -146,7 +146,7 @@ async fn flag_on_compiles_regions_and_keeps_sessionless_creds_on_default() {
     // The wire push (what capability-flagged agents receive) carries only
     // the enabled region, with its STUN probe target + DERP endpoint.
     let (wire, _rev) =
-        roomler_ai_remote_control::turn_creds::relay_regions_wire(&app.state.turn_map)
+        meshharbor_remote_control::turn_creds::relay_regions_wire(&app.state.turn_map)
             .expect("enabled map with one usable region");
     assert_eq!(wire.len(), 1);
     assert_eq!(wire[0].id, "us-east");

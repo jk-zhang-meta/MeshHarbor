@@ -2,7 +2,7 @@
 // Copyright (C) 2026 G ROX EOOD
 use bson::{DateTime, doc, oid::ObjectId};
 use mongodb::Database;
-use roomler_ai_db::models::ActivationCode;
+use meshharbor_db::models::ActivationCode;
 
 use super::base::{BaseDao, DaoResult};
 

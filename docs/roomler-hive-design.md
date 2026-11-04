@@ -59,7 +59,7 @@ machines and makes five things first-class:
 | `vault` module | `crates/modules/vault` (AGPL) | secrets, versions, envelope encryption, roles, Cedar decisions, leases, templates, audit |
 | `knowhow` module | `crates/modules/knowhow` (AGPL) | entity/edge graph, fleet + network sync, proposals, verification, access plans |
 | `hive` module | `crates/modules/hive` (AGPL) | sessions, leases and fences, replicaset membership, turn stubs and cards, teleport coordination, **the brain** (memory, skills, playbooks), optional LLM gateway |
-| daemon feature `hive` | `agents/roomlerd/src/hive/` (MPL) — **no new binary** | supervisor, `roomlerd hive-host` (re-exec'd as the user), harness adapters, **replica store** (SQLite + FTS5), replication, viewer peer, checkpoints, LLM sidecar, toolbelt (MCP), egress proxy, vault agent, reviewer, scanners |
+| daemon feature `hive` | `agents/meshharbord/src/hive/` (MPL) — **no new binary** | supervisor, `roomlerd hive-host` (re-exec'd as the user), harness adapters, **replica store** (SQLite + FTS5), replication, viewer peer, checkpoints, LLM sidecar, toolbelt (MCP), egress proxy, vault agent, reviewer, scanners |
 | UI | `ui/src/{views,components}/hive/` (AGPL) | session chrome and renderers inside chat, the viewer peer, sessions list, brain review, knowhow map, vault admin |
 
 **Hive's invariants**, on top of Roomler's own:
@@ -171,7 +171,7 @@ owner (`crates/remote_control/src/signaling.rs:2092`), and an unmounted module a
 
 ```mermaid
 flowchart BT
-  core["roomler-core"]
+  core["meshharbor-core"]
   chat["chat"] --> core
   conference["conference"] --> chat
   fleet["fleet"] --> core
@@ -220,7 +220,7 @@ v0.2 also put the node side in a second binary, `hived`, supervised by `roomlerd
 doubles the signing, updater and installer couplings on every platform and contradicts
 "one daemon per machine". The node side is a cargo feature of `roomlerd`. Its
 user-level half is `roomlerd hive-host`, re-exec'd as the user the way `portal-helper`
-and `record` already are (`agents/roomlerd/src/main.rs:203,346`), so it ships, signs
+and `record` already are (`agents/meshharbord/src/main.rs:203,346`), so it ships, signs
 and updates with the daemon.
 
 ### 3.2 Who runs as what
@@ -267,7 +267,7 @@ flowchart LR
 
 `hive-host` authenticates to the daemon the way FR-43's worker does: the daemon mints a
 secret per host and hands it over **on stdin**, never on disk or in argv
-(`agents/roomlerd/src/delegate.rs:16-30`). Without it, any process in the user's
+(`agents/meshharbord/src/delegate.rs:16-30`). Without it, any process in the user's
 session could volunteer to *be* the session's host and receive its prompts.
 
 ⚠️ **The daemon never writes into a user-owned tree as SYSTEM/root.** Checkout, restore
@@ -399,16 +399,16 @@ account, so the device owner's map, not the server's list, is the last word. To 
 session started as `bob`: `"alice@example.com" = "bob"`.
 
 Spawning reuses the one privilege path the daemon has, `RunAs` + `apply_run_as`
-(`agents/roomlerd/src/exec.rs:442,497`), which exec, the PTY, sftp and the portal helper
+(`agents/meshharbord/src/exec.rs:442,497`), which exec, the PTY, sftp and the portal helper
 already share. No second spawn path.
 
 | OS | How | Consequence |
 |---|---|---|
 | Linux, macOS | `RunAs::Named(account)`: `setgroups → setgid → setuid` in `pre_exec`, verified afterwards (`exec.rs:738-773`); uid-0 accounts refused | any mapped account, signed in or not |
-| Windows | the console user, through `WTSQueryUserToken` + `CreateProcessAsUserW` (`agents/roomlerd/src/pty/windows.rs:690-762`) | ⚠️ only the user signed in at the console (D2). There is no S4U or `LogonUser` path, and the daemon "will not ask for" credentials (`exec.rs:503-508`). Nobody signed in ⇒ `refused: no_console_user` |
+| Windows | the console user, through `WTSQueryUserToken` + `CreateProcessAsUserW` (`agents/meshharbord/src/pty/windows.rs:690-762`) | ⚠️ only the user signed in at the console (D2). There is no S4U or `LogonUser` path, and the daemon "will not ask for" credentials (`exec.rs:503-508`). Nobody signed in ⇒ `refused: no_console_user` |
 
 Two gaps in that path: it sets no working directory and only `TERM` in the environment
-(`agents/roomlerd/src/pty/unix.rs:150`). Hive adds `current_dir(folder)` and a login
+(`agents/meshharbord/src/pty/unix.rs:150`). Hive adds `current_dir(folder)` and a login
 environment. The folder must resolve under a `hive_roots` entry after
 canonicalisation, checked as the mapped account, so a symlink out of a root is caught by
 the account that would follow it.
@@ -469,10 +469,10 @@ outside Hive.
 JSONL is "internal to Claude Code and changes between versions" (sessions docs).
 Interactive mode — the TUI in a terminal — is for people who want it. On Linux and
 macOS it runs in a `tmux -L roomler-hive` server owned by the mapped account, the FR-56
-pattern minus the X terminal (`agents/roomlerd/src/apps/linux.rs:389-433`,
+pattern minus the X terminal (`agents/meshharbord/src/apps/linux.rs:389-433`,
 `docs/remote-apps.md:279-298`), attachable at the machine or with
 `roomler ssh <device> -t 'roomler hive attach <sid>'`. On Windows it is a ConPTY
-(`agents/roomlerd/src/pty/windows.rs:180-240`). Interactive turns are read by tailing
+(`agents/meshharbord/src/pty/windows.rs:180-240`). Interactive turns are read by tailing
 the transcript through a version-pinned parser. A session switches modes only at a turn
 boundary.
 
@@ -480,7 +480,7 @@ boundary.
 every agent mid-turn.
 
 - Linux: `hive-host` runs as a transient unit outside the daemon's cgroup
-  (`systemd-run --uid=…`, as the companion is started, `agents/roomlerd/src/companion.rs:701-731`),
+  (`systemd-run --uid=…`, as the companion is started, `agents/meshharbord/src/companion.rs:701-731`),
   so `systemctl restart roomlerd` leaves it running, and it reconnects to the daemon's
   per-uid socket.
 - macOS: `hive-host` starts in the user's bootstrap context (`launchctl asuser`, as
@@ -735,7 +735,7 @@ centrally over stub metadata and session cards; full text on the replicas (§10.
 No browser↔daemon terminal channel exists (the remote-control peer carries `control`,
 `files`, `clipboard`, `cursor` and `record` channels). The smallest honest addition is a
 `terminal` DataChannel on the viewer peer, fed by the same PTY code, with a new
-`PromptKind::Hive` consent for write access (`agents/roomlerd/src/consent.rs:174`;
+`PromptKind::Hive` consent for write access (`agents/meshharbord/src/consent.rs:174`;
 adding a kind is one variant plus companion rendering). People at a terminal already
 have attach: `roomler ssh <device> -t 'roomler hive attach <sid>'` goes through roomler
 SSH's four gates, single-use grants and consent. Browser attach is P6.
@@ -868,7 +868,7 @@ This session was moved by alice at 14:02 UTC.
 From: laptop (Windows 11), C:\dev\roomler-ai, PowerShell.  To: mars (Ubuntu 24.04), /home/alice/roomler-ai, bash.
 Paths in earlier turns under C:\dev\roomler-ai\ now live under /home/alice/roomler-ai/.
 Workspace = checkpoint 0a1b2c3 (turn 41), untracked and uncommitted changes included.
-Last tool call before the move — `cargo test -p roomlerd --lib` — was interrupted; its result is unknown.
+Last tool call before the move — `cargo test -p meshharbord --lib` — was interrupted; its result is unknown.
 Toolchain drift: rustc 1.90 → 1.89, node 22 → 20.  Not carried: `npm run dev` (port 5000), target/.
 Credentials re-evaluated here: secret://grox/aws/prod-deployer is denied on this device.
 ```
@@ -929,7 +929,7 @@ even under allow rules. Because that is UX, the daemon asks again where it matte
 | Need | Primitive | What decides it |
 |---|---|---|
 | a peer's port | on a TUN host, the overlay address or MagicDNS name directly; on a netstack host, `socks5h://` to the netstack front | the netstack front resolves peer names from the netmap and needs no DNS (`crates/tunnel-core/src/overlay/netstack_socks.rs:3-32`), but reaches overlay peers only — not subnets, not exits (`netstack.rs:1146-1150`) |
-| a private subnet behind a device | a session-scoped forward or SOCKS5 **through that device** (`CreateSocks5{node}` semantics) | the exit dials with its own resolver (`agents/roomlerd/src/tunnel/dialer.rs:20-52`); `tunnel_policies` authorize it (`crates/remote_control/src/models.rs:3532-3549`) and `tunnel_audit` records it |
+| a private subnet behind a device | a session-scoped forward or SOCKS5 **through that device** (`CreateSocks5{node}` semantics) | the exit dials with its own resolver (`agents/meshharbord/src/tunnel/dialer.rs:20-52`); `tunnel_policies` authorize it (`crates/remote_control/src/models.rs:3532-3549`) and `tunnel_audit` records it |
 | the internet from a chosen place (an office IP a cloud API allow-lists) | SOCKS5 through that device | ⚠️ **not** an overlay exit node — those are host-wide, primary-org only and reroute the whole machine (`docs/overlay-exit-nodes.md`) |
 
 The daemon needs three changes for this, named here so they aren't discovered in the
@@ -956,7 +956,7 @@ field:
 ### 7.3 `ssh` by default, `exec` by exception
 
 `fleet_exec` runs as SYSTEM/root on the target — fleet RPC always uses
-`RunAs::Daemon` (`agents/roomlerd/src/signaling.rs:4479`) and run-as-user is explicitly
+`RunAs::Daemon` (`agents/meshharbord/src/signaling.rs:4479`) and run-as-user is explicitly
 deferred (`docs/fleet-rpc.md:197`). So agents get `ssh_run`, which runs as whatever
 account the **target** maps under SSH's gates and single-use grants, and `fleet_exec`
 only with a policy permit **and** a person's approval on each call. Both keep every gate
@@ -1538,7 +1538,7 @@ open (§18).
 
 | Threat | Controls |
 |---|---|
-| A session is remote code execution on a device | four gates, shaped like exec and SSH: `HIVE_RUN` (no managed role below `ADMINISTRATOR`); `role:assume` (default deny); per-(user, device) limits applied after the identity gates so a refusal is attributable; device-local `hive_enabled` with the account map and roots. Never SYSTEM/root. A consent prompt (`PromptKind::Hive`, floored by `consent::strictest_of`, `agents/roomlerd/src/consent.rs:153`) when the starter doesn't own the device |
+| A session is remote code execution on a device | four gates, shaped like exec and SSH: `HIVE_RUN` (no managed role below `ADMINISTRATOR`); `role:assume` (default deny); per-(user, device) limits applied after the identity gates so a refusal is attributable; device-local `hive_enabled` with the account map and roots. Never SYSTEM/root. A consent prompt (`PromptKind::Hive`, floored by `consent::strictest_of`, `agents/meshharbord/src/consent.rs:153`) when the starter doesn't own the device |
 | A compromised server starts sessions everywhere | gate 4 belongs to the device. `hive_enabled` and `hive_replica` join `DesiredConfig` (`crates/remote_control/src/models.rs:2713`) and so can be pushed only to devices that opted into remote config; `hive_accounts`, `hive_roots` and `hive_archive` are never pushable, locked the way `the_device_owned_refusals_are_not_pushable` (`:9198`) locks `remote_config_enabled` |
 | A compromised server reads sessions | it holds no transcripts. It holds metadata, stubs, cards (if enabled), the brain and audit. It can mint a view grant for itself and open a viewer peer, as it could initiate remote control — the same trust in signalling RC already has, and every view grant is audited |
 | A replica's disk is stolen, or its device compromised | the store is daemon-owned and unreadable by other local users; placement policy keeps sensitive roles on tagged devices; purge tombstones; encryption at rest with per-session keys (P7). Until then a stolen disk exposes the sessions it held |
@@ -1593,16 +1593,16 @@ Device config, on `roomler config`'s surface and default-deny: `hive_enabled`,
 ## 15. Code layout
 
 ```
-crates/modules/hive/       roomler-ai-mod-hive (AGPL)     sessions · leases · replicaset · stubs · cards · moves · brain · gateway
-crates/modules/vault/      roomler-ai-mod-vault (AGPL)    secrets · envelope + KMS · roles · Cedar · leases · templates · audit
-crates/modules/knowhow/    roomler-ai-mod-knowhow (AGPL)  graph · sync · scan intake · proposals · verification · access plans
+crates/modules/hive/       meshharbor-mod-hive (AGPL)     sessions · leases · replicaset · stubs · cards · moves · brain · gateway
+crates/modules/vault/      meshharbor-mod-vault (AGPL)    secrets · envelope + KMS · roles · Cedar · leases · templates · audit
+crates/modules/knowhow/    meshharbor-mod-knowhow (AGPL)  graph · sync · scan intake · proposals · verification · access plans
 crates/hive-node/          (MPL)  daemon-only: events + hash chain · stream-json adapter · replica store (SQLite + FTS5) · launch spec · roots
 crates/remote_control/     (MPL)  + rc:hive.*, rc:vault.*, rc:knowhow.* variants; RpcCap hive, hive-replica, vault, knowhow-scan
 crates/localapi/           (MPL)  + per-session endpoint types
 crates/tunnel-core/        (MPL)  + authenticated SOCKS5, Principal::Session, the replication carrier
-agents/roomlerd/src/hive/  (MPL)  supervisor · hive-host · adapters · store (SQLite + FTS5) · replication · viewer peer
+agents/meshharbord/src/hive/  (MPL)  supervisor · hive-host · adapters · store (SQLite + FTS5) · replication · viewer peer
                                   · checkpoints · sidecar · toolbelt · egress proxy · vault agent · reviewer · scanners
-agents/roomler-cli/        (MPL)  roomler hive · mcp · brain · vault · knowhow · connect
+agents/meshharbor-cli/        (MPL)  roomler hive · mcp · brain · vault · knowhow · connect
 ui/src/…/hive/             (AGPL) session chrome · viewer peer · renderers · sessions list · brain review · knowhow map · vault admin
 ```
 

@@ -2,7 +2,7 @@
 // Copyright (C) 2026 G ROX EOOD
 use bson::{DateTime, doc, oid::ObjectId};
 use mongodb::Database;
-use roomler_ai_db::models::PushSubscription;
+use meshharbor_db::models::PushSubscription;
 
 use super::base::{BaseDao, DaoResult};
 
@@ -37,7 +37,7 @@ impl PushSubscriptionDao {
             id: None,
             user_id,
             endpoint,
-            keys: roomler_ai_db::models::PushKeys { auth, p256dh },
+            keys: meshharbor_db::models::PushKeys { auth, p256dh },
             created_at: DateTime::now(),
         };
 

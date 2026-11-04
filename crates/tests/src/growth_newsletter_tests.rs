@@ -39,7 +39,7 @@ fn keypair() -> (EcdsaKeyPair, String) {
     let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng).unwrap();
     let pair =
         EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, pkcs8.as_ref(), &rng).unwrap();
-    let mut spki = roomler_ai_services::sendgrid::P256_SPKI_PREFIX.to_vec();
+    let mut spki = meshharbor_services::sendgrid::P256_SPKI_PREFIX.to_vec();
     spki.extend_from_slice(pair.public_key().as_ref());
     (pair, base64::engine::general_purpose::STANDARD.encode(spki))
 }

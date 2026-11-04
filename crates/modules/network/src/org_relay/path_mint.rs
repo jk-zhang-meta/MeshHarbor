@@ -4,7 +4,7 @@
 //! gate snapshot and records each crossing before claiming or sending it.
 
 use super::*;
-use roomler_ai_remote_control::models::PeerRelayDenyReason as Deny;
+use meshharbor_remote_control::models::PeerRelayDenyReason as Deny;
 
 /// A selected edge is addressed by identities and endpoint, not graph index:
 /// the fresh snapshot is independently ordered and may have changed.

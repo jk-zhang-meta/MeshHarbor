@@ -747,7 +747,7 @@ async fn a_cross_border_pair_rides_only_its_approved_line() {
             "{name}: a lossy line is not pinned to DERP"
         );
     }
-    let pk = roomler_ai_mod_network::overlay::pair_key(
+    let pk = meshharbor_mod_network::overlay::pair_key(
         ObjectId::parse_str(&l.cn_node).unwrap(),
         ObjectId::parse_str(&l.us_node).unwrap(),
     );
@@ -772,20 +772,20 @@ async fn staged_graph_uses_live_gates_and_revoked_crossing_is_not_offered() {
     let us = ObjectId::parse_str(&l.us_node).unwrap();
     let gz = ObjectId::parse_str(&l.gz_agent).unwrap();
     let hk = ObjectId::parse_str(&l.hk_agent).unwrap();
-    let edges = roomler_ai_mod_network::org_relay::candidate_test_support::prepare_edges(
+    let edges = meshharbor_mod_network::org_relay::candidate_test_support::prepare_edges(
         net, cn, us, false,
     )
     .await
     .unwrap();
     assert!(
-        roomler_ai_mod_network::org_relay::candidate_test_support::prepare_edges(net, cn, us, true)
+        meshharbor_mod_network::org_relay::candidate_test_support::prepare_edges(net, cn, us, true)
             .await
             .is_err(),
         "trial capability is required"
     );
     assert_eq!(edges, vec![(gz, hk, LINE.to_string(), true)]);
     l.set_edge(false).await;
-    let edges = roomler_ai_mod_network::org_relay::candidate_test_support::prepare_edges(
+    let edges = meshharbor_mod_network::org_relay::candidate_test_support::prepare_edges(
         l.rig.app.state.network(),
         cn,
         us,
@@ -802,7 +802,7 @@ async fn staged_graph_uses_live_gates_and_revoked_crossing_is_not_offered() {
         200
     );
     assert!(
-        roomler_ai_mod_network::org_relay::candidate_test_support::prepare_edges(
+        meshharbor_mod_network::org_relay::candidate_test_support::prepare_edges(
             l.rig.app.state.network(),
             cn,
             us,
@@ -851,7 +851,7 @@ async fn staged_graph_tracks_three_relay_chain_and_each_acl() {
     let gz = ObjectId::parse_str(&l.gz_agent).unwrap();
     let mid_id = ObjectId::parse_str(&mid_agent).unwrap();
     let hk = ObjectId::parse_str(&l.hk_agent).unwrap();
-    let edges = roomler_ai_mod_network::org_relay::candidate_test_support::prepare_edges(
+    let edges = meshharbor_mod_network::org_relay::candidate_test_support::prepare_edges(
         l.rig.app.state.network(),
         cn,
         us,
@@ -874,7 +874,7 @@ async fn staged_graph_tracks_three_relay_chain_and_each_acl() {
     let hk_node = ObjectId::parse_str(&l.hk_node).unwrap();
     let net = l.rig.app.state.network();
     assert!(
-        roomler_ai_mod_network::org_relay::candidate_test_support::record_member_probe_fixture(
+        meshharbor_mod_network::org_relay::candidate_test_support::record_member_probe_fixture(
             net,
             cn,
             &[
@@ -884,13 +884,13 @@ async fn staged_graph_tracks_three_relay_chain_and_each_acl() {
         )
     );
     assert!(
-        roomler_ai_mod_network::org_relay::candidate_test_support::record_member_probe_fixture(
+        meshharbor_mod_network::org_relay::candidate_test_support::record_member_probe_fixture(
             net,
             us,
             &[(hk_node, "1.1.1.1:3478".into(), true, Some(10)),]
         )
     );
-    let chosen = roomler_ai_mod_network::org_relay::candidate_test_support::select_path(
+    let chosen = meshharbor_mod_network::org_relay::candidate_test_support::select_path(
         l.rig.app.state.network(),
         cn,
         us,
@@ -926,19 +926,19 @@ async fn staged_graph_tracks_three_relay_chain_and_each_acl() {
     endpoint_update(&mut mid, "223.6.6.8:41641").await;
     endpoint_update(&mut mid, "223.6.6.7:41641").await;
     let after_endpoint_revert =
-        roomler_ai_mod_network::org_relay::candidate_test_support::select_path(net, cn, us, false)
+        meshharbor_mod_network::org_relay::candidate_test_support::select_path(net, cn, us, false)
             .await
             .unwrap()
             .unwrap();
     assert_eq!(after_endpoint_revert, (vec![mid_id, hk], false));
     let negative = [(mid_node_id, "223.6.6.7:3478".into(), false, None)];
     assert!(
-        roomler_ai_mod_network::org_relay::candidate_test_support::record_member_probe_fixture(
+        meshharbor_mod_network::org_relay::candidate_test_support::record_member_probe_fixture(
             net, cn, &negative
         )
     );
     assert_eq!(
-        roomler_ai_mod_network::org_relay::candidate_test_support::select_path(net, cn, us, false)
+        meshharbor_mod_network::org_relay::candidate_test_support::select_path(net, cn, us, false)
             .await
             .unwrap()
             .unwrap(),
@@ -963,19 +963,19 @@ async fn staged_graph_tracks_three_relay_chain_and_each_acl() {
         assert_eq!(status, 200, "{value}");
     }
     assert_eq!(
-        roomler_ai_mod_network::org_relay::candidate_test_support::select_path(net, cn, us, false)
+        meshharbor_mod_network::org_relay::candidate_test_support::select_path(net, cn, us, false)
             .await
             .unwrap()
             .unwrap(),
         (vec![mid_id, hk], false)
     );
     assert!(
-        roomler_ai_mod_network::org_relay::candidate_test_support::record_member_probe_fixture(
+        meshharbor_mod_network::org_relay::candidate_test_support::record_member_probe_fixture(
             net, cn, &negative
         )
     );
     assert_eq!(
-        roomler_ai_mod_network::org_relay::candidate_test_support::select_path(net, cn, us, false)
+        meshharbor_mod_network::org_relay::candidate_test_support::select_path(net, cn, us, false)
             .await
             .unwrap()
             .unwrap(),
@@ -990,7 +990,7 @@ async fn staged_graph_tracks_three_relay_chain_and_each_acl() {
         json!({ "relay_backbone_ready": true }),
     )
     .await;
-    let after_rejoin = roomler_ai_mod_network::org_relay::candidate_test_support::select_path(
+    let after_rejoin = meshharbor_mod_network::org_relay::candidate_test_support::select_path(
         l.rig.app.state.network(),
         cn,
         us,
@@ -1016,7 +1016,7 @@ async fn staged_graph_tracks_three_relay_chain_and_each_acl() {
         .status()
         .as_u16();
     assert_eq!(status, 200);
-    let edges = roomler_ai_mod_network::org_relay::candidate_test_support::prepare_edges(
+    let edges = meshharbor_mod_network::org_relay::candidate_test_support::prepare_edges(
         l.rig.app.state.network(),
         cn,
         us,
@@ -1029,7 +1029,7 @@ async fn staged_graph_tracks_three_relay_chain_and_each_acl() {
         "no edge may use the no-longer-granted middle relay"
     );
     assert!(
-        roomler_ai_mod_network::org_relay::candidate_test_support::select_path(
+        meshharbor_mod_network::org_relay::candidate_test_support::select_path(
             l.rig.app.state.network(),
             cn,
             us,
@@ -1051,7 +1051,7 @@ async fn staged_graph_rejects_probe_from_displaced_agent_socket() {
     let endpoint = "1.1.1.1:3478";
     let net = l.rig.app.state.network();
     assert!(
-        roomler_ai_mod_network::org_relay::candidate_test_support::record_member_probe_fixture(
+        meshharbor_mod_network::org_relay::candidate_test_support::record_member_probe_fixture(
             net,
             us,
             &[(hk, endpoint.into(), true, Some(30))]
@@ -1059,16 +1059,16 @@ async fn staged_graph_rejects_probe_from_displaced_agent_socket() {
     );
     let node = net.overlay_nodes.base.find_by_id(us).await.unwrap();
     let identity = match node.node_ref {
-        roomler_ai_remote_control::models::NodeRef::Agent { agent_id } => agent_id,
+        meshharbor_remote_control::models::NodeRef::Agent { agent_id } => agent_id,
         _ => panic!("fixture must be an agent"),
     };
     let old_connection =
-        roomler_ai_mod_network::org_relay::candidate_test_support::current_connection_id(
+        meshharbor_mod_network::org_relay::candidate_test_support::current_connection_id(
             net, identity,
         )
         .unwrap();
     let (reached, release, finished) =
-        roomler_ai_mod_network::org_relay::candidate_test_support::pause_next_probe(identity);
+        meshharbor_mod_network::org_relay::candidate_test_support::pause_next_probe(identity);
     let report = |rtt| {
         Message::Text(
             json!({"t":"rc:overlay.relay_probe", "relay_node_id":hk.to_hex(),
@@ -1085,7 +1085,7 @@ async fn staged_graph_rejects_probe_from_displaced_agent_socket() {
     let mut replacement = connect_from(&l.rig.app, &l.us_tok, &[], Some(US_A)).await;
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
-            if roomler_ai_mod_network::org_relay::candidate_test_support::current_connection_id(
+            if meshharbor_mod_network::org_relay::candidate_test_support::current_connection_id(
                 net, identity,
             )
             .is_some_and(|id| id != old_connection)
@@ -1105,7 +1105,7 @@ async fn staged_graph_rejects_probe_from_displaced_agent_socket() {
             .unwrap()
     );
     assert_eq!(
-        roomler_ai_mod_network::org_relay::candidate_test_support::probe_rtts(net, us, hk),
+        meshharbor_mod_network::org_relay::candidate_test_support::probe_rtts(net, us, hk),
         vec![Some(30)]
     );
     async fn barrier(ws: &mut Ws, nonce: &'static [u8]) {
@@ -1124,7 +1124,7 @@ async fn staged_graph_rejects_probe_from_displaced_agent_socket() {
     replacement.send(report(20)).await.unwrap();
     barrier(&mut replacement, b"new-probe-barrier").await;
     assert_eq!(
-        roomler_ai_mod_network::org_relay::candidate_test_support::probe_rtts(net, us, hk),
+        meshharbor_mod_network::org_relay::candidate_test_support::probe_rtts(net, us, hk),
         vec![Some(30), Some(20)]
     );
 }
@@ -1174,7 +1174,7 @@ async fn a_line_ends_with_its_edge_and_with_either_relay() {
 /// relay only while a restarting center closed its connections.
 #[tokio::test]
 async fn a_line_outlives_a_reconnect_from_its_zone_only() {
-    use roomler_ai_mod_network::org_relay::LINE_RECONNECT_GRACE;
+    use meshharbor_mod_network::org_relay::LINE_RECONNECT_GRACE;
     let mut l = LineRig::up("iso-line-reconnect", true).await;
     relay_request(&mut l.cn, &l.us_node).await;
     let (_, _, _, cn, us) = l.expect_line().await;
@@ -1632,9 +1632,9 @@ async fn staged_graph_tunnel_displaced_probe_is_rejected() {
     let (mut old, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
     line_join(&mut old, 31, "223.6.6.6:41641", json!({})).await;
     let net = rig.app.state.network();
-    let node = roomler_ai_mod_network::overlay::current_node(
+    let node = meshharbor_mod_network::overlay::current_node(
         net,
-        roomler_ai_mod_network::overlay::NodeIdentity::TunnelClient(identity),
+        meshharbor_mod_network::overlay::NodeIdentity::TunnelClient(identity),
     )
     .await
     .unwrap()
@@ -1643,19 +1643,19 @@ async fn staged_graph_tunnel_displaced_probe_is_rejected() {
     let relay = ObjectId::new();
     let endpoint = "1.1.1.1:3478";
     assert!(
-        roomler_ai_mod_network::org_relay::candidate_test_support::record_member_probe_fixture(
+        meshharbor_mod_network::org_relay::candidate_test_support::record_member_probe_fixture(
             net,
             node,
             &[(relay, endpoint.into(), true, Some(30))]
         )
     );
     let old_conn =
-        roomler_ai_mod_network::org_relay::candidate_test_support::current_connection_id(
+        meshharbor_mod_network::org_relay::candidate_test_support::current_connection_id(
             net, identity,
         )
         .unwrap();
     let (reached, release, finished) =
-        roomler_ai_mod_network::org_relay::candidate_test_support::pause_next_probe(identity);
+        meshharbor_mod_network::org_relay::candidate_test_support::pause_next_probe(identity);
     let report = |rtt| {
         Message::Text(
             json!({"t":"rc:overlay.relay_probe", "relay_node_id":relay.to_hex(),
@@ -1672,7 +1672,7 @@ async fn staged_graph_tunnel_displaced_probe_is_rejected() {
     let (mut replacement, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
     line_join(&mut replacement, 31, "223.6.6.6:41641", json!({})).await;
     assert_ne!(
-        roomler_ai_mod_network::org_relay::candidate_test_support::current_connection_id(
+        meshharbor_mod_network::org_relay::candidate_test_support::current_connection_id(
             net, identity
         )
         .unwrap(),
@@ -1681,7 +1681,7 @@ async fn staged_graph_tunnel_displaced_probe_is_rejected() {
     // Re-offer the same endpoint before the old report resumes, so offer
     // withdrawal cannot accidentally hide a missing ownership check.
     assert!(
-        roomler_ai_mod_network::org_relay::candidate_test_support::record_member_probe_fixture(
+        meshharbor_mod_network::org_relay::candidate_test_support::record_member_probe_fixture(
             net,
             node,
             &[(relay, endpoint.into(), true, Some(30))]
@@ -1695,13 +1695,13 @@ async fn staged_graph_tunnel_displaced_probe_is_rejected() {
             .unwrap()
     );
     assert_eq!(
-        roomler_ai_mod_network::org_relay::candidate_test_support::probe_rtts(net, node, relay),
+        meshharbor_mod_network::org_relay::candidate_test_support::probe_rtts(net, node, relay),
         vec![Some(30), Some(30)]
     );
     replacement.send(report(20)).await.unwrap();
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
-            let rtts = roomler_ai_mod_network::org_relay::candidate_test_support::probe_rtts(
+            let rtts = meshharbor_mod_network::org_relay::candidate_test_support::probe_rtts(
                 net, node, relay,
             );
             if rtts == vec![Some(30), Some(30), Some(20)] {
@@ -1775,12 +1775,12 @@ async fn staged_graph_tunnel_old_close_preserves_replacement_session() {
     )
     .await;
     let old_conn =
-        roomler_ai_mod_network::org_relay::candidate_test_support::current_connection_id(
+        meshharbor_mod_network::org_relay::candidate_test_support::current_connection_id(
             l.rig.app.state.network(),
             identity,
         )
         .unwrap();
-    let cleanup = roomler_ai_mod_network::org_relay::candidate_test_support::observe_tunnel_cleanup(
+    let cleanup = meshharbor_mod_network::org_relay::candidate_test_support::observe_tunnel_cleanup(
         &old_conn,
     );
     let (mut replacement, _) = tokio_tungstenite::connect_async(request()).await.unwrap();
@@ -1792,15 +1792,15 @@ async fn staged_graph_tunnel_old_close_preserves_replacement_session() {
     )
     .await;
     let net = l.rig.app.state.network();
-    let ident = roomler_ai_mod_network::overlay::NodeIdentity::TunnelClient(identity);
-    let tunnel_node = roomler_ai_mod_network::overlay::current_node(net, ident)
+    let ident = meshharbor_mod_network::overlay::NodeIdentity::TunnelClient(identity);
+    let tunnel_node = meshharbor_mod_network::overlay::current_node(net, ident)
         .await
         .unwrap()
         .id
         .unwrap();
     let cn_node = ObjectId::parse_str(&l.cn_node).unwrap();
-    let key = roomler_ai_mod_network::overlay::pair_key(cn_node, tunnel_node);
-    let current = roomler_ai_mod_network::org_relay::candidate_test_support::current_connection_id(
+    let key = meshharbor_mod_network::overlay::pair_key(cn_node, tunnel_node);
+    let current = meshharbor_mod_network::org_relay::candidate_test_support::current_connection_id(
         net, identity,
     )
     .unwrap();
@@ -1835,11 +1835,11 @@ async fn staged_graph_tunnel_old_close_preserves_replacement_session() {
         .unwrap();
     assert!(net.overlay_nodes_by_id.contains_key(&identity));
     assert_eq!(
-        roomler_ai_mod_network::overlay::current_node(net, ident)
+        meshharbor_mod_network::overlay::current_node(net, ident)
             .await
             .unwrap()
             .status,
-        roomler_ai_remote_control::models::AgentStatus::Online
+        meshharbor_remote_control::models::AgentStatus::Online
     );
     assert!(net.org_relay.active_session(&key).is_some());
     assert!(
@@ -1852,7 +1852,7 @@ async fn staged_graph_tunnel_old_close_preserves_replacement_session() {
         .is_none()
     );
     assert_eq!(
-        roomler_ai_mod_network::org_relay::candidate_test_support::current_connection_id(
+        meshharbor_mod_network::org_relay::candidate_test_support::current_connection_id(
             net, identity
         ),
         Some(current)
@@ -1896,29 +1896,29 @@ async fn staged_graph_tunnel_bind_waits_for_old_async_leave() {
     let (mut old, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
     line_join(&mut old, 31, "223.6.6.6:41641", json!({})).await;
     let net = rig.app.state.network();
-    let old_id = roomler_ai_mod_network::org_relay::candidate_test_support::current_connection_id(
+    let old_id = meshharbor_mod_network::org_relay::candidate_test_support::current_connection_id(
         net, identity,
     )
     .unwrap();
     let (reached, resume) =
-        roomler_ai_mod_network::org_relay::candidate_test_support::pause_tunnel_leave(&old_id);
+        meshharbor_mod_network::org_relay::candidate_test_support::pause_tunnel_leave(&old_id);
     old.send(Message::Close(None)).await.unwrap();
     tokio::time::timeout(Duration::from_secs(5), reached)
         .await
         .unwrap()
         .unwrap();
     assert!(
-        roomler_ai_mod_network::org_relay::candidate_test_support::current_connection_id(
+        meshharbor_mod_network::org_relay::candidate_test_support::current_connection_id(
             net, identity
         )
         .is_none()
     );
     let bind_attempt =
-        roomler_ai_mod_network::org_relay::candidate_test_support::observe_tunnel_bind_attempt(
+        meshharbor_mod_network::org_relay::candidate_test_support::observe_tunnel_bind_attempt(
             identity,
         );
     let mut bound =
-        roomler_ai_mod_network::org_relay::candidate_test_support::observe_tunnel_bound(identity);
+        meshharbor_mod_network::org_relay::candidate_test_support::observe_tunnel_bound(identity);
     let (mut replacement, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
     tokio::time::timeout(Duration::from_secs(5), bind_attempt)
         .await
@@ -1931,7 +1931,7 @@ async fn staged_graph_tunnel_bind_waits_for_old_async_leave() {
         "new bind must wait for old async leave"
     );
     assert!(
-        roomler_ai_mod_network::org_relay::candidate_test_support::current_connection_id(
+        meshharbor_mod_network::org_relay::candidate_test_support::current_connection_id(
             net, identity
         )
         .is_none()
@@ -1943,24 +1943,24 @@ async fn staged_graph_tunnel_bind_waits_for_old_async_leave() {
         .unwrap();
     line_join(&mut replacement, 31, "223.6.6.6:41641", json!({})).await;
     assert!(net.overlay_nodes_by_id.contains_key(&identity));
-    let new_id = roomler_ai_mod_network::org_relay::candidate_test_support::current_connection_id(
+    let new_id = meshharbor_mod_network::org_relay::candidate_test_support::current_connection_id(
         net, identity,
     )
     .unwrap();
     assert_ne!(new_id, old_id);
-    let node = roomler_ai_mod_network::overlay::current_node(
+    let node = meshharbor_mod_network::overlay::current_node(
         net,
-        roomler_ai_mod_network::overlay::NodeIdentity::TunnelClient(identity),
+        meshharbor_mod_network::overlay::NodeIdentity::TunnelClient(identity),
     )
     .await
     .unwrap();
     assert_eq!(
         node.status,
-        roomler_ai_remote_control::models::AgentStatus::Online
+        meshharbor_remote_control::models::AgentStatus::Online
     );
     // Closing the current owner must still perform ordinary cleanup.
     let current_cleanup =
-        roomler_ai_mod_network::org_relay::candidate_test_support::observe_tunnel_cleanup(&new_id);
+        meshharbor_mod_network::org_relay::candidate_test_support::observe_tunnel_cleanup(&new_id);
     replacement.send(Message::Close(None)).await.unwrap();
     tokio::time::timeout(Duration::from_secs(5), current_cleanup)
         .await
@@ -1968,20 +1968,20 @@ async fn staged_graph_tunnel_bind_waits_for_old_async_leave() {
         .unwrap();
     assert!(!net.overlay_nodes_by_id.contains_key(&identity));
     assert!(
-        roomler_ai_mod_network::org_relay::candidate_test_support::current_connection_id(
+        meshharbor_mod_network::org_relay::candidate_test_support::current_connection_id(
             net, identity
         )
         .is_none()
     );
-    let offline = roomler_ai_mod_network::overlay::current_node(
+    let offline = meshharbor_mod_network::overlay::current_node(
         net,
-        roomler_ai_mod_network::overlay::NodeIdentity::TunnelClient(identity),
+        meshharbor_mod_network::overlay::NodeIdentity::TunnelClient(identity),
     )
     .await
     .unwrap();
     assert_eq!(
         offline.status,
-        roomler_ai_remote_control::models::AgentStatus::Offline
+        meshharbor_remote_control::models::AgentStatus::Offline
     );
 }
 
@@ -2016,7 +2016,7 @@ async fn staged_graph_unknown_zone_parity(mode: &'static str, slug: &str) {
         );
         let a_id = ObjectId::parse_str(&a_node).unwrap();
         let b_id = ObjectId::parse_str(&b_node).unwrap();
-        let result = roomler_ai_mod_network::org_relay::candidate_test_support::select_path(
+        let result = meshharbor_mod_network::org_relay::candidate_test_support::select_path(
             rig.app.state.network(),
             a_id,
             b_id,
@@ -2025,7 +2025,7 @@ async fn staged_graph_unknown_zone_parity(mode: &'static str, slug: &str) {
         .await;
         assert!(matches!(
             result,
-            Err(roomler_ai_remote_control::models::PeerRelayDenyReason::ZoneDenied)
+            Err(meshharbor_remote_control::models::PeerRelayDenyReason::ZoneDenied)
         ));
         return;
     }
@@ -2041,7 +2041,7 @@ async fn staged_graph_unknown_zone_parity(mode: &'static str, slug: &str) {
     let a_id = ObjectId::parse_str(&a_node).unwrap();
     let b_id = ObjectId::parse_str(&b_node).unwrap();
     let relay_agent_id = ObjectId::parse_str(&relay_id).unwrap();
-    let path = roomler_ai_mod_network::org_relay::candidate_test_support::select_path(
+    let path = meshharbor_mod_network::org_relay::candidate_test_support::select_path(
         rig.app.state.network(),
         a_id,
         b_id,
@@ -2105,7 +2105,7 @@ async fn staged_graph_unknown_zone_parity_linked_servers_enforce() {
     recv_t(&mut b, "rc:overlay.relay_session", wait)
         .await
         .expect("server b session");
-    let selected = roomler_ai_mod_network::org_relay::candidate_test_support::select_path(
+    let selected = meshharbor_mod_network::org_relay::candidate_test_support::select_path(
         rig.app.state.network(),
         ObjectId::parse_str(&a_node).unwrap(),
         ObjectId::parse_str(&b_node).unwrap(),
@@ -2171,7 +2171,7 @@ async fn staged_graph_unknown_backbone(mode: &'static str, slug: &str) {
         )
         .await;
         assert_eq!(status, 200, "{response}");
-        let edges = roomler_ai_mod_network::org_relay::candidate_test_support::prepare_edges(
+        let edges = meshharbor_mod_network::org_relay::candidate_test_support::prepare_edges(
             rig.app.state.network(),
             a_node,
             b_node,
@@ -2186,7 +2186,7 @@ async fn staged_graph_unknown_backbone(mode: &'static str, slug: &str) {
             "Off/Warn keep an approved edge and preserve its original cross-border bit"
         );
         assert!(
-            roomler_ai_mod_network::org_relay::candidate_test_support::record_member_probe_fixture(
+            meshharbor_mod_network::org_relay::candidate_test_support::record_member_probe_fixture(
                 net,
                 a_node,
                 &[
@@ -2196,7 +2196,7 @@ async fn staged_graph_unknown_backbone(mode: &'static str, slug: &str) {
             )
         );
         assert!(
-            roomler_ai_mod_network::org_relay::candidate_test_support::record_member_probe_fixture(
+            meshharbor_mod_network::org_relay::candidate_test_support::record_member_probe_fixture(
                 net,
                 b_node,
                 &[
@@ -2205,7 +2205,7 @@ async fn staged_graph_unknown_backbone(mode: &'static str, slug: &str) {
                 ]
             )
         );
-        let selected = roomler_ai_mod_network::org_relay::candidate_test_support::select_path(
+        let selected = meshharbor_mod_network::org_relay::candidate_test_support::select_path(
             net, a_node, b_node, false,
         )
         .await
@@ -2257,7 +2257,7 @@ async fn staged_graph_unknown_zone_parity_linked_servers_known_cross_zone() {
             .is_none(),
         "no cross-border line may be minted"
     );
-    let selected = roomler_ai_mod_network::org_relay::candidate_test_support::select_path(
+    let selected = meshharbor_mod_network::org_relay::candidate_test_support::select_path(
         rig.app.state.network(),
         ObjectId::parse_str(&a_node).unwrap(),
         ObjectId::parse_str(&b_node).unwrap(),
@@ -2266,7 +2266,7 @@ async fn staged_graph_unknown_zone_parity_linked_servers_known_cross_zone() {
     .await;
     assert!(matches!(
         selected,
-        Err(roomler_ai_remote_control::models::PeerRelayDenyReason::ZoneDenied)
+        Err(meshharbor_remote_control::models::PeerRelayDenyReason::ZoneDenied)
     ));
 }
 
@@ -2278,8 +2278,8 @@ async fn staged_graph_unknown_zone_parity_unlinked_servers_fail_closed() {
     let net = l.rig.app.state.network();
     let cn = ObjectId::parse_str(&l.cn_node).unwrap();
     let us = ObjectId::parse_str(&l.us_node).unwrap();
-    let agent_id = |node: &roomler_ai_remote_control::models::OverlayNode| match node.node_ref {
-        roomler_ai_remote_control::models::NodeRef::Agent { agent_id } => agent_id.to_hex(),
+    let agent_id = |node: &meshharbor_remote_control::models::OverlayNode| match node.node_ref {
+        meshharbor_remote_control::models::NodeRef::Agent { agent_id } => agent_id.to_hex(),
         _ => panic!("fixture member must be an agent"),
     };
     let cn_agent = agent_id(&net.overlay_nodes.base.find_by_id(cn).await.unwrap());
@@ -2287,13 +2287,13 @@ async fn staged_graph_unknown_zone_parity_unlinked_servers_fail_closed() {
     l.rig.set_role(&cn_agent, "server").await;
     l.rig.set_role(&us_agent, "server").await;
     l.rig.link(&cn_agent, &us_agent, false).await;
-    let result = roomler_ai_mod_network::org_relay::candidate_test_support::prepare_edges(
+    let result = meshharbor_mod_network::org_relay::candidate_test_support::prepare_edges(
         net, cn, us, false,
     )
     .await;
     assert!(matches!(
         result,
-        Err(roomler_ai_remote_control::models::PeerRelayDenyReason::ZoneDenied)
+        Err(meshharbor_remote_control::models::PeerRelayDenyReason::ZoneDenied)
     ));
 }
 
@@ -2303,11 +2303,11 @@ async fn staged_graph_unknown_zone_parity_unlinked_servers_fail_closed() {
 /// only; it does not grant a live path or prove remote revoke delivery.
 #[tokio::test]
 async fn staged_graph_mixed_edge_approval_revokes_only_when_the_edge_requires_it() {
-    use roomler_ai_mod_network::org_relay::{
+    use meshharbor_mod_network::org_relay::{
         LineLeg, OrgRelaySession, SessionMember, SessionParty,
         candidate_test_support::insert_session_fixture, revoke_removed_backbone_edges_sync,
     };
-    use roomler_ai_remote_control::models::{NodeRef, PeerRelayBackboneEdge};
+    use meshharbor_remote_control::models::{NodeRef, PeerRelayBackboneEdge};
     use std::time::Instant;
     let app = TestApp::spawn().await;
     let state = app.state.network();
@@ -2406,13 +2406,13 @@ async fn staged_graph_mixed_edge_approval_revokes_only_when_the_edge_requires_it
 /// three-relay records are fixtures, not grants to those relay processes.
 #[tokio::test]
 async fn staged_graph_three_relay_zone_recheck_preserves_valid_and_revokes_changed_edges() {
-    use roomler_ai_mod_network::org_relay::{
+    use meshharbor_mod_network::org_relay::{
         LineLeg, SessionParty,
         candidate_test_support::{
             insert_session_fixture, line_zones_fit_fixture, recheck_zones_fixture,
         },
     };
-    use roomler_ai_remote_control::models::NodeRef;
+    use meshharbor_remote_control::models::NodeRef;
     let mut l = LineRig::up("iso-three-relay-zone", true).await;
     let (extra_agent, extra_token) =
         enroll(&l.rig.app, &l.rig.seeded, "iso-three-relay-zone-extra").await;
@@ -2429,7 +2429,7 @@ async fn staged_graph_three_relay_zone_recheck_preserves_valid_and_revokes_chang
     relay_request(&mut l.cn, &l.us_node).await;
     let _ = l.expect_line().await;
     let state = l.rig.app.state.network();
-    let pair = roomler_ai_mod_network::overlay::pair_key(
+    let pair = meshharbor_mod_network::overlay::pair_key(
         ObjectId::parse_str(&l.cn_node).unwrap(),
         ObjectId::parse_str(&l.us_node).unwrap(),
     );
@@ -2440,7 +2440,7 @@ async fn staged_graph_three_relay_zone_recheck_preserves_valid_and_revokes_chang
     );
     // Loss of region evidence is not proof that the existing data path is invalid.
     let gz_id = ObjectId::parse_str(&l.gz_agent).unwrap();
-    let gz_conn = roomler_ai_mod_network::org_relay::candidate_test_support::current_connection_id(
+    let gz_conn = meshharbor_mod_network::org_relay::candidate_test_support::current_connection_id(
         state, gz_id,
     )
     .unwrap();
@@ -2525,12 +2525,12 @@ async fn staged_graph_three_relay_zone_recheck_preserves_valid_and_revokes_chang
 /// cannot hide an already-confirmed bad edge, or revoke its newer replacement.
 #[tokio::test]
 async fn staged_session_zone_epoch_change_revokes_invalid_snapshot_not_new_generation() {
-    use roomler_ai_mod_network::org_relay::{self, candidate_test_support as support};
+    use meshharbor_mod_network::org_relay::{self, candidate_test_support as support};
     let mut l = LineRig::up("iso-session-zone-epoch", true).await;
     relay_request(&mut l.cn, &l.us_node).await;
     let _ = l.expect_line().await;
     let state = l.rig.app.state.network();
-    let pair = roomler_ai_mod_network::overlay::pair_key(
+    let pair = meshharbor_mod_network::overlay::pair_key(
         ObjectId::parse_str(&l.cn_node).unwrap(),
         ObjectId::parse_str(&l.us_node).unwrap(),
     );
@@ -2589,7 +2589,7 @@ async fn staged_session_zone_epoch_change_revokes_invalid_snapshot_not_new_gener
 /// The actual scheduler owns its recovery guard from spawn through completion.
 #[tokio::test]
 async fn staged_trial_zone_worker_keeps_its_guard_until_the_worker_finishes() {
-    use roomler_ai_mod_network::org_relay::candidate_test_support as support;
+    use meshharbor_mod_network::org_relay::candidate_test_support as support;
     let rig = Rig::up("iso-trial-zone-guard", "enforce").await;
     let state = rig.app.state.network();
     // No await between spawn and this observation: on this current-thread
@@ -2619,8 +2619,8 @@ async fn staged_trial_zone_worker_keeps_its_guard_until_the_worker_finishes() {
 /// per-crossing audit, actual WireGuard data, and policy withdrawal.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn staged_graph_actual_three_relay_mint_audits_and_revokes_each_edge() {
-    use roomler_ai_remote_control::signaling::ServerMsg;
-    use roomlerd::relay_server::backbone_test_support::{
+    use meshharbor_remote_control::signaling::ServerMsg;
+    use meshharbord::relay_server::backbone_test_support::{
         BindSecret, Carrier, NativeRelay, OrgRelayConn, WgDevice, WgKeypair, bind_member,
     };
     use std::{
@@ -2725,7 +2725,7 @@ async fn staged_graph_actual_three_relay_mint_audits_and_revokes_each_edge() {
     let mid_node = ObjectId::parse_str(&middle_node).unwrap();
     let hk_node = ObjectId::parse_str(&l.hk_node).unwrap();
     assert!(
-        roomler_ai_mod_network::org_relay::candidate_test_support::record_member_probe_fixture(
+        meshharbor_mod_network::org_relay::candidate_test_support::record_member_probe_fixture(
             network,
             a,
             &[
@@ -2735,13 +2735,13 @@ async fn staged_graph_actual_three_relay_mint_audits_and_revokes_each_edge() {
         )
     );
     assert!(
-        roomler_ai_mod_network::org_relay::candidate_test_support::record_member_probe_fixture(
+        meshharbor_mod_network::org_relay::candidate_test_support::record_member_probe_fixture(
             network,
             b,
             &[(hk_node, "1.1.1.1:3478".into(), true, Some(10)),]
         )
     );
-    let selected = roomler_ai_mod_network::org_relay::candidate_test_support::select_path(
+    let selected = meshharbor_mod_network::org_relay::candidate_test_support::select_path(
         network, a, b, false,
     )
     .await
@@ -2793,12 +2793,12 @@ async fn staged_graph_actual_three_relay_mint_audits_and_revokes_each_edge() {
     assert_eq!(first_bridge["bridge"]["remote_vni"], mid["vni"]);
     assert_eq!(second_bridge["bridge"]["local_vni"], mid["vni"]);
     assert_eq!(second_bridge["bridge"]["remote_vni"], hk["vni"]);
-    let pair = roomler_ai_mod_network::overlay::pair_key(a, b);
+    let pair = meshharbor_mod_network::overlay::pair_key(a, b);
     let live = network
         .org_relay
         .active_session(&pair)
         .expect("real multi-hop session");
-    use roomler_ai_mod_network::org_relay::candidate_test_support as support;
+    use meshharbor_mod_network::org_relay::candidate_test_support as support;
     assert!(support::reauthorize_nhop_fixture(network, a, b, &live).await);
     let mut bad_endpoint = live.clone();
     bad_endpoint.hops[0].private_endpoint = "10.77.0.9:3478".into();
@@ -2814,7 +2814,7 @@ async fn staged_graph_actual_three_relay_mint_audits_and_revokes_each_edge() {
     let middle_party = live.hops[0].relay.clone();
     let middle_agent_id = live.hops[0].relay_agent_id;
     let mut fixture_keys = Vec::new();
-    for i in 0..roomler_ai_remote_control::models::peer_relay_limits::MAX_SESSIONS_PER_RELAY - 1 {
+    for i in 0..meshharbor_remote_control::models::peer_relay_limits::MAX_SESSIONS_PER_RELAY - 1 {
         let mut held = live.clone();
         held.pair_key = format!("nhop-reuse-capacity-{i}");
         held.relay = middle_party.clone();
@@ -3120,7 +3120,7 @@ async fn staged_graph_actual_three_relay_mint_audits_and_revokes_each_edge() {
     .await;
     assert_eq!(status, 200, "{body}");
     assert!(
-        roomler_ai_mod_network::org_relay::candidate_test_support::record_member_probe_fixture(
+        meshharbor_mod_network::org_relay::candidate_test_support::record_member_probe_fixture(
             network,
             a,
             &[
@@ -3130,15 +3130,15 @@ async fn staged_graph_actual_three_relay_mint_audits_and_revokes_each_edge() {
         )
     );
     assert!(
-        roomler_ai_mod_network::org_relay::candidate_test_support::record_member_probe_fixture(
+        meshharbor_mod_network::org_relay::candidate_test_support::record_member_probe_fixture(
             network,
             b,
             &[(hk_node, "1.1.1.1:3478".into(), true, Some(10)),]
         )
     );
-    let pair = roomler_ai_mod_network::overlay::pair_key(a, b);
+    let pair = meshharbor_mod_network::overlay::pair_key(a, b);
     let (reached, resume) =
-        roomler_ai_mod_network::org_relay::candidate_test_support::pause_nhop_delivery_fixture(
+        meshharbor_mod_network::org_relay::candidate_test_support::pause_nhop_delivery_fixture(
             pair.clone(),
         );
     relay_request(&mut l.cn, &l.us_node).await;
@@ -3188,7 +3188,7 @@ async fn staged_graph_actual_three_relay_mint_audits_and_revokes_each_edge() {
     .await;
     assert_eq!(status, 200, "{body}");
     assert!(
-        roomler_ai_mod_network::org_relay::candidate_test_support::record_member_probe_fixture(
+        meshharbor_mod_network::org_relay::candidate_test_support::record_member_probe_fixture(
             network,
             a,
             &[
@@ -3198,14 +3198,14 @@ async fn staged_graph_actual_three_relay_mint_audits_and_revokes_each_edge() {
         )
     );
     assert!(
-        roomler_ai_mod_network::org_relay::candidate_test_support::record_member_probe_fixture(
+        meshharbor_mod_network::org_relay::candidate_test_support::record_member_probe_fixture(
             network,
             b,
             &[(hk_node, "1.1.1.1:3478".into(), true, Some(10)),]
         )
     );
     let (reached, release) =
-        roomler_ai_mod_network::org_relay::candidate_test_support::pause_nhop_before_first_fixture(
+        meshharbor_mod_network::org_relay::candidate_test_support::pause_nhop_before_first_fixture(
             pair.clone(),
         );
     relay_request(&mut l.cn, &l.us_node).await;
@@ -3372,7 +3372,7 @@ async fn staged_graph_actual_four_relay_mint_uses_every_bridge() {
     let mid2 = ObjectId::parse_str(&m2_node).unwrap();
     let hk = ObjectId::parse_str(&l.hk_node).unwrap();
     assert!(
-        roomler_ai_mod_network::org_relay::candidate_test_support::record_member_probe_fixture(
+        meshharbor_mod_network::org_relay::candidate_test_support::record_member_probe_fixture(
             network,
             a,
             &[
@@ -3382,7 +3382,7 @@ async fn staged_graph_actual_four_relay_mint_uses_every_bridge() {
         )
     );
     assert!(
-        roomler_ai_mod_network::org_relay::candidate_test_support::record_member_probe_fixture(
+        meshharbor_mod_network::org_relay::candidate_test_support::record_member_probe_fixture(
             network,
             b,
             &[
@@ -3391,7 +3391,7 @@ async fn staged_graph_actual_four_relay_mint_uses_every_bridge() {
             ]
         )
     );
-    let chosen = roomler_ai_mod_network::org_relay::candidate_test_support::select_path(
+    let chosen = meshharbor_mod_network::org_relay::candidate_test_support::select_path(
         network, a, b, false,
     )
     .await
@@ -3485,7 +3485,7 @@ async fn staged_graph_actual_four_relay_mint_uses_every_bridge() {
     .await;
     assert_eq!(status, 200, "{body}");
     assert!(
-        roomler_ai_mod_network::org_relay::candidate_test_support::record_member_probe_fixture(
+        meshharbor_mod_network::org_relay::candidate_test_support::record_member_probe_fixture(
             network,
             a,
             &[
@@ -3495,7 +3495,7 @@ async fn staged_graph_actual_four_relay_mint_uses_every_bridge() {
         )
     );
     assert!(
-        roomler_ai_mod_network::org_relay::candidate_test_support::record_member_probe_fixture(
+        meshharbor_mod_network::org_relay::candidate_test_support::record_member_probe_fixture(
             network,
             b,
             &[
@@ -3505,20 +3505,20 @@ async fn staged_graph_actual_four_relay_mint_uses_every_bridge() {
         )
     );
     assert!(
-        roomler_ai_mod_network::org_relay::candidate_test_support::record_backbone_probe_fixture(
+        meshharbor_mod_network::org_relay::candidate_test_support::record_backbone_probe_fixture(
             network,
             gz,
             &[(mid1, "10.44.0.1:3478".into(), true, Some(100)),]
         )
     );
     assert!(
-        roomler_ai_mod_network::org_relay::candidate_test_support::record_backbone_probe_fixture(
+        meshharbor_mod_network::org_relay::candidate_test_support::record_backbone_probe_fixture(
             network,
             mid2,
             &[(hk, "10.44.0.3:3478".into(), true, Some(5)),]
         )
     );
-    let limit = roomler_ai_remote_control::models::peer_relay_limits::MINT_RATE_LIMIT_PER_MINUTE;
+    let limit = meshharbor_remote_control::models::peer_relay_limits::MINT_RATE_LIMIT_PER_MINUTE;
     for _ in 0..limit {
         network.relay_rate_limiter.check(a, gz, limit);
     }
@@ -3544,7 +3544,7 @@ async fn staged_graph_actual_four_relay_mint_uses_every_bridge() {
         after, before,
         "rate-limit denial must precede crossing audit rows"
     );
-    let pair = roomler_ai_mod_network::overlay::pair_key(a, b);
+    let pair = meshharbor_mod_network::overlay::pair_key(a, b);
     let fallback = network
         .org_relay
         .active_session(&pair)
@@ -3657,7 +3657,7 @@ async fn staged_graph_long_path_audit_failure_falls_back_without_double_rate_cha
         ObjectId::parse_str(&mid_node).unwrap(),
         ObjectId::parse_str(&l.hk_node).unwrap(),
     );
-    use roomler_ai_mod_network::org_relay::candidate_test_support as support;
+    use meshharbor_mod_network::org_relay::candidate_test_support as support;
     assert!(support::record_member_probe_fixture(
         network,
         a,
@@ -3699,8 +3699,8 @@ async fn staged_graph_long_path_audit_failure_falls_back_without_double_rate_cha
             false
         )
     );
-    let limit = roomler_ai_remote_control::models::peer_relay_limits::MINT_RATE_LIMIT_PER_MINUTE;
-    let pair = roomler_ai_mod_network::overlay::pair_key(a, b);
+    let limit = meshharbor_remote_control::models::peer_relay_limits::MINT_RATE_LIMIT_PER_MINUTE;
+    let pair = meshharbor_mod_network::overlay::pair_key(a, b);
     // If both audits fail, fallback must still fail closed and send no grant.
     support::fail_next_nhop_audit_fixture(pair.clone());
     support::fail_next_line_audit_fixture(pair.clone());
@@ -3863,10 +3863,10 @@ async fn staged_graph_long_path_audit_failure_falls_back_without_double_rate_cha
 /// claim. The direct fallback must be freshly planned on the other ingress.
 #[tokio::test]
 async fn staged_graph_long_path_capacity_race_falls_back_to_available_line() {
-    use roomler_ai_mod_network::org_relay::{
+    use meshharbor_mod_network::org_relay::{
         OrgRelaySession, SessionMember, SessionParty, candidate_test_support as support,
     };
-    use roomler_ai_remote_control::models::{NodeRef, peer_relay_limits as limits};
+    use meshharbor_remote_control::models::{NodeRef, peer_relay_limits as limits};
     use std::time::Instant;
     let mut l = LineRig::up("iso-multi-cap-fallback", true).await;
     let (mid_agent, mid_token) =
@@ -3941,7 +3941,7 @@ async fn staged_graph_long_path_capacity_race_falls_back_to_available_line() {
         .unwrap()
         .unwrap();
     assert_eq!(selected.0.len(), 3);
-    let pair = roomler_ai_mod_network::overlay::pair_key(a, b);
+    let pair = meshharbor_mod_network::overlay::pair_key(a, b);
     let (reached, resume) = support::pause_nhop_preclaim_fixture(pair.clone());
     relay_request(&mut l.cn, &l.us_node).await;
     tokio::time::timeout(Duration::from_secs(10), reached)
@@ -4015,7 +4015,7 @@ async fn staged_graph_long_path_capacity_race_falls_back_to_available_line() {
 /// same complete, guarded reauthorization as longer multi-hop sessions.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn staged_graph_two_relay_repush_and_claim_reauthorize_every_edge() {
-    use roomler_ai_mod_network::org_relay::candidate_test_support as support;
+    use meshharbor_mod_network::org_relay::candidate_test_support as support;
     async fn request(ws: &mut Ws, peer: &str, fallback: bool, serial: u64) {
         if fallback {
             ws.send(Message::Text(json!({"t":"rc:overlay.org_relay_fallback_request", "peer_node_id":peer, "request_id":serial}).to_string().into())).await.unwrap();
@@ -4031,7 +4031,7 @@ async fn staged_graph_two_relay_repush_and_claim_reauthorize_every_edge() {
         let mut l = LineRig::up(&slug, true).await;
         let a = ObjectId::parse_str(&l.cn_node).unwrap();
         let b = ObjectId::parse_str(&l.us_node).unwrap();
-        let pair = roomler_ai_mod_network::overlay::pair_key(a, b);
+        let pair = meshharbor_mod_network::overlay::pair_key(a, b);
         request(&mut l.cn, &l.us_node, fallback, 1).await;
         let (_, _, _, cn, _) = l.expect_line().await;
         let network = l.rig.app.state.network();
@@ -4116,7 +4116,7 @@ async fn staged_graph_two_relay_repush_and_claim_reauthorize_every_edge() {
         let mut l = LineRig::up(&slug, true).await;
         let a = ObjectId::parse_str(&l.cn_node).unwrap();
         let b = ObjectId::parse_str(&l.us_node).unwrap();
-        let pair = roomler_ai_mod_network::overlay::pair_key(a, b);
+        let pair = meshharbor_mod_network::overlay::pair_key(a, b);
         let (reached, resume) = support::pause_line_preclaim_fixture(pair.clone());
         relay_request(&mut l.cn, &l.us_node).await;
         tokio::time::timeout(Duration::from_secs(10), reached)
@@ -4185,9 +4185,9 @@ async fn staged_graph_two_relay_repush_and_claim_reauthorize_every_edge() {
 /// Peer-relay Warn remains audit-only; actual On grants carry WG until revoke.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn staged_graph_off_warn_cross_zone_actual_wg_and_warn_only() {
-    use roomler_ai_mod_network::org_relay::candidate_test_support as support;
-    use roomler_ai_remote_control::signaling::ServerMsg;
-    use roomlerd::relay_server::backbone_test_support::{
+    use meshharbor_mod_network::org_relay::candidate_test_support as support;
+    use meshharbor_remote_control::signaling::ServerMsg;
+    use meshharbord::relay_server::backbone_test_support::{
         BindSecret, Carrier, NativeRelay, OrgRelayConn, WgDevice, WgKeypair, bind_member,
     };
     use std::{
@@ -4304,7 +4304,7 @@ async fn staged_graph_off_warn_cross_zone_actual_wg_and_warn_only() {
                 relay_request(ws, &peer.to_hex()).await;
             }
         }
-        let pair = roomler_ai_mod_network::overlay::pair_key(a_id, b_id);
+        let pair = meshharbor_mod_network::overlay::pair_key(a_id, b_id);
         let reason = format!("cross_border_edge:{}", agents[2]);
         set_mode(&rig.app, &rig.seeded, "warn").await;
         record();
@@ -4564,7 +4564,7 @@ async fn staged_graph_off_warn_cross_zone_actual_wg_and_warn_only() {
 /// an invalid long path still falls back through the established one-hop gate.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn staged_graph_off_warn_cross_zone_mint_rechecks_every_edge_and_audit() {
-    use roomler_ai_mod_network::org_relay::candidate_test_support as support;
+    use meshharbor_mod_network::org_relay::candidate_test_support as support;
     async fn policy(rig: &Rig, source: &str, target: &str, endpoint: &str, crossing: bool) {
         let path = format!(
             "/api/tenant/{}/agent/{source}/peer-relay-policy",
@@ -4663,7 +4663,7 @@ async fn staged_graph_off_warn_cross_zone_mint_rechecks_every_edge_and_audit() {
             .iter()
             .map(|n| ObjectId::parse_str(n).unwrap())
             .collect();
-        let pair = roomler_ai_mod_network::overlay::pair_key(a_id, b_id);
+        let pair = meshharbor_mod_network::overlay::pair_key(a_id, b_id);
         let record = || {
             let ar: Vec<_> = (0..4)
                 .map(|i| (ids[i], public[i].into(), i == 0, (i == 0).then_some(10)))
@@ -4916,7 +4916,7 @@ async fn staged_graph_off_warn_cross_zone_mint_rechecks_every_edge_and_audit() {
 /// An unusable shortcut must not hide an explicit, same-zone multi-hop path.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn staged_graph_same_zone_filters_unusable_relays_before_mint_selection() {
-    use roomler_ai_mod_network::org_relay::candidate_test_support as support;
+    use meshharbor_mod_network::org_relay::candidate_test_support as support;
     for (scenario, isolation, fallback, best_single, probe_case) in [
         ("foreign", "off", false, false, "measured"),
         ("foreign", "off", true, false, "measured"),
@@ -5097,7 +5097,7 @@ async fn staged_graph_same_zone_filters_unusable_relays_before_mint_selection() 
             recv_t(&mut a, "rc:overlay.relay_session", wait)
                 .await
                 .expect("single-relay fallback");
-            let pair = roomler_ai_mod_network::overlay::pair_key(a_id, b_id);
+            let pair = meshharbor_mod_network::overlay::pair_key(a_id, b_id);
             let session = network
                 .org_relay
                 .active_session(&pair)
@@ -5141,7 +5141,7 @@ async fn staged_graph_same_zone_filters_unusable_relays_before_mint_selection() 
             .is_none(),
             "ineligible relay received a multi-hop serve"
         );
-        let pair = roomler_ai_mod_network::overlay::pair_key(a_id, b_id);
+        let pair = meshharbor_mod_network::overlay::pair_key(a_id, b_id);
         let session = network
             .org_relay
             .active_session(&pair)
@@ -5196,7 +5196,7 @@ async fn staged_graph_same_zone_filters_unusable_relays_before_mint_selection() 
 /// in each isolation mode, including the org-only fallback entry point.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn staged_graph_same_zone_actual_mint_and_fallback() {
-    use roomler_ai_mod_network::org_relay::candidate_test_support as support;
+    use meshharbor_mod_network::org_relay::candidate_test_support as support;
     for (isolation, fallback) in [
         ("enforce", false),
         ("enforce", true),
@@ -5396,11 +5396,11 @@ async fn staged_graph_same_zone_actual_mint_and_fallback() {
                 )
             );
             let limit =
-                roomler_ai_remote_control::models::peer_relay_limits::MINT_RATE_LIMIT_PER_MINUTE;
+                meshharbor_remote_control::models::peer_relay_limits::MINT_RATE_LIMIT_PER_MINUTE;
             for _ in 0..limit - 2 {
                 assert!(network.relay_rate_limiter.check(a_id, ids[0], limit));
             }
-            let pair = roomler_ai_mod_network::overlay::pair_key(a_id, b_id);
+            let pair = meshharbor_mod_network::overlay::pair_key(a_id, b_id);
             support::fail_next_nhop_audit_fixture(pair.clone());
             if fallback {
                 a.send(Message::Text(json!({"t":"rc:overlay.org_relay_fallback_request", "peer_node_id":b_id.to_hex(), "request_id":2}).to_string().into())).await.unwrap();
@@ -5439,7 +5439,7 @@ async fn staged_graph_same_zone_actual_mint_and_fallback() {
 /// bypass that winner's complete reauthorization when repushing it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn staged_graph_line_claim_race_reauthorizes_multihop_winner() {
-    use roomler_ai_mod_network::org_relay::candidate_test_support as support;
+    use meshharbor_mod_network::org_relay::candidate_test_support as support;
     for invalid_key in [false, true] {
         let slug = if invalid_key {
             "iso-line-claim-race-denied"
@@ -5472,7 +5472,7 @@ async fn staged_graph_line_claim_race_reauthorizes_multihop_winner() {
             ObjectId::parse_str(&middle_node).unwrap(),
             ObjectId::parse_str(&l.hk_node).unwrap(),
         );
-        let pair = roomler_ai_mod_network::overlay::pair_key(a, b);
+        let pair = meshharbor_mod_network::overlay::pair_key(a, b);
         let (reached, resume) = support::pause_line_preclaim_fixture(pair.clone());
         relay_request(&mut l.cn, &l.us_node).await;
         tokio::time::timeout(Duration::from_secs(10), reached)
@@ -5636,7 +5636,7 @@ async fn staged_graph_line_claim_race_reauthorizes_multihop_winner() {
 /// reserves a trial slot or emits relay, bridge, and member grants.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn staged_cross_border_trial_audit_failure_and_timeout_fail_closed() {
-    use roomler_ai_mod_network::org_relay::candidate_test_support::{
+    use meshharbor_mod_network::org_relay::candidate_test_support::{
         self as support, TrialCrossingAuditFault,
     };
     for (slug, fault) in [
@@ -5655,7 +5655,7 @@ async fn staged_cross_border_trial_audit_failure_and_timeout_fail_closed() {
             ObjectId::parse_str(&l.gz_node).unwrap(),
             ObjectId::parse_str(&l.hk_node).unwrap(),
         );
-        let pair = roomler_ai_mod_network::overlay::pair_key(a, b);
+        let pair = meshharbor_mod_network::overlay::pair_key(a, b);
         let network = l.rig.app.state.network();
         support::fail_next_trial_crossing_audit(pair, fault);
         let request = |request_id| {
@@ -5766,7 +5766,7 @@ async fn staged_cross_border_trial_audit_failure_and_timeout_fail_closed() {
 /// unknown relay placement cannot prove that the backbone edge is local.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn staged_trial_actual_edge_zone_gates_apply_in_off_and_warn() {
-    use roomler_ai_mod_network::org_relay::candidate_test_support::{
+    use meshharbor_mod_network::org_relay::candidate_test_support::{
         self as support, TrialCrossingAuditFault,
     };
     for mode in ["off", "warn"] {
@@ -5782,7 +5782,7 @@ async fn staged_trial_actual_edge_zone_gates_apply_in_off_and_warn() {
             let flags = json!({"supports_backbone_only_v1":true,"supports_path_backbone_v1":true,"supports_path_trial_v1":true});
             line_join(&mut l.cn, 1, "223.5.5.5:41641", flags.clone()).await;
             line_join(&mut l.us, 2, "8.8.8.8:41641", flags).await;
-            let pair = roomler_ai_mod_network::overlay::pair_key(
+            let pair = meshharbor_mod_network::overlay::pair_key(
                 ObjectId::parse_str(&l.cn_node).unwrap(),
                 ObjectId::parse_str(&l.us_node).unwrap(),
             );
@@ -5935,7 +5935,7 @@ async fn staged_trial_actual_edge_zone_gates_apply_in_off_and_warn() {
 /// the same policy edit must preserve an ordinary same-zone trial.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn staged_trial_edge_approval_downgrade_revokes_only_actual_crossing() {
-    use roomler_ai_mod_network::org_relay::candidate_test_support as support;
+    use meshharbor_mod_network::org_relay::candidate_test_support as support;
     for (slug, mode, same_zone) in [
         ("iso-trial-edge-enforce", "enforce", false),
         ("iso-trial-edge-off", "off", false),
@@ -6090,7 +6090,7 @@ async fn staged_trial_edge_approval_downgrade_revokes_only_actual_crossing() {
 /// unchanged or restored zones must not tear down a healthy trial.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn staged_trial_live_relay_zone_recheck_revokes_changes_not_stale_reads() {
-    use roomler_ai_mod_network::org_relay::candidate_test_support as support;
+    use meshharbor_mod_network::org_relay::candidate_test_support as support;
     for case in [
         "cross_to_same",
         "same_to_cross",
@@ -6281,7 +6281,7 @@ async fn staged_trial_live_relay_zone_recheck_revokes_changes_not_stale_reads() 
 /// relation alone is insufficient: each relay must retain its issued zone.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn staged_trial_live_relay_zone_recheck_retires_two_relays_moving_together() {
-    use roomler_ai_mod_network::org_relay::candidate_test_support as support;
+    use meshharbor_mod_network::org_relay::candidate_test_support as support;
     let mut l = LineRig::up_with_isolation("iso-trial-both-move", true, "off").await;
     let flags = json!({"supports_backbone_only_v1":true,"supports_path_backbone_v1":true,"supports_path_trial_v1":true});
     line_join(&mut l.cn, 1, "223.5.5.5:41641", flags.clone()).await;
@@ -6416,8 +6416,8 @@ async fn staged_trial_live_relay_zone_recheck_retires_two_relays_moving_together
 /// and Engine request path; an incorrect middle hop must not consume its Start.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn staged_graph_multihop_discovery_actual_client_request_and_middle_fence() {
-    use roomler_ai_remote_control::signaling::{ClientMsg, NetmapPeer, ServerMsg};
-    use roomlerd::relay_server::backbone_test_support::{PathTrialTestHarness, WgKeypair};
+    use meshharbor_remote_control::signaling::{ClientMsg, NetmapPeer, ServerMsg};
+    use meshharbord::relay_server::backbone_test_support::{PathTrialTestHarness, WgKeypair};
     use std::sync::Arc;
     let mut l = LineRig::up("iso-discovery-nhop-client", true).await;
     let caps = json!({"supports_backbone_only_v1":true,"supports_path_backbone_v1":true,
@@ -6615,9 +6615,9 @@ async fn staged_graph_multihop_discovery_actual_client_request_and_middle_fence(
 /// members, relay gates and directed current policy; it sends no grants.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn staged_graph_specified_trial_path_rechecks_all_nodes_and_edges() {
-    use roomler_ai_mod_network::org_relay::candidate_test_support as support;
-    use roomler_ai_mod_network::org_relay::{OrgRelaySession, SessionMember, SessionParty};
-    use roomler_ai_remote_control::models::{NodeRef, peer_relay_limits as limits};
+    use meshharbor_mod_network::org_relay::candidate_test_support as support;
+    use meshharbor_mod_network::org_relay::{OrgRelaySession, SessionMember, SessionParty};
+    use meshharbor_remote_control::models::{NodeRef, peer_relay_limits as limits};
     use std::time::Instant;
 
     let mut l = LineRig::up("iso-trial-path", true).await;
@@ -6990,7 +6990,7 @@ async fn staged_graph_specified_trial_path_rechecks_all_nodes_and_edges() {
             .is_err(),
         "tombstoned peer cannot reauthorize"
     );
-    let pair = roomler_ai_mod_network::overlay::pair_key(a, b);
+    let pair = meshharbor_mod_network::overlay::pair_key(a, b);
     assert!(
         network.org_relay.active_session(&pair).is_none(),
         "planning must not mint a session"
@@ -7010,7 +7010,7 @@ async fn staged_graph_specified_trial_path_rechecks_all_nodes_and_edges() {
 /// trial planner itself must still require explicit approval of every crossing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn staged_graph_specified_trial_path_denies_unapproved_crossing_outside_enforce() {
-    use roomler_ai_mod_network::org_relay::candidate_test_support as support;
+    use meshharbor_mod_network::org_relay::candidate_test_support as support;
     for mode in ["off", "warn"] {
         let slug = format!("iso-trial-cross-{mode}");
         let rig = Rig::up(&slug, mode).await;
@@ -7070,7 +7070,7 @@ async fn staged_graph_specified_trial_path_denies_unapproved_crossing_outside_en
 /// path, both member orientations, bilateral commit/return, and revocation.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn staged_nhop_trial_actual_lifecycle_and_rollback() {
-    use roomler_ai_mod_network::org_relay::candidate_test_support::{
+    use meshharbor_mod_network::org_relay::candidate_test_support::{
         self as support, TrialCrossingAuditFault,
     };
     async fn control(ws: &mut Ws, kind: &str, trial: &Value, return_id: Option<&str>) {
@@ -7157,7 +7157,7 @@ async fn staged_nhop_trial_actual_lifecycle_and_rollback() {
         let network = l.rig.app.state.network();
         let cn = ObjectId::parse_str(&l.cn_node).unwrap();
         let us = ObjectId::parse_str(&l.us_node).unwrap();
-        let pair = roomler_ai_mod_network::overlay::pair_key(cn, us);
+        let pair = meshharbor_mod_network::overlay::pair_key(cn, us);
         let ids: Vec<_> = nodes
             .iter()
             .map(|id| ObjectId::parse_str(id).unwrap())
@@ -7527,12 +7527,12 @@ async fn staged_graph_cross_zone_discovery_paginates_and_rechecks_approvals() {
         "all five approved exits should be discoverable"
     );
     let removed = ids[0].clone();
-    let pair = roomler_ai_mod_network::overlay::pair_key(
+    let pair = meshharbor_mod_network::overlay::pair_key(
         ObjectId::parse_str(&l.cn_node).unwrap(),
         ObjectId::parse_str(&l.us_node).unwrap(),
     );
     let (reached, resume) =
-        roomler_ai_mod_network::org_relay::candidate_test_support::pause_cross_discovery_fixture(
+        meshharbor_mod_network::org_relay::candidate_test_support::pause_cross_discovery_fixture(
             pair.clone(),
         );
     l.cn.send(Message::Text(
@@ -7633,7 +7633,7 @@ async fn staged_graph_cross_zone_discovery_paginates_and_rechecks_approvals() {
 /// Off/Warn must not add a member-to-endpoint zone gate at either path length.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn staged_nhop_trial_off_warn_endpoint_zone_parity_two_and_three() {
-    use roomler_ai_mod_network::org_relay::candidate_test_support as support;
+    use meshharbor_mod_network::org_relay::candidate_test_support as support;
     for isolation in ["off", "warn"] {
         let slug = format!("iso-trial-endpoint-parity-{isolation}");
         let rig = Rig::up(&slug, isolation).await;
@@ -7777,11 +7777,11 @@ async fn staged_nhop_trial_off_warn_endpoint_zone_parity_two_and_three() {
 /// inserts trial state without issuing grants; real trial admission is separate.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn staged_nhop_trial_zone_fixture_rechecks_middle_and_members() {
-    use roomler_ai_mod_network::org_relay::{
+    use meshharbor_mod_network::org_relay::{
         LineLeg, OrgRelaySession, SessionMember, SessionParty, candidate_test_support as support,
     };
-    use roomler_ai_remote_control::models::NodeRef;
-    use roomler_core::business_authority::BusinessZone::Mainland;
+    use meshharbor_remote_control::models::NodeRef;
+    use meshharbor_core::business_authority::BusinessZone::Mainland;
     use std::time::Instant;
     for case in [
         "changed",
@@ -7847,7 +7847,7 @@ async fn staged_nhop_trial_zone_fixture_rechecks_middle_and_members() {
         };
         let mut session = OrgRelaySession {
             tenant_id: ObjectId::parse_str(&rig.seeded.tenant_id).unwrap(),
-            pair_key: roomler_ai_mod_network::overlay::pair_key(a_id, b_id),
+            pair_key: meshharbor_mod_network::overlay::pair_key(a_id, b_id),
             vni: 101,
             generation: 201,
             relay: SessionParty {
@@ -8232,9 +8232,9 @@ async fn staged_graph_multihop_discovery_bilateral_client_wg_commit_return_at_ex
 async fn run_multihop_discovery_bilateral_client_wg(flipped: bool) {
     tokio::time::timeout(Duration::from_secs(180), async {
         use crate::peer_relay_mint_tests::{CompositeDirectLink, composite_ip};
-        use roomler_ai_mod_network::org_relay::candidate_test_support as support;
-        use roomler_ai_remote_control::signaling::{ClientMsg, NetmapPeer, ServerMsg};
-        use roomlerd::relay_server::backbone_test_support::{NativeRelay, PathTrialTestHarness, WgKeypair};
+        use meshharbor_mod_network::org_relay::candidate_test_support as support;
+        use meshharbor_remote_control::signaling::{ClientMsg, NetmapPeer, ServerMsg};
+        use meshharbord::relay_server::backbone_test_support::{NativeRelay, PathTrialTestHarness, WgKeypair};
         use std::{net::Ipv4Addr, sync::Arc, time::Instant};
         #[allow(clippy::too_many_arguments)]
         async fn pump(label: &str, owner: &mut PathTrialTestHarness,
@@ -8449,9 +8449,9 @@ async fn run_multihop_discovery_bilateral_client_wg(flipped: bool) {
 /// after bilateral commit; only the second return ACK retires all resources.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn staged_nhop_trial_actual_wg_commit_and_bilateral_return() {
-    use roomler_ai_mod_network::org_relay::candidate_test_support as support;
-    use roomler_ai_remote_control::signaling::ServerMsg;
-    use roomlerd::relay_server::backbone_test_support::{
+    use meshharbor_mod_network::org_relay::candidate_test_support as support;
+    use meshharbor_remote_control::signaling::ServerMsg;
+    use meshharbord::relay_server::backbone_test_support::{
         BindSecret, Carrier, NativeRelay, OrgRelayConn, WgDevice, WgKeypair, bind_member,
     };
     use std::{
@@ -9062,9 +9062,9 @@ async fn staged_nhop_trial_actual_wg_commit_and_bilateral_return() {
 /// real server messages, native relays, and actual WireGuard packet crypto.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn staged_graph_same_zone_actual_wg_and_bridge_revocation() {
-    use roomler_ai_mod_network::org_relay::candidate_test_support as support;
-    use roomler_ai_remote_control::signaling::ServerMsg;
-    use roomlerd::relay_server::backbone_test_support::{
+    use meshharbor_mod_network::org_relay::candidate_test_support as support;
+    use meshharbor_remote_control::signaling::ServerMsg;
+    use meshharbord::relay_server::backbone_test_support::{
         BindSecret, Carrier, NativeRelay, OrgRelayConn, WgDevice, WgKeypair, bind_member,
     };
     use std::{
@@ -9352,7 +9352,7 @@ async fn staged_graph_same_zone_actual_wg_and_bridge_revocation() {
     )
     .await;
     assert_eq!(status, 200, "{body}");
-    let pair = roomler_ai_mod_network::overlay::pair_key(a_id, b_id);
+    let pair = meshharbor_mod_network::overlay::pair_key(a_id, b_id);
     assert!(
         network.org_relay.active_session(&pair).is_none(),
         "withdrawn edge must remove session"
@@ -9555,9 +9555,9 @@ async fn unknown_role_enforce_denies_all_business_connectivity_until_approved_an
     let us_r_node = rig.node("ur-us-r").await;
     let net = rig.app.state.network();
     let tc_oid = ObjectId::parse_str(&tc_id).unwrap();
-    let tc_node = roomler_ai_mod_network::overlay::current_node(
+    let tc_node = meshharbor_mod_network::overlay::current_node(
         net,
-        roomler_ai_mod_network::overlay::NodeIdentity::TunnelClient(tc_oid),
+        meshharbor_mod_network::overlay::NodeIdentity::TunnelClient(tc_oid),
     )
     .await
     .unwrap()
@@ -9734,18 +9734,18 @@ async fn unknown_role_enforce_denies_all_business_connectivity_until_approved_an
     let us_a_oid = ObjectId::parse_str(&us_a_node).unwrap();
     let us_b_oid = ObjectId::parse_str(&us_b_node).unwrap();
     assert!(matches!(
-        roomler_ai_mod_network::org_relay::candidate_test_support::select_path(
+        meshharbor_mod_network::org_relay::candidate_test_support::select_path(
             net, us_a_oid, us_b_oid, false
         )
         .await,
-        Err(roomler_ai_remote_control::models::PeerRelayDenyReason::ZoneDenied)
+        Err(meshharbor_remote_control::models::PeerRelayDenyReason::ZoneDenied)
     ));
     assert!(matches!(
-        roomler_ai_mod_network::org_relay::candidate_test_support::prepare_edges(
+        meshharbor_mod_network::org_relay::candidate_test_support::prepare_edges(
             net, us_a_oid, us_b_oid, false
         )
         .await,
-        Err(roomler_ai_remote_control::models::PeerRelayDenyReason::ZoneDenied)
+        Err(meshharbor_remote_control::models::PeerRelayDenyReason::ZoneDenied)
     ));
 
     // DERP allow table denies Unknown pubkeys even in the same zone.
@@ -9910,7 +9910,7 @@ async fn unknown_role_enforce_denies_all_business_connectivity_until_approved_an
         .await
         .expect("us_b receives relay_session");
     assert_eq!(serve["vni"], sess_a["vni"]);
-    let pair = roomler_ai_mod_network::overlay::pair_key(us_a_oid, us_b_oid);
+    let pair = meshharbor_mod_network::overlay::pair_key(us_a_oid, us_b_oid);
     assert!(net.org_relay.active_session(&pair).is_some());
 
     // Center-brokered tunnel now opens for both Agent and TunnelClient, and forwards TCP.
@@ -10156,15 +10156,15 @@ async fn unknown_role_warn_logs_without_blocking_same_zone_or_relaxing_zone_enfo
     );
 
     // Verify `Lines` under warn mode identifies Unknown devices for `would refuse: unknown_role`.
-    let topo = roomler_ai_mod_network::business_isolation::lines(
+    let topo = meshharbor_mod_network::business_isolation::lines(
         net,
-        roomler_ai_mod_network::business_isolation::Mode::Enforce,
+        meshharbor_mod_network::business_isolation::Mode::Enforce,
         tid_oid,
     )
     .await;
     assert_eq!(
         topo.unknown_role,
-        roomler_ai_mod_network::business_isolation::Mode::Warn
+        meshharbor_mod_network::business_isolation::Mode::Warn
     );
     assert!(topo.approved_roles.is_empty());
 
@@ -10311,9 +10311,9 @@ async fn unknown_role_warn_logs_without_blocking_same_zone_or_relaxing_zone_enfo
     )
     .await;
     assert_eq!(st, 200);
-    let topo_after_line = roomler_ai_mod_network::business_isolation::lines(
+    let topo_after_line = meshharbor_mod_network::business_isolation::lines(
         net,
-        roomler_ai_mod_network::business_isolation::Mode::Enforce,
+        meshharbor_mod_network::business_isolation::Mode::Enforce,
         tid_oid,
     )
     .await;
@@ -10353,7 +10353,7 @@ async fn unknown_role_warn_logs_without_blocking_same_zone_or_relaxing_zone_enfo
     //    role table under `business_isolation = enforce` must fail closed for new admissions
     //    (preventing unlinked same-zone servers from failing open) while preserving live
     //    netmaps, DERP tables, tunnel sessions, and managed forwards.
-    roomler_core::business_authority::set_test_force_role_read_fail(tid_oid, true);
+    meshharbor_core::business_authority::set_test_force_role_read_fail(tid_oid, true);
     let (_, warn_outage_plan) = mf_post(&rig.app, &plan_path, &admin, &fwd_spec).await;
     assert_eq!(
         verdict(&warn_outage_plan, "region"),
@@ -10365,26 +10365,26 @@ async fn unknown_role_warn_logs_without_blocking_same_zone_or_relaxing_zone_enfo
         "unknown",
         "warn mode under enforce isolation returns unknown source region when role read fails: {warn_outage_plan}"
     );
-    let us_a_ref = roomler_ai_remote_control::models::NodeRef::Agent {
+    let us_a_ref = meshharbor_remote_control::models::NodeRef::Agent {
         agent_id: ObjectId::parse_str(&us_a_id).unwrap(),
     };
-    let us_b_ref = roomler_ai_remote_control::models::NodeRef::Agent {
+    let us_b_ref = meshharbor_remote_control::models::NodeRef::Agent {
         agent_id: ObjectId::parse_str(&us_b_id).unwrap(),
     };
     assert_eq!(
-        roomler_ai_mod_network::business_isolation::permit_refs(
+        meshharbor_mod_network::business_isolation::permit_refs(
             net,
-            roomler_ai_mod_network::business_isolation::Mode::Enforce,
+            meshharbor_mod_network::business_isolation::Mode::Enforce,
             tid_oid,
             &us_a_ref,
             &us_b_ref,
         )
         .await,
-        roomler_ai_mod_network::business_isolation::Permit::Denied,
+        meshharbor_mod_network::business_isolation::Permit::Denied,
         "new admission permit_refs fails closed when role read fails under enforce isolation"
     );
     assert!(
-        roomler_ai_mod_network::business_isolation::refuses_parties(
+        meshharbor_mod_network::business_isolation::refuses_parties(
             net,
             (tid_oid, &us_a_ref),
             (tid_oid, &us_b_ref),
@@ -10394,7 +10394,7 @@ async fn unknown_role_warn_logs_without_blocking_same_zone_or_relaxing_zone_enfo
         "new admission refuses_parties fails closed when role read fails under enforce isolation"
     );
     assert!(
-        !roomler_ai_mod_network::tunnel::reconcile_tunnel_sessions(net, tid_oid).await,
+        !meshharbor_mod_network::tunnel::reconcile_tunnel_sessions(net, tid_oid).await,
         "reconcile_tunnel_sessions preserves live tunnel sessions on role read failure in warn mode"
     );
     let us_a_row = net
@@ -10404,10 +10404,10 @@ async fn unknown_role_warn_logs_without_blocking_same_zone_or_relaxing_zone_enfo
         .await
         .unwrap();
     assert!(
-        !roomler_ai_mod_network::overlay::refan_node(net, &us_a_row).await,
+        !meshharbor_mod_network::overlay::refan_node(net, &us_a_row).await,
         "refan_node preserves live peer netmaps on role read failure in warn mode"
     );
-    roomler_core::business_authority::set_test_force_role_read_fail(tid_oid, false);
+    meshharbor_core::business_authority::set_test_force_role_read_fail(tid_oid, false);
 }
 
 /// Mandatory Item 1 & 3 — under `app.business_isolation = enforce` and
@@ -10522,9 +10522,9 @@ async fn unknown_role_enforce_transient_role_read_failure_preserves_live_state_a
 
     let net = rig.app.state.network();
     let tc_oid = ObjectId::parse_str(&tc_id).unwrap();
-    let tc_node = roomler_ai_mod_network::overlay::current_node(
+    let tc_node = meshharbor_mod_network::overlay::current_node(
         net,
-        roomler_ai_mod_network::overlay::NodeIdentity::TunnelClient(tc_oid),
+        meshharbor_mod_network::overlay::NodeIdentity::TunnelClient(tc_oid),
     )
     .await
     .unwrap()
@@ -10548,7 +10548,7 @@ async fn unknown_role_enforce_transient_role_read_failure_preserves_live_state_a
         .unwrap()
         .id
         .unwrap();
-    assert!(roomler_ai_mod_network::derp_acl::rebuild(net, tid_oid, net_id).await);
+    assert!(meshharbor_mod_network::derp_acl::rebuild(net, tid_oid, net_id).await);
     assert!(
         net.derp_acl
             .get(&net_id)
@@ -10581,7 +10581,7 @@ async fn unknown_role_enforce_transient_role_read_failure_preserves_live_state_a
     // Mint 1-hop org-relay session us_a <-> us_b via us_r.
     let us_a_oid = ObjectId::parse_str(&us_a_node).unwrap();
     let us_b_oid = ObjectId::parse_str(&us_b_node).unwrap();
-    let pair = roomler_ai_mod_network::overlay::pair_key(us_a_oid, us_b_oid);
+    let pair = meshharbor_mod_network::overlay::pair_key(us_a_oid, us_b_oid);
     relay_request(&mut us_a, &us_b_node).await;
     let _ = recv_t(&mut us_r, "rc:overlay.relay_serve", wait)
         .await
@@ -10627,7 +10627,7 @@ async fn unknown_role_enforce_transient_role_read_failure_preserves_live_state_a
     assert_eq!(init_fwd["forwards"].as_array().unwrap().len(), 1);
 
     // ── Inject simulated transient role-read storage failure ──
-    roomler_core::business_authority::set_test_force_role_read_fail(tid_oid, true);
+    meshharbor_core::business_authority::set_test_force_role_read_fail(tid_oid, true);
 
     // New managed-forward plan during outage fails closed with Verdict::Unknown.
     let plan_path = format!("/api/tenant/{tid}/managed-forward/plan");
@@ -10641,7 +10641,7 @@ async fn unknown_role_enforce_transient_role_read_failure_preserves_live_state_a
 
     // 1. Direct reconcile calls during outage must return false and preserve ALL live state.
     assert!(
-        !roomler_ai_mod_network::org_relay::recheck_zones(
+        !meshharbor_mod_network::org_relay::recheck_zones(
             net,
             ObjectId::parse_str(&us_a_id).unwrap(),
             "test_role_read_outage",
@@ -10650,7 +10650,7 @@ async fn unknown_role_enforce_transient_role_read_failure_preserves_live_state_a
         "org_relay::recheck_zones must return false on role read failure"
     );
     assert!(
-        !roomler_ai_mod_network::derp_acl::rebuild(net, tid_oid, net_id).await,
+        !meshharbor_mod_network::derp_acl::rebuild(net, tid_oid, net_id).await,
         "derp_acl::rebuild must return false on role read failure"
     );
     assert!(
@@ -10668,16 +10668,16 @@ async fn unknown_role_enforce_transient_role_read_failure_preserves_live_state_a
         "DERP table must remain intact for tc_us on role read failure"
     );
     assert!(
-        !roomler_ai_mod_network::tunnel::reconcile_tunnel_sessions(net, tid_oid).await,
+        !meshharbor_mod_network::tunnel::reconcile_tunnel_sessions(net, tid_oid).await,
         "reconcile_tunnel_sessions must return false on role read failure"
     );
     assert!(
-        !roomler_ai_mod_network::managed_forward::reconcile_tenant_forwards(net, tid_oid).await,
+        !meshharbor_mod_network::managed_forward::reconcile_tenant_forwards(net, tid_oid).await,
         "reconcile_tenant_forwards must return false on role read failure"
     );
     let us_a_row = net.overlay_nodes.base.find_by_id(us_a_oid).await.unwrap();
     assert!(
-        !roomler_ai_mod_network::overlay::refan_node(net, &us_a_row).await,
+        !meshharbor_mod_network::overlay::refan_node(net, &us_a_row).await,
         "refan_node must return false on role read failure"
     );
 
@@ -10742,7 +10742,7 @@ async fn unknown_role_enforce_transient_role_read_failure_preserves_live_state_a
         rm_b_on_rejoin.is_empty(),
         "handle_overlay_join during role read failure must not emit removes to us_b: {rm_b_on_rejoin:?}"
     );
-    roomler_core::business_authority::set_test_force_role_read_fail(tid_oid, false);
+    meshharbor_core::business_authority::set_test_force_role_read_fail(tid_oid, false);
     let recovered_netmap = recv_t(&mut us_a, "rc:overlay.netmap", wait)
         .await
         .expect("scheduled join netmap retry delivers full netmap to us_a once role read recovers");
@@ -10751,7 +10751,7 @@ async fn unknown_role_enforce_transient_role_read_failure_preserves_live_state_a
         "recovered join netmap must include healthy peer us_b: {recovered_netmap}"
     );
     let _ = deltas(&mut us_b, Duration::from_millis(200)).await;
-    roomler_core::business_authority::set_test_force_role_read_fail(tid_oid, true);
+    meshharbor_core::business_authority::set_test_force_role_read_fail(tid_oid, true);
 
     // 2. Superseding a failed `unknown` approval with a `client` re-approval before retry
     //    fires must cancel the stale `unknown` retry and keep tc_us's session + DERP alive.
@@ -10770,7 +10770,7 @@ async fn unknown_role_enforce_transient_role_read_failure_preserves_live_state_a
         "during role-read outage, tunnel session for tc_us is preserved until storage recovers"
     );
     rig.set_device_role("tunnel-client", &tc_id, "client").await;
-    roomler_core::business_authority::set_test_force_role_read_fail(tid_oid, false);
+    meshharbor_core::business_authority::set_test_force_role_read_fail(tid_oid, false);
     assert!(
         recv_t(
             &mut tc_ws,
@@ -10797,7 +10797,7 @@ async fn unknown_role_enforce_transient_role_read_failure_preserves_live_state_a
     //    `approve` writes the revocation to DB, runs the first pass (which sees
     //    the read failure and preserves live DERP/tunnel/forward state during the
     //    outage), and spawns the background retry task.
-    roomler_core::business_authority::set_test_force_role_read_fail(tid_oid, true);
+    meshharbor_core::business_authority::set_test_force_role_read_fail(tid_oid, true);
     rig.set_device_role("tunnel-client", &tc_id, "unknown")
         .await;
     assert!(
@@ -10824,7 +10824,7 @@ async fn unknown_role_enforce_transient_role_read_failure_preserves_live_state_a
     );
 
     // Now clear the simulated storage failure so the spawned retry task succeeds.
-    roomler_core::business_authority::set_test_force_role_read_fail(tid_oid, false);
+    meshharbor_core::business_authority::set_test_force_role_read_fail(tid_oid, false);
 
     let tc_term = recv_t(&mut tc_ws, "rc:tunnel.terminate", wait)
         .await

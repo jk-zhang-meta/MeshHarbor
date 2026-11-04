@@ -17,7 +17,7 @@
 
 use bson::{DateTime, doc, oid::ObjectId};
 use mongodb::Database;
-use roomler_ai_remote_control::models::KeyRotationAuditEvent;
+use meshharbor_remote_control::models::KeyRotationAuditEvent;
 
 use super::base::{BaseDao, DaoResult, PaginatedResult, PaginationParams};
 

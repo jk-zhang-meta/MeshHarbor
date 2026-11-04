@@ -273,11 +273,11 @@ struct PeerRoutes {
 /// WireGuard header (#2002). Since FR-115 P4a-2 the definition (and its
 /// history) lives in `remote_control::derp_frame`, so the regional PoP
 /// relays read frames by this very function; the path here is unchanged.
-pub use roomler_ai_remote_control::derp_frame::payload_is_wg_or_disco;
+pub use meshharbor_remote_control::derp_frame::payload_is_wg_or_disco;
 // The disco magic, from the same module; the feature-gated test below
 // asserts it equals `overlay::disco::MAGIC`.
 #[cfg(test)]
-use roomler_ai_remote_control::derp_frame::DISCO_MAGIC;
+use meshharbor_remote_control::derp_frame::DISCO_MAGIC;
 
 /// R4 — everything the tunnel driver needs to run the `quic-derp-v1` flavor:
 /// the node's established DERP mux + its own pubkey (hex, as it travels on

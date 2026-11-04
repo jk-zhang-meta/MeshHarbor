@@ -45,12 +45,12 @@ stays out of scope (operator's standing rule).
    snapshot. Onset and clear each produce ONE `NetDelta` with a one-line `summary`
    (`netstate.rs:160`) — the "LOG every silent drop" rule — never a per-snapshot line.
 2. **`roomler status`** gains a line next to `srflx`, using the same shape
-   (`agents/roomler-cli/src/localclient.rs:1237`):
+   (`agents/meshharbor-cli/src/localclient.rs:1237`):
    `lan         CAPTURED — 192.168.68.0/24 leaves via "Ethernet 3" (Check Point Virtual
    Network Adapter For Endpoint VPN Client); direct on the LAN is impossible while it does`
    and `lan         clear` otherwise. Wire: `NodeStatus.lan_capture: Option<LanCaptureStatus>`
    (`crates/localapi/src/lib.rs:89`), populated the way `srflx` is
-   (`agents/roomlerd/src/localapi_state.rs:371` ← `runtime.rs:3230`). Optional field: an old
+   (`agents/meshharbord/src/localapi_state.rs:371` ← `runtime.rs:3230`). Optional field: an old
    CLI against a new daemon, or the reverse, prints nothing extra.
 3. **`peers --json why`**: `BlockedBy::LanCaptured` (`path.rs:1310`) when the LAN tier is refused
    while a capture is active on *this* host — a fact about this host, the way
@@ -68,7 +68,7 @@ stays out of scope (operator's standing rule).
    Ethernet share one switch: the selected interface holds an address in the prefix, so it
    reaches the LAN — a VPN adapter's tunnel address never does). `roomler peers <node>` adds a
    `CAPTURED` hold-down line pointing at `roomler status` and the VPN profile.
-4. **RC path pill**: `rc:video-info` (`agents/roomlerd/src/peer.rs` ~3043, `video_info_sent`)
+4. **RC path pill**: `rc:video-info` (`agents/meshharbord/src/peer.rs` ~3043, `video_info_sent`)
    carries an optional `transport_reason` string set by the *agent* from its own capture state;
    the viewer renders `relay · VPN captures the host's LAN`. Optional field — old viewers ignore
    it, old agents omit it.

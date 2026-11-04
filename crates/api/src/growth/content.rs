@@ -34,7 +34,7 @@ use axum::{
 };
 use bson::{Bson, DateTime, doc};
 use chrono::Duration;
-use roomler_ai_services::{
+use meshharbor_services::{
     dao::{
         growth::{GrowthDao, SEARCH_CONSOLE_SOURCE},
         growth_content::{ContentPost, GrowthContentDao},
@@ -42,7 +42,7 @@ use roomler_ai_services::{
     },
     purestat::{Filter, Query, Row},
 };
-use roomler_core::{campaign, growth::ExclusionSet};
+use meshharbor_core::{campaign, growth::ExclusionSet};
 use serde::{Deserialize, Serialize};
 
 use super::{

@@ -160,7 +160,7 @@ async fn flush_tenant(state: &FleetState, tenant_id: ObjectId) {
             "agents": agents,
         }
     });
-    roomler_core::ws::dispatcher::broadcast_with_redis(
+    meshharbor_core::ws::dispatcher::broadcast_with_redis(
         &state.ws_storage,
         &state.redis_pubsub,
         &members,
@@ -268,7 +268,7 @@ pub async fn run_presence_sweep(state: &FleetState) -> usize {
         let online = state.rc_hub.is_agent_online(agent_id) || redis_fresh.contains(&agent_id);
         let recently_seen = matches!(
             row.status,
-            roomler_ai_remote_control::models::AgentStatus::Online
+            meshharbor_remote_control::models::AgentStatus::Online
         ) && now_ms - row.last_seen_at.timestamp_millis() < STALE_AFTER_MS;
         let computed = if online {
             ONLINE
@@ -287,13 +287,13 @@ pub async fn run_presence_sweep(state: &FleetState) -> usize {
             if computed == OFFLINE
                 && matches!(
                     row.status,
-                    roomler_ai_remote_control::models::AgentStatus::Online
+                    meshharbor_remote_control::models::AgentStatus::Online
                 )
                 && let Err(e) = state
                     .agents
                     .mark_status(
                         agent_id,
-                        roomler_ai_remote_control::models::AgentStatus::Offline,
+                        meshharbor_remote_control::models::AgentStatus::Offline,
                     )
                     .await
             {

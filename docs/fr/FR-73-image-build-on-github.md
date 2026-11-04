@@ -297,7 +297,7 @@ import and export) on a standard `ubuntu-latest` runner, one sample each:
 |---|---|---|---|
 | cold — the merge that created the lane | `COPY . .` (P1) | **13 min 37 s** | everything; merge push → tag on GHCR 15 min 01 s |
 | cold — the first build with the new layers | chef (P1b) | **17 min 42 s** | everything, plus the first export of the chef/planner/cook layers to the cache |
-| warm — a daemon-only change (`agents/roomlerd`, #1400) | chef | 6 min 36 s | the cook layer hit; `COPY agents` missed, the server's workspace recompiled for 313 s although nothing it links had moved → **P1c** |
+| warm — a daemon-only change (`agents/meshharbord`, #1400) | chef | 6 min 36 s | the cook layer hit; `COPY agents` missed, the server's workspace recompiled for 313 s although nothing it links had moved → **P1c** |
 | warm — a Rust-only change (one line in `crates/api`) | chef | **6 min 49 s** | the cook layer hit; the workspace recompiled (325 s) — the honest cost of a server change |
 | warm — a UI-only change, first attempt | chef | 6 min 45 s | contaminated: the cache manifest holds ONE build's layers, and the previous build was the Rust-only tree, so `crates/` missed |
 | warm — a UI-only change, cache matching | chef | **1 min 04 s** | every Rust layer hit; only the bun build and the runtime assembly ran |

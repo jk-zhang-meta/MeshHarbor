@@ -32,7 +32,7 @@ use axum::{
 };
 use bson::{DateTime, Document, doc, oid::ObjectId};
 use chrono::NaiveDate;
-use roomler_ai_services::dao::growth::{GrowthDao, OrgDay};
+use meshharbor_services::dao::growth::{GrowthDao, OrgDay};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 
@@ -514,12 +514,12 @@ pub async fn freeze_billing_months(
     if !mounted(state, "saas") {
         return Ok(Vec::new());
     }
-    let excluded: Vec<ObjectId> = roomler_core::growth::ExclusionSet::load(&state.core)
+    let excluded: Vec<ObjectId> = meshharbor_core::growth::ExclusionSet::load(&state.core)
         .await?
         .tenants
         .into_iter()
         .collect();
-    Ok(roomler_ai_services::billing::freeze_closed_months(&state.db, &excluded, now).await?)
+    Ok(meshharbor_services::billing::freeze_closed_months(&state.db, &excluded, now).await?)
 }
 
 /// P3b — freeze the wizard's opt-in step diagnostics of the last
@@ -536,8 +536,8 @@ pub async fn freeze_setup_diagnostics(
     state: &AppState,
     now: DateTime,
 ) -> Result<Vec<String>, GrowthError> {
-    use roomler_ai_remote_control::setup_diagnostics::{Outcome, Step};
-    use roomler_ai_services::dao::{
+    use meshharbor_remote_control::setup_diagnostics::{Outcome, Step};
+    use meshharbor_services::dao::{
         growth::{INSTALL_SOURCE, INSTALL_WIZARD_STEP_METRIC, daily_row},
         setup_diagnostics::SetupDiagnosticsDao,
     };

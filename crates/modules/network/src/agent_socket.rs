@@ -24,8 +24,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use bson::oid::ObjectId;
 use dashmap::DashMap;
-use roomler_ai_remote_control::signaling::ClientMsg;
-use roomler_core::{AgentCtx, AgentMsgHandler, AgentSocketLifecycle};
+use meshharbor_remote_control::signaling::ClientMsg;
+use meshharbor_core::{AgentCtx, AgentMsgHandler, AgentSocketLifecycle};
 use tokio::sync::Mutex;
 use tracing::debug;
 
@@ -167,7 +167,7 @@ impl AgentMsgHandler for NetworkAgentSocket {
                 // connection, so the agent's watchdog keeps the change.
                 if let Some(generation) = confirm {
                     let _ = ctx.tx.try_send(
-                        roomler_ai_remote_control::signaling::ServerMsg::ManagedForwardConfirm {
+                        meshharbor_remote_control::signaling::ServerMsg::ManagedForwardConfirm {
                             generation,
                         },
                     );

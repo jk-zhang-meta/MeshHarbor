@@ -140,7 +140,7 @@ STEP 3A — Ensure test services are running
     timeout 30 bash -c 'until mongosh --host localhost --port 27019 --eval "db.runCommand({ping:1})" --quiet 2>/dev/null; do sleep 2; done'
 
 STEP 3B — Run backend integration tests
-  cargo test -p roomler-ai-tests 2>&1 | tee /tmp/roomler-test-results.txt
+  cargo test -p meshharbor-tests 2>&1 | tee /tmp/roomler-test-results.txt
 
   Collect:
   - Total tests: passed / failed / ignored
@@ -168,10 +168,10 @@ STEP 3E — Coverage gap analysis
 # =============================================================================
 
 STEP 4A — Rust release build
-  cargo build --release --bin roomler-ai-api 2>&1
+  cargo build --release --bin meshharbor-api 2>&1
   Record:
   - Build success/failure
-  - Binary size: ls -lh target/release/roomler-ai-api
+  - Binary size: ls -lh target/release/meshharbor-api
 
 STEP 4B — Frontend production build
   cd ui && bun run build 2>&1

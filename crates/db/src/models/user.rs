@@ -98,7 +98,7 @@ impl AccountApproval {
 /// FR-88 — the campaign a sign-up arrived from, as stored on `users`.
 ///
 /// Every field is optional and every value has already been through
-/// `roomler_core::attribution::sanitize` (trimmed, printable ASCII, at most
+/// `meshharbor_core::attribution::sanitize` (trimmed, printable ASCII, at most
 /// [`MAX_ATTRIBUTION_VALUE_LEN`] characters; the referrer is a bare host, the
 /// landing path starts with `/`). The struct is only ever built from that
 /// sanitiser or read back from Mongo, so a value here is safe to group on.

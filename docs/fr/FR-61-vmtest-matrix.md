@@ -17,7 +17,7 @@ verifies three things per cell before destroying the VM:
    agent.
 2. **The overlay works** — `roomler peers` sees an anchor node and `roomler ping` succeeds in
    both directions.
-3. **`roomler-desktop` works across all its pages** — every view renders.
+3. **`meshharbor-desktop` works across all its pages** — every view renders.
 
 The product's acceptance bar is "it just works" on machines people actually have. Today that
 bar has no harness: a fresh install on a clean OS is exercised only when a human happens to do
@@ -28,7 +28,7 @@ one.
 - `installer-smoke.yml` covers exactly **2 cells** — Windows **perUser** MSI install/uninstall
   on a GitHub runner and a macOS `.pkg` install. The perMachine wxs is only *compiled* ("no
   install"). No Linux `.deb` install smoke, no perMachine/SystemContext install, no ARM, no
-  Wayland, no enrollment, no remote desktop, no `roomler-desktop` — anywhere in CI.
+  Wayland, no enrollment, no remote desktop, no `meshharbor-desktop` — anywhere in CI.
 - Every recent install-path defect shipped precisely because nothing installs the product the
   way users do, and was found by a **human** doing a field install:
   - FR-50 (#1083): the served installer could not know which server served it — found by
@@ -49,7 +49,7 @@ one.
 | # | Lane (host) | Method | Types | RD check | Desktop check |
 |---|---|---|---|---|---|
 | 1 | **Win11 x86_64** — KVM on zeus, OVMF+swtpm, autounattend golden image, autologon + OpenSSH baked | `install.ps1` AND silent MSI | system (perMachine `ENABLE_SYSTEM_CONTEXT=1`) / attended (perMachine) / per-user (perUser MSI) | Playwright | CDP page-walk (5 views) + screenshots |
-| 2 | Win11 **wizard smoke** | `roomler-setup` driven over CDP | one flavour (perUser) | – | wizard reaches Done; row deleted after |
+| 2 | Win11 **wizard smoke** | `meshharbor-setup` driven over CDP | one flavour (perUser) | – | wizard reaches Done; row deleted after |
 | 3 | **Ubuntu 24.04 GNOME Wayland x86_64** — KVM on zeus/mars, cloud-init golden image, GDM autologin on Wayland | `install.sh` AND `.deb` via dpkg | system (`--system`; `drm_capture`+`uinput`) / per-user (user unit; `mutter_capture`) | Playwright | launch + `--view` walk + `virsh screendump` per view |
 | 4 | **ARM Linux** — Ubuntu arm64 under QEMU **TCG** on zeus (the fleet is x86), AAVMF UEFI, headless + virtual-desktop mode | `install.sh` AND aarch64 `.deb` | system | Playwright, long timeouts | N/A — no aarch64 companion asset; assert the graceful skip |
 | 5 | **macOS arm64** — tart VM on the operator's MacBook Pro (opt-in lane; auto-skipped when unreachable), TCC pre-granted in the golden image | `install.sh` (± `--daemon-token`) AND `installer -pkg` (± daemon marker) | per-user (LaunchAgent only) / system (marker ⇒ + root LaunchDaemon, two device rows) | Playwright | launch + screenshot walk |
@@ -100,28 +100,28 @@ COW-clone golden image → boot → SSH in
   `-AllowElevated`; `daemon-system` adds `ENABLE_SYSTEM_CONTEXT=1` and enrolls
   `--machine-global`. Both carry the FR-50 serve-time server-URL rewrite, so the script lane
   must fetch from the server under test, never from the repo.
-- **MSI**: two products (perUser task-autostart, `agents/roomlerd/wix/main.wxs`; perMachine SCM
-  service, `agents/roomlerd/wix-perMachine/main.wxs`); the third type is the property flip
+- **MSI**: two products (perUser task-autostart, `agents/meshharbord/wix/main.wxs`; perMachine SCM
+  service, `agents/meshharbord/wix-perMachine/main.wxs`); the third type is the property flip
   `ENABLE_SYSTEM_CONTEXT=1` — the **only** public property (`wix-perMachine/main.wxs:395`).
   Enrollment is always post-MSI (`roomlerd enroll`, `--machine-global` for the machine
   flavours); the perMachine service auto-starts at install, so the ephemeral enroll may need a
   stop-enroll-start dance (`enroll --ephemeral` refuses if a config exists —
-  `agents/roomlerd/src/main.rs:96-102`).
+  `agents/meshharbord/src/main.rs:96-102`).
 - **Consent**: `resolve_session_authz` (`crates/api/src/ws/remote_control.rs:1708`) resolves
   the device **owner** to `owner_consent_mode()` = Auto unless `prompt_owner`; the agent-local
   `auto_grant_session` defaults **true** at enroll. Controller = the enrolling admin ⇒ RD
   checks run with zero prompts, by design, not by weakening anything.
 - **Release assets**: aarch64 Linux `.deb`/`.tar.gz` exist (no `ffmpeg-encoder` — SW encode
-  only); there is **no aarch64 `roomler-desktop`** and **no Intel macOS** asset; the macOS
+  only); there is **no aarch64 `meshharbor-desktop`** and **no Intel macOS** asset; the macOS
   `.pkg` is `aarch64-apple-darwin` only.
-- **roomler-desktop**: 5 views (`overview|devices|tunnels|settings|onboarding`,
-  `agents/roomler-desktop/src/front/app.js`), `--view=` deep-link only fires via the
+- **meshharbor-desktop**: 5 views (`overview|devices|tunnels|settings|onboarding`,
+  `agents/meshharbor-desktop/src/front/app.js`), `--view=` deep-link only fires via the
   single-instance second launch; Tauri ⇒ on Windows the WebView2 runtime honours
   `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=<p>` from the environment, so
   the page-walk is CDP-driven DOM assertion; Linux WebKitGTK has no CDP ⇒ `virsh screendump`
   per view + LocalAPI state instead.
 - **Verification CLI**: `roomler peers --json`, `roomler ping <target> --json` (failure ⇒
-  exit 1), `roomler status --json` (`agents/roomler-cli/src/cli.rs`).
+  exit 1), `roomler status --json` (`agents/meshharbor-cli/src/cli.rs`).
 - **Ephemeral (FR-51)**: reusable keys gated by org `ephemeral_keys_enabled` (re-checked per
   use ⇒ flipping it off is class-wide revocation); reaper
   `ROOMLER__RC__EPHEMERAL_REAPER_ENABLED` already on in prod; graceful shutdown self-unenrolls.
@@ -179,7 +179,7 @@ COW-clone golden image → boot → SSH in
 - [x] AC6 — RD asserts frames FLOW and ADVANCE (getStats `framesDecoded` / the composable's live
   fps hook, with a transport-agnostic canvas-pixel-change fallback for the DataChannel/VP9-444
   path that has no `<video>`). Verified on Ubuntu + Windows (VP9-444, direct, 29 fps).
-- [x] AC7 — all 5 roomler-desktop views walked; Windows asserts real DOM per view over WebView2
+- [x] AC7 — all 5 meshharbor-desktop views walked; Windows asserts real DOM per view over WebView2
   CDP; Linux uses `virsh screendump` per view (pairwise-distinct). Verified.
 - [x] AC8 — teardown leaves the org at baseline (graceful self-unenroll + reaper backstop
   observed; `count ≤ baseline` accepts the reaper cleaning older leftovers); k8s untouched
@@ -241,7 +241,7 @@ step-log comments):
 
 - **Ubuntu** (script + `.deb` × system + per-user): install / enroll / overlay (`roomler ping`
   anchor round-trip ~1–2 ms) / Wayland (`seat0 ... wayland`) / RD (VP9-444 direct 29 fps, real
-  GNOME desktop — DRM capture in a virtio-gpu KVM guest) / roomler-desktop (5 views).
+  GNOME desktop — DRM capture in a virtio-gpu KVM guest) / meshharbor-desktop (5 views).
 - **Win11** (install.ps1 + MSI × system/attended/user): install / enroll / SystemContext overlay
   (two roomlerd — session-0 SYSTEM supervisor + session-1 worker) / RD / desktop (5 views over
   WebView2 CDP). Golden image bakes unattended (autounattend + OVMF + swtpm + virtio).

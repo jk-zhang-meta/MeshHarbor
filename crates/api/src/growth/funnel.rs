@@ -44,9 +44,9 @@ use axum::{
     extract::{Query, State},
 };
 use bson::{Bson, DateTime, doc, oid::ObjectId};
-use roomler_ai_db::models::SignupAttribution;
-use roomler_ai_services::dao::{growth::GrowthDao, growth_digest::ExcludedCounts};
-use roomler_core::{campaign, growth::ExclusionSet};
+use meshharbor_db::models::SignupAttribution;
+use meshharbor_services::dao::{growth::GrowthDao, growth_digest::ExcludedCounts};
+use meshharbor_core::{campaign, growth::ExclusionSet};
 use serde::{Deserialize, Serialize};
 
 use super::{
@@ -694,7 +694,7 @@ pub(crate) async fn read(
     // `saas` module's collection).
     let first_paid = if mounted(state, "saas") {
         Some(
-            roomler_ai_services::dao::billing_event::BillingEventDao::new(&state.db)
+            meshharbor_services::dao::billing_event::BillingEventDao::new(&state.db)
                 .first_paid(&tenant_ids)
                 .await?,
         )

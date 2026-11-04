@@ -5,8 +5,8 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use roomler_ai_services::auth::AuthError;
-use roomler_ai_services::dao::base::DaoError;
+use meshharbor_services::auth::AuthError;
+use meshharbor_services::dao::base::DaoError;
 use serde::Serialize;
 
 #[derive(Debug)]
@@ -127,16 +127,16 @@ impl From<AuthError> for ApiError {
     }
 }
 
-impl From<roomler_ai_services::oauth::OAuthError> for ApiError {
-    fn from(err: roomler_ai_services::oauth::OAuthError) -> Self {
+impl From<meshharbor_services::oauth::OAuthError> for ApiError {
+    fn from(err: meshharbor_services::oauth::OAuthError) -> Self {
         match err {
-            roomler_ai_services::oauth::OAuthError::ProviderNotConfigured(msg) => {
+            meshharbor_services::oauth::OAuthError::ProviderNotConfigured(msg) => {
                 ApiError::BadRequest(format!("Provider not configured: {msg}"))
             }
-            roomler_ai_services::oauth::OAuthError::UnknownProvider(msg) => {
+            meshharbor_services::oauth::OAuthError::UnknownProvider(msg) => {
                 ApiError::BadRequest(format!("Unknown provider: {msg}"))
             }
-            roomler_ai_services::oauth::OAuthError::InvalidState => {
+            meshharbor_services::oauth::OAuthError::InvalidState => {
                 ApiError::BadRequest("Invalid OAuth state".to_string())
             }
             other => ApiError::Internal(other.to_string()),

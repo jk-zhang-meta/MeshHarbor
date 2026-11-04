@@ -18,7 +18,7 @@ what a SYSTEM session shows.**
 ## 2. Evidence (master `94a2032c6`)
 
 **Roomler SSH runs entirely in the console-session worker.** The path is:
-- `agents/roomlerd/src/ssh.rs` `maybe_intercept` L188;
+- `agents/meshharbord/src/ssh.rs` `maybe_intercept` L188;
 - `SplitTun::wrap` (`crates/tunnel-core/src/overlay/split_tun.rs` L120: **one** port; `is_intercepted` L224; `listen` L189), on `DEFAULT_SSH_PORT = 2222` (`crates/modules/network/src/routes/agent_ssh.rs` L531–535);
 - `accept_loop` L260;
 - `serve_conn` L2232 → `russh::server::run_stream`.
@@ -30,7 +30,7 @@ what a SYSTEM session shows.**
 
 **Every input the SSH path reads is user-writable there:**
 - the grant table: pushed over the worker's control socket as `ServerMsg::SshGrant` (`crates/remote_control/src/signaling.rs` L2582), and recorded in the worker's memory (`ssh.rs` `record_grant` L2365);
-- the host key (`AgentConfig::ssh_host_key` in `%APPDATA%`, published by the worker's hello: `agents/roomlerd/src/signaling.rs` L1285, L5469), which the caller pins (`agents/roomler-cli/src/sshcmd.rs`);
+- the host key (`AgentConfig::ssh_host_key` in `%APPDATA%`, published by the worker's hello: `agents/meshharbord/src/signaling.rs` L1285, L5469), which the caller pins (`agents/meshharbor-cli/src/sshcmd.rs`);
 - `ssh_authorized_keys`, `ssh_account_mode`, `ssh_max_privilege`, `forward_acl`, the consent sentinels, and the WireGuard key that gate 0 ("carrier identity") rests on.
 
 **Why that matters.** Today each of these yields only the user's own identity. Once SSH runs as SYSTEM, each becomes an escalation.
@@ -41,7 +41,7 @@ what a SYSTEM session shows.**
 
 - `SplitTun` intercepts a small fixed set of ports, `{2222, 2223}`. `Netstack::listen(port)` already takes any port.
 - Port **2223** is spliced, byte for byte, into a new owner-checked pipe, `\\.\pipe\roomler-ssh-service`.
-  - It uses the doorbell's SDDL (`agents/roomlerd/src/exec_service.rs` L1032, `first_pipe_instance`, `reject_remote_clients`).
+  - It uses the doorbell's SDDL (`agents/meshharbord/src/exec_service.rs` L1032, `first_pipe_instance`, `reject_remote_clients`).
   - The worker refuses a pipe SYSTEM does not own (`pipe_owned_by_system` L1388). Squatting costs only availability.
 - The service runs `russh::server::run_stream` over the pipe stream with **its own** host key.
   - The worker sees only ciphertext: it can drop or delay bytes, but not read or inject (SSH's MACs).
@@ -116,7 +116,7 @@ P1 as built (`crates/modules/network/src/routes/agent_ssh.rs`):
 - **Deferred:** refusing `console_user` up front on Windows with no service path. A SystemContext worker runs as SYSTEM and *can* serve it, and the server cannot yet tell that worker from an attended one. An attended worker accepts the grant and refuses when the session starts, naming why (`WTSQueryUserToken … only a process running as SYSTEM may`, §8 row 2), not through the grant ack.
 - A P1-era agent binds `via_service` and refuses such a grant (`Other`). It never advertises `ssh-system`, so no server sends it one.
 
-P2 and P3 as built (`agents/roomlerd/src/ssh_service.rs`, `exec_service.rs`, `ssh.rs`):
+P2 and P3 as built (`agents/meshharbord/src/ssh_service.rs`, `exec_service.rs`, `ssh.rs`):
 - **The ceiling is the anchor's.** `Anchor.ssh` (serde default `off`, so every FR-94 anchor reads as off), set elevated with `roomlerd anchor ssh <off|console_user|system>` or `anchor create --ssh`. Re-anchoring the SAME device keeps it; any other device starts off. `Anchor.extra` keeps keys a newer build wrote, so this build's save (a renewal, `anchor exec`) never erases them.
 - **The host key** is `ssh_host_ed25519_key` beside the anchor, written and read with the anchor's rules (private directory, file DACL set before the rename, owner and DACL checked on the handle read from). The service or `anchor ssh` makes it when missing.
 - **The publisher** compares every 60 s and puts `{host_pubkey, ceiling}` when the anchor, the ceiling or the key changed, or after 6 h. A failure waits 5 min. Without an anchor it publishes nothing: the server's record names the anchor it came under.

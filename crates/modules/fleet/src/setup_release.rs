@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 G ROX EOOD
 //! `/api/setup/*` — cached GitHub-Releases proxy for the unified
-//! `roomler-setup` wizard (tag `setup-v*`, asset prefix
-//! `roomler-setup-`) plus the terminal installers
+//! `meshharbor-setup` wizard (tag `setup-v*`, asset prefix
+//! `meshharbor-setup-`) plus the terminal installers
 //! `/api/setup/install.{sh,ps1}`. Renamed from
 //! `tunnel_wizard_release.rs` in P4b; the legacy `/api/tunnel-wizard/*`
 //! family it also served was retired in P4c-2 (its release family
@@ -27,7 +27,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 
-use roomler_core::{ApiError, client_ip::PeerAddr};
+use meshharbor_core::{ApiError, client_ip::PeerAddr};
 
 use crate::{
     FleetState,
@@ -56,7 +56,7 @@ pub struct InstallerHealth {
     pub uri: String,
 }
 
-// ─── /api/setup — the unified roomler-setup wizard ──────────────────────────
+// ─── /api/setup — the unified meshharbor-setup wizard ──────────────────────────
 
 /// `GET /api/setup/latest-release` — recent `setup-v*` releases ONLY
 /// (filtered server-side from the mixed tag list the cache holds).
@@ -153,11 +153,11 @@ pub async fn setup_installer_proxy(
 }
 
 /// Pick the unified-wizard asset for a platform. Asset naming follows
-/// the release-setup.yml matrix with the `roomler-setup-` prefix:
-///   - linux-x86_64 — `roomler-setup-*-x86_64-unknown-linux-gnu.tar.gz`
-///   - linux-aarch64 — `roomler-setup-*-aarch64-unknown-linux-gnu.tar.gz` (FR-97 P7b)
-///   - macos — `roomler-setup-*-universal-apple-darwin.tar.gz`
-///   - windows-x86_64 — `roomler-setup-*-x86_64-pc-windows-msvc.zip`
+/// the release-setup.yml matrix with the `meshharbor-setup-` prefix:
+///   - linux-x86_64 — `meshharbor-setup-*-x86_64-unknown-linux-gnu.tar.gz`
+///   - linux-aarch64 — `meshharbor-setup-*-aarch64-unknown-linux-gnu.tar.gz` (FR-97 P7b)
+///   - macos — `meshharbor-setup-*-universal-apple-darwin.tar.gz`
+///   - windows-x86_64 — `meshharbor-setup-*-x86_64-pc-windows-msvc.zip`
 ///
 /// Each arm names its own target triple, so neither Linux arm can take the
 /// other's tarball whatever order GitHub lists them in.
@@ -170,7 +170,7 @@ pub fn pick_setup_asset<'a>(
         if name.ends_with(".sha256") {
             return false;
         }
-        if !name.starts_with("roomler-setup-") {
+        if !name.starts_with("meshharbor-setup-") {
             return false;
         }
         match platform {
@@ -195,7 +195,7 @@ pub fn pick_setup_asset<'a>(
 ///       --role daemon --token <jwt>
 ///
 /// and the PowerShell twin via `/api/setup/install.ps1`. These are the
-/// no-GUI equivalent of the roomler-setup wizard (same resolve →
+/// no-GUI equivalent of the meshharbor-setup wizard (same resolve →
 /// download → verify → install → enroll steps). Short cache so script
 /// fixes roll out within minutes of a web deploy.
 const INSTALL_SH: &str = include_str!("../../../../scripts/install.sh");
@@ -382,7 +382,7 @@ fn normalise_platform(s: &str) -> Result<&'static str, ApiError> {
         // P7b says `/api/setup/linux` and means that one.
         "linux-x86_64" | "linux" | "linux-tar" => Ok("linux-x86_64"),
         // FR-97 P7b — what an aarch64 wizard names itself
-        // (`roomler_setup_core::asset_resolver::current_platform`).
+        // (`meshharbor_setup_core::asset_resolver::current_platform`).
         "linux-aarch64" | "linux-arm64" => Ok("linux-aarch64"),
         "macos" | "macos-universal" | "darwin" => Ok("macos"),
         "windows-x86_64" | "windows" | "win" => Ok("windows-x86_64"),
@@ -459,8 +459,8 @@ mod tests {
     /// code does not control).
     #[test]
     fn pick_setup_asset_keeps_the_linux_arches_apart() {
-        let x86 = "roomler-setup-0.4.148-x86_64-unknown-linux-gnu.tar.gz";
-        let arm = "roomler-setup-0.4.148-aarch64-unknown-linux-gnu.tar.gz";
+        let x86 = "meshharbor-setup-0.4.148-x86_64-unknown-linux-gnu.tar.gz";
+        let arm = "meshharbor-setup-0.4.148-aarch64-unknown-linux-gnu.tar.gz";
         for order in [[arm, x86], [x86, arm]] {
             let assets: Vec<_> = order.iter().map(|n| asset(n)).collect();
             assert_eq!(pick_setup_asset(&assets, "linux-x86_64").unwrap().name, x86);
@@ -518,7 +518,7 @@ mod tests {
             release(
                 "setup-v0.3.0-rc.200",
                 false,
-                &["roomler-setup-0.3.0-rc.200-x86_64-pc-windows-msvc.zip"],
+                &["meshharbor-setup-0.3.0-rc.200-x86_64-pc-windows-msvc.zip"],
             ),
         ];
         let picked = pick_release_for(&releases, "latest", "setup-v").unwrap();
@@ -537,22 +537,22 @@ mod tests {
             // purpose: once in the candidate list and once alone, to prove the
             // legacy wizard asset can NEVER satisfy the setup pick.
             asset("roomler-tunnel-installer-0.3.0-x86_64-pc-windows-msvc.zip"),
-            asset("roomler-setup-0.3.0-x86_64-pc-windows-msvc.zip"),
-            asset("roomler-setup-0.3.0-x86_64-pc-windows-msvc.zip.sha256"),
-            asset("roomler-setup-0.3.0-x86_64-unknown-linux-gnu.tar.gz"),
-            asset("roomler-setup-0.3.0-universal-apple-darwin.tar.gz"),
+            asset("meshharbor-setup-0.3.0-x86_64-pc-windows-msvc.zip"),
+            asset("meshharbor-setup-0.3.0-x86_64-pc-windows-msvc.zip.sha256"),
+            asset("meshharbor-setup-0.3.0-x86_64-unknown-linux-gnu.tar.gz"),
+            asset("meshharbor-setup-0.3.0-universal-apple-darwin.tar.gz"),
         ];
         assert_eq!(
             pick_setup_asset(&assets, "windows-x86_64").unwrap().name,
-            "roomler-setup-0.3.0-x86_64-pc-windows-msvc.zip"
+            "meshharbor-setup-0.3.0-x86_64-pc-windows-msvc.zip"
         );
         assert_eq!(
             pick_setup_asset(&assets, "linux-x86_64").unwrap().name,
-            "roomler-setup-0.3.0-x86_64-unknown-linux-gnu.tar.gz"
+            "meshharbor-setup-0.3.0-x86_64-unknown-linux-gnu.tar.gz"
         );
         assert_eq!(
             pick_setup_asset(&assets, "macos").unwrap().name,
-            "roomler-setup-0.3.0-universal-apple-darwin.tar.gz"
+            "meshharbor-setup-0.3.0-universal-apple-darwin.tar.gz"
         );
         // The legacy wizard asset must never satisfy the setup pick.
         let legacy_only = vec![asset(

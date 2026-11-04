@@ -3,7 +3,7 @@
 use super::base::{BaseDao, DaoResult};
 use bson::{DateTime, Document, doc, oid::ObjectId};
 use mongodb::{Database, options::ReturnDocument};
-use roomler_ai_db::models::DeviceShareGrant;
+use meshharbor_db::models::DeviceShareGrant;
 
 pub struct DeviceShareDao {
     pub base: BaseDao<DeviceShareGrant>,

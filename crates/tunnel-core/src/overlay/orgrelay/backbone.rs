@@ -20,7 +20,7 @@ use tokio::{net::UdpSocket, sync::watch, task::JoinHandle};
 /// Conservative experimental ceiling; callers must not select this path for
 /// a WG datagram MTU above it. No TUN, system-route, or existing MTU changes.
 pub const MAX_CIPHERTEXT: usize =
-    roomler_ai_remote_control::models::peer_relay_limits::BACKBONE_MAX_CIPHERTEXT;
+    meshharbor_remote_control::models::peer_relay_limits::BACKBONE_MAX_CIPHERTEXT;
 pub const MAX_BRIDGE_LIFETIME: Duration = Duration::from_secs(3600);
 const MAX_LOCAL_CIDRS: usize = 16;
 const BIND_BUDGET: Duration = Duration::from_secs(5);

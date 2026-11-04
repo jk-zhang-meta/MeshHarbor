@@ -5,7 +5,7 @@
 //!
 //! Every request for an installer, a release manifest or a served install
 //! script carries a User-Agent that says what kind of client asked: the
-//! wizard (`roomler-setup/…`), `curl`/`wget` (`install.sh`), PowerShell
+//! wizard (`meshharbor-setup/…`), `curl`/`wget` (`install.sh`), PowerShell
 //! (`install.ps1`), a browser, or something else. [`classify_user_agent`]
 //! turns that into one of five **classes**, and [`count_fetch`] adds one to
 //! the `growth_daily` counter `{asset, client, os}` for the UTC day — a
@@ -13,10 +13,10 @@
 //!
 //! ⚠️ **The updater is never counted.** `roomlerd/<ver>` is the daemon's own
 //! update check, and by default it asks `roomler.ai` from self-hosted
-//! devices as well (`agents/roomlerd/src/updater.rs`, `DEFAULT_PROXY_URL`).
+//! devices as well (`agents/meshharbord/src/updater.rs`, `DEFAULT_PROXY_URL`).
 //! Counting it would be exactly the self-host telemetry the product promises
 //! not to collect (`LICENSING.md`, `docs/business-model.md` §6). So is every
-//! other identity of our own — `roomlerd-*`, `roomler-cli/`, the pre-rename
+//! other identity of our own — `roomlerd-*`, `meshharbor-cli/`, the pre-rename
 //! updater's spelling, any product token of ours that is not the wizard:
 //! [`UaClass::Updater`], whose [`UaClass::counted`] is `None`, and a fetch
 //! with it writes nothing.
@@ -31,7 +31,7 @@
 //! counted fetch whose client address falls inside is counted under the
 //! client class [`INTERNAL_CLIENT`] instead of its own, so the classes stop
 //! inflating and the digest still says how many were left out. The address
-//! comes from [`roomler_core::client_ip`] — the per-IP limiter's rule, the
+//! comes from [`meshharbor_core::client_ip`] — the per-IP limiter's rule, the
 //! only one the server has — is compared in memory, and is dropped: the
 //! row stays three enum-like dimensions and a count. The updater rule comes
 //! first: a `roomlerd/` fetch from the lab is still never counted at all.
@@ -39,13 +39,13 @@
 use std::{collections::BTreeMap, net::SocketAddr};
 
 use axum::http::{HeaderMap, header::USER_AGENT};
-use roomler_ai_services::dao::growth::GrowthDao;
+use meshharbor_services::dao::growth::GrowthDao;
 
 use crate::FleetState;
 
 /// `growth_daily.source` for every counter here, and the `metric` of a
 /// fetch — spelled in the core DAO, which the host's digest reads them by.
-pub use roomler_ai_services::dao::growth::{
+pub use meshharbor_services::dao::growth::{
     INSTALL_FETCH_METRIC as METRIC_FETCH, INSTALL_INTERNAL_CLIENT as INTERNAL_CLIENT,
     INSTALL_SOURCE as SOURCE,
 };
@@ -79,7 +79,7 @@ pub mod asset {
 /// vocabulary; `Updater` is the one that is never written.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UaClass {
-    /// `roomler-setup/<ver>` — the wizard, in-process.
+    /// `meshharbor-setup/<ver>` — the wizard, in-process.
     Wizard,
     /// `curl/…` or `Wget/…` — `install.sh`, or a person at a terminal.
     ScriptSh,
@@ -113,12 +113,12 @@ impl UaClass {
 /// The one product token that is counted. Every OTHER product token of ours
 /// — `roomlerd/`, `roomlerd-exec-service/`, `roomlerd-anchor/`,
 /// `roomlerd-localapi/`, `roomlerd-ssh-service/`, `roomlerd-crash-reporter/`,
-/// `roomler-cli/`, `roomler-token-renewal/`, the updater's pre-rename
+/// `meshharbor-cli/`, `roomler-token-renewal/`, the updater's pre-rename
 /// spelling, and whatever a later release adds — is the product's own
 /// machinery and is never counted. Decided by the common prefix, not by a
 /// list, so a new identity of ours is excluded before anyone remembers to
 /// name it here.
-const WIZARD_PREFIX: &str = "roomler-setup/";
+const WIZARD_PREFIX: &str = "meshharbor-setup/";
 const OWN_PREFIX: &str = "roomler";
 
 /// Pure: the class of a User-Agent value (`None` = no header).
@@ -216,7 +216,7 @@ pub fn count_fetch(state: &FleetState, headers: &HeaderMap, peer: Option<SocketA
     // P3c — one rule for "the client's address": the limiter's. Compared in
     // memory and dropped; skipped outright while no network is configured.
     let internal = !state.internal_networks.is_empty()
-        && roomler_core::client_ip::client_ip_or_peer(
+        && meshharbor_core::client_ip::client_ip_or_peer(
             headers,
             peer,
             state.settings.app.rate_limit_trusted_hops,
@@ -254,7 +254,7 @@ mod tests {
     #[test]
     fn classifies_every_real_client() {
         assert_eq!(
-            classify_user_agent(Some("roomler-setup/0.4.136")),
+            classify_user_agent(Some("meshharbor-setup/0.4.136")),
             UaClass::Wizard
         );
         assert_eq!(classify_user_agent(Some("curl/8.5.0")), UaClass::ScriptSh);
@@ -292,7 +292,7 @@ mod tests {
             "roomlerd-localapi/0.4.135",
             "roomlerd-ssh-service/0.4.135",
             "roomlerd-crash-reporter/0.4.135",
-            "roomler-cli/0.4.135",
+            "meshharbor-cli/0.4.135",
             "roomler-token-renewal/0.4.135",
             "roomler-something-from-a-later-release/0.5.0",
         ] {
@@ -318,7 +318,7 @@ mod tests {
             UaClass::Browser
         );
         assert_eq!(
-            classify_user_agent(Some("roomler-setup/0.4.136")).counted(),
+            classify_user_agent(Some("meshharbor-setup/0.4.136")).counted(),
             Some("wizard")
         );
     }
@@ -381,7 +381,7 @@ mod tests {
         };
         // The wizard resolving and downloading the perMachine MSI.
         assert_eq!(
-            dims(&asset::installer("permachine"), "roomler-setup/0.4.136"),
+            dims(&asset::installer("permachine"), "meshharbor-setup/0.4.136"),
             (
                 "installer-permachine".into(),
                 "wizard".into(),
@@ -438,7 +438,7 @@ mod tests {
         for ua in [
             Some("curl/8.5.0"),
             Some(PS51),
-            Some("roomler-setup/0.4.139"),
+            Some("meshharbor-setup/0.4.139"),
             Some(CHROME_WIN),
             None,
         ] {

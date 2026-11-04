@@ -14,11 +14,11 @@
 //! to post is logged, never a reason to refuse a start or drop a report.
 
 use bson::{DateTime, oid::ObjectId};
-use roomler_ai_db::models::{Binding, NotificationSource, NotificationType};
-use roomler_ai_mod_chat::bound::BoundChat;
-use roomler_ai_remote_control::hive::{HiveApprovalStatus, HiveTurnStatus};
-use roomler_core::Core;
-use roomler_core::notify::{NotifyParams, PushTo};
+use meshharbor_db::models::{Binding, NotificationSource, NotificationType};
+use meshharbor_mod_chat::bound::BoundChat;
+use meshharbor_remote_control::hive::{HiveApprovalStatus, HiveTurnStatus};
+use meshharbor_core::Core;
+use meshharbor_core::notify::{NotifyParams, PushTo};
 use tracing::{debug, warn};
 
 use crate::HiveState;
@@ -40,7 +40,7 @@ pub(crate) async fn open(
     session: ObjectId,
     title: &str,
     owner: ObjectId,
-) -> Result<ObjectId, roomler_ai_services::dao::base::DaoError> {
+) -> Result<ObjectId, meshharbor_services::dao::base::DaoError> {
     let room = state
         .chat
         .create_bound_room(
@@ -734,7 +734,7 @@ async fn notify_approval_with(
         },
         ws_type_label: "approval_request",
     };
-    roomler_core::notify::notify_users(core, &params, &drivers, PushTo::Everyone).await;
+    meshharbor_core::notify::notify_users(core, &params, &drivers, PushTo::Everyone).await;
 }
 
 /// The approval's stub as markdown: THAT the session waits for a driver, and

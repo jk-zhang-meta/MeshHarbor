@@ -1,5 +1,5 @@
 [package]
-name = "roomler-ai-mod-fleet"
+name = "meshharbor-mod-fleet"
 license = "AGPL-3.0-only"
 publish = false
 version.workspace = true
@@ -7,20 +7,20 @@ edition.workspace = true
 description = "FR-69 module: fleet — agents, enrollment, presence, the agent Hub, consent, remote config, exec, releases and installer proxies."
 
 [lib]
-name = "roomler_ai_mod_fleet"
+name = "meshharbor_mod_fleet"
 path = "src/lib.rs"
 
 # The fourth module crate (FR-69 P5a): device management. `remote` and
 # `network` depend on THIS crate (the Hub, the agent row, presence); it depends
-# on `roomler-core` and the crates below it, never on the api crate. The Hub
-# came here from `roomler-ai-remote-control`, which is wire-only for the
+# on `meshharbor-core` and the crates below it, never on the api crate. The Hub
+# came here from `meshharbor-remote-control`, which is wire-only for the
 # server now (its `server` feature keeps just the Mongo audit sink).
 [dependencies]
-roomler-core = { path = "../../core" }
-roomler-ai-config = { path = "../../config" }
-roomler-ai-db = { path = "../../db" }
-roomler-ai-services = { path = "../../services" }
-roomler-ai-remote-control = { path = "../../remote_control" }
+meshharbor-core = { path = "../../core" }
+meshharbor-config = { path = "../../config" }
+meshharbor-db = { path = "../../db" }
+meshharbor-services = { path = "../../services" }
+meshharbor-remote-control = { path = "../../remote_control" }
 
 anyhow.workspace = true
 async-trait.workspace = true

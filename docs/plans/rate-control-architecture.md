@@ -13,7 +13,7 @@ first release**.
 
 | what | size |
 |---|---|
-| controllers / estimators / heuristics that move rate, fps, dims or force a keyframe | **34** in `agents/roomlerd/src/encode/*` + the two pumps |
+| controllers / estimators / heuristics that move rate, fps, dims or force a keyframe | **34** in `agents/meshharbord/src/encode/*` + the two pumps |
 | of which compensate for "a rate change costs an IDR" | 9: coarsen ladder, deferred applies + `DEFER_QUIET`, 15-s thrift, background swap, settle-KF thrift, refine-vs-cap fight, opener grace, FlipTracker cooldown, kf_gate rebuild cooldown |
 | of which are a second estimate of the same pipe | 8: occupancy AIMD, blocked-send goodput, FR-35 learner, rate memory, P1 floor relief, P3 arrival clamp, P4 drain, FR-15 age loop (+ P6/P8 glue) |
 | kill switches | 11 pub `*_enabled()` in `encode/mod.rs` + 2 private + ~11 env-only knobs; a config key touches six places (`config_surface.rs` KEYS/get/set, `config.rs` field + `env_bridge_bools`, `enrollment.rs` default) |
@@ -180,7 +180,7 @@ floor + 150 ms`, `idr_count`, `pauses_on_direct == 0`. **Trace-replay fixtures**
 2-s heartbeat: `t_s,target_bps,frames_encoded_d,bytes_d,bytes_inflight,goodput_bps,viewer_age_ms,
 viewer_age_floor_ms,rx_bps,queue_ms,link_congested,drains,constrained,w,h,fps`) extracted by
 `scripts/rc-trace-extract.py` from `agent_logs` (`list_for_agent(?session_id=…)`,
-`routes/agent_log.rs:208`) into `agents/roomlerd/tests/fixtures/ratectl/`; ground truth per window =
+`routes/agent_log.rs:208`) into `agents/meshharbord/tests/fixtures/ratectl/`; ground truth per window =
 `rx_bps` when `queue_ms > 0`, else goodput, else hold; assertions = over-drive integral
 `Σ max(0, target − 1.1×pipe)` ≤ budget and recovery ≤ N windows per stall. Four fixtures: **airport
 hotspot** (goodput 65–395 k, target climbing → ≤ 1.1×pipe within 5 s, never climbs while age is
@@ -314,7 +314,7 @@ a routing hole; and the same missing notion of "own adapters" makes `non_overlay
 
 ## Verification
 
-- Unit: B0 fixtures in `cargo test -p roomlerd --lib` (default build); A0's sweep as `--ignored`
+- Unit: B0 fixtures in `cargo test -p meshharbord --lib` (default build); A0's sweep as `--ignored`
   on hardware hosts; C2's pure tests; the config-surface parity tests for every new key.
 - Field: `scripts/rc-ab.sh` on CORPLAP-1 (QSV over the corp VPN — after C1 that pair is TURN, not
   DERP) and CORPLAP-2 (real relay) from neo16; both arms recorded on each FR issue in the FR-59

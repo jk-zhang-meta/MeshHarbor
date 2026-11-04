@@ -31,10 +31,10 @@ use axum::{
     extract::{Path, Query, State},
 };
 use bson::{DateTime, Document, oid::ObjectId};
-use roomler_ai_db::models::role::permissions;
-use roomler_ai_remote_control::vault::{RevokeReason, providers};
-use roomler_ai_services::dao::base::DaoError;
-use roomler_core::{ApiError, extractors::auth::AuthUser, guards::parse_tid};
+use meshharbor_db::models::role::permissions;
+use meshharbor_remote_control::vault::{RevokeReason, providers};
+use meshharbor_services::dao::base::DaoError;
+use meshharbor_core::{ApiError, extractors::auth::AuthUser, guards::parse_tid};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tracing::{error, warn};
@@ -372,7 +372,7 @@ fn check_entries(what: &str, entries: &[String]) -> Result<(), ApiError> {
 }
 
 /// P3-4c — `exec_allow` names programs by their BARE name
-/// ([`program_name_ok`](roomler_ai_remote_control::vault::program_name_ok)):
+/// ([`program_name_ok`](meshharbor_remote_control::vault::program_name_ok)):
 /// the device resolves the name among the system's own directories and hands
 /// a value to nothing else, so a path could only ever allow nothing. It is
 /// refused here rather than kept to do nothing.
@@ -380,12 +380,12 @@ fn check_programs(entries: &[String]) -> Result<(), ApiError> {
     check_entries("exec_allow", entries)?;
     if let Some(e) = entries
         .iter()
-        .find(|e| !roomler_ai_remote_control::vault::program_name_ok(e))
+        .find(|e| !meshharbor_remote_control::vault::program_name_ok(e))
     {
         return Err(ApiError::BadRequest(format!(
             "exec_allow entry {e:?} is not a program's bare name (letters, digits, `.`, `_`, \
              `+` or `-`, at most {} characters, not starting with `.` or `-`)",
-            roomler_ai_remote_control::vault::lease_limits::MAX_PROGRAM_LEN
+            meshharbor_remote_control::vault::lease_limits::MAX_PROGRAM_LEN
         )));
     }
     Ok(())

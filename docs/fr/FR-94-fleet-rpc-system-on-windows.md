@@ -5,7 +5,7 @@ wording #2039, measurements #2086) and P1–P5 (§6: #2099, #2105, #2110) shippe
 `hosted-20261013-c6bcdb2`, agent 0.4.133. AC1–AC8 field-verified on 0.4.133 (§7, §10 rows 7–20). Follow-ups
 #2133 and #2134 · **Owner:** fleet (the anchor, the pending store, the claim and result routes), the Windows agent
 (the service runner) · **Anchors:** §2 master `bc1b26bbc`; §5 #2099 (`0cacbfe4c`) · **Builds on:**
-[Fleet RPC](../fleet-rpc.md), [roomler SSH account modes](../roomler-ssh.md),
+[Fleet RPC](../fleet-rpc.md), [roomler SSH account modes](../meshharbor-ssh.md),
 [FR-43](FR-43-macos-single-enrollment.md) (the supervised-daemon delegation model), #2021
 
 ## 1. Goal
@@ -22,20 +22,20 @@ The design must keep one invariant (§4): **nothing the signed-in user can write
 
 | What | Where | Consequence |
 |---|---|---|
-| The session-0 service only preps the firewall and runs the supervisor | `agents/roomlerd/src/win_service/mod.rs` L501–512 (`firewall_prep`, `spawn_supervisor` → `supervisor::run`) | Nothing in session 0 can run a command today |
+| The session-0 service only preps the firewall and runs the supervisor | `agents/meshharbord/src/win_service/mod.rs` L501–512 (`firewall_prep`, `spawn_supervisor` → `supervisor::run`) | Nothing in session 0 can run a command today |
 | The console-session **worker** holds the agent socket and runs exec, SSH and LocalAPI | process list on 0.4.129; SSH interception installed at `overlay.rs` L332, its services built at `signaling.rs` L1366 | Every remote action has the worker's identity |
-| Fleet RPC always asks for `RunAs::Daemon` | `agents/roomlerd/src/signaling.rs` L4107 | "Daemon" means the worker |
+| Fleet RPC always asks for `RunAs::Daemon` | `agents/meshharbord/src/signaling.rs` L4107 | "Daemon" means the worker |
 | An attended worker runs on the signed-in user's token: the elevated linked token when they are an admin, their filtered token otherwise | `win_service/supervisor.rs` L392 `worker_elevation_requested`, L447 `elevated_primary_token` | Measured on 0.4.129: `<host>\<user>`, session 1, **High** integrity |
 | SystemContext mode runs a SYSTEM worker in the console session from cold start | `supervisor.rs` L869 `peer_presence_is_signaled` = L885 `system_swap_enabled` (`ROOMLERD_ENABLE_SYSTEM_SWAP`) | A controller connecting swaps nothing (since 0.3.0-rc.7; #2032) |
 | Attended, nobody signed in: no worker at all | `supervisor.rs` L1634 (no user token: idle), L1689 (logout terminates the worker) | The device is offline; there is no exec |
 | `console_user` needs `WTSQueryUserToken`, so SeTcbPrivilege, so SYSTEM | `exec.rs` L3128–3205 (`win_console`), `pty/windows.rs` L686–705, `ssh.rs` L755–758 | Refused on **every attended install**, Fleet RPC and SSH alike, with a message blaming "not a perMachine service install" (`exec.rs` L3205). That is the wrong diagnosis on a perMachine attended install |
-| An attended worker's config is the **user's** `%APPDATA%` | `agents/roomlerd/src/main.rs` L839 `pick_config_path` (the machine-global path applies to SystemContext workers only) | The agent token, the server origin and `exec_enabled` are **user-writable** on attended installs |
-| The machine-global dir is SYSTEM + Administrators only, where the installer hardened it | `agents/roomler-setup/src/orchestrator_agent.rs` L799 `harden_machine_global_dir` | A SYSTEM-protected anchor exists only where an elevated installer wrote one |
+| An attended worker's config is the **user's** `%APPDATA%` | `agents/meshharbord/src/main.rs` L839 `pick_config_path` (the machine-global path applies to SystemContext workers only) | The agent token, the server origin and `exec_enabled` are **user-writable** on attended installs |
+| The machine-global dir is SYSTEM + Administrators only, where the installer hardened it | `agents/meshharbor-setup/src/orchestrator_agent.rs` L799 `harden_machine_global_dir` | A SYSTEM-protected anchor exists only where an elevated installer wrote one |
 | The agent WS never uses a proxy; reqwest is on its defaults | `Cargo.toml` L293 (`tokio-tungstenite`, `rustls-tls-native-roots`), L194 (reqwest 0.12 defaults: native TLS, per-user system proxy) | A session-0 HTTPS client needs the same direct egress the WS already needs (P0 (c)) |
 | The exec waiter is pod-local | `crates/modules/fleet/src/hub.rs` L2190 `exec_on_agent`, L349 `exec_waiters` | A claim or result from the service can land on any pod, so the pending store must be shared |
 | Redis is optional in Core; Mongo is always there | `crates/core/src/state.rs` L73 | The pending store lives in Mongo (TTL + `find_one_and_delete`), not Redis |
 | The four gates | `crates/modules/fleet/src/agent_exec.rs` L10–25, `authorize` L257, `dispatch` L339 | Unchanged by this FR |
-| The claim "SYSTEM on Windows" | `exec.rs` L37–39 and L736, `roomler-cli/src/cli.rs` L401, `ui/src/utils/permissions.ts` L105, `ui/src/stores/agents.ts` L354, `fleet/src/agent_exec.rs` L32–35; CLAUDE.md and `docs/fleet-rpc.md` (annotated by #2022, #2032) | P0's wording PR makes them say what happens **today** |
+| The claim "SYSTEM on Windows" | `exec.rs` L37–39 and L736, `meshharbor-cli/src/cli.rs` L401, `ui/src/utils/permissions.ts` L105, `ui/src/stores/agents.ts` L354, `fleet/src/agent_exec.rs` L32–35; CLAUDE.md and `docs/fleet-rpc.md` (annotated by #2022, #2032) | P0's wording PR makes them say what happens **today** |
 
 ## 3. Why SYSTEM by default
 
@@ -252,7 +252,7 @@ stateDiagram-v2
   refusal is audited `claim_refused`. The control is that this device's own service then claims the same id.
   The claim matches the request id against the credential's own device and org, so another org's
   credential is refused the same way. (iv) The doorbell's reply holds `claimed` and `error` only, never
-  output (`the_doorbell_wire_is_locked`, `agents/roomlerd/src/exec_service.rs`). Every field reply in
+  output (`the_doorbell_wire_is_locked`, `agents/meshharbord/src/exec_service.rs`). Every field reply in
   rows 9, 17 and 18 had that shape. The output goes from the service to the server.)*
 - [x] **AC5:** a claim is single-use, bound to its device, and expires no later than the exec deadline. A
   claim and a result that land on the **other** pod still complete (an integration test with two servers,

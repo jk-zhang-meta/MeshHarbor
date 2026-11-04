@@ -11,7 +11,7 @@
 //! those arms kept in this loop's locals (the tunnel originator, its
 //! sessions, the probe-persist throttle) lives behind their lifecycles,
 //! keyed by the connection id minted here. The teardown order is unchanged
-//! and written once (see `roomler_core::agent_socket`).
+//! and written once (see `meshharbor_core::agent_socket`).
 //!
 //! The host keeps the `/ws` upgrade and the role gate (D7) and calls
 //! [`handle_agent_socket`] from its agent branch: the URL, the wire and the
@@ -20,7 +20,7 @@
 use axum::extract::ws::{Message, WebSocket};
 use bson::oid::ObjectId;
 use futures::{SinkExt, StreamExt, stream::SplitSink};
-use roomler_ai_remote_control::{
+use meshharbor_remote_control::{
     models::{ConsentMode, RpcCap},
     signaling::{AgentSysStats, ClientMsg, Owner, RelayRegionRtt, Role, ServerMsg},
     turn_creds::relay_regions_wire,
@@ -32,8 +32,8 @@ use tracing::{debug, info, warn};
 use crate::FleetState;
 use crate::hub::DispatchCtx;
 use axum::{extract::WebSocketUpgrade, response::Response};
-use roomler_core::ws::upgrade::{MAX_WS_MESSAGE_BYTES, send_goodbye_and_close, tid_matches_claim};
-use roomler_core::{business_authority::AuthenticatedDevice, client_ip::ConnectionOrigin};
+use meshharbor_core::ws::upgrade::{MAX_WS_MESSAGE_BYTES, send_goodbye_and_close, tid_matches_claim};
+use meshharbor_core::{business_authority::AuthenticatedDevice, client_ip::ConnectionOrigin};
 
 /// Authority is stricter than the legacy management token-generation switch:
 /// a signed old credential must never be stamped as the current generation.
@@ -71,7 +71,7 @@ async fn observe_business_connection(
             owner_user_id,
             row.owner_user_id,
         ) {
-            return Err(roomler_core::ApiError::Unauthorized(
+            return Err(meshharbor_core::ApiError::Unauthorized(
                 "Current device identity required for business evidence".into(),
             ));
         }
@@ -88,7 +88,7 @@ async fn observe_business_connection(
     if !matches!(
         tokio::time::timeout(
             std::time::Duration::from_secs(1),
-            roomler_core::business_authority::record_connection_observation(
+            meshharbor_core::business_authority::record_connection_observation(
                 &state.core,
                 &device,
                 origin,
@@ -176,7 +176,7 @@ pub async fn handle_agent_socket(
     // anything else is stored as none, so the device takes no leases until a
     // hello carries a key that is well formed.
     let vault_key = if vault_key.is_empty()
-        || roomler_ai_remote_control::signaling::vault_key_is_well_formed(&vault_key)
+        || meshharbor_remote_control::signaling::vault_key_is_well_formed(&vault_key)
     {
         vault_key
     } else {
@@ -192,7 +192,7 @@ pub async fn handle_agent_socket(
     // import. A hint either way (the browser pins what signed), so this
     // checks a device's bug, not an attacker.
     let peer_auth_key = if peer_auth_key.is_empty()
-        || roomler_ai_remote_control::signaling::peer_auth_key_is_well_formed(&peer_auth_key)
+        || meshharbor_remote_control::signaling::peer_auth_key_is_well_formed(&peer_auth_key)
     {
         peer_auth_key
     } else {
@@ -209,7 +209,7 @@ pub async fn handle_agent_socket(
     // as the connection that wrote its hello, so this connection's teardown
     // writes `Offline` only while no newer hello has replaced it.
     let conn_id = uuid::Uuid::new_v4().to_string();
-    let business_observation = roomler_core::business_authority::ObservationTask::spawn({
+    let business_observation = meshharbor_core::business_authority::ObservationTask::spawn({
         let (state, origin, conn_id) = (state.clone(), connection_origin.clone(), conn_id.clone());
         async move {
             observe_business_connection(
@@ -454,11 +454,11 @@ pub async fn handle_agent_socket(
     // then there is nothing to seed; the removal's kick is on its way.
     if let Ok(row) = state.agents.find_live_in_tenant(tenant_id, agent_id).await {
         if let Some(req) = row.key_rotation.as_ref()
-            && !roomler_ai_remote_control::models::order_is_satisfied(
+            && !meshharbor_remote_control::models::order_is_satisfied(
                 req,
                 row.overlay_identity.as_ref(),
             )
-            && roomler_ai_remote_control::models::should_redeliver(
+            && meshharbor_remote_control::models::should_redeliver(
                 req,
                 row.key_rotation_report.as_ref(),
                 bson::DateTime::now(),
@@ -579,7 +579,7 @@ pub async fn handle_agent_socket(
     // state it creates on `hello` and releases on `closing`: the tunnel
     // originator with its sessions and transports, the probe-persist
     // throttle. The lifecycles run in HOOK_ORDER.
-    let actx = roomler_core::AgentCtx {
+    let actx = meshharbor_core::AgentCtx {
         conn_id: conn_id.clone(),
         agent_id,
         tenant_id,
@@ -735,7 +735,7 @@ pub async fn handle_agent_socket(
                                     } => {
                                         let delivered = state.rc_hub.deliver_exec_result(
                                             &request_id,
-                                            roomler_ai_remote_control::models::ExecOutcome {
+                                            meshharbor_remote_control::models::ExecOutcome {
                                                 exit_code,
                                                 stdout,
                                                 stderr,
@@ -1216,9 +1216,9 @@ async fn handle_agent_exec_request(
     shell: String,
     command: String,
     timeout_ms: u64,
-    reply_tx: roomler_ai_remote_control::session::ClientTx,
+    reply_tx: meshharbor_remote_control::session::ClientTx,
 ) {
-    use roomler_ai_remote_control::models::ExecOutcome;
+    use meshharbor_remote_control::models::ExecOutcome;
 
     let reply = |outcome: ExecOutcome| ServerMsg::RpcExecResponse {
         request_id: request_id.clone(),
@@ -1305,12 +1305,12 @@ async fn record_config_report(
     tenant_id: ObjectId,
     agent_id: ObjectId,
     revision: u64,
-    outcome: roomler_ai_remote_control::models::ConfigOutcome,
+    outcome: meshharbor_remote_control::models::ConfigOutcome,
     live: Vec<String>,
     needs_restart: Vec<String>,
     detail: Option<String>,
 ) {
-    use roomler_ai_remote_control::models::ConfigReport;
+    use meshharbor_remote_control::models::ConfigReport;
 
     // Re-clamped on receipt: a bound that exists only on the reporting side is
     // not a bound, since the reporting side is the untrusted one.
@@ -1344,7 +1344,7 @@ pub async fn resolve_exec_target(
     state: &FleetState,
     tenant_id: bson::oid::ObjectId,
     target: &str,
-) -> Option<roomler_ai_remote_control::models::Agent> {
+) -> Option<meshharbor_remote_control::models::Agent> {
     // LIVE, like the by-name arm below, which searches the live listing: an
     // id must not reach a device a name cannot (#1821).
     if let Ok(oid) = bson::oid::ObjectId::parse_str(target)
@@ -1356,7 +1356,7 @@ pub async fn resolve_exec_target(
         .agents
         .list_for_tenant(
             tenant_id,
-            &roomler_ai_services::dao::base::PaginationParams {
+            &meshharbor_services::dao::base::PaginationParams {
                 page: 1,
                 per_page: 500,
                 before: None,
@@ -1427,7 +1427,7 @@ pub async fn pump_server_messages(
 
 /// FR-92 — does this agent parse the org's keep-busy policy? Equality on
 /// `AgentCaps.input`, never a prefix match.
-fn advertises_keep_busy(caps: &roomler_ai_remote_control::models::AgentCaps) -> bool {
+fn advertises_keep_busy(caps: &meshharbor_remote_control::models::AgentCaps) -> bool {
     caps.input.iter().any(|w| w == "keep-busy")
 }
 
@@ -1498,7 +1498,7 @@ fn machine_sys_doc(s: &AgentSysStats, srflx_count: Option<u8>) -> bson::Document
 /// contract as [`machine_sys_doc`] and the same trap: a new `PeerLink`
 /// field vanishes silently unless it is listed here.
 /// `mesh_link_doc_carries_every_field` below is the guard.
-fn mesh_link_doc(l: &roomler_ai_remote_control::signaling::PeerLink) -> bson::Document {
+fn mesh_link_doc(l: &meshharbor_remote_control::signaling::PeerLink) -> bson::Document {
     bson::doc! {
         "node": &l.node,
         "carrier": &l.carrier,
@@ -1595,7 +1595,7 @@ pub async fn ws_upgrade_agent(
     };
     let pre_read = match pre_lookup {
         Ok(row) => Some(row),
-        Err(roomler_ai_services::dao::base::DaoError::NotFound) => {
+        Err(meshharbor_services::dao::base::DaoError::NotFound) => {
             info!(%agent_id, %tenant_id, "refusing agent WS: row gone (a reaped ephemeral device?)");
             return Response::builder()
                 .status(401)
@@ -1674,8 +1674,8 @@ pub async fn ws_upgrade_agent(
                 // the SCM supervisor's rc.53 code-7 fast-alarm fires on the
                 // FIRST exit.
                 info!(%agent_id, reason, "refusing WS with rc:goodbye");
-                let goodbye = roomler_ai_remote_control::signaling::ServerMsg::Goodbye {
-                    reason: roomler_ai_remote_control::signaling::AgentCloseReason::AgentDeleted,
+                let goodbye = meshharbor_remote_control::signaling::ServerMsg::Goodbye {
+                    reason: meshharbor_remote_control::signaling::AgentCloseReason::AgentDeleted,
                     message: "This agent's server-side row was deleted (or quarantined). \
                           Re-enrol with a fresh enrollment token from the admin UI to \
                           revive (soft-deleted rows rehydrate by (tenant_id, machine_id))."
@@ -1779,7 +1779,7 @@ mod tests {
     /// silent-drop trap as the sys doc, same guard discipline.
     #[test]
     fn mesh_link_doc_carries_every_field() {
-        let l = roomler_ai_remote_control::signaling::PeerLink {
+        let l = meshharbor_remote_control::signaling::PeerLink {
             node: "6a1f00000000000000000001".into(),
             carrier: "relay".into(),
             rtt_ms: Some(87),

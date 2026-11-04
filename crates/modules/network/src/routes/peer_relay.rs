@@ -27,17 +27,17 @@ use axum::{
     extract::{Path, Query, State},
 };
 use bson::{DateTime, oid::ObjectId};
-use roomler_ai_db::models::role::permissions;
-use roomler_ai_remote_control::models::{
+use meshharbor_db::models::role::permissions;
+use meshharbor_remote_control::models::{
     Agent, AgentStatus, MAX_PEER_RELAY_BACKBONE_EDGES, PeerRelayAuditAction, PeerRelayAuditEvent,
     PeerRelayDenyReason, PeerRelayMode, PeerRelayPolicy, RpcCap,
 };
-use roomler_ai_services::dao::base::PaginationParams;
+use meshharbor_services::dao::base::PaginationParams;
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
-use roomler_core::guards::require_permission;
-use roomler_core::{ApiError, extractors::auth::AuthUser};
+use meshharbor_core::guards::require_permission;
+use meshharbor_core::{ApiError, extractors::auth::AuthUser};
 
 use crate::NetworkState;
 
@@ -102,7 +102,7 @@ pub struct RelayDeviceView {
     pub serving: bool,
     pub static_endpoints: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub approved_backbone_edges: Vec<roomler_ai_remote_control::models::PeerRelayBackboneEdge>,
+    pub approved_backbone_edges: Vec<meshharbor_remote_control::models::PeerRelayBackboneEdge>,
 }
 
 impl From<Agent> for RelayDeviceView {
@@ -584,7 +584,7 @@ mod tests {
         let mut old = p(true);
         let mut requested = old.clone();
         requested.approved_backbone_edges.push(
-            roomler_ai_remote_control::models::PeerRelayBackboneEdge {
+            meshharbor_remote_control::models::PeerRelayBackboneEdge {
                 relay_agent_id: ObjectId::new().to_hex(),
                 endpoint: "10.20.30.40:3478".into(),
                 cross_border: false,
@@ -606,7 +606,7 @@ mod tests {
     fn only_an_administrator_opens_a_cross_border_line() {
         let mut old = p(true);
         old.approved_backbone_edges.push(
-            roomler_ai_remote_control::models::PeerRelayBackboneEdge {
+            meshharbor_remote_control::models::PeerRelayBackboneEdge {
                 relay_agent_id: ObjectId::new().to_hex(),
                 endpoint: "172.31.8.41:3478".into(),
                 cross_border: false,

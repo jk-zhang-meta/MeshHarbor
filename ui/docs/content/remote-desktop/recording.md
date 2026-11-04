@@ -1,12 +1,12 @@
 ---
 title: Screen recording
-description: Record your own screen from roomler-desktop, or the screen of a machine you control from the viewer, in full quality, then cut it, speed it up and add music.
+description: Record your own screen from meshharbor-desktop, or the screen of a machine you control from the viewer, in full quality, then cut it, speed it up and add music.
 tags: [remote-desktop, recording, sessions]
 order: 7
 ---
 
 Roomler records a screen to an ordinary MP4 file. You can record **your own
-screen** from roomler-desktop, or **the screen of a machine you are
+screen** from meshharbor-desktop, or **the screen of a machine you are
 controlling** from the viewer's toolbar. Either way the recording is made on the
 machine whose screen it shows, and the file stays there until someone opens or
 downloads it.
@@ -19,7 +19,7 @@ downloads it.
 
 ## Record your own screen
 
-On the machine, open **roomler-desktop → Recordings**, set the options under
+On the machine, open **meshharbor-desktop → Recordings**, set the options under
 **Record this screen**, and press **Start recording**.
 
 | Option | Choices |
@@ -56,7 +56,7 @@ roomler record rm <file.mp4>
 :::warning Off until the machine's owner allows it
 Two switches decide whether a session can record, and both start off.
 
-- **On the machine:** roomler-desktop → **Recordings** → **Recording by a remote controller** → **Allow remote recording**, plus **Include computer audio** if remote recordings may carry its sound. Only someone at that machine can change these; the server cannot turn them on.
+- **On the machine:** meshharbor-desktop → **Recordings** → **Recording by a remote controller** → **Allow remote recording**, plus **Include computer audio** if remote recordings may carry its sound. Only someone at that machine can change these; the server cannot turn them on.
 - **In the organization:** you can always record a device you own, and the organization's owner can record any device. Anyone else needs the **Record remote screens** permission on one of their roles ([users, roles and permissions](/docs/security/users-roles-permissions/)).
 
 Until both allow it, the Record control is greyed out and its tooltip says why.
@@ -123,7 +123,7 @@ In **Recordings**, press **Edit** on a recording.
 - A crash or an update in the middle of a recording costs only the last few
   seconds. The next recording turns what was left into a playable file, marked
   as interrupted.
-- Every refusal says why, in one sentence, in the viewer and in roomler-desktop.
+- Every refusal says why, in one sentence, in the viewer and in meshharbor-desktop.
 
 ## Limits
 

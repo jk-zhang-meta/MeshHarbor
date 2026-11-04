@@ -284,7 +284,7 @@ impl PurestatClient {
             return None;
         }
         let http = reqwest::Client::builder()
-            .user_agent(concat!("roomler-ai-api/", env!("CARGO_PKG_VERSION")))
+            .user_agent(concat!("meshharbor-api/", env!("CARGO_PKG_VERSION")))
             .timeout(timeout)
             .build()
             .ok()?;

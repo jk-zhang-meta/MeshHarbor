@@ -8,7 +8,7 @@
 //! `mediasoup`: with P4 the C++ worker build leaves `services`, `core` and
 //! the api crate's graphs — a profile without conferencing no longer compiles
 //! it at all (spec D9). Rooms are chat's, which is why this crate depends on
-//! `roomler-ai-mod-chat` (for the room guards) and not the other way round.
+//! `meshharbor-mod-chat` (for the room guards) and not the other way round.
 //!
 //! # Shape
 //!
@@ -21,7 +21,7 @@
 //!
 //! Three contract surfaces are used here for the first time:
 //!
-//! - [`roomler_core::WsHandler::closed`] — a participant's transports and its
+//! - [`meshharbor_core::WsHandler::closed`] — a participant's transports and its
 //!   call session must be dropped when its socket closes, not only on an
 //!   explicit `media:leave`. The host tells every namespace handler about the
 //!   close; this one acts.
@@ -45,10 +45,10 @@ use axum::{
 };
 use bson::oid::ObjectId;
 use dashmap::DashMap;
-use roomler_ai_config::Settings;
-use roomler_ai_db::indexes::{IndexSet, index, index_ttl};
-use roomler_ai_services::dao::{recording::RecordingDao, room::RoomDao};
-use roomler_core::{
+use meshharbor_config::Settings;
+use meshharbor_db::indexes::{IndexSet, index, index_ttl};
+use meshharbor_services::dao::{recording::RecordingDao, room::RoomDao};
+use meshharbor_core::{
     Capabilities, Core, Job, Module, Role, TenantCtx, WsHandlerSpec, WsRegistration,
 };
 
@@ -181,7 +181,7 @@ impl Module for ConferenceState {
     }
 
     /// `media:*` on the user socket — and the socket close, through
-    /// [`roomler_core::WsHandler::closed`].
+    /// [`meshharbor_core::WsHandler::closed`].
     fn ws(&self) -> WsRegistration {
         WsRegistration {
             handlers: vec![WsHandlerSpec {

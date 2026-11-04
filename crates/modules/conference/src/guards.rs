@@ -2,18 +2,18 @@
 // Copyright (C) 2026 G ROX EOOD
 //! Object-level authorisation for the call and recording routes.
 //!
-//! The room guard is chat's (`roomler_ai_mod_chat::guards`): rooms are the
+//! The room guard is chat's (`meshharbor_mod_chat::guards`): rooms are the
 //! container a call runs in, and the visibility rules are one set. This is the
 //! thin binding to [`ConferenceState`], so the handlers read as before.
 
 use bson::oid::ObjectId;
-use roomler_ai_db::models::Room;
-use roomler_core::ApiError;
+use meshharbor_db::models::Room;
+use meshharbor_core::ApiError;
 
 use crate::ConferenceState;
 
 /// Tenant membership + the room resolved WITHIN that tenant + the room-level
-/// read gate. See `roomler_ai_mod_chat::guards::require_room_in_tenant` for
+/// read gate. See `meshharbor_mod_chat::guards::require_room_in_tenant` for
 /// the invariant and why a `Secret` room answers 404.
 pub async fn require_room_in_tenant(
     state: &ConferenceState,
@@ -21,7 +21,7 @@ pub async fn require_room_in_tenant(
     room_id: ObjectId,
     user_id: ObjectId,
 ) -> Result<Room, ApiError> {
-    roomler_ai_mod_chat::guards::require_room_in_tenant_with(
+    meshharbor_mod_chat::guards::require_room_in_tenant_with(
         &state.tenants,
         &state.rooms,
         tenant_id,

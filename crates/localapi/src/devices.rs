@@ -13,7 +13,7 @@
 //! this crate stays serde-only (see the manifest), and a thin client must not
 //! compile the remote-control crate to read a list of names. The daemon parses
 //! the server's `VisibleDevicesPage` and converts it field by field into
-//! [`DevicesPage`] (`agents/roomlerd/src/self_view.rs`), the same way the overlay
+//! [`DevicesPage`] (`agents/meshharbord/src/self_view.rs`), the same way the overlay
 //! runtime turns a `NetmapPeer` into a [`crate::PeerInfo`]; a daemon test
 //! converts a fully populated server row and compares the two wires, so the
 //! mirrors cannot drift apart without a test saying so.

@@ -35,7 +35,7 @@ use axum::{
 };
 use bson::{Bson, DateTime, Document, doc, oid::ObjectId};
 use chrono::NaiveDate;
-use roomler_ai_services::{
+use meshharbor_services::{
     dao::{
         growth_digest::ExcludedCounts,
         newsletter_send::{DeliveryCounts, NewsletterSendDao, stale_cutoff_at},
@@ -43,7 +43,7 @@ use roomler_ai_services::{
     newsletter::{ISSUE_UTM_MEDIUM, ISSUE_UTM_SOURCE},
     purestat::{Filter, Query},
 };
-use roomler_core::{
+use meshharbor_core::{
     campaign::{CampaignKey, KeyDepth},
     growth::ExclusionSet,
 };
@@ -78,7 +78,7 @@ pub const UNTAGGED: &str = "the issue's links carried no campaign tags";
 /// usable; the same test the `saas` route's own key parse applies, so "no
 /// event arrived" (a measured zero) is never shown where no event CAN.
 pub fn webhook_on(state: &AppState) -> bool {
-    roomler_ai_services::sendgrid::webhook_key_usable(
+    meshharbor_services::sendgrid::webhook_key_usable(
         &state.settings.newsletter.event_webhook_public_key,
     )
 }
@@ -702,7 +702,7 @@ mod tests {
     /// stored under — the link's spelling, normalised at ingress.
     #[test]
     fn an_issues_key_is_the_one_its_signups_are_stored_under() {
-        let campaign = roomler_ai_services::newsletter::issue_campaign("october-notes");
+        let campaign = meshharbor_services::newsletter::issue_campaign("october-notes");
         let k = issue_key(&campaign).unwrap();
         assert_eq!(k.source, "newsletter");
         assert_eq!(k.medium.as_deref(), Some("email"));
@@ -710,7 +710,7 @@ mod tests {
         assert_eq!(k.content, None);
         // A sign-up that came through the link, as ingress stores it.
         let stored =
-            roomler_core::attribution::sanitize(roomler_core::attribution::AttributionInput {
+            meshharbor_core::attribution::sanitize(meshharbor_core::attribution::AttributionInput {
                 source: Some("newsletter".into()),
                 medium: Some("email".into()),
                 campaign: Some(campaign.clone()),
@@ -732,8 +732,8 @@ mod tests {
     /// sign-up's would be, so the two still meet.
     #[test]
     fn a_long_slugs_campaign_still_meets_its_signups() {
-        let campaign = roomler_ai_services::newsletter::issue_campaign(&"a".repeat(64));
-        let stored = roomler_core::attribution::clean_value(&campaign).unwrap();
+        let campaign = meshharbor_services::newsletter::issue_campaign(&"a".repeat(64));
+        let stored = meshharbor_core::attribution::clean_value(&campaign).unwrap();
         assert_eq!(stored, campaign, "ingress keeps the link's campaign whole");
     }
 

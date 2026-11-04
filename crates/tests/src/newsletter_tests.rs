@@ -292,7 +292,7 @@ async fn test_send_refuses_loudly_without_a_mailer() {
 
 fn admin_app_settings(
     admin_id: ObjectId,
-) -> impl FnOnce(&mut roomler_ai_config::Settings) + Send + 'static {
+) -> impl FnOnce(&mut meshharbor_config::Settings) + Send + 'static {
     move |s| {
         s.stats.platform_admins = Some(admin_id.to_hex());
         s.email.smtp_host = Some("mailer.does-not-exist.invalid".into());

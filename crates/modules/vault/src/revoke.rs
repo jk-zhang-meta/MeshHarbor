@@ -45,14 +45,14 @@ use std::time::Duration;
 use async_trait::async_trait;
 use bson::{DateTime, oid::ObjectId};
 use dashmap::DashMap;
-use roomler_ai_mod_hive::model::{AgentSession, SessionStatus};
-use roomler_ai_remote_control::{
+use meshharbor_mod_hive::model::{AgentSession, SessionStatus};
+use meshharbor_remote_control::{
     models::{Agent, RpcCap},
     signaling::ServerMsg,
     vault::{RevokeReason, lease_limits},
 };
-use roomler_ai_services::dao::base::DaoError;
-use roomler_core::{FleetLifecycle, ReleasedLease};
+use meshharbor_services::dao::base::DaoError;
+use meshharbor_core::{FleetLifecycle, ReleasedLease};
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 

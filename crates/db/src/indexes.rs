@@ -72,7 +72,7 @@ pub async fn ensure_indexes(db: &Database, multi_block: bool) -> Result<(), mong
 /// Apply index sets in order: each set's pre-ops, then its indexes.
 ///
 /// FR-69 — the host calls this a second time with the module crates' sets
-/// (`roomler_core::Module::indexes`), after the core plan above.
+/// (`meshharbor_core::Module::indexes`), after the core plan above.
 pub async fn apply_index_sets(
     db: &Database,
     sets: &[IndexSet],
@@ -178,10 +178,10 @@ pub fn index_plan(multi_block: bool) -> IndexPlan {
 
     // FR-69 P3 — `rooms`, `room_members`, `messages`, `reactions`, `files`
     // and `custom_emojis` are the `chat` module's: their sets live in
-    // `roomler_ai_mod_chat::ChatState::indexes`.
+    // `meshharbor_mod_chat::ChatState::indexes`.
 
     // FR-69 P4 — `recordings` and `call_sessions` are the `conference`
-    // module's: their sets live in `roomler_ai_mod_conference::ConferenceState::indexes`.
+    // module's: their sets live in `meshharbor_mod_conference::ConferenceState::indexes`.
 
     // Invites
     sets.push(set(
@@ -196,7 +196,7 @@ pub fn index_plan(multi_block: bool) -> IndexPlan {
     // token; lookup by session; TTL-swept at `expires_at` (expireAfterSeconds=0
     // ⇒ the doc's own date is the expiry).
     // FR-69 P5a — `consent_requests` is the `fleet` module's
-    // (`roomler_ai_mod_fleet::FleetState::indexes`).
+    // (`meshharbor_mod_fleet::FleetState::indexes`).
 
     // Background Tasks
     sets.push(set(
@@ -229,7 +229,7 @@ pub fn index_plan(multi_block: bool) -> IndexPlan {
 
     // FR-69 P2 — `subscribers`, `newsletter_issues` and `newsletter_sends`
     // are the `saas` module's: their sets live in
-    // `roomler_ai_mod_saas::SaasState::indexes` and the host applies them
+    // `meshharbor_mod_saas::SaasState::indexes` and the host applies them
     // after this plan.
 
     // Activation Codes
@@ -245,22 +245,22 @@ pub fn index_plan(multi_block: bool) -> IndexPlan {
     // FR-69 P5a — `agents`, `agent_crashes`, `enrollment_keys`,
     // `enrollment_key_uses`, `exec_audit`, `config_audit` and `agent_logs` are
     // the `fleet` module's: their sets live in
-    // `roomler_ai_mod_fleet::FleetState::indexes`.
+    // `meshharbor_mod_fleet::FleetState::indexes`.
     // FR-69 P6 — `remote_sessions` (both sets) and `remote_audit` are the
-    // `remote` module's: `roomler_ai_mod_remote::RemoteState::indexes`.
+    // `remote` module's: `meshharbor_mod_remote::RemoteState::indexes`.
 
     // Remote-control agent crash reports — 90-day TTL on
     // `reported_at` (server clock). Compound index drives the admin
     // UI query: "last N crashes for this agent in this tenant",
     // sorted by client-supplied `crashed_at_unix` desc. See
-    // `roomler_ai_remote_control::models::AgentCrashRecord` for the
+    // `meshharbor_remote_control::models::AgentCrashRecord` for the
     // shape (defined by the crash-report plan).
 
     // FR-69 P7a — `tunnel_clients`, `overlay_networks`, `overlay_blocks` (both
     // `multi_block` plans), `overlay_nodes`, `tunnel_policies`, `tunnel_audit`
     // (both sets), `key_rotation_audit`, `peer_relay_audit`, `ssh_audit` and
     // `ssh_activity` are the `network` module's: their sets live in
-    // `roomler_ai_mod_network::NetworkState::indexes_for`.
+    // `meshharbor_mod_network::NetworkState::indexes_for`.
 
     // Single-use token ledger (`_id` = the token's jti, so uniqueness is the
     // primary key and a claim is one insert). Rows expire an hour after use —
@@ -422,7 +422,7 @@ pub fn index_plan(multi_block: bool) -> IndexPlan {
     // P1c — the platform admin's explicit exclusion list: one row per
     // `(kind, id)`, so the same org cannot be listed twice with two reasons.
     // The implicit exclusions (platform admins and the orgs they own) have
-    // no row — `roomler_core::growth::ExclusionSet` folds both in.
+    // no row — `meshharbor_core::growth::ExclusionSet` folds both in.
     sets.push(set(
         "growth_exclusions",
         vec![index_unique(bson::doc! { "kind": 1, "id": 1 })],

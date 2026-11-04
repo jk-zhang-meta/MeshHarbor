@@ -24,8 +24,8 @@ use std::{
 };
 
 use bson::{DateTime, oid::ObjectId};
-use roomler_ai_db::models::{Plan, PlanEnforcement, Tenant};
-use roomler_ai_services::{
+use meshharbor_db::models::{Plan, PlanEnforcement, Tenant};
+use meshharbor_services::{
     dao::room::LiveCall,
     quota::{self, Limit},
 };
@@ -197,7 +197,7 @@ async fn end_call(state: &ConferenceState, call: &LiveCall, tenant: &Tenant) -> 
         }
     }
     // FR-102 P4 — counted once, by the sweep whose end landed.
-    roomler_core::quota::record_collision(state, tenant, Limit::MeetingMinutes);
+    meshharbor_core::quota::record_collision(state, tenant, Limit::MeetingMinutes);
     if state.settings.stats.enabled
         && let Err(e) = state
             .stats
@@ -236,7 +236,7 @@ async fn broadcast_to_members(
     if member_ids.is_empty() {
         return;
     }
-    roomler_core::ws::dispatcher::broadcast_with_redis(
+    meshharbor_core::ws::dispatcher::broadcast_with_redis(
         &state.ws_storage,
         &state.redis_pubsub,
         &member_ids,

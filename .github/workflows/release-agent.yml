@@ -205,13 +205,13 @@ jobs:
           # silently collide.
           #
           # ⚠️ THIS MAPPING HAS FIVE MORE COPIES:
-          # agents/roomlerd/src/artifact_version.rs::msi_product_version_for
+          # agents/meshharbord/src/artifact_version.rs::msi_product_version_for
           # (download verification),
-          # agents/roomlerd/src/version_sweep.rs::own_msi_version
+          # agents/meshharbord/src/version_sweep.rs::own_msi_version
           # (coexisting-MSI sweep — a divergence there makes an agent rank
           # its OWN install as older and uninstall itself), and the three
-          # build.rs VERSIONINFO embeds (roomlerd, roomler-cli-shim,
-          # roomler-cli — `file_version`): those stamp the EXE
+          # build.rs VERSIONINFO embeds (roomlerd, meshharbor-cli-shim,
+          # meshharbor-cli — `file_version`): those stamp the EXE
           # FILEVERSION shown by Explorer/EDR inventory; a divergence there
           # is cosmetic-but-confusing (EXE claims a different version than
           # the MSI), nothing asserts it at build time.
@@ -222,7 +222,7 @@ jobs:
           # genuinely-signed OLDER build. The two copies MUST change
           # together: if they diverge, every agent refuses every update and
           # the symptom is a silent fleet-wide update freeze, not an error.
-          # `cargo test -p roomlerd --lib -- --ignored real_published_msi`
+          # `cargo test -p meshharbord --lib -- --ignored real_published_msi`
           # re-checks the Rust side against a real published MSI.
           if [[ "$version" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)-rc\.([0-9]+)$ ]]; then
             vmajor="${BASH_REMATCH[1]}"; vminor="${BASH_REMATCH[2]}"
@@ -527,7 +527,7 @@ jobs:
           # cmake_minimum_required(VERSION < 3.5); CMake 3.31+ errors without
           # this policy shim.
           CMAKE_POLICY_VERSION_MINIMUM: "3.5"
-        run: cargo build -p roomlerd --release --features "full,hive,vp9-444,vp9-444-bindgen,overlay-l3,overlay-netstack,ffmpeg-encoder,ssh-server,viewer-indicator-x11"
+        run: cargo build -p meshharbord --release --features "full,hive,vp9-444,vp9-444-bindgen,overlay-l3,overlay-netstack,ffmpeg-encoder,ssh-server,viewer-indicator-x11"
 
       # P3e Phase 2: the .deb's `roomler` is now the CLI SHIM (re-execs
       # `roomlerd cli`) — the Linux twin of the rc.365 MSI change. It must
@@ -540,7 +540,7 @@ jobs:
       # still get the real standalone binary from release-tunnel.yml.
       - name: Build the roomler CLI shim (shipped in the .deb alongside roomlerd)
         run: |
-          cargo build -p roomler-cli-shim --release
+          cargo build -p meshharbor-cli-shim --release
           test -f target/release/roomler-shim || { echo "::error::roomler-shim not produced — the cargo-deb assets entry would fail"; exit 1; }
 
       - name: Bundle FFmpeg into the .deb (self-contained, RPATH)
@@ -551,7 +551,7 @@ jobs:
           # won't start on a stock box. Ship each lib under its SONAME as a real
           # file (no symlinks) into /usr/lib/roomler-agent; RPATH wires it up.
           # patchelf comes from the cached apt set at the top of this job.
-          dst=agents/roomlerd/vendor-ffmpeg
+          dst=agents/meshharbord/vendor-ffmpeg
           rm -rf "$dst" && mkdir -p "$dst"
           # P3e Phase 3: bundle ONLY the vendored libs the binary actually
           # references. Before the ffmpeg codec+format trim the binary linked
@@ -630,15 +630,15 @@ jobs:
           docker run --rm -v "$PWD:/w" ubuntu:24.04 bash -euc '
             apt-get update -qq
             apt-get install -y -qq libxcb1 libxcb-shm0 libxcb-randr0 libasound2t64 >/dev/null
-            LD_LIBRARY_PATH=/w/agents/roomlerd/vendor-ffmpeg /w/target/release/roomlerd --version
+            LD_LIBRARY_PATH=/w/agents/meshharbord/vendor-ffmpeg /w/target/release/roomlerd --version
             # FR-77 P4 — the VA loader chain must come from the bundle: a stock
             # host has no libva2, and the daemon must still start there.
             for l in libva.so.2 libva-drm.so.2 libdrm.so.2; do
-              test -f /w/agents/roomlerd/vendor-ffmpeg/$l || { echo "::error::$l missing from the bundle — the daemon would need the system libva"; exit 1; }
+              test -f /w/agents/meshharbord/vendor-ffmpeg/$l || { echo "::error::$l missing from the bundle — the daemon would need the system libva"; exit 1; }
             done'
 
       - name: Build .deb
-        working-directory: agents/roomlerd
+        working-directory: agents/meshharbord
         run: cargo deb --no-build --no-strip
 
       # FR-27 — the headless fleet must not grow a desktop stack.
@@ -677,7 +677,7 @@ jobs:
           # >=0.4.16 on `is_daemon_asset` (which ALREADY accepts `roomlerd`),
           # <=0.4.15 on the first `.deb` matching arch, `scripts/install.sh` on
           # an arch+format SUFFIX, and the server-side ordering on a
-          # `roomler-desktop-` denylist. Not one of them keys on this prefix, so
+          # `meshharbor-desktop-` denylist. Not one of them keys on this prefix, so
           # the rename freezes nothing. Already-published assets keep their old
           # names and stay reachable through the legacy arm.
           src=$(ls target/debian/roomlerd_*_amd64.deb | head -n1)
@@ -813,10 +813,10 @@ jobs:
       # prompt and no "being viewed" indicator at all (the daemon's native
       # overlay is Windows-only).
       - name: Build the desktop companion
-        run: cargo build -p roomler-desktop --release
+        run: cargo build -p meshharbor-desktop --release
 
       - name: Build the companion .deb
-        working-directory: agents/roomler-desktop
+        working-directory: agents/meshharbor-desktop
         run: cargo deb --no-build --no-strip
 
       # FR-93 P6d — the same binary as an RPM, for the hosts with no dpkg
@@ -824,7 +824,7 @@ jobs:
       # `target/release/…` resolves; the packaging files resolve in the
       # package's own directory.
       - name: Build the companion .rpm
-        run: cargo generate-rpm -p agents/roomler-desktop
+        run: cargo generate-rpm -p agents/meshharbor-desktop
 
       - name: Guard — the companion .rpm requires what the binary links
         # The requires are written out in Cargo.toml (`auto-req = "no"`), because
@@ -836,14 +836,14 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get install -y -qq rpm >/dev/null
-          rpmf=$(find target/generate-rpm -name 'roomler-desktop-*.rpm' -print | head -n1)
+          rpmf=$(find target/generate-rpm -name 'meshharbor-desktop-*.rpm' -print | head -n1)
           [ -n "$rpmf" ] || { echo "::error::cargo generate-rpm produced no companion .rpm"; exit 1; }
           rpm -qp --info "$rpmf" | grep -E '^(Name|Version|Release|Architecture)'
           rpm -qp --info "$rpmf" | grep -qE '^Architecture: *x86_64' || { echo "::error::the companion .rpm is not x86_64"; exit 1; }
           rpm -qp --requires "$rpmf" > rpm-requires.txt
           cat rpm-requires.txt
           missing=0
-          for so in $(readelf -d target/release/roomler-desktop | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p'); do
+          for so in $(readelf -d target/release/meshharbor-desktop | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p'); do
             case "$so" in ld-linux*) continue ;; esac
             if ! grep -qF "${so}()(64bit)" rpm-requires.txt; then
               echo "::error::the companion links $so, which its .rpm does not require: add it to [package.metadata.generate-rpm.requires]"
@@ -868,15 +868,15 @@ jobs:
           src=$(find . -path ./node_modules -prune -o \
                        -name 'roomler-desktop_*_amd64.deb' -print | head -n1)
           [ -n "$src" ] || { echo "::error::cargo deb produced no companion .deb"; exit 1; }
-          dst="roomler-desktop-${version}-x86_64-unknown-linux-gnu.deb"
+          dst="meshharbor-desktop-${version}-x86_64-unknown-linux-gnu.deb"
           mv "$src" "$dst"
           sha256sum "$dst" | awk '{print $1"  "$2}' > "${dst}.sha256"
           echo "artifact=${dst}" >> "$GITHUB_OUTPUT"
           # FR-93 P6d — the RPM under the same naming, so `install.sh` finds
           # either by the one pattern with its extension swapped.
-          rsrc=$(find target/generate-rpm -name 'roomler-desktop-*.rpm' -print | head -n1)
+          rsrc=$(find target/generate-rpm -name 'meshharbor-desktop-*.rpm' -print | head -n1)
           [ -n "$rsrc" ] || { echo "::error::cargo generate-rpm produced no companion .rpm"; exit 1; }
-          rdst="roomler-desktop-${version}-x86_64-unknown-linux-gnu.rpm"
+          rdst="meshharbor-desktop-${version}-x86_64-unknown-linux-gnu.rpm"
           mv "$rsrc" "$rdst"
           sha256sum "$rdst" | awk '{print $1"  "$2}' > "${rdst}.sha256"
           echo "rpm=${rdst}" >> "$GITHUB_OUTPUT"
@@ -946,27 +946,27 @@ jobs:
           command -v cargo-generate-rpm >/dev/null || cargo install cargo-generate-rpm --locked
 
       - name: Build the desktop companion
-        run: cargo build -p roomler-desktop --release
+        run: cargo build -p meshharbor-desktop --release
 
       - name: Build the companion .deb
-        working-directory: agents/roomler-desktop
+        working-directory: agents/meshharbor-desktop
         run: cargo deb --no-build --no-strip
 
       - name: Build the companion .rpm
-        run: cargo generate-rpm -p agents/roomler-desktop
+        run: cargo generate-rpm -p agents/meshharbor-desktop
 
       - name: Guard — the companion .rpm requires what the binary links
         # As in build-linux-companion; `ld-linux-aarch64.so.1` is glibc's.
         run: |
           set -euo pipefail
-          rpmf=$(find target/generate-rpm -name 'roomler-desktop-*.rpm' -print | head -n1)
+          rpmf=$(find target/generate-rpm -name 'meshharbor-desktop-*.rpm' -print | head -n1)
           [ -n "$rpmf" ] || { echo "::error::cargo generate-rpm produced no companion .rpm"; exit 1; }
           rpm -qp --info "$rpmf" | grep -E '^(Name|Version|Release|Architecture)'
           rpm -qp --info "$rpmf" | grep -qE '^Architecture: *aarch64' || { echo "::error::the arm64 companion .rpm is not aarch64"; exit 1; }
           rpm -qp --requires "$rpmf" > rpm-requires.txt
           cat rpm-requires.txt
           missing=0
-          for so in $(readelf -d target/release/roomler-desktop | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p'); do
+          for so in $(readelf -d target/release/meshharbor-desktop | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p'); do
             case "$so" in ld-linux*) continue ;; esac
             if ! grep -qF "${so}()(64bit)" rpm-requires.txt; then
               echo "::error::the companion links $so, which its .rpm does not require: add it to [package.metadata.generate-rpm.requires]"
@@ -988,13 +988,13 @@ jobs:
           src=$(find . -path ./node_modules -prune -o \
                        -name 'roomler-desktop_*_arm64.deb' -print | head -n1)
           [ -n "$src" ] || { echo "::error::cargo deb produced no arm64 companion .deb"; exit 1; }
-          dst="roomler-desktop-${version}-aarch64-unknown-linux-gnu.deb"
+          dst="meshharbor-desktop-${version}-aarch64-unknown-linux-gnu.deb"
           mv "$src" "$dst"
           sha256sum "$dst" | awk '{print $1"  "$2}' > "${dst}.sha256"
           echo "artifact=${dst}" >> "$GITHUB_OUTPUT"
-          rsrc=$(find target/generate-rpm -name 'roomler-desktop-*.rpm' -print | head -n1)
+          rsrc=$(find target/generate-rpm -name 'meshharbor-desktop-*.rpm' -print | head -n1)
           [ -n "$rsrc" ] || { echo "::error::cargo generate-rpm produced no arm64 companion .rpm"; exit 1; }
-          rdst="roomler-desktop-${version}-aarch64-unknown-linux-gnu.rpm"
+          rdst="meshharbor-desktop-${version}-aarch64-unknown-linux-gnu.rpm"
           mv "$rsrc" "$rdst"
           sha256sum "$rdst" | awk '{print $1"  "$2}' > "${rdst}.sha256"
           echo "rpm=${rdst}" >> "$GITHUB_OUTPUT"
@@ -1090,12 +1090,12 @@ jobs:
       - name: Build agent (release, full + vp9-444, no ffmpeg-encoder)
         env:
           CMAKE_POLICY_VERSION_MINIMUM: "3.5"
-        run: cargo build -p roomlerd --release --features "full,hive,vp9-444,vp9-444-bindgen,overlay-l3,overlay-netstack,ssh-server,viewer-indicator-x11"
+        run: cargo build -p meshharbord --release --features "full,hive,vp9-444,vp9-444-bindgen,overlay-l3,overlay-netstack,ssh-server,viewer-indicator-x11"
 
       - name: Build the roomler CLI shim (shipped in the .deb alongside roomlerd)
         run: |
           set -euo pipefail
-          cargo build -p roomler-cli-shim --release
+          cargo build -p meshharbor-cli-shim --release
           test -f target/release/roomler-shim || { echo "::error::roomler-shim not produced — the cargo-deb assets entry would fail"; exit 1; }
 
       - name: Bundle libvpx into the .deb (self-contained, RPATH)
@@ -1107,7 +1107,7 @@ jobs:
           # then aborts at load. The cargo-deb assets glob is
           # `vendor-ffmpeg/*.so.*` — CI-populated and shared with the x86_64
           # lane's FFmpeg bundle; here it carries libvpx alone.
-          dst=agents/roomlerd/vendor-ffmpeg
+          dst=agents/meshharbord/vendor-ffmpeg
           rm -rf "$dst" && mkdir -p "$dst"
           vpx7=$(readlink -f /usr/lib/aarch64-linux-gnu/libvpx.so.7)
           cp "$vpx7" "$dst/libvpx.so.7"
@@ -1123,10 +1123,10 @@ jobs:
           docker run --rm -v "$PWD:/w" ubuntu:24.04 bash -euc '
             apt-get update -qq
             apt-get install -y -qq libxcb1 libxcb-shm0 libxcb-randr0 libasound2t64 >/dev/null
-            LD_LIBRARY_PATH=/w/agents/roomlerd/vendor-ffmpeg /w/target/release/roomlerd --version'
+            LD_LIBRARY_PATH=/w/agents/meshharbord/vendor-ffmpeg /w/target/release/roomlerd --version'
 
       - name: Build .deb
-        working-directory: agents/roomlerd
+        working-directory: agents/meshharbord
         run: cargo deb --no-build --no-strip
 
       - name: Rename + checksum
@@ -1142,7 +1142,7 @@ jobs:
           # >=0.4.16 on `is_daemon_asset` (which ALREADY accepts `roomlerd`),
           # <=0.4.15 on the first `.deb` matching arch, `scripts/install.sh` on
           # an arch+format SUFFIX, and the server-side ordering on a
-          # `roomler-desktop-` denylist. Not one of them keys on this prefix, so
+          # `meshharbor-desktop-` denylist. Not one of them keys on this prefix, so
           # the rename freezes nothing. Already-published assets keep their old
           # names and stay reachable through the legacy arm.
           src=$(ls target/debian/roomlerd_*_arm64.deb | head -n1)
@@ -1546,7 +1546,7 @@ jobs:
         # `hive_enabled`; a device that never does keeps nothing for them.
         env:
           CMAKE_POLICY_VERSION_MINIMUM: "3.5"
-        run: cargo build -p roomlerd --release --features "full-hw,hive,vp9-444,system-context,ffmpeg-encoder,overlay-l3,overlay-netstack,ssh-server"
+        run: cargo build -p meshharbord --release --features "full-hw,hive,vp9-444,system-context,ffmpeg-encoder,overlay-l3,overlay-netstack,ssh-server"
 
       - name: Build the roomler CLI shim for the MSI bundle (P3e lever D)
         shell: pwsh
@@ -1554,7 +1554,7 @@ jobs:
           # P4b put the tunnel CLI inside both MSIs so daemon installs subsume
           # it and the MSI stays the ONE updater for the node stack. That is
           # unchanged — what changed (P3e lever D) is HOW: the daemon now owns
-          # the command surface (`roomlerd cli` → roomler_cli::cli) and the
+          # the command surface (`roomlerd cli` → meshharbor_cli::cli) and the
           # MSI carries a ~150 KB shim instead of a second full binary.
           #
           # rc.361 measurements that motivated it: roomler.exe was 22.1 MiB of
@@ -1568,7 +1568,7 @@ jobs:
           # time, so this MUST still run before the two cargo-wix builds below.
           # Tunnel-ONLY hosts are unaffected: release-tunnel.yml keeps building
           # and shipping the real standalone `roomler` binary.
-          cargo build -p roomler-cli-shim --release
+          cargo build -p meshharbor-cli-shim --release
           if (-not (Test-Path target\release\roomler-shim.exe)) {
             Write-Host "::error::roomler-shim.exe not produced — the TunnelExe wxs component would fail the MSI harvest (LGHT0103)"
             exit 1
@@ -1641,7 +1641,7 @@ jobs:
           # Under ffmpeg-encoder, encoder-smoke FIRST asserts the linked
           # libavcodec is >= 61 (FFmpeg 7+) — the load-bearing replacement
           # for the deleted 5m33s cargo-test link-verify step. On failure:
-          # re-pin ffmpeg-next in agents/roomlerd/Cargo.toml or
+          # re-pin ffmpeg-next in agents/meshharbord/Cargo.toml or
           # re-vendor via vendor-ffmpeg-windows.yml.
           & "target\release\roomlerd.exe" encoder-smoke --encoder hardware
 
@@ -1731,7 +1731,7 @@ jobs:
                     Sort-Object FullName | Select-Object -Last 1
           if (-not $crtDir) { Write-Host "::error::no Microsoft.VC14x.CRT redist folder under $vsRoot"; exit 1 }
           # Only what the import tables ask for: roomlerd.exe needs all three,
-          # roomler.exe needs vcruntime140, roomler-desktop.exe needs none, and
+          # roomler.exe needs vcruntime140, meshharbor-desktop.exe needs none, and
           # msvcp140.dll itself imports only the two vcruntime DLLs. The other
           # six redist DLLs (concrt140, vccorlib140, msvcp140_1, msvcp140_2,
           # msvcp140_atomic_wait, msvcp140_codecvt_ids) are satellites a
@@ -1751,9 +1751,9 @@ jobs:
       - name: Build MSI (per-User)
         shell: pwsh
         run: |
-          # cargo-wix reads agents/roomlerd/wix/main.wxs and sets the
+          # cargo-wix reads agents/meshharbord/wix/main.wxs and sets the
           # Version preprocessor variable from --install-version.
-          cargo wix -p roomlerd --nocapture --no-build --install-version $env:MSI_VERSION
+          cargo wix -p meshharbord --nocapture --no-build --install-version $env:MSI_VERSION
 
       - name: Locate + rename per-User MSI
         id: locate
@@ -1789,7 +1789,7 @@ jobs:
           Copy-Item "$wixDir\main.wxs" "$wixDir\main.wxs.bak" -Force
           Copy-Item $pmSrc "$wixDir\main.wxs" -Force
           try {
-            cargo wix -p roomlerd --nocapture --no-build --install-version $env:MSI_VERSION
+            cargo wix -p meshharbord --nocapture --no-build --install-version $env:MSI_VERSION
           } finally {
             Move-Item "$wixDir\main.wxs.bak" "$wixDir\main.wxs" -Force
           }
@@ -2089,14 +2089,14 @@ jobs:
           shared-key: agent-windows-vp9-444
 
   # ---------------------------------------------------------------------------
-  # 2b. Windows companion — the roomler-desktop EXE, built in PARALLEL with
+  # 2b. Windows companion — the meshharbor-desktop EXE, built in PARALLEL with
   #     the MSI job. The crate deps on roomlerd with DEFAULT features
   #     (`default = []`, signalling-only), so this job needs no vcpkg /
   #     FFmpeg / libvpx / LLVM — Tauri 2 + the agent-default graph build on
   #     a bare windows-latest. The MSIs never contained this EXE (it ships
   #     standalone), so the split changes wall-clock only. (P4c-2 retired
   #     the legacy roomler-installer wizard EXE this job also used to build
-  #     — the unified roomler-setup wizard ships via release-setup.yml,
+  #     — the unified meshharbor-setup wizard ships via release-setup.yml,
   #     which the `dispatch-setup-release` job at the end of this file runs
   #     in LOCKSTEP with every agent release: FR-84 S1.)
   # ---------------------------------------------------------------------------
@@ -2157,21 +2157,21 @@ jobs:
         # +crt-static is safe; link-verified against the Tauri 2 stack.
         env:
           RUSTFLAGS: -C target-feature=+crt-static
-        run: cargo build -p roomler-desktop --release
+        run: cargo build -p meshharbor-desktop --release
 
       - name: Locate + rename tray EXE
         id: locate_tray
         shell: pwsh
         run: |
           # P3d Slice B: the tray/desktop-companion OUTPUT binary is now
-          # `roomler-desktop.exe` (and since FR-21 P2a the package matches). The
+          # `meshharbor-desktop.exe` (and since FR-21 P2a the package matches). The
           # released artifact is renamed to match.
-          $exe = "target/release/roomler-desktop.exe"
-          if (-not (Test-Path $exe)) { throw "roomler-desktop EXE not produced" }
+          $exe = "target/release/meshharbor-desktop.exe"
+          if (-not (Test-Path $exe)) { throw "meshharbor-desktop EXE not produced" }
           # Suffix-free: signedness is verified, not encoded in the filename.
-          # install.ps1's `-like 'roomler-desktop-*-x86_64-pc-windows-msvc*.exe'`
+          # install.ps1's `-like 'meshharbor-desktop-*-x86_64-pc-windows-msvc*.exe'`
           # and asset_resolver.rs's contains/ends_with both still match.
-          $dst = "roomler-desktop-$env:VERSION-x86_64-pc-windows-msvc.exe"
+          $dst = "meshharbor-desktop-$env:VERSION-x86_64-pc-windows-msvc.exe"
           Copy-Item $exe $dst
           "artifact=$dst" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
@@ -2235,7 +2235,7 @@ jobs:
           shared-key: installer-smoke-windows
 
   # ---------------------------------------------------------------------------
-  # 2c. macOS companion — roomler-desktop, built in PARALLEL with the .pkg job
+  # 2c. macOS companion — meshharbor-desktop, built in PARALLEL with the .pkg job
   #     (FR-6 wave 18, #773). It was the last step build-macos ran before
   #     staging, and the .pkg job is the release's long pole: on agent-v0.4.112
   #     to 0.4.114 the job took 12.2 min, 158–177 s of it this build, after a
@@ -2279,13 +2279,13 @@ jobs:
       # `cargo build` embeds the frontend and no Tauri toolchain is needed on
       # the runner (the same reason the Windows lane uses `cargo build`).
       - name: Build the desktop companion
-        run: cargo build -p roomler-desktop --release --target aarch64-apple-darwin
+        run: cargo build -p meshharbor-desktop --release --target aarch64-apple-darwin
 
       - name: Upload the companion binary (for build-macos)
         uses: actions/upload-artifact@v4
         with:
           name: macos-companion
-          path: target/aarch64-apple-darwin/release/roomler-desktop
+          path: target/aarch64-apple-darwin/release/meshharbor-desktop
           if-no-files-found: error
           # A re-run of this job replaces it rather than failing on the name.
           overwrite: true
@@ -2579,7 +2579,7 @@ jobs:
         # go to the desktop companion, which works.
         env:
           CMAKE_POLICY_VERSION_MINIMUM: "3.5"
-        run: cargo build -p roomlerd --release --features "full,hive,vp9-444,vp9-444-bindgen,overlay-l3,overlay-netstack,ssh-server,ffmpeg-encoder" --target aarch64-apple-darwin
+        run: cargo build -p meshharbord --release --features "full,hive,vp9-444,vp9-444-bindgen,overlay-l3,overlay-netstack,ssh-server,ffmpeg-encoder" --target aarch64-apple-darwin
 
       # The `roomler` CLI. macOS shipped WITHOUT one until rc.454 — the pkg
       # payload was the .app and nothing else — so `roomler peers` was
@@ -2587,12 +2587,12 @@ jobs:
       # surface behind `roomlerd cli`. Same ~150 KB shim as the .deb and the
       # MSI (P3e lever D); it lands at /usr/local/bin/roomler below.
       - name: Build the roomler CLI shim
-        run: cargo build -p roomler-cli-shim --release --target aarch64-apple-darwin
+        run: cargo build -p meshharbor-cli-shim --release --target aarch64-apple-darwin
 
-      # The desktop companion — the macOS counterpart of roomler-desktop.exe —
+      # The desktop companion — the macOS counterpart of meshharbor-desktop.exe —
       # is built by the parallel `build-macos-companion` job (FR-6 wave 18).
       # Collect it where this job used to build it: the staging step below
-      # copies `target/aarch64-apple-darwin/release/roomler-desktop` into the
+      # copies `target/aarch64-apple-darwin/release/meshharbor-desktop` into the
       # .app. The agent build above takes 7.5–10 min and the companion ~3, so
       # it is normally waiting already.
       #
@@ -2632,7 +2632,7 @@ jobs:
         # will launch, so check it is what the build produced.
         run: |
           set -euo pipefail
-          f=target/aarch64-apple-darwin/release/roomler-desktop
+          f=target/aarch64-apple-darwin/release/meshharbor-desktop
           chmod +x "$f"
           desc="$(file "$f")"
           echo "$desc"
@@ -2850,19 +2850,19 @@ jobs:
             echo "::error::the staged binary does not start without Homebrew (exit $rc) — it is not self-contained"
             exit 1
           fi
-          cp agents/roomlerd/packaging/macos/com.roomler.agent.plist "$APP/Contents/Resources/"
+          cp agents/meshharbord/packaging/macos/com.roomler.agent.plist "$APP/Contents/Resources/"
           # The privileged half's plist rides along in Resources; the
           # postinstall only installs it into /Library/LaunchDaemons when the
           # operator has opted in. Staged unconditionally so enabling the
           # daemon never requires a different package.
-          cp agents/roomlerd/packaging/macos/com.roomler.daemon.plist "$APP/Contents/Resources/"
+          cp agents/meshharbord/packaging/macos/com.roomler.daemon.plist "$APP/Contents/Resources/"
           # The companion's LaunchAgent rides here too — the postinstall reads
           # every plist it installs out of this one directory.
-          cp agents/roomlerd/packaging/macos/com.roomler.desktop.plist "$APP/Contents/Resources/"
+          cp agents/meshharbord/packaging/macos/com.roomler.desktop.plist "$APP/Contents/Resources/"
           # The update half (root LaunchDaemon, DEFAULT ON, opt-out marker
           # /etc/roomler/disable-auto-update). Owns check+download+
           # install so no agent process ever execs its own replacement.
-          cp agents/roomlerd/packaging/macos/com.roomler.update.plist "$APP/Contents/Resources/"
+          cp agents/meshharbord/packaging/macos/com.roomler.update.plist "$APP/Contents/Resources/"
           cat > "$APP/Contents/Info.plist" <<PLIST
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -2937,14 +2937,14 @@ jobs:
           # already embedded via `custom-protocol`.
           DESK=stage/Roomler.app
           mkdir -p "$DESK/Contents/MacOS" "$DESK/Contents/Resources"
-          cp target/aarch64-apple-darwin/release/roomler-desktop "$DESK/Contents/MacOS/roomler-desktop"
-          cp agents/roomler-desktop/icons/icon.png "$DESK/Contents/Resources/icon.png"
+          cp target/aarch64-apple-darwin/release/meshharbor-desktop "$DESK/Contents/MacOS/meshharbor-desktop"
+          cp agents/meshharbor-desktop/icons/icon.png "$DESK/Contents/Resources/icon.png"
           cat > "$DESK/Contents/Info.plist" <<PLIST
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
           <plist version="1.0">
           <dict>
-              <key>CFBundleExecutable</key>          <string>roomler-desktop</string>
+              <key>CFBundleExecutable</key>          <string>meshharbor-desktop</string>
               <key>CFBundleIdentifier</key>          <string>ai.roomler.agent-tray</string>
               <key>CFBundleName</key>                <string>Roomler</string>
               <key>CFBundleShortVersionString</key>  <string>${VERSION}</string>
@@ -2971,7 +2971,7 @@ jobs:
           }
           # It links only system frameworks; assert that rather than assume it,
           # since the agent bundle taught us what an un-checked dylib costs.
-          bad="$(otool -L "$DESK/Contents/MacOS/roomler-desktop" | tail -n +2 | awk '{print $1}' \
+          bad="$(otool -L "$DESK/Contents/MacOS/meshharbor-desktop" | tail -n +2 | awk '{print $1}' \
                  | grep -E '^/(opt|usr/local)/' || true)"
           [ -z "$bad" ] || { echo "::error::companion loads non-system paths:"; echo "$bad"; exit 1; }
           # dyld/exec smoke, HARD-BOUNDED: `|| true` guards the exit code,
@@ -2983,12 +2983,12 @@ jobs:
           # crash still surfaces in the log) without trusting the binary
           # to ever return. macOS runners lack GNU `timeout` natively, so
           # do it by hand.
-          "$DESK/Contents/MacOS/roomler-desktop" --version 2>/dev/null &
+          "$DESK/Contents/MacOS/meshharbor-desktop" --version 2>/dev/null &
           probe=$!
           sleep 5
           kill -9 "$probe" 2>/dev/null || true
           wait "$probe" 2>/dev/null || true
-          echo "  companion staged: $(du -h "$DESK/Contents/MacOS/roomler-desktop" | cut -f1)"
+          echo "  companion staged: $(du -h "$DESK/Contents/MacOS/meshharbor-desktop" | cut -f1)"
 
       - name: Import signing certs
         if: steps.apple.outputs.mode == 'full'
@@ -3037,7 +3037,7 @@ jobs:
               done
           codesign --force --sign "Developer ID Application" \
                    --options runtime --timestamp \
-                   --entitlements agents/roomlerd/packaging/macos/entitlements.plist \
+                   --entitlements agents/meshharbord/packaging/macos/entitlements.plist \
                    "stage/roomlerd.app/Contents/MacOS/roomlerd"
 
           codesign --force --sign "Developer ID Application" \
@@ -3151,7 +3151,7 @@ jobs:
           # point for `roomlerd enroll` / `--version`, not a second install.
           ln -s /Library/Roomler/roomlerd.app/Contents/MacOS/roomlerd \
             payload/usr/local/bin/roomlerd
-          cp agents/roomlerd/packaging/macos/postinstall scripts/postinstall
+          cp agents/meshharbord/packaging/macos/postinstall scripts/postinstall
           chmod 755 scripts/postinstall
 
           # Turn OFF bundle relocation. This is not a nicety.
@@ -3695,7 +3695,7 @@ jobs:
       # Every Linux updater up to 0.4.15 picks its own package with
       #   assets.iter().find(|a| name.ends_with(".deb") && name.contains(arch))
       # and reads THIS feed. On 2026-08-29 the newly-added
-      # `roomler-desktop-*.deb` came back first, so mars and jupiter
+      # `meshharbor-desktop-*.deb` came back first, so mars and jupiter
       # apt-installed the companion as their own daemon update: "package
       # installed", version unchanged, no error, 34 packages of webkit onto a
       # headless cluster node. `agent_release::order_assets_daemon_first` fixes
@@ -3727,10 +3727,10 @@ jobs:
             # renaming that asset silently turned this guard into a permanent
             # warning — a stale allowlist that fires on the correct state. What
             # `order_assets_daemon_first` actually asserts server-side is a
-            # `roomler-desktop-` DENYLIST, so replay exactly that and the guard
+            # `meshharbor-desktop-` DENYLIST, so replay exactly that and the guard
             # survives any future daemon rename.
             case "$first" in
-              roomler-desktop-*) echo "::warning::a pre-0.4.16 $arch agent would install '$first' as its daemon update — the companion must sort AFTER the daemon in /api/agent/latest-release (agent_release::order_assets_daemon_first)" ;;
+              meshharbor-desktop-*) echo "::warning::a pre-0.4.16 $arch agent would install '$first' as its daemon update — the companion must sort AFTER the daemon in /api/agent/latest-release (agent_release::order_assets_daemon_first)" ;;
               *) ;;
             esac
           done

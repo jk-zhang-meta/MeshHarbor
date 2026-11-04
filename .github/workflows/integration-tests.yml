@@ -8,7 +8,7 @@
 # a `cargo check` so the crate at least BUILDS; this lane is the other half.
 #
 # ⚠️ The failure mode that let it rot is a lane that runs NOTHING and reports
-# success — a build log printing `Checking roomler-ai-tests` was mistaken for
+# success — a build log printing `Checking meshharbor-tests` was mistaken for
 # coverage for months. So this workflow asserts a MINIMUM TEST COUNT: if the
 # harness executes far fewer tests than the suite contains, the job fails
 # loudly instead of passing quietly. A green tick here has to mean the tests
@@ -24,7 +24,7 @@ on:
     branches: [master]
     paths:
       - 'crates/**'
-      - 'agents/roomlerd/**'
+      - 'agents/meshharbord/**'
       - '.github/workflows/integration-tests.yml'
   # ⚠️ On PRs this used to fire ONLY for `crates/tests/**` — i.e. when someone
   # edited the tests, not when they edited what the tests cover. A change to a
@@ -231,7 +231,7 @@ jobs:
       - name: Build the test binary
         # Separate from the run so a compile failure reads as a compile
         # failure, not as "0 tests passed".
-        run: cargo test -p roomler-ai-tests --no-run
+        run: cargo test -p meshharbor-tests --no-run
 
       - name: Watch mongod while the suite runs
         # ⚠️ THE MISTAKE THIS FIXES. The leaked-database count below runs
@@ -338,7 +338,7 @@ jobs:
           # pairs and takes every Nth from its own offset, so between them the
           # shards run each test exactly once, and a module's tests spread
           # over all three. (The crate has no doc tests to lose.)
-          mapfile -t bins < <(cargo test -p roomler-ai-tests --no-run --message-format=json 2>/dev/null \
+          mapfile -t bins < <(cargo test -p meshharbor-tests --no-run --message-format=json 2>/dev/null \
             | jq -r 'select(.reason == "compiler-artifact" and .profile.test and .executable != null) | .executable')
           echo "test binaries: ${#bins[@]}"
           [ "${#bins[@]}" -gt 0 ] || { echo "::error::cargo listed no test binaries"; exit 1; }

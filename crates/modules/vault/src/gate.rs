@@ -21,7 +21,7 @@
 
 use async_trait::async_trait;
 use bson::DateTime;
-use roomler_core::{RoleAsk, RoleVerdict, SessionGate};
+use meshharbor_core::{RoleAsk, RoleVerdict, SessionGate};
 
 use crate::VaultState;
 use crate::model::VaultAuditEvent;

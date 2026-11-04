@@ -48,7 +48,7 @@ the pre-logon desktop.
 
 Alongside it: `roomler.exe` — a small shim that re-execs the agent's own command
 surface, so the CLI and the daemon can never disagree about their version — and
-`roomler-desktop.exe`, the tray companion.
+`meshharbor-desktop.exe`, the tray companion.
 
 @macos
 Two processes, because macOS forces it: a **LaunchAgent** in your GUI session

@@ -23,7 +23,7 @@ pub const KIND_STATIC: &str = "static";
 pub const KIND_STRUCTURED: &str = "structured";
 /// P3-6b — an issuer, for a credential minted per lease: its fields are
 /// those its `provider` names
-/// (`roomler_ai_remote_control::vault::providers`), and a session never
+/// (`meshharbor_remote_control::vault::providers`), and a session never
 /// gets one of them. It is used in `short-lived` mode alone, and that mode
 /// uses nothing else (the guardrails `dynamic-only-short-lived` and
 /// `short-lived-only-dynamic`).

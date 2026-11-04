@@ -12,9 +12,9 @@ use axum::{
     Json,
     extract::{Path, State},
 };
-use roomler_ai_db::models::consent_request::ConsentRequestStatus;
+use meshharbor_db::models::consent_request::ConsentRequestStatus;
 
-use roomler_core::ApiError;
+use meshharbor_core::ApiError;
 
 use crate::FleetState;
 

@@ -30,7 +30,7 @@
 use std::collections::HashSet;
 
 use pulldown_cmark::{Event, Options, Parser, Tag, html};
-use roomler_ai_db::models::NewsletterIssue;
+use meshharbor_db::models::NewsletterIssue;
 
 /// Sentinel the wrapper embeds where a recipient's unsubscribe URL belongs.
 /// Chosen to survive both markdown rendering and HTML escaping unchanged; an
@@ -57,7 +57,7 @@ pub const HOSTED_SITE_HOSTS: [&str; 2] = ["roomler.ai", "www.roomler.ai"];
 pub fn issue_campaign(slug: &str) -> String {
     format!("{ISSUE_CAMPAIGN_PREFIX}{slug}")
         .chars()
-        .take(roomler_ai_db::models::MAX_ATTRIBUTION_VALUE_LEN)
+        .take(meshharbor_db::models::MAX_ATTRIBUTION_VALUE_LEN)
         .collect()
 }
 
@@ -337,7 +337,7 @@ pub fn substitute_recipient(rendered: &str, unsubscribe_url: &str) -> String {
 mod tests {
     use super::*;
     use bson::DateTime;
-    use roomler_ai_db::models::IssueStatus;
+    use meshharbor_db::models::IssueStatus;
 
     fn issue(body_md: &str) -> NewsletterIssue {
         NewsletterIssue {
@@ -427,7 +427,7 @@ mod tests {
         assert_eq!(issue_campaign("october-notes"), "nl-october-notes");
         let long = "a".repeat(64);
         let c = issue_campaign(&long);
-        assert_eq!(c.len(), roomler_ai_db::models::MAX_ATTRIBUTION_VALUE_LEN);
+        assert_eq!(c.len(), meshharbor_db::models::MAX_ATTRIBUTION_VALUE_LEN);
         assert!(c.starts_with("nl-aaa"));
     }
 

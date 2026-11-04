@@ -33,7 +33,7 @@ Verified against master on 2026-09-06 (`file:line` anchors — re-check before r
 | Thing | Where | What it already proves |
 |---|---|---|
 | The five profiles | `crates/api/Cargo.toml:30-36` — `profile-full = [chat, conference, fleet, remote, network]`, `collab = [chat, conference]`, `remote = [fleet, remote]`, `mesh = [fleet, network]`, `access = [fleet, remote, network]` | the composition exists as feature aggregates |
-| Profile CI | `.github/workflows/ci.yml:2090+` (`profiles` job) | every reduced profile **compiles**, and `cargo tree` asserts the **absences** (no `mediasoup` in remote/mesh/access, no `roomler-ai-tunnel-core` in collab) with a positive control on `full` |
+| Profile CI | `.github/workflows/ci.yml:2090+` (`profiles` job) | every reduced profile **compiles**, and `cargo tree` asserts the **absences** (no `mediasoup` in remote/mesh/access, no `meshharbor-tunnel-core` in collab) with a positive control on `full` |
 | Profile images | `.github/workflows/publish-selfhost-image.yml` | publishes `<tag>-<profile>` (bare `<tag>` for full), passes `PROFILE` as a build arg, and a **boot smoke** asserts the image *is* the profile it claims (`WANT_full='chat conference fleet network remote'`) |
 | `GET /api/capabilities` | `crates/api/src/routes/capabilities.rs` | **unauthenticated**; returns `{version, modules, compiled, switched_off}`. `modules` = what this server mounts, `compiled` = what the build linked |
 | Clean-clone install smoke | `scripts/selfhost-smoke.sh` (FR-42) | the documented self-host steps work **verbatim** from a clean clone — on one host, one profile |

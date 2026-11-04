@@ -18,7 +18,7 @@ on:
     paths:
       - 'Dockerfile.hive-archive'
       - 'scripts/hive-archive-entrypoint.sh'
-      - 'agents/roomlerd/src/archive_replica.rs'
+      - 'agents/meshharbord/src/archive_replica.rs'
       - '.github/workflows/hive-archive-image.yml'
   workflow_dispatch:
     inputs:

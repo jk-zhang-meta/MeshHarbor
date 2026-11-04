@@ -15,7 +15,7 @@ import {
   verifyTransportMac,
 } from '@/utils/extauth'
 
-/** The vectors the DEVICE's tests pin too (`agents/roomlerd/src/external_logins.rs`). */
+/** The vectors the DEVICE's tests pin too (`agents/meshharbord/src/external_logins.rs`). */
 const FP =
   'sha-256 4A:AD:B9:B1:3F:82:18:3B:54:02:12:DF:3E:5D:49:6B:19:E5:7C:AB:3C:5F:03:24:5E:E5:66:1C:20:D2:28:A8'
 const OTHER_FP =

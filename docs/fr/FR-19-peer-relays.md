@@ -244,7 +244,7 @@ the "unknown" half and the code does not implement it.** The enum is a plain
 and no custom decoder. `#[serde(default)]` on `NetmapPeer.relay_strategy` (`:2117`) handles a
 *missing* field, not an *unrecognised* one. An unknown tag is a hard serde error failing the
 **entire enclosing `ServerMsg`**, and the agent's parse arm swallows it at `debug!`
-(`agents/roomlerd/src/signaling.rs:1543`).
+(`agents/meshharbord/src/signaling.rs:1543`).
 
 Add a variant carelessly and every pre-FR-19 agent **drops whole netmap frames** and stops
 installing peers — a fleet-wide outage delivered by the server, visible only at `debug!`.
@@ -765,7 +765,7 @@ Verified against `origin/master`, 2026-08-28.
 | Per-source limiter model | `overlay/carrier_plane.rs:705` `unknown_init_fresh`; `wg.rs:716-717` |
 | SSRF validator to reuse | `crates/api/src/routes/push.rs:20` `validate_push_endpoint` |
 | Permission bits + `ALL` bump | `crates/db/src/models/role.rs:104`, `:133` |
-| CLI surfaces | `agents/roomler-cli/src/localclient.rs:1028` (`relay_qualified_label`), `:252` (`print_why`), `:141` (`netcheck`) |
+| CLI surfaces | `agents/meshharbor-cli/src/localclient.rs:1028` (`relay_qualified_label`), `:252` (`print_why`), `:141` (`netcheck`) |
 
 **Config keys** — four wiring points each, per the contract at
 `crates/agent-core/src/config_surface.rs:36-38`: field on `AgentConfig`; `const KEYS` entry
@@ -947,7 +947,7 @@ kill switch. That is what makes E2E-3 executable before P2.
 
 ### 10a. Unit (no MongoDB)
 
-⚠️ `cargo test -p roomlerd --lib` **skips** the overlay tests; the lane needs
+⚠️ `cargo test -p meshharbord --lib` **skips** the overlay tests; the lane needs
 `--features overlay-l3`.
 
 | test | asserts |
@@ -1086,8 +1086,8 @@ less.
 - CI **cannot** cover 10c: no symmetric-NAT corp laptop, no blocked relay band, no three-host
   topology. *"Field-validated, not CI-validated… CI green ≠ done."*
 - ⚠️ `--workspace` clippy compiles only `pub mod fixtures` from `crates/tests`, so
-  `Checking roomler-ai-tests` is **not** evidence the new tests build. `scripts/ci-local.sh`
-  runs only `cargo check -p roomler-ai-tests` (`:81`).
+  `Checking meshharbor-tests` is **not** evidence the new tests build. `scripts/ci-local.sh`
+  runs only `cargo check -p meshharbor-tests` (`:81`).
 
 ---
 
@@ -1189,12 +1189,12 @@ property to test (E2E-2, E2E-4), not to assert.
   survive; one attempted after will not. Interacts with the C4 warm-relay design — **do not
   solve both here.**
 - **MTU — not a risk, and the first draft overstated it.** The overlay MTU is a fixed 1280
-  (`agents/roomlerd/src/overlay.rs:41`), so worst case on the wire is
+  (`agents/meshharbord/src/overlay.rs:41`), so worst case on the wire is
   1280 + 32 (WG) + 8 (Geneve) + 8 (UDP) + 20 (IPv4) = **1348**, comfortably under 1500.
   Geneve's 8 bytes is +4 over TURN's ChannelData and costs nothing against DERP (WS over
   TCP). Re-check only if the overlay MTU is ever raised. ⚠️ And do **not** cite
   `roomler diagnose` as the path-MTU instrument — it is
-  `bail!("T3: diagnose not yet wired")` (`agents/roomler-cli/src/cli.rs:637`); only its
+  `bail!("T3: diagnose not yet wired")` (`agents/meshharbor-cli/src/cli.rs:637`); only its
   doc comment describes the probe.
 
 ---

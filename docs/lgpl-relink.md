@@ -28,7 +28,7 @@ Both halves are satisfied by publication, not by request:
 | §6(a) requires | Where it is |
 |---|---|
 | Complete source of **the Library** | [`vendored-ffmpeg-9.0.1`](https://github.com/gjovanov/roomler-ai/releases/tag/vendored-ffmpeg-9.0.1) → `ffmpeg-<version>-corresponding-source.tar.xz` (upstream + every patch our builds apply + the full build recipe) |
-| The **"work that uses the Library"**, as **source code** | This repository. The agent is MPL-2.0; `agents/roomlerd` and every crate it depends on are public. |
+| The **"work that uses the Library"**, as **source code** | This repository. The agent is MPL-2.0; `agents/meshharbord` and every crate it depends on are public. |
 | Terms permitting modification and debugging | MPL-2.0 for our code; upstream licences for vendored crates |
 
 The written offer in [THIRD-PARTY-NOTICES.md](../THIRD-PARTY-NOTICES.md) stands
@@ -119,7 +119,7 @@ release workflow:
 
 ```powershell
 $env:PKG_CONFIG_PATH = "<your-prefix>/lib/pkgconfig"
-cargo build -p roomlerd --release --features `
+cargo build -p meshharbord --release --features `
   "full-hw,vp9-444,system-context,ffmpeg-encoder,overlay-l3,overlay-netstack,ssh-server"
 ```
 
@@ -128,7 +128,7 @@ Linux:
 ```bash
 export FFMPEG_DIR=<your-prefix>
 export PKG_CONFIG_PATH=<your-prefix>/lib/pkgconfig
-cargo build -p roomlerd --release \
+cargo build -p meshharbord --release \
   --features "full,vp9-444,vp9-444-bindgen,overlay-l3,overlay-netstack,ffmpeg-encoder,ssh-server"
 ```
 

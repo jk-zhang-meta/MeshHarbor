@@ -24,14 +24,14 @@ use axum::{
 use bson::DateTime;
 use serde::{Deserialize, Serialize};
 
-use roomler_ai_db::models::{IssueCounts, IssueStatus, NewsletterIssue};
-use roomler_ai_services::email::SendOptions;
-use roomler_ai_services::newsletter::{
+use meshharbor_db::models::{IssueCounts, IssueStatus, NewsletterIssue};
+use meshharbor_services::email::SendOptions;
+use meshharbor_services::newsletter::{
     LinkTags, clean_header_text, render_issue_html, site_hosts, substitute_recipient,
 };
 
-use roomler_core::guards::require_platform_admin;
-use roomler_core::{ApiError, extractors::auth::AuthUser};
+use meshharbor_core::guards::require_platform_admin;
+use meshharbor_core::{ApiError, extractors::auth::AuthUser};
 
 use crate::SaasState;
 
@@ -165,7 +165,7 @@ fn clean_audience(raw: Option<Vec<String>>) -> Result<Option<Vec<String>>, ApiEr
     };
     let mut out: Vec<String> = Vec::with_capacity(raw.len());
     for a in &raw {
-        let a = roomler_ai_db::models::Subscriber::normalize_email(a);
+        let a = meshharbor_db::models::Subscriber::normalize_email(a);
         if a.is_empty() || a.len() > 254 || !a.contains('@') || a.chars().any(char::is_whitespace) {
             return Err(ApiError::Validation(
                 "audience must list plausible addresses".into(),

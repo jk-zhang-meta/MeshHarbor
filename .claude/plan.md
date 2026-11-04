@@ -14,7 +14,7 @@ Replicate the same health check infrastructure from the lgr repo, adapted for ro
 | Aspect | lgr | roomler-ai |
 |--------|-----|------------|
 | Backend | Elysia.js (Bun) | Rust (Axum 0.8) |
-| Backend test | `bun run test` | `cargo test -p roomler-ai-tests` |
+| Backend test | `bun run test` | `cargo test -p meshharbor-tests` |
 | Typecheck | `bunx tsc --noEmit` | `cargo clippy` (Rust) + `vue-tsc --noEmit` (Vue) |
 | Lint | `bun run lint` | No linting configured |
 | Dep audit | `bun audit` | `cargo audit` (Rust) + `bun audit` (UI) |
@@ -80,14 +80,14 @@ Heavily adapted from the template. Key adaptations:
 
 ### Phase 3 — Test Execution
 - Start services: `docker compose up -d mongo redis minio`
-- Backend: `cargo test -p roomler-ai-tests` (114 integration tests)
+- Backend: `cargo test -p meshharbor-tests` (114 integration tests)
 - Frontend unit: `cd ui && bun run test:unit` (Vitest)
 - E2E: NOT run in automated daily check (requires full stack + browser)
 - Coverage gap analysis (note: Rust coverage requires cargo-tarpaulin)
 
 ### Phase 4 — Performance Profiling
 - Skip (no autocannon/k6 configured; note as gap for future setup)
-- Check binary size: `ls -la target/release/roomler-ai-api`
+- Check binary size: `ls -la target/release/meshharbor-api`
 - Check Docker image size
 
 ### Phase 5 — Security Audit

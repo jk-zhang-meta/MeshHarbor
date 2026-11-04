@@ -4,7 +4,7 @@
 //!
 //! Here, and not in `roomlerd`, because three parties must apply the SAME
 //! rules: the config surface's validator (a `ConfigSet` of `record_dir`), the
-//! recorder at start time, and roomler-desktop before it offers a folder the
+//! recorder at start time, and meshharbor-desktop before it offers a folder the
 //! daemon would then refuse. A validator each would drift.
 //!
 //! The rules: an absolute, local path; no `~` (never expanded); no UNC share

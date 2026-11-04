@@ -34,18 +34,18 @@ Removing a device ends every token it was ever given, so a revived row never acc
 
 **On expiry.**
 - The socket answers a fixed `401 "Unauthorized (agent)"`, the same as a revocation.
-- The agent backs off 30 s, 60 s, 5 min, then 1 h forever (`agents/roomlerd/src/signaling.rs` L1007), and raises "re-enrollment required" at the third failure (L778).
+- The agent backs off 30 s, 60 s, 5 min, then 1 h forever (`agents/meshharbord/src/signaling.rs` L1007), and raises "re-enrollment required" at the third failure (L778).
 - Recovery is `roomlerd re-enroll --token <fresh>`, run **on the machine**, and the running daemon picks it up only at the next restart.
 
 **The token is copied at start.**
 - `signaling::run` keeps the snapshot every reconnect uses (L586, `connect_once` L1134).
-- The DERP dial closure captures it once per overlay start (`agents/roomlerd/src/overlay.rs` ~L351).
+- The DERP dial closure captures it once per overlay start (`agents/meshharbord/src/overlay.rs` ~L351).
 - The log uploader (`main.rs` ~L3569), the crash uploader and `OrgHttpRegistry` (`self_view.rs` L86–113) each hold a copy.
 - The redactor registers it (`signaling.rs` L1234).
 
 **The pattern to copy.**
-- FR-94's service credential renews itself: `agents/roomlerd/src/exec_service.rs` `renew_if_due` L901–943, server `crates/modules/fleet/src/exec_service.rs` `renew` L226–244. "A lost response costs nothing … what ends a credential is the anchor, never the calendar."
-- The persist pattern is `RemoteConfigServices::rotate_overlay_key` (`agents/roomlerd/src/remote_config.rs` L213–245): the daemon's `WriteLock`, a fresh load, the scalar or `[[orgs]]` slot, then adopt in memory.
+- FR-94's service credential renews itself: `agents/meshharbord/src/exec_service.rs` `renew_if_due` L901–943, server `crates/modules/fleet/src/exec_service.rs` `renew` L226–244. "A lost response costs nothing … what ends a credential is the anchor, never the calendar."
+- The persist pattern is `RemoteConfigServices::rotate_overlay_key` (`agents/meshharbord/src/remote_config.rs` L213–245): the daemon's `WriteLock`, a fresh load, the scalar or `[[orgs]]` slot, then adopt in memory.
 
 **Removal revives old tokens.** `soft_delete` sets only `deleted_at`, and enrollment **revives** a tombstone in place for the same `(tenant_id, machine_id)` (`agent.rs` L143–208 → `AgentDao::rehydrate`). Tunnel clients do the same (`routes/tunnel.rs` L116–128, `TunnelClientDao::soft_delete` L292). A revived row therefore accepts every token it ever issued (#2133's "same shape").
 
@@ -63,14 +63,14 @@ Removing a device ends every token it was ever given, so a revived row never acc
 
 - **One renew check per enrollment**: the primary and every `[[orgs]]` entry, each against its own `server_url`.
   - It runs at start, after every successful connect, and every 12 h.
-  - It renews when `exp − now < 180 days`, reading `exp` with `jwt_introspect::parse_unverified` (`agents/roomlerd/src/jwt_introspect.rs` L59).
+  - It renews when `exp − now < 180 days`, reading `exp` with `jwt_introspect::parse_unverified` (`agents/meshharbord/src/jwt_introspect.rs` L59).
 - **On an auth-rejected connect**, before the backoff:
   1. Adopt a newer token from disk if another process re-enrolled. This makes `roomlerd re-enroll` work without a restart.
   2. Try a renewal: the old token is in its grace, and a revoked device is refused anyway.
 - **Persist** exactly like `rotate_overlay_key`, then adopt through a **live `TokenSlot`** per enrollment that replaces every String copy. Each consumer reads it when it uses it: the socket per connect, DERP per dial, the uploaders and the HTTP registry per request. The new token is registered with the redactor.
 - The tunnel CLI renews at start when due, and its `config::save` becomes atomic and `0600`.
 - Kill switch: `ROOMLERD_TOKEN_RENEWAL=0`.
-- ⚠️ The companion's `cmd_re_enroll` (`agents/roomler-desktop/src/commands.rs` L447–470) saves the fresh config **wholesale**, dropping `[[orgs]]` and every operator setting. It is fixed here (through `apply_enrollment`), and renewal never goes that way.
+- ⚠️ The companion's `cmd_re_enroll` (`agents/meshharbor-desktop/src/commands.rs` L447–470) saves the fresh config **wholesale**, dropping `[[orgs]]` and every operator setting. It is fixed here (through `apply_enrollment`), and renewal never goes that way.
 
 ### 3c. A removal ends every earlier token
 
@@ -107,13 +107,13 @@ stateDiagram-v2
 | P1 | Server: both renew routes and the grace verifier; `token_gen`, its check at five sites, the removal bump in both DAOs; `token_exp` stamping and the DTO; the TTL knob; tests. Every `Agent { … }` literal gains the fields (`dao/agent.rs` L153, `tunnel-core/src/policy.rs` L968) | `rc.token_renewal`, `rc.token_generation_check` | #2158, on prod since `hosted-20261014-fbc8f22` |
 | P2 | Agent: `TokenSlot` through every consumer; the renew check (its horizon overridable by `ROOMLERD_TOKEN_RENEW_BEFORE_DAYS`, the field knob for AC1); persist; renew-on-401; `OrgStatus`; the `cmd_re_enroll` fix | `ROOMLERD_TOKEN_RENEWAL=0` | #2160, released in 0.4.135 |
 
-P2 as built (`agents/roomlerd/src/token_renewal.rs`):
+P2 as built (`agents/meshharbord/src/token_renewal.rs`):
 - **When "due".** By default, with 180 days left or at half the token's lifetime, whichever comes first. A 365-day token renews at 185 days old. A token minted short by `rc.agent_token_ttl_secs` renews at half-life rather than on every look. `ROOMLERD_TOKEN_RENEW_BEFORE_DAYS` is an *exact* override. Under the default rule a horizon above the lifetime would be capped at half-life and change nothing, so the override is what makes AC1's fresh token due at once (and at every look after: a testing knob).
 - **When it looks.** After every connect the server accepted, and on the schedule that look returns: at most 12 h, at least 1 min, and 1 h after a failure that may pass. The first look waits for a connect, so a device that cannot reach its server asks it nothing. A random 0–60 s delay spreads a fleet that reconnected at once.
 - **On a 401.** First a newer token in the config file (matched by server, tenant *and* device id), then a renewal, which the grace covers. Either earns one prompt retry. A refusal straight after a recovery waits out the normal ladder, so a server that renews a token its socket then refuses cannot spin the loop.
 - **Saving.** A compare-and-swap under the daemon's config lock (`RemoteConfigServices::persist_agent_token`). A file already holding a different token for the device was re-enrolled meanwhile, and that token wins. A save that fails still puts the renewed token in use: nothing is rotated, so the file's token stays valid, and the daemon keeps working until a restart reads the file again.
-- **One slot per enrollment** (`roomler-node-core::token_slot`), minted once in `run_cmd` and shared by the loop, its LocalAPI status row, its device-list HTTP identity, the DERP dialer (read per dial: the overlay runtime outlives the connection that built it), and, for the primary, the log and crash uploaders.
-| P3 | Tunnel CLI renewal (before `forward` and `socks5` dial; the due rule moved to `roomler_cli::credential::renew_at`, which `roomlerd` now calls); atomic `0600` save, compare-and-swap for a renewal | — | #2167, released in 0.4.135 |
+- **One slot per enrollment** (`meshharbor-node-core::token_slot`), minted once in `run_cmd` and shared by the loop, its LocalAPI status row, its device-list HTTP identity, the DERP dialer (read per dial: the overlay runtime outlives the connection that built it), and, for the primary, the log and crash uploaders.
+| P3 | Tunnel CLI renewal (before `forward` and `socks5` dial; the due rule moved to `meshharbor_cli::credential::renew_at`, which `roomlerd` now calls); atomic `0600` save, compare-and-swap for a renewal | — | #2167, released in 0.4.135 |
 | P4 | UI chip; docs (§5 AC7); field | — | #2168 (docs + chip), #2182 (a renewal stamps the expiry at once); AC4's last two tests #2263; field §8 |
 
 Rollout:

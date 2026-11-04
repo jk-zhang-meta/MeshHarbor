@@ -43,7 +43,7 @@ are master `4fc8ea7bb`.
 | # | StarDesk claims | Roomler today | Verdict |
 |---|---|---|---|
 | P1 | "under 50 ms" (vs "200–300 ms" for others) | **No input-to-photon metric anywhere.** Paint age via `rc:clock`; the §12 budget in `docs/remote-control.md` was never measured | no instrument: [FR-16](../fr/FR-16-rc-quality-benchmark.md) amended + [FR-98](../fr/FR-98-input-to-photon-budget.md) |
-| P2 | 4K at up to 144 fps; fps lock 60/120/144 | hard 60 (`agents/roomlerd/src/peer.rs` L98, L105, `ffmpeg_target_fps` L8240); MF and openh264 30; a whole-millisecond sleep runs before the WGC slot check (`capture/wgc_backend.rs` L259, L293–302); `TIME_BASE_DEN = 1000` (`encode/ffmpeg/encoder.rs` L86) | gap: high-refresh FR (wave 2) |
+| P2 | 4K at up to 144 fps; fps lock 60/120/144 | hard 60 (`agents/meshharbord/src/peer.rs` L98, L105, `ffmpeg_target_fps` L8240); MF and openh264 30; a whole-millisecond sleep runs before the WGC slot check (`capture/wgc_backend.rs` L259, L293–302); `TIME_BASE_DEN = 1000` (`encode/ffmpeg/encoder.rs` L86) | gap: high-refresh FR (wave 2) |
 | P3 | "Zero-Copy pipeline" | CPU readback on every capture arm; `Frame.data: Vec<u8>` (`capture/mod.rs` L59–64); `hwframes.rs` has no D3D11VA | gap: GPU frame path FR (wave 2) |
 | P4 | HDR | FP16 tone-clipped to 8-bit sRGB (`capture/fp16.rs`); BT.601 8-bit throughout | gap: HDR FR (wave 3) |
 | P5 | 4:4:4 "True Color" | FR-77's cells | **parity** |
@@ -58,7 +58,7 @@ are master `4fc8ea7bb`.
 | S1 | E2E, mutual authentication, "zero-knowledge" | ephemeral per-session ECDSA and mutual DTLS, but on master the fingerprints are bound to nothing the device can check: the hub rebuilds the offer around the raw SDP (`crates/modules/fleet/src/hub.rs` L1391, L1450). FR-52's open PR #1628 binds them for outsiders only | gap: [FR-100](../fr/FR-100-controller-identity.md) |
 | S2 | DTLS 1.2/1.3, AES-128, ECDHE with PFS | DTLS 1.2, ECDHE, SRTP AEAD-GCM including AES-256; CBC suites still offered | parity, harden: [FR-101](../fr/FR-101-rc-session-hygiene.md) |
 | S3 | replay protection | **on**: webrtc-srtp's `Session::new` gives every session a 64-packet SRTP/SRTCP window when none is set. This row first said "off", from the no-protection fallback in `Context::new`, which a session never reaches. FR-16 L0's replay cells corrected it on 2026-10-13: a replayed SRTCP PLI is refused even with no window set | **parity**; FR-101 P1a pins the window |
-| S4 | certificate pinning | deliberately absent so corporate TLS inspection works (`agents/roomlerd/Cargo.toml` L285–293) | by design; FR-100 gives the integrity pinning would |
+| S4 | certificate pinning | deliberately absent so corporate TLS inspection works (`agents/meshharbord/Cargo.toml` L285–293) | by design; FR-100 gives the integrity pinning would |
 | S5 | Privacy Mode: black out the local display | nothing; `WDA_EXCLUDEFROMCAPTURE` already hides our own panels from capture | gap: FR-99 |
 | S6 | auto-lock after the session | none | gap: FR-99 |
 | S7 | clipboard, files and audio off by default | clipboard auto-sync on, files requested by default, audio off; no policy switch | gap: FR-101 |

@@ -6,13 +6,13 @@
 > and Linux the identity rule: it runs as the person at the device, or, for a
 > remote recording on a host nobody is signed in to, as the service into its
 > own locked folder, §6), P2a (the local verbs), P2b
-> (roomler-desktop's Recordings view and tray), P3a (the server's gates for
+> (meshharbor-desktop's Recordings view and tray), P3a (the server's gates for
 > remote recording), P3b (the device's half of it), P3b-2 (downloading it),
 > P3b-3 (a dropped session's recording waits a minute for its controller),
 > P3c (the viewer's Record and Download, §10), P3c-2 (no Record control on a
 > device with no recorder), P5a (the export engine: cut
 > and speed up, §11), P5b (the export's sound and background music) and P5c
-> (roomler-desktop's Edit view).**
+> (meshharbor-desktop's Edit view).**
 > It is in **every release build from the one after 0.4.108**: `recording` is
 > in `full` again, together with the FFmpeg assets that carry AAC and the H.264
 > decoder (P4c, §9 and §11). It was out of `full` from 2026-09-26 (#1692, the
@@ -27,7 +27,7 @@
 > the device's owner allows it, and `ROOMLERD_RECORDING=0` in the service's
 > environment switches recording off, local and remote. It is driven by
 > `roomlerd record`, by the daemon for the LocalAPI recording verbs and
-> `roomler record` (§6), by roomler-desktop (§7), by a remote controller
+> `roomler record` (§6), by meshharbor-desktop (§7), by a remote controller
 > from the viewer's toolbar, over the session's `record` channel (§10), and
 > by `roomlerd media` for an export (§11), which touches only the files the
 > person hands it. Still to come: the microphone and computer audio on macOS
@@ -261,7 +261,7 @@ weighed and deferred (below).
   people ask for it (the operator, 2026-09-26).
 - **Override** (`--out`, or the config key `record_dir`): absolute, local, no
   `~`, no UNC or `\\?\` device path, no `..`, no symlink or junction component.
-  ONE validator, `roomler_node_core::recording_dir::validate_record_dir`
+  ONE validator, `meshharbor_node_core::recording_dir::validate_record_dir`
   (`crates/agent-core/src/recording_dir.rs`), shared by the config surface and
   the child. On Windows `is_symlink` is true for junctions and false for cloud
   placeholders. That is the distinction wanted: a placeholder doesn't redirect
@@ -333,14 +333,14 @@ the lock disabled.
 ## 6. Recording through the daemon — the local verbs (P2a)
 
 The person at the device records through the running daemon: from
-roomler-desktop (P2b) or from `roomler record`. The daemon never records in its
+meshharbor-desktop (P2b) or from `roomler record`. The daemon never records in its
 own address space. It launches `roomlerd record` and follows its events
 (`recording/manager.rs`, `RecordingManager`).
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant C as roomler record / roomler-desktop
+    participant C as roomler record / meshharbor-desktop
     participant L as LocalAPI listener
     participant M as RecordingManager (daemon)
     participant R as roomlerd record (child)
@@ -403,7 +403,7 @@ sequenceDiagram
   (`manager::is_recording`) is a count each recorder's reader task adds to once
   and removes once, so no code path can clear a recording it does not own.
 - **`roomler record start|stop|status|ls|rm`**
-  (`agents/roomler-cli/src/cli.rs`) wraps these verbs one to one. `--json`
+  (`agents/meshharbor-cli/src/cli.rs`) wraps these verbs one to one. `--json`
   prints the wire shape.
 
 ### Who the recorder runs as (P1e)
@@ -546,14 +546,14 @@ into the daemon's log: a service has no stderr of its own to share.
   ScreenCast portal session, so the portal may ask the person first (P0's
   restore-token question).
 
-## 7. roomler-desktop — the Recordings view and the tray (P2b)
+## 7. meshharbor-desktop — the Recordings view and the tray (P2b)
 
 The companion's sixth view (`#/recordings`, `src/front/recordings.js`) and a
 tray item. Both only ASK the daemon; every decision stays there (§6).
 
 ```mermaid
 flowchart LR
-    subgraph companion["roomler-desktop (the person's session)"]
+    subgraph companion["meshharbor-desktop (the person's session)"]
       V["Recordings view<br/>recordings.js"]
       T["tray<br/>Start / Stop recording,<br/>RED while one runs"]
       P["native folder picker<br/>cmd_pick_record_dir"]
@@ -708,7 +708,7 @@ offered** where it cannot be recorded (#1760):
 
 | Computer audio | Windows | Linux | macOS · a build without `audio` |
 |---|---|---|---|
-| `system_audio_supported()` (`agents/roomlerd/src/recording/mod.rs`): the `audio` feature on Windows or Linux — the ONE answer every row below reads | yes | yes | **no** |
+| `system_audio_supported()` (`agents/meshharbord/src/recording/mod.rs`): the `audio` feature on Windows or Linux — the ONE answer every row below reads | yes | yes | **no** |
 | the recorder child (`child.rs` `open_system_audio`) | WASAPI loopback | the PulseAudio / PipeWire monitor | refuses `system_audio_unavailable` with the same words (`SYSTEM_AUDIO_UNSUPPORTED`); each `cfg` arm asserts at compile time that it agrees with the fn |
 | the device's caps (`remote.rs` `advertise`) | `remote-audio` while the owner allows it | same | never `remote-audio`, whatever the owner set |
 | a remote start asking for audio (`remote.rs` `precheck`) | `audio_not_allowed` until the owner allows it | same | `audio_unsupported`, ahead of the owner's gate, the words in `detail` |
@@ -794,7 +794,7 @@ before `available` existed and advertising `remote` still reads as serving.
 
 ### The device's half (P3b)
 
-The owner switches it on in roomler-desktop's Recordings view ("Allow remote
+The owner switches it on in meshharbor-desktop's Recordings view ("Allow remote
 recording", and separately "Include computer audio"), or with
 `roomler config set record_remote_enabled true`. Both keys are device-only: the
 console gate accepts them only from the person at the device, and
@@ -1263,7 +1263,7 @@ flowchart LR
   cancelled export leaves nothing behind.
 
 **`roomlerd media`** is the engine as a process of its own, launched by
-roomler-desktop **as the person** (never by the daemon), speaking the
+meshharbor-desktop **as the person** (never by the daemon), speaking the
 recorder's JSON-line protocol:
 
 | Command | Answers |
@@ -1316,7 +1316,7 @@ through symphonia (P4).
 
 ### The Edit view (P5c)
 
-roomler-desktop's editor. **Edit** on a saved recording's row puts that one
+meshharbor-desktop's editor. **Edit** on a saved recording's row puts that one
 recording in place of the list (`src/front/editor.js`, with its commands in
 `src/editor.rs`). The button shows only where this device's service has the
 engine: `cmd_media_available` runs `roomlerd media --help` once.
@@ -1324,7 +1324,7 @@ engine: `cmd_media_available` runs `roomlerd media --help` once.
 ```mermaid
 sequenceDiagram
     participant P as the page (editor.js)
-    participant C as roomler-desktop (editor.rs)
+    participant C as meshharbor-desktop (editor.rs)
     participant D as roomlerd (LocalAPI)
     participant E as roomlerd media (as the person)
     P->>C: cmd_media_probe(name)
@@ -1405,7 +1405,7 @@ the music in the preview.
 | `tests/export.rs` (P5a) | a recording whose every frame paints its own index, exported keep 0–2 s · cut 2–4 s · 4× 4–8 s · keep 8–10 s, decodes to exactly `0..59, 120, 124 … 236, 240..299` (150 frames, 5 s, moov first, the recording byte-identical); the same comparison against the unedited source fails (the oracle discriminates); keeping everything reproduces the recording frame for frame; a cancelled export and one that keeps nothing leave no file and nothing staged; the real `roomlerd media probe` / `export` process (a cut plus 2× shows frames 30, 32 … 58, the `done` event says `audio: none`, the recording being silent), and a list naming `../elsewhere.mp4` is refused `bad_edit_list`. Red, each on its own cell: the map ignoring speed, the frame choice off by one, the cancel check removed, the name check removed | same step, `--test export` |
 | `recording::edit` and `recording::export_audio` unit tests (P5b) | the sound of keep / cut / 4× / keep: the kept stretches play from their own source sample, the speed-up is muted, the cut is gone, and the sound is exactly as long as the picture; a volume is 0 to 1 (1.5, NaN and −0.1 refused by name; 0 is a volume, the recording muted), and music needs a file; music defaults to half volume and looping, and an absent `original_volume` means as recorded; the music's gain is silent before its start, ramps in from it, and ramps out to the export's end; a music time too large to count in samples saturates instead of wrapping to an early start | "Test the recorder (FR-85)" (`--lib recording::`; `export_audio`'s in the `audio` run) |
 | `tests/export.rs`, `mod sound` (P5b) | a recording whose sound is a STEPPED tone, second k playing 300 + 100·k Hz, so every second of an export names the second of the recording it came from (the oracle reads the recording's own second 3 as 600 Hz first). Keep 0–2 s · cut 2–4 s · 4× 4–8 s · keep 8–10 s: the export's seconds 0, 1, 3 and 4 play 300, 400, 1100 and 1200 Hz at full level, second 2 (the speed-up) is muted, and the sound lasts as long as the picture. Music (a 2 s WAV at 44.1 kHz, so it is resampled) under a keep and a 4× speed-up: at its volume and pitch, still playing after its own 2 s (it looped), quieter while it fades in. Both together: under the speed-up only the music is heard. `original_volume` 0 with no music gives a file with no audio track (`audio: none`). A file that is not music, a WAV declaring 0 Hz (which panics symphonia 0.5.5's probe) and one declaring 1 Hz are refused `music_unreadable`, with nothing left staged; a 50 ms blip plays once. Red, each on its own cell: a speed-up not muted, the sound ignoring the cut, the music never looping, the fade-in ignored, the music's volume ignored, the panic guard removed, the rate range widened, the loop minimum removed (and, in the unit test, the saturation removed). ⚠️ The 1 Hz cell stays green with EITHER rate check deleted (at open, per buffer): each refuses that WAV on its own, so it is red only with the range widened | same step, the `audio` run of `--test export` |
-| `recording::edit` and `recording::manager` unit tests (P5c) | the edit list roomler-desktop writes is one roomlerd reads: `agents/roomler-desktop/tests/fixtures/edit-list.json`, the file the page's own test pins its output to, plans to 5 s with its music as written (red when roomlerd reads `looped` for `loop`); deleting a recording takes its edit list with it and leaves an export beside it (red when the list is left behind) | "Test the recorder (FR-85)" (`--lib recording::`) |
+| `recording::edit` and `recording::manager` unit tests (P5c) | the edit list meshharbor-desktop writes is one roomlerd reads: `agents/meshharbor-desktop/tests/fixtures/edit-list.json`, the file the page's own test pins its output to, plans to 5 s with its music as written (red when roomlerd reads `looped` for `loop`); deleting a recording takes its edit list with it and leaves an export beside it (red when the list is left behind) | "Test the recorder (FR-85)" (`--lib recording::`) |
 | `recording::audio` unit tests (P1c) | 48 kHz passes through exactly (one frame of interpolator latency); mono → both channels; a 44.1 kHz sine resamples to 48 kHz at the same pitch; a positive rate trim consumes faster; the soft clip is linear below the knee, monotonic, never wraps; a silent source still yields one frame per 20 ms; two sources sum; a backlog is cut to the lag keeping the newest; a 0.2 % fast source is held near the lag by the rate correction, never trimmed | "Test the recorder (FR-85)", the `audio` run |
 | `tests/recorder.rs`, audio (P1c) | a 440 Hz tone at 44.1 kHz mono plus a microphone that delivers nothing → an Opus track within 80 ms of the video, decoded back at 440 Hz with the right level; the same recording without audio has no audio track (the negative control); `roomlerd record --system-audio` through the real process; a build without `audio` refuses `--microphone` with `audio_unavailable` | both runs of the same step |
 | `recording::audio_codec`, `recording::mp4`, `recording::recorder::tests::alignment`, `recording::export_audio` unit tests (P4) | odd-sized pushes come out as whole codec frames and the tail is padded into one more; an AAC track keeps its AudioSpecificConfig (`11 90`) through the crash-safe file and the remux, and an Opus track reads back as Opus (the control); a click the mixer made 30 000 samples after the first video frame decodes 30 000 samples into the track, in Opus AND in AAC — red with the sample-exact cut removed (the click lands 240 samples late), and an AAC priming left unpaid would put it 1024 late; the export's reader finds the same click at the same sample in either codec | the recorder step (Opus); the AAC halves in "Recording with FFmpeg" |
@@ -1428,17 +1428,17 @@ the music in the preview.
 | `crates/modules/fleet` (P3a) | `record_grant`'s table: kept only when the controller may AND the device serves it, each refusal with its reason, a grant without RECORD untouched; P3c-2: a device with no recorder is `device_cannot_record` whoever asks, and the caps words read by equality (`available` alone is not serving, `remote` alone is, `remote-audio` alone is nothing); the hub strips RECORD from the effective grant and names why in `SessionCreated` (no recorder, then not opted in, then served); a coalesced duplicate repeats the reason | "Run fleet module unit tests" |
 | `crates/tests/src/remote_recording_tests.rs` (P3a) | Real servers, WebSockets and MongoDB, one controller connection per request (a second request on one socket coalesces). The owner on an opted-in device keeps RECORD, on a device with a recorder that never opted in gets `device_not_opted_in`, and on a device with no recorder `device_cannot_record` (P3c-2; so does a member, before their own refusal). A member with `REMOTE_CONTROL` gets `controller_not_allowed`; the same member with `RECORD_REMOTE_SCREEN` keeps it (the positive control). A non-owner `ADMINISTRATOR` keeps it; under break-glass it is stripped. A heartbeat re-announcing caps opts the device in and out without a reconnect, and one without caps changes nothing; one announcing no recorder reads as `device_cannot_record`. Activity is kept for a RECORD session of the sending device only (not for a session without RECORD, not from another device). The route answers RFC 3339 times and refuses a caller without `VIEW_REMOTE_AUDIT` | `integration-tests.yml` |
 | `ui/src/__tests__/utils/permissions.spec.ts` (P3a) | the catalogue lists 32 bits, `RECORD_REMOTE_SCREEN` is `2 ** 31` (positive, not `1 << 31`), and mask arithmetic keeps bit 31 | "Frontend checks" |
-| `agents/roomler-cli` | `record` verbs parse; lengths and endings read plainly | same |
-| `ui/src/__tests__/companion/recordings.spec.ts` | roomler-desktop's REAL `index.html` section and `recordings.js`, in jsdom against a mocked `invoke`: Start greyed out with the reason, the running state, start options, a refusal said, delete only on the second click (red when a single click deletes), the arm expiring, the folder picker saving through `cmd_config_set` and a cancel saving nothing, keyed rows kept in place (red when rows are rebuilt), the last good data kept on a failed refresh, a service with no recorder; #1760: the computer-audio box greyed out, unticked, with the reason where the service says it cannot record it (the microphone still offered, a start then asking for none; red when the reason is ignored), and the recorder's refusal in plain words | "Frontend checks" (`bun run test:unit`) |
+| `agents/meshharbor-cli` | `record` verbs parse; lengths and endings read plainly | same |
+| `ui/src/__tests__/companion/recordings.spec.ts` | meshharbor-desktop's REAL `index.html` section and `recordings.js`, in jsdom against a mocked `invoke`: Start greyed out with the reason, the running state, start options, a refusal said, delete only on the second click (red when a single click deletes), the arm expiring, the folder picker saving through `cmd_config_set` and a cancel saving nothing, keyed rows kept in place (red when rows are rebuilt), the last good data kept on a failed refresh, a service with no recorder; #1760: the computer-audio box greyed out, unticked, with the reason where the service says it cannot record it (the microphone still offered, a start then asking for none; red when the reason is ignored), and the recorder's refusal in plain words | "Frontend checks" (`bun run test:unit`) |
 | `ui/src/__tests__/companion/recordings.spec.ts` (P3b) | the remote-recording card: absent against a service that predates the gates; computer audio offered only once remote recording is allowed; each toggle saved through `cmd_config_set`; a refused toggle said and not faked; a remote recording's status names who it is for; #1760: the owner's computer-audio toggle greyed out, unticked, with the reason where the service cannot record it, remote recording itself still offered | "Frontend checks" |
 | `ui/src/__tests__/companion/viewing.spec.ts` (P3b) | the REAL banner (`panel-viewing.html` / `.js`): who is watching; a RECORDING controller leads, even when another viewer came first (red when the lookup is removed); Stop recording stops the recording and not the session; the notice comes down when the recording ends; P3b-3: a dropped session's recording reads "reconnecting" with its Stop and no Disconnect, and Disconnect returns while another session is live beside it | "Frontend checks" |
-| `ui/src/__tests__/companion/editor.spec.ts` (P5c) | roomler-desktop's REAL Edit section and `editor.js` in jsdom against a mocked `invoke`. The pieces: every split kept whatever its neighbours do (red when an action merges them), no sliver, the export's length as roomlerd's map; the page writes EXACTLY the shared fixture (red when it writes `looped`); a saved list read back fitted, clipped to a shorter recording, a kept last piece carried to a longer one, or started over and said (red when a gap is accepted); the preview's skip, rate and mute. The view: opens on the whole recording and hides the list; split and cut saved after a pause, not per click; speed from the timeline; music added and saved; saved edits restored; edits that do not fit said; a recording it cannot edit refused with the reason; everything cut greys Export out with why; an export that waits for the last save (red when it does not), shows its progress, locks the edits, names the new file and its sound, and opens it by its BARE name; a refusal in words; cancel through the service; an export already running shown on open. The Edit button shows only where the service has the engine (red when it shows without it) and opens that recording | "Frontend checks" (`bun run test:unit`) |
+| `ui/src/__tests__/companion/editor.spec.ts` (P5c) | meshharbor-desktop's REAL Edit section and `editor.js` in jsdom against a mocked `invoke`. The pieces: every split kept whatever its neighbours do (red when an action merges them), no sliver, the export's length as roomlerd's map; the page writes EXACTLY the shared fixture (red when it writes `looped`); a saved list read back fitted, clipped to a shorter recording, a kept last piece carried to a longer one, or started over and said (red when a gap is accepted); the preview's skip, rate and mute. The view: opens on the whole recording and hides the list; split and cut saved after a pause, not per click; speed from the timeline; music added and saved; saved edits restored; edits that do not fit said; a recording it cannot edit refused with the reason; everything cut greys Export out with why; an export that waits for the last save (red when it does not), shows its progress, locks the edits, names the new file and its sound, and opens it by its BARE name; a refusal in words; cancel through the service; an export already running shown on open. The Edit button shows only where the service has the engine (red when it shows without it) and opens that recording | "Frontend checks" (`bun run test:unit`) |
 | `ui/src/__tests__/composables/useRemoteRecording.spec.ts` (P3c) | the viewer's half of the `record` channel, against a scripted channel and an injected save sink: the status and the list asked for as the channel opens; a recording followed from the prompt to its end, a refusal said in words; a channel that closes mid-recording reads as reconnecting (P3b-3; a standing question dies with the session), the next session's channel picks the recording up and Stop names its id, even on a reloaded page, and coming back to nothing recording says it ended meanwhile; a download written in order, with the device's SHA-256 shown; a transfer the session cut, resumed from the bytes already held (red when it restarts from 0); in memory, a file kept only when its SHA-256 matches (red when any file is kept); a short file is an error (red without the length check); a refusal ends a transfer by name and a cancel tells the device; one transfer at a time; P3c-2: `showsRecordRefusal` hides the control for `device_cannot_record` only, and shows every other reason, one from a newer server included; P3b-3: a deliberate Disconnect stops a recording first and waits for the device's answer (or its timeout), and asks nothing of a channel already gone; #1760: `audio_unavailable` on a state greys the box out (`audioUnavailable`, with its sentence) and a start then asks for no audio, a state without the field offers the box again, and a refusal's `detail` is kept for the line under the sentence (red when the field is ignored) | "Frontend checks" (`bun run test:unit`) |
 | `ui/src/__tests__/composables/useRemoteControl.spec.ts`, the record channel (P3c) | RECORD read out of the effective grant by equality (a newer `RECORDING` is not it; red with a prefix match) and never assumed when a server sends no grant; the channel opened from the grant, once per PeerConnection (red without the already-open guard), and never without a PeerConnection | "Frontend checks" |
 | `ui/e2e/remote-recording-refused.spec.ts`, `remote-recording-smoke.spec.ts` (P3c) | against the `agent-e2e` harness: a device with a recorder that never opted in (`available` alone) shows a disabled Record control whose tooltip says why, and no Record button; a device with no recorder shows neither (P3c-2); on a device that advertises `remote`, Record ends in the REC chip or in a refusal said in words. The harness agents run as root with nobody at a console, so there a recording is UNATTENDED (P1f): `Dockerfile.agent-e2e` carries `recording` from P1f on, and a harness image built before it advertises nothing, so the smoke spec skips | the k8s agent lane (`scripts/e2e-k8s.sh`); each skips without a seeded tenant or a fitting device |
-| `agents/roomler-desktop` | the tray's wording and when its item is enabled, and a controller's recording named in the tooltip; the tray's red: the icon swapped in has a red dot in its corner and nowhere else, the idle one no red, the red one is not a template, and only an answer moves either input (a failed poll neither takes the red off nor puts it on; a viewer's session is not red, a recording one is); only a bare `*.mp4` name is opened; a service without the recorder reads as unsupported; recording keys (incl. both remote gates) are the daemon's to accept; the remote gates come from the listing and are absent on an older service | `ci.yml` "Test the desktop companion (roomler-desktop)", new with P2b. The crate's unit tests ran in NO lane before: the macOS job only `cargo check`s it, and the shared step is `--lib`, which a bin-only crate cannot join |
-| `agents/roomler-desktop` editor unit tests (P5c) | the event prefix is the recorder's; the probe's answer skips log lines and keeps a refusal; an export folded from the engine's events; a run that ends without an answer is `engine_failed` with its exit (red without the fallback) and a refusal the engine said is kept as said; the stderr tail reads everything and keeps the end; an edit list round-trips under roomlerd's name with no temporary file left; it names its own recording and nothing else, and needs one (red without the check); a directory at a recording's name is not one | `ci.yml` "Test the desktop companion (roomler-desktop)" |
+| `agents/meshharbor-desktop` | the tray's wording and when its item is enabled, and a controller's recording named in the tooltip; the tray's red: the icon swapped in has a red dot in its corner and nowhere else, the idle one no red, the red one is not a template, and only an answer moves either input (a failed poll neither takes the red off nor puts it on; a viewer's session is not red, a recording one is); only a bare `*.mp4` name is opened; a service without the recorder reads as unsupported; recording keys (incl. both remote gates) are the daemon's to accept; the remote gates come from the listing and are absent on an older service | `ci.yml` "Test the desktop companion (meshharbor-desktop)", new with P2b. The crate's unit tests ran in NO lane before: the macOS job only `cargo check`s it, and the shared step is `--lib`, which a bin-only crate cannot join |
+| `agents/meshharbor-desktop` editor unit tests (P5c) | the event prefix is the recorder's; the probe's answer skips log lines and keeps a refusal; an export folded from the engine's events; a run that ends without an answer is `engine_failed` with its exit (red without the fallback) and a refusal the engine said is kept as said; the stderr tail reads everything and keeps the end; an edit list round-trips under roomlerd's name with no temporary file left; it names its own recording and nothing else, and needs one (red without the check); a directory at a recording's name is not one | `ci.yml` "Test the desktop companion (meshharbor-desktop)" |
 
-⚠️ `agents/roomlerd/tests/*.rs` runs only when a step **names** it. Every other
+⚠️ `agents/meshharbord/tests/*.rs` runs only when a step **names** it. Every other
 roomlerd test step is `--lib`, which is why `tests/file_dc.rs` has never run in
 CI.

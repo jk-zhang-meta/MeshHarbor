@@ -44,7 +44,7 @@ uploads the pump does not have yet. Nothing about how a session is chosen change
 
 ## Key design
 
-1. **Cascade positions** (`agents/roomlerd/src/encode/ffmpeg/encoder.rs`, the
+1. **Cascade positions** (`agents/meshharbord/src/encode/ffmpeg/encoder.rs`, the
    `*_ENCODER_NAMES` tables): vendor SDKs → `*_videotoolbox` → `*_vaapi` →
    **`*_d3d12va` → `*_vulkan`**, closing every table. A host with a working vendor
    SDK keeps its vendor path first (the FR-62 rate-control behaviour of each

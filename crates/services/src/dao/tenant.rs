@@ -2,7 +2,7 @@
 // Copyright (C) 2026 G ROX EOOD
 use bson::{DateTime, Document, doc, oid::ObjectId};
 use mongodb::Database;
-use roomler_ai_db::models::{
+use meshharbor_db::models::{
     Plan, RcFeaturePolicy, Role, Tenant, TenantMember, TenantSettings, role,
 };
 

@@ -41,7 +41,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use chrono::{Duration, NaiveDate};
-use roomler_ai_services::dao::growth::{
+use meshharbor_services::dao::growth::{
     GITHUB_SOURCE, GITHUB_TRAFFIC_SOURCE, GrowthDaily, GrowthDao, PullStatus,
 };
 use serde::{Deserialize, Serialize};
@@ -530,7 +530,7 @@ pub async fn section(state: &AppState, day: NaiveDate) -> Result<GithubSection, 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use roomler_ai_services::dao::growth::daily_row;
+    use meshharbor_services::dao::growth::daily_row;
 
     fn d(s: &str) -> NaiveDate {
         NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap()

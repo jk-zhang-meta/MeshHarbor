@@ -80,7 +80,7 @@ impl SessionStatus {
 /// The harness a session runs, and its own id for the conversation.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct HarnessRef {
-    /// [`roomler_ai_remote_control::hive::HARNESS_CLAUDE_CODE`] in P0.
+    /// [`meshharbor_remote_control::hive::HARNESS_CLAUDE_CODE`] in P0.
     pub id: String,
     /// The harness's session id (a UUID), minted here so every replica
     /// resumes the same conversation.
@@ -485,7 +485,7 @@ pub struct ReplicaMember {
     #[serde(default)]
     pub state: MemberState,
     /// The device's word, when it refused the join
-    /// ([`roomler_ai_remote_control::hive::HiveJoinRefusal::as_str`]).
+    /// ([`meshharbor_remote_control::hive::HiveJoinRefusal::as_str`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub refusal: Option<String>,
     /// When the device answered its join.
@@ -600,10 +600,10 @@ impl AgentSession {
     /// FR-90 P2f-3 — what every start of this session tells its device of
     /// the session it was forked from: `rc:hive.start`'s `fork_of`. `None`
     /// for a session that is no fork.
-    pub fn fork_of(&self) -> Option<roomler_ai_remote_control::hive::HiveForkOf> {
+    pub fn fork_of(&self) -> Option<meshharbor_remote_control::hive::HiveForkOf> {
         self.parent
             .as_ref()
-            .map(|p| roomler_ai_remote_control::hive::HiveForkOf {
+            .map(|p| meshharbor_remote_control::hive::HiveForkOf {
                 session_id: p.session_id,
                 harness_session: p.harness_session.clone(),
             })
@@ -901,7 +901,7 @@ pub struct AgentApproval {
     pub approval_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turn: Option<u32>,
-    /// [`roomler_ai_remote_control::hive::HiveApprovalStatus::as_str`].
+    /// [`meshharbor_remote_control::hive::HiveApprovalStatus::as_str`].
     pub status: String,
     /// The stub in the session's room, edited when it ends.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1022,7 +1022,7 @@ pub struct PurgeEntry {
     pub device_id: ObjectId,
     pub state: PurgeEntryState,
     /// Its words for each part, from its last answer
-    /// ([`roomler_ai_remote_control::hive::HivePurgePart::as_str`]).
+    /// ([`meshharbor_remote_control::hive::HivePurgePart::as_str`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub store: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

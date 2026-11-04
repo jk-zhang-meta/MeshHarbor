@@ -91,12 +91,12 @@ The authoritative statement for any given file is its own
 | Regional DERP relay | `crates/derp-relay` | `AGPL-3.0-only` |
 | Integration tests | `crates/tests` | `AGPL-3.0-only` |
 | Web UI | `ui/` | `AGPL-3.0-only` |
-| Remote-control agent (`roomlerd`) | `agents/roomlerd` | `MPL-2.0` |
-| Tunnel/CLI client (`roomler`) | `agents/roomler-cli` | `MPL-2.0` |
-| CLI shim | `agents/roomler-cli-shim` | `MPL-2.0` |
-| Desktop companion | `agents/roomler-desktop` | `MPL-2.0` |
-| Install wizard | `agents/roomler-setup` | `MPL-2.0` |
-| Wizard machinery | `crates/roomler-setup-core` | `MPL-2.0` |
+| Remote-control agent (`roomlerd`) | `agents/meshharbord` | `MPL-2.0` |
+| Tunnel/CLI client (`roomler`) | `agents/meshharbor-cli` | `MPL-2.0` |
+| CLI shim | `agents/meshharbor-cli-shim` | `MPL-2.0` |
+| Desktop companion | `agents/meshharbor-desktop` | `MPL-2.0` |
+| Install wizard | `agents/meshharbor-setup` | `MPL-2.0` |
+| Wizard machinery | `crates/meshharbor-setup-core` | `MPL-2.0` |
 | Agent building blocks | `crates/agent-core` | `MPL-2.0` |
 | Overlay/tunnel transport core | `crates/tunnel-core` | `MPL-2.0` |
 | Remote-control protocol | `crates/remote_control` | `MPL-2.0` |
@@ -119,7 +119,7 @@ distributed as part of a Larger Work under a secondary licence such as the
 
 The same rule applies to a single file: `ui/src/utils/mesh.ts` (the mesh graph's
 edge rules) is bundled into the desktop companion as
-`agents/roomler-desktop/src/front/mesh-util.js`, so it is MPL-2.0 inside the
+`agents/meshharbor-desktop/src/front/mesh-util.js`, so it is MPL-2.0 inside the
 otherwise AGPL web app (`CLIENT_FILES` in `scripts/licence-classes.sh`).
 
 We would rather state this plainly than let someone discover it by reading the

@@ -7,7 +7,7 @@
 # WHAT IT IS FOR
 #
 #   The product renamed its binaries (`roomler-agent` -> `roomlerd`,
-#   `roomler-agent-tray` -> `roomler-desktop`, `roomler-tunnel` -> `roomler`)
+#   `roomler-agent-tray` -> `meshharbor-desktop`, `roomler-tunnel` -> `roomler`)
 #   but ~1 765 references to the retired names survive across ~233 files.
 #   Sweeping them blind is NOT safe: earlier slices (P3d A/B/C, P3e) left
 #   deliberate DUAL-READ FALLBACKS so hosts enrolled under the old names keep
@@ -424,7 +424,7 @@ EOF
     # splits two sentences at once -- the doc's and the anchor's own -- and
     # nothing catches it: the file still compiles, still passes `cargo fmt`,
     # and the audit still counts the anchor. It happened in
-    # `roomler-setup-core/src/integration.rs`, where the module doc read
+    # `meshharbor-setup-core/src/integration.rs`, where the module doc read
     # "...v1 just" and resumed five lines later at "ensures `roomler-tunnel`
     # is on PATH", while the anchor's own "(it leaves" ... "the old entry
     # stranded" was split around it. Leftover from converting `///` markers

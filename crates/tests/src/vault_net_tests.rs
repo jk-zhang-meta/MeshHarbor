@@ -27,7 +27,7 @@ use crate::fixtures::test_app::TestApp;
 use crate::vault_lease_tests::{
     Device, TAKES_LEASES, device, enroll, lease_app, post, refused, rows, send, start,
 };
-use roomler_ai_services::auth::NetGrantClaims;
+use meshharbor_services::auth::NetGrantClaims;
 
 /// Ask for egress; the vault's answer to that request.
 async fn ask_net(dev: &mut Device, req_id: &str, mut frame: Value) -> Value {

@@ -16,7 +16,7 @@
 #                                                           (after editing the fork)
 #
 # Default version: 0.7.39 (the release `tun` 0.8.10 resolves). After a
-# rebuild, run `cargo check -p roomler-ai-tunnel-core --features overlay-l3`
+# rebuild, run `cargo check -p meshharbor-tunnel-core --features overlay-l3`
 # ON WINDOWS — the crate is windows-target-only, so a Linux CI build never
 # compiles it; the drift gate below is content comparison and runs anywhere.
 set -euo pipefail
@@ -97,7 +97,7 @@ check | revendor)
         rm -rf "$VENDORED"
         mv "$TMP/rebuilt" "$VENDORED"
         echo "revendored wintun-bindings $VER + patch into crates/vendored/wintun-bindings"
-        echo "next (Windows): cargo check -p roomler-ai-tunnel-core --features overlay-l3"
+        echo "next (Windows): cargo check -p meshharbor-tunnel-core --features overlay-l3"
     fi
     ;;
 esac

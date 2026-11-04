@@ -163,13 +163,13 @@ that could regress is the population whose served bytes do not change.
 - [ ] the same holds for `install.ps1`
 - [ ] a `frontend_url` carrying a shell metacharacter serves the compiled-in
       default and logs a refusal (unit test)
-- [ ] editing the `SERVER=` line in either script fails `cargo test -p roomler-ai-api`
+- [ ] editing the `SERVER=` line in either script fails `cargo test -p meshharbor-api`
 - [ ] `docs/self-hosting.md` and `README.md` no longer instruct the reader to
       pass `--server` on the served path
 
 ## Out of scope
 
-- **The GUI wizard** (`agents/roomler-setup`) has a server field the operator
+- **The GUI wizard** (`agents/meshharbor-setup`) has a server field the operator
   fills in, and is not piped. Unaffected.
 - **`roomler self-update`** resolving its own origin — a different fetch with a
   different (signed) trust story, tracked separately.

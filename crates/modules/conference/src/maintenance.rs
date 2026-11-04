@@ -70,7 +70,7 @@ pub async fn close_orphaned_call_state(state: &ConferenceState) -> (u64, u64) {
     let now = DateTime::now();
     let calls = state
         .db
-        .collection::<Document>(roomler_ai_services::dao::stats::CALL_SESSIONS)
+        .collection::<Document>(meshharbor_services::dao::stats::CALL_SESSIONS)
         .update_many(
             doc! { "ended_at": Bson::Null, "room_id": { "$nin": in_progress.clone() } },
             doc! { "$set": { "ended_at": now, "end_reason": "stale_reset" } },

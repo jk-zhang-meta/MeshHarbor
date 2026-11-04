@@ -9,11 +9,11 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use roomler_core::{ApiError, extractors::auth::AuthUser};
+use meshharbor_core::{ApiError, extractors::auth::AuthUser};
 
 use crate::ChatState;
-use roomler_ai_db::models::TaskCategory;
-use roomler_ai_services::dao::base::PaginationParams;
+use meshharbor_db::models::TaskCategory;
+use meshharbor_services::dao::base::PaginationParams;
 
 #[derive(Debug, Deserialize)]
 pub struct ExportConversationRequest {
@@ -93,7 +93,7 @@ pub async fn export_conversation(
 
         // Generate Excel
         let bytes =
-            roomler_ai_services::export::excel::export_conversation(&result.items, &user_map)
+            meshharbor_services::export::excel::export_conversation(&result.items, &user_map)
                 .map_err(|e| format!("Excel export failed: {}", e))?;
 
         // Persist the artifact through the storage backend; `file_path` on

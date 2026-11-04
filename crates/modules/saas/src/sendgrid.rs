@@ -57,12 +57,12 @@ use serde::Serialize;
 use serde_json::Value;
 use tracing::{info, warn};
 
-use roomler_ai_services::dao::{base::DaoError, newsletter_send::DeliveryEvent};
+use meshharbor_services::dao::{base::DaoError, newsletter_send::DeliveryEvent};
 /// The key and the signature check live beside the Stripe one, in the
 /// services crate, so the host's views agree with this route on whether a
 /// configured key is usable.
-pub use roomler_ai_services::sendgrid::EventVerifier;
-use roomler_core::Core;
+pub use meshharbor_services::sendgrid::EventVerifier;
+use meshharbor_core::Core;
 
 use crate::SaasState;
 
@@ -228,7 +228,7 @@ pub async fn record_events(
                 id
             }
         };
-        let key = roomler_ai_db::models::Subscriber::normalize_email(&p.email);
+        let key = meshharbor_db::models::Subscriber::normalize_email(&p.email);
         let subscriber_id = match subscribers.get(&key) {
             Some(id) => *id,
             None => {

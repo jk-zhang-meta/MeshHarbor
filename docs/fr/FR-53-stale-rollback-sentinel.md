@@ -72,7 +72,7 @@ longer installed.
 The sentinel cannot tell those apart, because it does not record which version
 failed. `AttentionInfo` (`notify.rs:45`) is `{ path, message, reason }`, and the
 version exists only inside the free-text `message` written by
-`rollback_attention_msg` (`agents/roomlerd/src/main.rs:2777`).
+`rollback_attention_msg` (`agents/meshharbord/src/main.rs:2777`).
 
 ## Key design
 

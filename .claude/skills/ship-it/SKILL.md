@@ -50,7 +50,7 @@ These do not error. They make every device quietly stop updating.
 
 | Coupling | What drift does |
 |---|---|
-| `msi_product_version_for` (in `roomlerd`) **vs** the "Derive the MSI ProductVersion" step in `release-agent.yml` — the same `MAJOR.MINOR.RC` mapping, **twice** | Change one and **every agent refuses every update**: a silent fleet-wide freeze, not an error. Re-check with `cargo test -p roomlerd --lib -- --ignored real_published_msi` |
+| `msi_product_version_for` (in `roomlerd`) **vs** the "Derive the MSI ProductVersion" step in `release-agent.yml` — the same `MAJOR.MINOR.RC` mapping, **twice** | Change one and **every agent refuses every update**: a silent fleet-wide freeze, not an error. Re-check with `cargo test -p meshharbord --lib -- --ignored real_published_msi` |
 | The GPG sidecar job | Non-Windows `download_asset` **requires** `<asset-url>.asc` and refuses fail-closed. A release whose GPG job skipped freezes every Linux/macOS agent. `release-agent.yml` now hard-fails on a tag when `GPG_PRIVATE_KEY` is absent (graceful skip only on a branch dispatch), plus a post-signing assertion that every `.deb`/`.pkg`/`.msi` got a sidecar |
 | The version scheme (rolling `0.4.<counter>`) | Six coupled MSI-mapping copies. Agents ≤ rc.483 **refuse** 0.4.x MSIs |
 | Asset ORDER in a release | A frozen agent's picker takes the **first** `.deb` matching its arch, and `/api/agent/latest-release` forwards GitHub's order. Publishing the Linux companion `.deb` into the agent release froze every pre-0.4.16 Linux agent — they apt-installed the companion *as* their daemon update. Fixed server-side (`agent_release::order_assets_daemon_first`) **because a frozen agent cannot receive an agent-side fix** |
@@ -191,7 +191,7 @@ dispatches `release-setup.yml --ref setup-v<V>`. Two GitHub rules shape it: a
 tag pushed with `GITHUB_TOKEN` triggers **no** workflow, and `workflow_dispatch`
 is the documented exception — hence the explicit dispatch. The wizard lane
 builds all three platforms (macOS is no longer skippable), publishes the
-release on that tag, and opens/closes a "roomler-setup release failed" issue
+release on that tag, and opens/closes a "meshharbor-setup release failed" issue
 like the agent lane's seed alert.
 
 ⚠️ **#2013 — never send `target_commitish` for a tag that already exists.**

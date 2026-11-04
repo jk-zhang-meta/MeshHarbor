@@ -47,11 +47,11 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use bson::{DateTime, oid::ObjectId};
-use roomler_ai_services::dao::{
+use meshharbor_services::dao::{
     growth_key::{GrowthKeyDao, GrowthKeyKind},
     growth_social::{GrowthSocialDao, NewPost, PostKey, PostSnapshot, SNAPSHOTS, Upserted},
 };
-use roomler_core::campaign::{CampaignKey, normalize_platform};
+use meshharbor_core::campaign::{CampaignKey, normalize_platform};
 use serde::Serialize;
 use serde_json::{Map, Value};
 use tracing::{info, warn};
@@ -251,7 +251,7 @@ fn platform_of(obj: &Map<String, Value>) -> Result<&'static str, Refusal> {
             format!(
                 "`{}` is not one of {}",
                 bounded(raw),
-                roomler_core::campaign::PLATFORMS.join(", ")
+                meshharbor_core::campaign::PLATFORMS.join(", ")
             ),
         )
     })
@@ -565,7 +565,7 @@ pub async fn ingest_post(
             )
                 .into_response()
         }
-        Err(e) => roomler_core::error::ApiError::from(e).into_response(),
+        Err(e) => meshharbor_core::error::ApiError::from(e).into_response(),
     }
 }
 
@@ -593,7 +593,7 @@ pub async fn ingest_snapshot(
             return Refusal::new("unknown_post", "push the post before its snapshots")
                 .into_response();
         }
-        Err(e) => return roomler_core::error::ApiError::from(e).into_response(),
+        Err(e) => return meshharbor_core::error::ApiError::from(e).into_response(),
     }
     match dao.insert_snapshot_once(&snap).await {
         Ok(status) => {
@@ -612,7 +612,7 @@ pub async fn ingest_snapshot(
             )
                 .into_response()
         }
-        Err(e) => roomler_core::error::ApiError::from(e).into_response(),
+        Err(e) => meshharbor_core::error::ApiError::from(e).into_response(),
     }
 }
 

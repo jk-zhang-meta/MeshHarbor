@@ -49,7 +49,7 @@ Two things this is NOT, both refuted by data rather than assumed:
    `if (ctx->quality)` block, which runs *later* in `nvenc_setup_rate_control` — does
    `averageBitRate = bit_rate = 0; vbvBufferSize = rc_buffer_size = 0; maxBitRate = rc_max_rate`.
    So the agent's HRD sizing in `encoder_options`
-   (`agents/roomlerd/src/encode/ffmpeg/encoder.rs:246-278`, the rc.234 "2× the ceiling" design
+   (`agents/meshharbord/src/encode/ffmpeg/encoder.rs:246-278`, the rc.234 "2× the ceiling" design
    and the rc.442/443 constrained-window notes) **never reaches the driver on NVENC**. The
    driver runs its own default for the `ll` tuning, which behaves as a single-frame reservoir:
    the opening IDR may spend ~`maxrate/fps` (85 kbit at 2.55 Mbps / 30 fps — the observed

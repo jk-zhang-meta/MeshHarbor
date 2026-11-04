@@ -32,7 +32,7 @@ disconnects, self-updates and reboots.
    (`keep_busy_enabled`, never server-settable), and an **org admin can deny it org-wide** in v1. The
    deny also stops it where it is already running.
 3. **Host side:** a companion tray item ("Keep busy is on · Stop") and `roomler keep-busy status|off`.
-   - **Amended 2026-10-11** (operator, "i want an On in roomler-desktop too"): the person at the
+   - **Amended 2026-10-11** (operator, "i want an On in meshharbor-desktop too"): the person at the
      computer can also turn it on, from the tray ("Start keep busy") and with `roomler keep-busy on`.
      This is P10. Only that person's place may do it: never root, SYSTEM (P10b), a service or another
      session. The server itself still has no "on" (§7). That gate decides who is named. It is not a
@@ -43,13 +43,13 @@ disconnects, self-updates and reboots.
 
 | What | Where | Consequence |
 |---|---|---|
-| FR-55 holds `PowerCreateRequest(PowerRequestSystemRequired)` / `IOPMAssertion("PreventUserIdleSystemSleep")` | `agents/roomlerd/src/power.rs` L305-471 | stops sleep, but not the screensaver, the idle lock or presence, because none of these reset the user-idle clock |
+| FR-55 holds `PowerCreateRequest(PowerRequestSystemRequired)` / `IOPMAssertion("PreventUserIdleSystemSleep")` | `agents/meshharbord/src/power.rs` L305-471 | stops sleep, but not the screensaver, the idle lock or presence, because none of these reset the user-idle clock |
 | Injected input does reset it: macOS logs a `UserIsActive` assertion "tickle … process:roomlerd" during a session | FR-55 field log; `power.rs` L17-22 | the mechanism works, but today it only runs while a controller types |
 | One process-global injection worker owns the only OS injector, created lazily and **cached for the life of the process, Noop included** | `input/arbiter.rs` L581 `global()`, L646 `worker`, L652, L781 `get_or_insert_with` | a second injector would break modifier fencing and the portal route; an early Noop would break RC input until restart |
 | Every RC input event already passes through `ArbiterState::plan` with an exact per-session held-key/button set | `arbiter.rs` L286-355, L125-131 | the engine gets an exact "a controller is active" signal, and knows when a remote button is down |
 | Clicks carry coordinates, and dispatch **moves before every button event** | `input/mod.rs` L167-173; `input/enigo_backend.rs` L123-138 | a controller's click lands where they point, even after the engine moved the cursor |
 | enigo 0.6.1's Windows `move_mouse(Abs)` is `SendInput(ABSOLUTE)` without `VIRTUALDESK`, normalised to the primary display; `to_pixels` ignores `mon` by default | `enigo-0.6.1/src/win/win_impl.rs` L175-176; `enigo_backend.rs` L293-308 | moving through `InputMsg` cannot reach a secondary monitor, so keep-busy needs its own pixel-space move |
-| No idle-clock reader exists anywhere (`GetLastInputInfo`, `CGEventSourceSecondsSinceLastEventType`, `XScreenSaverQueryInfo`, Mutter IdleMonitor: 0 hits) | `agents/`, `crates/` | detection is new code; `Win32_UI_Input_KeyboardAndMouse` is already enabled (`agents/roomlerd/Cargo.toml` L425) |
+| No idle-clock reader exists anywhere (`GetLastInputInfo`, `CGEventSourceSecondsSinceLastEventType`, `XScreenSaverQueryInfo`, Mutter IdleMonitor: 0 hits) | `agents/`, `crates/` | detection is new code; `Win32_UI_Input_KeyboardAndMouse` is already enabled (`agents/meshharbord/Cargo.toml` L425) |
 | Lock state is Windows-only and per session; macOS/Linux stubs always read `Unlocked`, and the RC input gate drops input while `Locked` | `lock_state.rs` L170-214, L290-306, L313-335; `peer.rs` L8088-8112 | keep-busy needs its own lock probes on macOS/Linux, and they must **not** feed the RC gate (a Mac controller types the password on the lock screen) |
 | The Windows worker lives for the whole console session, regardless of RC, and is respawned at login | `win_service/supervisor.rs` `decide_spawn` L664-763 | an engine there can outlive any session |
 | The machine-global config dir is hardened to SYSTEM + Administrators; the default worker runs as the user | `crates/agent-core/src/config.rs` `harden_machine_global_dir`; `supervisor.rs` L816-880 | state "beside the config" is not writable by every worker, so it goes in the signed-in person's profile (`win_identity.rs` L104 `session_user_profile_dir`) |
@@ -72,7 +72,7 @@ flowchart LR
   E -- watch --> L[LocalAPI / heartbeat]
 ```
 
-- **New module `agents/roomlerd/src/keep_busy/`**: one std thread. It contains:
+- **New module `agents/meshharbord/src/keep_busy/`**: one std thread. It contains:
   - `engine.rs`: a pure state machine over a `Host` trait, tested with a fake host and clock, the
     `ArbiterState` split again;
   - `patterns.rs`, `state.rs`;
@@ -287,7 +287,7 @@ stateDiagram-v2
 - **CLI:** `roomler keep-busy [status|on|off] [--json]`. `on` takes `--pattern`, `--size`, `--speed`,
   `--resume-after SECONDS` and `--auto-off MINUTES`.
 - **Companion:**
-  - a tray item and tooltip, polled like the recording item (`roomler-desktop/src/tray.rs`
+  - a tray item and tooltip, polled like the recording item (`meshharbor-desktop/src/tray.rs`
     `spawn_recording_watch`). Since P10 it is a toggle:
     - "Stop keep busy (Pattern · phase)" while it is on;
     - "Start keep busy" while it is off and can run here (the product default pattern);

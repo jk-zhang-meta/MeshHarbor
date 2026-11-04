@@ -257,7 +257,7 @@ impl ScClient {
     /// This server's client: `None` without a key (nothing is ever asked),
     /// `Some(Err)` when the key is set but unusable — the pullers say so
     /// once and ask nothing.
-    pub fn from_settings(g: &roomler_ai_config::GrowthSettings) -> Option<Result<Self, ScError>> {
+    pub fn from_settings(g: &meshharbor_config::GrowthSettings) -> Option<Result<Self, ScError>> {
         if !g.search_console_configured() {
             return None;
         }
@@ -485,7 +485,7 @@ fn transport(e: reqwest::Error) -> ScError {
 
 fn http_client(timeout: Duration) -> reqwest::Client {
     reqwest::Client::builder()
-        .user_agent(concat!("roomler-ai-api/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("meshharbor-api/", env!("CARGO_PKG_VERSION")))
         .timeout(timeout)
         .build()
         .expect("a reqwest client with a timeout builds")
@@ -687,6 +687,6 @@ mod tests {
         let shown = format!("{:?}", hs_client("sc-domain:x"));
         assert!(!shown.contains("test-secret"), "{shown}");
         // No key configured: no client, nothing asked.
-        assert!(ScClient::from_settings(&roomler_ai_config::GrowthSettings::default()).is_none());
+        assert!(ScClient::from_settings(&meshharbor_config::GrowthSettings::default()).is_none());
     }
 }

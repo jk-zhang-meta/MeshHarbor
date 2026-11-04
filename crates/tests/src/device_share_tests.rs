@@ -2,9 +2,9 @@
 //! Real loopback HTTP + isolated Mongo grant lifecycle; no agent or production host.
 use crate::fixtures::test_app::TestApp;
 use bson::{DateTime, doc, oid::ObjectId};
-use roomler_ai_db::models::{AccountApprovalState, DeviceShareGrant, User};
-use roomler_ai_remote_control::models::{Agent, AgentStatus, OsKind};
-use roomler_ai_services::dao::agent::AgentDao;
+use meshharbor_db::models::{AccountApprovalState, DeviceShareGrant, User};
+use meshharbor_remote_control::models::{Agent, AgentStatus, OsKind};
+use meshharbor_services::dao::agent::AgentDao;
 use serde_json::{Value, json};
 struct Actor {
     id: ObjectId,
@@ -184,11 +184,11 @@ async fn device_share_exact_recipient_device_service_and_port_not_membership() {
         .await
         .unwrap();
     assert!(
-        roomler_core::device_share::authorize(
+        meshharbor_core::device_share::authorize(
             &f.app.state,
             f.recipient.id,
             other.id.unwrap(),
-            roomler_ai_db::models::DeviceShareOperation::Ssh
+            meshharbor_db::models::DeviceShareOperation::Ssh
         )
         .await
         .is_err()
@@ -533,7 +533,7 @@ async fn device_share_live_lookup_rejects_owner_change_quarantine_and_recipient_
 #[tokio::test]
 async fn device_share_remote_real_ws_session_and_live_revoke() {
     use futures::{SinkExt, StreamExt};
-    use roomler_ai_remote_control::signaling::ServerMsg;
+    use meshharbor_remote_control::signaling::ServerMsg;
     use std::time::Duration;
     use tokio_tungstenite::{connect_async, tungstenite::Message};
     let f = fixture().await;
@@ -628,7 +628,7 @@ async fn device_share_remote_real_ws_session_and_live_revoke() {
     assert!(
         request
             .1
-            .contains(roomler_ai_remote_control::permissions::Permissions::FILES)
+            .contains(meshharbor_remote_control::permissions::Permissions::FILES)
     );
     assert!(!request.2);
     assert_eq!(hub.session_grant(request.0).unwrap().1, f.recipient.id);
@@ -763,7 +763,7 @@ async fn device_share_remote_escalation_and_unshared_org_request_are_denied() {
 #[tokio::test]
 async fn device_share_remote_distinct_grants_do_not_coalesce_and_live_allowlist_revokes() {
     use futures::SinkExt;
-    use roomler_ai_remote_control::signaling::ServerMsg;
+    use meshharbor_remote_control::signaling::ServerMsg;
     use std::time::Duration;
     use tokio_tungstenite::{connect_async, tungstenite::Message};
     let f = fixture().await;
@@ -867,8 +867,8 @@ async fn device_share_remote_distinct_grants_do_not_coalesce_and_live_allowlist_
 #[tokio::test]
 async fn device_share_shared_lease_exact_agent_scope_and_live_policy_pdp() {
     use futures::{SinkExt, StreamExt};
-    use roomler_ai_remote_control::signaling::{ClientMsg, ServerMsg};
-    use roomler_core::{AgentCtx, AgentMsgHandler};
+    use meshharbor_remote_control::signaling::{ClientMsg, ServerMsg};
+    use meshharbor_core::{AgentCtx, AgentMsgHandler};
     use std::time::Duration;
     use tokio_tungstenite::{connect_async, tungstenite::Message};
     let f = fixture().await;
@@ -958,7 +958,7 @@ async fn device_share_shared_lease_exact_agent_scope_and_live_policy_pdp() {
         conn_established_ms: 0,
         tx,
     };
-    let handler = roomler_ai_mod_remote::agent_socket::RemoteAgentSocket::new(remote.clone());
+    let handler = meshharbor_mod_remote::agent_socket::RemoteAgentSocket::new(remote.clone());
     let challenge = || ClientMsg::SharedLeaseChallenge {
         session_id: sid,
         grant_id,
@@ -1088,14 +1088,14 @@ async fn shared_ssh_start(
     String,
     SharedSshWs,
     ObjectId,
-    roomler_ai_remote_control::signaling::SharedSshSetup,
-    roomler_core::AgentCtx,
-    roomler_ai_mod_network::agent_socket::NetworkAgentSocket,
-    tokio::sync::mpsc::Receiver<roomler_ai_remote_control::signaling::ServerMsg>,
+    meshharbor_remote_control::signaling::SharedSshSetup,
+    meshharbor_core::AgentCtx,
+    meshharbor_mod_network::agent_socket::NetworkAgentSocket,
+    tokio::sync::mpsc::Receiver<meshharbor_remote_control::signaling::ServerMsg>,
 ) {
     use futures::SinkExt;
-    use roomler_ai_remote_control::signaling::{ClientMsg, ServerMsg};
-    use roomler_core::{AgentMsgHandler, AgentSocketLifecycle};
+    use meshharbor_remote_control::signaling::{ClientMsg, ServerMsg};
+    use meshharbor_core::{AgentMsgHandler, AgentSocketLifecycle};
     use tokio_tungstenite::tungstenite::client::IntoClientRequest;
     let grant = create(f).await["id"].as_str().unwrap().to_owned();
     let (tx, _, mut target) = f
@@ -1144,10 +1144,10 @@ async fn shared_ssh_start(
     // The share's account crosses to the device, never the policy's (the fixture's is daemon).
     assert_eq!(
         setup.account_mode,
-        roomler_ai_remote_control::models::SshAccountMode::Named
+        meshharbor_remote_control::models::SshAccountMode::Named
     );
     assert_eq!(setup.account.as_deref(), Some("alice"));
-    let ctx = roomler_core::AgentCtx {
+    let ctx = meshharbor_core::AgentCtx {
         conn_id: format!("shared-ssh-test-{sid}"),
         agent_id: f.device,
         tenant_id: f.tenant,
@@ -1158,7 +1158,7 @@ async fn shared_ssh_start(
         conn_established_ms: 0,
         tx,
     };
-    let handler = roomler_ai_mod_network::agent_socket::NetworkAgentSocket::new(
+    let handler = meshharbor_mod_network::agent_socket::NetworkAgentSocket::new(
         f.app.state.modules.network.as_ref().unwrap().clone(),
     );
     handler.hello(&ctx).await;
@@ -1188,7 +1188,7 @@ async fn shared_ssh_start(
     assert!(matches!(opened,ServerMsg::TunnelOpened {session_id,..} if session_id==sid));
     (grant, ws, sid, setup, ctx, handler, target)
 }
-async fn shared_ssh_next(ws: &mut SharedSshWs) -> roomler_ai_remote_control::signaling::ServerMsg {
+async fn shared_ssh_next(ws: &mut SharedSshWs) -> meshharbor_remote_control::signaling::ServerMsg {
     use futures::StreamExt;
     tokio::time::timeout(std::time::Duration::from_secs(6), async {
         loop {
@@ -1368,8 +1368,8 @@ async fn device_share_shared_ssh_metadata_caps_and_bearer_only_recipient_boundar
 #[tokio::test]
 async fn device_share_shared_ssh_typed_single_flow_and_exact_target_reply_guard() {
     use futures::{SinkExt, StreamExt};
-    use roomler_ai_remote_control::signaling::{ClientMsg, ServerMsg};
-    use roomler_core::AgentMsgHandler;
+    use meshharbor_remote_control::signaling::{ClientMsg, ServerMsg};
+    use meshharbor_core::AgentMsgHandler;
     let f = shared_ssh_fixture().await;
     let (_grant, mut ws, sid, setup, ctx, handler, mut target) = shared_ssh_start(&f).await;
     let send = ClientMsg::TunnelSdpOffer {
@@ -1443,8 +1443,8 @@ async fn device_share_shared_ssh_typed_single_flow_and_exact_target_reply_guard(
 }
 #[tokio::test]
 async fn device_share_shared_ssh_live_revoke_stops_scope_and_lease_echo() {
-    use roomler_ai_remote_control::signaling::{ClientMsg, ServerMsg};
-    use roomler_core::AgentMsgHandler;
+    use meshharbor_remote_control::signaling::{ClientMsg, ServerMsg};
+    use meshharbor_core::AgentMsgHandler;
     let f = shared_ssh_fixture().await;
     let (grant, mut ws, sid, setup, ctx, handler, mut target) = shared_ssh_start(&f).await;
     handler
@@ -1882,8 +1882,8 @@ async fn native_shared_ssh_mfa_real_metadata_ws_and_web_refresh_cannot_bypass() 
 }
 #[tokio::test]
 async fn native_shared_ssh_mfa_real_live_lease_stops_after_account_or_tenant_change() {
-    use roomler_ai_remote_control::signaling::{ClientMsg, ServerMsg};
-    use roomler_core::AgentMsgHandler;
+    use meshharbor_remote_control::signaling::{ClientMsg, ServerMsg};
+    use meshharbor_core::AgentMsgHandler;
     for target in ["account", "tenant"] {
         let f = shared_ssh_fixture().await;
         let (_grant, _ws, sid, setup, ctx, handler, mut peer) = shared_ssh_start(&f).await;
@@ -2027,34 +2027,34 @@ async fn native_login_agent_child() {
         .try_init()
         .expect("isolated agent tracing must install");
     let path = std::path::PathBuf::from(std::env::var("MH_NATIVE_LOGIN_AGENT_CONFIG").unwrap());
-    let cfg = roomlerd::config::load(&path).unwrap();
+    let cfg = meshharbord::config::load(&path).unwrap();
     let (stop, rx) = tokio::sync::watch::channel(false);
-    let broker = roomlerd::consent::ConsentBroker::new(
-        roomlerd::consent::Mode::AutoGrant,
+    let broker = meshharbord::consent::ConsentBroker::new(
+        meshharbord::consent::Mode::AutoGrant,
         path.parent().unwrap().join("consent"),
     )
     .unwrap();
     let (view, _) = tokio::sync::watch::channel(Default::default());
-    let device = tokio::spawn(roomlerd::signaling::run(
-        roomlerd::signaling::OrgCtx::primary(roomlerd::token_slot::TokenSlot::new(
+    let device = tokio::spawn(meshharbord::signaling::run(
+        meshharbord::signaling::OrgCtx::primary(meshharbord::token_slot::TokenSlot::new(
             cfg.agent_token.clone(),
         )),
-        roomlerd::delegate::Delegation::Off,
+        meshharbord::delegate::Delegation::Off,
         cfg,
-        roomlerd::encode::EncoderPreference::Software,
+        meshharbord::encode::EncoderPreference::Software,
         rx,
         std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         view,
         Default::default(),
         broker,
-        roomlerd::tunnel::client_mgr::TunnelClientHub::new("native-login-fixture".into()),
-        roomlerd::remote_config::RemoteConfigServices::new(
+        meshharbord::tunnel::client_mgr::TunnelClientHub::new("native-login-fixture".into()),
+        meshharbord::remote_config::RemoteConfigServices::new(
             path,
             std::sync::Arc::new(tokio::sync::Mutex::new(())),
             false,
             false,
         ),
-        roomlerd::rc_sessions::RcSessionRegistry::new(),
+        meshharbord::rc_sessions::RcSessionRegistry::new(),
     ));
     tokio::task::spawn_blocking(|| {
         let mut b = Vec::new();
@@ -2081,7 +2081,7 @@ async fn native_login_cli_child() {
     } else {
         format!("printf 'MH_NATIVE_LOGIN_NONCE_{nonce}\\n'")
     };
-    roomler_cli::cli::run_from(
+    meshharbor_cli::cli::run_from(
         vec![
             "roomler".to_owned(),
             "share-ssh".into(),
@@ -2097,7 +2097,7 @@ async fn native_login_cli_child() {
             "--".into(),
             command,
         ],
-        roomler_cli::cli::Origin::Standalone,
+        meshharbor_cli::cli::Origin::Standalone,
     )
     .await
     .expect("synthetic native CLI failed");
@@ -2128,7 +2128,7 @@ async fn native_shared_ssh_composed_hidden_prompt_nonce_live_revoke_and_reopen()
         .json()
         .await
         .unwrap();
-    let mut cfg = roomlerd::enrollment::enroll(roomlerd::enrollment::EnrollInputs {
+    let mut cfg = meshharbord::enrollment::enroll(meshharbord::enrollment::EnrollInputs {
         server_url: &f.app.base_url,
         enrollment_token: enroll["enrollment_token"].as_str().unwrap(),
         machine_id: &format!("native-login-{}", ObjectId::new()),
@@ -2138,14 +2138,14 @@ async fn native_shared_ssh_composed_hidden_prompt_nonce_live_revoke_and_reopen()
     .await
     .unwrap();
     cfg.ssh_enabled = true;
-    cfg.ssh_host_key = Some(roomlerd::ssh::generate_host_key().unwrap());
+    cfg.ssh_host_key = Some(meshharbord::ssh::generate_host_key().unwrap());
     cfg.ssh_account_mode = Some("daemon".into());
     cfg.enable_remote_browse = false;
     cfg.auto_grant_session = false;
     cfg.exec_enabled = false;
     cfg.remote_config_enabled = false;
     cfg.overlay_enabled = false;
-    let expected_host = roomlerd::ssh::host_public_key(&cfg);
+    let expected_host = meshharbord::ssh::host_public_key(&cfg);
     let device = ObjectId::parse_str(&cfg.agent_id).unwrap();
     f.app
         .db
@@ -2158,7 +2158,7 @@ async fn native_shared_ssh_composed_hidden_prompt_nonce_live_revoke_and_reopen()
         .unwrap();
     f.app.db.collection::<Agent>("agents").update_one(doc!{"_id":device},doc!{"$set":{"ssh_policy.mode":"on","ssh_policy.account_mode":"daemon","ssh_policy.consent_mode":"auto"}}).await.unwrap();
     let config = root.path().join("agent.toml");
-    roomlerd::config::save(&config, &cfg).unwrap();
+    meshharbord::config::save(&config, &cfg).unwrap();
     std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o600)).unwrap();
     let agent_log = std::fs::OpenOptions::new()
         .write(true)
@@ -2213,7 +2213,7 @@ async fn native_shared_ssh_composed_hidden_prompt_nonce_live_revoke_and_reopen()
             .is_agent_online(device)
             && row.ssh_host_pubkey == expected_host
         {
-            use roomler_ai_remote_control::models::RpcCap;
+            use meshharbor_remote_control::models::RpcCap;
             assert!(
                 [
                     RpcCap::Ssh,
@@ -2468,13 +2468,13 @@ async fn device_share_ssh_requires_its_own_account_and_never_inherits_the_policy
 
     // A legacy row: SSH permission, no account. The policy says daemon (root); it must not apply.
     let now = bson::DateTime::now();
-    let legacy = roomler_ai_db::models::DeviceShareGrant {
+    let legacy = meshharbor_db::models::DeviceShareGrant {
         id: None,
         device_id: f.device,
         tenant_id: f.tenant,
         owner_user_id: f.owner.id,
         recipient_user_id: f.recipient.id,
-        permissions: roomler_ai_db::models::DeviceSharePermissions {
+        permissions: meshharbor_db::models::DeviceSharePermissions {
             ssh: true,
             ..Default::default()
         },
@@ -2488,8 +2488,8 @@ async fn device_share_ssh_requires_its_own_account_and_never_inherits_the_policy
     let id = f
         .app
         .db
-        .collection::<roomler_ai_db::models::DeviceShareGrant>(
-            roomler_ai_db::models::DeviceShareGrant::COLLECTION,
+        .collection::<meshharbor_db::models::DeviceShareGrant>(
+            meshharbor_db::models::DeviceShareGrant::COLLECTION,
         )
         .insert_one(&legacy)
         .await
@@ -2541,7 +2541,7 @@ async fn device_share_ssh_requires_its_own_account_and_never_inherits_the_policy
 /// name the server refuses never reaches the device.
 #[tokio::test]
 async fn local_accounts_reach_the_device_for_its_owner_only() {
-    use roomler_ai_remote_control::signaling::{LocalAccount, LocalAccountOp, ServerMsg};
+    use meshharbor_remote_control::signaling::{LocalAccount, LocalAccountOp, ServerMsg};
     let f = fixture().await;
     let path = format!("/api/account/devices/{}/local-accounts", f.device.to_hex());
     let get = |token: String| {

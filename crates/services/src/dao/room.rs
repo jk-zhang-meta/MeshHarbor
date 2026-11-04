@@ -3,7 +3,7 @@
 use bson::{DateTime, doc, oid::ObjectId};
 use mongodb::Database;
 use rand::Rng;
-use roomler_ai_db::models::{
+use meshharbor_db::models::{
     ConferenceSettings, MediaSettings, ParticipantRole, ParticipantSession, Room, RoomMember,
     RoomVisibility,
 };
@@ -174,7 +174,7 @@ impl RoomDao {
         name: String,
         path: String,
         creator_id: ObjectId,
-        binding: roomler_ai_db::models::Binding,
+        binding: meshharbor_db::models::Binding,
     ) -> DaoResult<Room> {
         let mut room = new_room(NewRoom {
             tenant_id,

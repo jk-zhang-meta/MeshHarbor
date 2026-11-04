@@ -58,7 +58,7 @@ install's topology. Nothing is wrong.
 
 ## Root cause
 
-`agents/roomlerd/src/win_service/supervisor.rs:974` — `netd_enabled()`:
+`agents/meshharbord/src/win_service/supervisor.rs:974` — `netd_enabled()`:
 
 ```rust
 fn netd_enabled() -> bool {
@@ -143,7 +143,7 @@ this caller?*
 |---|---|---|
 | `win_service/supervisor.rs` `netd_enabled()` | **yes** — an optional flag on a path most installs don't have | **fixed (P1)** |
 | `main.rs` enroll, reuse existing `machine_id` | **yes** — a first enrollment has no config *by definition* | **fixed** |
-| `roomler-desktop/commands.rs` `load_optional_config` | no — guarded by `path.exists()` first, so only *exists-but-corrupt* reaches `load` | leave: corruption is a real fault worth ERROR |
+| `meshharbor-desktop/commands.rs` `load_optional_config` | no — guarded by `path.exists()` first, so only *exists-but-corrupt* reaches `load` | leave: corruption is a real fault worth ERROR |
 | `localapi_state.rs` live config (cleanup) | no — this **is** the config the daemon runs on | leave: correct |
 | `localapi_state.rs` stale config | no — the caller named a specific file it expects | leave: correct |
 | `main.rs` per-org base after a join | no — its own comment says *"the join already wrote this file, so a failure here means something else broke it"* | leave: correct |

@@ -3,7 +3,7 @@
 use bson::{DateTime, doc, oid::ObjectId};
 use mongodb::Database;
 use mongodb::options::ReturnDocument;
-use roomler_ai_remote_control::models::{AgentStatus, DEFAULT_ROUTE_V4, NodeRef, OverlayNode};
+use meshharbor_remote_control::models::{AgentStatus, DEFAULT_ROUTE_V4, NodeRef, OverlayNode};
 
 use super::base::{BaseDao, DaoError, DaoResult};
 
@@ -1021,7 +1021,7 @@ impl OverlayNodeDao {
     pub async fn update_netcheck_caps(
         &self,
         node_id: ObjectId,
-        caps: roomler_ai_remote_control::signaling::CapVectorWire,
+        caps: meshharbor_remote_control::signaling::CapVectorWire,
     ) -> DaoResult<bool> {
         self.base
             .update_by_id(

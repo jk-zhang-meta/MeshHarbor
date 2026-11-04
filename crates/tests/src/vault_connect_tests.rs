@@ -672,7 +672,7 @@ async fn a_devices_requests_for_its_owner_are_held_to_a_ceiling() {
     let t = app.seed_tenant("vaultconnbusy").await;
     let mut dev = device(&app, &t, "conn-busy", "linux", TAKES_LEASES, true).await;
     set_owner(&app, &dev.agent_id, &t.member.id).await;
-    let ceiling = roomler_ai_remote_control::vault::lease_limits::CONNECT_PER_MINUTE;
+    let ceiling = meshharbor_remote_control::vault::lease_limits::CONNECT_PER_MINUTE;
     for i in 0..ceiling {
         let answer = ask_connect(
             &mut dev,

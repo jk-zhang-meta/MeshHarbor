@@ -3,7 +3,7 @@
 Everything between the remote host's framebuffer and the viewer's canvas: capture
 backends, the **cell matrix** a host advertises and how the viewer resolves it, the
 probe that discovers it, the encoder cascade per platform, rate control, and the
-browser decode paths. Agent side lives in `agents/roomlerd/src/{capture,encode}/`;
+browser decode paths. Agent side lives in `agents/meshharbord/src/{capture,encode}/`;
 viewer side in `ui/src/composables/{useRemoteControl,videoCells}.ts` + `ui/src/workers/`.
 *As of 0.4.87 (FR-77 P0–P4, 2026-09-08).* The design record with every decision's
 pros and cons is [`docs/fr/FR-77-encoder-chroma-matrix.md`](fr/FR-77-encoder-chroma-matrix.md);
@@ -185,7 +185,7 @@ mistaken for the cell that was asked for.
 
 A capability probe is untrusted third-party code by definition — vendor drivers
 and, through them, GPU firmware — so it does not run in the daemon's address
-space. `encode::caps::detect()` (`agents/roomlerd/src/encode/caps.rs`) answers
+space. `encode::caps::detect()` (`agents/meshharbord/src/encode/caps.rs`) answers
 from the cache when it can, and otherwise spawns `roomlerd caps-probe` twice:
 
 ```mermaid
@@ -662,7 +662,7 @@ workflow's "Fetch vendored FFmpeg" step does, on a dev box:
 pwsh scripts/dev-ffmpeg-windows.ps1          # download + verify + stage under C:\ffmpeg-pin, once
 # in a vcvars64 / "x64 Native Tools" shell (bindgen wants MSVC's stdint.h):
 Invoke-Expression (pwsh scripts/dev-ffmpeg-windows.ps1 -Env | Out-String)
-cargo build -p roomlerd --release --features "full-hw,vp9-444,system-context,ffmpeg-encoder,overlay-l3,overlay-netstack,ssh-server"
+cargo build -p meshharbord --release --features "full-hw,vp9-444,system-context,ffmpeg-encoder,overlay-l3,overlay-netstack,ssh-server"
 .\target\release\roomlerd.exe encoder-smoke --encoder hardware --codec hevc
 ```
 

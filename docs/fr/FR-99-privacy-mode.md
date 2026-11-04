@@ -25,13 +25,13 @@ StarDesk ships this as "Privacy Mode" (black out the local displays, mute the ho
 | What | Where | Consequence |
 |---|---|---|
 | No privacy mode, curtain, blank screen or local-input block anywhere | greps for `privacy`, `curtain`, `BlockInput`, `black_screen` hit nothing relevant | A full gap |
-| `WDA_EXCLUDEFROMCAPTURE` already keeps **our own** windows out of the stream | `agents/roomlerd/src/indicator/win.rs` L515, L519 (border and badge); `agents/roomler-desktop/src/panels.rs` L408–414 (consent panels) | The capture-exclusion half of a curtain is a call we already make |
-| A locked host streams a padlock frame, because capture cannot see `winsta0\Winlogon` from the Default desktop | `agents/roomlerd/src/lock_overlay.rs` L1–20, `lock_state.rs` | An ordinary window cannot appear on the secure desktop (FR-34 §1) |
+| `WDA_EXCLUDEFROMCAPTURE` already keeps **our own** windows out of the stream | `agents/meshharbord/src/indicator/win.rs` L515, L519 (border and badge); `agents/meshharbor-desktop/src/panels.rs` L408–414 (consent panels) | The capture-exclusion half of a curtain is a call we already make |
+| A locked host streams a padlock frame, because capture cannot see `winsta0\Winlogon` from the Default desktop | `agents/meshharbord/src/lock_overlay.rs` L1–20, `lock_state.rs` | An ordinary window cannot appear on the secure desktop (FR-34 §1) |
 | Low-level hooks, raw-input sinks, key polling and key taps are **banned** | `docs/fr/FR-92-keep-busy.md` L120–126: "EDR flags each as a keylogger, and GPO-locked corporate desktops with EDR are in the acceptance bar"; AC8 is a source scan that fails on a planted `SetWindowsHookEx` | The obvious input block (`WH_KEYBOARD_LL`) is off the table |
 | The `rc:*` wire carries `Permissions` as **names**; an unknown name fails the whole frame | `crates/remote_control/src/permissions.rs` L15–22, and the deserialiser notes below it | A new permission bit must never reach an agent that does not know it |
-| Every host-side Disconnect goes through one arm, which reports `host_disconnect` first | `agents/roomlerd/src/signaling.rs` L1935 (`kill_rx`), L139 | The person's way out already exists; the curtain must not take it away |
+| Every host-side Disconnect goes through one arm, which reports `host_disconnect` first | `agents/meshharbord/src/signaling.rs` L1935 (`kill_rx`), L139 | The person's way out already exists; the curtain must not take it away |
 | Device-owned settings are kept out of server pushes structurally | `crates/remote_control/src/models.rs` L1718 (`remote_config_enabled` "deliberately ABSENT") | The opt-in for this mode follows the same rule |
-| The consent floor is the device's | `agents/roomlerd/src/consent.rs` L153 (`strictest_of`) | The lock-on-end policy follows the same shape |
+| The consent floor is the device's | `agents/meshharbord/src/consent.rs` L153 (`strictest_of`) | The lock-on-end policy follows the same shape |
 | No lock on disconnect, no host mute | — | Gaps |
 
 ## 3. Design
@@ -55,7 +55,7 @@ screen, UAC, Ctrl+Alt+Del), the person sees that screen, which shows no user con
 keeps streaming it. Documented, not fought.
 
 **As built, P1b (2026-10-14).** The curtain lives in the overlay that already draws the "being viewed" border,
-badge and consent panel (`agents/roomlerd/src/indicator/win.rs`), on its pump thread:
+badge and consent panel (`agents/meshharbord/src/indicator/win.rs`), on its pump thread:
 
 - **One window over the whole virtual desktop**, not one per monitor, with the notice painted centred on each
   monitor. One window keeps a single z-order to defend and a single affinity to verify. Monitors are
@@ -171,7 +171,7 @@ the raw `rc:request` the agent received.
 | Piece | Where | What it does |
 |---|---|---|
 | `privacy_mode_allowed` | `crates/agent-core/src/config.rs`, `config_surface.rs` | The owner's switch, default off, live. Absent from `DesiredConfig` (named in `the_device_owned_refusals_are_not_pushable`, which also refuses any `privacy_*` key). Over the LocalAPI only the console person may set it (`crates/localapi/src/lib.rs`), as for keep busy: it is their screen |
-| The words | `agents/roomlerd/src/privacy.rs` (`current_words`), appended in `signaling::stub_caps` | `privacy-available` where a curtain is possible here (Windows 10 2004+, i.e. build ≥ 19041, in a build whose overlay came up); `privacy-mode` only while the owner allows it too. Never in the memoized `detect()`, for the record words' reason; the heartbeat re-announces a change, so an OFF stops the next grant at the hub |
+| The words | `agents/meshharbord/src/privacy.rs` (`current_words`), appended in `signaling::stub_caps` | `privacy-available` where a curtain is possible here (Windows 10 2004+, i.e. build ≥ 19041, in a build whose overlay came up); `privacy-mode` only while the owner allows it too. Never in the memoized `detect()`, for the record words' reason; the heartbeat re-announces a change, so an OFF stops the next grant at the hub |
 | The consent line | `signaling.rs`, the remote-control prompt's `detail` | "They may also cover this screen while they work." on every surface, and only when the grant holds `PRIVACY` and this device could act on it |
 | The `privacy` channel | `privacy.rs` (`attach`, `attach_refusing`), routed in `peer.rs` beside `record` | Controller → `rc:privacy.set {id, on}` / `rc:privacy.status {id}`; device → `rc:privacy.state {id, on, reason?}` |
 | `curtain-smoke` | `roomlerd curtain-smoke [--seconds N]` | Puts a curtain up through the production overlay and prints `possible=… up=…`: the field check that needs no server and no viewer |
@@ -224,9 +224,9 @@ it into `remote_audit`, the server's own decisions, would have dressed a host's 
 | Piece | Where | What it does |
 |---|---|---|
 | `rc:privacy.activity` | `ClientMsg::PrivacyActivity` (`crates/remote_control/src/signaling.rs`), owner `remote` | `{session_id, kind: on \| off \| refused, reason?}`. Fire-and-forget: an older server drops an unknown frame with a debug line (`crates/modules/fleet/src/socket.rs`) |
-| The device's reports | `Session::set`, `take_down`, `refuse` (`agents/roomlerd/src/privacy.rs`) | `on` once the curtain is up; `off` with `controller`, `session_end` or `disabled_on_device`; `refused` with gate 2–4's reason. Sent with `try_send`, so a struggling connection drops a line rather than stalls the curtain |
+| The device's reports | `Session::set`, `take_down`, `refuse` (`agents/meshharbord/src/privacy.rs`) | `on` once the curtain is up; `off` with `controller`, `session_end` or `disabled_on_device`; `refused` with gate 2–4's reason. Sent with `try_send`, so a struggling connection drops a line rather than stalls the curtain |
 | The ledger | `Ledger` (`privacy.rs`), `privacy-curtains.json` in the process's own local data dir | Each curtain is written there **before** it goes up and dropped when it comes down. A process killed in between leaves an entry, never a curtain without one |
-| `worker_exit` | `collect_leftovers` (at start-up, `main.rs`, before any connection) and `drain_leftovers` (`agents/roomlerd/src/signaling.rs`, on each org's connection) | The next process reports each leftover as `off {worker_exit}` on the connection of the org its session belonged to, because the server looks the session up within that org. One the queue refuses waits for the next connection |
+| `worker_exit` | `collect_leftovers` (at start-up, `main.rs`, before any connection) and `drain_leftovers` (`agents/meshharbord/src/signaling.rs`, on each org's connection) | The next process reports each leftover as `off {worker_exit}` on the connection of the org its session belonged to, because the server looks the session up within that org. One the queue refuses waits for the next connection |
 | The server's check | `record_privacy` (`crates/modules/remote/src/agent_socket.rs`) | Kept only for a session of THIS device whose grant held `PRIVACY`: the live hub first, the stored row after the session ended (how a `worker_exit` is checked). A reason that is not a code (`a-z0-9_`, at most 64) is dropped and the row kept |
 | The trail | `GET /api/tenant/{tid}/privacy-activity/{agent_id}` (`crates/modules/remote/src/routes.rs`) | Under `VIEW_REMOTE_AUDIT`, newest first, a removed device's trail included. 90-day TTL, like the audit it is read with |
 
@@ -272,7 +272,7 @@ controls**, each restored afterwards:
 session. On a SystemContext install that process is SYSTEM in the console session, not the person's: it
 locked from there, so no new process or token is needed.
 
-**As built, P3a (the device's own policy, 2026-10-15)** (`agents/roomlerd/src/lock_on_end.rs`):
+**As built, P3a (the device's own policy, 2026-10-15)** (`agents/meshharbord/src/lock_on_end.rs`):
 
 | Piece | What it does |
 |---|---|
@@ -286,8 +286,8 @@ cells passed (0.4.139, §8 row 16). Now a **fresh Windows service install** is w
 `lock_on_end = auto`. That covers the wizard's SystemContext flavour and `roomlerd enroll
 --machine-global` (`install.ps1 -Role daemon-system`). Both call one helper,
 [`enrollment.rs:722`](../../crates/agent-core/src/enrollment.rs#L722) `apply_service_install_defaults`,
-from [`main.rs:2566`](../../agents/roomlerd/src/main.rs#L2566) and
-[`orchestrator_agent.rs:574`](../../agents/roomler-setup/src/orchestrator_agent.rs#L574):
+from [`main.rs:2566`](../../agents/meshharbord/src/main.rs#L2566) and
+[`orchestrator_agent.rs:574`](../../agents/meshharbor-setup/src/orchestrator_agent.rs#L574):
 
 | Install | Starts at | Why |
 |---|---|---|
@@ -326,7 +326,7 @@ CI's clippy lines pass on Linux, and so does the Windows build with the overlay,
 | `AccessPolicy.lock_on_end` | `auto` · `always`; `never` or unset asks nothing (`AccessPolicy::lock_on_end_ask`, `crates/remote_control/src/models.rs`). Set by a `MANAGE_AGENTS` admin from the device row. An unknown value reads as `always`, as `LockOnEnd` reads one everywhere |
 | The gate | `resolve_session_authz` reads it on every allowed path, the owner and break-glass included: it describes the device, not who is asking (`crates/modules/remote/src/controller.rs`). The cross-pod relay carries it (`lock_ask_from_relay`, `relay.rs`); an older origin pod's body asks nothing |
 | The hub | sends `Request.lock_on_end` only to an agent advertising `lock-on-end` (`honours_lock_on_end`, from the hello's and each heartbeat's caps). The `session_requested` audit row records `lock_on_end` and `lock_enforced` (`crates/modules/fleet/src/hub.rs`) |
-| The agent | advertises `lock-on-end` only where the lock can be lifted remotely afterwards: the Windows service and the Linux root daemon (`can_honour_ask`). It keeps the ask with the session's metadata, hands it to a service install's worker in `SessionParams`, and registers it as the session goes live; `session_started` then decides under `effective_policy`, the stricter of the ask and the owner's own (`agents/roomlerd/src/lock_on_end.rs`) |
+| The agent | advertises `lock-on-end` only where the lock can be lifted remotely afterwards: the Windows service and the Linux root daemon (`can_honour_ask`). It keeps the ask with the session's metadata, hands it to a service install's worker in `SessionParams`, and registers it as the session goes live; `session_started` then decides under `effective_policy`, the stricter of the ask and the owner's own (`agents/meshharbord/src/lock_on_end.rs`) |
 | The viewer | **Lock when sessions end** on the device row, both layouts, saved with the access policy (`ui/src/components/admin/AgentsSection.vue`) |
 
 ⚠️ **A per-user install never takes an ask.** Its worker cannot reach the secure desktop, so a lock an admin

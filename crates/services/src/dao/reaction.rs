@@ -2,7 +2,7 @@
 // Copyright (C) 2026 G ROX EOOD
 use bson::{DateTime, doc, oid::ObjectId};
 use mongodb::Database;
-use roomler_ai_db::models::{EmojiRef, EmojiType, Reaction, ReactionSummary};
+use meshharbor_db::models::{EmojiRef, EmojiType, Reaction, ReactionSummary};
 
 use super::base::{BaseDao, DaoError, DaoResult};
 use super::message::MessageDao;

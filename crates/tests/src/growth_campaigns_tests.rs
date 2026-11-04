@@ -31,9 +31,9 @@ use axum::{
 };
 use bson::{Bson, DateTime, Document, doc, oid::ObjectId};
 use chrono::NaiveDate;
-use roomler_ai_api::growth::org_daily;
-use roomler_ai_mod_saas::purestat_pull;
-use roomler_ai_services::{
+use meshharbor_api::growth::org_daily;
+use meshharbor_mod_saas::purestat_pull;
+use meshharbor_services::{
     dao::growth::{GROWTH_DAILY, GROWTH_PULLS, GrowthDao, PURESTAT_SOURCE, PullStatus},
     purestat::PurestatClient,
 };
@@ -270,7 +270,7 @@ async fn device(app: &TestApp, tenant: ObjectId, created: DateTime) {
 pub(crate) async fn admin_app(
     purestat: &str,
     key: &str,
-    tweak: impl FnOnce(&mut roomler_ai_config::Settings),
+    tweak: impl FnOnce(&mut meshharbor_config::Settings),
 ) -> (TestApp, String) {
     let admin_id = ObjectId::new();
     let (base, key) = (purestat.to_string(), key.to_string());

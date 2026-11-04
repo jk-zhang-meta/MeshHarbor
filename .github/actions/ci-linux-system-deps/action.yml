@@ -45,7 +45,7 @@ runs:
           echo 'Acquire::Retries "3";' | sudo tee /etc/apt/apt.conf.d/80-ci-retries
           sudo apt-get update -qq
 
-      # rc.18 added a Tauri-tray companion (agents/roomler-tray) that
+      # rc.18 added a Tauri-tray companion (agents/meshharbor-tray) that
       # pulls in glib-sys / gobject-sys on Linux. Workspace clippy walks
       # every crate, so the build needs libglib2.0-dev + libgtk-3-dev
       # available even before the vp9-444 / scrap apt step further down.

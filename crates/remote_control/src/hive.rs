@@ -113,7 +113,7 @@ pub mod view_limits {
 /// the peer; these bound what the peer carries and what a device serves.
 pub mod search_limits {
     /// The most sessions one grant names: the store's own bound on a search
-    /// filter (`roomler_hive_node::store::MAX_SEARCH_SESSIONS`).
+    /// filter (`meshharbor_hive_node::store::MAX_SEARCH_SESSIONS`).
     pub const MAX_SESSIONS: usize = 500;
     /// The longest query, in characters. It is taken as plain words.
     pub const MAX_QUERY_CHARS: usize = 200;

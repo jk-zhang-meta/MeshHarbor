@@ -13,7 +13,7 @@ of it, and every motion burst (FR-31, FR-35) starts from a quiet pipe.
 ## What is in force today
 
 - The FFmpeg DC pump re-encodes `last_good_frame` every `IDLE_KEEPALIVE` = 60 ms once the capture
-  goes empty (`agents/roomlerd/src/peer.rs`, the `Ok(None)` arm: `last_capture_at.elapsed() >=
+  goes empty (`agents/meshharbord/src/peer.rs`, the `Ok(None)` arm: `last_capture_at.elapsed() >=
   IDLE_KEEPALIVE` ⇒ `f.clone()` of the same `Arc<Frame>`) — 16–17 encodes/s of bit-identical
   input, since rc.130. Its purpose is the "refinement" of a static picture after motion and a
   steady stream for the viewer's stall detector.

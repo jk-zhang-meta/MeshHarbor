@@ -22,7 +22,7 @@
  * 60 fps: without jitter every probe lands on the same phase of the capture
  * clock, and a run reports one arbitrary point of the wait for the next
  * capture instead of its distribution. That follows from the arithmetic;
- * the agent's in-process harness (`agents/roomlerd/tests/l4_latency.rs`)
+ * the agent's in-process harness (`agents/meshharbord/tests/l4_latency.rs`)
  * jitters for the same reason.
  */
 import * as benchMarker from '../workers/rc-bench-marker'
@@ -91,7 +91,7 @@ export function benchSessionActive(knob: boolean, videoCaps: readonly string[] |
   return benchSessionMode(knob ? 'probe' : null, videoCaps) === 'probe'
 }
 
-/** `roomlerd probe-target`'s layout (`agents/roomlerd/src/probe_target.rs`),
+/** `roomlerd probe-target`'s layout (`agents/meshharbord/src/probe_target.rs`),
  *  in the host monitor's physical pixels: 144 wide, a 32 px pad of 16 cells
  *  × 9 px above the 48 px marker area, flush in the bottom-right corner. */
 export const PROBE_TARGET = { width: 144, height: 80, padH: 32, cells: 16, cellW: 9 } as const

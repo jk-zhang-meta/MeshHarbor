@@ -5,7 +5,7 @@
 
 use crate::fixtures::seed::SeededTenant;
 use crate::fixtures::test_app::TestApp;
-use roomler_ai_remote_control::models::TouchControl;
+use meshharbor_remote_control::models::TouchControl;
 use serde_json::{Value, json};
 
 /// Controls compared as controls: as JSON text the server writes `12.0` for

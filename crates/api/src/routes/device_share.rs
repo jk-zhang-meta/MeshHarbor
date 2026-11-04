@@ -5,17 +5,17 @@ use axum::{
     extract::{Path, Query, State},
 };
 use bson::{DateTime, doc, oid::ObjectId};
-use roomler_ai_db::models::{
+use meshharbor_db::models::{
     DeviceShareGrant, DeviceShareOperation, DeviceSharePermissions, User,
     device_share::valid_share_account,
 };
-use roomler_ai_remote_control::models::{AgentStatus, OsKind};
-use roomler_ai_services::dao::{
+use meshharbor_remote_control::models::{AgentStatus, OsKind};
+use meshharbor_services::dao::{
     agent::AgentDao,
     base::{DaoError, PaginationParams},
     device_share::DeviceShareDao,
 };
-use roomler_core::{ApiError, Core, extractors::auth::AuthUser};
+use meshharbor_core::{ApiError, Core, extractors::auth::AuthUser};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
@@ -160,7 +160,7 @@ async fn named_recipient(core: &Core, login: &str) -> Result<User, ApiError> {
         Err(DaoError::NotFound) => return Err(refuse()),
         Err(e) => return Err(e.into()),
     };
-    roomler_core::device_share::require_recipient(&user).map_err(|_| refuse())?;
+    meshharbor_core::device_share::require_recipient(&user).map_err(|_| refuse())?;
     Ok(user)
 }
 fn oid(id: &str) -> Result<ObjectId, ApiError> {
@@ -228,7 +228,7 @@ pub async fn create(
     auth: AuthUser,
     Json(mut body): Json<CreateShare>,
 ) -> Result<Json<ShareView>, ApiError> {
-    roomler_core::device_share::require_enabled(&core)?;
+    meshharbor_core::device_share::require_enabled(&core)?;
     validate(&mut body)?;
     let device = oid(&body.device_id)?;
     let named_login = match (body.recipient_user_id.is_empty(), body.recipient.as_deref()) {
@@ -268,14 +268,14 @@ pub async fn create(
         ));
     }
     let owner = core.users.base.find_by_id(auth.user_id).await?;
-    roomler_core::admission::require_user(&core, &owner, None)?;
+    meshharbor_core::admission::require_user(&core, &owner, None)?;
     if !owner.is_verified {
         return Err(ApiError::Forbidden("Device owner must verify email".into()));
     }
     let recipient = match (by_id, named_login) {
         (Some(id), _) => {
             let user = core.users.base.find_by_id(id).await?;
-            roomler_core::device_share::require_recipient(&user)?;
+            meshharbor_core::device_share::require_recipient(&user)?;
             id
         }
         (None, Some(login)) => {
@@ -346,7 +346,7 @@ pub async fn list(
     auth: AuthUser,
     Query(query): Query<ShareListQuery>,
 ) -> Result<Json<SharePage>, ApiError> {
-    roomler_core::device_share::require_enabled(&core)?;
+    meshharbor_core::device_share::require_enabled(&core)?;
     let field = match query.direction.as_deref().unwrap_or("received") {
         "received" => "recipient_user_id",
         "sent" => "owner_user_id",
@@ -447,7 +447,7 @@ pub async fn check(
     Json(body): Json<CheckShare>,
 ) -> Result<Json<ShareCheck>, ApiError> {
     let grant_id = oid(&id)?;
-    let access = roomler_core::device_share::authorize_grant(
+    let access = meshharbor_core::device_share::authorize_grant(
         &core,
         auth.user_id,
         grant_id,

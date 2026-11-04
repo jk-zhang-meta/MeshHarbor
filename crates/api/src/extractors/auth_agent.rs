@@ -2,7 +2,7 @@
 // Copyright (C) 2026 G ROX EOOD
 //! FR-84 D5a — the agent-JWT extractor for the HOST's routes.
 //!
-//! The fleet module's [`roomler_ai_mod_fleet::auth_agent::AuthAgent`] is the
+//! The fleet module's [`meshharbor_mod_fleet::auth_agent::AuthAgent`] is the
 //! one place an agent token turns into an authorization decision, and it is
 //! an extractor so a handler cannot forget the check. Its bound is
 //! `FleetState: FromRef<S>`, which the host's `AppState` cannot satisfy: the
@@ -17,8 +17,8 @@
 //! not a credential problem.
 
 use axum::{extract::FromRequestParts, http::request::Parts};
-use roomler_ai_mod_fleet::auth_agent::{AuthAgent, authenticate};
-use roomler_core::ApiError;
+use meshharbor_mod_fleet::auth_agent::{AuthAgent, authenticate};
+use meshharbor_core::ApiError;
 
 use crate::state::AppState;
 

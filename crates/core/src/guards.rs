@@ -8,7 +8,7 @@
 //! allowlist and a module cannot reach into the crate that composes it.
 
 use bson::oid::ObjectId;
-use roomler_ai_db::models::role::permissions;
+use meshharbor_db::models::role::permissions;
 
 use crate::{Core, error::ApiError, extractors::auth::AuthUser};
 

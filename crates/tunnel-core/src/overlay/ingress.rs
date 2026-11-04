@@ -21,7 +21,7 @@
 
 use std::net::IpAddr;
 
-use roomler_ai_remote_control::models::{OverlayRule, ProtocolKind};
+use meshharbor_remote_control::models::{OverlayRule, ProtocolKind};
 
 /// IP protocol numbers we care about. Anything else is `Other` — matched only
 /// by a rule that doesn't narrow protocol.
@@ -507,7 +507,7 @@ mod tests {
         p[7] = 0x10; // fragment offset 16
         assert!(!admitted_reply(&p, &f, 0));
     }
-    use roomler_ai_remote_control::models::PortRange;
+    use meshharbor_remote_control::models::PortRange;
 
     fn rule(cidr: &str, low: u16, high: u16, proto: ProtocolKind) -> OverlayRule {
         OverlayRule {

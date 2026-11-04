@@ -2,7 +2,7 @@
 // Copyright (C) 2026 G ROX EOOD
 //! Freshly authorize one bounded page of arbitrary-hop discovery metadata.
 use super::*;
-use roomler_ai_remote_control::signaling::OrgRelayDiscoveryScanWire as Scan;
+use meshharbor_remote_control::signaling::OrgRelayDiscoveryScanWire as Scan;
 
 pub(super) async fn page(
     state: &NetworkState,

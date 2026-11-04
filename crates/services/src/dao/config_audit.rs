@@ -18,7 +18,7 @@
 
 use bson::{DateTime, doc, oid::ObjectId};
 use mongodb::Database;
-use roomler_ai_remote_control::models::{ConfigAuditEvent, DesiredConfig};
+use meshharbor_remote_control::models::{ConfigAuditEvent, DesiredConfig};
 
 use super::base::{BaseDao, DaoResult, PaginatedResult, PaginationParams};
 

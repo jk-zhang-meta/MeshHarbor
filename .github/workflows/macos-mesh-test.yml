@@ -58,8 +58,8 @@ jobs:
         # The `roomler` CLI comes too — it is how a user session reaches the
         # ROOT daemon, which is the thing the system socket exists for.
         run: |
-          cargo build -p roomlerd --release --features overlay-l3
-          cargo build -p roomler-cli --release
+          cargo build -p meshharbord --release --features overlay-l3
+          cargo build -p meshharbor-cli --release
 
       - name: Enroll
         id: enroll

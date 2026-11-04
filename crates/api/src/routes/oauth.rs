@@ -7,8 +7,8 @@ use axum::{
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
 };
-use roomler_ai_services::oauth::OAuthUserInfo;
-use roomler_core::attribution::{self, AttributionInput};
+use meshharbor_services::oauth::OAuthUserInfo;
+use meshharbor_core::attribution::{self, AttributionInput};
 use serde::Deserialize;
 use tracing::debug;
 use uuid::Uuid;
@@ -171,7 +171,7 @@ pub async fn complete_sign_in(
     let user = sign_in.user;
     let user_id = user.id.unwrap();
 
-    roomler_core::admission::require_user(state, &user, None)?;
+    meshharbor_core::admission::require_user(state, &user, None)?;
     // Generate JWT tokens only after the same admission rule as password login.
     let tokens = state.auth.generate_tokens_at_revision(
         user_id,

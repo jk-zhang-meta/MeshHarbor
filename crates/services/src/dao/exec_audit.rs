@@ -12,7 +12,7 @@
 
 use bson::{doc, oid::ObjectId};
 use mongodb::Database;
-use roomler_ai_remote_control::models::ExecAuditEvent;
+use meshharbor_remote_control::models::ExecAuditEvent;
 
 use super::base::{BaseDao, DaoResult, PaginatedResult, PaginationParams};
 

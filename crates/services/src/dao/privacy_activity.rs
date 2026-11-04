@@ -16,7 +16,7 @@
 
 use bson::{doc, oid::ObjectId};
 use mongodb::Database;
-use roomler_ai_remote_control::models::PrivacyActivityEvent;
+use meshharbor_remote_control::models::PrivacyActivityEvent;
 
 use super::base::{BaseDao, DaoResult, PaginatedResult, PaginationParams};
 

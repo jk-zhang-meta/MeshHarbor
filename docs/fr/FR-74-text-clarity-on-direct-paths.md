@@ -243,7 +243,7 @@ encoder was not out of bits, it was choosing not to spend them.
 a 90-frame steady scroll at 24 px/frame, a stop, and a **wheel pattern** (a 54 px
 notch, then four repeat frames at the keepalive cadence, ×12). Per-frame q and
 bytes, per arm. (WSL: build the harness with
-`cargo rustc -p roomlerd --lib --profile test --features ffmpeg-encoder,vp9-444 -- -A warnings`
+`cargo rustc -p meshharbord --lib --profile test --features ffmpeg-encoder,vp9-444 -- -A warnings`
 and run the deps binary — a plain `cargo test` under `vp9-444` alone crashes
 rustc's diagnostic renderer on a governor dead-code warning, not on the test.)
 

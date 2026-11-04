@@ -1,0 +1,112 @@
+[package]
+name = "meshharbor-setup"
+license = "MPL-2.0"
+publish = false
+version.workspace = true
+edition.workspace = true
+description = "Unified install + onboarding wizard for the Roomler daemon (Windows MSI flavours) and the roomler tunnel CLI (Win/Linux/macOS)."
+
+[lib]
+# Lib name DELIBERATELY avoids the "install"/"setup"/"update"/"patch"
+# substrings: Windows UAC's "installer detection" heuristic
+# auto-elevates 32/64-bit EXEs whose filename contains any of those.
+# Cargo's test binaries are named after the lib crate, so a lib named
+# `meshharbor_setup` would produce `meshharbor_setup-<hash>.exe` which UAC
+# refuses to launch from an unelevated `cargo test` with "os error
+# 740: The requested operation requires elevation". Same lesson as the
+# retired rc.28 agent wizard (lib `wizard_core`), the retired rc.59
+# tunnel wizard (lib `tunnel_wizard_core`), and the P4a shared core
+# (lib `wizard_shared`).
+name = "wizard_app"
+path = "src/lib.rs"
+
+[[bin]]
+name = "meshharbor-setup"
+path = "src/main.rs"
+# test = false because the bin's test-harness EXE would be
+# `meshharbor_setup-<hash>.exe` → UAC installer-detection refuses to
+# launch it unelevated (the "setup" substring trips the heuristic).
+# The legacy wizards dodge this only because every documented gate
+# uses `--lib`; this crate makes the invariant structural so a plain
+# `cargo test -p meshharbor-setup` can't wedge on a UAC prompt.
+test = false
+
+[dependencies]
+# P4a shared wizard mechanics: unified ProgressEvent + replay log,
+# wizard-state persistence, token peek, asset resolver (health GET +
+# streaming download + SHA256), MSI runner, archive extract,
+# PATH/symlink integration, tunnel-enroll HTTP. The app owns the
+# Tauri surface + the agent/tunnel lib calls; core owns the mechanics.
+meshharbor-setup-core = { path = "../../crates/meshharbor-setup-core" }
+
+# Lib dep on the agent — the daemon orchestrator reuses `config::
+# {save, machine_global_config_path, default_config_path}`,
+# `enrollment::enroll`, `machine::derive_machine_id`, `install_detect::
+# detect_existing_install`, `jwt_introspect::parse_unverified`, and
+# `updater::spawn_installer_for_flavour_with_properties` directly as
+# lib calls. Transitively pulls the agent's heavy deps (webrtc-rs
+# etc.) — same trade-off the legacy wizards accepted: a fatter EXE,
+# but the install pipeline stays lib-driven with no CLI shelling.
+meshharbord = { path = "../meshharbord" }
+
+# Lib dep on the tunnel CLI — the tunnel orchestrator reuses
+# `config::{TunnelConfig, save, default_config_path}` for the
+# config-write half of enrollment and the Welcome-step detect probe.
+meshharbor-cli = { path = "../meshharbor-cli" }
+
+# Tauri 2.x runtime. NO `tray-icon` feature — the wizard is a
+# foreground window, exits on Finish/Cancel. `custom-protocol` is
+# REQUIRED for `cargo build --release` to embed the front-end assets
+# rather than loading from `devUrl` (same lesson as the rc.20 tray
+# hotfix; see `agents/meshharbor-desktop/Cargo.toml` for the full
+# rationale).
+tauri = { version = "2", features = ["custom-protocol"] }
+tauri-plugin-shell = "2"
+tauri-plugin-single-instance = "2"
+tauri-plugin-dialog = "2"
+
+# Async + error handling — shared workspace versions.
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# Hostname for the default device-name field on the Server step.
+gethostname = "0.5"
+
+# Install-root resolution for the tunnel orchestrator (per-user
+# Programs dir on Windows, ~/.local/opt on Linux, ~/Applications on
+# macOS). Wizard-state paths themselves live in meshharbor-setup-core.
+directories = { workspace = true }
+
+# The Welcome-step tunnel probe parses the CLI's config.toml
+# (`toml::from_str::<meshharbor_cli::config::TunnelConfig>`).
+toml = { workspace = true }
+
+# FR-102 P3b — the opt-in setup diagnostics (`diagnostics.rs`): the one
+# record shape and its vocabularies are the wire crate's, shared with the
+# server that validates them (`default-features = false` — wire-only, no
+# driver, like every agent-side consumer); `uuid` mints the per-run id
+# (a v4's simple form is exactly the 32 hex chars the server accepts);
+# `reqwest` posts a record and tells a network failure from a refusal on
+# the enroll's error chain. All three already compile for `roomlerd`.
+meshharbor-remote-control = { path = "../../crates/remote_control", default-features = false }
+uuid = { workspace = true }
+reqwest = { workspace = true }
+
+# (windows-sys deliberately absent — meshharbor-setup-core owns every
+# Win32 mechanic this app needs: MSI wait/terminate, registry PATH
+# edit, WM_SETTINGCHANGE broadcast.)
+
+[dev-dependencies]
+tempfile = { workspace = true }
+# `config::test_fixture()` for the orchestrator's config-shaping tests — the
+# same escape roomlerd uses: the fixture is feature-gated so a downstream
+# crate's test build can see it while no production build ever carries it.
+meshharbor-node-core = { path = "../../crates/agent-core", features = ["test-fixtures"] }
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }

@@ -27,7 +27,7 @@
 //! from a device placement did not choose, matches nothing.
 
 use bson::{DateTime, oid::ObjectId};
-use roomler_ai_remote_control::{
+use meshharbor_remote_control::{
     hive::{
         HiveCopyPurged, HiveFenceMark, HiveJoinRefusal, HiveReplicaManifestEntry, HiveReplicaRole,
         is_hash_hex, replica_limits, retain_limits,
@@ -269,7 +269,7 @@ pub(crate) async fn on_join_ack(
 ) {
     let detail = clamp_words(
         detail,
-        roomler_ai_remote_control::hive::hive_limits::MAX_DETAIL_LEN,
+        meshharbor_remote_control::hive::hive_limits::MAX_DETAIL_LEN,
     );
     match state
         .sessions

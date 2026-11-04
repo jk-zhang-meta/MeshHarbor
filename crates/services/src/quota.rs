@@ -14,7 +14,7 @@
 //! place: the refusals are the load-bearing rows, so recording them cannot be
 //! per-call-site.
 
-use roomler_ai_db::models::{Plan, PlanEnforcement, PlanLimits};
+use meshharbor_db::models::{Plan, PlanEnforcement, PlanLimits};
 
 /// Which advertised limit a check is about.
 ///
@@ -260,7 +260,7 @@ fn check_inner(
 
 /// FR-102 P4 — the whole verdict of one check: the collision, when the
 /// limit was hit (whether or not it refuses — `warn` mode lets it through),
-/// and whether it refuses. `roomler_core::quota` counts the collision per
+/// and whether it refuses. `meshharbor_core::quota` counts the collision per
 /// org; [`check`] and its siblings keep answering only the refusal.
 #[derive(Debug, Clone)]
 pub struct Verdict {
@@ -296,7 +296,7 @@ pub fn evaluate(plan: Plan, mode: PlanEnforcement, limit: Limit, used: u64, delt
 
 /// FR-115 — [`evaluate`] for an org billed for `seats` seats: the per-seat
 /// limits (`storage_bytes`, `max_concurrent_sessions`) are scaled by
-/// [`Plan::limits_for`] before the comparison. `roomler_core::quota` passes
+/// [`Plan::limits_for`] before the comparison. `meshharbor_core::quota` passes
 /// `Tenant::billed_seats`.
 pub fn evaluate_for(
     plan: Plan,
@@ -370,7 +370,7 @@ mod tests {
     // minutes (ESTABLISHED since FR-115); max_devices = 100; recordings and
     // exit nodes off, MagicDNS on.
 
-    const GIB: u64 = roomler_ai_db::models::tenant::GIB;
+    const GIB: u64 = meshharbor_db::models::tenant::GIB;
 
     #[test]
     fn under_the_cap_always_passes() {
@@ -584,7 +584,7 @@ mod tests {
     fn storage_is_judged_on_the_incoming_size() {
         const MB: u64 = 1024 * 1024;
         // Free.storage_bytes is 1 GiB; sit the tenant 1 MB under it.
-        let used = roomler_ai_db::models::tenant::GIB - MB;
+        let used = meshharbor_db::models::tenant::GIB - MB;
 
         // A 100 KB file still fits...
         assert!(
@@ -748,7 +748,7 @@ mod tests {
         let v = evaluate_for(Plan::Pro, 3, e, Limit::MaxConcurrentSessions, 3, 1);
         assert_eq!(v.collision.as_ref().map(|d| d.max), Some(3));
 
-        let gib = roomler_ai_db::models::tenant::GIB;
+        let gib = meshharbor_db::models::tenant::GIB;
         assert!(
             evaluate_for(Plan::Pro, 4, e, Limit::StorageBytes, 35 * gib, gib)
                 .collision

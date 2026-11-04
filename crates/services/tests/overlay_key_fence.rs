@@ -1,8 +1,8 @@
 //! Real standalone Mongo admission regressions. No mock database or transactions.
 use bson::{doc, oid::ObjectId};
 use mongodb::{Client, Database};
-use roomler_ai_remote_control::models::{NodeRef, OverlayNode};
-use roomler_ai_services::dao::overlay_node::{NewOverlayNode, OverlayNodeDao};
+use meshharbor_remote_control::models::{NodeRef, OverlayNode};
+use meshharbor_services::dao::overlay_node::{NewOverlayNode, OverlayNodeDao};
 
 async fn fixture() -> (Database, OverlayNodeDao, OverlayNode) {
     let uri =
@@ -44,7 +44,7 @@ async fn join(
     node: &OverlayNode,
     key: &str,
     epoch: u32,
-) -> roomler_ai_services::dao::base::DaoResult<OverlayNode> {
+) -> meshharbor_services::dao::base::DaoResult<OverlayNode> {
     dao.rehydrate(
         node.id.unwrap(),
         &node.node_ref,
@@ -508,7 +508,7 @@ async fn b4_immediate_key_revocation_fences_current_key_and_requires_fresh_rotat
 
 #[tokio::test]
 async fn b4_retired_wg_keys_bounded_slice_and_default_ttl_floor_and_pre_expiry_window() {
-    use roomler_ai_services::dao::overlay_node::{
+    use meshharbor_services::dao::overlay_node::{
         MAX_RETIRED_WG_KEYS, MIN_KEY_TTL_SECS, clamp_default_key_ttl_secs,
     };
 

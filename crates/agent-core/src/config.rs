@@ -76,7 +76,7 @@ pub struct AgentConfig {
     /// client that finds no listening instance is refused with
     /// `ERROR_PIPE_BUSY` on the spot: the Routes page blanking every few
     /// seconds was three such opens racing ONE instance. `None` = the
-    /// built-in default (4, `roomler_localapi::DEFAULT_PIPE_POOL`); `1` =
+    /// built-in default (4, `meshharbor_localapi::DEFAULT_PIPE_POOL`); `1` =
     /// one instance, the pre-FR-84 behaviour (the kill switch). Clamped to
     /// 1..=16; read once at startup (restart required).
     #[serde(default)]
@@ -259,7 +259,7 @@ pub struct AgentConfig {
     /// device can be opted in before the mechanism exists, rather than the
     /// mechanism arriving to find every device closed.
     ///
-    /// [`RpcCap::ExternalAccess`]: roomler_ai_remote_control::models::RpcCap::ExternalAccess
+    /// [`RpcCap::ExternalAccess`]: meshharbor_remote_control::models::RpcCap::ExternalAccess
     #[serde(default)]
     pub external_access_enabled: bool,
 
@@ -1684,7 +1684,7 @@ pub struct AgentConfig {
     /// only by the person at the console, whose screen it locks. A server may
     /// ask for stricter on a session (P3b), never lower this floor.
     #[serde(default)]
-    pub lock_on_end: roomler_ai_remote_control::models::LockOnEnd,
+    pub lock_on_end: meshharbor_remote_control::models::LockOnEnd,
     /// FR-108 — whether a controller's display match may switch this host's
     /// display mode: `auto` (the default: only while nobody is using this
     /// screen), `always` (whenever asked, rc.191's behaviour) or `never`. Read
@@ -1715,16 +1715,16 @@ pub struct AgentConfig {
     /// ⚠️ Device-owned: structurally absent from `DesiredConfig`, so no server
     /// can switch back on what the owner switched off.
     #[serde(default)]
-    pub rc_clipboard: roomler_ai_remote_control::models::FeaturePolicy,
+    pub rc_clipboard: meshharbor_remote_control::models::FeaturePolicy,
     /// FR-101 P2b — the same floor for file transfer.
     #[serde(default)]
-    pub rc_files: roomler_ai_remote_control::models::FeaturePolicy,
+    pub rc_files: meshharbor_remote_control::models::FeaturePolicy,
     /// FR-101 P2b — the same floor for this computer's audio.
     #[serde(default)]
-    pub rc_audio: roomler_ai_remote_control::models::FeaturePolicy,
+    pub rc_audio: meshharbor_remote_control::models::FeaturePolicy,
     /// FR-101 P1b — keep a plaintext `server_url` (and every `[[orgs]]`
     /// entry's) as written. Without it a loaded `http://` URL to a remote
-    /// host is read as `https://` (`roomler_ai_remote_control::server_url`),
+    /// host is read as `https://` (`meshharbor_remote_control::server_url`),
     /// so the control socket, the token renewal, the updater and the uploads
     /// all go over TLS. For a lab whose server serves no TLS. Loopback needs
     /// no escape: it is never promoted.
@@ -1827,7 +1827,7 @@ pub struct AgentConfig {
     /// Operators on org-controlled hosts narrow further by populating
     /// `forward_acl.allowlist` in the TOML or disable forwards
     /// entirely with `forward_acl.enabled = false`. See
-    /// `agents/roomlerd/src/tunnel/acl.rs` for the matching
+    /// `agents/meshharbord/src/tunnel/acl.rs` for the matching
     /// semantics.
     #[serde(default)]
     pub forward_acl: AgentForwardAcl,
@@ -1836,7 +1836,7 @@ pub struct AgentConfig {
     /// enabled with a seeded bash/tmux entry so a headless VD host offers
     /// "New bash session" out of the box. Operators add htop/mc/… per host
     /// in the TOML. The browser only ever sends an allowlist KEY, never a
-    /// command line. See `agents/roomlerd/src/apps/`.
+    /// command line. See `agents/meshharbord/src/apps/`.
     #[serde(default)]
     pub virtual_desktop_apps: crate::apps_config::VirtualDesktopAppsConfig,
 
@@ -1964,7 +1964,7 @@ pub struct AgentConfig {
     /// Each enabled entry is reconciled into a live daemon flow on every
     /// startup (and on change) by `tunnel::route_reconciler` — the
     /// persistent counterpart of the ephemeral LocalAPI `CreateForward`
-    /// flows. The struct is `roomler_localapi::RouteDescriptor`, one
+    /// flows. The struct is `meshharbor_localapi::RouteDescriptor`, one
     /// type for wire + disk. Managed via `roomler route add/rm/...` or the
     /// desktop Tunnels pane (the DAEMON writes this field — LocalAPI verbs
     /// persist through the daemon's config-write lock); hand-editing the
@@ -1974,7 +1974,7 @@ pub struct AgentConfig {
     /// this field (no unknown-field preservation) — declared routes do not
     /// survive an auto-rollback.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub tunnel_routes: Vec<roomler_localapi::RouteDescriptor>,
+    pub tunnel_routes: Vec<meshharbor_localapi::RouteDescriptor>,
 
     /// Multi-org P1: SECONDARY enrollments (`[[orgs]]`). The top-level scalar
     /// identity fields (`server_url` / `agent_token` / `agent_id` /
@@ -2556,13 +2556,13 @@ impl AgentConfig {
 
     /// FR-101 P1b — read every URL to a server over TLS: this enrollment's
     /// `server_url` and `ws_url`, and each `[[orgs]]` entry's. A plaintext URL
-    /// to a remote host becomes its TLS twin (`roomler_ai_remote_control::
+    /// to a remote host becomes its TLS twin (`meshharbor_remote_control::
     /// server_url::secure`); loopback stays, and so does everything when the
     /// owner set [`Self::allow_plaintext_server`]. Applied by [`try_load`], the
     /// one parse every reader of the config goes through, so no consumer can
     /// dial the URL as written. Returns what changed, as (field, was) pairs.
     pub fn secure_server_urls(&mut self) -> Vec<(String, String)> {
-        use roomler_ai_remote_control::server_url::secure;
+        use meshharbor_remote_control::server_url::secure;
         let allow = self.allow_plaintext_server;
         let mut changed = Vec::new();
         let mut one = |field: String, url: &mut String| {
@@ -4032,9 +4032,9 @@ tenant_id = "tid2"
         cfg.overlay_enabled = true;
         cfg.overlay_wg_secret_key = Some("PRIMARY-KEY".into());
         cfg.overlay_exit_node = Some("exit-1".into());
-        cfg.tunnel_routes = vec![roomler_localapi::RouteDescriptor {
+        cfg.tunnel_routes = vec![meshharbor_localapi::RouteDescriptor {
             id: "r1".into(),
-            kind: roomler_localapi::FlowKind::Forward,
+            kind: meshharbor_localapi::FlowKind::Forward,
             node: "aid".into(),
             local: 18080,
             remote: Some("127.0.0.1:80".into()),

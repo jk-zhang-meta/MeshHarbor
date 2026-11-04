@@ -9,7 +9,7 @@ use lettre::{
         header::{ContentType, HeaderName, HeaderValue},
     },
 };
-use roomler_ai_config::EmailSettings;
+use meshharbor_config::EmailSettings;
 use serde::Serialize;
 use tracing::{info, warn};
 

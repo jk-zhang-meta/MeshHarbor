@@ -151,28 +151,28 @@ Six commitments follow. All are load-bearing in the code today; don't regress th
 
 ```bash
 # Development
-cargo run --bin roomler-ai-api         # Start backend (port 3000)
+cargo run --bin meshharbor-api         # Start backend (port 3000)
 cd ui && bun run dev                   # Vite dev server (port 5000, proxies to 5001)
 cd ui && bun run build                 # Production UI build (includes vue-tsc --noEmit)
 
 # Remote-control agent (native binary — runs on the controlled host)
-cargo build -p roomlerd --release --features full      # capture + encode + input (SW encoder)
-cargo build -p roomlerd --release --features full-hw   # + Media Foundation HW encoder scaffolding
-cargo build -p roomlerd --release                      # signalling-only (no media, no input)
+cargo build -p meshharbord --release --features full      # capture + encode + input (SW encoder)
+cargo build -p meshharbord --release --features full-hw   # + Media Foundation HW encoder scaffolding
+cargo build -p meshharbord --release                      # signalling-only (no media, no input)
 ./target/release/roomlerd enroll --server <url> --token <enrollment-jwt> --name <label>
 ./target/release/roomlerd run [--encoder software|hardware]
 ./target/release/roomlerd encoder-smoke --encoder hardware   # offline MFT/FFmpeg init diagnosis
 ./scripts/dev-xvfb.sh                  # capture smoke test via a virtual framebuffer
 
 # Testing
-cargo test -p roomler-ai-tests         # Integration tests (requires MongoDB + Redis)
+cargo test -p meshharbor-tests         # Integration tests (requires MongoDB + Redis)
 cd ui && bun run test:unit             # Vitest unit tests
 cd ui && bun run e2e                   # Playwright E2E tests
 
 # Static analysis — what CI runs
 cargo fmt --all -- --check
 cargo clippy --workspace -- -D warnings
-cargo clippy -p roomler-ai-api -p roomler-ai-services -p roomler-ai-tests --all-targets -- -D warnings
+cargo clippy -p meshharbor-api -p meshharbor-services -p meshharbor-tests --all-targets -- -D warnings
 cd ui && vue-tsc --noEmit
 
 # Dependency audit
@@ -185,11 +185,11 @@ docker compose up -d                   # MongoDB (27019), Redis (6379), MinIO (9
 ⚠️ **`cargo clippy --workspace` compiles the feature UNION and can never see a
 profile or a feature-gated backend.** `--features full` is a *separate* CI clippy
 step — the only one that compiles the capture backend. Run
-`cargo check -p roomler-ai-tunnel-core --features overlay-l3,overlay-netstack --all-targets`
+`cargo check -p meshharbor-tunnel-core --features overlay-l3,overlay-netstack --all-targets`
 in WSL before pushing; a `#[cfg(windows)]` helper needs the same gate on its test.
 
 ⚠️ `--workspace` clippy compiles only `pub mod fixtures` from `crates/tests` (every
-test module is `#[cfg(test)]`-gated), so `Checking roomler-ai-tests` in a build log
+test module is `#[cfg(test)]`-gated), so `Checking meshharbor-tests` in a build log
 is **not** evidence the tests build.
 
 ### Agent build requirements
@@ -239,10 +239,10 @@ crates/
                       The `server` feature (default-ON) gates the Mongo audit DAO — the
                       five agent-side consumers set `default-features = false`
   localapi/         → LocalAPI protocol LEAF crate — re-exported as `tunnel_core::localapi`
-  agent-core/       → package `roomler-node-core`: daemon-free agent building blocks
+  agent-core/       → package `meshharbor-node-core`: daemon-free agent building blocks
                       (config, enrollment, machine-id, logging, sentinels, forward ACL).
                       The desktop companion deps THIS, never the full agent
-  core/             → package `roomler-core` (AGPL, SERVER side, never linked by an agent):
+  core/             → package `meshharbor-core` (AGPL, SERVER side, never linked by an agent):
                       the `Module` trait, hooks, jobs, the module DAG, the composition
                       snapshot, and `Core` itself (`state.rs`) with the /ws registry,
                       dispatcher, Redis fan-out, cluster identity, storage, rate limiting
@@ -275,11 +275,11 @@ crates/
 agents/
   roomlerd/         → Native agent binary (CLI + lib): webrtc-rs peer, capture, encode,
                       input injection, overlay, tunnels, SSH server
-  roomler-cli/      → Tunnel client. Bin `roomler`; the whole command surface lives in the
+  meshharbor-cli/      → Tunnel client. Bin `roomler`; the whole command surface lives in the
                       LIB (`cli.rs`) so the daemon can host it too
-  roomler-cli-shim/ → Bin `roomler-shim`, installed BY THE MSI/.deb as `roomler`:
+  meshharbor-cli-shim/ → Bin `roomler-shim`, installed BY THE MSI/.deb as `roomler`:
                       re-execs `roomlerd cli`
-  roomler-setup/    → Tauri 2 unified install wizard (lib `wizard_app`)
+  meshharbor-setup/    → Tauri 2 unified install wizard (lib `wizard_app`)
 ui/src/             → api/ · components/ · composables/ · stores/ (Pinia setup pattern) ·
                       views/ · plugins/  — map in `docs/ui.md`
 scripts/            → dev-xvfb.sh · e2e-*.sh · name-audit.sh · fr-registry-audit.sh ·
@@ -337,14 +337,14 @@ Full treatment: **`docs/modular-monolith.md`**. What constrains new work:
    round-trip. ⚠️ Unknown module names from a newer server are IGNORED, never an
    error.
 
-⚠️ **`State<Core>` is the handler seam.** `AppState` derefs to `roomler_core::Core`,
+⚠️ **`State<Core>` is the handler seam.** `AppState` derefs to `meshharbor_core::Core`,
 so a handler or helper that needs only core fields takes `State<Core>` / `&Core`.
 `impl FromRef<AppState> for Core` lives in `crates/api/src/core_state.rs` — the ONE
-place the orphan rules allow it. `roomler-core` must never learn `AppState` exists.
+place the orphan rules allow it. `meshharbor-core` must never learn `AppState` exists.
 
-**Naming**: server crates `roomler-ai-*`; the core `roomler-core` (`crates/core`);
+**Naming**: server crates `roomler-ai-*`; the core `meshharbor-core` (`crates/core`);
 modules `roomler-ai-mod-<name>` (`crates/modules/<name>`); the daemon's shared crate
-`roomler-node-core` (`crates/agent-core`, which held the name `roomler-core` from
+`meshharbor-node-core` (`crates/agent-core`, which held the name `meshharbor-core` from
 FR-21 until FR-69 — its pre-FR-21 name is retired, never bring it back).
 
 ## Multi-Tenancy
@@ -422,7 +422,7 @@ Suites, harnesses and the nightly lane: **`docs/testing.md`**.
   green suite looks like. Set `RUST_LOG` and `--nocapture`; without a subscriber
   every `info!`/`warn!` explaining a refusal is discarded.
 - **CI runs this lane** — `.github/workflows/integration-tests.yml`, on master
-  pushes touching `crates/**` or `agents/roomlerd/**`, on PRs touching
+  pushes touching `crates/**` or `agents/meshharbord/**`, on PRs touching
   `crates/tests/**`, and on dispatch (optional `filter`). Deliberately **not** on
   every PR: a ~20 min job on every push trains people to ignore it.
   ⚠️ The lane asserts a **minimum test count** and a **leaked-database ceiling**,
@@ -568,17 +568,17 @@ frontend, run both.
 
 | Change type | Command |
 |---|---|
-| Backend (models, services, routes) | `cargo test -p roomler-ai-tests` |
-| Remote-control crate (signalling, wire format) | `cargo test -p roomler-ai-remote-control --lib` |
-| Agent library | `cargo test -p roomlerd --lib` |
-| Agent with media / input backends | `cargo test -p roomlerd --lib --features full` |
+| Backend (models, services, routes) | `cargo test -p meshharbor-tests` |
+| Remote-control crate (signalling, wire format) | `cargo test -p meshharbor-remote-control --lib` |
+| Agent library | `cargo test -p meshharbord --lib` |
+| Agent with media / input backends | `cargo test -p meshharbord --lib --features full` |
 | Agent capture, headless | `./scripts/dev-xvfb.sh` |
 | Frontend | `cd ui && bun run build` |
 | Frontend unit | `cd ui && bun run test:unit` |
 | Full flow | `cd ui && bun run e2e` |
 
 ⚠️ The agent builds and unit-tests **natively on Windows**
-(`cargo test -p roomlerd --lib`) — the WSL lane is not the only option.
+(`cargo test -p meshharbord --lib`) — the WSL lane is not the only option.
 
 ## The three pillars — invariants, and where the detail lives
 
@@ -729,7 +729,7 @@ for.
 ⚠️ **Remote configuration never restarts a daemon** — exiting an orphan `roomlerd
 run` host takes it permanently offline. The one restart path is LOCAL (LocalAPI
 `RestartDaemon`: "Apply now", `roomler restart`, FR-84 D3), and it refuses unless it
-can PROVE a supervisor (`agents/roomlerd/src/supervision.rs`).
+can PROVE a supervisor (`agents/meshharbord/src/supervision.rs`).
 
 **Linux root daemons resolve `/etc/roomler/config.toml`** (rc.435,
 `docs/installation.md`). ⚠️ `systemctl is-active` reads **inactive while such a host
@@ -756,7 +756,7 @@ signalling, DERP) · `docs/ui.md` (frontend map).
 
 `docs/installation.md` · `docs/code-signing.md` · the **`ship-it` skill**.
 
-ONE unified wizard (`agents/roomler-setup`, Tauri 2) covers every role; backend
+ONE unified wizard (`agents/meshharbor-setup`, Tauri 2) covers every role; backend
 proxies under `/api/setup/*` and `/api/agent/installer/*` stream installer bytes
 through `roomler.ai` (**not** `github.com`) so corporate ESET/Defender allow-lists
 trust the download.
@@ -765,14 +765,14 @@ trust the download.
 auto-elevates any EXE whose filename contains "install"/"setup"/"update"/"patch",
 and cargo derives test-binary names from the **lib** crate, so wizard lib targets
 must dodge those substrings (`wizard_app`, `wizard_shared`). The user-facing bin
-keeps the marketing name; `[[bin]] test = false` keeps `cargo test -p roomler-setup`
+keeps the marketing name; `[[bin]] test = false` keeps `cargo test -p meshharbor-setup`
 off the UAC prompt.
 <!-- RETIRED-NAME-ANCHOR(2): these two directories were DELETED under their
      retired names. A history line has to name what actually existed; an
-     earlier path sweep rewrote one of them into agents/roomler-cli-installer,
+     earlier path sweep rewrote one of them into agents/meshharbor-cli-installer,
      a directory git has never heard of. FR-21 D6. -->
-⚠️ The legacy wizards `agents/roomler-installer` (rc.28) and
-`agents/roomler-tunnel-installer` (rc.59) were retired in P4c-2. The tunnel CLI's
+⚠️ The legacy wizards `agents/meshharbor-installer` (rc.28) and
+`agents/meshharbor-tunnel-installer` (rc.59) were retired in P4c-2. The tunnel CLI's
 `self-update` is **kept** — it is the sole updater for tunnel-only hosts ("one
 updater" is per-role; daemon hosts get `roomler.exe` refreshed by the MSI).
 
@@ -792,7 +792,7 @@ Fixed-and-shipped issues live in `git log` and the docs. Currently open:
   `pgp_verify`, every OS), from the first tunnel release that carries it.
 - **[MEDIUM]** [2026-04-17, rewritten 2026-08-29 by **FR-27**, #854] Host consent now
   has a **`PromptSurface` chain** — native (`win`·`mac`·`x11`) → companion
-  (`roomler-desktop` over LocalAPI) → notification (Linux, the desktop's own, with
+  (`meshharbor-desktop` over LocalAPI) → notification (Linux, the desktop's own, with
   Approve/Deny: FR-93 P6f) → cli (`roomlerd consent`) → none, which reports
   `no_prompt_surface` instead of a silent deny, and the chosen surface is logged per
   prompt (before it, "the prompt didn't appear" was unattributable). ⚠️ On

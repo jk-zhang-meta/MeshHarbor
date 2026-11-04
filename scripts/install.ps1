@@ -1,8 +1,8 @@
 # roomler install.ps1 -- terminal-driven install of the Roomler node stack on
-# Windows, replicating the roomler-setup wizard's steps without a GUI:
+# Windows, replicating the meshharbor-setup wizard's steps without a GUI:
 # resolve via the roomler.ai proxy -> download -> sha256-verify -> install ->
 # enroll -> autostart. Installs roomlerd + the roomler CLI (both inside the
-# MSI since P4b) and places the roomler-desktop companion beside them.
+# MSI since P4b) and places the meshharbor-desktop companion beside them.
 #
 # NB this file is deliberately ASCII-only: it is served raw over HTTP
 # (GET /api/setup/install.ps1) and must parse identically under Windows
@@ -20,7 +20,7 @@
 #     & ([scriptblock]::Create((irm https://www.itachi.fans/meshharbor/api/setup/install.ps1))) -Role daemon-system -Token <jwt>
 #   )
 #
-# Roles (same vocabulary as the roomler-setup wizard):
+# Roles (same vocabulary as the meshharbor-setup wizard):
 #   daemon-user     perUser MSI -- Scheduled-Task autostart, no UAC.
 #                   Run from a NORMAL (non-elevated) shell -- see -AllowElevated.
 #   daemon-machine  perMachine MSI -- SCM service 'Roomler'. ELEVATED shell required.
@@ -36,7 +36,7 @@
 #   -DownloadOnly   resolve + download + verify, print what WOULD run,
 #                   touch nothing else (safe on any box).
 #   -NoEnroll       install without enrolling (no token needed).
-#   -SkipDesktop    daemon roles: don't fetch roomler-desktop.exe.
+#   -SkipDesktop    daemon roles: don't fetch meshharbor-desktop.exe.
 #   -PrepareFirewall  daemon-user only: request administrator approval once
 #                   during installation to prepare the daemon's UDP rule
 #                   BEFORE enrollment/autostart. The daemon still runs as
@@ -257,7 +257,7 @@ function Install-Daemon {
         Say "download-only: would run: msiexec $msiArgs"
         if ($PrepareFirewall) { Say "download-only: would request administrator approval for '$daemon' service prepare-firewall before enrollment/autostart" }
         Say "download-only: would enroll via: '$daemon' enroll --server $Server --token <token> --name '$Name'$mgFlag"
-        if (-not $SkipDesktop) { Say "download-only: would place roomler-desktop.exe into $installDir" }
+        if (-not $SkipDesktop) { Say "download-only: would place meshharbor-desktop.exe into $installDir" }
         return
     }
 
@@ -350,26 +350,26 @@ function Install-Daemon {
 # Placing it BESIDE roomlerd.exe is the supported layout -- the tray
 # resolves the daemon as a sibling of its own EXE.
 function Install-Desktop([string]$InstallDir) {
-    Say "resolving roomler-desktop from $Server/api/agent/latest-release"
+    Say "resolving meshharbor-desktop from $Server/api/agent/latest-release"
     try {
         $releases = Invoke-RestMethod -UseBasicParsing "$Server/api/agent/latest-release"
         $asset = $null
         foreach ($r in $releases) {
             if ($r.tag_name -notlike 'agent-v*' -or $r.draft) { continue }
             $asset = $r.assets | Where-Object {
-                $_.name -like 'roomler-desktop-*-x86_64-pc-windows-msvc*.exe' -and $_.name -notlike '*.sha256'
+                $_.name -like 'meshharbor-desktop-*-x86_64-pc-windows-msvc*.exe' -and $_.name -notlike '*.sha256'
             } | Select-Object -First 1
             if ($asset) { break }
         }
-        if (-not $asset) { Warn "no roomler-desktop asset found in recent agent releases -- skipped"; return }
-        $exe = Join-Path $stage 'roomler-desktop.exe'
+        if (-not $asset) { Warn "no meshharbor-desktop asset found in recent agent releases -- skipped"; return }
+        $exe = Join-Path $stage 'meshharbor-desktop.exe'
         Say ("downloading " + $asset.name)
         Invoke-WebRequest -UseBasicParsing $asset.browser_download_url -OutFile $exe
         Assert-Sha256 -File $exe -Digest $asset.digest
-        Copy-Item $exe (Join-Path $InstallDir 'roomler-desktop.exe') -Force
-        Say "placed roomler-desktop.exe in $InstallDir"
+        Copy-Item $exe (Join-Path $InstallDir 'meshharbor-desktop.exe') -Force
+        Say "placed meshharbor-desktop.exe in $InstallDir"
     } catch {
-        Warn "roomler-desktop install skipped: $_"
+        Warn "meshharbor-desktop install skipped: $_"
     }
 }
 
@@ -383,7 +383,7 @@ function Install-TunnelClient {
     Invoke-WebRequest -UseBasicParsing ($Server + $health.uri) -OutFile $zip
     Assert-Sha256 -File $zip -Digest $health.digest
 
-    # The roomler-setup wizard's canonical per-user install root -- a
+    # The meshharbor-setup wizard's canonical per-user install root -- a
     # script install lands where the wizard (and its detect) expects.
     $installDir = Join-Path $env:LOCALAPPDATA 'roomler\roomler-tunnel\Programs\roomler-tunnel'
 
@@ -513,13 +513,13 @@ function Uninstall-Roomler {
         }
     }
 
-    # 2) Script-copied leftovers the MSI never owned: roomler-desktop.exe
+    # 2) Script-copied leftovers the MSI never owned: meshharbor-desktop.exe
     #    (placed by Install-Desktop) + the then-empty install dir.
     foreach ($dir in @((Join-Path $env:ProgramFiles 'Roomler'), (Join-Path $env:LOCALAPPDATA 'Programs\Roomler'))) {
-        $desk = Join-Path $dir 'roomler-desktop.exe'
+        $desk = Join-Path $dir 'meshharbor-desktop.exe'
         if (Test-Path $desk) {
             try {
-                Get-Process -Name 'roomler-desktop' -ErrorAction SilentlyContinue |
+                Get-Process -Name 'meshharbor-desktop' -ErrorAction SilentlyContinue |
                     Where-Object { $_.Path -like ($dir + '*') } | Stop-Process -Force -ErrorAction SilentlyContinue
                 Remove-Item $desk -Force
                 Say "removed leftover $desk"

@@ -9,7 +9,7 @@ The team shipped a QUIC (quinn) transport for the **roomler** CLI (native-to-nat
 This doc is the answer ("research + evaluate MoQ + weigh pros/cons + decide if it benefits remote desktop + give an implementation plan"). It is grounded in (a) a full code map of the current data plane, (b) the IETF/library/browser state of MoQ as of June 2026, (c) a peer-reviewed QUIC-vs-WebRTC remote-rendering benchmark, and (d) an adversarial stress-test of the conclusion.
 
 ### How remote desktop works today (verified)
-- **P2P WebRTC** (webrtc-rs): the controlled-host **agent is the answerer**, the **browser controller is the offerer**; media flows agent↔browser directly, **TURN-relayed only when NAT requires** — and TURN relays *opaque DTLS*, so **the server never sees pixels**. (`agents/roomlerd/src/peer.rs`; `crates/remote_control/src/turn_creds.rs`.)
+- **P2P WebRTC** (webrtc-rs): the controlled-host **agent is the answerer**, the **browser controller is the offerer**; media flows agent↔browser directly, **TURN-relayed only when NAT requires** — and TURN relays *opaque DTLS*, so **the server never sees pixels**. (`agents/meshharbord/src/peer.rs`; `crates/remote_control/src/turn_creds.rs`.)
 - Three video sub-paths: WebRTC **video track** (RTP/SRTP, H.264/HEVC/AV1, `peer.rs:852-1690`); **HEVC-over-DataChannel** and **VP9-444-over-DataChannel** (`peer.rs:895-994`) — both send raw frames over the `"video-bytes"` SCTP DataChannel with a **13-byte length header** (`frame_video_bytes`, `peer.rs:1714`), 16 KiB chunks, AIMD on `dc.buffered_amount`, keyframe-on-open gating.
 - The two DC paths **decode in the browser via WebCodecs onto a canvas** (`ui/src/workers/rc-vp9-444-worker.ts`, `rc-hevc-worker.ts`) — already bypassing `<video>`'s jitter buffer (present-ASAP). Input is JSON over an `"input"` DataChannel (`peer.rs:2922-3008`, enigo). Transport is chosen via `AgentCaps.transports` + `ClientMsg::SessionRequest{preferred_transport}` (`encode/caps.rs:142-232`, `signaling.rs:250`).
 
@@ -61,7 +61,7 @@ Everything is **feature-flagged** (`--features moq-broadcast` + `ROOMLERD_MOQ=1`
 - `moq-lite`/`web-transport` **don't build clean against `quinn 0.11 + ring`** (the deliberate no-C-build stance, `tunnel-core/Cargo.toml`) and vendoring exceeds ~3 days.
 
 ### Phase 1 — broadcast feature (only on GO **and** a real multi-viewer need)
-- **Publisher module** in `agents/roomlerd`: clone `media_pump_vp9_444_dc` (`peer.rs:1743`) into `media_pump_moq` — identical capture/keyframe/AIMD/scene-change logic, only the *sink* differs (publish object instead of `dc.send`). Reuse `frame_video_bytes` **verbatim**.
+- **Publisher module** in `agents/meshharbord`: clone `media_pump_vp9_444_dc` (`peer.rs:1743`) into `media_pump_moq` — identical capture/keyframe/AIMD/scene-change logic, only the *sink* differs (publish object instead of `dc.send`). Reuse `frame_video_bytes` **verbatim**.
 - **Wire types** `rc:broadcast.*` in `crates/remote_control/src/signaling.rs` (mirror `SessionRequest`/`Request` `signaling.rs:250/533` + the tunnel additions): `BroadcastStart` → `BroadcastRequest`(agent, via `Hub::send_to_agent`) → `BroadcastReady{relay_url, path}`; `BroadcastJoin` → server tenant/consent gate (mirror cross-tenant check `api/src/ws/tunnel.rs:394`) → `BroadcastJoinGranted{relay_url, path, [sframe_key]}`. **Broadcast triggers the existing consent broker** (a broadcast is a stronger consent event than a 1:1 view).
 - **Caps + version gate**: probe-gated `"moq-broadcast"` in `AgentCaps.transports` (`encode/caps.rs`, default build omits it — lock with a caps regression test); add `MIN_MOQ_AGENT_RC` + `agent_supports_moq()` next to `agent_supports_quic` (`crates/tunnel-core/src/transport/mod.rs:38-84`) so the server won't set up a broadcast for an agent too old to publish.
 - **Relay**: self-hosted `moq-relay` co-located with coturn; hand out the relay address like TURN creds (template: `ice_servers_for`, `turn_creds.rs:54`).
@@ -82,11 +82,11 @@ Everything is **feature-flagged** (`--features moq-broadcast` + `ROOMLERD_MOQ=1`
 - **DO NOT BUILD** (stop after Phase 0, or skip it) if: no customer is asking for observers; relay-blindness is required and secure-objects keys can't be made sane; or Phase-0 shows the publisher isn't free / fan-out doesn't hold.
 
 ## Critical files (for a future implementation)
-- `agents/roomlerd/src/peer.rs` — publisher source to clone (`media_pump_vp9_444_dc:1634`, `frame_video_bytes:1605`, dispatch `:885-987`).
-- `agents/roomlerd/src/signaling.rs` — agent-side `rc:broadcast.*` handling + a new broadcast-peer map (mirror the `TunnelQuicSetup` arm + `close_all_tunnel_quic_peers` teardown).
+- `agents/meshharbord/src/peer.rs` — publisher source to clone (`media_pump_vp9_444_dc:1634`, `frame_video_bytes:1605`, dispatch `:885-987`).
+- `agents/meshharbord/src/signaling.rs` — agent-side `rc:broadcast.*` handling + a new broadcast-peer map (mirror the `TunnelQuicSetup` arm + `close_all_tunnel_quic_peers` teardown).
 - `crates/remote_control/src/signaling.rs` — new `rc:broadcast.*` `ClientMsg`/`ServerMsg` wire types (mirror `SessionRequest`/`Request` + tunnel additions).
 - `crates/tunnel-core/src/transport/mod.rs` — `MIN_MOQ_AGENT_RC` + `agent_supports_moq()` next to `agent_supports_quic`.
-- `agents/roomlerd/src/encode/caps.rs` — probe-gated `"moq-broadcast"` cap + a default-build-omits-it test.
+- `agents/meshharbord/src/encode/caps.rs` — probe-gated `"moq-broadcast"` cap + a default-build-omits-it test.
 - `ui/src/composables/useRemoteControl.ts` — `startMoqObserverPath()` (mirror `startVp9_444Path`); reuse the worker handoff verbatim. `ui/src/workers/rc-vp9-444-worker.ts` / `rc-hevc-worker.ts` — **unchanged**.
 - `crates/api/src/ws/tunnel.rs` — server-side auth-boundary + version-gate pattern to copy. `crates/remote_control/src/turn_creds.rs` — `ice_servers_for` template for handing out the relay address.
 - New deps (Phase 0): `moq-lite`, `web-transport` (Rust, kixelated/moq-dev); `moq-relay` container. New build feature `moq-broadcast`.

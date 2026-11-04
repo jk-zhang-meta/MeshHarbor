@@ -55,7 +55,7 @@ and leaving the tag unmoved.
 ### What is genuinely unknown
 
 The Dockerfile is arch-neutral and the runtime image ships only
-`roomler-ai-api`, `derp-relay` and the built UI — **no agent media stack**
+`meshharbor-api`, `derp-relay` and the built UI — **no agent media stack**
 (`openh264`, `scrap`, `enigo` are agent-only). So the risk is concentrated in
 three dependencies that carry architecture-specific build machinery:
 

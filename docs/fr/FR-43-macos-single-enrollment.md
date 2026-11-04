@@ -23,12 +23,12 @@ negotiable:
 | capture / input / clipboard | a WindowServer connection | the console user's GUI session |
 | `utun` + route table + SSH | root | session 0 |
 
-`docs/installation.md:104-113` states it; `agents/roomlerd/packaging/macos/com.roomler.agent.plist`
+`docs/installation.md:104-113` states it; `agents/meshharbord/packaging/macos/com.roomler.agent.plist`
 and `com.roomler.daemon.plist` are the two units, and both invoke the *same* binary with
 the same `run` subcommand — the split is context, not code.
 
 **Windows does not need two because a SYSTEM process can reach the interactive desktop.**
-`agents/roomlerd/src/win_service/desktop.rs:1-16` documents the mechanism (a thread
+`agents/meshharbord/src/win_service/desktop.rs:1-16` documents the mechanism (a thread
 attaches to `winsta0\Default` / `winsta0\Winlogon` and captures/injects there), and
 `win_service/supervisor.rs:266` (`spawn_in_session`) + `:746` (`decide_spawn`) is the shape: the SCM
 service supervises, the agent proper runs in a session. macOS has **no `SetThreadDesktop`
@@ -162,7 +162,7 @@ daemon must accept exactly one attached worker at a time.
 ### Consent
 
 Stays in the daemon, and this is not a compromise — FR-27 already built the mechanism.
-`PromptSurface` (`agents/roomlerd/src/consent.rs:184`) is a chain, and its **companion**
+`PromptSurface` (`agents/meshharbord/src/consent.rs:184`) is a chain, and its **companion**
 rung is precisely "a per-user process the daemon starts on demand"
 (`companion::ensure_running()`). A session-0 daemon has no native surface and correctly
 falls through to it. So the daemon keeps the policy decision (`strictest_of`, the local
@@ -341,7 +341,7 @@ and an update is precisely when nobody is watching.
 Neither half was wrong on its own; nothing connected them. The supervisor knew
 about the LaunchAgent, and the installer had never heard of the supervisor.
 
-**The guard** (`agents/roomlerd/packaging/macos/postinstall`): when the root
+**The guard** (`agents/meshharbord/packaging/macos/postinstall`): when the root
 daemon is opted in **and** its config carries
 `macos_supervise_gui_worker = true`, the LaunchAgent is booted out and its plist
 removed, and the daemon owns the worker.
@@ -367,7 +367,7 @@ removed, and the daemon owns the worker.
   always booted this label out as its first act. The change is that it is no
   longer bootstrapped back.
 
-⚠️ `agents/roomlerd/packaging/macos/postinstall` had **no `.gitattributes`
+⚠️ `agents/meshharbord/packaging/macos/postinstall` had **no `.gitattributes`
 rule**, only `core.autocrlf` on one developer's box. It has no extension, so
 `scripts/*.sh` never matched it, and the rule written for the dpkg maintainer
 scripts — *"`#!/bin/sh\r` … fails to configure on EVERY host"* — had no macOS

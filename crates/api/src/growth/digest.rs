@@ -43,9 +43,9 @@ use std::{
 use bson::{Bson, DateTime, Document, doc, oid::ObjectId};
 use chrono::{NaiveDate, Timelike};
 use futures::TryStreamExt;
-use roomler_ai_db::models::tenant::Plan;
-use roomler_ai_remote_control::setup_diagnostics::{Outcome, Step};
-use roomler_ai_services::{
+use meshharbor_db::models::tenant::Plan;
+use meshharbor_remote_control::setup_diagnostics::{Outcome, Step};
+use meshharbor_services::{
     EmailService,
     dao::{
         base::DaoError,
@@ -60,7 +60,7 @@ use roomler_ai_services::{
         setup_diagnostics::SetupDiagnosticsDao,
     },
 };
-use roomler_core::{campaign, growth::ExclusionSet};
+use meshharbor_core::{campaign, growth::ExclusionSet};
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
@@ -351,7 +351,7 @@ impl<T> From<Result<T, PurestatError>> for Measured<T> {
 /// not an outage: the sections that need the goal say which one, and the
 /// ones that do not still measure. Defined beside the client since P6 (the
 /// `saas` puller reads it too); re-exported so the path stays.
-pub use roomler_ai_services::purestat::unknown_goal;
+pub use meshharbor_services::purestat::unknown_goal;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KeyCount {
@@ -691,8 +691,8 @@ pub struct IssueDelivery {
     pub complaints: i64,
 }
 
-impl From<roomler_ai_services::dao::newsletter_send::DeliveryCounts> for IssueDelivery {
-    fn from(c: roomler_ai_services::dao::newsletter_send::DeliveryCounts) -> Self {
+impl From<meshharbor_services::dao::newsletter_send::DeliveryCounts> for IssueDelivery {
+    fn from(c: meshharbor_services::dao::newsletter_send::DeliveryCounts) -> Self {
         Self {
             delivered: c.delivered,
             bounced: c.bounced,
@@ -1437,7 +1437,7 @@ async fn read_tokens(
 ) -> Result<Tokens, DigestError> {
     let docs = find_docs(
         state,
-        roomler_ai_services::dao::enroll_token_issued::ENROLL_TOKEN_ISSUED,
+        meshharbor_services::dao::enroll_token_issued::ENROLL_TOKEN_ISSUED,
         doc! {
             "issued_at": w.between(Span::D28),
             "tenant_id": { "$nin": excluded_ids(&set.tenants) },
@@ -1472,7 +1472,7 @@ async fn read_fetches(
     state: &AppState,
     w: &Windows,
 ) -> Result<(Vec<FetchRow>, Measured<Figure>), DigestError> {
-    use roomler_ai_services::dao::growth::{
+    use meshharbor_services::dao::growth::{
         INSTALL_FETCH_METRIC, INSTALL_INTERNAL_CLIENT, INSTALL_SOURCE,
     };
     let (day, d7, d28) = w.dates();
@@ -1500,7 +1500,7 @@ async fn read_fetches(
         f.d28 += r.value;
     }
     let (networks, refused) =
-        roomler_core::growth::InternalNetworks::parse(&state.settings.growth.internal_networks);
+        meshharbor_core::growth::InternalNetworks::parse(&state.settings.growth.internal_networks);
     let internal = if networks.is_empty() && internal_rows == 0 {
         // Two reasons for one state, said apart: nothing written, or nothing
         // usable written (the boot warning names each entry and why).
@@ -1570,7 +1570,7 @@ async fn read_wizard_steps(state: &AppState, w: &Windows) -> Result<WizardSteps,
     let rows = SetupDiagnosticsDao::new(&state.db)
         .rows_between(w.start_dt(Span::D28), w.end_dt())
         .await?;
-    if rows.len() as i64 >= roomler_ai_services::dao::setup_diagnostics::MAX_READ_ROWS {
+    if rows.len() as i64 >= meshharbor_services::dao::setup_diagnostics::MAX_READ_ROWS {
         warn!(
             rows = rows.len(),
             "setup_diagnostics: the digest's read hit its row bound; the counts are a floor"
@@ -1979,7 +1979,7 @@ async fn newsletter_section(state: &AppState, w: &Windows) -> Result<Newsletter,
         .iter()
         .filter_map(|(_, f)| f.as_ref().map(|f| f.slug.clone()))
         .collect();
-    let delivery = roomler_ai_services::dao::newsletter_send::NewsletterSendDao::new(&state.db)
+    let delivery = meshharbor_services::dao::newsletter_send::NewsletterSendDao::new(&state.db)
         .delivery_counts(&ids)
         .await?;
     let via = super::newsletter::unsubscribed_via(state, &slugs).await?;
@@ -2048,7 +2048,7 @@ async fn newsletter_section(state: &AppState, w: &Windows) -> Result<Newsletter,
 /// saying so after a real one (2026-10-17: one paid invoice read, naming no
 /// org here).
 pub fn no_billing_record(
-    backfill: Option<&roomler_ai_services::dao::growth::GrowthPull>,
+    backfill: Option<&meshharbor_services::dao::growth::GrowthPull>,
 ) -> String {
     match backfill {
         None => "no billing event on record yet: none from Stripe's webhook, and the backfill \
@@ -2072,12 +2072,12 @@ pub fn no_billing_record(
 /// and every count by the instant it happened. `record_since` and
 /// `backfilled` are the caller's (they read the whole record).
 pub fn billed_figures(
-    rows: &[roomler_ai_services::dao::billing_event::BillingEvent],
+    rows: &[meshharbor_services::dao::billing_event::BillingEvent],
     w: &Windows,
     record_since: Option<String>,
     backfilled: bool,
 ) -> BilledFigures {
-    use roomler_ai_services::{billing, dao::billing_event::BillingKind};
+    use meshharbor_services::{billing, dao::billing_event::BillingKind};
     let orgs = billing::fold(rows);
     let at = w.day_end - 1;
     let mut mrr: BTreeMap<String, CurrencyMrr> = BTreeMap::new();
@@ -2143,14 +2143,14 @@ async fn billed_section(
     w: &Windows,
     set: &ExclusionSet,
 ) -> Result<Measured<BilledFigures>, DigestError> {
-    use roomler_ai_services::billing;
+    use meshharbor_services::billing;
     let Some(first) = billing::record_start(&state.db).await? else {
         let backfill = billing::last_backfill(&state.db).await?;
         return Ok(Measured::NotMeasured(NotMeasured::now(no_billing_record(
             backfill.as_ref(),
         ))));
     };
-    let rows = roomler_ai_services::dao::billing_event::BillingEventDao::new(&state.db)
+    let rows = meshharbor_services::dao::billing_event::BillingEventDao::new(&state.db)
         .list(None, &excluded_ids(&set.tenants))
         .await?;
     let backfilled = billing::last_backfill(&state.db).await?.is_some();
@@ -2163,7 +2163,7 @@ async fn billed_section(
 }
 
 /// P4 — the quota collisions of the windows, from the per-day counters
-/// `roomler_core::quota` bumps (core: read whatever modules are mounted).
+/// `meshharbor_core::quota` bumps (core: read whatever modules are mounted).
 /// The org is the `tenant` dimension, so an excluded org's rows are left
 /// out here, at read time.
 async fn upgrade_intent_section(
@@ -2171,7 +2171,7 @@ async fn upgrade_intent_section(
     w: &Windows,
     set: &ExclusionSet,
 ) -> Result<UpgradeIntent, DigestError> {
-    use roomler_ai_services::dao::growth::{QUOTA_COLLISION_METRIC, QUOTA_SOURCE};
+    use meshharbor_services::dao::growth::{QUOTA_COLLISION_METRIC, QUOTA_SOURCE};
     let (day, _, d28) = w.dates();
     let rows = GrowthDao::new(&state.db)
         .read_daily(QUOTA_SOURCE, QUOTA_COLLISION_METRIC, &d28, &day)
@@ -3561,7 +3561,7 @@ async fn finish(
     let doc = DigestDoc {
         day: key.to_string(),
         status: DigestStatus::Computing,
-        version: roomler_ai_services::dao::growth_digest::DIGEST_VERSION,
+        version: meshharbor_services::dao::growth_digest::DIGEST_VERSION,
         claimed_at: now,
         computed_at: Some(now),
         sent_at: None,
@@ -4015,7 +4015,7 @@ mod tests {
     /// that are gone now went with their org.
     #[test]
     fn the_no_billing_reason_says_whether_the_backfill_ran() {
-        use roomler_ai_services::dao::growth::{BILLING_BACKFILL_SOURCE, GrowthPull, PullStatus};
+        use meshharbor_services::dao::growth::{BILLING_BACKFILL_SOURCE, GrowthPull, PullStatus};
         let run = |rows: u32| GrowthPull {
             id: GrowthPull::id_of(BILLING_BACKFILL_SOURCE, "2026-10-17"),
             source: BILLING_BACKFILL_SOURCE.into(),

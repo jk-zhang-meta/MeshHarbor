@@ -367,7 +367,7 @@ review like one. The root socket itself is unchanged. Kill switch:
 `ROOMLERD_PERSON_SOCKET=0`.
 
 **A remote-desktop session's media transport is hardened past webrtc-rs' defaults**
-(FR-101 P1, `agents/roomlerd/src/rc_transport.rs`, applied in `AgentPeer::new`):
+(FR-101 P1, `agents/meshharbord/src/rc_transport.rs`, applied in `AgentPeer::new`):
 
 | Setting | Default now | Why | Switch back |
 |---|---|---|---|
@@ -378,7 +378,7 @@ review like one. The root socket itself is unchanged. Kill switch:
 > **Corrected 2026-10-13: replay protection was never off.** FR-101's evidence said
 > webrtc-srtp 0.14 had no replay window unless one was set. That read the fallback in
 > `Context::new`, and a session never reaches it, because `Session::new` supplies a
-> window first. FR-16 L0's replay cells (`agents/roomlerd/tests/l4_latency.rs`) capture
+> window first. FR-16 L0's replay cells (`agents/meshharbord/tests/l4_latency.rs`) capture
 > the controller's SRTCP PLI on the link and deliver it to the agent again, into a live
 > session:
 >

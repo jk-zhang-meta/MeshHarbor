@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 G ROX EOOD
-//! `roomler-core` — the server's composition contract (FR-69).
+//! `meshharbor-core` — the server's composition contract (FR-69).
 //!
 //! The server is becoming a **modular monolith**: one small core plus six
 //! pillar modules, each a crate behind the one [`Module`] contract defined
@@ -43,9 +43,9 @@
 //! # Naming
 //!
 //! Server-side crates are `roomler-ai-*`; this crate is the one exception by
-//! design, `roomler-core`. Module crates are `roomler-ai-mod-<name>`. The
-//! daemon's shared building blocks are `roomler-node-core`
-//! (`crates/agent-core`), which held the name `roomler-core` from FR-21 until
+//! design, `meshharbor-core`. Module crates are `roomler-ai-mod-<name>`. The
+//! daemon's shared building blocks are `meshharbor-node-core`
+//! (`crates/agent-core`), which held the name `meshharbor-core` from FR-21 until
 //! FR-69.
 
 pub mod admission;
@@ -89,7 +89,7 @@ pub use hooks::{
 };
 pub use job::{Cadence, Job, JobFuture};
 pub use module::Module;
-pub use roomler_ai_db::indexes::{IndexOp, IndexPlan, IndexSet};
+pub use meshharbor_db::indexes::{IndexOp, IndexPlan, IndexSet};
 pub use state::Core;
 pub use ws::{Role, UpgradeSpec, WsCtx, WsHandler, WsHandlerSpec, WsRegistration};
 

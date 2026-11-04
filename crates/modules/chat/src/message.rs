@@ -8,11 +8,11 @@ use bson::oid::ObjectId;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-use roomler_core::{ApiError, extractors::auth::AuthUser};
+use meshharbor_core::{ApiError, extractors::auth::AuthUser};
 
 use crate::ChatState;
-use roomler_ai_db::models::{Mentions, MessageAttachment};
-use roomler_ai_services::dao::base::PaginationParams;
+use meshharbor_db::models::{Mentions, MessageAttachment};
+use meshharbor_services::dao::base::PaginationParams;
 
 #[derive(Debug, Deserialize)]
 pub struct MentionRequest {
@@ -67,7 +67,7 @@ pub struct MessageResponse {
     /// FR-90 — what owns this message's meaning (a turn stub's session), if
     /// anything. Chat never interprets it.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub binding: Option<roomler_ai_db::models::Binding>,
+    pub binding: Option<meshharbor_db::models::Binding>,
     pub content: String,
     pub message_type: String,
     pub is_pinned: bool,
@@ -243,7 +243,7 @@ pub async fn create(
         "type": "message:create",
         "data": &response,
     });
-    roomler_core::ws::dispatcher::broadcast_with_redis(
+    meshharbor_core::ws::dispatcher::broadcast_with_redis(
         &state.ws_storage,
         &state.redis_pubsub,
         &all_member_ids,
@@ -268,7 +268,7 @@ pub async fn create(
             "data": &parent_response,
         });
         // Broadcast to ALL members (including sender, so sender's UI also updates)
-        roomler_core::ws::dispatcher::broadcast_with_redis(
+        meshharbor_core::ws::dispatcher::broadcast_with_redis(
             &state.ws_storage,
             &state.redis_pubsub,
             &all_member_ids,
@@ -304,7 +304,7 @@ pub async fn create(
             .cloned()
             .unwrap_or_else(|| auth.user_id.to_hex());
 
-        roomler_core::notify::notify_mentions(
+        meshharbor_core::notify::notify_mentions(
             &state,
             tid,
             rid,
@@ -362,7 +362,7 @@ pub async fn update(
         "type": "message:update",
         "data": &response,
     });
-    roomler_core::ws::dispatcher::broadcast_with_redis(
+    meshharbor_core::ws::dispatcher::broadcast_with_redis(
         &state.ws_storage,
         &state.redis_pubsub,
         &member_ids,
@@ -409,7 +409,7 @@ pub async fn delete(
             "room_id": room_id,
         }
     });
-    roomler_core::ws::dispatcher::broadcast_with_redis(
+    meshharbor_core::ws::dispatcher::broadcast_with_redis(
         &state.ws_storage,
         &state.redis_pubsub,
         &member_ids,
@@ -480,7 +480,7 @@ pub async fn toggle_pin(
             "pinned": body.pinned,
         }
     });
-    roomler_core::ws::dispatcher::broadcast_with_redis(
+    meshharbor_core::ws::dispatcher::broadcast_with_redis(
         &state.ws_storage,
         &state.redis_pubsub,
         &member_ids,
@@ -530,7 +530,7 @@ pub async fn thread_replies(
 }
 
 pub(crate) fn to_response(
-    m: roomler_ai_db::models::Message,
+    m: meshharbor_db::models::Message,
     names: &HashMap<ObjectId, String>,
     viewer_id: Option<ObjectId>,
 ) -> MessageResponse {
@@ -592,7 +592,7 @@ pub(crate) fn to_response(
 }
 
 /// Collect unique author IDs from a slice of messages
-fn collect_author_ids(messages: &[roomler_ai_db::models::Message]) -> Vec<ObjectId> {
+fn collect_author_ids(messages: &[meshharbor_db::models::Message]) -> Vec<ObjectId> {
     let mut ids: Vec<ObjectId> = messages.iter().map(|m| m.author_id).collect();
     ids.sort();
     ids.dedup();

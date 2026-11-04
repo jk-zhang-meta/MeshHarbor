@@ -1607,7 +1607,7 @@ pub struct EndpointState {
 
 /// FR-84 D4 — what this device can encode, as [`Request::EncoderCaps`]
 /// reports it. Plain strings on the wire (the vocabulary lives in
-/// `roomler_ai_remote_control::models`; this leaf crate carries none of it),
+/// `meshharbor_remote_control::models`; this leaf crate carries none of it),
 /// every field additive.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default)]
 pub struct EncoderCapsSummary {

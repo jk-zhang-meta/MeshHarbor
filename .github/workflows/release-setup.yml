@@ -1,6 +1,6 @@
-name: Release roomler-setup
+name: Release meshharbor-setup
 
-# Builds the unified `roomler-setup` Tauri 2 wizard for the
+# Builds the unified `meshharbor-setup` Tauri 2 wizard for the
 # desktop targets the operator might run on:
 #   - Linux x86_64 (gtk + webkit2gtk) — packaged as `.tar.gz`
 #   - Linux aarch64 (the same, built on the arm64 runner; FR-97 P7b) — `.tar.gz`
@@ -24,7 +24,7 @@ name: Release roomler-setup
 # Workspace Cargo.toml version is the source of truth (validate-version
 # enforces it). The api's `/api/setup/<platform>` proxy
 # (routes/setup_release.rs) serves the published assets via its 1h cache;
-# `pick_setup_asset` requires the exact `roomler-setup-<v>-<triple>.<ext>`
+# `pick_setup_asset` requires the exact `meshharbor-setup-<v>-<triple>.<ext>`
 # names produced below (windows→.zip, linux→.tar.gz, macos→.tar.gz).
 #
 # Windows signing is REQUIRED (the wizard downloads MSIs + invokes
@@ -206,7 +206,7 @@ jobs:
           save-if: ${{ github.ref_type != 'tag' }}
       - name: Install Tauri Linux system deps
         # webkit2gtk + libsoup + ayatana; librsvg2 for icon decode. Same
-        # set as the legacy tunnel wizard (roomler-setup pulls the same
+        # set as the legacy tunnel wizard (meshharbor-setup pulls the same
         # Tauri Linux runtime). roomlerd comes in with DEFAULT
         # features (signalling-only) — no vcpkg/FFmpeg/libvpx needed.
         run: |
@@ -219,18 +219,18 @@ jobs:
             libayatana-appindicator3-dev \
             patchelf
       - name: Build wizard (release)
-        run: cargo build -p roomler-setup --release
+        run: cargo build -p meshharbor-setup --release
       - name: Strip binary
-        run: strip target/release/roomler-setup
+        run: strip target/release/meshharbor-setup
       - name: Pack tarball
         id: tar
         shell: bash
         run: |
           set -euo pipefail
           version="${{ needs.validate-version.outputs.version }}"
-          name="roomler-setup-${version}-x86_64-unknown-linux-gnu"
+          name="meshharbor-setup-${version}-x86_64-unknown-linux-gnu"
           mkdir -p "/tmp/${name}"
-          cp target/release/roomler-setup "/tmp/${name}/"
+          cp target/release/meshharbor-setup "/tmp/${name}/"
           cp LICENSE README.md "/tmp/${name}/" 2>/dev/null || true
           (cd /tmp && tar czf "${name}.tar.gz" "${name}")
           sha256sum "/tmp/${name}.tar.gz" | awk '{print $1"  "$2}' > "/tmp/${name}.tar.gz.sha256"
@@ -282,9 +282,9 @@ jobs:
             libayatana-appindicator3-dev \
             patchelf
       - name: Build wizard (release)
-        run: cargo build -p roomler-setup --release
+        run: cargo build -p meshharbor-setup --release
       - name: Strip binary
-        run: strip target/release/roomler-setup
+        run: strip target/release/meshharbor-setup
       - name: Smoke — the binary is aarch64 and links against this base
         # A GUI cannot open here, but a missing shared library or a wrong
         # architecture fails before it would; `ldd` names any library the
@@ -292,17 +292,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          readelf -h target/release/roomler-setup | grep -q 'Machine:.*AArch64'
-          if ldd target/release/roomler-setup | grep 'not found'; then exit 1; fi
+          readelf -h target/release/meshharbor-setup | grep -q 'Machine:.*AArch64'
+          if ldd target/release/meshharbor-setup | grep 'not found'; then exit 1; fi
       - name: Pack tarball
         id: tar
         shell: bash
         run: |
           set -euo pipefail
           version="${{ needs.validate-version.outputs.version }}"
-          name="roomler-setup-${version}-aarch64-unknown-linux-gnu"
+          name="meshharbor-setup-${version}-aarch64-unknown-linux-gnu"
           mkdir -p "/tmp/${name}"
-          cp target/release/roomler-setup "/tmp/${name}/"
+          cp target/release/meshharbor-setup "/tmp/${name}/"
           cp LICENSE README.md "/tmp/${name}/" 2>/dev/null || true
           (cd /tmp && tar czf "${name}.tar.gz" "${name}")
           sha256sum "/tmp/${name}.tar.gz" | awk '{print $1"  "$2}' > "/tmp/${name}.tar.gz.sha256"
@@ -342,17 +342,17 @@ jobs:
           shared-key: setup-macos
           save-if: ${{ github.ref_type != 'tag' }}
       - name: Build wizard x86_64
-        run: cargo build -p roomler-setup --release --target x86_64-apple-darwin
+        run: cargo build -p meshharbor-setup --release --target x86_64-apple-darwin
       - name: Build wizard aarch64
-        run: cargo build -p roomler-setup --release --target aarch64-apple-darwin
+        run: cargo build -p meshharbor-setup --release --target aarch64-apple-darwin
       - name: Lipo into universal
         run: |
           mkdir -p target/release-universal
-          lipo -create -output target/release-universal/roomler-setup \
-            target/x86_64-apple-darwin/release/roomler-setup \
-            target/aarch64-apple-darwin/release/roomler-setup
-          strip target/release-universal/roomler-setup
-          file target/release-universal/roomler-setup
+          lipo -create -output target/release-universal/meshharbor-setup \
+            target/x86_64-apple-darwin/release/meshharbor-setup \
+            target/aarch64-apple-darwin/release/meshharbor-setup
+          strip target/release-universal/meshharbor-setup
+          file target/release-universal/meshharbor-setup
 
       # Wrap the universal binary in a .app BEFORE signing.
       #
@@ -361,7 +361,7 @@ jobs:
       # a stapled notarisation ticket (Apple only staples bundles/.dmg/.pkg).
       # A bundle can -- and the ticket lands as a regular file inside it, so
       # it survives the tar round-trip and the wizard validates even on an
-      # offline Mac. A relative symlink keeps the documented `./roomler-setup`
+      # offline Mac. A relative symlink keeps the documented `./meshharbor-setup`
       # invocation working, and the ARCHIVE NAME is unchanged so
       # `pick_setup_asset` (setup_release.rs) is untouched.
       - name: Stage .app bundle
@@ -372,19 +372,19 @@ jobs:
           version="${{ needs.validate-version.outputs.version }}"
           APP="/tmp/stage/Roomler Setup.app"
           mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-          cp target/release-universal/roomler-setup "$APP/Contents/MacOS/roomler-setup"
-          chmod 755 "$APP/Contents/MacOS/roomler-setup"
+          cp target/release-universal/meshharbor-setup "$APP/Contents/MacOS/meshharbor-setup"
+          chmod 755 "$APP/Contents/MacOS/meshharbor-setup"
           # FR-84 S2: the bundle's icon (Finder, Dock, the Gatekeeper dialog),
           # staged BEFORE signing so it is inside the sealed contents — the
           # same PNG + CFBundleIconFile shape the companion .app uses in
           # release-agent.yml.
-          cp agents/roomler-setup/icons/icon.png "$APP/Contents/Resources/icon.png"
+          cp agents/meshharbor-setup/icons/icon.png "$APP/Contents/Resources/icon.png"
           cat > "$APP/Contents/Info.plist" <<PLIST
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
           <plist version="1.0">
           <dict>
-              <key>CFBundleExecutable</key>          <string>roomler-setup</string>
+              <key>CFBundleExecutable</key>          <string>meshharbor-setup</string>
               <key>CFBundleIdentifier</key>          <string>ai.roomler.setup</string>
               <key>CFBundleName</key>                <string>Roomler Setup</string>
               <key>CFBundleShortVersionString</key>  <string>${version}</string>
@@ -416,12 +416,12 @@ jobs:
         run: |
           set -euo pipefail
           version="${{ needs.validate-version.outputs.version }}"
-          name="roomler-setup-${version}-universal-apple-darwin"
+          name="meshharbor-setup-${version}-universal-apple-darwin"
           mkdir -p "/tmp/${name}"
           cp -R "/tmp/stage/Roomler Setup.app" "/tmp/${name}/"
-          # Keep `./roomler-setup` working (docs + muscle memory) while the
+          # Keep `./meshharbor-setup` working (docs + muscle memory) while the
           # real, stapled code lives in the bundle.
-          ln -s "Roomler Setup.app/Contents/MacOS/roomler-setup" "/tmp/${name}/roomler-setup"
+          ln -s "Roomler Setup.app/Contents/MacOS/meshharbor-setup" "/tmp/${name}/meshharbor-setup"
           cp LICENSE README.md "/tmp/${name}/" 2>/dev/null || true
           # `tar` preserves the symlink and the stapled ticket; COPYFILE_DISABLE
           # stops bsdtar emitting ._ AppleDouble files alongside every entry.
@@ -492,7 +492,7 @@ jobs:
         # against the Tauri 2 stack.
         env:
           RUSTFLAGS: -C target-feature=+crt-static
-        run: cargo build -p roomler-setup --release
+        run: cargo build -p meshharbor-setup --release
       # Sign BEFORE zipping, so the EXE the operator extracts is the signed
       # one. This is the artifact rc.28 BLOCKER-10 was about: a downloader
       # that fetches MSIs and shells out to msiexec is exactly the shape
@@ -501,7 +501,7 @@ jobs:
         id: sign
         uses: ./.github/actions/sign-windows
         with:
-          files:                    target\release\roomler-setup.exe
+          files:                    target\release\meshharbor-setup.exe
           description:              'Roomler Setup'
           mode:                     ${{ github.event.inputs.signing_mode || 'auto' }}
           require:                  ${{ needs.validate-version.outputs.is_release == 'true' || github.event.inputs.require_signing == 'true' }}
@@ -526,9 +526,9 @@ jobs:
           # health endpoint returns whatever filename exists — a stable
           # name keeps the operator-facing URI deterministic. Signed-ness
           # is a property of the EXE inside, surfaced in the release notes.
-          $name = "roomler-setup-$version-x86_64-pc-windows-msvc"
+          $name = "meshharbor-setup-$version-x86_64-pc-windows-msvc"
           New-Item -ItemType Directory -Path "$env:RUNNER_TEMP\$name" -Force | Out-Null
-          Copy-Item target\release\roomler-setup.exe "$env:RUNNER_TEMP\$name\"
+          Copy-Item target\release\meshharbor-setup.exe "$env:RUNNER_TEMP\$name\"
           if (Test-Path LICENSE) { Copy-Item LICENSE "$env:RUNNER_TEMP\$name\" }
           if (Test-Path README.md) { Copy-Item README.md "$env:RUNNER_TEMP\$name\" }
           Compress-Archive -Path "$env:RUNNER_TEMP\$name\*" -DestinationPath "$name.zip"
@@ -598,7 +598,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.validate-version.outputs.tag }}
-          name: roomler-setup ${{ needs.validate-version.outputs.version }}
+          name: meshharbor-setup ${{ needs.validate-version.outputs.version }}
           # FR-84 S1 pinned the release to the BUILT commit, so that a branch
           # dispatch with publish_release=true CREATES the tag there, and a
           # master that moved mid-run cannot tag the wrong commit. That pin is
@@ -623,15 +623,15 @@ jobs:
           # badge correctly stays on the agent release.
           prerelease: ${{ contains(needs.validate-version.outputs.version, 'rc.') || contains(needs.validate-version.outputs.version, 'alpha') || contains(needs.validate-version.outputs.version, 'beta') }}
           body: |
-            Automated build of the unified `roomler-setup` wizard ${{ needs.validate-version.outputs.version }} via
+            Automated build of the unified `meshharbor-setup` wizard ${{ needs.validate-version.outputs.version }} via
             [release-setup.yml](.github/workflows/release-setup.yml).
 
             **Download / run:**
-            - Windows x86_64: `.zip` containing a signed `roomler-setup.exe` — extract + double-click.
-            - Linux x86_64: `.tar.gz` — extract, run `./roomler-setup`.
-            - Linux aarch64: `.tar.gz` — extract, run `./roomler-setup`.
+            - Windows x86_64: `.zip` containing a signed `meshharbor-setup.exe` — extract + double-click.
+            - Linux x86_64: `.tar.gz` — extract, run `./meshharbor-setup`.
+            - Linux aarch64: `.tar.gz` — extract, run `./meshharbor-setup`.
             - macOS universal (x86_64 + aarch64): `.tar.gz` — extract, then open `Roomler Setup.app`
-              (or run `./roomler-setup`, a symlink into the bundle). The app is Developer-ID-signed,
+              (or run `./meshharbor-setup`, a symlink into the bundle). The app is Developer-ID-signed,
               notarised and stapled, so Gatekeeper accepts it even offline — no `xattr` workaround.
 
             **What the wizard does:** pick a role, detect existing installs, paste an enrollment token, and it
@@ -736,7 +736,7 @@ jobs:
           fi
           version="${tag#setup-v}"
           existing=$(gh issue list --repo "${{ github.repository }}" --state open \
-            --search 'in:title "roomler-setup release failed"' --limit 1 --json number --jq '.[0].number // empty')
+            --search 'in:title "meshharbor-setup release failed"' --limit 1 --json number --jq '.[0].number // empty')
 
           if [ -n "$existing" ]; then
             echo "reusing open alert #$existing"
@@ -744,8 +744,8 @@ jobs:
               --body "$(printf 'Failed again on %s (%s): %s\n\nStill unresolved — /api/setup still serves the previous wizard. This issue closes automatically when a wizard release succeeds.\n' "$(date -u +%F)" "$tag" "$run_url")"
           else
             gh issue create --repo "${{ github.repository }}" \
-              --title "roomler-setup release failed — /api/setup serves a stale wizard ($(date -u +%F))" \
-              --body "$(printf 'The roomler-setup wizard release for `%s` (ref `%s`) failed: %s\n\n`/api/setup/{windows,linux,macos}` keep serving the PREVIOUS `setup-v*` release until one exists for this version — the landing page download and the admin UI both go through it, so every new install gets a wizard older than the daemon it installs (FR-84 S1 is what makes this lane run in lockstep with the agent).\n\nRe-run once fixed (the tag already exists at the agent commit; the run is idempotent):\n\n    gh workflow run release-setup.yml --ref %s -f version=%s -f publish_release=true\n\nNever re-cut a wizard under a number that already shipped — bump the version and release again.\n\nThis issue is reused by later failures and CLOSED automatically by the next successful wizard release, so an open one always means "currently broken".\n' "$tag" "$REF_NAME" "$run_url" "$tag" "$version")"
+              --title "meshharbor-setup release failed — /api/setup serves a stale wizard ($(date -u +%F))" \
+              --body "$(printf 'The meshharbor-setup wizard release for `%s` (ref `%s`) failed: %s\n\n`/api/setup/{windows,linux,macos}` keep serving the PREVIOUS `setup-v*` release until one exists for this version — the landing page download and the admin UI both go through it, so every new install gets a wizard older than the daemon it installs (FR-84 S1 is what makes this lane run in lockstep with the agent).\n\nRe-run once fixed (the tag already exists at the agent commit; the run is idempotent):\n\n    gh workflow run release-setup.yml --ref %s -f version=%s -f publish_release=true\n\nNever re-cut a wizard under a number that already shipped — bump the version and release again.\n\nThis issue is reused by later failures and CLOSED automatically by the next successful wizard release, so an open one always means "currently broken".\n' "$tag" "$REF_NAME" "$run_url" "$tag" "$version")"
           fi
 
   # ---------------------------------------------------------------------------
@@ -769,7 +769,7 @@ jobs:
           set -euo pipefail
           run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           nums=$(gh issue list --repo "${{ github.repository }}" --state open \
-            --search 'in:title "roomler-setup release failed"' --limit 50 --json number --jq '.[].number')
+            --search 'in:title "meshharbor-setup release failed"' --limit 50 --json number --jq '.[].number')
           if [ -z "$nums" ]; then
             echo "no open wizard-release alert — nothing to close"
             exit 0

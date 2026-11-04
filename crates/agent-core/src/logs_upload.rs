@@ -28,7 +28,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 // Wire types — mirror the shape in `crates/db/src/models/agent_log.rs`
-// so the agent doesn't need a `roomler-ai-db` dependency (which would
+// so the agent doesn't need a `meshharbor-db` dependency (which would
 // drag the MongoDB driver into the agent binary). Serde reps below
 // MUST stay in sync with the db-side types; the integration test
 // `crates/tests/src/agent_log.rs` will lock both.
@@ -139,7 +139,7 @@ where
         // Skip our own uploader's failure logs to avoid feedback loops
         // ("upload failed" → another event → "upload failed" → ...).
         // Target prefix matches this module's tracing::span! site.
-        if target == "roomlerd::logs_upload" {
+        if target == "meshharbord::logs_upload" {
             return;
         }
 
@@ -265,7 +265,7 @@ async fn run_uploader_paced(mut rx: mpsc::Receiver<LogLine>, config: UploadConfi
         Err(e) => {
             // Without a client we can't upload anything. Drain the
             // channel forever so the layer doesn't backpressure.
-            tracing::warn!(target: "roomlerd::logs_upload", %e, "reqwest client build failed; logs upload disabled");
+            tracing::warn!(target: "meshharbord::logs_upload", %e, "reqwest client build failed; logs upload disabled");
             while rx.recv().await.is_some() {}
             return;
         }
@@ -353,7 +353,7 @@ async fn run_uploader_paced(mut rx: mpsc::Receiver<LogLine>, config: UploadConfi
                 // WARN lets us spot persistent malformed batches without
                 // a tight retry loop.
                 let status = resp.status();
-                tracing::warn!(target: "roomlerd::logs_upload", %status, "logs upload non-success");
+                tracing::warn!(target: "meshharbord::logs_upload", %status, "logs upload non-success");
                 tokio::time::sleep(backoff.saturating_sub(pace.flush)).await;
                 backoff = (backoff * 2).min(pace.max_backoff);
             }
@@ -363,7 +363,7 @@ async fn run_uploader_paced(mut rx: mpsc::Receiver<LogLine>, config: UploadConfi
                 // re-fire on every tick when offline. Suppress to
                 // tracing::debug so the rolling log stays useful but
                 // doesn't flood.
-                tracing::debug!(target: "roomlerd::logs_upload", %e, "logs upload error");
+                tracing::debug!(target: "meshharbord::logs_upload", %e, "logs upload error");
                 tokio::time::sleep(backoff.saturating_sub(pace.flush)).await;
                 backoff = (backoff * 2).min(pace.max_backoff);
             }

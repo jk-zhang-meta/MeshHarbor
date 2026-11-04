@@ -35,7 +35,7 @@ is the wrong move: the inputs differ, the defect does not.
 
 ## Key design
 
-### The gate (`agents/roomlerd/src/encode/evidence.rs`, new, pure)
+### The gate (`agents/meshharbord/src/encode/evidence.rs`, new, pure)
 
 ```rust
 pub enum Reason { AgentStalled, TransitStalled, StallShadow, CarrierChanged }
@@ -193,7 +193,7 @@ stopped doing.
       (`governor.rs` −42, `encode/mod.rs` −16, the config surface −26,
       `peer.rs` +3); the new gate is 255 lines of which 118 are its own tests
       and 97 are comment, i.e. **~40 lines of logic** for what it replaced.
-      `cargo test -p roomlerd --lib` 995 pass, `roomler-node-core` 175 pass,
+      `cargo test -p meshharbord --lib` 995 pass, `meshharbor-node-core` 175 pass,
       clippy clean. ⚠️ The overall line count is not negative and is not claimed
       to be: the inventory above is the claim.
 - [x] **AC2 — the field events replay.** The 12:15 cell (a hard blocked send

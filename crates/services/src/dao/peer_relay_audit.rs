@@ -24,7 +24,7 @@
 
 use bson::{doc, oid::ObjectId};
 use mongodb::Database;
-use roomler_ai_remote_control::models::PeerRelayAuditEvent;
+use meshharbor_remote_control::models::PeerRelayAuditEvent;
 
 use super::base::{BaseDao, DaoResult, PaginatedResult, PaginationParams};
 

@@ -169,7 +169,7 @@ pub fn migration_notes() -> &'static [String] {
 /// Never deletes; a failed rename (locked file, ACL) is noted and the
 /// read-both resolution keeps everything working until the next start.
 ///
-/// `companion_running` (the roomler-desktop tray): skip entirely — the tray
+/// `companion_running` (the meshharbor-desktop tray): skip entirely — the tray
 /// may hold open handles inside the tree, and a pre-S1a tray would keep
 /// writing the old tree after the move, re-manufacturing the split.
 pub fn migrate_legacy_trees(companion_running: bool) {

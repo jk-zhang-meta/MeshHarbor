@@ -63,7 +63,7 @@
     setStatus('ERROR: ' + msg, 'err')
   }
 
-  // ---- Wire-format helpers (must match agents/roomlerd/src/encode/libvpx.rs) ----
+  // ---- Wire-format helpers (must match agents/meshharbord/src/encode/libvpx.rs) ----
   const HEADER_BYTES = 13
   const FLAG_KEYFRAME = 0x01
   function buildFrame(payload, isKey, timestampUs) {

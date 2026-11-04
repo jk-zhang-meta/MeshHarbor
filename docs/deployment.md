@@ -12,7 +12,7 @@ flowchart TB
     LB["front reverse proxy / LB<br/>TLS · consistent-hash on tenant id"]
     subgraph pod["API pod (1..N replicas)"]
         NG["nginx — SPA files ·<br/>/api /ws /derp proxy · security headers"]
-        BIN["roomler-ai-api (Rust)<br/>REST · WS · mediasoup workers"]
+        BIN["meshharbor-api (Rust)<br/>REST · WS · mediasoup workers"]
     end
     MONGO[("MongoDB")]
     REDIS[("Redis — pub/sub fan-out<br/>+ online registry")]
@@ -31,7 +31,7 @@ flowchart TB
 One multi-stage `Dockerfile`:
 
 1. `rust:1.95-bookworm` (the toolchain `rust-toolchain.toml` pins) — builds
-   `roomler-ai-api` (+ `derp-relay`) in three layers (FR-73 P1b): `chef` (toolchain +
+   `meshharbor-api` (+ `derp-relay`) in three layers (FR-73 P1b): `chef` (toolchain +
    `cargo-chef`), `planner` (the dependency recipe from the manifests) and `builder`
    (`cargo chef cook` = every dependency, the mediasoup C++ worker included, as ONE
    cached layer; then the real build over only the Rust sources — a UI-only change
@@ -197,7 +197,7 @@ docker compose up -d
 | `ghcr.io/gjovanov/minio` | 9000 (API) / 9001 (console) | S3-compatible file storage: Chainguard's MinIO build, mirrored and pinned by digest, since `minio/minio` is gone from Docker Hub (#2034) |
 | `coturn/coturn` | host network | TURN relay (`turnserver.conf` — rotate the shared secret!) |
 
-Then `cargo run --bin roomler-ai-api` (API :3000) and `cd ui && bun run dev`
+Then `cargo run --bin meshharbor-api` (API :3000) and `cd ui && bun run dev`
 (SPA :5000, proxying `/api` + `/ws` to :5001).
 
 ## Configuration
@@ -438,7 +438,7 @@ the server proxies the downloads and gets a cache-bust ping
 
 | Workflow | Tag | Artifacts |
 |---|---|---|
-| `release-agent.yml` | `agent-v*` | Windows MSIs (perUser + perMachine) + `roomler-desktop` companion; Linux `.deb`/tarball (x86_64 **and** aarch64); macOS `.pkg` (arm64) |
+| `release-agent.yml` | `agent-v*` | Windows MSIs (perUser + perMachine) + `meshharbor-desktop` companion; Linux `.deb`/tarball (x86_64 **and** aarch64); macOS `.pkg` (arm64) |
 | `release-tunnel.yml` | `tunnel-v*` | `roomler` CLI: Windows zip, Linux tarball + `.deb`, macOS universal tarball |
 | `release-setup.yml` | `setup-v*` — cut **automatically at every `agent-v*` commit** by `release-agent.yml`'s `dispatch-setup-release` job (FR-84 S1; repo variable `SETUP_LOCKSTEP=false` disables it) | The install wizard: Linux/macOS tarballs, signed Windows EXE zip — all three or none |
 

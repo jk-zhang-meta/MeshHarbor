@@ -46,8 +46,8 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
-use roomler_ai_tests::fixtures::seed::SeededTenant;
-use roomler_ai_tests::fixtures::test_app::TestApp;
+use meshharbor_tests::fixtures::seed::SeededTenant;
+use meshharbor_tests::fixtures::test_app::TestApp;
 use serde_json::{Value, json};
 
 mod hive_support;
@@ -194,8 +194,8 @@ fn device_process() {
                 .unwrap();
             rt.block_on(async move {
                 let cfg =
-                    roomlerd::config::load(&dir.join("config.toml")).expect("the device's config");
-                roomlerd::hive::init_as_daemon(
+                    meshharbord::config::load(&dir.join("config.toml")).expect("the device's config");
+                meshharbord::hive::init_as_daemon(
                     &cfg,
                     &dir.join("hive.db"),
                     &dir.join("run"),
@@ -267,7 +267,7 @@ fn device_dir(dir: &Path) -> PathBuf {
 }
 
 /// A device that runs the owner's sessions; one that `holds` copies too.
-fn runs(cfg: &mut roomlerd::config::AgentConfig, seeded: &SeededTenant, dir: &Path, holds: bool) {
+fn runs(cfg: &mut meshharbord::config::AgentConfig, seeded: &SeededTenant, dir: &Path, holds: bool) {
     cfg.hive_enabled = true;
     cfg.hive_replica = holds;
     cfg.hive_accounts
@@ -281,9 +281,9 @@ async fn device(
     app: &TestApp,
     seeded: &SeededTenant,
     dir: &Path,
-    cfg: &roomlerd::config::AgentConfig,
+    cfg: &meshharbord::config::AgentConfig,
 ) -> tokio::process::Child {
-    roomlerd::config::save(&dir.join("config.toml"), cfg).expect("the device's config");
+    meshharbord::config::save(&dir.join("config.toml"), cfg).expect("the device's config");
     let child = tokio::process::Command::new(std::env::current_exe().unwrap())
         .args([
             "device_process",
@@ -383,7 +383,7 @@ fn resume_note_of(dir: &Path, sid: &str) -> String {
     std::fs::read_to_string(
         dir.join("run")
             .join(sid)
-            .join(roomlerd::hive::RESUME_NOTE_FILE),
+            .join(meshharbord::hive::RESUME_NOTE_FILE),
     )
     .unwrap_or_default()
 }
@@ -620,15 +620,15 @@ async fn scenario(folder: Folder) {
     // Read with B's process gone, and before C asks: the pack B makes again
     // for C can come out byte for byte the whole pack's, and B keeps it.
     let whole = person_head.as_ref().map(|head| {
-        let store = roomler_hive_node::store::Store::open(&b_dir.join("hive.db"))
+        let store = meshharbor_hive_node::store::Store::open(&b_dir.join("hive.db"))
             .expect("B's store, its process gone");
         let whole = store
             .of_kind(&sid, "checkpoint", 1_000)
             .expect("B's copy of the chain")
             .iter()
             .find_map(
-                |e| match roomler_hive_node::TranscriptEvent::from_json(&e.event_json) {
-                    Some(roomler_hive_node::TranscriptEvent::Checkpoint(cp)) => cp
+                |e| match meshharbor_hive_node::TranscriptEvent::from_json(&e.event_json) {
+                    Some(meshharbor_hive_node::TranscriptEvent::Checkpoint(cp)) => cp
                         .workspace
                         .filter(|ws| ws.base.is_none() && !ws.pack.is_empty()),
                     _ => None,
@@ -711,7 +711,7 @@ async fn scenario(folder: Folder) {
         .await;
         stop(c_proc).await;
         stop(b_proc).await;
-        let c_store = roomler_hive_node::store::Store::open(&c_dir.join("hive.db"))
+        let c_store = meshharbor_hive_node::store::Store::open(&c_dir.join("hive.db"))
             .expect("C's store, its process gone");
         let made_again = c_store
             .substitute(&sid, &whole.commit)
@@ -730,6 +730,6 @@ async fn scenario(folder: Folder) {
 }
 
 /// The bytes `chunks` carry.
-fn len(chunks: &[roomler_hive_node::checkpoint::Chunk]) -> u64 {
+fn len(chunks: &[meshharbor_hive_node::checkpoint::Chunk]) -> u64 {
     chunks.iter().map(|c| c.len).sum()
 }

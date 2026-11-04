@@ -20,7 +20,7 @@ what**, and that the ownership is enforced by the compiler and by a composition 
 
 ```mermaid
 flowchart BT
-    core["crates/core → <b>roomler-core</b> (AGPL)<br/>identity · tenancy · plans · notifications · storage<br/>the /ws socket + its fan-out · Redis pub/sub · cluster bus<br/>TURN creds · metering · rate-limit primitive · hooks registry"]
+    core["crates/core → <b>meshharbor-core</b> (AGPL)<br/>identity · tenancy · plans · notifications · storage<br/>the /ws socket + its fan-out · Redis pub/sub · cluster bus<br/>TURN creds · metering · rate-limit primitive · hooks registry"]
     fleet["modules/fleet<br/>agents · enrollment · presence · <b>the Hub</b> · consent<br/>exec + audit · releases · remote config · removal"]
     chat["modules/chat<br/>rooms · messages · reactions · files · search<br/>xlsx export · giphy · typing:*"]
     conference["modules/conference<br/>mediasoup SFU · media:* · calls · recordings<br/>(the ONLY crate that links mediasoup)"]
@@ -49,12 +49,12 @@ Three rules keep it a monolith rather than a pile of crates:
 | Rule | What it means in code |
 |---|---|
 | **The DAG is data** | `crates/core/src/graph.rs` lists the modules and the six edges (`conference → chat`, `remote → fleet`, `network → fleet`, `hive → fleet`, `hive → chat`, `vault → hive`); FR-90 P3-3b added `vault → hive` (a lease is believed only from the session record's device at its fence), and `vault → fleet` arrives with P3-3c. Any module may call core; core **never** calls a module. |
-| **Core membership is narrow** | Something is in `roomler-core` only if at least two modules need it **and** it is identity, tenancy or infrastructure. Everything else belongs to exactly one module. |
+| **Core membership is narrow** | Something is in `meshharbor-core` only if at least two modules need it **and** it is identity, tenancy or infrastructure. Everything else belongs to exactly one module. |
 | **Inverse flows are hooks** | When core must reach "up" (a tenant is archived, an agent is removed), it invokes a registry of hooks in a fixed order — see §6. |
 
-The licence split follows the crate boundary: `roomler-core` and every module are AGPL-3.0
-(server side); the daemon's shared crate is `roomler-node-core` (`crates/agent-core`, MPL-2.0)
-and a CI assertion inverts `cargo tree` from every agent binary to prove `roomler-core` is never
+The licence split follows the crate boundary: `meshharbor-core` and every module are AGPL-3.0
+(server side); the daemon's shared crate is `meshharbor-node-core` (`crates/agent-core`, MPL-2.0)
+and a CI assertion inverts `cargo tree` from every agent binary to prove `meshharbor-core` is never
 inside one (FR-24, FR-69 AC10).
 
 ---
@@ -85,7 +85,7 @@ core's extractors work unchanged inside it.
 
 ```mermaid
 flowchart LR
-    subgraph contract["roomler_core::Module — the surfaces"]
+    subgraph contract["meshharbor_core::Module — the surfaces"]
         R["routes() → Router<()><br/>unlimited_routes() (outside the governor)"]
         W["ws() → WsRegistration<br/>handlers (typing:*, media:*) · upgrades (/derp)"]
         I["indexes_for(multi_block)<br/>the module's index sets"]
@@ -137,7 +137,7 @@ flowchart LR
         F5["profile-access = fleet + remote + network"]
         S["saas — an ADD-ON, never in a published self-host image"]
     end
-    DF["Dockerfile<br/>ARG PROFILE=full · ARG SAAS=1<br/>--no-default-features --features roomler-ai-api/profile-$PROFILE[,saas]"]
+    DF["Dockerfile<br/>ARG PROFILE=full · ARG SAAS=1<br/>--no-default-features --features meshharbor-api/profile-$PROFILE[,saas]"]
     subgraph images["images on ghcr.io/gjovanov/roomler-ai"]
         H["hosted-&lt;date&gt;-&lt;sha7&gt; · <b>hosted</b><br/>full + saas — what roomler.ai runs (FR-73)"]
         V["&lt;tag&gt; = full · <b>latest</b><br/>&lt;tag&gt;-collab · -remote · -mesh · -access<br/>SAAS=0, asserted by the publish smoke"]
@@ -151,7 +151,7 @@ flowchart LR
 | Profile | Carries | Needs beside it | Leaves out (and CI asserts it) |
 |---|---|---|---|
 | `full` | everything | MongoDB, Redis, MinIO, coturn, the media port range | — |
-| `collab` | chat, conference | MongoDB, Redis, MinIO, coturn | the fleet, the overlay, remote desktop; **no `roomler-ai-tunnel-core`** |
+| `collab` | chat, conference | MongoDB, Redis, MinIO, coturn | the fleet, the overlay, remote desktop; **no `meshharbor-tunnel-core`** |
 | `remote` | fleet, remote | MongoDB, Redis, coturn | the SFU worker build, MinIO, the overlay; **no `mediasoup`** |
 | `mesh` | fleet, network | MongoDB, Redis, coturn (+ DERP relays if run) | the SFU worker build, MinIO; **no `mediasoup`** |
 | `access` | fleet, remote, network | MongoDB, Redis, coturn | chat, calls; **no `mediasoup`** |

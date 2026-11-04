@@ -154,7 +154,7 @@ sequenceDiagram
 ```
 
 Since #1698 the **service host** writes the rule **before its first worker
-spawn** — `agents/roomlerd/src/win_service/firewall.rs`
+spawn** — `agents/meshharbord/src/win_service/firewall.rs`
 (`prepare_before_first_spawn`), driven by the `run_startup_sequence` seam in
 `win_service/mod.rs`, whose recorder test locks the order. Synchronous,
 bounded, best-effort: a refused or timed-out `netsh` is logged at WARN and the

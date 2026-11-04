@@ -63,11 +63,11 @@ impossible again.
 | **SERVER** | `api`, `services`, `db`, `config`, `derp-relay`, `tests` | 54 157 |
 | **SERVER (web)** | `ui/src` | 53 717 |
 | **SHARED** | `tunnel-core` 55 593 · `remote_control` 12 883 · `localapi` 3 012 · `tcp-turn-conn` 518 | **72 006** |
-| **CLIENT** | `roomlerd` 89 737 · `roomler-core` · `roomler-cli` · `roomler-setup` · `roomler-setup-core` · `roomler-desktop` · `roomler-cli-shim` | 110 911 |
+| **CLIENT** | `roomlerd` 89 737 · `meshharbor-core` · `meshharbor-cli` · `meshharbor-setup` · `meshharbor-setup-core` · `meshharbor-desktop` · `meshharbor-cli-shim` | 110 911 |
 | **THIRD-PARTY** | `crates/vendored/*` | untouched |
 
 SHARED is measured, not guessed: `crates/api/Cargo.toml` deps
-`roomler-ai-remote-control` and `roomler-ai-tunnel-core` unconditionally, with
+`meshharbor-remote-control` and `meshharbor-tunnel-core` unconditionally, with
 19 live `tunnel_core::` call sites in `crates/api/src`.
 
 ### What AGPL actually buys — the finding that shaped this FR
@@ -79,7 +79,7 @@ side of its own proposal:**
 | Named asset | Lives in | Class | Licence here |
 |---|---|---|---|
 | Mesh carrier cascade | `crates/tunnel-core/src/overlay/` | SHARED | **MPL-2.0** |
-| Encoder cascade | `agents/roomlerd/src/encode/` | CLIENT | **MPL-2.0** |
+| Encoder cascade | `agents/meshharbord/src/encode/` | CLIENT | **MPL-2.0** |
 
 **AGPL therefore covers ~37% of first-party code and 0% of the code the split
 was argued for.** What it covers is routes, DAOs, Mongo models and the Vue app.
@@ -209,7 +209,7 @@ refuses to tag while that file disagrees with the release's own checkout.
 | **P4c** | The offer carries every change the builds make: our patches + the vcpkg port at the recipe's baseline, an `inputs.txt` asset, and a `release-agent.yml` gate against the checkout | ✅ republished complete 2026-09-24 (run 36062315391) and verified on the served asset; the release gate fails before and passes after |
 | **P5** | *(optional)* `server` feature on `tunnel-core` so AGPL reaches further | not planned |
 | **P6** | OCI image labels on the runtime stage + build-args in the deploy recipe | ✅ shipped |
-| **P7** | The split's own guard covers FR-69's modules: the manifest check walks the workspace `members` (it globbed one level deep and saw 18 of 24), and the server crate list gains `roomler-ai-mod-remote`/`-network` (the AGPL-in-agent graph check could not see them) | ✅ 2026-09-25, proven fail-first (field log) |
+| **P7** | The split's own guard covers FR-69's modules: the manifest check walks the workspace `members` (it globbed one level deep and saw 18 of 24), and the server crate list gains `meshharbor-mod-remote`/`-network` (the AGPL-in-agent graph check could not see them) | ✅ 2026-09-25, proven fail-first (field log) |
 | **Docs** | [`docs/licensing.md`](../licensing.md) plus index rows for it and `lgpl-relink.md`. ✅ 2026-09-25, **added retroactively**: this FR opened before docs-before-close, and closing it binds it | ✅ |
 
 ### P4b — the relink gap was smaller than it looked
@@ -310,7 +310,7 @@ CI run and this landing is not. The fix is the same one command.
 | 2026-08-29 | Re-read LGPL-2.1 §6(a) against the actual build | "object code **and/or source code**" ⇒ open-sourcing the agent already discharges the half we thought needed an object archive; P4b closed without shipping one |
 | 2026-08-29 | `gh workflow run lgpl-source-offer.yml --ref fr24-licensing-split` | **HTTP 404** — `workflow_dispatch` resolves only on the default branch; the first run has to wait for the merge |
 <!-- RETIRED-NAME-ANCHOR(2): the row below RECORDS the rename, so it must name both sides. -->
-| 2026-08-29 | Merged master (FR-21 renames + FR-25/26/28/29) into the branch | `agents/roomler-agent`→`roomlerd`, `roomler-tunnel`→`roomler-cli`, `roomler-agent-tray`→`roomler-desktop`, `roomler-agent-core`→`roomler-core`; classification and crate lists repointed |
+| 2026-08-29 | Merged master (FR-21 renames + FR-25/26/28/29) into the branch | `agents/meshharbor-agent`→`roomlerd`, `roomler-tunnel`→`meshharbor-cli`, `roomler-agent-tray`→`meshharbor-desktop`, `roomler-agent-core`→`meshharbor-core`; classification and crate lists repointed |
 | 2026-08-29 | **The rename exposed a hole in the sweep** | an unclassified path was a silent `continue`, so a renamed directory would have dropped the whole daemon out of the sweep while `--check` still reported OK. Unclassified is now a hard failure; it immediately caught 10 real files (`ui/*.ts`, `ui/index.html`, `ui/public/*`) that `ui/src` never covered ⇒ SERVER_PATHS broadened to `ui` |
 | 2026-08-29 | Post-merge re-verification | SPDX 647/647 · manifest audit exit 0 · graph check `none` × 5 · fmt clean · agent crates check · ui build + **898/898** vitest |
 | 2026-08-29 | First dispatch of `lgpl-source-offer.yml`, from master (run 33255539777) | asset live and the assert step green. ⚠️ It already lacked the vcpkg port's patches, which the Windows build applied from the start (found 2026-09-24) |

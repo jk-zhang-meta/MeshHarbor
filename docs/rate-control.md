@@ -25,7 +25,7 @@ counters with **one verdict per window, taken before any loop acts**:
 > the carrier it will be attributed to is the carrier that produced it.
 
 `encode::evidence::rejected(WindowFacts) -> Option<Reason>`
-(`agents/roomlerd/src/encode/evidence.rs:135`) is pure — no clock, no I/O, no
+(`agents/meshharbord/src/encode/evidence.rs:135`) is pure — no clock, no I/O, no
 configuration and **no switch**. Its inputs (`WindowFacts`, `evidence.rs:120`)
 are things the governor already holds at the window boundary: this window's
 pipe-state verdict, the previous window's, whether a pump pass stalled inside
@@ -290,7 +290,7 @@ paths untouched byte for byte, and **no new switch** — the operator's override
 ### P1 (0.4.77) — the ceiling is a content-generous bound
 
 `rate_profile::ffmpeg_maxrate_bps_scaled`
-(`agents/roomlerd/src/encode/rate_profile.rs:219`) uses **0.25 bpp/s on a
+(`agents/meshharbord/src/encode/rate_profile.rs:219`) uses **0.25 bpp/s on a
 direct path** (0.07 on a constrained one, min'd with the relay clamp as
 before), clamped to **[3, 48] Mbps × the codec/chroma factor**
 (`codec_rate_factor_pct`, `:129` — AV1 100, HEVC and VP9 125, H.264 150;

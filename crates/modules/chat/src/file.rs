@@ -7,15 +7,15 @@ use axum::{
     response::Response,
 };
 use bson::oid::ObjectId;
-use roomler_ai_services::quota;
+use meshharbor_services::quota;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-use roomler_core::{ApiError, extractors::auth::AuthUser};
+use meshharbor_core::{ApiError, extractors::auth::AuthUser};
 
 use crate::ChatState;
-use roomler_ai_db::models::{FileContext, FileContextType};
-use roomler_ai_services::dao::base::PaginationParams;
+use meshharbor_db::models::{FileContext, FileContextType};
+use meshharbor_services::dao::base::PaginationParams;
 
 /// FR-11 file-grid params. Flat (never `#[serde(flatten)]` behind axum
 /// `Query` — the AuditQuery postmortem); every field optional/defaulted so a
@@ -72,7 +72,7 @@ pub struct FileResponse {
     pub room_name: Option<String>,
 }
 
-fn to_response(f: roomler_ai_db::models::File) -> FileResponse {
+fn to_response(f: meshharbor_db::models::File) -> FileResponse {
     let room_id = f.context.room_id.map(|rid| rid.to_hex());
     FileResponse {
         id: f.id.unwrap().to_hex(),
@@ -309,7 +309,7 @@ pub async fn upload(
         let tenant = state.tenants.base.find_by_id(tid).await?;
         let current = state.files.sum_storage_for_tenant(tid).await?;
         // FR-102 P4 — through core, which also counts the collision per org.
-        if let Err(d) = roomler_core::quota::check_delta(
+        if let Err(d) = meshharbor_core::quota::check_delta(
             &state,
             &tenant,
             quota::Limit::StorageBytes,
@@ -369,10 +369,10 @@ pub async fn download(
             // tolerate-404: records whose bytes were lost on a pre-S0
             // pod-ephemeral /tmp (wiped on every deploy) resolve to a clear
             // 404 rather than a 500.
-            roomler_core::storage::StorageError::NotFound => {
+            meshharbor_core::storage::StorageError::NotFound => {
                 ApiError::NotFound("File content is no longer available on the server".to_string())
             }
-            roomler_core::storage::StorageError::Other(msg) => {
+            meshharbor_core::storage::StorageError::Other(msg) => {
                 ApiError::Internal(format!("Failed to read file: {}", msg))
             }
         })?;
@@ -513,7 +513,7 @@ pub async fn upload_room(
         let tenant = state.tenants.base.find_by_id(tid).await?;
         let current = state.files.sum_storage_for_tenant(tid).await?;
         // FR-102 P4 — through core, which also counts the collision per org.
-        if let Err(d) = roomler_core::quota::check_delta(
+        if let Err(d) = meshharbor_core::quota::check_delta(
             &state,
             &tenant,
             quota::Limit::StorageBytes,

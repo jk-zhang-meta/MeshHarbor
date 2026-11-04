@@ -30,8 +30,8 @@ use std::time::Duration;
 
 use bson::{DateTime, oid::ObjectId};
 use futures::StreamExt;
-use roomler_ai_remote_control::turn_creds::org_of_username;
-use roomler_ai_services::dao::stats::Meter;
+use meshharbor_remote_control::turn_creds::org_of_username;
+use meshharbor_services::dao::stats::Meter;
 use tracing::{debug, info, warn};
 
 use crate::NetworkState;
@@ -208,7 +208,7 @@ mod tests {
 
     fn user() -> String {
         let principal =
-            roomler_ai_remote_control::turn_creds::charged("6a975e17971e2d55ddcdedb0", ORG);
+            meshharbor_remote_control::turn_creds::charged("6a975e17971e2d55ddcdedb0", ORG);
         format!("1792000000:{principal}")
     }
 

@@ -15,7 +15,7 @@ import {
   type KeepBusyState,
 } from '@/composables/keepBusy'
 
-/** A state as the agent sends it (`agents/roomlerd/src/keep_busy/wire.rs`). */
+/** A state as the agent sends it (`agents/meshharbord/src/keep_busy/wire.rs`). */
 function wire(over: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     t: 'rc:keep-busy.state',

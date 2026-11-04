@@ -30,7 +30,7 @@ use std::sync::{
 use axum::{Router, extract::Query, http::HeaderMap, routing::get};
 use bson::{Bson, DateTime, Document, doc, oid::ObjectId};
 use chrono::{Datelike, NaiveDate};
-use roomler_ai_services::{
+use meshharbor_services::{
     billing,
     dao::{
         billing_event::BILLING_EVENTS,
@@ -90,7 +90,7 @@ fn at(back: u32, day: u32) -> i64 {
 
 // ── The app ──────────────────────────────────────────────────────────────
 
-async fn revenue_app(tweak: impl FnOnce(&mut roomler_ai_config::Settings)) -> (TestApp, String) {
+async fn revenue_app(tweak: impl FnOnce(&mut meshharbor_config::Settings)) -> (TestApp, String) {
     let admin_id = ObjectId::new();
     let app = TestApp::spawn_with_settings(move |s| {
         s.stats.platform_admins = Some(admin_id.to_hex());
@@ -635,7 +635,7 @@ async fn a_lifecycle_moves_billed_mrr_month_by_month_and_freezes() {
 
     // The nightly freeze: the closed months on record, once.
     let frozen =
-        roomler_ai_api::growth::org_daily::freeze_billing_months(&app.state, DateTime::now())
+        meshharbor_api::growth::org_daily::freeze_billing_months(&app.state, DateTime::now())
             .await
             .unwrap();
     for m in [&m0, &m1, &m2] {
@@ -646,7 +646,7 @@ async fn a_lifecycle_moves_billed_mrr_month_by_month_and_freezes() {
         "a month before the record is never frozen"
     );
     let again =
-        roomler_ai_api::growth::org_daily::freeze_billing_months(&app.state, DateTime::now())
+        meshharbor_api::growth::org_daily::freeze_billing_months(&app.state, DateTime::now())
             .await
             .unwrap();
     assert!(again.is_empty(), "frozen once: {again:?}");
@@ -664,7 +664,7 @@ async fn a_lifecycle_moves_billed_mrr_month_by_month_and_freezes() {
     assert!(stored.get_document("dims").unwrap().get("tenant").is_none());
 
     // Purge the org: its rows go, the frozen months stay as they were.
-    let purged = roomler_core::growth::purge_tenant(&app.state.core, y)
+    let purged = meshharbor_core::growth::purge_tenant(&app.state.core, y)
         .await
         .unwrap();
     assert_eq!(purged.billing_events, rows.len() as u64);
@@ -1036,7 +1036,7 @@ async fn the_backfill_reads_stripe_once() {
     ];
     let calls = Arc::new(AtomicUsize::new(0));
     let base = fake_stripe(pages, calls.clone()).await;
-    let stripe = StripeService::new(&roomler_ai_config::StripeSettings {
+    let stripe = StripeService::new(&meshharbor_config::StripeSettings {
         secret_key: "sk_test_fake".into(),
         webhook_secret: SECRET.into(),
         price_pro: PRICE_PRO.into(),
@@ -1093,7 +1093,7 @@ async fn the_backfill_reads_stripe_once() {
     assert!(billing::last_backfill(&app.db).await.unwrap().is_some());
 
     // The closed months it touched refreeze; the view says it ran.
-    let refrozen = roomler_ai_mod_saas::stripe::refreeze(&app.state.core, &r.months, now)
+    let refrozen = meshharbor_mod_saas::stripe::refreeze(&app.state.core, &r.months, now)
         .await
         .unwrap();
     assert!(refrozen.contains(&label(month_start(3))), "{refrozen:?}");
@@ -1152,7 +1152,7 @@ async fn a_backfill_that_records_nothing_says_it_ran() {
     stranger["subscription_details"] = json!({ "metadata": {} });
     let pages = vec![json!({ "object": "list", "data": [stranger], "has_more": false })];
     let base = fake_stripe(pages, Arc::new(AtomicUsize::new(0))).await;
-    let stripe = StripeService::new(&roomler_ai_config::StripeSettings {
+    let stripe = StripeService::new(&meshharbor_config::StripeSettings {
         secret_key: "sk_test_fake".into(),
         webhook_secret: SECRET.into(),
         price_pro: PRICE_PRO.into(),

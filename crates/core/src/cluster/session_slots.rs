@@ -21,7 +21,7 @@
 //! The holder record names the claiming pod. A caller refused by a full set
 //! may drop a holder that ITS OWN pod claimed but no longer holds (a release
 //! that failed): that pod is the one that would know. It never judges another
-//! pod's holders (`roomler_ai_mod_remote::slots`).
+//! pod's holders (`meshharbor_mod_remote::slots`).
 //!
 //! The claim is ONE Lua script (drop expired, already mine → renew, under the
 //! cap → add, else full), so two starts in the same instant cannot both pass

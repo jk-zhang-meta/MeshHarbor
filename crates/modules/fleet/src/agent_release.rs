@@ -33,7 +33,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 
-use roomler_core::{ApiError, client_ip::PeerAddr};
+use meshharbor_core::{ApiError, client_ip::PeerAddr};
 
 use crate::{FleetState, install_trace, releases};
 
@@ -135,7 +135,7 @@ pub(crate) fn filter_component_releases(
 // carry — those files are immutable, so the doc and fixtures below must quote them
 // exactly or they assert against names no release ever had. New releases publish
 // `roomlerd-…`; this ordering never keyed on the daemon prefix at all, only on the
-// `roomler-desktop-` companion one, which is why the rename did not touch it.
+// `meshharbor-desktop-` companion one, which is why the rename did not touch it.
 /// Push the desktop-companion artifacts to the END of every release's asset
 /// list, so a client scanning for "the first `.deb` for my arch" cannot pick
 /// one up.
@@ -145,7 +145,7 @@ pub(crate) fn filter_component_releases(
 /// `assets.iter().find(|a| name.ends_with(".deb") && name.contains(arch))`,
 /// which is only correct while the list happens to be ordered favourably —
 /// and this proxy's order is GitHub's, which is neither documented nor by
-/// name. FR-27 added `roomler-desktop-<v>-x86_64-unknown-linux-gnu.deb` to
+/// name. FR-27 added `meshharbor-desktop-<v>-x86_64-unknown-linux-gnu.deb` to
 /// `agent-v0.4.16`, it came back FIRST, and on 2026-08-29 both `mars` and
 /// `jupiter` apt-installed the companion **as their own daemon update**: the
 /// install "succeeded", the version never moved, and jupiter pulled 34
@@ -160,7 +160,7 @@ pub(crate) fn filter_component_releases(
 ///
 /// Stable sort ⇒ everything else keeps GitHub's relative order.
 fn order_assets_daemon_first(assets: &mut [AgentReleaseAsset]) {
-    assets.sort_by_key(|a| a.name.to_lowercase().starts_with("roomler-desktop-"));
+    assets.sort_by_key(|a| a.name.to_lowercase().starts_with("meshharbor-desktop-"));
 }
 
 // ─── installer download proxy ─────────────────────────────────────────────────
@@ -382,7 +382,7 @@ mod tests {
     /// FR-27 / 2026-08-29 field incident. Every Linux updater up to 0.4.15
     /// takes the FIRST `.deb` matching its arch, and GitHub handed this proxy
     /// the companion first — so `mars` and `jupiter` apt-installed
-    /// `roomler-desktop` as their own daemon update and froze at 0.4.15 with
+    /// `meshharbor-desktop` as their own daemon update and froze at 0.4.15 with
     /// no error. The fix has to live here because a frozen agent is exactly
     /// the one that cannot receive an agent-side fix.
     #[test]
@@ -392,10 +392,10 @@ mod tests {
                 "agent-v0.4.16",
                 false,
                 &[
-                    "roomler-desktop-0.4.16-x86_64-unknown-linux-gnu.deb",
+                    "meshharbor-desktop-0.4.16-x86_64-unknown-linux-gnu.deb",
                     "roomler-agent-0.4.16-aarch64-unknown-linux-gnu.deb",
                     "roomler-agent-0.4.16-x86_64-unknown-linux-gnu.deb",
-                    "roomler-desktop-0.4.16-x86_64-pc-windows-msvc.exe",
+                    "meshharbor-desktop-0.4.16-x86_64-pc-windows-msvc.exe",
                 ],
             )],
             "agent-v",
@@ -417,11 +417,11 @@ mod tests {
         // companion refresher both resolve their artifact from this payload.
         assert!(
             a.iter()
-                .any(|x| x.name == "roomler-desktop-0.4.16-x86_64-unknown-linux-gnu.deb")
+                .any(|x| x.name == "meshharbor-desktop-0.4.16-x86_64-unknown-linux-gnu.deb")
         );
         assert!(
             a.iter()
-                .any(|x| x.name == "roomler-desktop-0.4.16-x86_64-pc-windows-msvc.exe")
+                .any(|x| x.name == "meshharbor-desktop-0.4.16-x86_64-pc-windows-msvc.exe")
         );
         // Non-companion assets keep GitHub's relative order (stable sort).
         let daemon: Vec<&str> = a

@@ -53,7 +53,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use bson::DateTime;
 use chrono::{Duration, NaiveDate};
-use roomler_ai_services::{
+use meshharbor_services::{
     dao::{
         base::DaoResult,
         growth::{
@@ -63,7 +63,7 @@ use roomler_ai_services::{
     },
     purestat::{PurestatClient, PurestatError, Query, Row},
 };
-use roomler_core::{
+use meshharbor_core::{
     Core,
     campaign::{CampaignKey, UTM_DIMENSIONS},
 };
@@ -432,9 +432,9 @@ mod tests {
             source: SOURCE.into(),
             day: day.into(),
             status: if pulled_at.is_some() {
-                roomler_ai_services::dao::growth::PullStatus::Ok
+                meshharbor_services::dao::growth::PullStatus::Ok
             } else {
-                roomler_ai_services::dao::growth::PullStatus::Failed
+                meshharbor_services::dao::growth::PullStatus::Failed
             },
             pulled_at: pulled_at.map(at),
             attempted_at: at("2026-10-14T01:30:00Z"),

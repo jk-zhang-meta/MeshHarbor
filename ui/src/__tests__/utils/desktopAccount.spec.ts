@@ -2,7 +2,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-const source = readFileSync(resolve(import.meta.dirname, '../../../../agents/roomler-desktop/src/front/account.js'), 'utf8')
+const source = readFileSync(resolve(import.meta.dirname, '../../../../agents/meshharbor-desktop/src/front/account.js'), 'utf8')
 const invoke = vi.fn()
 function start() { document.body.innerHTML = '<button id="account-devices">Devices</button><button id="account-received">Received</button><button id="account-sent">Sent</button><p id="account-error" hidden></p>'; new Function('window', source)({ Roomler: { $: (id: string) => document.getElementById(id), invoke } }) }
 beforeEach(() => { invoke.mockReset(); invoke.mockResolvedValue(undefined); start() })

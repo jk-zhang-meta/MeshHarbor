@@ -13,11 +13,11 @@ use axum::{
     extract::{Path, State},
 };
 use bson::{DateTime, doc, oid::ObjectId};
-use roomler_ai_db::models::role::permissions;
-use roomler_ai_remote_control::models::DesiredConfig;
+use meshharbor_db::models::role::permissions;
+use meshharbor_remote_control::models::DesiredConfig;
 use serde::{Deserialize, Serialize};
 
-use roomler_core::{ApiError, extractors::auth::AuthUser};
+use meshharbor_core::{ApiError, extractors::auth::AuthUser};
 
 use crate::FleetState;
 

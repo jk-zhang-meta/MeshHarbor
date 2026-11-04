@@ -109,7 +109,7 @@ HUD does not render the two new `HopWindow`s yet.
 
 Anchors verified against master `b4d12871`.
 
-**What the pump is today.** `media_pump_ffmpeg_dc` (`agents/roomlerd/src/peer.rs:4712–7506`,
+**What the pump is today.** `media_pump_ffmpeg_dc` (`agents/meshharbord/src/peer.rs:4712–7506`,
 27 await points) runs on a tokio worker and does everything in one loop: the
 budget gate and rate applies (`:5763`, `:6639`, `:6677`, `:6740`, `:6991`), pacing
 (`:5799`), capture (`:5813`, already a handoff to capture's own thread), the
@@ -526,7 +526,7 @@ thread behind a command channel (`encode::thread`: `encode`, `set_bitrate`,
 `request_keyframe`, `adopt_rebuilt`, `rebuild_spec{,_at_dims}`, `rate_stats`,
 `with`), and a replacement is built on that thread while the current one keeps
 producing. What did **not** move is the deciding. `media_pump_ffmpeg_dc`
-(`agents/roomlerd/src/peer.rs:4831–7934`) still computes, inside the frame path:
+(`agents/meshharbord/src/peer.rs:4831–7934`) still computes, inside the frame path:
 
 | what it decides | where | reads |
 |---|---|---|
@@ -702,7 +702,7 @@ inline one and compared, never read.
 |---|---|---|---|
 | **M3a** | `encode::plan`: the `Plan`, a pure producer, and a frame-cadence shadow comparison in `media_pump_ffmpeg_dc`; heartbeat `plan_divergences` + `plan_epoch` | **none, on purpose** — the shadow changes no decision, takes no await, adds no env read to the frame path, and logs at most seven lines per session; a switch would be the twelfth of the kill switches this FR exists to delete (AC4), guarding nothing | `plan_divergences` reads **zero on every field, fleet-wide**, over a week of sessions on the release carrying it; a non-zero field is a named, measured bug in the plan, fixed before M3b |
 
-**The plan** (`agents/roomlerd/src/encode/plan.rs:70`): `bitrate_bps`, `dims`,
+**The plan** (`agents/meshharbord/src/encode/plan.rs:70`): `bitrate_bps`, `dims`,
 `fps`, `queue_budget_bytes`, `queue_lag_bound_ms`, `epoch` as designed, plus
 **`queue_hard_budget_bytes`** — FR-74 P1b's hard ceiling landed beside the
 design, and without it the loop would still compute
@@ -827,8 +827,8 @@ and is outside this FR.
   `the_shadow_counts_each_field_and_reports_the_first_once` (`plan.rs:786`),
   which plants a divergence through the same `check_*` calls the pump makes.
 - The lanes that compile the pump wiring are the FFmpeg ones:
-  `cargo clippy -p roomlerd --features ffmpeg-encoder,vp9-444,vp9-444-bindgen --all-targets -- -D warnings`
-  and `cargo test -p roomlerd --features ffmpeg-encoder --lib`, run in WSL
+  `cargo clippy -p meshharbord --features ffmpeg-encoder,vp9-444,vp9-444-bindgen --all-targets -- -D warnings`
+  and `cargo test -p meshharbord --features ffmpeg-encoder --lib`, run in WSL
   against the vendored FFmpeg 9.0.1 tree CI uses (the `full` clippy job
   deliberately leaves `ffmpeg-encoder` out); the rest of CI's clippy lines
   verbatim.
@@ -860,7 +860,7 @@ shipping a wrong plan). On the first release carrying M3a:
 **Negative control — the record (2026-10-18, WSL, default build).** Planted:
 `+ 1` on the producer's constrained budget (`produce`, the `(budget, budget,
 0)` arm), marked `NEGATIVE CONTROL` in the source for the run.
-`cargo test -p roomlerd --lib plan` → **FAILED, 3 failed / 22 passed**:
+`cargo test -p meshharbord --lib plan` → **FAILED, 3 failed / 22 passed**:
 
 | test | what it said |
 |---|---|
@@ -1023,11 +1023,11 @@ been lost.
   failed / 17 passed**: exactly the three held-branch tests, the `zeus` case
   among them (`left: 0, right: 1` — the divergence gone).
 - Both reverted (`grep -c "NEGATIVE CONTROL"` = 0): 20 passed, `cargo fmt
-  --check` clean, `cargo clippy -p roomlerd --lib -- -D warnings` clean.
+  --check` clean, `cargo clippy -p meshharbord --lib -- -D warnings` clean.
 - CI's FFmpeg lane, in WSL against the vendored tree:
-  `cargo clippy -p roomlerd --features ffmpeg-encoder,vp9-444,vp9-444-bindgen
+  `cargo clippy -p meshharbord --features ffmpeg-encoder,vp9-444,vp9-444-bindgen
   --all-targets -- -D warnings` clean (the pump wiring compiles only here), and
-  `cargo test -p roomlerd --features ffmpeg-encoder --lib`. ⚠️ The test build
+  `cargo test -p meshharbord --features ffmpeg-encoder --lib`. ⚠️ The test build
   ICEs in this WSL (`check_mod_deathness`, module `media_share`, rendering an
   existing `governor.rs` warning) — the known environmental one that master hits
   too and CI does not; run with the lint-level workaround in its own target dir.
@@ -1152,10 +1152,10 @@ judgement (`plan.rs:527`) would catch it, exactly as it caught this one.
   it.
 - **Both reverted** (`grep -c "NEGATIVE CONTROL"` = 0): 93 passed across
   policy, learner, governor and plan. `cargo fmt --check` and
-  `cargo clippy -p roomlerd --lib -- -D warnings` are clean.
-- **CI's FFmpeg lane, in WSL.** `cargo clippy -p roomlerd --features
+  `cargo clippy -p meshharbord --lib -- -D warnings` are clean.
+- **CI's FFmpeg lane, in WSL.** `cargo clippy -p meshharbord --features
   ffmpeg-encoder,vp9-444,vp9-444-bindgen --all-targets -- -D warnings` is
-  clean; the pump wiring compiles only here. `cargo test -p roomlerd --features
+  clean; the pump wiring compiles only here. `cargo test -p meshharbord --features
   ffmpeg-encoder --lib` (with the ICE workaround from §"M3a.1"): 1762 passed,
   2 failed. The two failures are environmental and unrelated: an Xvfb display
   already taken, and a WSL connect timeout.
@@ -1317,7 +1317,7 @@ the same memory, so it came along every time.
   stand-in measurement; it does not replace the learner).
 - The climb speed below the band (+12.5 % per 5 s, FR-59 P8) — FR-63's job.
 
-### Simulation (B0, `encode::sim`, `cargo test -p roomlerd --lib p1_report -- --ignored --nocapture`)
+### Simulation (B0, `encode::sim`, `cargo test -p meshharbord --lib p1_report -- --ignored --nocapture`)
 
 | cell | `rate_prior_decay` | peak target | max age | memory at end |
 |---|---|---|---|---|

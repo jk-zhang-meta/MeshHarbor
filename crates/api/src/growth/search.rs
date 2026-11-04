@@ -28,7 +28,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use chrono::{Duration, NaiveDate};
-use roomler_ai_services::dao::growth::{
+use meshharbor_services::dao::growth::{
     BING_SOURCE, BING_WEEKLY_SOURCE, GrowthDaily, GrowthDao, PullStatus, SEARCH_CONSOLE_SOURCE,
 };
 use serde::{Deserialize, Serialize};
@@ -533,7 +533,7 @@ pub fn per_path(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use roomler_ai_services::dao::growth::daily_row;
+    use meshharbor_services::dao::growth::daily_row;
 
     fn d(s: &str) -> NaiveDate {
         NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap()

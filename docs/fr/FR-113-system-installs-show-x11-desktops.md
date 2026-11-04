@@ -32,7 +32,7 @@ with `uinput`) captured the X11 session through DRM: 84 of 84 viewer samples wit
 
 **Why.** A systemd unit carries none of the session's variables (`DISPLAY`, `XAUTHORITY`): `docs/linux-capture.md`
 §1. FR-95's plan engages only for a person's **Wayland** session on screen. `person_on_screen`
-(`agents/roomlerd/src/capture/mod.rs:928`) keeps a session only when `s.kind == "wayland"` (`:931`), so on an X11 seat
+(`agents/meshharbord/src/capture/mod.rs:928`) keeps a session only when `s.kind == "wayland"` (`:931`), so on an X11 seat
 the plan falls through to the X11 arm, which a root daemon cannot open. FR-95's AC5 asked for exactly that ("X11
 hosts are unchanged"), and this FR is what changing it means.
 

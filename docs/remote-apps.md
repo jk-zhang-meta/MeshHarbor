@@ -25,7 +25,7 @@ The rest of the design follows from taking that sentence seriously.
 
 Everything is P2P over the session's existing `control` data channel — no
 server change, and the server never sees a window title. `peer.rs` routes three
-envelopes to `apps::handle_control_message` (`agents/roomlerd/src/peer.rs:9195`),
+envelopes to `apps::handle_control_message` (`agents/meshharbord/src/peer.rs:9195`),
 runs it on `spawn_blocking` because every backend shells out or calls FFI, and
 sends the returned reply back on the same channel. The request/reply shape and
 the id correlation are `rc:logs-fetch`'s.
@@ -63,9 +63,9 @@ Three properties of the wire are load-bearing:
   decimal on Windows, `tmux:<name>` for a detached session. The viewer only
   ever round-trips it, and the Linux backend re-validates the shape before
   handing it to `wmctrl -i -a` so a crafted id cannot become a flag
-  (`agents/roomlerd/src/apps/linux.rs:337`).
+  (`agents/meshharbord/src/apps/linux.rs:337`).
 - 🔑 **Launch takes a key, never a command.** `resolve_app`
-  (`agents/roomlerd/src/apps/mod.rs:536`) is the security gate: the key must be
+  (`agents/meshharbord/src/apps/mod.rs:536`) is the security gate: the key must be
   in the device's own allowlist and the entry's `command` is run as argv with
   no shell, so a compromised viewer can start only what the device's owner
   wrote into its config, and there is no injection surface to reason about.
@@ -80,7 +80,7 @@ Until FR-56 P1 the gate was literally `env::var_os("DISPLAY").is_some()` on
 the **daemon**, which is true only when the daemon started its own Xvfb
 (`ROOMLERD_VIRTUAL_DESKTOP=1`). On every real login session the daemon has no
 `DISPLAY`, so the feature never failed — it never engaged. `discover()`
-(`agents/roomlerd/src/apps/linux.rs:480`) replaces that with the walk below.
+(`agents/meshharbord/src/apps/linux.rs:480`) replaces that with the walk below.
 
 ```mermaid
 flowchart TD
@@ -126,7 +126,7 @@ Three rules the session arm enforces, each paid for somewhere:
   where an Xvfb the daemon owns could not (`linux.rs:274`).
 
 The same `loginctl` walk serves FR-27's consent companion and FR-45's capture
-helper (`agents/roomlerd/src/companion.rs:598`) — one copy on purpose, because
+helper (`agents/meshharbord/src/companion.rs:598`) — one copy on purpose, because
 a compositor that reports its session differently should break all three in
 the same place.
 
@@ -137,7 +137,7 @@ questions asked of every row: **does the hello advertise anything this host
 cannot do**, and **does the refusal carry its reason in the reply** — not only
 in the daemon log. The hello column is `AgentCaps.apps`
 (`crates/remote_control/src/models.rs:203`), assigned once per process by
-`detect()` from `apps_caps()` (`agents/roomlerd/src/encode/caps.rs:1670`,
+`detect()` from `apps_caps()` (`agents/meshharbord/src/encode/caps.rs:1670`,
 `:624` via `with_config_lists` `:655`) — in the daemon, never in the
 caps-probe child (§4.3).
 
@@ -177,7 +177,7 @@ that is the truth: a short list looks exactly like a quiet desktop. This is the
 `Some([])`-vs-`None` distinction on its fourth surface in this codebase
 (overlay ACL ingress rules, `ssh_activity`, FR-49's dark org): an empty list and
 an unenumerable source are different facts, and only the reply can tell them
-apart. `Coverage` (`agents/roomlerd/src/apps/mod.rs:127`) is a **trait method**,
+apart. `Coverage` (`agents/meshharbord/src/apps/mod.rs:127`) is a **trait method**,
 not a field set at construction, so the compiler forces every backend to answer
 — it caught the test fake the day it was added.
 
@@ -209,7 +209,7 @@ not a field set at construction, so the compiler forces every backend to answer
 
 Every reply that says `supported: false`, and every focus/launch refused for
 want of a backend, carries `unavailable: {code, reason}` (`Unavailable`,
-`agents/roomlerd/src/apps/mod.rs:176`). The sentence is composed on the agent,
+`agents/meshharbord/src/apps/mod.rs:176`). The sentence is composed on the agent,
 not in the viewer, because only the agent knows which arm it took — the same
 rule FR-80 applied to the capture reason. The `code` is a **closed set**, and a
 compatibility surface like every other `rc:*` string: a test locks that the
@@ -234,9 +234,9 @@ The legacy `error` string on a focus/launch refusal keeps its shape and
 
 `detect()` assigns `caps.apps = apps_caps()` once, beside `caps.rpc` and
 `caps.files` (the `with_config_lists` seam), and memoizes the whole
-`AgentCaps` behind a `OnceLock` (`agents/roomlerd/src/encode/caps.rs:37`,
+`AgentCaps` behind a `OnceLock` (`agents/meshharbord/src/encode/caps.rs:37`,
 `:624`, `:655`); both the hello and the FR-43 heartbeat re-announce
-(`agents/roomlerd/src/signaling.rs:1277`, `:1910`)
+(`agents/meshharbord/src/signaling.rs:1277`, `:1910`)
 hand out that same struct. So `list` missing from the hello can mean *nobody
 had logged in yet when the daemon started*, and nothing short of a daemon
 restart changes it. That is why P6 added a fourth value:
@@ -312,8 +312,8 @@ server outlives both), it is `ssh`-attachable from a real login
 
 Streaming **one application window** instead of the monitor reuses FR-45's
 whole portal pipeline with a single change: `SelectSources(types = WINDOW)`
-(`SOURCE_WINDOW`, `agents/roomlerd/src/capture/portal/screencast.rs:95`) behind
-`ROOMLERD_WINDOW_CAPTURE` (`agents/roomlerd/src/capture/portal/backend.rs:77`,
+(`SOURCE_WINDOW`, `agents/meshharbord/src/capture/portal/screencast.rs:95`) behind
+`ROOMLERD_WINDOW_CAPTURE` (`agents/meshharbord/src/capture/portal/backend.rs:77`,
 config key `window_capture`, `crates/agent-core/src/config.rs:924`). It is
 **attended by construction**: the portal answers by showing the person at the
 screen a window picker, and nothing agent-side can name a window — GNOME
@@ -385,7 +385,7 @@ label    = "Text editor"
 | `window_capture` | config / `ROOMLERD_WINDOW_CAPTURE` (`config_surface.rs:1044`) | **off** | P4 — attended by construction; restart required |
 | `ROOMLERD_VIRTUAL_DESKTOP` | env | off | the daemon's own Xvfb (§2 of [`linux-capture.md`](linux-capture.md)); when set, the Daemon arm wins and no session is discovered |
 
-`roomlerd apps-probe` (`agents/roomlerd/src/main.rs:5893`) answers the whole
+`roomlerd apps-probe` (`agents/meshharbord/src/main.rs:5893`) answers the whole
 question on the host with no session and no browser, the way `capture-smoke`
 does for pixels: which config it loaded and whether apps are enabled there,
 whether a desktop was found and as whom (the display and the cookie), what the
@@ -409,13 +409,13 @@ must never write the device's config as a side effect of being run.
 
 | File | Owns |
 |---|---|
-| `agents/roomlerd/src/apps/mod.rs` | the wire types (`Coverage` `:127`, `MissingTool` `:151`, `Unavailable` `:176` with `code` `:209` and `reason` `:221`), the `WindowManager` trait (`:259`), `availability` (`:314`) and `availability_for` (`:321`), `has_backend` (`:357`), `backend` (`:367`), `handle_control_message` (`:390`) and the pure `dispatch` seam (`:410`), the three reply builders (`:433`, `:471`, `:489`), `unavailable_reply` (`:521`), `resolve_app` (`:536`), the `wmctrl`/tmux parsers and `classify_title` (`:650`) |
-| `agents/roomlerd/src/apps/linux.rs` | `Target` (`:56`), `LinuxWm::cmd` and the privilege drop (`:102`), `on_path` (`:209`) and `HELPERS` (`:228`), `coverage` (`:254`), `list` (`:274`), `focus` (`:337`), `launch` (`:368`), `discover` (`:480`) and its test seam `discover_with` (`:497`), `refused` (`:579`), `Probe` (`:589`) and `probe` (`:605`), `find_xauthority` (`:648`) |
-| `agents/roomlerd/src/apps/windows.rs` | `EnumWindows` (`:49`), `coverage` (`:88`), `list` (`:100`), `focus` (`:120`), `launch` (`:149`) |
-| `agents/roomlerd/src/encode/caps.rs` | `apps_caps` / `apps_caps_for` (`:1612`, `:1618`), assigned by `with_config_lists` (`:777`) from `detect` (`:624`) beside `rpc` and `files` (`files_caps` / `files_caps_for`, `:1657`, `:1664`); `CACHED_CAPS` (`:37`) — why the hello is a snapshot; `cached_or_probed` (`:789`) — why the child's struct must carry no `apps` |
-| `agents/roomlerd/src/peer.rs` | the control-DC arm (`:8654`) |
-| `agents/roomlerd/src/companion.rs` | `graphical_session` (`:461`) |
-| `agents/roomlerd/src/main.rs` | `apps-probe` (`:4724`) — reads the device config through `read_if_present`, never `load` |
+| `agents/meshharbord/src/apps/mod.rs` | the wire types (`Coverage` `:127`, `MissingTool` `:151`, `Unavailable` `:176` with `code` `:209` and `reason` `:221`), the `WindowManager` trait (`:259`), `availability` (`:314`) and `availability_for` (`:321`), `has_backend` (`:357`), `backend` (`:367`), `handle_control_message` (`:390`) and the pure `dispatch` seam (`:410`), the three reply builders (`:433`, `:471`, `:489`), `unavailable_reply` (`:521`), `resolve_app` (`:536`), the `wmctrl`/tmux parsers and `classify_title` (`:650`) |
+| `agents/meshharbord/src/apps/linux.rs` | `Target` (`:56`), `LinuxWm::cmd` and the privilege drop (`:102`), `on_path` (`:209`) and `HELPERS` (`:228`), `coverage` (`:254`), `list` (`:274`), `focus` (`:337`), `launch` (`:368`), `discover` (`:480`) and its test seam `discover_with` (`:497`), `refused` (`:579`), `Probe` (`:589`) and `probe` (`:605`), `find_xauthority` (`:648`) |
+| `agents/meshharbord/src/apps/windows.rs` | `EnumWindows` (`:49`), `coverage` (`:88`), `list` (`:100`), `focus` (`:120`), `launch` (`:149`) |
+| `agents/meshharbord/src/encode/caps.rs` | `apps_caps` / `apps_caps_for` (`:1612`, `:1618`), assigned by `with_config_lists` (`:777`) from `detect` (`:624`) beside `rpc` and `files` (`files_caps` / `files_caps_for`, `:1657`, `:1664`); `CACHED_CAPS` (`:37`) — why the hello is a snapshot; `cached_or_probed` (`:789`) — why the child's struct must carry no `apps` |
+| `agents/meshharbord/src/peer.rs` | the control-DC arm (`:8654`) |
+| `agents/meshharbord/src/companion.rs` | `graphical_session` (`:461`) |
+| `agents/meshharbord/src/main.rs` | `apps-probe` (`:4724`) — reads the device config through `read_if_present`, never `load` |
 | `crates/remote_control/src/models.rs` | `AgentCaps.apps` and its known values (`:203`) |
 | `crates/agent-core/src/apps_config.rs` · `config_surface.rs` | the `[virtual_desktop_apps]` shapes (`:21`); the config-surface keys (`:1446`, `:988`) |
 | `ui/src/composables/useRemoteControl.ts` | the parsers (`parseAppsListReply` `:1105`, `parseAppsUnavailable` `:1181`), the request path (`:5474`, `refreshApps` `:5512`), the reply arm (`:8515`), the no-reason wording (`:890`) |

@@ -60,14 +60,14 @@ use axum::{
 };
 use bson::{Bson, DateTime, doc, oid::ObjectId};
 use mongodb::Database;
-use roomler_ai_db::models::role::permissions;
-use roomler_ai_remote_control::{
+use meshharbor_db::models::role::permissions;
+use meshharbor_remote_control::{
     error::Error as HubError,
     hive::{HiveJoinRefusal, HivePurgePart, hive_limits},
     signaling::ServerMsg,
 };
-use roomler_ai_services::dao::base::{BaseDao, DaoError, DaoResult};
-use roomler_core::{ApiError, extractors::auth::AuthUser};
+use meshharbor_services::dao::base::{BaseDao, DaoError, DaoResult};
+use meshharbor_core::{ApiError, extractors::auth::AuthUser};
 use serde::Serialize;
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
@@ -870,7 +870,7 @@ async fn send(state: &HiveState, p: &HivePurge, device: ObjectId) -> Sent {
 /// told at its next connection.
 async fn tell_other_pods(state: &HiveState, p: &HivePurge, devices: &[ObjectId]) {
     let agent_ids: Vec<String> = devices.iter().map(|d| d.to_hex()).collect();
-    roomler_ai_mod_fleet::ctrl::publish_rc_ctrl(
+    meshharbor_mod_fleet::ctrl::publish_rc_ctrl(
         &state.core,
         "hive_purge",
         serde_json::json!({
@@ -1034,7 +1034,7 @@ pub(crate) async fn device_removed(
         // Not connected here: the pod that holds its socket tells it. The
         // kick is published after this, on the same channel.
         Err(_) => {
-            roomler_ai_mod_fleet::ctrl::publish_rc_ctrl(
+            meshharbor_mod_fleet::ctrl::publish_rc_ctrl(
                 &state.core,
                 "hive_purge_all",
                 serde_json::json!({

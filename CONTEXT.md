@@ -76,7 +76,7 @@ The `<name>.roomler.json` beside a recording: its initiator, device, encoder, di
 _Avoid_: metadata file, manifest, json
 
 **Edit list**:
-The `<name>.edit.json` a roomler-desktop edit is saved as — contiguous keep / cut / speed-up segments over a recording, read by `roomlerd media export`. Non-destructive.
+The `<name>.edit.json` a meshharbor-desktop edit is saved as — contiguous keep / cut / speed-up segments over a recording, read by `roomlerd media export`. Non-destructive.
 _Avoid_: EDL (except in code), timeline, project file
 
 **Recording activity**:

@@ -17,7 +17,7 @@
 //! lock rather than the only one; both are cheap and neither is sufficient
 //! alone in the presence of a browser bug or a policy change.
 
-use roomler_ai_config::Settings;
+use meshharbor_config::Settings;
 
 /// Which origins may authenticate with an ambient credential.
 #[derive(Debug, Clone, PartialEq, Eq)]

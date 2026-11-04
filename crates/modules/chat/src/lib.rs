@@ -27,13 +27,13 @@ use axum::{
     extract::{DefaultBodyLimit, FromRef},
     routing::{delete, get, post, put},
 };
-use roomler_ai_config::Settings;
-use roomler_ai_db::indexes::{IndexSet, index, index_text, index_unique, index_unique_sparse};
-use roomler_ai_services::{
+use meshharbor_config::Settings;
+use meshharbor_db::indexes::{IndexSet, index, index_text, index_unique, index_unique_sparse};
+use meshharbor_services::{
     GiphyService,
     dao::{file::FileDao, message::MessageDao, reaction::ReactionDao, room::RoomDao},
 };
-use roomler_core::{Capabilities, Core, Module, Role, TenantCtx, WsHandlerSpec, WsRegistration};
+use meshharbor_core::{Capabilities, Core, Module, Role, TenantCtx, WsHandlerSpec, WsRegistration};
 
 pub mod bound;
 pub mod export;

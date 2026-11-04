@@ -124,7 +124,7 @@ exec roomlerd run
   unprivileged local user cannot stop (or unenroll) a SYSTEM worker. Before
   #1683 the hard kill was the only path and a Windows-service ephemeral device
   always waited out the reaper's TTL. Mechanism: `docs/remote-control.md`
-  (service host) and `agents/roomlerd/src/win_service/stop_event.rs`.
+  (service host) and `agents/meshharbord/src/win_service/stop_event.rs`.
 - **A per-user Windows install** (the perUser MSI's Scheduled Task) has no
   service host to ask it, so it holds a stop channel of its own and listens for
   the session's end: [below](#a-per-user-windows-install-fr-97-p4d).
@@ -172,7 +172,7 @@ flowchart LR
 
 - **Which daemon.** The event is keyed by the config's instance id, the
   fingerprint the single-instance lock already uses
-  ([`instance_lock.rs:92`](../agents/roomlerd/src/instance_lock.rs#L92)). So
+  ([`instance_lock.rs:92`](../agents/meshharbord/src/instance_lock.rs#L92)). So
   `service stop` reaches the daemon of the config it resolved, and no other.
   `Local\` keeps the event in the person's own session, and its default DACL
   lets that person and SYSTEM signal it, which Task Manager already allows them.
@@ -180,7 +180,7 @@ flowchart LR
   loads `user32.dll`, and the daemon loads it for capture and input. Windows
   tells such a process through `WM_QUERYENDSESSION` and `WM_ENDSESSION`, sent to
   its top-level windows, so a hidden one listens
-  ([`session_end.rs`](../agents/roomlerd/src/win_service/session_end.rs)). A
+  ([`session_end.rs`](../agents/meshharbord/src/win_service/session_end.rs)). A
   message-only window would hear nothing: the session's end is a broadcast.
   `WM_QUERYENDSESSION` is answered yes and never acted on, because another
   program can still cancel the end. Only `WM_ENDSESSION` with `wParam` TRUE

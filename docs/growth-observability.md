@@ -71,7 +71,7 @@ Organic channels come from the referrer host through `channel_for_referrer_host`
 referrer), **other**. Matched by suffix, so `l.facebook.com` and `www.google.co.uk` land where
 they should and `googleusercontent.com` does not.
 
-## The exclusion set (P1c) — `roomler_core::growth::ExclusionSet`
+## The exclusion set (P1c) — `meshharbor_core::growth::ExclusionSet`
 
 Internal orgs and people must not count. `ExclusionSet::load(core)` is the **one** function
 every growth number applies; it folds two kinds:
@@ -139,7 +139,7 @@ A module that is not mounted (`[modules] remote = false`, a reduced profile) mak
 `not_measured: "<module> module not mounted"`; the rest of the digest still completes. The
 same holds for purestat: a 401, a timeout or an unreachable host costs the web sections —
 with the reason stored — and nothing else. The client
-([`purestat.rs`](../crates/services/src/purestat.rs), in `roomler-ai-services` since P6 so
+([`purestat.rs`](../crates/services/src/purestat.rs), in `meshharbor-services` since P6 so
 the `saas` puller shares it) has a 15-second timeout, pages `has_more` up to 1,000 rows (and
 says when that bound cut an answer), and never logs the key.
 
@@ -299,7 +299,7 @@ flowchart LR
   collection fills the sources' 730-day horizon once. Nothing here is unbounded.
 - Fields: `rc_sessions`, `rc_session_minutes`, `rc_controllers`, `calls`,
   `call_participant_minutes`, `tunnel_flows`, `ssh_sessions`, `exec_runs`, `devices_online`,
-  `members_active`, `value` (bool) and `value_kinds`. `roomler_core::growth::purge_tenant` is
+  `members_active`, `value` (bool) and `value_kinds`. `meshharbor_core::growth::purge_tenant` is
   the one call an org deletion must make to take these rows (and the `growth_daily` rows whose
   `dims` carry the tenant) with it — aggregates may outlive rows, rows never outlive their
   owner. ⚠️ There is **no org hard-delete path today** (orgs are only archived, and reversibly),
@@ -353,7 +353,7 @@ sequenceDiagram
     A->>S: POST …/agent/enroll-token
     S->>S: enroll_token_issued {_id: jti, tenant_id, issued_by, issued_at}
     H->>S: GET install.sh · install.ps1 · installer/{flavour} · latest-release · setup/{platform}
-    Note over H,S: UA: curl · PowerShell · roomler-setup · a browser — never roomlerd/
+    Note over H,S: UA: curl · PowerShell · meshharbor-setup · a browser — never roomlerd/
     S->>S: growth_daily install:fetch {asset, client, os} += 1 — no UA, no IP<br/>(client = internal from the operator's internal networks, P3c)
     H->>S: POST /api/agent/enroll {…, install: {method, scope}}
     S->>S: agents.install · enroll_token_issued.redeemed_at + agent_id
@@ -376,7 +376,7 @@ The class comes from the **User-Agent and nothing else about the request**
 
 | Class | User-Agent | Who |
 |---|---|---|
-| `wizard` | `roomler-setup/<ver>` | the wizard resolving and downloading its MSI |
+| `wizard` | `meshharbor-setup/<ver>` | the wizard resolving and downloading its MSI |
 | `script-sh` | `curl/…`, `Wget/…` | `install.sh`, or a person at a terminal |
 | `script-ps1` | anything carrying `PowerShell` — Windows PowerShell 5.1 and pwsh 7 both send `Mozilla/5.0 (…) …PowerShell/…`, so this is decided **before** the browser rule | `install.ps1`, `irm … | iex`, or a person at a prompt |
 | `browser` | any other `Mozilla/…` | a person on the site (the wizard download button) |
@@ -388,10 +388,10 @@ fetch of `install.sh` is honestly `unknown`.
 
 > ⚠️ **The updater is never counted.** `roomlerd/<ver>` is the daemon's own update check, and by
 > default it asks `roomler.ai` from self-hosted devices as well
-> (`agents/roomlerd/src/updater.rs`, `DEFAULT_PROXY_URL`). Counting it would be exactly the
+> (`agents/meshharbord/src/updater.rs`, `DEFAULT_PROXY_URL`). Counting it would be exactly the
 > self-host telemetry the product promises not to collect (`LICENSING.md`,
 > [business-model.md](business-model.md) §6). The rule covers every product token of ours that
-> is not the wizard — `roomlerd/`, `roomlerd-*/`, `roomler-cli/`, `roomler-token-renewal/`, the
+> is not the wizard — `roomlerd/`, `roomlerd-*/`, `meshharbor-cli/`, `roomler-token-renewal/`, the
 > updater's pre-rename spelling, whatever a later release adds — decided by the common prefix,
 > as `UaClass::Updater`, whose counted value is `None`: a fetch with it writes nothing. Locked
 > by a test per known spelling, plus one for an identity that does not exist yet.
@@ -477,7 +477,7 @@ Compatibility, both directions, is what the shape is built around:
   release is current, and a daemon from before `--install-method` existed refuses an argument it
   does not know — which would have failed every scripted install until the next agent release.
   `ROOMLER_INSTALL_METHOD` / `ROOMLER_INSTALL_SCOPE` are the flag's fallbacks
-  (`roomler_node_core::enrollment::resolve_install`: flag, then env, then `manual` / `unknown`);
+  (`meshharbor_node_core::enrollment::resolve_install`: flag, then env, then `manual` / `unknown`);
   an older daemon ignores them. `install.sh` passes them through `env` so they survive `sudo`;
   `install.ps1` removes them after the enroll, since an `irm | iex` run shares the caller's
   process.
@@ -495,7 +495,7 @@ reads (AC9).
 ### The wizard's opt-in diagnostics (P3b)
 
 Where a wizard run gets to, and where it stops — **only for runs whose operator ticked the
-box** (spec §3e item 5; D4: opt-in, unticked). The Welcome page of `roomler-setup` carries
+box** (spec §3e item 5; D4: opt-in, unticked). The Welcome page of `meshharbor-setup` carries
 "Send anonymous setup diagnostics to `<server>`", unticked on every launch: the choice lives
 in the wizard's memory for that run, is never written to its saved state and never restored
 from an earlier run. Ticked, the wizard sends **one `POST /api/setup/diagnostics` per step
@@ -504,7 +504,7 @@ boundary**; unticked, it sends **nothing** — not one request (AC12).
 ```mermaid
 sequenceDiagram
     participant P as Person
-    participant W as roomler-setup (SPA + Rust recorder)
+    participant W as meshharbor-setup (SPA + Rust recorder)
     participant S as the server being enrolled into
     P->>W: Welcome: ticks the box (memory only)
     P->>W: Welcome → Server → Token (Continue)
@@ -522,7 +522,7 @@ sequenceDiagram
 ```
 
 - **A record is exactly** `{run, step, outcome, elapsed_ms, error_code, os, wizard_version}`
-  (`roomler_ai_remote_control::setup_diagnostics::SetupDiagnostic`, the one shape both ends
+  (`meshharbor_remote_control::setup_diagnostics::SetupDiagnostic`, the one shape both ends
   share; every key always present, `error_code` as `null` on a step that did not fail).
   `run` is 32 random hex characters minted per wizard launch and kept in memory; `step` is one
   of `welcome` · `server` · `token` (the pages, measured by the SPA) · `preflight` · `resolve`
@@ -548,7 +548,7 @@ sequenceDiagram
 - **The run rides the enroll** (`agents.install.run`, P3's reserved field), so a ticked run
   joins the device it enrolled; unticked, the enroll carries no `run`.
 - ⚠️ **The recorder is the gate, not the SPA**: a boundary reported while the box is unticked
-  is dropped in Rust (`agents/roomler-setup/src/diagnostics.rs`), so the SPA cannot leak one by
+  is dropped in Rust (`agents/meshharbor-setup/src/diagnostics.rs`), so the SPA cannot leak one by
   calling at the wrong time. Locked by the crate's unit tests: a full simulated run unticked
   makes zero sends; ticked, one per boundary with exactly the seven keys, each valid by the
   server's own check; buffered until the server is known; a cancel before then sends nothing.
@@ -637,7 +637,7 @@ flowchart LR
 
 ### The key both planes meet on
 
-`roomler_core::campaign::CampaignKey` ([`campaign.rs:228`](../crates/core/src/campaign.rs))
+`meshharbor_core::campaign::CampaignKey` ([`campaign.rs:228`](../crates/core/src/campaign.rs))
 is `(source, medium, campaign, content)`, and `CampaignKey::normalized`
 ([`campaign.rs:242`](../crates/core/src/campaign.rs)) is the ONE spelling: each value cleaned
 exactly as a sign-up's is at ingress (`attribution::clean_value` — trimmed, printable ASCII
@@ -982,7 +982,7 @@ have been half CI; they are counted apart, never dropped.
 
 > ⚠️ **GitHub counts every download of a release asset, the fleet's self-updates included.**
 > The updater fetches the MSI/.deb/.pkg and its `.asc` from GitHub directly
-> (`agents/roomlerd/src/updater.rs`, `download_asset`), hosted and self-hosted devices alike,
+> (`agents/meshharbord/src/updater.rs`, `download_asset`), hosted and self-hosted devices alike,
 > and the installer proxy fetches from GitHub on each request. A download is distribution, not
 > an install (the `.asc` itself is not counted). Nothing here tells one deployment from
 > another: the number is GitHub's own public aggregate, readable by anyone.
@@ -1107,7 +1107,7 @@ control characters dropped, and keys that fold into one are summed
 
 [`content_pull.rs`](../crates/modules/saas/src/content_pull.rs) keeps `growth_content`, a
 collection of `saas`'s own (its index set in the module, FR-69 rule 3), read by the host through
-`roomler_ai_services::dao::growth_content`
+`meshharbor_services::dao::growth_content`
 ([`sync_feed`, `growth_content.rs:132`](../crates/services/src/dao/growth_content.rs)).
 
 - **The feed is the list.** No server record holds the posts: the blog is built by the docs
@@ -1338,7 +1338,7 @@ The key is the one SendGrid shows (base64 DER `SubjectPublicKeyInfo`, starting
 `MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE`) or the same key as PEM; anything that is not an
 uncompressed P-256 key is refused at boot with a warning, and the route then refuses every
 request ([`EventVerifier::from_config`, services sendgrid.rs:39](../crates/services/src/sendgrid.rs)).
-The verifier lives in `roomler-ai-services`, beside the Stripe check, so the host's views and
+The verifier lives in `meshharbor-services`, beside the Stripe check, so the host's views and
 the route agree on whether a configured key is usable
 ([`webhook_key_usable`, sendgrid.rs:83](../crates/services/src/sendgrid.rs)).
 
@@ -1579,7 +1579,7 @@ flowchart LR
 
 ### Upgrade intent: plan-limit collisions
 
-Every plan-limit check now goes through core ([`roomler_core::quota`, quota.rs:33](../crates/core/src/quota.rs))
+Every plan-limit check now goes through core ([`meshharbor_core::quota`, quota.rs:33](../crates/core/src/quota.rs))
 — thirteen call sites across `chat`, `conference`, `fleet`, `network` and the host. The
 decision stays `services::quota`'s, unchanged ([`evaluate`, quota.rs:258](../crates/services/src/quota.rs)),
 with the FR-32 warn line written there exactly once. What core adds: a collision — refused in
@@ -2009,7 +2009,7 @@ addresses.
 ⚠️ **An overlay pair needs the device to allow it.** #1882's `access_policy.rc_overlay` is off unless
 the device opts in, and with it off the agent drops every overlay candidate. With it on, an agent
 whose overlay interface is named `roomler*` still never gathers on it: the interface-name rule
-(`is_overlay_iface`, [`peer.rs:12797`](../agents/roomlerd/src/peer.rs)) applies whatever
+(`is_overlay_iface`, [`peer.rs:12797`](../agents/meshharbord/src/peer.rs)) applies whatever
 `rc_overlay` says. So an overlay carrier comes from `rc_overlay` on AND either a macOS agent, whose
 `utunN` the name rule cannot see, or a controller whose route to the agent runs through the mesh.
 Measured on 2026-10-19 (FR-102 §8): a controller on the vmtest org's mesh viewing a Linux agent
@@ -2140,7 +2140,7 @@ FR's field-verification log ([FR-102 §8](fr/FR-102-growth-observability.md#8-fi
 | The digest of a closed day equals a Mongo hand count of sign-ups, orgs, devices, sessions and the newsletter (AC23); without a purestat key the web sections read "not measured" by design | ✅ 2026-10-14 (the 10-13 digest) and 2026-10-15 (the 10-14 digest, the first with campaigns measured and the vmtest orgs excluded) | `crates/tests/src/growth_digest_tests.rs` — two concurrent runs store once and send once |
 | The funnel's sign-ups and activated orgs for a closed week equal a hand count (AC7) | ✅ 2026-10-15, the week of 2026-08-31 | `crates/tests/src/growth_funnel_tests.rs` — exact counts per step, `pending` / `settled`, and `null` for an unmounted module (AC6) |
 | Each enroll path records its `install` on the agent row (AC9) | ✅ 2026-10-15 on vmtest, agent 0.4.137: `script-sh`, `script-ps1`, `wizard`, `manual`; a 0.4.136 agent records `unknown` | `crates/agent-core/src/enrollment.rs` — flag, then env, then `manual`; an unknown env spelling clamped |
-| Unticked, the wizard sends zero diagnostics requests through a full install (a proxy capture); ticked, one per step with exactly the documented fields (AC12) | ✅ 2026-10-16 on the released setup 0.4.139, two vmtest Win11 wizard cells (7/7 each): unticked, no `setup_diagnostics` row and no `install.run`; ticked, 15 rows of one run, one per step boundary, with exactly the seven documented keys | `agents/roomler-setup/src/diagnostics.rs` — a full simulated run unticked makes zero sends; ticked, one per boundary with exactly the seven keys; `crates/tests/src/growth_setup_diagnostics_tests.rs` — the stored row's exact fields with no IP and no UA, every refusal, the kill switch's empty 404, the cap, the freeze, the digest section |
+| Unticked, the wizard sends zero diagnostics requests through a full install (a proxy capture); ticked, one per step with exactly the documented fields (AC12) | ✅ 2026-10-16 on the released setup 0.4.139, two vmtest Win11 wizard cells (7/7 each): unticked, no `setup_diagnostics` row and no `install.run`; ticked, 15 rows of one run, one per step boundary, with exactly the seven documented keys | `agents/meshharbor-setup/src/diagnostics.rs` — a full simulated run unticked makes zero sends; ticked, one per boundary with exactly the seven keys; `crates/tests/src/growth_setup_diagnostics_tests.rs` — the stored row's exact fields with no IP and no UA, every refusal, the kill switch's empty 404, the cap, the freeze, the digest section |
 | The Campaigns table's visitors for a closed day equal purestat's own number for the same filter, and read "not measured" with the key revoked (AC16) | ✅ 2026-10-15, 2026-10-13 by `content` | `crates/tests/src/growth_campaigns_tests.rs`, against a fake purestat |
 | The ingest stores a snapshot pushed twice once, refuses an unknown platform and a body carrying post text, and answers 404 to a wrong key (AC18) | ✅ 2026-10-15 | `crates/tests/src/growth_channels_tests.rs`, plus the revoked key, the JWT, the kill switch and the unmounted module |
 | The read key returns, for one closed range, the same JSON a platform admin's session gets on every GET view, and the empty 404 on every write, on `GET …/keys` and after its revocation (AC20) | ✅ 2026-10-16: eight views gave the key and an admin session the same status, byte length and SHA-256; every non-GET, the admin surface and an unknown growth path got the empty 404 | `crates/tests/src/growth_p10_tests.rs` — every GET view compared body for body, every write, the admin surface, an ingest key, a malformed, an unknown and a revoked key, the kill switch |

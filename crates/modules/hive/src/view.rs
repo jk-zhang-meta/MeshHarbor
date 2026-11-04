@@ -69,10 +69,10 @@ use std::time::Duration;
 use async_trait::async_trait;
 use bson::oid::ObjectId;
 use dashmap::DashMap;
-use roomler_ai_remote_control::hive::{search_limits, view_limits};
-use roomler_ai_remote_control::signaling::{ClientMsg, IceServer, ServerMsg};
-use roomler_ai_remote_control::turn_creds::ice_servers_for_session_with_ttl;
-use roomler_core::{WsCtx, WsHandler};
+use meshharbor_remote_control::hive::{search_limits, view_limits};
+use meshharbor_remote_control::signaling::{ClientMsg, IceServer, ServerMsg};
+use meshharbor_remote_control::turn_creds::ice_servers_for_session_with_ttl;
+use meshharbor_core::{WsCtx, WsHandler};
 use serde_json::{Value, json};
 use tracing::{debug, info, warn};
 
@@ -199,7 +199,7 @@ fn grant_id_of(data: &Value) -> Option<ObjectId> {
 
 /// Send `{type, data}` to one browser connection, wherever its socket is.
 async fn to_browser(state: &HiveState, connection_id: &str, kind: &str, data: Value) {
-    roomler_core::ws::dispatcher::send_to_connection_routed(
+    meshharbor_core::ws::dispatcher::send_to_connection_routed(
         &state.core.ws_storage,
         &state.core.redis_pubsub,
         connection_id,
@@ -358,7 +358,7 @@ async fn open(state: &HiveState, ctx: &WsCtx, data: &Value) {
     {
         state.view_grants.map.remove(&grant_id);
         let reason = match e {
-            roomler_ai_remote_control::error::Error::ExecUnsupported(_) => "device_unsupported",
+            meshharbor_remote_control::error::Error::ExecUnsupported(_) => "device_unsupported",
             _ => "device_offline",
         };
         audit("refused", Some(reason)).write(state).await;
@@ -614,7 +614,7 @@ async fn open_search(state: &HiveState, ctx: &WsCtx, data: &Value) {
     if let Err(e) = state.fleet.rc_hub.push_hive_search(device_id, tid, push) {
         state.view_grants.map.remove(&grant_id);
         let reason = match e {
-            roomler_ai_remote_control::error::Error::ExecUnsupported(_) => "device_unsupported",
+            meshharbor_remote_control::error::Error::ExecUnsupported(_) => "device_unsupported",
             _ => "device_offline",
         };
         audit(device_id, "refused", Some(reason))
@@ -820,7 +820,7 @@ pub(crate) async fn on_device_frame(state: &HiveState, device_id: ObjectId, msg:
                     );
                     let message = crate::agent_socket::clamp_words(
                         detail,
-                        roomler_ai_remote_control::hive::hive_limits::MAX_DETAIL_LEN,
+                        meshharbor_remote_control::hive::hive_limits::MAX_DETAIL_LEN,
                     );
                     let (kind, data) = refused_frame(&g, word.as_str(), message);
                     to_browser(state, &g.connection_id, kind, data).await;

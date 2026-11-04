@@ -215,11 +215,11 @@ what the pump does.
 
 | Heartbeat field | What it times | Where |
 |---|---|---|
-| `avg_convert_ms` | `convert_bgra` and the `AVFrame` build: the CPU colour conversion and a plane copy | `encode_sync`, `agents/roomlerd/src/encode/ffmpeg/encoder.rs` |
+| `avg_convert_ms` | `convert_bgra` and the `AVFrame` build: the CPU colour conversion and a plane copy | `encode_sync`, `agents/meshharbord/src/encode/ffmpeg/encoder.rs` |
 | `avg_upload_ms` | the hardware-frame upload: VAAPI, D3D12 and Vulkan; zero for every other encoder | the same |
 | `avg_submit_ms` | `send_frame`, where NVENC, QSV and AMF upload a software frame themselves | the same |
 | `avg_drain_ms` | receiving the packets | the same |
-| `avg_readback_ms` | WGC's copy of the capture surface into CPU memory, on its capture thread. This is off the pump's clock, so `avg_capture_ms` never contained it | the `FrameArrived` handler, `agents/roomlerd/src/capture/wgc_backend.rs` |
+| `avg_readback_ms` | WGC's copy of the capture surface into CPU memory, on its capture thread. This is off the pump's clock, so `avg_capture_ms` never contained it | the `FrameArrived` handler, `agents/meshharbord/src/capture/wgc_backend.rs` |
 
 - **The four parts add up to the encode stage** (`avg_encode_ms` also includes the hop to FR-70's encoder
   thread). They are cumulative per encoder (`StageTimes`, carried by `rate_stats()`) and reported per frame

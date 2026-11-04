@@ -13,7 +13,7 @@
 //! `SplitStream` moved from the setup wait into the dispatch loop.
 
 use async_trait::async_trait;
-use roomler_ai_remote_control::signaling::{ClientMsg, ServerMsg};
+use meshharbor_remote_control::signaling::{ClientMsg, ServerMsg};
 
 /// The **egress** half — every `ClientMsg` the driver emits (hello/open, the SDP
 /// offer, ICE trickle, per-flow forward-requests, half-close + closed audit)

@@ -48,8 +48,8 @@ sequenceDiagram
 
 | Frame | Fields | Meaning |
 |---|---|---|
-| `mouse_rel` | `dx`, `dy`: whole counts | move by this much from wherever the pointer is ([`mod.rs:358`](../agents/roomlerd/src/input/mod.rs#L358)) |
-| `mouse_press` | `btn` | press **where the pointer is** ([`mod.rs:366`](../agents/roomlerd/src/input/mod.rs#L366)) |
+| `mouse_rel` | `dx`, `dy`: whole counts | move by this much from wherever the pointer is ([`mod.rs:358`](../agents/meshharbord/src/input/mod.rs#L358)) |
+| `mouse_press` | `btn` | press **where the pointer is** ([`mod.rs:366`](../agents/meshharbord/src/input/mod.rs#L366)) |
 | `mouse_release` | `btn` | let go where the pointer is: #1945's frame, unchanged |
 
 - **Whole counts.** The viewer sums `movementX/Y` over the input gap and sends only whole counts, carrying
@@ -62,8 +62,8 @@ sequenceDiagram
   cursor. So it presses with `mouse_press` and releases with `mouse_release`, neither of which moves.
 - ⚠️ **Both frames are gated at both ends.** An older agent cannot parse them. The agent advertises
   `mouse-rel` in `AgentCaps.input` only where its injector carries relative motion
-  ([`mod.rs:178`](../agents/roomlerd/src/input/mod.rs#L178) `advertises_mouse_rel`, appended at every
-  announcement, [`signaling.rs:6855`](../agents/roomlerd/src/signaling.rs#L6855)). The viewer offers the
+  ([`mod.rs:178`](../agents/meshharbord/src/input/mod.rs#L178) `advertises_mouse_rel`, appended at every
+  announcement, [`signaling.rs:6855`](../agents/meshharbord/src/signaling.rs#L6855)). The viewer offers the
   control only to an agent that says so, matched by equality
   ([`relativeMouse.ts:17`](../ui/src/composables/relativeMouse.ts#L17) `agentSupportsRelativeMouse`).
 
@@ -71,12 +71,12 @@ sequenceDiagram
 
 | Host | Relative motion | A press where the pointer is |
 |---|---|---|
-| Windows, user worker | `SendInput` with `MOUSEEVENTF_MOVE` and no `ABSOLUTE` ([`enigo_backend.rs:193`](../agents/roomlerd/src/input/enigo_backend.rs#L193)) | [`enigo_backend.rs:200`](../agents/roomlerd/src/input/enigo_backend.rs#L200) |
+| Windows, user worker | `SendInput` with `MOUSEEVENTF_MOVE` and no `ABSOLUTE` ([`enigo_backend.rs:193`](../agents/meshharbord/src/input/enigo_backend.rs#L193)) | [`enigo_backend.rs:200`](../agents/meshharbord/src/input/enigo_backend.rs#L200) |
 | Windows, SystemContext | the same `dispatch`, on its desktop-bound thread | the same |
-| Linux, system install (uinput) | ✅ **P2b**: a second, relative-only pointer beside the absolute tablet (`REL_X`/`REL_Y` plus buttons), made on the first `mouse_rel` ([`uinput_backend.rs:470`](../agents/roomlerd/src/input/uinput_backend.rs#L470) `open_rel_device`; the frame at [`uinput_backend.rs:564`](../agents/roomlerd/src/input/uinput_backend.rs#L564)). libinput adds it as a pointer on GNOME and KDE and hands relative-pointer clients its unaccelerated deltas, the counts sent | ✅ [`uinput_backend.rs:555`](../agents/roomlerd/src/input/uinput_backend.rs#L555) |
-| Linux, per-user Wayland (the RemoteDesktop session) | ✅ **P2c**: the session's own relative call, which names no stream ([`portal/input.rs:163`](../agents/roomlerd/src/capture/portal/input.rs#L163)): the portal's `NotifyPointerMotion` ([`portal/input.rs:470`](../agents/roomlerd/src/capture/portal/input.rs#L470)), or `NotifyPointerMotionRelative` on mutter's own session, where FR-93 routes GNOME's input ([`portal/input.rs:499`](../agents/roomlerd/src/capture/portal/input.rs#L499)). Both move the pointer by exactly the counts sent | ✅ [`portal/input.rs:155`](../agents/roomlerd/src/capture/portal/input.rs#L155) |
-| Linux X11 (enigo, XTest) | ✅ **P2a**: XTest relative motion (`XTestFakeRelativeMotionEvent`, enigo's `Coordinate::Rel`, [`enigo_backend.rs:193`](../agents/roomlerd/src/input/enigo_backend.rs#L193)), which an XI2 raw reader sees 1:1 | ✅ the same `dispatch` |
-| macOS (the per-user agent) | ✅ **P2d**: enigo's `Coordinate::Rel` posts a `MouseMoved` CGEvent (a `…Dragged` one with a button held) at the cursor plus the delta, with the event's delta fields set to the counts sent ([`enigo_backend.rs:193`](../agents/roomlerd/src/input/enigo_backend.rs#L193)). The session's event stream carries each event with exactly that delta, and an app reads it as `NSEvent`'s `deltaX`/`deltaY`, also with the cursor decoupled from the mouse the way a game decouples it | ✅ the same `dispatch` |
+| Linux, system install (uinput) | ✅ **P2b**: a second, relative-only pointer beside the absolute tablet (`REL_X`/`REL_Y` plus buttons), made on the first `mouse_rel` ([`uinput_backend.rs:470`](../agents/meshharbord/src/input/uinput_backend.rs#L470) `open_rel_device`; the frame at [`uinput_backend.rs:564`](../agents/meshharbord/src/input/uinput_backend.rs#L564)). libinput adds it as a pointer on GNOME and KDE and hands relative-pointer clients its unaccelerated deltas, the counts sent | ✅ [`uinput_backend.rs:555`](../agents/meshharbord/src/input/uinput_backend.rs#L555) |
+| Linux, per-user Wayland (the RemoteDesktop session) | ✅ **P2c**: the session's own relative call, which names no stream ([`portal/input.rs:163`](../agents/meshharbord/src/capture/portal/input.rs#L163)): the portal's `NotifyPointerMotion` ([`portal/input.rs:470`](../agents/meshharbord/src/capture/portal/input.rs#L470)), or `NotifyPointerMotionRelative` on mutter's own session, where FR-93 routes GNOME's input ([`portal/input.rs:499`](../agents/meshharbord/src/capture/portal/input.rs#L499)). Both move the pointer by exactly the counts sent | ✅ [`portal/input.rs:155`](../agents/meshharbord/src/capture/portal/input.rs#L155) |
+| Linux X11 (enigo, XTest) | ✅ **P2a**: XTest relative motion (`XTestFakeRelativeMotionEvent`, enigo's `Coordinate::Rel`, [`enigo_backend.rs:193`](../agents/meshharbord/src/input/enigo_backend.rs#L193)), which an XI2 raw reader sees 1:1 | ✅ the same `dispatch` |
+| macOS (the per-user agent) | ✅ **P2d**: enigo's `Coordinate::Rel` posts a `MouseMoved` CGEvent (a `…Dragged` one with a button held) at the cursor plus the delta, with the event's delta fields set to the counts sent ([`enigo_backend.rs:193`](../agents/meshharbord/src/input/enigo_backend.rs#L193)). The session's event stream carries each event with exactly that delta, and an app reads it as `NSEvent`'s `deltaX`/`deltaY`, also with the cursor decoupled from the mouse the way a game decouples it | ✅ the same `dispatch` |
 
 ⚠️ **On Windows, enigo has to be told to send a relative move as relative.** enigo 0.6's default
 (`windows_subject_to_mouse_speed_and_acceleration_level = false`) turns `Coordinate::Rel` into an
@@ -84,18 +84,18 @@ ABSOLUTE move to cursor + delta, so that pointer acceleration does not apply. Ra
 absolute event and no motion, and a game sees nothing. Agent 0.4.140 shipped that way: ten `mouse_rel`
 frames reached the host as 0 relative counts and 10 absolute events (the spec's §8 row 5). Every enigo
 the agent builds now starts from one helper with the flag set
-([`enigo_backend.rs:112`](../agents/roomlerd/src/input/enigo_backend.rs#L112) `enigo_settings`), and a
+([`enigo_backend.rs:112`](../agents/meshharbord/src/input/enigo_backend.rs#L112) `enigo_settings`), and a
 test locks it.
 The visible cursor then follows pointer speed and acceleration, as a real mouse does; the raw deltas are
 the counts sent.
 
 A Linux agent advertises `mouse-rel` **only while the session a controller would open now carries it**. It
 decides when the caps are announced, which is before any session
-([`mod.rs:292`](../agents/roomlerd/src/input/mod.rs#L292) `linux_injector_carries_rel`):
+([`mod.rs:292`](../agents/meshharbord/src/input/mod.rs#L292) `linux_injector_carries_rel`):
 - **uinput**, below the compositor, carries it for any session, Wayland or X11. That is uinput opted in
   (`ROOMLERD_UINPUT=1`) with the device openable, the brief planning the DRM arm that a system install's
   automatic capture (FR-95) pairs with uinput, or such a capture already alive
-  ([`mod.rs:206`](../agents/roomlerd/src/input/mod.rs#L206) `uinput_would_inject`). A capture alive only
+  ([`mod.rs:206`](../agents/meshharbord/src/input/mod.rs#L206) `uinput_would_inject`). A capture alive only
   during a session would come too late for the hello, which is why the plan counts.
 - **A RemoteDesktop session** carries it on a Wayland desktop whose capture plans the portal or mutter arm
   with input that reaches the desktop (the brief's `input_reach` is `full`). While that session is live the
@@ -108,7 +108,7 @@ The brief is at most a minute old, and the heartbeat re-announces the caps when 
 follows the session: a desktop whose input reaches only Xwayland takes it back.
 
 A macOS agent advertises it **in a GUI session with the Accessibility grant**
-([`mod.rs:268`](../agents/roomlerd/src/input/mod.rs#L268) `macos_injector_carries_rel`). The root
+([`mod.rs:268`](../agents/meshharbord/src/input/mod.rs#L268) `macos_injector_carries_rel`). The root
 LaunchDaemon has no WindowServer to post into, yet its permission check can still answer "granted" (FR-80).
 Without the grant macOS drops every posted event, and the enigo the agent ships refuses to start. Both are
 read at every announcement, so a grant given while the daemon runs is announced by the next heartbeat.
@@ -203,7 +203,7 @@ stateDiagram-v2
 ## The arbiter
 
 `mouse_rel` is movement: only the session holding input injects it, the same as `mouse_move`. A
-`mouse_press` is held like any press ([`arbiter.rs:380`](../agents/roomlerd/src/input/arbiter.rs#L380)),
+`mouse_press` is held like any press ([`arbiter.rs:380`](../agents/meshharbord/src/input/arbiter.rs#L380)),
 so a session that ends mid-drag still has its button released, where the pointer is. Every injected
 relative event notes remote input, so keep busy and display match read it as the controller's, not a
 person's.
@@ -212,7 +212,7 @@ person's.
 
 | Where | How |
 |---|---|
-| The device | `ROOMLERD_INPUT_MOUSE_REL=0` (or `false`, `no`, `off`): the agent stops advertising `mouse-rel` ([`mod.rs:167`](../agents/roomlerd/src/input/mod.rs#L167)). On macOS it goes in the per-user agent's `EnvironmentVariables` in `~/Library/LaunchAgents/com.roomler.agent.plist`, and takes effect after a `launchctl bootout` and `bootstrap` of `gui/<uid>` (FR-109 §8 row 33) |
+| The device | `ROOMLERD_INPUT_MOUSE_REL=0` (or `false`, `no`, `off`): the agent stops advertising `mouse-rel` ([`mod.rs:167`](../agents/meshharbord/src/input/mod.rs#L167)). On macOS it goes in the per-user agent's `EnvironmentVariables` in `~/Library/LaunchAgents/com.roomler.agent.plist`, and takes effect after a `launchctl bootout` and `bootstrap` of `gui/<uid>` (FR-109 §8 row 33) |
 | One browser | `localStorage['roomler-rc-relative-mouse'] = 'off'` hides the control |
 | One browser, the auto-switch alone | `localStorage['roomler-rc-relative-auto'] = 'off'` ([`relativeMouse.ts:68`](../ui/src/composables/relativeMouse.ts#L68)): relative mode stays manual, and the toolbar control still works |
 
@@ -220,7 +220,7 @@ person's.
 
 - It never reads input on the host. The agent only injects; there is no hook and no raw-input reader in
   `roomlerd` (FR-92's rule). A unit test scans the relative-mouse code for any of them
-  ([`input/mod.rs:846`](../agents/roomlerd/src/input/mod.rs#L846) `fr109_relative_mouse_reads_no_input`).
+  ([`input/mod.rs:846`](../agents/meshharbord/src/input/mod.rs#L846) `fr109_relative_mouse_reads_no_input`).
 - No ghost cursor in relative mode: other viewers see the host's own cursor in the picture.
 - The host's pointer speed and acceleration settings are not changed.
 - Not measured on macOS: an app that reads the GameController framework (`GCMouse`). It reads the mouse

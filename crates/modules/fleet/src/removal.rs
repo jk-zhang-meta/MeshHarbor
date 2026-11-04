@@ -7,14 +7,14 @@
 //! FR-69 P5a — moved from the host's `ws/ephemeral.rs`. The overlay release
 //! that opened the sequence is `network`'s, which fleet cannot call (the
 //! module graph is a DAG); it now runs through the core hook registry
-//! ([`roomler_core::hooks::FleetLifecycle::agent_removed`]), in
-//! [`roomler_core::hooks::HOOK_ORDER`] — session holders, then lease holders,
+//! ([`meshharbor_core::hooks::FleetLifecycle::agent_removed`]), in
+//! [`meshharbor_core::hooks::HOOK_ORDER`] — session holders, then lease holders,
 //! then this, the record owner. Same order as before, one owner per step.
 
 use bson::oid::ObjectId;
-use roomler_ai_remote_control::models::Agent;
-use roomler_ai_services::dao::base::{DaoError, DaoResult};
-use roomler_core::hooks::ReleasedLease;
+use meshharbor_remote_control::models::Agent;
+use meshharbor_services::dao::base::{DaoError, DaoResult};
+use meshharbor_core::hooks::ReleasedLease;
 
 use crate::FleetState;
 

@@ -5,7 +5,7 @@ How to confirm a perMachine + SystemContext host can be remote-controlled
 The fixes this verifies landed in rc.51/rc.52 — any current release includes
 them; the per-step "rc.52" anchors below identify *which* behaviour is being
 checked, not a version you should install. The easiest way to set up such a
-host today is the `roomler-setup` wizard's **Daemon — system** role
+host today is the `meshharbor-setup` wizard's **Daemon — system** role
 ([installation.md](installation.md)).
 
 This procedure assumes you have remote-shell access to the controlled

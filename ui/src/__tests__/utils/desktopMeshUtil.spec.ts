@@ -3,7 +3,7 @@
 // @vitest-environment node
 //
 // FR-84 D5c — the desktop companion's mesh graph reads edges by the SAME rules
-// as the web one: agents/roomler-desktop/src/front/mesh-util.js is generated
+// as the web one: agents/meshharbor-desktop/src/front/mesh-util.js is generated
 // from ui/src/utils/mesh.ts and checked in (the companion has no bundler).
 // This fails when the checked-in copy is not what mesh.ts builds to today.
 //
@@ -33,7 +33,7 @@ describe('desktop mesh-util.js', () => {
     const checkedIn = readFileSync(TARGET, 'utf8').replace(/\r\n/g, '\n')
     expect(
       checkedIn,
-      'agents/roomler-desktop/src/front/mesh-util.js is stale — run: cd ui && bun scripts/build-desktop-mesh-util.mjs',
+      'agents/meshharbor-desktop/src/front/mesh-util.js is stale — run: cd ui && bun scripts/build-desktop-mesh-util.mjs',
     ).toBe(fresh)
   })
 

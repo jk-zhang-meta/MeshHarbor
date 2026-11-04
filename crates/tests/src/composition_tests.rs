@@ -29,7 +29,7 @@
 //! the commit message so the reviewer can diff the JSON against the claim:
 //!
 //! ```text
-//! COMPOSITION_UPDATE=1 cargo test -p roomler-ai-tests composition_matches_baseline
+//! COMPOSITION_UPDATE=1 cargo test -p meshharbor-tests composition_matches_baseline
 //! ```
 //!
 //! **Without a local server build** (a Windows dev box has no OpenSSL or
@@ -48,8 +48,8 @@
 
 use std::{collections::BTreeSet, path::PathBuf};
 
-use roomler_ai_api::build_router;
-use roomler_core::composition::{Snapshot, index_sets_json, routes_of, wire_names};
+use meshharbor_api::build_router;
+use meshharbor_core::composition::{Snapshot, index_sets_json, routes_of, wire_names};
 
 use crate::fixtures::test_app::TestApp;
 
@@ -87,7 +87,7 @@ async fn snapshot() -> Snapshot {
     // The sets a host applies: the core plan (per `multi_block` schema) plus
     // every mounted module's, sorted by collection — see `index_sets_json`.
     let all_sets = |multi_block: bool| {
-        let mut sets = roomler_ai_db::indexes::index_plan(multi_block).sets;
+        let mut sets = meshharbor_db::indexes::index_plan(multi_block).sets;
         sets.extend(app.state.modules.index_sets_for(multi_block));
         index_sets_json(sets)
     };
@@ -101,7 +101,7 @@ async fn snapshot() -> Snapshot {
         // P5b — the owner of every client wire tag. Recorded so a module PR
         // that re-homes a message (or a new variant that names an owner) is
         // a visible line in the baseline diff, not a silent re-route.
-        namespaces: roomler_core::composition::namespaces(),
+        namespaces: meshharbor_core::composition::namespaces(),
     }
 }
 

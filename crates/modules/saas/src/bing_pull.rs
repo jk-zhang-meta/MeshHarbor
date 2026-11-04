@@ -41,12 +41,12 @@ use std::collections::BTreeMap;
 
 use bson::DateTime;
 use chrono::{Duration, NaiveDate};
-use roomler_ai_config::GrowthSettings;
-use roomler_ai_services::dao::{
+use meshharbor_config::GrowthSettings;
+use meshharbor_services::dao::{
     base::DaoResult,
     growth::{BING_SOURCE, BING_WEEKLY_SOURCE, GrowthDaily, GrowthDao, PulledDay, daily_row},
 };
-use roomler_core::Core;
+use meshharbor_core::Core;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tracing::{info, warn};
 
@@ -192,7 +192,7 @@ impl BingClient {
             return None;
         }
         let http = reqwest::Client::builder()
-            .user_agent(concat!("roomler-ai-api/", env!("CARGO_PKG_VERSION")))
+            .user_agent(concat!("meshharbor-api/", env!("CARGO_PKG_VERSION")))
             .timeout(TIMEOUT)
             // The key rides the query string, and a redirect would carry it
             // to wherever the next hop points (and into reqwest's debug log

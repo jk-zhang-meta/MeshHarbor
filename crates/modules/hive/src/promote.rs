@@ -41,8 +41,8 @@ use axum::{
 };
 use bson::{DateTime, doc, oid::ObjectId};
 use dashmap::DashMap;
-use roomler_ai_db::models::role::permissions;
-use roomler_ai_remote_control::{
+use meshharbor_db::models::role::permissions;
+use meshharbor_remote_control::{
     error::Error as HubError,
     hive::{
         HiveCopyTip, HiveDrainRefusal, HivePlace, HiveRefusal, HiveReplicaRole, hive_limits,
@@ -53,7 +53,7 @@ use roomler_ai_remote_control::{
     models::{Agent, RpcCap},
     signaling::ServerMsg,
 };
-use roomler_core::{ApiError, extractors::auth::AuthUser};
+use meshharbor_core::{ApiError, extractors::auth::AuthUser};
 use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 use tracing::{debug, info, warn};
@@ -79,7 +79,7 @@ pub struct Bounds {
 }
 
 impl Bounds {
-    pub fn of(settings: &roomler_ai_config::HiveSettings) -> Self {
+    pub fn of(settings: &meshharbor_config::HiveSettings) -> Self {
         Self {
             prepare: Duration::from_secs(settings.promote_prepare_secs),
             join: Duration::from_secs(settings.promote_join_secs),
@@ -562,7 +562,7 @@ async fn authorize(
                 .await
             {
                 Ok(row) => row,
-                Err(roomler_ai_services::dao::base::DaoError::NotFound) => {
+                Err(meshharbor_services::dao::base::DaoError::NotFound) => {
                     return Ok(Err(PromoteDenyReason::PrimaryOffline));
                 }
                 Err(e) => return Err(e.into()),
@@ -1024,7 +1024,7 @@ pub(crate) enum Failure {
     /// it holds a tail a move cut off, which it has not set aside yet.
     CutOff,
     /// P2f-1 — the teleport's target refused its join, in its words
-    /// ([`roomler_ai_remote_control::hive::HiveJoinRefusal`]).
+    /// ([`meshharbor_remote_control::hive::HiveJoinRefusal`]).
     JoinRefused { word: String },
     /// P2f-1 — the primary refused its join as the primary: it does not say
     /// where its copy ends, so the target has no tip to catch up with.
@@ -1598,7 +1598,7 @@ async fn primary_heard_from(state: &HiveState, s: &AgentSession, p: &Promotion) 
     {
         Ok(row) => unreachable_reach(&row, DateTime::now()).is_err(),
         // Removed meanwhile: it is never heard from again.
-        Err(roomler_ai_services::dao::base::DaoError::NotFound) => false,
+        Err(meshharbor_services::dao::base::DaoError::NotFound) => false,
         Err(e) => {
             warn!(session = ?s.id, %e, "hive: the primary's row was not read — taken as heard from");
             true
@@ -2669,8 +2669,8 @@ mod tests {
     /// admission ran out would be refused `not_prepared`.
     #[test]
     fn a_teleport_waits_less_than_its_target_admits_its_join() {
-        use roomler_ai_remote_control::hive::promote_limits::TELEPORT_ADMISSION_SECS;
-        let defaults = roomler_ai_config::HiveSettings::default();
+        use meshharbor_remote_control::hive::promote_limits::TELEPORT_ADMISSION_SECS;
+        let defaults = meshharbor_config::HiveSettings::default();
         assert!(
             defaults.promote_join_secs < TELEPORT_ADMISSION_SECS,
             "{} s against {TELEPORT_ADMISSION_SECS} s",

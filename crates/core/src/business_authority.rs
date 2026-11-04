@@ -8,7 +8,7 @@
 use bson::{DateTime, doc, oid::ObjectId};
 use futures::TryStreamExt;
 use mongodb::options::ReturnDocument;
-use roomler_ai_remote_control::models::{Agent, AgentStatus, TunnelClient};
+use meshharbor_remote_control::models::{Agent, AgentStatus, TunnelClient};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -293,7 +293,7 @@ fn current_owner(core: &Core) -> Result<Option<ObjectId>, ApiError> {
 }
 
 fn require_role_approver(
-    policy: &roomler_ai_config::AccountApprovalSettings,
+    policy: &meshharbor_config::AccountApprovalSettings,
     actor: ObjectId,
 ) -> Result<(), ApiError> {
     if crate::admission::owner_id(policy)? == Some(actor) {
@@ -675,10 +675,10 @@ async fn admitted_owner_set(
     if owner_ids.is_empty() {
         return Ok(Some(std::collections::HashSet::new()));
     }
-    let users: Vec<roomler_ai_db::models::User> =
+    let users: Vec<meshharbor_db::models::User> =
         tokio::time::timeout(std::time::Duration::from_secs(3), async {
             core.db
-                .collection::<roomler_ai_db::models::User>(roomler_ai_db::models::User::COLLECTION)
+                .collection::<meshharbor_db::models::User>(meshharbor_db::models::User::COLLECTION)
                 .find(doc! { "_id": { "$in": owner_ids } })
                 .await
                 .map_err(storage_error)?
@@ -1205,7 +1205,7 @@ mod tests {
 
     #[test]
     fn only_explicit_enabled_central_owner_can_approve_or_revoke_roles() {
-        use roomler_ai_config::AccountApprovalSettings;
+        use meshharbor_config::AccountApprovalSettings;
         let owner = ObjectId::new();
         let configured = AccountApprovalSettings {
             enabled: true,

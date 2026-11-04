@@ -2646,8 +2646,8 @@ dependencies = [
  "base64 0.22.1",
  "dashmap",
  "futures",
+ "meshharbor-remote-control",
  "ring",
- "roomler-ai-remote-control",
  "serde",
  "serde_json",
  "tokio",
@@ -6162,6 +6162,751 @@ dependencies = [
 ]
 
 [[package]]
+name = "meshharbor-api"
+version = "0.4.151"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "backtrace",
+ "base64 0.22.1",
+ "bson",
+ "chrono",
+ "dashmap",
+ "dotenvy",
+ "futures",
+ "hex",
+ "hmac 0.12.1",
+ "infer",
+ "ipnet",
+ "jsonwebtoken",
+ "libc",
+ "meshharbor-config",
+ "meshharbor-core",
+ "meshharbor-db",
+ "meshharbor-mod-chat",
+ "meshharbor-mod-conference",
+ "meshharbor-mod-fleet",
+ "meshharbor-mod-hive",
+ "meshharbor-mod-network",
+ "meshharbor-mod-remote",
+ "meshharbor-mod-saas",
+ "meshharbor-mod-vault",
+ "meshharbor-remote-control",
+ "meshharbor-services",
+ "mongodb",
+ "nanoid",
+ "rand 0.9.4",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "sha1 0.10.6",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tower",
+ "tower-http",
+ "tower_governor",
+ "tracing",
+ "tracing-appender",
+ "tracing-subscriber",
+ "uuid",
+ "validator",
+]
+
+[[package]]
+name = "meshharbor-cli"
+version = "0.4.151"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "base64 0.22.1",
+ "bson",
+ "clap",
+ "directories",
+ "embed-resource",
+ "flate2",
+ "futures",
+ "hex",
+ "indexmap 2.14.0",
+ "ipnet",
+ "libc",
+ "meshharbor-remote-control",
+ "meshharbor-tunnel-core",
+ "rand 0.9.4",
+ "reqwest 0.12.28",
+ "rpassword",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "socket2 0.5.10",
+ "ssh-key",
+ "tar",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-test",
+ "tokio-tungstenite 0.28.0",
+ "toml 0.9.12+spec-1.1.0",
+ "tracing",
+ "tracing-subscriber",
+ "webrtc",
+ "zip",
+]
+
+[[package]]
+name = "meshharbor-cli-shim"
+version = "0.4.151"
+dependencies = [
+ "embed-resource",
+ "libc",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "meshharbor-config"
+version = "0.4.151"
+dependencies = [
+ "config",
+ "serde",
+ "serde_json",
+ "toml 0.9.12+spec-1.1.0",
+]
+
+[[package]]
+name = "meshharbor-core"
+version = "0.4.151"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "bson",
+ "bytes",
+ "dashmap",
+ "futures",
+ "ipnet",
+ "maxminddb",
+ "meshharbor-config",
+ "meshharbor-db",
+ "meshharbor-remote-control",
+ "meshharbor-services",
+ "mongodb",
+ "object_store",
+ "redis",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tower",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "meshharbor-db"
+version = "0.4.151"
+dependencies = [
+ "bson",
+ "chrono",
+ "meshharbor-config",
+ "mongodb",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "meshharbor-desktop"
+version = "0.4.151"
+dependencies = [
+ "anyhow",
+ "gethostname 0.5.0",
+ "gio",
+ "meshharbor-localapi",
+ "meshharbor-node-core",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-foundation",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tauri-plugin-shell",
+ "tauri-plugin-single-instance",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "meshharbor-hive-node"
+version = "0.4.151"
+dependencies = [
+ "blake3",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "uuid",
+]
+
+[[package]]
+name = "meshharbor-localapi"
+version = "0.4.151"
+dependencies = [
+ "async-trait",
+ "libc",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "meshharbor-mod-chat"
+version = "0.4.151"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "bson",
+ "futures",
+ "infer",
+ "meshharbor-config",
+ "meshharbor-core",
+ "meshharbor-db",
+ "meshharbor-services",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "meshharbor-mod-conference"
+version = "0.4.151"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "base64 0.22.1",
+ "bson",
+ "dashmap",
+ "futures",
+ "hmac 0.12.1",
+ "mediasoup",
+ "meshharbor-config",
+ "meshharbor-core",
+ "meshharbor-db",
+ "meshharbor-mod-chat",
+ "meshharbor-remote-control",
+ "meshharbor-services",
+ "serde",
+ "serde_json",
+ "sha1 0.10.6",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "meshharbor-mod-fleet"
+version = "0.4.151"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "bson",
+ "chrono",
+ "dashmap",
+ "futures",
+ "hex",
+ "ipnet",
+ "meshharbor-config",
+ "meshharbor-core",
+ "meshharbor-db",
+ "meshharbor-remote-control",
+ "meshharbor-services",
+ "mongodb",
+ "parking_lot 0.12.5",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "meshharbor-mod-hive"
+version = "0.4.151"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "bson",
+ "dashmap",
+ "meshharbor-config",
+ "meshharbor-core",
+ "meshharbor-db",
+ "meshharbor-mod-chat",
+ "meshharbor-mod-fleet",
+ "meshharbor-remote-control",
+ "meshharbor-services",
+ "mongodb",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "meshharbor-mod-network"
+version = "0.4.151"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "base64 0.22.1",
+ "bson",
+ "chrono",
+ "dashmap",
+ "futures",
+ "ipnet",
+ "meshharbor-config",
+ "meshharbor-core",
+ "meshharbor-db",
+ "meshharbor-mod-fleet",
+ "meshharbor-remote-control",
+ "meshharbor-services",
+ "meshharbor-tunnel-core",
+ "rand 0.9.4",
+ "redis",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "meshharbor-mod-remote"
+version = "0.4.151"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "bson",
+ "dashmap",
+ "meshharbor-config",
+ "meshharbor-core",
+ "meshharbor-db",
+ "meshharbor-mod-fleet",
+ "meshharbor-remote-control",
+ "meshharbor-services",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "meshharbor-mod-saas"
+version = "0.4.151"
+dependencies = [
+ "anyhow",
+ "axum",
+ "bson",
+ "chrono",
+ "futures",
+ "jsonwebtoken",
+ "meshharbor-config",
+ "meshharbor-core",
+ "meshharbor-db",
+ "meshharbor-services",
+ "reqwest 0.12.28",
+ "rsa",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "url",
+]
+
+[[package]]
+name = "meshharbor-mod-vault"
+version = "0.4.151"
+dependencies = [
+ "age",
+ "anyhow",
+ "async-trait",
+ "axum",
+ "base64 0.22.1",
+ "bson",
+ "cedar-policy",
+ "chacha20poly1305",
+ "crypto_box",
+ "dashmap",
+ "futures",
+ "meshharbor-config",
+ "meshharbor-core",
+ "meshharbor-db",
+ "meshharbor-mod-hive",
+ "meshharbor-remote-control",
+ "meshharbor-services",
+ "mongodb",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "zeroize",
+]
+
+[[package]]
+name = "meshharbor-node-core"
+version = "0.4.151"
+dependencies = [
+ "anyhow",
+ "bson",
+ "directories",
+ "hex",
+ "libc",
+ "meshharbor-localapi",
+ "meshharbor-remote-control",
+ "meshharbor-tunnel-core",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "toml 0.9.12+spec-1.1.0",
+ "tracing",
+ "tracing-appender",
+ "tracing-subscriber",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "meshharbor-remote-control"
+version = "0.4.151"
+dependencies = [
+ "base64 0.22.1",
+ "bitflags 2.13.1",
+ "bson",
+ "dashmap",
+ "hmac 0.12.1",
+ "ipnet",
+ "jsonwebtoken",
+ "mongodb",
+ "parking_lot 0.12.5",
+ "ring",
+ "serde",
+ "serde_json",
+ "sha1 0.10.6",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-test",
+ "tracing",
+ "url",
+]
+
+[[package]]
+name = "meshharbor-services"
+version = "0.4.151"
+dependencies = [
+ "anyhow",
+ "argon2 0.5.3",
+ "async-trait",
+ "base64 0.22.1",
+ "bson",
+ "chrono",
+ "dashmap",
+ "futures",
+ "genpdf",
+ "hex",
+ "hmac 0.12.1",
+ "jsonwebtoken",
+ "lettre",
+ "meshharbor-config",
+ "meshharbor-db",
+ "meshharbor-remote-control",
+ "mongodb",
+ "nanoid",
+ "password-hash 0.5.0",
+ "pulldown-cmark",
+ "rand 0.9.4",
+ "redis",
+ "reqwest 0.12.28",
+ "ring",
+ "rust_xlsxwriter",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "url",
+ "urlencoding",
+ "uuid",
+ "validator",
+ "web-push",
+]
+
+[[package]]
+name = "meshharbor-setup"
+version = "0.4.151"
+dependencies = [
+ "anyhow",
+ "directories",
+ "gethostname 0.5.0",
+ "meshharbor-cli",
+ "meshharbor-node-core",
+ "meshharbor-remote-control",
+ "meshharbor-setup-core",
+ "meshharbord",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tauri-plugin-shell",
+ "tauri-plugin-single-instance",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "toml 0.9.12+spec-1.1.0",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
+name = "meshharbor-setup-core"
+version = "0.4.151"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "directories",
+ "flate2",
+ "futures",
+ "hex",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tar",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "windows-sys 0.59.0",
+ "zip",
+]
+
+[[package]]
+name = "meshharbor-tests"
+version = "0.4.151"
+dependencies = [
+ "age",
+ "anyhow",
+ "axum",
+ "base64 0.22.1",
+ "bson",
+ "bytes",
+ "chrono",
+ "crypto_box",
+ "futures",
+ "hex",
+ "hmac 0.12.1",
+ "jsonwebtoken",
+ "meshharbor-api",
+ "meshharbor-cli",
+ "meshharbor-config",
+ "meshharbor-core",
+ "meshharbor-db",
+ "meshharbor-hive-node",
+ "meshharbor-mod-conference",
+ "meshharbor-mod-fleet",
+ "meshharbor-mod-hive",
+ "meshharbor-mod-network",
+ "meshharbor-mod-remote",
+ "meshharbor-mod-saas",
+ "meshharbor-remote-control",
+ "meshharbor-services",
+ "meshharbord",
+ "mongodb",
+ "opaque-ke",
+ "rand 0.8.6",
+ "redis",
+ "reqwest 0.12.28",
+ "ring",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "tokio",
+ "tokio-test",
+ "tokio-tungstenite 0.26.2",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "webrtc",
+]
+
+[[package]]
+name = "meshharbor-tunnel-core"
+version = "0.4.151"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "base64 0.22.1",
+ "blake2 0.10.6",
+ "boringtun",
+ "bson",
+ "bytes",
+ "core-foundation 0.9.4",
+ "futures",
+ "hex",
+ "hmac 0.12.1",
+ "if-addrs",
+ "ipnet",
+ "libc",
+ "meshharbor-localapi",
+ "meshharbor-remote-control",
+ "ml-kem",
+ "quinn",
+ "quinn-udp",
+ "rand 0.9.4",
+ "rcgen",
+ "ring",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sha1 0.10.6",
+ "sha2 0.10.9",
+ "smoltcp",
+ "socket2 0.5.10",
+ "subtle",
+ "system-configuration",
+ "system-configuration-sys",
+ "tcp-turn-conn",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-test",
+ "tracing",
+ "tun",
+ "turn",
+ "webrtc",
+ "webrtc-util",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "meshharbord"
+version = "0.4.151"
+dependencies = [
+ "anyhow",
+ "arboard",
+ "async-trait",
+ "async_zip",
+ "audiopus",
+ "base64 0.22.1",
+ "bson",
+ "bytes",
+ "chrono",
+ "clap",
+ "clipboard-win",
+ "cpal",
+ "crypto_box",
+ "dashmap",
+ "dcv-color-primitives",
+ "directories",
+ "drm",
+ "embed-resource",
+ "enigo",
+ "env-libvpx-sys",
+ "ffmpeg-next",
+ "futures",
+ "hex",
+ "hkdf 0.12.4",
+ "hmac 0.12.1",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "if-addrs",
+ "ipnet",
+ "libc",
+ "libloading 0.8.9",
+ "meshharbor-cli",
+ "meshharbor-hive-node",
+ "meshharbor-node-core",
+ "meshharbor-remote-control",
+ "meshharbor-tunnel-core",
+ "mp4-atom",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-foundation",
+ "opaque-ke",
+ "openh264",
+ "openh264-sys2",
+ "pbkdf2 0.12.2",
+ "png 0.18.1",
+ "rand 0.8.6",
+ "rand 0.9.4",
+ "rcgen",
+ "reqwest 0.12.28",
+ "ring",
+ "russh",
+ "rustls-native-certs",
+ "scrap",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "socket2 0.5.10",
+ "stringprep",
+ "subtle",
+ "symphonia",
+ "sysinfo",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-rustls",
+ "tokio-test",
+ "tokio-tungstenite 0.28.0",
+ "tokio-util",
+ "toml 0.9.12+spec-1.1.0",
+ "tracing",
+ "tracing-appender",
+ "tracing-subscriber",
+ "webrtc",
+ "windows 0.58.0",
+ "windows-service",
+ "windows-sys 0.59.0",
+ "x11rb",
+ "zbus",
+ "zeroize",
+ "zip",
+]
+
+[[package]]
 name = "miette"
 version = "7.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8806,751 +9551,6 @@ dependencies = [
  "bitflags 2.13.1",
  "serde",
  "serde_derive",
-]
-
-[[package]]
-name = "roomler-ai-api"
-version = "0.4.151"
-dependencies = [
- "anyhow",
- "async-trait",
- "axum",
- "backtrace",
- "base64 0.22.1",
- "bson",
- "chrono",
- "dashmap",
- "dotenvy",
- "futures",
- "hex",
- "hmac 0.12.1",
- "infer",
- "ipnet",
- "jsonwebtoken",
- "libc",
- "mongodb",
- "nanoid",
- "rand 0.9.4",
- "reqwest 0.12.28",
- "roomler-ai-config",
- "roomler-ai-db",
- "roomler-ai-mod-chat",
- "roomler-ai-mod-conference",
- "roomler-ai-mod-fleet",
- "roomler-ai-mod-hive",
- "roomler-ai-mod-network",
- "roomler-ai-mod-remote",
- "roomler-ai-mod-saas",
- "roomler-ai-mod-vault",
- "roomler-ai-remote-control",
- "roomler-ai-services",
- "roomler-core",
- "serde",
- "serde_json",
- "sha1 0.10.6",
- "sha2 0.10.9",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "tower",
- "tower-http",
- "tower_governor",
- "tracing",
- "tracing-appender",
- "tracing-subscriber",
- "uuid",
- "validator",
-]
-
-[[package]]
-name = "roomler-ai-config"
-version = "0.4.151"
-dependencies = [
- "config",
- "serde",
- "serde_json",
- "toml 0.9.12+spec-1.1.0",
-]
-
-[[package]]
-name = "roomler-ai-db"
-version = "0.4.151"
-dependencies = [
- "bson",
- "chrono",
- "mongodb",
- "roomler-ai-config",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "roomler-ai-mod-chat"
-version = "0.4.151"
-dependencies = [
- "anyhow",
- "async-trait",
- "axum",
- "bson",
- "futures",
- "infer",
- "roomler-ai-config",
- "roomler-ai-db",
- "roomler-ai-services",
- "roomler-core",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "roomler-ai-mod-conference"
-version = "0.4.151"
-dependencies = [
- "anyhow",
- "async-trait",
- "axum",
- "base64 0.22.1",
- "bson",
- "dashmap",
- "futures",
- "hmac 0.12.1",
- "mediasoup",
- "roomler-ai-config",
- "roomler-ai-db",
- "roomler-ai-mod-chat",
- "roomler-ai-remote-control",
- "roomler-ai-services",
- "roomler-core",
- "serde",
- "serde_json",
- "sha1 0.10.6",
- "tokio",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "roomler-ai-mod-fleet"
-version = "0.4.151"
-dependencies = [
- "anyhow",
- "async-trait",
- "axum",
- "bson",
- "chrono",
- "dashmap",
- "futures",
- "hex",
- "ipnet",
- "mongodb",
- "parking_lot 0.12.5",
- "reqwest 0.12.28",
- "roomler-ai-config",
- "roomler-ai-db",
- "roomler-ai-remote-control",
- "roomler-ai-services",
- "roomler-core",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tokio",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "roomler-ai-mod-hive"
-version = "0.4.151"
-dependencies = [
- "anyhow",
- "async-trait",
- "axum",
- "bson",
- "dashmap",
- "mongodb",
- "roomler-ai-config",
- "roomler-ai-db",
- "roomler-ai-mod-chat",
- "roomler-ai-mod-fleet",
- "roomler-ai-remote-control",
- "roomler-ai-services",
- "roomler-core",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "roomler-ai-mod-network"
-version = "0.4.151"
-dependencies = [
- "anyhow",
- "async-trait",
- "axum",
- "base64 0.22.1",
- "bson",
- "chrono",
- "dashmap",
- "futures",
- "ipnet",
- "rand 0.9.4",
- "redis",
- "roomler-ai-config",
- "roomler-ai-db",
- "roomler-ai-mod-fleet",
- "roomler-ai-remote-control",
- "roomler-ai-services",
- "roomler-ai-tunnel-core",
- "roomler-core",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "roomler-ai-mod-remote"
-version = "0.4.151"
-dependencies = [
- "anyhow",
- "async-trait",
- "axum",
- "bson",
- "dashmap",
- "roomler-ai-config",
- "roomler-ai-db",
- "roomler-ai-mod-fleet",
- "roomler-ai-remote-control",
- "roomler-ai-services",
- "roomler-core",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "roomler-ai-mod-saas"
-version = "0.4.151"
-dependencies = [
- "anyhow",
- "axum",
- "bson",
- "chrono",
- "futures",
- "jsonwebtoken",
- "reqwest 0.12.28",
- "roomler-ai-config",
- "roomler-ai-db",
- "roomler-ai-services",
- "roomler-core",
- "rsa",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
- "url",
-]
-
-[[package]]
-name = "roomler-ai-mod-vault"
-version = "0.4.151"
-dependencies = [
- "age",
- "anyhow",
- "async-trait",
- "axum",
- "base64 0.22.1",
- "bson",
- "cedar-policy",
- "chacha20poly1305",
- "crypto_box",
- "dashmap",
- "futures",
- "mongodb",
- "roomler-ai-config",
- "roomler-ai-db",
- "roomler-ai-mod-hive",
- "roomler-ai-remote-control",
- "roomler-ai-services",
- "roomler-core",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
- "zeroize",
-]
-
-[[package]]
-name = "roomler-ai-remote-control"
-version = "0.4.151"
-dependencies = [
- "base64 0.22.1",
- "bitflags 2.13.1",
- "bson",
- "dashmap",
- "hmac 0.12.1",
- "ipnet",
- "jsonwebtoken",
- "mongodb",
- "parking_lot 0.12.5",
- "ring",
- "serde",
- "serde_json",
- "sha1 0.10.6",
- "thiserror 2.0.18",
- "tokio",
- "tokio-test",
- "tracing",
- "url",
-]
-
-[[package]]
-name = "roomler-ai-services"
-version = "0.4.151"
-dependencies = [
- "anyhow",
- "argon2 0.5.3",
- "async-trait",
- "base64 0.22.1",
- "bson",
- "chrono",
- "dashmap",
- "futures",
- "genpdf",
- "hex",
- "hmac 0.12.1",
- "jsonwebtoken",
- "lettre",
- "mongodb",
- "nanoid",
- "password-hash 0.5.0",
- "pulldown-cmark",
- "rand 0.9.4",
- "redis",
- "reqwest 0.12.28",
- "ring",
- "roomler-ai-config",
- "roomler-ai-db",
- "roomler-ai-remote-control",
- "rust_xlsxwriter",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "url",
- "urlencoding",
- "uuid",
- "validator",
- "web-push",
-]
-
-[[package]]
-name = "roomler-ai-tests"
-version = "0.4.151"
-dependencies = [
- "age",
- "anyhow",
- "axum",
- "base64 0.22.1",
- "bson",
- "bytes",
- "chrono",
- "crypto_box",
- "futures",
- "hex",
- "hmac 0.12.1",
- "jsonwebtoken",
- "mongodb",
- "opaque-ke",
- "rand 0.8.6",
- "redis",
- "reqwest 0.12.28",
- "ring",
- "roomler-ai-api",
- "roomler-ai-config",
- "roomler-ai-db",
- "roomler-ai-mod-conference",
- "roomler-ai-mod-fleet",
- "roomler-ai-mod-hive",
- "roomler-ai-mod-network",
- "roomler-ai-mod-remote",
- "roomler-ai-mod-saas",
- "roomler-ai-remote-control",
- "roomler-ai-services",
- "roomler-cli",
- "roomler-core",
- "roomler-hive-node",
- "roomlerd",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
- "tokio",
- "tokio-test",
- "tokio-tungstenite 0.26.2",
- "tower",
- "tracing",
- "tracing-subscriber",
- "uuid",
- "webrtc",
-]
-
-[[package]]
-name = "roomler-ai-tunnel-core"
-version = "0.4.151"
-dependencies = [
- "anyhow",
- "async-trait",
- "base64 0.22.1",
- "blake2 0.10.6",
- "boringtun",
- "bson",
- "bytes",
- "core-foundation 0.9.4",
- "futures",
- "hex",
- "hmac 0.12.1",
- "if-addrs",
- "ipnet",
- "libc",
- "ml-kem",
- "quinn",
- "quinn-udp",
- "rand 0.9.4",
- "rcgen",
- "ring",
- "roomler-ai-remote-control",
- "roomler-localapi",
- "rustls",
- "serde",
- "serde_json",
- "sha1 0.10.6",
- "sha2 0.10.9",
- "smoltcp",
- "socket2 0.5.10",
- "subtle",
- "system-configuration",
- "system-configuration-sys",
- "tcp-turn-conn",
- "thiserror 2.0.18",
- "tokio",
- "tokio-test",
- "tracing",
- "tun",
- "turn",
- "webrtc",
- "webrtc-util",
- "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "roomler-cli"
-version = "0.4.151"
-dependencies = [
- "anyhow",
- "async-trait",
- "base64 0.22.1",
- "bson",
- "clap",
- "directories",
- "embed-resource",
- "flate2",
- "futures",
- "hex",
- "indexmap 2.14.0",
- "ipnet",
- "libc",
- "rand 0.9.4",
- "reqwest 0.12.28",
- "roomler-ai-remote-control",
- "roomler-ai-tunnel-core",
- "rpassword",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "socket2 0.5.10",
- "ssh-key",
- "tar",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "tokio-test",
- "tokio-tungstenite 0.28.0",
- "toml 0.9.12+spec-1.1.0",
- "tracing",
- "tracing-subscriber",
- "webrtc",
- "zip",
-]
-
-[[package]]
-name = "roomler-cli-shim"
-version = "0.4.151"
-dependencies = [
- "embed-resource",
- "libc",
- "windows-sys 0.59.0",
-]
-
-[[package]]
-name = "roomler-core"
-version = "0.4.151"
-dependencies = [
- "anyhow",
- "async-trait",
- "axum",
- "bson",
- "bytes",
- "dashmap",
- "futures",
- "ipnet",
- "maxminddb",
- "mongodb",
- "object_store",
- "redis",
- "reqwest 0.12.28",
- "roomler-ai-config",
- "roomler-ai-db",
- "roomler-ai-remote-control",
- "roomler-ai-services",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "tower",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "roomler-desktop"
-version = "0.4.151"
-dependencies = [
- "anyhow",
- "gethostname 0.5.0",
- "gio",
- "objc2",
- "objc2-app-kit",
- "objc2-foundation",
- "roomler-localapi",
- "roomler-node-core",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
- "tauri-plugin-shell",
- "tauri-plugin-single-instance",
- "tempfile",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "windows-sys 0.59.0",
-]
-
-[[package]]
-name = "roomler-hive-node"
-version = "0.4.151"
-dependencies = [
- "blake3",
- "rusqlite",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.18",
- "uuid",
-]
-
-[[package]]
-name = "roomler-localapi"
-version = "0.4.151"
-dependencies = [
- "async-trait",
- "libc",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
- "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "roomler-node-core"
-version = "0.4.151"
-dependencies = [
- "anyhow",
- "bson",
- "directories",
- "hex",
- "libc",
- "reqwest 0.12.28",
- "roomler-ai-remote-control",
- "roomler-ai-tunnel-core",
- "roomler-localapi",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "toml 0.9.12+spec-1.1.0",
- "tracing",
- "tracing-appender",
- "tracing-subscriber",
- "windows-sys 0.59.0",
-]
-
-[[package]]
-name = "roomler-setup"
-version = "0.4.151"
-dependencies = [
- "anyhow",
- "directories",
- "gethostname 0.5.0",
- "reqwest 0.12.28",
- "roomler-ai-remote-control",
- "roomler-cli",
- "roomler-node-core",
- "roomler-setup-core",
- "roomlerd",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
- "tauri-plugin-shell",
- "tauri-plugin-single-instance",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "toml 0.9.12+spec-1.1.0",
- "tracing",
- "tracing-subscriber",
- "uuid",
-]
-
-[[package]]
-name = "roomler-setup-core"
-version = "0.4.151"
-dependencies = [
- "anyhow",
- "base64 0.22.1",
- "directories",
- "flate2",
- "futures",
- "hex",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tar",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "windows-sys 0.59.0",
- "zip",
-]
-
-[[package]]
-name = "roomlerd"
-version = "0.4.151"
-dependencies = [
- "anyhow",
- "arboard",
- "async-trait",
- "async_zip",
- "audiopus",
- "base64 0.22.1",
- "bson",
- "bytes",
- "chrono",
- "clap",
- "clipboard-win",
- "cpal",
- "crypto_box",
- "dashmap",
- "dcv-color-primitives",
- "directories",
- "drm",
- "embed-resource",
- "enigo",
- "env-libvpx-sys",
- "ffmpeg-next",
- "futures",
- "hex",
- "hkdf 0.12.4",
- "hmac 0.12.1",
- "http-body-util",
- "hyper",
- "hyper-util",
- "if-addrs",
- "ipnet",
- "libc",
- "libloading 0.8.9",
- "mp4-atom",
- "objc2",
- "objc2-app-kit",
- "objc2-foundation",
- "opaque-ke",
- "openh264",
- "openh264-sys2",
- "pbkdf2 0.12.2",
- "png 0.18.1",
- "rand 0.8.6",
- "rand 0.9.4",
- "rcgen",
- "reqwest 0.12.28",
- "ring",
- "roomler-ai-remote-control",
- "roomler-ai-tunnel-core",
- "roomler-cli",
- "roomler-hive-node",
- "roomler-node-core",
- "russh",
- "rustls-native-certs",
- "scrap",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "socket2 0.5.10",
- "stringprep",
- "subtle",
- "symphonia",
- "sysinfo",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "tokio-rustls",
- "tokio-test",
- "tokio-tungstenite 0.28.0",
- "tokio-util",
- "toml 0.9.12+spec-1.1.0",
- "tracing",
- "tracing-appender",
- "tracing-subscriber",
- "webrtc",
- "windows 0.58.0",
- "windows-service",
- "windows-sys 0.59.0",
- "x11rb",
- "zbus",
- "zeroize",
- "zip",
 ]
 
 [[package]]

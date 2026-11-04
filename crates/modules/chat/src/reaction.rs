@@ -7,7 +7,7 @@ use axum::{
 use bson::oid::ObjectId;
 use serde::Deserialize;
 
-use roomler_core::{ApiError, extractors::auth::AuthUser};
+use meshharbor_core::{ApiError, extractors::auth::AuthUser};
 
 use crate::ChatState;
 
@@ -49,7 +49,7 @@ pub async fn add(
             "emoji": reaction.emoji.value,
         }
     });
-    roomler_core::ws::dispatcher::broadcast_with_redis(
+    meshharbor_core::ws::dispatcher::broadcast_with_redis(
         &state.ws_storage,
         &state.redis_pubsub,
         &member_ids,
@@ -90,7 +90,7 @@ pub async fn remove(
                 "emoji": emoji,
             }
         });
-        roomler_core::ws::dispatcher::broadcast_with_redis(
+        meshharbor_core::ws::dispatcher::broadcast_with_redis(
             &state.ws_storage,
             &state.redis_pubsub,
             &member_ids,

@@ -8,7 +8,7 @@ use bson::oid::ObjectId;
 use serde::Serialize;
 
 use crate::{core_state::Core, error::ApiError, extractors::auth::AuthUser};
-use roomler_ai_services::dao::base::PaginationParams;
+use meshharbor_services::dao::base::PaginationParams;
 
 #[derive(Debug, Serialize)]
 pub struct NotificationResponse {
@@ -118,7 +118,7 @@ async fn emit_unread_count(state: &Core, user_id: ObjectId) {
     .await;
 }
 
-fn to_response(n: roomler_ai_db::models::Notification) -> NotificationResponse {
+fn to_response(n: meshharbor_db::models::Notification) -> NotificationResponse {
     NotificationResponse {
         id: n.id.unwrap().to_hex(),
         tenant_id: n.tenant_id.to_hex(),

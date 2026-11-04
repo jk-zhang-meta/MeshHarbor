@@ -124,7 +124,7 @@ function getSystemStats() {
 
     let apiRssMb = 0;
     try {
-      const pid = execSync("pgrep -x roomler-ai-api").toString().trim().split('\n')[0];
+      const pid = execSync("pgrep -x meshharbor-api").toString().trim().split('\n')[0];
       if (pid) {
         const rssKb = execSync(`ps -o rss= -p ${pid}`).toString().trim();
         apiRssMb = Math.round(parseInt(rssKb) / 1024);

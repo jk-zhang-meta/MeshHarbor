@@ -20,7 +20,7 @@
 
 use bson::{doc, oid::ObjectId};
 use mongodb::Database;
-use roomler_ai_remote_control::models::ExternalRcAuditEvent;
+use meshharbor_remote_control::models::ExternalRcAuditEvent;
 
 use super::base::{BaseDao, DaoResult, PaginatedResult, PaginationParams};
 

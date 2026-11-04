@@ -1015,7 +1015,7 @@ mod fr115 {
         routing::{get, post},
     };
     use bson::{Bson, doc, oid::ObjectId};
-    use roomler_ai_services::stripe::StripeService;
+    use meshharbor_services::stripe::StripeService;
 
     const SECRET: &str = "whsec_test_secret_for_billing_tests";
     const PRICE_PRO: &str = "price_fr115_pro_month";
@@ -1150,7 +1150,7 @@ mod fr115 {
         format!("http://{addr}")
     }
 
-    fn configure(s: &mut roomler_ai_config::Settings, base: &str, annual: bool) {
+    fn configure(s: &mut meshharbor_config::Settings, base: &str, annual: bool) {
         s.stripe.secret_key = "sk_test_fr115_fake".into();
         s.stripe.webhook_secret = SECRET.into();
         s.stripe.price_pro = PRICE_PRO.into();
@@ -1664,7 +1664,7 @@ mod fr115 {
 /// FR115_PRICE_PRO_ANNUAL       $8 / $80 / $16 / $160 per seat
 /// FR115_PRICE_BUSINESS
 /// FR115_PRICE_BUSINESS_ANNUAL
-/// cargo test -p roomler-ai-tests fr115_testmode -- --ignored --nocapture
+/// cargo test -p meshharbor-tests fr115_testmode -- --ignored --nocapture
 /// ```
 ///
 /// The names are this module's own. Every TestApp reads `ROOMLER__STRIPE__*`,
@@ -1675,7 +1675,7 @@ mod fr115_testmode {
     use super::*;
     use bson::{doc, oid::ObjectId};
     use reqwest::Method;
-    use roomler_ai_services::stripe::StripeService;
+    use meshharbor_services::stripe::StripeService;
     use std::time::Duration;
 
     const API: &str = "https://api.stripe.com";
@@ -1706,7 +1706,7 @@ mod fr115_testmode {
         }
     }
 
-    fn configure(s: &mut roomler_ai_config::Settings, e: &Env, webhook_secret: &str) {
+    fn configure(s: &mut meshharbor_config::Settings, e: &Env, webhook_secret: &str) {
         s.stripe.secret_key = e.key.clone();
         s.stripe.webhook_secret = webhook_secret.into();
         s.stripe.price_pro = e.pro.clone();

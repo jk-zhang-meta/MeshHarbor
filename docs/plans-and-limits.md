@@ -51,7 +51,7 @@ flowchart TD
 ```
 
 `services::quota::evaluate_for` (`crates/services/src/quota.rs:301`) is the only place a limit is
-compared. Call sites go through `roomler_core::quota::check` (`crates/core/src/quota.rs:38`), which adds
+compared. Call sites go through `meshharbor_core::quota::check` (`crates/core/src/quota.rs:38`), which adds
 two things: the FR-102 collision count per org (`growth_daily`), and `Core::plans_sold`
 (§6).
 
@@ -140,7 +140,7 @@ On the hosted service that is a plan; on a self-hosted server it only means nobo
 org anything. `Core::plans_sold` (`crates/core/src/state.rs:131`) is true only where the
 hosted `saas` module is compiled in and switched on (`crates/api/src/state.rs:298`); the
 published self-host image and the compose build both leave it out. With it false,
-`roomler_core::quota` refuses nothing and counts nothing (`crates/core/src/quota.rs:49`), and
+`meshharbor_core::quota` refuses nothing and counts nothing (`crates/core/src/quota.rs:49`), and
 the session cap (`crates/modules/remote/src/controller.rs:745`) and the meeting sweep
 (`crates/modules/conference/src/meeting_cap.rs:104`) stand down.
 

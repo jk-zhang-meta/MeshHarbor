@@ -97,7 +97,7 @@ capability URLs, webhook signatures).
 | POST | `/api/tunnel-client/enroll` | Exchange tunnel enrollment token → client credential |
 | GET | `/api/tunnel-client/agents` | Reachable agents (TunnelClient bearer) |
 | GET | `/api/tunnel/latest-release` · `/installer/{platform}` (+`/health`) | Tunnel-CLI release manifest + artifact proxy |
-| GET | `/api/setup/latest-release` · `/{platform}` (+`/health`) | `roomler-setup` wizard manifest + artifact proxy |
+| GET | `/api/setup/latest-release` · `/{platform}` (+`/health`) | `meshharbor-setup` wizard manifest + artifact proxy |
 | GET | `/api/setup/install.sh` · `/install.ps1` | Terminal installers (served from the binary, curl-able) |
 | POST | `/api/setup/diagnostics` | FR-102 P3b: the setup wizard's **opt-in** step diagnostics — one `{run, step, outcome, elapsed_ms, error_code, os, wizard_version}` per step boundary, sent only when the person ticked the box. Unauthenticated by necessity, so every field is checked against its vocabulary (422 with a code, nothing stored); body ≤ 1 KiB; ≤ 48 rows per run (429 `run_capped`); 202 with no body. Stores no IP and no User-Agent. The empty 404 while `ROOMLER__GROWTH__SETUP_DIAGNOSTICS=false` ([growth-observability.md](growth-observability.md#the-wizards-opt-in-diagnostics-p3b)). The static segment also makes `GET /api/setup/diagnostics` a 405 (it used to fall into the `{platform}` proxy's 400) |
 | POST | `/api/releases/refresh` | CI cache-bust after a release is published (bearer; fans out to all pods) |
@@ -460,4 +460,4 @@ is written before it is acted on. Full treatment: [vault.md](vault.md).
 |---|---|
 | `/ws` — user, agent, and tunnel-client roles; chat/presence/media signalling + the whole `rc:*` protocol | [real-time.md](real-time.md) |
 | `/derp` — pubkey-addressed relay for UDP-blocked overlay pairs | [real-time.md](real-time.md#derp) |
-| LocalAPI — on-host named pipe / unix socket used by `roomler`, `roomler-desktop` | [tunnels.md](tunnels.md#localapi) |
+| LocalAPI — on-host named pipe / unix socket used by `roomler`, `meshharbor-desktop` | [tunnels.md](tunnels.md#localapi) |

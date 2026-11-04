@@ -37,7 +37,7 @@ What the numbers say:
   10-bit `XR30` unpacked on the way. FR-36 already measured how unforgiving it is: a strided read was 6×
   slower than a sequential one.
 - **The DataChannel pumps read the full 4K, then resample it all.** The VP9-444 and FFmpeg DataChannel
-  pumps open their capture with `DownscalePolicy::Never` (`agents/roomlerd/src/peer.rs:3652`, written for
+  pumps open their capture with `DownscalePolicy::Never` (`agents/meshharbord/src/peer.rs:3652`, written for
   1080p sources: "fast enough at 1080p"). They then resample every frame down to the software cap,
   1920×1012 here. That resample is a Lanczos-3, which costs in proportion to the **source** area
   (`scrap_backend.rs`'s own note: 38 ms from a Retina panel). So 8.8 M pixels were read and resampled for
@@ -65,10 +65,10 @@ flowchart LR
 ```
 
 **P1 — the DRM arm honours the pump's encode box.** `ScreenCapture::set_output_cap`
-(`agents/roomlerd/src/capture/mod.rs:398`) already exists for exactly this, and every pump calls it with its
+(`agents/meshharbord/src/capture/mod.rs:398`) already exists for exactly this, and every pump calls it with its
 effective box (`peer.rs:4283`). macOS honours it; the DRM arm ignored it. Now the DRM worker reads the box on
 every grab and takes the fused half read whenever half the source still covers it, whatever the policy says
-(`wants_half`, `agents/roomlerd/src/capture/drm_backend.rs:1329`; `set_output_cap`, `drm_backend.rs:1542`).
+(`wants_half`, `agents/meshharbord/src/capture/drm_backend.rs:1329`; `set_output_cap`, `drm_backend.rs:1542`).
 A 4K scanout encoded at 1920×1012 is read at 2048×1080. A 1440p scanout for the same box keeps its full read,
 because its half (1280×720) is smaller than what the encode keeps. The pump's "native" size is the frame's
 pre-downscale size (`Frame::native_dims`), so the box it computes does not shrink with the frame, and the
@@ -82,7 +82,7 @@ coordinated but the join. The output is byte-identical to the single pass.
 **P2b — the frame period runs from the ask** (`next_frame`, `drm_backend.rs:1476`). The period is timed
 from when a frame was asked of the worker, so it absorbs the grab instead of adding to it.
 
-**P3 — the GPU reads the scanout** (`agents/roomlerd/src/capture/drm_gpu.rs`). As built:
+**P3 — the GPU reads the scanout** (`agents/meshharbord/src/capture/drm_gpu.rs`). As built:
 
 - **The display is the process's.** The first capture that reaches for the GPU brings up `Egl`
   (`drm_gpu.rs:316`). It loads `libEGL.so.1` and `libGLESv2.so.2` with `libloading`, as `gpu_clock.rs` loads
@@ -131,7 +131,7 @@ software. The GPU's work is the capture.
 
 ## 5. Test plan
 
-- **Unit, run natively on the box** (`cargo test -p roomlerd --lib --features full -- drm_backend`; CI's lanes
+- **Unit, run natively on the box** (`cargo test -p meshharbord --lib --features full -- drm_backend`; CI's lanes
   do not compile the `drm-capture` tests): `banded_repacks_match_the_single_pass` checks every layout
   (`XR24`, `AB24`, `XR30`, `AB30`) at 2, 3, 4, 7 and 64 threads against the single pass, for both the full and
   the half repack, with an odd width, an odd height and a padded pitch.
@@ -145,7 +145,7 @@ software. The GPU's work is the capture.
 - **The fallbacks**, mars `~/wwlab/p3-ac45-mars.sh`: the binary's `DT_NEEDED`, then `capture-smoke` three
   ways: the GPU path; `ROOMLERD_DRM_GPU=0`; and `libEGL.so.1` hidden by a `/dev/null` bind mount in a
   private mount namespace, which fails the `dlopen` as a host without EGL would.
-- **A capture's teardown leaks nothing**, natively on a host with a GPU: `cargo test -p roomlerd --lib
+- **A capture's teardown leaks nothing**, natively on a host with a GPU: `cargo test -p meshharbord --lib
   --features full -- --ignored --test-threads=1 a_capture_leaks_nothing`. It runs 30 captures on threads of
   their own and bounds resident memory. Its negative control is `retire` stripped of the unbind and
   `eglReleaseThread`, which is the first build's teardown, and the control must fail it. `eglReleaseThread`

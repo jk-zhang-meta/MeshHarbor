@@ -8,7 +8,7 @@ measured-rate line (#678: a sender cannot see capacity it is not using). Operato
 
 ## What is in force today
 
-- `relay_max_bps()` = **3 Mbps** (`agents/roomlerd/src/encode/mod.rs:464`, env `RELAY_MAX_KBPS`),
+- `relay_max_bps()` = **3 Mbps** (`agents/meshharbord/src/encode/mod.rs:464`, env `RELAY_MAX_KBPS`),
   applied as the encoder's `maxrate` cap on every constrained session
   (`encoder.rs` ↔ `rate_profile::ffmpeg_maxrate_bps_scaled`, `peer.rs:3134`), opened at 85 % =
   **2.55 Mbps**, and as the AIMD's ceiling (`governor.rs:254-273`); the send-queue budget derives

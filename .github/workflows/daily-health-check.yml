@@ -42,7 +42,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: gjovanov/roomler-ai-deploy
-          path: ../roomler-ai-deploy
+          path: ../meshharbor-ai-deploy
           token: ${{ secrets.GH_PAT }}
         continue-on-error: true
 

@@ -3,7 +3,7 @@
 use bson::{DateTime, doc, oid::ObjectId};
 use dashmap::DashMap;
 use mongodb::Database;
-use roomler_ai_db::models::BackgroundTask;
+use meshharbor_db::models::BackgroundTask;
 
 use crate::dao::base::{BaseDao, DaoResult};
 
@@ -95,7 +95,7 @@ impl TaskStore {
             .await?;
 
         if let Some(mut task) = self.cache.get_mut(&id) {
-            task.status = roomler_ai_db::models::TaskStatus::Completed;
+            task.status = meshharbor_db::models::TaskStatus::Completed;
             task.progress = 100;
             task.file_path = file_path;
             task.file_name = file_name;
@@ -123,7 +123,7 @@ impl TaskStore {
             .await?;
 
         if let Some(mut task) = self.cache.get_mut(&id) {
-            task.status = roomler_ai_db::models::TaskStatus::Failed;
+            task.status = meshharbor_db::models::TaskStatus::Failed;
             task.error = Some(error);
             task.completed_at = Some(now);
             task.updated_at = now;
@@ -136,8 +136,8 @@ impl TaskStore {
         self.cache.retain(|_, task| {
             matches!(
                 task.status,
-                roomler_ai_db::models::TaskStatus::Pending
-                    | roomler_ai_db::models::TaskStatus::Processing
+                meshharbor_db::models::TaskStatus::Pending
+                    | meshharbor_db::models::TaskStatus::Processing
             )
         });
     }

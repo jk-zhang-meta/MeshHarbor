@@ -40,7 +40,7 @@ therefore **increased**.
 ### The six mechanisms
 
 1. **A hard 1.5 Mbps bitrate floor.** `MIN_BITRATE_BPS = 1_500_000`
-   (`agents/roomlerd/src/encode/mod.rs:202`); on a constrained path `area_min_bitrate_bps()`
+   (`agents/meshharbord/src/encode/mod.rs:202`); on a constrained path `area_min_bitrate_bps()`
    (`:215`) returns exactly it, and `governor.rs:317` passes it as the AIMD's `floor_bps`.
    **The encoder cannot be told to emit less than 1.5 Mbps, ever** — 3.8× the measured pipe at
    best, 23× in the worst window. Every other lever is downstream of a target the encoder is

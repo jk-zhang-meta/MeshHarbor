@@ -23,16 +23,16 @@ use axum::{
     response::IntoResponse,
 };
 use bson::oid::ObjectId;
-use roomler_ai_remote_control::models::{AgentCrashPayload, AgentCrashRecord};
+use meshharbor_remote_control::models::{AgentCrashPayload, AgentCrashRecord};
 use serde::Serialize;
 use serde_json::json;
 
-use roomler_core::{ApiError, extractors::auth::AuthUser};
+use meshharbor_core::{ApiError, extractors::auth::AuthUser};
 
 use crate::{FleetState, auth_agent::AuthAgent};
 
 /// Maximum `log_tail` byte length accepted by the ingest endpoint.
-/// Matches `roomlerd::crash_recorder::MAX_PAYLOAD_BYTES` so a
+/// Matches `meshharbord::crash_recorder::MAX_PAYLOAD_BYTES` so a
 /// drift on either side surfaces as a 422 (server) or a serialise-
 /// time failure (agent), not silent data loss.
 const MAX_LOG_TAIL_BYTES: usize = 64 * 1024;
@@ -162,7 +162,7 @@ fn validate_payload(payload: &AgentCrashPayload) -> Result<(), ApiError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use roomler_ai_remote_control::models::CrashReason;
+    use meshharbor_remote_control::models::CrashReason;
 
     fn sample_payload() -> AgentCrashPayload {
         AgentCrashPayload {

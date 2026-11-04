@@ -2,7 +2,7 @@
 // Copyright (C) 2026 G ROX EOOD
 use bson::{DateTime, doc, oid::ObjectId};
 use mongodb::Database;
-use roomler_ai_db::models::{
+use meshharbor_db::models::{
     MAX_TUTORIAL_CHAPTER_ID_LEN, MAX_TUTORIAL_CHAPTERS, NotificationPrefs, OAuthProvider, Presence,
     SignupAttribution, TutorialState, User, UserStatusInfo,
 };
@@ -108,7 +108,7 @@ impl UserDao {
     /// Create a password account.
     ///
     /// FR-88 — `attribution` is the sanitised campaign the sign-up arrived
-    /// with (`roomler_core::attribution::sanitize`'s output, or `None`). It is
+    /// with (`meshharbor_core::attribution::sanitize`'s output, or `None`). It is
     /// written HERE, with the row, and by nothing else afterwards: the insert
     /// serialises the struct, so the field travels with every other one.
     pub async fn create(
@@ -134,7 +134,7 @@ impl UserDao {
             locale: "en-US".to_string(),
             timezone: "UTC".to_string(),
             is_verified: false,
-            account_approval: roomler_ai_db::models::AccountApproval::pending(),
+            account_approval: meshharbor_db::models::AccountApproval::pending(),
             is_mfa_enabled: false,
             last_active_at: None,
             oauth_providers: Vec::new(),
@@ -155,7 +155,7 @@ impl UserDao {
         &self,
         user_id: ObjectId,
         expected_revision: u32,
-        state: roomler_ai_db::models::AccountApprovalState,
+        state: meshharbor_db::models::AccountApprovalState,
         reviewer: ObjectId,
     ) -> DaoResult<bool> {
         let next = expected_revision
@@ -425,7 +425,7 @@ impl UserDao {
             // password path gives it — not "this account may sign in".
             // OAuth sign-in never consulted it and still doesn't.
             is_verified: email_verified,
-            account_approval: roomler_ai_db::models::AccountApproval::pending(),
+            account_approval: meshharbor_db::models::AccountApproval::pending(),
             is_mfa_enabled: false,
             last_active_at: None,
             oauth_providers: vec![OAuthProvider {

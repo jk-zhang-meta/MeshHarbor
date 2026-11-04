@@ -22,9 +22,9 @@ use std::time::{Duration, Instant};
 use base64::Engine as _;
 use bson::oid::ObjectId;
 use futures::{SinkExt, StreamExt};
-use roomler_ai_remote_control::models::NodeRef;
-use roomler_ai_services::dao::overlay_network::OverlayNetworkDao;
-use roomler_ai_services::dao::overlay_node::{NewOverlayNode, OverlayNodeDao};
+use meshharbor_remote_control::models::NodeRef;
+use meshharbor_services::dao::overlay_network::OverlayNetworkDao;
+use meshharbor_services::dao::overlay_node::{NewOverlayNode, OverlayNodeDao};
 use serde_json::{Value, json};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async, tungstenite::Message};
 
@@ -762,8 +762,8 @@ async fn the_kill_switch_restores_the_worker_path() {
 /// written as `decide` would write it.
 #[tokio::test]
 async fn a_sessions_grant_is_claimed_only_by_a_service_that_holds_one_command() {
-    use roomler_ai_remote_control::models::SshPending;
-    use roomler_ai_services::dao::ssh_pending::SshPendingDao;
+    use meshharbor_remote_control::models::SshPending;
+    use meshharbor_services::dao::ssh_pending::SshPendingDao;
 
     let app = TestApp::spawn().await;
     let seeded = app.seed_tenant("sshonecmd").await;

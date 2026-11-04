@@ -53,8 +53,8 @@ use super::netmap::PeerConfig;
 use super::wg::Carrier;
 use crate::transport::derp::{DerpMux, MuxEvent};
 use crate::transport::relay::RelayConn;
-use roomler_ai_remote_control::signaling::{ClientMsg, IceServer, RelayStrategyWire};
-use roomler_ai_remote_control::worker_pick::pick_worker_fnv1a;
+use meshharbor_remote_control::signaling::{ClientMsg, IceServer, RelayStrategyWire};
+use meshharbor_remote_control::worker_pick::pick_worker_fnv1a;
 
 /// Minimum spacing between break-before-make regrades OFF an established DERP
 /// link for the same peer (see [`RelayCoordinator::derp_regrade_due`]).
@@ -1821,7 +1821,7 @@ impl RelayCoordinator {
                 // hostname URL (rc.140), which dials this same worker while
                 // keeping the SNI valid. The pin dials the grant's own UDP
                 // port, not a hardcoded 3478 — regional PoPs may differ.
-                let udp_port = roomler_ai_remote_control::turn_url::first_udp_port(
+                let udp_port = meshharbor_remote_control::turn_url::first_udp_port(
                     ice.iter().flat_map(|s| s.urls.iter()).map(String::as_str),
                 );
                 let mut pinned = vec![format!("turn:{h}:{udp_port}?transport=udp")];
@@ -2458,7 +2458,7 @@ fn turn_host_port(ice: &[IceServer]) -> Option<(String, u16)> {
         if !u.starts_with("turn:") && !u.starts_with("turns:") {
             return None;
         }
-        roomler_ai_remote_control::turn_url::host_port(u)
+        meshharbor_remote_control::turn_url::host_port(u)
     })
 }
 

@@ -6,7 +6,7 @@
 
 ## Goal
 
-Replace eight estimators of one quantity — occupancy AIMD, blocked-send goodput, the FR-35 learner and rate memory, FR-59's floor relief / arrival clamp / drain / seed contradiction / remembered-rate opener, the FR-15 age loop — composed with "the lower of" rules in `RateGovernor::pre_encode_tick` (`agents/roomlerd/src/encode/governor.rs:482`) and `tick_viewer_window` (:708), with **one** pure, delay-based controller that runs in **shadow** for a release before it drives anything, and is verified against a deterministic simulator replaying recorded field traces rather than against the fleet.
+Replace eight estimators of one quantity — occupancy AIMD, blocked-send goodput, the FR-35 learner and rate memory, FR-59's floor relief / arrival clamp / drain / seed contradiction / remembered-rate opener, the FR-15 age loop — composed with "the lower of" rules in `RateGovernor::pre_encode_tick` (`agents/meshharbord/src/encode/governor.rs:482`) and `tick_viewer_window` (:708), with **one** pure, delay-based controller that runs in **shadow** for a release before it drives anything, and is verified against a deterministic simulator replaying recorded field traces rather than against the fleet.
 
 ## Key design
 
@@ -22,7 +22,7 @@ Replace eight estimators of one quantity — occupancy AIMD, blocked-send goodpu
 | Phase | What | Kill switch | Status |
 |---|---|---|---|
 | **B-opener** | Slow-start for the session opener — `encode::slow_start` (pure law) + the governor cap on the opening ceiling **and floor** | `rate_slow_start` (default **OFF**) | shipped **inert** in 0.4.55 (#1262, #1265 capped only the ceiling, which `set_ceiling` raised back to the flat 1.5 M floor); fixed in 0.4.56 (#1275) and **field-verified engaging** — AC0a done, AC0b open |
-| B0 | `encode/sim.rs` — pipe/encoder/viewer simulator + the four scenario fixtures, driving the SHIPPED laws | n/a (test-only) | **shipped** — 11 tests in `cargo test -p roomlerd --lib` on the default build. CSV trace replay deferred (see below) |
+| B0 | `encode/sim.rs` — pipe/encoder/viewer simulator + the four scenario fixtures, driving the SHIPPED laws | n/a (test-only) | **shipped** — 11 tests in `cargo test -p meshharbord --lib` on the default build. CSV trace replay deferred (see below) |
 | B1 | `ratectl` shadow beside the governor, `shadow_*` heartbeat fields | `ratectl = shadow` (default) | not started |
 | B2 | Flip to `live` on the flip criterion | `ratectl = shadow\|live\|off` | not started |
 | B3 | Retire the eight estimators and their switches | `ratectl = off` for one release | not started |
@@ -165,7 +165,7 @@ confirmation rather than a search.
 - [x] AC0a — **the ramp engages and opens where it says.** Field-verified 2026-09-03 on 0.4.56, CORPLAP-1: `FR-63 slow-start armed open_bps=300000 ceiling_bps=2550000`, against an arm-A opener of `2_550_000` on the same host and build — an 8.5× smaller opening commitment. `slf=Some(600000)` on the first window with `gp=None` proves the **floor descent** did it, since the P1 relief cannot fire without a measurement; on 0.4.55, which capped only the ceiling, the opener was pinned at the flat 1.5 M and the ramp was inert.
 - [ ] AC0b — **the ramp removes the harm.** **Answered in simulation, still open in the field** — see
       "The AC0b A/B" below for the numbers, the two findings and why this does not tick the box.
-- [x] AC1 — All four fixtures green in `cargo test -p roomlerd --lib` on the default build.
+- [x] AC1 — All four fixtures green in `cargo test -p meshharbord --lib` on the default build.
       Shipped with seven more: four asserting the simulator itself, the AC0b A/B, and the
       keyframe-sensitivity check. 11 tests, ~10 ms.
 - [ ] AC2 — One release of shadow logs across the fleet meets the flip criterion, report attached.
@@ -182,7 +182,7 @@ one window. `encode::sim::RampExit` models two candidates beside the shipped
 rule. ⚠️ **Only `EndsOnCongestion` is shipped**; the other two exist in the
 simulator so a candidate can be measured before anyone argues for it.
 
-On the recorded 213 kbps cell (`cargo test -p roomlerd --lib ramp_exit_report --
+On the recorded 213 kbps cell (`cargo test -p meshharbord --lib ramp_exit_report --
 --ignored --nocapture`):
 
 | exit rule | peak target | over-drive bits | skips | settles | windows > 500 ms |
@@ -224,7 +224,7 @@ before a queue can form. On a remembered pair that difference held a real
 session at 200 kbps for four minutes while `EveryWindow` would have freed it in
 one window (FR-70 #1330). So every number above was re-taken under the shipped
 rule (`MeasureRule::OnPushBack`), with the byte-budget gate and a rebuild-bound
-encoder modelled (`cargo test -p roomlerd --lib shipped_rule_report -- --ignored
+encoder modelled (`cargo test -p meshharbord --lib shipped_rule_report -- --ignored
 --nocapture`).
 
 **AC0b, the 213 kbps cell, both rules side by side:**

@@ -1,0 +1,963 @@
+[package]
+name = "meshharbord"
+license = "MPL-2.0"
+publish = false
+version.workspace = true
+edition.workspace = true
+description = "Roomler AI remote-control agent — runs on the controlled host, connects to the Roomler API."
+
+[lib]
+name = "meshharbord"
+path = "src/lib.rs"
+
+[[bin]]
+# RETIRED-NAME-ANCHOR: names the compatibility ALIAS the MSI installs.
+# Renaming it here would not rename the alias; it would only make this
+# comment describe a file that does not exist. FR-21 D6.
+# The daemon. P3d Slice B moved the OUTPUT binary to `roomlerd`; FR-21 P2a
+# then brought the package and lib names into line, so all three now agree.
+# CI still stages a `roomler-agent.exe` alias copy next to it — the installed
+# field fleet references the old name via the WiX AgentExe File and the
+# desktop companion's spawn fallback, so the alias is a compatibility
+# surface, not a leftover. See wix/main.wxs `AgentExeAlias` +
+# release-agent.yml Copy-Item.
+# MeshHarbor: the installed daemon is `meshharbord` (the crate and the lib stay
+# `roomlerd`, an internal name no user sees).
+name = "meshharbord"
+path = "src/main.rs"
+
+[[example]]
+# FR-52 — the device half of a cross-implementation OPAQUE login, for proving a
+# browser client can log into a device. See the file's module docs.
+name = "extauth_interop"
+required-features = ["external-access"]
+
+[dependencies]
+# Shared protocol types (ClientMsg, ServerMsg, etc.)
+# default-features = false drops the `server` half (Mongo audit DAO + Hub) —
+# agent-side code only needs the wire/model/permission surface (P3e Phase 3).
+meshharbor-remote-control = { path = "../../crates/remote_control", default-features = false }
+# P3e lever E — the daemon-free building blocks (config, enrollment, machine,
+# logging, sentinels, ACL, apps-config shapes) live in agent-core so the
+# desktop companion can link them without this crate's data plane. lib.rs
+# re-exports each module under its old `crate::` path.
+meshharbor-node-core = { path = "../../crates/agent-core" }
+# Tunnel ACL types + helpers (DestinationRule / HostPattern / dst_matches).
+# Agent-side allowlist is belt-and-suspenders for the server-side gate.
+meshharbor-tunnel-core = { path = "../../crates/tunnel-core" }
+# P3e lever D — the `roomler` command surface, dispatched by `roomlerd cli`.
+# Daemon hosts install a ~150 KB shim as roomler.exe instead of a second full
+# CLI binary (rc.361: 22.1 MiB, ~92 % of it crates this daemon already links).
+# Cheap to add: this crate's lib is CLI glue over tunnel-core + remote-control,
+# both of which are already in the graph above.
+meshharbor-cli = { path = "../meshharbor-cli" }
+# FR-90 — Hive's device core (transcript chain, stream-json adapter, replica
+# store, launch spec). Only the `hive` feature links it, and with it SQLite.
+meshharbor-hive-node = { path = "../../crates/hive-node", optional = true }
+# FR-90 P3-3 — the device's vault key, and the sealed boxes the vault sends to
+# it. Only the `vault` feature links it.
+crypto_box = { workspace = true, optional = true }
+# FR-90 P3-4a — a leased value is zeroed when the daemon lets it go.
+zeroize = { workspace = true, optional = true }
+# FR-90 P0e — the loopback model sidecar's HTTP/1.1 server (already in the
+# tree through reqwest, which makes the upstream call).
+hyper = { version = "1", features = ["server", "client", "http1"], optional = true }
+hyper-util = { version = "0.1", features = ["tokio"], optional = true }
+http-body-util = { version = "0.1", optional = true }
+
+# Async + networking
+tokio = { workspace = true }
+tokio-tungstenite = { workspace = true }
+# FR-18 — capping SO_SNDBUF on the /derp socket. Pinned to the same version
+# tunnel-core already uses so the agent links one socket2, not two.
+socket2 = "0.5"
+reqwest = { workspace = true }
+futures = { workspace = true }
+
+# Subnet auto-detection for the tunnel mesh subnet-router (advertised_routes):
+# enumerate local interfaces (if-addrs) + canonicalize CIDRs (ipnet).
+if-addrs = "0.15"
+ipnet = "2"
+
+# Heartbeat telemetry v2 (stats PR-5): agent-process rss/cpu + host-total
+# network counters for the `sys` block on rc:agent.heartbeat.
+sysinfo = "0.33"
+# Per-session counter registry behind `rc:session.stats` (wave 2) — the
+# media pump and input handler are session-id-keyed free functions, so
+# the counters live in a shared map rather than threaded params.
+dashmap = { workspace = true }
+
+# CLI + config
+clap = { workspace = true }
+directories = { workspace = true }
+toml = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Tracing
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+# Daily-rolling file appender for the persistent logs that survive a
+# Scheduled-Task / systemd / launchd run where stdout is /dev/null.
+# Pinned to the same minor as tracing-subscriber 0.3 so the
+# `MakeWriter` plumbing aligns.
+tracing-appender = "0.2"
+
+# Errors
+anyhow = { workspace = true }
+# GPU-clock session pin (gpu_clock.rs): NVML is dlopen'd at runtime, never
+# linked — this is just the cross-platform dlopen mechanism.
+libloading = "0.8"
+thiserror = { workspace = true }
+
+# Hashing (for machine_id derivation)
+sha2 = { workspace = true }
+hex = { workspace = true }
+# The device key (`peer_auth`) and the vault proxy's SCRAM. (The pinned-key
+# `.asc` check that first brought it here, `pgp_verify`, moved to tunnel-core
+# in FR-97 P6b.) Already in the graph via remote_control/derp-relay — a direct
+# dep adds no compilation.
+ring = "0.17"
+
+# ObjectId for session keys (mirrors the shared protocol)
+bson = { workspace = true }
+
+# Trait helpers
+async-trait = { workspace = true }
+
+# WebRTC peer
+webrtc = { workspace = true }
+
+# Screen capture (X11 on Linux, DXGI on Windows, CoreGraphics on macOS).
+# Gated behind a feature because the transitive system deps (libxcb,
+# libxcb-shm, libxcb-randr on Linux) aren't available on every dev box
+# and we want `cargo check`/CI green without them. Production builds:
+#   cargo build --release --features scrap-capture
+scrap = { workspace = true, optional = true }
+
+# Software H.264 encoder (OpenH264).
+openh264 = { workspace = true, optional = true }
+# Raw OpenH264 C-API constants + structs needed for runtime bitrate
+# control (the openh264 crate's `bitrate()` is builder-only; runtime
+# changes require SetOption(ENCODER_OPTION_BITRATE, &SBitrateInfo)).
+# Pinned to the same minor as the openh264 crate's transitive dep so
+# the constants point at the same encoder ABI.
+openh264-sys2 = { version = "0.9", optional = true, default-features = false }
+
+# VP9 4:4:4 encoder via libvpx. Feature-gated `vp9-444` because the
+# build pulls in C compilation of libvpx (~30 s first build) and a
+# small bindgen layer. See docs/encoders.md for why we pick VP9
+# profile 1 over AV1/HEVC for screen-content 4:4:4.
+#
+# We bind env-libvpx-sys directly rather than going through the
+# `vpx-encode` 0.6 wrapper. `vpx-encode 0.6` hardcodes
+# `VPX_IMG_FMT_I420` in its `encode()` and exposes no Config field
+# for `g_profile` — both blockers for VP9 profile 1 (8-bit 4:4:4).
+# The Y.runtime-encoder rewrite ships `Vp9Encoder` against raw FFI
+# (~150 LOC of unsafe in encode/libvpx.rs) so we can configure
+# I444 input, profile=1, lag-in-frames=0, and screen-content tuning.
+#
+# env-libvpx-sys defaults to its pre-generated FFI bindings
+# (covering libvpx 1.3.0 through 1.13.0). Builds against newer
+# libvpx need the `generate` feature to run bindgen at build time —
+# enable via the `vp9-444-bindgen` feature below.
+#
+# Why two features: bindgen 0.68.1 + libclang on Windows has a
+# regression that opaques `vpx_codec_enc_cfg` (forward-declared via
+# pointer-to-incomplete in a union in vpx_codec.h, then re-declared
+# fully in vpx_encoder.h) regardless of libvpx version, breaking
+# the build. Linux + macOS bindgen handles it correctly. So Linux
+# + macOS release builds (apt's libvpx 1.14, brew's libvpx 1.15) use
+# `vp9-444 + vp9-444-bindgen`; the Windows release build sticks to
+# `vp9-444` alone and pins libvpx to 1.12.0 via vcpkg so the
+# pre-generated bindings match the installed lib.
+env-libvpx-sys = { version = "5.1", optional = true }
+# AVX2 BGRA→I444 colour convert for the VP9 4:4:4 encoder input.
+# Pure SIMD, no FFI, ships its own SSE2 fallback.
+dcv-color-primitives = { version = "0.6", optional = true }
+
+# Cross-platform input injection (mouse / keyboard).
+enigo = { workspace = true, optional = true }
+
+# Roomler SSH server (`ssh-server` feature). `default-features = false` is
+# NOT optional here: russh's defaults are `["flate2", "aws-lc-rs", "rsa"]`,
+# and aws-lc-rs is a C/NASM build that would break the deliberate ring-only /
+# no-openssl invariant `tunnel-core` maintains for QUIC (see its `quinn` dep
+# comment). `ring` is already in the tree, so this adds no new C build.
+#
+# `rsa` is deliberately left OFF: it costs ~0.32 MiB, pulls a `0.10.0-rc`
+# pre-release into the graph, and roomler SSH authenticates ed25519 keys —
+# an RSA host or user key is not something we need to accept.
+russh = { version = "0.62", default-features = false, features = ["ring"], optional = true }
+
+# FR-52 gate 4 (`external-access` feature) — the OPAQUE aPAKE that lets a
+# device verify a password held ONLY here, against a proof relayed by a server
+# that must not be able to learn or replay it. facebook/opaque-ke is the
+# reference Rust implementation; 4.0.1 is the stable release (4.1.0-pre.2 is
+# published but is a PRE-release, and this binary runs as SYSTEM/root on every
+# enrolled machine and updates itself).
+#
+# Measured cost: **+7 crates** on roomlerd's normal graph (366 -> 373), because
+# the RustCrypto stack it wants — argon2, curve25519-dalek, elliptic-curve,
+# digest/hmac/hkdf — is already linked. The genuinely new ones are opaque-ke,
+# voprf and serdect. Far below the ~99 `ssh-server` costs, which is why this is
+# a cheap feature rather than a debated one.
+#
+# `argon2` is ON deliberately: it is OPAQUE's key-stretching function, and what
+# makes a STOLEN registration record expensive to attack offline. Without it the
+# record is only as strong as the password. `default-features = false` keeps the
+# ecdsa / ed25519 / ml-kem suites out.
+opaque-ke = { version = "4", default-features = false, features = [
+    "ristretto255",
+    "serde",
+    "argon2",
+    "std",
+], optional = true }
+
+# FR-52 P3b — derives the single-use application key a verified login leaves
+# behind (session key + attempt + principal). Already in the graph through the
+# RustCrypto stack, so +0 crates; named here because the derivation is a wire
+# surface the browser must reproduce byte-for-byte, and it gets a known-answer
+# test against an independent HKDF.
+hkdf = { version = "0.12", optional = true }
+# FR-52 P4 — the transport binding: HMAC-SHA256 over each side's DTLS
+# fingerprint under the verified login's key. In the graph via hkdf: +0 crates.
+hmac = { workspace = true, optional = true }
+# FR-90 P3-5b — the vault's proxies: TLS to an upstream (rustls on ring, as
+# the rest of the tree, so aws-lc-rs stays absent: no default features), the
+# system's roots (a corporate CA in the OS store is trusted, as the WS path's
+# is), and SCRAM-SHA-256 (PBKDF2 over HMAC-SHA256, SASLprep). Every crate
+# here is already in the lockfile.
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"], optional = true }
+rustls-native-certs = { version = "0.8", optional = true }
+pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"], optional = true }
+stringprep = { version = "0.1", optional = true }
+
+# ⚠️ NO direct `argon2` dependency, on purpose (FR-52 P3a). The KSF uses
+# `opaque_ke::argon2` — the crate opaque-ke's own hashing was written against —
+# because the KSF's output IS every device's stored record: a workspace bump of
+# a SHARED crate (the server hashes user passwords with it) must not be able to
+# change what an external-access password derives to. The parameters are pinned
+# in `external_access::PinnedArgon2` and locked by a known-answer test against an
+# independent implementation, so an opaque-ke bump that moved argon2 fails there.
+
+# ⚠️ opaque-ke is on `rand 0.8` (rand_core 0.6) while the workspace is on
+# `rand 0.9`, and the two `RngCore` traits are DIFFERENT types — passing the
+# workspace `OsRng` to any opaque-ke call fails to compile with a bound error
+# that names `rand_core` only in a footnote. Aliased rather than switched:
+# rand 0.8 is already in this graph transitively (as are 0.9 and 0.10), so
+# naming it here costs nothing and makes the split explicit at the one place
+# it matters.
+rand_opaque = { package = "rand", version = "0.8", optional = true }
+
+# Opus audio encoder for the system/desktop-audio WebRTC track (`audio`
+# feature). Bundles libopus and builds it from C source on first build,
+# so there's no runtime lib dependency and it's independent of the
+# `ffmpeg-encoder` feature. Platform-agnostic — the codec is the same
+# everywhere; only the capture backend (cpal, target-gated below) differs.
+# NOTE: 0.3 ships only as a pre-release on crates.io (`0.3.0-rc.0`), so
+# the version must name it explicitly — a bare "0.3" resolves to nothing.
+# The 0.3 line is the one with the `coder::Encoder` + `SampleRate` /
+# `Bitrate::BitsPerSecond` API this module targets.
+audiopus = { version = "0.3.0-rc.0", optional = true }
+
+# FR-85 — MP4 box encode/decode for screen recordings (`recording`
+# feature). Box-level only: we write fragmented MP4 while recording (a crash
+# loses at most one ~2 s fragment) and remux to a progressive, moov-first
+# file on stop — no FFmpeg muxer, so it works on the arm64 build that has no
+# FFmpeg at all. MIT OR Apache-2.0.
+mp4-atom = { version = "0.16", optional = true }
+# FR-85 P5b — background music for an export: the file a person picks, decoded
+# in pure Rust. A user-chosen file is untrusted input, which is why it is not
+# FFmpeg's C parsers. Only the formats people bring (MP3, AAC/M4A, FLAC, Ogg
+# Vorbis, WAV); no video, no container we do not need. MPL-2.0.
+symphonia = { version = "0.5", optional = true, default-features = false, features = [
+    "mp3",
+    "aac",
+    "isomp4",
+    "flac",
+    "ogg",
+    "vorbis",
+    "wav",
+    "pcm",
+] }
+
+# Option B HEVC plan (rc.65+). `ffmpeg-next` is the safe Rust wrapper
+# over FFmpeg's libav*. We use it to dispatch HEVC + H.264 + VP9 to
+# vendor HW encoders (NVENC, Intel QSV / oneVPL, AMD AMF) WITHOUT going
+# through Windows Media Foundation — closing the RTX 5090 Blackwell
+# regression (Known Issues: ActivateObject 0x8000FFFF) and the Iris Xe
+# Tiger Lake async-MFT gap. Plus unlocks HW VP9 on Intel iGPUs via
+# `vp9_qsv`.
+#
+# `default-features = false` + `features = ["codec"]` pulls in just
+# `libavcodec` bindings. We don't need `libavformat` (no muxing — the
+# agent emits raw NAL units over DataChannel), `libavfilter` (no
+# filtering), or `libavdevice` (no capture — we use scrap for that).
+#
+# Gated on `ffmpeg-encoder` feature; off by default. CI's Windows job
+# adds it to the build feature set so the link is exercised + measured.
+# Linux + macOS jobs stay unchanged (they get FFmpeg via VAAPI in
+# rc.74 + VideoToolbox in rc.75).
+#
+# Build-time: needs FFmpeg headers + libs findable via pkg-config.
+# CI Windows job uses vcpkg's `ffmpeg[nvcodec,qsv,amf,...]` port and
+# exports `PKG_CONFIG_PATH` to point at the vcpkg install. See
+# `.github/workflows/release-agent.yml`.
+#
+# rc.71 hotfix: `default-features = false, features = ["codec"]` caused
+# ffmpeg-next 8.1 to fail to compile because util/interrupt.rs and
+# codec/packet/packet.rs reference libavformat symbols that aren't
+# gated by the codec feature. Switched to defaults (codec + format +
+# filter + device + sw-scaling + sw-resampling) AND extended the vcpkg
+# manifest with avformat/avfilter/avdevice to match.
+#
+# P3e lever A (rc.368): narrowed to `codec + format` — the rc.71 breakage
+# was codec-ALONE; keeping `format` satisfies interrupt.rs/packet.rs, and
+# nothing in `src/encode/ffmpeg/` touches filter/device/scaling/resampling
+# APIs (it uses codec, frame, Dictionary, and format::Pixel — which is the
+# avutil pixel enum, not avformat). The bytes were measured with MSVC link
+# stubs against the vendored static tree: `ffmpeg_next::init()` with the
+# device feature calls `avdevice_register_all()`, dragging avfilter
+# (3.48 MiB) + avformat's demuxer table (2.23) + avdevice + swscale into
+# the EXE for a total 23.07 MiB, vs 16.24 with registration gated off —
+# a −6.8 MiB delta for identical encoder behaviour (init() is
+# feature-gated internally: no device/filter feature = no registration
+# call). The vendored FFmpeg zip still SHIPS all the .lib files; the
+# linker just stops being told to pull the registries in.
+ffmpeg-next = { version = "9.0", optional = true, default-features = false, features = [
+    "codec",
+    "format",
+] }
+
+# Cross-platform text clipboard (Win32 / X11 / macOS). Feature-gated
+# behind `clipboard` so builds without the clipboard DC handler
+# (signalling-only CI images, future trimmed-down deployments) don't
+# pay for the dep. Pulls x11rb on Linux which we already have from
+# enigo so the transitive dep graph stays small. `image-data` unlocks
+# get_image/set_image (raw RGBA) for clipboard protocol v2 — on
+# Windows it only adds windows-sys Gdi (already compiled), on Linux
+# the pure-Rust `image` crate.
+arboard = { workspace = true, optional = true, features = ["image-data"] }
+
+# PNG encode/decode for clipboard protocol v2 image payloads (the
+# wire format is PNG; arboard speaks raw RGBA). Pure Rust, small,
+# already in the lockfile transitively.
+png = { version = "0.18", optional = true }
+
+# Used by the media pump to wrap encoded NALUs in webrtc Sample.data.
+bytes = "1"
+
+# Cursor-shape encoding for the cursor data channel (1E.2). Small —
+# only used in one place to b64 a 32-pixel BGRA bitmap per shape.
+base64 = { workspace = true }
+
+# Random fallback for machine_id
+rand = { workspace = true }
+# FR-43 P2a — constant-time secret comparison on the delegation attach
+# path. Already in the graph via tunnel-core, so this is a declaration,
+# not a new dependency.
+subtle = { version = "2.6", default-features = false }
+
+# RFC2822 date parsing for the Phase 8 pre-flight clock-skew check
+# (parses the server's HTTP Date: header). Already a workspace dep.
+chrono = { workspace = true }
+
+# Streaming zip writer for folder downloads (file-DC v2 Phase 4).
+# Pinned to an exact version because the pre-1.0 API is volatile;
+# a thin internal wrapper module isolates the surface so an upgrade
+# is a one-file change. `tokio` feature gives us async writers that
+# integrate with the BackpressuredDcWriter adapter; `deflate` is the
+# compression algorithm we use for text-mime entries (binaries land
+# as Stored/no-compression to save CPU). Platform-agnostic — works
+# on Linux/macOS too. Lives in the top-level [dependencies] (not the
+# Windows-only block) so `cargo clippy --workspace` on Linux CI can
+# resolve the `async_zip` import in `files.rs::walk_and_zip`.
+async_zip = { package = "async_zip", version = "=0.0.17", features = ["tokio", "deflate"] }
+# tokio-util's `compat` feature provides FuturesAsyncWriteCompatExt /
+# TokioAsyncWriteCompatExt — needed because async_zip exposes its
+# entry writers as `futures::AsyncWrite` (its tokio feature internally
+# wraps the user writer with Compat) but `tokio::io::copy` requires
+# `tokio::AsyncWrite`. Same platform-agnostic placement as `async_zip`.
+tokio-util = { version = "0.7", features = ["compat"] }
+
+# Windows Media Foundation H.264 encoder (hardware-accelerated).
+# Gated behind target_os and an explicit feature; non-Windows builds
+# never touch the `windows` crate. Feature list scoped to the MF, D3D11,
+# DXGI, and COM interfaces the encoder actually needs — full-crate
+# features blow up compile time without any benefit.
+# System-audio capture (`audio` feature). Linux = PulseAudio monitor
+# source; Windows = WASAPI loopback (open the default OUTPUT device as an
+# input). macOS uses a Noop stub (no cpal there) until ScreenCaptureKit
+# lands, so cpal is scoped to just these two targets. Optional so
+# default / signalling-only builds don't pull in the audio host libs.
+[target.'cfg(any(target_os = "linux", target_os = "windows"))'.dependencies]
+cpal = { version = "0.15", optional = true }
+
+[target.'cfg(unix)'.dependencies]
+# Used for `flock` in the single-instance lock. Tiny crate, ubiquitous.
+libc = "0.2"
+
+# FR-27 — the native X11 consent panel (`viewer-indicator-x11`). Already in the
+# lockfile via enigo/arboard, so this adds no new dependency tree. Default
+# features only: the panel is CLICKABLE, so it needs none of the `shape`
+# extension the click-through border would.
+#
+# FR-29 additionally needs the `damage` protocol module, to answer "did
+# anything change?" — the question XShm cannot answer and DXGI answers for
+# free with WouldBlock. ONE declaration for both consumers: two
+# `[target.'cfg(target_os = "linux")'.dependencies]` tables is a duplicate-key
+# error, not a merge. Enabled by `viewer-indicator-x11` (FR-27) and by
+# `scrap-capture` (FR-29) independently; the crate itself is already in the
+# lockfile via enigo/arboard, so this buys a feature, not a dependency.
+#
+# FR-92 P3 (keep busy on X11, enabled by `enigo-input`) adds two protocol
+# modules: `screensaver` (MIT-SCREEN-SAVER — the idle counter that tells the
+# engine's own XTest moves from a person's) and `randr` (the monitor under
+# the pointer).
+#
+# FR-97 P3e adds `xkb`: the keyboard layout an X11 desktop has in use (its
+# locked group) and the switch to another (`input::layout_x11`).
+[target.'cfg(target_os = "linux")'.dependencies]
+x11rb = { version = "0.13", features = ["damage", "screensaver", "randr", "xkb"], optional = true }
+
+# FR-96 security review (#2055) — the root update helper stages each download in
+# a FRESH private directory (mkdtemp) instead of a fixed world-creatable name in
+# /tmp, and moves a planted wake-file entry aside into one. The staging +
+# consume code here is `#[cfg(target_os = "linux")]`; GHSA-r3xj-4wh9-xh2v
+# carried the identical fix to Windows's non-SYSTEM staging path too — see the
+# matching entry in the Windows target table below. Already a dev-dep below
+# and in the lockfile, so this adds no new dependency tree.
+tempfile = { workspace = true }
+
+# FR-36 P1 — DRM/KMS scanout capture (`drm-capture`). MIT, and its whole tree
+# (drm-ffi / drm-sys / drm-fourcc) is MIT too, so it is clean under FR-24's
+# no-AGPL-in-a-shipped-agent rule. drm-sys builds from `linux-raw-sys` with NO
+# bindgen, so this adds no libclang requirement to any release lane — verified
+# with `cargo tree | grep -c bindgen` = 0 on aarch64 Fedora. bitflags, bytemuck
+# and rustix are already in the lockfile.
+drm = { version = "0.15", optional = true }
+
+# FR-45 P1 — desktop-portal detection (`portal-capture`). zbus is PURE RUST: it
+# speaks the D-Bus wire protocol itself and does NOT link libdbus, so it adds no
+# system `.so` to roomlerd's DT_NEEDED. That distinction is the whole reason
+# detection can land ahead of FR-45's open dependency decision — reaching
+# PipeWire is what carries the "a missing library stops the daemon starting on
+# headless hosts" hazard, and this does not. Already in the lockfile.
+zbus = { version = "5", default-features = false, features = ["blocking-api", "tokio"], optional = true }
+
+# FR-27 — the native macOS consent panel (`viewer-indicator-macos`). All three
+# are already in the lockfile (tauri pulls them for the desktop companion), so
+# this is a target-scoped direct dep rather than new supply-chain surface.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { version = "0.6", optional = true }
+objc2-app-kit = { version = "0.3", optional = true, features = [
+    "NSApplication",
+    "NSButton",
+    # `NSControlStateValue` + the line-cap setter live here.
+    "NSCell",
+    "NSColor",
+    "NSControl",
+    # The manual event pump: `nextEventMatchingMask:untilDate:inMode:dequeue:`
+    # is gated on this, and without it AppKit would need `NSApp.run()`, which
+    # never returns control to us.
+    "NSEvent",
+    "NSFont",
+    "NSGraphics",
+    "NSResponder",
+    "NSScreen",
+    "NSTextField",
+    "NSView",
+    "NSWindow",
+] }
+objc2-foundation = { version = "0.3", optional = true, features = [
+    "NSDate",
+    "NSGeometry",
+    # `NSDefaultRunLoopMode`, the mode the pump runs events in.
+    "NSRunLoop",
+    "NSString",
+    "NSThread",
+] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+# Effort 2 (Windows Service deployment mode). Optional opt-in alternative
+# to the Scheduled Task default. windows-service 0.7 owns the SCM lifecycle
+# (service_dispatcher, control handler, status updates) and the manager
+# API (CreateService / DeleteService / QueryServiceStatus). Compatible
+# with the `windows = "0.58"` crate already pulled in by mf-encoder etc.
+windows-service = "0.7"
+
+# GetClipboardSequenceNumber wrapper for the clipboard-v2 change
+# watcher (`raw::seq_num()`): 1 cheap syscall per 200 ms tick, no
+# clipboard open. Already compiled transitively by arboard on Windows,
+# so this adds zero new code to the build.
+clipboard-win = { version = "5", optional = true }
+
+# GHSA-r3xj-4wh9-xh2v — the non-SYSTEM half of the Windows updater staging
+# fix (`updater::stage_dir_as_current_user`) needs a fresh, privately-named
+# directory per download, the same mkdtemp-style primitive Linux's #2055 fix
+# already uses (see the matching entry in the Linux target table above).
+# Already a dev-dep below and in the lockfile, so this adds no new
+# dependency tree — only a production (non-test) use of it on this platform.
+tempfile = { workspace = true }
+
+# Raw Win32 FFI for the M2 worker-supervisor: WTSGetActiveConsoleSessionId,
+# WTSQueryUserToken, CreateProcessAsUserW, CreateEnvironmentBlock. Going
+# through `windows-sys` (rather than the higher-level `windows` crate) keeps
+# this path independent of the feature-gated `windows` we use for MF /
+# WGC / viewer-indicator — the service-mode supervisor always wants these
+# bindings on Windows builds, regardless of the encoder feature mix.
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",      # ConvertStringSecurityDescriptorToSecurityDescriptorW — the #1683 stop-event DACL (SYSTEM-signals-only)
+    "Win32_System_RemoteDesktop",        # WTS* APIs
+    "Win32_System_Threading",            # CreateProcessAsUserW, STARTUPINFO
+    "Win32_System_Power",                # FR-55 PowerCreateRequest/PowerSetRequest + GetSystemPowerStatus
+    "Win32_System_Shutdown",             # FR-99 P3 LockWorkStation — lock the console when the last remote session ends
+    "Win32_System_SystemInformation",    # FR-99 P3 GetTickCount — against GetLastInputInfo, "nobody at the computer"
+    "Win32_Media",                       # timeBeginPeriod/timeEndPeriod/timeGetDevCaps (rc.92 — 1ms timer res so the FFmpeg DC pump isn't quantized to the 15.6ms default)
+    "Win32_System_Environment",          # CreateEnvironmentBlock
+    "Win32_System_StationsAndDesktops",  # winsta0\default desktop attach
+    "Win32_System_Diagnostics_ToolHelp", # CreateToolhelp32Snapshot (find winlogon.exe pid for M3 A1)
+    "Wdk_System_Threading", # NtQueryInformationProcess(ProcessCommandLineInformation) — #2465: is a roomlerd an earlier host's SCM worker?
+    "Win32_System_ProcessStatus",        # K32GetModuleFileNameExW (kernel32) — a running companion's STARTED-from path, which survives a rename/POSIX delete of its file (#1686)
+    "Win32_UI_HiDpi",                    # SetProcessDpiAwarenessContext (mouse offset fix)
+    "Win32_UI_Input_KeyboardAndMouse",   # SendInput + VkKeyScanExW + MapVirtualKeyExW (rc.122 real-VK text injection for the legacy console)
+    "Win32_UI_WindowsAndMessaging",      # GetDesktopWindow + GetSystemMetrics (M3 A1 GDI fallback)
+    "Win32_Globalization",               # LCIDToLocaleName (rc.227 layout auto-switch: HKL → "bg-BG" tags for rc:layout)
+    "Win32_Graphics_Gdi",                # GetWindowDC, BitBlt, CreateCompatibleBitmap, GetDIBits (M3 A1 GDI fallback)
+    "Win32_Storage_FileSystem",          # GetLogicalDrives (file-DC v2 root listing) + CreateFileW/ReadFile (SSH P5b console-user capture)
+    "Win32_System_Pipes",                # CreatePipe — capturing a console-user session's output (SSH P5b)
+    "Win32_System_LibraryLoader",        # GetModuleHandleW — the FR-16 L4 `probe-target` window's class registration
+    "Win32_System_Console",              # CreatePseudoConsole/Resize/Close + COORD — ConPTY interactive shells (SSH P4b)
+    "Win32_System_JobObjects",           # CreateJobObjectW + KILL_ON_JOB_CLOSE — Windows has no process group, so a job IS the killpg equivalent (SSH P4b)
+    "Win32_System_IO",                   # OVERLAPPED, which ReadFile's signature references
+    "Win32_UI_Shell",                    # ShellExecuteExW for UAC-elevated msiexec (rc.18 self-update fix); SHGetKnownFolderPath (FR-84 D6)
+    "Win32_System_Com",                  # CoTaskMemFree — frees SHGetKnownFolderPath's buffer (FR-84 D6: the SCM host reads the console user's config)
+    "Win32_NetworkManagement_Ndis",      # IF_OPER_STATUS / NET_LUID in the adapter and route rows (MeshHarbor OS-01 inventory)
+    "Win32_Networking_WinSock",          # SOCKADDR_* in GetAdaptersAddresses / GetIpForwardTable2 (MeshHarbor OS-01 inventory)
+    "Win32_NetworkManagement_IpHelper",  # GetExtendedTcpTable — who holds a port a route cannot bind (FR-84 D6 / #1035)
+    "Win32_System_Registry",             # SHELLEXECUTEINFOW carries an HKEY field; struct gated on this
+    "Win32_System_ApplicationInstallationAndServicing", # Msi* database reads — the self-updater binds an MSI's own ProductVersion to the release the manifest claimed it is (msi.dll ships in System32, so the installer-smoke import audit passes it)
+    "Win32_Security_WinTrust",           # WinVerifyTrust — the self-updater refuses to run an installer it cannot attribute to us
+    "Win32_Security_Cryptography",       # CryptQueryObject/CertGetNameStringW — WHO signed it, which WinVerifyTrust alone does not tell you
+] }
+
+[target.'cfg(target_os = "windows")'.dependencies.windows]
+version = "0.58"
+optional = true
+features = [
+    "Win32_Foundation",
+    "Win32_Media_MediaFoundation",
+    "Win32_Graphics_Direct3D",          # D3D_DRIVER_TYPE + D3D_FEATURE_LEVEL constants
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",       # DXGI_FORMAT etc.
+    "Win32_System_Com",
+    "Win32_System_Variant",
+    "Win32_UI_WindowsAndMessaging",     # GetCursorInfo / GetIconInfo for cursor capture (1E.1)
+    "Win32_UI_Input_KeyboardAndMouse",  # ReleaseCapture for the viewer-indicator badge drag
+    "Win32_Graphics_Gdi",               # GetDIBits / GetObject / BITMAPINFOHEADER
+    "Win32_System_LibraryLoader",        # GetModuleHandleW for viewer-indicator window registration
+    # WinRT interop for the WGC capture backend (1C.1):
+    # GraphicsCaptureItemInterop::CreateForMonitor(HMONITOR), plus
+    # CreateDirect3D11DeviceFromDXGIDevice to wrap our D3D11 device
+    # as the IDirect3DDevice that Direct3D11CaptureFramePool expects.
+    "Win32_System_WinRT",
+    "Win32_System_WinRT_Graphics_Capture",
+    "Win32_System_WinRT_Direct3D11",
+    # WinRT namespaces for the capture session, frame pool, and
+    # IDirect3DSurface / IDirect3DDevice wrappers.
+    "Graphics_Capture",
+    "Graphics_DirectX",
+    "Graphics_DirectX_Direct3D11",
+    "Foundation",                        # EventRegistrationToken, IAsyncAction, TypedEventHandler
+    "Foundation_Collections",            # IVectorView<RectInt32> for DirtyRegions
+    # Multi-monitor enumeration (MonitorFromPoint / EnumDisplayMonitors).
+    "Win32_Graphics_Gdi",
+    "Win32_UI_HiDpi",                    # GetDpiForMonitor (future: scale-aware reporting)
+    # FR-99 P4 host mute: IMMDeviceEnumerator + IAudioEndpointVolume on the
+    # default render endpoint, muted while a privacy curtain is up.
+    "Win32_Media_Audio",
+    "Win32_Media_Audio_Endpoints",
+]
+
+[features]
+default = []
+# Enables the scrap-backed screen capture on Linux/Windows/macOS.
+scrap-capture = ["dep:scrap", "dep:x11rb"]
+# Enables the OpenH264 software video encoder.
+openh264-encoder = ["dep:openh264", "dep:openh264-sys2"]
+# Enables the Windows Media Foundation hardware H.264 encoder. Windows-
+# only by construction (the `windows` crate has no non-Windows target).
+# If selected on other platforms, code remains dormant — open_default
+# cascade falls through to openh264.
+mf-encoder = ["dep:windows"]
+# Enables the Windows.Graphics.Capture (WGC) screen-capture backend.
+# Preferred on Windows 10 1803+ because it captures the HW mouse
+# cursor overlay (DXGI Desktop Duplication does not), emits a
+# per-frame DirtyRegion on Win 11 22000+, and plays nicely with
+# multi-monitor + HDR. Falls back to scrap (DXGI) on enumeration or
+# runtime failure. Pulls in the same `windows` crate feature set as
+# `mf-encoder`.
+wgc-capture = ["dep:windows"]
+# Enables the libvpx VP9 4:4:4 software encoder for the
+# DataChannel-bypass video transport (docs/encoders.md). Pulls
+# in a C build of libvpx and the dcv_color_primitives SIMD colour
+# converter. ~30 s extra cold build, ~10 s incremental.
+vp9-444 = ["dep:env-libvpx-sys", "dep:dcv-color-primitives"]
+# Pair with `vp9-444` when building against a libvpx newer than 1.13.0
+# (Ubuntu 24.04 apt = 1.14, brew = 1.15.x). Skip on Windows — bindgen
+# blows up there regardless of libvpx version (see env-libvpx-sys dep
+# comment above). Pure feature wiring; the C-level work happens at
+# build time inside env-libvpx-sys's build.rs.
+vp9-444-bindgen = ["env-libvpx-sys/generate"]
+# Enables the enigo-based input injection backend. On Linux it also brings
+# x11rb, which keep busy reads the X idle counter, buttons and monitors with
+# (FR-92 P3); the dependency is Linux-only, so elsewhere this adds nothing.
+enigo-input = ["dep:enigo", "dep:x11rb"]
+# Enables the clipboard data-channel handler — round-trip text +
+# PNG images between browser and agent via the `clipboard` DC, plus
+# the v2 change watcher for auto-sync. Cross-platform via arboard
+# (Win32 / XClipboard / NSPasteboard). No system deps on Windows;
+# Linux pulls x11rb which we already use for enigo. `dep:clipboard-win`
+# is Windows-target-only (same pattern as mf-encoder's `dep:windows`);
+# enabling it here is a no-op on other platforms.
+# FR-97 P3e-3a adds `dep:x11rb` (Linux-only, already in the lockfile): the
+# change gate for an X11 clipboard is XFixes' selection-owner events.
+clipboard = ["dep:arboard", "dep:png", "dep:clipboard-win", "dep:x11rb"]
+# Enables the Windows viewer-indicator overlay — topmost layered
+# click-through window drawn on the controlled host to signal "someone
+# is watching". Excluded from screen capture via SetWindowDisplayAffinity
+# so it never makes it into the RTP stream. No-op on non-Windows.
+viewer-indicator = ["dep:windows"]
+# FR-27 — the NATIVE consent panel on X11: an override-redirect window the
+# daemon draws itself, so a Linux desktop can answer a "Prompt on host" device
+# with nothing else installed. Prompt only; the "being viewed" banner on Linux
+# stays with the desktop companion.
+#
+# `x11rb` is already in the lockfile (enigo, arboard) so this adds no new
+# dependency tree, and `dep:x11rb` is target-scoped below — enabling the
+# feature on Windows or macOS is a no-op, same pattern as `clipboard`.
+#
+# ⚠️ Unlike the Windows panel there is NO capture exclusion: X has no
+# equivalent of `WDA_EXCLUDEFROMCAPTURE`. See the module docs.
+viewer-indicator-x11 = ["dep:x11rb"]
+# FR-27 — the NATIVE consent panel on macOS (AppKit). Prompt only, same split
+# as X11.
+#
+# ⚠️ Requires the daemon's tokio runtime to be OFF the main thread: AppKit
+# delivers events on the main run loop, and `#[tokio::main]` parks it forever.
+# `main.rs` does that swap under this same feature.
+viewer-indicator-macos = ["dep:objc2", "dep:objc2-app-kit", "dep:objc2-foundation"]
+# System / desktop audio → WebRTC Opus track (opt-in per session via
+# `ServerMsg::Request.audio_enabled`). Pulls in the Opus encoder
+# (audiopus, bundled libopus from C source) and the cpal capture backend
+# (PulseAudio monitor on Linux, WASAPI loopback on Windows; macOS falls
+# back to a silent Noop capture). Independent of `ffmpeg-encoder`. See
+# `src/audio/`.
+audio = ["dep:audiopus", "dep:cpal"]
+# FR-85 — HQ screen recording: the `roomlerd record` child (own capturer, CFR
+# pacer, recording encoder profile, fragmented MP4 + remux on stop), the local
+# verbs, and the device's half of remote recording. `symphonia` decodes an
+# export's background music (P5b).
+#
+# ⚠️ In `full`, and so in every release build, with every gate CLOSED: a local
+# recording starts only when the person at the device presses Record, and a
+# remote one only once the device's owner switches `record_remote_enabled` on
+# (default off) AND the controller holds `RECORD_REMOTE_SCREEN`. The recorder
+# runs as that person at normal integrity (P1e). `ROOMLERD_RECORDING=0`
+# switches the whole surface off without a rebuild.
+#
+# It was out of `full` from 2026-09-26 (the operator: canary hosts first) and
+# rejoined with the FFmpeg bump (P4c, the operator's go-ahead 2026-09-27) once
+# both canaries passed: an EDR-managed corporate laptop (0 Defender events;
+# its SystemContext worker launches the recorder with the console user's
+# token) and macOS TCC for the recorder child on a supervised Mac (the Screen
+# Recording grant survived the update). Still unproven in the field: the
+# restricted-token path (P1e, an elevated user-context worker), which no EDR
+# host in this fleet runs.
+recording = ["dep:mp4-atom", "dep:symphonia"]
+# Convenience: full media pipeline (capture + software encode).
+media = ["scrap-capture", "openh264-encoder"]
+# Full media pipeline including the MF hardware encoder. Production
+# Windows builds should use this so the open_default cascade can pick
+# MF when available and fall back to openh264 when not.
+media-hw = ["media", "mf-encoder"]
+# FR-36 P1 — DRM/KMS screen capture: read the scanout framebuffer below the
+# compositor. The only backend that can see a WAYLAND desktop, or a LOCKED
+# one — the portal refuses both by design. Linux-only in effect (the dep is
+# scoped to the Linux target, so enabling this elsewhere is a no-op, same as
+# `clipboard`'s `dep:clipboard-win`).
+#
+# ⚠️ Compiling it in does NOT switch any host to it: `ROOMLERD_DRM_CAPTURE`
+# defaults to OFF, because DRM carries no damage information and defaulting it
+# on would undo FR-29's idle-CPU win on every X11 host. Shipped in `full` for
+# the same reason `ssh-server` is — the code is present with its gates closed,
+# so a Wayland host opts in with an env var instead of a custom build.
+drm-capture = ["dep:drm"]
+# FR-45 P1 — detect whether xdg-desktop-portal actually exposes ScreenCast, so
+# `capture-smoke` can say WHY a host fell through to X11. Detection only; the
+# capture path itself is P2/P3. Linux-only in effect.
+portal-capture = ["dep:zbus"]
+# FR-36 P4 — input injection through `/dev/uinput`, below the compositor.
+# The companion to `drm-capture`: XTest reaches Xwayland clients ONLY, so on a
+# native Wayland desktop enigo does not fail, it succeeds and does nothing —
+# a captured session would be read-only. Linux-only in effect; needs no new
+# crate (libc is already a cfg(unix) dep).
+#
+# ⚠️ Compiling it in switches nothing: `ROOMLERD_UINPUT` defaults to OFF,
+# because a virtual input device is host-global and appears in every
+# application's device list. Shipped in `full` with its gate closed, same as
+# `drm-capture`.
+uinput-input = []
+# FR-90 P0c — Hive agent sessions on this device: advertise `hive`, answer
+# `rc:hive.start` through the device's own gates, run Claude Code headless as
+# the account `hive_accounts` maps the starter to, keep the transcript in the
+# replica store. Linux only in P0 (a named account; the re-exec'd `hive-host`
+# that covers Windows' console user and macOS is P1).
+#
+# ⚠️ Deliberately NOT in `full`: no release build compiles it until the P0
+# field cell has run, and even compiled, every gate is closed by default
+# (`hive_enabled = false`, an empty account map, empty roots = nowhere).
+hive = ["dep:meshharbor-hive-node", "dep:hyper", "dep:hyper-util", "dep:http-body-util"]
+# FR-90 P0f — TESTS ONLY: `hive::init_as_daemon`, a supervisor that launches
+# sessions as the daemon's OWN account, for the integration test that cannot
+# switch users (`crates/tests/tests/hive_canary.rs`).
+#
+# ⚠️ Never in a release build — it is in no aggregate, and the release
+# workflows name their features. Even compiled, `init_as_daemon` refuses when
+# the daemon is root, so it can never be how a session runs as root.
+hive-test-launcher = ["hive"]
+# Narrow local CP/dataplane oracle; no production profile enables this.
+# The daemon's native listener module requires an overlay surface. Use the
+# OS-free netstack surface (not overlay-l3/TUN); the harness opens no stack.
+backbone-test-support = ["overlay-netstack", "meshharbor-tunnel-core/path-trial-test-support"]
+# FR-90 P3-3 — the device's half of the vault: a key the daemon makes while the
+# device's own `vault_enabled` is on, kept in memory only and new at every
+# start, its public half in the primary enrollment's hello. Implies `hive`:
+# the vault leases values to agent sessions, so a build that runs none has
+# nothing to take them for.
+#
+# ⚠️ Not in `full` and in no release build yet: no tool asks for a lease before
+# P3-4c, and even compiled, `vault_enabled` is off by default.
+vault = ["hive", "dep:crypto_box", "dep:zeroize", "dep:tokio-rustls", "dep:rustls-native-certs", "dep:hmac", "dep:pbkdf2", "dep:stringprep"]
+# Everything needed for a full remote-control session, software only.
+full = ["media", "enigo-input", "clipboard", "audio", "drm-capture", "uinput-input", "portal-capture", "recording", "external-access"]
+# Everything needed including the MF hardware encoder. Production
+# Windows MSI builds with this.
+full-hw = ["full", "mf-encoder", "wgc-capture", "viewer-indicator"]
+# Phase 1 — deterministic synthetic frame source for the headless
+# Linux CI / agent-e2e Pod. Replaces scrap-capture when the runtime
+# env var `ROOMLERD_SYNTHETIC_FRAMES=1` is set, so a Pod with
+# no X server / no display can still drive encode + WebRTC end-to-
+# end. Production agents (`full` / `full-hw`) DO NOT compile this in;
+# the agent-e2e Dockerfile selects `--features synthetic-frame-source,
+# openh264-encoder,clipboard` (no scrap, no enigo, no WGC).
+synthetic-frame-source = []
+
+# Option B HEVC plan (rc.64+). Enables the FFmpeg-based encoder
+# backend in `src/encode/ffmpeg/` that bypasses Windows Media Foundation
+# entirely and routes HEVC + H.264 + VP9 through vendor HW encoders
+# (NVENC, Intel QSV / oneVPL, AMD AMF) via `ffmpeg-next`. Closes the
+# RTX 5090 Blackwell MF regression (Known Issues: ActivateObject
+# 0x8000FFFF) and the Iris Xe Tiger Lake async-MFT gap, plus unlocks
+# HW VP9 on Intel iGPUs (`vp9_qsv` — unavailable via MF).
+#
+# rc.64 ships THIS FEATURE FLAG ONLY — no `ffmpeg-next` dep, no CI
+# vcpkg plumbing, no encoder code. The stub `src/encode/ffmpeg/mod.rs`
+# compiles to `pub fn available() -> bool { false }`. Safe back-out is
+# `git revert` of one commit.
+#
+# rc.65 wires the vcpkg port at `vcpkg-ports/ffmpeg-roomler/` into
+# `release-agent.yml`, adds `ffmpeg-next` + `ffmpeg-sys-next` deps,
+# and verifies the binding version pair compiles against FFmpeg 7.x
+# with `hevc_qsv` / `vp9_qsv` symbols reachable. MSI size delta is
+# measured; >+8 MB compressed = HARD STOP and re-plan.
+#
+# Phased rollout documented in `docs/encoders.md`.
+# rc.75 hotfix: ffmpeg-encoder needs dcv_color_primitives for BGRA→NV12.
+# Previously only `vp9-444` pulled the dep in, so the CI link-verify test
+# step that runs with `--features ffmpeg-encoder` alone hit
+# `error[E0432]: unresolved import dcv_color_primitives`.
+ffmpeg-encoder = ["dep:ffmpeg-next", "dep:dcv-color-primitives"]
+
+# M3 A1 — SYSTEM-context capture+input on the secure desktop. Lets
+# the perMachine MSI deployment drive the Windows lock screen / UAC
+# prompt by spawning a worker via stolen winlogon.exe primary-token
+# (see `agents/meshharbord/src/system_context/`). Off by default.
+# The perMachine MSI build sets `--features full-hw,system-context`;
+# the perUser MSI never compiles any of this.
+#
+# Empirically validated on a Windows field-test host 2026-05-04 via
+# the M3 A1 pre-flight probe binary (see memory
+# `project_m3_a1_preflights_2_3_5.md`). Architecture: DXGI Desktop
+# Duplication + winlogon-token spawn + LocalSystem SCM service +
+# lazy-rebind SetThreadDesktop on input. Replicates RustDesk's
+# pattern; no kernel driver, no undocumented APIs.
+#
+# Windows-only by construction (the underlying FFI is Win32-specific).
+# Selecting this feature on non-Windows leaves all the modules
+# `#[cfg(target_os = "windows")]`-gated so the build stays green;
+# nothing reaches user code.
+system-context = []
+
+# Phase 3b — overlay L3 mesh (Tailscale-style). Pulls the WireGuard data
+# plane + TUN device from tunnel-core. Default-OFF + gated on the
+# `overlay_enabled` config. The agent runs privileged (service), so the
+# TUN device + routes come up directly (no helper).
+overlay-l3 = ["meshharbor-tunnel-core/overlay-l3", "meshharbor-node-core/overlay-l3"]
+# Netstack overlay surface — the OS-free twin of `overlay-l3`. Instead of a
+# real TUN, the node terminates the overlay CIDR in a userspace smoltcp stack
+# and exposes a loopback SOCKS5 front, so a locked-down host (full-tunnel VPN)
+# reaches the mesh with NO OS routing. Opt in per-run with the env var
+# `ROOMLERD_OVERLAY_NETSTACK_SOCKS=<port>` (see `overlay.rs`). Independent
+# of `overlay-l3`; a build may carry either or both (config picks at runtime).
+overlay-netstack = ["meshharbor-tunnel-core/overlay-netstack", "meshharbor-node-core/overlay-netstack"]
+
+# Roomler SSH server (P2) — an in-daemon SSH endpoint on this node's overlay
+# address. Implies `overlay-netstack`: the port is served by the userspace
+# stack via `split_tun`, never by an OS socket, which is the only way it can
+# coexist with an `sshd` already holding `0.0.0.0:22` (the state of every
+# Linux host in the fleet).
+#
+# Measured cost, x86_64-pc-windows-msvc, cgu=1, by building `roomlerd` with
+# and without this feature: **+1.86 MiB** (29.94 -> 31.80, +6.2%). An isolated
+# harness predicted +2.57; the real binary absorbs more because it already
+# links a far larger std/tokio/webrtc surface for the linker to share against.
+# Little of it is CRYPTO sharing, though — russh 0.62 sits on the NEXT
+# RustCrypto generation (aes-gcm 0.11 vs our 0.10, curve25519-dalek 5 vs 4,
+# p256 0.14 vs 0.13, sha2 0.11 vs 0.10), so the binary really does carry a
+# second, parallel primitive stack and ~99 extra crates. That is the honest
+# price of the feature and the reason it is opt-in per build.
+ssh-server = ["dep:russh", "overlay-netstack"]
+
+# FR-52 — cross-org remote access: the device half of gate 4. +7 crates (see
+# the opaque-ke dep comment).
+#
+# In `full`, and so in every release build, since P4f (decision 11, operator,
+# 2026-10-19). This is the `ssh-server` rule: ship it with its gates closed, so a
+# device can be opted in without waiting for a release. Compiled in, it changes
+# nothing on a device until its org turns external access on (gate 1), an
+# admin approves the device (gate 2), and its owner opts in and sets a password
+# ON the device (gate 3). It is in `full` rather than in each release list
+# because a feature only some builds can serve is one the fleet view would
+# have to explain device by device.
+#
+# ⚠️ Advertising `RpcCap::ExternalAccess` is deliberately NOT gated on this
+# feature. The verb means "this build can tell the person at the machine that a
+# controller is from outside the org" — the consent-prompt property, not the
+# password one. Gating the verb here would make a build without the feature
+# un-approvable AND indistinguishable from an agent too old to have it: two
+# different fixes behind one symptom, which is the split P2a exists to keep.
+external-access = ["dep:opaque-ke", "dep:rand_opaque", "dep:hkdf", "dep:hmac"]
+
+# build.rs embeds a Windows VERSIONINFO resource into roomlerd.exe.
+# `[target.'cfg(windows)'.build-dependencies]` resolves against the HOST
+# (build scripts compile for the host), matching build.rs's #[cfg(windows)]
+# gate -- a Linux/macOS build pulls nothing extra.
+#
+# embed-resource, NOT winres/winresource: only embed-resource's compile_for()
+# scopes the resource to a single binary (`cargo:rustc-link-arg-bin=`).
+# winresource emits `cargo:rustc-link-lib=dylib=resource`, which propagates
+# into every downstream binary -- and this crate is a path dependency of both
+# Tauri crates, which already embed their own VS_VERSION_INFO. Already in the
+# graph via tauri-build 2.x, so no new supply-chain surface. See build.rs.
+[target.'cfg(windows)'.build-dependencies]
+embed-resource = "3"
+
+[dev-dependencies]
+tokio-test = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
+tempfile = { workspace = true }
+# Turns on `config::test_fixture` for THIS crate's test builds (feature
+# unification applies dev-dep features to the normal dep during `cargo
+# test`); production builds never see it.
+meshharbor-node-core = { path = "../../crates/agent-core", features = ["test-fixtures"] }
+# File-DC integration test (tests/file_dc.rs) needs the zip crate
+# to unpack the agent's streaming-zip output and verify content.
+zip = { version = "2", default-features = false, features = ["deflate"] }
+# FR-90 P3-5b — a TLS upstream for the vault proxies' tests: a certificate made
+# per test run (ring, as the tree; already in the lockfile).
+rcgen = { version = "0.13", default-features = false, features = ["ring", "pem"] }
+# v039 CTRL-03 — the TLS servers of tests/control_dns_tls.rs (the vault's
+# optional dependency, as a dev-dependency so the test needs no feature).
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
+
+# ---------------------------------------------------------------------------
+# Packaging metadata
+# ---------------------------------------------------------------------------
+
+# cargo-deb (Linux .deb), MeshHarbor
+#   cargo deb -p meshharbord --no-build --variant headless   overlay + SSH, no capture
+#   cargo deb -p meshharbord --no-build                      full; needs vendor-ffmpeg/
+# Produces target/debian/meshharbor_<version>_<arch>.deb. A clean break from the
+# upstream Roomler packages (other name, paths and units), so it conflicts with
+# them instead of taking their files over: a host moves by reinstalling.
+[package.metadata.deb]
+name = "meshharbor"
+maintainer = "MeshHarbor <jesuskun0527@gmail.com>"
+copyright = "2026, G ROX LTD"
+license-file = ["../../LICENSE", "0"]
+extended-description = """\
+MeshHarbor daemon — keeps this device on your private MeshHarbor mesh network \
+and available for secure remote control. Media and input flow directly \
+peer-to-peer; the server never sees raw pixels or keystrokes."""
+# The full build bundles FFmpeg 9.0.1 + libvpx.so.7 in usr/lib/meshharbor (the
+# binary's RPATH), so it depends on no system FFmpeg or libvpx.
+depends = "libc6 (>= 2.35), libxcb1, libxcb-shm0, libxcb-randr0, libasound2, libssl3 | libssl3t64, libstdc++6, libgcc-s1"
+recommends = "iproute2"
+suggests = "mesa-va-drivers, intel-media-va-driver"
+section = "net"
+priority = "optional"
+maintainer-scripts = "packaging/linux/debian"
+conflicts = "roomlerd, roomler-agent"
+assets = [
+    ["target/release/meshharbord", "usr/bin/", "755"],
+    # The `meshharbor` command: the meshharbor-cli-shim under the user-facing name;
+    # it re-execs `meshharbord cli`, so it can never version-skew from the daemon.
+    ["target/release/roomler-shim", "usr/bin/meshharbor", "755"],
+    ["packaging/linux/meshharbor.service", "usr/lib/systemd/user/meshharbor.service", "644"],
+    # Opt-in SYSTEM unit for headless nodes; nothing enables it (install.sh
+    # --role daemon --system does).
+    ["packaging/linux/meshharbord.service", "usr/lib/systemd/system/meshharbord.service", "644"],
+    ["packaging/linux/meshharbor-update.service", "usr/lib/systemd/system/meshharbor-update.service", "644"],
+    ["packaging/linux/meshharbor-update.timer", "usr/lib/systemd/system/meshharbor-update.timer", "644"],
+    ["packaging/linux/meshharbor-update.path", "usr/lib/systemd/system/meshharbor-update.path", "644"],
+    ["packaging/linux/README.Debian", "usr/share/doc/meshharbor/README.Debian", "644"],
+    ["vendor-ffmpeg/*.so.*", "usr/lib/meshharbor/", "644"],
+]
+
+# A headless node (server, relay, router): overlay + SSH, no screen capture,
+# so no FFmpeg or X libraries. Built with `--features overlay-netstack,
+# overlay-l3,ssh-server`.
+[package.metadata.deb.variants.headless]
+depends = "libc6 (>= 2.34), libssl3 | libssl3t64, libgcc-s1, zlib1g, libzstd1"
+assets = [
+    ["target/release/meshharbord", "usr/bin/", "755"],
+    # The `meshharbor` command: the meshharbor-cli-shim under the user-facing name;
+    # it re-execs `meshharbord cli`, so it can never version-skew from the daemon.
+    ["target/release/roomler-shim", "usr/bin/meshharbor", "755"],
+    ["packaging/linux/meshharbor.service", "usr/lib/systemd/user/meshharbor.service", "644"],
+    # Opt-in SYSTEM unit for headless nodes; nothing enables it (install.sh
+    # --role daemon --system does).
+    ["packaging/linux/meshharbord.service", "usr/lib/systemd/system/meshharbord.service", "644"],
+    ["packaging/linux/meshharbor-update.service", "usr/lib/systemd/system/meshharbor-update.service", "644"],
+    ["packaging/linux/meshharbor-update.timer", "usr/lib/systemd/system/meshharbor-update.timer", "644"],
+    ["packaging/linux/meshharbor-update.path", "usr/lib/systemd/system/meshharbor-update.path", "644"],
+    ["packaging/linux/README.Debian", "usr/share/doc/meshharbor/README.Debian", "644"],
+]
+
+# cargo-wix (Windows .msi)
+#   cargo wix -p meshharbord --nocapture
+# Produces target/wix/roomler-agent-<version>-x86_64.msi
+# RETIRED-NAME-ANCHOR-END
+# Source lives at agents/meshharbord/wix/main.wxs.
+[package.metadata.wix]
+upgrade-guid = "1F2D7B1C-8B2F-4D2E-B1A3-6B1E2C7E4D91"
+path-guid    = "3A8C9F21-4E7D-4A8E-9F3B-8D1C2E7F5A62"
+license      = false
+eula         = false

@@ -34,7 +34,7 @@
 //! [`Group`] and a [`Tier`] so the Settings page can be more than 150 rows.
 
 use crate::config::{AgentConfig, EncoderPreferenceChoice};
-use roomler_localapi::ConfigEntry;
+use meshharbor_localapi::ConfigEntry;
 use std::sync::OnceLock;
 
 /// Mirror of `tunnel_core::overlay::direct::MAX_DIRECT_PORT_BASE`
@@ -289,7 +289,7 @@ const KEYS: &[KeyMeta] = &[
         tier: Tier::Essential,
         // LIVE: the daemon's `ConfigSet` hands the saved value to
         // `files::set_files_dir`, and every drop re-validates it
-        // (agents/roomlerd/src/files.rs) — nothing is read at startup only.
+        // (agents/meshharbord/src/files.rs) — nothing is read at startup only.
         live: true,
         kind: "string",
         description: "FR-84 - where files dropped onto a remote-control session land. An absolute folder, or `~/...` for the active user's profile (expanded per user, at the time of the drop). Must be outside system folders and, when the service runs as SYSTEM/root, inside the active user's profile; created if missing. Empty = the default: the active user's Downloads folder (Windows falls back to %PROGRAMDATA%\\roomler\\...\\uploads when that is unreachable). Only the person at the device's console can change it. Applies at once.",
@@ -2331,7 +2331,7 @@ pub fn apply(cfg: &mut AgentConfig, key: &str, value: Option<&str>) -> Result<()
                 None => None,
                 Some(v) => {
                     let parsed =
-                        roomler_ai_remote_control::permissions::Permissions::from_wire_names(v)
+                        meshharbor_remote_control::permissions::Permissions::from_wire_names(v)
                             .ok_or_else(|| {
                                 format!(
                                     "external_max_permissions must be permission names joined by \
@@ -3147,8 +3147,8 @@ fn parse_bool_or(v: Option<&str>, default: bool) -> Result<bool, String> {
 }
 
 /// FR-101 P2b — how an `rc_*` key prints: the word the file and the wire use.
-fn fmt_lock_on_end(p: roomler_ai_remote_control::models::LockOnEnd) -> String {
-    use roomler_ai_remote_control::models::LockOnEnd;
+fn fmt_lock_on_end(p: meshharbor_remote_control::models::LockOnEnd) -> String {
+    use meshharbor_remote_control::models::LockOnEnd;
     match p {
         LockOnEnd::Never => "never",
         LockOnEnd::Auto => "auto",
@@ -3162,8 +3162,8 @@ fn fmt_lock_on_end(p: roomler_ai_remote_control::models::LockOnEnd) -> String {
 /// where the file's reader would have read it as `always` without a word.
 fn parse_lock_on_end(
     v: Option<&str>,
-) -> Result<roomler_ai_remote_control::models::LockOnEnd, String> {
-    use roomler_ai_remote_control::models::LockOnEnd;
+) -> Result<meshharbor_remote_control::models::LockOnEnd, String> {
+    use meshharbor_remote_control::models::LockOnEnd;
     match v
         .map(str::trim)
         .filter(|s| !s.is_empty())
@@ -3239,8 +3239,8 @@ fn parse_peer_auth(v: Option<&str>) -> Result<crate::config::PeerAuthPolicy, Str
     }
 }
 
-fn fmt_feature_policy(p: roomler_ai_remote_control::models::FeaturePolicy) -> String {
-    use roomler_ai_remote_control::models::FeaturePolicy;
+fn fmt_feature_policy(p: meshharbor_remote_control::models::FeaturePolicy) -> String {
+    use meshharbor_remote_control::models::FeaturePolicy;
     match p {
         FeaturePolicy::On => "on",
         FeaturePolicy::Ask => "ask",
@@ -3255,8 +3255,8 @@ fn fmt_feature_policy(p: roomler_ai_remote_control::models::FeaturePolicy) -> St
 fn parse_feature_policy(
     key: &str,
     v: Option<&str>,
-) -> Result<roomler_ai_remote_control::models::FeaturePolicy, String> {
-    use roomler_ai_remote_control::models::FeaturePolicy;
+) -> Result<meshharbor_remote_control::models::FeaturePolicy, String> {
+    use meshharbor_remote_control::models::FeaturePolicy;
     match v
         .map(str::trim)
         .filter(|s| !s.is_empty())
@@ -3335,7 +3335,7 @@ mod tests {
     /// FR-84 D2 — `restart_required` is the truth PER KEY, not a blanket.
     /// The keys the daemon applies without a restart are the two gate-4
     /// flags `RemoteConfigServices::adopt_local` re-seeds after a
-    /// `ConfigSet` (agents/roomlerd/src/localapi_state.rs), `record_dir`
+    /// `ConfigSet` (agents/meshharbord/src/localapi_state.rs), `record_dir`
     /// (FR-85), which the recorder's supervisor reads fresh when a recording
     /// starts (`recording/manager.rs`, `configured_dir`),
     /// `local_restart_enabled` (FR-84 D3), which the restart verb reads fresh
@@ -3839,7 +3839,7 @@ mod tests {
     /// read it as `always` without a word).
     #[test]
     fn lock_on_end_set_echo_clear() {
-        use roomler_ai_remote_control::models::LockOnEnd;
+        use meshharbor_remote_control::models::LockOnEnd;
         let mut cfg = crate::config::test_fixture();
         assert_eq!(cfg.lock_on_end, LockOnEnd::Never);
         apply(&mut cfg, "lock_on_end", Some(" AUTO ")).unwrap();

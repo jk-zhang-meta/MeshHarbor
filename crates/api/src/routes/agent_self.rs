@@ -12,7 +12,7 @@
 //! **visible = self ∪ what this device's overlay netmap already carries.**
 //!
 //! That is not a policy of this file. The set is computed by the join path's
-//! own shaping ([`roomler_ai_mod_network::overlay::shape_full_netmap`]), so
+//! own shaping ([`meshharbor_mod_network::overlay::shape_full_netmap`]), so
 //! `off` / `warn` list every live node and `enforce` lists exactly what the
 //! netmap would ship — a peer the ACL withholds from the netmap is absent here
 //! too, by construction rather than by a second rule that could drift. Only
@@ -38,11 +38,11 @@ use axum::{
     Json,
     extract::{Query, State},
 };
-use roomler_ai_mod_fleet::agent::{AgentPresence, agent_presence_batch, derive_agent_presence};
-use roomler_ai_remote_control::models::{
+use meshharbor_mod_fleet::agent::{AgentPresence, agent_presence_batch, derive_agent_presence};
+use meshharbor_remote_control::models::{
     NodeRef, OverlayAclMode, OverlayNode, VisibleDeviceRow, VisibleDevicesPage,
 };
-use roomler_core::ApiError;
+use meshharbor_core::ApiError;
 
 use crate::extractors::auth_agent::HostAuthAgent;
 #[cfg(feature = "network")]
@@ -105,7 +105,7 @@ fn presence_str(p: AgentPresence) -> &'static str {
 /// insist on.
 #[cfg(feature = "network")]
 async fn visibility(state: &AppState, agent: &HostAuthAgent) -> Result<Visibility, ApiError> {
-    use roomler_ai_mod_network::overlay::{
+    use meshharbor_mod_network::overlay::{
         NodeIdentity, current_node, reachability, shape_full_netmap,
     };
 

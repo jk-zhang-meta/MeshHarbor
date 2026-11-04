@@ -152,7 +152,7 @@ account** — so that interest which does not convert immediately is not lost pe
 | 2026-08-29 | config keys the compose sets actually exist | `auth.auto_verify`, `s3.enabled` in `settings.rs`; the production JWT refusal at `crates/api/src/main.rs:32` |
 | 2026-08-29 | two draft claims checked against code and **corrected** | registering creates no organization (`auth.rs:140` — the web form sends no `tenant_name`); agents update from upstream GitHub releases, not a self-hoster's builds (`agent_release.rs`) |
 | 2026-08-29 | UI typecheck + unit tests | `vue-tsc --noEmit` clean; **901 tests / 39 files pass** |
-| 2026-08-29 | `cargo check -p roomler-ai-api` (WSL) | clean |
+| 2026-08-29 | `cargo check -p meshharbor-api` (WSL) | clean |
 | | `crates/tests/src/subscribe_tests.rs` | **not run locally** — no Docker on the dev box; runs in CI |
 | | one-command self-host on a clean machine | **operator** — needs a clean box and a 10-20 min build |
 | | 60-90 s demo recorded and embedded | **operator** — needs a real capture session |

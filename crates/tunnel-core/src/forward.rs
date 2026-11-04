@@ -29,7 +29,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use bytes::Bytes;
-use roomler_ai_remote_control::signaling::CloseReason;
+use meshharbor_remote_control::signaling::CloseReason;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::{Mutex, Notify, mpsc};
@@ -195,7 +195,7 @@ impl FlowStats {
 /// Read by the daemon's `flows` LocalAPI verb.
 ///
 /// Named `SessionThroughput` (not `SessionStats`) to avoid colliding
-/// with the unrelated video-session `roomler_ai_remote_control::models::
+/// with the unrelated video-session `meshharbor_remote_control::models::
 /// SessionStats`.
 ///
 /// `bytes_*` are cumulative (never decremented). `active_flows` is a

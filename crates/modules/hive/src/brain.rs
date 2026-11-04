@@ -37,9 +37,9 @@ use axum::{
 };
 use bson::{Bson, DateTime, Document, doc, oid::ObjectId};
 use mongodb::Database;
-use roomler_ai_db::models::role::permissions;
-use roomler_ai_services::dao::base::{BaseDao, DaoError, DaoResult};
-use roomler_core::{ApiError, extractors::auth::AuthUser};
+use meshharbor_db::models::role::permissions;
+use meshharbor_services::dao::base::{BaseDao, DaoError, DaoResult};
+use meshharbor_core::{ApiError, extractors::auth::AuthUser};
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
@@ -1319,7 +1319,7 @@ mod tests {
     /// lets a device accept, even at four bytes a character.
     #[test]
     fn a_full_snapshot_fits_the_wire_limit() {
-        use roomler_ai_remote_control::hive::hive_limits::MAX_CORE_MEMORY_BYTES;
+        use meshharbor_remote_control::hive::hive_limits::MAX_CORE_MEMORY_BYTES;
         let wide = "𝔀".repeat(MAX_FACT_CHARS);
         let org: Vec<BrainFact> = (0..6)
             .map(|_| fact(BrainScope::Org, FactKind::Gotcha, &wide))

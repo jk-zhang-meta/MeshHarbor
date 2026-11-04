@@ -1,6 +1,6 @@
 #!/bin/sh
 # meshharbor install.sh — terminal-driven install of the Roomler node stack
-# (Linux + macOS), replicating the roomler-setup wizard's steps without a
+# (Linux + macOS), replicating the meshharbor-setup wizard's steps without a
 # GUI: resolve via the roomler.ai proxy → download → sha256-verify →
 # install → enroll → autostart.
 #
@@ -37,7 +37,7 @@
 #                     for a server the central owner approves as a `server`
 #                     role. Primary enrollment only; the server never pushes it.
 #
-# The desktop companion (roomler-desktop) rides IN the macOS .pkg. On Linux it
+# The desktop companion (meshharbor-desktop) rides IN the macOS .pkg. On Linux it
 # is a SEPARATE .deb (FR-27), or .rpm on Fedora, the RHEL family and openSUSE
 # (FR-93 P6d) — installed automatically when this box has a
 # graphical session, since the companion is the device's consent PROMPT
@@ -124,7 +124,7 @@ usage() {
     echo "                  holds the device's credential. --keep-config keeps the config."
     echo "                  Then remove the device in the dashboard: that revokes it."
     echo
-    echo "  --desktop       Linux only. Force the roomler-desktop companion on or off."
+    echo "  --desktop       Linux only. Force the meshharbor-desktop companion on or off."
     echo "                  Default: installed when a graphical session is detected. It is"
     echo "                  the device's on-screen consent prompt, so a host set to"
     echo "                  'Prompt on host' without it cannot ask anybody."
@@ -847,7 +847,7 @@ install_tunnel_linux() {
         exit 1
     fi
     if command -v dpkg >/dev/null 2>&1; then
-        deb="$STAGE/roomler-cli.deb"
+        deb="$STAGE/meshharbor-cli.deb"
         say "downloading the roomler CLI (.deb, $tunnel_deb) via the proxy"
         download "$SERVER/api/tunnel/installer/$tunnel_deb?version=latest" "$deb"
         if [ "$DOWNLOAD_ONLY" = 1 ]; then
@@ -861,12 +861,12 @@ install_tunnel_linux() {
         # tarball needs only libssl.so.3, which both ship.
         if ! tunnel_cli_runs; then
             warn "the .deb did not install here (its dependencies cannot be met on this distro) — installing the tarball instead"
-            tarball="$STAGE/roomler-cli.tar.gz"
+            tarball="$STAGE/meshharbor-cli.tar.gz"
             download "$SERVER/api/tunnel/installer/$tunnel_tar?version=latest" "$tarball"
             install_tunnel_tarball "$tarball"
         fi
     else
-        tarball="$STAGE/roomler-cli.tar.gz"
+        tarball="$STAGE/meshharbor-cli.tar.gz"
         say "downloading the roomler CLI (tarball, $tunnel_tar) via the proxy"
         download "$SERVER/api/tunnel/installer/$tunnel_tar?version=latest" "$tarball"
         if [ "$DOWNLOAD_ONLY" = 1 ]; then
@@ -880,7 +880,7 @@ install_tunnel_linux() {
 }
 
 install_tunnel_macos() {
-    tarball="$STAGE/roomler-cli.tar.gz"
+    tarball="$STAGE/meshharbor-cli.tar.gz"
     say "downloading the roomler CLI (universal tarball) via the proxy"
     download "$SERVER/api/tunnel/installer/macos?version=latest" "$tarball"
     if [ "$DOWNLOAD_ONLY" = 1 ]; then
@@ -1021,14 +1021,14 @@ install_desktop_linux() {
         return 0
     fi
 
-    desktop_pattern="roomler-desktop-.*${arch}-unknown-linux-gnu\\.${desktop_ext}"
+    desktop_pattern="meshharbor-desktop-.*${arch}-unknown-linux-gnu\\.${desktop_ext}"
     desktop_url="$(asset_field_for "$releases" "$desktop_pattern" browser_download_url)"
     if [ -z "$desktop_url" ]; then
-        say "no roomler-desktop .${desktop_ext} for ${arch} in this release — skipping the companion"
+        say "no meshharbor-desktop .${desktop_ext} for ${arch} in this release — skipping the companion"
         return 0
     fi
     desktop_digest="$(asset_field_for "$releases" "$desktop_pattern" digest)"
-    desktop_pkg="$STAGE/roomler-desktop.${desktop_ext}"
+    desktop_pkg="$STAGE/meshharbor-desktop.${desktop_ext}"
     download "$desktop_url" "$desktop_pkg"
     verify_sha256 "$desktop_pkg" "$desktop_digest"
 
@@ -1040,7 +1040,7 @@ install_desktop_linux() {
         fi
         return 0
     fi
-    say "installing the roomler-desktop companion (.${desktop_ext} — sudo required)"
+    say "installing the meshharbor-desktop companion (.${desktop_ext} — sudo required)"
     if desktop_install "$desktop_pkg"; then
         # FR-84 D6 — the daemon (started above) watches for the companion and
         # opens it once, with the Welcome tour, in the logged-in graphical
@@ -1181,7 +1181,7 @@ account_config_paths() {
     if [ "$OS" = Darwin ]; then
         echo "$h/Library/Application Support/live.roomler.roomler"
         # RETIRED-NAME-ANCHOR(2): the tunnel CLI's config segment is still the
-        # old name (roomler-cli config.rs), and a pre-rename daemon tree may
+        # old name (meshharbor-cli config.rs), and a pre-rename daemon tree may
         # still hold an enrolled credential: skipping either leaves a live token.
         echo "$h/Library/Application Support/ai.roomler.roomler-tunnel"
         echo "$h/Library/Application Support/live.roomler.roomler-agent"
@@ -1255,14 +1255,14 @@ stop_leftovers() {
     done
     procs_gone_within "$name" 30 && return 0
     for pid in $(find_procs "$name"); do
-        if [ "$name" = roomler-desktop ]; then
+        if [ "$name" = meshharbor-desktop ]; then
             warn "$name pid $pid outlived its SIGTERM by 30 s; killing it (a UI, nothing to clean up)"
             as_root kill -KILL "$pid" 2>/dev/null || true
         else
             uninstall_failed "stop $name pid $pid within 30 s of a SIGTERM: $(describe_proc "$pid")"
         fi
     done
-    if [ "$name" = roomler-desktop ] && ! procs_gone_within "$name" 5; then
+    if [ "$name" = meshharbor-desktop ] && ! procs_gone_within "$name" 5; then
         uninstall_failed "stop $name: it outlived a SIGKILL"
     fi
 }
@@ -1391,7 +1391,7 @@ remove_packages_linux() {
         # RETIRED-NAME-ANCHOR: the last two are the packages the daemon's .deb
         # took over (Cargo.toml `replaces`); a host that had them keeps their
         # dpkg entries until they are removed by name.
-        for p in roomler-desktop roomlerd roomler-cli roomler-tunnel roomler-agent; do
+        for p in meshharbor-desktop roomlerd meshharbor-cli roomler-tunnel roomler-agent; do
             # The status letter: i installed, c only its config left, n none.
             case "$(dpkg-query -W -f='${db:Status-Abbrev}' "$p" 2>/dev/null | cut -c2 || true)" in
                 ''|n) ;;
@@ -1407,9 +1407,9 @@ remove_packages_linux() {
             as_root dpkg "$mode" $pkgs || uninstall_failed "remove the packages:$pkgs (dpkg $mode)"
         fi
     fi
-    if command -v rpm >/dev/null 2>&1 && rpm -q roomler-desktop >/dev/null 2>&1; then
-        say "removing the roomler-desktop package (rpm)"
-        as_root rpm -e roomler-desktop || uninstall_failed "remove the roomler-desktop package (rpm -e)"
+    if command -v rpm >/dev/null 2>&1 && rpm -q meshharbor-desktop >/dev/null 2>&1; then
+        say "removing the meshharbor-desktop package (rpm)"
+        as_root rpm -e meshharbor-desktop || uninstall_failed "remove the meshharbor-desktop package (rpm -e)"
     fi
 }
 
@@ -1455,7 +1455,7 @@ remove_registrations_linux() {
 $home/.config/systemd/user/default.target.wants/meshharbor.service
 $home/.config/systemd/user/graphical-session.target.wants/meshharbor.service"
         entries="$entries
-$home/.config/autostart/roomler-desktop.desktop"
+$home/.config/autostart/meshharbor-desktop.desktop"
     done <<EOF
 $(local_accounts)
 EOF
@@ -1484,7 +1484,7 @@ uninstall_linux() {
     uninstall_stop_linux
     # No grace: every stop above has already waited for its unit.
     stop_leftovers roomlerd 0
-    stop_leftovers roomler-desktop 0
+    stop_leftovers meshharbor-desktop 0
     remove_packages_linux
     remove_tarball_linux
     remove_registrations_linux
@@ -1550,7 +1550,7 @@ uninstall_macos() {
     stop_leftovers roomlerd 20
     # A companion the person opened from Finder runs under LaunchServices,
     # which no bootout reaches.
-    stop_leftovers roomler-desktop 20
+    stop_leftovers meshharbor-desktop 20
     if [ "$KEEP_CONFIG" != 1 ]; then
         # The two grants, while the bundle that names them is still there to
         # resolve: a fresh install then asks again, instead of showing a toggle
@@ -1600,7 +1600,7 @@ EOF
     # the .pkg postinstall migrates but never deletes.
     remove_paths /etc/meshharbor /etc/roomler-agent /var/log/roomler /var/log/roomler-agent \
         /tmp/roomlerd.out.log /tmp/roomlerd.err.log \
-        /tmp/roomler-desktop.out.log /tmp/roomler-desktop.err.log
+        /tmp/meshharbor-desktop.out.log /tmp/meshharbor-desktop.err.log
     remove_listed "$list"
     report_other_config "$accounts"
 }
@@ -1648,7 +1648,7 @@ local_fresh_install_only() {
     done
     if [ "$OS" = Linux ]; then
         command -v dpkg-query >/dev/null 2>&1 || { echo "error: local .deb requires readable native package inventory" >&2; exit 1; }
-        for package_name in roomlerd roomler-agent roomler-desktop roomler roomler-tunnel; do
+        for package_name in roomlerd roomler-agent meshharbor-desktop roomler roomler-tunnel; do
             if dpkg-query -W "$package_name" >/dev/null 2>&1; then
                 echo "error: existing Roomler package state requires reviewed migration" >&2; exit 1
             else
@@ -1661,7 +1661,7 @@ local_fresh_install_only() {
                 [ ! -e "$base/$unit" ] && [ ! -L "$base/$unit" ] || { echo "error: existing Roomler service state is preserved" >&2; exit 1; }
             done
         done
-        for existing in /usr/bin/meshharbord /usr/bin/meshharbor /usr/bin/roomler-tunnel /usr/bin/roomler-agent /usr/bin/roomler-desktop /usr/lib/meshharbor; do
+        for existing in /usr/bin/meshharbord /usr/bin/meshharbor /usr/bin/roomler-tunnel /usr/bin/roomler-agent /usr/bin/meshharbor-desktop /usr/lib/meshharbor; do
             [ ! -e "$existing" ] && [ ! -L "$existing" ] || { echo "error: existing Linux daemon must be migrated explicitly" >&2; exit 1; }
         done
     else

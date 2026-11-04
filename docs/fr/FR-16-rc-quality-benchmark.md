@@ -94,7 +94,7 @@ L1–L3. Anchors are master `4fc8ea7bb`.
 
 ### L0 — an in-process harness that CI runs
 
-- **Agent side.** `AgentPeer::new` (`agents/roomlerd/src/peer.rs` L293) needs no API
+- **Agent side.** `AgentPeer::new` (`agents/meshharbord/src/peer.rs` L293) needs no API
   server. Its answer comes from `handle_offer` (L1398), trickle goes through
   `add_remote_candidate` (L1438), and teardown is `close()` (L1536); a dropped peer frees
   nothing. One seam is added: a hook on the `SettingEngine` the constructor builds
@@ -103,13 +103,13 @@ L1–L3. Anchors are master `4fc8ea7bb`.
 - **Impairment through webrtc-util vnet,** not a UDP proxy. vnet gives a min delay, jitter,
   per-chunk loss filters and a token bucket, inside one process, deterministically.
 - **Controller side.** A webrtc-rs peer, H.264 depacketized into `openh264::decoder` (already
-  wrapped in `agents/roomlerd/src/recording/decode.rs` L59–68). With no FFmpeg in CI, video
+  wrapped in `agents/meshharbord/src/recording/decode.rs` L59–68). With no FFmpeg in CI, video
   rides the RTP track (`write_sample`, `peer.rs` L2913). The data-channel cell waits for a
   decoder binding, and the spec says so.
 - **One clock.** The synthetic source records `counter → Instant`; the decoded marker gives
   the counter back. Latency is `now − t_capture` on the same clock.
 - **It runs in CI** the way `control_dc_record` already does: one more explicit
-  `cargo test -p roomlerd --features openh264-encoder,synthetic-frame-source --test l4_latency`
+  `cargo test -p meshharbord --features openh264-encoder,synthetic-frame-source --test l4_latency`
   line next to `.github/workflows/ci.yml` L686–689. A test file nobody names runs in no lane.
 - **Cells** run at the synthetic source's default 320×240 and the software pump's 30 fps.
   CI builds are unoptimised and openh264 pegs a core long before 1080p, so larger sizes
@@ -127,7 +127,7 @@ L1–L3. Anchors are master `4fc8ea7bb`.
 
 ### The synthetic source grows up
 
-`agents/roomlerd/src/capture/synthetic_backend.rs` today paints 320×240 and clamps fps to
+`agents/meshharbord/src/capture/synthetic_backend.rs` today paints 320×240 and clamps fps to
 1..60 (L57). In bench mode it gets:
 
 - **Size and rate:** parametric W×H up to 3840×2160, and 1–240 fps. The clamp lifts only in
@@ -170,7 +170,7 @@ L1–L3. Anchors are master `4fc8ea7bb`.
   target `rc.l4`, timing metadata only), so fleet runs are queryable in `agent_logs`.
 - **The host path.** `roomlerd probe-target` is a small topmost window that flips the marker
   on **real OS input**. It is the only cell that includes injection and the host's own
-  compositor. Field-only. **Built** (`agents/roomlerd/src/probe_target.rs`): it sits flush in
+  compositor. Field-only. **Built** (`agents/meshharbord/src/probe_target.rs`): it sits flush in
   the primary monitor's bottom-right corner, 144 × 80 physical px, with 16 cells above the
   marker area. The viewer's `target` mode (`roomler-rc-bench=target`) probes with pointer
   moves onto the cells, aimed with `rc:video-info`'s native size. The window paints the cell's
@@ -199,7 +199,7 @@ competitors". Engineering may use the numbers; the public pages never print them
 
 | P | Scope | Kill switch | Status |
 |---|---|---|---|
-| L0 | The harness, the synthetic source, the CI line, the planted-regression control | test-only | **merged** #2097 (`0db6f451f`): `agents/roomlerd/tests/l4_latency.rs` + the marker and clock in `capture/synthetic_backend.rs` + the `peer::l0` seam; local and CI runs in the field log |
+| L0 | The harness, the synthetic source, the CI line, the planted-regression control | test-only | **merged** #2097 (`0db6f451f`): `agents/meshharbord/tests/l4_latency.rs` + the marker and clock in `capture/synthetic_backend.rs` + the `peer::l0` seam; local and CI runs in the field log |
 | L4 | The probe, the worker sampler, the upload, `probe-target`, the nightly spec; baselines on a direct and a relay pair | `ROOMLERD_BENCH` unset; the build feature; the viewer knob `roomler-rc-bench` | **agent half built**: `synthetic_backend::probe` + the bottom-right marker, the input-handler hook in `peer.rs`, `bench` in `AgentCaps.video`, the `probe`/`probe50` cells. **Viewer half built**: the TS marker decoder, the worker sampler in all three decode workers, the `<video>` sampler, the jittered prober, the `rc.l4` upload, the server's parse lock. **`probe-target` built**: the window (`probe_target.rs`) and the viewer's `target` mode. **End to end on a release build: done** against `probe-target` on vmtest guests (the field log, 2026-10-13; FR-98 P5's cells used it on 2026-10-16, on the RTP track and the DataChannel). Owed: the nightly spec, which needs the agent-e2e pods in bench mode (`ROOMLERD_BENCH=1` in `scripts/e2e-k8s/overlay-template/statefulset-agent-e2e.yaml`, and an agent-e2e image from 0.4.133 or later, built by hand on the build host), and the baselines on real hosts |
 | T | The StarDesk comparison cell on the spare box (private results) | — | — |
 | L1–L3 | As designed above | — | — |

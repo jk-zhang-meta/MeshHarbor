@@ -8,7 +8,7 @@
 
 use axum::{Json, extract::State};
 use bson::oid::ObjectId;
-use roomler_core::{ApiError, extractors::auth::AuthUser};
+use meshharbor_core::{ApiError, extractors::auth::AuthUser};
 use serde::Serialize;
 
 use crate::ChatState;

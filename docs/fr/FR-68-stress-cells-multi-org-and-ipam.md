@@ -103,7 +103,7 @@ fingerprint and triggers a full FIB walk that deletes nothing — the anti-flap 
 on exactly the multi-org host it was written for.
 
 **C2(b)** FR-64 C2 specifies "a WARN when two orgs' blocks overlap". It was never
-implemented (`grep -i overlap` over `tun.rs` and `agents/roomlerd/src/overlay.rs` finds
+implemented (`grep -i overlap` over `tun.rs` and `agents/meshharbord/src/overlay.rs` finds
 nothing). With nested blocks — a legacy `/10` primary beside a carved `/22` secondary —
 `defended_ula_prefix` (`tun.rs:1773-1791`) produces **nested, not disjoint** v6 prefixes and
 the war can silently re-open.
@@ -118,7 +118,7 @@ There is **no counter** for route evictions or carrier revalidations. Both are l
 throttled to **1 WARN/min/prefix** carrying `suppressed_since_last` — a naive `grep -c`
 under-reports by up to 40×. Three cumulative counters, following the canonical path
 `crates/tunnel-core/src/evidence.rs:36-37` → `crates/localapi/src/lib.rs:227` →
-`agents/roomler-cli/src/localclient.rs:1381-1387`:
+`agents/meshharbor-cli/src/localclient.rs:1381-1387`:
 
 `ROUTE_EVICTIONS` (split `sibling` / `foreign`) · `ROUTE_WAVES` · `FORCED_REVALIDATIONS`
 

@@ -266,7 +266,7 @@ The 2026-09-01 deferral rested on two facts, and neither holds any more.
   idle-suspends, which is the case P3 exists for.
 
 So P3 is built as designed above: logind `Inhibit()` with `mode="block"`, the fd held for as
-long as the keeper wants the machine awake (`agents/roomlerd/src/power.rs`, the Linux
+long as the keeper wants the machine awake (`agents/meshharbord/src/power.rs`, the Linux
 `imp`). It runs from a plain thread, because zbus's blocking API panics inside the tokio
 runtime the keeper runs on. `what` is `sleep:idle` for a root daemon. A per-user daemon
 runs outside every login session, where logind's polkit policy grants only `idle`

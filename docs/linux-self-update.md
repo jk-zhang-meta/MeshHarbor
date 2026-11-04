@@ -60,7 +60,7 @@ roomler-agent-<version>-<arch>-unknown-linux-gnu.tar.gz.sha256
 ```
 
 Tarball layout — a prefix dir so extraction is never a surprise, mirroring the
-`.deb` asset map in `agents/roomlerd/Cargo.toml`:
+`.deb` asset map in `agents/meshharbord/Cargo.toml`:
 
 ```
 roomler-agent-<version>-<arch>-unknown-linux-gnu/
@@ -93,7 +93,7 @@ proxy for that. Falling back to the tarball when a Debian host somehow lacks the
 New `install_tarball_linux` alongside `run_linux_install_candidates`.
 
 ⚠️ **It has no privilege ladder**, whatever this design first said. It refuses any
-non-root daemon (`agents/roomlerd/src/updater.rs:2088-2097`). It places the files
+non-root daemon (`agents/meshharbord/src/updater.rs:2088-2097`). It places the files
 in-process rather than running one command it could hand to `sudo`, so there is
 nothing to escalate. A per-user tarball install therefore never updated (#2046)
 until FR-96 gave it a root helper ([below](#the-update-half-of-a-per-user-install-fr-96)).
@@ -156,7 +156,7 @@ flowchart LR
 |---|---|---|
 | the archive | `scripts/stage-linux-tarball.sh` | files and symlinks only, owned by 0:0 in the archive. With no directory entries, extraction creates only missing parents, as root, and never touches an existing directory |
 | the extraction | `scripts/install.sh` | `--no-same-owner --no-overwrite-dir`, so even the already-published archives cannot do it again. Then `repair_tarball_owners()` repairs a host an earlier install damaged: parent before child, stops at a symlink, takes the mode `rpm -qf` records for the path (Fedora ships `/usr/bin` and `/usr/lib` 0555), and otherwise only strips group and other write |
-| the daemon | `agents/roomlerd/src/tarball_owner.rs`, called from `run_cmd` after the instance lock | a damaged host updates through its OLD updater, which copies files and never looks at a directory. So the root daemon repairs at every start: a dozen `fstat`s on a healthy host |
+| the daemon | `agents/meshharbord/src/tarball_owner.rs`, called from `run_cmd` after the instance lock | a damaged host updates through its OLD updater, which copies files and never looks at a directory. So the root daemon repairs at every start: a dozen `fstat`s on a healthy host |
 
 ⚠️ The daemon's walk is root changing directories another account may own:
 the case where a symlink swap becomes a write anywhere. So it never resolves a
@@ -237,7 +237,7 @@ sequenceDiagram
 | `roomler-update.path` | `PathExists=/var/tmp/roomler-update-check` | `WatchPaths` |
 
 - **Shipped in both packages, disabled.**
-  - The `.deb` lists the three units as assets (`agents/roomlerd/Cargo.toml`).
+  - The `.deb` lists the three units as assets (`agents/meshharbord/Cargo.toml`).
   - The tarball stages them (`scripts/stage-linux-tarball.sh`) and installs each
     only where absent (`TARBALL_INSTALL_IF_ABSENT`, `updater.rs`).
   - The `.deb`'s `postinst` enables nothing, by rule (`deb_postinst_is_a_unix_shell_script`,
@@ -483,7 +483,7 @@ Status and evidence: [FR-96](fr/FR-96-per-user-linux-installs-update-themselves.
 
 ## The desktop companion follows the daemon (FR-117)
 
-The companion (`roomler-desktop`) is a package of its own, a `.deb`, or an `.rpm` where rpm keeps
+The companion (`meshharbor-desktop`) is a package of its own, a `.deb`, or an `.rpm` where rpm keeps
 the books ([desktop-companion.md §10.1](desktop-companion.md#101-the-linux-packages-fr-93-p6d-p6e)).
 `install.sh` or the wizard installs it once, from a release asset. With no apt or dnf repository
 nothing upgraded it, so every update below moved the daemon and left the companion where it was.
@@ -491,7 +491,7 @@ FR-117 P1 gives it the daemon's version through the same owner, trust path and c
 
 | Host | Who moves the companion | When |
 |---|---|---|
-| system install | the root daemon, inside `run_periodic` (`agents/roomlerd/src/updater.rs:3313`) | after every check that installs nothing; at the start after an update (`:3194`, the cooldown would otherwise make it wait the full interval); after an operator's push (`:3245`) |
+| system install | the root daemon, inside `run_periodic` (`agents/meshharbord/src/updater.rs:3313`) | after every check that installs nothing; at the start after an update (`:3194`, the cooldown would otherwise make it wait the full interval); after an operator's push (`:3245`) |
 | per-user install, helper enabled | `roomlerd update-helper` (`updater.rs:3880`) | every run, BEFORE the install cooldown: the run the daemon's restart wakes right after an update is exactly the one that must move it |
 | per-user daemon itself | nobody: it cannot install | at its start, a skew it can see wakes the helper (`updater.rs:3122`, `package_needs_sync`) |
 | non-root daemon, no helper | nobody | one INFO line, never a password prompt |

@@ -27,9 +27,9 @@ use std::{collections::HashSet, sync::Arc};
 
 use bson::oid::ObjectId;
 use mongodb::Database;
-use roomler_ai_config::Settings;
-use roomler_ai_remote_control::turn_creds::{RelayLoadMap, TurnMap};
-use roomler_ai_services::{
+use meshharbor_config::Settings;
+use meshharbor_remote_control::turn_creds::{RelayLoadMap, TurnMap};
+use meshharbor_services::{
     AuthService, EmailService, OAuthService, PushService, TaskService,
     dao::{
         activation_code::ActivationCodeDao, invite::InviteDao, notification::NotificationDao,
@@ -62,7 +62,7 @@ pub struct Core {
     pub push: Option<Arc<PushService>>,
     pub push_subscriptions: Arc<PushSubscriptionDao>,
     /// Single-use ledger for enrollment-token jtis. See
-    /// [`roomler_ai_services::dao::used_token`].
+    /// [`meshharbor_services::dao::used_token`].
     pub used_tokens: Arc<UsedTokenDao>,
     /// Background-task service (export jobs and the like).
     pub tasks: Arc<TaskService>,

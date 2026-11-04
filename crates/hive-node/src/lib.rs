@@ -22,7 +22,7 @@
 //!
 //! What it deliberately does not do: spawn processes, drop privileges, or talk
 //! to the network. The daemon does those, with the one privilege path it
-//! already has (`roomlerd::exec::apply_run_as`).
+//! already has (`meshharbord::exec::apply_run_as`).
 //!
 //! Design: `docs/roomler-hive-design.md` §4.3–§4.4; spec:
 //! `docs/fr/FR-90-hive-agent-sessions.md`.

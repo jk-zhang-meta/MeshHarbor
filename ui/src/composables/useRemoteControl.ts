@@ -1404,7 +1404,7 @@ export interface PeerCursor {
 /** rc.NEXT Ã¢ÂÂ remote app selection & launch (virtual-desktop hosts). The
  *  agent enumerates windows on its desktop; the browser can focus one or
  *  launch a new allowlisted app. Rides the control DC (same request/reply
- *  pattern as rc:logs-fetch). See `agents/roomlerd/src/apps/`. */
+ *  pattern as rc:logs-fetch). See `agents/meshharbord/src/apps/`. */
 export interface RcWindowEntry {
   window_id: string
   title: string
@@ -9335,7 +9335,7 @@ export function useRemoteControl(
     // Declare we want to *receive* video from the agent. Without this line
     // the offer has no m=video section, so the agent's answer can't include
     // one either Ã¢ÂÂ ontrack never fires and hasMedia stays false. See the
-    // peer-side mirror in agents/roomlerd/src/peer.rs (add_track).
+    // peer-side mirror in agents/meshharbord/src/peer.rs (add_track).
     pc.addTransceiver('video', { direction: 'recvonly' })
 
     // Opt-in host audio: declare a recvonly audio transceiver so the

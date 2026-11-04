@@ -32,7 +32,7 @@
 #                                                 editing the fork)
 #
 # Default version: 0.5.0. The macOS arms compile only on a Mac, so after a
-# rebuild run `cargo check -p roomlerd --features scrap-capture` ON macOS;
+# rebuild run `cargo check -p meshharbord --features scrap-capture` ON macOS;
 # the drift gate below is a content comparison and runs anywhere.
 set -euo pipefail
 
@@ -103,7 +103,7 @@ check | revendor)
         rm -rf "$VENDORED"
         mv "$TMP/rebuilt" "$VENDORED"
         echo "revendored scrap $VER + patch into crates/vendored/scrap"
-        echo "next (macOS): cargo check -p roomlerd --features scrap-capture"
+        echo "next (macOS): cargo check -p meshharbord --features scrap-capture"
     fi
     ;;
 esac

@@ -15,9 +15,9 @@
 //!   worker role — daemon-only machinery).
 //! * [`apps_config`] carries ONLY the `[virtual_desktop_apps]` serde shapes
 //!   that [`config::AgentConfig`] embeds; the launch machinery stays in
-//!   `roomlerd::apps` and re-exports them.
+//!   `meshharbord::apps` and re-exports them.
 //! * [`acl`] evaluates over shapes canonical in
-//!   `roomler_ai_remote_control::models` (where `dst_matches` also lives
+//!   `meshharbor_remote_control::models` (where `dst_matches` also lives
 //!   since this split).
 
 pub mod acl;

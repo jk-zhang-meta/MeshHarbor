@@ -38,11 +38,11 @@ use axum::{
     extract::FromRef,
     routing::{get, post, put},
 };
-use roomler_ai_config::Settings;
-use roomler_ai_db::indexes::{IndexSet, index, index_ttl, index_unique};
-use roomler_ai_mod_chat::bound::BoundChat;
-use roomler_ai_mod_fleet::FleetState;
-use roomler_core::{
+use meshharbor_config::Settings;
+use meshharbor_db::indexes::{IndexSet, index, index_ttl, index_unique};
+use meshharbor_mod_chat::bound::BoundChat;
+use meshharbor_mod_fleet::FleetState;
+use meshharbor_core::{
     AgentSocketHooks, Capabilities, Core, Hooks, Module, Role, TenantCtx, WsHandlerSpec,
     WsRegistration, rate_limit::RateLimiter,
 };

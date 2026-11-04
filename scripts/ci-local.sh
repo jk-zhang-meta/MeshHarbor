@@ -32,7 +32,7 @@
 #
 # NOT covered here, deliberately:
 #   * `vp9-444` (needs libvpx + bindgen), macOS lanes, Windows lanes.
-#   * `cargo test -p roomler-ai-tests` — needs MongoDB + Redis. CI does not run
+#   * `cargo test -p meshharbor-tests` — needs MongoDB + Redis. CI does not run
 #     it either; see docs and CLAUDE.md for the WSL+docker recipe.
 set -uo pipefail
 
@@ -75,25 +75,25 @@ run "clippy-workspace"   cargo clippy --workspace -- -D warnings
 # and then failed in CI (#707) — a local script that cannot catch what CI
 # catches just sends you to CI to find out.
 run "clippy-server-crates" \
-  cargo clippy -p roomler-ai-api -p roomler-ai-services --all-targets -- -D warnings
-run "test-api-lib"       cargo test -p roomler-ai-api --lib
-run "test-services-lib"  cargo test -p roomler-ai-services --lib
-run "check-tests-crate"  cargo check -p roomler-ai-tests --all-targets
+  cargo clippy -p meshharbor-api -p meshharbor-services --all-targets -- -D warnings
+run "test-api-lib"       cargo test -p meshharbor-api --lib
+run "test-services-lib"  cargo test -p meshharbor-services --lib
+run "check-tests-crate"  cargo check -p meshharbor-tests --all-targets
 
 if [ "$QUICK" = "0" ]; then
   # The feature-gated lanes. These are the ones a default check never reaches,
   # and they are where the 2026-08-23 breakage actually lived.
   run "clippy-tunnel-overlay" \
-    cargo clippy -p roomler-ai-tunnel-core --features overlay-l3,overlay-netstack --all-targets -- -D warnings
+    cargo clippy -p meshharbor-tunnel-core --features overlay-l3,overlay-netstack --all-targets -- -D warnings
   run "test-tunnel-overlay" \
-    cargo test -p roomler-ai-tunnel-core --features overlay-l3,overlay-netstack --lib -- --test-threads=1
+    cargo test -p meshharbor-tunnel-core --features overlay-l3,overlay-netstack --lib -- --test-threads=1
   # `--all-targets`, matching CI. Without it the agent's TEST code is never
   # compiled here, and CI's agent lanes (the Rust lanes behind "Rust checks",
   # Windows overlay clippy, ffmpeg-encoder) all build with tests — so a struct literal in
   # `telemetry.rs`'s tests sailed past a green local gate and failed all three
   # (2026-08-25). "Compiled somewhere" is not "compiled everywhere CI does".
   run "clippy-agent-overlay" \
-    cargo clippy -p roomlerd --features overlay-l3 --all-targets -- -D warnings
+    cargo clippy -p meshharbord --features overlay-l3 --all-targets -- -D warnings
 fi
 
 echo

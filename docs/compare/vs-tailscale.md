@@ -47,7 +47,7 @@ service, with no device cap and no licence key.
 same job on Linux. Roomler's implementation intercepts TCP for its own overlay
 address below the OS and terminates it in an in-process netstack, which means it
 also works on **Windows**, and on hosts where port 22 is already taken or where
-an EDR agent kills `sshd` as a service. See [`../roomler-ssh.md`](../roomler-ssh.md).
+an EDR agent kills `sshd` as a service. See [`../meshharbor-ssh.md`](../meshharbor-ssh.md).
 
 **Where it runs.** The hosted control plane is operated by an EU company (G ROX
 EOOD, Bulgaria) on its own hardware rather than on a hyperscaler. If jurisdiction

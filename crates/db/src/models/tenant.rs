@@ -262,7 +262,7 @@ pub struct TenantSettings {
     /// pre-selects for a device the person has no remembered choice on.
     /// `None` (the default, and every pre-feature row) = the product default,
     /// `circle`. Validated at the route against the agent's exact wire names
-    /// (`roomler_ai_remote_control::models::KEEP_BUSY_PATTERNS`), so a stored
+    /// (`meshharbor_remote_control::models::KEEP_BUSY_PATTERNS`), so a stored
     /// value is always one the agent can draw.
     ///
     /// A preference, not a policy: it never reaches the agent (no wire
@@ -277,7 +277,7 @@ pub struct TenantSettings {
     ///
     /// ⚠ This does NOT apply to the limits that were already enforced before
     /// FR-32 (`max_devices`, `max_tunnel_clients`) — see
-    /// `roomler_ai_services::quota::Limit::is_established`. An established
+    /// `meshharbor_services::quota::Limit::is_established`. An established
     /// limit always enforces, so setting `Off` can never silently un-enforce
     /// the device cap.
     #[serde(default)]

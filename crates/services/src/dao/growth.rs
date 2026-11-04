@@ -6,7 +6,7 @@
 //! * [`GROWTH_EXCLUSIONS`] — the platform admin's explicit exclusion list
 //!   (P1c): `{kind: tenant|user, id, reason, by, at}`, unique on
 //!   `(kind, id)`. The implicit exclusions (every platform admin and the
-//!   orgs they own) need no row; `roomler_core::growth::ExclusionSet` folds
+//!   orgs they own) need no row; `meshharbor_core::growth::ExclusionSet` folds
 //!   both into one set.
 //! * [`GROWTH_ORG_DAILY`] — one row per org per UTC day with any activity
 //!   (P2, spec §3d): `_id = "{tenant}:{yyyy-mm-dd}"`, the counters and the
@@ -70,14 +70,14 @@ pub const INSTALL_INTERNAL_CLIENT: &str = "internal";
 /// expire at 90 days; these do not.
 pub const INSTALL_WIZARD_STEP_METRIC: &str = "wizard_step";
 
-/// P4 — a plan-limit collision (`roomler_core::quota`), counted per UTC day
+/// P4 — a plan-limit collision (`meshharbor_core::quota`), counted per UTC day
 /// with `dims {tenant, limit}` beside the FR-32 warn line: the upgrade-intent
 /// signal. Named here, below its writers (every module that gates a limit)
 /// and its readers (the host's revenue view and digest).
 pub const QUOTA_SOURCE: &str = "quota";
 pub const QUOTA_COLLISION_METRIC: &str = "collision";
 /// P4 — the monthly billed-revenue totals frozen from `billing_events`
-/// (`roomler_ai_services::billing::freeze_month`): one row per metric per
+/// (`meshharbor_services::billing::freeze_month`): one row per metric per
 /// currency, `day` the month's first day, `dims {currency, period: month}`.
 /// No tenant: an org deleted later does not rewrite last year's MRR.
 pub const BILLING_SOURCE: &str = "billing";
@@ -342,7 +342,7 @@ impl OrgDay {
 pub struct PurgedCounts {
     pub org_days: u64,
     pub daily: u64,
-    /// P4 — the org's `billing_events` rows (`roomler_core::growth::purge_tenant`
+    /// P4 — the org's `billing_events` rows (`meshharbor_core::growth::purge_tenant`
     /// takes them; this DAO does not know the `saas` collection).
     pub billing_events: u64,
 }

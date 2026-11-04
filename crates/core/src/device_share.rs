@@ -3,9 +3,9 @@
 //! Callers retain device consent, service enablement, org kill switches and OS permissions.
 use crate::{ApiError, Core};
 use bson::{DateTime, oid::ObjectId};
-use roomler_ai_db::models::{AccountApprovalState, DeviceShareGrant, DeviceShareOperation, User};
-use roomler_ai_remote_control::models::{Agent, AgentStatus};
-use roomler_ai_services::dao::{agent::AgentDao, device_share::DeviceShareDao};
+use meshharbor_db::models::{AccountApprovalState, DeviceShareGrant, DeviceShareOperation, User};
+use meshharbor_remote_control::models::{Agent, AgentStatus};
+use meshharbor_services::dao::{agent::AgentDao, device_share::DeviceShareDao};
 
 pub fn require_enabled(core: &Core) -> Result<(), ApiError> {
     if !core.settings.auth.account_approval.enabled {

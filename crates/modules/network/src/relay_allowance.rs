@@ -59,8 +59,8 @@ static BUCKETS: LazyLock<DashMap<ObjectId, std::sync::Mutex<(f64, Instant)>>> =
     LazyLock::new(DashMap::new);
 
 /// The Redis key of the published set, scoped to the database (in
-/// `roomler-ai-services`: the push to the PoPs reads it too, FR-115 P4a-2).
-pub use roomler_ai_services::relay_allowance::set_key;
+/// `meshharbor-services`: the push to the PoPs reads it too, FR-115 P4a-2).
+pub use meshharbor_services::relay_allowance::set_key;
 
 /// The throttled rate for `network_id` (bytes/s), while its org is over.
 pub fn rate_of(network_id: &ObjectId) -> Option<u64> {
@@ -74,7 +74,7 @@ pub fn rate_of(network_id: &ObjectId) -> Option<u64> {
 /// neither WireGuard nor disco (the tunnel-class payloads). A handshake
 /// (types 1–3) and disco are control, and pass whatever the allowance. The
 /// PoPs read frames by the same definition (`remote_control::derp_frame`).
-pub use roomler_ai_remote_control::derp_frame::frame_is_bulk;
+pub use meshharbor_remote_control::derp_frame::frame_is_bulk;
 
 /// Debit `len` bytes from the network's bucket at `rate` bytes/s; `false`
 /// means over the rate, and the frame is dropped, as R4 drops a tunnel frame.
@@ -97,9 +97,9 @@ pub fn permits(network_id: ObjectId, len: usize, rate: u64) -> bool {
     }
 }
 
-/// The allowance's arithmetic lives in `roomler-ai-services`, shared with the
+/// The allowance's arithmetic lives in `meshharbor-services`, shared with the
 /// org's analytics page, so what an org is shown is what it is throttled by.
-pub use roomler_ai_services::relay_allowance::{month_start, rate_for};
+pub use meshharbor_services::relay_allowance::{month_start, rate_for};
 
 /// Month-to-date relayed bytes per org (`StatsDao::relay_month_to_date`).
 pub async fn month_to_date(
@@ -302,8 +302,8 @@ pub(crate) static TEST_MAP_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(()
 mod tests {
     use super::*;
     use chrono::{TimeZone, Utc};
-    use roomler_ai_config::RelayAllowanceSettings;
-    use roomler_ai_db::models::Plan;
+    use meshharbor_config::RelayAllowanceSettings;
+    use meshharbor_db::models::Plan;
 
     const GB: u64 = 1_000_000_000;
 

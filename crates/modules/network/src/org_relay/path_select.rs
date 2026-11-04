@@ -8,7 +8,7 @@ use super::{
     path_search::{self, OrientedPath, SearchEdge, SearchRelay},
 };
 use crate::NetworkState;
-use roomler_ai_remote_control::models::PeerRelayDenyReason as Deny;
+use meshharbor_remote_control::models::PeerRelayDenyReason as Deny;
 use std::time::Instant;
 
 pub(super) struct SelectedPath {

@@ -14,7 +14,7 @@
 use bson::{DateTime, doc, oid::ObjectId};
 use mongodb::Database;
 use mongodb::options::ReturnDocument;
-use roomler_ai_remote_control::models::{EnrollmentKey, EnrollmentKeyUse};
+use meshharbor_remote_control::models::{EnrollmentKey, EnrollmentKeyUse};
 
 use super::base::{BaseDao, DaoResult};
 

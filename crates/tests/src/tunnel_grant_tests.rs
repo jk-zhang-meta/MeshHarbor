@@ -21,8 +21,8 @@ use std::time::Duration;
 
 use bson::{Document, doc, oid::ObjectId};
 use futures::{SinkExt, StreamExt};
-use roomler_ai_remote_control::vault::NetKind;
-use roomler_ai_services::auth::NetGrant;
+use meshharbor_remote_control::vault::NetKind;
+use meshharbor_services::auth::NetGrant;
 use serde_json::{Value, json};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 

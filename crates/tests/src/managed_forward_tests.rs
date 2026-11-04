@@ -10,7 +10,7 @@ use crate::agent_presence_tests::enroll;
 use crate::fixtures::test_app::TestApp;
 use crate::peer_relay_mint_tests::{Ws, connect_from, recv_t};
 use futures::SinkExt;
-use roomler_ai_remote_control::net_inventory::{L4, Listener, NetInventory, Section};
+use meshharbor_remote_control::net_inventory::{L4, Listener, NetInventory, Section};
 use serde_json::{Value, json};
 use std::time::Duration;
 use tokio_tungstenite::tungstenite::Message;
@@ -469,7 +469,7 @@ async fn an_applied_forwards_own_listener_is_not_a_collision() {
 /// `confirm` is answered with `rc:forward.confirm` on the same connection.
 #[tokio::test]
 async fn the_nft_backend_is_gated_on_the_ingress_and_its_changes_are_confirmed() {
-    use roomler_ai_remote_control::net_inventory::{
+    use meshharbor_remote_control::net_inventory::{
         FirewallChain, FirewallOwner, Forwarding, Interface,
     };
     let inv = |fwd: Option<bool>, drop_chain: bool| NetInventory {
@@ -662,7 +662,7 @@ async fn the_nft_backend_is_gated_on_the_ingress_and_its_changes_are_confirmed()
     let with_rule = |dport: u16| {
         let mut i = inv(Some(true), false);
         i.firewall_rules = Section::capped(
-            vec![roomler_ai_remote_control::net_inventory::FirewallRule {
+            vec![meshharbor_remote_control::net_inventory::FirewallRule {
                 backend: "nftables".into(),
                 family: "inet".into(),
                 table: "meshharbor_fwd".into(),

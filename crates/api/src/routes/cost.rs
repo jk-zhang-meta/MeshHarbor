@@ -41,9 +41,9 @@ use super::stats::{
 };
 use crate::{core_state::Core, error::ApiError, extractors::auth::AuthUser};
 use bson::oid::ObjectId;
-use roomler_ai_config::RelayCosts;
-use roomler_ai_db::models::tenant::Plan;
-use roomler_ai_services::relay_allowance;
+use meshharbor_config::RelayCosts;
+use meshharbor_db::models::tenant::Plan;
+use meshharbor_services::relay_allowance;
 
 /// Meters this deployment actually collects. A meter absent from this list is
 /// reported `monitored: false` rather than `0` — see the module docs.
@@ -492,7 +492,7 @@ pub async fn tenant_resources(
 }
 
 /// FR-115 P4a — the org's relay allowance this month, as the throttle reads
-/// it (`roomler_ai_services::relay_allowance`, the same functions): the bytes
+/// it (`meshharbor_services::relay_allowance`, the same functions): the bytes
 /// relayed through DERP since the first of the month (UTC) against the
 /// plan's allowance for its seats. In units, never money (FR-20).
 ///

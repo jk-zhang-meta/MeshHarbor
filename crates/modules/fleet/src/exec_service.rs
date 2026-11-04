@@ -38,12 +38,12 @@ use bson::{DateTime, doc, oid::ObjectId};
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
-use roomler_ai_db::models::role::permissions;
-use roomler_ai_remote_control::error::Error as HubError;
-use roomler_ai_remote_control::models::{
+use meshharbor_db::models::role::permissions;
+use meshharbor_remote_control::error::Error as HubError;
+use meshharbor_remote_control::models::{
     Agent, ExecAnchor, ExecAuditEvent, ExecDenyReason, ExecOutcome, ExecPending, OsKind,
 };
-use roomler_core::{ApiError, extractors::auth::AuthUser, guards::require_permission};
+use meshharbor_core::{ApiError, extractors::auth::AuthUser, guards::require_permission};
 
 use crate::FleetState;
 use crate::auth_agent::AuthAgentService;
@@ -148,7 +148,7 @@ pub async fn anchor(
         .find_live_in_tenant(tid, agent_id)
         .await
         .map_err(|e| match e {
-            roomler_ai_services::dao::base::DaoError::NotFound => {
+            meshharbor_services::dao::base::DaoError::NotFound => {
                 ApiError::NotFound("No such device in this organization".to_string())
             }
             other => ApiError::Internal(format!("agent lookup: {other}")),
@@ -185,7 +185,7 @@ pub async fn anchor(
         .claim(&use_key, "agent-anchor")
         .await
         .map_err(|e| match e {
-            roomler_ai_services::dao::base::DaoError::Validation(_) => {
+            meshharbor_services::dao::base::DaoError::Validation(_) => {
                 ApiError::Unauthorized("This enrollment token has already been used".into())
             }
             _ => ApiError::ServiceUnavailable(

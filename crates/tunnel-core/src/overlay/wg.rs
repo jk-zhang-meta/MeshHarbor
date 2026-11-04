@@ -42,7 +42,7 @@ use super::ingress::{dst_ip_of, parse_l4, rules_permit};
 use super::router::{LocalScope, Router, RpfMode, RpfVerdict};
 use crate::transport::quic::QuicPeer;
 use crate::transport::relay::{RelayConn, RelayUdpSocket};
-use roomler_ai_remote_control::models::OverlayRule;
+use meshharbor_remote_control::models::OverlayRule;
 
 mod multipath_runtime;
 pub(crate) use multipath_runtime::MultipathFailure;
@@ -5746,7 +5746,7 @@ impl WgDevice {
     /// reason the wire field is an `Option`.
     pub fn sync_peer_ingress(
         &mut self,
-        peers: &HashMap<bson::oid::ObjectId, roomler_ai_remote_control::signaling::NetmapPeer>,
+        peers: &HashMap<bson::oid::ObjectId, meshharbor_remote_control::signaling::NetmapPeer>,
     ) {
         let mut table: HashMap<[u8; 32], Arc<Vec<OverlayRule>>> = HashMap::new();
         for p in peers.values() {
@@ -7508,9 +7508,9 @@ mod tests {
     fn netmap_peer_for(
         kp: &WgKeypair,
         ip: Ipv4Addr,
-    ) -> roomler_ai_remote_control::signaling::NetmapPeer {
+    ) -> meshharbor_remote_control::signaling::NetmapPeer {
         use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
-        roomler_ai_remote_control::signaling::NetmapPeer {
+        meshharbor_remote_control::signaling::NetmapPeer {
             node_id: bson::oid::ObjectId::new(),
             overlay_ip: ip.to_string(),
             name: String::new(),
@@ -7766,7 +7766,7 @@ mod tests {
     /// the netmap `routes` list nor `LocalScope` can express.
     #[tokio::test(flavor = "multi_thread")]
     async fn per_source_rules_narrow_one_peer_without_touching_another() {
-        use roomler_ai_remote_control::models::{PortRange, ProtocolKind};
+        use meshharbor_remote_control::models::{PortRange, ProtocolKind};
 
         let a = WgKeypair::generate();
         let b = WgKeypair::generate();
@@ -7916,7 +7916,7 @@ mod tests {
     /// started is not.
     #[tokio::test(flavor = "multi_thread")]
     async fn the_acl_narrows_traffic_to_the_node_itself_and_admits_its_replies() {
-        use roomler_ai_remote_control::models::{PortRange, ProtocolKind};
+        use meshharbor_remote_control::models::{PortRange, ProtocolKind};
 
         let a = WgKeypair::generate();
         let b = WgKeypair::generate();
@@ -8714,14 +8714,14 @@ mod tests {
     //   ROOMLER_TEST_TURN_SECRET = coturn's static-auth-secret
     // and run on a host with outbound UDP/3478 (or TCP/443 for the TURNS
     // variant) to coturn:
-    //   cargo test -p roomler-ai-tunnel-core --features overlay --ignored wg_against_real_coturn
+    //   cargo test -p meshharbor-tunnel-core --features overlay --ignored wg_against_real_coturn
 
     fn live_coturn_creds(
         url_fmt: impl Fn(&str) -> Vec<String>,
     ) -> Option<(Vec<String>, String, String)> {
         let host = std::env::var("ROOMLER_TEST_TURN_HOST").ok()?;
         let secret = std::env::var("ROOMLER_TEST_TURN_SECRET").ok()?;
-        let cfg = roomler_ai_remote_control::turn_creds::TurnConfig {
+        let cfg = meshharbor_remote_control::turn_creds::TurnConfig {
             workers: vec![],
             urls: url_fmt(&host),
             shared_secret: secret,
@@ -8847,7 +8847,7 @@ mod tests {
     ///   ROOMLER_TEST_TURN_HOST=coturn.roomler.ai \
     ///   ROOMLER_TEST_TURN_SECRET=<coturn static-auth-secret> \
     ///   ROOMLER_TEST_TURN_WORKER=5.9.157.221 \
-    ///   cargo test -p roomler-ai-tunnel-core --features overlay-l3 \
+    ///   cargo test -p meshharbor-tunnel-core --features overlay-l3 \
     ///     --lib wg_single_relay_against_real_coturn_udp -- --ignored --nocapture
     #[tokio::test(flavor = "multi_thread")]
     #[ignore = "hits live coturn; set ROOMLER_TEST_TURN_HOST/SECRET + ROOMLER_TEST_TURN_WORKER"]

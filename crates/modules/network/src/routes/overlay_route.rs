@@ -8,7 +8,7 @@
 //! re-fan the node's netmap entry so peers pick up the routes immediately
 //! instead of waiting for the next join.
 
-use roomler_ai_services::quota;
+use meshharbor_services::quota;
 use std::collections::{HashMap, HashSet};
 
 use axum::{
@@ -16,14 +16,14 @@ use axum::{
     extract::{Path, State},
 };
 use bson::{doc, oid::ObjectId};
-use roomler_ai_db::models::role::permissions;
-use roomler_ai_remote_control::models::{
+use meshharbor_db::models::role::permissions;
+use meshharbor_remote_control::models::{
     AgentStatus, DEFAULT_ROUTE_V4, NodeRef, OsKind, OverlayNode,
 };
 use serde::{Deserialize, Serialize};
 
-use roomler_core::guards::require_permission;
-use roomler_core::{ApiError, extractors::auth::AuthUser};
+use meshharbor_core::guards::require_permission;
+use meshharbor_core::{ApiError, extractors::auth::AuthUser};
 
 use crate::NetworkState;
 
@@ -494,7 +494,7 @@ pub async fn set_exit_node(
         let tenant = state.tenants.base.find_by_id(tid).await?;
         // FR-102 P4 — through core, which also counts the collision per org.
         if let Err(d) =
-            roomler_core::quota::require_feature(&state, &tenant, quota::Limit::ExitNodes)
+            meshharbor_core::quota::require_feature(&state, &tenant, quota::Limit::ExitNodes)
         {
             return Err(ApiError::Forbidden(d.message()));
         }
@@ -662,7 +662,7 @@ pub async fn set_magic_dns(
         let tenant = state.tenants.base.find_by_id(tid).await?;
         // FR-102 P4 — through core, which also counts the collision per org.
         if let Err(d) =
-            roomler_core::quota::require_feature(&state, &tenant, quota::Limit::MagicDns)
+            meshharbor_core::quota::require_feature(&state, &tenant, quota::Limit::MagicDns)
         {
             return Err(ApiError::Forbidden(d.message()));
         }

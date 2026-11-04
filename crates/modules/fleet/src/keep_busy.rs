@@ -25,12 +25,12 @@
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use bson::{DateTime, oid::ObjectId};
-use roomler_ai_db::models::{TenantSettings, role::permissions};
-use roomler_ai_remote_control::models::{
+use meshharbor_db::models::{TenantSettings, role::permissions};
+use meshharbor_remote_control::models::{
     KEEP_BUSY_PATTERNS, KeepBusyBrief, KeepBusyEvent, KeepBusyEventKind, KeepBusyEventSource,
 };
-use roomler_ai_services::dao::{agent::HeartbeatBefore, keep_busy_event::MAX_LIMIT};
-use roomler_core::{ApiError, extractors::auth::AuthUser, guards::require_permission};
+use meshharbor_services::dao::{agent::HeartbeatBefore, keep_busy_event::MAX_LIMIT};
+use meshharbor_core::{ApiError, extractors::auth::AuthUser, guards::require_permission};
 use serde::{Deserialize, Deserializer, Serialize};
 use tracing::{debug, info, warn};
 

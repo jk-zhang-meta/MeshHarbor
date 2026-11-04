@@ -6,7 +6,7 @@
 # fleet-wide broken upgrade. This repo is developed from a Windows box where
 # `core.autocrlf=true`, so the normalisation currently happens by config
 # rather than by rule; this makes it a rule.
-agents/roomlerd/packaging/linux/debian/* text eol=lf
+agents/meshharbord/packaging/linux/debian/* text eol=lf
 
 # The macOS half of exactly the same hazard, which the rule above missed: the
 # .pkg's `postinstall` is run by PackageKit, so `#!/bin/bash\r` is a
@@ -14,12 +14,12 @@ agents/roomlerd/packaging/linux/debian/* text eol=lf
 # unprotected only because it has no extension, so the `scripts/*.sh` pattern
 # never covered it. The .plists are LF for tidiness; CFPropertyList itself
 # tolerates CRLF.
-agents/roomlerd/packaging/macos/postinstall text eol=lf
-agents/roomlerd/packaging/macos/*.plist text eol=lf
+agents/meshharbord/packaging/macos/postinstall text eol=lf
+agents/meshharbord/packaging/macos/*.plist text eol=lf
 
 # Same reasoning, lower stakes: systemd refuses to parse a unit whose lines
 # end in CR, and the shell scripts are run on Linux hosts.
-agents/roomlerd/packaging/linux/*.service text eol=lf
+agents/meshharbord/packaging/linux/*.service text eol=lf
 scripts/*.sh text eol=lf
 
 # The sanitisation guard runs on Linux CI; a CRLF shebang would break it.

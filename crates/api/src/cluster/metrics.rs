@@ -4,7 +4,7 @@
 //! route serves.
 //!
 //! FR-69 P1b — the counters themselves live in
-//! `roomler_core::cluster::metrics` (they moved with the cluster bus that
+//! `meshharbor_core::cluster::metrics` (they moved with the cluster bus that
 //! bumps them) and are re-exported here under their old paths. Gauges are
 //! computed at snapshot time from the live registries — never stored, so
 //! they can't go stale. The media gauges (rooms / participants / consumers)
@@ -14,7 +14,7 @@
 
 use std::sync::atomic::Ordering;
 
-pub use roomler_core::cluster::metrics::*;
+pub use meshharbor_core::cluster::metrics::*;
 
 /// Snapshot every counter + live gauge for one pod.
 pub async fn snapshot(state: &crate::state::AppState) -> serde_json::Value {

@@ -1,5 +1,5 @@
 [package]
-name = "roomler-ai-mod-remote"
+name = "meshharbor-mod-remote"
 license = "AGPL-3.0-only"
 publish = false
 version.workspace = true
@@ -7,22 +7,22 @@ edition.workspace = true
 description = "FR-69 module: remote — remote-desktop sessions, the controller's rc:* dispatch and authz gate, the cross-pod RC relay, TURN credentials and the relay-region listing."
 
 [lib]
-name = "roomler_ai_mod_remote"
+name = "meshharbor_mod_remote"
 path = "src/lib.rs"
 
 # The fifth module crate (FR-69 P6): remote desktop. It depends on `fleet`
 # (the Hub, the agent row, the nudge machinery — `remote → fleet` in the
-# module graph) and on `roomler-core`; never on the api crate. The session
+# module graph) and on `meshharbor-core`; never on the api crate. The session
 # state machine itself is the Hub's (fleet's); this crate is what a CONTROLLER
 # reaches: the session routes, the `rc:*` dispatch with its authz gate, the
 # cross-pod relay, and the agent-side session-stats merge.
 [dependencies]
-roomler-core = { path = "../../core" }
-roomler-ai-config = { path = "../../config" }
-roomler-ai-db = { path = "../../db" }
-roomler-ai-services = { path = "../../services" }
-roomler-ai-remote-control = { path = "../../remote_control" }
-roomler-ai-mod-fleet = { path = "../fleet" }
+meshharbor-core = { path = "../../core" }
+meshharbor-config = { path = "../../config" }
+meshharbor-db = { path = "../../db" }
+meshharbor-services = { path = "../../services" }
+meshharbor-remote-control = { path = "../../remote_control" }
+meshharbor-mod-fleet = { path = "../fleet" }
 
 anyhow.workspace = true
 async-trait.workspace = true

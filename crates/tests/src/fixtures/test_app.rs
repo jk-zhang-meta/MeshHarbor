@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 G ROX EOOD
 use mongodb::{Client, Database, options::ClientOptions};
-use roomler_ai_api::{build_router, state::AppState};
-use roomler_ai_config::Settings;
-use roomler_ai_db::indexes::ensure_indexes;
+use meshharbor_api::{build_router, state::AppState};
+use meshharbor_config::Settings;
+use meshharbor_db::indexes::ensure_indexes;
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
 
@@ -117,7 +117,7 @@ impl TestApp {
             .expect("Failed to create AppState");
         // FR-69 — the module crates' index sets, after the core plan (the
         // same two steps `main.rs` runs).
-        roomler_ai_db::indexes::apply_index_sets(&db, &app_state.modules.index_sets())
+        meshharbor_db::indexes::apply_index_sets(&db, &app_state.modules.index_sets())
             .await
             .expect("Failed to create module indexes");
         let state = app_state.clone();
@@ -227,7 +227,7 @@ impl TestApp {
             .expect("Failed to create AppState");
         // FR-69 — the module crates' index sets, after the core plan (the
         // same two steps `main.rs` runs).
-        roomler_ai_db::indexes::apply_index_sets(&db, &app_state.modules.index_sets())
+        meshharbor_db::indexes::apply_index_sets(&db, &app_state.modules.index_sets())
             .await
             .expect("Failed to create module indexes");
         let state = app_state.clone();
@@ -309,7 +309,7 @@ impl TestApp {
             .expect("Failed to create AppState");
         // FR-69 — the module crates' index sets, after the core plan (the
         // same two steps `main.rs` runs).
-        roomler_ai_db::indexes::apply_index_sets(&db, &app_state.modules.index_sets())
+        meshharbor_db::indexes::apply_index_sets(&db, &app_state.modules.index_sets())
             .await
             .expect("Failed to create module indexes");
         let state = app_state.clone();
@@ -420,7 +420,7 @@ impl Drop for TestApp {
 
 fn test_settings() -> Settings {
     Settings {
-        app: roomler_ai_config::AppSettings {
+        app: meshharbor_config::AppSettings {
             rate_limit_per_sec: 1,
             rate_limit_burst: 60,
             // Tests talk to the server directly, so no proxy prepends a
@@ -439,23 +439,23 @@ fn test_settings() -> Settings {
             environment: "development".to_string(),
             pod_id: None,
         },
-        database: roomler_ai_config::DatabaseSettings {
+        database: meshharbor_config::DatabaseSettings {
             url: "mongodb://localhost:27019".to_string(),
             name: "roomler_ai_test".to_string(),
             max_pool_size: Some(5),
             min_pool_size: Some(1),
         },
-        jwt: roomler_ai_config::JwtSettings {
+        jwt: meshharbor_config::JwtSettings {
             secret: "test-secret-key-for-jwt-signing-minimum-32-chars".to_string(),
             previous_secrets: String::new(),
             access_token_ttl_secs: 3600,
             refresh_token_ttl_secs: 604800,
             issuer: "roomler-ai".to_string(),
         },
-        redis: roomler_ai_config::RedisSettings {
+        redis: meshharbor_config::RedisSettings {
             url: "redis://127.0.0.1:6379".to_string(),
         },
-        s3: roomler_ai_config::S3Settings {
+        s3: meshharbor_config::S3Settings {
             // Tests run on the local-disk backend — the file_tests suite
             // must pass without a MinIO container.
             enabled: false,
@@ -465,7 +465,7 @@ fn test_settings() -> Settings {
             bucket: "roomler-ai-test".to_string(),
             region: "us-east-1".to_string(),
         },
-        mediasoup: roomler_ai_config::MediasoupSettings {
+        mediasoup: meshharbor_config::MediasoupSettings {
             num_workers: 1,
             listen_ip: "0.0.0.0".to_string(),
             announced_ip: "127.0.0.1".to_string(),
@@ -473,7 +473,7 @@ fn test_settings() -> Settings {
             rtc_min_port: 40000,
             rtc_max_port: 40100,
         },
-        turn: roomler_ai_config::TurnSettings {
+        turn: meshharbor_config::TurnSettings {
             worker_urls: None,
             url: None,
             username: None,
@@ -482,62 +482,62 @@ fn test_settings() -> Settings {
             force_relay: None,
             ttl_secs: None,
         },
-        relay: roomler_ai_config::RelaySettings::default(),
-        releases: roomler_ai_config::ReleasesSettings::default(),
+        relay: meshharbor_config::RelaySettings::default(),
+        releases: meshharbor_config::ReleasesSettings::default(),
         // Stats collection ON (the prod default) so collector-path tests
         // exercise the real write path; platform_admins is set per-test
         // via `spawn_with_settings`.
-        stats: roomler_ai_config::StatsSettings::default(),
+        stats: meshharbor_config::StatsSettings::default(),
         // FR-102 — the growth routes on, the digest OFF (the shipped
         // default); a digest test drives the job directly.
-        growth: roomler_ai_config::GrowthSettings::default(),
+        growth: meshharbor_config::GrowthSettings::default(),
         // FR-20 P5 - no prices configured, which is what a test deployment
         // (and any deployment without the toml) actually looks like. Every
         // cost therefore reads "not priced" rather than 0.00.
-        relay_costs: roomler_ai_config::RelayCosts::default(),
-        modules: roomler_ai_config::ModulesSettings::default(),
+        relay_costs: meshharbor_config::RelayCosts::default(),
+        modules: meshharbor_config::ModulesSettings::default(),
         // FR-90 P1g — every organization, as a deployment without `[hive]`.
-        hive: roomler_ai_config::HiveSettings::default(),
+        hive: meshharbor_config::HiveSettings::default(),
         // FR-90 P3-1 — every organization and no KEK, as a deployment
         // without `[vault]`; a vault test makes its own KEK.
-        vault: roomler_ai_config::VaultSettings::default(),
+        vault: meshharbor_config::VaultSettings::default(),
         // #1731 — inert here: the stall watchdog is armed by the binary's
         // `main`, which these in-process servers never run.
-        diag: roomler_ai_config::DiagSettings::default(),
+        diag: meshharbor_config::DiagSettings::default(),
         // FR-115 P5 — the meeting cap ON, as a deployment without
         // `[meetings]`; the tests drive its sweep by hand.
-        meetings: roomler_ai_config::MeetingsSettings::default(),
+        meetings: meshharbor_config::MeetingsSettings::default(),
         // FR-115 P4a — the relay allowance OFF, as a deployment without
         // `[relay_allowance]`; its tests switch it on and drive the job by hand.
-        relay_allowance: roomler_ai_config::RelayAllowanceSettings::default(),
+        relay_allowance: meshharbor_config::RelayAllowanceSettings::default(),
         // P2b — blocks OFF by default, exactly like a fresh deployment. The
         // renumber tests carve explicitly; the block-carve test flips the
         // flag via `spawn_with_settings`.
-        overlay: roomler_ai_config::OverlaySettings::default(),
-        oauth: roomler_ai_config::OAuthSettings {
+        overlay: meshharbor_config::OverlaySettings::default(),
+        oauth: meshharbor_config::OAuthSettings {
             base_url: "http://localhost:5001".to_string(),
-            google: roomler_ai_config::OAuthProviderSettings {
+            google: meshharbor_config::OAuthProviderSettings {
                 client_id: String::new(),
                 client_secret: String::new(),
             },
-            facebook: roomler_ai_config::OAuthProviderSettings {
+            facebook: meshharbor_config::OAuthProviderSettings {
                 client_id: String::new(),
                 client_secret: String::new(),
             },
-            github: roomler_ai_config::OAuthProviderSettings {
+            github: meshharbor_config::OAuthProviderSettings {
                 client_id: String::new(),
                 client_secret: String::new(),
             },
-            linkedin: roomler_ai_config::OAuthProviderSettings {
+            linkedin: meshharbor_config::OAuthProviderSettings {
                 client_id: String::new(),
                 client_secret: String::new(),
             },
-            microsoft: roomler_ai_config::OAuthProviderSettings {
+            microsoft: meshharbor_config::OAuthProviderSettings {
                 client_id: String::new(),
                 client_secret: String::new(),
             },
         },
-        stripe: roomler_ai_config::StripeSettings {
+        stripe: meshharbor_config::StripeSettings {
             secret_key: String::new(),
             webhook_secret: String::new(),
             price_pro: String::new(),
@@ -548,10 +548,10 @@ fn test_settings() -> Settings {
             seat_sync: true,
             ..Default::default()
         },
-        giphy: roomler_ai_config::GiphySettings {
+        giphy: meshharbor_config::GiphySettings {
             api_key: String::new(),
         },
-        email: roomler_ai_config::EmailSettings {
+        email: meshharbor_config::EmailSettings {
             api_key: String::new(),
             from_email: "test@roomler.ai".to_string(),
             from_name: "Roomler Test".to_string(),
@@ -560,15 +560,15 @@ fn test_settings() -> Settings {
             smtp_port: None,
         },
         newsletter: Default::default(),
-        push: roomler_ai_config::PushSettings {
+        push: meshharbor_config::PushSettings {
             vapid_public_key: String::new(),
             vapid_private_key: String::new(),
             contact: "mailto:test@roomler.ai".to_string(),
         },
-        auth: roomler_ai_config::AuthSettings::default(),
+        auth: meshharbor_config::AuthSettings::default(),
         // Prod-shaped liveness (90 s — an in-process agent heartbeats every
         // 30 s, so existing tests never trip it). The reap test shortens it
         // via `spawn_with_settings`.
-        rc: roomler_ai_config::RcSettings::default(),
+        rc: meshharbor_config::RcSettings::default(),
     }
 }

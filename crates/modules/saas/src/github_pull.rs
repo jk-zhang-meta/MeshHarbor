@@ -77,15 +77,15 @@ use std::collections::BTreeMap;
 
 use bson::DateTime;
 use chrono::Duration;
-use roomler_ai_config::GrowthSettings;
-use roomler_ai_services::dao::{
+use meshharbor_config::GrowthSettings;
+use meshharbor_services::dao::{
     base::DaoResult,
     growth::{
         GITHUB_SOURCE, GITHUB_TRAFFIC_SOURCE, GrowthDaily, GrowthDao, GrowthPull, PullStatus,
         PulledDay, daily_row,
     },
 };
-use roomler_core::Core;
+use meshharbor_core::Core;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tracing::{info, warn};
 
@@ -295,7 +295,7 @@ impl GithubClient {
         let repo = g.github_repo()?.to_string();
         let token = Some(g.github_token.trim().to_string()).filter(|t| !t.is_empty());
         let http = reqwest::Client::builder()
-            .user_agent(concat!("roomler-ai-api/", env!("CARGO_PKG_VERSION")))
+            .user_agent(concat!("meshharbor-api/", env!("CARGO_PKG_VERSION")))
             .timeout(TIMEOUT)
             .build()
             .ok()?;
@@ -901,8 +901,8 @@ mod tests {
             ),
             ("roomlerd_0.4.140_amd64.deb", "roomlerd_amd64.deb"),
             (
-                "roomler-setup-0.4.139-universal-apple-darwin.tar.gz",
-                "roomler-setup-universal-apple-darwin.tar.gz",
+                "meshharbor-setup-0.4.139-universal-apple-darwin.tar.gz",
+                "meshharbor-setup-universal-apple-darwin.tar.gz",
             ),
             (
                 "roomlerd-0.3.0-rc.480-x86_64-unknown-linux-gnu.deb",

@@ -1,43 +1,43 @@
 [package]
-name = "roomler-ai-tests"
+name = "meshharbor-tests"
 license = "AGPL-3.0-only"
 publish = false
 version.workspace = true
 edition.workspace = true
 
 [lib]
-name = "roomler_ai_tests"
+name = "meshharbor_tests"
 path = "src/lib.rs"
 
 [dependencies]
-roomler-ai-config = { path = "../config" }
-roomler-ai-db = { path = "../db" }
-roomler-ai-services = { path = "../services" }
+meshharbor-config = { path = "../config" }
+meshharbor-db = { path = "../db" }
+meshharbor-services = { path = "../services" }
 base64.workspace = true
-roomler-ai-remote-control = { path = "../remote_control" }
-roomler-ai-api = { path = "../api" }
-roomler-core = { path = "../core" }
+meshharbor-remote-control = { path = "../remote_control" }
+meshharbor-api = { path = "../api" }
+meshharbor-core = { path = "../core" }
 # FR-115 P3b — the session-slot tests age a lease by hand.
 redis.workspace = true
 # FR-69 P4 — the cluster + stats tests reach the conference module's state
 # (room manager, media claims) through `AppState::modules`.
-roomler-ai-mod-conference = { path = "../modules/conference" }
-roomler-ai-mod-fleet = { path = "../modules/fleet" }
-roomler-ai-mod-network = { path = "../modules/network", features = ["path-planner-test-support"] }
+meshharbor-mod-conference = { path = "../modules/conference" }
+meshharbor-mod-fleet = { path = "../modules/fleet" }
+meshharbor-mod-network = { path = "../modules/network", features = ["path-planner-test-support"] }
 # FR-115 P3b — the external session's charge scope (`extauth::charge_scope`).
-roomler-ai-mod-remote = { path = "../modules/remote" }
+meshharbor-mod-remote = { path = "../modules/remote" }
 # FR-102 P6 — the purestat puller is the `saas` module's; its test drives
 # `purestat_pull::run_once` with an injected clock against a fake purestat.
-roomler-ai-mod-saas = { path = "../modules/saas" }
+meshharbor-mod-saas = { path = "../modules/saas" }
 # FR-90 P2e-3 — the promotion's compare-and-sets, raced at the store, where
 # two browsers racing past the route's gate cannot be timed from outside.
-roomler-ai-mod-hive = { path = "../modules/hive" }
+meshharbor-mod-hive = { path = "../modules/hive" }
 # `external-access` so the FR-52 loopback proof runs the REAL device-side login
 # (the OPAQUE record, the guess budget, the live config read) rather than a
 # stand-in — the spec's bar for P3 is "proven on loopback against the real
 # agent". Everything else in this crate is unaffected: the feature only adds
 # the credential modules.
-roomlerd = { path = "../../agents/roomlerd", features = ["external-access"] }
+meshharbord = { path = "../../agents/meshharbord", features = ["external-access"] }
 webrtc.workspace = true
 tokio.workspace = true
 mongodb.workspace = true
@@ -86,14 +86,14 @@ rand_opaque = { package = "rand", version = "0.8" }
 # release build). Linux only, like `hive`, and a DEV-dependency, so nothing
 # but a test build of this crate compiles it.
 [target.'cfg(target_os = "linux")'.dev-dependencies]
-roomlerd = { path = "../../agents/roomlerd", features = ["hive-test-launcher", "backbone-test-support"] }
+meshharbord = { path = "../../agents/meshharbord", features = ["hive-test-launcher", "backbone-test-support"] }
 # FR-90 P2d-6 — the canary reads the member device's store, which its own
 # process wrote, after that process is gone.
-roomler-hive-node = { path = "../hive-node" }
+meshharbor-hive-node = { path = "../hive-node" }
 # FR-90 P2f-4 — the real hook client (`roomler hive hook`) adopts the terminal
 # session `tests/hive_manage.rs` makes managed, through the device's socket.
-roomler-cli = { path = "../../agents/roomler-cli" }
+meshharbor-cli = { path = "../../agents/meshharbor-cli" }
 
 [features]
 # Test-only opt-in for real embedded SSH; no new dependency or release default.
-native-shared-ssh-composed = ["roomlerd/ssh-server"]
+native-shared-ssh-composed = ["meshharbord/ssh-server"]

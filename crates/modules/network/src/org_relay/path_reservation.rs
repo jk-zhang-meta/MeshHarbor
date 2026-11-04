@@ -7,7 +7,7 @@
 //! use the same owner, and distributed ownership and relay expiry are resolved.
 
 use bson::oid::ObjectId;
-use roomler_ai_remote_control::models::peer_relay_limits as limits;
+use meshharbor_remote_control::models::peer_relay_limits as limits;
 use std::{
     collections::{HashMap, HashSet},
     sync::Mutex,

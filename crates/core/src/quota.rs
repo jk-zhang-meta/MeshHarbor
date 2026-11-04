@@ -2,7 +2,7 @@
 // Copyright (C) 2026 G ROX EOOD
 //! FR-102 P4 — plan-limit checks that also COUNT the collision, per org.
 //!
-//! The decision stays `roomler_ai_services::quota`'s (FR-32: one decision
+//! The decision stays `meshharbor_services::quota`'s (FR-32: one decision
 //! point, the warn line written there exactly once). What this adds is the
 //! business model's "best upgrade-intent signal" (`docs/business-model.md`
 //! §5) as a number: every collision — refused or, in `warn` mode, let
@@ -20,8 +20,8 @@
 
 use std::collections::BTreeMap;
 
-use roomler_ai_db::models::Tenant;
-use roomler_ai_services::{
+use meshharbor_db::models::Tenant;
+use meshharbor_services::{
     dao::growth::{GrowthDao, QUOTA_COLLISION_METRIC, QUOTA_SOURCE},
     quota::{self, Limit, QuotaDenial},
 };

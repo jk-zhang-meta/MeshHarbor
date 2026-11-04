@@ -43,14 +43,14 @@ SERVER_PATHS=(
 # CLIENT: everything installed on a machine, PLUS the four crates shared with
 # the server (they must match the weaker side — see the header).
 CLIENT_PATHS=(
-  agents/roomlerd
-  agents/roomler-desktop
-  agents/roomler-cli-shim
-  agents/roomler-setup
-  agents/roomler-cli
+  agents/meshharbord
+  agents/meshharbor-desktop
+  agents/meshharbor-cli-shim
+  agents/meshharbor-setup
+  agents/meshharbor-cli
   crates/agent-core
   crates/hive-node
-  crates/roomler-setup-core
+  crates/meshharbor-setup-core
   crates/tunnel-core
   crates/remote_control
   crates/localapi
@@ -63,7 +63,7 @@ CLIENT_PATHS=(
 # never goes here.
 CLIENT_FILES=(
   # Bundled into the desktop companion as
-  # agents/roomler-desktop/src/front/mesh-util.js (FR-84 D5c).
+  # agents/meshharbor-desktop/src/front/mesh-util.js (FR-84 D5c).
   ui/src/utils/mesh.ts
 )
 
@@ -79,35 +79,35 @@ EXCLUDE_PATTERNS=(
 
 # ── Cargo package names, for the CI dependency-graph assertion ────────────────
 SERVER_CRATES=(
-  roomler-ai-api
-  roomler-core
-  roomler-ai-mod-saas
-  roomler-ai-mod-chat
-  roomler-ai-mod-conference
-  roomler-ai-mod-fleet
-  roomler-ai-mod-remote
-  roomler-ai-mod-network
-  roomler-ai-mod-hive
-  roomler-ai-mod-vault
-  roomler-ai-services
-  roomler-ai-db
-  roomler-ai-config
+  meshharbor-api
+  meshharbor-core
+  meshharbor-mod-saas
+  meshharbor-mod-chat
+  meshharbor-mod-conference
+  meshharbor-mod-fleet
+  meshharbor-mod-remote
+  meshharbor-mod-network
+  meshharbor-mod-hive
+  meshharbor-mod-vault
+  meshharbor-services
+  meshharbor-db
+  meshharbor-config
   derp-relay
-  roomler-ai-tests
+  meshharbor-tests
 )
 
 CLIENT_CRATES=(
   roomlerd
-  roomler-desktop
-  roomler-cli-shim
-  roomler-setup
-  roomler-cli
-  roomler-node-core
-  roomler-hive-node
-  roomler-setup-core
-  roomler-ai-tunnel-core
-  roomler-ai-remote-control
-  roomler-localapi
+  meshharbor-desktop
+  meshharbor-cli-shim
+  meshharbor-setup
+  meshharbor-cli
+  meshharbor-node-core
+  meshharbor-hive-node
+  meshharbor-setup-core
+  meshharbor-tunnel-core
+  meshharbor-remote-control
+  meshharbor-localapi
   tcp-turn-conn
 )
 
@@ -116,10 +116,10 @@ CLIENT_CRATES=(
 # the header sweep, is what stops the split from silently rotting.
 SHIPPED_AGENT_CRATES=(
   roomlerd
-  roomler-cli
-  roomler-cli-shim
-  roomler-desktop
-  roomler-setup
+  meshharbor-cli
+  meshharbor-cli-shim
+  meshharbor-desktop
+  meshharbor-setup
 )
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

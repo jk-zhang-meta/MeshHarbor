@@ -25,8 +25,8 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
-use roomler_ai_tests::fixtures::seed::SeededTenant;
-use roomler_ai_tests::fixtures::test_app::TestApp;
+use meshharbor_tests::fixtures::seed::SeededTenant;
+use meshharbor_tests::fixtures::test_app::TestApp;
 use serde_json::{Value, json};
 
 mod hive_support;
@@ -108,8 +108,8 @@ fn device_process() {
                 .unwrap();
             rt.block_on(async move {
                 let cfg =
-                    roomlerd::config::load(&dir.join("config.toml")).expect("the device's config");
-                roomlerd::hive::init_as_daemon(
+                    meshharbord::config::load(&dir.join("config.toml")).expect("the device's config");
+                meshharbord::hive::init_as_daemon(
                     &cfg,
                     &dir.join("hive.db"),
                     &dir.join("run"),
@@ -183,9 +183,9 @@ async fn hook(socket: &Path, transcript: &Path, cwd: &Path, event: &str) {
         "hook_event_name": event,
         "reason": "exit",
     });
-    let input = roomler_cli::hive_hooks::hook_input(raw.to_string().as_bytes())
+    let input = meshharbor_cli::hive_hooks::hook_input(raw.to_string().as_bytes())
         .expect("Claude Code's hook input");
-    roomler_cli::hive_hooks::mirror_at(socket, &input)
+    meshharbor_cli::hive_hooks::mirror_at(socket, &input)
         .await
         .expect("the hook ran clean");
 }
@@ -257,7 +257,7 @@ async fn scenario() {
     cfg.hive_accounts.insert(seeded.admin.id.clone(), me());
     cfg.hive_roots = vec![a_dir.join("roots").display().to_string()];
     cfg.hive_harness = Some(harness.display().to_string());
-    roomlerd::config::save(&a_dir.join("config.toml"), &cfg).expect("the device's config");
+    meshharbord::config::save(&a_dir.join("config.toml"), &cfg).expect("the device's config");
     let a = cfg.agent_id.clone();
     let mut proc = tokio::process::Command::new(std::env::current_exe().unwrap())
         .args([
@@ -375,7 +375,7 @@ async fn scenario() {
         a_dir
             .join("run")
             .join(&sid)
-            .join(roomlerd::hive::RESUME_NOTE_FILE),
+            .join(meshharbord::hive::RESUME_NOTE_FILE),
     )
     .unwrap_or_default();
     assert!(

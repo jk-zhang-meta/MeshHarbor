@@ -23,9 +23,9 @@ use axum::{
     extract::{Path, State},
 };
 use bson::{DateTime, doc, oid::ObjectId};
-use roomler_ai_db::models::role::permissions;
-use roomler_ai_services::dao::base::{BaseDao, DaoError, DaoResult};
-use roomler_core::{ApiError, extractors::auth::AuthUser};
+use meshharbor_db::models::role::permissions;
+use meshharbor_services::dao::base::{BaseDao, DaoError, DaoResult};
+use meshharbor_core::{ApiError, extractors::auth::AuthUser};
 use serde::{Deserialize, Serialize};
 
 use crate::HiveState;
@@ -130,7 +130,7 @@ pub fn validate(rules: ReplicasetRules, retention_days: u32) -> Result<Replicase
         }
         prefer.push(word);
     }
-    let restricted_tags = roomler_ai_mod_fleet::agent::normalize_tags(rules.restricted_tags)
+    let restricted_tags = meshharbor_mod_fleet::agent::normalize_tags(rules.restricted_tags)
         .map_err(|e| format!("restricted_tags: {e}"))?;
     if retention_days > MAX_RETENTION_DAYS {
         return Err(format!(

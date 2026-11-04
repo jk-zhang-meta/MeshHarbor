@@ -22,8 +22,8 @@ use std::time::{Duration, Instant};
 
 use bson::{doc, oid::ObjectId};
 use futures::{SinkExt, StreamExt};
-use roomler_ai_remote_control::models::SshAccountMode;
-use roomler_ai_services::auth::SshTicket;
+use meshharbor_remote_control::models::SshAccountMode;
+use meshharbor_services::auth::SshTicket;
 use serde_json::{Value, json};
 use tokio_tungstenite::tungstenite::Message;
 

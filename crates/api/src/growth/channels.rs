@@ -34,11 +34,11 @@ use axum::{
 };
 use bson::DateTime;
 use chrono::NaiveDate;
-use roomler_ai_services::dao::{
+use meshharbor_services::dao::{
     growth_digest::ExcludedCounts,
     growth_social::{GrowthPost, GrowthSocialDao, MAX_POSTS, PostSnapshot, SNAPSHOTS},
 };
-use roomler_core::{
+use meshharbor_core::{
     campaign::{CampaignKey, KeyDepth, PLATFORMS, platform_retired},
     growth::ExclusionSet,
 };
@@ -698,7 +698,7 @@ pub async fn compute(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use roomler_ai_services::dao::growth_social::PostKey;
+    use meshharbor_services::dao::growth_social::PostKey;
 
     fn at(s: &str) -> DateTime {
         DateTime::parse_rfc3339_str(s).unwrap()

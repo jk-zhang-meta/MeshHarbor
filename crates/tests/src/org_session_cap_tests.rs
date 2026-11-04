@@ -342,7 +342,7 @@ async fn a_cross_pod_request_carries_the_cap() {
 // ── FR-115 P3b — session slots, the cluster-wide count ──────────────────
 
 /// Two pods whose cluster buses are up, both under `mutator`.
-async fn two_pods(mutator: fn(&mut roomler_ai_config::Settings)) -> Option<(TestApp, TestApp)> {
+async fn two_pods(mutator: fn(&mut meshharbor_config::Settings)) -> Option<(TestApp, TestApp)> {
     let (app1, app2) = TestApp::spawn_pair(mutator).await;
     if app1.state.cluster_bus.is_none() || app1.state.session_slots.is_none() {
         eprintln!("skipping: no Redis available");
@@ -361,7 +361,7 @@ async fn two_pods(mutator: fn(&mut roomler_ai_config::Settings)) -> Option<(Test
     Some((app1, app2))
 }
 
-fn slots_on(s: &mut roomler_ai_config::Settings) {
+fn slots_on(s: &mut meshharbor_config::Settings) {
     s.rc.session_slots = true;
 }
 
@@ -437,7 +437,7 @@ async fn with_slots_off_each_hub_counts_its_own() {
 #[tokio::test]
 async fn the_slot_claim_claims_renews_refuses_and_expires() {
     use bson::oid::ObjectId;
-    use roomler_core::cluster::session_slots::{SlotClaim, SlotScope};
+    use meshharbor_core::cluster::session_slots::{SlotClaim, SlotScope};
     let app = TestApp::spawn_with_settings(slots_on).await;
     let (Some(slots), Some(redis)) = (
         app.state.session_slots.clone(),
@@ -492,7 +492,7 @@ async fn the_slot_claim_claims_renews_refuses_and_expires() {
     // Renewal only updates: a lease released while a round was in flight is
     // answered missing and never put back. `restore` puts back the ones the
     // hub still holds (a Redis that lost them).
-    let lease = roomler_core::cluster::session_slots::Lease {
+    let lease = meshharbor_core::cluster::session_slots::Lease {
         scope: org,
         session: s2,
         user,
@@ -525,7 +525,7 @@ async fn the_slot_claim_claims_renews_refuses_and_expires() {
 #[tokio::test]
 async fn a_stale_slot_this_pod_claimed_does_not_lock_the_org_out() {
     use bson::oid::ObjectId;
-    use roomler_core::cluster::session_slots::SlotScope;
+    use meshharbor_core::cluster::session_slots::SlotScope;
     let app = TestApp::spawn_with_settings(slots_on).await;
     let Some(slots) = app.state.session_slots.clone() else {
         eprintln!("skipping: no Redis available");
@@ -574,8 +574,8 @@ async fn a_stale_slot_this_pod_claimed_does_not_lock_the_org_out() {
 #[tokio::test]
 async fn an_external_session_is_charged_to_the_org_it_is_for() {
     use bson::oid::ObjectId;
-    use roomler_ai_mod_remote::extauth::charge_scope;
-    use roomler_core::cluster::session_slots::SlotScope;
+    use meshharbor_mod_remote::extauth::charge_scope;
+    use meshharbor_core::cluster::session_slots::SlotScope;
     let app = TestApp::spawn().await;
     let remote = app
         .state

@@ -14,7 +14,7 @@ flowchart LR
     subgraph client["Client side"]
         CLI["roomler CLI<br/>(standalone, TunnelClient JWT)"]
         DMN["roomlerd-embedded client<br/>(declared routes, agent JWT)"]
-        DESK["roomler-desktop<br/>(Tunnels pane via LocalAPI)"]
+        DESK["meshharbor-desktop<br/>(Tunnels pane via LocalAPI)"]
     end
 
     subgraph server["roomler.ai"]
@@ -253,7 +253,7 @@ resolution against the agent's close. The task now holds the agent only weakly, 
 is what pion does when it closes the agent's mDNS conn. The same patch also closes a
 narrower door: a candidate whose gathering finished **after** `close()` (a late STUN or
 TURN answer). It was started and kept, and its receive loop held the agent. Now it is
-closed on arrival. Both are locked by `agents/roomlerd/src/ice_lifetime_tests.rs`, which
+closed on arrival. Both are locked by `agents/meshharbord/src/ice_lifetime_tests.rs`, which
 counts the tasks alive on a runtime of its own. Without the patch, a closed agent
 leaves one behind in each test; with it, none. CI runs them in its Linux lib-test
 lane, where a host that cannot open the mDNS socket fails the mDNS test instead of
@@ -332,7 +332,7 @@ The audit (against `origin/master` c443af83e) found the client ends a session
 
 | Client path | Where | Why it sent nothing |
 |---|---|---|
-| `kill_flow` (LocalAPI `KillFlow`, and every route-reconciler kill) | [`client_mgr.rs`](../agents/roomlerd/src/tunnel/client_mgr.rs) `kill_flow`; [`route_reconciler.rs`](../agents/roomlerd/src/tunnel/route_reconciler.rs) | it only `abort()`ed the supervisor task — an abort frees the client peer via `TunnelPeer::drop`, but sends no wire message |
+| `kill_flow` (LocalAPI `KillFlow`, and every route-reconciler kill) | [`client_mgr.rs`](../agents/meshharbord/src/tunnel/client_mgr.rs) `kill_flow`; [`route_reconciler.rs`](../agents/meshharbord/src/tunnel/route_reconciler.rs) | it only `abort()`ed the supervisor task — an abort frees the client peer via `TunnelPeer::drop`, but sends no wire message |
 | every `?` early return after `rc:tunnel.opened` | [`driver.rs`](../crates/tunnel-core/src/driver.rs) `run_webrtc_session` / `run_quic_session` | `PEER_READY_TIMEOUT` (30 s, DC pool never opens), a failed local bind, an `accept_answer` error, a QUIC-setup soft-fall — all returned straight up |
 
 **The fix (layer A — client side).** A `TerminateOnDrop` guard, created in
@@ -381,7 +381,7 @@ are left as-is rather than re-plumbed.
 The `close()` rule above has a precondition nobody had written down: **something has
 to decide to call it.** On the exit agent, only two things ever removed a tunnel peer
 from the signaling loop's session maps — a `rc:tunnel.terminate` from the server
-(`agents/roomlerd/src/signaling.rs`, the `ServerMsg::TunnelTerminate` arm) and the
+(`agents/meshharbord/src/signaling.rs`, the `ServerMsg::TunnelTerminate` arm) and the
 control WS ending (`close_all_tunnel_peers`). Nothing observed the data plane. A client
 that never sent its terminate left its peer in the map, `close()`d by nobody, for the
 life of the connection.
@@ -416,7 +416,7 @@ sequenceDiagram
     L->>S: rc:tunnel.terminate { io_error } (relayed to a client still registered)
 ```
 
-The peer's own report travels a per-org channel (`agents/roomlerd/src/tunnel/reap.rs`),
+The peer's own report travels a per-org channel (`agents/meshharbord/src/tunnel/reap.rs`),
 created beside the overlay "Disconnect" channel in `signaling::run` and borrowed into
 every connection, so a report that lands during a reconnect gap is drained by the next
 connection rather than lost. Per org, not per process: a process-global sender would
@@ -424,16 +424,16 @@ land a secondary org's reap in the primary's maps.
 
 | Signal | Where it is armed | Latency | What it means |
 |---|---|---|---|
-| `dc_closed` | `on_close` on all eight pool DCs, `AgentTunnelPeer::accept_offer` (`agents/roomlerd/src/tunnel/peer.rs`) | milliseconds | the client closed its peer cleanly; a DC read loop only starts when the channel opens, so arming before the handshake leaves no window |
+| `dc_closed` | `on_close` on all eight pool DCs, `AgentTunnelPeer::accept_offer` (`agents/meshharbord/src/tunnel/peer.rs`) | milliseconds | the client closed its peer cleanly; a DC read loop only starts when the channel opens, so arming before the handshake leaves no window |
 | `pc_failed` | `on_peer_connection_state_change`, same place | ~30 s of silence | ICE gave the remote up: `disconnected_timeout` 5 s + `failed_timeout` 25 s in the vendored `webrtc-ice` (`crates/vendored/webrtc-ice/src/agent/agent_config.rs`) with binding requests every 2 s. **Terminal** — tunnel-core has no ICE restart — and it **frees nothing**: only `close()` does |
 | `pc_closed` | same handler | — | reachable only through a local `close()`; the net under any close that skipped the map |
-| `quic_conn_ended` | the accept task's end, `spawn_accept_loop` (`agents/roomlerd/src/tunnel/quic_peer.rs`) | ms after a close; ≤ 30 s after silence | the ONE connection the peer serves is over — closed by the client, or idle-timed out by quinn once the client's 8 s keepalives stopped |
+| `quic_conn_ended` | the accept task's end, `spawn_accept_loop` (`agents/meshharbord/src/tunnel/quic_peer.rs`) | ms after a close; ≤ 30 s after silence | the ONE connection the peer serves is over — closed by the client, or idle-timed out by quinn once the client's 8 s keepalives stopped |
 
 ⚠️ **Not `Disconnected`.** That is five seconds without a packet — a relay hiccup, a
 laptop's Wi-Fi roam, a CGNAT rebind — and ICE recovers from it on its own. Reaping there
 would tear down healthy tunnels, which is the one thing this pillar must never do. The
 remote-control watchdog gives a *disconnected* RC session 20 s of grace for the same
-reason (`agents/roomlerd/src/peer.rs`, `DISCONNECTED_GRACE`); a tunnel gets ICE's full
+reason (`agents/meshharbord/src/peer.rs`, `DISCONNECTED_GRACE`); a tunnel gets ICE's full
 30 s and the certainty of `Failed`.
 
 ⚠️ **Idle is not gone.** A declared SOCKS5 route with no traffic for hours still
@@ -467,7 +467,7 @@ same path it already takes when the agent's control WS drops. Nothing that used 
 is lost: such a session was `Failed` forever anyway (no ICE restart), only now its sockets
 are freed and the client is told.
 
-Locked by lib tests (`cargo test -p roomlerd --lib tunnel`), each shown red with its
+Locked by lib tests (`cargo test -p meshharbord --lib tunnel`), each shown red with its
 fix commented out: `a_client_that_closes_cleanly_is_reaped_at_once` (2 s budget),
 `a_client_that_vanishes_is_reaped_when_ice_fails` (the client runs on a runtime of its
 own whose only thread is parked — no keepalive answers, no clean close, sockets still
@@ -475,7 +475,7 @@ bound — and must be reported as `pc_failed` no earlier than 20 s in),
 `a_client_that_drops_its_connection_is_reaped` (QUIC),
 `a_reap_for_an_unknown_or_already_reaped_session_takes_nothing` and
 `the_reclaim_drops_a_parked_quic_peer_whose_connection_ended`
-(`agents/roomlerd/src/signaling.rs`).
+(`agents/meshharbord/src/signaling.rs`).
 
 ### ⚠️ A session that ends with a live flow ends that flow, both halves (#2129)
 
@@ -513,7 +513,7 @@ Where it fires:
 
 | End | Trigger | Where |
 |---|---|---|
-| exit | `AgentTunnelPeer::close` — the one method every real teardown reaches: the `rc:tunnel.terminate` arm, the #1754 reap, and the WS-disconnect sweep (`close_all_tunnel_peers`) | [`peer.rs:347`](../agents/roomlerd/src/tunnel/peer.rs), the handle passed to the flow at [`acceptor.rs:186`](../agents/roomlerd/src/tunnel/acceptor.rs) |
+| exit | `AgentTunnelPeer::close` — the one method every real teardown reaches: the `rc:tunnel.terminate` arm, the #1754 reap, and the WS-disconnect sweep (`close_all_tunnel_peers`) | [`peer.rs:347`](../agents/meshharbord/src/tunnel/peer.rs), the handle passed to the flow at [`acceptor.rs:186`](../agents/meshharbord/src/tunnel/acceptor.rs) |
 | client | the DC carrier being dropped (`kill_flow`, the session dying, a re-upgrade drain reaching zero, the standalone CLI's session end) — a `CancelOnDrop` in `Plane::Dc` fires it from `Drop` | [`driver.rs:495`](../crates/tunnel-core/src/driver.rs) · installed at `driver.rs:1327` |
 
 ⚠️ **The exclusion is `close`, not the loop exit.** The cancel is tied to
@@ -532,12 +532,12 @@ control: `forward::tests::a_live_flow_ends_on_both_ends_when_its_session_is_canc
 `driver::tests::dropping_a_dc_carrier_ends_its_live_connection` (the client
 carrier drop), and `tunnel::peer::tests::closing_the_peer_ends_its_live_flows`
 with its exclusion control `a_kept_peer_keeps_its_live_flows`
-(`agents/roomlerd/src/tunnel/peer.rs`).
+(`agents/meshharbord/src/tunnel/peer.rs`).
 
 ### ⚠️ The exit never awaits a TURN allocation on its signaling loop (#1761)
 
 An exit agent serves every session of its org from **one** signaling loop
-(`connect_once` in `agents/roomlerd/src/signaling.rs`): the control WS, the
+(`connect_once` in `agents/meshharbord/src/signaling.rs`): the control WS, the
 outbound pump, the reap arm, every `rc:*` message. Until 0.4.112 the
 `ServerMsg::TunnelQuicSetup` arm awaited `allocate_relay_from_ice` **inline** on
 that loop whenever the server had minted coturn credentials (QUIC-over-TURN). On a
@@ -591,7 +591,7 @@ The channel (`signaling.rs:605`) has the #1754 reap channel's shape: created in
 `signaling::run` **per org loop** — a process-global sender would land a secondary
 org's peer in the primary's maps — borrowed into every `connect_once`, a sender
 retained for the loop's life so the receiver never closes. The in-flight
-bookkeeping is `PendingQuicSetups` (`agents/roomlerd/src/tunnel/quic_setup.rs`),
+bookkeeping is `PendingQuicSetups` (`agents/meshharbord/src/tunnel/quic_setup.rs`),
 fresh per connection (`signaling.rs:1405`) like the session maps, and free of I/O
 so tests drive it directly:
 
@@ -617,7 +617,7 @@ only.** The ladder bounds every step itself (~65 s worst case) and the client ga
 at 30 s; the deadline exists so a future ladder change that stalls cannot pin an
 in-flight slot forever.
 
-Locked by lib tests (`cargo test -p roomlerd --lib tunnel`, `tunnel::quic_setup`), each
+Locked by lib tests (`cargo test -p meshharbord --lib tunnel`, `tunnel::quic_setup`), each
 shown red with a one-line negative control: `a_slow_turn_allocation_never_holds_the_loop`
 (the allocator for session A parks until released; the TURN branch must return within
 1 s regardless, session B's setup completes and is ready while A is parked, A lands
@@ -656,7 +656,7 @@ established beside the first, promoted, the first drained.
 | `Carrier` | **one type for both transports** — they differ only in the plane they pump on, everything else (sink, session id, target, reply registry, the P7 backstop, the dispatcher, the guard) is the same object. `carry(tcp, peer_addr)` spawns exactly the per-connection task the accept loop used to; `active()` counts connections in flight; `dead()` is the accept loop's old exit arms (the dispatcher exited · the P7 backstop tripped · QUIC `conn.closed()`), sending the same `io_error` terminate the loops sent; **dropping it is the old end of the session function** — dispatcher aborted, peer closed, terminate sent | [`driver.rs:454`](../crates/tunnel-core/src/driver.rs) · `carry` `:615` · `dead` `:801` |
 | `FlowListener` | the flow's port: bound **once**, an accept task hands each connection to the current carrier — or **holds** it while there is none — under one lock, so "no carrier ⇒ hold" and "install ⇒ drain the hold" cannot interleave to strand one, and (#1816) the hand-off itself — `carry`, which counts the connection — runs under that lock too, so it cannot interleave with a promotion's swap | [`flow_listener.rs:90`](../crates/tunnel-core/src/flow_listener.rs) · `install` `:172` · `offer` `:219` |
 | `HoldPolicy` | the hold's bounds: at most **64** connections, each for at most **30 s**; past either bound the connection is **closed** (the client sees EOF), never refused | [`flow_listener.rs:67`](../crates/tunnel-core/src/flow_listener.rs) |
-| the daemon's flow | binds once when its supervisor starts (a failed bind retries on the same ladder a failed session did), runs the transport ladder to a carrier, installs it, waits for `dead()`, clears, backs off — the port bound throughout | [`client_mgr.rs:1294`](../agents/roomlerd/src/tunnel/client_mgr.rs) `run_flow_supervisor` · `:1459` `run_flow_cycle` |
+| the daemon's flow | binds once when its supervisor starts (a failed bind retries on the same ladder a failed session did), runs the transport ladder to a carrier, installs it, waits for `dead()`, clears, backs off — the port bound throughout | [`client_mgr.rs:1294`](../agents/meshharbord/src/tunnel/client_mgr.rs) `run_flow_supervisor` · `:1459` `run_flow_cycle` |
 | the standalone CLI | `run_tunnel_session` composes establish + a private accept loop with a per-session bind, so `roomler forward` / `socks5` behave exactly as before | [`driver.rs:924`](../crates/tunnel-core/src/driver.rs) |
 
 ```mermaid
@@ -680,7 +680,7 @@ sequenceDiagram
 
 ⚠️ **`Up` still means "it serves", not "it is bound".** The flow's port is bound
 before any session exists, so #1685's rule had to move one step: `FlowLive::mark_listening`
-([`client_mgr.rs:210`](../agents/roomlerd/src/tunnel/client_mgr.rs)) now fires when a
+([`client_mgr.rs:210`](../agents/meshharbord/src/tunnel/client_mgr.rs)) now fires when a
 carrier is **installed** — the same call that hands it the held connections — not from a
 bind hook. A route to an offline node reads `backoff` exactly as before; a held connection
 is not a serving route. (`SessionParams::on_listening` stays for `run_tunnel_session`'s
@@ -755,7 +755,7 @@ sequenceDiagram
     S->>X: drop A → rc:tunnel.terminate (the #35;1754 guard) — the exit frees its peer
 ```
 
-The schedule (a pure [`ReupgradeBackoff`](../agents/roomlerd/src/tunnel/client_mgr.rs) ·
+The schedule (a pure [`ReupgradeBackoff`](../agents/meshharbord/src/tunnel/client_mgr.rs) ·
 [`client_mgr.rs:870`], mapped to deadlines by [`ProbeTimer`] `:907`), reset on a netwatch
 **Major** and after a **promotion**, at most **one candidate per flow** in flight:
 
@@ -769,10 +769,10 @@ The schedule (a pure [`ReupgradeBackoff`](../agents/roomlerd/src/tunnel/client_m
 
 | Piece | What it is | Where |
 |---|---|---|
-| the probe gate | `auto` flow **and** kill switch on (`reupgrade_active`); a pinned transport never probes | [`client_mgr.rs:950`](../agents/roomlerd/src/tunnel/client_mgr.rs) · ranking `better_transports` `:970` |
-| the candidate | a background task that runs the restricted ladder — only transports **better** than the active one, best first — over the shared agent WS, into a throwaway `FlowLive` so a failed/aborted probe never touches the live route's demux | [`spawn_candidate` `:1166`](../agents/roomlerd/src/tunnel/client_mgr.rs) · `establish_candidate` `:1203` · `CandidateGuard` `:1130` |
-| promotion | `listener.install(candidate)` (new connections → candidate, atomically) + `FlowLive.transport`/`session_id` updated + one info line; the old carrier becomes draining | [`run_flow_cycle` `:1459`](../agents/roomlerd/src/tunnel/client_mgr.rs) |
-| the drain | the old carrier keeps its established connections until `active()` hits 0 (or it dies), then is dropped → terminate → the exit frees its peer, and its demux entry is reaped — both from a guard, so an aborted reaper ends the same way | [`drain_carrier` `:1093`](../agents/roomlerd/src/tunnel/client_mgr.rs) · `DrainGuard` `:1064` · `spawn_drain` `:1121` · [`Carrier::drained`](../crates/tunnel-core/src/driver.rs) `driver.rs:595` |
+| the probe gate | `auto` flow **and** kill switch on (`reupgrade_active`); a pinned transport never probes | [`client_mgr.rs:950`](../agents/meshharbord/src/tunnel/client_mgr.rs) · ranking `better_transports` `:970` |
+| the candidate | a background task that runs the restricted ladder — only transports **better** than the active one, best first — over the shared agent WS, into a throwaway `FlowLive` so a failed/aborted probe never touches the live route's demux | [`spawn_candidate` `:1166`](../agents/meshharbord/src/tunnel/client_mgr.rs) · `establish_candidate` `:1203` · `CandidateGuard` `:1130` |
+| promotion | `listener.install(candidate)` (new connections → candidate, atomically) + `FlowLive.transport`/`session_id` updated + one info line; the old carrier becomes draining | [`run_flow_cycle` `:1459`](../agents/meshharbord/src/tunnel/client_mgr.rs) |
+| the drain | the old carrier keeps its established connections until `active()` hits 0 (or it dies), then is dropped → terminate → the exit frees its peer, and its demux entry is reaped — both from a guard, so an aborted reaper ends the same way | [`drain_carrier` `:1093`](../agents/meshharbord/src/tunnel/client_mgr.rs) · `DrainGuard` `:1064` · `spawn_drain` `:1121` · [`Carrier::drained`](../crates/tunnel-core/src/driver.rs) `driver.rs:595` |
 
 ⚠️ **A draining connection is NEVER cut, and there is no maximum drain time.** An RDP
 session that lives for hours keeps its old carrier for hours. The old carrier is dropped
@@ -971,9 +971,9 @@ sequenceDiagram
 
 | Piece | Where |
 |---|---|
-| asking | `vault::net` ([`vault.rs:863`](../agents/roomlerd/src/vault.rs#L863)) and its answer `on_net_granted` ([`:1010`](../agents/roomlerd/src/vault.rs#L1010)), held to what was asked by `net_granted` ([`:389`](../agents/roomlerd/src/vault.rs#L389)); the answer's own arm in the daemon's signalling ([`signaling.rs:6302`](../agents/roomlerd/src/signaling.rs#L6302)) |
+| asking | `vault::net` ([`vault.rs:863`](../agents/meshharbord/src/vault.rs#L863)) and its answer `on_net_granted` ([`:1010`](../agents/meshharbord/src/vault.rs#L1010)), held to what was asked by `net_granted` ([`:389`](../agents/meshharbord/src/vault.rs#L389)); the answer's own arm in the daemon's signalling ([`signaling.rs:6302`](../agents/meshharbord/src/signaling.rs#L6302)) |
 | presenting | `SessionParams.net_grant` ([`driver.rs:413`](../crates/tunnel-core/src/driver.rs#L413)), sent at the open ([`:1024`](../crates/tunnel-core/src/driver.rs#L1024)); a refusal typed ([`:1076`](../crates/tunnel-core/src/driver.rs#L1076)); the echo checked after the guard ([`:1102`](../crates/tunnel-core/src/driver.rs#L1102)); `SessionGrantRef` and `GrantError` ([`:2315`](../crates/tunnel-core/src/driver.rs#L2315), [`:2332`](../crates/tunnel-core/src/driver.rs#L2332)) |
-| the flow | `FlowLive.net_grant` ([`client_mgr.rs:201`](../agents/roomlerd/src/tunnel/client_mgr.rs#L201)), permanent by its type in `permanent_session_error` ([`:1737`](../agents/roomlerd/src/tunnel/client_mgr.rs#L1737)) |
+| the flow | `FlowLive.net_grant` ([`client_mgr.rs:201`](../agents/meshharbord/src/tunnel/client_mgr.rs#L201)), permanent by its type in `permanent_session_error` ([`:1737`](../agents/meshharbord/src/tunnel/client_mgr.rs#L1737)) |
 | the code | `NET_GRANT_REFUSED` ([`vault.rs:547`](../crates/remote_control/src/vault.rs#L547)), shared by the server and the device |
 | tests | `driver::tests` (4), `tunnel::client_mgr::tests::a_refused_or_unbound_grant_ends_the_flow`, `vault::tests::client` (2): 7, and 13 negative controls |
 
@@ -1012,9 +1012,9 @@ flowchart LR
 | Piece | Where |
 |---|---|
 | the hook | `Admit` ([`flow_listener.rs:122`](../crates/tunnel-core/src/flow_listener.rs#L122)), `FlowListener::bind_admitting` ([`:133`](../crates/tunnel-core/src/flow_listener.rs#L133)), asked before the hold ([`:304`](../crates/tunnel-core/src/flow_listener.rs#L304)) |
-| the account | `connection_is` ([`vault_connect.rs:2322`](../agents/roomlerd/src/hive/vault_connect.rs#L2322)), the session listener's hook `session_admit` ([`:2385`](../agents/roomlerd/src/hive/vault_connect.rs#L2385)) |
+| the account | `connection_is` ([`vault_connect.rs:2322`](../agents/meshharbord/src/hive/vault_connect.rs#L2322)), the session listener's hook `session_admit` ([`:2385`](../agents/meshharbord/src/hive/vault_connect.rs#L2385)) |
 | RFC 1929 | `Socks5Credential` ([`socks5.rs:95`](../crates/tunnel-core/src/socks5.rs#L95)), `accept_connect_authenticated` ([`:122`](../crates/tunnel-core/src/socks5.rs#L122)); `Target::SessionSocks5` ([`driver.rs:376`](../crates/tunnel-core/src/driver.rs#L376)), served in the carrier ([`:676`](../crates/tunnel-core/src/driver.rs#L676)) |
-| the flow | `create_session_flow` ([`client_mgr.rs:462`](../agents/roomlerd/src/tunnel/client_mgr.rs#L462)), ended at the grant's end ([`:495`](../agents/roomlerd/src/tunnel/client_mgr.rs#L495)) |
+| the flow | `create_session_flow` ([`client_mgr.rs:462`](../agents/meshharbord/src/tunnel/client_mgr.rs#L462)), ended at the grant's end ([`:495`](../agents/meshharbord/src/tunnel/client_mgr.rs#L495)) |
 | tests | `socks5::tests` (2), `flow_listener::tests` (1), `driver::tests::a_session_carrier_forwards_its_credentials_connections_alone`, `tunnel::client_mgr::tests::a_session_flow_serves_whom_it_admits_and_ends_with_its_grant`, `hive::vault_connect::tests::a_session_listener_admits_its_account_alone`: 6, and 11 negative controls |
 
 #### The tools: `net_socks` and `net_forward` (P3-7-3c)
@@ -1082,15 +1082,15 @@ Four parties each say yes, and each for itself:
 
 | Piece | Where |
 |---|---|
-| the tools | `net_tools` ([`toolbelt.rs:1085`](../agents/roomlerd/src/hive/toolbelt.rs#L1085)), offered in `tools/list` ([`:1377`](../agents/roomlerd/src/hive/toolbelt.rs#L1377)) and answered in `ask_vault` ([`:1222`](../agents/roomlerd/src/hive/toolbelt.rs#L1222)); their names in the settings, `NET_TOOLS` ([`:447`](../agents/roomlerd/src/hive/toolbelt.rs#L447)) |
-| a call | `net_tools::call` ([`net_tools.rs:192`](../agents/roomlerd/src/hive/net_tools.rs#L192)), its arguments `parse` ([`:144`](../agents/roomlerd/src/hive/net_tools.rs#L144)), the run's end `drop_run` ([`:275`](../agents/roomlerd/src/hive/net_tools.rs#L275)), called as the run's leases go ([`supervisor.rs:3937`](../agents/roomlerd/src/hive/supervisor.rs#L3937)) |
-| the owner's gate | `hive_net` ([`config.rs:596`](../crates/agent-core/src/config.rs#L596)), `HiveConfig.net` ([`gates.rs:55`](../agents/roomlerd/src/hive/gates.rs#L55)), `Supervisor::net_hub` ([`supervisor.rs:1467`](../agents/roomlerd/src/hive/supervisor.rs#L1467)); the settings' `ask`, `vault_use_tools` ([`:4770`](../agents/roomlerd/src/hive/supervisor.rs#L4770)) |
-| the hub | `TunnelClientHub::set_primary` ([`client_mgr.rs:289`](../agents/roomlerd/src/tunnel/client_mgr.rs#L289)), called as the daemon builds it ([`main.rs:4051`](../agents/roomlerd/src/main.rs#L4051)) |
+| the tools | `net_tools` ([`toolbelt.rs:1085`](../agents/meshharbord/src/hive/toolbelt.rs#L1085)), offered in `tools/list` ([`:1377`](../agents/meshharbord/src/hive/toolbelt.rs#L1377)) and answered in `ask_vault` ([`:1222`](../agents/meshharbord/src/hive/toolbelt.rs#L1222)); their names in the settings, `NET_TOOLS` ([`:447`](../agents/meshharbord/src/hive/toolbelt.rs#L447)) |
+| a call | `net_tools::call` ([`net_tools.rs:192`](../agents/meshharbord/src/hive/net_tools.rs#L192)), its arguments `parse` ([`:144`](../agents/meshharbord/src/hive/net_tools.rs#L144)), the run's end `drop_run` ([`:275`](../agents/meshharbord/src/hive/net_tools.rs#L275)), called as the run's leases go ([`supervisor.rs:3937`](../agents/meshharbord/src/hive/supervisor.rs#L3937)) |
+| the owner's gate | `hive_net` ([`config.rs:596`](../crates/agent-core/src/config.rs#L596)), `HiveConfig.net` ([`gates.rs:55`](../agents/meshharbord/src/hive/gates.rs#L55)), `Supervisor::net_hub` ([`supervisor.rs:1467`](../agents/meshharbord/src/hive/supervisor.rs#L1467)); the settings' `ask`, `vault_use_tools` ([`:4770`](../agents/meshharbord/src/hive/supervisor.rs#L4770)) |
+| the hub | `TunnelClientHub::set_primary` ([`client_mgr.rs:289`](../agents/meshharbord/src/tunnel/client_mgr.rs#L289)), called as the daemon builds it ([`main.rs:4051`](../agents/meshharbord/src/main.rs#L4051)) |
 | tests | `hive::toolbelt::tests` (6), `hive::net_tools::tests` (6: the call's arguments, its capability, the place it holds, a listener made after its run ended), `hive::supervisor::tests` (2: the settings' `ask`, `net_hub`), `hive::gates::tests::hive_net_is_the_owners_word`, `config_surface::tests::hive_net_defaults_off_and_clears_off`: 16, and 17 negative controls |
 
 ## LocalAPI
 
-The on-host control surface — how `roomler`, `roomler-desktop`, and scripts talk
+The on-host control surface — how `roomler`, `meshharbor-desktop`, and scripts talk
 to a running `roomlerd` without any token:
 
 - **Endpoints**: Windows named pipe `\\.\pipe\roomler` (SYSTEM + Admins +

@@ -228,7 +228,7 @@ const isWindows = computed(() => agent.value?.os === 'windows')
  *  session token (`WTSQueryUserToken` + `CreateProcessAsUserW`), and on Linux
  *  and macOS (FR-97 P5a) by the agent's own drop to them, which only an agent
  *  saying `console-user` makes — an older one refuses it outright
- *  (`agents/roomlerd/src/exec.rs`, `pty/unix.rs`). Offering it there produces
+ *  (`agents/meshharbord/src/exec.rs`, `pty/unix.rs`). Offering it there produces
  *  a policy that agent can never honour, and the failure surfaces at CONNECT
  *  time — at a shell prompt, about a field that lives in this dialog. The
  *  server refuses to store it too. */

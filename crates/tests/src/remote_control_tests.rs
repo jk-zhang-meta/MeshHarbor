@@ -1104,9 +1104,9 @@ fn urlencode(s: &str) -> String {
 #[tokio::test]
 async fn session_audit_reads_back_rows_the_audit_sink_wrote() {
     use bson::oid::ObjectId;
-    use roomler_ai_remote_control::audit::AuditSink;
-    use roomler_ai_remote_control::models::{AuditKind, EndReason, RemoteAuditEvent};
-    use roomler_ai_remote_control::permissions::Permissions;
+    use meshharbor_remote_control::audit::AuditSink;
+    use meshharbor_remote_control::models::{AuditKind, EndReason, RemoteAuditEvent};
+    use meshharbor_remote_control::permissions::Permissions;
 
     let app = TestApp::spawn().await;
     let seeded = app.seed_tenant("audit1630").await;

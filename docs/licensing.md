@@ -20,8 +20,8 @@ flowchart LR
         MISC["crates/derp-relay · tests · ui/"]
     end
     subgraph client["MPL-2.0: installed on customer machines"]
-        AGENTS["agents/*<br/>roomlerd · roomler-cli · shim<br/>roomler-desktop · roomler-setup"]
-        SHARED["crates/tunnel-core · remote_control<br/>agent-core · localapi · tcp-turn-conn<br/>roomler-setup-core"]
+        AGENTS["agents/*<br/>roomlerd · meshharbor-cli · shim<br/>meshharbor-desktop · meshharbor-setup"]
+        SHARED["crates/tunnel-core · remote_control<br/>agent-core · localapi · tcp-turn-conn<br/>meshharbor-setup-core"]
     end
     API --> SHARED
     AGENTS --> SHARED
@@ -42,14 +42,14 @@ table mirrors it for readers, and CI reads only the script.
 
 | class | by path ([`:31`](../scripts/licence-classes.sh#L31), [`:45`](../scripts/licence-classes.sh#L45)) | by crate ([`:81`](../scripts/licence-classes.sh#L81), [`:99`](../scripts/licence-classes.sh#L99)) | SPDX |
 |---|---|---|---|
-| server | `crates/{api,services,db,config,core,modules,derp-relay,tests}`, `ui/` | `roomler-ai-*`, `roomler-core`, all six `roomler-ai-mod-*`, `derp-relay` | `AGPL-3.0-only` |
-| client | `agents/*`, `crates/{agent-core,roomler-setup-core,tunnel-core,remote_control,localapi,tcp-turn-conn}` | `roomlerd`, `roomler-cli`, `roomler-node-core`, `roomler-ai-tunnel-core`, … | `MPL-2.0` |
+| server | `crates/{api,services,db,config,core,modules,derp-relay,tests}`, `ui/` | `roomler-ai-*`, `meshharbor-core`, all six `roomler-ai-mod-*`, `derp-relay` | `AGPL-3.0-only` |
+| client | `agents/*`, `crates/{agent-core,meshharbor-setup-core,tunnel-core,remote_control,localapi,tcp-turn-conn}` | `roomlerd`, `meshharbor-cli`, `meshharbor-node-core`, `meshharbor-tunnel-core`, … | `MPL-2.0` |
 | docs | `docs/` | — | `CC-BY-4.0` |
 | excluded | `crates/vendored/*` (upstream terms, unchanged), build output | — | upstream |
 
 The **shipped** agents, the binaries the graph check guards, are listed separately
-([`:117`](../scripts/licence-classes.sh#L117)): `roomlerd`, `roomler-cli`,
-`roomler-cli-shim`, `roomler-desktop` and `roomler-setup`.
+([`:117`](../scripts/licence-classes.sh#L117)): `roomlerd`, `meshharbor-cli`,
+`meshharbor-cli-shim`, `meshharbor-desktop` and `meshharbor-setup`.
 
 ⚠️ **A new crate must be added to one of the two crate lists.** The manifest check
 fails any workspace member it cannot classify. That failure is the reminder, and it
@@ -70,8 +70,8 @@ on every change to a manifest, a source file or the class script.
 ⚠️ **Both lists had gone blind to FR-69's modules, and every run still printed OK.**
 Until 2026-09-25 the manifest check iterated `crates/*/Cargo.toml`, one level deep,
 so the six crates FR-69 put under `crates/modules/` were never read: it checked 18
-of 24 members. Separately, the server crate list omitted `roomler-ai-mod-remote` and
-`roomler-ai-mod-network`, so the graph check could not see an agent depending on
+of 24 members. Separately, the server crate list omitted `meshharbor-mod-remote` and
+`meshharbor-mod-network`, so the graph check could not see an agent depending on
 either, and the network module is exactly the overlay code an agent might be tempted
 to import. All six happened to declare AGPL correctly, and no agent reaches them
 today (every shipped graph was re-checked). But nothing would have noticed if either

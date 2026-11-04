@@ -8,8 +8,8 @@
 //! agent token, and persists everything to the config file.
 
 use anyhow::{Context, Result, bail};
-use roomler_ai_remote_control::models::OsKind;
-pub use roomler_ai_remote_control::models::{InstallInfo, InstallMethod, InstallScope};
+use meshharbor_remote_control::models::OsKind;
+pub use meshharbor_remote_control::models::{InstallInfo, InstallMethod, InstallScope};
 use serde::{Deserialize, Serialize};
 
 use crate::config::AgentConfig;
@@ -729,7 +729,7 @@ pub fn takes_service_install_defaults(machine_global: bool, outcome: &EnrollOutc
 /// shown a remote unlock there. Both keep `never`, as does every existing
 /// config that lacks the key.
 pub fn apply_service_install_defaults(cfg: &mut AgentConfig) {
-    cfg.lock_on_end = roomler_ai_remote_control::models::LockOnEnd::Auto;
+    cfg.lock_on_end = meshharbor_remote_control::models::LockOnEnd::Auto;
 }
 
 /// Strip the trailing slash and force the scheme to `https://` if the
@@ -746,10 +746,10 @@ pub fn apply_service_install_defaults(cfg: &mut AgentConfig) {
 /// A remote host (the production case) is still upgraded.
 fn normalize_server_url(raw: &str) -> String {
     // FR-101 P1b — the same rule every reader of a server URL applies now
-    // (`roomler_ai_remote_control::server_url`), which reads the URL as
+    // (`meshharbor_remote_control::server_url`), which reads the URL as
     // reqwest will: `HTTP:roomler.ai` is plaintext too. No plaintext escape
     // at enrollment: the token must travel over TLS.
-    let secured = roomler_ai_remote_control::server_url::secure(raw, false);
+    let secured = meshharbor_remote_control::server_url::secure(raw, false);
     if secured.promoted {
         tracing::warn!(
             original = raw,
@@ -1042,7 +1042,7 @@ mod tests {
     /// reads `never`, and so does a per-user install.
     #[test]
     fn only_a_fresh_service_install_starts_at_lock_on_end_auto() {
-        use roomler_ai_remote_control::models::LockOnEnd;
+        use meshharbor_remote_control::models::LockOnEnd;
 
         // A fresh service install: the default applies.
         let fresh = fresh_for("https://a.invalid", "t1", "tok1");

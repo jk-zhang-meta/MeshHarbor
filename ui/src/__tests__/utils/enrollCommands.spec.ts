@@ -136,7 +136,7 @@ describe('enrollCommands', () => {
 
   it('offers the wizard for an agent only where it installs one (FR-97 D5)', () => {
     // Off Windows, Roomler Setup installs the tunnel client and nothing else
-    // (`agents/roomler-setup`): offered for an agent there, it could not
+    // (`agents/meshharbor-setup`): offered for an agent there, it could not
     // enroll the device the token was minted for.
     for (const scope of SCOPES) {
       const offered = enrollCommands('agent', ORIGIN, TOKEN, scope)

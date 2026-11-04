@@ -16,8 +16,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use bson::{Document, doc, oid::ObjectId};
-use roomler_ai_remote_control::signaling::ServerMsg;
-use roomler_core::{FleetLifecycle, ReleasedLease, TenantLifecycle, hooks::TenantArchived};
+use meshharbor_remote_control::signaling::ServerMsg;
+use meshharbor_core::{FleetLifecycle, ReleasedLease, TenantLifecycle, hooks::TenantArchived};
 use tracing::info;
 
 use crate::HiveState;

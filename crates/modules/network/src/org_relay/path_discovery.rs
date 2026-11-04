@@ -5,8 +5,8 @@
 
 use super::path_graph::EdgeGraph;
 use bson::oid::ObjectId;
-use roomler_ai_remote_control::signaling::{OrgRelayDiscoveryCursorWire, RelayPathWire};
-use roomler_core::business_authority::BusinessZone;
+use meshharbor_remote_control::signaling::{OrgRelayDiscoveryCursorWire, RelayPathWire};
+use meshharbor_core::business_authority::BusinessZone;
 use std::collections::{HashMap, HashSet};
 
 /// Bound CPU per metadata request, independently from path length. A graph
@@ -360,7 +360,7 @@ pub(super) fn scan(
 mod tests {
     use super::*;
     use crate::org_relay::path_graph::{EligibleRelay, GraphEdge};
-    use roomler_core::business_authority::BusinessZone::{Mainland as M, NonMainland as N};
+    use meshharbor_core::business_authority::BusinessZone::{Mainland as M, NonMainland as N};
     fn relay(n: u8, zone: BusinessZone) -> EligibleRelay {
         EligibleRelay {
             node_id: ObjectId::from_bytes([n; 12]),

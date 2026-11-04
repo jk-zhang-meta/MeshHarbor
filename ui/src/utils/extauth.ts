@@ -14,7 +14,7 @@
  *   included) cannot stand in for the device.
  *
  * Every byte here is a wire surface shared with `roomlerd`
- * (`agents/roomlerd/src/external_logins.rs`): the labels, the length
+ * (`agents/meshharbord/src/external_logins.rs`): the labels, the length
  * prefixes, the field order, the hashes, the encoding. The tests pin the
  * same known-answer vectors the device's tests pin.
  */

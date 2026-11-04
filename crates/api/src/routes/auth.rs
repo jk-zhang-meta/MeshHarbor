@@ -6,8 +6,8 @@ use axum::{
     http::{HeaderMap, StatusCode, header},
 };
 use nanoid::nanoid;
-use roomler_ai_db::models::{TutorialState, User};
-use roomler_core::attribution::{self, AttributionInput};
+use meshharbor_db::models::{TutorialState, User};
+use meshharbor_core::attribution::{self, AttributionInput};
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
@@ -26,7 +26,7 @@ pub struct RegisterRequest {
     /// `content`, `term`, `referrer_host`, `landing_path`, `self_reported`),
     /// as the register view read them off its own URL. Optional, read
     /// leniently, sanitised server-side; a malformed value never fails the
-    /// registration (`roomler_core::attribution`).
+    /// registration (`meshharbor_core::attribution`).
     #[serde(default)]
     pub attribution: Option<AttributionInput>,
 }
@@ -403,18 +403,18 @@ pub async fn native_share_ssh_login(
         },
     )
     .await?;
-    roomler_core::admission::require_user(&state, &user, None)?;
-    roomler_core::device_share::require_recipient(&user)?;
+    meshharbor_core::admission::require_user(&state, &user, None)?;
+    meshharbor_core::device_share::require_recipient(&user)?;
     let user_id = user
         .id
         .ok_or_else(|| ApiError::Unauthorized("Account missing identity".into()))?;
     let grant = bson::oid::ObjectId::parse_str(body.share_grant_id)
         .map_err(|_| ApiError::BadRequest("Invalid share ID".into()))?;
-    roomler_core::device_share::authorize_grant(
+    meshharbor_core::device_share::authorize_grant(
         &state,
         user_id,
         grant,
-        roomler_ai_db::models::DeviceShareOperation::Ssh,
+        meshharbor_db::models::DeviceShareOperation::Ssh,
     )
     .await?;
     let (access_token, expires_in) = state.auth.generate_access_token_at_revision(
@@ -442,7 +442,7 @@ pub async fn login(
         ));
     }
 
-    roomler_core::admission::require_user(&state, &user, None)?;
+    meshharbor_core::admission::require_user(&state, &user, None)?;
     let user_id = user.id.unwrap();
     let tokens = state.auth.generate_tokens_at_revision(
         user_id,
@@ -592,7 +592,7 @@ pub async fn refresh(
         .map_err(|_| ApiError::Unauthorized("Invalid user ID".to_string()))?;
 
     let user = state.users.base.find_by_id(user_id).await?;
-    roomler_core::admission::require_user(&state, &user, Some(claims.approval_revision))?;
+    meshharbor_core::admission::require_user(&state, &user, Some(claims.approval_revision))?;
 
     let tokens = state.auth.generate_tokens_at_revision(
         user_id,
@@ -744,7 +744,7 @@ async fn auto_accept_invite(
 mod tests {
     use super::*;
     use bson::{DateTime, oid::ObjectId};
-    use roomler_ai_db::models::{
+    use meshharbor_db::models::{
         NotificationPrefs, OAuthProvider, Presence, SignupAttribution, TutorialState,
         UserStatusInfo,
     };
@@ -768,7 +768,7 @@ mod tests {
             locale: "en-US".into(),
             timezone: "UTC".into(),
             is_verified: true,
-            account_approval: roomler_ai_db::models::AccountApproval::pending(),
+            account_approval: meshharbor_db::models::AccountApproval::pending(),
             is_mfa_enabled: false,
             last_active_at: None,
             oauth_providers: vec![OAuthProvider {

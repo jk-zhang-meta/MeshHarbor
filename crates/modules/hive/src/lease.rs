@@ -18,7 +18,7 @@
 //! | on a connection advertising `hive-lease` only | a build before P2e-2 never waits for the word, and drops a frame it cannot read |
 
 use bson::oid::ObjectId;
-use roomler_ai_remote_control::signaling::ServerMsg;
+use meshharbor_remote_control::signaling::ServerMsg;
 use tokio::sync::mpsc;
 use tracing::{debug, info};
 

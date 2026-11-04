@@ -10,9 +10,9 @@
 //! "not ours".
 
 use bson::oid::ObjectId;
-use roomler_ai_mod_fleet::hub::{DispatchCtx, OrgPolicy};
-use roomler_ai_mod_fleet::nudge::{note_agent_offline_evidence, spawn_agent_nudge};
-use roomler_ai_remote_control::{
+use meshharbor_mod_fleet::hub::{DispatchCtx, OrgPolicy};
+use meshharbor_mod_fleet::nudge::{note_agent_offline_evidence, spawn_agent_nudge};
+use meshharbor_remote_control::{
     models::ConsentMode,
     signaling::{ClientMsg, Role, ServerMsg},
 };
@@ -28,7 +28,7 @@ pub struct ControllerFrame<'a> {
     pub controller_name: &'a str,
     /// The Hub-registered sender for this browser connection: how replies
     /// and errors reach the tab.
-    pub controller_tx: &'a roomler_ai_remote_control::session::ClientTx,
+    pub controller_tx: &'a meshharbor_remote_control::session::ClientTx,
     /// The raw text frame (parsed here, not by the socket).
     pub text: &'a str,
     /// PR-1 rehome — the affinity key this connection dialed with (`None` =
@@ -151,13 +151,13 @@ pub async fn dispatch_controller_rc(
     state: &RemoteState,
     user_id: ObjectId,
     controller_name: &str,
-    controller_tx: &roomler_ai_remote_control::session::ClientTx,
+    controller_tx: &meshharbor_remote_control::session::ClientTx,
     text: &str,
     consent_mode: ConsentMode,
     override_reason: Option<String>,
     // P6 — the device's `AccessPolicy.input_mode` (resolved by the authz
     // gate alongside `consent_mode`); forwarded to the agent's arbiter.
-    input_mode: Option<roomler_ai_remote_control::models::InputMode>,
+    input_mode: Option<meshharbor_remote_control::models::InputMode>,
     // Multi-org — the org name the host's consent prompt should name
     // (resolved by the same gate).
     tenant_name: Option<String>,
@@ -173,7 +173,7 @@ pub async fn dispatch_controller_rc(
     // P4b-2 — the idle limit, org's and device's (the same gate).
     idle_secs: Option<u32>,
     // FR-99 P3b — the device's lock ask (the same gate).
-    lock_on_end: Option<roomler_ai_remote_control::models::LockOnEnd>,
+    lock_on_end: Option<meshharbor_remote_control::models::LockOnEnd>,
     // FR-115 P3 — the device org's concurrent-session cap (the same gate).
     org_session_cap: Option<u32>,
     // PR-1 rehome direction inputs: the affinity key this conn DIALED
@@ -201,7 +201,7 @@ pub async fn dispatch_controller_rc(
         && let Some(org) = hub.agent_org(*agent_id)
     {
         use crate::slots::SlotDecision;
-        use roomler_core::cluster::session_slots::SlotScope;
+        use meshharbor_core::cluster::session_slots::SlotScope;
         match crate::slots::claim(state, SlotScope::Org(org), user_id, *agent_id, cap).await {
             SlotDecision::Claimed(lease) => {
                 slot = Some(lease);
@@ -213,7 +213,7 @@ pub async fn dispatch_controller_rc(
                 holder_user,
                 holder_agent,
             } => {
-                let e = roomler_ai_remote_control::Error::OrgSessionLimit {
+                let e = meshharbor_remote_control::Error::OrgSessionLimit {
                     cap,
                     holder_user,
                     holder_agent,
@@ -297,7 +297,7 @@ pub async fn dispatch_controller_rc(
         // 250 ms; on any probe failure fall through to the honest
         // `agent_offline`.
         if is_session_request
-            && let roomler_ai_remote_control::error::Error::AgentOffline(agent_hex) = &e
+            && let meshharbor_remote_control::error::Error::AgentOffline(agent_hex) = &e
             && let Some(redis) = &state.redis_pubsub
             && let Ok(Ok(Some(owner))) = tokio::time::timeout(
                 std::time::Duration::from_millis(250),
@@ -306,8 +306,8 @@ pub async fn dispatch_controller_rc(
             .await
         {
             note_agent_offline_evidence(state, agent_hex.clone(), "controller_session");
-            roomler_core::cluster::metrics::bump(&roomler_core::cluster::metrics::RC_REHOME_TOTAL);
-            let record = roomler_core::cluster::directory::OwnerRecord::parse(&owner);
+            meshharbor_core::cluster::metrics::bump(&meshharbor_core::cluster::metrics::RC_REHOME_TOTAL);
+            let record = meshharbor_core::cluster::directory::OwnerRecord::parse(&owner);
             let owner_pod = record
                 .as_ref()
                 .map(|r| r.pod_id.clone())
@@ -382,7 +382,7 @@ pub async fn dispatch_controller_rc(
                     .unwrap_or_default(),
                 Err(_) => String::new(),
             };
-            let direction = roomler_ai_mod_fleet::nudge::rehome_direction(
+            let direction = meshharbor_mod_fleet::nudge::rehome_direction(
                 dialed_tid,
                 &agent_tenant_hex,
                 conn_established_ms,
@@ -390,9 +390,9 @@ pub async fn dispatch_controller_rc(
                 state.settings.rc.rehome_direction_guard_ms,
             );
             match direction {
-                roomler_ai_mod_fleet::nudge::RehomeDirection::ControllerMove { reason } => {
-                    roomler_core::cluster::metrics::bump(
-                        &roomler_core::cluster::metrics::RC_REHOME_CONTROLLER_TOTAL,
+                meshharbor_mod_fleet::nudge::RehomeDirection::ControllerMove { reason } => {
+                    meshharbor_core::cluster::metrics::bump(
+                        &meshharbor_core::cluster::metrics::RC_REHOME_CONTROLLER_TOTAL,
                     );
                     info!(
                         %user_id,
@@ -403,7 +403,7 @@ pub async fn dispatch_controller_rc(
                         "cross-pod rc miss: controller re-dials (nudge suppressed)"
                     );
                 }
-                roomler_ai_mod_fleet::nudge::RehomeDirection::NudgeAgent => {
+                meshharbor_mod_fleet::nudge::RehomeDirection::NudgeAgent => {
                     info!(
                         %user_id,
                         agent = %agent_hex,
@@ -430,7 +430,7 @@ pub async fn dispatch_controller_rc(
         // honest surface either way.
         if matches!(
             &e,
-            roomler_ai_remote_control::error::Error::SessionNotFound(_)
+            meshharbor_remote_control::error::Error::SessionNotFound(_)
         ) {
             let owners: Vec<String> = state
                 .remote_rc_conns
@@ -481,7 +481,7 @@ pub async fn dispatch_controller_rc(
         }
         // Phase A-1 split-evidence probe for the remaining offline paths
         // (non-session-request messages, probe timeouts).
-        if let roomler_ai_remote_control::error::Error::AgentOffline(agent_hex) = &e {
+        if let meshharbor_remote_control::error::Error::AgentOffline(agent_hex) = &e {
             note_agent_offline_evidence(state, agent_hex.clone(), "controller_session");
         }
         // Surface the failure to the controller so the UI can exit its
@@ -505,9 +505,9 @@ pub async fn dispatch_controller_rc(
 /// sentence, never to an error of its own.
 pub(crate) async fn refusal_message(
     state: &RemoteState,
-    e: &roomler_ai_remote_control::Error,
+    e: &meshharbor_remote_control::Error,
 ) -> String {
-    let roomler_ai_remote_control::Error::OrgSessionLimit {
+    let meshharbor_remote_control::Error::OrgSessionLimit {
         cap,
         holder_user,
         holder_agent,
@@ -568,7 +568,7 @@ pub struct SessionAuthz {
     pub mode: ConsentMode,
     pub override_reason: Option<String>,
     /// P6 — the device's `AccessPolicy.input_mode` (None = free default).
-    pub input_mode: Option<roomler_ai_remote_control::models::InputMode>,
+    pub input_mode: Option<meshharbor_remote_control::models::InputMode>,
     /// Multi-org — display name of the organization this session happens in,
     /// so the host's consent prompt can say WHICH org is asking. Resolved
     /// from the agent row the gate already loads. `None` on the early-out
@@ -608,7 +608,7 @@ pub struct SessionAuthz {
     /// (`AccessPolicy::lock_on_end_ask`). It binds every controller, the
     /// owner and break-glass included: it describes the device, not who is
     /// asking. `None` when nothing is asked and on the early-out paths.
-    pub lock_on_end: Option<roomler_ai_remote_control::models::LockOnEnd>,
+    pub lock_on_end: Option<meshharbor_remote_control::models::LockOnEnd>,
     /// FR-115 P3 — how many remote sessions the device's org may run at once
     /// ([`org_session_cap_of`]), counted by the hub that owns the device. It
     /// binds every controller, the owner and break-glass included. `None`
@@ -635,7 +635,7 @@ impl SessionAuthz {
     }
     fn allow_with_input(
         mode: ConsentMode,
-        input_mode: Option<roomler_ai_remote_control::models::InputMode>,
+        input_mode: Option<meshharbor_remote_control::models::InputMode>,
         tenant_name: Option<String>,
         rc_overlay: bool,
         session_policy: OrgPolicy,
@@ -673,7 +673,7 @@ impl SessionAuthz {
     /// FR-99 P3b — set the device's lock ask.
     fn lock_ask(
         mut self,
-        lock_on_end: Option<roomler_ai_remote_control::models::LockOnEnd>,
+        lock_on_end: Option<meshharbor_remote_control::models::LockOnEnd>,
     ) -> Self {
         self.lock_on_end = lock_on_end;
         self
@@ -690,7 +690,7 @@ impl SessionAuthz {
 /// ESTABLISHED like the device cap: `plan_enforcement` does not soften it.
 /// It landed with no org over it (the FR-115 census: peaks of four and three,
 /// both on unlimited plans), so no grandfathering arises.
-pub(crate) fn org_session_cap_of(t: &roomler_ai_db::models::Tenant) -> Option<u32> {
+pub(crate) fn org_session_cap_of(t: &meshharbor_db::models::Tenant) -> Option<u32> {
     let n = t.limits().max_concurrent_sessions;
     (n != u32::MAX).then_some(n)
 }
@@ -713,8 +713,8 @@ pub async fn resolve_session_authz(
     controller_user_id: ObjectId,
     text: &str,
 ) -> Result<SessionAuthz, String> {
-    use roomler_ai_db::models::role::permissions;
-    use roomler_ai_remote_control::models::AgentStatus;
+    use meshharbor_db::models::role::permissions;
+    use meshharbor_remote_control::models::AgentStatus;
 
     if let Ok(
         msg @ ClientMsg::SessionRequest {
@@ -784,7 +784,7 @@ pub async fn resolve_session_authz(
     // P4b-2 — and its idle limit, held to the device's own when that one is
     // shorter: a device may tighten its org's limit, never loosen it. A row
     // we could not see leaves the device's own, never a guess at the org's.
-    let idle_secs = roomler_ai_remote_control::models::stricter_idle_limit(
+    let idle_secs = meshharbor_remote_control::models::stricter_idle_limit(
         tenant.as_ref().and_then(|t| t.settings.rc_limits.idle_secs),
         agent.access_policy.idle_limit_secs(),
     );
@@ -936,8 +936,8 @@ pub async fn resolve_session_authz(
 /// Stable short code for the wire. Exhaustive match so a new
 /// `remote_control::Error` variant triggers a compile error here rather
 /// than silently being reported as "internal".
-pub fn error_code(e: &roomler_ai_remote_control::Error) -> &'static str {
-    use roomler_ai_remote_control::Error::*;
+pub fn error_code(e: &meshharbor_remote_control::Error) -> &'static str {
+    use meshharbor_remote_control::Error::*;
     match e {
         AgentOffline(_) => "agent_offline",
         AgentNotFound(_) => "agent_not_found",
@@ -965,8 +965,8 @@ pub fn error_code(e: &roomler_ai_remote_control::Error) -> &'static str {
 /// If the underlying error references a specific session, extract its id
 /// so the controller UI can route the error to the right spinner instead
 /// of assuming it's about the most recently attempted session.
-fn error_session_id(e: &roomler_ai_remote_control::Error) -> Option<bson::oid::ObjectId> {
-    use roomler_ai_remote_control::Error::*;
+fn error_session_id(e: &meshharbor_remote_control::Error) -> Option<bson::oid::ObjectId> {
+    use meshharbor_remote_control::Error::*;
     match e {
         SessionNotFound(hex) => bson::oid::ObjectId::parse_str(hex).ok(),
         BadPhase(hex, _) => bson::oid::ObjectId::parse_str(hex).ok(),

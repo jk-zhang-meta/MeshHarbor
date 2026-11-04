@@ -13,6 +13,6 @@
 **Index registry:** `crates/db/src/indexes.rs` — 15 collections with comprehensive indexes
 
 ### Binary + Image Size Tracking — noted 2026-03-10
-**Pattern:** Monitor `target/release/roomler-ai-api` binary size and Docker image size
+**Pattern:** Monitor `target/release/meshharbor-api` binary size and Docker image size
 **Status:** Baseline not yet established — will be captured on first health check run
 **Recurrence prevention:** Health check compares against baseline and flags >10% growth

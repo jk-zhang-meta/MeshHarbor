@@ -239,7 +239,7 @@ export function keepBusyStatusLine(s: KeepBusyState, now: number = Date.now()): 
 }
 
 // ─── Previews ───────────────────────────────────────────────────────────
-// The same curves the agent draws (`agents/roomlerd/src/keep_busy/patterns.rs`),
+// The same curves the agent draws (`agents/meshharbord/src/keep_busy/patterns.rs`),
 // sampled into an SVG path. Only the picture is shared, never the motion:
 // the agent remains the one that moves anything.
 

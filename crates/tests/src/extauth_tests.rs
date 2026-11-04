@@ -22,8 +22,8 @@ use base64::Engine as _;
 use futures::{SinkExt, StreamExt};
 use opaque_ke::{ClientLogin, ClientLoginFinishParameters, CredentialResponse};
 use rand_opaque::rngs::OsRng;
-use roomlerd::external_access::{Suite, set_password};
-use roomlerd::{config::AgentConfig, encode::EncoderPreference, enrollment, signaling};
+use meshharbord::external_access::{Suite, set_password};
+use meshharbord::{config::AgentConfig, encode::EncoderPreference, enrollment, signaling};
 use serde_json::{Value, json};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
@@ -100,17 +100,17 @@ fn spawn_agent(
     tokio::spawn(async move {
         let connected = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let (view_tx, _view_rx) = tokio::sync::watch::channel(Default::default());
-        let broker = roomlerd::consent::ConsentBroker::new(
-            roomlerd::consent::Mode::AutoGrant,
+        let broker = meshharbord::consent::ConsentBroker::new(
+            meshharbord::consent::Mode::AutoGrant,
             std::env::temp_dir().join(format!("roomler-extauth-consent-{}", cfg.agent_id)),
         )
         .expect("consent broker init");
         let (exec_enabled, remote_config_enabled) = (cfg.exec_enabled, cfg.remote_config_enabled);
         let _ = signaling::run(
-            signaling::OrgCtx::primary(roomlerd::token_slot::TokenSlot::new(
+            signaling::OrgCtx::primary(meshharbord::token_slot::TokenSlot::new(
                 cfg.agent_token.clone(),
             )),
-            roomlerd::delegate::Delegation::Off,
+            meshharbord::delegate::Delegation::Off,
             cfg,
             EncoderPreference::Software,
             stop_rx,
@@ -118,14 +118,14 @@ fn spawn_agent(
             view_tx,
             Default::default(),
             broker,
-            roomlerd::tunnel::client_mgr::TunnelClientHub::new("test".into()),
-            roomlerd::remote_config::RemoteConfigServices::new(
+            meshharbord::tunnel::client_mgr::TunnelClientHub::new("test".into()),
+            meshharbord::remote_config::RemoteConfigServices::new(
                 config_path,
                 std::sync::Arc::new(tokio::sync::Mutex::new(())),
                 exec_enabled,
                 remote_config_enabled,
             ),
-            roomlerd::rc_sessions::RcSessionRegistry::new(),
+            meshharbord::rc_sessions::RcSessionRegistry::new(),
         )
         .await;
     })
@@ -174,7 +174,7 @@ async fn device_with(
     cfg.external_max_permissions = terms.ceiling.map(str::to_string);
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.toml");
-    roomlerd::config::save(&path, &cfg).unwrap();
+    meshharbord::config::save(&path, &cfg).unwrap();
     let agent_id = cfg.agent_id.clone();
 
     let (stop, stop_rx) = tokio::sync::watch::channel(false);

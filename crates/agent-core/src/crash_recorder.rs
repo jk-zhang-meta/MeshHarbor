@@ -9,7 +9,7 @@
 //! each routing through [`record`] with a [`CrashReason`] +
 //! [`WriterContext`]. The recorder serialises an
 //! [`AgentCrashPayload`] (shared wire type defined in
-//! `roomler_ai_remote_control::models`) to a sidecar JSON file under
+//! `meshharbor_remote_control::models`) to a sidecar JSON file under
 //! the appropriate crashes dir; on next agent startup,
 //! `crash_uploader::drain_and_upload` POSTs each file to roomler.ai
 //! and deletes it on 2xx.
@@ -64,8 +64,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use roomler_ai_remote_control::models::{AgentCrashPayload, CrashReason};
-pub use roomler_ai_remote_control::models::{AgentCrashPayload as Payload, CrashReason as Reason};
+use meshharbor_remote_control::models::{AgentCrashPayload, CrashReason};
+pub use meshharbor_remote_control::models::{AgentCrashPayload as Payload, CrashReason as Reason};
 
 /// Maximum serialised JSON payload size. The backend's ingest route
 /// caps at 80 KiB to leave HTTP overhead room; we cap the payload

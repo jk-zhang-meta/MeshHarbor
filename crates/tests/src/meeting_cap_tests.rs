@@ -17,8 +17,8 @@ use futures::StreamExt;
 use serde_json::Value;
 
 use crate::fixtures::test_app::TestApp;
-use roomler_ai_mod_conference::{ConferenceState, meeting_cap};
-use roomler_ai_services::dao::growth::{GROWTH_DAILY, QUOTA_COLLISION_METRIC, QUOTA_SOURCE};
+use meshharbor_mod_conference::{ConferenceState, meeting_cap};
+use meshharbor_services::dao::growth::{GROWTH_DAILY, QUOTA_COLLISION_METRIC, QUOTA_SOURCE};
 
 type Ws =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;

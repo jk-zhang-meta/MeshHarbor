@@ -29,9 +29,9 @@ use axum::{
 };
 use bson::{DateTime, Document, doc, oid::ObjectId};
 use chrono::NaiveDate;
-use roomler_ai_db::models::SignupAttribution;
-use roomler_ai_services::dao::{growth::GrowthDao, growth_digest::ExcludedCounts};
-use roomler_core::{campaign, growth::ExclusionSet};
+use meshharbor_db::models::SignupAttribution;
+use meshharbor_services::dao::{growth::GrowthDao, growth_digest::ExcludedCounts};
+use meshharbor_core::{campaign, growth::ExclusionSet};
 use serde::{Deserialize, Serialize};
 
 use super::{
@@ -665,11 +665,11 @@ pub async fn org_timeline(
 
     // P4 — the billing history, and the first payment as a milestone.
     let plan_history = if mounted(&state, "saas") {
-        let rows = roomler_ai_services::dao::billing_event::BillingEventDao::new(&state.db)
+        let rows = meshharbor_services::dao::billing_event::BillingEventDao::new(&state.db)
             .list(Some(&[tid]), &[])
             .await?;
         if let Some(t) =
-            roomler_ai_services::billing::OrgBilling::of(&rows.iter().collect::<Vec<_>>())
+            meshharbor_services::billing::OrgBilling::of(&rows.iter().collect::<Vec<_>>())
                 .paid_since
         {
             events.push((

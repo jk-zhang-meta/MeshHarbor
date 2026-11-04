@@ -29,20 +29,20 @@ use axum::{
 };
 use bson::oid::ObjectId;
 use dashmap::DashMap;
-use roomler_ai_config::Settings;
-use roomler_ai_db::indexes::{
+use meshharbor_config::Settings;
+use meshharbor_db::indexes::{
     IndexOp, IndexSet, index, index_ttl, index_unique, index_unique_partial,
 };
-use roomler_ai_mod_fleet::FleetState;
-use roomler_ai_remote_control::signaling::ServerMsg;
-use roomler_ai_services::dao::{
+use meshharbor_mod_fleet::FleetState;
+use meshharbor_remote_control::signaling::ServerMsg;
+use meshharbor_services::dao::{
     key_rotation_audit::KeyRotationAuditDao, overlay_network::OverlayNetworkDao,
     overlay_node::OverlayNodeDao, overlay_policy::OverlayPolicyDao,
     peer_relay_audit::PeerRelayAuditDao, ssh_activity::SshActivityDao, ssh_audit::SshAuditDao,
     ssh_pending::SshPendingDao, tunnel_audit::TunnelAuditDao, tunnel_client::TunnelClientDao,
     tunnel_policy::TunnelPolicyDao,
 };
-use roomler_core::{
+use meshharbor_core::{
     Capabilities, Core, Hooks, Module, TenantCtx, WsRegistration, rate_limit::RateLimiter,
     ws::UpgradeSpec,
 };
@@ -116,7 +116,7 @@ pub struct NetworkState {
     pub(crate) tunnel_overlay_locks:
         Arc<DashMap<ObjectId, std::sync::Weak<tokio::sync::Mutex<()>>>>,
     /// Live join snapshots, for fail-closed security removal without Mongo IO.
-    pub admission_nodes: Arc<DashMap<ObjectId, roomler_ai_remote_control::models::OverlayNode>>,
+    pub admission_nodes: Arc<DashMap<ObjectId, meshharbor_remote_control::models::OverlayNode>>,
     /// DERP relay registry: `(network_id, wg_pubkey)` → the outbound frame
     /// sender for that node's live `/derp` WS. The pubkey-addressed
     /// forwarding map for the both-UDP-blocked carrier tier. The relay that
@@ -191,7 +191,7 @@ pub struct NetworkState {
     /// Multi-region DERP ticket signer (`relay.derp_ticket_private_key`).
     /// `None` = no key configured — ticket requests go unanswered and agents
     /// keep using the central `/derp`.
-    pub derp_ticket: Option<Arc<roomler_ai_remote_control::derp_ticket::DerpTicketSigner>>,
+    pub derp_ticket: Option<Arc<meshharbor_remote_control::derp_ticket::DerpTicketSigner>>,
     /// C-3 — directory owner-tokens for LOCAL tunnel sessions
     /// (`roomler:own:tunnel:<session>`). Written on open; refreshed by the
     /// directory heartbeat while the session map still holds the session;
@@ -217,7 +217,7 @@ pub struct NetworkState {
     /// (P3b-2 agent-as-tunnel-client, i.e. declared routes) —
     /// `origin_agent_id → {tunnel_session_id}`. Twin of the by-target index
     /// above, consulted by fleet's `rc.agent_nudge` busy check through
-    /// [`roomler_core::hooks::FleetLifecycle::agent_busy`]: the
+    /// [`meshharbor_core::hooks::FleetLifecycle::agent_busy`]: the
     /// per-connection session map is invisible there, so without this a
     /// routes-only agent read as IDLE and got its WS cycled (tearing every
     /// declared route plus its overlay carriers).
@@ -227,7 +227,7 @@ pub struct NetworkState {
             ObjectId,
             (
                 ObjectId,
-                roomler_ai_remote_control::models::NodeRef,
+                meshharbor_remote_control::models::NodeRef,
                 ObjectId,
                 u64,
             ),
@@ -271,7 +271,7 @@ impl Module for NetworkState {
         // Regions carrying derp_urls without a key = loud warn, never fatal.
         let derp_ticket = match settings.relay.derp_ticket_private_key.as_deref() {
             Some(key) => {
-                match roomler_ai_remote_control::derp_ticket::DerpTicketSigner::from_pkcs8_b64(key)
+                match meshharbor_remote_control::derp_ticket::DerpTicketSigner::from_pkcs8_b64(key)
                 {
                     Ok(s) => {
                         tracing::info!(
@@ -359,7 +359,7 @@ impl Module for NetworkState {
         let arms = Arc::new(agent_socket::NetworkAgentSocket::new(state.clone()));
         state.core.agent_socket.register(
             Self::ID,
-            roomler_core::AgentSocketHooks {
+            meshharbor_core::AgentSocketHooks {
                 handler: Some(arms.clone()),
                 lifecycle: Some(arms),
             },
@@ -410,7 +410,7 @@ impl Module for NetworkState {
                     }
                     for entry in tunnel_tokens.iter() {
                         let (sid, token) = (*entry.key(), entry.value().clone());
-                        let key = roomler_core::cluster::directory::tunnel_key(&sid.to_hex());
+                        let key = meshharbor_core::cluster::directory::tunnel_key(&sid.to_hex());
                         if let Err(e) = dir.refresh_if_mine(&key, &token, 90).await {
                             tracing::debug!(session = %sid, %e, "tunnel directory refresh failed");
                         }
@@ -430,7 +430,7 @@ impl Module for NetworkState {
                     }
                     for entry in derp_tokens.iter() {
                         let ((net, pk), token) = (*entry.key(), entry.value().clone());
-                        let key = roomler_core::cluster::directory::derp_key(
+                        let key = meshharbor_core::cluster::directory::derp_key(
                             &net.to_hex(),
                             &derp_cluster::pk_hex(&pk),
                         );
@@ -485,7 +485,7 @@ impl Module for NetworkState {
                 put(routes::peer_relay::set_policy),
             );
 
-        // roomler-cli routes — same enrollment two-step shape as the agent,
+        // meshharbor-cli routes — same enrollment two-step shape as the agent,
         // but a distinct audience (`TunnelClient` JWT) so a leaked agent token
         // can't impersonate a client and vice-versa.
         let tunnel_client = Router::new()
@@ -735,7 +735,7 @@ impl Module for NetworkState {
             // Role approvals need no set here: their deterministic `_id` is the
             // only key, and MongoDB rejects an empty createIndexes request.
             IndexSet {
-                collection: roomler_core::business_authority::OBSERVATIONS_COLLECTION,
+                collection: meshharbor_core::business_authority::OBSERVATIONS_COLLECTION,
                 pre_ops: Vec::new(),
                 indexes: vec![index_ttl(bson::doc! { "expires_at": 1 }, 0)],
             },
@@ -1007,7 +1007,7 @@ impl Module for NetworkState {
                 state.tunnel_presence_tokens.remove(&sid);
                 let _ = dir
                     .release(
-                        &roomler_core::cluster::directory::tunnel_key(&sid.to_hex()),
+                        &meshharbor_core::cluster::directory::tunnel_key(&sid.to_hex()),
                         &token,
                     )
                     .await;
@@ -1025,14 +1025,14 @@ impl Module for NetworkState {
                 let member = derp_cluster::pk_hex(&pk);
                 if let Ok(true) = dir
                     .release(
-                        &roomler_core::cluster::directory::derp_key(&net_hex, &member),
+                        &meshharbor_core::cluster::directory::derp_key(&net_hex, &member),
                         &token,
                     )
                     .await
                 {
                     let _ = dir
                         .set_remove(
-                            &roomler_core::cluster::directory::derpnet_key(&net_hex),
+                            &meshharbor_core::cluster::directory::derpnet_key(&net_hex),
                             &member,
                         )
                         .await;

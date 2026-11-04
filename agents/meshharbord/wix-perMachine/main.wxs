@@ -1,0 +1,528 @@
+<?xml version="1.0" encoding="windows-1252"?>
+<!-- RETIRED-NAME-ANCHOR-BEGIN
+     Same as wix/main.wxs: MSI identity (roomler_agent_exe FileKey), the inert
+     roomler-agent.exe alias, and pre-P4b install-folder cleanup.
+     INVARIANT: an MSI identifier that ships cannot be renamed without breaking
+     upgrades from every installed version. docs/fr/FR-21
+-->
+<!--
+  WiX v3 source for the PER-MACHINE roomler-agent MSI (M3 phase 4).
+
+  Build by file-swapping into wix/main.wxs (release-agent.yml does
+  this between two `cargo wix` runs). cargo-wix auto-discovers every
+  *.wxs under wix/, so this file lives in a sibling wix-perMachine/
+  directory to avoid the per-User build trying to compile it too.
+  Both per-user and per-machine MSIs ship from the same agent-v* tag.
+  (XML rule: no consecutive dashes in comments, hence the awkward
+  paraphrase of what would otherwise be `cargo wix [hyphen][hyphen]
+  include`.)
+
+  Differences vs the per-user main.wxs:
+
+    1. InstallScope='perMachine'. Files land under %ProgramFiles%
+       \Roomler (P4b: renamed from roomler-agent — the node-stack
+       unification's ONE install folder; the cleanup-legacy-install
+       CA sweeps the vacated dir on upgrade). UAC prompt fires on
+       install + uninstall. Operators on a managed fleet typically
+       install perMachine silently via group policy / Intune so the
+       prompt is invisible to end users.
+
+    2. Different UpgradeCode GUID. The per-user and per-machine MSIs
+       see each other as completely separate products. To prevent
+       the worst kind of field bug (two binaries, two updaters, two
+       autostart hooks fighting for the instance lock), each MSI
+       checks for the OTHER's UpgradeCode at install time and
+       refuses with a clear LaunchCondition message. The operator
+       has to uninstall one before installing the other.
+
+    3. Auto-registers the SCM service via a deferred + non-impersonated
+       custom action (runs as SYSTEM, which has CreateService rights).
+       The per-user MSI cannot do this because perUser installs run in
+       the user's filtered token and CreateService fails with Access
+       Denied; perMachine installs run elevated by definition.
+
+    4. No HKCU registry KeyPaths; perMachine components key off the
+       file itself (allowed because ProgramFiles is a system folder,
+       not a user-profile folder). Drops one ICE38 / ICE64 source of
+       gotchas that bit perUser.
+
+    5. No Scheduled Task auto-registration. The per-machine flavour
+       is service-only; operators who want both autostart paths can
+       run `roomlerd service install` (no [hyphen][hyphen]
+       as-service flag) manually after the MSI install. v1 keeps
+       the default clean: one product, one autostart hook.
+
+  Effort 2 + M3 phase 4 closes the field gap that drove the M5/M3
+  cycle: with the per-machine MSI, IT can deploy roomler-agent across
+  a fleet via standard MSI tooling and get both perMachine file
+  layout AND SCM service auto-registration in one msiexec invocation.
+  No more "install MSI, then run elevated PS service install
+  [hyphen][hyphen]as-service" two-step.
+-->
+<Wix xmlns='http://schemas.microsoft.com/wix/2006/wi'>
+    <Product
+        Id='*'
+        Name='Roomler Agent (per-Machine)'
+        UpgradeCode='2A8E9C2D-3F1A-5E3F-C2B4-7C2F3D8F5E02'
+        Manufacturer='G ROX LTD'
+        Language='1033'
+        Codepage='1252'
+        Version='$(var.Version)'>
+
+        <Package
+            Id='*'
+            Keywords='Installer'
+            Description='Roomler Daemon — private mesh network + secure remote control (per-Machine)'
+            Manufacturer='G ROX LTD'
+            InstallerVersion='450'
+            Languages='1033'
+            Compressed='yes'
+            InstallScope='perMachine'
+            Platform='x64'
+            SummaryCodepage='1252' />
+
+        <MajorUpgrade
+            Schedule='afterInstallInitialize'
+            DowngradeErrorMessage='A newer version of [ProductName] is already installed. Setup will now exit.' />
+
+        <!--
+          rc.18: dropped the cross-flavour LaunchCondition refusal that
+          previously blocked install over the perUser flavour. The
+          CleanupLegacyPerUser custom action below now scrubs any
+          stale perUser artefacts (Scheduled Task + user data dirs
+          reached via the active-session user-profile bridge) before
+          InstallFiles runs.
+        -->
+
+        <Media Id='1' Cabinet='media1.cab' EmbedCab='yes' />
+        <Property Id='DiskPrompt' Value='Roomler Agent Installation' />
+
+        <Directory Id='TARGETDIR' Name='SourceDir'>
+            <!-- Per-Machine install under %ProgramFiles%\Roomler (P4b:
+                 renamed from roomler-agent; UpgradeCode unchanged, so
+                 MajorUpgrade still removes the old-folder product first).
+                 Components can use the file itself as KeyPath; no HKCU
+                 dance needed because ProgramFiles is system-scoped. -->
+            <Directory Id='ProgramFiles64Folder'>
+                <Directory Id='APPLICATIONFOLDER' Name='Roomler'>
+                    <!-- P3d Slice B: the daemon EXE is now `roomlerd.exe`. File
+                         Id stays `roomler_agent_exe` so every <CustomAction
+                         FileKey='roomler_agent_exe'> (RegisterService,
+                         EnableSystemContext, cleanup, ...) still resolves to THIS
+                         real daemon file. Component Id + Guid unchanged for
+                         stable identity across upgrade; perMachine keys off the
+                         file itself (KeyPath='yes'), Win64='yes' like siblings. -->
+                    <Component Id='AgentExe' Guid='6E4F5B23-7A3D-4F2C-8E5D-9F2C3E5F7A04' Win64='yes'>
+                        <!-- RETIRED-NAME-ANCHOR(3): an MSI FileKey is installer IDENTITY; every
+                             CustomAction references it and upgrades key off it, so it is frozen
+                             deliberately. docs/fr/FR-21 -->
+                        <File
+                            Id='roomler_agent_exe'
+                            Name='roomlerd.exe'
+                            DiskId='1'
+                            KeyPath='yes'
+                            Source='target\release\roomlerd.exe' />
+                        <!-- P3d Slice B hardening: start the SCM service via the
+                             native StartServices standard action. RegisterService
+                             (deferred CA, After InstallFiles) creates the `Roomler`
+                             service earlier in the sequence, so StartServices finds
+                             it. Belt-and-suspenders next to the DisableSystemContext
+                             restart. Wait='no' so a slow start never fails the
+                             install; stop/remove stay with the Unregister CA. -->
+                        <ServiceControl Id='StartRoomlerSvc' Name='Roomler'
+                                        Start='install' Wait='no' />
+                    </Component>
+                    <!-- P3d Slice C (retired Slice B's alias): the inert
+                         `roomler-agent.exe` copy (`AgentExeAlias`, GUID
+                         F1F83CBE…) is no longer shipped — the live fleet
+                         crossed rc.194 (verified against prod agents
+                         2026-07-22); tray/scripts resolve `roomlerd.exe`
+                         first. MajorUpgrade removes the stale alias file
+                         from upgraded installs. -->
+                    <!-- P4b: the tunnel CLI ships INSIDE the daemon MSI
+                         (node-stack unification Option A — the MSI is the
+                         one updater for the whole stack; daemon installs
+                         subsume the CLI). Same component appends the
+                         install dir to the SYSTEM PATH so `roomler` works
+                         in any new shell for every user. PATH lives and
+                         dies with the CLI file; Part='last' + implicit
+                         Permanent='no' removes only our segment on
+                         uninstall, and msiexec broadcasts WM_SETTINGCHANGE
+                         itself. P3e lever D: the file is now the ~150 KB
+                         meshharbor-cli-shim, which re-execs `roomlerd cli` —
+                         the daemon owns the command surface, so this MSI no
+                         longer carries a second 22.1 MiB copy of crates
+                         roomlerd already links. Installed NAME is unchanged
+                         (roomler.exe), so the PATH entry and the
+                         installer-smoke payload asserts still hold. The
+                         workflow builds target\release\roomler-shim.exe via
+                         `cargo build -p meshharbor-cli-shim [dash][dash]release`
+                         before cargo-wix runs. Keys off the file itself
+                         like its siblings (system-scoped dir). -->
+                    <Component Id='TunnelExe' Guid='833F7BA5-4323-403A-BBC5-B77C42E9F27A' Win64='yes'>
+                        <!-- RETIRED-NAME-ANCHOR(3): roomler_tunnel_cli_exe is installer IDENTITY;
+                             upgrades key off the FileKey, so it is frozen deliberately even though
+                             the crate is `meshharbor-cli` now. docs/fr/FR-21 -->
+                        <File
+                            Id='roomler_tunnel_cli_exe'
+                            Name='roomler.exe'
+                            DiskId='1'
+                            KeyPath='yes'
+                            Source='target\release\roomler-shim.exe' />
+                        <Environment
+                            Id='TunnelPathEnvPerMachine'
+                            Name='PATH'
+                            Value='[APPLICATIONFOLDER]'
+                            Part='last'
+                            Action='set'
+                            System='yes' />
+                    </Component>
+                    <Component Id='LicenseTxt' Guid='7F506C34-8B4E-503D-9F6E-AF3D4F607B15' Win64='yes'>
+                        <File
+                            Id='license_txt'
+                            Name='LICENSE.txt'
+                            DiskId='1'
+                            KeyPath='yes'
+                            Source='LICENSE' />
+                    </Component>
+                    <Component Id='ReadmeTxt' Guid='80617D45-9C5F-614E-A07F-BF4E5F718C26' Win64='yes'>
+                        <File
+                            Id='readme_txt'
+                            Name='README.txt'
+                            DiskId='1'
+                            KeyPath='yes'
+                            Source='agents\roomlerd\packaging\windows\README.txt' />
+                    </Component>
+
+                    <!-- Phase 3b: Wintun TUN driver DLL for the overlay-l3
+                         WireGuard mesh. LoadLibrary'd at runtime; present only
+                         in overlay-l3 builds (the release pipeline produces
+                         them) + staged into target\release by the workflow's
+                         wintun step. Guid='*' since the DLL is its own KeyPath. -->
+                    <Component Id='WintunDll' Guid='*' Win64='yes'>
+                        <File
+                            Id='wintun_dll'
+                            Name='wintun.dll'
+                            DiskId='1'
+                            KeyPath='yes'
+                            Source='target\release\wintun.dll' />
+                    </Component>
+
+                    <!-- App-local Microsoft VC++ 2015-2022 x64 runtime (only
+                         the DLLs our binaries actually import; the full
+                         Microsoft.VC14x.CRT folder shipped through rc.363 and
+                         carried 1.12 MiB of dead weight). Import tables:
+                         roomlerd.exe needs msvcp140 + vcruntime140 +
+                         vcruntime140_1, roomler.exe needs vcruntime140,
+                         meshharbor-desktop.exe needs no CRT, and msvcp140.dll
+                         itself pulls only the two vcruntime DLLs. The dropped
+                         six (concrt140, vccorlib140, msvcp140_1, msvcp140_2,
+                         msvcp140_atomic_wait, msvcp140_codecvt_ids) are
+                         satellites a consuming binary imports DIRECTLY when it
+                         uses the matching STL feature; none of ours does.
+                         Re-verify after adding a C++ dependency with
+                         `dumpbin -dependents <exe> | findstr /i 140` and
+                         extend this component plus the workflow staging list
+                         together. The release
+                         roomlerd.exe links the CRT dynamically (its C++
+                         encoder objects; the vcpkg static-md policy keeps
+                         /MD), so a fresh Windows box without any VC++
+                         redistributable popped "vcruntime140_1.dll was not
+                         found" on the first daemon run (field report
+                         2026-07-28, install.ps1 daemon-machine enroll). The
+                         EXE dir is first in the DLL search path (service
+                         mode included), so shipping the DLLs here makes the
+                         install self-contained for roomlerd.exe, roomler.exe
+                         AND the meshharbor-desktop companion placed beside
+                         them. Staged into target\release by the workflow's
+                         VC++ runtime step. One component for the whole set,
+                         keyed off msvcp140.dll. NB the GUID must be EXPLICIT:
+                         Guid='*' is only legal on multi-file components when
+                         every non-keypath file is unversioned, and every CRT
+                         DLL carries a version (light fails with LGHT0368
+                         otherwise; burned the first rc.266 tag run). That is
+                         unchanged by the trim: still multi-file, still
+                         versioned. -->
+                    <Component Id='VcRedistCrt' Guid='6CB601C1-A505-49D9-97D9-C3015DDCF990' Win64='yes'>
+                        <File Id='crt_msvcp140' Name='msvcp140.dll' DiskId='1' KeyPath='yes' Source='target\release\msvcp140.dll' />
+                        <File Id='crt_vcruntime140' Name='vcruntime140.dll' DiskId='1' Source='target\release\vcruntime140.dll' />
+                        <File Id='crt_vcruntime140_1' Name='vcruntime140_1.dll' DiskId='1' Source='target\release\vcruntime140_1.dll' />
+                    </Component>
+
+                    <!--
+                      M3 A1: enable SendSAS() from LocalSystem services so the
+                      SYSTEM-context worker can deliver Ctrl+Alt+Del to the
+                      controlled host's lock screen. Without this the operator
+                      literally cannot log in via the browser controller because
+                      SendSAS(FALSE) silently fails for non-default principals.
+
+                      HKLM\Software\Microsoft\Windows\CurrentVersion\Policies\
+                          System\SoftwareSASGeneration
+                        0 = None (default; SAS injection blocked)
+                        1 = Services (LocalSystem services may call SendSAS)
+                        2 = Ease of access apps
+                        3 = Both
+
+                      We set 1 — only the LocalSystem service gets the right.
+                      Per-User MSI users never see this; they get the existing
+                      VK_DELETE+VK_CONTROL+VK_MENU path via enigo which works
+                      on the Default desktop but cannot reach Winlogon.
+
+                      Owns its own KeyPath via the registry value; no file
+                      backing needed. Removed cleanly on uninstall (component
+                      reference-count drops to zero, MSI deletes the value).
+                    -->
+                    <Component Id='SoftwareSASRegistry' Guid='9172A3F5-1B4C-4E7A-9D2E-F3A8B5C6D7E8' Win64='yes'>
+                        <RegistryValue
+                            Root='HKLM'
+                            Key='Software\Microsoft\Windows\CurrentVersion\Policies\System'
+                            Name='SoftwareSASGeneration'
+                            Type='integer'
+                            Value='1'
+                            KeyPath='yes' />
+                    </Component>
+                </Directory>
+            </Directory>
+
+            <!--
+              No Start Menu shortcut on the perMachine flavour. The
+              ProgramMenuFolder + ApplicationShortcut combo trips
+              ICE38 / ICE43 / ICE57 (per-user vs per-machine
+              ambiguity around the Start Menu folder semantics)
+              even with a HKLM KeyPath. Per-Machine deployments are
+              fleet / IT installs where operators reach the agent
+              via Get-Service or sc.exe rather than by clicking a
+              shortcut, so dropping it is a non-loss. The per-User
+              MSI continues to ship a shortcut.
+            -->
+        </Directory>
+
+        <Feature
+            Id='Complete'
+            Title='Roomler Agent (per-Machine)'
+            Description='Roomler Daemon — keeps this device on your private Roomler mesh network and available for secure remote control (all-users install, auto-start service).'
+            Display='expand'
+            Level='1'
+            ConfigurableDirectory='APPLICATIONFOLDER'
+            AllowAdvertise='no'
+            InstallDefault='local'
+            Absent='disallow'>
+            <ComponentRef Id='AgentExe' />
+            <!-- P4b: tunnel CLI + system-PATH append. -->
+            <ComponentRef Id='TunnelExe' />
+            <ComponentRef Id='LicenseTxt' />
+            <ComponentRef Id='ReadmeTxt' />
+            <ComponentRef Id='WintunDll' />
+            <ComponentRef Id='VcRedistCrt' />
+            <ComponentRef Id='SoftwareSASRegistry' />
+        </Feature>
+
+        <Property Id='ARPHELPLINK' Value='https://roomler.ai/' />
+        <Property Id='ARPURLINFOABOUT' Value='https://roomler.ai/' />
+
+        <!--
+          Postinstall hook: register the SCM service immediately
+          after the EXE lands on disk. Runs deferred + non-
+          impersonated (i.e. as LocalSystem since this is perMachine)
+          so it has the rights to call CreateService. Return="ignore"
+          so a registration failure (rare service-name collision,
+          weird group policy) doesn't sink the whole install -
+          operator can recover by running the equivalent
+          `service install` flag combination from elevated PS.
+        -->
+        <CustomAction
+            Id='RegisterService'
+            FileKey='roomler_agent_exe'
+            ExeCommand='service install --as-service'
+            Execute='deferred'
+            Impersonate='no'
+            Return='ignore' />
+
+        <!--
+          Symmetric uninstall hook: tear down the SCM service before
+          the EXE is removed from disk (the action shells out to the
+          EXE itself, so it must still be present). Only fires during
+          full uninstall (REMOVE="ALL"); maintenance / repair leaves
+          the service registration alone.
+        -->
+        <CustomAction
+            Id='UnregisterService'
+            FileKey='roomler_agent_exe'
+            ExeCommand='service uninstall --as-service'
+            Execute='deferred'
+            Impersonate='no'
+            Return='ignore' />
+
+        <!--
+          rc.18: cross-flavour cleanup. When the operator installs the
+          perMachine MSI over a prior perUser install, this CA shells
+          out to the freshly-laid EXE to scrub the perUser flavour's
+          stale Scheduled Task + user-data dirs. Runs deferred + non-
+          impersonated (SYSTEM) so it can: (a) delete a per-user task
+          via `schtasks /Delete /TN RoomlerAgent /F` (SYSTEM has the
+          rights), (b) reach into the active-session user's
+          %LOCALAPPDATA% / %APPDATA% via the WTSQueryUserToken-backed
+          `active_user_profile_root()` (system-context feature). On
+          headless installs with no logged-in user the helper logs a
+          skip and returns 0. Return="ignore" so a cleanup glitch
+          doesn't sink the install. Same-flavour invocations exit 0
+          via the helper's fast-path.
+        -->
+        <CustomAction
+            Id='CleanupLegacyPerUser'
+            FileKey='roomler_agent_exe'
+            ExeCommand='cleanup-legacy-install --target-flavour perMachine'
+            Execute='deferred'
+            Impersonate='no'
+            Return='ignore' />
+
+        <!--
+          rc.44: SystemContext automation. The installer wizard sets
+          ENABLE_SYSTEM_CONTEXT=1 on the msiexec command line when the
+          operator picked the `permachine-system-context` flavour. The
+          property must be declared Secure="yes" so it survives the
+          elevation boundary from the immediate (impersonated) into the
+          deferred (LocalSystem) execution sequence; without that
+          attribute msiexec drops public properties at InstallInitialize.
+
+          #1727: NO default value. "1" and "0" mean what they always
+          meant, and every caller that passes one is unchanged: the
+          wizard, install.ps1, and the auto-updater, which passes "1"
+          whenever the service has the swap on (updater.rs, rc.56).
+          When the command line does not say (a person running
+          `msiexec /i` by hand), KeepSystemContext below restores the
+          mode the machine was last switched to.
+
+          It used to default to "0", which ran DisableSystemContext: a
+          hand-run install on a SystemContext host switched it OFF, the
+          worker lost the machine-global config it reads in that mode,
+          and the device crash-looped offline until someone ran
+          `roomlerd enable-system-context` (field, 2026-09-26).
+        -->
+        <Property Id='ENABLE_SYSTEM_CONTEXT' Secure='yes' />
+
+        <!--
+          rc.44 forward action: flip the SystemContext gate on. Runs
+          deferred + non-impersonated (LocalSystem) so it has HKLM-write
+          rights + SCM Stop/Start rights. ExeCommand shells the freshly-
+          laid roomler-agent.exe (composite subcommand introduced in
+          rc.44 P1.5; writes %PROGRAMDATA%\roomler\last-system-context-
+          attempt.json on every invocation so the wizard can surface
+          actionable errors). Return="check" so a CA failure surfaces
+          as MSI failure → wizard's MsiExitDecoded::FatalError branch.
+        -->
+        <CustomAction
+            Id='EnableSystemContext'
+            FileKey='roomler_agent_exe'
+            ExeCommand='enable-system-context'
+            Execute='deferred'
+            Impersonate='no'
+            Return='check' />
+
+        <!--
+          rc.44 rollback partner for EnableSystemContext. Per Windows
+          Installer rules, rollback CAs are pushed onto the rollback
+          stack at the SCHEDULING POINT (not the failure point), so this
+          must be scheduled IMMEDIATELY BEFORE the forward action it
+          protects. If anything later in the sequence fails (or the
+          system crashes), this CA runs and reverts the env-var write.
+          Return="ignore" because a rollback failure shouldn't mask the
+          original CA's error.
+        -->
+        <CustomAction
+            Id='RollbackSystemContext'
+            FileKey='roomler_agent_exe'
+            ExeCommand='disable-system-context'
+            Execute='rollback'
+            Impersonate='no'
+            Return='ignore' />
+
+        <!--
+          rc.44 symmetric disable for plain-perMachine installs over
+          a SystemContext-on host (and IT-fleet quiet installs that
+          want SystemContext off). Conditioned on an explicit
+          ENABLE_SYSTEM_CONTEXT="0" (#1727: there is no default any more;
+          see KeepSystemContext). The
+          underlying `disable-system-context` subcommand is idempotent —
+          unsetting an already-absent env var is a no-op, restart of an
+          already-running service after a no-op env change is a noisy
+          but functionally cheap operation.
+        -->
+        <CustomAction
+            Id='DisableSystemContext'
+            FileKey='roomler_agent_exe'
+            ExeCommand='disable-system-context'
+            Execute='deferred'
+            Impersonate='no'
+            Return='ignore' />
+
+        <!--
+          #1727: no ENABLE_SYSTEM_CONTEXT on the command line. Keep the
+          mode the machine was last switched to. An MSI condition cannot
+          tell: the switch lives in the service's Environment, a
+          REG_MULTI_SZ that AppSearch hands over with its NUL separators
+          (a condition sees an empty string, measured), and by the time a
+          deferred action runs, RegisterService (and a major upgrade's
+          removal of the old product) has deleted the service with it. So
+          the freshly laid binary decides, from the product's own record
+          of the last enable/disable in %PROGRAMDATA%\roomler, which no
+          install touches. It then runs the matching enable or disable, so
+          it also restarts the service. Return="ignore", like
+          DisableSystemContext: the StartRoomlerSvc ServiceControl still
+          starts the service if this fails.
+        -->
+        <CustomAction
+            Id='KeepSystemContext'
+            FileKey='roomler_agent_exe'
+            ExeCommand='keep-system-context'
+            Execute='deferred'
+            Impersonate='no'
+            Return='ignore' />
+
+        <InstallExecuteSequence>
+            <Custom Action='RegisterService' After='InstallFiles'>
+                NOT (REMOVE="ALL")
+            </Custom>
+            <!--
+              rc.18: scrub stale artefacts AFTER the new EXE lands
+              (so we can shell out to it). NB both this and
+              RegisterService are After='InstallFiles'; WiX v3 breaks
+              the tie in DOCUMENT order, so RegisterService actually
+              runs FIRST (an earlier comment here claimed the
+              opposite). Ordering is immaterial: the helper's
+              CA-reachable step only sweeps the vacated pre-rename
+              install dir (P4b), and its cross-flavour arms — which
+              touch the other flavour's task/service namespace — are
+              never reached from the CA (same-flavour fast path; see
+              install_cleanup.rs module docs). Skip during uninstall.
+            -->
+            <Custom Action='CleanupLegacyPerUser' After='InstallFiles'>
+                NOT (REMOVE="ALL")
+            </Custom>
+            <!--
+              rc.44 SystemContext sequencing.
+              Rollback CA MUST be scheduled IMMEDIATELY BEFORE its
+              forward partner (EnableSystemContext) so the rollback
+              stack registers the revert action before any state
+              mutation. Both fire after RegisterService since the
+              service must exist before we can restart it.
+            -->
+            <Custom Action='RollbackSystemContext' After='RegisterService'>
+                ENABLE_SYSTEM_CONTEXT="1" AND NOT (REMOVE="ALL")
+            </Custom>
+            <Custom Action='EnableSystemContext' After='RollbackSystemContext'>
+                ENABLE_SYSTEM_CONTEXT="1" AND NOT (REMOVE="ALL")
+            </Custom>
+            <Custom Action='DisableSystemContext' After='RegisterService'>
+                ENABLE_SYSTEM_CONTEXT="0" AND NOT (REMOVE="ALL")
+            </Custom>
+            <Custom Action='KeepSystemContext' After='RegisterService'>
+                NOT ENABLE_SYSTEM_CONTEXT AND NOT (REMOVE="ALL")
+            </Custom>
+            <Custom Action='UnregisterService' Before='RemoveFiles'>
+                REMOVE="ALL"
+            </Custom>
+        </InstallExecuteSequence>
+    </Product>
+</Wix>
+<!-- RETIRED-NAME-ANCHOR-END -->

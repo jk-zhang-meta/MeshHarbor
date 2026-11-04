@@ -33,8 +33,8 @@
 use std::sync::Arc;
 
 use axum::Router;
-use roomler_ai_config::Settings;
-use roomler_core::{
+use meshharbor_config::Settings;
+use meshharbor_core::{
     Core, IndexSet, Job, Module, Role, WsCtx, WsHandler, WsHandlerSpec, graph, job::Cadence,
 };
 use tracing::{error, info, warn};
@@ -64,35 +64,35 @@ pub const EXTRACTED: &[&str] = &[
 #[derive(Clone, Default)]
 pub struct Modules {
     #[cfg(feature = "saas")]
-    pub saas: Option<roomler_ai_mod_saas::SaasState>,
+    pub saas: Option<meshharbor_mod_saas::SaasState>,
     #[cfg(feature = "chat")]
-    pub chat: Option<roomler_ai_mod_chat::ChatState>,
+    pub chat: Option<meshharbor_mod_chat::ChatState>,
     #[cfg(feature = "conference")]
-    pub conference: Option<roomler_ai_mod_conference::ConferenceState>,
+    pub conference: Option<meshharbor_mod_conference::ConferenceState>,
     /// P5a/P7b — device management; `None` when switched off (the agent
     /// socket is then refused with 503 and the device listing shows no
     /// agents).
     #[cfg(feature = "fleet")]
-    pub fleet: Option<roomler_ai_mod_fleet::FleetState>,
+    pub fleet: Option<meshharbor_mod_fleet::FleetState>,
     /// P6 — built on `fleet`; `None` when switched off (the controller's
     /// `rc:*` frames then fall through unhandled and the session routes are
     /// absent, while the Hub — fleet's — keeps serving the agents).
     #[cfg(feature = "remote")]
-    pub remote: Option<roomler_ai_mod_remote::RemoteState>,
+    pub remote: Option<meshharbor_mod_remote::RemoteState>,
     /// P7 — built on `fleet`; `None` when switched off (the tunnel-client
     /// socket is refused with 503, `/derp` is not mounted, the overlay and
     /// tunnel routes are absent).
     #[cfg(feature = "network")]
-    pub network: Option<roomler_ai_mod_network::NetworkState>,
+    pub network: Option<meshharbor_mod_network::NetworkState>,
     /// FR-90 — agent sessions, built on `fleet`; `None` when switched off
     /// (the default): the session routes are absent and a device's
     /// `rc:hive.*` frames reach no handler.
     #[cfg(feature = "hive")]
-    pub hive: Option<roomler_ai_mod_hive::HiveState>,
+    pub hive: Option<meshharbor_mod_hive::HiveState>,
     /// FR-90 P3-1 — the vault, on core alone; `None` when switched off (the
     /// default): its routes are absent.
     #[cfg(feature = "vault")]
-    pub vault: Option<roomler_ai_mod_vault::VaultState>,
+    pub vault: Option<meshharbor_mod_vault::VaultState>,
     /// Every mounted module's WebSocket namespace handlers, collected at
     /// init so the socket dispatch can look one up per message.
     ws: Vec<WsHandlerSpec>,
@@ -108,7 +108,7 @@ impl Modules {
             // A default-off module (FR-90 `hive`) that this build does not
             // link is the default state, not something an operator did.
             if !EXTRACTED.contains(&id)
-                && !roomler_ai_config::ModulesSettings::DEFAULT_OFF.contains(&id)
+                && !meshharbor_config::ModulesSettings::DEFAULT_OFF.contains(&id)
             {
                 warn!(
                     module = id,
@@ -128,7 +128,7 @@ impl Modules {
         #[cfg(feature = "saas")]
         {
             modules.saas =
-                init_one::<roomler_ai_mod_saas::SaasState>(core.clone(), settings, ()).await?;
+                init_one::<meshharbor_mod_saas::SaasState>(core.clone(), settings, ()).await?;
             if let Some(m) = &modules.saas {
                 modules.ws.extend(m.ws().handlers);
             }
@@ -136,7 +136,7 @@ impl Modules {
         #[cfg(feature = "chat")]
         {
             modules.chat =
-                init_one::<roomler_ai_mod_chat::ChatState>(core.clone(), settings, ()).await?;
+                init_one::<meshharbor_mod_chat::ChatState>(core.clone(), settings, ()).await?;
             if let Some(m) = &modules.chat {
                 modules.ws.extend(m.ws().handlers);
             }
@@ -144,7 +144,7 @@ impl Modules {
         #[cfg(feature = "conference")]
         {
             modules.conference =
-                init_one::<roomler_ai_mod_conference::ConferenceState>(core.clone(), settings, ())
+                init_one::<meshharbor_mod_conference::ConferenceState>(core.clone(), settings, ())
                     .await?;
             if let Some(m) = &modules.conference {
                 modules.ws.extend(m.ws().handlers);
@@ -153,7 +153,7 @@ impl Modules {
         #[cfg(feature = "fleet")]
         {
             modules.fleet =
-                init_one::<roomler_ai_mod_fleet::FleetState>(core.clone(), settings, ()).await?;
+                init_one::<meshharbor_mod_fleet::FleetState>(core.clone(), settings, ()).await?;
             if let Some(m) = &modules.fleet {
                 modules.ws.extend(m.ws().handlers);
             }
@@ -166,7 +166,7 @@ impl Modules {
             // switch is logged by `init_one` for fleet.
             if let Some(fleet) = modules.fleet.clone() {
                 modules.remote =
-                    init_one::<roomler_ai_mod_remote::RemoteState>(core.clone(), settings, fleet)
+                    init_one::<meshharbor_mod_remote::RemoteState>(core.clone(), settings, fleet)
                         .await?;
                 if let Some(m) = &modules.remote {
                     modules.ws.extend(m.ws().handlers);
@@ -178,7 +178,7 @@ impl Modules {
             // `network → fleet`, the same seam.
             if let Some(fleet) = modules.fleet.clone() {
                 modules.network =
-                    init_one::<roomler_ai_mod_network::NetworkState>(core.clone(), settings, fleet)
+                    init_one::<meshharbor_mod_network::NetworkState>(core.clone(), settings, fleet)
                         .await?;
                 if let Some(m) = &modules.network {
                     modules.ws.extend(m.ws().handlers);
@@ -195,7 +195,7 @@ impl Modules {
             if let Some(fleet) = modules.fleet.clone() {
                 if modules.chat.is_some() {
                     modules.hive =
-                        init_one::<roomler_ai_mod_hive::HiveState>(core.clone(), settings, fleet)
+                        init_one::<meshharbor_mod_hive::HiveState>(core.clone(), settings, fleet)
                             .await?;
                     if let Some(m) = &modules.hive {
                         modules.ws.extend(m.ws().handlers);
@@ -215,7 +215,7 @@ impl Modules {
             // a vault mounted without hive simply finds no session to lease
             // for. Its switch defaults off, like hive's.
             modules.vault =
-                init_one::<roomler_ai_mod_vault::VaultState>(core.clone(), settings, ()).await?;
+                init_one::<meshharbor_mod_vault::VaultState>(core.clone(), settings, ()).await?;
             if let Some(m) = &modules.vault {
                 modules.ws.extend(m.ws().handlers);
             }
@@ -332,12 +332,12 @@ impl Modules {
         &self,
         token: String,
         tid: Option<String>,
-        origin: roomler_core::client_ip::ConnectionOrigin,
+        origin: meshharbor_core::client_ip::ConnectionOrigin,
         ws: axum::extract::WebSocketUpgrade,
     ) -> axum::response::Response {
         #[cfg(feature = "fleet")]
         if let Some(fleet) = &self.fleet {
-            return roomler_ai_mod_fleet::socket::ws_upgrade_agent(
+            return meshharbor_mod_fleet::socket::ws_upgrade_agent(
                 fleet.clone(),
                 token,
                 tid,
@@ -356,12 +356,12 @@ impl Modules {
         &self,
         token: String,
         tid: Option<String>,
-        origin: roomler_core::client_ip::ConnectionOrigin,
+        origin: meshharbor_core::client_ip::ConnectionOrigin,
         ws: axum::extract::WebSocketUpgrade,
     ) -> axum::response::Response {
         #[cfg(feature = "network")]
         if let Some(network) = &self.network {
-            return roomler_ai_mod_network::tunnel::ws_upgrade_tunnel_client(
+            return meshharbor_mod_network::tunnel::ws_upgrade_tunnel_client(
                 network.clone(),
                 token,
                 tid,
@@ -380,12 +380,12 @@ impl Modules {
     pub fn register_controller(
         &self,
         user_id: bson::oid::ObjectId,
-        sender: roomler_core::ws::storage::WsSender,
+        sender: meshharbor_core::ws::storage::WsSender,
     ) -> Option<ControllerRegistration> {
         #[cfg(feature = "fleet")]
         if let Some(fleet) = &self.fleet {
             let (tx, rx) = fleet.rc_hub.register_controller(user_id);
-            let pump = tokio::spawn(roomler_ai_mod_fleet::socket::pump_server_messages(
+            let pump = tokio::spawn(meshharbor_mod_fleet::socket::pump_server_messages(
                 rx, sender,
             ));
             return Some((tx, pump));
@@ -413,7 +413,7 @@ impl Modules {
     pub fn apply_rc_ctrl(&self, ctrl: &serde_json::Value) {
         #[cfg(feature = "fleet")]
         if let Some(fleet) = &self.fleet {
-            roomler_ai_mod_fleet::ctrl::apply_rc_ctrl(&fleet.rc_hub, ctrl);
+            meshharbor_mod_fleet::ctrl::apply_rc_ctrl(&fleet.rc_hub, ctrl);
         }
     }
 
@@ -623,44 +623,44 @@ impl Modules {
         #[cfg(feature = "saas")]
         if let Some(saas) = &self.saas {
             core.hooks
-                .register(roomler_ai_mod_saas::SaasState::ID, saas.hooks());
+                .register(meshharbor_mod_saas::SaasState::ID, saas.hooks());
         }
         #[cfg(feature = "chat")]
         if let Some(chat) = &self.chat {
             core.hooks
-                .register(roomler_ai_mod_chat::ChatState::ID, chat.hooks());
+                .register(meshharbor_mod_chat::ChatState::ID, chat.hooks());
         }
         #[cfg(feature = "conference")]
         if let Some(conference) = &self.conference {
             core.hooks.register(
-                roomler_ai_mod_conference::ConferenceState::ID,
+                meshharbor_mod_conference::ConferenceState::ID,
                 conference.hooks(),
             );
         }
         #[cfg(feature = "fleet")]
         if let Some(fleet) = &self.fleet {
             core.hooks
-                .register(roomler_ai_mod_fleet::FleetState::ID, fleet.hooks());
+                .register(meshharbor_mod_fleet::FleetState::ID, fleet.hooks());
         }
         #[cfg(feature = "remote")]
         if let Some(remote) = &self.remote {
             core.hooks
-                .register(roomler_ai_mod_remote::RemoteState::ID, remote.hooks());
+                .register(meshharbor_mod_remote::RemoteState::ID, remote.hooks());
         }
         #[cfg(feature = "network")]
         if let Some(network) = &self.network {
             core.hooks
-                .register(roomler_ai_mod_network::NetworkState::ID, network.hooks());
+                .register(meshharbor_mod_network::NetworkState::ID, network.hooks());
         }
         #[cfg(feature = "hive")]
         if let Some(hive) = &self.hive {
             core.hooks
-                .register(roomler_ai_mod_hive::HiveState::ID, hive.hooks());
+                .register(meshharbor_mod_hive::HiveState::ID, hive.hooks());
         }
         #[cfg(feature = "vault")]
         if let Some(vault) = &self.vault {
             core.hooks
-                .register(roomler_ai_mod_vault::VaultState::ID, vault.hooks());
+                .register(meshharbor_mod_vault::VaultState::ID, vault.hooks());
         }
     }
 
@@ -756,7 +756,7 @@ impl Modules {
     pub async fn close_orphaned_call_state(&self) -> (u64, u64) {
         #[cfg(feature = "conference")]
         if let Some(conference) = &self.conference {
-            return roomler_ai_mod_conference::maintenance::close_orphaned_call_state(conference)
+            return meshharbor_mod_conference::maintenance::close_orphaned_call_state(conference)
                 .await;
         }
         (0, 0)
@@ -784,7 +784,7 @@ impl Modules {
         &self,
         user_id: bson::oid::ObjectId,
         controller_name: &str,
-        controller_tx: &roomler_ai_remote_control::session::ClientTx,
+        controller_tx: &meshharbor_remote_control::session::ClientTx,
         text: &str,
         dialed_tid: Option<&str>,
         conn_established_ms: i64,
@@ -792,9 +792,9 @@ impl Modules {
     ) -> bool {
         #[cfg(feature = "remote")]
         if let Some(remote) = &self.remote {
-            return roomler_ai_mod_remote::controller::handle_controller_frame(
+            return meshharbor_mod_remote::controller::handle_controller_frame(
                 remote,
-                roomler_ai_mod_remote::controller::ControllerFrame {
+                meshharbor_mod_remote::controller::ControllerFrame {
                     user_id,
                     controller_name,
                     controller_tx,
@@ -816,7 +816,7 @@ impl Modules {
     pub fn remote_conn_closed(&self, connection_id: &str) {
         #[cfg(feature = "remote")]
         if let Some(remote) = &self.remote {
-            roomler_ai_mod_remote::relay::forward_conn_closed(remote, connection_id);
+            meshharbor_mod_remote::relay::forward_conn_closed(remote, connection_id);
         }
     }
 }
@@ -838,7 +838,7 @@ pub struct NetworkGauges {
 /// Hub sender (the `rc:*` dispatch addresses replies to it) and the task
 /// pumping the Hub's replies onto the socket, aborted at close.
 pub type ControllerRegistration = (
-    roomler_ai_remote_control::session::ClientTx,
+    meshharbor_remote_control::session::ClientTx,
     tokio::task::JoinHandle<()>,
 );
 

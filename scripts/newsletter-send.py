@@ -24,7 +24,7 @@ never echoed, nothing persisted).
 Server: --server (default https://roomler.ai).
 
 Examples:
-  ./scripts/newsletter-send.py push  ../roomler-ai-news/news/01-three-products-one-daemon.md
+  ./scripts/newsletter-send.py push  ../meshharbor-ai-news/news/01-three-products-one-daemon.md
   ./scripts/newsletter-send.py preview three-products-one-daemon
   ./scripts/newsletter-send.py test-send three-products-one-daemon --to me@example.com
   ./scripts/newsletter-send.py send three-products-one-daemon

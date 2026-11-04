@@ -2,9 +2,9 @@
 // Copyright (C) 2026 G ROX EOOD
 use bson::{DateTime, doc, oid::ObjectId};
 use mongodb::Database;
-use roomler_ai_remote_control::models::{EndReason, RemoteSession, SessionPhase, SessionStats};
-use roomler_ai_remote_control::permissions::Permissions;
-use roomler_ai_remote_control::signaling::Tally;
+use meshharbor_remote_control::models::{EndReason, RemoteSession, SessionPhase, SessionStats};
+use meshharbor_remote_control::permissions::Permissions;
+use meshharbor_remote_control::signaling::Tally;
 
 use super::base::{BaseDao, DaoResult, PaginatedResult, PaginationParams};
 

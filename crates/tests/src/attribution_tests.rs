@@ -18,8 +18,8 @@
 
 use bson::oid::ObjectId;
 use bson::{Document, doc};
-use roomler_ai_services::dao::user::UserDao;
-use roomler_core::attribution::{AttributionInput, oauth_park_key, sanitize, take_for_oauth};
+use meshharbor_services::dao::user::UserDao;
+use meshharbor_core::attribution::{AttributionInput, oauth_park_key, sanitize, take_for_oauth};
 use serde_json::{Value, json};
 
 use crate::fixtures::test_app::TestApp;
@@ -562,8 +562,8 @@ async fn oauth_attribution_is_applied_only_when_the_account_is_created() {
 #[tokio::test]
 async fn oauth_completion_redirects_with_a_signup_marker_and_no_token() {
     use axum::http::header::{LOCATION, SET_COOKIE};
-    use roomler_ai_api::routes::oauth::complete_sign_in;
-    use roomler_ai_services::oauth::OAuthUserInfo;
+    use meshharbor_api::routes::oauth::complete_sign_in;
+    use meshharbor_services::oauth::OAuthUserInfo;
 
     let app = TestApp::spawn_with_oauth().await;
     let redis = app.state.redis_pubsub.as_ref().expect("redis");

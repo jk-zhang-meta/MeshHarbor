@@ -438,7 +438,7 @@ impl ModulesSettings {
     pub const DEFAULT_OFF: &'static [&'static str] = &["hive", "vault"];
 
     /// The module ids an operator has switched off, in the composition order
-    /// of `roomler_core::graph::MODULES` — including a default-off module
+    /// of `meshharbor_core::graph::MODULES` — including a default-off module
     /// nobody switched on, so `modules = compiled − switched_off` holds.
     ///
     /// ⚠️ It cannot see a `hive.tenants` or `vault.tenants` list, which also
@@ -1073,7 +1073,7 @@ pub struct RcSettings {
     #[serde(default = "default_true")]
     pub org_session_cap: bool,
     /// FR-115 P3b — count concurrent remote sessions cluster-wide, in Redis
-    /// (`roomler_core::cluster::session_slots`): an org's sessions to its own
+    /// (`meshharbor_core::cluster::session_slots`): an org's sessions to its own
     /// devices and the external (FR-52) sessions run for it share its slots,
     /// and an account in no org gets Free's one. Default **false** (shipped
     /// dark): P3's count on the hub that owns the device, with external

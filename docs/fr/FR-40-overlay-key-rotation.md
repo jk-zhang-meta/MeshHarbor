@@ -38,12 +38,12 @@ additionally refuses a registration whose pubkey is not the row's (`derp.rs:339-
 
 | piece | where | note |
 |---|---|---|
-| primary key mint | `agents/roomlerd/src/main.rs:3428-3435` | lazy, at daemon start, `WgKeypair::generate()` → `config::save`; the ONLY primary mint |
+| primary key mint | `agents/meshharbord/src/main.rs:3428-3435` | lazy, at daemon start, `WgKeypair::generate()` → `config::save`; the ONLY primary mint |
 | secondary-org mint | `crates/agent-core/src/enrollment.rs:621-622` | at enroll-append; never copied from the primary (cross-org correlation) |
 | storage | `crates/agent-core/src/config.rs:1855` (primary), `:1985` (`OrgEntry`), `for_org` at `:2119-2147` | the key is **per org** — `for_org` scopes it, unlike `exec_enabled`/`ssh_*` which are host-global |
 | atomic save | `config.rs:3340` | tmp + `sync_all` + 0600/ACL + `.prev` + rename, under the daemon-wide write lock (`org_join.rs:48`) |
-| how a session gets its key | `agents/roomlerd/src/signaling.rs:444-449`, `:881-883`; `overlay.rs:210-217` | from the in-memory `AgentConfig` snapshot taken at start — **never re-read from disk per session** |
-| runtime identity | `agents/roomlerd/src/overlay.rs:79-86` (`RuntimeFingerprint::same_shape` includes `wg_public_key`), `:236-243`, `:430-438` | a changed secret already fails re-attach and rebuilds the runtime |
+| how a session gets its key | `agents/meshharbord/src/signaling.rs:444-449`, `:881-883`; `overlay.rs:210-217` | from the in-memory `AgentConfig` snapshot taken at start — **never re-read from disk per session** |
+| runtime identity | `agents/meshharbord/src/overlay.rs:79-86` (`RuntimeFingerprint::same_shape` includes `wg_public_key`), `:236-243`, `:430-438` | a changed secret already fails re-attach and rebuilds the runtime |
 | existing per-org cycle | `main.rs:2883-2904` (`spawn_org`: stop the previous loop, re-load config from disk, respawn) | the primary loop has NO stop handle |
 | server join | `crates/api/src/ws/overlay.rs:232`, `:279-297` (`wg_key_taken_by_other`, machine-scoped ⇒ a same-machine rotation is allowed), `:299-390` (`rehydrate` stores `wg_public_key` + `key_epoch`) | `key_epoch` is stored and **read by nothing** (`models.rs:2904`; the agent always sends 0, `runtime.rs:1951`) |
 | peer fan-out | `overlay.rs:531-561` → `OverlayNetmapDelta { upserts, removes }` (`signaling.rs:3897`) | an upsert IS the update; the re-join already carries the new key to every peer |

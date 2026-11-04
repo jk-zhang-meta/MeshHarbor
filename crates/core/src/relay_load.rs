@@ -31,8 +31,8 @@
 //! endpoints are polled per tick and aggregated by [`Agg`]. A region with
 //! neither source stays unpolled and renders "not monitored", never down.
 
-use roomler_ai_remote_control::turn_creds::{RegionLoad, RelayLoadMap, TurnMap};
-use roomler_ai_services::dao::stats::{RelaySample, StatsDao};
+use meshharbor_remote_control::turn_creds::{RegionLoad, RelayLoadMap, TurnMap};
+use meshharbor_services::dao::stats::{RelaySample, StatsDao};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -150,7 +150,7 @@ impl Agg {
 /// `derp_url` because the central `/derp` is JWT-authed), else the single
 /// URL derived from `derp_url`. Regions with neither stay unpolled and
 /// render as "not monitored" — never as down.
-fn region_stats_urls(spec: &roomler_ai_remote_control::turn_creds::RelayRegionSpec) -> Vec<String> {
+fn region_stats_urls(spec: &meshharbor_remote_control::turn_creds::RelayRegionSpec) -> Vec<String> {
     if !spec.stats_urls.is_empty() {
         return spec.stats_urls.clone();
     }
@@ -164,7 +164,7 @@ fn region_stats_urls(spec: &roomler_ai_remote_control::turn_creds::RelayRegionSp
 /// FR-115 P4a-2 — the push of the over-allowance set to the PoPs, on the
 /// poll the API already makes (`POST` to the same `/stats`; the `GET` is
 /// unchanged). The set is the one the throttle's job publishes in Redis
-/// (`roomler_ai_services::relay_allowance::set_key`), signed with the DERP
+/// (`meshharbor_services::relay_allowance::set_key`), signed with the DERP
 /// ticket key the PoP already verifies tickets with, so the PoP stays DB-free
 /// and secret-free.
 ///
@@ -176,22 +176,22 @@ fn region_stats_urls(spec: &roomler_ai_remote_control::turn_creds::RelayRegionSp
 pub struct AllowancePush {
     redis: Arc<crate::ws::redis_pubsub::RedisPubSub>,
     key: String,
-    signer: roomler_ai_remote_control::derp_ticket::DerpTicketSigner,
+    signer: meshharbor_remote_control::derp_ticket::DerpTicketSigner,
 }
 
 impl AllowancePush {
     /// `None` without a usable ticket key: no PoP could verify a set.
     pub fn new(
-        settings: &roomler_ai_config::RelaySettings,
+        settings: &meshharbor_config::RelaySettings,
         redis: Arc<crate::ws::redis_pubsub::RedisPubSub>,
         db_name: &str,
     ) -> Option<Self> {
         let private_b64 = settings.derp_ticket_private_key.as_deref()?;
-        match roomler_ai_remote_control::derp_ticket::DerpTicketSigner::from_pkcs8_b64(private_b64)
+        match meshharbor_remote_control::derp_ticket::DerpTicketSigner::from_pkcs8_b64(private_b64)
         {
             Ok(signer) => Some(Self {
                 redis,
-                key: roomler_ai_services::relay_allowance::set_key(db_name),
+                key: meshharbor_services::relay_allowance::set_key(db_name),
                 signer,
             }),
             Err(e) => {
@@ -253,12 +253,12 @@ impl AllowancePush {
 pub fn spawn_poller(
     turn_map: Arc<TurnMap>,
     load: RelayLoadMap,
-    settings: &roomler_ai_config::RelaySettings,
+    settings: &meshharbor_config::RelaySettings,
     stats: Option<Arc<StatsDao>>,
     // FR-20 B — resolves an overlay network id to its tenant so PoP-relayed
     // bytes can be attributed. `None` ⇒ metering off; the load poller itself
     // is unaffected.
-    networks: Option<Arc<roomler_ai_services::dao::overlay_network::OverlayNetworkDao>>,
+    networks: Option<Arc<meshharbor_services::dao::overlay_network::OverlayNetworkDao>>,
     // FR-115 P4a-2 — `None` ⇒ no push, and so no PoP throttles (fail open).
     allowance_push: Option<AllowancePush>,
 ) {
@@ -429,7 +429,7 @@ pub fn spawn_poller(
                                     if let Err(e) = st
                                         .add_usage(
                                             n.tenant_id,
-                                            roomler_ai_services::dao::stats::Meter::DerpBytes,
+                                            meshharbor_services::dao::stats::Meter::DerpBytes,
                                             unix_now(),
                                             delta as i64,
                                         )
@@ -534,7 +534,7 @@ mod tests {
 
     #[test]
     fn region_stats_urls_prefers_explicit_override() {
-        use roomler_ai_remote_control::turn_creds::RelayRegionSpec;
+        use meshharbor_remote_control::turn_creds::RelayRegionSpec;
         let spec = |derp: Option<&str>, stats: Vec<&str>| RelayRegionSpec {
             id: "r".into(),
             turn_url: "turn:x:3478".into(),

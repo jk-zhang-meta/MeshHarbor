@@ -1,5 +1,5 @@
 [package]
-name = "roomler-ai-mod-saas"
+name = "meshharbor-mod-saas"
 license = "AGPL-3.0-only"
 publish = false
 version.workspace = true
@@ -7,18 +7,18 @@ edition.workspace = true
 description = "FR-69 module: the hosted-product layer — Stripe billing, the public updates list and the newsletter, plan compliance. An add-on over any profile; never in a self-host image."
 
 [lib]
-name = "roomler_ai_mod_saas"
+name = "meshharbor_mod_saas"
 path = "src/lib.rs"
 
-# The first module crate (FR-69 P2). It depends on `roomler-core` and on the
+# The first module crate (FR-69 P2). It depends on `meshharbor-core` and on the
 # crates below it — never on the api crate, which composes it. Its handlers
 # take `State<SaasState>` (or `State<Core>` where the core suffices); the
-# extractors, `ApiError` and the guards come from `roomler-core`.
+# extractors, `ApiError` and the guards come from `meshharbor-core`.
 [dependencies]
-roomler-core = { path = "../../core" }
-roomler-ai-config = { path = "../../config" }
-roomler-ai-db = { path = "../../db" }
-roomler-ai-services = { path = "../../services" }
+meshharbor-core = { path = "../../core" }
+meshharbor-config = { path = "../../config" }
+meshharbor-db = { path = "../../db" }
+meshharbor-services = { path = "../../services" }
 
 anyhow.workspace = true
 axum.workspace = true

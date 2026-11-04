@@ -23,7 +23,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 
-use roomler_core::ApiError;
+use meshharbor_core::ApiError;
 
 use crate::{
     FleetState,
@@ -149,7 +149,7 @@ fn normalise_platform(s: &str) -> Result<&'static str, ApiError> {
         "linux-x86_64" | "linux" | "linux-tar" => Ok("linux-x86_64"),
         "linux-deb" | "deb" => Ok("linux-deb"),
         // FR-97 P7b — aarch64. `linux-aarch64` is what an aarch64 CLI has
-        // always named itself (`roomler-cli`'s update.rs) and what an aarch64
+        // always named itself (`meshharbor-cli`'s update.rs) and what an aarch64
         // wizard asks for (asset_resolver.rs); install.sh asks for both.
         "linux-aarch64" | "linux-arm64" => Ok("linux-aarch64"),
         "linux-deb-aarch64" | "linux-deb-arm64" => Ok("linux-deb-aarch64"),

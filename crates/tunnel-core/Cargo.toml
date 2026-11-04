@@ -1,5 +1,5 @@
 [package]
-name = "roomler-ai-tunnel-core"
+name = "meshharbor-tunnel-core"
 license = "MPL-2.0"
 publish = false
 version.workspace = true
@@ -16,11 +16,11 @@ path = "src/lib.rs"
 # it cares about so callers have one import).
 # default-features = false drops the `server` half (Mongo audit DAO + Hub) —
 # this crate only needs the wire/model/permission surface (P3e Phase 3).
-roomler-ai-remote-control = { path = "../remote_control", default-features = false }
+meshharbor-remote-control = { path = "../remote_control", default-features = false }
 # The LocalAPI protocol, re-exported from lib.rs as `tunnel_core::localapi`
 # (P3e lever E — it lives in a leaf crate so thin clients can speak it without
 # compiling this crate's data plane).
-roomler-localapi = { path = "../localapi" }
+meshharbor-localapi = { path = "../localapi" }
 
 # Async + concurrency
 tokio = { workspace = true }

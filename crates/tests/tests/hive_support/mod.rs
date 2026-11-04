@@ -14,12 +14,12 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use futures::{SinkExt, StreamExt};
-use roomler_ai_tests::fixtures::seed::SeededTenant;
-use roomler_ai_tests::fixtures::test_app::TestApp;
-use roomlerd::config::AgentConfig;
-use roomlerd::encode::EncoderPreference;
-use roomlerd::hive::framing::{self, Bounds, Reassembler};
-use roomlerd::{enrollment, signaling};
+use meshharbor_tests::fixtures::seed::SeededTenant;
+use meshharbor_tests::fixtures::test_app::TestApp;
+use meshharbord::config::AgentConfig;
+use meshharbord::encode::EncoderPreference;
+use meshharbord::hive::framing::{self, Bounds, Reassembler};
+use meshharbord::{enrollment, signaling};
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
 use tokio_tungstenite::connect_async;
@@ -318,18 +318,18 @@ pub fn spawn_device(
     tokio::spawn(async move {
         let connected = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let (view_tx, _view_rx) = tokio::sync::watch::channel(Default::default());
-        let broker = roomlerd::consent::ConsentBroker::new(
-            roomlerd::consent::Mode::AutoGrant,
+        let broker = meshharbord::consent::ConsentBroker::new(
+            meshharbord::consent::Mode::AutoGrant,
             std::env::temp_dir().join(format!("roomler-test-consent-{}", cfg.agent_id)),
         )
         .expect("consent broker init");
         let exec_enabled = cfg.exec_enabled;
         let remote_config_enabled = cfg.remote_config_enabled;
         let _ = signaling::run(
-            signaling::OrgCtx::primary(roomlerd::token_slot::TokenSlot::new(
+            signaling::OrgCtx::primary(meshharbord::token_slot::TokenSlot::new(
                 cfg.agent_token.clone(),
             )),
-            roomlerd::delegate::Delegation::Off,
+            meshharbord::delegate::Delegation::Off,
             cfg,
             EncoderPreference::Software,
             stop,
@@ -337,14 +337,14 @@ pub fn spawn_device(
             view_tx,
             Default::default(),
             broker,
-            roomlerd::tunnel::client_mgr::TunnelClientHub::new("test".into()),
-            roomlerd::remote_config::RemoteConfigServices::new(
+            meshharbord::tunnel::client_mgr::TunnelClientHub::new("test".into()),
+            meshharbord::remote_config::RemoteConfigServices::new(
                 PathBuf::from("unused-in-tests.toml"),
                 Arc::new(tokio::sync::Mutex::new(())),
                 exec_enabled,
                 remote_config_enabled,
             ),
-            roomlerd::rc_sessions::RcSessionRegistry::new(),
+            meshharbord::rc_sessions::RcSessionRegistry::new(),
         )
         .await;
     })
@@ -636,7 +636,7 @@ pub async fn memory_device(
     cfg.hive_roots = vec![roots.display().to_string()];
     cfg.hive_harness = Some(harness.display().to_string());
     cfg.hive_core_memory = core_memory;
-    roomlerd::hive::init_as_daemon(
+    meshharbord::hive::init_as_daemon(
         &cfg,
         &dir.path().join("hive.db"),
         &dir.path().join("run"),

@@ -1,5 +1,5 @@
 [package]
-name = "roomler-node-core"
+name = "meshharbor-node-core"
 license = "MPL-2.0"
 publish = false
 version.workspace = true
@@ -7,11 +7,11 @@ edition.workspace = true
 description = "Daemon-free agent building blocks: config, enrollment, machine id, logging, sentinels — shared by roomlerd and the desktop companion."
 
 [lib]
-name = "roomler_node_core"
+name = "meshharbor_node_core"
 path = "src/lib.rs"
 
 # P3e lever E. These modules moved OUT of `roomlerd` verbatim because the
-# desktop companion (roomler-desktop) needs exactly them — config
+# desktop companion (meshharbor-desktop) needs exactly them — config
 # load/save, enrollment, machine-id, log tailing, the needs-attention
 # sentinel — and depending on the full agent lib compiled the entire data
 # plane behind it: tunnel-core's webrtc/quinn/turn/rustls are non-optional,
@@ -27,10 +27,10 @@ path = "src/lib.rs"
 # forward ACL, and OsKind for enrollment. default-features = false drops the
 # `server` half (Mongo audit DAO + Hub) — P3e Phase 3 closed the "this drags
 # the mongodb driver" caveat that used to live here.
-roomler-ai-remote-control = { path = "../remote_control", default-features = false }
+meshharbor-remote-control = { path = "../remote_control", default-features = false }
 # RouteDescriptor/FlowKind (the `[[tunnel_routes]]` config shape) and
 # ConfigEntry (the config surface's wire type). Leaf protocol crate.
-roomler-localapi = { path = "../localapi" }
+meshharbor-localapi = { path = "../localapi" }
 
 anyhow = { workspace = true }
 thiserror = { workspace = true }
@@ -72,13 +72,13 @@ test-fixtures = []
 # start — the designed fallback, and exactly what the tray's enroll (default
 # features) has always produced. Enabling these pulls tunnel-core INTO this
 # crate, so thin clients must never turn them on.
-overlay-l3 = ["dep:roomler-ai-tunnel-core", "roomler-ai-tunnel-core/overlay-l3"]
+overlay-l3 = ["dep:meshharbor-tunnel-core", "meshharbor-tunnel-core/overlay-l3"]
 overlay-netstack = [
-    "dep:roomler-ai-tunnel-core",
-    "roomler-ai-tunnel-core/overlay-netstack",
+    "dep:meshharbor-tunnel-core",
+    "meshharbor-tunnel-core/overlay-netstack",
 ]
 
-[dependencies.roomler-ai-tunnel-core]
+[dependencies.meshharbor-tunnel-core]
 path = "../tunnel-core"
 optional = true
 

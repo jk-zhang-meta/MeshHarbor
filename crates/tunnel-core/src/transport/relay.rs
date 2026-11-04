@@ -1721,7 +1721,7 @@ mod turn_tests {
     // and run on a host with outbound UDP/3478 (UDP smoke) or TCP/443
     // (TURNS/TCP smoke) to coturn. The secret stays in the env — never in
     // source. Run e.g.:
-    //   cargo test -p roomler-ai-tunnel-core --ignored relay_against_real_coturn
+    //   cargo test -p meshharbor-tunnel-core --ignored relay_against_real_coturn
 
     /// Allocate TWO relays via the real [`allocate_relay_from_ice`] entry,
     /// mutually permission them, and run a full quinn handshake + flow
@@ -1790,7 +1790,7 @@ mod turn_tests {
     ) -> Option<(Vec<String>, String, String)> {
         let host = std::env::var("ROOMLER_TEST_TURN_HOST").ok()?;
         let secret = std::env::var("ROOMLER_TEST_TURN_SECRET").ok()?;
-        let cfg = roomler_ai_remote_control::turn_creds::TurnConfig {
+        let cfg = meshharbor_remote_control::turn_creds::TurnConfig {
             workers: vec![],
             urls: urls_for(&host),
             shared_secret: secret,
@@ -1846,7 +1846,7 @@ mod turn_tests {
     ///
     ///   ROOMLER_TEST_TURN_HOST=coturn.roomler.ai \
     ///   ROOMLER_TEST_TURN_SECRET=<secret> ROOMLER_TEST_TURN_WORKER=5.9.157.221 \
-    ///   cargo test -p roomler-ai-tunnel-core --features overlay-l3 \
+    ///   cargo test -p meshharbor-tunnel-core --features overlay-l3 \
     ///     --lib relay_to_relay_hairpin_against_real_coturn -- --ignored --nocapture
     #[tokio::test(flavor = "multi_thread")]
     #[ignore = "hits live coturn; set ROOMLER_TEST_TURN_HOST/SECRET + ROOMLER_TEST_TURN_WORKER"]

@@ -5,7 +5,7 @@ use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier, password_ha
 use bson::oid::ObjectId;
 use chrono::{Duration, Utc};
 use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation, decode, encode};
-use roomler_ai_config::JwtSettings;
+use meshharbor_config::JwtSettings;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -185,7 +185,7 @@ pub struct NetGrantClaims {
     pub origin_agent_id: String,
     /// The device the flows exit through, hex.
     pub exit_agent_id: String,
-    /// A `roomler_ai_remote_control::vault::NetKind` word.
+    /// A `meshharbor_remote_control::vault::NetKind` word.
     pub net: String,
     /// A forward's one destination, as `canonical_net_host` spells it;
     /// empty for SOCKS.
@@ -215,7 +215,7 @@ pub struct NetGrant<'a> {
     pub owner_user_id: ObjectId,
     pub origin_agent_id: ObjectId,
     pub exit_agent_id: ObjectId,
-    pub net: roomler_ai_remote_control::vault::NetKind,
+    pub net: meshharbor_remote_control::vault::NetKind,
     /// A forward's destination, its host canonical; `None` for SOCKS.
     pub dst: Option<(&'a str, u16)>,
     pub grant_id: ObjectId,
@@ -246,7 +246,7 @@ pub struct SshTicketClaims {
     /// The device the command runs on, hex: never the origin.
     pub target_agent_id: String,
     /// The account the target's SSH policy mapped when the vault decided, a
-    /// `roomler_ai_remote_control::models::SshAccountMode` word.
+    /// `meshharbor_remote_control::models::SshAccountMode` word.
     pub account: String,
     /// The ticket's id, as the vault records its allow (`ticket:<jti>`).
     pub jti: String,
@@ -266,7 +266,7 @@ pub struct SshTicket {
     pub owner_user_id: ObjectId,
     pub origin_agent_id: ObjectId,
     pub target_agent_id: ObjectId,
-    pub account: roomler_ai_remote_control::models::SshAccountMode,
+    pub account: meshharbor_remote_control::models::SshAccountMode,
     pub ticket_id: ObjectId,
     /// When it ends, in seconds since the epoch: at most
     /// `lease_limits::MAX_TTL_SECS` from now.
@@ -982,7 +982,7 @@ impl AuthService {
 /// runs on; an account this build names; and a life no longer than a lease's
 /// ceiling.
 fn ssh_ticket_holds(c: &SshTicketClaims) -> Result<(), AuthError> {
-    use roomler_ai_remote_control::{models::SshAccountMode, vault::lease_limits};
+    use meshharbor_remote_control::{models::SshAccountMode, vault::lease_limits};
     let bad = |why: &str| Err(AuthError::InvalidToken(format!("ssh ticket: {why}")));
     let id = |hex: &str| ObjectId::parse_str(hex).ok();
     let ids = [
@@ -1014,7 +1014,7 @@ fn ssh_ticket_holds(c: &SshTicketClaims) -> Result<(), AuthError> {
 /// canonical and whole, and SOCKS naming none; every id an id; and a life no
 /// longer than a lease's ceiling.
 fn net_grant_holds(c: &NetGrantClaims) -> Result<(), AuthError> {
-    use roomler_ai_remote_control::vault::{NetKind, canonical_net_host, lease_limits};
+    use meshharbor_remote_control::vault::{NetKind, canonical_net_host, lease_limits};
     let bad = |why: &str| Err(AuthError::InvalidToken(format!("net grant: {why}")));
     match NetKind::from_wire(&c.net) {
         None => return bad("a kind this build cannot name"),
@@ -1844,7 +1844,7 @@ mod tests {
 
     // ─── FR-90 P3-7-1b: a session's egress grant ──────────────────────
 
-    use roomler_ai_remote_control::vault::NetKind;
+    use meshharbor_remote_control::vault::NetKind;
 
     fn a_grant<'a>(net: NetKind, dst: Option<(&'a str, u16)>, exp: i64) -> NetGrant<'a> {
         NetGrant {
@@ -2054,7 +2054,7 @@ mod tests {
 
     // ─── FR-90 P3-8-1a: a session's SSH ticket ────────────────────────
 
-    use roomler_ai_remote_control::models::SshAccountMode;
+    use meshharbor_remote_control::models::SshAccountMode;
 
     fn a_ticket(account: SshAccountMode, exp: i64) -> SshTicket {
         SshTicket {

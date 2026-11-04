@@ -17,7 +17,7 @@ use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use bson::oid::ObjectId;
 use hmac::{Hmac, Mac};
 use mediasoup::prelude::*;
-use roomler_core::{WsCtx, WsHandler};
+use meshharbor_core::{WsCtx, WsHandler};
 use sha1::Sha1;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{debug, info, warn};
@@ -90,7 +90,7 @@ pub async fn on_closed(state: &ConferenceState, user_id: &ObjectId, connection_i
                 }
             });
             for conn_id in &remaining_conns {
-                roomler_core::ws::dispatcher::send_to_connection_routed(
+                meshharbor_core::ws::dispatcher::send_to_connection_routed(
                     &state.ws_storage,
                     &state.redis_pubsub,
                     conn_id,
@@ -215,7 +215,7 @@ async fn send_media_error(state: &ConferenceState, connection_id: &str, message:
     });
     // Conn-addressed + routed: an error raised while executing a
     // forwarded command must reach the viewer's pod.
-    roomler_core::ws::dispatcher::send_to_connection_routed(
+    meshharbor_core::ws::dispatcher::send_to_connection_routed(
         &state.ws_storage,
         &state.redis_pubsub,
         connection_id,
@@ -287,10 +287,10 @@ async fn handle_media_join(
         let present = state.room_manager.get_participant_user_ids(&rid);
         // FR-102 P4 — through core, which also counts the collision per org.
         if !present.contains(user_id)
-            && let Err(d) = roomler_core::quota::check(
+            && let Err(d) = meshharbor_core::quota::check(
                 state,
                 &tenant,
-                roomler_ai_services::quota::Limit::VideoMaxParticipants,
+                meshharbor_services::quota::Limit::VideoMaxParticipants,
                 present.len() as u64,
             )
         {
@@ -322,7 +322,7 @@ async fn handle_media_join(
             "type": "media:router_capabilities",
             "data": { "rtp_capabilities": caps }
         });
-        roomler_core::ws::dispatcher::send_to_connection_routed(
+        meshharbor_core::ws::dispatcher::send_to_connection_routed(
             &state.ws_storage,
             &state.redis_pubsub,
             connection_id,
@@ -346,7 +346,7 @@ async fn handle_media_join(
     // pays; coturn reads only the expiry part.
     let turn_user = match room_org {
         Some(org) => {
-            roomler_ai_remote_control::turn_creds::charged(&user_id.to_hex(), &org.to_hex())
+            meshharbor_remote_control::turn_creds::charged(&user_id.to_hex(), &org.to_hex())
         }
         None => user_id.to_hex(),
     };
@@ -387,9 +387,9 @@ async fn handle_media_join(
         // UDP TURN often fails behind NAT/firewalls, so include TCP and TLS
         // fallbacks. Also emit `turn:HOST:443?transport=udp` because many
         // corporate firewalls allow UDP/443 (QUIC) but block UDP/3478.
-        let urls = roomler_ai_remote_control::turn_url::expand_turn_url(
+        let urls = meshharbor_remote_control::turn_url::expand_turn_url(
             url,
-            &roomler_ai_remote_control::turn_url::VariantCaps::media(),
+            &meshharbor_remote_control::turn_url::VariantCaps::media(),
         );
         vec![serde_json::json!({
             "urls": urls,
@@ -430,7 +430,7 @@ async fn handle_media_join(
             "force_relay": force_relay,
         }
     });
-    roomler_core::ws::dispatcher::send_to_connection_routed(
+    meshharbor_core::ws::dispatcher::send_to_connection_routed(
         &state.ws_storage,
         &state.redis_pubsub,
         connection_id,
@@ -450,7 +450,7 @@ async fn handle_media_join(
                 "source": source,
             }
         });
-        roomler_core::ws::dispatcher::send_to_connection_routed(
+        meshharbor_core::ws::dispatcher::send_to_connection_routed(
             &state.ws_storage,
             &state.redis_pubsub,
             connection_id,
@@ -568,7 +568,7 @@ async fn handle_media_produce(
                 "type": "media:produce_result",
                 "data": { "id": producer_id.to_string() }
             });
-            roomler_core::ws::dispatcher::send_to_connection_routed(
+            meshharbor_core::ws::dispatcher::send_to_connection_routed(
                 &state.ws_storage,
                 &state.redis_pubsub,
                 connection_id,
@@ -592,7 +592,7 @@ async fn handle_media_produce(
                     }
                 });
                 for conn_id in &other_conns {
-                    roomler_core::ws::dispatcher::send_to_connection_routed(
+                    meshharbor_core::ws::dispatcher::send_to_connection_routed(
                         &state.ws_storage,
                         &state.redis_pubsub,
                         conn_id,
@@ -683,7 +683,7 @@ async fn handle_media_consume(
                     "producer_paused": consumer_info.producer_paused,
                 }
             });
-            roomler_core::ws::dispatcher::send_to_connection_routed(
+            meshharbor_core::ws::dispatcher::send_to_connection_routed(
                 &state.ws_storage,
                 &state.redis_pubsub,
                 connection_id,
@@ -759,7 +759,7 @@ async fn handle_media_producer_pause(
         }
     });
     for conn_id in &other_conns {
-        roomler_core::ws::dispatcher::send_to_connection_routed(
+        meshharbor_core::ws::dispatcher::send_to_connection_routed(
             &state.ws_storage,
             &state.redis_pubsub,
             conn_id,
@@ -820,7 +820,7 @@ async fn handle_media_producer_close(
                 }
             });
             for conn_id in &other_conns {
-                roomler_core::ws::dispatcher::send_to_connection_routed(
+                meshharbor_core::ws::dispatcher::send_to_connection_routed(
                     &state.ws_storage,
                     &state.redis_pubsub,
                     conn_id,
@@ -864,7 +864,7 @@ async fn handle_media_leave(
             }
         });
         for conn_id in &other_conns {
-            roomler_core::ws::dispatcher::send_to_connection_routed(
+            meshharbor_core::ws::dispatcher::send_to_connection_routed(
                 &state.ws_storage,
                 &state.redis_pubsub,
                 conn_id,
@@ -916,7 +916,7 @@ async fn handle_play_audio(
     // FR-69 P3 — `files` is the `chat` module's; a DAO is a stateless handle
     // on the collection, so this playback path builds its own until the
     // media handlers move with conference (P4).
-    let files = roomler_ai_services::dao::file::FileDao::new(&state.db);
+    let files = meshharbor_services::dao::file::FileDao::new(&state.db);
     let file = match files.base.find_by_id_in_tenant(room.tenant_id, fid).await {
         Ok(f) => f,
         Err(e) => {
@@ -944,7 +944,7 @@ async fn handle_play_audio(
         }
     });
 
-    roomler_core::ws::dispatcher::send_to_connection_routed(
+    meshharbor_core::ws::dispatcher::send_to_connection_routed(
         &state.ws_storage,
         &state.redis_pubsub,
         connection_id,
@@ -955,7 +955,7 @@ async fn handle_play_audio(
         .room_manager
         .get_other_connection_ids(&rid, connection_id);
     for cid in &other_conns {
-        roomler_core::ws::dispatcher::send_to_connection_routed(
+        meshharbor_core::ws::dispatcher::send_to_connection_routed(
             &state.ws_storage,
             &state.redis_pubsub,
             cid,
@@ -1001,7 +1001,7 @@ async fn handle_stop_audio(
         }
     });
 
-    roomler_core::ws::dispatcher::send_to_connection_routed(
+    meshharbor_core::ws::dispatcher::send_to_connection_routed(
         &state.ws_storage,
         &state.redis_pubsub,
         connection_id,
@@ -1012,7 +1012,7 @@ async fn handle_stop_audio(
         .room_manager
         .get_other_connection_ids(&rid, connection_id);
     for cid in &other_conns {
-        roomler_core::ws::dispatcher::send_to_connection_routed(
+        meshharbor_core::ws::dispatcher::send_to_connection_routed(
             &state.ws_storage,
             &state.redis_pubsub,
             cid,

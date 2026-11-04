@@ -20,32 +20,32 @@ use std::sync::Arc;
 use tokio::sync::{Notify, mpsc, oneshot};
 use tracing::{debug, info, warn};
 
-use roomler_core::cluster::session_slots::{Lease, SessionSlots};
+use meshharbor_core::cluster::session_slots::{Lease, SessionSlots};
 
-use roomler_ai_remote_control::audit::AuditSink;
-use roomler_ai_remote_control::consent::{
+use meshharbor_remote_control::audit::AuditSink;
+use meshharbor_remote_control::consent::{
     ASYNC_CONSENT_TIMEOUT, ConsentOutcome, DEFAULT_CONSENT_TIMEOUT, HOST_PROMPT_TIMEOUT,
     hub_consent_deadline,
 };
-use roomler_ai_remote_control::error::{Error, Result};
-use roomler_ai_remote_control::models::{
+use meshharbor_remote_control::error::{Error, Result};
+use meshharbor_remote_control::models::{
     AgentCaps, AuditKind, ConsentMode, EndReason, ExecOutcome, FeaturePolicy, LockOnEnd, OsKind,
     RecordCap, RpcCap, SessionPhase, SessionPolicy,
 };
-use roomler_ai_remote_control::permissions::Permissions;
-use roomler_ai_remote_control::session::{ClientTx, LiveSession};
-use roomler_ai_remote_control::signaling::{
+use meshharbor_remote_control::permissions::Permissions;
+use meshharbor_remote_control::session::{ClientTx, LiveSession};
+use meshharbor_remote_control::signaling::{
     AgentCloseReason, ClientMsg, IceServer, LIMIT_NO_COMMON_CODEC, LocalRelayDescriptor, Role,
     ServerMsg,
 };
-use roomler_ai_remote_control::turn_creds::{
+use meshharbor_remote_control::turn_creds::{
     self, RelayLoadMap, TurnConfig, TurnMap, ice_servers_for_session, pick_region_with_load,
 };
 
 const SERVER_TX_CAPACITY: usize = 64;
 
 // The consent windows (`DEFAULT_CONSENT_TIMEOUT`, `ASYNC_CONSENT_TIMEOUT`,
-// `HOST_PROMPT_TIMEOUT`) live in `roomler_ai_remote_control::consent` — FR-27 moved
+// `HOST_PROMPT_TIMEOUT`) live in `meshharbor_remote_control::consent` — FR-27 moved
 // `ASYNC_CONSENT_TIMEOUT` there from here, because the on-host and owner-side
 // windows now differ within a single mode and the split needs one home.
 
@@ -596,7 +596,7 @@ pub struct ConnectedController {
 /// delivered into.
 /// A device's answer about its accounts: the list after the operation, or its refusal.
 pub type LocalAccountsAnswer =
-    std::result::Result<Vec<roomler_ai_remote_control::signaling::LocalAccount>, String>;
+    std::result::Result<Vec<meshharbor_remote_control::signaling::LocalAccount>, String>;
 
 struct ExecWaiterGuard {
     hub: Hub,
@@ -726,7 +726,7 @@ pub struct HubInner {
     account_waiters: DashMap<String, oneshot::Sender<LocalAccountsAnswer>>,
 
     /// FR-115 P3b — the cluster-wide slot record, set once at startup when
-    /// the deployment has Redis (`roomler_core::cluster::session_slots`).
+    /// the deployment has Redis (`meshharbor_core::cluster::session_slots`).
     session_slots: std::sync::OnceLock<SessionSlots>,
     /// FR-115 P3b — the live sessions that hold a slot, each with the lease
     /// this pod renews (`slot_leases`) and gives back when the session ends
@@ -1369,7 +1369,7 @@ impl Hub {
         consent_mode: ConsentMode,
         override_reason: Option<String>,
         local_relay: Option<LocalRelayDescriptor>,
-        input_mode: Option<roomler_ai_remote_control::models::InputMode>,
+        input_mode: Option<meshharbor_remote_control::models::InputMode>,
         tenant_name: Option<String>,
     ) -> Result<ObjectId> {
         // FR-85 P3 — a caller that does not say may NOT record: RECORD is
@@ -1430,7 +1430,7 @@ impl Hub {
         // authz gate. Rides `ServerMsg::Request`, and gates whether
         // `forward_offer` hands the agent `local_relay` at all.
         rc_overlay: bool,
-        input_mode: Option<roomler_ai_remote_control::models::InputMode>,
+        input_mode: Option<meshharbor_remote_control::models::InputMode>,
         // Multi-org — display name of the requesting org, for the host's
         // consent prompt. See `ServerMsg::Request::tenant_name`.
         tenant_name: Option<String>,
@@ -1449,10 +1449,10 @@ impl Hub {
         lock_on_end: Option<LockOnEnd>,
         // FR-52 P4 — `Some` for an EXTERNAL session: the login the device must
         // bind it to, forwarded in `ServerMsg::Request`. Passed only by the
-        // extauth relay (`roomler_ai_mod_remote::extauth`), after it found the
+        // extauth relay (`meshharbor_mod_remote::extauth`), after it found the
         // principal's verified login and checked the device advertises
         // `external-session`; `dispatch` always passes `None`.
-        external: Option<roomler_ai_remote_control::signaling::ExternalGrant>,
+        external: Option<meshharbor_remote_control::signaling::ExternalGrant>,
         // FR-115 P3 — how many remote sessions the device's organization may
         // run at once (`DispatchCtx::org_session_cap`). `None` = no cap.
         org_session_cap: Option<u32>,
@@ -1515,7 +1515,7 @@ impl Hub {
         // authz gate. Rides `ServerMsg::Request`, and gates whether
         // `forward_offer` hands the agent `local_relay` at all.
         rc_overlay: bool,
-        input_mode: Option<roomler_ai_remote_control::models::InputMode>,
+        input_mode: Option<meshharbor_remote_control::models::InputMode>,
         // Multi-org — display name of the requesting org, for the host's
         // consent prompt. See `ServerMsg::Request::tenant_name`.
         tenant_name: Option<String>,
@@ -1534,10 +1534,10 @@ impl Hub {
         lock_on_end: Option<LockOnEnd>,
         // FR-52 P4 — `Some` for an EXTERNAL session: the login the device must
         // bind it to, forwarded in `ServerMsg::Request`. Passed only by the
-        // extauth relay (`roomler_ai_mod_remote::extauth`), after it found the
+        // extauth relay (`meshharbor_mod_remote::extauth`), after it found the
         // principal's verified login and checked the device advertises
         // `external-session`; `dispatch` always passes `None`.
-        external: Option<roomler_ai_remote_control::signaling::ExternalGrant>,
+        external: Option<meshharbor_remote_control::signaling::ExternalGrant>,
         // FR-115 P3 — how many remote sessions the device's organization may
         // run at once (`DispatchCtx::org_session_cap`). `None` = no cap.
         org_session_cap: Option<u32>,
@@ -1556,7 +1556,7 @@ impl Hub {
             permissions
         };
         let device_share_scope = share_grant_id.map(|grant_id| {
-            roomler_ai_remote_control::session::DeviceShareSessionScope {
+            meshharbor_remote_control::session::DeviceShareSessionScope {
                 grant_id,
                 ceiling: permissions,
             }
@@ -2183,7 +2183,7 @@ impl Hub {
         granted: bool,
         reason: Option<&str>,
     ) -> Result<()> {
-        let outcome = roomler_ai_remote_control::consent::outcome_of(granted, reason);
+        let outcome = meshharbor_remote_control::consent::outcome_of(granted, reason);
         let arc = self
             .inner
             .sessions
@@ -2246,7 +2246,7 @@ impl Hub {
         extauth_mac: Option<String>,
         // FR-100 P1b — relayed verbatim, as `extauth_mac` is: the nonce the
         // device signs its answer against. The hub never reads it.
-        peer_auth: Option<roomler_ai_remote_control::signaling::PeerAuthOffer>,
+        peer_auth: Option<meshharbor_remote_control::signaling::PeerAuthOffer>,
     ) -> Result<()> {
         let (agent_id, local_relay, rc_overlay, region, org, shared_lease) =
             self.with_session(session_id, |s| {
@@ -2261,7 +2261,7 @@ impl Hub {
                     s.tenant_id,
                     match s.device_share_scope() {
                         Some(scope) => {
-                            Some(roomler_ai_remote_control::signaling::SharedSessionLease {
+                            Some(meshharbor_remote_control::signaling::SharedSessionLease {
                                 grant_id: scope.grant_id,
                                 lease_epoch: s
                                     .shared_lease_epoch()
@@ -2347,7 +2347,7 @@ impl Hub {
         session_id: ObjectId,
         sdp: String,
         extauth_mac: Option<String>,
-        peer_auth: Option<roomler_ai_remote_control::signaling::PeerAuthAnswer>,
+        peer_auth: Option<meshharbor_remote_control::signaling::PeerAuthAnswer>,
         peer_auth_verdict: Option<String>,
     ) -> Result<()> {
         let (controller_tx, user_id, region, org) = {
@@ -2386,7 +2386,7 @@ impl Hub {
             Ok((s.id, s.agent_id, s.tenant_id, s.max_duration.take()))
         })?;
         let peer_auth = peer_auth_verdict.filter(|v| {
-            let known = roomler_ai_remote_control::signaling::peer_auth_verdict_is_known(v);
+            let known = meshharbor_remote_control::signaling::peer_auth_verdict_is_known(v);
             if !known {
                 debug!(session = %sid.to_hex(), verdict = %v.escape_debug(),
                     "peer-auth: a verdict this server does not know, not recorded");
@@ -3604,10 +3604,10 @@ impl Hub {
     pub fn shared_lease(
         &self,
         session_id: ObjectId,
-    ) -> Option<roomler_ai_remote_control::signaling::SharedSessionLease> {
+    ) -> Option<meshharbor_remote_control::signaling::SharedSessionLease> {
         let e = self.inner.sessions.get(&session_id)?;
         let s = e.value().lock();
-        Some(roomler_ai_remote_control::signaling::SharedSessionLease {
+        Some(meshharbor_remote_control::signaling::SharedSessionLease {
             grant_id: s.device_share_scope()?.grant_id,
             lease_epoch: s.shared_lease_epoch()?.to_string(),
         })
@@ -3736,7 +3736,7 @@ impl Hub {
         &self,
         agent_id: ObjectId,
         tenant_id: ObjectId,
-        op: roomler_ai_remote_control::signaling::LocalAccountOp,
+        op: meshharbor_remote_control::signaling::LocalAccountOp,
         deadline: std::time::Duration,
     ) -> Result<LocalAccountsAnswer> {
         {
@@ -3880,7 +3880,7 @@ pub struct DispatchCtx {
     /// P6 — the device's `AccessPolicy.input_mode`, resolved by the API WS
     /// layer alongside `consent_mode`; forwarded to the agent's InputArbiter
     /// in `ServerMsg::Request`. `None` = agent default (free).
-    pub input_mode: Option<roomler_ai_remote_control::models::InputMode>,
+    pub input_mode: Option<meshharbor_remote_control::models::InputMode>,
     /// Multi-org — the display name of the organization the request is made
     /// in, resolved by the API WS layer (the Hub has no DB access) and
     /// forwarded in `ServerMsg::Request` so the host's consent prompt can
@@ -4186,7 +4186,7 @@ impl Hub {
 mod tests {
     use super::*;
     use mongodb::Client;
-    use roomler_ai_remote_control::audit::AuditSink;
+    use meshharbor_remote_control::audit::AuditSink;
     use std::time::Duration;
 
     async fn test_hub() -> Hub {
@@ -4343,7 +4343,7 @@ mod tests {
             false,
         );
         let (ctl_tx, mut ctl_rx) = mpsc::channel(8);
-        let grant = roomler_ai_remote_control::signaling::ExternalGrant {
+        let grant = meshharbor_remote_control::signaling::ExternalGrant {
             attempt_id: "a1".into(),
         };
         let clamped = Permissions::default(); // VIEW | INPUT | CLIPBOARD
@@ -4619,7 +4619,7 @@ mod tests {
     /// checks neither, and must drop neither.
     #[tokio::test]
     async fn the_hub_relays_peer_auth_verbatim_both_ways() {
-        use roomler_ai_remote_control::signaling::{PeerAuthAnswer, PeerAuthOffer};
+        use meshharbor_remote_control::signaling::{PeerAuthAnswer, PeerAuthOffer};
         let hub = test_hub().await;
         let agent_id = ObjectId::new();
         let (_agent_tx, _cancel, mut agent_rx) = hub.register_agent(
@@ -5768,7 +5768,7 @@ mod tests {
                 None,
                 None,
                 // FR-52 P4 — what the extauth relay passes for an outsider.
-                external.then(|| roomler_ai_remote_control::signaling::ExternalGrant {
+                external.then(|| meshharbor_remote_control::signaling::ExternalGrant {
                     attempt_id: "a1".into(),
                 }),
                 None,
@@ -6365,7 +6365,7 @@ mod tests {
                 ConsentMode::Prompt,
                 None,
                 None,
-                Some(roomler_ai_remote_control::models::InputMode::Exclusive),
+                Some(meshharbor_remote_control::models::InputMode::Exclusive),
                 None, // tenant_name
             )
         };
@@ -6391,7 +6391,7 @@ mod tests {
             ServerMsg::Request { input_mode, .. } => {
                 assert_eq!(
                     input_mode,
-                    Some(roomler_ai_remote_control::models::InputMode::Exclusive)
+                    Some(meshharbor_remote_control::models::InputMode::Exclusive)
                 );
             }
             other => panic!("expected Request, got {other:?}"),
@@ -7496,7 +7496,7 @@ mod tests {
         let join = || ServerMsg::HiveReplicaJoin {
             session_id: ObjectId::new(),
             fence: 1,
-            role: Some(roomler_ai_remote_control::hive::HiveReplicaRole::Teleport),
+            role: Some(meshharbor_remote_control::hive::HiveReplicaRole::Teleport),
             fences: Vec::new(),
         };
         hub.set_agent_hive_support(agent_id, true);

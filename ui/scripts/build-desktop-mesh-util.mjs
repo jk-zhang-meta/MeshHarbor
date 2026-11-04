@@ -5,11 +5,11 @@
 //
 // `ui/src/utils/mesh.ts` is the ONE source of the rules the mesh graph reads
 // an edge by (qualifiedCarrier / edgeSides / participatingCarriers). The
-// desktop companion (agents/roomler-desktop/src/front) is plain JavaScript
+// desktop companion (agents/meshharbor-desktop/src/front) is plain JavaScript
 // that Tauri serves as-is — no bundler, `<script src>` tags, CSP
 // `script-src 'self'` — so it cannot import TypeScript. This bundles mesh.ts
 // into a classic-script IIFE that defines `window.RoomlerMesh`, and writes it
-// CHECKED IN to agents/roomler-desktop/src/front/mesh-util.js.
+// CHECKED IN to agents/meshharbor-desktop/src/front/mesh-util.js.
 //
 // ui/src/__tests__/utils/desktopMeshUtil.spec.ts rebuilds it in memory and
 // fails when the checked-in copy is stale, so a change to mesh.ts that forgets
@@ -29,7 +29,7 @@ const here = dirname(fileURLToPath(import.meta.url))
 /** The single source of the helpers. */
 export const SOURCE = resolve(here, '../src/utils/mesh.ts')
 /** The checked-in, generated desktop copy. */
-export const TARGET = resolve(here, '../../agents/roomler-desktop/src/front/mesh-util.js')
+export const TARGET = resolve(here, '../../agents/meshharbor-desktop/src/front/mesh-util.js')
 
 // The target lives under agents/, which the licence split classes as MPL-2.0
 // client code (scripts/licence-classes.sh); the SPDX check reads the first

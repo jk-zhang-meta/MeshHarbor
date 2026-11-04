@@ -13,12 +13,12 @@
 //! `enable_tunnel_forwards = true` to trust the server unconditionally.
 //!
 //! Data shapes (`HostPattern`, `PortRange`, `DestinationRule`) are
-//! canonical in `roomler_ai_remote_control::models` and re-exported
+//! canonical in `meshharbor_remote_control::models` and re-exported
 //! by `tunnel-core::policy`. The agent's ACL re-uses them so a
 //! single rule shape covers both gates and the same `dst_matches`
 //! helper applies.
 
-use roomler_ai_remote_control::models::{DestinationRule, ProtocolKind, dst_matches};
+use meshharbor_remote_control::models::{DestinationRule, ProtocolKind, dst_matches};
 use serde::{Deserialize, Serialize};
 
 /// Why the agent rejected a forward request. Maps to wire-level
@@ -102,7 +102,7 @@ impl AgentForwardAcl {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use roomler_ai_remote_control::models::{HostPattern, PortRange};
+    use meshharbor_remote_control::models::{HostPattern, PortRange};
 
     fn rule(p: HostPattern, low: u16, high: u16) -> DestinationRule {
         DestinationRule {

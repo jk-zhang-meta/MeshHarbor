@@ -89,7 +89,7 @@ impl InstallInfo {
 /// spelling and a digest's grouping key, so it is locked by a test.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum InstallMethod {
-    /// The `roomler-setup` wizard, in-process.
+    /// The `meshharbor-setup` wizard, in-process.
     Wizard,
     /// The served `install.sh`.
     ScriptSh,
@@ -1633,7 +1633,7 @@ pub enum InputMode {
 
 /// FR-101 P2 — one sensitive session feature (clipboard, files, audio), as a
 /// policy allows it. The wire twin of the org setting
-/// (`roomler_ai_db::models::RcFeaturePolicy`): this crate stays a leaf the
+/// (`meshharbor_db::models::RcFeaturePolicy`): this crate stays a leaf the
 /// agent links, so it cannot name the db type, and the two read the same.
 ///
 /// ⚠️ A value this build does not know reads as [`Self::Off`], never as an
@@ -1987,7 +1987,7 @@ pub struct KeepBusyBrief {
 }
 
 /// FR-92 P8 — the keep-busy patterns, by their exact wire names, as the
-/// agent spells them (`agents/roomlerd/src/keep_busy/patterns.rs`
+/// agent spells them (`agents/meshharbord/src/keep_busy/patterns.rs`
 /// `Pattern::wire`) and the viewer lists them
 /// (`ui/src/composables/keepBusy.ts` `KEEP_BUSY_PATTERNS`). The org's
 /// default pattern is validated against this list by EQUALITY — never a
@@ -2165,7 +2165,7 @@ pub struct Agent {
     #[serde(default)]
     pub arch_emulated: bool,
     pub agent_version: String,
-    /// FR-27 — the version of the `roomler-desktop` companion INSTALLED on this
+    /// FR-27 — the version of the `meshharbor-desktop` companion INSTALLED on this
     /// host, reported on the heartbeat. `None` means one of three different
     /// things and the grid must not flatten them: a pre-FR-27 agent that never
     /// reports the field, a host with no companion installed, or a probe that
@@ -2174,7 +2174,7 @@ pub struct Agent {
     /// It exists because the daemon and the companion update through DIFFERENT
     /// mechanisms on every platform — Windows: the daemon side-loads the EXE
     /// (`companion::refresh_if_stale`), macOS: the `.pkg` carries
-    /// `/Applications/Roomler.app`, Linux: a separate `roomler-desktop` .deb
+    /// `/Applications/Roomler.app`, Linux: a separate `meshharbor-desktop` .deb
     /// that apt owns — so "Update all" moving the daemon says nothing about the
     /// companion, and until now nothing on screen could tell you it had been
     /// left behind. That was the operator's report, not a hypothetical.
@@ -3158,7 +3158,7 @@ pub struct SshGrantSpec {
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-// Tunnel client (roomler-cli)
+// Tunnel client (meshharbor-cli)
 // ────────────────────────────────────────────────────────────────────────────
 
 /// A laptop running `roomler`. Mirrors [`Agent`] structurally
@@ -3465,7 +3465,7 @@ pub struct DestinationRule {
 /// Lived in `tunnel_core::policy` until P3e lever E moved it HERE, next to
 /// the shapes it matches over (this crate is where `HostPattern` /
 /// `PortRange` / `DestinationRule` are canonical — the doc block above this
-/// section says so). The move lets `roomler-node-core`'s config-side ACL
+/// section says so). The move lets `meshharbor-node-core`'s config-side ACL
 /// evaluate rules without depending on tunnel-core's data plane; tunnel-core
 /// re-exports both fns from `policy` so its callers are unchanged.
 pub fn dst_matches(rule: &DestinationRule, dst_host: &str, dst_port: u16) -> bool {

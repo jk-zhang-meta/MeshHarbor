@@ -213,14 +213,14 @@ jobs:
               if len(raw) <= 4096:
                   bad.append(f"{p}: {len(raw)} bytes — a placeholder, not an icon set (need > 4 KiB)")
 
-          desktop = pathlib.Path("agents/roomler-desktop/icons")
+          desktop = pathlib.Path("agents/meshharbor-desktop/icons")
           check_png(desktop / "tray.png", 16)
           # FR-85 — the tray while a recording runs (tray.rs swaps it in).
           check_png(desktop / "tray-recording.png", 16)
           check_png(desktop / "icon.png", 128)
           check_ico(desktop / "icon.ico")
 
-          setup = pathlib.Path("agents/roomler-setup/icons")
+          setup = pathlib.Path("agents/meshharbor-setup/icons")
           check_png(setup / "icon.png", 128)
           check_ico(setup / "icon.ico")
 
@@ -275,7 +275,7 @@ jobs:
       # lane until a release tag, which is exactly the "invisible until
       # <platform> builds it" class the macOS job exists for.
       - name: Run clippy on the X11 consent panel
-        run: cargo clippy -p roomlerd --lib --features viewer-indicator-x11 -- -D warnings
+        run: cargo clippy -p meshharbord --lib --features viewer-indicator-x11 -- -D warnings
 
       # The step above is deliberately NOT `--all-targets`, so it never
       # compiles `#[cfg(test)]` bodies — the same blind spot the API-unit-test
@@ -291,7 +291,7 @@ jobs:
       # `--all-targets` and must not be flipped blind. Widen it per crate as
       # each is checked.
       #
-      # `roomler-ai-tests` joined the list in #894. It is the crate that most
+      # `meshharbor-tests` joined the list in #894. It is the crate that most
       # needed it: virtually all of it is `#[cfg(test)]`, so the `--workspace`
       # step above compiles almost NONE of it, and 24 lints had accumulated
       # unread — 9 when the issue was filed on 2026-08-29, 24 by the time it was
@@ -304,7 +304,7 @@ jobs:
       # `#[cfg(test)]` gate compiles the module's helpers into the lib target as
       # dead code, which only `--all-targets` surfaces.
       - name: Run clippy on the audited crates (incl. test targets)
-        run: cargo clippy -p roomler-ai-api -p roomler-ai-services -p roomler-ai-tests -p roomler-core --all-targets -- -D warnings
+        run: cargo clippy -p meshharbor-api -p meshharbor-services -p meshharbor-tests -p meshharbor-core --all-targets -- -D warnings
 
       # The integration crate cannot RUN here (it needs MongoDB + Redis), but
       # it can still be compiled — and compiling it is what was missing. It sat
@@ -323,7 +323,7 @@ jobs:
       # workspace crates (~26 s). Placed alone in the unit lane (PR #1743's
       # first run) it re-checked ~800 dependencies from scratch: 369 s.
       - name: Type-check the integration test crate
-        run: cargo check -p roomler-ai-tests --all-targets
+        run: cargo check -p meshharbor-tests --all-targets
 
       # Pair `vp9-444` with `vp9-444-bindgen` on Linux so env-libvpx-sys
       # regenerates its FFI bindings via bindgen against the installed
@@ -356,7 +356,7 @@ jobs:
         # `hive` (FR-90 P0c) is held out of `full` until the P0 field cell,
         # so it is named here for the same reason: no other lane lints it.
         # `vault` (FR-90 P3-3) implies `hive` and is in no release build yet.
-        run: cargo clippy -p roomlerd --features full,vp9-444,vp9-444-bindgen,clipboard,ssh-server,recording,hive,vault --all-targets -- -D warnings -A dead_code
+        run: cargo clippy -p meshharbord --features full,vp9-444,vp9-444-bindgen,clipboard,ssh-server,recording,hive,vault --all-targets -- -D warnings -A dead_code
 
       # Overlay L3 (Phase 3) feature gate. `overlay-l3` pulls the `tun`
       # crate (Wintun on Windows / /dev/net/tun on Linux) + the TUN↔WG
@@ -373,13 +373,13 @@ jobs:
         # without updating a literal that only exists under `overlay-netstack`,
         # and no lane ever compiled it. `--all-targets` covers test code, which
         # is exactly where that class of break lands.
-        run: cargo clippy -p roomler-ai-tunnel-core --features overlay-l3,overlay-netstack --all-targets -- -D warnings
+        run: cargo clippy -p meshharbor-tunnel-core --features overlay-l3,overlay-netstack --all-targets -- -D warnings
 
       - name: Clippy roomlerd --features overlay-l3
         # Phase 3b: the agent's overlay glue (overlay.rs + the main /
         # signaling hooks) only compiles under the opt-in feature, so the
         # default --workspace clippy never sees it. Lint it explicitly.
-        run: cargo clippy -p roomlerd --features overlay-l3 -- -D warnings
+        run: cargo clippy -p meshharbord --features overlay-l3 -- -D warnings
 
   rust-unit:
     name: Rust unit tests (server + crates)
@@ -420,7 +420,7 @@ jobs:
       # `crates/api` unit tests ran in NO lane until now: the clippy step above
       # is `--workspace` WITHOUT `--all-targets`, so it does not even compile
       # `#[cfg(test)]` code, and the `cargo test` steps further down name
-      # `roomlerd` / `roomler-ai-tunnel-core` explicitly. Every policy test
+      # `roomlerd` / `meshharbor-tunnel-core` explicitly. Every policy test
       # under `routes/` — who may open a session, what a refusal records — was
       # therefore decorative: a green PR did not mean they had run.
       #
@@ -428,9 +428,9 @@ jobs:
       # Redis and belongs to a different lane. These are pure in-crate unit
       # tests and need no services.
       - name: Run API unit tests
-        run: cargo test -p roomler-ai-api --lib
+        run: cargo test -p meshharbor-api --lib
 
-      # FR-69 — `roomler-core` carries the module contract's own guards (the
+      # FR-69 — `meshharbor-core` carries the module contract's own guards (the
       # DAG stays acyclic, the hook order covers every module, the axum Debug
       # parser behind the composition baseline still reads a real router) and,
       # since P1b, the cluster/storage/analytics primitives that moved out of
@@ -438,12 +438,12 @@ jobs:
       # reason the api step above is: `--workspace` clippy compiles none of
       # their `#[cfg(test)]` bodies, and a test no lane runs is decorative.
       - name: Run core unit tests
-        run: cargo test -p roomler-core --lib
+        run: cargo test -p meshharbor-core --lib
 
       # FR-69 P5a — the Hub's unit tests (consent, the session state machine,
       # nudges) moved with it into the fleet module.
       - name: Run fleet module unit tests
-        run: cargo test -p roomler-ai-mod-fleet --lib
+        run: cargo test -p meshharbor-mod-fleet --lib
 
       # Every other crate that carries `#[cfg(test)]` bodies — and until
       # 2026-09-25 ran them in NO lane, for the reason the api step above
@@ -455,32 +455,32 @@ jobs:
       # `remote_control` holds the `rc:*` wire locks CLAUDE.md calls
       # load-bearing, `mod-network` the SSH gates and the grant-ack table,
       # `agent-core` the config round-trips. One invocation, one build graph.
-      # `roomler-setup` (the wizard app, lib `wizard_app`) joined with FR-84
+      # `meshharbor-setup` (the wizard app, lib `wizard_app`) joined with FR-84
       # S2: its orchestrator now decides the overlay default per install
       # flavour, and that rule ran in no lane either. `--lib` only — its
       # bin is `test = false` by the UAC lib-naming rule.
-      # `roomler-hive-node` (FR-90 P0a) joined with its first commit: the
+      # `meshharbor-hive-node` (FR-90 P0a) joined with its first commit: the
       # transcript chain's one-writer and no-gap checks, the replica store's
       # search scoping and the empty-roots-means-nowhere rule are its tests.
-      # `roomler-ai-mod-hive` (FR-90 P0b) the same way: the start-ack table
+      # `meshharbor-mod-hive` (FR-90 P0b) the same way: the start-ack table
       # bound to its device, the status sets a device report may move, and
       # the folder/title checks the start route applies.
-      # `roomler-ai-mod-remote` (FR-101 P2a) joined with its first tests: how
+      # `meshharbor-mod-remote` (FR-101 P2a) joined with its first tests: how
       # the owner pod reads the session policy off the cross-pod relay (absent
       # vs unreadable), and the policy route's strict values.
-      # `roomler-ai-mod-vault` (FR-90 P3-1) with its first commit: a value
+      # `meshharbor-mod-vault` (FR-90 P3-1) with its first commit: a value
       # moved to another place, altered, or held to another KEK does not
       # open; a KEK never prints; paths and fields have one spelling.
       - name: Run the remaining crates' unit tests
         run: >-
           cargo test --lib
-          -p roomler-ai-remote-control -p roomler-ai-mod-network
-          -p roomler-node-core -p roomler-cli -p roomler-localapi
-          -p roomler-ai-services -p roomler-ai-db -p roomler-ai-config
-          -p roomler-ai-mod-chat -p roomler-ai-mod-saas
-          -p tcp-turn-conn -p roomler-setup-core -p roomler-setup
-          -p roomler-hive-node -p roomler-ai-mod-hive -p roomler-ai-mod-remote
-          -p roomler-ai-mod-vault
+          -p meshharbor-remote-control -p meshharbor-mod-network
+          -p meshharbor-node-core -p meshharbor-cli -p meshharbor-localapi
+          -p meshharbor-services -p meshharbor-db -p meshharbor-config
+          -p meshharbor-mod-chat -p meshharbor-mod-saas
+          -p tcp-turn-conn -p meshharbor-setup-core -p meshharbor-setup
+          -p meshharbor-hive-node -p meshharbor-mod-hive -p meshharbor-mod-remote
+          -p meshharbor-mod-vault
 
       # FR-115 P4a-2 — `derp-relay`, the regional PoPs' DERP relay, ran its
       # tests in NO lane: it is a binary crate, so the `--lib` step above
@@ -500,8 +500,8 @@ jobs:
       # the config-path split, which were already here and already unrun.
       # The GTK/WebKit dev packages it links come from the system-deps
       # composite above.
-      - name: Test the desktop companion (roomler-desktop)
-        run: cargo test -p roomler-desktop --bins
+      - name: Test the desktop companion (meshharbor-desktop)
+        run: cargo test -p meshharbor-desktop --bins
 
   rust-agent:
     name: Agent tests (vp9-444, overlay, kernel TUN)
@@ -542,7 +542,7 @@ jobs:
       # `vp9-444-bindgen`, and why Linux needs the pair: see the note on
       # rust-lint's "Clippy agent --features full" step.
       - name: Check agent --features vp9-444
-        run: cargo check -p roomlerd --features vp9-444,vp9-444-bindgen
+        run: cargo check -p meshharbord --features vp9-444,vp9-444-bindgen
 
       - name: Test agent under vp9-444
         # Runs the full `--features vp9-444` lib test suite:
@@ -566,7 +566,7 @@ jobs:
         #     Rust on Linux (X11 headers already installed above).
         #   - roomler SSH (`ssh-server`, which implies `overlay-netstack`):
         #     same trap the clipboard note above describes, and it had already
-        #     sprung — `agents/roomlerd/src/ssh.rs`'s suite (host key,
+        #     sprung — `agents/meshharbord/src/ssh.rs`'s suite (host key,
         #     auth accept/deny, grant redemption, single-use, expiry) is
         #     `#[cfg(feature = "ssh-server")]` and was in NO CI lane, so none
         #     of it ran here. It also puts the Unix half of the privilege drop
@@ -606,7 +606,7 @@ jobs:
         #     takes ~20 s.
         env:
           ROOMLERD_TEST_XKB: "1"
-        run: cargo test -p roomlerd --features vp9-444,vp9-444-bindgen,clipboard,ssh-server,hive,vault,portal-capture,drm-capture,uinput-input,enigo-input,external-access --lib
+        run: cargo test -p meshharbord --features vp9-444,vp9-444-bindgen,clipboard,ssh-server,hive,vault,portal-capture,drm-capture,uinput-input,enigo-input,external-access --lib
 
       - name: Test tunnel-core --features overlay-l3,overlay-netstack
         # WG handshake (direct + RelayConn) + the TUN↔WG bridge loopback
@@ -617,15 +617,15 @@ jobs:
         # pool-open timeout (`Elapsed`) — flaky on master + PRs alike. Serial
         # execution keeps at most one peer-pair up at a time; the tests are
         # individually fast (<1s), so the whole step stays well under a minute.
-        run: cargo test -p roomler-ai-tunnel-core --features overlay-l3,overlay-netstack --lib -- --test-threads=1
+        run: cargo test -p meshharbor-tunnel-core --features overlay-l3,overlay-netstack --lib -- --test-threads=1
 
-      - name: Test the tunnel CLI (roomler-cli --lib)
+      - name: Test the tunnel CLI (meshharbor-cli --lib)
         # FR-97 P6b: no lane ran the CLI's own tests before this one, so its
         # self-update (the artifact picked per host, the version an archive
         # names inside its signed bytes, the dpkg owner, the atomic swap) was
         # covered by nothing. The release-signature check those rest on is
         # tunnel-core's `pgp_verify`, tested in the step above.
-        run: cargo test -p roomler-cli --lib
+        run: cargo test -p meshharbor-cli --lib
 
       - name: Multi-org shared TUN against real kernel networking
         # The mux's bookkeeping is unit-tested against a fake device; the half
@@ -645,8 +645,8 @@ jobs:
           # Build FIRST with human diagnostics. The json pass below would
           # otherwise swallow a compile error into records jq drops, leaving
           # only an empty $BIN and "sudo: : command not found".
-          cargo test -p roomlerd --features overlay-l3 --lib --no-run
-          BIN=$(cargo test -p roomlerd --features overlay-l3 --lib \
+          cargo test -p meshharbord --features overlay-l3 --lib --no-run
+          BIN=$(cargo test -p meshharbord --features overlay-l3 --lib \
                   --no-run --message-format=json \
                 | jq -r 'select(.profile.test == true) | .executable' | head -1)
           echo "test binary: $BIN"
@@ -664,7 +664,7 @@ jobs:
         # only the run. A filter that matches nothing passes too, hence the
         # count check.
         run: |
-          cargo test -p roomlerd --features overlay-l3 --lib -- derp:: > derp-tests.txt 2>&1 \
+          cargo test -p meshharbord --features overlay-l3 --lib -- derp:: > derp-tests.txt 2>&1 \
             || { cat derp-tests.txt; exit 1; }
           cat derp-tests.txt
           grep -E 'test result: ok\. [1-9][0-9]* passed' derp-tests.txt
@@ -693,7 +693,7 @@ jobs:
         # resolves the two TEST graphs to the same features for every shared
         # crate (only roomlerd and the 7 audio-only crates differ), so the
         # tests here reuse it. NOT a full superset: this lane's non-test
-        # `cargo build -p roomlerd` (no dev-dependency features under resolver
+        # `cargo build -p meshharbord` (no dev-dependency features under resolver
         # v2) needs tokio and ~25 dependents in a variant the audio lane never
         # builds, and rebuilds them. Measured on #1939: 273 s for the lane
         # against 221-295 s on master, off the CI critical path. Same workflow
@@ -716,7 +716,7 @@ jobs:
 
       - name: Test the recorder (FR-85) — unit tests + the recorder integration binary
         # ⚠️ Named explicitly, twice, on purpose. Every other roomlerd test
-        # step is `--lib`, so `agents/roomlerd/tests/*.rs` runs only when a
+        # step is `--lib`, so `agents/meshharbord/tests/*.rs` runs only when a
         # step NAMES it — `tests/file_dc.rs` has never run in CI for exactly
         # that reason. And `recording` is not in any other feature set here,
         # so its unit tests would not run under the `--lib` step above either.
@@ -754,10 +754,10 @@ jobs:
         # FR-6 wave 14: the WITH-`audio` half of this step now runs in the
         # `rust-recorder-audio` lane, in parallel with this one.
         run: |
-          cargo test -p roomlerd --features recording,openh264-encoder,synthetic-frame-source --lib recording::
-          cargo test -p roomlerd --features recording,openh264-encoder,synthetic-frame-source --test recorder
-          cargo test -p roomlerd --features recording,openh264-encoder,synthetic-frame-source --test control_dc_record
-          cargo test -p roomlerd --features recording,openh264-encoder,synthetic-frame-source --test export
+          cargo test -p meshharbord --features recording,openh264-encoder,synthetic-frame-source --lib recording::
+          cargo test -p meshharbord --features recording,openh264-encoder,synthetic-frame-source --test recorder
+          cargo test -p meshharbord --features recording,openh264-encoder,synthetic-frame-source --test control_dc_record
+          cargo test -p meshharbord --features recording,openh264-encoder,synthetic-frame-source --test export
 
       - name: The privacy channel (FR-99 P1b) — the production handler over a loopback pair
         # The `privacy` DataChannel's handlers as `peer.rs` routes them, with a
@@ -767,7 +767,7 @@ jobs:
         # ⚠️ Named explicitly: a `tests/*.rs` file nobody names runs in no
         # lane. It needs no feature; it is built with the step above's so it
         # reuses that build instead of compiling the agent a third time.
-        run: cargo test -p roomlerd --features recording,openh264-encoder,synthetic-frame-source --test privacy_dc
+        run: cargo test -p meshharbord --features recording,openh264-encoder,synthetic-frame-source --test privacy_dc
 
       - name: A DataChannel session answers an offer without H.264 (#2231)
         # The production AgentPeer on the VP9 DataChannel transport against a
@@ -777,7 +777,7 @@ jobs:
         # The second test keeps the failure itself (an H.264 track cannot
         # answer that offer). ⚠️ Named explicitly, as the steps around it are;
         # built with the same features, so it reuses that build.
-        run: cargo test -p roomlerd --features recording,openh264-encoder,synthetic-frame-source --test dc_track_codec
+        run: cargo test -p meshharbord --features recording,openh264-encoder,synthetic-frame-source --test dc_track_codec
 
       - name: L0 latency harness (FR-16) — capture → decode on one clock, over a vnet
         # FR-16 L0. The production AgentPeer and media pump on the synthetic
@@ -791,8 +791,8 @@ jobs:
         # `synthetic-frame-source`, which no `--lib` step elsewhere enables.
         # Same features as the recorder step, so it reuses that build.
         run: |
-          cargo test -p roomlerd --features recording,openh264-encoder,synthetic-frame-source --lib capture::synthetic_backend
-          cargo test -p roomlerd --features recording,openh264-encoder,synthetic-frame-source --test l4_latency -- --nocapture
+          cargo test -p meshharbord --features recording,openh264-encoder,synthetic-frame-source --lib capture::synthetic_backend
+          cargo test -p meshharbord --features recording,openh264-encoder,synthetic-frame-source --test l4_latency -- --nocapture
 
       - name: Linux recorder identity (FR-85) — as root, the drop and the thread's filesystem identity
         # FR-85 P1e-unix. A root daemon launches the recorder as the person
@@ -802,7 +802,7 @@ jobs:
         # the runner and then run under sudo. ROOMLERD_TEST_REQUIRE_ROOT
         # turns a skip into a failure: the step cannot pass by not running.
         run: |
-          cargo test -p roomlerd --features recording,openh264-encoder,synthetic-frame-source --lib --no-run --message-format=json > /tmp/p1eu.json
+          cargo test -p meshharbord --features recording,openh264-encoder,synthetic-frame-source --lib --no-run --message-format=json > /tmp/p1eu.json
           BIN=$(jq -r 'select(.reason == "compiler-artifact" and .profile.test == true and .executable != null) | .executable' /tmp/p1eu.json | head -1)
           if [ -z "$BIN" ]; then echo "::error::no roomlerd lib test binary in the build output"; exit 1; fi
           sudo ROOMLERD_TEST_REQUIRE_ROOT=1 "$BIN" recording::launch
@@ -810,11 +810,11 @@ jobs:
       - name: The tarball repair, as root — another account's tree comes back root's, and no symlink is followed
         # Up to 0.4.126 a tarball install left /usr and the unit directories
         # another account's; the daemon repairs at start, as root
-        # (agents/roomlerd/src/tarball_owner.rs). Only root can chown, so the
+        # (agents/meshharbord/src/tarball_owner.rs). Only root can chown, so the
         # lib test binary runs under sudo, and ROOMLERD_TEST_REQUIRE_ROOT turns
         # the test's skip into a failure.
         run: |
-          cargo test -p roomlerd --features recording,openh264-encoder,synthetic-frame-source --lib --no-run --message-format=json > /tmp/tob.json
+          cargo test -p meshharbord --features recording,openh264-encoder,synthetic-frame-source --lib --no-run --message-format=json > /tmp/tob.json
           BIN=$(jq -r 'select(.reason == "compiler-artifact" and .profile.test == true and .executable != null) | .executable' /tmp/tob.json | head -1)
           if [ -z "$BIN" ]; then echo "::error::no roomlerd lib test binary in the build output"; exit 1; fi
           sudo ROOMLERD_TEST_REQUIRE_ROOT=1 "$BIN" tarball_owner
@@ -827,7 +827,7 @@ jobs:
         # can take on another identity, so the lib test binary runs under sudo,
         # and ROOMLERD_TEST_REQUIRE_ROOT turns the tests' skip into a failure.
         run: |
-          cargo test -p roomlerd --features recording,openh264-encoder,synthetic-frame-source --lib --no-run --message-format=json > /tmp/p3d.json
+          cargo test -p meshharbord --features recording,openh264-encoder,synthetic-frame-source --lib --no-run --message-format=json > /tmp/p3d.json
           BIN=$(jq -r 'select(.reason == "compiler-artifact" and .profile.test == true and .executable != null) | .executable' /tmp/p3d.json | head -1)
           if [ -z "$BIN" ]; then echo "::error::no roomlerd lib test binary in the build output"; exit 1; fi
           sudo ROOMLERD_TEST_REQUIRE_ROOT=1 "$BIN" files::seat_user_tests
@@ -853,7 +853,7 @@ jobs:
         # because in a system unit it means root's home whatever User= says.
         run: |
           set -eu
-          cargo build -p roomlerd --features recording,openh264-encoder,synthetic-frame-source --message-format=json > /tmp/p2c-build.json
+          cargo build -p meshharbord --features recording,openh264-encoder,synthetic-frame-source --message-format=json > /tmp/p2c-build.json
           BIN=$(jq -r 'select(.reason == "compiler-artifact" and .target.name == "roomlerd" and .executable != null) | .executable' /tmp/p2c-build.json | tail -1)
           if [ -z "$BIN" ]; then echo "::error::no roomlerd binary in the build output"; exit 1; fi
           ME=$(id -un)
@@ -868,7 +868,7 @@ jobs:
           # host, its `-` is belt and braces, and what FR-96 P2a needs from it
           # is that the sandbox leaves it WRITABLE — asserted below, with a
           # negative control.
-          for p in $(grep -E '^ReadWritePaths=' agents/roomlerd/packaging/linux/roomler.service | sed 's/^ReadWritePaths=//' | tr ' ' '\n' | grep '^-' | sed "s|^-||; s|%h|$H|g"); do
+          for p in $(grep -E '^ReadWritePaths=' agents/meshharbord/packaging/linux/roomler.service | sed 's/^ReadWritePaths=//' | tr ' ' '\n' | grep '^-' | sed "s|^-||; s|%h|$H|g"); do
             if [ "$p" != "$H/Videos" ] && [ "$p" != "$H/Downloads" ] && [ "$p" != /var/tmp ] && [ -e "$p" ]; then echo "::error::$p exists on the runner; the cell proves nothing"; exit 1; fi
           done
           OUT=/tmp/p2c-where.out
@@ -882,7 +882,7 @@ jobs:
             echo "StandardOutput=file:$OUT"
             echo "StandardError=journal"
             echo "ExecStart=/bin/sh -c '\"$BIN\" record --where; if touch \"$H/.p2c-probe\" 2>/dev/null; then echo HOME_WRITABLE; else echo HOME_READ_ONLY; fi; $WAKE_PROBE'"
-            grep -E '^(NoNewPrivileges|ProtectSystem|ProtectHome|ReadWritePaths)=' agents/roomlerd/packaging/linux/roomler.service | sed "s|%h|$H|g"
+            grep -E '^(NoNewPrivileges|ProtectSystem|ProtectHome|ReadWritePaths)=' agents/meshharbord/packaging/linux/roomler.service | sed "s|%h|$H|g"
           } | sudo tee /etc/systemd/system/p2c-sandbox.service
           sudo systemctl daemon-reload
           if ! sudo systemctl start p2c-sandbox.service; then
@@ -908,7 +908,7 @@ jobs:
             echo "StandardOutput=file:$NC"
             echo "StandardError=journal"
             echo "ExecStart=/bin/sh -c '$WAKE_PROBE'"
-            grep -E '^(NoNewPrivileges|ProtectSystem|ProtectHome|ReadWritePaths)=' agents/roomlerd/packaging/linux/roomler.service | grep -vx 'ReadWritePaths=-/var/tmp' | sed "s|%h|$H|g"
+            grep -E '^(NoNewPrivileges|ProtectSystem|ProtectHome|ReadWritePaths)=' agents/meshharbord/packaging/linux/roomler.service | grep -vx 'ReadWritePaths=-/var/tmp' | sed "s|%h|$H|g"
           } | sudo tee /etc/systemd/system/p2c-nogrant.service
           if grep -q '^ReadWritePaths=.*/var/tmp' /etc/systemd/system/p2c-nogrant.service; then echo "::error::the negative control still grants /var/tmp"; exit 1; fi
           sudo systemctl daemon-reload
@@ -935,7 +935,7 @@ jobs:
         # master's unit fails here (the lock, EROFS), the fixed one passes.
         run: |
           set -eu
-          cargo build -p roomlerd --features recording,openh264-encoder,synthetic-frame-source --message-format=json > /tmp/uu-build.json
+          cargo build -p meshharbord --features recording,openh264-encoder,synthetic-frame-source --message-format=json > /tmp/uu-build.json
           BIN=$(jq -r 'select(.reason == "compiler-artifact" and .target.name == "roomlerd" and .executable != null) | .executable' /tmp/uu-build.json | tail -1)
           if [ -z "$BIN" ]; then echo "::error::no roomlerd binary in the build output"; exit 1; fi
           ME=$(id -un)
@@ -953,7 +953,7 @@ jobs:
           printf '%s\n' 'server_url = "http://127.0.0.1:9"' 'agent_token = "ci"' \
             'agent_id = "000000000000000000000000"' 'tenant_id = "000000000000000000000000"' \
             'machine_id = "ci"' 'machine_name = "ci"' > "$H/.config/roomler/config.toml"
-          sed "s|^ExecStart=.*|ExecStart=$BIN run|" agents/roomlerd/packaging/linux/roomler.service > "$H/.config/systemd/user/roomler.service"
+          sed "s|^ExecStart=.*|ExecStart=$BIN run|" agents/meshharbord/packaging/linux/roomler.service > "$H/.config/systemd/user/roomler.service"
           systemctl --user daemon-reload
           systemctl --user start roomler.service
           sock=""
@@ -1027,9 +1027,9 @@ jobs:
         # why the recorder is tested both with and without `audio`. It has
         # its own lane (FR-6 wave 14) so the two halves compile in parallel.
         run: |
-          cargo test -p roomlerd --features recording,openh264-encoder,synthetic-frame-source,audio --lib recording::
-          cargo test -p roomlerd --features recording,openh264-encoder,synthetic-frame-source,audio --test recorder
-          cargo test -p roomlerd --features recording,openh264-encoder,synthetic-frame-source,audio --test export
+          cargo test -p meshharbord --features recording,openh264-encoder,synthetic-frame-source,audio --lib recording::
+          cargo test -p meshharbord --features recording,openh264-encoder,synthetic-frame-source,audio --test recorder
+          cargo test -p meshharbord --features recording,openh264-encoder,synthetic-frame-source,audio --test export
 
       - name: The recorder's pointer (FR-85 P1d) and keep busy (FR-92 P3) on X11 — against a real X server
         # FR-85 P1d. XShm frames carry no pointer, so on X11 the recorder
@@ -1088,7 +1088,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends xvfb xauth
-          xvfb-run -a -s "-screen 0 1280x1024x24 -noreset" env ROOMLERD_TEST_X11=1 cargo test -p roomlerd --features scrap-capture,enigo-input,viewer-indicator-x11,clipboard --lib -- capture::pointer capture::x11_cursor keep_busy::host_x11 capture::xwayland_probe_tests indicator::x11 input::layout_x11 clipboard::x11_gate_tests --nocapture --test-threads=1 | tee /tmp/x11-tests.log
+          xvfb-run -a -s "-screen 0 1280x1024x24 -noreset" env ROOMLERD_TEST_X11=1 cargo test -p meshharbord --features scrap-capture,enigo-input,viewer-indicator-x11,clipboard --lib -- capture::pointer capture::x11_cursor keep_busy::host_x11 capture::xwayland_probe_tests indicator::x11 input::layout_x11 clipboard::x11_gate_tests --nocapture --test-threads=1 | tee /tmp/x11-tests.log
           grep -q "x11-real: XTest motion reset the idle counter" /tmp/x11-tests.log
           grep -q "x11-real: ran with idle" /tmp/x11-tests.log
           grep -q "x11-real: Xvfb does not advertise XWAYLAND" /tmp/x11-tests.log
@@ -1165,7 +1165,7 @@ jobs:
           # too close to the default 4000 to leave room for accretion.
           max-target-mb: "6000"
       - name: cargo check tunnel-core (overlay-l3 + overlay-netstack)
-        run: cargo check -p roomler-ai-tunnel-core --features overlay-l3,overlay-netstack
+        run: cargo check -p meshharbor-tunnel-core --features overlay-l3,overlay-netstack
 
       # This job checked tunnel-core ONLY, so `roomlerd`'s `cfg(unix)` code
       # was never compiled for macOS anywhere except a release-tag build — and
@@ -1181,7 +1181,7 @@ jobs:
       # (`src/pty.rs`, `exec.rs`'s privilege drop); check-only, so it costs a
       # compile and not a link.
       - name: cargo check agent (ssh-server — the raw-libc surface)
-        run: cargo check -p roomlerd --lib --features ssh-server
+        run: cargo check -p meshharbord --lib --features ssh-server
 
       # The capture path is the OTHER macOS-only surface, and until rc.454 it
       # compiled nowhere but a release tag either. It now calls
@@ -1190,7 +1190,7 @@ jobs:
       # target. `scrap-capture` also pulls in the quartz backend itself, so
       # this is the only lane that type-checks the fork at all.
       - name: cargo check agent (scrap-capture — the macOS capture surface)
-        run: cargo check -p roomlerd --lib --features scrap-capture
+        run: cargo check -p meshharbord --lib --features scrap-capture
 
       # FR-27 — the native AppKit consent panel. `--bins` as well as `--lib`,
       # and that is the whole point: this feature ALSO changes `main.rs`, which
@@ -1198,17 +1198,17 @@ jobs:
       # can pump. A `--lib` check would compile the panel and miss the swap
       # entirely — the exact escape rc.454 hit, one feature over.
       - name: cargo check agent (viewer-indicator-macos — the AppKit panel + the main-thread swap)
-        run: cargo check -p roomlerd --lib --bins --features viewer-indicator-macos
+        run: cargo check -p meshharbord --lib --bins --features viewer-indicator-macos
 
       # `--bins`, because `--lib` alone was not enough. main.rs is a SEPARATE
       # crate root: a `#[cfg(target_os = "macos")]` block there referring to a
-      # lib module needs `roomlerd::`, and a bare path compiles nowhere —
+      # lib module needs `meshharbord::`, and a bare path compiles nowhere —
       # but nothing on this lane ever built the binary, so rc.454's startup
       # permission preflight passed every check and then failed on master.
       # Same "invisible until a Mac compiles it" class this whole job exists
       # for, one crate root over.
       - name: cargo check agent BINARY (macOS cfg arms in main.rs)
-        run: cargo check -p roomlerd --bins --features scrap-capture
+        run: cargo check -p meshharbord --bins --features scrap-capture
 
       # FR-90 P1h — agent sessions on macOS (`cfg(hive_host)`): the launcher,
       # the harness's paths, its process lifetime (`hive/procs.rs` calls
@@ -1223,8 +1223,8 @@ jobs:
       # is the only runner where they are checked against `libc`.
       - name: cargo check + test agent sessions on macOS (FR-90 P1h — `hive`)
         run: |
-          cargo check -p roomlerd --lib --bins --features hive,vault
-          cargo test -p roomlerd --lib --features hive,vault -- hive:: vault:: vault_proxy:: macos_supervisor::
+          cargo check -p meshharbord --lib --bins --features hive,vault
+          cargo test -p meshharbord --lib --features hive,vault -- hive:: vault:: vault_proxy:: macos_supervisor::
 
       # FR-85 — the release feature set (`full`, less the vendored FFmpeg
       # and libvpx), which carries `recording` again (P4c, after the
@@ -1239,14 +1239,14 @@ jobs:
         # every platform; the first run of this step failed on exactly that.
         env:
           CMAKE_POLICY_VERSION_MINIMUM: "3.5"
-        run: cargo check -p roomlerd --lib --bins --features full,recording
+        run: cargo check -p meshharbord --lib --bins --features full,recording
 
       # The desktop companion ships on macOS from rc.455 and owns the
       # permissions panel — the one surface that tells an operator why their
       # remote screen is blank. Its macOS arms (the TCC probes, `open` for the
       # Settings pane) exist on exactly this target.
       - name: cargo check the desktop companion
-        run: cargo check -p roomler-desktop
+        run: cargo check -p meshharbor-desktop
 
       - name: Lint the macOS packaging
         # A malformed plist or postinstall only fails at INSTALL time, on
@@ -1254,10 +1254,10 @@ jobs:
         # Both checks are free here.
         run: |
           set -euo pipefail
-          for p in agents/roomlerd/packaging/macos/*.plist; do
+          for p in agents/meshharbord/packaging/macos/*.plist; do
             plutil -lint "$p"
           done
-          bash -n agents/roomlerd/packaging/macos/postinstall
+          bash -n agents/meshharbord/packaging/macos/postinstall
           # The daemon plist must point at a path the .pkg actually creates,
           # and must NOT reuse the LaunchAgent's Label — launchctl would
           # refuse the second bootstrap and the failure reads as "already
@@ -1269,7 +1269,7 @@ jobs:
           # Globbed on `com.roomler.*` — the launchd jobs — rather than every
           # .plist in the directory, which also holds entitlements.plist (a
           # codesign input with no Label at all).
-          labels=$(for p in agents/roomlerd/packaging/macos/com.roomler.*.plist; do
+          labels=$(for p in agents/meshharbord/packaging/macos/com.roomler.*.plist; do
                      plutil -extract Label raw "$p" \
                        || { echo "::error::$p has no Label"; exit 1; }
                    done)
@@ -1285,7 +1285,7 @@ jobs:
           # a plist still naming the old path installs fine and the daemon simply
           # never starts, which reads as "the overlay is down", not as a typo.
           grep -q '/Library/Roomler/roomlerd.app/Contents/MacOS/roomlerd' \
-            agents/roomlerd/packaging/macos/com.roomler.daemon.plist
+            agents/meshharbord/packaging/macos/com.roomler.daemon.plist
 
       - name: macOS overlay against a real utun
         # The macOS arms of add_address_sync / add_peer_route /
@@ -1298,7 +1298,7 @@ jobs:
         # of trusted. Built as the normal user and only RUN under sudo, so
         # root never takes ownership of the cargo cache.
         run: |
-          BIN=$(cargo test -p roomler-ai-tunnel-core --features overlay-l3 --lib \
+          BIN=$(cargo test -p meshharbor-tunnel-core --features overlay-l3 --lib \
                   --no-run --message-format=json \
                 | jq -r 'select(.profile.test == true) | .executable' | head -1)
           echo "test binary: $BIN"
@@ -1359,7 +1359,7 @@ jobs:
         with:
           family: windows-clippy
       - name: Clippy tunnel-core (overlay-l3 + overlay-netstack, all targets)
-        run: cargo clippy -p roomler-ai-tunnel-core --features overlay-l3,overlay-netstack --all-targets -- -D warnings
+        run: cargo clippy -p meshharbor-tunnel-core --features overlay-l3,overlay-netstack --all-targets -- -D warnings
       # `ssh-server` is in the set because this is the ONLY lane that lints the
       # Windows ConPTY implementation — it is `#[cfg(windows)]` AND behind that
       # feature, so every Linux lane compiles straight past it. It ships in all
@@ -1371,7 +1371,7 @@ jobs:
       # `hive` (FR-90 P1i): agent sessions on Windows, which no release build
       # carries yet, so this is the only place their code is linted.
       - name: Clippy roomlerd (overlay-l3 + ssh-server + hive, incl. tests)
-        run: cargo clippy -p roomlerd --features overlay-l3,ssh-server,hive,vault --tests -- -D warnings
+        run: cargo clippy -p meshharbord --features overlay-l3,ssh-server,hive,vault --tests -- -D warnings
       # FR-92 P10b — the LocalAPI crate's Windows half ran in NO lane: its
       # tests run on Linux, where every `#[cfg(windows)]` test compiles out,
       # and tunnel-core's clippy above builds only its library. That half is
@@ -1381,8 +1381,8 @@ jobs:
       - name: LocalAPI on Windows — clippy + unit tests (FR-92 P10b)
         if: ${{ !cancelled() }}
         run: |
-          cargo clippy -p roomler-localapi --all-targets -- -D warnings
-          cargo test -p roomler-localapi --lib
+          cargo clippy -p meshharbor-localapi --all-targets -- -D warnings
+          cargo test -p meshharbor-localapi --lib
       # FR-90 P1i — a Windows session's launcher: a process started SUSPENDED
       # into a Job Object, with the session's variables over the user's
       # environment; ending or closing the job ending what it started; the
@@ -1406,7 +1406,7 @@ jobs:
         # A block scalar: `hive:: ` holds `: `, which a plain YAML scalar reads
         # as a mapping, and then this whole file fails to parse.
         run: |
-          cargo test -p roomlerd --lib --features overlay-l3,ssh-server,hive,vault -- hive:: hive_win win_service::supervisor win_service::tests win_service::orphan vault:: vault_proxy:: ssh_service::
+          cargo test -p meshharbord --lib --features overlay-l3,ssh-server,hive,vault -- hive:: hive_win win_service::supervisor win_service::tests win_service::orphan vault:: vault_proxy:: ssh_service::
 
       # FR-99 P1b — the overlay behind `viewer-indicator`: the "being viewed"
       # border and badge, the native consent panel, and the privacy curtain
@@ -1417,8 +1417,8 @@ jobs:
       - name: The overlay and the privacy curtain — clippy + unit tests (FR-99 P1b)
         if: ${{ !cancelled() }}
         run: |
-          cargo clippy -p roomlerd --lib --features viewer-indicator -- -D warnings
-          cargo test -p roomlerd --lib --features viewer-indicator -- privacy:: indicator::
+          cargo clippy -p meshharbord --lib --features viewer-indicator -- -D warnings
+          cargo test -p meshharbord --lib --features viewer-indicator -- privacy:: indicator::
 
       # FR-6 wave 22 (#773): the job's LAST step. Only a master push
       # publishes, and an unchanged cache is not re-uploaded; see the action.
@@ -1478,9 +1478,9 @@ jobs:
         with:
           family: windows-recorder
       - name: Clippy roomlerd (recording, incl. tests)
-        run: cargo clippy -p roomlerd --features recording,openh264-encoder,synthetic-frame-source --tests -- -D warnings
+        run: cargo clippy -p meshharbord --features recording,openh264-encoder,synthetic-frame-source --tests -- -D warnings
       - name: The identity rule — unit tests (the table, argv, env, impersonation)
-        run: cargo test -p roomlerd --lib --features recording,openh264-encoder,synthetic-frame-source -- recording::launch --nocapture
+        run: cargo test -p meshharbord --lib --features recording,openh264-encoder,synthetic-frame-source -- recording::launch --nocapture
       # #1727 — not the recorder, but this is the one lane that builds
       # roomlerd's lib tests on Windows, and `win_service` is Windows-only:
       # its units ran in NO lane before. The same test binary as the step
@@ -1488,13 +1488,13 @@ jobs:
       # ENABLE_SYSTEM_CONTEXT does is decided here.
       - name: The installer's SystemContext record — unit tests (#1727)
         if: ${{ !cancelled() }}
-        run: cargo test -p roomlerd --lib --features recording,openh264-encoder,synthetic-frame-source -- win_service::system_context_attempt --nocapture
+        run: cargo test -p meshharbord --lib --features recording,openh264-encoder,synthetic-frame-source -- win_service::system_context_attempt --nocapture
       # Runs even when the unit step failed: the two prove different halves
       # (the child's integrity, the daemon's impersonation), and one red must
       # not hide the other's evidence.
       - name: The identity rule — the recorder launched as the person, end to end
         if: ${{ !cancelled() }}
-        run: cargo test -p roomlerd --features recording,openh264-encoder,synthetic-frame-source --test recorder -- process::an_elevated process::the_manager_records_as_the_person --nocapture
+        run: cargo test -p meshharbord --features recording,openh264-encoder,synthetic-frame-source --test recorder -- process::an_elevated process::the_manager_records_as_the_person --nocapture
       # FR-85 P1d — the pointer's Windows half sits in code no lane compiled:
       # WGC, the live cursor tracker and scrap's DXGI path are built only by
       # release-agent.yml, at tag time. `wgc-capture`, `mf-encoder` and
@@ -1504,8 +1504,8 @@ jobs:
       - name: The recorder's pointer — Windows capture compiles, lints, and its units pass
         if: ${{ !cancelled() }}
         run: |
-          cargo clippy -p roomlerd --features recording,openh264-encoder,wgc-capture,mf-encoder,scrap-capture --tests -- -D warnings
-          cargo test -p roomlerd --lib --features recording,openh264-encoder,wgc-capture,mf-encoder,scrap-capture -- capture::pointer capture::wgc_backend::tests::only_a_recording_or_the_escape_hatch_bakes_the_pointer
+          cargo clippy -p meshharbord --features recording,openh264-encoder,wgc-capture,mf-encoder,scrap-capture --tests -- -D warnings
+          cargo test -p meshharbord --lib --features recording,openh264-encoder,wgc-capture,mf-encoder,scrap-capture -- capture::pointer capture::wgc_backend::tests::only_a_recording_or_the_escape_hatch_bakes_the_pointer
 
       # FR-6 wave 22 (#773): the job's LAST step. Only a master push
       # publishes, and an unchanged cache is not re-uploaded; see the action.
@@ -1650,7 +1650,7 @@ jobs:
         # real build. Keep this set a subset of what release-agent.yml builds.
         #
         # `--all-targets` so test-only lints fire, matching the repo rule.
-        run: cargo clippy -p roomlerd --features ffmpeg-encoder,vp9-444,vp9-444-bindgen --all-targets -- -D warnings
+        run: cargo clippy -p meshharbord --features ffmpeg-encoder,vp9-444,vp9-444-bindgen --all-targets -- -D warnings
 
       - name: Test agent --features ffmpeg-encoder
         # Test, not merely check. The ten encoder names the cascade dispatches
@@ -1659,7 +1659,7 @@ jobs:
         # vendored build and the dispatch table from drifting apart — a drift
         # that is invisible until a device silently falls back to software.
         # They need the library present, not a GPU.
-        run: cargo test -p roomlerd --features ffmpeg-encoder --lib
+        run: cargo test -p meshharbord --features ffmpeg-encoder --lib
 
   recording-ffmpeg:
     # FR-85 P4 — the recorder and the export engine against the vendored
@@ -1747,7 +1747,7 @@ jobs:
             exit 1
           fi
       - name: Clippy the recorder with FFmpeg (incl. tests)
-        run: cargo clippy -p roomlerd --features "$REC_FEATURES" --all-targets -- -D warnings
+        run: cargo clippy -p meshharbord --features "$REC_FEATURES" --all-targets -- -D warnings
       - name: The recorder and the export record AAC and edit hardware recordings — never a quiet fallback
         # `--lib recording::`: the encoder (1024-sample frames, the declared
         # priming, the standard AudioSpecificConfig) and a click that must
@@ -1764,9 +1764,9 @@ jobs:
           ROOMLER_EXPECT_FFMPEG_AAC: "1"
           ROOMLER_EXPECT_FFMPEG_H264_DECODER: "1"
         run: |
-          cargo test -p roomlerd --features "$REC_FEATURES" --lib recording::
-          cargo test -p roomlerd --features "$REC_FEATURES" --test recorder
-          cargo test -p roomlerd --features "$REC_FEATURES" --test export
+          cargo test -p meshharbord --features "$REC_FEATURES" --lib recording::
+          cargo test -p meshharbord --features "$REC_FEATURES" --test recorder
+          cargo test -p meshharbord --features "$REC_FEATURES" --test export
 
   fr-registry:
     name: FR registry integrity
@@ -2177,7 +2177,7 @@ jobs:
         run: |
           for p in collab remote mesh access; do
             echo "::group::profile-$p"
-            cargo check -p roomler-ai-api --no-default-features --features "profile-$p"
+            cargo check -p meshharbor-api --no-default-features --features "profile-$p"
             echo "::endgroup::"
           done
 
@@ -2186,7 +2186,7 @@ jobs:
       # nothing is also a failure (the assertion must be able to fail).
       - name: Assert what each profile leaves out (AC3)
         run: |
-          tree() { cargo tree -p roomler-ai-api --no-default-features --features "profile-$1" -e normal --prefix none 2>/dev/null | awk '{print $1}' | sort -u; }
+          tree() { cargo tree -p meshharbor-api --no-default-features --features "profile-$1" -e normal --prefix none 2>/dev/null | awk '{print $1}' | sort -u; }
           fail=0
           for p in remote mesh access; do
             T=$(tree "$p"); N=$(printf '%s\n' "$T" | wc -l)
@@ -2195,10 +2195,10 @@ jobs:
           done
           T=$(tree collab); N=$(printf '%s\n' "$T" | wc -l)
           if [ "$N" -lt 100 ]; then echo "::error::profile-collab: cargo tree returned $N crates"; fail=1; fi
-          if printf '%s\n' "$T" | grep -qx 'roomler-ai-tunnel-core'; then echo "::error::profile-collab links roomler-ai-tunnel-core"; fail=1; else echo "  profile-collab: no tunnel-core ($N crates)"; fi
+          if printf '%s\n' "$T" | grep -qx 'meshharbor-tunnel-core'; then echo "::error::profile-collab links meshharbor-tunnel-core"; fail=1; else echo "  profile-collab: no tunnel-core ($N crates)"; fi
           # And the positive control: the FULL graph must contain both, or
           # the greps above prove nothing about the names they look for.
-          F=$(cargo tree -p roomler-ai-api -e normal --prefix none 2>/dev/null | awk '{print $1}' | sort -u)
+          F=$(cargo tree -p meshharbor-api -e normal --prefix none 2>/dev/null | awk '{print $1}' | sort -u)
           printf '%s\n' "$F" | grep -qx 'mediasoup' || { echo "::error::positive control failed: full does not list mediasoup"; fail=1; }
-          printf '%s\n' "$F" | grep -qx 'roomler-ai-tunnel-core' || { echo "::error::positive control failed: full does not list roomler-ai-tunnel-core"; fail=1; }
+          printf '%s\n' "$F" | grep -qx 'meshharbor-tunnel-core' || { echo "::error::positive control failed: full does not list meshharbor-tunnel-core"; fail=1; }
           exit $fail

@@ -36,15 +36,15 @@ use axum::{
     extract::{Path, Query, State},
 };
 use bson::{DateTime, oid::ObjectId};
-use roomler_ai_db::models::role::permissions;
-use roomler_ai_remote_control::{
+use meshharbor_db::models::role::permissions;
+use meshharbor_remote_control::{
     error::Error as HubError,
     hive::{HARNESS_CLAUDE_CODE, hive_limits},
     models::{Agent, RpcCap},
     signaling::ServerMsg,
 };
-use roomler_ai_services::dao::base::PaginationParams;
-use roomler_core::{ApiError, extractors::auth::AuthUser, guards::parse_tid};
+use meshharbor_services::dao::base::PaginationParams;
+use meshharbor_core::{ApiError, extractors::auth::AuthUser, guards::parse_tid};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 
@@ -71,7 +71,7 @@ pub struct StartBody {
 }
 
 /// Why the SERVER refused a start. The device's own refusals are
-/// [`roomler_ai_remote_control::hive::HiveRefusal`] words, on the session.
+/// [`meshharbor_remote_control::hive::HiveRefusal`] words, on the session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StartDenyReason {
     OrgArchived,
@@ -338,8 +338,8 @@ async fn searches(state: &HiveState, tid: ObjectId) -> bool {
         if let Ok(a) = state.fleet.agents.find_live_in_tenant(tid, device).await
             && a.capabilities.has_rpc(RpcCap::HiveSearch)
             && !matches!(
-                roomler_ai_mod_fleet::agent::derive_agent_presence(&state.fleet, &a, false).0,
-                roomler_ai_mod_fleet::agent::AgentPresence::Offline
+                meshharbor_mod_fleet::agent::derive_agent_presence(&state.fleet, &a, false).0,
+                meshharbor_mod_fleet::agent::AgentPresence::Offline
             )
         {
             return true;
@@ -978,7 +978,7 @@ mod tests {
     /// build does not know still reads as a refusal.
     #[test]
     fn every_device_refusal_has_a_message() {
-        use roomler_ai_remote_control::hive::HiveRefusal;
+        use meshharbor_remote_control::hive::HiveRefusal;
         let fallback = device_refusal_message("from_2027");
         for r in HiveRefusal::ALL {
             let m = device_refusal_message(r.as_str());

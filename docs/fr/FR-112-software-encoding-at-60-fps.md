@@ -31,7 +31,7 @@ at 30 by a constant, and on a fast host the constant is not even the limit: the 
 
 | Path | Today | Anchor |
 |---|---|---|
-| VP9-444 over the DataChannel | 30, or 60 with `ROOMLERD_VP9_FPS=60` | `agents/roomlerd/src/peer.rs:9435` |
+| VP9-444 over the DataChannel | 30, or 60 with `ROOMLERD_VP9_FPS=60` | `agents/meshharbord/src/peer.rs:9435` |
 | H.264 over RTP (OpenH264) | 30: `TARGET_FPS_SW`, and the encoder's own `max_frame_rate(30)` | `peer.rs:98`, `encode/openh264_backend.rs:50` |
 | Hardware encoders | 60 | `peer.rs:105`, `ffmpeg_target_fps` (`peer.rs:9459`) |
 

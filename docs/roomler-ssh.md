@@ -158,7 +158,7 @@ bounded run (`ExecEngine::run_fed`): the whole output was collected against a
 1 MiB ceiling and sent when the process ended, under a 300 s wall clock.
 Correct for `roomler exec`, whose answer is one persisted audit row; wrong for
 a byte stream. The engine now has a second entry point beside it,
-`ExecEngine::run_streamed` (`agents/roomlerd/src/exec.rs`), and the SSH server
+`ExecEngine::run_streamed` (`agents/meshharbord/src/exec.rs`), and the SSH server
 uses that one (`ssh.rs` `stream_to_channel`):
 
 ```mermaid
@@ -237,7 +237,7 @@ scripts rely on.
 
 `ssh <node>` allocates a terminal, runs a login shell on it, streams both ways,
 and reflows when the client window changes — on **both platforms**, through one
-surface: `agents/roomlerd/src/pty/{mod,unix,windows}.rs`. `ssh.rs` has a
+surface: `agents/meshharbord/src/pty/{mod,unix,windows}.rs`. `ssh.rs` has a
 single code path, which is deliberate: an interactive session is where a
 per-platform divergence would be least visible and most annoying, and two
 handlers would have grown two subtly different privilege and teardown stories.
@@ -340,9 +340,9 @@ Which Windows column applies is the server's decision per grant, recorded in
 The mode means what it means on Windows: the person signed in at the device's own
 screen, and nobody else. The agent finds them at each session, then takes the drop
 a `named` account takes (`unix_priv::drop_to_console`,
-[`exec.rs:1404`](../agents/roomlerd/src/exec.rs#L1404)). Exec, the pty and `sftp`
+[`exec.rs:1404`](../agents/meshharbord/src/exec.rs#L1404)). Exec, the pty and `sftp`
 all go through `apply_run_as`
-([`exec.rs:807`](../agents/roomlerd/src/exec.rs#L807)), so one rule covers all
+([`exec.rs:807`](../agents/meshharbord/src/exec.rs#L807)), so one rule covers all
 three.
 
 ```mermaid
@@ -365,7 +365,7 @@ flowchart TD
 
 | | Linux | macOS |
 |---|---|---|
-| Who is at the screen | the user of logind's `ActiveSession` on `seat0`, if its `Class` is `user` ([`companion.rs:888`](../agents/roomlerd/src/companion.rs#L888)) | the owner of `/dev/console`, which loginwindow hands to whoever logs in at the GUI, read as the pkg's postinstall reads it ([`companion.rs:616`](../agents/roomlerd/src/companion.rs#L616)) |
+| Who is at the screen | the user of logind's `ActiveSession` on `seat0`, if its `Class` is `user` ([`companion.rs:888`](../agents/meshharbord/src/companion.rs#L888)) | the owner of `/dev/console`, which loginwindow hands to whoever logs in at the GUI, read as the pkg's postinstall reads it ([`companion.rs:616`](../agents/meshharbord/src/companion.rs#L616)) |
 | Nobody, when | no logind, no `seat0`, an empty seat, a greeter (GDM's `gdm` at the login screen) | the login window (`root`), or a system account (`_mbsetupuser` during Setup Assistant) |
 | A text console counts | yes: a login on the machine's own VT is a person at its screen | not applicable |
 
@@ -921,7 +921,7 @@ flowchart TD
 ```
 
 ⚠️ **Windows `console_user` takes `exec`'s console-user spawn** (FR-97 P4b,
-`exec::run_console_user_program`, `agents/roomlerd/src/exec.rs:937`).
+`exec::run_console_user_program`, `agents/meshharbord/src/exec.rs:937`).
 `tokio::process` cannot take a token, so the subsystem goes through
 `supervisor::spawn_in_session_captured`, the piped `CreateProcessAsUserW` spawn
 P5b built and FR-89 made streaming. Three details differ from a shell command
@@ -990,7 +990,7 @@ roomler. The first P4b run dialled 22 and met exactly that.
 ### Bulk throughput: the channel window
 
 Every channel offers a **16 MiB** receive window (`ROOMLERD_SSH_WINDOW_SIZE`,
-bytes, 256 KiB–64 MiB; `sshd::channel_window` in `agents/roomlerd/src/ssh.rs`).
+bytes, 256 KiB–64 MiB; `sshd::channel_window` in `agents/meshharbord/src/ssh.rs`).
 russh's own default is 2 MiB, re-opened at half. One upload can have no more than
 the window in flight, and the bytes still waiting in the client's own socket
 buffers count against it, so a long round trip held the upload at window / RTT:
@@ -1361,10 +1361,10 @@ session's grant backs it.
 
 | Piece | Where |
 |---|---|
-| the grant's field | `Grant::one_command` ([`ssh.rs:2834`](../agents/roomlerd/src/ssh.rs#L2834)), recorded by `record_grant` ([`:2910`](../agents/roomlerd/src/ssh.rs#L2910)), resolved into the session's policy ([`:826`](../agents/roomlerd/src/ssh.rs#L826)) |
-| the rules | one channel ([`ssh.rs:1680`](../agents/roomlerd/src/ssh.rs#L1680)), no forward ([`:1746`](../agents/roomlerd/src/ssh.rs#L1746)), one `exec` ([`:1841`](../agents/roomlerd/src/ssh.rs#L1841)), no shell ([`:1949`](../agents/roomlerd/src/ssh.rs#L1949)), no terminal ([`:1988`](../agents/roomlerd/src/ssh.rs#L1988)), no subsystem ([`:2091`](../agents/roomlerd/src/ssh.rs#L2091)) |
-| the device's word | `ssh-one-command` in the hello ([`caps.rs:1932`](../agents/roomlerd/src/encode/caps.rs#L1932)) |
-| the SYSTEM service | the claim's word ([`ssh_service.rs:637`](../agents/roomlerd/src/ssh_service.rs#L637)), the published word ([`:646`](../agents/roomlerd/src/ssh_service.rs#L646)), and the claimed grant's field ([`:612`](../agents/roomlerd/src/ssh_service.rs#L612)) |
+| the grant's field | `Grant::one_command` ([`ssh.rs:2834`](../agents/meshharbord/src/ssh.rs#L2834)), recorded by `record_grant` ([`:2910`](../agents/meshharbord/src/ssh.rs#L2910)), resolved into the session's policy ([`:826`](../agents/meshharbord/src/ssh.rs#L826)) |
+| the rules | one channel ([`ssh.rs:1680`](../agents/meshharbord/src/ssh.rs#L1680)), no forward ([`:1746`](../agents/meshharbord/src/ssh.rs#L1746)), one `exec` ([`:1841`](../agents/meshharbord/src/ssh.rs#L1841)), no shell ([`:1949`](../agents/meshharbord/src/ssh.rs#L1949)), no terminal ([`:1988`](../agents/meshharbord/src/ssh.rs#L1988)), no subsystem ([`:2091`](../agents/meshharbord/src/ssh.rs#L2091)) |
+| the device's word | `ssh-one-command` in the hello ([`caps.rs:1932`](../agents/meshharbord/src/encode/caps.rs#L1932)) |
+| the SYSTEM service | the claim's word ([`ssh_service.rs:637`](../agents/meshharbord/src/ssh_service.rs#L637)), the published word ([`:646`](../agents/meshharbord/src/ssh_service.rs#L646)), and the claimed grant's field ([`:612`](../agents/meshharbord/src/ssh_service.rs#L612)) |
 | the server | routing a session's grant to the service ([`agent_ssh.rs:784`](../crates/modules/network/src/routes/agent_ssh.rs#L784)), the claim's backstop ([`:1392`](../crates/modules/network/src/routes/agent_ssh.rs#L1392)) in the pending rows' claim ([`ssh_pending.rs:63`](../crates/services/src/dao/ssh_pending.rs#L63)), the published record ([`models.rs:2653`](../crates/remote_control/src/models.rs#L2653)) |
 
 ### The session's own device: the client (FR-90 P3-8-2b)
@@ -1413,10 +1413,10 @@ for one `exec` because that is all it needs; the target refuses anything more
 
 | Piece | Where |
 |---|---|
-| the ask | `Client::ssh` ([`vault.rs:888`](../agents/roomlerd/src/vault.rs#L888)), answered at [`:1040`](../agents/roomlerd/src/vault.rs#L1040) from the primary's connection ([`signaling.rs:6334`](../agents/roomlerd/src/signaling.rs#L6334)) |
-| the client | the key ([`ssh_client.rs:138`](../agents/roomlerd/src/ssh_client.rs#L138)), the request ([`:187`](../agents/roomlerd/src/ssh_client.rs#L187)), the answer's checks ([`:156`](../agents/roomlerd/src/ssh_client.rs#L156)), the one `exec` ([`:286`](../agents/roomlerd/src/ssh_client.rs#L286)), one call whole ([`:371`](../agents/roomlerd/src/ssh_client.rs#L371)) |
-| the dial | the netstack's ([`overlay.rs:894`](../agents/roomlerd/src/overlay.rs#L894)), the OS's ([`ssh_client.rs:240`](../agents/roomlerd/src/ssh_client.rs#L240)) |
-| the echo, carried | `rc:ssh.response` into the client's answer ([`signaling.rs:5970`](../agents/roomlerd/src/signaling.rs#L5970), [`ssh_origin.rs:37`](../agents/roomlerd/src/ssh_origin.rs#L37)) |
+| the ask | `Client::ssh` ([`vault.rs:888`](../agents/meshharbord/src/vault.rs#L888)), answered at [`:1040`](../agents/meshharbord/src/vault.rs#L1040) from the primary's connection ([`signaling.rs:6334`](../agents/meshharbord/src/signaling.rs#L6334)) |
+| the client | the key ([`ssh_client.rs:138`](../agents/meshharbord/src/ssh_client.rs#L138)), the request ([`:187`](../agents/meshharbord/src/ssh_client.rs#L187)), the answer's checks ([`:156`](../agents/meshharbord/src/ssh_client.rs#L156)), the one `exec` ([`:286`](../agents/meshharbord/src/ssh_client.rs#L286)), one call whole ([`:371`](../agents/meshharbord/src/ssh_client.rs#L371)) |
+| the dial | the netstack's ([`overlay.rs:894`](../agents/meshharbord/src/overlay.rs#L894)), the OS's ([`ssh_client.rs:240`](../agents/meshharbord/src/ssh_client.rs#L240)) |
+| the echo, carried | `rc:ssh.response` into the client's answer ([`signaling.rs:5970`](../agents/meshharbord/src/signaling.rs#L5970), [`ssh_origin.rs:37`](../agents/meshharbord/src/ssh_origin.rs#L37)) |
 
 ### The tool: `ssh_run` (FR-90 P3-8-2b-2)
 
@@ -1466,10 +1466,10 @@ never recorded: what a session typed is its own.
 
 | Piece | Where |
 |---|---|
-| the owner's key | `hive_ssh` ([`config.rs:605`](../crates/agent-core/src/config.rs#L605)), never pushable ([`models.rs:9258`](../crates/remote_control/src/models.rs#L9258)), read into `HiveConfig.ssh` ([`gates.rs:58`](../agents/roomlerd/src/hive/gates.rs#L58)) |
-| the offer | `Supervisor::ssh_runner` ([`supervisor.rs:1479`](../agents/roomlerd/src/hive/supervisor.rs#L1479)), made at start ([`:784`](../agents/roomlerd/src/hive/supervisor.rs#L784)); `Run.ssh` ([`toolbelt.rs:367`](../agents/roomlerd/src/hive/toolbelt.rs#L367)); the settings' ask ([`supervisor.rs:4770`](../agents/roomlerd/src/hive/supervisor.rs#L4770), `SSH_TOOLS` at [`toolbelt.rs:453`](../agents/roomlerd/src/hive/toolbelt.rs#L453)) |
-| the tool | its definition ([`toolbelt.rs:1132`](../agents/roomlerd/src/hive/toolbelt.rs#L1132)); the call ([`ssh_tools.rs:153`](../agents/roomlerd/src/hive/ssh_tools.rs#L153)), its checks ([`:113`](../agents/roomlerd/src/hive/ssh_tools.rs#L113)), the ticket's life ([`:146`](../agents/roomlerd/src/hive/ssh_tools.rs#L146)), the daemon's runner ([`:63`](../agents/roomlerd/src/hive/ssh_tools.rs#L63)) |
-| the ask | `VaultTools::ssh` ([`toolbelt.rs:342`](../agents/roomlerd/src/hive/toolbelt.rs#L342)), on the primary's queue ([`vault.rs:647`](../agents/roomlerd/src/vault.rs#L647)) |
+| the owner's key | `hive_ssh` ([`config.rs:605`](../crates/agent-core/src/config.rs#L605)), never pushable ([`models.rs:9258`](../crates/remote_control/src/models.rs#L9258)), read into `HiveConfig.ssh` ([`gates.rs:58`](../agents/meshharbord/src/hive/gates.rs#L58)) |
+| the offer | `Supervisor::ssh_runner` ([`supervisor.rs:1479`](../agents/meshharbord/src/hive/supervisor.rs#L1479)), made at start ([`:784`](../agents/meshharbord/src/hive/supervisor.rs#L784)); `Run.ssh` ([`toolbelt.rs:367`](../agents/meshharbord/src/hive/toolbelt.rs#L367)); the settings' ask ([`supervisor.rs:4770`](../agents/meshharbord/src/hive/supervisor.rs#L4770), `SSH_TOOLS` at [`toolbelt.rs:453`](../agents/meshharbord/src/hive/toolbelt.rs#L453)) |
+| the tool | its definition ([`toolbelt.rs:1132`](../agents/meshharbord/src/hive/toolbelt.rs#L1132)); the call ([`ssh_tools.rs:153`](../agents/meshharbord/src/hive/ssh_tools.rs#L153)), its checks ([`:113`](../agents/meshharbord/src/hive/ssh_tools.rs#L113)), the ticket's life ([`:146`](../agents/meshharbord/src/hive/ssh_tools.rs#L146)), the daemon's runner ([`:63`](../agents/meshharbord/src/hive/ssh_tools.rs#L63)) |
+| the ask | `VaultTools::ssh` ([`toolbelt.rs:342`](../agents/meshharbord/src/hive/toolbelt.rs#L342)), on the primary's queue ([`vault.rs:647`](../agents/meshharbord/src/vault.rs#L647)) |
 
 ## 5. Roadmap
 

@@ -23,7 +23,7 @@ let mut entry = crate::config::OrgEntry {
     overlay_mode: crate::config::OrgOverlayMode::Off,
 ```
 
-`agents/roomlerd/src/main.rs:1791-1731` — `--overlay` exists, and sets the
+`agents/meshharbord/src/main.rs:1791-1731` — `--overlay` exists, and sets the
 **primary's** flag regardless of which identity was just enrolled:
 
 ```rust

@@ -98,7 +98,7 @@ roomler socks5  --agent berlin-1 --local 127.0.0.1:1080          # see the netwo
 …or open the machine's desktop from the web app and use it as if you were
 sitting at it.
 
-Prefer a GUI? The **roomler-setup** wizard installs any role on any OS —
+Prefer a GUI? The **meshharbor-setup** wizard installs any role on any OS —
 see [`docs/installation.md`](docs/installation.md).
 
 ## What it replaces
@@ -268,7 +268,7 @@ they cannot read. Full picture: [`docs/architecture.md`](docs/architecture.md).
 | **Remote desktop** | webrtc-rs (P2P, vendored forks for H.265 payloading + TURNS/TCP), OpenH264, Media Foundation, FFmpeg (NVENC/QSV/AMF), libvpx VP9 4:4:4, WebCodecs viewer |
 | **Overlay / tunnels** | boringtun (WireGuard), quinn (QUIC), smoltcp userspace netstack, Wintun / tun / utun, coturn + standalone DERP relays |
 | **Conference media** | mediasoup 0.20 SFU + mediasoup-client |
-| **Native apps** | `roomlerd` daemon (Rust), `roomler` CLI, `roomler-desktop` tray companion (Tauri 2), `roomler-setup` install wizard (Tauri 2) |
+| **Native apps** | `roomlerd` daemon (Rust), `roomler` CLI, `meshharbor-desktop` tray companion (Tauri 2), `meshharbor-setup` install wizard (Tauri 2) |
 | **Frontend** | Vue 3, Vuetify 3, Pinia, TipTap v3, d3 (observability) |
 | **Auth** | JWT (6 audience-checked token types), Argon2, OAuth 2.0 |
 | **Infrastructure** | Docker multi-stage image (nginx + API), docker-compose dev stack (MongoDB, Redis, MinIO, coturn), Kubernetes-ready |
@@ -284,7 +284,7 @@ Vite server yourself, so both hot-reload.
 docker compose up -d
 
 # 2. Backend — API on :3000
-cargo run --bin roomler-ai-api
+cargo run --bin meshharbor-api
 
 # 3. Frontend — SPA on :5000, proxying /api and /ws to :5001
 cd ui && bun install && bun run dev
@@ -304,8 +304,8 @@ and [`CONTRIBUTING.md`](CONTRIBUTING.md).
 |---|---|---|---|
 | **`roomlerd` daemon** (desktop + tunnel exit + overlay node) | x64 — MSI (per-user / per-machine), signed | x86_64 + arm64 — `.deb` / tarball, systemd | arm64 — `.pkg`, LaunchAgent |
 | **`roomler` CLI** (tunnel client) | x64 zip | x86_64 tarball + `.deb` | universal tarball |
-| **`roomler-setup` wizard** | x64 (signed) | x86_64 | universal |
-| **`roomler-desktop` companion** (tray, consent, tunnels UI) | ✅ | — | — |
+| **`meshharbor-setup` wizard** | x64 (signed) | x86_64 | universal |
+| **`meshharbor-desktop` companion** (tray, consent, tunnels UI) | ✅ | — | — |
 | **Viewer / web app** | any modern browser; WebCodecs low-latency paths are Chrome-first | | |
 
 All release artifacts ship with SHA-256 sidecars, GPG signatures, and SLSA build

@@ -54,8 +54,8 @@ if ($SetId) {
         Ok "certificate subject recorded: $Subject"
         Write-Host ''
         Warn 'Sweep check -- the Windows "Verified publisher" string must agree with:'
-        Info '  agents/roomlerd/wix/main.wxs + wix-perMachine/main.wxs (Manufacturer)'
-        Info '  agents/roomlerd/build.rs + agents/roomler-cli/build.rs (CompanyName)'
+        Info '  agents/meshharbord/wix/main.wxs + wix-perMachine/main.wxs (Manufacturer)'
+        Info '  agents/meshharbord/build.rs + agents/meshharbor-cli/build.rs (CompanyName)'
         Info '  both tauri.conf.json (bundle.publisher) + both [package.metadata.deb]'
     } else {
         Info 'no -Subject given -- 20-azure-cert-profile.ps1 will try to read it after profile creation.'

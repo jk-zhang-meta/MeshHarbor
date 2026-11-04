@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 G ROX EOOD
 /**
- * FR-85 P2b — roomler-desktop's Recordings view, driven in jsdom against a
+ * FR-85 P2b — meshharbor-desktop's Recordings view, driven in jsdom against a
  * mocked Tauri `invoke`.
  *
  * The companion ships plain scripts with no bundler, so there is nothing to
@@ -20,7 +20,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 // node:path, not `new URL(…)`: under jsdom the global URL is jsdom's, which
 // node's fileURLToPath rejects.
 const HERE = dirname(fileURLToPath(import.meta.url))
-const FRONT = join(HERE, '..', '..', '..', '..', 'agents', 'roomler-desktop', 'src', 'front')
+const FRONT = join(HERE, '..', '..', '..', '..', 'agents', 'meshharbor-desktop', 'src', 'front')
 const HTML = readFileSync(join(FRONT, 'index.html'), 'utf8')
 const SCRIPT = readFileSync(join(FRONT, 'recordings.js'), 'utf8')
 

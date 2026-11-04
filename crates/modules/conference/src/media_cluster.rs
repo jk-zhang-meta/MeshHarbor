@@ -31,8 +31,8 @@ use bson::oid::ObjectId;
 use tracing::{debug, info, warn};
 
 use crate::ConferenceState;
-use roomler_core::cluster::bus::BusError;
-use roomler_core::cluster::directory::{ClaimOutcome, MEDIA_TTL_SECS, OwnerRecord, media_key};
+use meshharbor_core::cluster::bus::BusError;
+use meshharbor_core::cluster::directory::{ClaimOutcome, MEDIA_TTL_SECS, OwnerRecord, media_key};
 
 /// Claim refresh cadence (TTL/3, same ratio as the 90/30 registries).
 pub const MEDIA_REFRESH_SECS: u64 = 10;
@@ -105,7 +105,7 @@ pub async fn resolve_media_route(
 /// "room does not exist" outcome.
 async fn claim_missing(
     state: &ConferenceState,
-    dir: &roomler_core::cluster::directory::OwnershipDirectory,
+    dir: &meshharbor_core::cluster::directory::OwnershipDirectory,
     rid: &ObjectId,
     is_join: bool,
 ) -> MediaRoute {
@@ -157,7 +157,7 @@ async fn belt_fallback(state: &ConferenceState, rid: &ObjectId, is_join: bool) -
     }
     let create = call_in_progress(state, rid).await;
     if create {
-        let total = roomler_core::cluster::metrics::MEDIA_BELT_FALLBACK_TOTAL
+        let total = meshharbor_core::cluster::metrics::MEDIA_BELT_FALLBACK_TOTAL
             .fetch_add(1, Ordering::Relaxed)
             + 1;
         warn!(
@@ -198,7 +198,7 @@ pub async fn forward_media_cmd(
     let deadline = if msg_type == "media:join" {
         std::time::Duration::from_secs(5)
     } else {
-        roomler_core::cluster::bus::RPC_DEADLINE
+        meshharbor_core::cluster::bus::RPC_DEADLINE
     };
     match bus
         .request_with_deadline(owner_pod, "media.cmd", body.clone(), deadline)
@@ -292,7 +292,7 @@ async fn media_error(state: &ConferenceState, connection_id: &str, message: &str
         "type": "media:error",
         "data": { "message": message }
     });
-    roomler_core::ws::dispatcher::send_to_connection_routed(
+    meshharbor_core::ws::dispatcher::send_to_connection_routed(
         &state.ws_storage,
         &state.redis_pubsub,
         connection_id,
@@ -411,7 +411,7 @@ pub async fn forward_close_leave(state: &ConferenceState, user_id: &ObjectId, co
 /// to the surviving owner.
 pub async fn fold_media_room(state: &ConferenceState, rid: &ObjectId, reason: &str) {
     warn!(room = %rid, reason, "folding local media-room island");
-    roomler_core::cluster::metrics::bump(&roomler_core::cluster::metrics::MEDIA_FOLD_TOTAL);
+    meshharbor_core::cluster::metrics::bump(&meshharbor_core::cluster::metrics::MEDIA_FOLD_TOTAL);
     // The key belongs to the foreign owner now — drop the token WITHOUT
     // a release.
     state.media_claim_tokens.remove(rid);
@@ -427,7 +427,7 @@ pub async fn fold_media_room(state: &ConferenceState, rid: &ObjectId, reason: &s
         "data": { "room_id": rid.to_hex(), "reason": "rehomed" }
     });
     for conn in &conns {
-        roomler_core::ws::dispatcher::send_to_connection_routed(
+        meshharbor_core::ws::dispatcher::send_to_connection_routed(
             &state.ws_storage,
             &state.redis_pubsub,
             conn,
@@ -569,7 +569,7 @@ pub fn wire_media_cluster(state: &ConferenceState) {
                         data["connection_id"] = serde_json::Value::String(cid.to_string());
                     }
                     let event = serde_json::json!({ "type": "media:peer_left", "data": data });
-                    roomler_core::ws::dispatcher::broadcast_with_redis(
+                    meshharbor_core::ws::dispatcher::broadcast_with_redis(
                         &st.ws_storage,
                         &st.redis_pubsub,
                         &remaining,
@@ -600,7 +600,7 @@ pub fn wire_media_cluster(state: &ConferenceState) {
                     "data": { "room_id": rid.to_hex(), "reason": "ended" }
                 });
                 for conn in &conns {
-                    roomler_core::ws::dispatcher::send_to_connection_routed(
+                    meshharbor_core::ws::dispatcher::send_to_connection_routed(
                         &st.ws_storage,
                         &st.redis_pubsub,
                         conn,

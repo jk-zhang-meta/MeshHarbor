@@ -26,7 +26,7 @@
 //! The log DIR is resolved by `appdirs` (new-then-old segment). On a fresh
 //! Windows install that's `%LOCALAPPDATA%\roomler\roomler\data\logs\`; a
 //! pre-rename host keeps `...\roomler\roomler-agent\data\logs\`. Linux:
-//! `~/.local/share/meshharbor/logs/` (or `.../roomler-agent/logs/` on an upgraded
+//! `~/.local/share/meshharbor/logs/` (or `.../meshharbor-agent/logs/` on an upgraded
 //! host). macOS: `~/Library/Application Support/live.roomler.roomler/logs/`.
 //!
 //! A process-wide panic hook captures the message + backtrace and writes

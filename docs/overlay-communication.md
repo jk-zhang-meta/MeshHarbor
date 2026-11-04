@@ -577,7 +577,7 @@ does instead:
   `firewall-cmd --info-zone` ([`hostfw.rs:45`](../crates/tunnel-core/src/overlay/hostfw.rs#L45))
   or `ufw status verbose` ([`hostfw.rs:130`](../crates/tunnel-core/src/overlay/hostfw.rs#L130)).
 - `roomler status` prints it only when the firewall limits what a mesh peer
-  reaches ([`localclient.rs:2751`](../agents/roomler-cli/src/localclient.rs#L2751)):
+  reaches ([`localclient.rs:2751`](../agents/meshharbor-cli/src/localclient.rs#L2751)):
 
   ```text
     host fw     firewalld has roomler0 in no zone, so the default zone public applies: mesh peers reach only dhcpv6-client, ssh here

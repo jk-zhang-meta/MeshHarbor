@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use bson::{DateTime, Document, doc, oid::ObjectId};
 use mongodb::Database;
-use roomler_ai_remote_control::models::{
+use meshharbor_remote_control::models::{
     AccessPolicy, Agent, AgentCaps, AgentStatus, DesiredConfig, DisplayInfo, ExecPolicy,
     ExternalAccessPolicy, InstallInfo, OsKind, PeerRelayPolicy, RpcCap, SshPolicy,
 };
@@ -22,7 +22,7 @@ pub struct AgentDao {
 pub struct HeartbeatBefore {
     /// The previous stored brief; `None` = the device had not said (unknown,
     /// never "off").
-    pub keep_busy: Option<roomler_ai_remote_control::models::KeepBusyBrief>,
+    pub keep_busy: Option<meshharbor_remote_control::models::KeepBusyBrief>,
     pub name: String,
     pub display_name: Option<String>,
 }
@@ -571,7 +571,7 @@ impl AgentDao {
         agent_id: ObjectId,
         warm_relay: Option<&str>,
         companion_version: Option<&str>,
-        keep_busy: Option<&roomler_ai_remote_control::models::KeepBusyBrief>,
+        keep_busy: Option<&meshharbor_remote_control::models::KeepBusyBrief>,
     ) -> DaoResult<Option<HeartbeatBefore>> {
         // C4 stage 2 — the standing warm allocation's relayed address rides
         // the same per-heartbeat write: stored pair-less so a peer can be
@@ -655,7 +655,7 @@ impl AgentDao {
         &self,
         agent_id: ObjectId,
         relay_home: Option<&str>,
-        relay_rtt: &[roomler_ai_remote_control::signaling::RelayRegionRtt],
+        relay_rtt: &[meshharbor_remote_control::signaling::RelayRegionRtt],
     ) -> DaoResult<bool> {
         let rtt_bson = bson::to_bson(relay_rtt).unwrap_or(bson::Bson::Array(vec![]));
         self.base
@@ -976,7 +976,7 @@ impl AgentDao {
         &self,
         tenant_id: ObjectId,
         agent_id: ObjectId,
-        report: &roomler_ai_remote_control::models::ConfigReport,
+        report: &meshharbor_remote_control::models::ConfigReport,
     ) -> DaoResult<bool> {
         let report_bson = bson::to_bson(report).unwrap_or(bson::Bson::Null);
         self.base
@@ -996,7 +996,7 @@ impl AgentDao {
         &self,
         tenant_id: ObjectId,
         agent_id: ObjectId,
-        request: &roomler_ai_remote_control::models::KeyRotationRequest,
+        request: &meshharbor_remote_control::models::KeyRotationRequest,
     ) -> DaoResult<bool> {
         let bson = bson::to_bson(request).unwrap_or(bson::Bson::Null);
         self.base
@@ -1036,9 +1036,9 @@ impl AgentDao {
         &self,
         tenant_id: ObjectId,
         agent_id: ObjectId,
-        report: &roomler_ai_remote_control::models::KeyRotationReport,
+        report: &meshharbor_remote_control::models::KeyRotationReport,
     ) -> DaoResult<bool> {
-        use roomler_ai_remote_control::models::KeyRotationOutcome;
+        use meshharbor_remote_control::models::KeyRotationOutcome;
 
         let bson = bson::to_bson(report).unwrap_or(bson::Bson::Null);
         // P1b — a rotation that happened, happened. A LATER refusal for the
@@ -1071,7 +1071,7 @@ impl AgentDao {
         &self,
         tenant_id: ObjectId,
         agent_id: ObjectId,
-        identity: &roomler_ai_remote_control::models::OverlayIdentity,
+        identity: &meshharbor_remote_control::models::OverlayIdentity,
     ) -> DaoResult<bool> {
         let bson = bson::to_bson(identity).unwrap_or(bson::Bson::Null);
         self.base
@@ -1160,7 +1160,7 @@ impl AgentDao {
         &self,
         tenant_id: ObjectId,
         agent_id: ObjectId,
-        endpoint: &roomler_ai_remote_control::models::SshServiceEndpoint,
+        endpoint: &meshharbor_remote_control::models::SshServiceEndpoint,
     ) -> DaoResult<bool> {
         let mut filter = Self::live_row(tenant_id, agent_id);
         filter.insert("exec_anchor.anchor_id", endpoint.anchor_id.as_str());

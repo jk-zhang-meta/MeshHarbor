@@ -19,7 +19,7 @@ FR-69 shipped the modular monolith and proved **composition**. Nothing proves **
 
 | what is verified today | where | what it does NOT establish |
 |---|---|---|
-| every profile **compiles**, and `cargo tree` asserts the absences (no `mediasoup` in remote/mesh/access, no `roomler-ai-tunnel-core` in collab) with a positive control on `full` | `.github/workflows/ci.yml` (`profiles` job) | that any of them **runs** |
+| every profile **compiles**, and `cargo tree` asserts the absences (no `mediasoup` in remote/mesh/access, no `meshharbor-tunnel-core` in collab) with a positive control on `full` | `.github/workflows/ci.yml` (`profiles` job) | that any of them **runs** |
 | a published image **is** the profile it claims (`/health .modules` == `WANT_<profile>`), and `/api/tenant/…/device` answers 401 where fleet is mounted and 404 where it is not | `.github/workflows/publish-selfhost-image.yml` | that a mounted module can carry **traffic** |
 | the documented self-host steps work verbatim from a clean clone | `scripts/selfhost-smoke.sh` (FR-42) | one host, one profile, no pillar exercised |
 

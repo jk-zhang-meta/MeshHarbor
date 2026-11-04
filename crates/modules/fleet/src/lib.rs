@@ -5,7 +5,7 @@
 //! ingest, releases and installer proxies, owner consent, remote config, and
 //! fleet RPC (exec) with its audit.
 //!
-//! The Hub came here from `roomler-ai-remote-control` — its consumers are
+//! The Hub came here from `meshharbor-remote-control` — its consumers are
 //! fleet's (the agent socket, presence, exec, consent, org join, forced
 //! updates) and `remote`/`network` reach it through this crate, which is the
 //! direction the module graph allows (`remote → fleet`, `network → fleet`).
@@ -26,7 +26,7 @@
 //!
 //! Removing an agent releases its overlay lease first — `network`'s, which
 //! fleet cannot call. [`removal::remove_agent_device`] runs the holders
-//! through [`roomler_core::hooks::HookRegistry`] in `HOOK_ORDER` and then
+//! through [`meshharbor_core::hooks::HookRegistry`] in `HOOK_ORDER` and then
 //! deletes the row and kicks the socket; renaming an agent propagates the
 //! MagicDNS label the same way. The host registers its transitional
 //! implementation of those hooks under the `network` id.
@@ -40,19 +40,19 @@ use axum::{
 };
 use bson::oid::ObjectId;
 use dashmap::DashMap;
-use roomler_ai_config::Settings;
-use roomler_ai_db::indexes::{
+use meshharbor_config::Settings;
+use meshharbor_db::indexes::{
     IndexSet, index, index_text, index_ttl, index_unique, index_unique_partial,
 };
-use roomler_ai_remote_control::{audit::AuditSink, models::AgentStatus};
-use roomler_ai_services::dao::{
+use meshharbor_remote_control::{audit::AuditSink, models::AgentStatus};
+use meshharbor_services::dao::{
     agent::AgentDao, agent_crash::AgentCrashDao, agent_log::AgentLogDao,
     config_audit::ConfigAuditDao, consent_request::ConsentRequestDao,
     enroll_token_issued::EnrollTokenIssuedDao, enrollment_key::EnrollmentKeyDao,
     exec_audit::ExecAuditDao, exec_pending::ExecPendingDao, external_rc_audit::ExternalRcAuditDao,
     keep_busy_event::KeepBusyEventDao, setup_diagnostics::SetupDiagnosticsDao,
 };
-use roomler_core::{Capabilities, Core, Module, TenantCtx, rate_limit::RateLimiter};
+use meshharbor_core::{Capabilities, Core, Module, TenantCtx, rate_limit::RateLimiter};
 use tokio::sync::mpsc;
 
 pub mod agent;
@@ -141,7 +141,7 @@ pub struct FleetState {
     pub releases_cache: Arc<releases::ReleasesCache>,
     /// FR-102 P3c — `growth.internal_networks`, parsed once at boot: a fetch
     /// from inside is counted as `internal` (`install_trace::count_fetch`).
-    pub internal_networks: Arc<roomler_core::growth::InternalNetworks>,
+    pub internal_networks: Arc<meshharbor_core::growth::InternalNetworks>,
 }
 
 impl std::ops::Deref for FleetState {
@@ -165,9 +165,9 @@ impl FromRef<FleetState> for Core {
 /// it, and skipped; the rest still apply. The networks in effect are logged
 /// as CIDRs, so a widened or missing range is visible at boot rather than as
 /// a quiet shift in the counts.
-fn internal_networks_from(settings: &Settings) -> roomler_core::growth::InternalNetworks {
+fn internal_networks_from(settings: &Settings) -> meshharbor_core::growth::InternalNetworks {
     let (nets, refused) =
-        roomler_core::growth::InternalNetworks::parse(&settings.growth.internal_networks);
+        meshharbor_core::growth::InternalNetworks::parse(&settings.growth.internal_networks);
     if !refused.is_empty() {
         tracing::warn!(
             refused = ?refused,
@@ -215,7 +215,7 @@ impl Module for FleetState {
             let pod_id = core.pod.pod_id.clone();
             tokio::spawn(async move {
                 let mut tick = tokio::time::interval(std::time::Duration::from_secs(
-                    roomler_core::cluster::session_slots::SLOT_RENEW_SECS,
+                    meshharbor_core::cluster::session_slots::SLOT_RENEW_SECS,
                 ));
                 tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                 loop {
@@ -322,7 +322,7 @@ impl Module for FleetState {
                         if !hub.is_agent_online(agent_id) {
                             continue;
                         }
-                        let key = roomler_core::cluster::directory::agent_key(&agent_id.to_hex());
+                        let key = meshharbor_core::cluster::directory::agent_key(&agent_id.to_hex());
                         match dir.refresh_if_mine(&key, &token, 90).await {
                             Ok(true) => {}
                             Ok(false) => tracing::warn!(
@@ -353,7 +353,7 @@ impl Module for FleetState {
 
     /// Fleet's side of the tenant cascade (device revocation on archive).
     /// Fleet is the CALLER of the agent cascade, never a holder of it.
-    fn hooks(&self) -> roomler_core::Hooks {
+    fn hooks(&self) -> meshharbor_core::Hooks {
         tenant_hooks::hooks(self)
     }
 
@@ -507,7 +507,7 @@ impl Module for FleetState {
                 get(tunnel_release::installer_proxy),
             );
 
-        // `/api/setup/…` — the unified `roomler-setup` wizard's proxy. The
+        // `/api/setup/…` — the unified `meshharbor-setup` wizard's proxy. The
         // static `/install.sh` + `/install.ps1` segments win over `/{platform}`.
         //
         // FR-102 P3b — `/diagnostics` is static too, so it wins over the
@@ -569,7 +569,7 @@ impl Module for FleetState {
             // fleet runs, not only when the network module is mounted; the
             // network module declares the same idempotent spec for clients.
             IndexSet {
-                collection: roomler_core::business_authority::OBSERVATIONS_COLLECTION,
+                collection: meshharbor_core::business_authority::OBSERVATIONS_COLLECTION,
                 pre_ops: Vec::new(),
                 indexes: vec![index_ttl(bson::doc! { "expires_at": 1 }, 0)],
             },
@@ -642,13 +642,13 @@ impl Module for FleetState {
             // over `issued_at` with an exclusion filter on `tenant_id`; 90
             // days like the other enrollment trails (spec §3p).
             IndexSet {
-                collection: roomler_ai_services::dao::enroll_token_issued::ENROLL_TOKEN_ISSUED,
+                collection: meshharbor_services::dao::enroll_token_issued::ENROLL_TOKEN_ISSUED,
                 pre_ops: Vec::new(),
                 indexes: vec![
                     index(bson::doc! { "issued_at": 1, "tenant_id": 1 }),
                     index_ttl(
                         bson::doc! { "issued_at": 1 },
-                        roomler_ai_services::dao::enroll_token_issued::ENROLL_TOKEN_ISSUED_TTL_SECS,
+                        meshharbor_services::dao::enroll_token_issued::ENROLL_TOKEN_ISSUED_TTL_SECS,
                     ),
                 ],
             },
@@ -657,13 +657,13 @@ impl Module for FleetState {
             // digest's and the nightly freeze's range scan. 90 days (spec
             // §3p); the frozen daily counts in `growth_daily` outlive it.
             IndexSet {
-                collection: roomler_ai_services::dao::setup_diagnostics::SETUP_DIAGNOSTICS,
+                collection: meshharbor_services::dao::setup_diagnostics::SETUP_DIAGNOSTICS,
                 pre_ops: Vec::new(),
                 indexes: vec![
                     index(bson::doc! { "run": 1 }),
                     index_ttl(
                         bson::doc! { "ts": 1 },
-                        roomler_ai_services::dao::setup_diagnostics::SETUP_DIAGNOSTICS_TTL_SECS,
+                        meshharbor_services::dao::setup_diagnostics::SETUP_DIAGNOSTICS_TTL_SECS,
                     ),
                 ],
             },

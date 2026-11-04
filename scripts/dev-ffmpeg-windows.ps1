@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
   Stage the vendored Windows FFmpeg (static-md, LGPL, minimal) and libvpx
-  trees on a dev box so `cargo build -p roomlerd --features ffmpeg-encoder,vp9-444`
+  trees on a dev box so `cargo build -p meshharbord --features ffmpeg-encoder,vp9-444`
   works NATIVELY, against exactly the bytes the release workflow links.
 
 .DESCRIPTION
@@ -32,7 +32,7 @@
   pwsh scripts/dev-ffmpeg-windows.ps1
   # then, in a "x64 Native Tools" shell (vcvars64 — bindgen wants MSVC's stdint.h):
   Invoke-Expression (pwsh scripts/dev-ffmpeg-windows.ps1 -Env | Out-String)
-  cargo build -p roomlerd --release --features "full-hw,vp9-444,system-context,ffmpeg-encoder,overlay-l3,overlay-netstack,ssh-server"
+  cargo build -p meshharbord --release --features "full-hw,vp9-444,system-context,ffmpeg-encoder,overlay-l3,overlay-netstack,ssh-server"
   .\target\release\roomlerd.exe encoder-smoke --encoder hardware --codec hevc
 
 .NOTES
@@ -187,6 +187,6 @@ Write-Host ""
 Write-Host "Or in one go:  Invoke-Expression (pwsh scripts/dev-ffmpeg-windows.ps1 -Env | Out-String)"
 Write-Host ""
 Write-Host "Then (the MSI's exact feature set; never vp9-444-bindgen on Windows):"
-Write-Host '  cargo build -p roomlerd --release --features "full-hw,vp9-444,system-context,ffmpeg-encoder,overlay-l3,overlay-netstack,ssh-server"'
+Write-Host '  cargo build -p meshharbord --release --features "full-hw,vp9-444,system-context,ffmpeg-encoder,overlay-l3,overlay-netstack,ssh-server"'
 Write-Host '  .\target\release\roomlerd.exe encoder-smoke --encoder hardware --codec hevc'
 Write-Host '  .\target\release\roomlerd.exe encoder-smoke --encoder hardware --codec av1'

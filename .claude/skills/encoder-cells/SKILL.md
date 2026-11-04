@@ -1,6 +1,6 @@
 ---
 name: encoder-cells
-description: The invariants that govern roomler's video-encoder surface — the capability probe (child processes, phases, cache, denylist), the codec × backend × chroma cell matrix, and the per-backend FFmpeg gotchas (NVENC, QSV, AMF, VAAPI, D3D12, Vulkan, VideoToolbox). Load BEFORE touching anything under agents/roomlerd/src/encode/, the caps/hello wire, encoder cascades or chroma selection, before adding or denying a codec/backend cell, when a host advertises no hardware or a session paints garbage, or when changing the vendored FFmpeg build. FR-77 / FR-78.
+description: The invariants that govern roomler's video-encoder surface — the capability probe (child processes, phases, cache, denylist), the codec × backend × chroma cell matrix, and the per-backend FFmpeg gotchas (NVENC, QSV, AMF, VAAPI, D3D12, Vulkan, VideoToolbox). Load BEFORE touching anything under agents/meshharbord/src/encode/, the caps/hello wire, encoder cascades or chroma selection, before adding or denying a codec/backend cell, when a host advertises no hardware or a session paints garbage, or when changing the vendored FFmpeg build. FR-77 / FR-78.
 ---
 
 # Encoder cells and the capability probe

@@ -64,11 +64,11 @@ pub struct Outcome {
 /// device's own backbone opt-in, permits the endpoint, and carry its
 /// interface.
 pub fn targets_from_wire(
-    relays: &[roomler_ai_remote_control::signaling::RelayProbeTargetWire],
-    backbone: &[roomler_ai_remote_control::signaling::RelayProbeTargetWire],
+    relays: &[meshharbor_remote_control::signaling::RelayProbeTargetWire],
+    backbone: &[meshharbor_remote_control::signaling::RelayProbeTargetWire],
     policy: Option<&super::backbone::LocalBackbonePolicy>,
 ) -> Vec<Target> {
-    let parse = |t: &roomler_ai_remote_control::signaling::RelayProbeTargetWire| {
+    let parse = |t: &meshharbor_remote_control::signaling::RelayProbeTargetWire| {
         t.endpoints
             .iter()
             .filter_map(|e| e.parse().ok())
@@ -257,7 +257,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn a_line_is_probed_only_where_the_backbone_policy_permits_it() {
-        use roomler_ai_remote_control::signaling::RelayProbeTargetWire;
+        use meshharbor_remote_control::signaling::RelayProbeTargetWire;
         let (relay, exit) = (ObjectId::new(), ObjectId::new());
         let own = [RelayProbeTargetWire {
             relay_node_id: relay,

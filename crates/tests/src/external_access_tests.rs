@@ -15,8 +15,8 @@
 
 use crate::fixtures::{seed::SeededTenant, test_app::TestApp};
 use bson::{doc, oid::ObjectId};
-use roomler_ai_db::models::role::permissions::MANAGE_AGENTS;
-use roomlerd::{config::AgentConfig, enrollment};
+use meshharbor_db::models::role::permissions::MANAGE_AGENTS;
+use meshharbord::{config::AgentConfig, enrollment};
 use serde_json::{Value, json};
 
 fn url(seeded: &SeededTenant, tail: &str) -> String {
@@ -162,7 +162,7 @@ async fn org_switch_defaults_off_and_flipping_it_is_an_owner_decision() {
         &app,
         &seeded,
         "fleet-admin",
-        roomler_ai_db::models::role::permissions::DEFAULT_ADMIN,
+        meshharbor_db::models::role::permissions::DEFAULT_ADMIN,
     )
     .await;
     assign_role(&app, &seeded, &admin_role, &seeded.member.id).await;

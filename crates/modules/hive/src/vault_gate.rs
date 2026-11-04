@@ -5,7 +5,7 @@
 //!
 //! Hive owns the session and never calls the vault (`vault → hive` in the
 //! module graph), so it asks the vault's gate through core's hook registry
-//! ([`roomler_core::SessionGate`]):
+//! ([`meshharbor_core::SessionGate`]):
 //!
 //! | When | Who is asked about | The device in the question |
 //! |---|---|---|
@@ -21,8 +21,8 @@
 //! moves, without the role it holds having been decided.
 
 use bson::oid::ObjectId;
-use roomler_ai_remote_control::models::{Agent, OsKind};
-use roomler_core::RoleAsk;
+use meshharbor_remote_control::models::{Agent, OsKind};
+use meshharbor_core::RoleAsk;
 use tracing::warn;
 
 use crate::HiveState;

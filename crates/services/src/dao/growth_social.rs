@@ -39,7 +39,7 @@ pub const SNAPSHOTS: [&str; 3] = ["T+1d", "T+7d", "T+28d"];
 pub const MAX_POSTS: i64 = 5_000;
 
 /// The campaign key a post's link carries, normalised at ingest — the same
-/// four fields as `roomler_core::campaign::CampaignKey`, which this crate
+/// four fields as `meshharbor_core::campaign::CampaignKey`, which this crate
 /// sits below.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct PostKey {

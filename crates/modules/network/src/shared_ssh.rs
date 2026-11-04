@@ -13,12 +13,12 @@ use axum::{
     response::Response,
 };
 use bson::oid::ObjectId;
-use roomler_ai_db::models::DeviceShareOperation;
-use roomler_ai_remote_control::{
+use meshharbor_db::models::DeviceShareOperation;
+use meshharbor_remote_control::{
     models::{ConsentMode, OsKind, RpcCap, SshAccountMode, SshMode, SshPolicy, ssh_limits},
     signaling::{ClientMsg, CloseReason, ServerMsg, SharedSessionLease, SharedSshSetup},
 };
-use roomler_core::{AgentCtx, ApiError, device_share::authorize_grant, extractors::auth::AuthUser};
+use meshharbor_core::{AgentCtx, ApiError, device_share::authorize_grant, extractors::auth::AuthUser};
 use serde::{Deserialize, Serialize};
 use std::{
     sync::{
@@ -35,7 +35,7 @@ pub(crate) struct SharedSshSession {
     pub recipient: ObjectId,
     pub grant: ObjectId,
     pub revision: u32,
-    pub claims: roomler_ai_services::auth::Claims,
+    pub claims: meshharbor_services::auth::Claims,
     pub lease: SharedSessionLease,
     pub policy: SshPolicy,
     pub outbound: mpsc::Sender<ServerMsg>,
@@ -58,11 +58,11 @@ fn deny(message: &str) -> ApiError {
     ApiError::Forbidden(message.into())
 }
 /// The account a shared session becomes: the share's own, re-validated on every read.
-fn shared_account(grant: &roomler_ai_db::models::DeviceShareGrant) -> Option<String> {
+fn shared_account(grant: &meshharbor_db::models::DeviceShareGrant) -> Option<String> {
     grant
         .ssh_account
         .clone()
-        .filter(|a| roomler_ai_db::models::device_share::valid_share_account(a))
+        .filter(|a| meshharbor_db::models::device_share::valid_share_account(a))
 }
 /// Role membership is NOT inferred. An explicit approved-recipient SSH grant is
 /// this route's authority; all target/org/local SSH policies still restrict it.
@@ -70,7 +70,7 @@ async fn pdp(
     state: &NetworkState,
     user: ObjectId,
     grant: ObjectId,
-) -> Result<roomler_core::device_share::SharedDeviceAccess, ApiError> {
+) -> Result<meshharbor_core::device_share::SharedDeviceAccess, ApiError> {
     tokio::time::timeout(Duration::from_secs(3),async {
         let access=authorize_grant(&state.core,user,grant,DeviceShareOperation::Ssh).await?;
         let a=&access.agent;
@@ -156,7 +156,7 @@ pub async fn connect(
 }
 async fn valid(state: &NetworkState, s: &SharedSshSession) -> bool {
     if (bson::DateTime::now().timestamp_millis() / 1000) >= s.claims.exp
-        || roomler_core::admission::authorize_claims(&state.core, &s.claims)
+        || meshharbor_core::admission::authorize_claims(&state.core, &s.claims)
             .await
             .is_err()
     {
@@ -316,7 +316,7 @@ async fn run(
             + ssh_limits::GRANT_TTL_SECS * 1000,
         session_secs,
     };
-    let audit = roomler_ai_remote_control::models::SshAuditEvent {
+    let audit = meshharbor_remote_control::models::SshAuditEvent {
         id: None,
         tenant_id: access.agent.tenant_id,
         agent_id: s.device,
@@ -373,7 +373,7 @@ async fn run(
                     ClientMsg::TunnelHello {..}=>{},
                     ClientMsg::TunnelOpen {agent_id,transport,net_grant,derp_pubkey,open_nonce} if !opened && agent_id==s.device && transport=="webrtc-dc-v1" && net_grant.is_none() && derp_pubkey.is_none()=> {
                         opened=true;
-                        let ice=roomler_ai_remote_control::turn_creds::ice_servers_for(&roomler_ai_remote_control::turn_creds::charged(&sid.to_hex(),&access.agent.tenant_id.to_hex()),state.turn_map.cfg_for(None));
+                        let ice=meshharbor_remote_control::turn_creds::ice_servers_for(&meshharbor_remote_control::turn_creds::charged(&sid.to_hex(),&access.agent.tenant_id.to_hex()),state.turn_map.cfg_for(None));
                         let m=ServerMsg::TunnelOpened {session_id:sid,transport:"webrtc-dc-v1".into(),dc_pool_size:8,sctp_rwnd_bytes:8*1024*1024,ice_servers:ice,quic_auth_token:None,open_nonce,net_grant_id:None};
                         if out.try_send(m).is_err(){break;}
                     }

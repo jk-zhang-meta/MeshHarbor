@@ -2,7 +2,7 @@
 // Validate a candidate Country MMDB before replacing the deployed database.
 
 use maxminddb::{Reader, geoip2};
-use roomler_core::business_authority::MAX_GEOIP_DATASET_AGE_SECS;
+use meshharbor_core::business_authority::MAX_GEOIP_DATASET_AGE_SECS;
 use serde_json::{Value, json};
 use std::{net::IpAddr, path::Path, process::ExitCode, time::SystemTime};
 

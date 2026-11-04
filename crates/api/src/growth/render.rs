@@ -17,7 +17,7 @@
 //! * the footer says how many users and orgs were excluded, and that the
 //!   digest carries no personal addresses.
 
-use roomler_ai_services::{
+use meshharbor_services::{
     dao::{growth_alert::GrowthAlert, growth_digest::DigestDoc, growth_quality::Pooled},
     newsletter::escape_html,
 };
@@ -2135,7 +2135,7 @@ mod tests {
         Quality, Revenue, SignupRow, Signups, Social, SocialPlatform, SocialSnapshot, Tokens,
         TopOrg, Usage, WizardErrorRow, WizardStepRow, WizardSteps,
     };
-    use roomler_ai_services::dao::growth_digest::{DigestStatus, ExcludedCounts};
+    use meshharbor_services::dao::growth_digest::{DigestStatus, ExcludedCounts};
 
     /// A minimal day with one of everything the renderer branches on, and a
     /// planted org name that reads as markup.
@@ -2770,7 +2770,7 @@ mod tests {
                 enabled: true,
                 since: "2026-10-05".into(),
                 until: "2026-10-11".into(),
-                by: roomler_core::campaign::KeyDepth::Source,
+                by: meshharbor_core::campaign::KeyDepth::Source,
                 include_internal: false,
                 excluded,
                 windows: Windows {

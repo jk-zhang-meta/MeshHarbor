@@ -11,9 +11,9 @@
 //! node (deduped within the network) so peers resolve the new label.
 
 use bson::oid::ObjectId;
-use roomler_ai_remote_control::models::NodeRef;
-use roomler_ai_services::dao::overlay_network::OverlayNetworkDao;
-use roomler_ai_services::dao::overlay_node::{NewOverlayNode, OverlayNodeDao};
+use meshharbor_remote_control::models::NodeRef;
+use meshharbor_services::dao::overlay_network::OverlayNetworkDao;
+use meshharbor_services::dao::overlay_node::{NewOverlayNode, OverlayNodeDao};
 use serde_json::{Value, json};
 
 use crate::fixtures::test_app::TestApp;

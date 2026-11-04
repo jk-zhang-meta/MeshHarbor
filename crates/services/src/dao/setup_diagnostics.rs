@@ -7,7 +7,7 @@
 //! read it.
 //!
 //! A row is the validated wire record
-//! ([`roomler_ai_remote_control::setup_diagnostics::SetupDiagnostic`]) plus
+//! ([`meshharbor_remote_control::setup_diagnostics::SetupDiagnostic`]) plus
 //! the server's clock: `{run, step, outcome, elapsed_ms, error_code, os,
 //! wizard_version, ts}`. Nothing about the request is kept — the handler
 //! never sees an address or a User-Agent — and `run` is a random id the
@@ -22,7 +22,7 @@
 use bson::{DateTime, Document, doc, oid::ObjectId};
 use futures::TryStreamExt;
 use mongodb::{Collection, Database};
-use roomler_ai_remote_control::setup_diagnostics::SetupDiagnostic;
+use meshharbor_remote_control::setup_diagnostics::SetupDiagnostic;
 use serde::{Deserialize, Serialize};
 
 use super::base::DaoResult;

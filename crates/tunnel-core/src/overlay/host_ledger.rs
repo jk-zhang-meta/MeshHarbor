@@ -349,7 +349,7 @@ pub(crate) fn pin_record(ip: std::net::IpAddr) -> Option<PinRecord> {
 /// FR-97 P0b-2b / P0e — undo what the persisted ledger records, then clear
 /// it: the WinNAT instances and the forwarding a Windows router left, and
 /// every exit-client pin. Run at boot, before the overlay can install
-/// anything, and after every exit of the daemon (`roomlerd::purge_exit_routes`).
+/// anything, and after every exit of the daemon (`meshharbord::purge_exit_routes`).
 /// Context-free and synchronous; a no-op when the ledger is empty. Each OS arm
 /// checks that a route still looks like our pin before it removes it.
 pub fn purge() {

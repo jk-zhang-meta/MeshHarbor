@@ -2,7 +2,7 @@
 // Copyright (C) 2026 G ROX EOOD
 use bson::{doc, oid::ObjectId};
 use mongodb::Database;
-use roomler_ai_remote_control::models::TunnelAuditEvent;
+use meshharbor_remote_control::models::TunnelAuditEvent;
 
 use super::base::{BaseDao, DaoResult, PaginatedResult, PaginationParams};
 

@@ -14,7 +14,7 @@
  * worker is independent of the broken-in-Chrome 131 RTP transform
  * path.
  *
- * Wire format (matches `agents/roomlerd/src/encode/libvpx.rs`):
+ * Wire format (matches `agents/meshharbord/src/encode/libvpx.rs`):
  *
  *   struct Frame {
  *     u32  size_le;          // payload length, little-endian

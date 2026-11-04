@@ -25,16 +25,16 @@ openh264 / libvpx), **encoder** = codec × backend (`hevc_nvenc`), **chroma form
   string `vp9_chroma` (`:165`) and a list `hevc_chroma` (`:177`). The session request
   carries `preferred_transport` + `chroma_pref` (`crates/remote_control/src/signaling.rs:978,679`).
 - The agent hard-wires `yuv420` for the VP9/AV1/H.264 data-channel codecs
-  (`agents/roomlerd/src/peer.rs:5297-5304`); the ONLY hardware 4:4:4 path is
-  `hevc_nvenc` with the RExt profile (`agents/roomlerd/src/encode/ffmpeg/encoder.rs:701-718`),
-  advertised by `hevc_chroma` iff the name is `hevc_nvenc` (`agents/roomlerd/src/encode/caps.rs:502-505`).
+  (`agents/meshharbord/src/peer.rs:5297-5304`); the ONLY hardware 4:4:4 path is
+  `hevc_nvenc` with the RExt profile (`agents/meshharbord/src/encode/ffmpeg/encoder.rs:701-718`),
+  advertised by `hevc_chroma` iff the name is `hevc_nvenc` (`agents/meshharbord/src/encode/caps.rs:502-505`).
 - The picker (`ui/src/views/remote/RemoteControl.vue:2625-2633`) is a hard-coded list
   — `auto / av1 / hevc / hevc-444 / vp9-444 / vp9-420 / h264` — English literals, no
   i18n, chroma inside the value. Its per-agent override allow-list omitted `hevc-444`
   (fixed in #1468 by making the list the single source the type derives from).
 - The FFmpeg dispatch tables (`encoder.rs:113,107,133,148`) try
   `h264/hevc/av1 × nvenc/qsv/amf/videotoolbox` + `vp9_qsv` (profile 0 only, `:655-659`).
-  VAAPI was never wired (`agents/roomlerd/Cargo.toml:198-199` still promises it for
+  VAAPI was never wired (`agents/meshharbord/Cargo.toml:198-199` still promises it for
   "rc.74"); no `*_mf` name exists anywhere. macOS ships FFmpeg again since 2026-08-25
   (`release-agent.yml:2211-2234`) — several docs still say it does not.
 - There is **no video decoder anywhere on the agent side** (grep-confirmed). The
@@ -182,7 +182,7 @@ flowchart LR
    stays without FFmpeg. Names in the dispatch tables: `h264/hevc/av1/vp9_vaapi` after
    the vendor names.
 10. **Backends deliberately not added.** FFmpeg's `*_mf`: the native Media Foundation
-    module (`agents/roomlerd/src/encode/mf/`) is field-proven, takes NV12 straight from
+    module (`agents/meshharbord/src/encode/mf/`) is field-proven, takes NV12 straight from
     capture, and FFmpeg's wrapper is strictly weaker. D3D12 and Vulkan video encode:
     vendor-neutral and worth it, but each is a new hardware-frames path in the pump,
     not a name in a table — a follow-up FR.
@@ -215,7 +215,7 @@ flowchart LR
 
 ### P3a — as built (#1488): the probe cache, the denylist key, the chroma column
 
-- **The probe cache** (`agents/roomlerd/src/encode/caps_cache.rs`, decided by the
+- **The probe cache** (`agents/meshharbord/src/encode/caps_cache.rs`, decided by the
   operator on 2026-09-07 after the 0.4.83 read: 3986 ms on the dev box, 5432 ms on
   CORPLAP-3, both over the ~3 s line). The child probe's answer is kept in
   `caps-cache.json` next to the daemon's logs under a key of exactly what the

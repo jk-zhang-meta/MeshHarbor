@@ -14,7 +14,7 @@
 
 use crate::fixtures::test_app::TestApp;
 use bson::{doc, oid::ObjectId};
-use roomler_ai_services::dao::stats::{Meter, STATS_USAGE, USAGE_BUCKET_SECS, bucket_start};
+use meshharbor_services::dao::stats::{Meter, STATS_USAGE, USAGE_BUCKET_SECS, bucket_start};
 
 #[tokio::test]
 async fn concurrent_writers_produce_exactly_one_summed_bucket() {

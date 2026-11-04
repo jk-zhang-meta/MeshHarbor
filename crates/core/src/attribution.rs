@@ -40,7 +40,7 @@
 use std::{collections::HashMap, future::Future, pin::Pin, time::Duration};
 
 use bson::DateTime;
-use roomler_ai_db::models::{MAX_ATTRIBUTION_VALUE_LEN, SignupAttribution};
+use meshharbor_db::models::{MAX_ATTRIBUTION_VALUE_LEN, SignupAttribution};
 use serde::{Deserialize, Deserializer};
 use tracing::debug;
 
@@ -403,7 +403,7 @@ pub async fn take_for_oauth(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use roomler_ai_db::models::{NotificationPrefs, Presence, TutorialState, User, UserStatusInfo};
+    use meshharbor_db::models::{NotificationPrefs, Presence, TutorialState, User, UserStatusInfo};
     use serde_json::json;
 
     fn input(v: serde_json::Value) -> AttributionInput {
@@ -659,7 +659,7 @@ mod tests {
             locale: "en-US".into(),
             timezone: "UTC".into(),
             is_verified: false,
-            account_approval: roomler_ai_db::models::AccountApproval::pending(),
+            account_approval: meshharbor_db::models::AccountApproval::pending(),
             is_mfa_enabled: false,
             last_active_at: None,
             oauth_providers: Vec::new(),

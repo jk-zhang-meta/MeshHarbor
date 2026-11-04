@@ -20,7 +20,7 @@
  */
 
 /**
- * The server modules, in the graph's order (`roomler_core::graph::MODULES`).
+ * The server modules, in the graph's order (`meshharbor_core::graph::MODULES`).
  * `hive` (FR-90, agent sessions) is the one a server switches OFF by default,
  * so `/api/capabilities` names it only where an operator turned it on.
  */

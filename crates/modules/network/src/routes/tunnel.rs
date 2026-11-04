@@ -17,16 +17,16 @@ use axum::{
     http::StatusCode,
 };
 use bson::oid::ObjectId;
-use roomler_ai_db::models::role::permissions;
-use roomler_ai_remote_control::models::{
+use meshharbor_db::models::role::permissions;
+use meshharbor_remote_control::models::{
     AgentStatus, DestinationRule, NodeRef, OsKind, PolicySubject, PolicyTarget,
 };
-use roomler_ai_services::dao::base::PaginationParams;
-use roomler_ai_services::quota;
+use meshharbor_services::dao::base::PaginationParams;
+use meshharbor_services::quota;
 use serde::{Deserialize, Serialize};
 
-use roomler_core::guards::require_permission;
-use roomler_core::{ApiError, extractors::auth::AuthUser};
+use meshharbor_core::guards::require_permission;
+use meshharbor_core::{ApiError, extractors::auth::AuthUser};
 
 use crate::NetworkState;
 
@@ -135,7 +135,7 @@ pub async fn enroll_tunnel_client(
             // an established limit, so it refuses whatever the mode says.
             // FR-102 P4 — through core, which also counts the collision per org.
             if let Err(d) =
-                roomler_core::quota::check(&state, &tenant, quota::Limit::MaxTunnelClients, used)
+                meshharbor_core::quota::check(&state, &tenant, quota::Limit::MaxTunnelClients, used)
             {
                 return Err(ApiError::Forbidden(format!(
                     "Tunnel-client limit reached for the {:?} plan ({} of {} used). \
@@ -222,7 +222,7 @@ pub async fn list_tenant_agents(
     let Some(client_id) = client.id else {
         return Err(ApiError::Internal("tunnel client missing id".to_string()));
     };
-    let client_ref = roomler_ai_remote_control::models::NodeRef::TunnelClient {
+    let client_ref = meshharbor_remote_control::models::NodeRef::TunnelClient {
         tunnel_client_id: client_id,
     };
     let page = state.fleet.agents.list_for_tenant(tid, &params).await?;
@@ -231,7 +231,7 @@ pub async fn list_tenant_agents(
     let mut agents = Vec::with_capacity(page.items.len());
     for a in page.items {
         let Some(agent_id) = a.id else { continue };
-        let agent_ref = roomler_ai_remote_control::models::NodeRef::Agent { agent_id };
+        let agent_ref = meshharbor_remote_control::models::NodeRef::Agent { agent_id };
         if crate::business_isolation::refuses_parties_with_lines(
             &state,
             &topo,
@@ -265,7 +265,7 @@ async fn accepted_tunnel_client(
     sub: &str,
     tenant: &str,
     generation: u32,
-) -> Result<roomler_ai_remote_control::models::TunnelClient, ApiError> {
+) -> Result<meshharbor_remote_control::models::TunnelClient, ApiError> {
     let client_id = ObjectId::parse_str(sub)
         .map_err(|_| ApiError::Unauthorized("invalid tunnel-client id in claims".to_string()))?;
     let tenant_id = ObjectId::parse_str(tenant)
@@ -275,7 +275,7 @@ async fn accepted_tunnel_client(
         .find_any_in_tenant(tenant_id, client_id)
         .await
         .map_err(|e| match e {
-            roomler_ai_services::dao::base::DaoError::NotFound => {
+            meshharbor_services::dao::base::DaoError::NotFound => {
                 ApiError::Unauthorized("no such tunnel client".to_string())
             }
             other => ApiError::Internal(format!("tunnel-client lookup: {other}")),
@@ -283,14 +283,14 @@ async fn accepted_tunnel_client(
     if client.deleted_at.is_some()
         || matches!(
             client.status,
-            roomler_ai_remote_control::models::AgentStatus::Quarantined
+            meshharbor_remote_control::models::AgentStatus::Quarantined
         )
     {
         return Err(ApiError::Unauthorized(
             "tunnel client has been deleted or quarantined".to_string(),
         ));
     }
-    if let Some(reason) = roomler_ai_mod_fleet::auth_agent::generation_refusal(
+    if let Some(reason) = meshharbor_mod_fleet::auth_agent::generation_refusal(
         generation,
         client.token_gen,
         state.fleet.settings.rc.token_generation_check,
@@ -392,7 +392,7 @@ pub struct TunnelClientResponse {
 }
 
 fn to_tunnel_client_response(
-    c: roomler_ai_remote_control::models::TunnelClient,
+    c: meshharbor_remote_control::models::TunnelClient,
 ) -> TunnelClientResponse {
     TunnelClientResponse {
         id: c.id.map(|i| i.to_hex()).unwrap_or_default(),
@@ -510,7 +510,7 @@ pub async fn update_tunnel_client(
             .await?;
     }
     if let Some(tags) = body.tags {
-        let normalized = roomler_ai_mod_fleet::agent::normalize_tags(tags)?;
+        let normalized = meshharbor_mod_fleet::agent::normalize_tags(tags)?;
         state.tunnel_clients.set_tags(tid, cid, &normalized).await?;
     }
 
@@ -586,7 +586,7 @@ pub async fn delete_tunnel_client(
 
 /// Wire shape for create + update. `subjects`, `targets`, and
 /// `allowlist` re-use the BSON serde representation of the
-/// `roomler_ai_remote_control::models` types — adjacently-tagged
+/// `meshharbor_remote_control::models` types — adjacently-tagged
 /// (`{kind: "...", id: "..."}` / `{kind: "...", value: "..."}`).
 #[derive(Debug, Deserialize)]
 pub struct TunnelPolicyCreateRequest {
@@ -650,8 +650,8 @@ pub struct TunnelPolicyResponse {
     pub updated_at: String,
 }
 
-impl From<roomler_ai_remote_control::models::TunnelPolicy> for TunnelPolicyResponse {
-    fn from(p: roomler_ai_remote_control::models::TunnelPolicy) -> Self {
+impl From<meshharbor_remote_control::models::TunnelPolicy> for TunnelPolicyResponse {
+    fn from(p: meshharbor_remote_control::models::TunnelPolicy) -> Self {
         Self {
             id: p.id.map(|i| i.to_hex()).unwrap_or_default(),
             tenant_id: p.tenant_id.to_hex(),

@@ -38,7 +38,7 @@ COPY . .
 # Build the agent binary with the e2e-only feature set. `--locked`
 # pins to Cargo.lock so a transient registry change can't shift
 # resolved versions between this build and the workspace.
-RUN cargo build --release -p roomlerd --locked \
+RUN cargo build --release -p meshharbord --locked \
     --no-default-features \
     --features synthetic-frame-source,openh264-encoder,clipboard,recording
 

@@ -21,17 +21,17 @@ use axum::{
     extract::{Path, State},
 };
 use bson::{DateTime, oid::ObjectId};
-use roomler_ai_db::models::role::permissions;
-use roomler_ai_remote_control::{
+use meshharbor_db::models::role::permissions;
+use meshharbor_remote_control::{
     models::{KeyRotationRequest, RpcCap},
     signaling::ServerMsg,
 };
 use serde::{Deserialize, Serialize};
 
-use roomler_core::{ApiError, extractors::auth::AuthUser};
+use meshharbor_core::{ApiError, extractors::auth::AuthUser};
 
 use crate::NetworkState;
-use roomler_core::guards::require_permission;
+use meshharbor_core::guards::require_permission;
 
 /// One order per device per minute. A rotation churns every peer's carrier
 /// to this device; a second click inside the window is the same storm.
@@ -472,7 +472,7 @@ pub async fn set_overlay_key_ttl(
 // FR-69 P5c — the order predicates moved to the wire crate's models (the agent
 // socket, the fleet module's now, evaluates them on connect); re-exported so
 // this file's tests and any `routes::overlay_key::…` path read as before.
-pub use roomler_ai_remote_control::models::{
+pub use meshharbor_remote_control::models::{
     REDELIVER_AFTER_SECS, order_is_satisfied, should_redeliver,
 };
 
@@ -491,10 +491,10 @@ mod tests {
         }
     }
 
-    fn report(request_id: &str) -> roomler_ai_remote_control::models::KeyRotationReport {
-        roomler_ai_remote_control::models::KeyRotationReport {
+    fn report(request_id: &str) -> meshharbor_remote_control::models::KeyRotationReport {
+        meshharbor_remote_control::models::KeyRotationReport {
             request_id: request_id.into(),
-            outcome: roomler_ai_remote_control::models::KeyRotationOutcome::Rotated,
+            outcome: meshharbor_remote_control::models::KeyRotationOutcome::Rotated,
             old_public_key: None,
             new_public_key: None,
             key_epoch: 1,
@@ -503,8 +503,8 @@ mod tests {
         }
     }
 
-    fn ident(key: &str, at: DateTime) -> roomler_ai_remote_control::models::OverlayIdentity {
-        roomler_ai_remote_control::models::OverlayIdentity {
+    fn ident(key: &str, at: DateTime) -> meshharbor_remote_control::models::OverlayIdentity {
+        meshharbor_remote_control::models::OverlayIdentity {
             public_key: key.into(),
             key_epoch: 1,
             joined_at: at,

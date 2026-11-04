@@ -1,7 +1,7 @@
 # FR-104: The wizard anchors a Windows device — SYSTEM exec set up at install, with one token and the administrator's prompt
 
 **Issue:** [#2147](https://github.com/gjovanov/roomler-ai/issues/2147) · **Status:** **closed 2026-10-14**: all five criteria field-verified on the released 0.4.135 wizard (§8) · **Owner:**
-fleet (the anchor route, enrollment tokens), the wizard (`agents/roomler-setup`, `crates/roomler-setup-core`),
+fleet (the anchor route, enrollment tokens), the wizard (`agents/meshharbor-setup`, `crates/meshharbor-setup-core`),
 the admin UI · **Anchors:** master `94a2032c6` · **Builds on:** FR-94 (the anchor; its P1 second half,
 "the wizard writing the anchor", was not built), FR-84 (the wizard)
 
@@ -18,17 +18,17 @@ credential never passes through a process the signed-in user controls.
 ## 2. Evidence (master `94a2032c6`)
 
 **The wizard does not elevate itself.**
-- It runs at **Medium integrity**: `asInvoker`, no `requestedExecutionLevel` (`agents/roomler-setup/build.rs` L48–52). `crates/roomler-setup-core/src/msi_runner.rs` L139–156 measured it.
-- The only elevated step is the `msiexec` child (`agents/roomler-setup/src/orchestrator_agent.rs` L355 → `agents/roomlerd/src/updater.rs` L2346 `spawn_msiexec_elevated`, `ShellExecuteExW` `"runas"`, file hard-coded to `msiexec.exe`).
+- It runs at **Medium integrity**: `asInvoker`, no `requestedExecutionLevel` (`agents/meshharbor-setup/build.rs` L48–52). `crates/meshharbor-setup-core/src/msi_runner.rs` L139–156 measured it.
+- The only elevated step is the `msiexec` child (`agents/meshharbor-setup/src/orchestrator_agent.rs` L355 → `agents/meshharbord/src/updater.rs` L2346 `spawn_msiexec_elevated`, `ShellExecuteExW` `"runas"`, file hard-coded to `msiexec.exe`).
 
-**It enrolls in-process.** `roomlerd::enrollment::enroll` (`orchestrator_agent.rs` L488–503) runs with **one pasted token** (`src/front/index.html` L166–172). The wizard holds no user session, so it cannot mint another.
+**It enrolls in-process.** `meshharbord::enrollment::enroll` (`orchestrator_agent.rs` L488–503) runs with **one pasted token** (`src/front/index.html` L166–172). The wizard holds no user session, so it cannot mint another.
 
 **One token cannot both enroll and anchor.**
 - `/api/agent/enroll` claims the token's `jti` (`crates/modules/fleet/src/agent.rs` L187–198), and `/api/agent/anchor` claims it again (`crates/modules/fleet/src/exec_service.rs` L172–183).
 - `used_tokens` is keyed by the bare `jti` (`crates/services/src/dao/used_token.rs` L66–78), whatever the purpose.
 
 **Anchoring needs elevation, and only machine roles have the service.**
-- `roomlerd anchor create` requires elevation (`agents/roomlerd/src/exec_service.rs` `require_elevated` ~L1532) and writes the anchor under a SYSTEM + Administrators DACL.
+- `roomlerd anchor create` requires elevation (`agents/meshharbord/src/exec_service.rs` `require_elevated` ~L1532) and writes the anchor under a SYSTEM + Administrators DACL.
 - Only the `DaemonSystem` and `DaemonMachine` roles (`src/role.rs` L35–55) install the SYSTEM service the anchor is for.
 
 ## 3. Design
@@ -50,13 +50,13 @@ credential never passes through a process the signed-in user controls.
 
 ### 3c. The wizard
 
-- **Offer.** The token peek (`agents/roomler-setup/src/commands.rs` L198–221) reads the `anchor` claim. The anchor step is offered only for `DaemonSystem` / `DaemonMachine` on Windows.
+- **Offer.** The token peek (`agents/meshharbor-setup/src/commands.rs` L198–221) reads the `anchor` claim. The anchor step is offered only for `DaemonSystem` / `DaemonMachine` on Windows.
 - **The step.** After `EnrollOk`, a new best-effort step (shaped like the companion step, `orchestrator_agent.rs` L513–519) runs `roomlerd.exe anchor create --server <origin> --token <the same token> --device <agent_id> --force`.
-  - It runs **elevated** through a generalised `spawn_elevated(file, argv)` in `roomler-setup-core`, beside `msi_runner.rs`; `spawn_msiexec_elevated` becomes a call to it.
+  - It runs **elevated** through a generalised `spawn_elevated(file, argv)` in `meshharbor-setup-core`, beside `msi_runner.rs`; `spawn_msiexec_elevated` becomes a call to it.
   - It is awaited with `MsiRunner::attach(pid).wait_for_exit()`, and success is the exit code.
   - `--force` because the wizard enrolled this very host by id a moment earlier.
 - **Progress.**
-  - Events: `ProgressEvent::{AnchorStarted, AnchorOk, AnchorSkipped{reason}}` (`crates/roomler-setup-core/src/progress.rs`).
+  - Events: `ProgressEvent::{AnchorStarted, AnchorOk, AnchorSkipped{reason}}` (`crates/meshharbor-setup-core/src/progress.rs`).
   - The checklist labels, and `DoneReport.anchored`.
   - A declined prompt or a failure leaves a Done-page note carrying the manual command (the text `ExecPolicyDialog.vue` L57–60 uses).
 - The origin is normalised to pass `exec_service::origin_ok` (https only).
@@ -130,7 +130,7 @@ Bare vmtest Win11 guests booted from the golden (no Roomler installed), the wiza
 | 5 | **AC3**: the released wizard `0.4.135` launched the way a double-click launches it, at **Medium** (`schtasks /IT /RL LIMITED`); *Attended service*; an anchor token. Each UAC prompt was answered from the hypervisor's console (`virsh send-key`), and identified first by the wizard's running checklist row (a `consent.exe` poll over SSH saw it appear) | a fresh vmtest Win11 guest, renamed before anything enrolled | 12:58:13Z, prompt 1 during the MSI step: Yes (`Alt+Y`). "MSI installer finished (exit 0)", "Enrolled". 12:58:22Z, prompt 2, the running row "Anchoring for SYSTEM exec (administrator prompt)": No (`Esc`). The checklist then read "Not anchored: the administrator prompt was declined (UAC)" → "Done". The Done page: the reason, and `roomlerd anchor create --server https://roomler.ai --token <fresh token> --device <the new id>`. The server: the device online on 0.4.135, `anchored=false`, no `exec-system`; no `anchor.json` on the guest. |
 
 Notes from the cells:
-- An **elevated** WebView2 ignores `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS`, so the walker's CDP port never opened. The per-executable policy key `…\Policies\Microsoft\Edge\WebView2\AdditionalBrowserArguments` (value `roomler-setup.exe`) works. Test guests only.
+- An **elevated** WebView2 ignores `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS`, so the walker's CDP port never opened. The per-executable policy key `…\Policies\Microsoft\Edge\WebView2\AdditionalBrowserArguments` (value `meshharbor-setup.exe`) works. Test guests only.
 - The vmtest golden's `vmtest` password expired on 2026-10-14, which stopped its autologon (Winlogon result 1327). The guests for rows 1–3 were fixed one by one. The golden itself is fixed in roomler-ai-deploy#31; row 5's guest booted from it.
 - Every vmtest Win11 clone was named `VMTEST-WIN`, and `machine_id` hashes the host name, so same-type clones in one org shared a device row. roomler-ai-deploy#32 renames each clone first; row 5's guest was renamed by hand before enrolling.
 

@@ -724,7 +724,7 @@ pub enum ClientMsg {
         /// as `localapi::Response::Status`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         caps: Option<Box<AgentCaps>>,
-        /// FR-27 — the version of the `roomler-desktop` companion installed on
+        /// FR-27 — the version of the `meshharbor-desktop` companion installed on
         /// this host, or `None` when none is installed / the probe failed /
         /// the agent predates the field. Additive agent→server like
         /// `srflx_count`, so no capability flag.
@@ -815,7 +815,7 @@ pub enum ClientMsg {
         /// FR-102 P9c — the carrier the session rides, as the agent
         /// recorded it once the session reached Active: `direct` · `turn` ·
         /// `turn_local` · `overlay_direct` · `overlay_turn` · `derp` ·
-        /// `org_relay` · `unknown` (`roomlerd::session_carrier`). Absent
+        /// `org_relay` · `unknown` (`meshharbord::session_carrier`). Absent
         /// from an agent older than the field and from a sample before the
         /// observation landed; the server stores it beside
         /// `remote_sessions.stats` and reads absence as **unknown, never
@@ -2730,7 +2730,7 @@ pub struct ExternalGrant {
 /// locked by the tests below.
 ///
 /// The wire crate is MPL and agent-linked, so this names modules by id and
-/// never by type; `roomler-core` checks the ids against its module graph.
+/// never by type; `meshharbor-core` checks the ids against its module graph.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Owner {
@@ -2750,7 +2750,7 @@ pub enum Owner {
 }
 
 impl Owner {
-    /// The module id, as `roomler_core::graph::MODULES` spells it.
+    /// The module id, as `meshharbor_core::graph::MODULES` spells it.
     pub const fn id(self) -> &'static str {
         match self {
             Owner::Fleet => "fleet",
@@ -9830,7 +9830,7 @@ mod tests {
         // `rc:goodbye` frame, the old agent's `serde_json::from_str`
         // returns `Err` and the existing `Err(e) => debug!(…,
         // "ignoring non-rc:* frame")` arm at
-        // `agents/roomlerd/src/signaling.rs:333` swallows it
+        // `agents/meshharbord/src/signaling.rs:333` swallows it
         // silently — no panic, no fatal exit.
         //
         // We simulate the rc.52 ServerMsg shape via a stripped local

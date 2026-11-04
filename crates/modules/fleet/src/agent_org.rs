@@ -30,13 +30,13 @@ use axum::{
     extract::{Path, State},
 };
 use bson::oid::ObjectId;
-use roomler_ai_db::models::role::permissions;
-use roomler_ai_remote_control::signaling::ServerMsg;
-use roomler_ai_services::quota;
+use meshharbor_db::models::role::permissions;
+use meshharbor_remote_control::signaling::ServerMsg;
+use meshharbor_services::quota;
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
-use roomler_core::{ApiError, extractors::auth::AuthUser, guards::require_permission};
+use meshharbor_core::{ApiError, extractors::auth::AuthUser, guards::require_permission};
 
 use crate::FleetState;
 
@@ -167,7 +167,7 @@ pub async fn join_org(
     // delivered.
     let online = matches!(
         agent.status,
-        roomler_ai_remote_control::models::AgentStatus::Online
+        meshharbor_remote_control::models::AgentStatus::Online
     );
     if !online {
         return Err(ApiError::BadRequest(format!(
@@ -215,7 +215,7 @@ pub async fn join_org(
         // organization"). `MaxDevices` is an established limit, so this
         // refuses regardless of the tenant's `plan_enforcement` mode.
         // FR-102 P4 — through core, which also counts the collision per org.
-        if let Err(d) = roomler_core::quota::check(&state, &tenant, quota::Limit::MaxDevices, used)
+        if let Err(d) = meshharbor_core::quota::check(&state, &tenant, quota::Limit::MaxDevices, used)
         {
             return Err(ApiError::Forbidden(format!(
                 "Device limit reached for the {:?} plan in the target organization \
@@ -379,7 +379,7 @@ pub async fn join_targets(
         "mesh_ready": agent.capabilities.multi_org.iter().any(|c| c == "tun"),
         "online": matches!(
             agent.status,
-            roomler_ai_remote_control::models::AgentStatus::Online
+            meshharbor_remote_control::models::AgentStatus::Online
         ),
     })))
 }

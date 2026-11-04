@@ -53,7 +53,7 @@ operator's to restore; the product's job is to say so.
 ## Key design
 
 1. **The reason survives the fallback.** `capture::open_default`
-   (`agents/roomlerd/src/capture/mod.rs:549`) currently drops the backend's
+   (`agents/meshharbord/src/capture/mod.rs:549`) currently drops the backend's
    error on the floor and returns `Box::new(NoopCapture)`
    (`mod.rs:683`). `NoopCapture` carries a `CaptureUnavailable { code, detail }`
    instead, exposed through one new `ScreenCapture` trait method defaulting to
@@ -61,7 +61,7 @@ operator's to restore; the product's job is to say so.
 2. **The code is derived, never guessed.** `code` is a small closed set —
    `permission` · `no_display` · `not_built` · `backend_error`. On macOS a
    failed open asks the OS through the TCC preflight the agent already owns
-   (`roomler_node_core::tcc::screen_recording_granted`, the same probe
+   (`meshharbor_node_core::tcc::screen_recording_granted`, the same probe
    `scrap_backend` warns from) rather than pattern-matching an error string,
    because scrap reports a bare `other error` for a denied grant and a broken
    display alike and a guess would be a second lie. On Linux an absent

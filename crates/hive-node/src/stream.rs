@@ -62,14 +62,14 @@ pub const MAX_FRAME: usize = 1024 * 1024;
 /// to find one both sides hold after a divergence a promotion left behind.
 pub const MAX_CHECKPOINTS: usize = 8;
 /// P2d-3 — the most events one `events` frame lists, as a viewer's page does
-/// (`agents/roomlerd/src/hive/view.rs` `PAGE_MAX`).
+/// (`agents/meshharbord/src/hive/view.rs` `PAGE_MAX`).
 pub const MAX_BATCH: usize = 500;
 /// P2d-3 — the event bytes one `events` frame carries before its batch is
 /// cut; an event larger than this comes alone.
 pub const BATCH_BYTES: usize = 1024 * 1024;
 /// P2d-3 — the largest event the stream carries, refused before it is read.
 /// Twice the largest a device records: a checkpoint, whose manifest the
-/// daemon reads up to 16 MiB (`agents/roomlerd/src/hive/checkpointer.rs`
+/// daemon reads up to 16 MiB (`agents/meshharbord/src/hive/checkpointer.rs`
 /// `MAX_HEADER`), and a stream-json line, read up to 8 MiB. A source holding
 /// a larger one cannot stream past it, and says so.
 pub const MAX_EVENT_BYTES: usize = 32 * 1024 * 1024;

@@ -286,7 +286,7 @@ its free pool → cycle every agent's WS.
 > compensation stack around it, once its evidence counters (`mux_nat_rewrites`,
 > `restores`, `skip_as_source_flips`) had read zero fleet-wide for 7 days. Every
 > org now gets its own adapter ([Per-org TUN adapters](#per-org-tun-adapters-the-only-path-since-w7c),
-> `agents/roomlerd/src/overlay.rs:318`). This section records how the mux
+> `agents/meshharbord/src/overlay.rs:318`). This section records how the mux
 > worked, for the history it explains.
 
 One `roomler` adapter, N per-org runtimes. Each org's `OverlayRuntime` gets a
@@ -385,7 +385,7 @@ re-binds ONCE, and every org re-establishes on `Ready`.
 ### Per-org TUN adapters (the only path since W7c)
 
 The second half of multi-org v2: with `overlay_multi_org` on, each org gets its
-**own adapter** (`per_org_systun_factory`, `agents/roomlerd/src/overlay.rs:318`).
+**own adapter** (`per_org_systun_factory`, `agents/meshharbord/src/overlay.rs:318`).
 It shipped behind `overlay_tun_per_org`, default ON since rc.339; W7c deleted
 the switch along with the shared adapter it chose between, so neither the key
 nor `ROOMLERD_OVERLAY_TUN_PER_ORG` is read any more:
@@ -598,7 +598,7 @@ no blank row can render).
 
 | Area | Tests |
 |---|---|
-| Config v2 + enrollment dispatch | `agents/roomlerd/src/config.rs`, `enrollment.rs` units; the two-tenant integration test driving ONE agent lib into TWO TestApps |
+| Config v2 + enrollment dispatch | `agents/meshharbord/src/config.rs`, `enrollment.rs` units; the two-tenant integration test driving ONE agent lib into TWO TestApps |
 | Block grid + allocator | `crates/remote_control/src/models.rs` units (grid rendering, prefix→width, buddy-alignment property, in-block leases) |
 | Renumber planner + version floor | `crates/api/src/routes/overlay_block.rs` units (preservation, compaction ordering, determinism, capacity refusal, numeric rc compare, fail-closed unknowns) |
 | Renumber end-to-end | `crates/tests/src/overlay_tests.rs` — inert dry run, apply + invertibility + next lease, double renumber ⇒ quarantine trail, cross-tenant disjointness over mixed widths, floor refusal + force, permission gate, carve-new-networks-only |
@@ -669,13 +669,13 @@ no blank row can render).
   when it has its own port and key (`crates/agent-core/src/config.rs:2114-2109`),
   and `derived_netstack` sends it to its stack rather than to the per-org TUN
   that the device-wide `overlay_multi_org` would pick
-  (`agents/roomlerd/src/overlay.rs:311`). A port that is unset is **picked**:
+  (`agents/meshharbord/src/overlay.rs:311`). A port that is unset is **picked**:
   - at `enroll --overlay`, `org overlay <org> netstack` and a pushed join;
   - at daemon start, for an entry from before the fix.
 
   The pick is the first free loopback port in 10800–10899, below every OS's
   ephemeral range, that no other enrollment claims
-  (`agents/roomlerd/src/org_join.rs`, `pick_netstack_port`). Free means
+  (`agents/meshharbord/src/org_join.rs`, `pick_netstack_port`). Free means
   nothing answers there and it binds: Windows and macOS let a loopback bind
   shadow another program's listener on the wildcard address, which only the
   connect sees. The CLI prints where the front is.

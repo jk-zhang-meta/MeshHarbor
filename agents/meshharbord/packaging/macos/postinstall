@@ -1,0 +1,548 @@
+#!/bin/bash
+# RETIRED-NAME-ANCHOR-BEGIN
+# FR-46 P5b renamed the bundle: `/Library/Roomler/roomlerd.app`, executable
+# `roomlerd`, CFBundleName `Roomler Daemon`. CFBundleIdentifier is deliberately
+# UNCHANGED (`com.roomler.agent`) — it is not a retired name, it doubles as the
+# launchd Label, and it is what TCC attributes grants to.
+# What is left below is retired-by-necessity: the two SWEEPS that find a
+# pre-rename bundle in order to delete it, the P5a config/log migration
+# sources, and two dual-read gates. All of them are deletable once no Mac can
+# still be on the old layout. docs/fr/FR-46
+#
+# pkg postinstall — runs as root after the payload is copied to
+# /Library/Roomler/roomlerd.app. We drop the LaunchAgent plist into the
+# current console user's ~/Library/LaunchAgents/ and launchctl bootstrap it
+# into their gui/<uid> domain so the agent starts immediately.
+#
+# We avoid `sudo -u` here because Apple's installer sanitises the env; we
+# resolve the console user via stat on /dev/console which is the reliable
+# idiom on macOS installers.
+
+set -euo pipefail
+
+CONSOLE_USER=$(stat -f "%Su" /dev/console)
+
+# Sweep the pre-rc.457 location. The daemon bundle used to live in
+# /Applications, where it showed up in Finder and Launchpad as a second Roomler
+# icon that does nothing when double-clicked. A pkg install is ADDITIVE, so an
+# upgrade would leave that copy sitting there forever — still visible, now also
+# stale, and running nothing (both plists point at the new path).
+# RETIRED-NAME-ANCHOR(3): sweeps the pre-P4b /Applications bundle. Without the old name
+# the vacated .app is orphaned forever. docs/fr/FR-21
+if [ -d /Applications/roomler-agent.app ]; then
+  rm -rf /Applications/roomler-agent.app
+  echo "removed the old /Applications/roomler-agent.app (the daemon now lives in /Library/Roomler)"
+fi
+
+# FR-46 P5b — sweep the PRE-RENAME bundle. A pkg install is ADDITIVE, so the
+# payload lands the new `roomlerd.app` beside the old `roomler-agent.app` and
+# the old one would sit there forever: a second copy of the daemon, still
+# signed, still launchable, and still the entry a Mac's Privacy panes point at.
+# Leaving it is worse than untidy — an operator hunting the right thing to
+# approve would find TWO plausible candidates and no way to tell them apart.
+#
+# Safe while the old agent is still running: macOS unlinks a running binary
+# without killing it, and the launchd jobs below are re-bootstrapped onto the
+# new path in this same script.
+#
+# RETIRED-NAME-ANCHOR(3): the pre-P5b bundle path. This sweep is the only
+# reason it is still named anywhere, and it goes when no Mac can have one.
+if [ -d /Library/Roomler/roomler-agent.app ]; then
+  rm -rf /Library/Roomler/roomler-agent.app
+  echo "removed the pre-rename /Library/Roomler/roomler-agent.app (now roomlerd.app)"
+  echo "  ⚠️  Screen Recording and Accessibility were granted to the OLD bundle."
+  echo "     macOS does not carry a grant across a rename, so approve the new"
+  echo "     entry in System Settings > Privacy & Security:"
+  echo "       Screen & System Audio Recording -> Roomler Daemon"
+  echo "       Accessibility                   -> Roomler Daemon"
+  echo "     and remove the stale 'Roomler Agent' entry if it is still listed."
+fi
+
+# ---------------------------------------------------------------------------
+# FR-46 (#1051) — migrate the system config and log directories off the retired
+# name, BEFORE anything below reads them.
+#
+# Order is the whole point. The daemon gate further down is
+# `[ -f <config-dir>/enable-daemon ]`, and its ELSE branch runs
+# `launchctl bootout` and DELETES the LaunchDaemon. So moving the directory
+# without moving the marker first would not "miss a setting" — it would remove
+# the root daemon, taking the overlay and the SSH server with it, on a host
+# whose operator asked for neither change. The script's own text says how
+# unattributable that failure looks.
+#
+# Same rules as `appdirs::migrate_system_config` on Linux: dest-absent only,
+# rename, and NEVER delete. A failure here must not abort the install (the
+# payload is already on disk — see the note above about half-applied installs),
+# so every step is guarded and reports instead of exiting.
+migrate_legacy_dir() {
+  # RETIRED-NAME-ANCHOR(3): the legacy source path. This function exists to
+  # RETIRE it, and it can be deleted once no Mac still has one. docs/fr/FR-46
+  legacy="$1"
+  current="$2"
+  if [ -d "$legacy" ] && [ ! -e "$current" ]; then
+    if mv "$legacy" "$current" 2>/dev/null; then
+      echo "migrated $legacy -> $current"
+    else
+      echo "WARNING: could not move $legacy -> $current; leaving it in place"
+    fi
+  fi
+}
+
+migrate_legacy_dir /etc/roomler-agent     /etc/meshharbor
+migrate_legacy_dir /var/log/roomler-agent /var/log/roomler
+
+# If the move could not happen (a partially-migrated host, a dest that already
+# existed, a read-only moment), the plists still point at the CURRENT path, so
+# copy the enrolled config across rather than letting the daemon start with
+# none and re-enrol as a stranger. A copy, never a move: the legacy original
+# stays until something is known to be working.
+if [ -f /etc/roomler-agent/config.toml ] && [ ! -f /etc/meshharbor/config.toml ]; then
+  mkdir -p /etc/meshharbor 2>/dev/null || true
+  if cp -p /etc/roomler-agent/config.toml /etc/meshharbor/config.toml 2>/dev/null; then
+    echo "copied the enrolled config forward to /etc/meshharbor/config.toml"
+  else
+    echo "WARNING: /etc/meshharbor/config.toml is missing and could not be copied"
+  fi
+fi
+
+# No GUI session — installed over SSH, at the login window, or on a runner.
+# There is no `gui/<uid>` domain to bootstrap into, and `root` has no Aqua
+# domain either.
+#
+# This must NOT fail the install. The payload is already on disk by the time
+# scripts run, so aborting here leaves a HALF-APPLIED install reported as a
+# failure ("An error occurred while running scripts") with nothing saying why —
+# which is what `set -euo pipefail` plus an unguarded `bootstrap` used to do.
+# The plist cannot be placed without a home directory to place it in, so the
+# honest outcome is: payload installed, autostart deferred to the next login,
+# said plainly.
+if [ -z "$CONSOLE_USER" ] || [ "$CONSOLE_USER" = root ]; then
+  echo "roomlerd: payload installed, but NO GUI session is logged in"
+  echo "  (console user is '${CONSOLE_USER:-unknown}'), so the LaunchAgent was"
+  echo "  not registered. Log in on this Mac and re-run the installer, or:"
+  echo "    sudo installer -pkg <the .pkg> -target /"
+  echo "  Screen capture and input need a login session and cannot run without one."
+  exit 0
+fi
+
+CONSOLE_UID=$(id -u "$CONSOLE_USER")
+CONSOLE_HOME=$(dscl . -read /Users/"$CONSOLE_USER" NFSHomeDirectory | awk '{print $2}')
+
+# Replace a possibly-RUNNING launchd service with its freshly-installed plist.
+#
+# `launchctl bootout` returns while the old instance is still DRAINING, and a
+# `bootstrap` issued during the drain fails with "Bootstrap failed: 5:
+# Input/output error". For the agent that race is essentially guaranteed on a
+# SELF-UPDATE: the instance being booted out is mid WebRTC/WS teardown and
+# takes seconds to die, so every helper- or daemon-driven update killed the
+# per-user half and left it "placed but not loaded" until the next login —
+# field-caught twice on 2026-08-26 (rc.472 and rc.474 cycles), install.log
+# carrying the EIO line both times. Manual installs dodged it only because the
+# service was usually already dead.
+#
+# So: bootout, WAIT until the service actually leaves the domain (bounded),
+# then bootstrap with retries. Used for all three launchd replacements below.
+replace_launchd_service() {
+  domain="$1"; label="$2"; plist="$3"
+  launchctl bootout "$domain/$label" 2>/dev/null || true
+  waited=0
+  while launchctl print "$domain/$label" >/dev/null 2>&1; do
+    waited=$((waited + 1))
+    [ "$waited" -ge 15 ] && break
+    sleep 1
+  done
+  attempt=0
+  while :; do
+    attempt=$((attempt + 1))
+    if launchctl bootstrap "$domain" "$plist" 2>/tmp/roomler-bootstrap.err; then
+      rm -f /tmp/roomler-bootstrap.err
+      return 0
+    fi
+    [ "$attempt" -ge 5 ] && break
+    sleep 2
+  done
+  return 1
+}
+
+# Is the root LaunchDaemon opted in on this Mac?
+#
+# FR-46 — dual-read while a Mac may still be mid-migration. The migration at
+# the top normally makes the legacy arm dead, but if the move could not happen
+# this must NOT read false: one caller BOOTS OUT the daemon on a false, so
+# reading one path only would turn a failed rename into a silent removal of the
+# overlay and the SSH server. docs/fr/FR-46
+#
+# ⚠️ ONE function, two callers, on purpose. The other caller
+# (`daemon_supervises_gui_worker`) decides whether to REMOVE the LaunchAgent,
+# and the two answers have to agree: a copy that drifted into saying "enabled"
+# while the gate below said "not" would strip the GUI worker off a Mac that
+# then installs no daemon either — no capture, no input, nothing to supervise.
+# RETIRED-NAME-ANCHOR(2): the legacy marker path, read as a fallback only.
+daemon_is_enabled() {
+  [ -f /etc/meshharbor/enable-daemon ] || [ -f /etc/roomler-agent/enable-daemon ]
+}
+
+# FR-43 P2 — does the root daemon own the GUI-session worker on this Mac?
+#
+# `macos_supervise_gui_worker = true` makes the daemon spawn and babysit the
+# worker itself so that ONE device row both holds the enrollment and serves the
+# screen. The supervisor deliberately stands down whenever
+# `gui/<uid>/com.roomler.agent` is loaded — the loser of that race must be the
+# supervisor, never the enrolled agent (`macos_supervisor::decide`) — so
+# bootstrapping the LaunchAgent here does not merely add a second worker: it
+# DISARMS delegation, and the daemon's row goes back to advertising a capture
+# target it cannot serve. A controller that connects to it gets a black screen
+# with working input, which is the exact symptom FR-43 P2 exists to remove.
+#
+# That is what gave P2 a one-release half-life: the operator boots the plist
+# out by hand (the daemon's own log tells them to), and the very next package
+# update quietly puts it back. An update is precisely when nobody is watching.
+#
+# Read the daemon's OWN config rather than inventing a marker file: the key
+# below is the one `decide()` acts on, so the installer and the supervisor
+# cannot disagree about who owns the worker. A marker would be a second source
+# of truth for one fact.
+#
+# ⚠️ Interlocked with the daemon opt-in on purpose. Supervision only means
+# anything if a root daemon is actually there to supervise; honouring the key
+# without it would remove the LaunchAgent and leave the Mac with NO GUI worker.
+daemon_supervises_gui_worker() {
+  daemon_is_enabled || return 1
+  [ -f /etc/meshharbor/config.toml ] || return 1
+  grep -qE '^[[:space:]]*macos_supervise_gui_worker[[:space:]]*=[[:space:]]*true' \
+    /etc/meshharbor/config.toml
+}
+
+LAUNCH_AGENTS_DIR="$CONSOLE_HOME/Library/LaunchAgents"
+PLIST_SOURCE="/Library/Roomler/roomlerd.app/Contents/Resources/com.roomler.agent.plist"
+PLIST_TARGET="$LAUNCH_AGENTS_DIR/com.roomler.agent.plist"
+
+if daemon_supervises_gui_worker; then
+  # FR-43 P2 — the root daemon owns the worker here, so the LaunchAgent must
+  # not exist. Note this REMOVES the plist rather than merely skipping the
+  # bootstrap: a plist left in ~/Library/LaunchAgents is loaded by launchd at
+  # the next login, so skipping alone would postpone the breakage by one
+  # login instead of fixing it.
+  #
+  # Booting the job out is not a new hazard — `replace_launchd_service` has
+  # always booted this exact label out as its first act. The change is that we
+  # no longer bootstrap it back.
+  launchctl bootout "gui/$CONSOLE_UID/com.roomler.agent" 2>/dev/null || true
+  rm -f "$PLIST_TARGET"
+  echo "roomlerd installed for $CONSOLE_USER (uid=$CONSOLE_UID); the GUI worker"
+  echo "  is owned by the ROOT DAEMON (macos_supervise_gui_worker = true in"
+  echo "  /etc/meshharbor/config.toml), so the per-user LaunchAgent was NOT loaded."
+  echo "  The daemon spawns and babysits the worker itself; one device row both"
+  echo "  holds the enrollment and serves the screen."
+  echo "  To go back to the per-user LaunchAgent, set that key false (or remove"
+  echo "  it) and re-run the installer."
+else
+  mkdir -p "$LAUNCH_AGENTS_DIR"
+  cp "$PLIST_SOURCE" "$PLIST_TARGET"
+  chown "$CONSOLE_USER":staff "$PLIST_TARGET"
+  chmod 644 "$PLIST_TARGET"
+
+  # Load the agent into the user's launchd domain — via the drain-aware
+  # replacement above, because on a self-update the previous instance is still
+  # dying when this runs (see replace_launchd_service).
+  #
+  # A final failure is reported, not fatal: the plist is in ~/Library/LaunchAgents,
+  # so launchd starts it at the next login regardless. Trading a working install
+  # for a launchctl edge case (a session that exists but will not accept a
+  # bootstrap) is the wrong way round.
+  if replace_launchd_service "gui/$CONSOLE_UID" com.roomler.agent "$PLIST_TARGET"; then
+    echo "roomlerd installed and started for $CONSOLE_USER (uid=$CONSOLE_UID)"
+  else
+    echo "roomlerd installed for $CONSOLE_USER (uid=$CONSOLE_UID), but launchctl"
+    echo "  bootstrap failed after retries: $(cat /tmp/roomler-bootstrap.err 2>/dev/null)"
+    echo "  The plist is in place, so it will start at the next login, or now via:"
+    echo "    launchctl bootstrap gui/$CONSOLE_UID $PLIST_TARGET"
+  fi
+  rm -f /tmp/roomler-bootstrap.err
+fi
+
+# The desktop companion (menu-bar app), same user domain. It is a UI surface,
+# not a service: it holds no session and captures nothing, so a failure to
+# start it must never fail the install — but it IS the only place that tells
+# the user which macOS permission is missing, which the OS never does.
+#
+# ⚠️⚠️ The companion enforces a SINGLE INSTANCE (tauri-plugin-single-instance):
+# a second launch hands its arguments to the first and EXITS 0. So a companion
+# that outlives this script defeats the update: the freshly installed one
+# starts, defers to the old one and quits, launchd records a clean exit, and
+# `bootstrap` has already reported success.
+#
+# `bootout` cannot rule that out, because it only reaches launchd's instance of
+# `com.roomler.desktop`. An app a person opened from Finder, Spotlight or the
+# Dock runs under LaunchServices' own job (`application.<bundle-id>.<n>`),
+# which nothing here addresses. Field 2026-09-25: a 0.4.92 companion kept
+# running through NINE updates on a Mac whose install.log said "Roomler
+# menu-bar app started" after every one — `launchctl print` showed the job
+# `runs = 1, last exit code = 0, not running`, the process was executing an
+# unlinked inode, and the operator saw "v0.4.92" on a 0.4.101 host.
+# Reproduced deterministically: `open -a Roomler.app`, then this block's
+# previous form.
+#
+# So: stop EVERY instance of the console user's companion, however it was
+# started, before starting the new one — matched on the executable path's TAIL,
+# so a copy of the app outside /Applications cannot hold the lock either.
+# SIGTERM first (it exits in ~0.5 s, measured), SIGKILL only for stragglers.
+# Only the console user's: another logged-in user's companion has no plist of
+# ours to bring it back, and a stale menu-bar app beats an absent one.
+# ⚠️ Everything below runs under `set -euo pipefail` and must never fail the
+# install: `pkill` exits 1 when nothing matched, which is the common case.
+COMPANION_EXE_RE='/Roomler\.app/Contents/MacOS/meshharbor-desktop( |$)'
+
+stop_companions() {
+  pkill -TERM -U "$CONSOLE_UID" -f "$COMPANION_EXE_RE" 2>/dev/null || return 0
+  n=0
+  while pgrep -U "$CONSOLE_UID" -f "$COMPANION_EXE_RE" >/dev/null 2>&1; do
+    n=$((n + 1))
+    if [ "$n" -ge 20 ]; then
+      pkill -KILL -U "$CONSOLE_UID" -f "$COMPANION_EXE_RE" 2>/dev/null || true
+      sleep 1
+      break
+    fi
+    sleep 0.5
+  done
+}
+
+# Did the new companion come up AND STAY up? A single-instance loser also
+# starts — and reads as `running` for a moment — before it exits 0, so one look
+# proves nothing: require the same pid on two looks two seconds apart.
+companion_pid() {
+  launchctl print "gui/$CONSOLE_UID/com.roomler.desktop" 2>/dev/null \
+    | awk '$1 == "pid" && $2 == "=" { print $3; exit }' || true
+}
+companion_running() {
+  first=$(companion_pid)
+  [ -n "$first" ] || return 1
+  sleep 2
+  second=$(companion_pid)
+  [ -n "$second" ] && [ "$second" = "$first" ]
+}
+
+DESKTOP_PLIST_SOURCE="/Library/Roomler/roomlerd.app/Contents/Resources/com.roomler.desktop.plist"
+DESKTOP_PLIST_TARGET="$LAUNCH_AGENTS_DIR/com.roomler.desktop.plist"
+if [ -f "$DESKTOP_PLIST_SOURCE" ] && [ -d /Applications/Roomler.app ]; then
+  cp "$DESKTOP_PLIST_SOURCE" "$DESKTOP_PLIST_TARGET"
+  chown "$CONSOLE_USER":staff "$DESKTOP_PLIST_TARGET"
+  chmod 644 "$DESKTOP_PLIST_TARGET"
+  stop_companions
+  # Same drain-aware replacement — the tray dies faster than the agent, but the
+  # race is the same shape and the retry costs nothing when it isn't needed.
+  if ! replace_launchd_service "gui/$CONSOLE_UID" com.roomler.desktop "$DESKTOP_PLIST_TARGET"; then
+    echo "Roomler menu-bar app installed; it will start at the next login"
+  elif companion_running; then
+    echo "Roomler menu-bar app started for $CONSOLE_USER"
+  else
+    # Say so: this line printed "started" through nine updates while nothing
+    # had restarted.
+    echo "WARNING: the Roomler menu-bar app was registered but did not stay running"
+    echo "  launchd: $(launchctl print "gui/$CONSOLE_UID/com.roomler.desktop" 2>/dev/null \
+      | grep -E 'state =|last exit code =' | head -2 | tr -s '\t\n ' ' ' || true)"
+    echo "  still running elsewhere? pgrep -lf meshharbor-desktop"
+  fi
+  rm -f /tmp/roomler-bootstrap.err
+else
+  echo "NOTE: the menu-bar companion is not in this package; skipping"
+fi
+
+echo "Grant Screen Recording + Accessibility permissions in System Settings, then:"
+echo "  launchctl kickstart -k gui/$CONSOLE_UID/com.roomler.agent"
+echo "(the Roomler menu-bar app shows which of the two is missing, with a button for each)"
+
+# ---------------------------------------------------------------------------
+# The privileged half — OPT-IN.
+#
+# The LaunchAgent above is unprivileged by necessity: capture and input need
+# the GUI session. But creating a utun and installing routes need root, which
+# is why the overlay has never come up on a real macOS install. A root
+# LaunchDaemon closes that, and it is deliberately NOT installed by default:
+# putting a root daemon on someone's Mac is a posture decision, not a side
+# effect of installing a remote-control agent.
+#
+# Enable it by creating the marker, then (re-)running the installer:
+#   sudo mkdir -p /etc/meshharbor && sudo touch /etc/meshharbor/enable-daemon
+# `install.sh --daemon-token` does exactly that before it runs the pkg.
+#
+# ⚠️ There is NO environment-variable form, and there cannot be. This script
+# used to also honour `ROOMLER_MACOS_DAEMON=1 installer -pkg … -target /`,
+# which never worked: macOS runs package scripts from `package_script_service`
+# — a separate PackageKit daemon — so a script does NOT inherit the
+# environment of whoever invoked `installer`. Proven in CI 2026-08-25: an
+# install with the variable set produced the per-user log lines and none of
+# the daemon ones, i.e. the condition was simply false. It was removed rather
+# than left as a documented option that silently does nothing.
+#
+# The daemon gets its OWN config at /etc/meshharbor/config.toml. It must
+# not share the user's: two processes on one enrollment identity would fight
+# over the control WS (the hub keys on agent_id — the second connection
+# displaces the first), so they are separate enrollments by construction.
+# ---------------------------------------------------------------------------
+DAEMON_PLIST_SOURCE="/Library/Roomler/roomlerd.app/Contents/Resources/com.roomler.daemon.plist"
+DAEMON_PLIST_TARGET="/Library/LaunchDaemons/com.roomler.daemon.plist"
+
+# The dual-read (and why the else branch makes it load-bearing) lives in
+# `daemon_is_enabled` above, which the FR-43 LaunchAgent guard also calls — the
+# two must never disagree about whether a root daemon is coming.
+if daemon_is_enabled; then
+  if [ ! -f "$DAEMON_PLIST_SOURCE" ]; then
+    echo "WARNING: daemon requested but $DAEMON_PLIST_SOURCE is missing; skipping"
+  else
+    mkdir -p /etc/meshharbor /var/log/roomler
+    cp "$DAEMON_PLIST_SOURCE" "$DAEMON_PLIST_TARGET"
+    chown root:wheel "$DAEMON_PLIST_TARGET"
+    chmod 644 "$DAEMON_PLIST_TARGET"
+
+    # Drain-aware replacement here too. The old form was a BARE `bootstrap`
+    # under `set -e` — a drain-race EIO would have aborted postinstall halfway,
+    # reported as an opaque install failure. Report-and-continue instead.
+    if ! replace_launchd_service system com.roomler.daemon "$DAEMON_PLIST_TARGET"; then
+      echo "WARNING: daemon bootstrap failed after retries: $(cat /tmp/roomler-bootstrap.err 2>/dev/null)"
+      echo "  Start it by hand: sudo launchctl bootstrap system $DAEMON_PLIST_TARGET"
+    fi
+    rm -f /tmp/roomler-bootstrap.err
+
+    echo "roomler system daemon installed (overlay/tunnel run as root)."
+    if [ ! -f /etc/meshharbor/config.toml ]; then
+      echo "  NOT ENROLLED YET — the daemon needs its own enrollment:"
+      echo "    sudo /Library/Roomler/roomlerd.app/Contents/MacOS/roomlerd \\"
+      echo "      --config /etc/meshharbor/config.toml \\"
+      echo "      enroll --server <url> --token <enrollment-jwt> --name <label>"
+      echo "    sudo launchctl kickstart -k system/com.roomler.daemon"
+    fi
+    echo "  Its LocalAPI lives at /var/run/meshharbor/meshharbor.sock — reach it with"
+    echo "  'sudo roomler …' (an unprivileged 'roomler' finds the user agent)."
+  fi
+else
+  # A previously-enabled daemon must go away when the marker does, or an
+  # upgrade would silently keep a root job the operator has opted out of.
+  if [ -f "$DAEMON_PLIST_TARGET" ]; then
+    launchctl bootout system/com.roomler.daemon 2>/dev/null || true
+    rm -f "$DAEMON_PLIST_TARGET"
+    echo "roomler system daemon REMOVED — no /etc/meshharbor/enable-daemon marker."
+    echo "  The overlay AND the SSH server live in this daemon, so both are now"
+    echo "  gone. Nothing else reports this: 'roomler ssh' will say the device"
+    echo "  'has not published an SSH host key', which describes the symptom and"
+    echo "  not the cause."
+    echo "  If you did not intend to opt out, restore the marker and re-install:"
+    echo "    sudo mkdir -p /etc/meshharbor"
+    echo "    sudo touch /etc/meshharbor/enable-daemon"
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# The update half — DEFAULT ON, opt-out.
+#
+# `installer -target /` needs root, and the DEFAULT install is the per-user
+# LaunchAgent alone — which therefore could never self-update (field
+# 2026-08-25: a per-user agent trying took the Mac OFFLINE; since then it
+# refuses, which is safe and permanently stale). This tiny root unit is the
+# missing half of updating and nothing else: no enrollment, no network
+# identity — it polls the public release feed, verifies, installs, exits.
+# The agents signal it by touching /private/var/tmp/meshharbor-update-check.
+#
+# Default ON because this pkg is only ever installed BY root — the operator
+# consented to root code at install time, and an updater that runs as the
+# installer's identity is how system packages update everywhere. Opt out:
+#   sudo mkdir -p /etc/meshharbor && sudo touch /etc/meshharbor/disable-auto-update
+# then re-run the installer (same absence-removes semantics as the daemon
+# marker — the opposite polarity, because the default is the opposite).
+#
+# ⚠️ NEVER bootout a loaded com.roomler.update here: during a self-update
+# THIS script is a grandchild of that very job, and booting it kills the
+# whole process group — `installer` included, mid-payload. Bootstrap only
+# when not yet loaded; a changed plist takes effect at next boot.
+# ---------------------------------------------------------------------------
+UPDATE_PLIST_SOURCE="/Library/Roomler/roomlerd.app/Contents/Resources/com.roomler.update.plist"
+UPDATE_PLIST_TARGET="/Library/LaunchDaemons/com.roomler.update.plist"
+
+# FR-46 — dual-read, and note the SENSE: this is an OPT-OUT. Reading only the
+# current path would install the auto-update helper on a Mac whose operator
+# opted out under the legacy one — silently doing the thing they declined.
+# RETIRED-NAME-ANCHOR(2): the legacy opt-out marker, honoured as a fallback.
+if [ ! -f /etc/meshharbor/disable-auto-update ] && [ ! -f /etc/roomler-agent/disable-auto-update ]; then
+  if [ ! -f "$UPDATE_PLIST_SOURCE" ]; then
+    echo "WARNING: $UPDATE_PLIST_SOURCE missing — auto-update helper not installed"
+  else
+    mkdir -p /var/log/roomler
+    cp "$UPDATE_PLIST_SOURCE" "$UPDATE_PLIST_TARGET"
+    chown root:wheel "$UPDATE_PLIST_TARGET"
+    chmod 644 "$UPDATE_PLIST_TARGET"
+    if launchctl print system/com.roomler.update >/dev/null 2>&1; then
+      # Loaded already. If it is RUNNING it is our own ancestor (this very
+      # install) and must not be touched — booting the job kills the whole
+      # process group, `installer` included. If it is IDLE, re-cycle it:
+      # launchd LATCHES a "failed init" on a job whose spawn ever failed
+      # (field 2026-08-26: a trigger raced a pkg's atomic bundle shove, the
+      # executable was transiently absent, and from then on EVERY wake was
+      # an instant synthetic exit(78) with "already handled failed init,
+      # ignoring" — the updater was dead until a manual bootout). A
+      # bootout+bootstrap clears the latch AND applies the refreshed plist,
+      # so every install ends with a provably-armed updater.
+      if launchctl print system/com.roomler.update 2>/dev/null | grep -q "state = running"; then
+        echo "roomler update helper is running (this very install) — leaving it; plist applies at its next load"
+      else
+        launchctl bootout system/com.roomler.update 2>/dev/null || true
+        if launchctl bootstrap system "$UPDATE_PLIST_TARGET" 2>/tmp/roomler-update-bootstrap.err; then
+          echo "roomler update helper re-cycled (refreshed plist live; any failed-init latch cleared)"
+        else
+          echo "WARNING: update helper bootout+bootstrap failed: $(cat /tmp/roomler-update-bootstrap.err 2>/dev/null)"
+          echo "  Re-arm by hand: sudo launchctl bootstrap system $UPDATE_PLIST_TARGET"
+        fi
+        rm -f /tmp/roomler-update-bootstrap.err
+      fi
+    else
+      if launchctl bootstrap system "$UPDATE_PLIST_TARGET" 2>/tmp/roomler-update-bootstrap.err; then
+        echo "roomler update helper installed (unattended self-update, log: /var/log/roomler/update.log)"
+      else
+        echo "roomler update helper installed, but launchctl bootstrap failed:"
+        echo "  $(cat /tmp/roomler-update-bootstrap.err 2>/dev/null)"
+        echo "  It will load at next boot. Until then updates are manual."
+      fi
+      rm -f /tmp/roomler-update-bootstrap.err
+    fi
+  fi
+else
+  if [ -f "$UPDATE_PLIST_TARGET" ]; then
+    rm -f "$UPDATE_PLIST_TARGET"
+    # Bootout ONLY when the helper job is idle. If an update is genuinely in
+    # flight the helper is this script's own ancestor — booting the job would
+    # kill the whole process group, this script included, and fail the install
+    # at its last step.
+    #
+    # FR-46: but "running" also covers a helper that merely woke a second ago
+    # and is about to exit, which a re-cycle in the PREVIOUS install makes
+    # likely — and treating that as in-flight left a job the operator had just
+    # asked to be gone loaded until the next reboot. So wait briefly for it to
+    # go idle instead of deciding on one sample. A real self-update stays busy
+    # far longer than this and still falls through to the announce path, so the
+    # ancestor protection is unchanged; a transiently-waking one is now
+    # actually removed, which is what the marker asked for.
+    helper_idle=0
+    i=0
+    while [ "$i" -lt 10 ]; do
+      if ! launchctl print system/com.roomler.update 2>/dev/null | grep -q "state = running"; then
+        helper_idle=1
+        break
+      fi
+      i=$((i + 1))
+      sleep 1
+    done
+    if [ "$helper_idle" -eq 1 ]; then
+      launchctl bootout system/com.roomler.update 2>/dev/null || true
+      echo "roomler update helper REMOVED — /etc/meshharbor/disable-auto-update is set."
+    else
+      echo "roomler update helper opt-out recorded; the loaded job unloads at next boot"
+      echo "  (still running after 10s — an update is in flight and the job is our ancestor)"
+    fi
+    echo "  This Mac will no longer self-update; new releases must be installed by hand:"
+    echo "    curl -fsSL https://roomler.ai/api/setup/install.sh | sh -s -- --role daemon …"
+  else
+    echo "auto-update opted out (/etc/meshharbor/disable-auto-update) — helper not installed"
+  fi
+fi
+
+exit 0
+# RETIRED-NAME-ANCHOR-END

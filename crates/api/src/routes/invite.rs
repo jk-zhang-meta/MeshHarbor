@@ -6,7 +6,7 @@ use axum::{
     http::StatusCode,
 };
 use bson::oid::ObjectId;
-use roomler_ai_services::quota;
+use meshharbor_services::quota;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -14,8 +14,8 @@ use crate::{
     error::ApiError,
     extractors::auth::{AuthUser, OptionalAuthUser},
 };
-use roomler_ai_db::models::role::permissions;
-use roomler_ai_services::dao::{base::PaginationParams, invite::CreateInviteParams};
+use meshharbor_db::models::role::permissions;
+use meshharbor_services::dao::{base::PaginationParams, invite::CreateInviteParams};
 
 // ─── Response types ──────────────────────────────────────────────
 
@@ -196,7 +196,7 @@ pub async fn accept_invite(
         let tenant = state.tenants.base.find_by_id(invite.tenant_id).await?;
         let used = state.tenants.count_members(invite.tenant_id).await?;
         // FR-102 P4 — through core, which also counts the collision per org.
-        if let Err(d) = roomler_core::quota::check(&state, &tenant, quota::Limit::MaxMembers, used)
+        if let Err(d) = meshharbor_core::quota::check(&state, &tenant, quota::Limit::MaxMembers, used)
         {
             return Err(ApiError::Forbidden(d.message()));
         }
@@ -535,7 +535,7 @@ pub async fn add_member(
         let tenant = state.tenants.base.find_by_id(tid).await?;
         let used = state.tenants.count_members(tid).await?;
         // FR-102 P4 — through core, which also counts the collision per org.
-        if let Err(d) = roomler_core::quota::check(&state, &tenant, quota::Limit::MaxMembers, used)
+        if let Err(d) = meshharbor_core::quota::check(&state, &tenant, quota::Limit::MaxMembers, used)
         {
             return Err(ApiError::Forbidden(d.message()));
         }
@@ -611,7 +611,7 @@ async fn invite_email_ctx(state: &Core, inviter_id: ObjectId, tid: ObjectId) -> 
 fn spawn_invite_email(
     state: &Core,
     ctx: &InviteEmailCtx,
-    invite: &roomler_ai_db::models::Invite,
+    invite: &meshharbor_db::models::Invite,
 ) -> bool {
     let Some(email_addr) = invite.target_email.clone() else {
         return false;
@@ -665,7 +665,7 @@ async fn require_invite_permission(
     Ok(perms)
 }
 
-fn invite_to_response(invite: roomler_ai_db::models::Invite) -> InviteResponse {
+fn invite_to_response(invite: meshharbor_db::models::Invite) -> InviteResponse {
     InviteResponse {
         id: invite.id.unwrap().to_hex(),
         code: invite.code,

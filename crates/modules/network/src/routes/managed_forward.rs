@@ -14,9 +14,9 @@ use axum::{
     http::StatusCode,
 };
 use bson::{DateTime, doc, oid::ObjectId};
-use roomler_ai_db::models::role::permissions;
-use roomler_core::guards::require_permission;
-use roomler_core::{ApiError, extractors::auth::AuthUser};
+use meshharbor_db::models::role::permissions;
+use meshharbor_core::guards::require_permission;
+use meshharbor_core::{ApiError, extractors::auth::AuthUser};
 use serde::{Deserialize, Serialize};
 
 use crate::NetworkState;
@@ -139,7 +139,7 @@ fn verify(
                 .iter()
                 .any(|r| crate::managed_forward::is_nft_rule_of(r, &f.spec));
             if !seen
-                && rules.state != roomler_ai_remote_control::net_inventory::SectionState::Complete
+                && rules.state != meshharbor_remote_control::net_inventory::SectionState::Complete
             {
                 return;
             }

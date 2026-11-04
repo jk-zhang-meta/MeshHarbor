@@ -152,7 +152,7 @@ jobs:
         # agent release died on exactly this).
         run: command -v cargo-deb >/dev/null || cargo install cargo-deb --locked
       - name: Build roomler-tunnel (release)
-        run: cargo build -p roomler-cli --release
+        run: cargo build -p meshharbor-cli --release
       - name: Strip binary
         # P3d Slice B: CLI OUTPUT binary is now `roomler` (was `roomler-tunnel`).
         run: strip target/release/roomler
@@ -165,7 +165,7 @@ jobs:
           name="roomler-tunnel-${version}-x86_64-unknown-linux-gnu"
           mkdir -p "/tmp/${name}"
           # P3d Slice C: the legacy `roomler-tunnel` in-archive alias is retired —
-          # every live consumer (rc.194+ self-update, roomler-setup's
+          # every live consumer (rc.194+ self-update, meshharbor-setup's
           # find_tunnel_binary, install.sh) resolves the new `roomler` name first.
           # Archive NAME keeps the roomler-tunnel-… prefix (frozen contract).
           cp target/release/roomler "/tmp/${name}/"
@@ -175,7 +175,7 @@ jobs:
           mv "/tmp/${name}.tar.gz" "/tmp/${name}.tar.gz.sha256" .
           echo "artifact=${name}.tar.gz" >> "$GITHUB_OUTPUT"
       - name: Build .deb
-        working-directory: agents/roomler-cli
+        working-directory: agents/meshharbor-cli
         run: cargo deb --no-build --no-strip
       - name: Rename .deb + checksum
         id: deb
@@ -184,7 +184,7 @@ jobs:
           set -euo pipefail
           version="${{ needs.validate-version.outputs.version }}"
           # FR-21 P2b: cargo-deb emits `<package>_…`, and the package is
-          # `roomler-cli` now. The DESTINATION asset name deliberately stays
+          # `meshharbor-cli` now. The DESTINATION asset name deliberately stays
           # `roomler-tunnel-…` — a published, immutable surface that every prior
           # release carries, and the updater matches on extension + arch, not
           # the prefix.
@@ -235,7 +235,7 @@ jobs:
       - name: Install cargo-deb
         run: command -v cargo-deb >/dev/null || cargo install cargo-deb --locked
       - name: Build roomler-tunnel (release)
-        run: cargo build -p roomler-cli --release
+        run: cargo build -p meshharbor-cli --release
       - name: Strip binary
         run: strip target/release/roomler
       - name: Pack tarball
@@ -253,7 +253,7 @@ jobs:
           mv "/tmp/${name}.tar.gz" "/tmp/${name}.tar.gz.sha256" .
           echo "artifact=${name}.tar.gz" >> "$GITHUB_OUTPUT"
       - name: Build .deb
-        working-directory: agents/roomler-cli
+        working-directory: agents/meshharbor-cli
         run: cargo deb --no-build --no-strip
       - name: Rename .deb + checksum
         id: deb
@@ -276,7 +276,7 @@ jobs:
           sudo dpkg -i "${{ steps.deb.outputs.artifact }}"
           readelf -h /usr/bin/roomler | grep -q 'Machine:.*AArch64'
           roomler --version
-          sudo dpkg -r roomler-cli
+          sudo dpkg -r meshharbor-cli
       - name: Upload Linux aarch64 artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -313,9 +313,9 @@ jobs:
           # non-tag runs (dispatch rehearsals on master) save.
           save-if: ${{ github.ref_type != 'tag' }}
       - name: Build roomler-tunnel x86_64
-        run: cargo build -p roomler-cli --release --target x86_64-apple-darwin
+        run: cargo build -p meshharbor-cli --release --target x86_64-apple-darwin
       - name: Build roomler-tunnel aarch64
-        run: cargo build -p roomler-cli --release --target aarch64-apple-darwin
+        run: cargo build -p meshharbor-cli --release --target aarch64-apple-darwin
       - name: Lipo into universal
         run: |
           # P3d Slice B: per-target CLI binary is now `roomler` (was
@@ -409,7 +409,7 @@ jobs:
         # sits beside the MSI's app-local CRT DLLs.
         env:
           RUSTFLAGS: -C target-feature=+crt-static
-        run: cargo build -p roomler-cli --release
+        run: cargo build -p meshharbor-cli --release
       # Sign before zipping so the EXE the operator extracts is signed. A zip
       # cannot itself carry an Authenticode signature, so the binary inside is
       # the only thing that can vouch for the download.

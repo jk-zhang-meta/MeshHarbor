@@ -171,10 +171,10 @@ fn observe_zone(actual: PartyZone, issued: BusinessZone, fits: &mut bool, unavai
 
 /// A confirmed absent/live-filtered row is invalid; operational and decoding
 /// errors do not prove removal and must retain the existing trial for retry.
-fn trial_lookup<T>(result: roomler_ai_services::dao::base::DaoResult<T>) -> Result<Option<T>, ()> {
+fn trial_lookup<T>(result: meshharbor_services::dao::base::DaoResult<T>) -> Result<Option<T>, ()> {
     match result {
         Ok(value) => Ok(Some(value)),
-        Err(roomler_ai_services::dao::base::DaoError::NotFound) => Ok(None),
+        Err(meshharbor_services::dao::base::DaoError::NotFound) => Ok(None),
         Err(_) => Err(()),
     }
 }
@@ -244,7 +244,7 @@ pub(in crate::org_relay) async fn current_party_zone(
         && (!require_zone || unknown_role_mode != crate::business_isolation::Mode::Off)
     {
         let (kind, dev_id) = crate::business_isolation::Lines::ref_identity(node_ref);
-        match roomler_core::business_authority::trial_device_role_evidence(
+        match meshharbor_core::business_authority::trial_device_role_evidence(
             &state.core,
             tenant,
             kind,
@@ -252,10 +252,10 @@ pub(in crate::org_relay) async fn current_party_zone(
         )
         .await
         {
-            roomler_core::business_authority::TrialServerEvidence::ObservedServer => {}
-            roomler_core::business_authority::TrialServerEvidence::ObservedClient
+            meshharbor_core::business_authority::TrialServerEvidence::ObservedServer => {}
+            meshharbor_core::business_authority::TrialServerEvidence::ObservedClient
                 if require_zone => {}
-            roomler_core::business_authority::TrialServerEvidence::Unknown => return Err(()),
+            meshharbor_core::business_authority::TrialServerEvidence::Unknown => return Err(()),
             _ if !require_zone || unknown_role_mode == crate::business_isolation::Mode::Enforce => {
                 return Ok(PartyZone::Invalid);
             }
@@ -279,7 +279,7 @@ pub(in crate::org_relay) async fn current_party_zone(
         (live.id.clone(), live.bound_at)
     };
     let Some(zone) =
-        roomler_core::business_authority::connection_zone(&state.core, &device, &connection)
+        meshharbor_core::business_authority::connection_zone(&state.core, &device, &connection)
     else {
         if bound_at.elapsed() < crate::business_isolation::JOIN_ZONE_WAIT {
             return Err(());
@@ -634,7 +634,7 @@ mod tests {
 
     #[test]
     fn confirmed_missing_is_invalid_but_decode_errors_are_retryable() {
-        use roomler_ai_services::dao::base::DaoError;
+        use meshharbor_services::dao::base::DaoError;
         assert_eq!(trial_lookup::<u32>(Ok(7)), Ok(Some(7)));
         assert_eq!(trial_lookup::<u32>(Err(DaoError::NotFound)), Ok(None));
         let bad_decode = bson::from_bson::<u32>(bson::Bson::String("invalid".into())).unwrap_err();

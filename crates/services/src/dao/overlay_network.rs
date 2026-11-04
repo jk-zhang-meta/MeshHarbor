@@ -3,7 +3,7 @@
 use bson::{DateTime, doc, oid::ObjectId};
 use mongodb::Database;
 use mongodb::options::ReturnDocument;
-use roomler_ai_remote_control::models::{BlockList, OverlayAclMode, OverlayNetwork, PeerRelayMode};
+use meshharbor_remote_control::models::{BlockList, OverlayAclMode, OverlayNetwork, PeerRelayMode};
 
 use super::base::{BaseDao, DaoError, DaoResult};
 use super::overlay_block::OverlayBlockDao;
@@ -163,7 +163,7 @@ impl OverlayNetworkDao {
     /// an address (`next_host > 1`, or anything in the free pool) must NOT be
     /// silently re-based under live nodes: changing `cidr` alone would leave
     /// every leased `overlay_ip` outside the new block, which
-    /// [`overlay_host`](roomler_ai_remote_control::models::overlay_host) then
+    /// [`overlay_host`](meshharbor_remote_control::models::overlay_host) then
     /// refuses to invert — the fleet would keep its old addresses while the
     /// server believed they were unleased. Migrating a populated network is
     /// the renumber endpoint's job: it rewrites the node rows and cycles the
@@ -270,7 +270,7 @@ impl OverlayNetworkDao {
         y: ObjectId,
         enabled: Option<bool>,
     ) -> DaoResult<bool> {
-        let (a, b) = roomler_ai_remote_control::models::ServerLink::ordered(x, y);
+        let (a, b) = meshharbor_remote_control::models::ServerLink::ordered(x, y);
         self.get_or_create(tenant_id).await?;
         self.base
             .update_one(

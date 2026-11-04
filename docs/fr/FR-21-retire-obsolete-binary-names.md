@@ -27,9 +27,9 @@ The current names are the ones the product actually ships:
 | retired | current | what it is |
 |---|---|---|
 | `roomler-agent` | **`roomlerd`** | the daemon on a controlled host |
-| `roomler-agent-tray` | **`roomler-desktop`** | the desktop/tray companion |
+| `roomler-agent-tray` | **`meshharbor-desktop`** | the desktop/tray companion |
 | `roomler-tunnel` | **`roomler`** | the CLI |
-| `roomler-installer`, `roomler-tunnel-installer` | **`roomler-setup`** | the unified wizard (legacy wizards deleted in P4c-2) |
+| `roomler-installer`, `roomler-tunnel-installer` | **`meshharbor-setup`** | the unified wizard (legacy wizards deleted in P4c-2) |
 
 ---
 
@@ -46,11 +46,11 @@ the field is still on the old segment, silently, at the next update:
 | anchor | file:line | what breaks if a sweep "fixes" it |
 |---|---|---|
 | `OLD_APP = "roomler-agent"` | `crates/agent-core/src/appdirs.rs:40` | a pre-rename host's enrolled `config.toml` is orphaned — the device drops off the mesh and re-enrolls as a stranger |
-| `LEGACY_SERVICE_NAME = "RoomlerAgentService"` | `agents/roomlerd/src/win_service/mod.rs:72` | the takeover install cannot find the running service to retire; two services, or none |
-| `LEGACY_TASK_NAME = "RoomlerAgent"` | `agents/roomlerd/src/service.rs:394` | the pre-rename scheduled task survives forever → two daemons |
-| legacy log prefix `roomler-agent.log` | `crates/agent-core/src/logging.rs:245,312,440`; `agents/roomlerd/src/logs_fetch.rs:56` | `rc:logs-fetch` returns "no log file" on an upgraded host that has not rolled yet |
-| `LEGACY_INSTALL_FOLDER_NAME = "roomler-agent"` | `agents/roomlerd/src/updater.rs:369` | the vacated install dir is never swept |
-| `%h/.config/roomler-agent` in `ReadWritePaths` | `agents/roomlerd/packaging/linux/roomler.service:44` | systemd denies the daemon its own legacy tree mid-migration |
+| `LEGACY_SERVICE_NAME = "RoomlerAgentService"` | `agents/meshharbord/src/win_service/mod.rs:72` | the takeover install cannot find the running service to retire; two services, or none |
+| `LEGACY_TASK_NAME = "RoomlerAgent"` | `agents/meshharbord/src/service.rs:394` | the pre-rename scheduled task survives forever → two daemons |
+| legacy log prefix `roomler-agent.log` | `crates/agent-core/src/logging.rs:245,312,440`; `agents/meshharbord/src/logs_fetch.rs:56` | `rc:logs-fetch` returns "no log file" on an upgraded host that has not rolled yet |
+| `LEGACY_INSTALL_FOLDER_NAME = "roomler-agent"` | `agents/meshharbord/src/updater.rs:369` | the vacated install dir is never swept |
+| `%h/.config/roomler-agent` in `ReadWritePaths` | `agents/meshharbord/packaging/linux/roomler.service:44` | systemd denies the daemon its own legacy tree mid-migration |
 | **the macOS `.app` bundle** — see §5, D5 | `packaging/macos/com.roomler.{agent,daemon}.plist`; `.github/workflows/ci.yml:393` | **TCC grants are voided** — every Mac silently loses Screen Recording + Accessibility until a human re-grants them |
 
 So the deliverable is not a diff. It is **a classifier plus a guard**: an inventory that assigns
@@ -78,11 +78,11 @@ union                      1765 hits / 233 files
 Concentration, for `roomler-agent` alone:
 
 ```
-61  agents/roomlerd       13  docs                6  .github/workflows
+61  agents/meshharbord       13  docs                6  .github/workflows
 11  crates/agent-core           8  scripts             5  crates/tunnel-core
- 7  ui/src                      6  agents/roomler-tunnel
- 4  agents/roomler-desktop   3  crates/tests        3  docs/fr
- 3  crates/roomler-setup-core   3  agents/roomler-setup
+ 7  ui/src                      6  agents/meshharbor-tunnel
+ 4  agents/meshharbor-desktop   3  crates/tests        3  docs/fr
+ 3  crates/meshharbor-setup-core   3  agents/meshharbor-setup
 ```
 
 `docs/` carries 121 hits across 17 files. `CLAUDE.md` carries the retired name on 17 lines —
@@ -95,7 +95,7 @@ cargo build -p roomler-agent --release --features full
 ```
 
 That block was **wrong** (fixed in P1): the emitted binary is `roomlerd`
-(`agents/roomlerd/Cargo.toml:18`), so the documented `run` command does not exist at the
+(`agents/meshharbord/Cargo.toml:18`), so the documented `run` command does not exist at the
 documented path. This is the cheapest possible demonstration that the residue costs something.
 
 ### Build-graph identity — **migrated in P2a**
@@ -108,11 +108,11 @@ correct before this FR; everything else moved in P2a.
 | package | `roomler-agent` | **`roomlerd`** |
 | lib | `roomler_agent` | **`roomlerd`** |
 | bin | `roomlerd` | unchanged — was already right |
-| package | `roomler-agent-tray` | **`roomler-desktop`** |
-| bin | `roomler-desktop` | unchanged — was already right |
-| package | `roomler-agent-core` | **`roomler-core`** — renamed again by FR-69 (2026-09-04) to **`roomler-node-core`**; `roomler-core` is now the SERVER core at `crates/core` |
-| lib | `roomler_agent_core` | **`roomler_core`** — now **`roomler_node_core`** (FR-69) |
-| directories | `agents/roomler-agent/`, `agents/roomler-agent-tray/` | **`agents/roomlerd/`, `agents/roomler-desktop/`** |
+| package | `roomler-agent-tray` | **`meshharbor-desktop`** |
+| bin | `meshharbor-desktop` | unchanged — was already right |
+| package | `roomler-agent-core` | **`meshharbor-core`** — renamed again by FR-69 (2026-09-04) to **`meshharbor-node-core`**; `meshharbor-core` is now the SERVER core at `crates/core` |
+| lib | `roomler_agent_core` | **`meshharbor_core`** — now **`meshharbor_node_core`** (FR-69) |
+| directories | `agents/meshharbor-agent/`, `agents/meshharbor-agent-tray/` | **`agents/meshharbord/`, `agents/meshharbor-desktop/`** |
 | Debian `Package:` | derived `roomler-agent` | **explicit `roomlerd`** + `provides`/`replaces` takeover |
 
 The `[[bin]]` comments state the intent plainly, and are the reason this half was left:
@@ -143,7 +143,7 @@ Anything a deployed host — or a deployed *operator runbook* — already depend
   people's shell history.
 - residual on-disk paths not yet behind `appdirs` (§5).
 - the HTTP `user_agent("roomler-agent/…")` sent by the updater
-  (`agents/roomlerd/src/updater.rs:717,800,1002`). It is **recorded** into device/session
+  (`agents/meshharbord/src/updater.rs:717,800,1002`). It is **recorded** into device/session
   telemetry at `crates/api/src/ws/handler.rs:69` — confirm nothing *dispatches* on it before
   changing it, because changing it also changes what historical rows mean.
 
@@ -244,8 +244,8 @@ P2 is wrong and stops.
 | **P0** ✅ | Classifier + advisory guard | `scripts/name-audit.sh`; CI job `name-audit` in `ci.yml` with `continue-on-error: true`; `RETIRED-NAME-ANCHOR:` markers on every Class-C site | the job is advisory — it cannot fail a PR |
 | **P1** ✅ | Everything FALSE today | the two clap program names; the `CLAUDE.md` Commands block; the copy-paste install steps in `docs/tunnel-install.md`; script/manifest comments | `git revert` — no runtime surface touched |
 | **P1b** | The bulk prose sweep | the ~1 700 remaining prose hits, *after* P2 has moved what they describe; historical appendices keep the retired name behind a block anchor | `git revert` |
-| **P2a** ✅ | Build-graph identity, agent side | packages `roomler-agent`→`roomlerd`, `roomler-agent-tray`→`roomler-desktop`, `roomler-agent-core`→`roomler-core`; libs `roomler_agent`→`roomlerd`, `roomler_agent_core`→`roomler_core`; dirs `agents/roomlerd`→`agents/roomlerd`, `agents/roomler-desktop`→`agents/roomler-desktop`; every `-p` selector in the workflows + `Dockerfile.agent-e2e` + `scripts/` | one atomic PR, `git revert`; gated on an **empty artifact-name diff** |
-| **P2b** | Build-graph identity, CLI side | package `roomler-tunnel`→`roomler-cli`, lib `roomler_tunnel`→`roomler_cli`, dir `agents/roomler-tunnel`→`agents/roomler-cli`; `release-tunnel.yml` | same; separate PR so `release-tunnel.yml` moves in a reviewable diff |
+| **P2a** ✅ | Build-graph identity, agent side | packages `roomler-agent`→`roomlerd`, `roomler-agent-tray`→`meshharbor-desktop`, `roomler-agent-core`→`meshharbor-core`; libs `roomler_agent`→`roomlerd`, `roomler_agent_core`→`meshharbor_core`; dirs `agents/meshharbord`→`agents/meshharbord`, `agents/meshharbor-desktop`→`agents/meshharbor-desktop`; every `-p` selector in the workflows + `Dockerfile.agent-e2e` + `scripts/` | one atomic PR, `git revert`; gated on an **empty artifact-name diff** |
+| **P2b** | Build-graph identity, CLI side | package `roomler-tunnel`→`meshharbor-cli`, lib `roomler_tunnel`→`meshharbor_cli`, dir `agents/meshharbor-tunnel`→`agents/meshharbor-cli`; `release-tunnel.yml` | same; separate PR so `release-tunnel.yml` moves in a reviewable diff |
 | **P3** | Env-var namespace | 107 vars `ROOMLER_AGENT_<REST>` → **`ROOMLERD_<REST>`** (D1), **dual-read**: new spelling wins, old spelling honoured and logged once at WARN | the old spelling never stops working; the WARN is the only new behaviour |
 | **P4** | Residual live paths | fix the §5 staging defect by calling a resolver instead of a constant (expose `machine_global_dir()` over LocalAPI); sweep the remaining hardcoded `roomler-agent` paths | every path keeps a new-then-old fallback, exactly like `appdirs` |
 | **P5** | Ratify + enforce | freeze list reviewed and justified in-tree; `name-audit --check` flips to **blocking**; a deliberately-red run proves it fails | revert the `continue-on-error` removal |
@@ -260,12 +260,12 @@ today*:
 
 ```
 command forms (`roomler-agent run`, `roomler-tunnel enroll`)   26   <- FALSE today
-path refs (`agents/roomlerd/...`)                         55   <- TRUE today
-cargo -p refs (`cargo build -p roomlerd`)                 12   <- TRUE today
+path refs (`agents/meshharbord/...`)                         55   <- TRUE today
+cargo -p refs (`cargo build -p meshharbord`)                 12   <- TRUE today
 ```
 
 Almost all prose correctly describes the *current* build graph: the package really is called
-`roomler-agent`, and the directory really is `agents/roomlerd/`. Rewriting it before P2
+`roomler-agent`, and the directory really is `agents/meshharbord/`. Rewriting it before P2
 would replace accurate documentation with a description of a state that does not exist yet.
 
 So P1 shrank to *everything that is false today*, and the bulk sweep moved to **P1b, after P2**
@@ -276,9 +276,9 @@ order and it is wrong, because in a rename the docs are only wrong *after* the c
 **What P1 actually found and fixed** — the most valuable single line in the FR so far:
 
 ```rust
--#[command(name = "roomlerd", version, about, long_about = None)]   // agents/roomlerd/src/main.rs:39
+-#[command(name = "roomlerd", version, about, long_about = None)]   // agents/meshharbord/src/main.rs:39
 +#[command(name = "roomlerd",      version, about, long_about = None)]
--#[command(name = "roomler-cli", ...)]                                // agents/roomler-cli/src/cli.rs:60
+-#[command(name = "meshharbor-cli", ...)]                                // agents/meshharbor-cli/src/cli.rs:60
 +#[command(name = "roomler",        ...)]
 ```
 
@@ -289,7 +289,7 @@ not by reading the diff: `Usage: roomlerd.exe` where it previously said `roomler
 ### 7b. Two hazards found while executing, both blocking their phase
 
 1. **P2a would silently rename the Debian package.** `[package.metadata.deb]` in
-   `agents/roomlerd/Cargo.toml:550` sets no `name`, so cargo-deb derives `Package:` from the
+   `agents/meshharbord/Cargo.toml:550` sets no `name`, so cargo-deb derives `Package:` from the
    crate name — and `docs/installation.md:240` documents `apt remove roomler-agent`, confirming
    it. Renaming the crate therefore makes dpkg see a *different* package: the old one stays
    installed beside the new one, or the upgrade simply does not happen. **P2a must either pin
@@ -316,12 +316,12 @@ not by reading the diff: `Usage: roomlerd.exe` where it previously said `roomler
 - [x] CI **fails** a PR that adds a new unclassified occurrence — proven by a deliberate red run
       linked from the issue, not by assertion.
 - [x] `CLAUDE.md`'s Commands block names binaries that exist (`roomlerd`, `roomler`,
-      `roomler-desktop`); copy-pasting any line works on a real host.
+      `meshharbor-desktop`); copy-pasting any line works on a real host.
 - [x] **P2 changed no artifact name** — checked against REAL published releases rather
       than a dispatch build, which is stronger: these are the files the fleet actually
       downloads. Asset name sets for `agent-v0.4.14` (pre-rename) and `agent-v0.4.23`,
       version-normalised: **25 names, zero removed, zero renamed**. The three additions
-      (`roomler-desktop-*.deb` + `.asc` + `.sha256`) are FR-27's companion package, not
+      (`meshharbor-desktop-*.deb` + `.asc` + `.sha256`) are FR-27's companion package, not
       this FR — and are the same asset that froze the pre-0.4.16 Linux fleet.
 - [x] A host that sets only a retired spelling still works, and a retired read logs a
       deprecation **once per variable per start**. Reworded from "all 107 variables
@@ -332,14 +332,14 @@ not by reading the diff: `Usage: roomlerd.exe` where it previously said `roomler
       prefix outside `env.rs` unless the line is marked `RAW-ENV-DELIBERATE`.
 - [x] The §5 staging path resolves correctly on **both** a fresh perMachine host and a pre-rename
       perMachine host — the SPA and `machine_global_dir()` now agree by construction.
-- [x] `cargo test -p roomler-ai-tests` green (floor: the current ~294 across 34 modules, 2 skips).
+- [x] `cargo test -p meshharbor-tests` green (floor: the current ~294 across 34 modules, 2 skips).
 - [x] `cd ui && bun run test:unit` green, including the `enrollCommands` retired-name lock.
 - [x] `cd ui && bun run e2e` — no new failures against `scripts/e2e-expected-failures.txt`.
       Run via the **nightly lane**, 2026-08-29 11:34Z on tag `v20260829-673a1686220f`:
       `OK (13 failed, 3 skipped, 154 passed)` — `OK` is the script's own verdict, meaning
       all 13 failures matched the 20-entry expected-failures list (the documented
       environmental set: conference specs, `rc-vp9-444`, email flows, the oauth-callback
-      case). The lane's working tree carries the rename (`agents/roomlerd` present), so it
+      case). The lane's working tree carries the rename (`agents/meshharbord` present), so it
       is a post-rename run. ⚠️ It predates #895 / #924 / #941 — the audit script, anchor
       comments and one Linux-only X11 accessor, none of which touch the web UI or the
       server behaviour this suite exercises.
@@ -366,7 +366,7 @@ Evidence for the ticked boxes, and what the unticked ones are still waiting on
 |---|---|
 | audit 0 unclassified | CI on `2568ecd1`: `OK unclassified=0 (<= 0) anchors=756 (>= 756) paths=0 (<= 0)`, job **Retired-name audit (FR-21): success** |
 | CI fails a new occurrence | mutation-checked: appending one unanchored mention gives `FAIL 1 unclassified occurrence(s); strict mode requires 0` |
-| Commands block names real binaries | every `-p`/`--bin` in the block resolved against `cargo metadata`: `roomler-ai-api`, `roomlerd`, `roomler`, `roomler-shim`, `roomler-desktop`, `roomler-ai-tests` all exist |
+| Commands block names real binaries | every `-p`/`--bin` in the block resolved against `cargo metadata`: `meshharbor-api`, `roomlerd`, `roomler`, `roomler-shim`, `meshharbor-desktop`, `meshharbor-tests` all exist |
 | integration tests | CI `integration-tests` on `2568ecd1`: **338 passed, 0 failed** (floor ~294) |
 | ui unit tests | CI **Frontend checks** green, running `bun run test:unit` + `vue-tsc` |
 | macOS TCC | P6 macOS row below — `Screen Recording + Accessibility both granted`, 30 s after the 0.4.15 release |
@@ -421,7 +421,7 @@ Both pre-rename shapes were exercised in that run, on the same host:
 
 | OS | install | what is verified |
 |---|---|---|
-| Windows | fresh perMachine MSI | service `Roomler`; `roomlerd.exe` + `roomler.exe` + `roomler-desktop.exe` present; config under `%PROGRAMDATA%\roomler\roomler`; staging affordance opens the real dir |
+| Windows | fresh perMachine MSI | service `Roomler`; `roomlerd.exe` + `roomler.exe` + `meshharbor-desktop.exe` present; config under `%PROGRAMDATA%\roomler\roomler`; staging affordance opens the real dir |
 | Windows | fresh perUser MSI | scheduled task `Roomler`; `%APPDATA%` tree on the new segment |
 | Windows | **upgrade from 0.4.x, pre-rename tree** | identity preserved; legacy service/task retired, not duplicated; legacy log files still fetchable |
 | Linux | fresh `.deb` | `roomlerd.service` active; `/etc/roomler/config.toml`; `roomler peers` OK |
@@ -453,13 +453,13 @@ breaking shell history and runbooks nobody has an inventory of.
 
 **D3 — what does `roomler-agent-core` become?** `roomlerd-core` reads as daemon-only, but the
 crate exists **because** the desktop companion deps it *without* the daemon (P3e lever E).
-**RESOLVED: `roomler-core`** (lib `roomler_core`) — it is the node's shared core, not the
+**RESOLVED: `meshharbor-core`** (lib `meshharbor_core`) — it is the node's shared core, not the
 daemon's. *Superseded 2026-09-04 by [FR-69](FR-69-modular-monolith.md): the crate is now
-**`roomler-node-core`** (lib `roomler_node_core`) — the same reasoning, spelled out — because
-FR-69 gives the name `roomler-core` to the server's core crate at `crates/core`. The
+**`meshharbor-node-core`** (lib `meshharbor_node_core`) — the same reasoning, spelled out — because
+FR-69 gives the name `meshharbor-core` to the server's core crate at `crates/core`. The
 pre-FR-21 name stays retired; the directory stays `crates/agent-core`.*
 
-**D4 — rename the directories, or only the package names?** Renaming `agents/roomlerd/`
+**D4 — rename the directories, or only the package names?** Renaming `agents/meshharbord/`
 costs `git log` legibility for the naive reader. **RESOLVED: rename, in a commit that changes
 *only* paths** so `git log --follow` and `git blame` track cleanly — never mixed with content
 edits.
@@ -476,8 +476,8 @@ the bundle without a human. The lock already exists on both sides —
 (`enrollCommands.spec.ts:143`). **RESOLVED: fold in** — same sweep, same guard — but as its own
 sub-phase **P2b**, landing after P2a (the agent-side packages), so each rename stays separately
 revertible and `release-tunnel.yml` moves in a diff a reviewer can hold in their head.
-Package `roomler-tunnel` → **`roomler-cli`** (lib `roomler_cli`): the emitted bin is already
-`roomler`, and the command surface lives in the lib (`roomler_cli::cli`, P3e lever D), so
+Package `roomler-tunnel` → **`meshharbor-cli`** (lib `meshharbor_cli`): the emitted bin is already
+`roomler`, and the command surface lives in the lib (`meshharbor_cli::cli`, P3e lever D), so
 "cli" names what the crate now is — the tunnel client is one of the things it drives, not the
 whole of it.
 
@@ -487,10 +487,10 @@ whole of it.
 
 - **Published GitHub release assets.** Already-published names are immutable. The updater's
   pickers key on extension + arch + the `-permachine-` infix, **not** on the `roomler-agent-`
-  prefix (`agents/roomlerd/src/updater.rs:414-484`) — verified, not assumed. This is why P2
+  prefix (`agents/meshharbord/src/updater.rs:414-484`) — verified, not assumed. This is why P2
   is low-risk and why no asset rename is forced.
 - The `ROOMLER__` **server** config prefix — a different product surface, not a retired name.
-- `roomler-setup`'s own naming, including the UAC lib-naming rule (`wizard_app` / `wizard_shared`
+- `meshharbor-setup`'s own naming, including the UAC lib-naming rule (`wizard_app` / `wizard_shared`
   dodge "install"/"setup"/"update"/"patch" deliberately).
 - `derp-relay`, `tcp-turn-conn`, `tunnel-core`, `localapi` — current names.
 - **Any behaviour change.** This FR moves names and adds a guard. If a phase needs a behaviour

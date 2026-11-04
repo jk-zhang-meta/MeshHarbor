@@ -1,5 +1,5 @@
 [package]
-name = "roomler-ai-mod-vault"
+name = "meshharbor-mod-vault"
 license = "AGPL-3.0-only"
 publish = false
 version.workspace = true
@@ -7,7 +7,7 @@ edition.workspace = true
 description = "FR-90 module: vault — IAM for secrets, the server side: secrets and their versions under envelope encryption (an age KEK), RRNs, and the audit of every decision. Never a value in an answer."
 
 [lib]
-name = "roomler_ai_mod_vault"
+name = "meshharbor_mod_vault"
 path = "src/lib.rs"
 
 # P3-1 depended on core alone. P3-3b adds the design's `vault → hive` edge: a
@@ -15,12 +15,12 @@ path = "src/lib.rs"
 # through hive's own DAO. `vault → fleet` (the Hub, to push a revocation)
 # arrives with P3-3c.
 [dependencies]
-roomler-core = { path = "../../core" }
-roomler-ai-config = { path = "../../config" }
-roomler-ai-db = { path = "../../db" }
-roomler-ai-services = { path = "../../services" }
-roomler-ai-remote-control = { path = "../../remote_control" }
-roomler-ai-mod-hive = { path = "../hive" }
+meshharbor-core = { path = "../../core" }
+meshharbor-config = { path = "../../config" }
+meshharbor-db = { path = "../../db" }
+meshharbor-services = { path = "../../services" }
+meshharbor-remote-control = { path = "../../remote_control" }
+meshharbor-mod-hive = { path = "../hive" }
 
 # Envelope encryption: a data key per version under XChaCha20-Poly1305, the
 # data key wrapped to the KEK, an `age` X25519 identity — so a wrapped key

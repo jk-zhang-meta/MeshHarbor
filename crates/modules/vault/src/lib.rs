@@ -39,9 +39,9 @@ use axum::{
     extract::FromRef,
     routing::{delete, get, post, put},
 };
-use roomler_ai_config::Settings;
-use roomler_ai_db::indexes::{IndexSet, index, index_ttl, index_unique, index_unique_partial};
-use roomler_core::{AgentSocketHooks, Capabilities, Core, Hooks, Module, TenantCtx};
+use meshharbor_config::Settings;
+use meshharbor_db::indexes::{IndexSet, index, index_ttl, index_unique, index_unique_partial};
+use meshharbor_core::{AgentSocketHooks, Capabilities, Core, Hooks, Module, TenantCtx};
 
 pub mod approval;
 pub mod connect;
@@ -76,16 +76,16 @@ pub struct VaultState {
     /// P3-3b — a lease is believed from the session record's device at its
     /// fence (hive's DAO, re-created: it is stateless), and sealed to the key
     /// on that device's row.
-    pub sessions: Arc<roomler_ai_mod_hive::dao::AgentSessionDao>,
-    pub agents: Arc<roomler_ai_services::dao::agent::AgentDao>,
+    pub sessions: Arc<meshharbor_mod_hive::dao::AgentSessionDao>,
+    pub agents: Arc<meshharbor_services::dao::agent::AgentDao>,
     /// P3-3b — each session's lease requests per minute on its device.
-    pub lease_limiter: Arc<roomler_core::rate_limit::RateLimiter>,
+    pub lease_limiter: Arc<meshharbor_core::rate_limit::RateLimiter>,
     /// P3-3c — this pod's devices' connections, and which hold live leases.
     pub revoker: Arc<revoke::Revoker>,
     /// P3-4d — what devices report doing with their leases, and each
     /// session's reports per minute on its device.
     pub activity: Arc<dao::VaultActivityDao>,
-    pub activity_limiter: Arc<roomler_core::rate_limit::RateLimiter>,
+    pub activity_limiter: Arc<meshharbor_core::rate_limit::RateLimiter>,
     /// P3-4e — the approvals policies asked for, and their answers.
     pub approvals: Arc<dao::VaultApprovalDao>,
     /// The organizations the vault serves (`vault.tenants`).
@@ -94,7 +94,7 @@ pub struct VaultState {
     /// opt-in: empty is none).
     pub people: Arc<scope::TenantScope>,
     /// P3-9-1 — each device's requests per minute for its owner.
-    pub person_limiter: Arc<roomler_core::rate_limit::RateLimiter>,
+    pub person_limiter: Arc<meshharbor_core::rate_limit::RateLimiter>,
     /// P3-6b — the providers a dynamic secret is leased for
     /// (`vault.providers`).
     pub providers: Arc<dynamic::ProviderScope>,
@@ -146,16 +146,16 @@ impl Module for VaultState {
             roles: Arc::new(dao::VaultRoleDao::new(db)),
             policies: Arc::new(dao::VaultPolicyDao::new(db)),
             leases: Arc::new(dao::VaultLeaseDao::new(db)),
-            sessions: Arc::new(roomler_ai_mod_hive::dao::AgentSessionDao::new(db)),
-            agents: Arc::new(roomler_ai_services::dao::agent::AgentDao::new(db)),
-            lease_limiter: Arc::new(roomler_core::rate_limit::RateLimiter::new()),
+            sessions: Arc::new(meshharbor_mod_hive::dao::AgentSessionDao::new(db)),
+            agents: Arc::new(meshharbor_services::dao::agent::AgentDao::new(db)),
+            lease_limiter: Arc::new(meshharbor_core::rate_limit::RateLimiter::new()),
             revoker: Arc::new(revoke::Revoker::default()),
             activity: Arc::new(dao::VaultActivityDao::new(db)),
-            activity_limiter: Arc::new(roomler_core::rate_limit::RateLimiter::new()),
+            activity_limiter: Arc::new(meshharbor_core::rate_limit::RateLimiter::new()),
             approvals: Arc::new(dao::VaultApprovalDao::new(db)),
             scope: Arc::new(scope),
             people: Arc::new(people),
-            person_limiter: Arc::new(roomler_core::rate_limit::RateLimiter::new()),
+            person_limiter: Arc::new(meshharbor_core::rate_limit::RateLimiter::new()),
             providers: Arc::new(providers),
             kek,
             core,

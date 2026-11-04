@@ -3,7 +3,7 @@
 //! FR-39 — the public subscribe / confirm / unsubscribe routes, against a real
 //! server and a real MongoDB.
 //!
-//! The unit tests in `roomler_ai_mod_saas::subscribe` pin the validators. These pin the
+//! The unit tests in `meshharbor_mod_saas::subscribe` pin the validators. These pin the
 //! things a pure function cannot reach, and the first is the whole reason the
 //! feature is shaped the way it is:
 //!

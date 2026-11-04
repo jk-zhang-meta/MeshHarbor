@@ -45,15 +45,15 @@ fn tuple_remote_ip(t: &TransportTuple) -> Option<IpAddr> {
 /// Every configured TURN hostname (default region + workers + regional
 /// PoPs) — the classification set is the UNION across regions, since a
 /// conference client can be granted any of them.
-fn turn_hosts(map: &roomler_ai_remote_control::turn_creds::TurnMap) -> Vec<(String, u16)> {
+fn turn_hosts(map: &meshharbor_remote_control::turn_creds::TurnMap) -> Vec<(String, u16)> {
     let mut out = Vec::new();
-    let mut push_cfg = |cfg: &roomler_ai_remote_control::turn_creds::TurnConfig| {
+    let mut push_cfg = |cfg: &meshharbor_remote_control::turn_creds::TurnConfig| {
         for url in cfg
             .urls
             .iter()
             .chain(cfg.workers.iter().flat_map(|w| w.iter()))
         {
-            if let Some(hp) = roomler_ai_remote_control::turn_url::host_port(url) {
+            if let Some(hp) = meshharbor_remote_control::turn_url::host_port(url) {
                 out.push(hp);
             }
         }
@@ -182,9 +182,9 @@ pub async fn run_media_sample_once(state: &ConferenceState, turn_ips: &HashSet<I
             0.0
         };
 
-        let bucket = roomler_ai_services::dao::stats::bucket_start(
+        let bucket = meshharbor_services::dao::stats::bucket_start(
             unix,
-            roomler_ai_services::dao::stats::CALL_BUCKET_SECS,
+            meshharbor_services::dao::stats::CALL_BUCKET_SECS,
         );
         let mut set = doc! {
             "tenant_id": tenant_id,
@@ -203,7 +203,7 @@ pub async fn run_media_sample_once(state: &ConferenceState, turn_ips: &HashSet<I
         let id = format!("{}:{}", room_id.to_hex(), bucket);
         if let Err(e) = state
             .db
-            .collection::<Document>(roomler_ai_services::dao::stats::STATS_CALL)
+            .collection::<Document>(meshharbor_services::dao::stats::STATS_CALL)
             .update_one(doc! { "_id": &id }, doc! { "$set": set })
             .upsert(true)
             .await

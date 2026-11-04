@@ -292,7 +292,7 @@ export interface Agent {
   machine_id: string
   os: AgentOs
   agent_version: string
-  /** FR-27 — the `roomler-desktop` version installed on the host, reported on
+  /** FR-27 — the `meshharbor-desktop` version installed on the host, reported on
    *  the heartbeat. Absent means one of three things and the UI must not
    *  flatten them: a pre-FR-27 agent, no companion installed, or a probe that
    *  could not read one. The daemon and the companion update by different

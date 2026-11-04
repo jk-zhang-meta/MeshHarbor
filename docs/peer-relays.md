@@ -109,7 +109,7 @@ survives a compromised server. Someone with local access sets it.
 secondary org's admin must not be able to mint sessions onto the device owner's
 listener. The server refuses (`SecondaryOrg`), and the device independently drops all
 three relay frames when they arrive on a secondary org's socket
-([`agents/roomlerd/src/overlay.rs:1026`](../agents/roomlerd/src/overlay.rs#L1026)).
+([`agents/meshharbord/src/overlay.rs:1026`](../agents/meshharbord/src/overlay.rs#L1026)).
 
 ## `auto` — a central Server role inside one business zone (MeshHarbor)
 
@@ -384,7 +384,7 @@ socket or a clock:
 ⚠️ **`roomler status` shows the relay's address and its PROBE counters only.** The
 forwarding and drop counters (`forwarded`, `bound`, and one per refusal reason, such as
 `drop_unbound_source` or `drop_bad_cookie`) are summarised into the daemon log every
-300 s ([`relay_server.rs:143`](../agents/roomlerd/src/relay_server.rs#L143)). A relay
+300 s ([`relay_server.rs:143`](../agents/meshharbord/src/relay_server.rs#L143)). A relay
 forwarding perfectly well reads `probes_answered=0`, and the first field run
 misread that. A nonzero `drop_unbound_source` means someone is *trying*.
 
@@ -547,7 +547,7 @@ The gap between 0.75× and 1.10× is the hysteresis: a pair does not flap betwee
 paths of about the same RTT.
 
 **Lab, 2026-10-27 (houston, `ptlab`).** The lab used real `roomlerd`,
-`roomler-ai-api`, mongod and redis, each in its own network namespace. netem added
+`meshharbor-api`, mongod and redis, each in its own network namespace. netem added
 60 ms each way to m1↔m2 only, and the relay was next to both. The pair went direct
 first (public tier). Its trial was requested 0.3 s later. 8 s later it was ready
 (direct 120.2 ms, relay 0.26 ms), and both ends committed in the same millisecond.
@@ -658,7 +658,7 @@ the capacity gained: the relay was in France and the members in Austria and Germ
    true` with the enrolled config, so the first start already serves. On a device that is
    already enrolled, set `relay_server_enabled = true` and restart. `--relay-server`
    applies to the PRIMARY enrollment only: the listener is host-global
-   ([`org_join.rs`](../agents/roomlerd/src/org_join.rs), `apply_relay_server_flag`).
+   ([`org_join.rs`](../agents/meshharbord/src/org_join.rs), `apply_relay_server_flag`).
 3. The org switch: `{"mode": "auto"}`. A `zone_denied` row means a party had no zone, or
    the three were not in one zone. The fleet's agents must reach the server through the
    configured `business_trusted_proxy_cidrs` chain, or no connection has a zone at all.
@@ -694,7 +694,7 @@ the capacity gained: the relay was in France and the members in Austria and Germ
 | wire framing and shape rules | [`orgrelay/wire.rs`](../crates/tunnel-core/src/overlay/orgrelay/wire.rs) |
 | the authenticated bind | [`orgrelay/bind.rs`](../crates/tunnel-core/src/overlay/orgrelay/bind.rs) |
 | the relay's session table (pure) | [`orgrelay/session.rs`](../crates/tunnel-core/src/overlay/orgrelay/session.rs) |
-| the relay server + counters | [`orgrelay/server.rs`](../crates/tunnel-core/src/overlay/orgrelay/server.rs), [`agents/roomlerd/src/relay_server.rs`](../agents/roomlerd/src/relay_server.rs) |
+| the relay server + counters | [`orgrelay/server.rs`](../crates/tunnel-core/src/overlay/orgrelay/server.rs), [`agents/meshharbord/src/relay_server.rs`](../agents/meshharbord/src/relay_server.rs) |
 | the member: bind + `OrgRelayConn` | [`orgrelay/client.rs`](../crates/tunnel-core/src/overlay/orgrelay/client.rs) |
 | the member's coordinator | [`relay_link.rs`](../crates/tunnel-core/src/overlay/relay_link.rs) — `relay_strategy` `:1052`, `org_request_bind` `:1946`, `commit_org_bind` `:1972` |
 | loss: the member's measure and report | [`runtime/rx_loss.rs`](../crates/tunnel-core/src/overlay/runtime/rx_loss.rs) (windows, `take_reports` `:154`), [`relay_link.rs:1446`](../crates/tunnel-core/src/overlay/relay_link.rs#L1446) `report_org_loss` |
@@ -703,7 +703,7 @@ the capacity gained: the relay was in France and the members in Austria and Germ
 | `auto`: the implicit grant and its revocations | [`org_relay.rs`](../crates/modules/network/src/org_relay.rs) — candidates `:504`, the zone check `:631`, `revoke_implicit_for_agent` `:1530` |
 | `auto`: TestApp tests | [`crates/tests/src/peer_relay_auto_tests.rs`](../crates/tests/src/peer_relay_auto_tests.rs) |
 | the cross-border line: plan, mint, push, audit | [`org_relay.rs`](../crates/modules/network/src/org_relay.rs) — `LineLeg` `:147`, `plan_line` `:1116`, `maybe_mint_line` `:1198`, `mint_line` `:1238`, `push_member` `:2063` |
-| the relays' two-leg bridge | [`orgrelay/backbone.rs:223`](../crates/tunnel-core/src/overlay/orgrelay/backbone.rs#L223) `start_authorized_bridge`, [`relay_server.rs:338`](../agents/roomlerd/src/relay_server.rs#L338) `install_bridge_from_wire` |
+| the relays' two-leg bridge | [`orgrelay/backbone.rs:223`](../crates/tunnel-core/src/overlay/orgrelay/backbone.rs#L223) `start_authorized_bridge`, [`relay_server.rs:338`](../agents/meshharbord/src/relay_server.rs#L338) `install_bridge_from_wire` |
 | pod-offload metric | `derp_bytes_relayed_total`, [`crates/api/src/cluster/metrics.rs:62`](../crates/api/src/cluster/metrics.rs#L62) |
 
 ## Not built

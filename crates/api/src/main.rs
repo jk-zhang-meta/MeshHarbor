@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 G ROX EOOD
-use roomler_ai_api::{build_router, state, state::AppState};
-use roomler_ai_config::{DEFAULT_FRONTEND_URL, Settings};
-use roomler_ai_db::{connect, indexes::ensure_indexes};
+use meshharbor_api::{build_router, state, state::AppState};
+use meshharbor_config::{DEFAULT_FRONTEND_URL, Settings};
+use meshharbor_db::{connect, indexes::ensure_indexes};
 use tracing::{error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -19,7 +19,7 @@ async fn main() -> anyhow::Result<()> {
     // stopped draining freeze every tokio worker at once (two, under the pod's
     // CPU limit), so `/health` died with the log. Now an overflow drops lines,
     // counted and reported below. The guard lives as long as `main`.
-    let (log_writer, _log_guard) = roomler_ai_api::logging::nonblocking(std::io::stdout());
+    let (log_writer, _log_guard) = meshharbor_api::logging::nonblocking(std::io::stdout());
     let dropped_log_lines = log_writer.error_counter();
     tracing_subscriber::registry()
         // ⚠️ The bare `warn` at the front is load-bearing, and it is the whole
@@ -28,15 +28,15 @@ async fn main() -> anyhow::Result<()> {
         // silent at every level, with nothing anywhere saying so.
         //
         // That is not hypothetical. FR-69 moved the pillars out of
-        // `roomler_ai_api` into `roomler-ai-mod-*` + `roomler-core`, and this
+        // `meshharbor_api` into `roomler-ai-mod-*` + `meshharbor-core`, and this
         // default was not moved with them — so in prod, where `RUST_LOG` is
         // unset (checked: absent from the deployment env AND the
         // `roomler2-config` configmap, `printenv RUST_LOG` in the pod says
         // UNSET), **425 of the server's 522 log statements were dropped**:
         // the whole overlay engine, the DERP cluster, the ephemeral reaper,
         // the org-relay mint, the agent socket, fleet RPC, the Hub. Measured
-        // 2026-09-07: zero `roomler_ai_mod_network` lines in three hours while
-        // `roomler_ai_api` and `tower_http` logged normally, on a pod that was
+        // 2026-09-07: zero `meshharbor_mod_network` lines in three hours while
+        // `meshharbor_api` and `tower_http` logged normally, on a pod that was
         // demonstrably reaping devices at the time.
         //
         // It surfaced because a reap left no trace: the reaper's own comment
@@ -47,17 +47,17 @@ async fn main() -> anyhow::Result<()> {
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
                 concat!(
                     "warn",
-                    ",roomler_ai_api=debug",
-                    ",roomler_ai_services=debug",
-                    ",roomler_ai_db=debug",
-                    ",roomler_core=debug",
-                    ",roomler_ai_mod_fleet=debug",
-                    ",roomler_ai_mod_network=debug",
-                    ",roomler_ai_mod_remote=debug",
-                    ",roomler_ai_mod_chat=debug",
-                    ",roomler_ai_mod_conference=debug",
-                    ",roomler_ai_mod_saas=debug",
-                    ",roomler_ai_remote_control=debug",
+                    ",meshharbor_api=debug",
+                    ",meshharbor_services=debug",
+                    ",meshharbor_db=debug",
+                    ",meshharbor_core=debug",
+                    ",meshharbor_mod_fleet=debug",
+                    ",meshharbor_mod_network=debug",
+                    ",meshharbor_mod_remote=debug",
+                    ",meshharbor_mod_chat=debug",
+                    ",meshharbor_mod_conference=debug",
+                    ",meshharbor_mod_saas=debug",
+                    ",meshharbor_remote_control=debug",
                     ",tunnel_core=debug",
                     ",tower_http=debug",
                 )
@@ -66,7 +66,7 @@ async fn main() -> anyhow::Result<()> {
         )
         .with(tracing_subscriber::fmt::layer().with_writer(log_writer))
         .init();
-    roomler_ai_api::logging::report_dropped_lines(dropped_log_lines);
+    meshharbor_api::logging::report_dropped_lines(dropped_log_lines);
 
     // Load config
     let settings = Settings::load()?;
@@ -81,9 +81,9 @@ async fn main() -> anyhow::Result<()> {
     if stall_watchdog {
         let dump_dir = std::path::PathBuf::from(&settings.diag.stall_dump_dir);
         let threshold = std::time::Duration::from_secs(settings.diag.stall_threshold_secs.max(2));
-        match roomler_ai_api::stall_watchdog::start(
+        match meshharbor_api::stall_watchdog::start(
             &tokio::runtime::Handle::current(),
-            roomler_ai_api::stall_watchdog::Config {
+            meshharbor_api::stall_watchdog::Config {
                 threshold,
                 dump_dir: dump_dir.clone(),
                 echo_stderr: true,
@@ -104,7 +104,7 @@ async fn main() -> anyhow::Result<()> {
         let _ = std::thread::Builder::new()
             .name("stall-report".into())
             .spawn(move || {
-                roomler_ai_api::stall_watchdog::report_previous_dumps(&dump_dir);
+                meshharbor_api::stall_watchdog::report_previous_dumps(&dump_dir);
             });
     }
 
@@ -216,7 +216,7 @@ async fn main() -> anyhow::Result<()> {
     // FR-69 — the module crates' index sets, after the core plan above. The
     // `[modules]` switches decide which crates initialised; a switched-off
     // module contributes nothing here either.
-    roomler_ai_db::indexes::apply_index_sets(&db, &app_state.modules.index_sets()).await?;
+    meshharbor_db::indexes::apply_index_sets(&db, &app_state.modules.index_sets()).await?;
 
     // S6 — leader-gate the startup maintenance below. With two pods, a
     // restarting pod must NOT reset `in_progress` calls that are live on
@@ -294,7 +294,7 @@ async fn main() -> anyhow::Result<()> {
                                 rows = g.rows,
                                 stored = format!("{:#x}", g.stored),
                                 gained = format!("{:#x}", g.gained()),
-                                granted = ?roomler_ai_db::models::role::permissions::names(g.gained()),
+                                granted = ?meshharbor_db::models::role::permissions::names(g.gained()),
                                 "managed role reconciled to its definition"
                             );
                         }

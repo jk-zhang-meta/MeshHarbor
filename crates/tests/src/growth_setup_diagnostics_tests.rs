@@ -2,7 +2,7 @@
 // Copyright (C) 2026 G ROX EOOD
 //! FR-102 P3b — the setup wizard's opt-in diagnostics, against a real
 //! server (spec §3e item 5, D4; AC12's server half — the wizard half is
-//! `agents/roomler-setup/src/diagnostics.rs`'s unit tests and the vmtest
+//! `agents/meshharbor-setup/src/diagnostics.rs`'s unit tests and the vmtest
 //! wizard cell with a capture).
 //!
 //! * a valid record is stored with exactly its seven fields plus the
@@ -23,16 +23,16 @@
 
 use bson::{DateTime, Document, doc};
 use chrono::NaiveDate;
-use roomler_ai_api::growth::{digest, org_daily};
-use roomler_ai_remote_control::setup_diagnostics::{MAX_BODY_BYTES, SetupDiagnostic};
-use roomler_ai_services::dao::setup_diagnostics::{MAX_ROWS_PER_RUN, SETUP_DIAGNOSTICS};
-use roomler_core::growth::ExclusionSet;
+use meshharbor_api::growth::{digest, org_daily};
+use meshharbor_remote_control::setup_diagnostics::{MAX_BODY_BYTES, SetupDiagnostic};
+use meshharbor_services::dao::setup_diagnostics::{MAX_ROWS_PER_RUN, SETUP_DIAGNOSTICS};
+use meshharbor_core::growth::ExclusionSet;
 use serde_json::{Value, json};
 
 use crate::fixtures::test_app::TestApp;
 
 const ROUTE: &str = "/api/setup/diagnostics";
-const UA: &str = "roomler-setup/0.4.138";
+const UA: &str = "meshharbor-setup/0.4.138";
 const RUN: &str = "0123456789abcdef0123456789abcdef";
 
 fn record(step: &str, outcome: &str, error_code: Option<&str>) -> SetupDiagnostic {
@@ -185,7 +185,7 @@ async fn a_valid_record_is_stored_with_exactly_its_fields_and_nothing_about_the_
         for s in strings {
             assert!(!s.contains("127.0.0.1"), "an address reached the row: {s}");
             assert!(
-                !s.contains("roomler-setup/"),
+                !s.contains("meshharbor-setup/"),
                 "the User-Agent reached the row: {s}"
             );
             assert!(!s.contains("Mozilla"), "{s}");

@@ -38,7 +38,7 @@ capture path and therefore applies to **every Linux desktop host in the fleet**.
 `GetImage` on every call and has no "nothing changed" signal — unlike Windows
 DXGI Desktop Duplication, which returns `WouldBlock` when the desktop is
 unchanged. Two consequences in
-[`capture/scrap_backend.rs`](../../agents/roomlerd/src/capture/scrap_backend.rs):
+[`capture/scrap_backend.rs`](../../agents/meshharbord/src/capture/scrap_backend.rs):
 
 - `scrap_backend.rs:377` — the `WouldBlock` arm is the "no new frame" path.
   **On Linux it is unreachable**: XShm always yields a full buffer.

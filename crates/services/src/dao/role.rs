@@ -2,7 +2,7 @@
 // Copyright (C) 2026 G ROX EOOD
 use bson::{DateTime, doc, oid::ObjectId};
 use mongodb::Database;
-use roomler_ai_db::models::Role;
+use meshharbor_db::models::Role;
 
 use super::base::{BaseDao, DaoError, DaoResult};
 
@@ -117,5 +117,5 @@ impl RoleDao {
     // copy that actually ran (`TenantDao::create_default_roles`). It had no
     // callers, so the divergence was invisible and would have shipped a
     // different org the day someone wired it up. The definitions now live
-    // once, in `roomler_ai_db::models::role::MANAGED_ROLES`.
+    // once, in `meshharbor_db::models::role::MANAGED_ROLES`.
 }

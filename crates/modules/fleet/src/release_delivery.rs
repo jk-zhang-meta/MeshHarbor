@@ -13,7 +13,7 @@ use axum::{
 };
 use futures::{StreamExt, stream};
 use reqwest::Url;
-use roomler_core::ApiError;
+use meshharbor_core::ApiError;
 use std::time::Duration;
 
 fn bad() -> ApiError {
@@ -207,7 +207,7 @@ pub(crate) async fn stream_asset(
         ));
     }
     let client = reqwest::Client::builder()
-        .user_agent(concat!("roomler-ai-api/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("meshharbor-api/", env!("CARGO_PKG_VERSION")))
         .timeout(Duration::from_secs(60))
         .redirect(reqwest::redirect::Policy::custom(|attempt| {
             if redirect_allowed(attempt.url().as_str(), attempt.previous().len()) {

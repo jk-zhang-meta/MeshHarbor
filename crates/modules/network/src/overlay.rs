@@ -35,8 +35,8 @@ use std::time::{Duration, Instant};
 
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use bson::{DateTime, oid::ObjectId};
-use roomler_ai_remote_control::models::{OverlayAclMode, OverlayPolicy};
-use roomler_ai_remote_control::{
+use meshharbor_remote_control::models::{OverlayAclMode, OverlayPolicy};
+use meshharbor_remote_control::{
     models::{AgentStatus, NodeRef, OverlayNode, PeerRelayMode},
     signaling::{
         ClientMsg, IceServer, NetmapPeer, OverlayJoinRefusal, OverlayNetworkInfo,
@@ -45,15 +45,15 @@ use roomler_ai_remote_control::{
     turn_creds,
     worker_pick::pick_worker_fnv1a,
 };
-use roomler_ai_services::dao::base::DaoError;
-use roomler_ai_services::dao::overlay_node::NewOverlayNode;
+use meshharbor_services::dao::base::DaoError;
+use meshharbor_services::dao::overlay_node::NewOverlayNode;
 use tokio::net::lookup_host;
 use tracing::{debug, warn};
 use tunnel_core::policy::{
     OverlayPeerRef, OverlaySource, evaluate_overlay, evaluate_overlay_ingress,
 };
 
-use roomler_core::turn::build_turn_config;
+use meshharbor_core::turn::build_turn_config;
 
 use crate::NetworkState;
 use crate::business_isolation::{self, Zones};
@@ -882,7 +882,7 @@ async fn handle_overlay_join(
     // Stamped on every join, not only after a rotation, so the dashboard can
     // always show the key. Best-effort, off the netmap path.
     if let NodeIdentity::Agent(agent_id) = ident {
-        let identity = roomler_ai_remote_control::models::OverlayIdentity {
+        let identity = meshharbor_remote_control::models::OverlayIdentity {
             public_key: self_node.wg_public_key.clone(),
             key_epoch: self_node.key_epoch,
             joined_at: bson::DateTime::now(),
@@ -1207,7 +1207,7 @@ async fn try_complete_join_netmap(
 ) -> bool {
     let self_node = match state.overlay_nodes.base.find_by_id(self_id).await {
         Ok(n) => n,
-        Err(roomler_ai_services::dao::base::DaoError::NotFound) => return true,
+        Err(meshharbor_services::dao::base::DaoError::NotFound) => return true,
         Err(_) => return false,
     };
     if self_node.deleted_at.is_some() || !matches!(self_node.status, AgentStatus::Online) {
@@ -1440,7 +1440,7 @@ async fn handle_overlay_srflx(
 async fn handle_overlay_netcheck(
     state: &NetworkState,
     ident: NodeIdentity,
-    caps: roomler_ai_remote_control::signaling::CapVectorWire,
+    caps: meshharbor_remote_control::signaling::CapVectorWire,
 ) {
     let Some(self_node) = current_node(state, ident).await else {
         debug!(?ident, "overlay.netcheck before join; ignoring");
@@ -1474,7 +1474,7 @@ async fn handle_overlay_netcheck(
 /// Phase B — the freshness gate: a vector older than 3× the measurement
 /// cadence (20 min) is surfaced as ABSENT, so a stalled prober can never
 /// stay fleet-authoritative (consumers then fall back to presence rules).
-fn fresh_caps(node: &OverlayNode) -> Option<roomler_ai_remote_control::signaling::CapVectorWire> {
+fn fresh_caps(node: &OverlayNode) -> Option<meshharbor_remote_control::signaling::CapVectorWire> {
     const CAPS_FRESH_MS: i64 = 60 * 60 * 1000; // 3 × the 20-min cadence
     let at = node.caps_measured_at?;
     let age_ms = bson::DateTime::now().timestamp_millis() - at.timestamp_millis();
@@ -1606,8 +1606,8 @@ async fn handle_org_relay_discover(
     ident: NodeIdentity,
     peer_node_id: ObjectId,
     request_id: u64,
-    cursor: Option<roomler_ai_remote_control::signaling::OrgRelayDiscoveryCursorWire>,
-    scan: Option<roomler_ai_remote_control::signaling::OrgRelayDiscoveryScanWire>,
+    cursor: Option<meshharbor_remote_control::signaling::OrgRelayDiscoveryCursorWire>,
+    scan: Option<meshharbor_remote_control::signaling::OrgRelayDiscoveryScanWire>,
 ) {
     let Some(requester) = current_node(state, ident).await else {
         return;
@@ -2618,7 +2618,7 @@ pub async fn release_overlay_node(
     // client is an idempotent no-op, and a pod with no sockets fans to
     // nobody. Joins never need this: an upsert rides the joiner's own
     // tenant-affine WS.
-    roomler_ai_mod_fleet::ctrl::publish_rc_ctrl(
+    meshharbor_mod_fleet::ctrl::publish_rc_ctrl(
         state,
         "overlay_removes",
         serde_json::json!({
@@ -2857,7 +2857,7 @@ pub async fn publish_and_refan_tenant_authority_for_agent(
     {
         obj.insert("agent_id".to_string(), serde_json::json!(aid.to_hex()));
     }
-    roomler_ai_mod_fleet::ctrl::publish_rc_ctrl(state, "overlay_policy_sync", payload).await;
+    meshharbor_mod_fleet::ctrl::publish_rc_ctrl(state, "overlay_policy_sync", payload).await;
     auth_revision
 }
 
@@ -3399,7 +3399,7 @@ pub async fn enforce_node_key_revocation_or_expiry(state: &NetworkState, node: &
         )
         .await;
     }
-    roomler_ai_mod_fleet::ctrl::publish_rc_ctrl(
+    meshharbor_mod_fleet::ctrl::publish_rc_ctrl(
         state,
         "overlay_removes",
         serde_json::json!({
@@ -3434,11 +3434,11 @@ pub async fn order_auto_key_rotate_if_needed(
     };
     let now = bson::DateTime::now();
     if let Some(req) = &agent.key_rotation
-        && !roomler_ai_remote_control::models::order_is_satisfied(
+        && !meshharbor_remote_control::models::order_is_satisfied(
             req,
             agent.overlay_identity.as_ref(),
         )
-        && !roomler_ai_remote_control::models::should_redeliver(
+        && !meshharbor_remote_control::models::should_redeliver(
             req,
             agent.key_rotation_report.as_ref(),
             now,
@@ -3447,7 +3447,7 @@ pub async fn order_auto_key_rotate_if_needed(
         return;
     }
     let request_id = ObjectId::new().to_hex();
-    let request = roomler_ai_remote_control::models::KeyRotationRequest {
+    let request = meshharbor_remote_control::models::KeyRotationRequest {
         request_id: request_id.clone(),
         requested_by: agent.owner_user_id,
         requested_at: now,
@@ -3461,7 +3461,7 @@ pub async fn order_auto_key_rotate_if_needed(
         .await;
     let supports_rotation = agent
         .capabilities
-        .has_rpc(roomler_ai_remote_control::models::RpcCap::KeyRotate);
+        .has_rpc(meshharbor_remote_control::models::RpcCap::KeyRotate);
     let delivered = supports_rotation
         && state
             .fleet
@@ -3607,7 +3607,7 @@ async fn unique_node_name(
 
 /// P9 — how stale a backing agent's heartbeat may be before its overlay row
 /// ships `reachable = false`. Heartbeats refresh `agents.last_seen_at` every
-/// ~30 s ([`roomler_ai_services::dao::AgentDao::touch_heartbeat`]); 120 s =
+/// ~30 s ([`meshharbor_services::dao::AgentDao::touch_heartbeat`]); 120 s =
 /// four missed beats, tolerant of a transient stall but killing day-old
 /// ghosts on the first netmap that carries them.
 const NODE_STALE_AFTER_MS: i64 = 120_000;
@@ -4521,8 +4521,8 @@ async fn overlay_ice_servers_with_ttl(
         needs_tls,
     );
     if region.is_some() {
-        roomler_core::cluster::metrics::bump(
-            &roomler_core::cluster::metrics::RELAY_REGION_PICK_TOTAL,
+        meshharbor_core::cluster::metrics::bump(
+            &meshharbor_core::cluster::metrics::RELAY_REGION_PICK_TOTAL,
         );
     }
     let Some(turn_cfg) = state.turn_map.cfg_for(region.as_deref()) else {
@@ -4532,7 +4532,7 @@ async fn overlay_ice_servers_with_ttl(
     let Some((host, port)) = turn_cfg
         .urls
         .first()
-        .and_then(|u| roomler_ai_remote_control::turn_url::host_port(u))
+        .and_then(|u| meshharbor_remote_control::turn_url::host_port(u))
     else {
         return servers;
     };
@@ -4691,8 +4691,8 @@ type PairRegions = std::collections::HashMap<String, (Option<String>, Instant)>;
 static PAIR_REGION_CACHE: Mutex<Option<PairRegions>> = Mutex::new(None);
 
 fn sticky_pair_region(
-    map: &roomler_ai_remote_control::turn_creds::TurnMap,
-    load: &roomler_ai_remote_control::turn_creds::RelayLoadMap,
+    map: &meshharbor_remote_control::turn_creds::TurnMap,
+    load: &meshharbor_remote_control::turn_creds::RelayLoadMap,
     pair_key: &str,
     home_a: Option<&str>,
     home_b: Option<&str>,
@@ -4734,7 +4734,7 @@ mod tests {
     use super::*;
 
     // `overlay_ip` and its inverse `overlay_host` now live in
-    // `roomler_ai_remote_control::models` (the free pool needs the inverse, and
+    // `meshharbor_remote_control::models` (the free pool needs the inverse, and
     // the model crate is shared with `services` and the agent). Their tests —
     // including the round-trip that pins the two together — moved with them.
 
@@ -4850,7 +4850,7 @@ mod tests {
     /// device withdrew must not keep the gateway visible.
     #[test]
     fn an_enforcing_acl_grants_only_what_the_peer_still_offers() {
-        use roomler_ai_remote_control::models::{
+        use meshharbor_remote_control::models::{
             OverlayRule, OverlaySelector, OverlayTarget, PortRange, ProtocolKind,
         };
         let now = bson::DateTime::now();
@@ -5156,7 +5156,7 @@ mod tests {
         );
         // One-sided MEASURED flip: a's fresh vector says the band is
         // dropped while b's says it works — still exactly one dialer.
-        use roomler_ai_remote_control::signaling::CapVectorWire;
+        use meshharbor_remote_control::signaling::CapVectorWire;
         a.srflx_endpoints = vec!["1.2.3.4:5".into()];
         a.caps = Some(CapVectorWire {
             stun_udp: true,
@@ -5186,7 +5186,7 @@ mod tests {
     /// keeps the legacy rules verbatim.
     #[test]
     fn server_verdict_measured_branch_and_freshness() {
-        use roomler_ai_remote_control::signaling::CapVectorWire;
+        use meshharbor_remote_control::signaling::CapVectorWire;
         let caps = |band: Option<bool>| {
             Some(CapVectorWire {
                 stun_udp: true,
@@ -5309,8 +5309,8 @@ mod tests {
     fn overlay_stun_test_settings(
         url: Option<&str>,
         secret: bool,
-    ) -> roomler_ai_config::TurnSettings {
-        roomler_ai_config::TurnSettings {
+    ) -> meshharbor_config::TurnSettings {
+        meshharbor_config::TurnSettings {
             url: url.map(str::to_owned),
             worker_urls: None,
             username: None,
@@ -5321,7 +5321,7 @@ mod tests {
         }
     }
 
-    fn overlay_stun_urls_for_settings(turn: &roomler_ai_config::TurnSettings) -> Vec<String> {
+    fn overlay_stun_urls_for_settings(turn: &meshharbor_config::TurnSettings) -> Vec<String> {
         let urls = build_turn_config(turn)
             .map(|cfg| cfg.urls)
             .unwrap_or_default();

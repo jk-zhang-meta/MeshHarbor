@@ -29,18 +29,18 @@ Every line below was read on `origin/master` at `861d4557`.
    device policy is consulted, and the UI does not say so. Every GROX device is
    owned by the operator, so the picker has never had an effect on this fleet.
    — `crates/api/src/ws/remote_control.rs:1610`
-2. **A host prompt has no screen surface unless `roomler-desktop` already runs.**
+2. **A host prompt has no screen surface unless `meshharbor-desktop` already runs.**
    The agent writes a `.pending` marker and waits; only the companion renders it
    (750 ms LocalAPI poll). Nothing starts the companion, and the daemon never
    checks whether anything can ask. Observable failure: 30 s of nothing, then a
-   deny. — `agents/roomlerd/src/signaling.rs:1956`,
-   `agents/roomler-desktop/src/main.rs` (`consent_watch_loop`)
+   deny. — `agents/meshharbord/src/signaling.rs:1956`,
+   `agents/meshharbor-desktop/src/main.rs` (`consent_watch_loop`)
 3. **"Nobody was there" is reported to the controller as "the user denied you".**
    `Decision::Timeout` maps to `granted: false`, and the hub terminates that as
    `EndReason::UserDenied`. The hub's own `ConsentTimeout` branch exists, but
    which of the two fires is a *race*: the agent's prompt window is set from the
    same `consent_timeout_secs` the hub is waiting on.
-   — `agents/roomlerd/src/consent.rs:79`, `crates/remote_control/src/hub.rs:967`
+   — `agents/meshharbord/src/consent.rs:79`, `crates/remote_control/src/hub.rs:967`
 
    ⚠️ **Corrected after the 2026-08-29 baseline.** This finding originally said
    the hub "loses the race every time". Measured on `mars`, it *wins*: the hub
@@ -80,7 +80,7 @@ Every line below was read on `origin/master` at `861d4557`.
    Tauri 2.11 auto-creates a tray from `app.trayIcon` (id `main`, icon, no menu);
    `tray::install` then builds a *second* one and never calls `.icon()`. The
    blank one carries the menu — which is exactly what the operator described.
-   — `tauri-2.11.2/src/app.rs:2412`, `agents/roomler-desktop/src/tray.rs:53`
+   — `tauri-2.11.2/src/app.rs:2412`, `agents/meshharbor-desktop/src/tray.rs:53`
 7. **One bug breaks most pages on macOS and Linux: `agent_exe_path()`.** It
    probes for a *sibling* `roomlerd`, then falls back to a bare name on `PATH`.
    On macOS the companion is `/Applications/Roomler.app/Contents/MacOS/`, the
@@ -88,7 +88,7 @@ Every line below was read on `origin/master` at `861d4557`.
    `/usr/local/bin` — hence the reported
    `Spawning self-update: No such file or directory (os error 2)`. The same
    failure kills apply-update, `probe_service_state`, service install/uninstall
-   and the log-dir probe. — `agents/roomler-desktop/src/commands.rs:1086`
+   and the log-dir probe. — `agents/meshharbor-desktop/src/commands.rs:1086`
 8. ~~**macOS "Check for updates" targets the wrong mechanism.**~~ **Wrong —
    corrected during implementation.** The reported
    `Spawning self-update: No such file or directory (os error 2)` made this
@@ -106,8 +106,8 @@ Every line below was read on `origin/master` at `861d4557`.
    and exits, so there is nothing to wait for).
 9. **`companion::refresh_if_stale` is Windows-only** and nothing reports the
    companion's version to the server, so "Update all" cannot tell anyone the
-   desktop stayed behind. — `agents/roomlerd/src/companion.rs:115`
-10. **`roomler-desktop` is not shipped for Linux at all** (`scripts/install.sh:529`),
+   desktop stayed behind. — `agents/meshharbord/src/companion.rs:115`
+10. **`meshharbor-desktop` is not shipped for Linux at all** (`scripts/install.sh:529`),
     although it already *compiles* there — `cargo clippy --workspace` installs
     webkit2gtk and walks the crate. This is packaging, not porting.
     — `.github/workflows/ci.yml:128`
@@ -127,7 +127,7 @@ The P6 stack is end-to-end complete. Four defects in it:
 
 12. `ArbiterState::close()` never resets `mode_seeded`, so an in-session toggle
     outlives every session and the device policy stops applying until the daemon
-    restarts. — `agents/roomlerd/src/input/arbiter.rs`
+    restarts. — `agents/meshharbord/src/input/arbiter.rs`
 13. A refused floor request is silent — no broadcast, so the holder never learns
     someone asked and the requester sees nothing.
 14. The participants rail renders only at `participants.length > 1`, so a single
@@ -147,7 +147,7 @@ daemon start and re-probed when one fails**:
 | 1 | native `win` | existing `viewer-indicator` window class |
 | 1 | native `mac` | AppKit reachable (see the main-thread note) |
 | 1 | native `x11` | `DISPLAY` set **and** `x11rb::connect` succeeds |
-| 2 | `companion` | `roomler-desktop` over LocalAPI, started on demand |
+| 2 | `companion` | `meshharbor-desktop` over LocalAPI, started on demand |
 | 3 | `cli` | `roomlerd consent` sentinel (works today) |
 | 4 | none | report `no_prompt_surface` rather than deny silently |
 
@@ -166,7 +166,7 @@ dependency tree; and the macOS daemon **already ships as an `.app` with
 `LSUIElement=true`** (`release-agent.yml:2343`), the bundle identity AppKit
 windows require.
 
-⚠️ **The macOS native backend has a prerequisite.** `agents/roomlerd/src/main.rs:688`
+⚠️ **The macOS native backend has a prerequisite.** `agents/meshharbord/src/main.rs:688`
 is `#[tokio::main]`, so the main thread is parked in `block_on` for the daemon's
 whole life — the main dispatch queue never drains and AppKit can never deliver a
 click to an Approve button. The macOS arm has to build the runtime explicitly, run
@@ -291,7 +291,7 @@ started themselves).
 | | What | Where |
 |---|---|---|
 | where | `/run/user/<uid>/roomler.sock`: the person's own `$XDG_RUNTIME_DIR/roomler.sock`, the path their companion and CLI ALREADY try first, so neither changes | `localapi::person_socket_path` |
-| whose | the user of the **active** graphical session on the seat, by the same `loginctl` walk the companion launch uses. Never the display manager's greeter, never a user switched away in the background (who must not answer consent for a view of someone else's desktop), never root (root uses the daemon's own socket). It moves when that person changes | `roomlerd::person_socket` (`step`, every 4 s) |
+| whose | the user of the **active** graphical session on the seat, by the same `loginctl` walk the companion launch uses. Never the display manager's greeter, never a user switched away in the background (who must not answer consent for a view of someone else's desktop), never root (root uses the daemon's own socket). It moves when that person changes | `meshharbord::person_socket` (`step`, every 4 s) |
 | who may connect | the socket is MADE AS the person: bind and chmod 0600 run on a thread switched to their filesystem ids (`setfsuid`/`setfsgid`), so it is born theirs. ⚠️ Not a root bind followed by a chown: they own the dir, so they could swap the path to a symlink in between, and `chown` follows it (to `/etc/shadow`, say). Caught in self-review before merge. Each connection's `SO_PEERCRED` uid must be theirs or root | `bind_as_person`, `person_peer_ok` |
 | what it serves | `Status`, `RcSessions`, `RcDisconnect`, `ConsentPending`, `ConsentDecide` and `RecordStatus`, and nothing else. Anything else is answered with a pointer to `sudo roomler …`. The match is **exhaustive with no `_` arm**, so a verb added later must be placed by hand | `localapi::person_may`, `Scope::Person` |
 | what it never does | replace a LIVE socket at the path (a per-user daemon of that person owns it); remove a non-socket file; create the runtime dir (logind's); remove anything but the inode it bound | `serve_person_socket` |
@@ -316,7 +316,7 @@ in place of `Permission denied (os error 13)` for everything else.
 | 1 | Consent correctness — owner override, local floor, timeout≠deny, `prompt_then_email`, `.pending` for exec+ssh, `roomlerd consent ls` | `prompt_owner` defaults to today's behaviour; the floor only tightens | **implemented** — timeout≠deny and `prompt_then_email` field-verified on 0.4.16, `.pending` for exec+ssh on 0.4.18, **the local floor on 2026-09-25** (AC4, WSL node, 0.4.102); `prompt_owner` still needs an owner-account run |
 | 2 | Desktop companion — one tray with an icon, daemon-path resolution, update-output surfacing, version honesty, `ensure_running()` | each item independent; no wire change | **implemented** (version honesty deferred to a follow-up) — field pending |
 | 3 | `PromptSurface` — 3.0 selection layer, 3.1 native Windows consent panel, 3.2 Tauri companion panels, 3.3 native X11, 3.4 native macOS | per-backend cargo feature; probe failure falls back to the companion | **all implemented** — field pending. ⚠️ `viewer-indicator-macos` is compiled by CI but deliberately **NOT in the macOS release feature set**: it moves tokio off the main thread, i.e. changes how every Mac agent STARTS, and macOS updates are owned by the root helper — a daemon that fails to start cannot pull its own fix. Enable only after a dispatch artifact runs on a real Mac |
-| 4 | Linux packaging — a **separate** `roomler-desktop` .deb | absent package = today's behaviour | **implemented** — field pending |
+| 4 | Linux packaging — a **separate** `meshharbor-desktop` .deb | absent package = today's behaviour | **implemented** — field pending |
 | 5 | Input arbitration — mode re-seed, visible floor requests, single-viewer rail, deterministic handover | none needed (bug fixes) | **implemented** — field pending |
 | 6 | Field test on the GROX fleet | n/a | **partly done, 2026-08-29 on 0.4.16** — the Windows native panel is verified end to end and the field log below lists exactly what is not. The test itself found 3 defects (#877), one of which froze the whole pre-0.4.16 Linux fleet |
 | 8 | Field fixes — release-asset ordering, the virtual-desktop guard, the CLI name, and phase 2d's `companion_version` | the ordering fix is server-only and additive; the x11 guard only ever DECLINES | **deployed** (#877; API `v20260829-0d5078f44e42`, agents ≥ 0.4.18) — the guard and the ordering were field-verified 2026-08-29; `companion_version` read on the live grid 2026-09-25: on the wire for all 21 devices, rendered only on a skew, and the fleet has none (AC10 half; see the log) |
@@ -381,7 +381,7 @@ Ticked only where a run is recorded in the field log below.
       after it, frozen: its unmap was never flushed; fixed in FR-93 P6a. The
       banner half of this criterion is the companion's, and still untested on
       X11.)*
-- [x] `roomler-desktop` shows exactly one tray icon, with a menu — **Windows**,
+- [x] `meshharbor-desktop` shows exactly one tray icon, with a menu — **Windows**,
       measured 2 → 1 against the 0.4.15 build. macOS/Linux untested.
 - [ ] macOS "Check for updates" and "Apply update" both work from the companion.
       **"Check for updates" verified — the Mac, 0.4.117, 2026-10-08**: the button
@@ -613,9 +613,9 @@ The floor run, verbatim from the daemon (UTC; hostname prefix stripped):
 
 The attribution is in the two windows. The device's own mode is `Prompt {
 timeout: 30s }` (line 1 prints `consent_broker.mode()`,
-`agents/roomlerd/src/signaling.rs:2414`), yet the prompt stood for **300 s** —
+`agents/meshharbord/src/signaling.rs:2414`), yet the prompt stood for **300 s** —
 the server's window — which is exactly the shape `strictest_of`
-(`agents/roomlerd/src/consent.rs:136`) produces when it downgrades an `auto`
+(`agents/meshharbord/src/consent.rs:136`) produces when it downgrades an `auto`
 directive: `Prompt { timeout: host_window }` (`signaling.rs:2397`). The control
 run pins the other half: same account, device and policy, only the local
 setting differs, and it auto-granted (`decision=Granted effective_mode=AutoGrant`,
@@ -677,7 +677,7 @@ card view's chip follows the same rule (`:697`).
 With a skew injected into the client store on the live page (NEO16-WSL's row
 given `companion_version = "0.4.99"`; no server call), the same row rendered
 `id: … · v0.4.101 · desktop v0.4.99` in warning colour (`rgb(255,193,7)`) with
-the tooltip *"roomler-desktop is on v0.4.99 while the daemon is on v0.4.101 —
+the tooltip *"meshharbor-desktop is on v0.4.99 while the daemon is on v0.4.101 —
 the companion updates separately …"*; reverting the store removed it. So the
 deployed rendering path works; what has not been seen is a real skew, and the
 fleet has none today.
@@ -860,7 +860,7 @@ Chrome, driven by Claude in Chrome, on the live site, from a background tab.
 
 **Aiming the click.** The badge is excluded from capture, so the stream cannot show it,
 and `roomler exec` runs in session 0, so it cannot enumerate the user's windows. The
-click was aimed by the badge's fixed geometry instead (`agents/roomlerd/src/indicator/win.rs`):
+click was aimed by the badge's fixed geometry instead (`agents/meshharbord/src/indicator/win.rs`):
 - the badge is 300×48, top-centre, at y = 4;
 - its Disconnect is at client (196–292, 9–39);
 - the agent is per-monitor DPI-aware, so that is physical (1006–1102, 13–43), centre
@@ -964,7 +964,7 @@ The setup was one vmtest cell: Ubuntu 24.04, GNOME on Wayland, the installer `.d
 Not field-tested: root at the seat, since GDM on this image refuses a root login. `step()` ignores uid 0 by construction, locked by `the_socket_follows_the_person_at_the_seat`.
 
 Found: the socket's own lifecycle lines never reach the log.
-- **The lines exist.** `localapi: person-at-the-device socket up` / `… down` are emitted at info by the `roomler_localapi` crate.
+- **The lines exist.** `localapi: person-at-the-device socket up` / `… down` are emitted at info by the `meshharbor_localapi` crate.
 - **The filter drops them.** That target is below every default filter: `roomlerd=info,tunnel_core=info,warn` in the generated units, and the binary's own default adds only the daemon's pre-FR-21 target. Only roomlerd's `person socket: …` lines (a move, a stop, a failure) are seen.
 - **The result.** `ls`, not `roomler logs`, answers "is the person socket up?".
 - **Why it is a follow-up.** Units already on disk set `RUST_LOG` wholesale, so a fix there needs the care FR-21's rename of the daemon's own target did (`logging.rs`, `mirror_legacy_log_target`).
