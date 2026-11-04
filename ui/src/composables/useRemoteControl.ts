@@ -288,6 +288,22 @@ export const RC_PREFLIGHT_WS_WAIT_MS = 5000
 export const RC_WATCHDOG_TICK_MS = 1000
 export const RC_STALL_PROBE_TICKS = 6
 export const RC_STALL_FAIL_TICKS = 10
+/**
+ * rcfix 2026-11-04 — the watchdog judges the TRANSPORT, not frame novelty.
+ * A near-static Windows desktop legitimately sends few or no frames, and the
+ * old rule (media bytes flat for `RC_STALL_FAIL_TICKS`) hung up healthy
+ * sessions every ~11 s and reconnected in a loop (measured: 0 lost, 0 NACK,
+ * 0 PLI, RTT 5-10 ms; that churn was the "3 fps"). Now `RC_STALL_FAIL_TICKS`
+ * counts ticks in which NOTHING arrived on the selected candidate pair (RTP,
+ * RTCP and every data channel, the control channel's answers included; ICE
+ * checks are excluded by the spec). Media flat while the transport is alive
+ * re-probes with `rc:keyframe` every `RC_STALL_REPROBE_TICKS`, and only after
+ * `RC_STALL_MEDIA_FAIL_TICKS` of unanswered probes (a dead pump behind a live
+ * peer) is the session re-created. A browser without candidate-pair bytes
+ * reads every tick as transport-flat: the pre-rcfix rule, exactly.
+ */
+export const RC_STALL_REPROBE_TICKS = 10
+export const RC_STALL_MEDIA_FAIL_TICKS = 45
 
 /**
  * Sub-`connected` health surfaced while `phase === 'connected'`:
@@ -608,10 +624,60 @@ export function createAbandonedRequestRegistry(
 const ABANDONED_REQUESTS = new Map<string, AbandonedRequestEntry>()
 
 /** Stall decision table Ã¢ÂÂ see the constants docblock above. */
-export function nextStallAction(stallTicks: number): 'none' | 'probe' | 'reconnect' {
-  if (stallTicks >= RC_STALL_FAIL_TICKS) return 'reconnect'
+export function nextStallAction(
+  stallTicks: number,
+  deadTicks: number = stallTicks,
+): 'none' | 'probe' | 'reconnect' {
+  if (deadTicks >= RC_STALL_FAIL_TICKS) return 'reconnect'
+  if (stallTicks >= RC_STALL_MEDIA_FAIL_TICKS) return 'reconnect'
   if (stallTicks === RC_STALL_PROBE_TICKS) return 'probe'
+  if (stallTicks > RC_STALL_PROBE_TICKS && (stallTicks - RC_STALL_PROBE_TICKS) % RC_STALL_REPROBE_TICKS === 0)
+    return 'probe'
   return 'none'
+}
+
+/**
+ * rcfix 2026-11-04 — one tick's transport-dead count: reset by ANY inbound
+ * progress (media, or bytes on the selected candidate pair), and by the agent
+ * having said this session produces no pixels, as `nextStallTicks`.
+ */
+export function nextDeadTicks(
+  prev: number,
+  mediaAdvanced: boolean,
+  transportAdvanced: boolean,
+  agentSaidNoPixels: boolean,
+): number {
+  return mediaAdvanced || transportAdvanced || agentSaidNoPixels ? 0 : prev + 1
+}
+
+/**
+ * rcfix 2026-11-04 — payload bytes received on the SELECTED candidate pair:
+ * RTP, RTCP and SCTP (every data channel), never ICE checks. `0` when the
+ * browser reports no selected pair, which the watchdog reads as "no
+ * transport evidence" (the pre-rcfix behaviour).
+ */
+export function transportBytesReceived(report: RTCStatsReport): number {
+  let selectedId = ''
+  const pairs = new Map<string, { bytes: number; nominated: boolean; succeeded: boolean }>()
+  report.forEach((raw) => {
+    const s = raw as { type?: string } & Record<string, unknown>
+    if (s.type === 'transport' && typeof s.selectedCandidatePairId === 'string') {
+      selectedId = s.selectedCandidatePairId
+    } else if (s.type === 'candidate-pair' && typeof s.id === 'string') {
+      pairs.set(s.id, {
+        bytes: typeof s.bytesReceived === 'number' ? s.bytesReceived : 0,
+        nominated: s.nominated === true,
+        succeeded: s.state === 'succeeded',
+      })
+    }
+  })
+  const sel = selectedId ? pairs.get(selectedId) : undefined
+  if (sel) return sel.bytes
+  // Firefox has no `transport.selectedCandidatePairId`: the nominated,
+  // succeeded pair is the selected one.
+  let best = 0
+  for (const p of pairs.values()) if (p.nominated && p.succeeded) best = Math.max(best, p.bytes)
+  return best
 }
 
 /**
@@ -4776,7 +4842,10 @@ export function useRemoteControl(
   /** 1 Hz media-progress watchdog (runs only while connected). */
   let watchdogTimer: ReturnType<typeof setInterval> | null = null
   let stallTicks = 0
+  /** rcfix 2026-11-04 — ticks with no inbound progress of any kind. */
+  let deadTicks = 0
   let lastMediaProgress = { rtpBytes: 0, vp9Frames: 0, hevcFrames: 0 }
+  let lastTransportBytes = 0
 
   function clearPcDisconnectedTimer() {
     if (pcDisconnectedTimer !== null) {
@@ -4824,7 +4893,9 @@ export function useRemoteControl(
       watchdogTimer = null
     }
     stallTicks = 0
+    deadTicks = 0
     lastMediaProgress = { rtpBytes: 0, vp9Frames: 0, hevcFrames: 0 }
+    lastTransportBytes = 0
     degraded.value = null
   }
 
@@ -4841,7 +4912,9 @@ export function useRemoteControl(
   function startMediaWatchdog() {
     if (watchdogTimer !== null) return
     stallTicks = 0
+    deadTicks = 0
     lastMediaProgress = { rtpBytes: statsPrevBytes, vp9Frames: 0, hevcFrames: 0 }
+    lastTransportBytes = statsTransportBytes
     // FR-93 P5f — when the interval this tick counts began (see advanceEndsWait).
     let tickFromMs = Date.now()
     watchdogTimer = setInterval(() => {
@@ -4881,22 +4954,26 @@ export function useRemoteControl(
       // that said it waits for the person at the screen, until the dialog's
       // deadline: a re-created session would only hand the person's answer to
       // a session this viewer no longer shows.
-      stallTicks = nextStallTicks(
-        stallTicks,
-        advanced,
-        mediaUnavailable.value !== null || agentIsWaiting(mediaWaiting.value, Date.now()),
-      )
+      const agentSaidNoPixels =
+        mediaUnavailable.value !== null || agentIsWaiting(mediaWaiting.value, Date.now())
+      stallTicks = nextStallTicks(stallTicks, advanced, agentSaidNoPixels)
+      // rcfix 2026-11-04 — liveness is the transport's: RTCP, the control
+      // channel's answers and the cursor channel all prove the peer is alive
+      // when a static screen sends no frame.
+      const transportAdvanced = statsTransportBytes > lastTransportBytes
+      lastTransportBytes = statsTransportBytes
+      deadTicks = nextDeadTicks(deadTicks, advanced, transportAdvanced, agentSaidNoPixels)
       degraded.value = classifyDegraded({
         pcState: pc?.connectionState ?? null,
         wsConnected: ws.status === 'connected',
-        stallTicks,
+        stallTicks: deadTicks,
       })
-      const action = nextStallAction(stallTicks)
+      const action = nextStallAction(stallTicks, deadTicks)
       if (action === 'probe') {
         console.info('[rc] media stalled', stallTicks, 's Ã¢ÂÂ probing with rc:keyframe')
         requestKeyframe()
       } else if (action === 'reconnect') {
-        console.warn('[rc] media stalled', stallTicks, 's, keyframe probe unanswered Ã¢ÂÂ re-creating session')
+        console.warn('[rc] media stalled', stallTicks, 's, transport flat', deadTicks, 's, keyframe probe unanswered Ã¢ÂÂ re-creating session')
         scheduleReconnect()
       }
     }, RC_WATCHDOG_TICK_MS)
@@ -6240,6 +6317,8 @@ export function useRemoteControl(
   const struggleWindow = new StruggleWindow(flowParams.struggleWindows)
   let statsPrevBytes = 0
   let statsPrevTsMs = 0
+  /** rcfix 2026-11-04 — selected-pair payload bytes (`transportBytesReceived`). */
+  let statsTransportBytes = 0
 
   // FR-1 P7 — agent clock sync for the HUD's end-to-end frame age. A probe
   // rides every stats tick (`rc:clock` on the control DC, ~60 B); the agent
@@ -8053,6 +8132,7 @@ export function useRemoteControl(
         stats.value = snap.next
         statsPrevBytes = snap.bytes
         statsPrevTsMs = snap.tsMs
+        statsTransportBytes = transportBytesReceived(report)
       } catch {
         /* getStats() can reject during teardown Ã¢ÂÂ just wait for next tick */
       }
@@ -8113,6 +8193,7 @@ export function useRemoteControl(
     }
     statsPrevBytes = 0
     statsPrevTsMs = 0
+    statsTransportBytes = 0
     stats.value = { ...EMPTY_STATS }
   }
 
