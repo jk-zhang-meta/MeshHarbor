@@ -1695,10 +1695,7 @@ mod tests {
             }
             other => panic!("expected Devices, got {other:?}"),
         }
-        match Cli::try_parse_from(["mh", "devices"])
-            .unwrap()
-            .command
-        {
+        match Cli::try_parse_from(["mh", "devices"]).unwrap().command {
             Command::Devices {
                 org,
                 q,
@@ -1917,14 +1914,8 @@ mod tests {
             }
             other => panic!("expected record start, got {other:?}"),
         }
-        let cli = Cli::try_parse_from([
-            "mh",
-            "record",
-            "start",
-            "--system-audio",
-            "--microphone",
-        ])
-        .unwrap();
+        let cli = Cli::try_parse_from(["mh", "record", "start", "--system-audio", "--microphone"])
+            .unwrap();
         assert!(matches!(
             cli.command,
             Command::Record {
@@ -1978,12 +1969,7 @@ mod tests {
     }
     #[test]
     fn native_shared_ssh_auth_modes_are_exclusive_and_password_is_not_an_argument() {
-        let base = [
-            "mh",
-            "share-ssh",
-            "--share",
-            "111111111111111111111111",
-        ];
+        let base = ["mh", "share-ssh", "--share", "111111111111111111111111"];
         assert!(Cli::try_parse_from(base).is_err());
         for tail in [
             vec!["--login"],

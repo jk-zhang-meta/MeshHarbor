@@ -482,11 +482,7 @@ mod tests {
         assert!(cmd.contains(RESUME_NOTE_SUBCOMMAND), "{cmd}");
         assert!(cmd.contains(note.to_str().unwrap()), "{cmd}");
         #[cfg(not(windows))]
-        assert_eq!(
-            hook_command("/usr/bin/mh'd", &note),
-            None,
-            "unquotable"
-        );
+        assert_eq!(hook_command("/usr/bin/mh'd", &note), None, "unquotable");
         // The printer: nothing without a note, the note with one.
         assert_eq!(note_main(&note), 0);
         std::fs::write(&note, "moved\n").unwrap();

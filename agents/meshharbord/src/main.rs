@@ -2228,10 +2228,7 @@ async fn rc_cmd(disconnect: Option<&str>) -> Result<()> {
         if !s.permissions.is_empty() {
             println!("    granted:    {}", s.permissions);
         }
-        println!(
-            "    disconnect: mh rc --disconnect {}",
-            s.session_id
-        );
+        println!("    disconnect: mh rc --disconnect {}", s.session_id);
     }
     Ok(())
 }

@@ -876,10 +876,7 @@ mod tests {
             Some("meshharbord")
         );
         // A diversion line names no owner; another path is not this one.
-        assert_eq!(
-            dpkg_owner("diversion by foo from: /usr/bin/mh\n", p),
-            None
-        );
+        assert_eq!(dpkg_owner("diversion by foo from: /usr/bin/mh\n", p), None);
         assert_eq!(dpkg_owner("meshharbor-cli: /usr/bin/other\n", p), None);
         assert_eq!(dpkg_owner("", p), None);
     }

@@ -135,8 +135,7 @@ fn news(last: Option<&EndpointState>, now: &EndpointState) -> Option<String> {
 /// know it, which is not a refusal at all.
 fn refused(message: &str) -> String {
     if message.starts_with("bad request: unknown variant") {
-        return "this device's meshharbor daemon is older than `mh connect`: update it"
-            .into();
+        return "this device's meshharbor daemon is older than `mh connect`: update it".into();
     }
     message.to_string()
 }

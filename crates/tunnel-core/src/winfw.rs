@@ -805,10 +805,7 @@ mod tests {
             windows_file_stem(r"C:\Program Files\MeshHarbor\meshharbord.exe"),
             Some("meshharbord")
         );
-        assert_eq!(
-            windows_file_stem("C:/Tools/mh.exe"),
-            Some("meshharbor")
-        );
+        assert_eq!(windows_file_stem("C:/Tools/mh.exe"), Some("meshharbor"));
         assert_eq!(windows_file_stem("meshharbord.exe"), Some("meshharbord"));
         assert_eq!(windows_file_stem(r"C:\x\noext"), Some("noext"));
         assert_eq!(windows_file_stem(r"C:\x\.hidden"), Some(".hidden"));
