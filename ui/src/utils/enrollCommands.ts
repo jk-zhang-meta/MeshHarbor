@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 G ROX EOOD
-import i18n from '@/plugins/i18n'
-
 /**
  * Enrollment command templates — ONE source for every "how do I enroll
  * this machine" string the UI renders (unified EnrollmentDialog, S4).
@@ -69,8 +67,6 @@ const PS_ROLE: Record<DaemonScope, string> = {
  *  unchanged, the command fails instead of anchoring something else. */
 export const DEVICE_ID_PLACEHOLDER = '<device-id>'
 
-const tr = (key: string, params: Record<string, unknown> = {}) => i18n.global.t(key, params)
-
 /**
  * Build the per-OS command matrix for one enrollment kind. `token` may
  * be null while the token is still being issued — the placeholder keeps
@@ -106,7 +102,7 @@ export function enrollCommands(
 
   const shOneLiner = (os: EnrollOs): CommandBlock => ({
     id: `${kind}-${os}-script`,
-    label: tr('mh.enrollCmd.oneLine'),
+    label: 'Recommended — one-line install',
     // --system is Linux-only (install.sh rejects it on macOS).
     command: `curl -fsSL ${base}/api/setup/install.sh | sh -s -- --role ${shRole}${os === 'linux' && machineWide ? ' --system' : ''} --token ${tok} --server ${base} --name ${manualName}`,
   })
@@ -119,7 +115,7 @@ export function enrollCommands(
 
   const manual = (os: EnrollOs): CommandBlock => ({
     id: `${kind}-${os}-manual`,
-    label: tr('mh.enrollCmd.manual'),
+    label: 'Already installed? Enroll manually',
     // Linux machine-wide mirrors install.sh --system's own "enroll later"
     // hint: root enroll into the system unit's /etc/roomler config.
     command:
@@ -132,7 +128,7 @@ export function enrollCommands(
 
   const wizard = (os: EnrollOs, platform: string): CommandBlock => ({
     id: `${kind}-${os}-wizard`,
-    label: tr('mh.enrollCmd.wizard'),
+    label: 'Graphical installer (Roomler Setup)',
     command: `${base}/api/setup/${platform}`,
     isDownload: true,
   })
@@ -145,18 +141,18 @@ export function enrollCommands(
       os: 'windows',
       title: 'Windows',
       note: machineWide
-        ? tr('mh.enrollCmd.noteWindows')
+        ? 'Machine-wide install — run the commands below from an Administrator PowerShell (Terminal (Admin)).'
         : undefined,
       blocks: [
         {
           id: `${kind}-windows-script`,
-          label: tr('mh.enrollCmd.oneLinePs'),
+          label: 'Recommended — one-line install (PowerShell)',
           command: `& ([scriptblock]::Create((irm ${base}/api/setup/install.ps1))) -Role ${psRole} -Token ${tok} -Server ${base}`,
         },
         wizard('windows', 'windows'),
         {
           id: `${kind}-windows-manual`,
-          label: tr('mh.enrollCmd.manual'),
+          label: 'Already installed? Enroll manually',
           command: `${manualBin} enroll --server ${base} --token ${tok} --name "$env:COMPUTERNAME"${psMg}`,
         },
         // FR-104 — only a machine-wide install has a SYSTEM service to anchor.
@@ -164,7 +160,7 @@ export function enrollCommands(
           ? [
               {
                 id: 'agent-windows-anchor',
-                label: tr('mh.enrollCmd.anchor', { placeholder: DEVICE_ID_PLACEHOLDER }),
+                label: `Then anchor it, from the same Administrator PowerShell (replace ${DEVICE_ID_PLACEHOLDER} with the id on the device's page)`,
                 command: `roomlerd anchor create --server ${base} --token ${tok} --device ${DEVICE_ID_PLACEHOLDER}`,
               },
             ]
@@ -175,7 +171,7 @@ export function enrollCommands(
       os: 'linux',
       title: 'Linux',
       note: machineWide
-        ? tr('mh.enrollCmd.noteLinux')
+        ? "Installs a root systemd system service (sudo will prompt). Screen capture needs a logged-in session — pick 'This user only' for desktops."
         : undefined,
       blocks: [shOneLiner('linux'), ...wizardUnlessAgent('linux', 'linux'), manual('linux')],
     },
@@ -191,7 +187,7 @@ export function enrollCommands(
       // their Mac never appears in the mesh.
       note:
         kind === 'agent'
-          ? tr('mh.enrollCmd.noteMac', { token: '<token>' })
+          ? 'Installs the per-user half (screen sharing + input). To also join the overlay mesh, mint a second enrollment token and append --daemon-token <token> — that adds a root LaunchDaemon and a second device row for this Mac.'
           : undefined,
       blocks: [shOneLiner('macos'), ...wizardUnlessAgent('macos', 'macos'), manual('macos')],
     },

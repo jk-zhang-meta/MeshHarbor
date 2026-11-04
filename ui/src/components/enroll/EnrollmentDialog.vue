@@ -84,7 +84,7 @@
                 density="compact"
                 class="text-caption mb-3"
               >
-                {{ os.note }}
+                {{ noteFor(os) }}
               </v-alert>
               <!-- FR-104 — the box shows what the token CARRIES (the server's
                    answer), never a wish: ticking it mints a new token. -->
@@ -102,7 +102,7 @@
                 </p>
               </template>
               <div v-for="block in os.blocks" :key="block.id" class="mb-3">
-                <p class="text-body-2 font-weight-medium mb-1">{{ block.label }}</p>
+                <p class="text-body-2 font-weight-medium mb-1">{{ labelFor(block) }}</p>
                 <template v-if="block.isDownload">
                   <v-btn
                     :href="block.command"
@@ -149,10 +149,13 @@ import { appOrigin } from '@/utils/deployment'
 import { computed, ref } from 'vue'
 import { useResponsiveDialog } from '@/composables/useResponsiveDialog'
 import {
+  DEVICE_ID_PLACEHOLDER,
   enrollCommands,
+  type CommandBlock,
   type DaemonScope,
   type EnrollKind,
   type EnrollOs,
+  type OsCommands,
 } from '@/utils/enrollCommands'
 import { trackGoal } from '@/utils/goals'
 import { useI18n } from 'vue-i18n'
@@ -209,6 +212,25 @@ const commands = computed(() =>
     props.anchor === true,
   ),
 )
+
+/** The catalog stays English (the static site renders it too); the dialog
+ *  says its labels and notes in the interface language. */
+function labelFor(block: CommandBlock): string {
+  if (block.id === 'agent-windows-anchor') return t('mh.enrollCmd.anchor', { placeholder: DEVICE_ID_PLACEHOLDER })
+  if (block.id.endsWith('-wizard')) return t('mh.enrollCmd.wizard')
+  if (block.id.endsWith('-manual')) return t('mh.enrollCmd.manual')
+  if (block.id.endsWith('-windows-script')) return t('mh.enrollCmd.oneLinePs')
+  if (block.id.endsWith('-script')) return t('mh.enrollCmd.oneLine')
+  return block.label
+}
+const NOTE_KEYS: Record<EnrollOs, string> = {
+  windows: 'mh.enrollCmd.noteWindows',
+  linux: 'mh.enrollCmd.noteLinux',
+  macos: 'mh.enrollCmd.noteMac',
+}
+function noteFor(os: OsCommands): string | undefined {
+  return os.note ? t(NOTE_KEYS[os.os], { token: '<token>' }) : undefined
+}
 
 const copiedId = ref<string | null>(null)
 function copy(id: string, text: string) {
