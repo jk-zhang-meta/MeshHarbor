@@ -495,6 +495,19 @@ fn native_source(native: (u32, u32), out: (u32, u32)) -> Option<(u32, u32)> {
     (native != out && native.0 > 0 && native.1 > 0).then_some(native)
 }
 
+/// The instant the NEXT frame's FPS gate is measured from.
+///
+/// A backend whose `next_frame` blocks for the readback (DXGI on Windows, XShm
+/// on Linux) paces from when the frame was ASKED for (`asked_at`), so the
+/// readback overlaps the period instead of being serialised after a full-period
+/// sleep. macOS keeps arrival timing (`arrived_at`): its CGDisplayStream
+/// self-paces and the reply does not carry a blocking grab. Pure so both
+/// branches are unit-tested on every target (the `macos` flag is the real
+/// `cfg!(target_os = "macos")` at the one call site).
+fn gate_mark(asked_at: Instant, arrived_at: Instant, macos: bool) -> Instant {
+    if macos { arrived_at } else { asked_at }
+}
+
 fn capture_one_blocking(
     cap: &mut Capturer,
     width: u32,
@@ -624,17 +637,19 @@ impl ScreenCapture for ScrapCapture {
         let reply = res_rx
             .await
             .map_err(|_| anyhow!("capture worker dropped reply"))?;
-        // FR-107's P2b, for X11: the frame period runs from when this frame
-        // was ASKED for. Timed from its arrival, every period also paid for
-        // the XShm grab, so a 30 fps target ran at 1000 / (33.3 + grab), as the
-        // DRM backend did until P2b. Linux only: on Windows and macOS this
-        // backend is the fallback, and its waits there (DXGI's and the CG
-        // stream's) were never measured against the change.
-        self.last_frame_at = Some(if cfg!(target_os = "linux") {
-            asked_at
-        } else {
-            Instant::now()
-        });
+        // FR-107's P2b, for X11, extended to Windows (rcfix 2026-11-04): the
+        // frame period runs from when this frame was ASKED for, not from when
+        // it arrived. `next_frame` BLOCKS here for the whole DXGI/XShm readback
+        // (the worker grabs and copies the surface before it replies), so timing
+        // the next gate from arrival serialises that readback AFTER a full-period
+        // sleep: a 30 fps target then ran at 1000 / (period + readback). Measured
+        // on the Surface (Iris Xe, DXGI, software build, static/changing screen):
+        // a 30 fps target delivered **19 fps** (52 ms/frame = 33 ms sleep + 19 ms
+        // readback) and a 60 fps target 29 fps. Pacing from `asked_at` overlaps
+        // the readback with the period and restores ~30 and ~45-55 fps. macOS is
+        // the exception: its CGDisplayStream self-paces and does not block in the
+        // reply, so arrival timing stays correct there.
+        self.last_frame_at = Some(gate_mark(asked_at, Instant::now(), cfg!(target_os = "macos")));
         let _ = self.monitor; // (exercised below by `monitor_count`)
         reply
     }
@@ -684,6 +699,24 @@ impl ScreenCapture for ScrapCapture {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// rcfix 2026-11-04 — the FPS-gate pacing choice. On a readback-blocking
+    /// backend (Windows DXGI, Linux XShm) the next gate is timed from the ASK,
+    /// so the readback overlaps the frame period; timing it from arrival
+    /// serialised the readback after a full-period sleep and ran a 30 fps target
+    /// at a measured 19 fps on the Surface. macOS keeps arrival timing (its
+    /// stream self-paces). A regression either way silently caps the capture
+    /// rate below the target, so both branches are pinned here.
+    #[test]
+    fn gate_paces_from_the_ask_except_on_macos() {
+        let asked = Instant::now();
+        let arrived = asked + Duration::from_millis(19); // the readback cost
+        // Windows / Linux: pace from the ask — the 19 ms readback overlaps the
+        // next period instead of being added on top of it.
+        assert_eq!(gate_mark(asked, arrived, false), asked);
+        // macOS: pace from arrival — the reply carried no blocking grab.
+        assert_eq!(gate_mark(asked, arrived, true), arrived);
+    }
 
     /// The encode box crosses to the capture worker as a packed u64, so the
     /// pack and the worker's unpack have to agree exactly — a mismatch would
