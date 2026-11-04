@@ -12,7 +12,7 @@
     >
       {{ snackbar.state.text }}
       <template #actions>
-        <v-btn variant="text" @click="snackbar.hideSnackbar()">Close</v-btn>
+        <v-btn variant="text" @click="snackbar.hideSnackbar()">{{ t('common.close') }}</v-btn>
       </template>
     </v-snackbar>
   </v-app>
@@ -22,6 +22,9 @@
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { useSnackbar } from '@/composables/useSnackbar'
 import { PRODUCT_TITLE } from '@/utils/product'
+import { useI18n } from 'vue-i18n'
+
+const { t } = useI18n()
 
 const snackbar = useSnackbar()
 

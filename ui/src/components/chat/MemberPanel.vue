@@ -4,7 +4,7 @@
   <div class="member-panel">
     <v-text-field
       v-model="search"
-      placeholder="Search members..."
+      :placeholder="t('mh.chat.searchMembers')"
       density="compact"
       variant="outlined"
       hide-details
@@ -33,7 +33,7 @@
       </v-list-item>
 
       <v-list-item v-if="!loading && filteredMembers.length === 0">
-        <v-list-item-title class="text-medium-emphasis">No members found</v-list-item-title>
+        <v-list-item-title class="text-medium-emphasis">{{ t('mh.chat.noMembers') }}</v-list-item-title>
       </v-list-item>
     </v-list>
   </div>
@@ -42,6 +42,9 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue'
 import { api } from '@/api/client'
+import { useI18n } from 'vue-i18n'
+
+const { t } = useI18n()
 
 interface Member {
   id: string

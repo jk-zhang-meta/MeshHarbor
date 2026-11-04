@@ -63,16 +63,16 @@
           />
           <!-- (The pin button that stood here toggled a flag nothing read.) -->
           <template v-if="!xs">
-            <v-btn icon="mdi-folder" size="small" data-testid="files-btn" aria-label="Files" @click="showFiles = !showFiles" />
-            <v-btn icon="mdi-account-group" size="small" aria-label="Members" @click="showMembers = !showMembers" />
+            <v-btn icon="mdi-folder" size="small" data-testid="files-btn" :aria-label="t('mh.chatView.files')" @click="showFiles = !showFiles" />
+            <v-btn icon="mdi-account-group" size="small" :aria-label="t('mh.chatView.members')" @click="showMembers = !showMembers" />
           </template>
           <v-menu v-else>
             <template #activator="{ props: menuProps }">
-              <v-btn v-bind="menuProps" icon="mdi-dots-vertical" size="small" aria-label="Room panels" />
+              <v-btn v-bind="menuProps" icon="mdi-dots-vertical" size="small" :aria-label="t('mh.chatView.panels')" />
             </template>
             <v-list density="compact" min-width="180">
-              <v-list-item prepend-icon="mdi-folder" title="Files" data-testid="files-btn" @click="showFiles = !showFiles" />
-              <v-list-item prepend-icon="mdi-account-group" title="Members" @click="showMembers = !showMembers" />
+              <v-list-item prepend-icon="mdi-folder" :title="t('mh.chatView.files')" data-testid="files-btn" @click="showFiles = !showFiles" />
+              <v-list-item prepend-icon="mdi-account-group" :title="t('mh.chatView.members')" @click="showMembers = !showMembers" />
             </v-list>
           </v-menu>
         </v-toolbar>
@@ -148,13 +148,13 @@
              is the one way back to the room's own chat. -->
         <v-toolbar density="compact" flat>
           <v-toolbar-title class="text-body-1">
-            <v-icon class="mr-1" size="small">mdi-robot-outline</v-icon>Agent session
+            <v-icon class="mr-1" size="small">mdi-robot-outline</v-icon>{{ t('mh.chatView.agentSession') }}
           </v-toolbar-title>
           <v-spacer />
           <v-btn
             icon="mdi-close"
             size="small"
-            aria-label="Close the transcript"
+            :aria-label="t('mh.chatView.closeTranscript')"
             data-testid="hive-transcript-close"
             @click="showTranscript = false"
           />
@@ -166,7 +166,7 @@
       <!-- Thread panel -->
       <div v-if="activeThread" class="chat-side-panel border-s d-flex flex-column">
         <v-toolbar density="compact" flat>
-          <v-toolbar-title class="text-body-1">Thread</v-toolbar-title>
+          <v-toolbar-title class="text-body-1">{{ t('mh.chatView.thread') }}</v-toolbar-title>
           <v-spacer />
           <v-btn icon="mdi-close" size="small" @click="activeThread = null" />
         </v-toolbar>
@@ -188,7 +188,7 @@
         <div class="pa-3">
           <message-editor
             ref="threadEditorRef"
-            placeholder="Reply in thread..."
+            :placeholder="t('mh.chatView.replyPlaceholder')"
             :members="roomMembers"
             :tenant-id="tenantId"
             :room-id="roomId"
@@ -202,7 +202,7 @@
       <!-- Members panel -->
       <div v-if="showMembers" class="chat-side-panel border-s d-flex flex-column" style="width: 25%;">
         <v-toolbar density="compact" flat>
-          <v-toolbar-title class="text-body-1">Members</v-toolbar-title>
+          <v-toolbar-title class="text-body-1">{{ t('mh.chatView.members') }}</v-toolbar-title>
           <v-spacer />
           <v-btn icon="mdi-close" size="small" @click="showMembers = false" />
         </v-toolbar>
@@ -213,7 +213,7 @@
       <!-- Files panel -->
       <div v-if="showFiles" class="chat-side-panel border-s d-flex flex-column" style="width: 25%;">
         <v-toolbar density="compact" flat>
-          <v-toolbar-title class="text-body-1">Files</v-toolbar-title>
+          <v-toolbar-title class="text-body-1">{{ t('mh.chatView.files') }}</v-toolbar-title>
           <v-spacer />
           <v-btn icon="mdi-close" size="small" data-testid="close-files-panel" @click="showFiles = false" />
         </v-toolbar>
@@ -254,6 +254,9 @@ import { isAdopted, useHiveStore } from '@/stores/hive'
 import FilePanel from '@/components/chat/FilePanel.vue'
 import EmojiPicker from '@/components/chat/EmojiPicker.vue'
 import GiphyPicker from '@/components/chat/GiphyPicker.vue'
+import { useI18n } from 'vue-i18n'
+
+const { t } = useI18n()
 
 const route = useRoute()
 const router = useRouter()

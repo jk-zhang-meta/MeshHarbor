@@ -27,8 +27,17 @@ describe('interface language', () => {
   })
 
   it('falls back to English for a string the translation lacks, never to a raw key', () => {
+    // Every shipped key is translated, so probe with an English-only message.
+    i18n.global.mergeLocaleMessage('en', { i18nFallbackProbe: 'Create Room' })
     setLocale('zh-CN')
-    expect(t('room.create')).toBe('Create Room')
+    expect(t('i18nFallbackProbe')).toBe('Create Room')
+  })
+
+  it('carries every key in both languages', () => {
+    const enKeys = leaves(en as unknown as Tree)
+    const zhKeys = leaves(zhCN as unknown as Tree)
+    expect(enKeys.filter((k) => !zhKeys.includes(k))).toEqual([])
+    expect(zhKeys.filter((k) => !enKeys.includes(k))).toEqual([])
   })
 
   it('translates every MeshHarbor management string', () => {

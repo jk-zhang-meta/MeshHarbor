@@ -4,21 +4,21 @@
   <v-dialog v-model="open" max-width="600" scrollable>
     <v-card>
       <v-card-title class="d-flex align-center">
-        <span>GIFs</span>
+        <span>{{ t('mh.chat.gifs') }}</span>
         <v-spacer />
         <v-btn icon="mdi-close" size="small" variant="text" @click="open = false" />
       </v-card-title>
 
       <v-tabs v-model="tab" density="compact">
-        <v-tab value="search">Search</v-tab>
-        <v-tab value="trending">Trending</v-tab>
+        <v-tab value="search">{{ t('common.search') }}</v-tab>
+        <v-tab value="trending">{{ t('mh.chat.trending') }}</v-tab>
       </v-tabs>
 
       <v-card-text class="pa-3">
         <v-text-field
           v-if="tab === 'search'"
           v-model="query"
-          placeholder="Search GIFs..."
+          :placeholder="t('mh.chat.searchGifs')"
           variant="outlined"
           density="compact"
           hide-details
@@ -54,11 +54,11 @@
         </div>
 
         <div v-if="hasMore" class="text-center mt-3">
-          <v-btn variant="text" :loading="loading" @click="loadMore">Load more</v-btn>
+          <v-btn variant="text" :loading="loading" @click="loadMore">{{ t('common.loadMore') }}</v-btn>
         </div>
 
         <div class="text-center mt-2 text-caption text-medium-emphasis">
-          Powered by GIPHY
+          {{ t('mh.chat.poweredByGiphy') }}
         </div>
       </v-card-text>
     </v-card>
@@ -68,6 +68,9 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
 import { api } from '@/api/client'
+import { useI18n } from 'vue-i18n'
+
+const { t } = useI18n()
 
 interface GiphyImage {
   url: string

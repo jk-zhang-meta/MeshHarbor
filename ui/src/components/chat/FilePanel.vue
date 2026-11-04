@@ -4,7 +4,7 @@
   <div class="file-panel" data-testid="file-panel">
     <v-text-field
       v-model="search"
-      placeholder="Search files..."
+      :placeholder="t('mh.chat.searchFiles')"
       density="compact"
       variant="outlined"
       hide-details
@@ -55,7 +55,7 @@
       </v-list-item>
 
       <v-list-item v-if="!roomStore.filesLoading && filteredFiles.length === 0">
-        <v-list-item-title class="text-medium-emphasis">No files in this room</v-list-item-title>
+        <v-list-item-title class="text-medium-emphasis">{{ t('mh.chat.noFiles') }}</v-list-item-title>
       </v-list-item>
     </v-list>
 
@@ -73,6 +73,9 @@
 import { appPath } from '@/utils/deployment'
 import { ref, computed, onMounted, watch } from 'vue'
 import { useRoomStore } from '@/stores/rooms'
+import { useI18n } from 'vue-i18n'
+
+const { t } = useI18n()
 
 const props = defineProps<{
   tenantId: string

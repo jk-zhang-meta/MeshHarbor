@@ -2,6 +2,75 @@
   "app": {
     "name": "MeshHarbor · 织港"
   },
+  "remote": {
+    "codec": {
+      "label": "编码器",
+      "chromaLabel": "色彩细节",
+      "appliesNext": "下次连接时生效",
+      "codecs": {
+        "auto": "自动（推荐）",
+        "av1": "AV1",
+        "hevc": "HEVC (H.265)",
+        "vp9": "VP9",
+        "h264": "H.264"
+      },
+      "chromas": {
+        "auto": "自动（随优先级）",
+        "yuv420": "标准 (4:2:0)",
+        "yuv444": "清晰文字 (4:4:4)"
+      },
+      "reason": {
+        "auto": "连接时为此设备和浏览器挑选最佳编码器",
+        "autoChroma": "两端都支持时，“更清晰”会使用完整色彩细节",
+        "chroma420": "色彩为四分之一分辨率，是视频默认格式，处处可解码",
+        "av1": "同码率下画质最佳，需要两端都有硬件支持",
+        "browserNoAv1": "此浏览器无法解码 AV1",
+        "agentNoAv1": "此设备没有 AV1 硬件编码器",
+        "av1NoHw444": "没有硬件编码器能输出 4:4:4 的 AV1",
+        "hevc": "设备上的硬件 H.265（NVENC / QSV / AMF / VideoToolbox / VAAPI / D3D12 / Vulkan）",
+        "hevc444": "硬件管线上文字最清晰，码率约为 1.5 倍",
+        "browserNoHevc": "此浏览器没有硬件 HEVC 解码器",
+        "browserNoHevcRext": "此浏览器无法解码 HEVC 4:4:4（需要 Chrome ≥137 加 NVIDIA 驱动 ≥572.16，或 Intel Gen11+）",
+        "agentNoHevc": "此设备没有 HEVC 编码器",
+        "agentNoHevc444": "此设备没有 HEVC 4:4:4 编码器（目前仅 NVENC 支持）",
+        "vp9420": "码率更低，处处可解码",
+        "vp9444": "文字最清晰，码率约为 1.5 倍，软件解码",
+        "browserNoVp9": "此浏览器无法解码 VP9 profile 1",
+        "agentNoVp9": "此设备没有 VP9 编码器",
+        "h264": "处处可用，文字较模糊",
+        "h264444": "通过 H.264 High 4:4:4 获得最清晰的文字，硬件编码、软件解码",
+        "browserNoH264High444": "此浏览器无法解码 H.264 High 4:4:4",
+        "agentNoH264_444": "此设备没有 H.264 4:4:4 编码器（目前仅 NVENC 支持）",
+        "vp9444hw": "文字最清晰，码率约为 1.5 倍，硬件编码（Intel）、软件解码",
+        "failedBefore": "此前在这个浏览器上解码失败；浏览器或驱动更新后会重试",
+        "no444Anywhere": "此设备和浏览器没有可用的 4:4:4 组合",
+        "no420Anywhere": "这里没有可解码的格式"
+      }
+    },
+    "session": {
+      "endedByHost": {
+        "title": "设备前的用户结束了会话。",
+        "body": "对方在自己的屏幕上结束了会话（断开连接，或桌面自带的“停止共享屏幕”），因此此查看器保持断开。重新连接会像任何新会话一样再次征求对方同意。",
+        "reconnect": "重新连接"
+      },
+      "rating": {
+        "question": "这次会话体验如何？",
+        "thumbsUp": "好",
+        "thumbsDown": "不好",
+        "dismiss": "以后再说",
+        "hint": "可选：哪里不对？",
+        "send": "发送",
+        "thanks": "谢谢，已记录。",
+        "reasons": {
+          "lag": "卡顿",
+          "picture": "画面",
+          "input": "鼠标或键盘",
+          "could_not_connect": "无法连接",
+          "other": "其他"
+        }
+      }
+    }
+  },
   "auth": {
     "login": "登录",
     "orLoginWith": "或使用以下方式登录",
@@ -14,7 +83,117 @@
     "forgotPassword": "忘记密码？",
     "noAccount": "还没有账号？",
     "hasAccount": "已有账号？",
-    "orRegisterWith": "或使用以下方式注册"
+    "orRegisterWith": "或使用以下方式注册",
+    "heardAbout": "你是从哪里了解到 MeshHarbor 的？",
+    "heardAboutHint": "可选。这能帮我们了解哪些渠道有效。",
+    "heardAboutOptions": {
+      "search": "搜索引擎",
+      "youtube": "YouTube",
+      "tiktok": "TikTok",
+      "instagram": "Instagram",
+      "facebook": "Facebook",
+      "reddit": "Reddit",
+      "hacker_news": "Hacker News",
+      "friend": "朋友或同事",
+      "other": "其他"
+    }
+  },
+  "nav": {
+    "dashboard": "概览",
+    "devices": "设备",
+    "agentSessions": "智能体会话",
+    "agentMemory": "智能体记忆",
+    "agentCopies": "智能体副本",
+    "network": "网络",
+    "tunnelAcl": "访问控制（ACL）",
+    "subnetRoutes": "叠加网络路由",
+    "magicDns": "MagicDNS",
+    "netInventory": "网络清单",
+    "managedForwards": "托管转发",
+    "serverTopology": "服务器拓扑",
+    "analytics": "统计分析",
+    "observability": "可观测性",
+    "growth": "增长",
+    "collaboration": "协作",
+    "rooms": "房间",
+    "explore": "发现",
+    "files": "文件",
+    "invites": "邀请",
+    "tutorial": "使用教程",
+    "admin": "管理",
+    "settings": "设置",
+    "members": "成员",
+    "roles": "角色",
+    "billing": "账单",
+    "audit": "审计",
+    "execAudit": "命令审计",
+    "sshAudit": "SSH 审计",
+    "sshActivity": "SSH 活动"
+  },
+  "room": {
+    "create": "创建房间",
+    "name": "房间名称",
+    "private": "私有",
+    "open": "开放（公开）",
+    "hasMedia": "启用通话",
+    "join": "加入",
+    "leave": "离开",
+    "members": "成员",
+    "noMessages": "还没有消息。开始聊天吧！",
+    "parent": "上级房间（可选）",
+    "none": "无（根房间）",
+    "createChild": "创建子房间",
+    "startCall": "发起通话",
+    "callStarted": "{room} 中已发起通话",
+    "joinCall": "加入"
+  },
+  "message": {
+    "placeholder": "输入消息…",
+    "edit": "编辑",
+    "delete": "删除",
+    "pin": "置顶",
+    "unpin": "取消置顶",
+    "reply": "回复",
+    "thread": "话题"
+  },
+  "call": {
+    "start": "开始会议",
+    "join": "加入会议",
+    "leave": "离开",
+    "end": "结束会议",
+    "mute": "静音",
+    "unmute": "取消静音",
+    "videoOn": "打开摄像头",
+    "videoOff": "关闭摄像头",
+    "shareScreen": "共享屏幕",
+    "participants": "参会者",
+    "chat": "聊天",
+    "chatPlaceholder": "输入消息…",
+    "noChatMessages": "还没有消息",
+    "layout": "布局",
+    "layoutAuto": "自动",
+    "layoutTiled": "平铺",
+    "layoutSpotlight": "焦点",
+    "layoutSidebar": "侧边栏",
+    "tileCount": "画面数量",
+    "hideNonVideo": "隐藏未开视频的参会者",
+    "selfView": "自己的画面",
+    "selfViewCropped": "在网格中（裁剪）",
+    "selfViewUncropped": "在网格中（不裁剪）",
+    "selfViewFloating": "浮动",
+    "pin": "固定",
+    "unpin": "取消固定",
+    "pinLimit": "最多只能固定 6 个",
+    "pip": "画中画",
+    "files": "文件",
+    "noFiles": "还没有上传文件",
+    "uploadFile": "上传文件"
+  },
+  "files": {
+    "upload": "上传",
+    "download": "下载",
+    "delete": "删除",
+    "noFiles": "还没有上传文件。"
   },
   "common": {
     "save": "保存",
@@ -28,28 +207,414 @@
     "yes": "是",
     "no": "否"
   },
-  "nav": {
-    "dashboard": "概览",
-    "devices": "设备",
-    "network": "网络",
-    "tunnelAcl": "访问控制（ACL）",
-    "subnetRoutes": "叠加网络路由",
-    "magicDns": "MagicDNS",
-    "netInventory": "网络清单",
-    "managedForwards": "托管转发",
-    "serverTopology": "服务器拓扑",
-    "analytics": "统计分析",
-    "observability": "可观测性",
-    "invites": "邀请",
-    "tutorial": "使用教程",
-    "admin": "管理",
-    "settings": "设置",
-    "members": "成员",
-    "roles": "角色",
-    "audit": "审计",
-    "execAudit": "命令审计",
-    "sshAudit": "SSH 审计",
-    "sshActivity": "SSH 活动"
+  "grid": {
+    "columns": "列",
+    "reset": "重置"
+  },
+  "vault": {
+    "approval": {
+      "status": {
+        "pending": "等待驱动者处理",
+        "approved": "已批准",
+        "denied": "已拒绝",
+        "used": "已批准并已使用",
+        "expired": "已过期",
+        "withdrawn": "已撤回",
+        "unknown": "审批"
+      },
+      "answerBy": "请在 {time} 前答复",
+      "approve": "批准",
+      "deny": "拒绝",
+      "notAccepted": "保险库策略不接受你对此次使用的批准"
+    }
+  },
+  "hive": {
+    "title": "智能体会话",
+    "stop": "停止",
+    "stopMirroring": "停止镜像",
+    "adopted": "已接管",
+    "adoptedExplain": "这是你在终端中运行的会话，只为你镜像到这里。它是只读的：没有人能从 MeshHarbor 向它发送提示。",
+    "empty": {
+      "title": "还没有智能体会话",
+      "body": "请在所有者已开启智能体会话（hive_enabled）的设备上启动一个。会话在那台设备上、以设备为你映射的账户运行，记录保存在设备上。"
+    },
+    "start": {
+      "button": "启动会话",
+      "title": "启动智能体会话",
+      "device": "设备",
+      "noDevices": "没有在线设备",
+      "folder": "设备上的文件夹",
+      "folderHint": "必须位于设备的某个 hive_roots 之内。",
+      "sessionTitle": "标题（可选）",
+      "submit": "启动",
+      "refused": "会话被拒绝：{reason}"
+    },
+    "state": {
+      "starting": "正在启动",
+      "idle": "空闲",
+      "running": "运行中",
+      "awaiting_approval": "需要审批",
+      "stopping": "正在停止",
+      "ended": "已结束",
+      "refused": "已拒绝",
+      "lost": "已丢失"
+    },
+    "viewer": {
+      "toggle": "显示会话记录",
+      "status": {
+        "idle": "未连接",
+        "opening": "正在请求设备…",
+        "connecting": "正在连接…",
+        "open": "来自设备的实时内容",
+        "openCopy": "正在读取副本",
+        "closed": "已断开",
+        "refused": "不可用"
+      },
+      "reconnect": "重新连接",
+      "loadEarlier": "加载更早内容",
+      "empty": "此会话还没有内容。",
+      "someone": "某人",
+      "inTerminal": "在终端中",
+      "thinking": "思考中",
+      "truncated": "输出已按设备上限截断，保留了开头和结尾。",
+      "turnDone": "本轮完成",
+      "turnError": "本轮因错误结束",
+      "started": "会话已启动：模型 {model}，目录 {cwd}",
+      "compacted": "智能体压缩了上下文。",
+      "checkpoint": "检查点 {n}：智能体的 {files} 中有 {changed} 发生变化",
+      "checkpointFolderCommitted": "文件夹已提交",
+      "checkpointFolderSame": "文件夹未变",
+      "checkpointFolderSkipped": "文件夹未保存（{why}）",
+      "unknownKind": "此版本无法显示的事件（{kind}）。",
+      "tool": {
+        "background": "在后台运行",
+        "replaceAll": "全部匹配处",
+        "unchanged": "未改动的行：{count}",
+        "tooLong": "内容太长，无法逐行比较。",
+        "before": "修改前",
+        "after": "修改后",
+        "writes": "写入行数：{count}",
+        "moreLines": "未显示的行：{count}",
+        "lines": "第 {from}–{to} 行",
+        "fromLine": "从第 {from} 行起",
+        "output": "输出 · 行数：{count}",
+        "subagent": "子智能体：{agent}",
+        "prompt": "它的指令",
+        "todo": {
+          "pending": "待办",
+          "in_progress": "进行中",
+          "completed": "已完成"
+        }
+      },
+      "askPlaceholder": "向智能体提问…",
+      "askFailed": "提示没有送达智能体。",
+      "readOnly": "你可以阅读此会话并在其房间中交流。只有驱动者可以向智能体发送提示。",
+      "adoptedReadOnly": "此会话在其设备的终端中运行，因此这里只读：没有人能从 MeshHarbor 向它发送提示。",
+      "copyReadOnly": "运行此会话的设备暂时无法提供内容，你正在阅读另一台设备保存的副本。副本只读：只有那台设备接受提示。",
+      "drivingRefused": "你是此会话的驱动者，但其设备不允许你在那里操作：{why}",
+      "approval": {
+        "asks": "{tool} 需要审批才能运行",
+        "allow": "允许",
+        "deny": "拒绝",
+        "denyPlaceholder": "为什么不允许？（可选，智能体会读到）",
+        "waiting": "正在等待会话的某位驱动者答复。",
+        "unanswered": "未答复。",
+        "allowed": "已由 {by} 允许",
+        "denied": "已由 {by} 拒绝",
+        "deniedWith": "已由 {by} 拒绝：{message}",
+        "expired": "无人及时答复，因此没有运行。",
+        "withdrawn": "在有人答复前已撤回。",
+        "other": "已结束：{outcome}",
+        "failed": "答复没有送达设备。"
+      }
+    },
+    "people": {
+      "button": "参与者",
+      "title": "谁参与此会话",
+      "explain": "驱动者向智能体发送提示并答复其审批请求。阅读者可以阅读会话并在其房间中交流，但他们写的内容不会送达智能体。只有会话所有者可以更改参与者。",
+      "role": {
+        "owner": "所有者",
+        "driver": "驱动者",
+        "reader": "阅读者"
+      },
+      "add": "从组织中添加成员",
+      "noMatch": "没有其他匹配的人",
+      "addReader": "添加为阅读者",
+      "addDriver": "添加为驱动者",
+      "remove": "将其移出会话",
+      "adoptedReadersOnly": "它在终端中运行，因此只能添加阅读者。"
+    },
+    "roomCopies": {
+      "button": "副本",
+      "title": "此会话的副本",
+      "explain": "下列每台设备都保存了此会话的副本（记录和检查点），因此在运行它的设备离线时，会话仍可阅读，也可以迁移。",
+      "someDevice": "你组织中的一台设备",
+      "runsIt": "运行中 · {n} 个事件",
+      "upToDate": "已同步 · {n} 个事件",
+      "behind": "落后 {k} 个事件 · 共 {n} 个事件",
+      "holds": "{n} 个事件",
+      "noTip": "尚未上报副本",
+      "role": {
+        "primary": "运行中",
+        "owner": "所有者的设备",
+        "archive": "归档副本",
+        "teleport": "正迁移到此"
+      },
+      "state": {
+        "pending": "正在加入",
+        "joined": "持有副本",
+        "refused": "已拒绝",
+        "leaving": "正在释放"
+      },
+      "short": {
+        "adopted": "从终端接管的会话只保存在运行它的设备上，不会复制到别处。",
+        "restricted": "副本少于策略要求：本应保存副本的设备缺少此会话限定的标签。",
+        "no_device": "副本少于策略要求：没有其他设备愿意保存副本。"
+      },
+      "moving": "正在迁移到 {device}：{step}。",
+      "step": {
+        "preparing": "设备正在准备",
+        "joining": "设备正在获取副本",
+        "draining": "当前运行它的设备正在完成本轮",
+        "syncing": "副本正在追赶",
+        "moving": "正在那里启动"
+      },
+      "moveTitle": "迁移到另一台设备",
+      "moveExplain": "会话在当前位置停止，并从目标设备保存的副本继续运行。会选择保存内容最多的副本：迁移到内容更少的副本会被拒绝。",
+      "folder": "目标文件夹",
+      "folderHint": "它在那台设备上运行的位置：除非另行指定，否则使用相同的文件夹。",
+      "move": "迁移",
+      "ahead": "{device} 保存的内容比任何可迁移的目标设备都多：在某台设备追上之前，迁移会被拒绝。",
+      "noTarget": "还没有其他可运行会话的设备保存副本。",
+      "notRunning": "只有运行中的会话可以迁移。",
+      "alreadyMoving": "它已经在迁移中。",
+      "adoptedStays": "从终端接管的会话会留在运行它的地方。",
+      "outcome": {
+        "promoting": "迁移中：目标设备已就绪，当前运行它的设备正在完成本轮。",
+        "teleporting": "迁移中：会话仍在运行，目标设备正在获取副本。",
+        "pending": "已请求：设备尚未答复。后续进展见其房间。"
+      },
+      "refused": "迁移被拒绝：{reason}",
+      "actions": {
+        "move": "迁移",
+        "teleport": "迁移到别处",
+        "fork": "分叉"
+      },
+      "teleportExplain": "迁移到一台没有副本的设备：会话继续运行时，那台设备先获取副本，然后像迁移到已有副本一样完成迁移。当前运行它的设备必须在线。",
+      "noTeleport": "没有其他可运行会话的在线设备能接手。",
+      "forkExplain": "用此会话的对话在单独的文件夹中创建新会话。此会话照常继续。",
+      "forkFromCopy": "{device} · 从其副本",
+      "forkTakesCopy": "{device} · 先获取副本",
+      "forkFolder": "分叉使用的文件夹",
+      "forkFolderHint": "那台设备上它自己的文件夹：分叉不能与会话共用运行目录。",
+      "forkName": "名称（可选）",
+      "forkNameDefault": "{title} 的分叉",
+      "fork": "分叉",
+      "noFork": "没有可运行会话的在线设备能创建分叉。",
+      "adoptedNoFork": "从终端接管的会话不能分叉。",
+      "forkWhileMoving": "它正在迁移：请等它稳定后再分叉。",
+      "forkOutcome": {
+        "accepted": "已分叉：新会话将在那台设备上启动。",
+        "pending": "已请求：设备尚未答复。后续进展见分叉的房间。",
+        "joining": "分叉中：设备正在先获取副本。"
+      },
+      "openFork": "打开分叉的房间"
+    },
+    "purge": {
+      "open": "永久删除",
+      "title": "永久删除此会话",
+      "explain": "“{title}”将从所有保存过它的设备上删除：运行它的设备、每个副本，以及它之前运行过的地方。每台设备上，账户相关的部分（历史和检查点）也会删除，但它工作的文件夹不会删除。",
+      "atOnce": "它的房间、核心记忆快照和审批记录会立即删除。此操作无法撤销。",
+      "forksKeep": "从它分叉出的会话会保留分叉之前的对话。",
+      "confirm": "输入 {title} 以确认",
+      "submit": "永久删除",
+      "refused": "清除被拒绝：{reason}",
+      "sent": "正在清除。",
+      "going": "正在清除：{total} 台设备中已有 {done} 台答复。离线设备会在下次连接时清除。",
+      "done": "已从所有保存它的设备上清除。",
+      "forks": "从它分叉出的会话保留分叉之前的对话：{n} 个。",
+      "someDevice": "你组织中的一台设备",
+      "state": {
+        "pending": "等待中",
+        "done": "已清除",
+        "closed": "已关闭"
+      },
+      "part": {
+        "done": "已清除",
+        "not_there": "无内容",
+        "failed": "失败",
+        "unknown": "未说明"
+      },
+      "parts": "其副本：{store} · 账户部分：{account}",
+      "pendingDetail": "它会在下次连接时被清除。",
+      "closed": {
+        "device_removed": "设备已被移除，并清除了它保存的全部内容",
+        "holds_nothing": "没有需要清除的内容",
+        "other": "已关闭"
+      }
+    },
+    "manage": {
+      "button": "转为托管",
+      "title": "转为托管会话",
+      "explain": "它的终端会话已结束。MeshHarbor 可以在 {device} 上将它作为托管会话继续：对话不变，从终端自己的历史恢复，之后像在这里启动的任何会话一样运行、复制和驱动。",
+      "folder": "{device} 上的文件夹",
+      "folderHint": "默认为它的终端运行的位置，也可以另行指定",
+      "submit": "转为托管",
+      "lastRefused": "其设备拒绝了上次请求：{why}",
+      "accepted": "它现在是 {device} 上的托管会话。",
+      "pending": "已请求。设备尚未答复：进展见此房间。",
+      "refused": "未能转为托管：{why}",
+      "inProgress": "正在转为托管会话"
+    },
+    "memory": {
+      "title": "智能体记忆",
+      "revision": "版本 {rev}",
+      "about": "这里保存的事实会作为常驻指令提供给智能体会话。会话在启动时获得一份副本并一直使用它：之后添加的事实会提供给下一个会话，而不是正在运行的会话。只有所有者开启了 hive_core_memory 的设备才会把它们传给智能体。",
+      "scope": {
+        "org": "组织",
+        "user": "你的",
+        "device": "某台设备"
+      },
+      "scopeHint": {
+        "org": "组织中的所有会话。由组织管理员维护。",
+        "user": "仅限你启动的会话。",
+        "device": "仅限那台设备上的会话。由设备管理员维护。"
+      },
+      "device": "设备",
+      "budget": "已用 {used} / {budget} 个字符",
+      "empty": "这里还没有事实。",
+      "newFact": "智能体应当知道的事实",
+      "kindLabel": "类型",
+      "kind": {
+        "preference": "偏好",
+        "convention": "约定",
+        "path": "路径",
+        "gotcha": "易错点",
+        "decision": "决定",
+        "warning": "警告"
+      },
+      "add": "保存",
+      "edit": "编辑",
+      "editTitle": "编辑事实",
+      "archive": "归档：从今后所有会话的记忆中移除"
+    },
+    "copies": {
+      "title": "智能体副本",
+      "about": "每个智能体会话在一台设备上运行，并按组织策略复制到指定的设备上，因此在那台设备离线时仍可阅读，也可以迁移。副本以明文形式保存在持有它的设备上。",
+      "off": "此服务器不复制会话：需要运维人员开启 hive.replicaset。",
+      "policy": {
+        "title": "策略",
+        "defaults": "默认值",
+        "copies": "每个会话 {min} 到 {max} 个副本，包括其自身设备上的那份",
+        "archive": "归档副本加入规则允许的每个会话",
+        "archiveOff": "归档副本不加入任何会话",
+        "prefer": "其次是会话所有者自己的设备",
+        "restricted": "标记为 {tags} 的设备上的会话只复制到带有该标签的设备",
+        "retention": "会话结束后保留 {days} 天",
+        "retentionForever": "会话结束后永久保留"
+      },
+      "rules": {
+        "edit": "编辑策略",
+        "min": "至少",
+        "max": "至多",
+        "copiesHint": "每个会话的副本数，包括其自身设备上的那份：1 到 {max}",
+        "maxBelowMin": "“至多”小于“至少”",
+        "archive": "归档副本加入规则允许的每个会话",
+        "prefer": "其次是会话所有者自己的设备",
+        "restricted": "限定标签",
+        "restrictedHint": "带有其中某个标签的设备上的会话，只复制到同样带有该标签的设备。按回车添加。",
+        "retention": "会话结束后保留天数",
+        "retentionHint": "0 表示永久保留，最多 {max}",
+        "retentionInvalid": "请输入 0 到 {max} 之间的整数天数",
+        "saved": "已保存。组织中正在运行的会话会按新策略重新分配。",
+        "stale": "策略在你读取后已被更改。现在显示的是最新版本：请重新修改。"
+      },
+      "archive": {
+        "title": "归档副本",
+        "hint": "组织中一台常开的设备，在保留期内为规则允许的每个会话保存副本，并在没有其他成员在线时提供会话内容。它不运行会话。由你的组织在自己的机器上运行。",
+        "none": "还没有设备提供归档副本。",
+        "unreadable": "在有归档副本上线之前，只有会话的某位成员在线时才能阅读会话。",
+        "offers": "可作为归档副本",
+        "notOffering": "不提供：其所有者关闭了 hive_archive，或此后尚未连接",
+        "gone": "已不再是此组织的设备",
+        "designated": "已指定",
+        "add": "添加归档副本",
+        "stale": "策略在读取后已被更改。已重新显示：请再试一次。"
+      },
+      "add": {
+        "title": "添加归档副本",
+        "intro": "在组织中一台常开的机器上运行归档副本镜像。首次启动时使用这里的令牌注册；之后每次启动都从其卷运行，不再需要令牌。",
+        "volume": "卷就是设备本身：它保存设备凭据以及复制到它的每个会话（明文）。请像保护会话本身一样保护它。",
+        "hostname": "请给容器设置固定的主机名：设备身份依赖于它，两个归档副本不能共用同一个主机名。",
+        "mint": "获取注册令牌",
+        "token": "令牌只能使用一次，有效期 {minutes} 分钟，只有首次启动需要。",
+        "docker": "docker run",
+        "compose": "docker compose",
+        "copy": "复制",
+        "copied": "已复制",
+        "next": "运行后它会出现在“归档副本”下：开启“已指定”即可启用。",
+        "close": "关闭"
+      }
+    },
+    "search": {
+      "label": "搜索你可以阅读的智能体会话",
+      "hint": "在组织的归档副本上搜索：你输入的内容和搜索结果都不会到达服务器。",
+      "none": "没有找到结果。",
+      "scope": "已搜索的会话：{n}",
+      "otherSession": "一个你可以阅读的会话",
+      "noRoom": "该会话没有可打开的房间。",
+      "openFailed": "无法打开该会话：{message}",
+      "failed": "搜索失败：{error}",
+      "refusedOther": "搜索被拒绝：{reason}",
+      "refused": {
+        "not_found": "此组织无法搜索智能体会话。",
+        "no_archive_replica": "当前没有可搜索的归档副本在线。",
+        "no_session": "归档副本还没有保存任何你可以阅读的会话。",
+        "rate_limited": "过去一分钟内发起的搜索太多。请稍等片刻再输入。",
+        "too_many_views": "此标签页已达到智能体会话连接上限。请稍后再输入。",
+        "device_offline": "归档副本已离线。",
+        "device_unsupported": "归档副本运行的版本不支持搜索。",
+        "no_answer": "归档副本没有答复。",
+        "unavailable": "服务器无法准备搜索。请稍后再输入。",
+        "at_capacity": "归档副本当前的搜索已满负荷。",
+        "hive_disabled": "归档副本不提供搜索。"
+      }
+    }
+  },
+  "keepBusy": {
+    "defaultPattern": {
+      "label": "默认模式",
+      "hint": "查看者在尚未设置过的设备上打开“保持活跃”菜单时预选的模式。不修改时为圆形；某人在某台设备上上次的选择优先于它。"
+    },
+    "history": {
+      "title": "历史",
+      "subtitle": "设备上每一次开启或关闭“保持活跃”（以设备上报为准），以及这些设置的每一次更改。永久保留。",
+      "allDevices": "全部设备",
+      "organization": "组织",
+      "when": "时间",
+      "device": "设备",
+      "what": "事件",
+      "who": "操作人",
+      "empty": "暂无记录。",
+      "loadMore": "加载更多",
+      "refresh": "刷新",
+      "kind": {
+        "on": "已开启",
+        "off": "已关闭",
+        "org_denied": "已对组织禁止",
+        "org_allowed": "已对组织允许",
+        "org_default_pattern": "默认模式已更改"
+      },
+      "productDefault": "圆形（默认）",
+      "source": {
+        "device": "设备上报",
+        "server": "管理员"
+      },
+      "sourceHint": {
+        "device": "设备自己在心跳中上报的内容：只是一个声明，每 30 秒随心跳出现，绝不是服务器的决定。",
+        "server": "服务器对管理员更改的记录。"
+      }
+    }
   },
   "mh": {
     "lang": {
@@ -437,6 +1002,129 @@
         "notCidr": "“{cidr}”不是网段——单个地址也需要前缀，例如 10.0.0.5/32。"
       }
     },
+    "tp": {
+      "title": "隧道访问控制（ACL）",
+      "newPolicy": "新建策略",
+      "empty": "尚未定义隧道策略。服务器端 ACL 默认拒绝：在添加至少一条策略之前，所有 {cmd} 请求都会被拒绝，返回 {code}。",
+      "col": {
+        "name": "名称",
+        "subjects": "主体",
+        "targets": "目标",
+        "allowlist": "允许列表",
+        "ceilings": "上限",
+        "actions": "操作"
+      },
+      "flows": "连接数：",
+      "bytes": "字节数：",
+      "editTitle": "编辑隧道策略",
+      "newTitle": "新建隧道策略",
+      "namePlaceholder": "例如 ops-team-prod-postgres",
+      "subjectsHint": "此策略适用于谁。所有策略中第一条匹配的生效。",
+      "addSubject": "添加主体",
+      "catchAllUsers": "（全部匹配：组织内所有用户）",
+      "targetsHint": "此策略允许主体访问哪些设备。",
+      "addTarget": "添加目标",
+      "catchAllAgents": "（全部匹配：组织内所有设备）",
+      "allowlistTitle": "目的地允许列表",
+      "allowlistHint": "主体经由目标可访问的主机与端口范围。",
+      "addRule": "添加规则",
+      "match": "匹配方式",
+      "portLow": "起始端口",
+      "portHigh": "结束端口",
+      "proto": "协议",
+      "protoAny": "任意",
+      "ceilingsTitle": "每会话上限",
+      "ceilingsHint": "留空表示不限制。",
+      "maxFlows": "最大并发连接数",
+      "flowsPlaceholder": "例如 64",
+      "maxBytes": "每会话最大字节数",
+      "bytesPlaceholder": "例如 10737418240（10 GiB）",
+      "saveChanges": "保存更改",
+      "createPolicy": "创建策略",
+      "deleteTitle": "删除隧道策略？",
+      "deleteBody": "将软删除 {name}。现有隧道会话不受影响；之后仅依赖此策略的新 {req} 请求会被拒绝，返回 {code}。",
+      "delete": "删除",
+      "required": "必填。",
+      "kind": {
+        "all_users": "所有用户",
+        "user_id": "用户",
+        "role_id": "角色",
+        "tunnel_client_id": "隧道客户端",
+        "agent_id": "设备",
+        "all_agents": "所有设备"
+      },
+      "host": {
+        "exact": "精确",
+        "wildcard": "通配符"
+      },
+      "hostValue": {
+        "exact": "主机名（例如 db.intranet）",
+        "wildcard": "通配符（例如 *.intranet）",
+        "cidr": "CIDR（例如 10.0.0.0/24）",
+        "other": "值"
+      },
+      "err": {
+        "name": "名称为必填项。",
+        "subjects": "至少需要一个主体。",
+        "targets": "至少需要一个目标。",
+        "allowlist": "至少需要一条允许规则。",
+        "subjectId": "除“所有用户”外，每个主体都需要选择具体对象。",
+        "targetId": "“设备”类型的目标需要选择具体设备。",
+        "host": "每条允许规则都需要填写主机。",
+        "portSet": "必须设置端口范围。",
+        "portLow": "起始端口必须在 1-65535 之间。",
+        "portOrder": "结束端口必须 ≥ 起始端口。",
+        "portHigh": "结束端口必须 ≤ 65535。"
+      },
+      "label": {
+        "user": "用户 {name}",
+        "role": "角色 {name}",
+        "client": "客户端 {name}",
+        "agent": "设备 {name}"
+      }
+    },
+    "ek": {
+      "title": "临时注册密钥",
+      "mintKey": "生成密钥",
+      "intro": "一种可重复使用的凭据，用来注册{selfRemoving}的设备，例如 CI 构建机、容器、自动扩缩的工作节点。这些设备闲置后会被清理（正常停止时立即清理），重启后算作一台{new}设备。吊销密钥后，下次使用即无法再注册；已注册的设备按各自的期限失效。",
+      "selfRemoving": "会自动移除",
+      "new": "新",
+      "col": {
+        "label": "标签",
+        "uses": "已用次数",
+        "expires": "过期时间",
+        "ttl": "设备存活期",
+        "state": "状态"
+      },
+      "unnamed": "（未命名）",
+      "minted": "生成于 {when}",
+      "default": "默认",
+      "state": {
+        "revoked": "已吊销",
+        "expired": "已过期",
+        "exhausted": "已用完",
+        "active": "有效"
+      },
+      "revoke": "吊销",
+      "revokeAria": "吊销密钥 {key}",
+      "empty": "尚未生成密钥。",
+      "shownOnce": "临时密钥（仅显示一次）",
+      "mintTitle": "生成临时注册密钥",
+      "labelHint": "仅用于显示：写明此密钥服务的设备群",
+      "maxUses": "最大使用次数",
+      "maxUsesHint": "1–10000；每次注册消耗一次",
+      "expiresDays": "有效期（天）",
+      "expiresHint": "最长 90 天；到期后无论剩余次数都失效",
+      "ttlLabel": "设备闲置期限（秒，可选）",
+      "ttlHint": "60 秒到 7 天；留空为服务器默认（15 分钟）。设备无响应多久后被清理",
+      "copyNow": "请立即复制：密钥{notStored}，无法再次显示。丢失后只能重新生成。",
+      "notStored": "不会被保存",
+      "copied": "已复制",
+      "copyKey": "复制密钥",
+      "enrollWith": "注册命令：",
+      "mint": "生成",
+      "done": "完成"
+    },
     "dev": {
       "updateAll": "全部更新",
       "enroll": "注册设备",
@@ -609,131 +1297,10 @@
         "oldReport": "该设备能应用下发的配置，但无法回报执行结果。"
       }
     },
-    "tp": {
-      "title": "隧道访问控制（ACL）",
-      "newPolicy": "新建策略",
-      "empty": "尚未定义隧道策略。服务器端 ACL 默认拒绝：在添加至少一条策略之前，所有 {cmd} 请求都会被拒绝，返回 {code}。",
-      "col": {
-        "name": "名称",
-        "subjects": "主体",
-        "targets": "目标",
-        "allowlist": "允许列表",
-        "ceilings": "上限",
-        "actions": "操作"
-      },
-      "flows": "连接数：",
-      "bytes": "字节数：",
-      "editTitle": "编辑隧道策略",
-      "newTitle": "新建隧道策略",
-      "namePlaceholder": "例如 ops-team-prod-postgres",
-      "subjectsHint": "此策略适用于谁。所有策略中第一条匹配的生效。",
-      "addSubject": "添加主体",
-      "catchAllUsers": "（全部匹配：组织内所有用户）",
-      "targetsHint": "此策略允许主体访问哪些设备。",
-      "addTarget": "添加目标",
-      "catchAllAgents": "（全部匹配：组织内所有设备）",
-      "allowlistTitle": "目的地允许列表",
-      "allowlistHint": "主体经由目标可访问的主机与端口范围。",
-      "addRule": "添加规则",
-      "match": "匹配方式",
-      "portLow": "起始端口",
-      "portHigh": "结束端口",
-      "proto": "协议",
-      "protoAny": "任意",
-      "ceilingsTitle": "每会话上限",
-      "ceilingsHint": "留空表示不限制。",
-      "maxFlows": "最大并发连接数",
-      "flowsPlaceholder": "例如 64",
-      "maxBytes": "每会话最大字节数",
-      "bytesPlaceholder": "例如 10737418240（10 GiB）",
-      "saveChanges": "保存更改",
-      "createPolicy": "创建策略",
-      "deleteTitle": "删除隧道策略？",
-      "deleteBody": "将软删除 {name}。现有隧道会话不受影响；之后仅依赖此策略的新 {req} 请求会被拒绝，返回 {code}。",
-      "delete": "删除",
-      "required": "必填。",
-      "kind": {
-        "all_users": "所有用户",
-        "user_id": "用户",
-        "role_id": "角色",
-        "tunnel_client_id": "隧道客户端",
-        "agent_id": "设备",
-        "all_agents": "所有设备"
-      },
-      "host": {
-        "exact": "精确",
-        "wildcard": "通配符"
-      },
-      "hostValue": {
-        "exact": "主机名（例如 db.intranet）",
-        "wildcard": "通配符（例如 *.intranet）",
-        "cidr": "CIDR（例如 10.0.0.0/24）",
-        "other": "值"
-      },
-      "err": {
-        "name": "名称为必填项。",
-        "subjects": "至少需要一个主体。",
-        "targets": "至少需要一个目标。",
-        "allowlist": "至少需要一条允许规则。",
-        "subjectId": "除“所有用户”外，每个主体都需要选择具体对象。",
-        "targetId": "“设备”类型的目标需要选择具体设备。",
-        "host": "每条允许规则都需要填写主机。",
-        "portSet": "必须设置端口范围。",
-        "portLow": "起始端口必须在 1-65535 之间。",
-        "portOrder": "结束端口必须 ≥ 起始端口。",
-        "portHigh": "结束端口必须 ≤ 65535。"
-      },
-      "label": {
-        "user": "用户 {name}",
-        "role": "角色 {name}",
-        "client": "客户端 {name}",
-        "agent": "设备 {name}"
-      }
-    },
-    "ek": {
-      "title": "临时注册密钥",
-      "mintKey": "生成密钥",
-      "intro": "一种可重复使用的凭据，用来注册{selfRemoving}的设备，例如 CI 构建机、容器、自动扩缩的工作节点。这些设备闲置后会被清理（正常停止时立即清理），重启后算作一台{new}设备。吊销密钥后，下次使用即无法再注册；已注册的设备按各自的期限失效。",
-      "selfRemoving": "会自动移除",
-      "new": "新",
-      "col": {
-        "label": "标签",
-        "uses": "已用次数",
-        "expires": "过期时间",
-        "ttl": "设备存活期",
-        "state": "状态"
-      },
-      "unnamed": "（未命名）",
-      "minted": "生成于 {when}",
-      "default": "默认",
-      "state": {
-        "revoked": "已吊销",
-        "expired": "已过期",
-        "exhausted": "已用完",
-        "active": "有效"
-      },
-      "revoke": "吊销",
-      "revokeAria": "吊销密钥 {key}",
-      "empty": "尚未生成密钥。",
-      "shownOnce": "临时密钥（仅显示一次）",
-      "mintTitle": "生成临时注册密钥",
-      "labelHint": "仅用于显示：写明此密钥服务的设备群",
-      "maxUses": "最大使用次数",
-      "maxUsesHint": "1–10000；每次注册消耗一次",
-      "expiresDays": "有效期（天）",
-      "expiresHint": "最长 90 天；到期后无论剩余次数都失效",
-      "ttlLabel": "设备闲置期限（秒，可选）",
-      "ttlHint": "60 秒到 7 天；留空为服务器默认（15 分钟）。设备无响应多久后被清理",
-      "copyNow": "请立即复制：密钥{notStored}，无法再次显示。丢失后只能重新生成。",
-      "notStored": "不会被保存",
-      "copied": "已复制",
-      "copyKey": "复制密钥",
-      "enrollWith": "注册命令：",
-      "mint": "生成",
-      "done": "完成"
-    },
     "common": {
-      "close": "关闭"
+      "close": "关闭",
+      "delete": "删除",
+      "edit": "编辑"
     },
     "ago": {
       "now": "刚刚",
@@ -1072,6 +1639,129 @@
       "noScreenTip": "系统未授予此设备屏幕录制权限，远程画面将是空白。macOS：系统设置 → 隐私与安全性 → 屏幕录制。",
       "noInput": "无输入权限",
       "noInputTip": "系统未授予此设备输入注入权限，远程键盘和鼠标将不起作用。macOS：系统设置 → 隐私与安全性 → 辅助功能。"
+    },
+    "chat": {
+      "react": "添加表情回应",
+      "reactShort": "回应",
+      "replyInThread": "在话题中回复",
+      "editMessage": "编辑消息",
+      "deleteMessage": "删除消息",
+      "actions": "消息操作",
+      "editPlaceholder": "编辑消息…",
+      "replyOne": "{n} 条回复",
+      "replyMany": "{n} 条回复",
+      "viewThread": "查看话题",
+      "deleteTitle": "删除这条消息？",
+      "cannotUndo": "此操作无法撤销。",
+      "writePlaceholder": "输入消息…",
+      "uploadFailed": "文件上传失败，请重试。",
+      "send": "发送",
+      "searchMembers": "搜索成员…",
+      "noMembers": "没有找到成员",
+      "searchFiles": "搜索文件…",
+      "noFiles": "此房间没有文件",
+      "gifs": "GIF 动图",
+      "trending": "热门",
+      "searchGifs": "搜索 GIF…",
+      "poweredByGiphy": "由 GIPHY 提供"
+    },
+    "notif": {
+      "title": "通知",
+      "markAllRead": "全部标为已读",
+      "empty": "没有通知"
+    },
+    "search": {
+      "close": "关闭搜索",
+      "placeholder": "搜索消息、房间和用户…",
+      "intro": "输入内容以搜索消息、房间和用户",
+      "noResults": "没有找到与“{query}”相关的结果",
+      "messages": "消息",
+      "rooms": "房间",
+      "people": "用户",
+      "inRoom": "{author} 在 #{room}"
+    },
+    "layout": {
+      "collapseSidebar": "收起侧边栏",
+      "selectOrg": "选择组织",
+      "newOrg": "新建组织",
+      "allOrgs": "全部组织",
+      "openDevices": "打开设备页面",
+      "searchDevices": "搜索设备",
+      "openRooms": "打开房间页面",
+      "searchRooms": "搜索房间",
+      "menu": "菜单",
+      "inCallMuted": "通话中（已静音）· 通话控制",
+      "inCall": "通话中 · 通话控制",
+      "call": "通话",
+      "returnToCall": "返回通话",
+      "cameraOff": "关闭摄像头",
+      "cameraOn": "打开摄像头",
+      "hangUp": "挂断",
+      "activeCallOne": "{n} 个进行中的通话",
+      "activeCallMany": "{n} 个进行中的通话",
+      "activeCalls": "进行中的通话",
+      "unreadOne": "{n} 条未读消息",
+      "unreadMany": "{n} 条未读消息",
+      "lightMode": "浅色模式",
+      "darkMode": "深色模式",
+      "profile": "个人资料",
+      "docs": "文档",
+      "reconnecting": "连接已断开，正在重新连接…",
+      "orgName": "名称",
+      "orgSlug": "标识",
+      "orgSlugHint": "用于网址的标识，全局唯一",
+      "create": "创建",
+      "createOrgFailed": "创建组织失败",
+      "slugTaken": "该标识已被占用，请换一个"
+    },
+    "chatView": {
+      "files": "文件",
+      "members": "成员",
+      "panels": "房间面板",
+      "agentSession": "智能体会话",
+      "closeTranscript": "关闭会话记录",
+      "thread": "话题",
+      "replyPlaceholder": "在话题中回复…"
+    },
+    "notFound": {
+      "title": "页面不存在",
+      "body": "你要找的页面不存在或已被移动。",
+      "home": "前往仪表盘"
+    },
+    "oauth": {
+      "back": "返回登录",
+      "failed": "OAuth 登录未能完成"
+    },
+    "rooms": {
+      "discover": "发现并加入开放房间",
+      "noTopic": "未设置主题",
+      "noMatch": "没有找到与“{query}”匹配的房间",
+      "noOpen": "暂无开放房间。试着创建一个吧！",
+      "empty": "还没有房间",
+      "emptyBody": "创建第一个房间，与团队聊天、分享文件或发起通话。",
+      "walkThrough": "带我了解",
+      "created": "房间已创建",
+      "deleteTitle": "删除“{name}”？",
+      "deleteBody": "这将永久删除该房间及其全部消息、文件和成员。此操作无法撤销。",
+      "assignRole": "分配角色",
+      "role": "角色",
+      "roleAssigned": "角色已分配",
+      "assignFailed": "分配角色失败"
+    },
+    "files": {
+      "search": "搜索文件",
+      "columns": "配置列",
+      "all": "全部文件",
+      "room": "房间文件",
+      "uploading": "正在上传文件…",
+      "col": {
+        "name": "名称",
+        "room": "房间",
+        "type": "类型",
+        "size": "大小",
+        "uploaded": "上传时间",
+        "actions": "操作"
+      }
     }
   }
 }

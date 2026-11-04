@@ -1298,7 +1298,9 @@
       }
     },
     "common": {
-      "close": "Close"
+      "close": "Close",
+      "delete": "Delete",
+      "edit": "Edit"
     },
     "ago": {
       "now": "just now",
@@ -1637,6 +1639,129 @@
       "noScreenTip": "The OS has not granted this device screen-capture permission, so the remote screen will be blank. On macOS: System Settings → Privacy & Security → Screen Recording.",
       "noInput": "No input access",
       "noInputTip": "The OS has not granted this device input-injection permission, so remote keyboard and mouse will do nothing. On macOS: System Settings → Privacy & Security → Accessibility."
+    },
+    "chat": {
+      "react": "React with emoji",
+      "reactShort": "React",
+      "replyInThread": "Reply in thread",
+      "editMessage": "Edit message",
+      "deleteMessage": "Delete message",
+      "actions": "Message actions",
+      "editPlaceholder": "Edit message...",
+      "replyOne": "{n} reply",
+      "replyMany": "{n} replies",
+      "viewThread": "View thread",
+      "deleteTitle": "Delete message?",
+      "cannotUndo": "This action cannot be undone.",
+      "writePlaceholder": "Write a message...",
+      "uploadFailed": "File upload failed. Please try again.",
+      "send": "Send",
+      "searchMembers": "Search members...",
+      "noMembers": "No members found",
+      "searchFiles": "Search files...",
+      "noFiles": "No files in this room",
+      "gifs": "GIFs",
+      "trending": "Trending",
+      "searchGifs": "Search GIFs...",
+      "poweredByGiphy": "Powered by GIPHY"
+    },
+    "notif": {
+      "title": "Notifications",
+      "markAllRead": "Mark all read",
+      "empty": "No notifications"
+    },
+    "search": {
+      "close": "Close search",
+      "placeholder": "Search messages, rooms, people...",
+      "intro": "Type to search across messages, rooms, and people",
+      "noResults": "No results found for \"{query}\"",
+      "messages": "Messages",
+      "rooms": "Rooms",
+      "people": "People",
+      "inRoom": "{author} in #{room}"
+    },
+    "layout": {
+      "collapseSidebar": "Collapse sidebar",
+      "selectOrg": "Select organization",
+      "newOrg": "New organization",
+      "allOrgs": "All organizations",
+      "openDevices": "Open the devices page",
+      "searchDevices": "Search devices",
+      "openRooms": "Open the rooms page",
+      "searchRooms": "Search rooms",
+      "menu": "Menu",
+      "inCallMuted": "In a call, muted — call controls",
+      "inCall": "In a call — call controls",
+      "call": "Call",
+      "returnToCall": "Return to call",
+      "cameraOff": "Turn camera off",
+      "cameraOn": "Turn camera on",
+      "hangUp": "Hang up",
+      "activeCallOne": "{n} active call",
+      "activeCallMany": "{n} active calls",
+      "activeCalls": "Active Calls",
+      "unreadOne": "{n} unread message",
+      "unreadMany": "{n} unread messages",
+      "lightMode": "Light mode",
+      "darkMode": "Dark mode",
+      "profile": "Profile",
+      "docs": "Documentation",
+      "reconnecting": "Disconnected. Reconnecting...",
+      "orgName": "Name",
+      "orgSlug": "Slug",
+      "orgSlugHint": "URL-friendly identifier, globally unique",
+      "create": "Create",
+      "createOrgFailed": "Failed to create organization",
+      "slugTaken": "That slug is already taken — pick another"
+    },
+    "chatView": {
+      "files": "Files",
+      "members": "Members",
+      "panels": "Room panels",
+      "agentSession": "Agent session",
+      "closeTranscript": "Close the transcript",
+      "thread": "Thread",
+      "replyPlaceholder": "Reply in thread..."
+    },
+    "notFound": {
+      "title": "Page Not Found",
+      "body": "The page you are looking for does not exist or has been moved.",
+      "home": "Go to Dashboard"
+    },
+    "oauth": {
+      "back": "Back to login",
+      "failed": "Failed to complete OAuth login"
+    },
+    "rooms": {
+      "discover": "Discover and join open rooms",
+      "noTopic": "No topic set",
+      "noMatch": "No rooms found matching \"{query}\"",
+      "noOpen": "No open rooms available. Try creating one!",
+      "empty": "No rooms yet",
+      "emptyBody": "Create your first room to start chatting, sharing files, or hosting calls with your team.",
+      "walkThrough": "Walk me through it",
+      "created": "Room created",
+      "deleteTitle": "Delete \"{name}\"?",
+      "deleteBody": "This will permanently delete the room and all its messages, files, and members. This cannot be undone.",
+      "assignRole": "Assign Role",
+      "role": "Role",
+      "roleAssigned": "Role assigned",
+      "assignFailed": "Failed to assign role"
+    },
+    "files": {
+      "search": "Search files",
+      "columns": "Configure columns",
+      "all": "All Files",
+      "room": "Room Files",
+      "uploading": "Uploading files...",
+      "col": {
+        "name": "Name",
+        "room": "Room",
+        "type": "Type",
+        "size": "Size",
+        "uploaded": "Uploaded",
+        "actions": "Actions"
+      }
     }
   }
 }

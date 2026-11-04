@@ -3,7 +3,7 @@
 <template>
   <v-dialog v-model="show" max-width="450" persistent>
     <v-card>
-      <v-card-title>Assign Role</v-card-title>
+      <v-card-title>{{ t('mh.rooms.assignRole') }}</v-card-title>
       <v-card-text>
         <p class="text-body-2 mb-3">
           Assign a role to <strong>{{ memberName }}</strong>
@@ -13,7 +13,7 @@
           :items="availableRoles"
           item-title="name"
           item-value="id"
-          label="Role"
+          :label="t('mh.rooms.role')"
           variant="outlined"
           density="comfortable"
         >
@@ -33,7 +33,7 @@
       </v-card-text>
       <v-card-actions>
         <v-spacer />
-        <v-btn variant="text" @click="cancel">Cancel</v-btn>
+        <v-btn variant="text" @click="cancel">{{ t('common.cancel') }}</v-btn>
         <v-btn
           color="primary"
           variant="flat"
@@ -52,6 +52,9 @@
 import { ref, computed, watch } from 'vue'
 import { useRoleStore } from '@/stores/role'
 import { useSnackbar } from '@/composables/useSnackbar'
+import { useI18n } from 'vue-i18n'
+
+const { t } = useI18n()
 
 const props = defineProps<{
   modelValue: boolean
@@ -100,9 +103,9 @@ async function assign() {
     await roleStore.assignRole(props.tenantId, selectedRoleId.value, props.userId)
     emit('assigned', selectedRoleId.value)
     show.value = false
-    showSuccess('Role assigned')
+    showSuccess(t('mh.rooms.roleAssigned'))
   } catch (e) {
-    showError(e instanceof Error ? e.message : 'Failed to assign role')
+    showError(e instanceof Error ? e.message : t('mh.rooms.assignFailed'))
   } finally {
     saving.value = false
   }

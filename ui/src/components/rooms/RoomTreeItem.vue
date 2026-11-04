@@ -63,12 +63,12 @@
     <!-- Delete confirmation -->
     <v-dialog v-model="showDeleteConfirm" max-width="400">
       <v-card>
-        <v-card-title class="text-h6">Delete "{{ room.name }}"?</v-card-title>
-        <v-card-text>This will permanently delete the room and all its messages, files, and members. This cannot be undone.</v-card-text>
+        <v-card-title class="text-h6">{{ t('mh.rooms.deleteTitle', { name: room.name }) }}</v-card-title>
+        <v-card-text>{{ t('mh.rooms.deleteBody') }}</v-card-text>
         <v-card-actions>
           <v-spacer />
-          <v-btn variant="text" @click="showDeleteConfirm = false">Cancel</v-btn>
-          <v-btn color="error" variant="tonal" :loading="deleting" @click="handleDelete">Delete</v-btn>
+          <v-btn variant="text" @click="showDeleteConfirm = false">{{ t('common.cancel') }}</v-btn>
+          <v-btn color="error" variant="tonal" :loading="deleting" @click="handleDelete">{{ t('mh.common.delete') }}</v-btn>
         </v-card-actions>
       </v-card>
     </v-dialog>
@@ -80,6 +80,9 @@ import { ref, computed, inject } from 'vue'
 import { useRouter } from 'vue-router'
 import { useRoomStore, type Room } from '@/stores/rooms'
 import { useSnackbar } from '@/composables/useSnackbar'
+import { useI18n } from 'vue-i18n'
+
+const { t } = useI18n()
 
 const props = defineProps<{
   room: Room
