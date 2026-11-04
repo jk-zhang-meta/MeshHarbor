@@ -846,7 +846,9 @@ pub mod backbone_test_support {
         client::{OrgRelayConn, bind as bind_member},
         parse_data, prober,
     };
-    pub use tunnel_core::overlay::runtime::{OverlayEvent, OverlayRuntime, TunFactory};
+    pub use tunnel_core::overlay::runtime::{
+        OverlayEvent, OverlayRuntime, RelayProbeUpdates, TunFactory,
+    };
     pub use tunnel_core::overlay::tun::TunIo;
     pub use tunnel_core::overlay::wg::{Carrier, WgDevice};
     pub use tunnel_core::overlay::{

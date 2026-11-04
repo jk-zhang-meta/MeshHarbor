@@ -11036,7 +11036,7 @@ async fn legacy_three_relay_runtime_recovers_automatically_after_middle_restart(
     use meshharbor_remote_control::signaling::{ClientMsg, ServerMsg};
     use meshharbord::relay_server::backbone_test_support::{
         ConnectionType, NativeRelay, Netstack, NetstackHandle, OverlayEvent, OverlayRuntime,
-        OverlayView, TunFactory, TunIo, WgKeypair, prober,
+        OverlayView, RelayProbeUpdates, TunFactory, TunIo, WgKeypair, prober,
     };
     use std::{
         io,
@@ -11166,6 +11166,10 @@ async fn legacy_three_relay_runtime_recovers_automatically_after_middle_restart(
                     if let ClientMsg::OverlayRelayRequest{peer_node_id,..}
                         |ClientMsg::OverlayOrgRelayFallbackRequest{peer_node_id,..}=&message {
                         pump_requests.lock().unwrap().push(*peer_node_id);
+                        let kind=if matches!(&message,ClientMsg::OverlayRelayRequest{..}) {
+                            "OverlayRelayRequest"
+                        }else{"OverlayOrgRelayFallbackRequest"};
+                        trace.record(role,"member_request",json!({"kind":kind,"peer_node_id":peer_node_id.to_hex()}));
                     }
                     if let ClientMsg::OverlayRelayProbe{relay_node_id,reachable,rtt_ms,..}=&message {
                         reported.lock().unwrap().push((*relay_node_id,*reachable,*rtt_ms));
@@ -11216,8 +11220,8 @@ async fn legacy_three_relay_runtime_recovers_automatically_after_middle_restart(
     }
     async fn relay_probe_targets(message:&ServerMsg,native:&Arc<Mutex<NativeRelay>>,
         target:Option<&Arc<Mutex<NativeRelay>>>,context:(&'static str,&TraceState),
-        targets:&watch::Sender<Vec<prober::Target>>) {
-        let ServerMsg::OverlayNetmap{network,..}=message else {return;};
+        targets:&watch::Sender<Vec<prober::Target>>,updates:&mut RelayProbeUpdates) {
+        let ServerMsg::OverlayNetmap{network,peers,..}=message else {return;};
         let policy=if let Some(target)=target {
             let next=target.lock().await;Some(native.lock().await.policy_to(&next))
         }else{None};
@@ -11230,13 +11234,16 @@ async fn legacy_three_relay_runtime_recovers_automatically_after_middle_restart(
                 "endpoints":t.endpoints.iter().map(ToString::to_string).collect::<Vec<_>>(),"via":t.via})).collect::<Vec<_>>()}));
         // Production runtime replaces this watch on every full netmap,
         // including identical values. The production prober owns round timing.
+        updates.reset_full(&accepted,peers,network.auth_revision);
         targets.send_replace(accepted);
     }
     async fn relay_pump(mut ws: Ws, native: Arc<Mutex<NativeRelay>>, target: Option<Arc<Mutex<NativeRelay>>>,
         context:(&'static str,Arc<TraceState>),initial:ServerMsg,
-        targets:watch::Sender<Vec<prober::Target>>,mut outcomes:mpsc::Receiver<Vec<prober::Outcome>>) {
+        probe_control:(watch::Sender<Vec<prober::Target>>,prober::ReactiveProbes),mut outcomes:mpsc::Receiver<Vec<prober::Outcome>>) {
         let (role,trace)=context;
-        relay_probe_targets(&initial,&native,target.as_ref(),(role,&trace),&targets).await;
+        let (targets,reactive)=probe_control;
+        let mut updates=RelayProbeUpdates::default();
+        relay_probe_targets(&initial,&native,target.as_ref(),(role,&trace),&targets,&mut updates).await;
         // The production agent initiates pings; the server deliberately never
         // does. A silent fixture otherwise loses its WS receive-liveness lease.
         let mut heartbeat=tokio::time::interval(Duration::from_secs(25));heartbeat.tick().await;
@@ -11245,6 +11252,9 @@ async fn legacy_three_relay_runtime_recovers_automatically_after_middle_restart(
                 _=heartbeat.tick()=>{ws.send(Message::Ping(Vec::new().into())).await.unwrap();continue;}
                 round=outcomes.recv()=>{
                     let Some(round)=round else {break;};
+                    let mut relay_ids=round.iter().map(|o|o.relay_node_id.to_hex()).collect::<Vec<_>>();
+                    relay_ids.sort();relay_ids.dedup();
+                    trace.record(role,"measured_probe_round",json!({"relay_node_ids":relay_ids,"outcome_count":round.len()}));
                     for outcome in round {
                         let rtt_ms=outcome.rtt.map(|d|u32::try_from(d.as_millis()).unwrap_or(u32::MAX));
                         trace.record(role,"measured_probe",json!({"relay_node_id":outcome.relay_node_id.to_hex(),
@@ -11262,8 +11272,15 @@ async fn legacy_three_relay_runtime_recovers_automatically_after_middle_restart(
                 Message::Text(text)=>{
                     let message:ServerMsg=serde_json::from_str(&text).expect("relay server message");
                     trace.wire(role,&message);
-                    relay_probe_targets(&message,&native,target.as_ref(),(role,&trace),&targets).await;
+                    relay_probe_targets(&message,&native,target.as_ref(),(role,&trace),&targets,&mut updates).await;
                     match &message {
+                        ServerMsg::OverlayNetmapDelta{epoch,auth_revision,upserts,removes}=>{
+                            for (id,serial) in updates.delta(*epoch,*auth_revision,upserts,removes) {
+                                let queued=reactive.request(id,serial);
+                                trace.record(role,"accepted_probe_hint",json!({"relay_node_id":id.to_hex(),
+                                    "local_event_serial":serial,"queued":queued}));
+                            }
+                        }
                         ServerMsg::OverlayRelayServe{..}|ServerMsg::OverlayRelayRevoke{..}
                         |ServerMsg::OverlayRelayBridgeServe{..}|ServerMsg::OverlayRelayBridgeRevoke{..}=>{
                             let policy=if matches!(&message,ServerMsg::OverlayRelayBridgeServe{..}) {
@@ -11287,9 +11304,10 @@ async fn legacy_three_relay_runtime_recovers_automatically_after_middle_restart(
         context:(&'static str,Arc<TraceState>),initial:ServerMsg,tasks:&mut Tasks)->usize {
         let (targets,target_rx)=watch::channel(Vec::<prober::Target>::new());
         let (outcomes,outcome_rx)=mpsc::channel(8);
-        tasks.0.push(prober::spawn(target_rx,outcomes));
+        let (prober_task,reactive)=prober::spawn_reactive(target_rx,outcomes);
+        tasks.0.push(prober_task);
         let index=tasks.0.len();
-        tasks.0.push(tokio::spawn(relay_pump(ws,native,target,context,initial,targets,outcome_rx)));
+        tasks.0.push(tokio::spawn(relay_pump(ws,native,target,context,initial,(targets,reactive),outcome_rx)));
         index
     }
     async fn tcp64(from:&NetstackHandle,to:&NetstackHandle,target:Ipv4Addr,port:u16)->io::Result<()> {
@@ -11332,8 +11350,8 @@ async fn legacy_three_relay_runtime_recovers_automatically_after_middle_restart(
         tokio::try_join!(echo,send)?;Ok(())
     }
 
-    // Allow the unchanged 240-second production probe cadence plus ordinary
-    // setup, automatic member retry and resource teardown; never accelerate it.
+    // Cover the unchanged 240-second periodic fallback plus ordinary setup,
+    // automatic member retry and resource teardown. Events may react earlier.
     tokio::time::timeout(Duration::from_secs(480),async {
         let slug="iso-legacy-runtime-restart";let rig=Rig::up(slug,"enforce").await;
         // Declared after Rig: both success and panic unwinding print the
@@ -11456,9 +11474,9 @@ async fn legacy_three_relay_runtime_recovers_automatically_after_middle_restart(
         trace.0.phase("rejoincompleted");
         assert_eq!(rig.node(&format!("{slug}-r1")).await,nodes[1]);
         start_relay(ws,native[1].clone(),Some(native[2].clone()),("relay1",trace.0.clone()),serde_json::from_value(rejoin_map).unwrap(),&mut tasks);
-        // Rejoin invalidates old incoming-edge observations. The source's
-        // next real production round is 240 seconds later; cover that round
-        // and normal member retries without forcing another source join.
+        // Rejoin invalidates old incoming-edge observations. This 300-second
+        // window also covers the unchanged 240-second periodic fallback and
+        // normal retries without forcing another source join; events may react earlier.
         let recovery=tokio::time::timeout(Duration::from_secs(300),async {
             loop {a.assert_live(&tasks);b.assert_live(&tasks);
                 let reminted=network.org_relay.active_session(&pair).is_some_and(|s|s.generation!=original.generation);
