@@ -958,7 +958,7 @@ pub(crate) mod win {
                 "C:\\Users\\a b\\Videos\\Roomler",
             ];
             let args: Vec<OsString> = cases.iter().map(OsString::from).collect();
-            let cmd = command_line(Path::new(r"C:\Program Files\Roomler\roomlerd.exe"), &args);
+            let cmd = command_line(Path::new(r"C:\Program Files\MeshHarbor\meshharbord.exe"), &args);
             let mut n = 0i32;
             // SAFETY: a NUL-terminated command line; the array is freed below.
             let argv = unsafe { CommandLineToArgvW(cmd.as_ptr(), &mut n) };
@@ -975,7 +975,7 @@ pub(crate) mod win {
                 .collect();
             // SAFETY: the array CommandLineToArgvW allocated.
             unsafe { LocalFree(argv.cast()) };
-            assert_eq!(parsed[0], r"C:\Program Files\Roomler\roomlerd.exe");
+            assert_eq!(parsed[0], r"C:\Program Files\MeshHarbor\meshharbord.exe");
             assert_eq!(&parsed[1..], &cases[..]);
         }
 

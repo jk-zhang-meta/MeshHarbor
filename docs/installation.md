@@ -178,7 +178,7 @@ Details worth knowing:
   carries the command to anchor later. Details: [`fleet-rpc.md`](./fleet-rpc.md)
   § Anchoring a device.
 - Daemon installs also place **`meshharbor-desktop`** (tray companion: status,
-  tunnels pane, consent prompts) and **`roomler.exe`** — a small shim that
+  tunnels pane, consent prompts) and **`meshharbor.exe`** — a small shim that
   re-execs `roomlerd cli`, so CLI and daemon can never version-skew.
 - Terminal alternative: `irm https://roomler.ai/api/setup/install.ps1 | iex`
   (prompts for role/token; flags mirror the sh script).
@@ -205,14 +205,14 @@ Details worth knowing:
   `./install.ps1 -Role daemon-user -PrepareFirewall`; add
   `-AllowPublicFirewall` only when public-network access is intended.
   The per-user MSI and updater both replace the daemon in the fixed
-  `%LOCALAPPDATA%\Programs\Roomler\roomlerd.exe` path, so updates keep the same
+  `%LOCALAPPDATA%\Programs\MeshHarbor\meshharbord.exe` path, so updates keep the same
   path-based rules. Moving the executable requires preparing the new path.
   A final MSI uninstall removes these two install-owned rules, requesting
   administrator approval only when they exist. Cancellation or removal failure
   is recorded as a custom-action result in the MSI log and **does not block
   uninstall**; the rules remain at that fixed path. Reinstalling at the same
   path reuses them. To clean them separately, restore/run the daemon at that
-  same path and use `roomlerd.exe service remove-firewall --elevate` with
+  same path and use `meshharbord.exe service remove-firewall --elevate` with
   administrator approval. For an explicit uninstall log, pass
   `/L*v "%TEMP%\meshharbor-uninstall.log"` to `msiexec /x`.
   An upgrade keeps the rules for that fixed path.
@@ -237,14 +237,14 @@ curl -fsSL https://roomler.ai/api/setup/install.sh | sh -s -- \
 ```
 
 - Installs the `.deb` (x86_64 **and** arm64) or tarball, verifies SHA-256,
-  enrolls, and enables a **systemd user unit** (`roomler.service` →
+  enrolls, and enables a **systemd user unit** (`meshharbor.service` →
   `systemctl --user enable --now`).
 - **It updates itself unattended, per-user or `--system`.** A per-user daemon
   runs as you and cannot write `/usr`, so for a per-user install `install.sh`
   also enables a **root update helper**, and so does the `.deb` itself however
-  it is installed (apt, the Software app, `dpkg -i`). `roomler-update.service`
-  is woken by `roomler-update.timer` (5 min after boot, or at once when the
-  install turns it on, then every 6 h) and by `roomler-update.path` (the file
+  it is installed (apt, the Software app, `dpkg -i`). `meshharbor-update.service`
+  is woken by `meshharbor-update.timer` (5 min after boot, or at once when the
+  install turns it on, then every 6 h) and by `meshharbor-update.path` (the file
   a pushed update touches). It checks, verifies and installs as root, and the
   daemon then restarts onto the new binary once nothing it serves would be cut
   (FR-96). On a system install the helper steps aside: that root daemon
@@ -315,11 +315,11 @@ curl -fsSL https://roomler.ai/api/setup/install.sh | sh -s -- \
 
   🔑 To tell which a host got, compare `readlink /proc/self/ns/mnt` with the
   daemon's `/proc/<pid>/ns/mnt` (the same means unsandboxed); the journal
-  cannot say. The root system unit (`roomlerd.service`) has no sandbox
+  cannot say. The root system unit (`meshharbord.service`) has no sandbox
   either way.
 - `--role tunnel` installs just the CLI (tarball or `.deb`).
 - **The system service from the CLI** (FR-97 P6c): `sudo roomlerd service install --as-service` (alias
-  `--system`) enables `roomlerd.service`, the root unit `install.sh --system` uses, after the fact. It refuses
+  `--system`) enables `meshharbord.service`, the root unit `install.sh --system` uses, after the fact. It refuses
   until `/etc/roomler/config.toml` exists (`sudo roomlerd --config /etc/roomler/config.toml enroll …`): without
   a config the unit would restart every 5 s. It warns when a per-user daemon also runs (one daemon per machine),
   and it leaves the update helper alone, because the helper steps aside by itself while the system unit is
@@ -334,7 +334,7 @@ curl -fsSL https://roomler.ai/api/setup/install.sh | sh -s -- \
 ### Where a root daemon's config lives (rc.435)
 
 A **root** daemon on Linux resolves `/etc/roomler/config.toml` — the path the
-packaged `roomlerd.service` has always passed as `--config`. Non-root Linux
+packaged `meshharbord.service` has always passed as `--config`. Non-root Linux
 installs are untouched.
 
 `appdirs::migrate_system_config()` moves a legacy
@@ -356,7 +356,7 @@ buildhost, fleet-host-2 and the WSL sibling, the last from nothing but a
 healthy** — the live daemon is an unmanaged orphan. Check `pgrep -x roomlerd` and
 `roomler peers`, and never "restart to fix" on that basis.
 
-⚠️ The per-host `roomlerd.service.d/config-path.conf` drop-ins used as the stopgap
+⚠️ The per-host `meshharbord.service.d/config-path.conf` drop-ins used as the stopgap
 are unnecessary from rc.435 and should be removed.
 
 ### The desktop user and a root daemon (FR-27 P11)
@@ -381,7 +381,7 @@ Disconnect and its consent prompt. As that user:
   to `sudo roomler …`.
 
 The socket follows the active graphical session, so there is none over SSH or at the
-login screen. Turn it off with `ROOMLERD_PERSON_SOCKET=0` in a `roomlerd.service`
+login screen. Turn it off with `ROOMLERD_PERSON_SOCKET=0` in a `meshharbord.service`
 drop-in. Details: [`desktop-companion.md`](desktop-companion.md) §12 and the
 [security baseline](security-baseline.md) §4.
 
@@ -413,15 +413,15 @@ processes**, and it is worth knowing why before you install:
      and it still honours a legacy `enable-daemon` marker there), so the
      path remains an input to code on user machines. FR-21 D5.
      ⚠️ This anchor's previous reason was FALSE and had been for some time:
-     it claimed com.roomler.daemon.plist passes /etc/roomler-agent as its
+     it claimed fans.itachi.meshharbor.daemon.plist passes /etc/roomler-agent as its
      config. It does not — it passes /etc/roomler/config.toml. An anchor's
      stated reason is a CLAIM and ages like any other; re-read the code it
      names before trusting it (FR-46). -->
 | Half | Runs as | Does | Why it cannot do the other's job |
 |------|---------|------|----------------------------------|
-| LaunchAgent `com.roomler.agent` | you, inside your GUI login session | screen capture, input, clipboard | a root LaunchDaemon in session 0 has no WindowServer — capture and `CGEvent` injection do not work there |
-| LaunchDaemon `com.roomler.daemon` | root, from boot | overlay mesh, tunnels | creating a `utun` and installing routes require root |
-| LaunchDaemon `com.roomler.update` | root, on a 6 h timer + on demand | self-update: check, verify, `installer -pkg … -target /` | `installer -target /` needs root, and neither agent half should ever exec its own replacement (the exit-to-update dance is what used to knock Macs offline). Installed by DEFAULT; opt out with `sudo touch /etc/roomler/disable-auto-update` + re-run the installer |
+| LaunchAgent `fans.itachi.meshharbor.agent` | you, inside your GUI login session | screen capture, input, clipboard | a root LaunchDaemon in session 0 has no WindowServer — capture and `CGEvent` injection do not work there |
+| LaunchDaemon `fans.itachi.meshharbor.daemon` | root, from boot | overlay mesh, tunnels | creating a `utun` and installing routes require root |
+| LaunchDaemon `fans.itachi.meshharbor.update` | root, on a 6 h timer + on demand | self-update: check, verify, `installer -pkg … -target /` | `installer -target /` needs root, and neither agent half should ever exec its own replacement (the exit-to-update dance is what used to knock Macs offline). Installed by DEFAULT; opt out with `sudo touch /etc/roomler/disable-auto-update` + re-run the installer |
 
 They cannot share one enrollment: the hub keys sessions on `agent_id`, so a
 second control-WS connection displaces the first. **Each half is its own
@@ -448,7 +448,7 @@ Running the one-liner under `sudo` is fine: the script resolves the console
 user itself and enrolls the per-user half as them.
 
 The root half can also be added after the fact (FR-97 P6c). Enroll it with
-`sudo /Library/Roomler/roomlerd.app/Contents/MacOS/roomlerd --config /etc/roomler/config.toml enroll … --overlay`,
+`sudo /Library/Roomler/meshharbord.app/Contents/MacOS/roomlerd --config /etc/roomler/config.toml enroll … --overlay`,
 then `sudo roomlerd service install --as-service` writes the enable marker and
 the LaunchDaemon and bootstraps it. `service stop --as-service` is a SIGTERM
 that stays down until the next boot or `service start --as-service`: the plist
@@ -485,7 +485,7 @@ and reports the state to the server — so the device list shows "No screen
 access" / "No input access" instead of letting you discover it by connecting to
 a black screen.
 
-Then restart it: `launchctl kickstart -k gui/$(id -u)/com.roomler.agent`
+Then restart it: `launchctl kickstart -k gui/$(id -u)/fans.itachi.meshharbor.agent`
 
 ⚠️ Grants are keyed to the binary's code signature. Until Apple notarisation is
 finished the `.pkg` is unsigned, so **an agent update invalidates them** and
@@ -495,8 +495,8 @@ both toggles need re-enabling.
 
 | | |
 |---|---|
-| `/Applications/Roomler.app` | the **menu-bar companion** — status, routes, and the permissions panel. `LSUIElement`, so no Dock tile. The only Roomler icon you should see |
-| `/Library/Roomler/roomlerd.app` | the daemon. A background service with nothing to launch, so it is deliberately NOT in `/Applications`; still a bundle, because TCC attributes the two permissions to a bundle identity |
+| `/Applications/MeshHarbor.app` | the **menu-bar companion** — status, routes, and the permissions panel. `LSUIElement`, so no Dock tile. The only Roomler icon you should see |
+| `/Library/Roomler/meshharbord.app` | the daemon. A background service with nothing to launch, so it is deliberately NOT in `/Applications`; still a bundle, because TCC attributes the two permissions to a bundle identity |
 | `/usr/local/bin/roomler` | the CLI (a small shim onto the daemon's own command surface) |
 | `/usr/local/bin/roomlerd` | the daemon on PATH, for `roomlerd enroll` / `--version` — a symlink into the bundle, not a second copy |
 
@@ -511,7 +511,7 @@ command reports "daemon not running", you are probably asking the wrong half.
 
 | | Path |
 |---|---|
-| App bundle | `/Library/Roomler/roomlerd.app` (executable `roomlerd`). ⚠️ Renaming the bundle voids the TCC grants — FR-46 P5b did rename it, which is why the `.pkg` postinstall tells you to re-approve **Roomler Daemon** and delete a stale **Roomler Agent** entry |
+| App bundle | `/Library/Roomler/meshharbord.app` (executable `roomlerd`). ⚠️ Renaming the bundle voids the TCC grants — FR-46 P5b did rename it, which is why the `.pkg` postinstall tells you to re-approve **Roomler Daemon** and delete a stale **Roomler Agent** entry |
 | Per-user config | `~/Library/Application Support/live.roomler.roomler/config.toml` |
 | Root config | `/etc/roomler/config.toml` |
 | Per-user log | `/tmp/roomlerd.err.log` |
@@ -558,7 +558,7 @@ the tray (**Welcome tour…**) and Settings.
 | Windows perUser — wizard, `install.ps1 -Role daemon-user` | the **worker** (the Scheduled Task, as the user) — `CreateProcessW` with `bInheritHandles = FALSE` | `HKCU\…\Run\Roomler Desktop` — written by the per-user `service install`, the worker at each start and the companion's first run; removed by `service uninstall` |
 | Ubuntu / Debian — `install.sh` (user or `--system`) | the **daemon**, via `systemd-run` as its own transient unit (never in the daemon's cgroup) into the active `Class=user` graphical session — it waits for the companion `.deb`, which `install.sh` installs after the daemon's | the package's `/etc/xdg/autostart/meshharbor-desktop.desktop` (`--autostart`) |
 | Fedora / RHEL family / openSUSE — `install.sh` (FR-93 P6d) | the same: the daemon from the tarball, then the companion **`.rpm`**, which `install.sh` installs with `dnf` (`zypper`, `yum`) so its libraries come from the distro's own repositories | the same autostart file, from the `.rpm` |
-| macOS — `.pkg` | the package's postinstall (the `com.roomler.desktop` LaunchAgent) — unchanged | the same LaunchAgent (`RunAtLoad`) |
+| macOS — `.pkg` | the package's postinstall (the `fans.itachi.meshharbor.desktop` LaunchAgent) — unchanged | the same LaunchAgent (`RunAtLoad`) |
 
 ```mermaid
 flowchart TD
@@ -616,7 +616,7 @@ when one is needed (FR-27).
 
 | Component | Mechanism |
 |---|---|
-| `roomlerd` (daemon hosts) | Self-updater polls `/api/agent/latest-release` (4 h timer + startup cooldown; a check that fails on the NETWORK — DNS, connect, timeout — rechecks after 5, 15, then 60 min instead of the full interval, #1755, while a verdict such as a 403 rate limit keeps the interval), verifies SHA-256, hands off to MSI / `dpkg` / `installer` and restarts. A per-user Linux daemon cannot write `/usr`: there a root update helper (`roomler-update.service`) installs, and the daemon restarts onto the new binary once nothing it serves would be cut (FR-96). Admins can force it fleet-wide or per device (`POST …/agent/update`); ⚠️ `delivered: true` means only that the push reached the device's live socket — a device with `auto_update = false` ignores it and logs `update trigger dropped — auto-update is off on this device` (#1689). Crash-looping updates roll back to the last known-good version |
+| `roomlerd` (daemon hosts) | Self-updater polls `/api/agent/latest-release` (4 h timer + startup cooldown; a check that fails on the NETWORK — DNS, connect, timeout — rechecks after 5, 15, then 60 min instead of the full interval, #1755, while a verdict such as a 403 rate limit keeps the interval), verifies SHA-256, hands off to MSI / `dpkg` / `installer` and restarts. A per-user Linux daemon cannot write `/usr`: there a root update helper (`meshharbor-update.service`) installs, and the daemon restarts onto the new binary once nothing it serves would be cut (FR-96). Admins can force it fleet-wide or per device (`POST …/agent/update`); ⚠️ `delivered: true` means only that the push reached the device's live socket — a device with `auto_update = false` ignores it and logs `update trigger dropped — auto-update is off on this device` (#1689). Crash-looping updates roll back to the last known-good version |
 | `roomler` CLI (tunnel-only hosts) | `roomler self-update` (same proxy origin): since FR-97 P6b the release's `.asc` is checked against the pinned key on every OS, and Linux and macOS install too, the tarball or (where dpkg owns the binary) the `.deb` ([`tunnel-install.md` §10](tunnel-install.md)). On daemon hosts the MSI/.deb owns the binaries — the shim's `self-update` refuses by design |
 | `meshharbor-desktop` | Not in either MSI: the daemon refreshes it itself at start when the companion's recorded version differs from its own — downloads the signed asset, stages it beside the old EXE, stops the running companion **by PID** (found by the path it was started from, never by image name), promotes the new file and starts it again in the same session (`agents/meshharbord/src/companion.rs`, `swap`). ⚠️ **One refresher per install**: on a Windows service install that is the service host — the worker it spawns skips, because two refreshers raced and left the old companion running, holding the single-instance lock (#1686) |
 | wizard | Fetch-latest by nature; `setup-v<V>` is cut with every `agent-v<V>` (the lockstep job in `release-agent.yml`) |
@@ -666,7 +666,7 @@ precisely so corporate networks can allow-list `roomler.ai` instead of
 
 ```mermaid
 flowchart TD
-    S["1 · stop every service THROUGH ITS MANAGER, files still on disk<br/>systemd: update timer + path, a helper run in flight finishes,<br/>roomlerd.service, each account's roomler.service<br/>launchd: com.roomler.update (never mid-install),<br/>every gui/&lt;uid&gt; agent + companion, com.roomler.daemon"]
+    S["1 · stop every service THROUGH ITS MANAGER, files still on disk<br/>systemd: update timer + path, a helper run in flight finishes,<br/>meshharbord.service, each account's meshharbor.service<br/>launchd: fans.itachi.meshharbor.update (never mid-install),<br/>every gui/&lt;uid&gt; agent + companion, fans.itachi.meshharbor.daemon"]
     L["1b · whatever still runs (an orphan, a hand-started daemon):<br/>SIGTERM; a daemon still there 30 s later is REPORTED,<br/>never SIGKILLed (the companion, a UI, is killed)"]
     P["2 · the packages · the tarball's files no package owns ·<br/>every account's login registrations"]
     K{"--keep-config?"}
@@ -679,10 +679,10 @@ flowchart TD
 
 | Step | Linux | macOS |
 |---|---|---|
-| 1 · stop | `roomler-update.timer` + `.path`, a `roomler-update.service` run still in `SubState=start` waited out, then `roomlerd.service`, then each account's `roomler.service` on its user bus (`stop_unit`, `:1149`) | `com.roomler.update` once it is no longer `state = running`, every account's `gui/<uid>/com.roomler.{desktop,agent}`, then `com.roomler.daemon` (`:1340`) |
+| 1 · stop | `meshharbor-update.timer` + `.path`, a `meshharbor-update.service` run still in `SubState=start` waited out, then `meshharbord.service`, then each account's `meshharbor.service` on its user bus (`stop_unit`, `:1149`) | `fans.itachi.meshharbor.update` once it is no longer `state = running`, every account's `gui/<uid>/fans.itachi.meshharbor.{desktop,agent}`, then `fans.itachi.meshharbor.daemon` (`:1340`) |
 | 1b · sweep | `roomlerd` and `meshharbor-desktop` by exact name — `pgrep -x`, or `/proc/*/comm` where procps is absent (`stop_leftovers`, `:1078`) | the same; it also reaches a companion opened from Finder, which runs under LaunchServices, out of any bootout's reach |
-| 2 · programs | `dpkg --purge` of the companion, the daemon, the tunnel CLI and the two names the daemon's `.deb` replaced (dependent first, one call); `rpm -e meshharbor-desktop`; the tarball payload of `scripts/stage-linux-tarball.sh` and the tunnel CLI's `/usr/local/bin` (`:1248`); every account's `roomler.service` enable links and the companion's own autostart entry (`X-Roomler-Managed`) | the two privacy grants, the two LaunchDaemons, every account's LaunchAgents, `/Library/Roomler`, `/Applications/Roomler.app`, `/usr/local/bin/roomler{,d}`, the `com.roomler.*` package receipts |
-| 3 · config | `/etc/roomler`, `/etc/default/roomlerd`, `roomlerd.service.d/`; for the caller (the account behind `sudo`) and root: `~/.config/roomler`, `~/.local/share/roomler`, `~/.local/state/roomler`, the tunnel CLI's tree, the pre-rename trees | `/etc/roomler`, `/var/log/roomler`, the `/tmp` logs; for the caller, the console user and root: `~/Library/Application Support/live.roomler.roomler`, the tunnel CLI's tree, the pre-rename trees |
+| 2 · programs | `dpkg --purge` of the companion, the daemon, the tunnel CLI and the two names the daemon's `.deb` replaced (dependent first, one call); `rpm -e meshharbor-desktop`; the tarball payload of `scripts/stage-linux-tarball.sh` and the tunnel CLI's `/usr/local/bin` (`:1248`); every account's `meshharbor.service` enable links and the companion's own autostart entry (`X-Roomler-Managed`) | the two privacy grants, the two LaunchDaemons, every account's LaunchAgents, `/Library/Roomler`, `/Applications/MeshHarbor.app`, `/usr/local/bin/roomler{,d}`, the `fans.itachi.meshharbor.*` package receipts |
+| 3 · config | `/etc/roomler`, `/etc/default/roomlerd`, `meshharbord.service.d/`; for the caller (the account behind `sudo`) and root: `~/.config/roomler`, `~/.local/share/roomler`, `~/.local/state/roomler`, the tunnel CLI's tree, the pre-rename trees | `/etc/roomler`, `/var/log/roomler`, the `/tmp` logs; for the caller, the console user and root: `~/Library/Application Support/live.roomler.roomler`, the tunnel CLI's tree, the pre-rename trees |
 
 ⚠️ **Stop through the manager before any file goes.** The stop is a SIGTERM,
 the daemon's clean stop: it takes back the exit routes and the DNS steer it put
@@ -700,9 +700,9 @@ for its unit, so on Linux the sweep signals at once. `launchctl bootout`
 returns while the job is still draining, so on a Mac it first waits up to
 20 s.
 
-⚠️ **An update in flight finishes first.** Stopping `roomler-update.service`
+⚠️ **An update in flight finishes first.** Stopping `meshharbor-update.service`
 mid-install would hand step 2 a half-installed package; on a Mac, booting
-`com.roomler.update` out mid-install kills its whole process group,
+`fans.itachi.meshharbor.update` out mid-install kills its whole process group,
 `installer` included (the `.pkg` postinstall's own warning).
 
 ⚠️ **The config is the credential.** `config.toml` holds the agent token (and

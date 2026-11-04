@@ -16,7 +16,7 @@ path = "src/lib.rs"
 # comment describe a file that does not exist. FR-21 D6.
 # The daemon. P3d Slice B moved the OUTPUT binary to `roomlerd`; FR-21 P2a
 # then brought the package and lib names into line, so all three now agree.
-# CI still stages a `roomler-agent.exe` alias copy next to it — the installed
+# CI still stages a `meshharbor-agent.exe` alias copy next to it — the installed
 # field fleet references the old name via the WiX AgentExe File and the
 # desktop companion's spawn fallback, so the alias is a compatibility
 # surface, not a leftover. See wix/main.wxs `AgentExeAlias` +
@@ -46,7 +46,7 @@ meshharbor-node-core = { path = "../../crates/agent-core" }
 # Agent-side allowlist is belt-and-suspenders for the server-side gate.
 meshharbor-tunnel-core = { path = "../../crates/tunnel-core" }
 # P3e lever D — the `roomler` command surface, dispatched by `roomlerd cli`.
-# Daemon hosts install a ~150 KB shim as roomler.exe instead of a second full
+# Daemon hosts install a ~150 KB shim as meshharbor.exe instead of a second full
 # CLI binary (rc.361: 22.1 MiB, ~92 % of it crates this daemon already links).
 # Cheap to add: this crate's lib is CLI glue over tunnel-core + remote-control,
 # both of which are already in the graph above.
@@ -855,7 +855,7 @@ ssh-server = ["dep:russh", "overlay-netstack"]
 # different fixes behind one symptom, which is the split P2a exists to keep.
 external-access = ["dep:opaque-ke", "dep:rand_opaque", "dep:hkdf", "dep:hmac"]
 
-# build.rs embeds a Windows VERSIONINFO resource into roomlerd.exe.
+# build.rs embeds a Windows VERSIONINFO resource into meshharbord.exe.
 # `[target.'cfg(windows)'.build-dependencies]` resolves against the HOST
 # (build scripts compile for the host), matching build.rs's #[cfg(windows)]
 # gate -- a Linux/macOS build pulls nothing extra.

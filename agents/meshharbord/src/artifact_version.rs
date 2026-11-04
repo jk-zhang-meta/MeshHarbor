@@ -48,7 +48,7 @@
 //! |---|---|---|
 //! | `.msi` | `ProductVersion` in the `Property` table | the Windows Installer database API |
 //! | `.deb` | `Version` in its control file (`0.4.142-1`; the `-1` is the Debian revision) | `dpkg-deb --field`, which ships with the dpkg the updater requires before picking a `.deb` |
-//! | `.pkg` | `version` on the component `PackageInfo`'s `<pkg-info identifier="com.roomler.agent">` | `pkgutil --expand` |
+//! | `.pkg` | `version` on the component `PackageInfo`'s `<pkg-info identifier="fans.itachi.meshharbor.agent">` | `pkgutil --expand` |
 //! | `.tar.gz` | its one top directory, `roomlerd-<version>-<target>` | `tar -tzf`, which the tarball install runs anyway |
 //!
 //! ⚠️ A wrong reader refuses every update fleet-wide, so the three new readers
@@ -233,14 +233,14 @@ fn tarball_version(top: &str) -> Option<String> {
 }
 
 /// The version a `.pkg`'s component `PackageInfo` declares for the agent: the
-/// `version` attribute of its `<pkg-info identifier="com.roomler.agent" …>`.
+/// `version` attribute of its `<pkg-info identifier="fans.itachi.meshharbor.agent" …>`.
 /// `None` when it declares another package, or none.
 #[cfg(any(target_os = "macos", test))]
 fn pkg_info_version(xml: &str) -> Option<String> {
     let start = xml.find("<pkg-info")?;
     let end = start + xml[start..].find('>')?;
     let tag = &xml[start..end];
-    if xml_attr(tag, "identifier")? != "com.roomler.agent" {
+    if xml_attr(tag, "identifier")? != "fans.itachi.meshharbor.agent" {
         return None;
     }
     xml_attr(tag, "version").map(str::to_string)
@@ -469,7 +469,7 @@ fn verify_pkg(path: &Path, claimed: &str) -> Result<String, VersionError> {
         }
     }
     Err(VersionError::Unreadable(
-        "no component PackageInfo names com.roomler.agent".to_string(),
+        "no component PackageInfo names fans.itachi.meshharbor.agent".to_string(),
     ))
 }
 
@@ -913,9 +913,9 @@ mod tests {
             .output()
             .is_ok();
         for (name, runs_here) in [
-            ("roomlerd.deb", cfg!(target_os = "linux") && dpkg),
+            ("meshharbord.deb", cfg!(target_os = "linux") && dpkg),
             ("meshharbor-desktop.rpm", cfg!(target_os = "linux") && rpm),
-            ("roomlerd.pkg", cfg!(target_os = "macos")),
+            ("meshharbord.pkg", cfg!(target_os = "macos")),
             ("roomlerd.tar.gz", cfg!(unix)),
         ] {
             let path = dir.join(name);
@@ -1014,10 +1014,10 @@ mod tests {
     #[test]
     fn a_pkg_info_names_the_agents_version_and_nothing_else() {
         let real = r#"<?xml version="1.0" encoding="utf-8"?>
-<pkg-info overwrite-permissions="true" relocatable="false" identifier="com.roomler.agent" postinstall-action="none" version="0.4.142" format-version="2" generator-version="InstallCmds-860.14 (24G830)" install-location="/" auth="root">
+<pkg-info overwrite-permissions="true" relocatable="false" identifier="fans.itachi.meshharbor.agent" postinstall-action="none" version="0.4.142" format-version="2" generator-version="InstallCmds-860.14 (24G830)" install-location="/" auth="root">
     <payload numberOfFiles="35" installKBytes="69357"/>"#;
         assert_eq!(pkg_info_version(real).as_deref(), Some("0.4.142"));
-        let reordered = r#"<pkg-info format-version="2" generator-version="9" identifier="com.roomler.agent" version="0.4.7">"#;
+        let reordered = r#"<pkg-info format-version="2" generator-version="9" identifier="fans.itachi.meshharbor.agent" version="0.4.7">"#;
         assert_eq!(pkg_info_version(reordered).as_deref(), Some("0.4.7"));
         let other = r#"<pkg-info identifier="com.example.other" version="9.9.9">"#;
         assert_eq!(pkg_info_version(other), None, "another package's version");
@@ -1106,7 +1106,7 @@ mod tests {
     fn a_file_that_is_not_an_msi_is_refused_not_waved_through() {
         // Naming a payload `.msi` must not be enough to skip the binding: the
         // database open fails and that is a refusal, not an Unsupported.
-        let path = std::env::temp_dir().join("roomler-artifact-version-test.msi");
+        let path = std::env::temp_dir().join("meshharbor-artifact-version-test.msi");
         std::fs::write(&path, b"this is not an MSI").expect("writing the decoy");
         let err = verify_artifact_version(&path, "agent-v0.3.0-rc.458")
             .expect_err("a non-MSI named .msi must not verify");

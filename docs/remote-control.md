@@ -190,7 +190,7 @@ agents/meshharbord/
     ├── windows.wxs            # MSI; auto-start at user login
     ├── macos.plist            # LaunchAgent (user, not Daemon, in v1)
     └── linux/
-        ├── roomler.service         # systemd --user
+        ├── meshharbor.service         # systemd --user
         └── flatpak/...
 ```
 
@@ -2407,7 +2407,7 @@ keyframe comes out or the cascade bottoms at `NoopEncoder`.
 To reproduce locally:
 
     cargo build -p meshharbord --release --features full-hw
-    target\release\roomler-agent.exe encoder-smoke --encoder hardware
+    target\release\meshharbor-agent.exe encoder-smoke --encoder hardware
 
 With the `full-hw` build, the MF backend code is present but only
 engaged when `--encoder hardware` is passed explicitly.
@@ -2969,8 +2969,8 @@ Settings that were previously missing or wrong:
   fully ready
 
 Brings Windows to parity with systemd `Restart=on-failure` (already
-in `packaging/linux/roomler-agent.service`) and macOS launchd
-`KeepAlive` (already in `packaging/macos/com.roomler.agent.plist`).
+in `packaging/linux/meshharbor-agent.service`) and macOS launchd
+`KeepAlive` (already in `packaging/macos/fans.itachi.meshharbor.agent.plist`).
 
 **Single-instance lock** (`agents/meshharbord/src/instance_lock.rs`):
 prevents an interactive `roomler-agent run` from racing the
@@ -3215,7 +3215,7 @@ the unfiltered token).
 schtasks /Delete /TN RoomlerAgent /F
 
 # Normal PowerShell (post-0.1.54):
-& "$env:LOCALAPPDATA\Programs\roomler-agent\roomler-agent.exe" service install
+& "$env:LOCALAPPDATA\Programs\meshharbor-agent\meshharbor-agent.exe" service install
 ```
 
 After this, the freshly-created task has a normal ACL and future
@@ -3549,7 +3549,7 @@ sequenceDiagram
 ```
 
 - **The rule** (`is_orphaned_worker`, `agents/meshharbord/src/win_service/orphan.rs:153`):
-  a running `roomlerd.exe run --supervisor scm` that this host does not
+  a running `meshharbord.exe run --supervisor scm` that this host does not
   supervise. The SCM runs one host process per service, a host supervises one
   worker, and the check runs only while this host supervises none. So such a
   worker belongs to a host that is gone, or is one this host lost track of.

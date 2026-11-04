@@ -19,7 +19,7 @@
 //! |---|---|---|
 //! | `repo` | `repo` | `stars` `forks` `watchers`; `downloads` (every asset but the sidecars of every published PRODUCT release) and `helper_downloads` (the rest) |
 //! | `release` | `repo`, `release` (the tag), `kind` (`product` · `helper`) | `downloads` |
-//! | `flavour` | `repo`, `flavour` (a product asset's name without its version: `roomlerd-x86_64-pc-windows-msvc.msi`) | `downloads` |
+//! | `flavour` | `repo`, `flavour` (a product asset's name without its version: `meshharbord-x86_64-pc-windows-msvc.msi`) | `downloads` |
 //!
 //! A **helper** release is one our own CI downloads from — vendored builds
 //! and caches ([`PRODUCT_TAG_PREFIXES`] names the product's): on
@@ -476,8 +476,8 @@ fn version_len(s: &[u8], i: usize) -> Option<usize> {
 
 /// An asset's FLAVOUR: its name without the version, so the same artifact
 /// of every release groups together — `roomlerd-0.4.140-x86_64-pc-windows-msvc.msi`
-/// is `roomlerd-x86_64-pc-windows-msvc.msi`, `roomlerd_0.4.140_amd64.deb` is
-/// `roomlerd_amd64.deb`. The FIRST version token preceded by `-`, `_` or a
+/// is `meshharbord-x86_64-pc-windows-msvc.msi`, `roomlerd_0.4.140_amd64.deb` is
+/// `meshharbord_amd64.deb`. The FIRST version token preceded by `-`, `_` or a
 /// `v` after one of them is removed together with that separator; a name
 /// without one is its own flavour.
 pub fn flavour(asset: &str) -> String {
@@ -893,20 +893,20 @@ mod tests {
         for (name, want) in [
             (
                 "roomlerd-0.4.140-x86_64-pc-windows-msvc.msi",
-                "roomlerd-x86_64-pc-windows-msvc.msi",
+                "meshharbord-x86_64-pc-windows-msvc.msi",
             ),
             (
                 "roomlerd-0.4.140-x86_64-pc-windows-msvc.msi.asc",
-                "roomlerd-x86_64-pc-windows-msvc.msi.asc",
+                "meshharbord-x86_64-pc-windows-msvc.msi.asc",
             ),
-            ("roomlerd_0.4.140_amd64.deb", "roomlerd_amd64.deb"),
+            ("roomlerd_0.4.140_amd64.deb", "meshharbord_amd64.deb"),
             (
                 "meshharbor-setup-0.4.139-universal-apple-darwin.tar.gz",
                 "meshharbor-setup-universal-apple-darwin.tar.gz",
             ),
             (
                 "roomlerd-0.3.0-rc.480-x86_64-unknown-linux-gnu.deb",
-                "roomlerd-x86_64-unknown-linux-gnu.deb",
+                "meshharbord-x86_64-unknown-linux-gnu.deb",
             ),
             ("roomler-v0.4.7.zip", "roomler.zip"),
             ("SHA256SUMS", "SHA256SUMS"),
@@ -1032,7 +1032,7 @@ mod tests {
             value(
                 &rows,
                 "flavour",
-                Some(("flavour", "roomlerd-x86_64-pc-windows-msvc.msi")),
+                Some(("flavour", "meshharbord-x86_64-pc-windows-msvc.msi")),
                 "downloads"
             ),
             Some(100),
@@ -1042,7 +1042,7 @@ mod tests {
             value(
                 &rows,
                 "flavour",
-                Some(("flavour", "roomlerd_amd64.deb")),
+                Some(("flavour", "meshharbord_amd64.deb")),
                 "downloads"
             ),
             None

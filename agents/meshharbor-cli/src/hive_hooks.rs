@@ -43,7 +43,7 @@ pub const EVENTS: [(&str, bool); 3] = [
 const HOOK_TIMEOUT_SECS: u64 = 30;
 
 /// FR-97 P4c — what a hook entry runs on Windows ([`HookCommand::on_path`]).
-const WINDOWS_HOOK_COMMAND: &str = "roomler.exe hive hook";
+const WINDOWS_HOOK_COMMAND: &str = "meshharbor.exe hive hook";
 
 /// What a hook entry runs: this very binary, with `hive hook`, as ONE shell
 /// command line.
@@ -70,12 +70,12 @@ impl HookCommand {
         Ok(Self::for_binary(path, embedded))
     }
 
-    /// FR-97 P4c — the entry on Windows: the installed `roomler.exe`, found on
+    /// FR-97 P4c — the entry on Windows: the installed `meshharbor.exe`, found on
     /// PATH, with no quotes at all.
     ///
     /// Claude Code runs a hook's command line through Git Bash there, or
     /// through PowerShell where Git Bash is absent. A quoted path runs
-    /// differently in each: bash runs `'C:\…\roomlerd.exe' cli hive hook`, but
+    /// differently in each: bash runs `'C:\…\meshharbord.exe' cli hive hook`, but
     /// PowerShell reads a leading string as a value to print and needs
     /// `& '…'`, which bash rejects. A bare word on PATH is the one form both
     /// run as written. Both MSIs put the install folder on PATH: the machine's
@@ -773,17 +773,17 @@ mod tests {
     /// P1j-5 — a file laid out as Claude Code writes its settings comes back
     /// from `adopt` then `unadopt` byte for byte, with a final newline or
     /// without; so does one with its leaves written inline (`THEIRS`).
-    /// FR-97 P4c — the Windows entry: `roomler.exe` found on PATH, which Git
+    /// FR-97 P4c — the Windows entry: `meshharbor.exe` found on PATH, which Git
     /// Bash and PowerShell both run as written. `adopt` writes it and
     /// `unadopt` knows it as its own.
     #[test]
     fn the_windows_entry_runs_from_path_and_is_known_as_ours() {
         let hook = HookCommand::on_path();
-        assert_eq!(hook.command, "roomler.exe hive hook");
+        assert_eq!(hook.command, "meshharbor.exe hive hook");
         assert!(ours(&json!({"type": "command", "command": hook.command})));
         let (added, changed) = adopt_doc(Some(THEIRS), &hook).unwrap();
         assert!(changed);
-        assert!(added.contains("roomler.exe hive hook"), "{added}");
+        assert!(added.contains("meshharbor.exe hive hook"), "{added}");
         let (back, changed) = unadopt_doc(&added).unwrap();
         assert!(changed);
         assert_eq!(

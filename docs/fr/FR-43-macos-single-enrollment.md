@@ -23,8 +23,8 @@ negotiable:
 | capture / input / clipboard | a WindowServer connection | the console user's GUI session |
 | `utun` + route table + SSH | root | session 0 |
 
-`docs/installation.md:104-113` states it; `agents/meshharbord/packaging/macos/com.roomler.agent.plist`
-and `com.roomler.daemon.plist` are the two units, and both invoke the *same* binary with
+`docs/installation.md:104-113` states it; `agents/meshharbord/packaging/macos/fans.itachi.meshharbor.agent.plist`
+and `fans.itachi.meshharbor.daemon.plist` are the two units, and both invoke the *same* binary with
 the same `run` subcommand — the split is context, not code.
 
 **Windows does not need two because a SYSTEM process can reach the interactive desktop.**
@@ -326,7 +326,7 @@ shape as [`crate::power::PowerKeeper`].
 
 **P2 had a half-life of one release, and the release was the thing that ended
 it.** `macos_supervisor::decide` stands down whenever
-`gui/<uid>/com.roomler.agent` is loaded — correctly, since the loser of that
+`gui/<uid>/fans.itachi.meshharbor.agent` is loaded — correctly, since the loser of that
 race must be the supervisor rather than the enrolled agent. The `.pkg`'s
 `postinstall` then re-bootstrapped that exact label unconditionally, so every
 package update handed the GUI worker back to launchd and disarmed delegation.
@@ -334,7 +334,7 @@ The daemon's row went back to advertising a capture target it cannot serve, and
 a controller connecting to it got the black-screen-with-working-input symptom
 this FR exists to remove.
 
-The operator's remedy (`launchctl bootout gui/<uid>/com.roomler.agent`, which
+The operator's remedy (`launchctl bootout gui/<uid>/fans.itachi.meshharbor.agent`, which
 the daemon's own log tells them to run) survived exactly until the next update —
 and an update is precisely when nobody is watching.
 
@@ -397,15 +397,15 @@ counterpart despite the identical failure mode under PackageKit. Pinned
       the switch off) sends no `caps` on its heartbeats at all — measured on the
       wire, not inferred from behaviour.
 - [x] P2d: a supervised Mac takes a package **update** and delegation is still
-      armed afterwards — `gui/<uid>/com.roomler.agent` is not loaded, the plist
+      armed afterwards — `gui/<uid>/fans.itachi.meshharbor.agent` is not loaded, the plist
       is gone from `~/Library/LaunchAgents`, and a session started after the
       update streams real pixels. This is the criterion the old build fails, so
       measure it on the CURRENT release first.
       *(2026-09-24, `agent-v0.4.100` — the first package update to reach a
       supervised Mac since P2d landed; the Mac took it unattended. After it:
-      `launchctl print gui/501/com.roomler.agent` → **`Could not find service`**;
-      `~/Library/LaunchAgents` holds only `com.roomler.desktop.plist` — **no
-      `com.roomler.agent.plist`**; a session started afterwards on the daemon row
+      `launchctl print gui/501/fans.itachi.meshharbor.agent` → **`Could not find service`**;
+      `~/Library/LaunchAgents` holds only `fans.itachi.meshharbor.desktop.plist` — **no
+      `fans.itachi.meshharbor.agent.plist`**; a session started afterwards on the daemon row
       rendered **3024×1968** (native Retina), luma variance **3957** (a black frame
       reads ~0), **H.265** at **8 fps** with the bitrate counter live. Preconditions
       on the device: `macos_supervise_gui_worker = true`. ⚠️ **The fail half is the
@@ -469,7 +469,7 @@ counterpart despite the identical failure mode under PackageKit. Pinned
 ## Out of scope
 
 Apple Developer ID / notarization (FR-7) · Windows and Linux, unchanged · the update half
-`com.roomler.update` (FR-5), which stays a separate root unit by design · the desktop
+`fans.itachi.meshharbor.update` (FR-5), which stays a separate root unit by design · the desktop
 companion.
 
 ## Field-verification log
@@ -652,8 +652,8 @@ came back on 0.4.100.
 
 | check, after the update | result |
 |---|---|
-| `launchctl print gui/501/com.roomler.agent` | **`Could not find service`** — not loaded |
-| `~/Library/LaunchAgents/` | only `com.roomler.desktop.plist` (touched by this update) — **no `com.roomler.agent.plist`** |
+| `launchctl print gui/501/fans.itachi.meshharbor.agent` | **`Could not find service`** — not loaded |
+| `~/Library/LaunchAgents/` | only `fans.itachi.meshharbor.desktop.plist` (touched by this update) — **no `fans.itachi.meshharbor.agent.plist`** |
 | a session started afterwards, on the daemon row | canvas **3024 × 1968**, luma variance **3957**, **H.265**, **8 fps**, bitrate counter live (95 → 93 kbps between reads) |
 | `macos_supervise_gui_worker` | `true` — this is the supervised case AC9 names |
 

@@ -1142,11 +1142,11 @@ const WINDOWS_BUNDLE: &[BundleSection] = &[
     },
     BundleSection {
         title: "overlay peers",
-        command: "& \"$env:ProgramFiles\\Roomler\\roomler.exe\" peers 2>&1 | Out-String -Width 200",
+        command: "& \"$env:ProgramFiles\\Roomler\\meshharbor.exe\" peers 2>&1 | Out-String -Width 200",
     },
     BundleSection {
         title: "node status",
-        command: "& \"$env:ProgramFiles\\Roomler\\roomler.exe\" status 2>&1 | Out-String -Width 200",
+        command: "& \"$env:ProgramFiles\\Roomler\\meshharbor.exe\" status 2>&1 | Out-String -Width 200",
     },
 ];
 

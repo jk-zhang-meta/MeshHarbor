@@ -585,7 +585,7 @@ mod tests {
             release(
                 "agent-v0.3.0-rc.166",
                 true,
-                &["roomler-agent-permachine.msi"],
+                &["meshharbor-agent-permachine.msi"],
             ),
         ];
         let picked = pick_release(&releases, "latest").unwrap();

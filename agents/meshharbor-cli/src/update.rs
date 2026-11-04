@@ -30,7 +30,7 @@
 //!
 //! | Host | Artifact | Install |
 //! |---|---|---|
-//! | Windows | the `.zip` | its `roomler.exe` replaces the running exe |
+//! | Windows | the `.zip` | its `meshharbor.exe` replaces the running exe |
 //! | macOS, and Linux where no package owns this binary | the `.tar.gz` | its `roomler` is written beside the running binary and renamed over it, so the swap is atomic |
 //! | Linux where dpkg owns this binary (`install.sh`'s Debian path) | the `.deb` | `dpkg -i`, so dpkg's database keeps naming the version on disk |
 //!
@@ -485,9 +485,9 @@ fn extract_tarball_binary(_tgz: &[u8], _dir: &str) -> Result<Vec<u8>> {
 // Reads a PUBLISHED archive. The retired entry name is an input this must
 // keep accepting: a fleet host running the previous CLI looks for exactly
 // that name, and dropping the arm strands it on its current version.
-/// binary `roomler-tunnel.exe` -> `roomler.exe`, but the CI ships BOTH names
+/// binary `meshharbor-tunnel.exe` -> `meshharbor.exe`, but the CI ships BOTH names
 /// in the zip and a deployed (pre-rename) fleet self-updater may still be
-/// extracting `roomler-tunnel.exe`, so accept EITHER source entry. The on-disk
+/// extracting `meshharbor-tunnel.exe`, so accept EITHER source entry. The on-disk
 /// replace target ([`replace_self`]) is driven by `current_exe()`, so whatever
 /// the running binary is named stays named — only the zip SOURCE entry name
 /// widens here.
@@ -497,13 +497,13 @@ fn extract_windows_exe(zip_bytes: &[u8]) -> Result<Vec<u8>> {
     for i in 0..archive.len() {
         let mut f = archive.by_index(i).context("read zip entry")?;
         let name = f.name();
-        if name.ends_with("roomler.exe") || name.ends_with("roomler-tunnel.exe") {
+        if name.ends_with("meshharbor.exe") || name.ends_with("meshharbor-tunnel.exe") {
             let mut buf = Vec::with_capacity(f.size() as usize);
             std::io::Read::read_to_end(&mut f, &mut buf).context("read exe from zip")?;
             return Ok(buf);
         }
     }
-    bail!("neither roomler.exe nor roomler-tunnel.exe found in the release archive");
+    bail!("neither meshharbor.exe nor meshharbor-tunnel.exe found in the release archive");
     // RETIRED-NAME-ANCHOR-END
 }
 

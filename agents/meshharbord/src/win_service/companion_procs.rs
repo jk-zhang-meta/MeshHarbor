@@ -19,7 +19,7 @@
 //!
 //! The loader's record of the main module does not follow the file: the first
 //! entry of the process's module list keeps answering the path the process
-//! was started from (`C:\Program Files\Roomler\meshharbor-desktop.exe`) — as WMI's
+//! was started from (`C:\Program Files\MeshHarbor\meshharbor-desktop.exe`) — as WMI's
 //! `ExecutablePath` (the PEB's `ImagePathName`) did for that very process.
 //! That is the identity used here (see [`loaded_path`] for the one API trap).
 //! The image name only pre-filters which processes are worth opening: the
@@ -258,12 +258,12 @@ mod tests {
     fn only_the_companion_its_renamed_copy_or_a_file_id_is_worth_opening() {
         let name = "meshharbor-desktop.exe";
         assert!(worth_opening("meshharbor-desktop.exe", name));
-        assert!(worth_opening("ROOMLER-DESKTOP.EXE", name));
+        assert!(worth_opening("MESHHARBOR-DESKTOP.EXE", name));
         assert!(worth_opening("meshharbor-desktop.exe.old", name));
         // A running image whose file was POSIX-deleted (#1686, measured).
         assert!(worth_opening("00240000000AA4A74B077E87", name));
         assert!(!worth_opening("explorer.exe", name));
-        assert!(!worth_opening("roomlerd.exe", name));
+        assert!(!worth_opening("meshharbord.exe", name));
         assert!(!worth_opening("", name));
     }
 
@@ -271,14 +271,14 @@ mod tests {
     fn paths_compare_like_windows_does() {
         assert_eq!(
             normalize(Path::new(
-                r"\\?\C:\Program Files\Roomler\meshharbor-desktop.exe"
+                r"\\?\C:\Program Files\MeshHarbor\meshharbor-desktop.exe"
             )),
-            normalize(Path::new(r"c:\program files\roomler\ROOMLER-DESKTOP.EXE"))
+            normalize(Path::new(r"c:\program files\meshharbor\MESHHARBOR-DESKTOP.EXE"))
         );
         assert_ne!(
-            normalize(Path::new(r"C:\Program Files\Roomler\meshharbor-desktop.exe")),
+            normalize(Path::new(r"C:\Program Files\MeshHarbor\meshharbor-desktop.exe")),
             normalize(Path::new(
-                r"C:\Users\x\AppData\Local\Programs\Roomler\meshharbor-desktop.exe"
+                r"C:\Users\x\AppData\Local\Programs\MeshHarbor\meshharbor-desktop.exe"
             ))
         );
     }
@@ -293,7 +293,7 @@ mod tests {
     /// `$Extend\$Deleted` (it was listed as `00240000000AA4A74B077E87`, and
     /// `tasklist /FI "IMAGENAME eq meshharbor-desktop.exe"` matched nothing),
     /// while WMI's `ExecutablePath` — the loader's record `find` reads —
-    /// still said `C:\Program Files\Roomler\meshharbor-desktop.exe`. For an
+    /// still said `C:\Program Files\MeshHarbor\meshharbor-desktop.exe`. For an
     /// ordinary and an elevated caller Windows refuses every way of unlinking
     /// a running image's file (delete, replace-rename, a raw
     /// `FileDispositionInfoEx` POSIX delete — all measured, err 5), so the

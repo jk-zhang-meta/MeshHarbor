@@ -2174,7 +2174,7 @@ pub struct Agent {
     /// It exists because the daemon and the companion update through DIFFERENT
     /// mechanisms on every platform — Windows: the daemon side-loads the EXE
     /// (`companion::refresh_if_stale`), macOS: the `.pkg` carries
-    /// `/Applications/Roomler.app`, Linux: a separate `meshharbor-desktop` .deb
+    /// `/Applications/MeshHarbor.app`, Linux: a separate `meshharbor-desktop` .deb
     /// that apt owns — so "Update all" moving the daemon says nothing about the
     /// companion, and until now nothing on screen could tell you it had been
     /// left behind. That was the operator's report, not a hypothetical.

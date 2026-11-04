@@ -125,7 +125,7 @@ pub fn run(target: DesktopTarget, frames: u32, timeout_ms: u32) -> Result<()> {
                     anyhow::anyhow!(
                         "OpenDesktopW(Winlogon) returned ACCESS_DENIED — \
                      this mode requires SYSTEM context. Run via \
-                     `psexec -s -i 1 roomlerd.exe system-capture-smoke --desktop winlogon` \
+                     `psexec -s -i 1 meshharbord.exe system-capture-smoke --desktop winlogon` \
                      from elevated PowerShell."
                     )
                 })?;

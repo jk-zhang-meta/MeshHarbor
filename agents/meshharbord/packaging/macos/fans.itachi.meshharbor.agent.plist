@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  LaunchAgent for roomlerd. Installed to ~/Library/LaunchAgents/ by
+  LaunchAgent for meshharbord. Installed to ~/Library/LaunchAgents/ by
   the .pkg's post-install script. Runs in the user's session (required for
   ScreenCaptureKit / CoreGraphics capture and for CGEvent input injection;
   neither works in a LaunchDaemon running as _root in session 0).
@@ -9,16 +9,16 @@
   First run will trigger two permission prompts:
    - Screen Recording (System Settings -> Privacy & Security)
    - Accessibility       (System Settings -> Privacy & Security)
-  Grant both, then `launchctl kickstart -k gui/$UID/com.roomler.agent`.
+  Grant both, then `launchctl kickstart -k gui/$UID/fans.itachi.meshharbor.agent`.
 -->
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.roomler.agent</string>
+    <string>fans.itachi.meshharbor.agent</string>
 
     <key>ProgramArguments</key>
     <array>
-        <string>/Library/Roomler/roomlerd.app/Contents/MacOS/roomlerd</string>
+        <string>/Library/MeshHarbor/meshharbord.app/Contents/MacOS/meshharbord</string>
         <string>run</string>
     </array>
 
@@ -35,19 +35,19 @@
     <string>Interactive</string>
 
     <!-- FR-97 P6e (#1538): stdout carries only tracing's console copy of the
-         rotating log (~/Library/Application Support/live.roomler.roomler/logs),
+         rotating log (~/Library/Application Support/live.meshharbor.meshharbor/logs),
          and here it grew unrotated in /tmp (13.9 MB on one Mac). stderr stays
          a file: an agent that cannot start says why there, before its log
          exists (the vmtest lane reads it). -->
     <key>StandardOutPath</key>
     <string>/dev/null</string>
     <key>StandardErrorPath</key>
-    <string>/tmp/roomlerd.err.log</string>
+    <string>/tmp/meshharbord.err.log</string>
 
     <key>EnvironmentVariables</key>
     <dict>
         <key>RUST_LOG</key>
-        <string>roomlerd=info,warn</string>
+        <string>meshharbord=info,warn</string>
     </dict>
 </dict>
 </plist>

@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (C) 2026 G ROX EOOD
 // RETIRED-NAME-ANCHOR(3): records the OLD -> NEW mapping, so it must name both sides.
-//! Embeds a Windows VERSIONINFO resource into `roomlerd.exe`.
+//! Embeds a Windows VERSIONINFO resource into `meshharbord.exe`.
 //!
 //! Authenticode says *who* signed a binary. VERSIONINFO is what Explorer's
 //! Details tab, Task Manager's Publisher column, `Get-Process | Select
 //! Company`, and most corporate AV/EDR consoles actually read. Until this
-//! landed, `roomlerd.exe` -- a binary that runs as a LocalSystem service on
+//! landed, `meshharbord.exe` -- a binary that runs as a LocalSystem service on
 //! managed corporate fleets -- had NO version resource at all: no
 //! CompanyName, no ProductName, no FileVersion, no copyright. That is an
 //! independent AV heuristic signal on top of being unsigned, and it makes
@@ -18,13 +18,13 @@
 //! `cargo:rustc-link-lib=dylib=resource`, and link-lib directives from a
 //! dependency's build script propagate into the final link of every
 //! DOWNSTREAM binary. This crate is a path dependency of BOTH Tauri crates
-//! (`roomler-agent-tray` -> `meshharbor-desktop.exe`, `meshharbor-setup` ->
+//! (`meshharbor-agent-tray` -> `meshharbor-desktop.exe`, `meshharbor-setup` ->
 //! `meshharbor-setup.exe`), and both already embed their own VS_VERSION_INFO
 //! via `tauri_build::build()`. The result would be two RT_VERSION resources
 //! in each of those EXEs, with the winner decided by linker order.
 //!
-//! `embed_resource::compile_for(rc, ["roomlerd"], NONE)` emits
-//! `cargo:rustc-link-arg-bin=roomlerd=...` -- scoped to one binary of one
+//! `embed_resource::compile_for(rc, ["meshharbord"], NONE)` emits
+//! `cargo:rustc-link-arg-bin=meshharbord=...` -- scoped to one binary of one
 //! package, and structurally incapable of leaking. It is also already in the
 //! dependency graph (pulled by tauri-build), so it adds no supply-chain
 //! surface.
@@ -66,9 +66,9 @@ fn main() {
 /// resource below is.
 ///
 /// ⚠️ The bin name is `meshharbord` (the `[[bin]]` in Cargo.toml), NOT the
-/// package/lib name `roomlerd`. `cargo:rustc-link-arg-bin=<NAME>` names a BIN
+/// package/lib name `meshharbord`. `cargo:rustc-link-arg-bin=<NAME>` names a BIN
 /// TARGET; naming the package made cargo reject the whole build on Windows
-/// MSVC with "does not have a bin target with the name roomlerd" (the FR-21
+/// MSVC with "does not have a bin target with the name meshharbord" (the FR-21
 /// `meshharbord` output-binary rename reached Cargo.toml but this script still
 /// named the retired bin — the daemon did not build on Windows at all).
 fn windows_main_stack() {
@@ -173,12 +173,12 @@ BEGIN
         BLOCK "040904b0"
         BEGIN
             VALUE "CompanyName", "G ROX LTD"
-            VALUE "FileDescription", "Roomler Daemon"
+            VALUE "FileDescription", "MeshHarbor Daemon"
             VALUE "FileVersion", "{file_version_str}"
             VALUE "InternalName", "meshharbord"
             VALUE "LegalCopyright", "Copyright (C) 2026 G ROX LTD"
             VALUE "OriginalFilename", "meshharbord.exe"
-            VALUE "ProductName", "Roomler"
+            VALUE "ProductName", "MeshHarbor"
             VALUE "ProductVersion", "{pkg_version}"
         END
     END
@@ -195,7 +195,7 @@ END
         fs::write(&rc_path, rc).expect("failed to write the VERSIONINFO resource script");
 
         // The bin TARGET is `meshharbord` (Cargo.toml `[[bin]]`), not the
-        // package name `roomlerd`: `compile_for` scopes the resource to one
+        // package name `meshharbord`: `compile_for` scopes the resource to one
         // bin, and naming a bin that does not exist is the same hard cargo
         // error as the stack link-arg above.
         let result = embed_resource::compile_for(&rc_path, ["meshharbord"], embed_resource::NONE);
@@ -208,7 +208,7 @@ END
                 .manifest_required()
                 .expect("VERSIONINFO embedding failed in CI (rc.exe / llvm-rc unavailable?)");
         } else if let Err(err) = result.manifest_optional() {
-            println!("cargo:warning=roomlerd VERSIONINFO not embedded: {err:?}");
+            println!("cargo:warning=meshharbord VERSIONINFO not embedded: {err:?}");
         }
     }
 }

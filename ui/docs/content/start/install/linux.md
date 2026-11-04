@@ -34,7 +34,7 @@ sudo roomlerd service install --as-service      # alias: --system
 
 It refuses until that config exists, and it says so if a per-user daemon also
 runs on the machine: one daemon per machine is the rule, so stop the per-user
-unit as that account (`systemctl --user disable --now roomler.service`).
+unit as that account (`systemctl --user disable --now meshharbor.service`).
 
 ## Install
 
@@ -152,8 +152,8 @@ curl -fsSL https://roomler.ai/api/setup/install.sh | sh -s -- --uninstall
 ```
 
 It stops each service through systemd **before** removing anything: the system
-`roomlerd.service`, the per-user `roomler.service` and the update helper
-(`roomler-update.timer` and `.path`). That stop is the daemon's clean stop, so
+`meshharbord.service`, the per-user `meshharbor.service` and the update helper
+(`meshharbor-update.timer` and `.path`). That stop is the daemon's clean stop, so
 the routes and DNS settings it added to the machine go with it. Then the
 packages and files, then the config. It prints `done.` only if every step
 worked; otherwise it lists what it could not remove and exits non-zero.

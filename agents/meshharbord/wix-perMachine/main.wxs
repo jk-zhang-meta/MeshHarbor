@@ -1,12 +1,12 @@
 <?xml version="1.0" encoding="windows-1252"?>
 <!-- RETIRED-NAME-ANCHOR-BEGIN
-     Same as wix/main.wxs: MSI identity (roomler_agent_exe FileKey), the inert
-     roomler-agent.exe alias, and pre-P4b install-folder cleanup.
+     Same as wix/main.wxs: MSI identity (meshharbor_agent_exe FileKey), the inert
+     meshharbor-agent.exe alias, and pre-P4b install-folder cleanup.
      INVARIANT: an MSI identifier that ships cannot be renamed without breaking
      upgrades from every installed version. docs/fr/FR-21
 -->
 <!--
-  WiX v3 source for the PER-MACHINE roomler-agent MSI (M3 phase 4).
+  WiX v3 source for the PER-MACHINE meshharbor-agent MSI (M3 phase 4).
 
   Build by file-swapping into wix/main.wxs (release-agent.yml does
   this between two `cargo wix` runs). cargo-wix auto-discovers every
@@ -20,7 +20,7 @@
   Differences vs the per-user main.wxs:
 
     1. InstallScope='perMachine'. Files land under %ProgramFiles%
-       \Roomler (P4b: renamed from roomler-agent — the node-stack
+       \MeshHarbor (P4b: renamed from meshharbor-agent — the node-stack
        unification's ONE install folder; the cleanup-legacy-install
        CA sweeps the vacated dir on upgrade). UAC prompt fires on
        install + uninstall. Operators on a managed fleet typically
@@ -48,12 +48,12 @@
 
     5. No Scheduled Task auto-registration. The per-machine flavour
        is service-only; operators who want both autostart paths can
-       run `roomlerd service install` (no [hyphen][hyphen]
+       run `meshharbord service install` (no [hyphen][hyphen]
        as-service flag) manually after the MSI install. v1 keeps
        the default clean: one product, one autostart hook.
 
   Effort 2 + M3 phase 4 closes the field gap that drove the M5/M3
-  cycle: with the per-machine MSI, IT can deploy roomler-agent across
+  cycle: with the per-machine MSI, IT can deploy meshharbor-agent across
   a fleet via standard MSI tooling and get both perMachine file
   layout AND SCM service auto-registration in one msiexec invocation.
   No more "install MSI, then run elevated PS service install
@@ -62,7 +62,7 @@
 <Wix xmlns='http://schemas.microsoft.com/wix/2006/wi'>
     <Product
         Id='*'
-        Name='Roomler Agent (per-Machine)'
+        Name='MeshHarbor Agent (per-Machine)'
         UpgradeCode='2A8E9C2D-3F1A-5E3F-C2B4-7C2F3D8F5E02'
         Manufacturer='G ROX LTD'
         Language='1033'
@@ -72,7 +72,7 @@
         <Package
             Id='*'
             Keywords='Installer'
-            Description='Roomler Daemon — private mesh network + secure remote control (per-Machine)'
+            Description='MeshHarbor Daemon — private mesh network + secure remote control (per-Machine)'
             Manufacturer='G ROX LTD'
             InstallerVersion='450'
             Languages='1033'
@@ -95,19 +95,19 @@
         -->
 
         <Media Id='1' Cabinet='media1.cab' EmbedCab='yes' />
-        <Property Id='DiskPrompt' Value='Roomler Agent Installation' />
+        <Property Id='DiskPrompt' Value='MeshHarbor Agent Installation' />
 
         <Directory Id='TARGETDIR' Name='SourceDir'>
-            <!-- Per-Machine install under %ProgramFiles%\Roomler (P4b:
-                 renamed from roomler-agent; UpgradeCode unchanged, so
+            <!-- Per-Machine install under %ProgramFiles%\MeshHarbor (P4b:
+                 renamed from meshharbor-agent; UpgradeCode unchanged, so
                  MajorUpgrade still removes the old-folder product first).
                  Components can use the file itself as KeyPath; no HKCU
                  dance needed because ProgramFiles is system-scoped. -->
             <Directory Id='ProgramFiles64Folder'>
-                <Directory Id='APPLICATIONFOLDER' Name='Roomler'>
-                    <!-- P3d Slice B: the daemon EXE is now `roomlerd.exe`. File
-                         Id stays `roomler_agent_exe` so every <CustomAction
-                         FileKey='roomler_agent_exe'> (RegisterService,
+                <Directory Id='APPLICATIONFOLDER' Name='MeshHarbor'>
+                    <!-- P3d Slice B: the daemon EXE is now `meshharbord.exe`. File
+                         Id stays `meshharbor_agent_exe` so every <CustomAction
+                         FileKey='meshharbor_agent_exe'> (RegisterService,
                          EnableSystemContext, cleanup, ...) still resolves to THIS
                          real daemon file. Component Id + Guid unchanged for
                          stable identity across upgrade; perMachine keys off the
@@ -117,58 +117,58 @@
                              CustomAction references it and upgrades key off it, so it is frozen
                              deliberately. docs/fr/FR-21 -->
                         <File
-                            Id='roomler_agent_exe'
-                            Name='roomlerd.exe'
+                            Id='meshharbor_agent_exe'
+                            Name='meshharbord.exe'
                             DiskId='1'
                             KeyPath='yes'
-                            Source='target\release\roomlerd.exe' />
+                            Source='target\release\meshharbord.exe' />
                         <!-- P3d Slice B hardening: start the SCM service via the
                              native StartServices standard action. RegisterService
-                             (deferred CA, After InstallFiles) creates the `Roomler`
+                             (deferred CA, After InstallFiles) creates the `MeshHarbor`
                              service earlier in the sequence, so StartServices finds
                              it. Belt-and-suspenders next to the DisableSystemContext
                              restart. Wait='no' so a slow start never fails the
                              install; stop/remove stay with the Unregister CA. -->
-                        <ServiceControl Id='StartRoomlerSvc' Name='Roomler'
+                        <ServiceControl Id='StartMeshHarborSvc' Name='MeshHarbor'
                                         Start='install' Wait='no' />
                     </Component>
                     <!-- P3d Slice C (retired Slice B's alias): the inert
-                         `roomler-agent.exe` copy (`AgentExeAlias`, GUID
+                         `meshharbor-agent.exe` copy (`AgentExeAlias`, GUID
                          F1F83CBE…) is no longer shipped — the live fleet
                          crossed rc.194 (verified against prod agents
-                         2026-07-22); tray/scripts resolve `roomlerd.exe`
+                         2026-07-22); tray/scripts resolve `meshharbord.exe`
                          first. MajorUpgrade removes the stale alias file
                          from upgraded installs. -->
                     <!-- P4b: the tunnel CLI ships INSIDE the daemon MSI
                          (node-stack unification Option A — the MSI is the
                          one updater for the whole stack; daemon installs
                          subsume the CLI). Same component appends the
-                         install dir to the SYSTEM PATH so `roomler` works
+                         install dir to the SYSTEM PATH so `meshharbor` works
                          in any new shell for every user. PATH lives and
                          dies with the CLI file; Part='last' + implicit
                          Permanent='no' removes only our segment on
                          uninstall, and msiexec broadcasts WM_SETTINGCHANGE
                          itself. P3e lever D: the file is now the ~150 KB
-                         meshharbor-cli-shim, which re-execs `roomlerd cli` —
+                         meshharbor-cli-shim, which re-execs `meshharbord cli` —
                          the daemon owns the command surface, so this MSI no
                          longer carries a second 22.1 MiB copy of crates
-                         roomlerd already links. Installed NAME is unchanged
-                         (roomler.exe), so the PATH entry and the
+                         meshharbord already links. Installed NAME is unchanged
+                         (meshharbor.exe), so the PATH entry and the
                          installer-smoke payload asserts still hold. The
-                         workflow builds target\release\roomler-shim.exe via
+                         workflow builds target\release\meshharbor-shim.exe via
                          `cargo build -p meshharbor-cli-shim [dash][dash]release`
                          before cargo-wix runs. Keys off the file itself
                          like its siblings (system-scoped dir). -->
                     <Component Id='TunnelExe' Guid='833F7BA5-4323-403A-BBC5-B77C42E9F27A' Win64='yes'>
-                        <!-- RETIRED-NAME-ANCHOR(3): roomler_tunnel_cli_exe is installer IDENTITY;
+                        <!-- RETIRED-NAME-ANCHOR(3): meshharbor_tunnel_cli_exe is installer IDENTITY;
                              upgrades key off the FileKey, so it is frozen deliberately even though
                              the crate is `meshharbor-cli` now. docs/fr/FR-21 -->
                         <File
-                            Id='roomler_tunnel_cli_exe'
-                            Name='roomler.exe'
+                            Id='meshharbor_tunnel_cli_exe'
+                            Name='meshharbor.exe'
                             DiskId='1'
                             KeyPath='yes'
-                            Source='target\release\roomler-shim.exe' />
+                            Source='target\release\meshharbor-shim.exe' />
                         <Environment
                             Id='TunnelPathEnvPerMachine'
                             Name='PATH'
@@ -191,7 +191,7 @@
                             Name='README.txt'
                             DiskId='1'
                             KeyPath='yes'
-                            Source='agents\roomlerd\packaging\windows\README.txt' />
+                            Source='agents\meshharbord\packaging\windows\README.txt' />
                     </Component>
 
                     <!-- Phase 3b: Wintun TUN driver DLL for the overlay-l3
@@ -212,8 +212,8 @@
                          the DLLs our binaries actually import; the full
                          Microsoft.VC14x.CRT folder shipped through rc.363 and
                          carried 1.12 MiB of dead weight). Import tables:
-                         roomlerd.exe needs msvcp140 + vcruntime140 +
-                         vcruntime140_1, roomler.exe needs vcruntime140,
+                         meshharbord.exe needs msvcp140 + vcruntime140 +
+                         vcruntime140_1, meshharbor.exe needs vcruntime140,
                          meshharbor-desktop.exe needs no CRT, and msvcp140.dll
                          itself pulls only the two vcruntime DLLs. The dropped
                          six (concrt140, vccorlib140, msvcp140_1, msvcp140_2,
@@ -224,7 +224,7 @@
                          `dumpbin -dependents <exe> | findstr /i 140` and
                          extend this component plus the workflow staging list
                          together. The release
-                         roomlerd.exe links the CRT dynamically (its C++
+                         meshharbord.exe links the CRT dynamically (its C++
                          encoder objects; the vcpkg static-md policy keeps
                          /MD), so a fresh Windows box without any VC++
                          redistributable popped "vcruntime140_1.dll was not
@@ -232,7 +232,7 @@
                          2026-07-28, install.ps1 daemon-machine enroll). The
                          EXE dir is first in the DLL search path (service
                          mode included), so shipping the DLLs here makes the
-                         install self-contained for roomlerd.exe, roomler.exe
+                         install self-contained for meshharbord.exe, meshharbor.exe
                          AND the meshharbor-desktop companion placed beside
                          them. Staged into target\release by the workflow's
                          VC++ runtime step. One component for the whole set,
@@ -299,8 +299,8 @@
 
         <Feature
             Id='Complete'
-            Title='Roomler Agent (per-Machine)'
-            Description='Roomler Daemon — keeps this device on your private Roomler mesh network and available for secure remote control (all-users install, auto-start service).'
+            Title='MeshHarbor Agent (per-Machine)'
+            Description='MeshHarbor Daemon — keeps this device on your private MeshHarbor mesh network and available for secure remote control (all-users install, auto-start service).'
             Display='expand'
             Level='1'
             ConfigurableDirectory='APPLICATIONFOLDER'
@@ -332,7 +332,7 @@
         -->
         <CustomAction
             Id='RegisterService'
-            FileKey='roomler_agent_exe'
+            FileKey='meshharbor_agent_exe'
             ExeCommand='service install --as-service'
             Execute='deferred'
             Impersonate='no'
@@ -347,7 +347,7 @@
         -->
         <CustomAction
             Id='UnregisterService'
-            FileKey='roomler_agent_exe'
+            FileKey='meshharbor_agent_exe'
             ExeCommand='service uninstall --as-service'
             Execute='deferred'
             Impersonate='no'
@@ -359,7 +359,7 @@
           out to the freshly-laid EXE to scrub the perUser flavour's
           stale Scheduled Task + user-data dirs. Runs deferred + non-
           impersonated (SYSTEM) so it can: (a) delete a per-user task
-          via `schtasks /Delete /TN RoomlerAgent /F` (SYSTEM has the
+          via `schtasks /Delete /TN MeshHarborAgent /F` (SYSTEM has the
           rights), (b) reach into the active-session user's
           %LOCALAPPDATA% / %APPDATA% via the WTSQueryUserToken-backed
           `active_user_profile_root()` (system-context feature). On
@@ -370,7 +370,7 @@
         -->
         <CustomAction
             Id='CleanupLegacyPerUser'
-            FileKey='roomler_agent_exe'
+            FileKey='meshharbor_agent_exe'
             ExeCommand='cleanup-legacy-install --target-flavour perMachine'
             Execute='deferred'
             Impersonate='no'
@@ -397,7 +397,7 @@
           hand-run install on a SystemContext host switched it OFF, the
           worker lost the machine-global config it reads in that mode,
           and the device crash-looped offline until someone ran
-          `roomlerd enable-system-context` (field, 2026-09-26).
+          `meshharbord enable-system-context` (field, 2026-09-26).
         -->
         <Property Id='ENABLE_SYSTEM_CONTEXT' Secure='yes' />
 
@@ -405,15 +405,15 @@
           rc.44 forward action: flip the SystemContext gate on. Runs
           deferred + non-impersonated (LocalSystem) so it has HKLM-write
           rights + SCM Stop/Start rights. ExeCommand shells the freshly-
-          laid roomler-agent.exe (composite subcommand introduced in
-          rc.44 P1.5; writes %PROGRAMDATA%\roomler\last-system-context-
+          laid meshharbor-agent.exe (composite subcommand introduced in
+          rc.44 P1.5; writes %PROGRAMDATA%\meshharbor\last-system-context-
           attempt.json on every invocation so the wizard can surface
           actionable errors). Return="check" so a CA failure surfaces
           as MSI failure → wizard's MsiExitDecoded::FatalError branch.
         -->
         <CustomAction
             Id='EnableSystemContext'
-            FileKey='roomler_agent_exe'
+            FileKey='meshharbor_agent_exe'
             ExeCommand='enable-system-context'
             Execute='deferred'
             Impersonate='no'
@@ -431,7 +431,7 @@
         -->
         <CustomAction
             Id='RollbackSystemContext'
-            FileKey='roomler_agent_exe'
+            FileKey='meshharbor_agent_exe'
             ExeCommand='disable-system-context'
             Execute='rollback'
             Impersonate='no'
@@ -450,7 +450,7 @@
         -->
         <CustomAction
             Id='DisableSystemContext'
-            FileKey='roomler_agent_exe'
+            FileKey='meshharbor_agent_exe'
             ExeCommand='disable-system-context'
             Execute='deferred'
             Impersonate='no'
@@ -465,15 +465,15 @@
           deferred action runs, RegisterService (and a major upgrade's
           removal of the old product) has deleted the service with it. So
           the freshly laid binary decides, from the product's own record
-          of the last enable/disable in %PROGRAMDATA%\roomler, which no
+          of the last enable/disable in %PROGRAMDATA%\meshharbor, which no
           install touches. It then runs the matching enable or disable, so
           it also restarts the service. Return="ignore", like
-          DisableSystemContext: the StartRoomlerSvc ServiceControl still
+          DisableSystemContext: the StartMeshHarborSvc ServiceControl still
           starts the service if this fails.
         -->
         <CustomAction
             Id='KeepSystemContext'
-            FileKey='roomler_agent_exe'
+            FileKey='meshharbor_agent_exe'
             ExeCommand='keep-system-context'
             Execute='deferred'
             Impersonate='no'

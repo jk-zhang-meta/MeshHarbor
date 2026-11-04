@@ -20,7 +20,7 @@ every update wiped Screen Recording + Accessibility.
 
 `installer -target /` needs root; the per-user half isn't. Worse, the exit-to-update dance
 (spawn installer, exit, hope launchd restarts you) raced launchd job replacement.
-Fix: a third launchd unit, **`com.roomler.update`**, installed by the pkg BY DEFAULT
+Fix: a third launchd unit, **`fans.itachi.meshharbor.update`**, installed by the pkg BY DEFAULT
 <!-- RETIRED-NAME-ANCHOR(2): the real macOS daemon config dir, read by the
      shipped .pkg postinstall. FR-21 D5. -->
 (opt-out marker `/etc/roomler-agent/disable-auto-update`, absence-removes): a root,
@@ -98,7 +98,7 @@ The **four-trap ladder** to make self-signed signing work in CI, each field-hit 
    perfectly-signed bundle.
 
 - **Receipts**: rc.479/480/482 all carry the byte-identical DR
-  `identifier "com.roomler.agent" and certificate root = H"b2a06501a54c27be3fea609ce04c1e55cd0a4f52"` —
+  `identifier "fans.itachi.meshharbor.agent" and certificate root = H"b2a06501a54c27be3fea609ce04c1e55cd0a4f52"` —
   **the DR-equivalence check (`codesign -d -r-` old vs new) proves grant survival with no
   grant present**. Operator-confirmed on rc.482: *"screen worked directly"*, no re-grant.
   Observed TCC asymmetry, recorded not modeled: Screen Recording survived even the

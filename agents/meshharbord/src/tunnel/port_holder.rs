@@ -455,12 +455,12 @@ mod tests {
         assert!(describe(&Holder::ThisDaemon { pid: 7 }).contains("restarting the service"));
         let companion = describe(&Holder::Alive {
             pid: 9,
-            image: Some(r"C:\Program Files\Roomler\meshharbor-desktop.exe".into()),
+            image: Some(r"C:\Program Files\MeshHarbor\meshharbor-desktop.exe".into()),
         });
         assert!(companion.contains("quitting the companion"), "{companion}");
         let mac_companion = describe(&Holder::Alive {
             pid: 10,
-            image: Some("/Applications/Roomler.app/Contents/MacOS/meshharbor-desktop".into()),
+            image: Some("/Applications/MeshHarbor.app/Contents/MacOS/meshharbor-desktop".into()),
         });
         assert!(
             mac_companion.contains("quitting the companion"),

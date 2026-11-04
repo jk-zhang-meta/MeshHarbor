@@ -93,7 +93,7 @@ COW-clone golden image → boot → SSH in
 
 - **Install scripts**: `scripts/install.sh` — `--role daemon|tunnel --server --token --name
   --system --no-enroll --download-only --desktop`; per-user default (`systemctl --user`,
-  `roomler.service`) vs `--system` (`/etc/roomler/config.toml` + `roomlerd.service`); macOS
+  `meshharbor.service`) vs `--system` (`/etc/roomler/config.toml` + `meshharbord.service`); macOS
   `--daemon-token` writes the `/etc/roomler/enable-daemon` marker before the pkg (two rows by
   construction). `scripts/install.ps1` — `-Role daemon-user|daemon-machine|daemon-system
   -Token -Name -NoEnroll -AllowElevated`; `daemon-user` **throws in an elevated shell** without

@@ -1,12 +1,12 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  LaunchDAEMON for roomlerd — the privileged half.
+  LaunchDAEMON for meshharbord — the privileged half.
 
   Why this exists: creating a utun and installing routes require root, and
   the agent has only ever shipped as a per-user LaunchAgent. So on macOS the
   overlay could never come up on a real install, no matter what the code did
-  — the daemon simply lacked the privilege. `com.roomler.agent.plist` (the
+  — the daemon simply lacked the privilege. `fans.itachi.meshharbor.agent.plist` (the
   LaunchAgent) stays exactly as it is, because capture (ScreenCaptureKit /
   CoreGraphics) and input (CGEvent) need the GUI session and do NOT work
   from session 0. The two halves are complementary, not alternatives.
@@ -18,7 +18,7 @@
   Opt-in: the postinstall only loads this when the operator asks for it
   (`/etc/meshharbor/enable-daemon` present — the marker is the ONLY
   channel; PackageKit scripts inherit no environment, which is why the old
-  ROOMLER_MACOS_DAEMON=1 form never worked and was removed). A root daemon
+  MESHHARBOR_MACOS_DAEMON=1 form never worked and was removed). A root daemon
   on someone's Mac is a posture decision, not a side effect of installing a
   remote-control agent.
 
@@ -29,11 +29,11 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.roomler.daemon</string>
+    <string>fans.itachi.meshharbor.daemon</string>
 
     <key>ProgramArguments</key>
     <array>
-        <string>/Library/Roomler/roomlerd.app/Contents/MacOS/roomlerd</string>
+        <string>/Library/MeshHarbor/meshharbord.app/Contents/MacOS/meshharbord</string>
         <string>--config</string>
         <string>/etc/meshharbor/config.toml</string>
         <string>run</string>
@@ -58,7 +58,7 @@
     <key>StandardOutPath</key>
     <string>/dev/null</string>
     <key>StandardErrorPath</key>
-    <string>/var/log/roomler/daemon.log</string>
+    <string>/var/log/meshharbor/daemon.log</string>
 
     <key>EnvironmentVariables</key>
     <dict>

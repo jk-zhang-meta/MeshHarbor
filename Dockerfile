@@ -116,7 +116,7 @@ FROM debian:trixie-slim AS runtime
 # advertises the wrong terms to every registry that lists us.
 ARG VERSION=dev
 ARG GIT_SHA=unknown
-LABEL org.opencontainers.image.title="Roomler" \
+LABEL org.opencontainers.image.title="MeshHarbor" \
       org.opencontainers.image.description="Remote desktop in a browser tab + WireGuard mesh VPN. Self-hosted, end-to-end encrypted." \
       org.opencontainers.image.url="https://roomler.ai" \
       org.opencontainers.image.source="https://github.com/gjovanov/roomler-ai" \
@@ -129,7 +129,7 @@ LABEL org.opencontainers.image.title="Roomler" \
 RUN apt-get update && apt-get install -y ca-certificates nginx && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /app/target/release/meshharbor-api /usr/local/bin/
 COPY --from=builder /app/target/release/derp-relay /usr/local/bin/
-COPY --from=ui-builder /app/ui/dist /var/www/roomler-ai
+COPY --from=ui-builder /app/ui/dist /var/www/meshharbor
 COPY files/nginx-pod.conf /etc/nginx/conf.d/default.conf
 # FR-91: the security headers live in one file that the pod nginx and the blog
 # lane's server both include. Outside conf.d/ on purpose: nginx.conf includes
@@ -146,18 +146,18 @@ COPY files/security-headers.conf /etc/nginx/snippets/security-headers.conf
 # `country: unknown`, a supported state. NOT GeoLite2: MaxMind's EULA forbids
 # handing its data to third parties, and a public image does exactly that.
 # Details: files/geoip/README.md.
-COPY files/geoip/ /usr/share/roomler/geoip/
+COPY files/geoip/ /usr/share/meshharbor/geoip/
 # The image names its own database, so a deployment needs no setting for it.
 # An env value overrides it (your own .mmdb, e.g. a licensed GeoIP2), and an
 # EMPTY value turns country lookups off. ⚠️ An env var outranks the config
 # files, so `geoip_mmdb` in config/local.toml cannot override this; use the
 # variable.
-ENV ROOMLER__STATS__GEOIP_MMDB=/usr/share/roomler/geoip/dbip-country-lite.mmdb
+ENV MESHHARBOR__STATS__GEOIP_MMDB=/usr/share/meshharbor/geoip/dbip-country-lite.mmdb
 # FR-20 P5 - unit costs for the metered relay/SFU resources. The binary
 # resolves `config/relay-costs.toml` relative to its CWD, which is `/` here.
 # Same contract as the GeoIP directory above: absent is a supported state and
 # renders "not priced", never a fabricated 0.00 (which would also imply 100%
-# margin). `ROOMLER__RELAY_COSTS__*` overrides it without an image rebuild.
+# margin). `MESHHARBOR__RELAY_COSTS__*` overrides it without an image rebuild.
 COPY config/ /config/
 RUN rm -f /etc/nginx/sites-enabled/default
 RUN printf '#!/bin/sh\nnginx\nexec meshharbor-api\n' > /entrypoint.sh && chmod +x /entrypoint.sh

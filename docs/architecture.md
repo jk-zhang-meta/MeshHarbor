@@ -122,7 +122,7 @@ flowchart BT
 
     roomlerd["agents/meshharbord → roomlerd<br/>the daemon"]
     tunnel["agents/meshharbor-cli → roomler<br/>tunnel CLI (surface lives in its lib)"]
-    shim["agents/meshharbor-cli-shim<br/>roomler.exe on daemon hosts → re-execs roomlerd cli"]
+    shim["agents/meshharbor-cli-shim<br/>meshharbor.exe on daemon hosts → re-execs roomlerd cli"]
     tray["agents/meshharbor-desktop → meshharbor-desktop"]
     setup["agents/meshharbor-setup<br/>install wizard (Tauri)"]
 

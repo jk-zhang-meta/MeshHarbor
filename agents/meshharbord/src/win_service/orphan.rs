@@ -13,7 +13,7 @@
 //! **The rule** ([`is_orphaned_worker`]): the SCM runs one host process per
 //! service, and a host supervises at most one worker. The reaper runs only
 //! while this host supervises none (before its first spawn, and after its
-//! worker refused), so a running `roomlerd.exe run --supervisor scm` belongs
+//! worker refused), so a running `meshharbord.exe run --supervisor scm` belongs
 //! to a host that is gone, or is one this host lost track of. Only this
 //! service spawns that command line: a per-user install runs `--supervisor
 //! task`. It is keyed on who spawned the worker, never on when: creation
@@ -365,7 +365,7 @@ fn terminate_and_wait(h: &OwnedHandle) -> bool {
 mod tests {
     use super::*;
 
-    const EXE: &str = r"C:\Program Files\Roomler\roomlerd.exe";
+    const EXE: &str = r"C:\Program Files\MeshHarbor\meshharbord.exe";
 
     fn cand(pid: u32, image: &str, cmdline: &str) -> Candidate {
         Candidate {
@@ -381,10 +381,10 @@ mod tests {
     #[test]
     fn an_scm_worker_is_recognised() {
         for c in [
-            r#""C:\Program Files\Roomler\roomlerd.exe" run --supervisor scm --stop-event Global\roomler-worker-stop-2452-3"#,
-            r#""C:\Program Files\Roomler\roomlerd.exe" run --supervisor scm --stop-event Global\roomler-worker-stop-1812-0 --sas-event Global\roomler-sas-1812"#,
-            r"C:\Roomler\roomlerd.exe run --supervisor scm",
-            r"C:\Roomler\roomlerd.exe run --supervisor=scm",
+            r#""C:\Program Files\MeshHarbor\meshharbord.exe" run --supervisor scm --stop-event Global\roomler-worker-stop-2452-3"#,
+            r#""C:\Program Files\MeshHarbor\meshharbord.exe" run --supervisor scm --stop-event Global\roomler-worker-stop-1812-0 --sas-event Global\roomler-sas-1812"#,
+            r"C:\Roomler\meshharbord.exe run --supervisor scm",
+            r"C:\Roomler\meshharbord.exe run --supervisor=scm",
         ] {
             assert!(is_scm_worker_cmdline(c), "{c}");
         }
@@ -396,15 +396,15 @@ mod tests {
     #[test]
     fn nothing_else_is_an_scm_worker() {
         for c in [
-            r#""C:\Program Files\Roomler\roomlerd.exe" service-run"#,
-            r#""C:\Program Files\Roomler\roomlerd.exe" run"#,
-            r#""C:\Program Files\Roomler\roomlerd.exe" run --supervisor task"#,
-            r#""C:\Program Files\Roomler\roomlerd.exe" netd"#,
-            r#""C:\Program Files\Roomler\roomlerd.exe" cli ssh mars"#,
-            r#""C:\Program Files\Roomler\roomlerd.exe" cli run --supervisor scm"#,
-            r#""C:\Program Files\Roomler\roomlerd.exe" self-update --check-only"#,
-            r#""C:\Program Files\Roomler\roomlerd.exe" run --supervisor"#,
-            r#""C:\Program Files\Roomler\roomlerd.exe" run --stop-event scm"#,
+            r#""C:\Program Files\MeshHarbor\meshharbord.exe" service-run"#,
+            r#""C:\Program Files\MeshHarbor\meshharbord.exe" run"#,
+            r#""C:\Program Files\MeshHarbor\meshharbord.exe" run --supervisor task"#,
+            r#""C:\Program Files\MeshHarbor\meshharbord.exe" netd"#,
+            r#""C:\Program Files\MeshHarbor\meshharbord.exe" cli ssh mars"#,
+            r#""C:\Program Files\MeshHarbor\meshharbord.exe" cli run --supervisor scm"#,
+            r#""C:\Program Files\MeshHarbor\meshharbord.exe" self-update --check-only"#,
+            r#""C:\Program Files\MeshHarbor\meshharbord.exe" run --supervisor"#,
+            r#""C:\Program Files\MeshHarbor\meshharbord.exe" run --stop-event scm"#,
             "",
         ] {
             assert!(!is_scm_worker_cmdline(c), "{c}");
@@ -414,9 +414,9 @@ mod tests {
     #[test]
     fn a_quoted_program_path_is_one_argument() {
         assert_eq!(
-            split_args(r#""C:\Program Files\Roomler\roomlerd.exe" run  --supervisor scm"#),
+            split_args(r#""C:\Program Files\MeshHarbor\meshharbord.exe" run  --supervisor scm"#),
             [
-                r"C:\Program Files\Roomler\roomlerd.exe",
+                r"C:\Program Files\MeshHarbor\meshharbord.exe",
                 "run",
                 "--supervisor",
                 "scm"
@@ -428,7 +428,7 @@ mod tests {
     /// non-worker are all left alone.
     #[test]
     fn the_rule_needs_every_condition() {
-        let worker = r#""C:\Program Files\Roomler\roomlerd.exe" run --supervisor scm --stop-event Global\roomler-worker-stop-2452-3"#;
+        let worker = r#""C:\Program Files\MeshHarbor\meshharbord.exe" run --supervisor scm --stop-event Global\roomler-worker-stop-2452-3"#;
         let own = 1812;
         assert!(is_orphaned_worker(&cand(3248, EXE, worker), own, &[]));
         assert!(
@@ -452,7 +452,7 @@ mod tests {
     /// stop cleanly beside it.
     #[test]
     fn a_worker_whose_file_was_renamed_away_is_still_an_orphan() {
-        let worker = r#""C:\Program Files\Roomler\roomlerd.exe" run --supervisor scm --stop-event Global\roomler-worker-stop-2452-3"#;
+        let worker = r#""C:\Program Files\MeshHarbor\meshharbord.exe" run --supervisor scm --stop-event Global\roomler-worker-stop-2452-3"#;
         let renamed = cand(3248, r"C:\Config.Msi\3f1a2b.rbf", worker);
         assert!(is_orphaned_worker(&renamed, 1812, &[]));
     }

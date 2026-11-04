@@ -4,9 +4,9 @@ license = "MPL-2.0"
 publish = false
 version.workspace = true
 edition.workspace = true
-description = "Tiny launcher installed as roomler.exe on daemon hosts — re-execs `roomlerd cli`."
+description = "Tiny launcher installed as meshharbor.exe on daemon hosts — re-execs `roomlerd cli`."
 
-# Installed AS `roomler.exe` (the wxs File element renames it). The build
+# Installed AS `meshharbor.exe` (the wxs File element renames it). The build
 # output can NOT be called `roomler` because the standalone tunnel CLI
 # already emits that name and `cargo build --workspace` refuses two bins
 # with the same output path.
@@ -21,7 +21,7 @@ path = "src/main.rs"
 [dependencies]
 
 # build.rs embeds a Windows VERSIONINFO resource. This shim INSTALLS as
-# roomler.exe on every Windows daemon host, so an anonymous binary here is
+# meshharbor.exe on every Windows daemon host, so an anonymous binary here is
 # exactly as visible to AV/inventory tooling as the daemon itself. See
 # agents/meshharbord/Cargo.toml for the embed-resource-vs-winresource
 # rationale.

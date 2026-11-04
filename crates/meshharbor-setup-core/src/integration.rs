@@ -3,7 +3,7 @@
 // RETIRED-NAME-ANCHOR-BEGIN
 // What is left here is the WINDOWS half. The per-user install DIR is named by
 // the extract step, not by this module, and the release zip still carries a
-// roomler-tunnel.exe alias for hosts that already have it on PATH — so the
+// meshharbor-tunnel.exe alias for hosts that already have it on PATH — so the
 // occurrences below describe a layout this module only appends to.
 // The LINUX half is done: FR-46 flipped the symlink to `~/.local/bin/roomler`
 // and REMOVES a pre-rename one instead of stranding it, which is what the
@@ -52,8 +52,8 @@ pub struct IntegrationReport {
     /// was created. v1 leaves this false (Phase B deliverable).
     pub shortcut_created: bool,
     /// Resolved path the operator should run / add to their shell rc.
-    /// e.g. `C:\Users\foo\AppData\Local\Programs\roomler-tunnel\
-    /// roomler-tunnel.exe` (Windows) or `/home/foo/.local/bin/
+    /// e.g. `C:\Users\foo\AppData\Local\Programs\meshharbor-tunnel\
+    /// meshharbor-tunnel.exe` (Windows) or `/home/foo/.local/bin/
     /// roomler` (Linux).
     pub binary_path: PathBuf,
 }
@@ -62,7 +62,7 @@ pub struct IntegrationReport {
 ///
 /// `tunnel_binary` is the absolute path to the `roomler-tunnel(.exe)`
 /// the extractor located inside `<install_root>`. `install_root` is
-/// the per-user install dir (`%LOCALAPPDATA%\Programs\roomler-tunnel`
+/// the per-user install dir (`%LOCALAPPDATA%\Programs\meshharbor-tunnel`
 /// on Windows; the extractor's dest dir on Linux/macOS).
 ///
 /// Returns a structured report on success. Best-effort: a failure to
@@ -342,7 +342,7 @@ mod tests {
             path_updated: true,
             shortcut_created: false,
             binary_path: PathBuf::from(if cfg!(windows) {
-                r"C:\Users\foo\bin\roomler.exe"
+                r"C:\Users\foo\bin\meshharbor.exe"
             } else {
                 "/home/foo/.local/bin/roomler"
             }),

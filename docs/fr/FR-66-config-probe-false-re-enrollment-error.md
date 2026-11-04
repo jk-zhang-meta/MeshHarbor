@@ -18,10 +18,10 @@ Every service start logs this — three times on the day it was found:
 
 ```
 ERROR config unreadable and no usable previous copy — the host must be re-enrolled
-  path=C:\ProgramData\roomler\roomler\config.toml
-  error=reading config at C:\ProgramData\roomler\roomler\config.toml:
+  path=C:\ProgramData\meshharbor\roomler\config.toml
+  error=reading config at C:\ProgramData\meshharbor\roomler\config.toml:
         The system cannot find the file specified. (os error 2)
-  prev=C:\ProgramData\roomler\roomler\config.toml.prev
+  prev=C:\ProgramData\meshharbor\roomler\config.toml.prev
   prev_error=... (os error 2)
 ```
 
@@ -45,7 +45,7 @@ Three log lines apart, the same start says:
 config: resolved load path
   config_path=C:\Windows\system32\config\systemprofile\...\roomler\config\config.toml
   is_system_context=true
-  machine_global=C:\ProgramData\roomler\roomler\config.toml
+  machine_global=C:\ProgramData\meshharbor\roomler\config.toml
 supervisor: M3 A1 auto-swap (user-context -> SystemContext) is DISABLED (default)
 supervisor: spawned worker  pid=109640  session_id=1  elevated=true
 ```

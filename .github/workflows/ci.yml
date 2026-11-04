@@ -833,7 +833,7 @@ jobs:
           sudo ROOMLERD_TEST_REQUIRE_ROOT=1 "$BIN" files::seat_user_tests
 
       - name: The Linux user unit's sandbox (FR-85 P2c) — it starts on a fresh host, and the recorder writes ~/Videos
-        # FR-85 P2c. `roomler.service` (the per-user install; what
+        # FR-85 P2c. `meshharbor.service` (the per-user install; what
         # `install.sh --role daemon` enables without `--system`) runs the
         # daemon with ProtectHome=read-only. This starts a unit carrying its
         # sandbox lines VERBATIM, on a runner that never ran the pre-rename
@@ -868,7 +868,7 @@ jobs:
           # host, its `-` is belt and braces, and what FR-96 P2a needs from it
           # is that the sandbox leaves it WRITABLE — asserted below, with a
           # negative control.
-          for p in $(grep -E '^ReadWritePaths=' agents/meshharbord/packaging/linux/roomler.service | sed 's/^ReadWritePaths=//' | tr ' ' '\n' | grep '^-' | sed "s|^-||; s|%h|$H|g"); do
+          for p in $(grep -E '^ReadWritePaths=' agents/meshharbord/packaging/linux/meshharbor.service | sed 's/^ReadWritePaths=//' | tr ' ' '\n' | grep '^-' | sed "s|^-||; s|%h|$H|g"); do
             if [ "$p" != "$H/Videos" ] && [ "$p" != "$H/Downloads" ] && [ "$p" != /var/tmp ] && [ -e "$p" ]; then echo "::error::$p exists on the runner; the cell proves nothing"; exit 1; fi
           done
           OUT=/tmp/p2c-where.out
@@ -882,12 +882,12 @@ jobs:
             echo "StandardOutput=file:$OUT"
             echo "StandardError=journal"
             echo "ExecStart=/bin/sh -c '\"$BIN\" record --where; if touch \"$H/.p2c-probe\" 2>/dev/null; then echo HOME_WRITABLE; else echo HOME_READ_ONLY; fi; $WAKE_PROBE'"
-            grep -E '^(NoNewPrivileges|ProtectSystem|ProtectHome|ReadWritePaths)=' agents/meshharbord/packaging/linux/roomler.service | sed "s|%h|$H|g"
+            grep -E '^(NoNewPrivileges|ProtectSystem|ProtectHome|ReadWritePaths)=' agents/meshharbord/packaging/linux/meshharbor.service | sed "s|%h|$H|g"
           } | sudo tee /etc/systemd/system/p2c-sandbox.service
           sudo systemctl daemon-reload
           if ! sudo systemctl start p2c-sandbox.service; then
             sudo journalctl -u p2c-sandbox.service --no-pager | tail -20
-            echo "::error::a unit carrying roomler.service's sandbox did not start"; exit 1
+            echo "::error::a unit carrying meshharbor.service's sandbox did not start"; exit 1
           fi
           cat "$OUT"
           grep -q "$H/Videos/Roomler" "$OUT" || { echo "::error::under the sandbox the recorder did not choose ~/Videos/Roomler"; exit 1; }
@@ -908,7 +908,7 @@ jobs:
             echo "StandardOutput=file:$NC"
             echo "StandardError=journal"
             echo "ExecStart=/bin/sh -c '$WAKE_PROBE'"
-            grep -E '^(NoNewPrivileges|ProtectSystem|ProtectHome|ReadWritePaths)=' agents/meshharbord/packaging/linux/roomler.service | grep -vx 'ReadWritePaths=-/var/tmp' | sed "s|%h|$H|g"
+            grep -E '^(NoNewPrivileges|ProtectSystem|ProtectHome|ReadWritePaths)=' agents/meshharbord/packaging/linux/meshharbor.service | grep -vx 'ReadWritePaths=-/var/tmp' | sed "s|%h|$H|g"
           } | sudo tee /etc/systemd/system/p2c-nogrant.service
           if grep -q '^ReadWritePaths=.*/var/tmp' /etc/systemd/system/p2c-nogrant.service; then echo "::error::the negative control still grants /var/tmp"; exit 1; fi
           sudo systemctl daemon-reload
@@ -953,13 +953,13 @@ jobs:
           printf '%s\n' 'server_url = "http://127.0.0.1:9"' 'agent_token = "ci"' \
             'agent_id = "000000000000000000000000"' 'tenant_id = "000000000000000000000000"' \
             'machine_id = "ci"' 'machine_name = "ci"' > "$H/.config/roomler/config.toml"
-          sed "s|^ExecStart=.*|ExecStart=$BIN run|" agents/meshharbord/packaging/linux/roomler.service > "$H/.config/systemd/user/roomler.service"
+          sed "s|^ExecStart=.*|ExecStart=$BIN run|" agents/meshharbord/packaging/linux/meshharbor.service > "$H/.config/systemd/user/meshharbor.service"
           systemctl --user daemon-reload
-          systemctl --user start roomler.service
+          systemctl --user start meshharbor.service
           sock=""
           for _ in $(seq 1 45); do [ -S "$RUN/roomler.sock" ] && { sock=1; break; }; sleep 1; done
-          show_log() { sudo journalctl "_UID=$MYUID" _SYSTEMD_USER_UNIT=roomler.service --no-pager -n 25 || true; }
-          PID=$(systemctl --user show -p MainPID --value roomler.service)
+          show_log() { sudo journalctl "_UID=$MYUID" _SYSTEMD_USER_UNIT=meshharbor.service --no-pager -n 25 || true; }
+          PID=$(systemctl --user show -p MainPID --value meshharbor.service)
           case "$PID" in ''|0) show_log; echo "::error::the unit has no running daemon"; exit 1 ;; esac
           [ "$(sudo readlink "/proc/$PID/ns/mnt")" != "$(sudo readlink /proc/1/ns/mnt)" ] \
             || { echo "::error::the unit ran in the host's mount namespace: its sandbox did not apply, and this cell proves nothing"; exit 1; }
@@ -983,7 +983,7 @@ jobs:
           done
           case "$(governing "$H")" in ro*) ;; *) echo "::error::$H is writable inside the unit ('$(governing "$H")')"; exit 1 ;; esac
           echo "the user unit: sandboxed, LocalAPI bound, the runtime, state, config and data folders and /var/tmp writable, the rest of home read-only"
-          systemctl --user stop roomler.service
+          systemctl --user stop meshharbor.service
 
   rust-recorder-audio:
     name: Recorder tests with audio + X11 pointer (FR-85)
@@ -1266,10 +1266,10 @@ jobs:
           # launchctl refuses the second bootstrap of a duplicate and the error
           # reads "already loaded" rather than "you shipped one label twice".
           #
-          # Globbed on `com.roomler.*` — the launchd jobs — rather than every
+          # Globbed on `fans.itachi.meshharbor.*` — the launchd jobs — rather than every
           # .plist in the directory, which also holds entitlements.plist (a
           # codesign input with no Label at all).
-          labels=$(for p in agents/meshharbord/packaging/macos/com.roomler.*.plist; do
+          labels=$(for p in agents/meshharbord/packaging/macos/fans.itachi.meshharbor.*.plist; do
                      plutil -extract Label raw "$p" \
                        || { echo "::error::$p has no Label"; exit 1; }
                    done)
@@ -1284,8 +1284,8 @@ jobs:
           # renamed executable. This assert is why a half-done rename cannot ship:
           # a plist still naming the old path installs fine and the daemon simply
           # never starts, which reads as "the overlay is down", not as a typo.
-          grep -q '/Library/Roomler/roomlerd.app/Contents/MacOS/roomlerd' \
-            agents/meshharbord/packaging/macos/com.roomler.daemon.plist
+          grep -q '/Library/Roomler/meshharbord.app/Contents/MacOS/roomlerd' \
+            agents/meshharbord/packaging/macos/fans.itachi.meshharbor.daemon.plist
 
       - name: macOS overlay against a real utun
         # The macOS arms of add_address_sync / add_peer_route /

@@ -209,18 +209,18 @@ mod tests {
 
     #[test]
     fn command_line_quotes_the_exe_and_each_argument() {
-        let exe = Path::new(r"C:\Program Files\Roomler\meshharbor-desktop.exe");
+        let exe = Path::new(r"C:\Program Files\MeshHarbor\meshharbor-desktop.exe");
         assert_eq!(
             command_line(exe, &["--first-run"]),
-            r#""C:\Program Files\Roomler\meshharbor-desktop.exe" --first-run"#
+            r#""C:\Program Files\MeshHarbor\meshharbor-desktop.exe" --first-run"#
         );
         assert_eq!(
             command_line(exe, &["--view=welcome", "two words"]),
-            r#""C:\Program Files\Roomler\meshharbor-desktop.exe" --view=welcome "two words""#
+            r#""C:\Program Files\MeshHarbor\meshharbor-desktop.exe" --view=welcome "two words""#
         );
         assert_eq!(
             command_line(exe, &[]),
-            r#""C:\Program Files\Roomler\meshharbor-desktop.exe""#
+            r#""C:\Program Files\MeshHarbor\meshharbor-desktop.exe""#
         );
     }
 

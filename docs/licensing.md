@@ -84,7 +84,7 @@ The agents link FFmpeg, which is LGPL-2.1, and how they link it decides what we 
 
 | platform | linkage | clause | what we provide |
 |---|---|---|---|
-| Windows (`roomlerd.exe`) | **static** | §6: a recipient must be able to relink | the corresponding source, the written offer, and the relink procedure |
+| Windows (`meshharbord.exe`) | **static** | §6: a recipient must be able to relink | the corresponding source, the written offer, and the relink procedure |
 | Linux (`.deb`) | shared | §6(b), satisfied by the shared-library mechanism | the corresponding source |
 | macOS (`.pkg`) | shared | §6(b) | the corresponding source |
 

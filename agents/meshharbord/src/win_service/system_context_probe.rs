@@ -17,7 +17,7 @@
 //!   works on the operator's box without `AdjustTokenPrivileges`
 //!   gymnastics.
 //!
-//!   Run via: `psexec -s -i 1 ...\roomlerd.exe system-context-probe winlogon-token`
+//!   Run via: `psexec -s -i 1 ...\meshharbord.exe system-context-probe winlogon-token`
 //!
 //! - **`winsta-attach`** (Pre-flight #3): the SCM service starts in
 //!   the `Service-0x0-3e7$\Default` window station. Before it can open
@@ -28,7 +28,7 @@
 //!   `attach_to_winsta0()` step in the eventual SYSTEM-context worker
 //!   bootstrap.
 //!
-//!   Run via: `psexec -s -i 0 ...\roomlerd.exe system-context-probe winsta-attach`
+//!   Run via: `psexec -s -i 0 ...\meshharbord.exe system-context-probe winsta-attach`
 //!
 //! - **`dxgi-cadence`** (Pre-flight #5): instrument `scrap::Capturer`
 //!   on the primary display for 30 s on a static desktop. Reports the
@@ -38,7 +38,7 @@
 //!   "emit-on-change" with a 1 fps idle keepalive) — the M3 A1 worker
 //!   needs equivalent compensation.
 //!
-//!   Run via: `...\roomlerd.exe system-context-probe dxgi-cadence`
+//!   Run via: `...\meshharbord.exe system-context-probe dxgi-cadence`
 //!   (no SYSTEM context needed; user-context is fine for cadence
 //!   measurement.)
 //!

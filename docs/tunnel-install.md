@@ -64,8 +64,8 @@ The agent is the existing `roomlerd` MSI. Download from your Roomler server (pro
 # perUser flavour — installs to %LOCALAPPDATA%, no UAC prompt
 Invoke-WebRequest `
   "https://roomler.ai/api/agent/installer/peruser?version=latest" `
-  -OutFile "$env:USERPROFILE\Downloads\roomlerd.msi"
-msiexec /i "$env:USERPROFILE\Downloads\roomlerd.msi"
+  -OutFile "$env:USERPROFILE\Downloads\meshharbord.msi"
+msiexec /i "$env:USERPROFILE\Downloads\meshharbord.msi"
 ```
 
 For unattended / fleet installs (boot-time, runs as `LocalSystem`):
@@ -73,25 +73,25 @@ For unattended / fleet installs (boot-time, runs as `LocalSystem`):
 ```powershell
 Invoke-WebRequest `
   "https://roomler.ai/api/agent/installer/permachine?version=latest" `
-  -OutFile "$env:USERPROFILE\Downloads\roomlerd-permachine.msi"
+  -OutFile "$env:USERPROFILE\Downloads\meshharbord-permachine.msi"
 # Run elevated:
-msiexec /i "$env:USERPROFILE\Downloads\roomlerd-permachine.msi"
+msiexec /i "$env:USERPROFILE\Downloads\meshharbord-permachine.msi"
 ```
 
 **Linux (.deb):**
 
 ```bash
-curl -fsSL -o /tmp/roomlerd.deb \
+curl -fsSL -o /tmp/meshharbord.deb \
   "https://roomler.ai/api/agent/installer/peruser?version=latest&os=linux"
-sudo dpkg -i /tmp/roomlerd.deb
+sudo dpkg -i /tmp/meshharbord.deb
 ```
 
 **macOS (.pkg):**
 
 ```bash
-curl -fsSL -o /tmp/roomlerd.pkg \
+curl -fsSL -o /tmp/meshharbord.pkg \
   "https://roomler.ai/api/agent/installer/peruser?version=latest&os=macos"
-sudo installer -pkg /tmp/roomlerd.pkg -target /
+sudo installer -pkg /tmp/meshharbord.pkg -target /
 ```
 
 ---
@@ -227,7 +227,7 @@ This writes the long-lived `TunnelClient` JWT to:
 
 - Windows: `%APPDATA%\roomler\roomler-tunnel\config.toml`
 - Linux: `~/.config/roomler-tunnel/config.toml`
-- macOS: `~/Library/Application Support/roomler-tunnel/config.toml`
+- macOS: `~/Library/Application Support/meshharbor-tunnel/config.toml`
 
 Verify in **Admin → Tenant → Tunnels** that the row appears.
 
@@ -468,7 +468,7 @@ Then it installs by host:
 
 | Host | Installs |
 |---|---|
-| Windows | the zip's `roomler.exe` replaces the running exe |
+| Windows | the zip's `meshharbor.exe` replaces the running exe |
 | macOS, and Linux where no package owns the binary | the tarball's `roomler`, written beside the running binary and renamed over it, so the swap is atomic |
 | Linux where the binary came from the `.deb` (`install.sh --role tunnel` on Debian and Ubuntu) | `dpkg -i` of the verified `.deb`, so dpkg's record names the version on disk |
 
@@ -481,7 +481,7 @@ rc.266, points at the manual download.
 This is the single updater for tunnel-only hosts.
 
 **Daemon hosts** (installed a "be-accessed" role — the agent MSI) do NOT need
-this: since the node-stack unification the daemon MSI *carries* `roomler.exe`, so
+this: since the node-stack unification the daemon MSI *carries* `meshharbor.exe`, so
 the daemon's own auto-update refreshes the CLI alongside `roomlerd` on every MSI
 upgrade. `roomler self-update` there is refused, and names `roomlerd self-update`
 instead: that `roomler` is a shim over the daemon, and the MSI is the source of

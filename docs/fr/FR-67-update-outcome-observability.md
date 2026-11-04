@@ -42,8 +42,8 @@ nothing being waited *for*: the install finished before the watcher existed. The
 `child.wait()` and returns an already-exited pid.
 
 **2. The cgroup teardown then removes any chance of finishing.** Both packaged
-units ship with no `KillMode` (`packaging/linux/roomlerd.service`,
-`roomler.service`) ⇒ systemd's default `control-group`. `spawn_watcher` launches
+units ship with no `KillMode` (`packaging/linux/meshharbord.service`,
+`meshharbor.service`) ⇒ systemd's default `control-group`. `spawn_watcher` launches
 the watcher as a plain child (`updater.rs:2573`) on the reasoning that it "is
 reparented to init and runs to completion on its own" — but reparenting to PID 1
 does not leave the cgroup. `docs/fr/FR-36-wayland-capture.md:371` already recorded
@@ -164,7 +164,7 @@ sequenceDiagram
 | P1 | Stop waiting on a synchronously-completed install (Linux) | revert = today's unconditional wait | **shipped (#1400)** — field verification pending a release |
 | P2 | Recover a `(deleted)` exe path + refuse a non-existent watcher binary + log the anyhow chain | revert = today's ENOENT | **shipped (#1427)** — ⚠️ NOT the guard it was scoped as: this is the whole reason the `.deb` path had no watcher |
 | P3 | Read the verdict: startup log + `NodeStatus` + `roomler status` | pure addition; revert = today's silence | proposed |
-| P4 | macOS `AbandonProcessGroup` — **`com.roomler.update.plist`** is the job that matters (`update-helper` is that LaunchDaemon's body and is where `installer -pkg` is spawned) | packaging-only revert | proposed — see the note below |
+| P4 | macOS `AbandonProcessGroup` — **`fans.itachi.meshharbor.update.plist`** is the job that matters (`update-helper` is that LaunchDaemon's body and is where `installer -pkg` is spawned) | packaging-only revert | proposed — see the note below |
 | P5 | Fleet answer: report the outcome to the server and show it | render-only; absent field ⇒ today's blank | proposed |
 | P6 | Transient systemd unit — **only if P1 leaves a measurable race** | `update_watcher_escape_cgroup`, default OFF | deferred, evidence-gated |
 | P7 | The dashboard is told which devices will not act on an update ordered from it, and why: `update_mode` in the caps, refused up front with a `refused_code`, marked before the click | revert = today's blind push; an agent without the word is pushed as before | **shipped (#2545)** · field-verified on 0.4.146 + `hosted-20261019-e46da07` |
@@ -237,9 +237,9 @@ installer genuinely IS asynchronous: `installer -pkg` is `.spawn()`ed and return
 a live pid, so **P1 does not help there** — the watcher must actually wait, and
 therefore must actually survive.
 
-The job to fix is **`com.roomler.update`**, whose body is `roomlerd update-helper`
+The job to fix is **`fans.itachi.meshharbor.update`**, whose body is `roomlerd update-helper`
 (`main.rs`, `Command::UpdateHelper`) — that is where the install runs.
-`com.roomler.daemon` may need it too if the daemon ever spawns an installer
+`fans.itachi.meshharbor.daemon` may need it too if the daemon ever spawns an installer
 directly rather than delegating to the helper.
 
 ⚠️ Deliberately not written yet: `AbandonProcessGroup=true` stops launchd reaping

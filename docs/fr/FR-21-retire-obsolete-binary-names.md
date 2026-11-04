@@ -50,8 +50,8 @@ the field is still on the old segment, silently, at the next update:
 | `LEGACY_TASK_NAME = "RoomlerAgent"` | `agents/meshharbord/src/service.rs:394` | the pre-rename scheduled task survives forever → two daemons |
 | legacy log prefix `roomler-agent.log` | `crates/agent-core/src/logging.rs:245,312,440`; `agents/meshharbord/src/logs_fetch.rs:56` | `rc:logs-fetch` returns "no log file" on an upgraded host that has not rolled yet |
 | `LEGACY_INSTALL_FOLDER_NAME = "roomler-agent"` | `agents/meshharbord/src/updater.rs:369` | the vacated install dir is never swept |
-| `%h/.config/roomler-agent` in `ReadWritePaths` | `agents/meshharbord/packaging/linux/roomler.service:44` | systemd denies the daemon its own legacy tree mid-migration |
-| **the macOS `.app` bundle** — see §5, D5 | `packaging/macos/com.roomler.{agent,daemon}.plist`; `.github/workflows/ci.yml:393` | **TCC grants are voided** — every Mac silently loses Screen Recording + Accessibility until a human re-grants them |
+| `%h/.config/roomler-agent` in `ReadWritePaths` | `agents/meshharbord/packaging/linux/meshharbor.service:44` | systemd denies the daemon its own legacy tree mid-migration |
+| **the macOS `.app` bundle** — see §5, D5 | `packaging/macos/fans.itachi.meshharbor.{agent,daemon}.plist`; `.github/workflows/ci.yml:393` | **TCC grants are voided** — every Mac silently loses Screen Recording + Accessibility until a human re-grants them |
 
 So the deliverable is not a diff. It is **a classifier plus a guard**: an inventory that assigns
 every occurrence to `migrate` / `freeze`, a CI job that fails on an unclassified occurrence, and
@@ -150,8 +150,8 @@ Anything a deployed host — or a deployed *operator runbook* — already depend
 ### Class C — **freeze** (renaming *is* the defect)
 
 The seven anchors in §2, plus already-published GitHub release asset names (immutable), plus the
-legacy `roomler-agent.service` unit name referenced by the duplicate-unit cleanup
-(`packaging/linux/roomlerd.service:61`).
+legacy `meshharbor-agent.service` unit name referenced by the duplicate-unit cleanup
+(`packaging/linux/meshharbord.service:61`).
 
 Every Class-C site gets a one-line marker so the classifier finds it mechanically rather than
 through a hand-maintained path list that drifts:
@@ -171,7 +171,7 @@ fresh install.**
 `ui/src/views/remote/RemoteControl.vue:1783` hardcodes:
 
 ```js
-const STAGING_PATH = 'C:\\ProgramData\\roomler\\roomler-agent\\staging'
+const STAGING_PATH = 'C:\\ProgramData\\meshharbor\\roomler-agent\\staging'
 ```
 
 But `appdirs::machine_global_dir()` (`crates/agent-core/src/appdirs.rs:73-92`) resolves
@@ -179,14 +179,14 @@ But `appdirs::machine_global_dir()` (`crates/agent-core/src/appdirs.rs:73-92`) r
 tree is present:
 
 ```rust
-let new = base.join(NEW_APP);   // C:\ProgramData\roomler\roomler
-let old = base.join(OLD_APP);   // C:\ProgramData\roomler\roomler-agent
+let new = base.join(NEW_APP);   // C:\ProgramData\meshharbor\roomler
+let old = base.join(OLD_APP);   // C:\ProgramData\meshharbor\roomler-agent
 if !new.exists() && old.exists() { old } else { new }
 ```
 
 So the hardcoded path is correct **only** on a perMachine host that still carries the legacy
 tree, and wrong on every fresh perMachine install — where the real directory is
-`C:\ProgramData\roomler\roomler\staging`.
+`C:\ProgramData\meshharbor\roomler\staging`.
 
 And unlike the per-user trees, `migrate_legacy_trees` (`appdirs.rs:133-175`) walks the three
 `ProjectDirs` paths **only** — it never touches the machine-global tree — so the split is
@@ -284,7 +284,7 @@ order and it is wrong, because in a rename the docs are only wrong *after* the c
 
 Both binaries **misnamed themselves in every `--help`, usage line and argument error**. Nothing
 tested it, because clap's program name is display-only. Verified by running the built binary,
-not by reading the diff: `Usage: roomlerd.exe` where it previously said `roomler-agent.exe`.
+not by reading the diff: `Usage: meshharbord.exe` where it previously said `meshharbor-agent.exe`.
 
 ### 7b. Two hazards found while executing, both blocking their phase
 
@@ -372,7 +372,7 @@ Evidence for the ticked boxes, and what the unticked ones are still waiting on
 | macOS TCC | P6 macOS row below — `Screen Recording + Accessibility both granted`, 30 s after the 0.4.15 release |
 | field sweep, three OSes | P6 Linux / Windows / macOS rows below |
 | e2e, no new failures | nightly lane `scripts/e2e-nightly.sh`, 2026-08-29 11:34Z on `v20260829-673a1686220f`: `OK (13 failed, 3 skipped, 154 passed)`. `OK` is the script's verdict that every failure matched `scripts/e2e-expected-failures.txt`. Post-rename tree. ⚠️ Predates #895/#924/#941, none of which touch the UI or server behaviour it exercises |
-| pre-rename host keeps its identity | Throwaway Server 2022 VM: genuinely pre-rename agent `0.3.0-rc.83` (binary still named `roomler-agent.exe`) enrolled against prod → `agent_id 6a93ef77…6b90`, resolving `config_path=%APPDATA%\roomler\roomler-agent\config\config.toml` + `machine_global=C:\ProgramData\roomler\roomler-agent`. Its OWN auto-updater then fired (`new release available … current=0.3.0-rc.83 latest=agent-v0.4.27`) and upgraded it. 0.4.27 logged all four legacy-tree migrations, kept the same `agent_id`, and took overlay `100.65.4.35`. Stricter second pass: legacy-only state re-created against the CURRENT binary → migrated again, **same `agent_id`, same `100.65.4.35`**. Fleet view showed `fr21-prerename-vm 100.65.4.35` online. Device then deleted: `{"deleted":true,"overlay_released":true,"overlay_ip":"100.65.4.35"}` |
+| pre-rename host keeps its identity | Throwaway Server 2022 VM: genuinely pre-rename agent `0.3.0-rc.83` (binary still named `meshharbor-agent.exe`) enrolled against prod → `agent_id 6a93ef77…6b90`, resolving `config_path=%APPDATA%\roomler\roomler-agent\config\config.toml` + `machine_global=C:\ProgramData\meshharbor\roomler-agent`. Its OWN auto-updater then fired (`new release available … current=0.3.0-rc.83 latest=agent-v0.4.27`) and upgraded it. 0.4.27 logged all four legacy-tree migrations, kept the same `agent_id`, and took overlay `100.65.4.35`. Stricter second pass: legacy-only state re-created against the CURRENT binary → migrated again, **same `agent_id`, same `100.65.4.35`**. Fleet view showed `fr21-prerename-vm 100.65.4.35` online. Device then deleted: `{"deleted":true,"overlay_released":true,"overlay_ip":"100.65.4.35"}` |
 | no artifact name changed | `gh release view` asset lists for `agent-v0.4.14` vs `agent-v0.4.23`, version-normalised and diffed: nothing removed, nothing renamed. Real published artifacts, not a rehearsal build |
 | nothing bypasses the env chain | `PREFIXES` is now the single list both readers and `env::test_env` use; all 44 env manipulations in the agent go through it, and `name-audit.sh --check` fails any new raw one. The deprecation warning is `legacy_use_is_new`, mutation-checked: disabling the dedupe fails `legacy_reads_warn_once_per_variable_and_current_reads_never_do` |
 | §5 staging path, both host shapes | `appdirs::resolve_machine_global` split out of the `OnceLock`-cached `machine_global_dir()` and pinned by 4 tests (pre-rename only / fresh only / both present / neither). `files.rs` derives the staging dir as `machine_global_dir().join("staging")`, so this is the decision the criterion turns on. Mutation-checked: dropping the pre-rename branch fails `machine_global_keeps_a_pre_rename_tree` |
@@ -383,7 +383,7 @@ which counted only the boxes ticked at that moment; the list is now genuinely co
 
 Both pre-rename shapes were exercised in that run, on the same host:
 
-- **§5 staging path on a PRE-RENAME host** — `C:\ProgramData\roomler\roomler-agent` was the live
+- **§5 staging path on a PRE-RENAME host** — `C:\ProgramData\meshharbor\roomler-agent` was the live
   machine-global root under `rc.83` (`machine_global=` logged), and `0.4.27` migrated it to
   `…\roomler\roomler`. `staging\` derives from `machine_global_dir()`, so this is the branch the
   criterion turns on. Previously confirmed only on the fresh side (`CORPLAP-1`, twice).
@@ -421,10 +421,10 @@ Both pre-rename shapes were exercised in that run, on the same host:
 
 | OS | install | what is verified |
 |---|---|---|
-| Windows | fresh perMachine MSI | service `Roomler`; `roomlerd.exe` + `roomler.exe` + `meshharbor-desktop.exe` present; config under `%PROGRAMDATA%\roomler\roomler`; staging affordance opens the real dir |
+| Windows | fresh perMachine MSI | service `Roomler`; `meshharbord.exe` + `meshharbor.exe` + `meshharbor-desktop.exe` present; config under `%PROGRAMDATA%\roomler\roomler`; staging affordance opens the real dir |
 | Windows | fresh perUser MSI | scheduled task `Roomler`; `%APPDATA%` tree on the new segment |
 | Windows | **upgrade from 0.4.x, pre-rename tree** | identity preserved; legacy service/task retired, not duplicated; legacy log files still fetchable |
-| Linux | fresh `.deb` | `roomlerd.service` active; `/etc/roomler/config.toml`; `roomler peers` OK |
+| Linux | fresh `.deb` | `meshharbord.service` active; `/etc/roomler/config.toml`; `roomler peers` OK |
 | Linux | **upgrade from 0.4.x** | no duplicate unit (the `SubState=auto-restart` storm class); enrolled identity preserved |
 | macOS | fresh `.pkg` | LaunchAgent + opt-in LaunchDaemon load; capture and input work |
 | macOS | **upgrade from 0.4.x** | **TCC grants survive** — the single highest-risk assertion in this FR |
@@ -438,7 +438,7 @@ Field verification runs through `roomler exec` after the roll, per the standing 
 
 **D1 — target namespace for the 107 env vars: `ROOMLERD_*` or `ROOMLER_*`?**
 **RESOLVED 2026-08-28 (operator): `ROOMLERD_*`.** The precedent exists already
-(`ROOMLERD_CONFIG`, used by `packaging/linux/roomlerd.service:48`), and `ROOMLER_*` sits one
+(`ROOMLERD_CONFIG`, used by `packaging/linux/meshharbord.service:48`), and `ROOMLER_*` sits one
 underscore from the **server's** `ROOMLER__` double-underscore config prefix —
 `ROOMLER_OVERLAY_DEMOTE` beside `ROOMLER__OVERLAY__…` is a confusion this FR would be
 *creating*, not removing.
@@ -465,7 +465,7 @@ costs `git log` legibility for the naive reader. **RESOLVED: rename, in a commit
 edits.
 
 **D5 — the macOS bundle.** Freeze, or migrate with a paired TCC re-grant campaign? Freezing
-leaves `roomler-agent` visible at `/Library/Roomler/roomler-agent.app` and in both launchd labels
+leaves `roomler-agent` visible at `/Library/Roomler/meshharbor-agent.app` and in both launchd labels
 forever. That is ugly, and it is still right: the alternative asks every Mac user to re-grant
 Screen Recording and Accessibility, and a missed re-grant is a device that looks enrolled and
 cannot be controlled. **RESOLVED: freeze** — revisit only with an installer that can re-register
@@ -503,14 +503,14 @@ whole of it.
 | date | what | result |
 |---|---|---|
 | 2026-08-31 | **Deployment status — is the rename actually IN THE FIELD?** Completeness on master is not the same question, so it was measured: prod API version, latest published agent release, and the per-device `agent_version` for every row in the fleet tenant. | **DEPLOYED.** Prod API **0.4.30**; latest release **0.4.33**; `agent-v0.4.15` (the rename release) is an ancestor of both. **14 of 14 ONLINE agents run 0.4.33** — nothing live is behind. The only FR-21-tagged commit on master not in `agent-v0.4.33` touches `CLAUDE.md` alone, so no functional rename work is awaiting a release or a deploy. ⚠️ **7 of 21 registered rows still carry pre-0.4.15 builds and every one of them is OFFLINE** (windows rc.99 ~89 d, windows rc.299 ~25 d, linux rc.286 ~9 d, linux rc.434 ~8 d, windows rc.458 ~5 d, windows rc.483 ~3 d, windows 0.4.13 ~1 d). Dormant device rows, not a stalled rollout — and the path they take on waking is the one field-verified the day before on the throwaway VM: the new binary migrates all four legacy trees and keeps the same `agent_id` and overlay address. The 0.4.13 row is the only one recent enough to expect back soon. ⚠️ Straggler detail is recorded by OS + version + staleness on purpose: the fleet API returns REAL machine names, which the repo may not carry. |
-| 2026-08-30 | **THE LAST CRITERION — a genuine pre-rename Windows host, upgraded.** No such host exists in the fleet (all post-rename) and this dev box has a live enrollment, so one was BUILT: a throwaway Hyper-V VM, Windows Server 2022 Evaluation applied straight from the Microsoft ISO to a VHDX (`Expand-WindowsImage` + the GUEST image's own `bcdboot` — the host's Win11 `bcdboot` fails `193`), unattended via `Panther\unattend.xml`, driven entirely over PowerShell Direct. Clean host: no `roomler` trees at all. Installed the genuinely pre-rename **`0.3.0-rc.83`** (May build; binary still named `roomler-agent.exe`) and enrolled it against **production**. | **PASS, and by the product's own upgrade path.** rc.83 logged `config_path=%APPDATA%\roomler\roomler-agent\config\config.toml` and `machine_global=C:\ProgramData\roomler\roomler-agent` — both LEGACY — loaded `agent_id 6a93ef77…6b90` and sent `rc:agent.hello`. Its **own auto-updater** then fired (`new release available … current=0.3.0-rc.83 latest=agent-v0.4.27`) and installed 0.4.27, which logged all four legacy-tree migrations (`roomler-agent` → `roomler`, per-user config + data, LocalAppData data, ProgramData) and came up on the **same `agent_id`**, taking overlay **`100.65.4.35`**. Stricter second pass against the CURRENT binary: legacy-only state re-created (all three roots renamed back, no new tree anywhere) → migrated again, **same `agent_id`, same `100.65.4.35`**. Fleet view: `fr21-prerename-vm 100.65.4.35` online. Torn down after: device deleted (`{"deleted":true,"overlay_released":true,"overlay_ip":"100.65.4.35"}` — the lease returned to the pool, nothing burned), VM + 16 GB of artifacts removed, temporary host firewall rule removed. |
+| 2026-08-30 | **THE LAST CRITERION — a genuine pre-rename Windows host, upgraded.** No such host exists in the fleet (all post-rename) and this dev box has a live enrollment, so one was BUILT: a throwaway Hyper-V VM, Windows Server 2022 Evaluation applied straight from the Microsoft ISO to a VHDX (`Expand-WindowsImage` + the GUEST image's own `bcdboot` — the host's Win11 `bcdboot` fails `193`), unattended via `Panther\unattend.xml`, driven entirely over PowerShell Direct. Clean host: no `roomler` trees at all. Installed the genuinely pre-rename **`0.3.0-rc.83`** (May build; binary still named `meshharbor-agent.exe`) and enrolled it against **production**. | **PASS, and by the product's own upgrade path.** rc.83 logged `config_path=%APPDATA%\roomler\roomler-agent\config\config.toml` and `machine_global=C:\ProgramData\meshharbor\roomler-agent` — both LEGACY — loaded `agent_id 6a93ef77…6b90` and sent `rc:agent.hello`. Its **own auto-updater** then fired (`new release available … current=0.3.0-rc.83 latest=agent-v0.4.27`) and installed 0.4.27, which logged all four legacy-tree migrations (`roomler-agent` → `roomler`, per-user config + data, LocalAppData data, ProgramData) and came up on the **same `agent_id`**, taking overlay **`100.65.4.35`**. Stricter second pass against the CURRENT binary: legacy-only state re-created (all three roots renamed back, no new tree anywhere) → migrated again, **same `agent_id`, same `100.65.4.35`**. Fleet view: `fr21-prerename-vm 100.65.4.35` online. Torn down after: device deleted (`{"deleted":true,"overlay_released":true,"overlay_ip":"100.65.4.35"}` — the lease returned to the pool, nothing burned), VM + 16 GB of artifacts removed, temporary host firewall rule removed. |
 | 2026-08-28 | **Debian takeover, against real artifacts.** Built `.deb` from `release-agent.yml` run `33150602388`; published `agent-v0.4.11` `.deb` as the upgrade-from side. | **PASS.** `Package: roomlerd`, `Provides: roomler-agent`, `Replaces: roomler-tunnel, roomler-agent`. Upgrade via `dpkg -i` (the self-updater's *fallback*, the stricter path): **exit 0, zero overwrite conflicts**; `/usr/bin/roomlerd` + `/usr/bin/roomler` ownership transferred to `roomlerd`; unit present. Vestigial `ii roomler-agent` remains exactly as designed, and the one-time `--remove roomler-agent` sweep exits 0 with **all files surviving**. Asset filename unchanged (`roomler-agent-0.4.11-…deb`), so the "no artifact name moves" criterion holds. |
 | 2026-08-29 | **P7 — `--strict` reached, and three real defects found on the way.** `unclassified` 1006 -> 0; 732 anchored sites, 0 stale markers. (1) `user_profile::active_user_config_path()` hardcoded the PRE-rename appdirs segment, so on every post-rename install the path could not exist and the caller's `exists()` filter silently dropped the user-config rung — indistinguishable from "no logged-in user", the documented `None` case. It survived because the test asserted `ends_with("\\roomler-agent\\config\\config.toml")`: the test pinned the bug. Now dual-segment, with a pure test on candidate ORDER; mutation-checked red/green. (2) An anchor block had been inserted ABOVE `#!/bin/bash` in the macOS `postinstall`, so `installer` could not execute it and EVERY `.pkg` install failed at `Validating packages`. Red on `installer-smoke` for nine commits, misread as the flakiness master shows on the same job — master fails LATER (`helper job still loaded after opt-out`, after a successful install). One job name, two failures. `--check` now fails any tracked file whose shebang is not line 1 — the anchor system's own failure mode, caught by nothing else. (3) Nine env keys were exercised in tests only through the RETIRED spelling, i.e. the third link of a three-link fallback; the spelling the code and docs use was covered by nothing, and `hw_auto_disabled_reads_env` cleared one name while reading a chain preferring the other. Plus a break this branch itself caused: the e2e image moved to `/etc/roomler` while its StatefulSet still mounted `/etc/roomler-agent`, and its data PVC mounted a directory the daemon never writes to. |
 | 2026-08-28 | Full release lane under the renamed packages (dispatch). | **PASS** — both `.deb`s, `.msi`, `.pkg`, companion EXE all build. |
 | 2026-08-28 | **P6 Linux, on three REAL hosts** — mars, jupiter, zeus, each with `roomler-agent 0.4.11-1` genuinely installed and the daemon running. `.deb` from run `33150602388`, moved to each host over the roomler mesh itself (`100.65.4.2` → node). Primary path `apt-get install ./…deb`, not the fallback. | **PASS.** `Replacing files in old package roomler-agent`, exit 0, no conflict, on all three. `/usr/bin/roomlerd`, `/usr/bin/roomler` and the bundled FFmpeg `.so`s transferred owner; `ldd` 0 not-found; node id + overlay ip UNCHANGED; service active on the new binary; `roomlerd --version` now `roomlerd 0.4.11` (production printed `roomler-agent 0.4.11`). |
 | 2026-08-28 | **The RUST_LOG shim, forced onto the legacy spec** — a `.deb` upgrade replaces the packaged unit, so a plain upgrade tests the FILE, not the fallback. Drop-in pinned `RUST_LOG=roomler_agent=info,warn` on mars, then restart. | **PASS.** INFO 40 → 75: 35 new lines from the renamed lib under a spec naming ONLY the retired target. Without the shim it stays 40 and the daemon goes dark above `warn`. Drop-in removed; the operator's own `virtual-desktop.conf` untouched. |
-| 2026-08-29 | **P6 Windows** — `CORPLAP-1`, a real corp Windows 11 host, carried onto `agent-v0.4.15` (the first release containing the rename) by the FLEET UPDATER, not by hand. Driven over Fleet RPC. | **PASS.** Service `Roomler` RUNNING from `"C:\Program Files\Roomler\roomlerd.exe" service-run`; `roomlerd --version` -> `roomlerd 0.4.15`; the legacy `RoomlerAgentService` is **not installed** (`OpenService` 1060) — retired, not duplicated. |
-| 2026-08-29 | **P6 macOS** — `MacBook-1`, Apple Silicon (Darwin 25.6 arm64), same updater-driven path. | **PASS, including the TCC assertion.** The bundle is still the frozen `/Library/Roomler/roomler-agent.app` (D5). The 0.4.15 process started `21:36:32Z` — 30 s after the release was published at `21:36:02Z` — and logged `macOS permissions: Screen Recording + Accessibility both granted` at `21:36:34Z`. The highest-risk claim in this FR, checked against a real Mac rather than reasoned about. |
+| 2026-08-29 | **P6 Windows** — `CORPLAP-1`, a real corp Windows 11 host, carried onto `agent-v0.4.15` (the first release containing the rename) by the FLEET UPDATER, not by hand. Driven over Fleet RPC. | **PASS.** Service `Roomler` RUNNING from `"C:\Program Files\MeshHarbor\meshharbord.exe" service-run`; `roomlerd --version` -> `roomlerd 0.4.15`; the legacy `RoomlerAgentService` is **not installed** (`OpenService` 1060) — retired, not duplicated. |
+| 2026-08-29 | **P6 macOS** — `MacBook-1`, Apple Silicon (Darwin 25.6 arm64), same updater-driven path. | **PASS, including the TCC assertion.** The bundle is still the frozen `/Library/Roomler/meshharbor-agent.app` (D5). The 0.4.15 process started `21:36:32Z` — 30 s after the release was published at `21:36:02Z` — and logged `macOS permissions: Screen Recording + Accessibility both granted` at `21:36:34Z`. The highest-risk claim in this FR, checked against a real Mac rather than reasoned about. |
 | 2026-08-29 | **§5 confirmed a SECOND time, independently.** `%PROGRAMDATA%\roomler` on `CORPLAP-1` holds `roomler` and **no** `roomler-agent`. | **PASS.** The literal the viewer used to hardcode is wrong on that host too — two independent Windows hosts now, not one. |
 
 ⚠️ The isolated-dpkg-root row above used `--force-depends` + `--force-script-chrootless` and

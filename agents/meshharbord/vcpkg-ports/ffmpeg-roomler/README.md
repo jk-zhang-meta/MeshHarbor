@@ -40,7 +40,7 @@ landing at ~6 MB compressed delta in the agent MSI (vs ~20 MB for upstream).
 
 ## Linking model
 
-- **FFmpeg**: statically linked into `roomlerd.exe`. No separate DLL ships.
+- **FFmpeg**: statically linked into `meshharbord.exe`. No separate DLL ships.
 - **libmfx** (Intel oneVPL dispatcher): statically linked. Bundled.
 - **NVENC** (`nvEncodeAPI64.dll`): loaded at runtime from NVIDIA driver. Not bundled.
 - **AMF** (`amfrt64.dll`): loaded at runtime from AMD driver. Not bundled.

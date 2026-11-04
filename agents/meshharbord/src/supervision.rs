@@ -19,7 +19,7 @@
 //! | `WindowsScm` | the SCM host spawns its workers as `run --supervisor scm` (`win_service::worker_args`) | the in-process supervisor — exit **0** is `ExitReaction::Respawn`, no backoff |
 //! | `WindowsTask` | the per-user Scheduled Task's action is `run --supervisor task` (`service.rs`) | the **caller**: `<RestartOnFailure>` is a minute away at best, so whoever asked runs `meshharbord service start` once the old process is gone |
 //! | `MacosSupervisor` | the FR-43 root daemon spawns `run --supervised` | the root daemon's poll loop, any exit, ≥ 1 s later |
-//! | `Launchd` | `XPC_SERVICE_NAME` is one of OUR labels (`com.roomler.*`) | launchd — `KeepAlive{SuccessfulExit:false}` relaunches a **non-zero** exit only |
+//! | `Launchd` | `XPC_SERVICE_NAME` is one of OUR labels (`fans.itachi.meshharbor.*`) | launchd — `KeepAlive{SuccessfulExit:false}` relaunches a **non-zero** exit only |
 //! | `Systemd` | `INVOCATION_ID` is set AND this process sits in one of OUR units' cgroups | systemd — and at request time the unit's EFFECTIVE policy is read back (`systemctl show`) before anything exits |
 //!
 //! Hence two exit codes ([`Supervision::restart_exit_code`]): `0` under the
@@ -75,8 +75,8 @@ pub enum Supervision {
     /// A systemd unit — the packaged system unit or the per-user unit (both
     /// in [`SYSTEMD_UNITS`]).
     Systemd(SystemdUnit),
-    /// A launchd job carrying one of our labels (`com.roomler.agent`,
-    /// `com.roomler.daemon`).
+    /// A launchd job carrying one of our labels (`fans.itachi.meshharbor.agent`,
+    /// `fans.itachi.meshharbor.daemon`).
     Launchd,
     /// The FR-43 macOS root daemon's GUI-worker supervisor
     /// (`macos_supervisor.rs`).
@@ -87,10 +87,10 @@ pub enum Supervision {
 
 /// The launchd label prefix every roomler job carries. A LaunchServices app's
 /// `XPC_SERVICE_NAME` never starts with it. Both jobs that run `meshharbord run`
-/// (`com.roomler.agent`, `com.roomler.daemon`) set
+/// (`fans.itachi.meshharbor.agent`, `fans.itachi.meshharbor.daemon`) set
 /// `KeepAlive{SuccessfulExit:false}` — asserted against the packaged plists by
 /// `packaged_plists_relaunch_a_non_zero_exit`.
-pub const LAUNCHD_LABEL_PREFIX: &str = "com.roomler.";
+pub const LAUNCHD_LABEL_PREFIX: &str = "fans.itachi.meshharbor.";
 
 /// The systemd units a daemon may run under, by exact name: the packaged
 /// system unit (`packaging/linux/meshharbord.service`) and the per-user unit the
@@ -524,7 +524,7 @@ pub fn launchd_restarts(show: &str, my_pid: u32) -> Result<(), String> {
 pub async fn confirm_launchd() -> Result<(), String> {
     let label = std::env::var(LAUNCHD_LABEL_ENV)
         .map_err(|_| "no launchd job label is available".to_string())?;
-    if !["com.roomler.agent", "com.roomler.daemon"].contains(&label.as_str()) {
+    if !["fans.itachi.meshharbor.agent", "fans.itachi.meshharbor.daemon"].contains(&label.as_str()) {
         return Err("the launchd label is not one of the packaged daemon jobs".into());
     }
     // SAFETY: geteuid has no arguments and does not change process identity.
@@ -674,7 +674,7 @@ mod tests {
 
     #[test]
     fn launchd_restart_proof_requires_the_loaded_main_pid_and_failure_condition() {
-        let show = "gui/501/com.roomler.agent = {\n\tpid = 4242\n\tsemaphores = {\n\t\tsuccessful exit => 0\n\t}\n}\n";
+        let show = "gui/501/fans.itachi.meshharbor.agent = {\n\tpid = 4242\n\tsemaphores = {\n\t\tsuccessful exit => 0\n\t}\n}\n";
         assert!(launchd_restarts(show, 4242).is_ok());
         assert!(
             launchd_restarts(show, 4243).is_err(),
@@ -735,7 +735,7 @@ mod tests {
     /// of its own, and nothing to do with us.
     const GNOME_TERMINAL_CGROUP: &str = "0::/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.gnome.Terminal.slice/vte-spawn-1234.scope\n";
     /// A transient unit an operator made up — `Restart=` unknown.
-    const TRANSIENT_CGROUP: &str = "0::/system.slice/roomler-manual.service\n";
+    const TRANSIENT_CGROUP: &str = "0::/system.slice/meshharbor-manual.service\n";
 
     const SYSTEM: SystemdUnit = SystemdUnit {
         name: "meshharbord.service",
@@ -769,7 +769,7 @@ mod tests {
             Supervision::WindowsScm
         );
         // launchd: our labels only.
-        for label in ["com.roomler.agent", "com.roomler.daemon"] {
+        for label in ["fans.itachi.meshharbor.agent", "fans.itachi.meshharbor.daemon"] {
             assert_eq!(
                 detect(None, false, &env_of(&[(LAUNCHD_LABEL_ENV, label)]), None),
                 Supervision::Launchd,
@@ -902,12 +902,12 @@ mod tests {
     fn packaged_plists_relaunch_a_non_zero_exit() {
         for (label, plist) in [
             (
-                "com.roomler.agent",
-                include_str!("../packaging/macos/com.roomler.agent.plist"),
+                "fans.itachi.meshharbor.agent",
+                include_str!("../packaging/macos/fans.itachi.meshharbor.agent.plist"),
             ),
             (
-                "com.roomler.daemon",
-                include_str!("../packaging/macos/com.roomler.daemon.plist"),
+                "fans.itachi.meshharbor.daemon",
+                include_str!("../packaging/macos/fans.itachi.meshharbor.daemon.plist"),
             ),
         ] {
             assert!(label.starts_with(LAUNCHD_LABEL_PREFIX));

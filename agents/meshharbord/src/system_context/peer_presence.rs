@@ -36,7 +36,7 @@
 // SystemContext worker — which can be different versions during an update.
 // Both ends must agree on the name, and only one of them gets replaced
 // first, so the name is a compatibility surface rather than a label.
-//! `C:\ProgramData\roomler-agent\peer-connected.lock` — under
+//! `C:\ProgramData\meshharbor-agent\peer-connected.lock` — under
 //! `%PROGRAMDATA%`. Both the user-context worker (running as the
 //! interactive user) and the SCM service (running as `LocalSystem`)
 //! can read and write here:

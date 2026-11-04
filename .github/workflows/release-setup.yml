@@ -385,7 +385,7 @@ jobs:
           <plist version="1.0">
           <dict>
               <key>CFBundleExecutable</key>          <string>meshharbor-setup</string>
-              <key>CFBundleIdentifier</key>          <string>ai.roomler.setup</string>
+              <key>CFBundleIdentifier</key>          <string>fans.itachi.meshharbor.setup</string>
               <key>CFBundleName</key>                <string>Roomler Setup</string>
               <key>CFBundleShortVersionString</key>  <string>${version}</string>
               <key>CFBundleVersion</key>             <string>${version}</string>

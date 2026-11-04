@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  LaunchAgent for the Roomler desktop companion (the menu-bar app), the macOS
+  LaunchAgent for the MeshHarbor desktop companion (the menu-bar app), the macOS
   counterpart of meshharbor-desktop.exe on Windows. Installed to
   ~/Library/LaunchAgents/ by the .pkg's post-install script.
 
@@ -14,7 +14,7 @@
   lost is the place that TELLS you the two macOS permissions are missing, which
   the OS itself never does.
 
-  KeepAlive is deliberately ABSENT (unlike com.roomler.agent, which restarts on
+  KeepAlive is deliberately ABSENT (unlike fans.itachi.meshharbor.agent, which restarts on
   a non-zero exit). A user who quits their menu-bar app means it; relaunching it
   under them would be a bug, not resilience. It comes back at the next login via
   RunAtLoad.
@@ -22,11 +22,11 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.roomler.desktop</string>
+    <string>fans.itachi.meshharbor.desktop</string>
 
     <key>ProgramArguments</key>
     <array>
-        <string>/Applications/Roomler.app/Contents/MacOS/meshharbor-desktop</string>
+        <string>/Applications/MeshHarbor.app/Contents/MacOS/meshharbor-desktop</string>
     </array>
 
     <key>RunAtLoad</key>

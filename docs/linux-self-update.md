@@ -67,8 +67,8 @@ roomler-agent-<version>-<arch>-unknown-linux-gnu/
   usr/bin/roomlerd                       # the daemon
   usr/bin/roomler                        # the CLI shim (re-execs `roomlerd cli`)
   usr/lib/roomler-agent/*.so.*           # bundled FFmpeg + libvpx ($ORIGIN RPATH)
-  usr/lib/systemd/system/roomlerd.service
-  usr/lib/systemd/user/roomler.service
+  usr/lib/systemd/system/meshharbord.service
+  usr/lib/systemd/user/meshharbor.service
   usr/share/doc/roomler-agent/README.Debian
 ```
 
@@ -211,30 +211,30 @@ format the host takes. So a per-user install could never install its own update
 (#2046). The tarball path refuses outright, and the `.deb` ladder's `pkexec` puts
 a password prompt in front of whoever is at the screen. FR-96 gives it the root
 half macOS has had since FR-5: `roomlerd update-helper`, run as root by
-`roomler-update.service`.
+`meshharbor-update.service`.
 
 ```mermaid
 sequenceDiagram
     autonumber
     participant D as per-user roomlerd
     participant W as /var/tmp/roomler-update-check
-    participant P as roomler-update.path / .timer
+    participant P as meshharbor-update.path / .timer
     participant U as roomlerd update-helper (root)
     D->>W: touch: a wake, its content never read (P2a)
     W-->>P: PathExists
     Note over P: the timer fires too: 5 min after boot (at once if started later), then every 6 h
-    P->>U: start roomler-update.service
+    P->>U: start meshharbor-update.service
     U->>U: consume/move-aside the wake, space ≥60 s from the last run, the opt-out, the cooldown
     U->>U: check_once, then download_asset → a FRESH private dir (the pinned release key, then the version inside it = the tag's: FR-97 P6a)
     U->>U: install as root: apt-get / dpkg, or the tarball
     Note over D: notices its binary was replaced, restarts onto it once idle (P2b)
 ```
 
-| unit | what | the macOS twin (`com.roomler.update.plist`) |
+| unit | what | the macOS twin (`fans.itachi.meshharbor.update.plist`) |
 |---|---|---|
-| `roomler-update.service` | `Type=oneshot`, `ExecStart=/usr/bin/roomlerd update-helper` | the program |
-| `roomler-update.timer` | `OnBootSec=5min` (already past for a timer started after boot, so that one fires at once), `OnUnitActiveSec=6h`, `RandomizedDelaySec=30min` | `RunAtLoad`, `StartInterval` |
-| `roomler-update.path` | `PathExists=/var/tmp/roomler-update-check` | `WatchPaths` |
+| `meshharbor-update.service` | `Type=oneshot`, `ExecStart=/usr/bin/roomlerd update-helper` | the program |
+| `meshharbor-update.timer` | `OnBootSec=5min` (already past for a timer started after boot, so that one fires at once), `OnUnitActiveSec=6h`, `RandomizedDelaySec=30min` | `RunAtLoad`, `StartInterval` |
+| `meshharbor-update.path` | `PathExists=/var/tmp/roomler-update-check` | `WatchPaths` |
 
 - **Shipped in both packages, disabled.**
   - The `.deb` lists the three units as assets (`agents/meshharbord/Cargo.toml`).
@@ -276,7 +276,7 @@ exposures to an unprivileged local user were closed before P1 shipped.
 - ⚠️ **A wake storm costs one check a minute and fails nothing.** `PathExists=` is
   level-triggered and the service had systemd's default start limit (5/10 s), so —
   measured on systemd 255 — six touches in 10 s, or a single `mkdir` at the wake
-  path, left `roomler-update.path` `failed (unit-start-limit-hit)` until reboot,
+  path, left `meshharbor-update.path` `failed (unit-start-limit-hit)` until reboot,
   and a pushed update then silently degraded to the 6 h timer. The helper now
   spaces its own runs ≥60 s (`UPDATE_HELPER_MIN_GAP`, launchd's `ThrottleInterval`
   twin, `updater.rs`); the service carries `StartLimitIntervalSec=0` and
@@ -313,7 +313,7 @@ flowchart TD
     R -->|yes| IP1[installs its own updates<br/>WARN if the helper is ALSO enabled:<br/>two updaters would race]
     R -->|no| K{ROOMLERD_UPDATE_HELPER=0?}
     K -->|yes| IP2[installs its own updates<br/>the kill switch: as before FR-96]
-    K -->|no| E{an enable link for<br/>roomler-update.path or .timer<br/>that leads to the unit?}
+    K -->|no| E{an enable link for<br/>meshharbor-update.path or .timer<br/>that leads to the unit?}
     E -->|no| IP3[installs its own updates]
     E -->|yes| H[forwards each push to<br/>/var/tmp/roomler-update-check<br/>and installs nothing]
 ```
@@ -327,7 +327,7 @@ flowchart TD
   (wakes nobody hears — #2046 again). A wrong "in-process" answer costs a failed
   `pkexec`, and the helper's own timer still installs.
 - ⚠️ **The user unit grants `/var/tmp`** (`ReadWritePaths=-/var/tmp`,
-  `packaging/linux/roomler.service`). `ProtectSystem=strict` leaves it read-only
+  `packaging/linux/meshharbor.service`). `ProtectSystem=strict` leaves it read-only
   wherever the user manager applies the sandbox. Measured on Fedora 44 KDE: the
   0.4.128 unit answered `Read-only file system` there, so every push would have
   failed. Only the directory can be granted: the helper deletes the file each run,
@@ -444,21 +444,21 @@ care of it.
 
 ```mermaid
 flowchart LR
-    I["a .deb install,<br/>by any path"] -->|"postinst: deb-systemd-helper<br/>enable timer + path"| H["roomler-update.timer<br/>roomler-update.path"]
-    H -->|"at once, then every 6 h;<br/>or a push"| S{"roomlerd.service<br/>enabled?"}
+    I["a .deb install,<br/>by any path"] -->|"postinst: deb-systemd-helper<br/>enable timer + path"| H["meshharbor-update.timer<br/>meshharbor-update.path"]
+    H -->|"at once, then every 6 h;<br/>or a push"| S{"meshharbord.service<br/>enabled?"}
     S -->|"yes: a system install"| A["the helper steps aside;<br/>the root daemon updates itself"]
     S -->|"no: a per-user install"| U["the helper installs as root;<br/>the daemon restarts onto it once idle"]
 ```
 
 | what | how |
 |---|---|
-| `postinst` turns the update half on | `deb-systemd-helper` enables `roomler-update.timer` and `.path` on the first configure of a version that ships it, which is an existing host's first upgrade too. It never re-enables them over an administrator's `systemctl disable`. The daemon units stay untouched, as they always were. |
-| the helper steps aside on a system install | with `roomlerd.service` enabled, after its 60 s gate, so one updater per host holds however the units got enabled |
+| `postinst` turns the update half on | `deb-systemd-helper` enables `meshharbor-update.timer` and `.path` on the first configure of a version that ships it, which is an existing host's first upgrade too. It never re-enables them over an administrator's `systemctl disable`. The daemon units stay untouched, as they always were. |
+| the helper steps aside on a system install | with `meshharbord.service` enabled, after its 60 s gate, so one updater per host holds however the units got enabled |
 | the timer it starts fires at once | an `OnBootSec` already in the past elapses immediately (`systemd.timer(5)`; measured, FR-96 §8), so the unit needs nothing more |
-| a daemon that cannot install says so | with the helper off it downloads nothing and logs `sudo systemctl enable --now roomler-update.timer roomler-update.path`. It hands its updates to the helper as soon as one is on, with no restart |
+| a daemon that cannot install says so | with the helper off it downloads nothing and logs `sudo systemctl enable --now meshharbor-update.timer meshharbor-update.path`. It hands its updates to the helper as soon as one is on, with no restart |
 
 ⚠️ A host whose daemon is already stuck cannot receive this by itself: one
-install by a person heals it (`sudo apt install ./roomlerd.deb`, the Software
+install by a person heals it (`sudo apt install ./meshharbord.deb`, the Software
 app, or a re-run of `install.sh`). The running daemon then follows on its own
 only if it has P2b: once idle, and once its own last failed attempt is 10 min
 old. An older daemon runs its old image until its next start, a re-login or a

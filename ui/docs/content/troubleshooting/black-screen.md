@@ -31,7 +31,7 @@ under both:
 Then restart the user half:
 
 ```bash
-launchctl kickstart -k gui/$(id -u)/com.roomler.agent
+launchctl kickstart -k gui/$(id -u)/fans.itachi.meshharbor.agent
 ```
 :::
 

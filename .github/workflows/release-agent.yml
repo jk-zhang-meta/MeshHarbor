@@ -3,7 +3,7 @@
 # (already-released files cannot be renamed, and the updater's picker matches
 # those strings) or a FROZEN install path — the RPATH-bound
 # /usr/lib/roomler-agent, the macOS .app bundle whose name keys the TCC grants,
-# or the inert roomler-agent.exe alias the deployed fleet still resolves.
+# or the inert meshharbor-agent.exe alias the deployed fleet still resolves.
 # INVARIANT: a retired name here must be a published artifact name or a path a
 # real host has. If you add one that is neither, that is a bug, not a new
 # exemption. docs/fr/FR-21
@@ -1191,8 +1191,8 @@ jobs:
           shared-key: agent-linux-arm64
 
   # ---------------------------------------------------------------------------
-  # 2. Windows — MSI via cargo-wix. The MSI PAYLOAD (roomlerd.exe + the
-  #    roomler.exe shim) is signed before the harvest and the MSIs themselves
+  # 2. Windows — MSI via cargo-wix. The MSI PAYLOAD (meshharbord.exe + the
+  #    meshharbor.exe shim) is signed before the harvest and the MSIs themselves
   #    afterwards; see ./.github/actions/sign-windows. On a release tag,
   #    unsigned fails the job.
   # ---------------------------------------------------------------------------
@@ -1557,24 +1557,24 @@ jobs:
           # the command surface (`roomlerd cli` → meshharbor_cli::cli) and the
           # MSI carries a ~150 KB shim instead of a second full binary.
           #
-          # rc.361 measurements that motivated it: roomler.exe was 22.1 MiB of
+          # rc.361 measurements that motivated it: meshharbor.exe was 22.1 MiB of
           # which cargo-bloat attributes only 1.16 MiB to CLI-specific code —
           # the rest duplicated std/webrtc/tunnel_core/tokio/rustls/reqwest/
-          # quinn/clap that roomlerd.exe already links. This step also used to
+          # quinn/clap that meshharbord.exe already links. This step also used to
           # cost 143 s (3rd-costliest in the job) because it rebuilt shared
           # deps under a DIFFERENT feature set than the agent build above.
           #
-          # Both wxs files reference target\release\roomler-shim.exe at harvest
+          # Both wxs files reference target\release\meshharbor-shim.exe at harvest
           # time, so this MUST still run before the two cargo-wix builds below.
           # Tunnel-ONLY hosts are unaffected: release-tunnel.yml keeps building
           # and shipping the real standalone `roomler` binary.
           cargo build -p meshharbor-cli-shim --release
-          if (-not (Test-Path target\release\roomler-shim.exe)) {
-            Write-Host "::error::roomler-shim.exe not produced — the TunnelExe wxs component would fail the MSI harvest (LGHT0103)"
+          if (-not (Test-Path target\release\meshharbor-shim.exe)) {
+            Write-Host "::error::meshharbor-shim.exe not produced — the TunnelExe wxs component would fail the MSI harvest (LGHT0103)"
             exit 1
           }
-          $kb = [math]::Round((Get-Item target\release\roomler-shim.exe).Length/1KB, 0)
-          Write-Host "Staged roomler-shim.exe ($kb KB, installs as roomler.exe) for the TunnelExe component"
+          $kb = [math]::Round((Get-Item target\release\meshharbor-shim.exe).Length/1KB, 0)
+          Write-Host "Staged meshharbor-shim.exe ($kb KB, installs as meshharbor.exe) for the TunnelExe component"
 
       # The rc.65 "Verify FFmpeg link via unit test" step is GONE: even in
       # --release with the exact build feature set, `cargo test` cost 5m33s
@@ -1591,7 +1591,7 @@ jobs:
           # .lib + .pdb only — no .dll. The agent binary links libvpx
           # statically and runs without a separate DLL. If a future
           # vcpkg port (or a triplet swap) produces a vpx.dll, copy it
-          # next to roomler-agent.exe so cargo-wix harvests it. No-op
+          # next to meshharbor-agent.exe so cargo-wix harvests it. No-op
           # when the DLL isn't there.
           $dll = Join-Path $env:VPX_DLL_DIR "vpx.dll"
           if (Test-Path $dll) {
@@ -1637,17 +1637,17 @@ jobs:
           # negotiates types, produces an IDR, no SEH crash". Debug logging
           # surfaces STREAM_CHANGE notifications and per-frame byte counts
           # so regressions in the MF drain path are visible in CI output.
-          # P3d Slice B: daemon EXE is now roomlerd.exe.
+          # P3d Slice B: daemon EXE is now meshharbord.exe.
           # Under ffmpeg-encoder, encoder-smoke FIRST asserts the linked
           # libavcodec is >= 61 (FFmpeg 7+) — the load-bearing replacement
           # for the deleted 5m33s cargo-test link-verify step. On failure:
           # re-pin ffmpeg-next in agents/meshharbord/Cargo.toml or
           # re-vendor via vendor-ffmpeg-windows.yml.
-          & "target\release\roomlerd.exe" encoder-smoke --encoder hardware
+          & "target\release\meshharbord.exe" encoder-smoke --encoder hardware
 
       # Sign the MSI PAYLOAD, before cargo-wix harvests it.
       #
-      # Signing only the .msi leaves roomlerd.exe + the shim unsigned ON DISK
+      # Signing only the .msi leaves meshharbord.exe + the shim unsigned ON DISK
       # after install -- and the on-disk binaries are what AV scans, what Task
       # Manager shows a publisher for, and what an AppLocker/WDAC publisher
       # rule matches. An MSI-only signature buys none of that.
@@ -1674,8 +1674,8 @@ jobs:
         uses: ./.github/actions/sign-windows
         with:
           files: |
-            target\release\roomlerd.exe
-            target\release\roomler-shim.exe
+            target\release\meshharbord.exe
+            target\release\meshharbor-shim.exe
           description:              'Roomler Daemon'
           mode:                     ${{ github.event.inputs.signing_mode || 'auto' }}
           require:                  ${{ needs.validate-version.outputs.is_release == 'true' || github.event.inputs.require_signing == 'true' }}
@@ -1718,7 +1718,7 @@ jobs:
           # self-contained on machines without any VC++ 2015-2022
           # redistributable -- a fresh Windows box otherwise pops
           # "vcruntime140_1.dll was not found" the moment install.ps1
-          # (or the operator) runs the freshly installed roomlerd.exe,
+          # (or the operator) runs the freshly installed meshharbord.exe,
           # which links the CRT dynamically via its C++ encoder objects
           # (field report 2026-07-28). The DLLs come from the runner's
           # own VS installation; fail loudly if any expected name is
@@ -1730,15 +1730,15 @@ jobs:
           $crtDir = Get-ChildItem -Directory "$vsRoot\VC\Redist\MSVC\*\x64\Microsoft.VC14*.CRT" -ErrorAction SilentlyContinue |
                     Sort-Object FullName | Select-Object -Last 1
           if (-not $crtDir) { Write-Host "::error::no Microsoft.VC14x.CRT redist folder under $vsRoot"; exit 1 }
-          # Only what the import tables ask for: roomlerd.exe needs all three,
-          # roomler.exe needs vcruntime140, meshharbor-desktop.exe needs none, and
+          # Only what the import tables ask for: meshharbord.exe needs all three,
+          # meshharbor.exe needs vcruntime140, meshharbor-desktop.exe needs none, and
           # msvcp140.dll itself imports only the two vcruntime DLLs. The other
           # six redist DLLs (concrt140, vccorlib140, msvcp140_1, msvcp140_2,
           # msvcp140_atomic_wait, msvcp140_codecvt_ids) are satellites a
           # consuming binary imports DIRECTLY when it uses the matching STL
           # feature; nothing we ship does, so they were 1.12 MiB of dead
           # payload per install. If a new C++ dependency lands, re-check with
-          # `dumpbin -dependents target\release\roomlerd.exe | findstr /i 140`
+          # `dumpbin -dependents target\release\meshharbord.exe | findstr /i 140`
           # and extend this list AND both wxs VcRedistCrt components together.
           $expected = @('msvcp140.dll', 'vcruntime140.dll', 'vcruntime140_1.dll')
           foreach ($n in $expected) {
@@ -1895,7 +1895,7 @@ jobs:
             param([string]$Dir, [switch]$Quiet)
             $found    = @()
             $appLocal = @()
-            foreach ($exe in @('roomlerd.exe', 'roomler.exe')) {
+            foreach ($exe in @('meshharbord.exe', 'meshharbor.exe')) {
               $path = Join-Path $Dir $exe
               if (-not (Test-Path $path)) { $found += "$exe missing from the MSI payload"; continue }
               $imports = & $dumpbin /dependents $path |
@@ -1939,8 +1939,8 @@ jobs:
                    -ArgumentList @('/a', "`"$msiPath`"", '/qn', "TARGETDIR=`"$out`"")
             if ($p.ExitCode -ne 0) { throw "msiexec /a failed for $($f.Name) with exit $($p.ExitCode)" }
 
-            $hit = Get-ChildItem -Recurse $out -Filter 'roomlerd.exe' -File | Select-Object -First 1
-            if (-not $hit) { throw "roomlerd.exe not found in the extracted $($f.Name) payload" }
+            $hit = Get-ChildItem -Recurse $out -Filter 'meshharbord.exe' -File | Select-Object -First 1
+            if (-not $hit) { throw "meshharbord.exe not found in the extracted $($f.Name) payload" }
             $installDir = $hit.DirectoryName
             Write-Host "  payload dir: $($installDir.Substring($out.Length))"
 
@@ -1983,7 +1983,7 @@ jobs:
         # Budget history: rc.63 baseline 8 MB (pre-ffmpeg); rc.65's
         # Option B guard capped ffmpeg bloat at a 24 MB hard ceiling;
         # rc.194 measured 20.73 MB per flavour. P4b DELIBERATELY grows
-        # the MSI: both flavours now bundle the tunnel CLI roomler.exe
+        # the MSI: both flavours now bundle the tunnel CLI meshharbor.exe
         # (~8 MB compressed; node-stack unification Option A) →
         # expected ≈ 29 MB. The guard's job is unchanged in spirit:
         # catch ACCIDENTAL bloat (unstripped FFmpeg, stray DLLs,
@@ -2149,7 +2149,7 @@ jobs:
       - name: Build tray binary (release)
         shell: pwsh
         # Static CRT: the desktop companion ships as a raw standalone EXE
-        # (placed beside roomlerd.exe by install.ps1 / the wizard), so it
+        # (placed beside meshharbord.exe by install.ps1 / the wizard), so it
         # must not assume the MSVC runtime exists on the host -- a fresh
         # Windows box without the VC++ redist pops a loader dialog
         # otherwise (field report 2026-07-28). The tray graph is pure
@@ -2714,12 +2714,12 @@ jobs:
         run: |
           set -euo pipefail
           # FR-46 P5b: the .app, its executable and CFBundleName now all carry the
-          # CURRENT name. CFBundleIdentifier stays `com.roomler.agent` on purpose —
+          # CURRENT name. CFBundleIdentifier stays `fans.itachi.meshharbor.agent` on purpose —
           # it is not a retired name, it doubles as the launchd Label, and it is what
           # TCC attributes the grants to, so changing it would widen the blast radius
           # of a rename that already costs a re-approval at every Mac.
           BIN=target/aarch64-apple-darwin/release/roomlerd
-          APP=stage/roomlerd.app
+          APP=stage/meshharbord.app
           mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
           cp "$BIN" "$APP/Contents/MacOS/roomlerd"
           # Bundle every non-system dylib the binary loads into the .app, so
@@ -2850,26 +2850,26 @@ jobs:
             echo "::error::the staged binary does not start without Homebrew (exit $rc) — it is not self-contained"
             exit 1
           fi
-          cp agents/meshharbord/packaging/macos/com.roomler.agent.plist "$APP/Contents/Resources/"
+          cp agents/meshharbord/packaging/macos/fans.itachi.meshharbor.agent.plist "$APP/Contents/Resources/"
           # The privileged half's plist rides along in Resources; the
           # postinstall only installs it into /Library/LaunchDaemons when the
           # operator has opted in. Staged unconditionally so enabling the
           # daemon never requires a different package.
-          cp agents/meshharbord/packaging/macos/com.roomler.daemon.plist "$APP/Contents/Resources/"
+          cp agents/meshharbord/packaging/macos/fans.itachi.meshharbor.daemon.plist "$APP/Contents/Resources/"
           # The companion's LaunchAgent rides here too — the postinstall reads
           # every plist it installs out of this one directory.
-          cp agents/meshharbord/packaging/macos/com.roomler.desktop.plist "$APP/Contents/Resources/"
+          cp agents/meshharbord/packaging/macos/fans.itachi.meshharbor.desktop.plist "$APP/Contents/Resources/"
           # The update half (root LaunchDaemon, DEFAULT ON, opt-out marker
           # /etc/roomler/disable-auto-update). Owns check+download+
           # install so no agent process ever execs its own replacement.
-          cp agents/meshharbord/packaging/macos/com.roomler.update.plist "$APP/Contents/Resources/"
+          cp agents/meshharbord/packaging/macos/fans.itachi.meshharbor.update.plist "$APP/Contents/Resources/"
           cat > "$APP/Contents/Info.plist" <<PLIST
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
           <plist version="1.0">
           <dict>
               <key>CFBundleExecutable</key>          <string>roomlerd</string>
-              <key>CFBundleIdentifier</key>          <string>com.roomler.agent</string>
+              <key>CFBundleIdentifier</key>          <string>fans.itachi.meshharbor.agent</string>
               <key>CFBundleName</key>                <string>Roomler Daemon</string>
               <key>CFBundleShortVersionString</key>  <string>${VERSION}</string>
               <key>CFBundleVersion</key>             <string>${VERSION}</string>
@@ -2935,7 +2935,7 @@ jobs:
           # `cargo tauri build` for the same reason the Windows lane uses plain
           # `cargo build`: no Tauri toolchain on the runner, and the frontend is
           # already embedded via `custom-protocol`.
-          DESK=stage/Roomler.app
+          DESK=stage/MeshHarbor.app
           mkdir -p "$DESK/Contents/MacOS" "$DESK/Contents/Resources"
           cp target/aarch64-apple-darwin/release/meshharbor-desktop "$DESK/Contents/MacOS/meshharbor-desktop"
           cp agents/meshharbor-desktop/icons/icon.png "$DESK/Contents/Resources/icon.png"
@@ -2945,7 +2945,7 @@ jobs:
           <plist version="1.0">
           <dict>
               <key>CFBundleExecutable</key>          <string>meshharbor-desktop</string>
-              <key>CFBundleIdentifier</key>          <string>ai.roomler.agent-tray</string>
+              <key>CFBundleIdentifier</key>          <string>fans.itachi.meshharbor.agent-tray</string>
               <key>CFBundleName</key>                <string>Roomler</string>
               <key>CFBundleShortVersionString</key>  <string>${VERSION}</string>
               <key>CFBundleVersion</key>             <string>${VERSION}</string>
@@ -3031,18 +3031,18 @@ jobs:
           # codesign refuses with "is already signed" — and since the Apple
           # secrets have never been configured, this whole branch has never
           # executed, so nothing would have caught it but a release.
-          find stage/roomlerd.app/Contents/Frameworks -type f -name '*.dylib' -print0 \
+          find stage/meshharbord.app/Contents/Frameworks -type f -name '*.dylib' -print0 \
             | while IFS= read -r -d '' dylib; do
                 codesign --force --sign "Developer ID Application" --options runtime --timestamp "$dylib"
               done
           codesign --force --sign "Developer ID Application" \
                    --options runtime --timestamp \
                    --entitlements agents/meshharbord/packaging/macos/entitlements.plist \
-                   "stage/roomlerd.app/Contents/MacOS/roomlerd"
+                   "stage/meshharbord.app/Contents/MacOS/roomlerd"
 
           codesign --force --sign "Developer ID Application" \
                    --options runtime --timestamp \
-                   "stage/roomlerd.app"
+                   "stage/meshharbord.app"
 
           # The CLI shim ships in the same .pkg, outside the bundle. Sign it
           # HERE: nothing may `cargo build` after this point (a relink strips
@@ -3057,22 +3057,22 @@ jobs:
           # for an unsigned-fallback build and FATAL here: Apple's notary
           # service refuses a nested bundle on any one of those three counts,
           # and this payload tripped all three. Re-seal it with the real
-          # identity, inside-out, BEFORE `cp -R stage/Roomler.app` runs.
+          # identity, inside-out, BEFORE `cp -R stage/MeshHarbor.app` runs.
           #
           # Field evidence (2026-09-08, the first run that ever had Apple
-          # credentials): roomlerd.app and roomler-shim were correctly
+          # credentials): meshharbord.app and roomler-shim were correctly
           # Developer-ID-signed and the .pkg itself carried "Developer ID
           # Installer: G ROX EOOD", yet notarisation still returned
-          # `status: Invalid` -- because Roomler.app inside it was self-signed.
-          find "stage/Roomler.app/Contents" -type f -name '*.dylib' -print0 2>/dev/null \
+          # `status: Invalid` -- because MeshHarbor.app inside it was self-signed.
+          find "stage/MeshHarbor.app/Contents" -type f -name '*.dylib' -print0 2>/dev/null \
             | while IFS= read -r -d '' nested; do
                 codesign --force --sign "Developer ID Application" \
                          --options runtime --timestamp "$nested"
               done
           codesign --force --sign "Developer ID Application" \
                    --options runtime --timestamp \
-                   "stage/Roomler.app"
-          codesign --verify --strict "stage/Roomler.app"
+                   "stage/MeshHarbor.app"
+          codesign --verify --strict "stage/MeshHarbor.app"
 
       # Every Mach-O this .pkg ships must run on its declared floor. The
       # dylibs carry their own minimum macOS (on 0.4.115: libvpx and the three
@@ -3100,10 +3100,10 @@ jobs:
             else
               echo "::error::$f requires macOS $m, above this .pkg's floor of $MACOS_FLOOR"; fail=1
             fi
-          done < <(find stage/roomlerd.app stage/Roomler.app \
+          done < <(find stage/meshharbord.app stage/MeshHarbor.app \
                         target/aarch64-apple-darwin/release/roomler-shim -type f -print0)
           [ "$n" -gt 0 ] || { echo "::error::found no Mach-O files to check"; exit 1; }
-          for p in stage/roomlerd.app/Contents/Info.plist stage/Roomler.app/Contents/Info.plist; do
+          for p in stage/meshharbord.app/Contents/Info.plist stage/MeshHarbor.app/Contents/Info.plist; do
             v=$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$p")
             [ "$v" = "$MACOS_FLOOR" ] || { echo "::error::$p declares LSMinimumSystemVersion $v, not $MACOS_FLOOR"; fail=1; }
           done
@@ -3132,7 +3132,7 @@ jobs:
           # ⚠️ The path is part of the TCC identity, so this move costs every
           # existing Mac one re-grant. Unavoidable, and cheapest now while the
           # platform has almost no installs.
-          cp -R stage/roomlerd.app payload/Library/Roomler/
+          cp -R stage/meshharbord.app payload/Library/Roomler/
           # The CLI. Until rc.454 the macOS payload was the .app and NOTHING
           # else — no `roomler` on PATH, so `roomler peers` was impossible on a
           # Mac even though the daemon carries the whole command surface. Same
@@ -3143,13 +3143,13 @@ jobs:
           chmod 755 payload/usr/local/bin/roomler
           # The menu-bar companion, and its LaunchAgent (installed by the
           # postinstall alongside the agent's).
-          cp -R stage/Roomler.app payload/Applications/
+          cp -R stage/MeshHarbor.app payload/Applications/
           # `roomlerd` on PATH for command-surface parity with Linux and
           # Windows. A symlink, not a copy: the daemon binary lives inside the
           # bundle (its name is CFBundleExecutable and every launchd plist and
           # TCC grant is keyed to that path), so this is a convenience entry
           # point for `roomlerd enroll` / `--version`, not a second install.
-          ln -s /Library/Roomler/roomlerd.app/Contents/MacOS/roomlerd \
+          ln -s /Library/Roomler/meshharbord.app/Contents/MacOS/roomlerd \
             payload/usr/local/bin/roomlerd
           cp agents/meshharbord/packaging/macos/postinstall scripts/postinstall
           chmod 755 scripts/postinstall
@@ -3161,8 +3161,8 @@ jobs:
           # bundle with this identifier already lives and installs THERE,
           # ignoring the payload path. Measured on a CI runner:
           #
-          #   PackageKit: Applications/roomlerd.app relocated to
-          #               Users/runner/work/.../payload/Applications/roomlerd.app
+          #   PackageKit: Applications/meshharbord.app relocated to
+          #               Users/runner/work/.../payload/Applications/meshharbord.app
           #
           # …i.e. it installed into the staging directory it had just been built
           # from. On a user's Mac the same rule redirects the install to any
@@ -3187,7 +3187,7 @@ jobs:
             --root payload \
             --component-plist component.plist \
             --scripts scripts \
-            --identifier com.roomler.agent \
+            --identifier fans.itachi.meshharbor.agent \
             --version "$VERSION" \
             --install-location / \
             component.pkg
@@ -3292,10 +3292,10 @@ jobs:
           PKG="${{ steps.pkg.outputs.artifact }}"
 
           echo "=== codesign (app bundle, strict) ==="
-          codesign --verify --strict --verbose=2 stage/roomlerd.app
+          codesign --verify --strict --verbose=2 stage/meshharbord.app
 
           echo "=== hardened runtime ==="
-          codesign -d --verbose=2 stage/roomlerd.app 2>&1 | grep -q 'flags=.*runtime' \
+          codesign -d --verbose=2 stage/meshharbord.app 2>&1 | grep -q 'flags=.*runtime' \
             || { echo "::error::hardened runtime is NOT enabled on the app bundle -- notarisation would reject it"; exit 1; }
 
           echo "=== pkg signature ==="

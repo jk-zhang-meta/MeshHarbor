@@ -4,7 +4,7 @@
 //!
 //! When the SCM-launched service receives a `Running` state and
 //! a console session is active, this module spawns the agent's own
-//! `roomlerd.exe run` as the active user via
+//! `meshharbord.exe run` as the active user via
 //! `WTSQueryUserToken` + `CreateProcessAsUserW`, then watches it.
 //! The worker exiting non-zero triggers a respawn with exponential
 //! backoff (parity with the Scheduled Task `RestartOnFailure` PT1M

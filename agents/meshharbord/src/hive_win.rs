@@ -1518,7 +1518,7 @@ mod tests {
             "-p",
             "",
             "two words",
-            r"C:\ProgramData\Roomler\hive\run\abc\settings.json",
+            r"C:\ProgramData\MeshHarbor\hive\run\abc\settings.json",
             r"C:\dir with space\",
             r#"say "hi""#,
             r#"a\"b"#,
@@ -1574,10 +1574,10 @@ mod tests {
             ),
         };
         let line = a
-            .command_line(Path::new(r"C:\Program Files\Roomler\roomlerd.exe"))
+            .command_line(Path::new(r"C:\Program Files\MeshHarbor\meshharbord.exe"))
             .unwrap();
         let back = argv(&line);
-        assert_eq!(back[0], r"C:\Program Files\Roomler\roomlerd.exe");
+        assert_eq!(back[0], r"C:\Program Files\MeshHarbor\meshharbord.exe");
         assert_eq!(back[1], PREP_SUBCOMMAND);
         assert_eq!(back[4], "", "no memory is an empty argument");
         let parsed = PrepArgs::parse(back.into_iter().skip(1).map(OsString::from))
@@ -1586,12 +1586,12 @@ mod tests {
         assert_eq!(parsed, a);
 
         let with_memory = PrepArgs {
-            memory_dir: Some(PathBuf::from(r"C:\ProgramData\Roomler\hive\run\s1\memory")),
+            memory_dir: Some(PathBuf::from(r"C:\ProgramData\MeshHarbor\hive\run\s1\memory")),
             ..a
         };
         let back = argv(
             &with_memory
-                .command_line(Path::new(r"C:\r\roomlerd.exe"))
+                .command_line(Path::new(r"C:\r\meshharbord.exe"))
                 .unwrap(),
         );
         let parsed = PrepArgs::parse(back.into_iter().skip(1).map(OsString::from))

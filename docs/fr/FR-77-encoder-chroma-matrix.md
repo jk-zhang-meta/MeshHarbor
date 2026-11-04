@@ -58,7 +58,7 @@ release), measured 2026-09-07:
 | VAAPI h264/hevc/av1/vp9 (Linux only; estimated from 223 KB of source) | ~100 | no |
 | VideoToolbox (macOS only; estimated) | ~40 | mac |
 
-Every wrapper on every platform is **under 1 MB** against a 35 MiB `roomlerd.exe`, a
+Every wrapper on every platform is **under 1 MB** against a 35 MiB `meshharbord.exe`, a
 13.13 MB MSI and a 10.44 MiB `.deb`. The whole full library is 21.7 MB linkable, which
 reproduces the P3e finding ("23 MiB linked where the ten encoders' closure is 0.29").
 The real per-backend costs are elsewhere: a runtime dependency (VAAPI → `libva`, bundled since P4),

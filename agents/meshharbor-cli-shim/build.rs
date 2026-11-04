@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (C) 2026 G ROX EOOD
-//! Embeds a Windows VERSIONINFO resource into `roomler-shim.exe`.
+//! Embeds a Windows VERSIONINFO resource into `meshharbor-shim.exe`.
 //!
-//! The shim INSTALLS as `roomler.exe` (the wxs File element renames it) on
+//! The shim INSTALLS as `meshharbor.exe` (the wxs File element renames it) on
 //! every Windows daemon host, so this is one of the two first-party binaries
 //! AV consoles, Task Manager and AppLocker actually look at there. Same
 //! rationale and same embed-resource-vs-winresource reasoning as
@@ -79,12 +79,12 @@ BEGIN
         BLOCK "040904b0"
         BEGIN
             VALUE "CompanyName", "G ROX LTD"
-            VALUE "FileDescription", "Roomler CLI (daemon shim)"
+            VALUE "FileDescription", "MeshHarbor CLI (daemon shim)"
             VALUE "FileVersion", "{file_version_str}"
-            VALUE "InternalName", "roomler-shim"
+            VALUE "InternalName", "meshharbor-shim"
             VALUE "LegalCopyright", "Copyright (C) 2026 G ROX LTD"
-            VALUE "OriginalFilename", "roomler.exe"
-            VALUE "ProductName", "Roomler"
+            VALUE "OriginalFilename", "meshharbor.exe"
+            VALUE "ProductName", "MeshHarbor"
             VALUE "ProductVersion", "{pkg_version}"
         END
     END
@@ -97,10 +97,10 @@ END
         );
 
         let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR is always set by cargo"));
-        let rc_path = out_dir.join("roomler-shim-version.rc");
+        let rc_path = out_dir.join("meshharbor-shim-version.rc");
         fs::write(&rc_path, rc).expect("failed to write the VERSIONINFO resource script");
 
-        let result = embed_resource::compile_for(&rc_path, ["roomler-shim"], embed_resource::NONE);
+        let result = embed_resource::compile_for(&rc_path, ["meshharbor-shim"], embed_resource::NONE);
 
         // A missing rc.exe/llvm-rc must not break a developer's local build,
         // but it must never silently ship a release binary with no version
@@ -110,7 +110,7 @@ END
                 .manifest_required()
                 .expect("VERSIONINFO embedding failed in CI (rc.exe / llvm-rc unavailable?)");
         } else if let Err(err) = result.manifest_optional() {
-            println!("cargo:warning=roomler-shim VERSIONINFO not embedded: {err:?}");
+            println!("cargo:warning=meshharbor-shim VERSIONINFO not embedded: {err:?}");
         }
     }
 }

@@ -25,8 +25,8 @@ keys for publicly-trusted code signing since June 2023, so no CA issues a PFX.
   Artifact Signing over GitHub OIDC: certs minted on demand from a Microsoft
   HSM (~3-day leaves ⇒ RFC3161 timestamping mandatory), CI authenticates via a
   federated credential, configuration is seven repo *variables*, no secrets.
-- **R2 — Sign the payload, not just the wrapper.** `roomlerd.exe` +
-  `roomler-shim.exe` (installs as `roomler.exe`) signed BEFORE `cargo wix`
+- **R2 — Sign the payload, not just the wrapper.** `meshharbord.exe` +
+  `meshharbor-shim.exe` (installs as `meshharbor.exe`) signed BEFORE `cargo wix`
   harvests; third-party DLLs (wintun, VC-CRT) staged AFTER signing and asserted
   to keep their original signers.
 - **R3 — Signedness is verified, never inferred.** `signtool verify /pa /all`
@@ -34,7 +34,7 @@ keys for publicly-trusted code signing since June 2023, so no CA issues a PFX.
   `-unsigned` filename suffix (computed from secret *presence*) retired.
 - **R4 — A release tag that would ship unsigned FAILS.** `require` gate defaults
   true on tags; dispatch rehearsals stay green with warnings.
-- **R5 — Version identity.** `roomlerd.exe`/`roomler.exe`/`roomler-shim.exe`
+- **R5 — Version identity.** `meshharbord.exe`/`meshharbor.exe`/`meshharbor-shim.exe`
   embed VERSIONINFO (CompanyName=G ROX LTD, FILEVERSION = the MSI
   `MAJOR.MINOR.RC` remap); MSI `Manufacturer`, deb `maintainer`, Tauri
   `publisher` all agree with the certificate subject.
@@ -101,7 +101,7 @@ keys for publicly-trusted code signing since June 2023, so no CA issues a PFX.
 
 - [x] CI signs via Azure with OIDC and *verifies* — acceptance run
   `32640941995` (`signing_mode=azure require_signing=true`): payload
-  `roomlerd.exe`/`roomler-shim.exe`, both MSIs, desktop EXE all
+  `meshharbord.exe`/`meshharbor-shim.exe`, both MSIs, desktop EXE all
   `[G ROX LTD, timestamped]`, `signed + verified … mode=azure`.
 - [x] Third-party signatures survive: `wintun.dll signer: WireGuard LLC
   (status=Valid)` asserted in the same run.
@@ -117,7 +117,7 @@ keys for publicly-trusted code signing since June 2023, so no CA issues a PFX.
 - [x] SLSA provenance attestations on every asset
   (`gh attestation verify <asset> --repo gjovanov/roomler-ai`).
 - [x] macOS interim identity stable across releases: designated requirement
-  `identifier "com.roomler.agent" + cert root H"b2a06501…"` byte-identical
+  `identifier "fans.itachi.meshharbor.agent" + cert root H"b2a06501…"` byte-identical
   rc.479→482; TCC Screen-Recording grant survived updates (operator-confirmed
   on rc.482: "screen worked directly", no re-grant).
 - [x] Apple Developer ID + notarisation live end-to-end — enrolment 5XS5WN8R99

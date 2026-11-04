@@ -8,7 +8,7 @@
     "Encode-only (browser decodes via WebCodecs). HEVC + H.264 + VP9 HW encoders via NVENC + Intel QSV/oneVPL + AMD AMF. Plus libvpx-vp9 software fallback.",
     "No decoders, demuxers, muxers, parsers, filters, bsfs, protocols, devices — discards ~80% of full FFmpeg's libavcodec/libavformat surface.",
     "Bypasses two Media Foundation regressions (RTX 5090 Blackwell ActivateObject 0x8000FFFF, Iris Xe Tiger Lake async-MFT gap). Unlocks HW VP9 on Intel iGPU.",
-    "Linked statically into roomlerd.exe; NVENC + AMF use driver-provided DLLs at runtime so no extra MSI bytes for NVIDIA/AMD users."
+    "Linked statically into meshharbord.exe; NVENC + AMF use driver-provided DLLs at runtime so no extra MSI bytes for NVIDIA/AMD users."
   ],
   "homepage": "https://ffmpeg.org",
   "license": "LGPL-2.1-or-later",

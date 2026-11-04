@@ -25,7 +25,7 @@ the build if one appears.
 
 | Platform | Linkage | Obligation |
 |---|---|---|
-| **Windows** (`roomlerd.exe`) | **static** (`x64-windows-static-md`) | LGPL-2.1 **§6** — recipients must be able to relink |
+| **Windows** (`meshharbord.exe`) | **static** (`x64-windows-static-md`) | LGPL-2.1 **§6** — recipients must be able to relink |
 | **Linux** (`.deb`) | shared (`--enable-shared --disable-static`) | §6(b) satisfied by the shared-library mechanism |
 | **macOS** (`.pkg`, since 2026-08-25) | shared (`--enable-shared`; the three `*_videotoolbox` encoders as dylibs inside the app bundle) | §6(b) satisfied by the shared-library mechanism |
 

@@ -320,7 +320,7 @@ unsupervised `roomlerd run` would take the device offline for good:
 | Windows service (SCM host) | the host passes `run --supervisor scm` | `0` — the host respawns 0 at once | the service host |
 | Windows Scheduled Task (per-user) | the task passes `run --supervisor task` | `9` | **the caller**: the task's `IgnoreNew` policy drops a start while the old process is still exiting, so the companion / CLI runs `roomlerd service start` every 3 s until a new process answers |
 | systemd | `INVOCATION_ID` **and** `/proc/self/cgroup` puts the process inside one of our units, **and** `systemctl show` says this process is the unit's main PID and its restart policy restarts exit `9` | `9` | systemd |
-| launchd | `XPC_SERVICE_NAME` starts with `com.roomler.` | `9` — `KeepAlive{SuccessfulExit:false}` relaunches only a non-zero exit | launchd |
+| launchd | `XPC_SERVICE_NAME` starts with `fans.itachi.meshharbor.` | `9` — `KeepAlive{SuccessfulExit:false}` relaunches only a non-zero exit | launchd |
 | the macOS supervisor (FR-43) | the worker's `--supervised` flag | `9` | the supervisor |
 | anything else | — | **refused** | — |
 
@@ -762,10 +762,10 @@ step differently:
 | OS | How the companion ships | What moves it with the daemon |
 |---|---|---|
 | Windows | a standalone EXE beside the daemon, in neither MSI | `refresh_if_stale` (`agents/meshharbord/src/companion.rs:960`): at the start of the process that owns it (#1686), and from FR-117 P2 again every 4 h (`refresh_periodically`, `companion.rs:79`) |
-| macOS | inside the daemon's `.pkg` (`/Applications/Roomler.app`) | the same `.pkg`: one install moves both |
+| macOS | inside the daemon's `.pkg` (`/Applications/MeshHarbor.app`) | the same `.pkg`: one install moves both |
 | Linux | its own `.deb`, or `.rpm` (§10.1) | FR-117 P1: the root update owner moves the package (`companion/package_sync.rs`) |
 
-The CLI needs nothing of its own: it ships inside every daemon package (the MSI's `roomler.exe`
+The CLI needs nothing of its own: it ships inside every daemon package (the MSI's `meshharbor.exe`
 shim, the `.pkg`, the `.deb`, and the tarball, where `usr/bin/roomler` is a required member).
 
 **Why Linux needed it.** The companion's package is installed once, by `install.sh` or the wizard,

@@ -161,7 +161,7 @@ pub struct DesktopStateView {
     /// `windows` | `linux` | `macos` — the tour words the private-network
     /// step per platform.
     pub platform: &'static str,
-    /// macOS: the privileged half (`com.roomler.daemon`, root) is installed.
+    /// macOS: the privileged half (`fans.itachi.meshharbor.daemon`, root) is installed.
     /// On a Mac the MESH belongs to that half — its own enrollment — while
     /// this app talks to the per-user capture half; offering to put THIS half
     /// on the mesh too would make the Mac two nodes.
@@ -183,7 +183,7 @@ pub fn cmd_desktop_state() -> DesktopStateView {
         },
         // The plist is world-readable; `/etc/meshharbor` (0700) is not.
         macos_privileged_half: cfg!(target_os = "macos")
-            && std::path::Path::new("/Library/LaunchDaemons/com.roomler.daemon.plist").exists(),
+            && std::path::Path::new("/Library/LaunchDaemons/fans.itachi.meshharbor.daemon.plist").exists(),
     }
 }
 

@@ -70,7 +70,7 @@ describe('updateStallChip (FR-106)', () => {
   it('names the per-user Linux remedy on Linux, and only the generic check elsewhere', () => {
     const linux = updateStallChip('0.4.136', true, 'linux', FEED, NOW)!.tooltip
     expect(linux).toContain('per-user Linux install made before 0.4.138')
-    expect(linux).toContain('sudo apt install ./roomlerd.deb')
+    expect(linux).toContain('sudo apt install ./meshharbord.deb')
     expect(linux).toContain("'roomler config ls'")
     for (const os of ['windows', 'macos']) {
       const other = updateStallChip('0.4.136', true, os, FEED, NOW)!.tooltip

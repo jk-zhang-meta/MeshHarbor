@@ -1,14 +1,14 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Roomler",
-  "identifier": "ai.roomler.agent-tray",
+  "productName": "MeshHarbor",
+  "identifier": "fans.itachi.meshharbor.agent-tray",
   "build": {
     "frontendDist": "src/front",
     "devUrl": "http://localhost:1430"
   },
   "app": {
     "trayIcon": {
-      "id": "roomler",
+      "id": "meshharbor",
       "iconPath": "icons/tray.png",
       "iconAsTemplate": true
     },
@@ -16,7 +16,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Roomler",
+        "title": "MeshHarbor",
         "width": 1100,
         "height": 740,
         "minWidth": 640,
@@ -45,8 +45,8 @@
     "publisher": "G ROX LTD",
     "copyright": "Copyright (C) 2026 G ROX LTD",
     "category": "Productivity",
-    "shortDescription": "Roomler desktop",
-    "longDescription": "Desktop control surface for the Roomler device service: device overview, network peers with live connection types, daemon-supervised tunnel routes with live throughput, onboarding, settings, and remote-control consent prompts.",
+    "shortDescription": "MeshHarbor desktop",
+    "longDescription": "Desktop control surface for the MeshHarbor device service: device overview, network peers with live connection types, daemon-supervised tunnel routes with live throughput, onboarding, settings, and remote-control consent prompts.",
     "windows": {
       "wix": {
         "language": "en-US"

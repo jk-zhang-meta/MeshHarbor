@@ -2,7 +2,7 @@
 
 This page exists to make an LGPL right **exercisable** rather than theoretical.
 
-The Windows Roomler agent (`roomlerd.exe`) links FFmpeg **statically**. FFmpeg is
+The Windows Roomler agent (`meshharbord.exe`) links FFmpeg **statically**. FFmpeg is
 LGPL-2.1-or-later, and §6 of that licence gives you the right to modify FFmpeg
 and relink the application against your modified version. Below is how to do it.
 

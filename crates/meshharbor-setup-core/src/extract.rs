@@ -259,7 +259,7 @@ fn check_within(dest_dir: &Path, candidate: &Path) -> Result<()> {
 /// `extracted_root`) for forward-compat with future layouts.
 pub fn find_tunnel_binary(extracted_root: &Path) -> Result<PathBuf> {
     let candidate_names: [&str; 2] = if cfg!(target_os = "windows") {
-        ["roomler.exe", "roomler-tunnel.exe"]
+        ["meshharbor.exe", "meshharbor-tunnel.exe"]
     } else {
         // RETIRED-NAME-ANCHOR: member names inside ALREADY-PUBLISHED tarballs.
         // The extractor must keep accepting them. docs/fr/FR-21
@@ -327,7 +327,7 @@ mod tests {
         build_zip_to_path(
             &archive,
             &[
-                ("roomler-tunnel-1.2.3-target/roomler-tunnel.exe", b"binary"),
+                ("roomler-tunnel-1.2.3-target/meshharbor-tunnel.exe", b"binary"),
                 ("roomler-tunnel-1.2.3-target/README.txt", b"readme"),
             ],
         )
@@ -335,7 +335,7 @@ mod tests {
         extract_zip(&archive, &dest).unwrap();
         let bin = dest
             .join("roomler-tunnel-1.2.3-target")
-            .join("roomler-tunnel.exe");
+            .join("meshharbor-tunnel.exe");
         assert!(bin.is_file());
         let bytes = std::fs::read(&bin).unwrap();
         assert_eq!(bytes, b"binary");
@@ -427,7 +427,7 @@ mod tests {
             .join("roomler-tunnel-0.3.0-rc.46-x86_64-pc-windows-msvc");
         std::fs::create_dir_all(&sub).unwrap();
         let bin_name = if cfg!(target_os = "windows") {
-            "roomler-tunnel.exe"
+            "meshharbor-tunnel.exe"
         } else {
             "roomler-tunnel"
         };
@@ -440,7 +440,7 @@ mod tests {
     fn find_tunnel_binary_locates_flat_layout() {
         let tmp = TempDir::new().unwrap();
         let bin_name = if cfg!(target_os = "windows") {
-            "roomler-tunnel.exe"
+            "meshharbor-tunnel.exe"
         } else {
             "roomler-tunnel"
         };
@@ -461,7 +461,7 @@ mod tests {
     #[test]
     fn find_tunnel_binary_prefers_new_name_when_both_present() {
         let (new_name, old_name) = if cfg!(target_os = "windows") {
-            ("roomler.exe", "roomler-tunnel.exe")
+            ("meshharbor.exe", "meshharbor-tunnel.exe")
         } else {
             ("roomler", "roomler-tunnel")
         };
@@ -486,7 +486,7 @@ mod tests {
     #[test]
     fn find_tunnel_binary_finds_new_name_alone() {
         let new_name = if cfg!(target_os = "windows") {
-            "roomler.exe"
+            "meshharbor.exe"
         } else {
             "roomler"
         };

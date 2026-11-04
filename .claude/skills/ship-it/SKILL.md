@@ -86,7 +86,7 @@ carries no digest.
 
 - Every azure-signing job **must** carry `environment: release` — the tenant
   rejects wildcard tag-subject federated credentials.
-- MSI **payload** (`roomlerd.exe`, `roomler-shim.exe`) is signed **before**
+- MSI **payload** (`meshharbord.exe`, `meshharbor-shim.exe`) is signed **before**
   `cargo wix` harvests; third-party DLLs (wintun, VC-CRT) are staged **after**
   signing and must keep their original signers (CI asserts).
 - **Nothing after payload signing may `cargo build`** — a relink strips

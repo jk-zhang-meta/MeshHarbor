@@ -1,6 +1,6 @@
 #!/usr/bin/env sh
 # RETIRED-NAME-ANCHOR-BEGIN
-# FR-46: the ARCHIVE name is now `roomlerd-…`. Every consumer was measured first —
+# FR-46: the ARCHIVE name is now `meshharbord-…`. Every consumer was measured first —
 # the extractor uses `--strip-components=1` so the internal dir name is inert, and no
 # picker keys on the prefix. What stays frozen here is `usr/lib/meshharbor` (the
 # RPATH baked into the shipped binary by patchelf, which must move in lockstep with
@@ -27,10 +27,10 @@ root="/tmp/${name}"
 pkg=agents/meshharbord
 rm -rf "$root"
 
-# Binaries. `roomler-shim` installs UNDER the user-facing name: it re-execs
-# `roomlerd cli`, so a stale shim can never version-skew from the daemon.
+# Binaries. `meshharbor-shim` installs UNDER the user-facing name: it re-execs
+# `meshharbord cli`, so a stale shim can never version-skew from the daemon.
 install -D -m755 target/release/meshharbord    "$root/usr/bin/meshharbord"
-install -D -m755 target/release/roomler-shim "$root/usr/bin/meshharbor"
+install -D -m755 target/release/meshharbor-shim "$root/usr/bin/meshharbor"
 
 # Bundled libs (FFmpeg on x86_64, libvpx everywhere) — the payload is
 # self-contained by design: stock distros ship ABI-incompatible versions, and

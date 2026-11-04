@@ -87,7 +87,7 @@ access"* rather than letting you discover it by connecting to a blank desktop.
 Then restart the user half:
 
 ```bash
-launchctl kickstart -k gui/$(id -u)/com.roomler.agent
+launchctl kickstart -k gui/$(id -u)/fans.itachi.meshharbor.agent
 ```
 
 :::warning Grants are bound to the signed binary
@@ -100,8 +100,8 @@ installer tells you when this has happened rather than leaving you to find out.
 
 | Path | What it is |
 |---|---|
-| `/Applications/Roomler.app` | The **menu-bar companion** — status, routes, and the permissions panel. No Dock tile. The only Roomler icon you should see. |
-| `/Library/Roomler/roomlerd.app` | The agent itself. A background service with nothing to launch, so deliberately not in `/Applications` — but still a bundle, because the two privacy grants attach to a bundle identity. |
+| `/Applications/MeshHarbor.app` | The **menu-bar companion** — status, routes, and the permissions panel. No Dock tile. The only Roomler icon you should see. |
+| `/Library/Roomler/meshharbord.app` | The agent itself. A background service with nothing to launch, so deliberately not in `/Applications` — but still a bundle, because the two privacy grants attach to a bundle identity. |
 | `/usr/local/bin/roomler` | The CLI. |
 | `/usr/local/bin/roomlerd` | The agent on `PATH`, for `roomlerd enroll` and `--version`. A symlink into the bundle, not a second copy. |
 
@@ -134,7 +134,7 @@ It stops both halves through launchd **before** removing anything: the
 per-user agent and the menu-bar app (for every account that has them), then the
 root half and the update helper. That stop is the daemon's clean stop, so the
 routes and DNS settings it added to the Mac go with it. Then it removes
-`/Library/Roomler`, `/Applications/Roomler.app`, the CLI, the package receipt
+`/Library/Roomler`, `/Applications/MeshHarbor.app`, the CLI, the package receipt
 and the config, which holds the credentials. It also resets the Screen Recording
 and Accessibility grants, so a fresh install asks for them again rather than
 showing a toggle that is on for a binary that is gone.
@@ -154,5 +154,5 @@ the mesh address.
 
 - **Screen is the wallpaper and nothing else** → the Screen Recording grant. See above.
 - **Clicks and keys do nothing** → the Accessibility grant.
-- **The Mac is missing from `roomler peers`** → you installed the user half only. Add the root half with `--daemon-token`, or enroll it (`sudo /Library/Roomler/roomlerd.app/Contents/MacOS/roomlerd --config /etc/roomler/config.toml enroll … --overlay`) and run `sudo roomlerd service install --as-service`.
+- **The Mac is missing from `roomler peers`** → you installed the user half only. Add the root half with `--daemon-token`, or enroll it (`sudo /Library/Roomler/meshharbord.app/Contents/MacOS/roomlerd --config /etc/roomler/config.toml enroll … --overlay`) and run `sudo roomlerd service install --as-service`.
 - **More** → [Troubleshooting](/docs/troubleshooting/).

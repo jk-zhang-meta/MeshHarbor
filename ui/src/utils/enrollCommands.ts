@@ -111,7 +111,7 @@ export function enrollCommands(
   // `roomlerd` on PATH for the enrolling user — so the generic `roomlerd
   // enroll` this used to print could not work on a Mac. FR-46 P5b renamed the
   // bundle, so the path below carries the current name like every other OS.
-  const macAgentBin = '/Library/Roomler/roomlerd.app/Contents/MacOS/roomlerd'
+  const macAgentBin = '/Library/Roomler/meshharbord.app/Contents/MacOS/roomlerd'
 
   const manual = (os: EnrollOs): CommandBlock => ({
     id: `${kind}-${os}-manual`,

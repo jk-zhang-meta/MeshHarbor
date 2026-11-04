@@ -33,7 +33,7 @@
   # then, in a "x64 Native Tools" shell (vcvars64 — bindgen wants MSVC's stdint.h):
   Invoke-Expression (pwsh scripts/dev-ffmpeg-windows.ps1 -Env | Out-String)
   cargo build -p meshharbord --release --features "full-hw,vp9-444,system-context,ffmpeg-encoder,overlay-l3,overlay-netstack,ssh-server"
-  .\target\release\roomlerd.exe encoder-smoke --encoder hardware --codec hevc
+  .\target\release\meshharbord.exe encoder-smoke --encoder hardware --codec hevc
 
 .NOTES
   Rollback to the previous FFmpeg: -FfmpegRelease vendored-ffmpeg-8.1.2
@@ -188,5 +188,5 @@ Write-Host "Or in one go:  Invoke-Expression (pwsh scripts/dev-ffmpeg-windows.ps
 Write-Host ""
 Write-Host "Then (the MSI's exact feature set; never vp9-444-bindgen on Windows):"
 Write-Host '  cargo build -p meshharbord --release --features "full-hw,vp9-444,system-context,ffmpeg-encoder,overlay-l3,overlay-netstack,ssh-server"'
-Write-Host '  .\target\release\roomlerd.exe encoder-smoke --encoder hardware --codec hevc'
-Write-Host '  .\target\release\roomlerd.exe encoder-smoke --encoder hardware --codec av1'
+Write-Host '  .\target\release\meshharbord.exe encoder-smoke --encoder hardware --codec hevc'
+Write-Host '  .\target\release\meshharbord.exe encoder-smoke --encoder hardware --codec av1'

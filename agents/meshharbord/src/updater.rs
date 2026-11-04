@@ -504,7 +504,7 @@ fn recent_update_attempt_at(marker_path: &std::path::Path, cooldown: Duration) -
 // the remainder of the gap at the start of each run.
 
 /// The least time between two update-helper runs — launchd's `ThrottleInterval`
-/// (`com.roomler.update.plist`), made explicit for systemd. Locked to the plist
+/// (`fans.itachi.meshharbor.update.plist`), made explicit for systemd. Locked to the plist
 /// by `update_helper_min_gap_matches_launchd_throttle_interval`.
 #[cfg(target_os = "linux")]
 const UPDATE_HELPER_MIN_GAP: Duration = Duration::from_secs(60);
@@ -2594,7 +2594,7 @@ fn spawn_installer_for_flavour_inner(installer_path: &std::path::Path) -> Result
         // that cannot update. On a two-half install the ROOT daemon updates
         // the shared bundle, so the host still moves forward.
         let euid = unsafe { libc::geteuid() };
-        // RETIRED-NAME-ANCHOR(21): the pre-P4b /Applications/roomler-agent.app path
+        // RETIRED-NAME-ANCHOR(21): the pre-P4b /Applications/meshharbor-agent.app path
         // this sweep still has to name, plus the .app bundle itself, which keys the
         // TCC grants and stays frozen until P5b. The macOS LOG path is no longer
         // among them — FR-46 P5a moved it to /var/log/roomler. docs/fr/FR-46
@@ -2603,7 +2603,7 @@ fn spawn_installer_for_flavour_inner(installer_path: &std::path::Path) -> Result
                 "refusing to self-update: `installer -target /` requires root, but this \
                  agent runs as uid {euid} (the per-user LaunchAgent). Exiting here would \
                  take the agent offline without installing anything. Updates on macOS are \
-                 owned by the root update helper (com.roomler.update) — wake it with \
+                 owned by the root update helper (fans.itachi.meshharbor.update) — wake it with \
                  `touch {MACOS_UPDATE_TRIGGER}` and watch /var/log/roomler/update.log, \
                  or install by hand: `sudo installer -pkg <pkg> -target /`."
             );
@@ -2613,7 +2613,7 @@ fn spawn_installer_for_flavour_inner(installer_path: &std::path::Path) -> Result
         //
         // RETIRED-NAME-ANCHOR(3): the PRE-P4b /Applications bundle, swept on upgrade.
         // Without the old name the vacated .app is orphaned forever. docs/fr/FR-21
-        // The pkg's payload is absolute: /Applications/roomler-agent.app plus
+        // The pkg's payload is absolute: /Applications/meshharbor-agent.app plus
         // /usr/local/bin/roomler, and BOTH launchd plists name the bundle path
         // literally. A home-directory install relocates the payload under
         // ~/Applications, so the update "succeeds" and launchd keeps starting
@@ -2903,7 +2903,7 @@ fn stage_watcher_exe(
     else {
         return (exe.to_path_buf(), false);
     };
-    let fixed = staging.join("roomlerd-watch.exe");
+    let fixed = staging.join("meshharbord-watch.exe");
     match std::fs::copy(exe, &fixed) {
         Ok(_) => return (fixed, true),
         Err(e) => {
@@ -3111,7 +3111,7 @@ pub async fn run_periodic(
     interval: Duration,
     mut trigger_rx: tokio::sync::mpsc::Receiver<Option<String>>,
 ) {
-    // macOS: the agent processes install NOTHING — `com.roomler.update`
+    // macOS: the agent processes install NOTHING — `fans.itachi.meshharbor.update`
     // (the root update helper) owns check+download+verify+install, and this
     // loop reduces to forwarding rc:agent.update triggers to its wake file.
     // A runtime `cfg!` (not an attribute) so both bodies stay type-checked
@@ -3368,7 +3368,7 @@ fn schedule_transport_retry(
     }
 }
 
-// ─── macOS update half (`com.roomler.update` + `update-helper`) ──────────
+// ─── macOS update half (`fans.itachi.meshharbor.update` + `update-helper`) ──────────
 //
 // `installer -target /` needs root and the DEFAULT macOS install is the
 // per-user LaunchAgent alone, so an in-process self-update is structurally
@@ -3380,7 +3380,7 @@ fn schedule_transport_retry(
 // the installer's parent and none exits for an update — the pkg postinstall
 // re-bootstraps both halves.
 
-/// The wake file the agents touch and `com.roomler.update`'s `WatchPaths`
+/// The wake file the agents touch and `fans.itachi.meshharbor.update`'s `WatchPaths`
 /// watches. Lives in the sticky world-writable /var/tmp ON PURPOSE: the
 /// per-user agent is not root, and the file is a pure WAKE SIGNAL —
 /// **its content is deliberately ignored**. Anything else would hand every
@@ -3692,7 +3692,7 @@ async fn forward_triggers_to(
                 match queue_update_check_at(wake) {
                     Ok(()) if cfg!(target_os = "macos") => tracing::info!(
                         trigger = %wake.display(),
-                        "rc:agent.update queued for the root update helper (com.roomler.update); \
+                        "rc:agent.update queued for the root update helper (fans.itachi.meshharbor.update); \
                          watch /var/log/roomler/update.log"
                     ),
                     Ok(()) => tracing::info!(
@@ -3771,7 +3771,7 @@ pub(crate) async fn hold_daemon_for_install(socket: PathBuf, ceiling: Duration) 
     }
 }
 
-/// `meshharbord update-helper` — the body of `com.roomler.update` on macOS, and
+/// `meshharbord update-helper` — the body of `fans.itachi.meshharbor.update` on macOS, and
 /// of `meshharbor-update.service` on Linux (FR-96).
 ///
 /// Root-only, single-shot: consume the wake file, honour the opt-out marker
@@ -4067,7 +4067,7 @@ async fn install_from_helper(
 /// pins the pair.
 #[cfg(target_os = "linux")]
 pub const UPDATE_HELPER_CAPABILITIES: &[&str] = &["wake-file", "step-aside", "restart-on-replace"];
-/// macOS: the agents have always forwarded to `com.roomler.update`.
+/// macOS: the agents have always forwarded to `fans.itachi.meshharbor.update`.
 #[cfg(target_os = "macos")]
 pub const UPDATE_HELPER_CAPABILITIES: &[&str] = &["wake-file", "step-aside"];
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
@@ -4369,7 +4369,7 @@ mod tests {
         }
         // The path is never touched: the euid check comes first, which is the
         // point — a guaranteed-doomed install must not even be attempted.
-        let err = spawn_installer_inner(std::path::Path::new("/tmp/nonexistent-roomler.pkg"))
+        let err = spawn_installer_inner(std::path::Path::new("/tmp/nonexistent-meshharbor.pkg"))
             .expect_err("a non-root self-update must be an error, not a handoff");
         let msg = err.to_string();
         assert!(
@@ -5339,7 +5339,7 @@ mod tests {
     #[test]
     fn update_helper_min_gap_matches_launchd_throttle_interval() {
         assert_eq!(UPDATE_HELPER_MIN_GAP, Duration::from_secs(60));
-        let plist = include_str!("../packaging/macos/com.roomler.update.plist");
+        let plist = include_str!("../packaging/macos/fans.itachi.meshharbor.update.plist");
         assert!(
             plist.contains("<key>ThrottleInterval</key>"),
             "the plist still carries the twin"
@@ -5488,8 +5488,8 @@ mod tests {
     fn helper_enable_link_follows_the_link_to_the_unit() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let unit = tmp.path().join("meshharbor-update.path");
-        let live = tmp.path().join("paths.target.wants-roomler-update.path");
-        let dangling = tmp.path().join("timers.target.wants-roomler-update.timer");
+        let live = tmp.path().join("paths.target.wants-meshharbor-update.path");
+        let dangling = tmp.path().join("timers.target.wants-meshharbor-update.timer");
         let absent = tmp.path().join("never-made");
         std::fs::write(&unit, b"[Path]\n").expect("unit");
         std::os::unix::fs::symlink(&unit, &live).expect("live link");
@@ -5821,7 +5821,7 @@ mod tests {
     // root daemon must never route through an escalator that can block
     // on a polkit agent that does not exist on a headless host.
 
-    const DEB: &str = "/tmp/roomler-agent-update/roomler-agent.deb";
+    const DEB: &str = "/tmp/roomler-agent-update/meshharbor-agent.deb";
 
     #[test]
     fn linux_install_root_never_escalates() {
@@ -6246,7 +6246,7 @@ mod tests {
     fn classify_install_flavour_recognises_program_files() {
         assert_eq!(
             classify_install_flavour_from_path(std::path::Path::new(
-                r"C:\Program Files\roomler-agent\roomler-agent.exe"
+                r"C:\Program Files\meshharbor-agent\meshharbor-agent.exe"
             )),
             WindowsInstallFlavour::PerMachine
         );
@@ -6260,7 +6260,7 @@ mod tests {
         // future 32-bit MSI doesn't get mis-classified as perUser.
         assert_eq!(
             classify_install_flavour_from_path(std::path::Path::new(
-                r"C:\Program Files (x86)\roomler-agent\roomler-agent.exe"
+                r"C:\Program Files (x86)\roomler-agent\meshharbor-agent.exe"
             )),
             WindowsInstallFlavour::PerMachine
         );
@@ -6272,7 +6272,7 @@ mod tests {
         // Default cargo-wix perUser destination on Win11.
         assert_eq!(
             classify_install_flavour_from_path(std::path::Path::new(
-                r"C:\Users\operator\AppData\Local\Programs\roomler-agent\roomler-agent.exe"
+                r"C:\Users\operator\AppData\Local\Programs\meshharbor-agent\meshharbor-agent.exe"
             )),
             WindowsInstallFlavour::PerUser
         );
@@ -6286,7 +6286,7 @@ mod tests {
         // GetModuleFileName quirk) must still classify as perMachine.
         assert_eq!(
             classify_install_flavour_from_path(std::path::Path::new(
-                r"C:\PROGRAM FILES\roomler-agent\roomler-agent.exe"
+                r"C:\PROGRAM FILES\meshharbor-agent\meshharbor-agent.exe"
             )),
             WindowsInstallFlavour::PerMachine
         );
@@ -6311,9 +6311,9 @@ mod tests {
         // ERROR_INSTALL_PACKAGE_REJECTED.
         let wizard_paths = [
             r"C:\Users\operator\Downloads\roomler-installer-0.3.0-rc.28-x86_64-pc-windows-msvc.exe",
-            r"C:\Users\operator\Desktop\roomler-installer.exe",
-            r"C:\Users\operator\AppData\Local\Temp\roomler-installer.exe",
-            r"D:\Installers\roomler-installer.exe",
+            r"C:\Users\operator\Desktop\meshharbor-installer.exe",
+            r"C:\Users\operator\AppData\Local\Temp\meshharbor-installer.exe",
+            r"D:\Installers\meshharbor-installer.exe",
         ];
         for p in wizard_paths {
             assert_eq!(
@@ -6337,7 +6337,7 @@ mod tests {
 
         let (launch, staged) = stage_watcher_exe(&fake_exe, &installer);
         assert!(staged, "copy into an existing staging dir must stage");
-        assert_eq!(launch, staging.join("roomlerd-watch.exe"));
+        assert_eq!(launch, staging.join("meshharbord-watch.exe"));
         assert_eq!(std::fs::read(&launch).unwrap(), b"MZ-fake");
 
         // A parent-less installer path has no staging dir — fall back
@@ -6356,15 +6356,15 @@ mod tests {
         // perUser MSI installs without UAC; /qn (fully silent) is
         // correct AND the historical default — must not regress.
         let argv = msiexec_argv(
-            std::path::Path::new(r"C:\Temp\roomler-agent.msi"),
+            std::path::Path::new(r"C:\Temp\meshharbor-agent.msi"),
             WindowsInstallFlavour::PerUser,
         );
         assert_eq!(argv[0], "/i");
-        assert_eq!(argv[1], r"C:\Temp\roomler-agent.msi");
+        assert_eq!(argv[1], r"C:\Temp\meshharbor-agent.msi");
         assert_eq!(argv[2], "/qn");
         assert_eq!(argv[3], "/norestart");
         assert_eq!(argv[4], "/l*v");
-        assert_eq!(argv[5], r"C:\Temp\roomler-agent.msi.log");
+        assert_eq!(argv[5], r"C:\Temp\meshharbor-agent.msi.log");
         assert_eq!(argv.len(), 6);
     }
 
@@ -6378,7 +6378,7 @@ mod tests {
         // original rc.18 reason for /qb! no longer applies. Locks
         // against a well-meaning revert.
         let argv = msiexec_argv(
-            std::path::Path::new(r"C:\Temp\roomler-agent-perMachine.msi"),
+            std::path::Path::new(r"C:\Temp\meshharbor-agent-perMachine.msi"),
             WindowsInstallFlavour::PerMachine,
         );
         assert_eq!(argv[2], "/qn");
@@ -6410,11 +6410,11 @@ mod tests {
         // first two tokens. Locks against a future refactor that
         // accidentally reorders.
         let argv = msiexec_argv(
-            std::path::Path::new(r"D:\roomler-agent.msi"),
+            std::path::Path::new(r"D:\meshharbor-agent.msi"),
             WindowsInstallFlavour::PerUser,
         );
         assert_eq!(argv[0], "/i");
-        assert_eq!(argv[1], r"D:\roomler-agent.msi");
+        assert_eq!(argv[1], r"D:\meshharbor-agent.msi");
     }
 
     // ----- rc.44 P4: msiexec_argv_with_properties (SystemContext) ----
@@ -6425,7 +6425,7 @@ mod tests {
         // /norestart shape. Locks the wire format for the WiX CA's
         // condition (`ENABLE_SYSTEM_CONTEXT="1"`).
         let argv = msiexec_argv_with_properties(
-            std::path::Path::new(r"C:\Temp\roomler-agent-perMachine.msi"),
+            std::path::Path::new(r"C:\Temp\meshharbor-agent-perMachine.msi"),
             WindowsInstallFlavour::PerMachine,
             &[("ENABLE_SYSTEM_CONTEXT", "1")],
         );
@@ -6447,7 +6447,7 @@ mod tests {
         // (`ENABLE_SYSTEM_CONTEXT="0"`) matches. Verifies the explicit
         // value survives the formatter.
         let argv = msiexec_argv_with_properties(
-            std::path::Path::new(r"C:\Temp\roomler-agent-perMachine.msi"),
+            std::path::Path::new(r"C:\Temp\meshharbor-agent-perMachine.msi"),
             WindowsInstallFlavour::PerMachine,
             &[("ENABLE_SYSTEM_CONTEXT", "0")],
         );
@@ -6459,7 +6459,7 @@ mod tests {
         // When the wizard passes no properties (perUser flavour), the
         // wrapper must produce byte-identical output to the base
         // msiexec_argv — no trailing whitespace, no extra tokens.
-        let p = std::path::Path::new(r"C:\Temp\roomler-agent.msi");
+        let p = std::path::Path::new(r"C:\Temp\meshharbor-agent.msi");
         let base = msiexec_argv(p, WindowsInstallFlavour::PerUser);
         let with_empty = msiexec_argv_with_properties(p, WindowsInstallFlavour::PerUser, &[]);
         assert_eq!(base, with_empty);
@@ -6471,7 +6471,7 @@ mod tests {
         // in a future cycle (e.g. ENABLE_SYSTEM_CONTEXT=1 +
         // SYSTEM_CONTEXT_TIMEOUT_SECS=180). Order must be preserved.
         let argv = msiexec_argv_with_properties(
-            std::path::Path::new(r"C:\Temp\roomler-agent-perMachine.msi"),
+            std::path::Path::new(r"C:\Temp\meshharbor-agent-perMachine.msi"),
             WindowsInstallFlavour::PerMachine,
             &[("A", "1"), ("B", "two"), ("C", "3")],
         );

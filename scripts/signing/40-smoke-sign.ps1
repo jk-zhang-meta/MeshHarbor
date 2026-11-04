@@ -90,9 +90,9 @@ if (-not $File) {
     # reports "CN=Microsoft Windows" instead of the actual signer (verified
     # the hard way, 2026-08-22). A roomler build has no catalog entry.
     $candidates = @(
-        (Join-Path $PSScriptRoot '..\..\target\release\roomler.exe'),
-        (Join-Path $PSScriptRoot '..\..\target\release\roomlerd.exe'),
-        (Join-Path $PSScriptRoot '..\..\target\debug\roomler.exe')
+        (Join-Path $PSScriptRoot '..\..\target\release\meshharbor.exe'),
+        (Join-Path $PSScriptRoot '..\..\target\release\meshharbord.exe'),
+        (Join-Path $PSScriptRoot '..\..\target\debug\meshharbor.exe')
     )
     $src = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
     $File = Join-Path $stage 'smoke-target.exe'

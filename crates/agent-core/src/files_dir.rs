@@ -762,7 +762,7 @@ mod tests {
             r"C:\Windows\Temp",
             r"c:/windows/temp",
             r"C:\Windows",
-            r"C:\Program Files\Roomler\drops",
+            r"C:\Program Files\MeshHarbor\drops",
             r"C:\Program Files (x86)\x",
         ] {
             let err = resolve(bad, &alice(), &win()).unwrap_err();
@@ -847,7 +847,7 @@ mod tests {
             r"D:\Drops",
             r"C:\Users\bob\Drops",
             r"C:\Users",
-            r"C:\ProgramData\roomler\drops",
+            r"C:\ProgramData\meshharbor\drops",
             r"\\nas\public\drops",
         ] {
             let err = resolve(bad, &sys, &win()).unwrap_err();

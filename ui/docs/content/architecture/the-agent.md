@@ -46,7 +46,7 @@ A Windows service (`LocalSystem`) or a scheduled task, depending on the install
 mode you chose. The system service is the one that can reach the lock screen and
 the pre-logon desktop.
 
-Alongside it: `roomler.exe` — a small shim that re-execs the agent's own command
+Alongside it: `meshharbor.exe` — a small shim that re-execs the agent's own command
 surface, so the CLI and the daemon can never disagree about their version — and
 `meshharbor-desktop.exe`, the tray companion.
 

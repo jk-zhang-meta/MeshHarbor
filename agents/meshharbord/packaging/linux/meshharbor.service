@@ -10,7 +10,7 @@ PartOf=graphical-session.target
 [Service]
 Type=simple
 # RETIRED-NAME-ANCHOR(3): a "was X" line has to name X.
-# P3d Slice B: the daemon binary is now `roomlerd` (was `roomler-agent`).
+# P3d Slice B: the daemon binary is now `meshharbord` (was `meshharbor-agent`).
 ExecStart=/usr/bin/meshharbord run
 # `always`, not `on-failure`: a self-update exits 0 on purpose (the agent
 # hands off to the installer and shuts down cleanly), and `on-failure`
@@ -27,10 +27,10 @@ ExecStart=/usr/bin/meshharbord run
 Restart=always
 RestartSec=5
 RestartPreventExitStatus=7 8
-# RETIRED-NAME-ANCHOR: `roomler_agent` is the pre-FR-21 tracing target. Kept
+# RETIRED-NAME-ANCHOR: `meshharbor_agent` is the pre-FR-21 tracing target. Kept
 # alongside the new one so this unit reads correctly on a daemon from either
 # side of the rename; agent-core::logging mirrors it for units already on disk.
-Environment=RUST_LOG=roomlerd=info,warn
+Environment=RUST_LOG=meshharbord=info,warn
 
 # Sandboxing — conservative defaults appropriate for a user unit.
 NoNewPrivileges=true
@@ -38,8 +38,8 @@ ProtectSystem=strict
 ProtectHome=read-only
 # RETIRED-NAME-ANCHOR(10): systemd must whitelist BOTH trees or it denies an upgraded
 # host its own.
-# P3d Slice B: the appdirs resolver (src/appdirs.rs) uses the NEW `roomler`
-# app segment on fresh installs but keeps the OLD `roomler-agent` tree when a
+# P3d Slice B: the appdirs resolver (src/appdirs.rs) uses the NEW `meshharbor`
+# app segment on fresh installs but keeps the OLD `meshharbor-agent` tree when a
 # pre-rename host already has one. Whitelist BOTH so neither a fresh install
 # nor an upgraded host is blocked by ProtectHome=read-only.
 # RETIRED-NAME-ANCHOR: dropping the legacy pair makes systemd deny the daemon its own
@@ -57,11 +57,11 @@ ProtectHome=read-only
 # Either way this unit then runs with NO sandbox at all, which is why a fresh
 # 24.04 guest started it fine (field-verified: the daemon shared the
 # session's mount namespace, no read-only /home). The NEW pair keeps
-# no prefix on purpose: `roomlerd enroll` creates both (the config, and the
+# no prefix on purpose: `meshharbord enroll` creates both (the config, and the
 # log folder), and a unit started before enrolling should fail naming the
 # missing folder rather than run with it read-only.
-ReadWritePaths=%h/.config/meshharbor %h/.local/share/meshharbor -%h/.config/roomler-agent -%h/.local/share/roomler-agent
-# FR-85 P2c — the recorder's default folder (`~/Videos/Roomler`). Everything
+ReadWritePaths=%h/.config/meshharbor %h/.local/share/meshharbor -%h/.config/meshharbor-agent -%h/.local/share/meshharbor-agent
+# FR-85 P2c — the recorder's default folder (`~/Videos/MeshHarbor`). Everything
 # else under home stays read-only: a folder chosen elsewhere is refused by the
 # recorder's test write, which falls back and names why in the Recordings
 # view. `-`: a host without ~/Videos must still start (see above). A

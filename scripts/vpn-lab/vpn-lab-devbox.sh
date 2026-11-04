@@ -10,7 +10,7 @@ set -u
 OUT="${1:?out dir}"; DUR="${2:?duration seconds}"; shift 2
 TARGETS=("${@:-100.65.4.28 100.65.0.5}")
 [ $# -eq 0 ] && TARGETS=(100.65.4.28 100.65.0.5)
-ROOMLER="/c/Program Files/Roomler/roomler.exe"
+ROOMLER="/c/Program Files/MeshHarbor/meshharbor.exe"
 LAB_TARGET="${LAB_TARGET:-winhost-a}"
 mkdir -p "$OUT"
 

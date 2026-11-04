@@ -566,10 +566,10 @@ mod tests {
 
     #[test]
     fn build_cmdline_no_args_quotes_exe() {
-        let exe = PathBuf::from(r"C:\Program Files\Roomler\roomlerd.exe");
+        let exe = PathBuf::from(r"C:\Program Files\MeshHarbor\meshharbord.exe");
         let empty: [&str; 0] = [];
         let cmd = build_cmdline(&exe, &empty);
-        assert_eq!(cmd, r#""C:\Program Files\Roomler\roomlerd.exe""#);
+        assert_eq!(cmd, r#""C:\Program Files\MeshHarbor\meshharbord.exe""#);
     }
 
     #[test]

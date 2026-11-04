@@ -3,7 +3,7 @@
 # (already-released files cannot be renamed, and the updater's picker matches
 # those strings) or a FROZEN install path — the RPATH-bound
 # /usr/lib/roomler-agent, the macOS .app bundle whose name keys the TCC grants,
-# or the inert roomler-agent.exe alias the deployed fleet still resolves.
+# or the inert meshharbor-agent.exe alias the deployed fleet still resolves.
 # INVARIANT: a retired name here must be a published artifact name or a path a
 # real host has. If you add one that is neither, that is a bug, not a new
 # exemption. docs/fr/FR-21
@@ -15,7 +15,7 @@ name: Release roomler-tunnel
 # (tar.gz / zip) per target, plus a `.deb` per Linux arch for Debian / Ubuntu
 # installs.
 #
-# The Windows `roomler.exe` is Authenticode-signed via
+# The Windows `meshharbor.exe` is Authenticode-signed via
 # ./.github/actions/sign-windows (the signing job carries `environment:
 # release` — the federated credential is bound to that GitHub environment);
 # the macOS universal binary is Developer-ID-signed + notarised (NOT stapled
@@ -401,7 +401,7 @@ jobs:
           save-if: ${{ github.ref_type != 'tag' }}
       - name: Build roomler-tunnel (release)
         shell: pwsh
-        # Static CRT: the standalone zip's roomler.exe runs from any
+        # Static CRT: the standalone zip's meshharbor.exe runs from any
         # dir on arbitrary fresh machines -- it must not assume the
         # MSVC runtime (vcruntime140.dll) exists there (field report
         # 2026-07-28). Pure-Rust graph, so +crt-static is safe. The
@@ -413,11 +413,11 @@ jobs:
       # Sign before zipping so the EXE the operator extracts is signed. A zip
       # cannot itself carry an Authenticode signature, so the binary inside is
       # the only thing that can vouch for the download.
-      - name: Sign roomler.exe
+      - name: Sign meshharbor.exe
         id: sign
         uses: ./.github/actions/sign-windows
         with:
-          files:                    target\release\roomler.exe
+          files:                    target\release\meshharbor.exe
           description:              'Roomler CLI'
           mode:                     ${{ github.event.inputs.signing_mode || 'auto' }}
           require:                  ${{ needs.validate-version.outputs.is_release == 'true' || github.event.inputs.require_signing == 'true' }}
@@ -437,13 +437,13 @@ jobs:
           $version = "${{ needs.validate-version.outputs.version }}"
           $name = "roomler-tunnel-$version-x86_64-pc-windows-msvc"
           New-Item -ItemType Directory -Path "$env:RUNNER_TEMP\$name" -Force | Out-Null
-          # P3d Slice C: legacy `roomler-tunnel.exe` in-zip alias retired — rc.194+
-          # self-updaters and the setup wizard both extract `roomler.exe` first.
+          # P3d Slice C: legacy `meshharbor-tunnel.exe` in-zip alias retired — rc.194+
+          # self-updaters and the setup wizard both extract `meshharbor.exe` first.
           # (A pre-rc.194 CLI waking from dormancy can still RUN; only its
           # self-update would need a manual refresh — none live in the fleet,
           # verified against prod tunnel_clients 2026-07-22.) Zip asset name
           # keeps the `roomler-tunnel-…zip` prefix (updater/proxy prefix-agnostic).
-          Copy-Item target\release\roomler.exe "$env:RUNNER_TEMP\$name\"
+          Copy-Item target\release\meshharbor.exe "$env:RUNNER_TEMP\$name\"
           if (Test-Path LICENSE) { Copy-Item LICENSE "$env:RUNNER_TEMP\$name\" }
           if (Test-Path README.md) { Copy-Item README.md "$env:RUNNER_TEMP\$name\" }
           Compress-Archive -Path "$env:RUNNER_TEMP\$name\*" -DestinationPath "$name.zip"
@@ -521,7 +521,7 @@ jobs:
             - Linux x86_64: `.tar.gz` or `.deb`
             - Linux aarch64: `.tar.gz` or `.deb`
             - macOS universal (x86_64 + aarch64): `.tar.gz`
-            - Windows x86_64: `.zip` containing `roomler.exe`
+            - Windows x86_64: `.zip` containing `meshharbor.exe`
 
             **First-use:**
             1. Extract the archive.

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (C) 2026 G ROX EOOD
-//! `roomler.exe` on daemon hosts — a launcher that re-execs `meshharbord cli`.
+//! `meshharbor.exe` on daemon hosts — a launcher that re-execs `meshharbord cli`.
 //!
 //! # Why
 //!
@@ -9,7 +9,7 @@
 //! was CLI-specific code: `cargo bloat` puts `meshharbor_cli` + its bin at
 //! 1.16 MiB of a 15.0 MiB `.text`, and everything else (std, the webrtc
 //! family, tunnel_core, tokio, rustls, reqwest, quinn, clap) is a second copy
-//! of crates `roomlerd.exe` already links. It also cost the Windows MSI job a
+//! of crates `meshharbord.exe` already links. It also cost the Windows MSI job a
 //! serial 143 s `cargo build -p meshharbor-cli` with a different feature set.
 //!
 //! So the daemon now owns that command surface (`meshharbord cli <args>` →
@@ -157,7 +157,7 @@ fn main() -> ! {
 }
 
 #[cfg(target_os = "windows")]
-const DAEMON_FILE_NAME: &str = "roomlerd.exe";
+const DAEMON_FILE_NAME: &str = "meshharbord.exe";
 #[cfg(not(target_os = "windows"))]
 const DAEMON_FILE_NAME: &str = "meshharbord";
 
@@ -165,4 +165,4 @@ const DAEMON_FILE_NAME: &str = "meshharbord";
 /// and CI asserts the launchd plists point here — FR-46 P5b moved all three
 /// together, which is the only way a bundle rename is safe.
 #[cfg(target_os = "macos")]
-const MACOS_BUNDLE_DAEMON: &str = "/Library/Roomler/roomlerd.app/Contents/MacOS/roomlerd";
+const MACOS_BUNDLE_DAEMON: &str = "/Library/Roomler/meshharbord.app/Contents/MacOS/roomlerd";

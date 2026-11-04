@@ -1239,7 +1239,7 @@ pub fn cmd_check_update() -> Result<String, String> {
 /// On Windows the daemon spawns msiexec and exits, so there is nothing to wait
 /// for and the detached spawn is right. Everywhere else the command RETURNS,
 /// and on macOS what it returns is the part that matters: a non-root
-/// invocation queues the root update helper (`com.roomler.update`) and prints
+/// invocation queues the root update helper (`fans.itachi.meshharbor.update`) and prints
 /// where to watch. Discarding that left the button looking like it had done
 /// nothing — on the one platform where it had in fact done the right thing.
 #[tauri::command]
@@ -2565,7 +2565,7 @@ fn classify_service_state(task: Option<&str>, scm: Option<&str>) -> (String, boo
 // in-flight install still resolve a daemon. See docs/fr/FR-21.
 pub(crate) fn agent_exe_path() -> Result<PathBuf, String> {
     let (new_name, old_name) = if cfg!(windows) {
-        ("roomlerd.exe", "roomler-agent.exe")
+        ("meshharbord.exe", "meshharbor-agent.exe")
     } else {
         ("roomlerd", "roomler-agent")
     };
@@ -2589,7 +2589,7 @@ pub(crate) fn agent_exe_path() -> Result<PathBuf, String> {
     // near this app.
     //
     // The sibling probe above is a Windows assumption. The macOS .pkg puts the
-    // companion in `/Applications/Roomler.app/Contents/MacOS/` and the daemon
+    // companion in `/Applications/MeshHarbor.app/Contents/MacOS/` and the daemon
     // in `/Library/Roomler/…` with a `/usr/local/bin/roomlerd` symlink, so the
     // probe always missed — and the PATH fallback missed too, because a
     // LaunchAgent inherits launchd's minimal PATH (`/usr/bin:/bin:/usr/sbin:
@@ -2629,7 +2629,7 @@ fn installed_daemon_candidates() -> Vec<PathBuf> {
             // The bundle itself, if the symlink is missing. Every launchd plist
             // and TCC grant keys on this path, so it moves only with a rename that
             // moves the plists too (FR-46 P5b).
-            PathBuf::from("/Library/Roomler/roomlerd.app/Contents/MacOS/roomlerd"),
+            PathBuf::from("/Library/Roomler/meshharbord.app/Contents/MacOS/roomlerd"),
         ]
     }
     #[cfg(all(unix, not(target_os = "macos")))]
@@ -2973,7 +2973,7 @@ mod tests {
 
     #[test]
     fn save_error_mentions_elevation_only_for_machine_global() {
-        let p = Path::new("C:/ProgramData/roomler/config.toml");
+        let p = Path::new("C:/ProgramData/meshharbor/config.toml");
         let elevated = explain_save_error("denied", p, true);
         assert!(
             elevated.contains("administrator"),

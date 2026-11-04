@@ -77,7 +77,7 @@ pub const CHUNK_BYTES: usize = u16::MAX as usize;
 /// rc.66 bump: 256 → 4096. Field-test 2026-05-27 with TDS bulk read
 /// stalled at ~50 KB/s effective throughput while SCTP was happily
 /// acknowledging at 1-2 MB/s; arwnd closed monotonically and
-/// `roomler-tunnel.exe` was at 0% CPU (so not busy-loop, not lock
+/// `meshharbor-tunnel.exe` was at 0% CPU (so not busy-loop, not lock
 /// contention — purely I/O-bound waiting for the local app to
 /// drain). With 4096 × ~64 KiB chunks the per-flow buffer ceiling
 /// is ~256 MiB; a momentary slow consumer no longer cascades back

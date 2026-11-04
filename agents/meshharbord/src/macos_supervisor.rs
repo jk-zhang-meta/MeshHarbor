@@ -77,7 +77,7 @@ pub struct Inputs {
     pub is_root: bool,
     /// The console user's uid, or `None` at the login window / no session.
     pub console_uid: Option<u32>,
-    /// Whether `gui/<uid>/com.roomler.agent` is loaded — i.e. launchd already
+    /// Whether `gui/<uid>/fans.itachi.meshharbor.agent` is loaded — i.e. launchd already
     /// owns a worker for this session.
     pub launch_agent_loaded: bool,
     /// Consecutive workers that exited faster than [`HEALTHY_RUN`]. A worker
@@ -291,7 +291,7 @@ mod imp {
 
     /// The LaunchAgent label the postinstall bootstraps. If this is loaded,
     /// we stand down — see the module docs.
-    const AGENT_LABEL: &str = "com.roomler.agent";
+    const AGENT_LABEL: &str = "fans.itachi.meshharbor.agent";
 
     /// The console user's uid, or `None` when nobody is logged in.
     ///
@@ -304,7 +304,7 @@ mod imp {
         (uid != 0).then_some(uid)
     }
 
-    /// Is `gui/<uid>/com.roomler.agent` loaded? Exit status only — the output
+    /// Is `gui/<uid>/fans.itachi.meshharbor.agent` loaded? Exit status only — the output
     /// is launchd's own formatting and we depend on none of it.
     fn launch_agent_loaded(uid: u32) -> bool {
         Command::new("launchctl")

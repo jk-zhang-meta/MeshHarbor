@@ -191,7 +191,7 @@ describe('enrollCommands', () => {
     const macos = enrollCommands('agent', ORIGIN, TOKEN).find((o) => o.os === 'macos')!
     const manual = macos.blocks.find((b) => b.id.endsWith('-manual'))!
     expect(manual.command).toContain(
-      '/Library/Roomler/roomlerd.app/Contents/MacOS/roomlerd enroll',
+      '/Library/Roomler/meshharbord.app/Contents/MacOS/roomlerd enroll',
     )
     expect(manual.command).not.toMatch(/^roomlerd /)
   })

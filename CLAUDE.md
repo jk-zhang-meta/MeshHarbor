@@ -774,7 +774,7 @@ off the UAC prompt.
 ⚠️ The legacy wizards `agents/meshharbor-installer` (rc.28) and
 `agents/meshharbor-tunnel-installer` (rc.59) were retired in P4c-2. The tunnel CLI's
 `self-update` is **kept** — it is the sole updater for tunnel-only hosts ("one
-updater" is per-role; daemon hosts get `roomler.exe` refreshed by the MSI).
+updater" is per-role; daemon hosts get `meshharbor.exe` refreshed by the MSI).
 
 ## Known Issues (OPEN only)
 

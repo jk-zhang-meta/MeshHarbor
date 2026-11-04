@@ -83,7 +83,7 @@ Every line below was read on `origin/master` at `861d4557`.
    — `tauri-2.11.2/src/app.rs:2412`, `agents/meshharbor-desktop/src/tray.rs:53`
 7. **One bug breaks most pages on macOS and Linux: `agent_exe_path()`.** It
    probes for a *sibling* `roomlerd`, then falls back to a bare name on `PATH`.
-   On macOS the companion is `/Applications/Roomler.app/Contents/MacOS/`, the
+   On macOS the companion is `/Applications/MeshHarbor.app/Contents/MacOS/`, the
    daemon is `/usr/local/bin/roomlerd`, and a LaunchAgent's `PATH` excludes
    `/usr/local/bin` — hence the reported
    `Spawning self-update: No such file or directory (os error 2)`. The same
@@ -93,7 +93,7 @@ Every line below was read on `origin/master` at `861d4557`.
    corrected during implementation.** The reported
    `Spawning self-update: No such file or directory (os error 2)` made this
    look like a second, independent macOS defect. It is not: `self_update_cmd`
-   has queued the root `com.roomler.update` helper for a non-root macOS caller
+   has queued the root `fans.itachi.meshharbor.update` helper for a non-root macOS caller
    since FR-5 (`main.rs:3360`), so the mechanism was already correct and
    finding 7 alone accounts for the error. What WAS wrong is that
    `cmd_apply_update` spawned detached and discarded stdout, so the daemon's
@@ -577,7 +577,7 @@ arches.
 
 ### 2026-09-25 — AC4 on the WSL node: the local floor holds against a server `auto`
 
-Device **NEO16-WSL** (display name; Linux, the root `roomlerd.service` unit,
+Device **NEO16-WSL** (display name; Linux, the root `meshharbord.service` unit,
 virtual desktop, no companion), API `0.4.101`. The controller is the device's
 **owner**, so `resolve_session_authz`
 (`crates/modules/remote/src/controller.rs:448`) resolves `auto` by the owner

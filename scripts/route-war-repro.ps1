@@ -31,7 +31,7 @@
 
 .EXAMPLE
   # From another mesh node, on a host running the build under test:
-  roomler exec <device> "& 'C:\Program Files\Roomler\scripts\route-war-repro.ps1' -Seconds 180"
+  roomler exec <device> "& 'C:\Program Files\MeshHarbor\scripts\route-war-repro.ps1' -Seconds 180"
 
 .NOTES
   Read the result as a DIFF of two `roomler status` readings, never an

@@ -42,9 +42,9 @@ pub(crate) fn started(pid: u32) -> Option<String> {
 /// there at all. `None`: no such process, or more shells than any wrapper.
 ///
 /// FR-97 P4c — on Windows Claude Code runs a hook through Git Bash or
-/// PowerShell, and the installed `roomler.exe` is a shim that starts
-/// `roomlerd.exe cli` and waits for it, so the shim stands there too:
-/// `claude.exe → bash.exe → roomler.exe → roomlerd.exe`. Windows keeps a
+/// PowerShell, and the installed `meshharbor.exe` is a shim that starts
+/// `meshharbord.exe cli` and waits for it, so the shim stands there too:
+/// `claude.exe → bash.exe → meshharbor.exe → meshharbord.exe`. Windows keeps a
 /// process's parent pid after that parent ends, so a "parent" created after
 /// its child is another process that took a dead one's pid, and is no one's
 /// terminal ([`imp::parent`]).
@@ -73,8 +73,8 @@ const WRAPPERS: [&str; 9] = [
     "cmd.exe",
     "powershell.exe",
     "pwsh.exe",
-    "roomler.exe",
-    "roomler-shim.exe",
+    "meshharbor.exe",
+    "meshharbor-shim.exe",
 ];
 
 fn is_wrapper(name: &str) -> bool {

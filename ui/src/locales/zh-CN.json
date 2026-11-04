@@ -1610,7 +1610,7 @@
       "days": "{n} 天",
       "hours": "{n} 小时",
       "tooltip": "v{version} 落后 {behind}：{first} 已发布 {ago}，此设备在线但尚未安装。",
-      "remedyLinux": "0.4.138 之前按用户安装的 Linux 客户端无法自行更新。请在设备上手动安装一次当前版本（sudo apt install ./roomlerd.deb、软件中心，或重新运行安装脚本），之后它会自动更新。如果是系统安装且停止了更新，请在设备上检查 'roomler config ls' 中的 auto_update 和日志（'roomler logs --grep update'）。",
+      "remedyLinux": "0.4.138 之前按用户安装的 Linux 客户端无法自行更新。请在设备上手动安装一次当前版本（sudo apt install ./meshharbord.deb、软件中心，或重新运行安装脚本），之后它会自动更新。如果是系统安装且停止了更新，请在设备上检查 'roomler config ls' 中的 auto_update 和日志（'roomler logs --grep update'）。",
       "remedyOther": "请在设备上检查 'roomler config ls' 中的 auto_update 和日志（'roomler logs --grep update'）。"
     },
     "cred": {

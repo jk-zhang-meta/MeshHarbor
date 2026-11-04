@@ -57,7 +57,7 @@ flowchart TD
 | **24 h** | A healthy online device takes a release within about 6.5 h. The root daemon checks every 4 h (`auto-updater armed interval_h=4`). The per-user helper's timer runs every 6 h, with up to 30 min of random delay, and a push reaches it at once. 24 h leaves room for a host that slept for part of the day |
 | **Online only.** | An offline device installs what it missed at its next start. A chip there would say "not updating" about a machine that is merely off, which the presence column already shows |
 | **No chip when anything is unknown.** | A version that does not parse, or a release list that failed to load, shows nothing. The absence of a signal must never invent a problem on a healthy device |
-| **The remedy by OS.** | Linux: a per-user install made before 0.4.138 needs one install by a person (`sudo apt install ./roomlerd.deb`, the Software app, or a re-run of the install script), after which it updates itself; a system install that stopped needs `auto_update` and its log checked. Windows and macOS: `auto_update` and the log |
+| **The remedy by OS.** | Linux: a per-user install made before 0.4.138 needs one install by a person (`sudo apt install ./meshharbord.deb`, the Software app, or a re-run of the install script), after which it updates itself; a system install that stopped needs `auto_update` and its log checked. Windows and macOS: `auto_update` and the log |
 | **The count is capped by the list.** | The endpoint returns the newest releases only. A device older than all of them is "N+ releases behind" |
 
 Pieces (all UI):

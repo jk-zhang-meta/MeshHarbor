@@ -61,11 +61,11 @@ param(
     # arch + the -permachine- infix, never the prefix.
     # Path to the perMachine roomler-agent MSI. Default: the per-tag
     # release asset name pattern from .github/workflows/release-agent.yml.
-    [string]$MsiPath = 'C:\Users\Public\Downloads\roomler-agent-perMachine.msi',
+    [string]$MsiPath = 'C:\Users\Public\Downloads\meshharbor-agent-perMachine.msi',
 
     # Override the agent EXE path. Defaults to the perMachine install
     # location.
-    [string]$AgentExe = 'C:\Program Files\Roomler\roomlerd.exe',
+    [string]$AgentExe = 'C:\Program Files\MeshHarbor\meshharbord.exe',
 
     # How many tail lines to print per log file in Logs.
     [int]$LogTail = 120,
@@ -252,13 +252,13 @@ function Action-SystemSpawn {
     Require-AgentExe
     Write-Host '== Looking for SYSTEM-context worker ======================' -ForegroundColor Cyan
 
-    # Find roomlerd.exe processes whose owner is NT AUTHORITY\SYSTEM
+    # Find meshharbord.exe processes whose owner is NT AUTHORITY\SYSTEM
     # AND whose session id is non-zero. The supervisor itself (also
-    # roomlerd.exe) runs as SYSTEM in session 0; we want the
+    # meshharbord.exe) runs as SYSTEM in session 0; we want the
     # spawned WORKER which lives in an interactive session.
-    $procs = Get-CimInstance Win32_Process -Filter "Name='roomlerd.exe'"
+    $procs = Get-CimInstance Win32_Process -Filter "Name='meshharbord.exe'"
     if (-not $procs) {
-        Write-Host 'No roomlerd.exe processes found. SCM service running?' -ForegroundColor Yellow
+        Write-Host 'No meshharbord.exe processes found. SCM service running?' -ForegroundColor Yellow
         return
     }
     $hits = @()

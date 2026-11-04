@@ -34,7 +34,7 @@ host (a field host). All PowerShell snippets must run from an
 ## 1. Confirm the host is on rc.52+
 
 ```powershell
-& "C:\Program Files\Roomler\roomlerd.exe" --version
+& "C:\Program Files\MeshHarbor\meshharbord.exe" --version
 # expect: 0.3.0-rc.52 (or later)
 ```
 
@@ -42,7 +42,7 @@ If older, force the update (must be from an **elevated** prompt — the
 auto-updater needs admin to write `%ProgramFiles%`):
 
 ```powershell
-& "C:\Program Files\Roomler\roomlerd.exe" self-update
+& "C:\Program Files\MeshHarbor\meshharbord.exe" self-update
 ```
 
 (If the host crash-loops too fast for the worker's in-process updater
@@ -56,7 +56,7 @@ manually.)
 This is the **crux** of the fix.
 
 ```powershell
-Test-Path "C:\ProgramData\roomler\roomler\config.toml"
+Test-Path "C:\ProgramData\meshharbor\roomler\config.toml"
 # expect: True
 ```
 
@@ -85,7 +85,7 @@ enrollment token from the admin UI first** — this counts as a new
 enrollment for that host:
 
 ```powershell
-& "C:\Program Files\Roomler\roomlerd.exe" enroll `
+& "C:\Program Files\MeshHarbor\meshharbord.exe" enroll `
     --server https://roomler.ai `
     --token <FRESH-ENROLLMENT-TOKEN> `
     --name <HOST-NAME> `
@@ -103,7 +103,7 @@ your admin token can with elevation):
 
 ```powershell
 $Src = "C:\Users\<the-enrolling-user>\AppData\Roaming\roomler\roomler\config\config.toml"
-$Dst = "C:\ProgramData\roomler\roomler\config.toml"
+$Dst = "C:\ProgramData\meshharbor\roomler\config.toml"
 New-Item -ItemType Directory -Force -Path (Split-Path $Dst) | Out-Null
 Copy-Item $Src $Dst
 ```
@@ -118,7 +118,7 @@ preserves it; the server's `agents` row stays the same.
 The Agent JWT inside `config.toml` must not be world-readable.
 
 ```powershell
-icacls "C:\ProgramData\roomler"
+icacls "C:\ProgramData\meshharbor"
 # expect ONLY entries for:
 #   NT-AUTORITÄT\SYSTEM          (F)(OI)(CI)   — well-known SID S-1-5-18
 #   VORDEFINIERT\Administratoren (F)(OI)(CI)   — well-known SID S-1-5-32-544
@@ -131,7 +131,7 @@ ran (typical for an auto-update path rather than a fresh wizard
 install). Apply it manually — one command:
 
 ```powershell
-icacls "C:\ProgramData\roomler" /inheritance:r `
+icacls "C:\ProgramData\meshharbor" /inheritance:r `
        /grant:r "*S-1-5-18:(OI)(CI)F" `
        /grant:r "*S-1-5-32-544:(OI)(CI)F"
 ```
@@ -140,7 +140,7 @@ Verify a non-admin user truly cannot read it:
 
 ```powershell
 # From a NON-elevated PowerShell signed in as a normal user:
-Get-Content "C:\ProgramData\roomler\roomler\config.toml"
+Get-Content "C:\ProgramData\meshharbor\roomler\config.toml"
 # expect: "Access to the path … is denied"
 ```
 
@@ -165,16 +165,16 @@ couldn't find a config before logon.
 ## 5. Confirm in the agent log
 
 The service-supervisor log lives at
-`C:\ProgramData\roomler\roomler\service-logs\roomlerd-service.log.<date>`
+`C:\ProgramData\meshharbor\roomler\service-logs\roomlerd-service.log.<date>`
 (or fetch via the browser's log viewer panel).
 
 ### Healthy rc.52 — these lines should be present:
 
 ```
 config: resolved load path
-    config_path=C:\ProgramData\roomler\roomler\config.toml
+    config_path=C:\ProgramData\meshharbor\roomler\config.toml
     is_system_context=true
-    machine_global=C:\ProgramData\roomler\roomler\config.toml
+    machine_global=C:\ProgramData\meshharbor\roomler\config.toml
 supervisor: M3 A1 auto-swap (user-context -> SystemContext) is ENABLED
 supervisor: spawned SYSTEM-context worker via winlogon-token
 ```
@@ -204,7 +204,7 @@ connects — no respawn churn.
 | `enroll --machine-global` → "requires elevated terminal" | not running as admin | re-open PowerShell as Administrator |
 | Worker starts post-logon but crash-loops pre-logon | self-heal hasn't run yet (needs one ≥5 min healthy logged-in run) OR use step 2b directly | step 2a wait, or step 2b explicit |
 | `Users` appears in `icacls` output | rc.52 dir-DACL wasn't applied (typical for auto-update path) | run the manual `icacls` from step 3 |
-| `crash_recorder: suppressed sidecar write … reason=HardCapReached` flooding the log | `%PROGRAMDATA%\roomler\roomler\crashes\` filled up (100 file cap) while crash-looping; uploader can't drain because worker never starts | step 2 first (fixes the loop), then `Remove-Item C:\ProgramData\roomler\roomler\crashes\*.json` to clear the backlog |
+| `crash_recorder: suppressed sidecar write … reason=HardCapReached` flooding the log | `%PROGRAMDATA%\roomler\roomler\crashes\` filled up (100 file cap) while crash-looping; uploader can't drain because worker never starts | step 2 first (fixes the loop), then `Remove-Item C:\ProgramData\meshharbor\roomler\crashes\*.json` to clear the backlog |
 
 ---
 
@@ -220,6 +220,6 @@ Any of these means rc.52 hasn't actually fixed this host:
 - A non-admin local user can read `config.toml` (token leak — step 3
   ACL is missing).
 - `machine_id` differs from the server's stored row for this agent
-  (run `roomlerd --config C:\ProgramData\roomler\roomler\config.toml`
+  (run `roomlerd --config C:\ProgramData\meshharbor\roomler\config.toml`
   through any inspect path, OR compare the server-side `agents`
   document `machine_id` field).

@@ -1,4 +1,4 @@
-roomlerd for Debian/Ubuntu
+meshharbord for Debian/Ubuntu
 ==========================
 
 The daemon binary is /usr/bin/meshharbord.
@@ -15,7 +15,7 @@ twice and they fight over the same identity.
                             | meshharbor.service | meshharbord.service
   --------------------------+-----------------+------------------
   screen capture + input    | yes             | the person on screen, else opt-in
-  overlay mesh (roomler0)   | no              | yes (TUN needs CAP_NET_ADMIN)
+  overlay mesh (meshharbor0)   | no              | yes (TUN needs CAP_NET_ADMIN)
   unattended self-update    | yes (helper)    | yes
   starts before login       | no              | yes
 
@@ -33,7 +33,7 @@ Desktop host (systemd --user)
 
   # 3. Optional smoke test — needs an active graphical session (X11, or
   #    Wayland since 0.4.130); a tty login won't capture anything.
-  RUST_LOG=roomlerd=debug,webrtc=info meshharbord run
+  RUST_LOG=meshharbord=debug,webrtc=info meshharbord run
 
   # 4. Updates (FR-96): this daemon runs as you and cannot write /usr, so a
   #    ROOT helper installs them for it. Installing this package turned it on
@@ -69,7 +69,7 @@ unit starts at boot before any login. Enroll against the SAME path you run
 with — `enroll` creates the directory and writes the file 0600 (it holds a
 bearer token):
 
-  sudo roomlerd --config /etc/meshharbor/config.toml \
+  sudo meshharbord --config /etc/meshharbor/config.toml \
        enroll --server https://roomler.ai \
               --token <paste-enrollment-jwt> \
               --name "$(hostname)"
@@ -98,7 +98,7 @@ persists its WireGuard key on the first overlay-enabled start.
 
 The OS TUN needs CAP_NET_ADMIN, so this works under meshharbord.service (root)
 and not under meshharbor.service. On a host that cannot run as root, set
-ROOMLERD_OVERLAY_NETSTACK_SOCKS=<port> for the userspace netstack
+MESHHARBORD_OVERLAY_NETSTACK_SOCKS=<port> for the userspace netstack
 instead: outbound mesh access through a loopback SOCKS5 proxy, no TUN and no
 routes — but other nodes cannot reach services on this host.
 
@@ -138,6 +138,6 @@ Until then the viewer names what is missing and these two commands. It never
 shows a black screen or calls a desktop host headless.
 
 What each desktop, install and session state gives, and every message the
-viewer can show: docs/wayland.md in the roomler-ai repository.
+viewer can show: docs/wayland.md in the meshharbor repository.
 
 -- Goran Jovanov <goran.jovanov@gmail.com>  2026

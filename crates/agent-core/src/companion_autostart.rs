@@ -8,7 +8,7 @@
 //! | Windows perMachine | `HKLM\…\Run\Roomler Desktop` | the elevated `service install --as-service` (MSI CA), self-healed by the SCM host at every start | the companion's per-user state; an `--autostart` launch exits |
 //! | Windows perUser | `HKCU\…\Run\Roomler Desktop` | the per-user `service install` (MSI CA) and the companion itself | the companion deletes the value and records the choice |
 //! | Linux (.deb) | `/etc/xdg/autostart/meshharbor-desktop.desktop` | the package | `~/.config/autostart/meshharbor-desktop.desktop` with `Hidden=true` |
-//! | macOS (.pkg) | the `com.roomler.desktop` LaunchAgent (`RunAtLoad`) | the package's postinstall | macOS Login Items — not ours to write |
+//! | macOS (.pkg) | the `fans.itachi.meshharbor.desktop` LaunchAgent (`RunAtLoad`) | the package's postinstall | macOS Login Items — not ours to write |
 //!
 //! Shared by the daemon and the companion so both spell the value, the
 //! argument and the entry the same way. Pure helpers are tested on every
@@ -85,7 +85,7 @@ pub fn plan_run_key(current: Option<&str>, desired: Option<&str>) -> RunKeyActio
 pub enum InstallScope {
     /// Under Program Files: a perMachine install, `HKLM`.
     Machine,
-    /// Anywhere else (`%LOCALAPPDATA%\Programs\Roomler`): per-user, `HKCU`.
+    /// Anywhere else (`%LOCALAPPDATA%\Programs\MeshHarbor`): per-user, `HKCU`.
     User,
 }
 
@@ -355,10 +355,10 @@ mod tests {
 
     #[test]
     fn run_command_quotes_a_path_with_spaces() {
-        let exe = Path::new(r"C:\Program Files\Roomler\meshharbor-desktop.exe");
+        let exe = Path::new(r"C:\Program Files\MeshHarbor\meshharbor-desktop.exe");
         assert_eq!(
             windows_run_command(exe),
-            r#""C:\Program Files\Roomler\meshharbor-desktop.exe" --autostart"#
+            r#""C:\Program Files\MeshHarbor\meshharbor-desktop.exe" --autostart"#
         );
         // Quoted even without a space: one shape, so a comparison with what
         // is in the registry never flips on the install path.
@@ -370,7 +370,7 @@ mod tests {
 
     #[test]
     fn desired_value_table() {
-        let exe = Path::new(r"C:\Program Files\Roomler\meshharbor-desktop.exe");
+        let exe = Path::new(r"C:\Program Files\MeshHarbor\meshharbor-desktop.exe");
         let on = Some(windows_run_command(exe));
         // (device_enabled, exe_exists, user_opted_out) → desired
         let table = [
@@ -412,14 +412,14 @@ mod tests {
         ];
         assert_eq!(
             windows_scope_for_exe(
-                Path::new(r"C:\Program Files\Roomler\meshharbor-desktop.exe"),
+                Path::new(r"C:\Program Files\MeshHarbor\meshharbor-desktop.exe"),
                 &pf
             ),
             InstallScope::Machine
         );
         assert_eq!(
             windows_scope_for_exe(
-                Path::new(r"c:/program files/ROOMLER/meshharbor-desktop.exe"),
+                Path::new(r"c:/program files/MESHHARBOR/meshharbor-desktop.exe"),
                 &pf
             ),
             InstallScope::Machine,
@@ -427,7 +427,7 @@ mod tests {
         );
         assert_eq!(
             windows_scope_for_exe(
-                Path::new(r"C:\Users\ana\AppData\Local\Programs\Roomler\meshharbor-desktop.exe"),
+                Path::new(r"C:\Users\ana\AppData\Local\Programs\MeshHarbor\meshharbor-desktop.exe"),
                 &pf
             ),
             InstallScope::User
@@ -442,7 +442,7 @@ mod tests {
         );
         assert_eq!(
             windows_scope_for_exe(
-                Path::new(r"C:\Program Files\Roomler\meshharbor-desktop.exe"),
+                Path::new(r"C:\Program Files\MeshHarbor\meshharbor-desktop.exe"),
                 &[]
             ),
             InstallScope::User,
@@ -518,7 +518,7 @@ mod tests {
                 .as_nanos()
         );
         delete_tree(Hive::CurrentUser, &scratch);
-        let v = windows_run_command(Path::new(r"C:\Program Files\Roomler\meshharbor-desktop.exe"));
+        let v = windows_run_command(Path::new(r"C:\Program Files\MeshHarbor\meshharbor-desktop.exe"));
 
         assert_eq!(
             read_value(Hive::CurrentUser, &scratch, WINDOWS_RUN_VALUE_NAME).unwrap(),

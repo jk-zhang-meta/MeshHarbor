@@ -524,7 +524,7 @@ flowchart LR
 
 **Every member keeps the same store**, owned by the daemon and readable by no local
 user — Linux `/var/lib/roomler/hive`, Windows `%ProgramData%\roomler\hive` with a
-SYSTEM/Administrators ACL, macOS under `/Library/Application Support/roomler`:
+SYSTEM/Administrators ACL, macOS under `/Library/Application Support/meshharbor`:
 
 - `hive.db` — SQLite in WAL mode with the events of every session the device holds,
   replica state, and an FTS5 index over the events. One database per device, as Hermes

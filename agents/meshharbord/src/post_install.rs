@@ -34,7 +34,7 @@
 //! RestartManager doesn't care about pages — it enumerates the
 //! *processes holding the files being replaced* and shuts down the
 //! ones whose SID it can manage. A watcher spawned from
-//! `<install>\roomlerd.exe` IS such a process, so RM killed it
+//! `<install>\meshharbord.exe` IS such a process, so RM killed it
 //! seconds into every install that had contended files (field
 //! forensic 2026-08-21 on the dev host: `last-install.json` frozen
 //! at `InProgress`, watcher born 02:54:11, RM app-shutdown
@@ -69,7 +69,7 @@
 //!    --version`, compares against the expected tag. Windows: when
 //!    the own-path probe can't verify (P4b renamed the install
 //!    folder, so a rename-hop watcher runs from the vacated dir),
-//!    it falls back to probing `…\Roomler\roomlerd.exe` for the
+//!    it falls back to probing `…\Roomler\meshharbord.exe` for the
 //!    running flavour.
 //! 7. Watcher writes `last-install.json` and exits. Windows
 //!    perMachine: as a last act the watcher runs `sc start` on the
@@ -579,7 +579,7 @@ fn ensure_service_running(
 // the directory being vacated, which still carries the retired name.
 /// P4b folder-rename fallback: probe the daemon at the RENAMED
 /// install directory for this flavour
-/// (`…\Roomler\roomlerd.exe`) when the own-path probe couldn't
+/// (`…\Roomler\meshharbord.exe`) when the own-path probe couldn't
 /// verify the expected version. On the rename-hop upgrade the
 /// watcher runs from the vacated `roomler-agent\` directory, so its
 /// own path never sees the freshly-installed binary. Record-only,
@@ -625,7 +625,7 @@ fn try_renamed_dir_fallback(
 #[cfg(target_os = "windows")]
 fn renamed_daemon_candidate(flavour: crate::updater::WindowsInstallFlavour) -> Option<PathBuf> {
     crate::updater::install_dir_with_name(flavour, crate::updater::INSTALL_FOLDER_NAME)
-        .map(|dir| dir.join("roomlerd.exe"))
+        .map(|dir| dir.join("meshharbord.exe"))
 }
 
 /// Whether a `--version` line (e.g. "roomlerd 0.1.50") contains
@@ -776,7 +776,7 @@ mod tests {
             per_user.ends_with(
                 std::path::Path::new("Programs")
                     .join(crate::updater::INSTALL_FOLDER_NAME)
-                    .join("roomlerd.exe")
+                    .join("meshharbord.exe")
             ),
             "unexpected perUser candidate {}",
             per_user.display()
@@ -785,7 +785,7 @@ mod tests {
             .expect("ProgramFiles env var set on Windows");
         assert!(
             per_machine.ends_with(
-                std::path::Path::new(crate::updater::INSTALL_FOLDER_NAME).join("roomlerd.exe")
+                std::path::Path::new(crate::updater::INSTALL_FOLDER_NAME).join("meshharbord.exe")
             ) && per_machine
                 .to_string_lossy()
                 .to_lowercase()
@@ -805,13 +805,13 @@ mod tests {
         use crate::updater::WindowsInstallFlavour;
         assert_eq!(
             install_flavour(Some(std::path::Path::new(
-                r"C:\Program Files\Roomler\roomlerd.exe"
+                r"C:\Program Files\MeshHarbor\meshharbord.exe"
             ))),
             WindowsInstallFlavour::PerMachine
         );
         assert_eq!(
             install_flavour(Some(std::path::Path::new(
-                r"C:\Users\x\AppData\Local\Programs\Roomler\roomlerd.exe"
+                r"C:\Users\x\AppData\Local\Programs\MeshHarbor\meshharbord.exe"
             ))),
             WindowsInstallFlavour::PerUser
         );

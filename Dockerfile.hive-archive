@@ -5,15 +5,15 @@
 # their retention, and serves a session's room when no other member is
 # online. It runs no session itself. The ORG runs this image, on its own
 # machines: a replica is a plaintext copy of everything the agent saw (design
-# §4.4), so an archive Roomler ran would hold every hosted org's transcripts.
+# §4.4), so an archive MeshHarbor ran would hold every hosted org's transcripts.
 #
 #   docker run -d --name hive-archive --hostname hive-archive-1 \
 #     --restart unless-stopped -v hive-archive:/data \
-#     -e ROOMLER_SERVER=https://roomler.ai \
-#     -e ROOMLER_ENROLL_TOKEN=<an ADMINISTRATOR's enrollment token> \
+#     -e MESHHARBOR_SERVER=https://roomler.ai \
+#     -e MESHHARBOR_ENROLL_TOKEN=<an ADMINISTRATOR's enrollment token> \
 #     ghcr.io/gjovanov/roomler-ai/hive-archive:<tag>
 #
-# The first start enrolls (`roomlerd enroll --archive-replica`), and every
+# The first start enrolls (`meshharbord enroll --archive-replica`), and every
 # later one runs from the config on the volume; the token is single use, and
 # no later start needs it. An ADMINISTRATOR then designates the device an
 # archive replica in the org's Hive policy before it holds anything.
@@ -56,23 +56,23 @@ RUN apt-get update \
         libssl3 \
         libgcc-s1 \
     && rm -rf /var/lib/apt/lists/*
-COPY --from=builder /src/target/release/roomlerd /usr/local/bin/roomlerd
+COPY --from=builder /src/target/release/meshharbord /usr/local/bin/meshharbord
 COPY scripts/hive-archive-entrypoint.sh /usr/local/bin/hive-archive-entrypoint.sh
 # Not root: it runs no session as anyone, so it needs no account but its own.
 # HOME is the volume, so the store (`$HOME/.local/share/…/hive`) and every
 # file the daemon keeps live on it with the config.
 RUN chmod 0755 /usr/local/bin/hive-archive-entrypoint.sh \
     && useradd --system --uid 10001 --user-group --home-dir /data \
-        --shell /usr/sbin/nologin roomler \
+        --shell /usr/sbin/nologin meshharbor \
     && mkdir -p /data \
-    && chown roomler:roomler /data \
+    && chown meshharbor:meshharbor /data \
     && chmod 0700 /data
-USER roomler
-# ROOMLERD_ARCHIVE_IMAGE: an archive replica enrolled before its posture
+USER meshharbor
+# MESHHARBORD_ARCHIVE_IMAGE: an archive replica enrolled before its posture
 # joined the mesh (FR-90 P2k-4) joins it at its first start in this image.
 ENV HOME=/data \
-    ROOMLER_DATA=/data \
-    ROOMLERD_AUTO_UPDATE=0 \
-    ROOMLERD_ARCHIVE_IMAGE=1
+    MESHHARBOR_DATA=/data \
+    MESHHARBORD_AUTO_UPDATE=0 \
+    MESHHARBORD_ARCHIVE_IMAGE=1
 VOLUME ["/data"]
 ENTRYPOINT ["/usr/local/bin/hive-archive-entrypoint.sh"]

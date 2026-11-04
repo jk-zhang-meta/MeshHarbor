@@ -814,7 +814,7 @@ mod tests {
         fn firewall_prep(&mut self, worker_exe: &Path) -> firewall::FirewallPrep {
             assert_eq!(
                 worker_exe,
-                Path::new(r"C:\Program Files\Roomler\roomlerd.exe")
+                Path::new(r"C:\Program Files\MeshHarbor\meshharbord.exe")
             );
             self.calls.push("firewall_prep");
             self.prep.clone()
@@ -834,7 +834,7 @@ mod tests {
         };
         run_startup_sequence(
             &mut rec,
-            PathBuf::from(r"C:\Program Files\Roomler\roomlerd.exe"),
+            PathBuf::from(r"C:\Program Files\MeshHarbor\meshharbord.exe"),
             vec!["run".to_string()],
         )
         .expect("sequence succeeds");

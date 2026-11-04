@@ -403,7 +403,7 @@ async fn the_puller_snapshots_the_closed_day_once_inside_its_window() {
             GITHUB_SOURCE,
             &y,
             "downloads",
-            doc! { "by": "flavour", "flavour": "roomlerd-x86_64-pc-windows-msvc.msi" }
+            doc! { "by": "flavour", "flavour": "meshharbord-x86_64-pc-windows-msvc.msi" }
         )
         .await,
         Some(298)
@@ -414,7 +414,7 @@ async fn the_puller_snapshots_the_closed_day_once_inside_its_window() {
             GITHUB_SOURCE,
             &y,
             "downloads",
-            doc! { "by": "flavour", "flavour": "roomlerd_amd64.deb" }
+            doc! { "by": "flavour", "flavour": "meshharbord_amd64.deb" }
         )
         .await,
         Some(149)
@@ -425,7 +425,7 @@ async fn the_puller_snapshots_the_closed_day_once_inside_its_window() {
             GITHUB_SOURCE,
             &y,
             "downloads",
-            doc! { "by": "flavour", "flavour": "roomlerd_amd64.deb.asc" }
+            doc! { "by": "flavour", "flavour": "meshharbord_amd64.deb.asc" }
         )
         .await,
         None,

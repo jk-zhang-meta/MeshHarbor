@@ -2,7 +2,7 @@
 #
 # Drives trac.exe connect/disconnect cycles while sampling overlay health, so the
 # whole corp-VPN transition matrix can be measured without a human clicking the
-# client. Deployed to C:\ProgramData\roomler\vpnlab\ and launched DETACHED via a
+# client. Deployed to C:\ProgramData\meshharbor\vpnlab\ and launched DETACHED via a
 # SYSTEM scheduled task (survives control-WS churn on the fleet-exec path that
 # started it).
 #
@@ -12,7 +12,7 @@
 # commands verbatim) — this script therefore takes NO credential parameters.
 #
 # Safety rails (non-negotiable):
-#   * kill-switch: refuses to run while C:\ProgramData\roomler\vpnlab\DISABLED exists
+#   * kill-switch: refuses to run while C:\ProgramData\meshharbor\vpnlab\DISABLED exists
 #   * failsafe: before every connect a one-shot SYSTEM task is registered that
 #     force-disconnects at now+hold+3min — the machine returns to a reachable
 #     state even if every remote path is lost mid-experiment
@@ -35,9 +35,9 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $Trac = 'C:\Program Files (x86)\CheckPoint\Endpoint Connect\trac.exe'
-$Roomler = 'C:\Program Files\Roomler\roomler.exe'
+$Roomler = 'C:\Program Files\MeshHarbor\meshharbor.exe'
 $CredFile = 'C:\dev\OE_VPN.txt'
-$Base = 'C:\ProgramData\roomler\vpnlab'
+$Base = 'C:\ProgramData\meshharbor\vpnlab'
 $RunDir = Join-Path $Base "run-$RunId"
 $FailsafeTask = 'roomler-vpnlab-failsafe'
 
@@ -180,7 +180,7 @@ switch ($Cmd) {
         $ok = $true
         foreach ($check in @(
                 @{ n = 'trac.exe present'; f = { Test-Path $Trac } },
-                @{ n = 'roomler.exe present'; f = { Test-Path $Roomler } },
+                @{ n = 'meshharbor.exe present'; f = { Test-Path $Roomler } },
                 @{ n = 'cred file 2 lines'; f = { (Get-Content $CredFile).Count -ge 2 } },
                 @{ n = 'trac info parses'; f = { (Get-TracState) -ne 'unknown' } },
                 @{ n = 'run dir writable'; f = { Mark 'SELFTEST'; $true } },

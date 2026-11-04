@@ -71,7 +71,7 @@ said.
 **Windows:**
 
 ```powershell
-Get-AuthenticodeSignature "C:\Program Files\Roomler\roomlerd.exe" |
+Get-AuthenticodeSignature "C:\Program Files\MeshHarbor\meshharbord.exe" |
   Select-Object Status, @{n='Signer';e={$_.SignerCertificate.Subject}}
 ```
 

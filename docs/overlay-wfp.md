@@ -111,7 +111,7 @@ Implementation: `crates/tunnel-core/src/overlay/wfp.rs` (raw `windows-sys`
 
 WFP above covers the **`roomler` adapter**. The daemon's WireGuard, disco/STUN
 and WebRTC sockets bind on the **physical** adapters too, and for those the
-ordinary Defender rule set applies: with no rule for `roomlerd.exe`, an
+ordinary Defender rule set applies: with no rule for `meshharbord.exe`, an
 unsolicited inbound UDP packet (a LAN-direct dial, a srflx punch) dies at the
 Public profile's default-deny. Since P9 (field-hit 2026-07-28) the daemon
 writes itself an allow rule at every TUN bring-up:
@@ -119,7 +119,7 @@ writes itself an allow rule at every TUN bring-up:
 | | |
 |---|---|
 | Name | `Roomler UDP-In (roomlerd)` — the exe stem, so the `roomler` tunnel client gets its own (`Roomler UDP-In (roomler)`) |
-| Shape | `dir=in action=allow protocol=udp program=<full path of roomlerd.exe>`, all profiles, every port |
+| Shape | `dir=in action=allow protocol=udp program=<full path of meshharbord.exe>`, all profiles, every port |
 | Definition | `crates/tunnel-core/src/winfw.rs` — `UdpInAllowRule` is the ONE definition; both writers build their `netsh` calls from it |
 | Kill switch | `ROOMLERD_TUN_HYGIENE=0` — skips both writers (and the adapter's Private-profile set) |
 
@@ -146,7 +146,7 @@ sequenceDiagram
     SCM->>Host: start
     Host->>SCM: Running
     Host->>FW: netsh delete + add "Roomler UDP-In (roomlerd)" (≤ 10 s per call)
-    Host->>FW: read the rule store, Remove-NetFirewallRule for inbound Block rules whose program == roomlerd.exe (≤ 30 s, only if any)
+    Host->>FW: read the rule store, Remove-NetFirewallRule for inbound Block rules whose program == meshharbord.exe (≤ 30 s, only if any)
     Host->>Worker: CreateProcessAsUserW
     Worker->>FW: bind 0.0.0.0:<udp> — a rule exists for this path
     Note over FW,Worker: no prompt, so no Block rules
@@ -171,7 +171,7 @@ install's prompt left behind.
 ### The cleanup's predicate — exact, and never by name
 
 A rule is removed iff **direction inbound ∧ action Block ∧ program path equal
-to our `roomlerd.exe`** (case-insensitive, `%VAR%` expanded, `/`→`\`, `\\?\`
+to our `meshharbord.exe`** (case-insensitive, `%VAR%` expanded, `/`→`\`, `\\?\`
 stripped) **∧ its store id starts with `TCP Query User{` or
 `UDP Query User{`** — the notification prompt's own id signature, matched
 case-sensitively. `prompt_block_rules_for_program` in `winfw.rs` is the whole
@@ -179,13 +179,13 @@ decision; its table test holds every neighbour it must not touch.
 
 - ⚠️ **A deliberate Block is left alone.** The id condition is what keeps
   this from being tampering: a Block an administrator placed on
-  `roomlerd.exe` through `netsh`, `wf.msc` or `New-NetFirewallRule` has a
+  `meshharbord.exe` through `netsh`, `wf.msc` or `New-NetFirewallRule` has a
   `{GUID}` or the caller's own id, never the prompt's shape, and stays exactly
   where it is at every start. The device owner's local setting is a floor
   (compare `consent::strictest_of`); only the prompt's leftovers are ours.
 - ⚠️ **Never by display name.** The prompt names its rules after the exe's
   FileDescription (`Roomler Daemon`); any program can carry that name, and a
-  same-named `roomlerd.exe` in another directory is a different program.
+  same-named `meshharbord.exe` in another directory is a different program.
 - ⚠️ **Allow rules are never touched** — not the prompt's own `Roomler Daemon`
   Allow pair (someone clicked Allow), not ours. That is why the removal goes
   through PowerShell (`Remove-NetFirewallRule -Name <store id>`) and not
@@ -227,10 +227,10 @@ adapter.
 Get-Process PickerHost -ErrorAction SilentlyContinue | Select-Object Id, MainWindowTitle
 # 2. Our Allow rule exists, and no Block rule names our exe.
 Get-NetFirewallRule -Direction Inbound | Where-Object {
-  ($_ | Get-NetFirewallApplicationFilter).Program -ieq "$env:ProgramFiles\Roomler\roomlerd.exe"
+  ($_ | Get-NetFirewallApplicationFilter).Program -ieq "$env:ProgramFiles\Roomler\meshharbord.exe"
 } | Select-Object Name, DisplayName, Action, Enabled, Profile
 # 3. Order: the host's line is logged before the worker's first bind.
-Select-String -Path "$env:ProgramData\roomler\roomler\service-logs\roomlerd-service.log.*" `
+Select-String -Path "$env:ProgramData\meshharbor\roomler\service-logs\roomlerd-service.log.*" `
   -Pattern 'installed for the worker BEFORE its first bind'
 ```
 

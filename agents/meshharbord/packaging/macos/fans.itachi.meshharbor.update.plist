@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  LaunchDaemon for the UPDATE HALF — `roomlerd update-helper`.
+  LaunchDaemon for the UPDATE HALF — `meshharbord update-helper`.
 
   Why this exists: `installer -pkg … -target /` requires root, and the
   DEFAULT macOS install is the per-user LaunchAgent alone (the privileged
@@ -33,7 +33,7 @@
   Not KeepAlive: the helper runs, decides, exits. launchd relaunches it on
   the next wake source. ThrottleInterval guards a crash-looping helper.
 
-  ⚠️ postinstall must NEVER bootout a LOADED com.roomler.update — during an
+  ⚠️ postinstall must NEVER bootout a LOADED fans.itachi.meshharbor.update — during an
   update the postinstall is a grandchild of this very job, and booting the
   job kills the whole process group, `installer` included, mid-payload. It
   bootstraps only when not yet loaded; a CHANGED plist therefore takes
@@ -42,11 +42,11 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.roomler.update</string>
+    <string>fans.itachi.meshharbor.update</string>
 
     <key>ProgramArguments</key>
     <array>
-        <string>/Library/Roomler/roomlerd.app/Contents/MacOS/roomlerd</string>
+        <string>/Library/MeshHarbor/meshharbord.app/Contents/MacOS/meshharbord</string>
         <string>update-helper</string>
     </array>
 
@@ -67,9 +67,9 @@
     <integer>60</integer>
 
     <key>StandardOutPath</key>
-    <string>/var/log/roomler/update.log</string>
+    <string>/var/log/meshharbor/update.log</string>
     <key>StandardErrorPath</key>
-    <string>/var/log/roomler/update.log</string>
+    <string>/var/log/meshharbor/update.log</string>
 
     <key>EnvironmentVariables</key>
     <dict>

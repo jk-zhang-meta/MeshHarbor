@@ -111,7 +111,7 @@ pub const AGENT_DELETED_EXIT_CODE: i32 = 7;
 ///     back. So a 0 here is indistinguishable from that, and systemd
 ///     re-launches the redundant process every `RestartSec` forever.
 ///     Field 2026-08-21: buildhost / fleet-host-2 / fleet-host-1 each had two units enabled
-///     (packaged `meshharbord.service` + a legacy `roomler-agent.service`),
+///     (packaged `meshharbord.service` + a legacy `meshharbor-agent.service`),
 ///     and the loser burned 1500+ restarts at 5 s intervals for weeks
 ///     while the winner served happily, so nothing looked wrong.
 ///     `RestartPreventExitStatus` in both units lists this code.

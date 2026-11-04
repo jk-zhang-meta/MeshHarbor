@@ -340,7 +340,7 @@ enum Command {
         #[arg(long, default_value_t = 30)]
         seconds: u64,
     },
-    /// (internal, macOS and Linux) The body of the `com.roomler.update`
+    /// (internal, macOS and Linux) The body of the `fans.itachi.meshharbor.update`
     /// LaunchDaemon and of the Linux `meshharbor-update.service` (FR-96): consume
     /// the wake file, then check → download → verify → install as root,
     /// waiting on it (`installer -pkg … -target /` on macOS, whose postinstall
@@ -959,7 +959,7 @@ enum ServiceAction {
         /// Register the ROOT daemon with the OS's own service manager instead
         /// of the per-user auto-start: on Windows the `Roomler` SCM service
         /// (LocalSystem, AutoStart), on Linux the system unit
-        /// `meshharbord.service`, on macOS the LaunchDaemon `com.roomler.daemon`
+        /// `meshharbord.service`, on macOS the LaunchDaemon `fans.itachi.meshharbor.daemon`
         /// (FR-97 P6c). For fleet / unattended hosts, or ones that must be
         /// reachable before anyone logs in. Requires elevation. On Linux and
         /// macOS the root daemon is its own enrollment, in
@@ -991,7 +991,7 @@ enum ServiceAction {
     /// Task (FR-84 D3, `roomler restart`, the companion's "Apply now").
     Start {
         /// Start the system service instead: the `Roomler` SCM service (and
-        /// wait for RUNNING), `meshharbord.service`, or `com.roomler.daemon`.
+        /// wait for RUNNING), `meshharbord.service`, or `fans.itachi.meshharbor.daemon`.
         /// Requires elevation on a stock install.
         #[arg(long, visible_alias = "system")]
         as_service: bool,
@@ -1007,7 +1007,7 @@ enum ServiceAction {
     Stop {
         /// Stop the system service instead. Windows waits for STOPPED, and
         /// its host asks the worker to leave (#1683). Linux stops
-        /// `meshharbord.service`. macOS sends `com.roomler.daemon` a SIGTERM;
+        /// `meshharbord.service`. macOS sends `fans.itachi.meshharbor.daemon` a SIGTERM;
         /// that clean stop stays down until the next boot or `service start
         /// --as-service`. Requires elevation on a stock install.
         #[arg(long, visible_alias = "system")]
@@ -1173,7 +1173,7 @@ fn self_heal_machine_global_config(_loaded_path: &std::path::Path, _cfg: &config
 /// `meshharbord cli <args...>` → the argv to hand to the embedded `roomler`
 /// CLI, or `None` for every other invocation.
 ///
-/// P3e lever D: daemon hosts install a ~150 KB `roomler.exe` shim that
+/// P3e lever D: daemon hosts install a ~150 KB `meshharbor.exe` shim that
 /// re-execs us this way, instead of the MSI carrying a second full copy of
 /// the tunnel CLI (rc.361: 22.1 MiB, ~92 % of it crates we already link).
 ///
@@ -1812,7 +1812,7 @@ async fn daemon_main() -> Result<()> {
             #[cfg(not(any(target_os = "macos", target_os = "linux")))]
             {
                 anyhow::bail!(
-                    "update-helper is the body of the macOS com.roomler.update LaunchDaemon \
+                    "update-helper is the body of the macOS fans.itachi.meshharbor.update LaunchDaemon \
                      and of the Linux meshharbor-update.service; this platform's updater runs \
                      inside the agent itself"
                 )
@@ -5242,7 +5242,7 @@ fn service_install_as_service() -> Result<()> {
 }
 
 /// FR-97 P6c — register the root daemon the package ships with the OS's own
-/// service manager (`meshharbord.service`, `com.roomler.daemon`) and start it.
+/// service manager (`meshharbord.service`, `fans.itachi.meshharbor.daemon`) and start it.
 #[cfg(not(target_os = "windows"))]
 fn service_install_as_service() -> Result<()> {
     println!("{}", service::install_system()?);
@@ -5542,7 +5542,7 @@ async fn netd_cmd() -> Result<()> {
 
 async fn self_update_cmd(check_only: bool) -> Result<()> {
     // macOS: installs are owned by the root update helper
-    // (com.roomler.update). A non-root invocation used to download the
+    // (fans.itachi.meshharbor.update). A non-root invocation used to download the
     // whole pkg and then fail the spawn on the euid guard — queue the
     // helper instead and say where to watch. Root (`sudo … self-update`)
     // keeps the direct path: it CAN install, and an operator running sudo
@@ -5558,7 +5558,7 @@ async fn self_update_cmd(check_only: bool) -> Result<()> {
         return match updater::queue_update_check() {
             Ok(()) => {
                 println!(
-                    "Queued for the root update helper (com.roomler.update).\n\
+                    "Queued for the root update helper (fans.itachi.meshharbor.update).\n\
                      Watch: /var/log/roomler-agent/update.log\n\
                      (If this Mac set /etc/roomler-agent/disable-auto-update, updates are manual:\n\
                       sudo installer -pkg <pkg> -target /)"
@@ -7000,7 +7000,7 @@ mod tests {
             Some(explicit.clone()),
             true,
             Some(Path::new(
-                r"C:\ProgramData\roomler\roomler-agent\config.toml",
+                r"C:\ProgramData\meshharbor\roomler-agent\config.toml",
             )),
             Path::new(r"C:\Users\u\AppData\config.toml"),
             None,
@@ -7011,7 +7011,7 @@ mod tests {
 
     #[test]
     fn pick_config_path_system_context_prefers_machine_global() {
-        let mg = Path::new(r"C:\ProgramData\roomler\roomler-agent\config.toml");
+        let mg = Path::new(r"C:\ProgramData\meshharbor\roomler-agent\config.toml");
         let default = Path::new(r"C:\Windows\System32\config\systemprofile\config.toml");
         let got = pick_config_path(None, true, Some(mg), default, None, |p| p == mg);
         assert_eq!(got, mg);
@@ -7021,7 +7021,7 @@ mod tests {
     fn pick_config_path_non_system_context_ignores_machine_global() {
         // A perUser / perMachine-non-SC worker never reads the
         // machine-global path even if it exists.
-        let mg = Path::new(r"C:\ProgramData\roomler\roomler-agent\config.toml");
+        let mg = Path::new(r"C:\ProgramData\meshharbor\roomler-agent\config.toml");
         let default = Path::new(r"C:\Users\u\AppData\config.toml");
         let got = pick_config_path(None, false, Some(mg), default, None, |p| {
             p == mg || p == default
@@ -7033,7 +7033,7 @@ mod tests {
     fn pick_config_path_system_context_falls_to_active_user() {
         // Machine-global absent, default (SYSTEM profile) absent —
         // post-logon SC worker uses the active-user fallback.
-        let mg = Path::new(r"C:\ProgramData\roomler\roomler-agent\config.toml");
+        let mg = Path::new(r"C:\ProgramData\meshharbor\roomler-agent\config.toml");
         let default = Path::new(r"C:\Windows\System32\config\systemprofile\config.toml");
         let active = Path::new(r"C:\Users\u\AppData\Roaming\roomler\config.toml");
         let got = pick_config_path(None, true, Some(mg), default, Some(active), |p| p == active);
@@ -7044,7 +7044,7 @@ mod tests {
     fn pick_config_path_returns_default_when_nothing_exists() {
         // Nothing on disk → default, so config::load fails with an
         // honest "not found" naming that path.
-        let mg = Path::new(r"C:\ProgramData\roomler\roomler-agent\config.toml");
+        let mg = Path::new(r"C:\ProgramData\meshharbor\roomler-agent\config.toml");
         let default = Path::new(r"C:\Windows\System32\config\systemprofile\config.toml");
         let got = pick_config_path(None, true, Some(mg), default, None, |_| false);
         assert_eq!(got, default);
@@ -7054,7 +7054,7 @@ mod tests {
 
     #[test]
     fn should_self_heal_only_for_system_context_peruser_load_without_machine_global() {
-        let mg = Path::new(r"C:\ProgramData\roomler\roomler-agent\config.toml");
+        let mg = Path::new(r"C:\ProgramData\meshharbor\roomler-agent\config.toml");
         let peruser = Path::new(r"C:\Users\u\AppData\Roaming\roomler\config.toml");
         // The one true case: SC worker, loaded from a perUser path,
         // machine-global absent.

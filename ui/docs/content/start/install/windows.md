@@ -57,8 +57,8 @@ through rather than at the beginning.
 
 | Item | What it is |
 |---|---|
-| `roomlerd.exe` | The agent — remote-desktop target, mesh node, tunnel endpoint, SSH server |
-| `roomler.exe` | The command-line tool. A small shim that re-execs the daemon's own command surface, so the CLI and the daemon can never disagree about their version |
+| `meshharbord.exe` | The agent — remote-desktop target, mesh node, tunnel endpoint, SSH server |
+| `meshharbor.exe` | The command-line tool. A small shim that re-execs the daemon's own command surface, so the CLI and the daemon can never disagree about their version |
 | `meshharbor-desktop.exe` | The tray companion: status, tunnels, and consent prompts |
 | `wintun.dll` + the VC runtime | The virtual network adapter and its C runtime dependency |
 
@@ -72,7 +72,7 @@ Every Windows binary is **Authenticode-signed**, and the MSI payload is signed
 before packaging. Check the publisher before you trust it:
 
 ```powershell
-Get-AuthenticodeSignature "C:\Program Files\Roomler\roomlerd.exe" |
+Get-AuthenticodeSignature "C:\Program Files\MeshHarbor\meshharbord.exe" |
   Select-Object Status, @{n='Signer';e={$_.SignerCertificate.Subject}}
 ```
 
@@ -90,7 +90,7 @@ roomler status
 
 | Item | Path |
 |---|---|
-| Program files | `C:\Program Files\Roomler\` (per-machine) or `%LOCALAPPDATA%\Programs\Roomler\` (per-user) |
+| Program files | `C:\Program Files\MeshHarbor\` (per-machine) or `%LOCALAPPDATA%\Programs\MeshHarbor\` (per-user) |
 | Per-user config | `%APPDATA%\roomler\config.toml` |
 | Machine-global config | `%PROGRAMDATA%\roomler\roomler\config.toml` |
 

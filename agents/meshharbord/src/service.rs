@@ -15,7 +15,7 @@
 //!     file at `/usr/lib/systemd/user/meshharbor.service`; install
 //!     here means `systemctl --user enable --now meshharbor.service`.
 //!   - **macOS**: `launchctl load -w` the LaunchAgent plist. The .pkg
-//!     postinstall drops it at `~/Library/LaunchAgents/com.roomler.agent.plist`;
+//!     postinstall drops it at `~/Library/LaunchAgents/fans.itachi.meshharbor.agent.plist`;
 //!     install here only needs to (re-)load it.
 //!
 //! All paths shell out to the system tool rather than talking to the
@@ -413,7 +413,7 @@ pub fn status() -> Result<AutostartStatus> {
 /// FR-97 P6c — `service <verb> --as-service` (alias `--system`) on Linux and
 /// macOS: the root daemon, under the OS's own service manager. It is the verb
 /// Windows has had for the SCM, and it registers what the package already
-/// ships: systemd's `meshharbord.service`, launchd's `com.roomler.daemon`.
+/// ships: systemd's `meshharbord.service`, launchd's `fans.itachi.meshharbor.daemon`.
 ///
 /// The decisions live here, free of `cfg`, so the Linux test run proves the
 /// macOS ones too (CI only compiles macOS). The per-OS modules run the tools.
@@ -440,17 +440,17 @@ pub mod system {
     // (`SYSTEM_DAEMON_ENABLE_LINKS` in updater.rs) and serves again once it
     // is not, so one updater per host holds with no step here, and an
     // administrator's own disable of the helper is never undone.
-    pub const MACOS_LABEL: &str = "com.roomler.daemon";
-    pub const MACOS_PLIST: &str = "/Library/LaunchDaemons/com.roomler.daemon.plist";
+    pub const MACOS_LABEL: &str = "fans.itachi.meshharbor.daemon";
+    pub const MACOS_PLIST: &str = "/Library/LaunchDaemons/fans.itachi.meshharbor.daemon.plist";
     /// The plist the `.pkg` carries inside the bundle; its postinstall copies
     /// it to [`MACOS_PLIST`] when the marker below exists.
     pub const MACOS_PLIST_SOURCE: &str =
-        "/Library/Roomler/roomlerd.app/Contents/Resources/com.roomler.daemon.plist";
+        "/Library/Roomler/meshharbord.app/Contents/Resources/fans.itachi.meshharbor.daemon.plist";
     /// The postinstall's opt-in for the root half. Its ABSENCE makes the next
     /// package upgrade remove the LaunchDaemon, so install writes it and
     /// uninstall removes it: the verb and every later upgrade agree.
     pub const MACOS_MARKER: &str = "/etc/meshharbor/enable-daemon";
-    const MACOS_DAEMON_BIN: &str = "/Library/Roomler/roomlerd.app/Contents/MacOS/roomlerd";
+    const MACOS_DAEMON_BIN: &str = "/Library/Roomler/meshharbord.app/Contents/MacOS/roomlerd";
 
     /// Why `service install --as-service` cannot go ahead, or `None`. Asked
     /// before the service manager is touched, so a refusal changes nothing.
@@ -500,7 +500,7 @@ pub mod system {
     fn what(os: Os) -> &'static str {
         match os {
             Os::Linux => "system daemon (meshharbord.service)",
-            Os::MacOs => "root half (com.roomler.daemon)",
+            Os::MacOs => "root half (fans.itachi.meshharbor.daemon)",
         }
     }
 
@@ -1219,7 +1219,7 @@ mod linux {
     // RETIRED-NAME-ANCHOR(2): the unit name on hosts installed before P3d
     // Slice B. Install/uninstall must still find it or an upgraded host ends
     // up with two enabled units and a silent restart storm.
-    const LEGACY_UNIT: &str = "roomler-agent.service";
+    const LEGACY_UNIT: &str = "meshharbor-agent.service";
 
     /// Which unit name is in force on this host: the canonical name when its
     /// unit file exists (or on a fresh host), the legacy name only when ONLY
@@ -1724,7 +1724,7 @@ mod macos {
     use super::*;
     use std::process::Command;
 
-    pub const PLIST: &str = "com.roomler.agent";
+    pub const PLIST: &str = "fans.itachi.meshharbor.agent";
 
     pub fn install() -> Result<()> {
         let plist = plist_path()?;
@@ -1762,7 +1762,7 @@ mod macos {
         Ok(())
     }
 
-    /// FR-84 D3 — `launchctl kickstart gui/<uid>/com.roomler.agent`: start
+    /// FR-84 D3 — `launchctl kickstart gui/<uid>/fans.itachi.meshharbor.agent`: start
     /// the loaded LaunchAgent now (no `-k`: a running one is left alone).
     /// launchd spawns the daemon. Fails when the agent is not bootstrapped —
     /// `service install` is the remedy, and the error says so.
@@ -1795,7 +1795,7 @@ mod macos {
         }
     }
 
-    // ── FR-97 P6c: the root half, `com.roomler.daemon` ──
+    // ── FR-97 P6c: the root half, `fans.itachi.meshharbor.daemon` ──
 
     fn running_as_root() -> bool {
         // SAFETY: `geteuid` is a thread-safe read of the caller's own credentials.
@@ -2124,7 +2124,7 @@ mod tests {
         );
         assert_eq!(
             status_line(Os::MacOs, "running", "enabled"),
-            "com.roomler.daemon: running, enabled"
+            "fans.itachi.meshharbor.daemon: running, enabled"
         );
     }
 
@@ -2151,7 +2151,7 @@ mod tests {
         );
         // That the update helper steps aside by THIS unit's enable link is
         // updater.rs's own lock (`the_system_daemon_links_are_its_install_target`).
-        let plist = include_str!("../packaging/macos/com.roomler.daemon.plist");
+        let plist = include_str!("../packaging/macos/fans.itachi.meshharbor.daemon.plist");
         assert!(plist.contains(&format!("<string>{}</string>", system::MACOS_LABEL)));
         assert!(plist.contains(&format!("<string>{}</string>", system::CONFIG)));
         let postinstall = include_str!("../packaging/macos/postinstall");

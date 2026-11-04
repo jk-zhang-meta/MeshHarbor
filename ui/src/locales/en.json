@@ -1610,7 +1610,7 @@
       "days": "{n} d",
       "hours": "{n} h",
       "tooltip": "v{version} is {behind} behind: {first} came out {ago} ago and this device, online, has not installed it.",
-      "remedyLinux": "A per-user Linux install made before 0.4.138 cannot install updates by itself. Install the current release on it once (sudo apt install ./roomlerd.deb, the Software app, or a re-run of the install script), and it updates itself from then on. On a system install that stopped, check auto_update in 'roomler config ls' and the log ('roomler logs --grep update') on it.",
+      "remedyLinux": "A per-user Linux install made before 0.4.138 cannot install updates by itself. Install the current release on it once (sudo apt install ./meshharbord.deb, the Software app, or a re-run of the install script), and it updates itself from then on. On a system install that stopped, check auto_update in 'roomler config ls' and the log ('roomler logs --grep update') on it.",
       "remedyOther": "Check auto_update in 'roomler config ls' and the log ('roomler logs --grep update') on it."
     },
     "cred": {

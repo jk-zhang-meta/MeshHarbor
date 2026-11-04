@@ -110,7 +110,7 @@ impl ScrapCapture {
             tracing::warn!(
                 "macOS Screen Recording permission MISSING — capture will deliver blank/wallpaper-only frames. \
                  Grant it under System Settings → Privacy & Security → Screen Recording, then restart the agent \
-                 (launchctl kickstart -k gui/$UID/com.roomler.agent)"
+                 (launchctl kickstart -k gui/$UID/fans.itachi.meshharbor.agent)"
             );
         }
 

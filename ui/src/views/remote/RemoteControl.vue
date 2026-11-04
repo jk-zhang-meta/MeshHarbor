@@ -2779,7 +2779,7 @@ async function onFilePicked(ev: Event) {
 // FR-21 P4: this was a hardcoded
 // RETIRED-NAME-RECORD: quotes the defective literal this fix removed; the old
 // spelling is the evidence, not a stale reference. docs/fr/FR-21
-// `C:\ProgramData\roomler\roomler-agent\staging`, which was right only on
+// `C:\ProgramData\meshharbor\roomler-agent\staging`, which was right only on
 // hosts carrying the pre-rename tree — `machine_global_dir()` resolves the
 // `roomler` segment on a fresh install. Confirmed broken on a real
 // SYSTEM-mode Windows host, where that parent directory does not exist.

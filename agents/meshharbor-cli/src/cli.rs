@@ -886,7 +886,7 @@ fn daemon_exe(origin: Origin) -> Option<PathBuf> {
         return me;
     }
     let name = if cfg!(windows) {
-        "roomlerd.exe"
+        "meshharbord.exe"
     } else {
         "roomlerd"
     };
@@ -1056,7 +1056,7 @@ where
             // self-update this binary; daemon hosts get the whole node stack
             // refreshed by the MSI. Before P3e lever D that distinction was
             // only a convention — a daemon host running `roomler self-update`
-            // would happily overwrite the MSI-owned roomler.exe out from under
+            // would happily overwrite the MSI-owned meshharbor.exe out from under
             // the installer. Now it would ALSO swap the 150 KB shim for a
             // 22 MiB standalone CLI, silently undoing the lever. Refuse, and
             // name the right updater instead.

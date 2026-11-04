@@ -370,7 +370,7 @@ swaps in 17 sessions on three hosts, where the baseline had 37 in 11 minutes),
 which retired the planned QSV hysteresis. What the gate deliberately does not
 see: a pipe throttled **below the socket** (an OS QoS policy, a thin Wi-Fi
 driver queue) queues where `bytes_inflight` cannot look — measured 2026-09-07
-with `roomlerd.exe` capped at 15 Mbps, the gate shed nothing and the cost
+with `meshharbord.exe` capped at 15 Mbps, the gate shed nothing and the cost
 surfaced as 160–380 ms of viewer age instead. That standing lag is the viewer
 age's call (FR-15), not this gate's.
 

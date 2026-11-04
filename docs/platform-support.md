@@ -56,12 +56,12 @@ flowchart LR
         W3["perUser<br/>a Scheduled Task, as the person"]
     end
     subgraph LIN["Linux · x86_64 · arm64"]
-        L1["system unit<br/>roomlerd.service, root"]
-        L2["per-user unit<br/>roomler.service, as the person"]
+        L1["system unit<br/>meshharbord.service, root"]
+        L2["per-user unit<br/>meshharbor.service, as the person"]
     end
     subgraph MAC["macOS 15+ · Apple silicon"]
-        M1["root half<br/>com.roomler.daemon"]
-        M2["per-user half<br/>com.roomler.agent"]
+        M1["root half<br/>fans.itachi.meshharbor.daemon"]
+        M2["per-user half<br/>fans.itachi.meshharbor.agent"]
     end
     DESK["🖥️ the person's desktop"]
     LOCK["🔒 the lock and sign-in screens"]

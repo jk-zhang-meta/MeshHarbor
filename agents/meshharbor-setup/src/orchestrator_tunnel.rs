@@ -389,7 +389,7 @@ fn detect_existing_install_label() -> String {
 // that ALREADY EXISTS on installed hosts, and the segment holds the enrolled
 // credential on tunnel-only ones. Moving either is a migration, not a
 // rename — see meshharbor-setup-core::integration, tracked as an FR-21 followup.
-/// `%LOCALAPPDATA%\roomler\roomler-tunnel\Programs\roomler-tunnel`.
+/// `%LOCALAPPDATA%\roomler\roomler-tunnel\Programs\meshharbor-tunnel`.
 /// Linux: `~/.local/opt/roomler-tunnel`. macOS:
 /// `~/Applications/RoomlerTunnel`.
 ///
@@ -407,7 +407,7 @@ pub fn default_install_root() -> anyhow::Result<PathBuf> {
         // ProjectDirs::data_local_dir on Windows returns
         // %LOCALAPPDATA%\roomler\roomler-tunnel — close enough; we
         // append `Programs` for clarity in the UI ("look under
-        // Programs\roomler-tunnel"). Same dir is used for the .lnk
+        // Programs\meshharbor-tunnel"). Same dir is used for the .lnk
         // shortcut target in Phase B.
         Ok(dirs
             .data_local_dir()
@@ -427,7 +427,7 @@ pub fn default_install_root() -> anyhow::Result<PathBuf> {
             //
             // What actually blocks it is smaller and different, and both halves
             // are real: (1) a pre-rename install strands a stale HKCU PATH entry,
-            // and PATH ORDER decides which `roomler.exe` wins — so the rename
+            // and PATH ORDER decides which `meshharbor.exe` wins — so the rename
             // needs a `remove_user_path_segment` beside it, exactly as the Unix
             // arm needed `retire_legacy_symlink`; (2) the retired name appears
             // TWICE on this path — the ProjectDirs application segment and this

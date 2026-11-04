@@ -16,8 +16,8 @@ path = "src/lib.rs"
 # with it. CI stages a
 # RETIRED-NAME-ANCHOR(3): the alias name is what the DEPLOYED self-updater
 # extracts. It is an input to code already running in the field.
-# `roomler-tunnel.exe` alias into the release zip so the deployed fleet's
-# self-updater (which extracts `roomler-tunnel.exe`) is never orphaned.
+# `meshharbor-tunnel.exe` alias into the release zip so the deployed fleet's
+# self-updater (which extracts `meshharbor-tunnel.exe`) is never orphaned.
 name = "roomler"
 path = "src/main.rs"
 
@@ -109,7 +109,7 @@ flate2 = "1"
 tar = "0.4"
 tempfile = { workspace = true }
 
-# build.rs embeds a Windows VERSIONINFO resource into roomler.exe. See
+# build.rs embeds a Windows VERSIONINFO resource into meshharbor.exe. See
 # agents/meshharbord/Cargo.toml for why this is embed-resource rather than
 # winres/winresource (per-binary scoping vs. a link-lib that leaks into
 # meshharbor-setup.exe, which depends on this crate).

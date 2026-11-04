@@ -1,7 +1,7 @@
 # RETIRED-NAME-ANCHOR-BEGIN
 # This lane installs and uninstalls the real installers, so it must assert on
 # the names a host actually has — including the pre-rename ones it is checking
-# are cleaned up: the legacy service and task, the roomler-agent.exe alias, the
+# are cleaned up: the legacy service and task, the meshharbor-agent.exe alias, the
 # old install folders and the published MSI names.
 # INVARIANT: a retired name here must be one the installer has to create, find or
 # remove on a real host. docs/fr/FR-21
@@ -149,7 +149,7 @@ jobs:
         # `vp9-444` (avoids the vcpkg/libvpx dance) and `wgc-capture`
         # (Windows.Graphics.Capture not needed for install
         # validation). The MSI bundle just packages whatever exe is
-        # at target/release/roomler-agent.exe; feature set affects
+        # at target/release/meshharbor-agent.exe; feature set affects
         # runtime behaviour only.
         shell: pwsh
         run: |
@@ -164,15 +164,15 @@ jobs:
           # LGHT0103 — same failure mode as the wintun.dll staging below.
           # P3e lever D moved that source from the full tunnel CLI to the
           # ~150 KB shim that re-execs `roomlerd cli`; the INSTALLED name is
-          # still roomler.exe, which is what the payload assert below checks.
+          # still meshharbor.exe, which is what the payload assert below checks.
           # Mirrors release-agent.yml's shim build step.
           cargo build -p meshharbor-cli-shim --release
-          if (-not (Test-Path target\release\roomler-shim.exe)) {
-            Write-Host "::error::roomler-shim.exe not produced — TunnelExe harvest would fail (LGHT0103)"
+          if (-not (Test-Path target\release\meshharbor-shim.exe)) {
+            Write-Host "::error::meshharbor-shim.exe not produced — TunnelExe harvest would fail (LGHT0103)"
             exit 1
           }
-          $kb = [math]::Round((Get-Item target\release\roomler-shim.exe).Length/1KB, 0)
-          Write-Host "Staged roomler-shim.exe ($kb KB, installs as roomler.exe) for the TunnelExe component"
+          $kb = [math]::Round((Get-Item target\release\meshharbor-shim.exe).Length/1KB, 0)
+          Write-Host "Staged meshharbor-shim.exe ($kb KB, installs as meshharbor.exe) for the TunnelExe component"
 
       # Mirrors release-agent.yml's payload-signing placement exactly: after
       # the binaries are built, BEFORE the third-party DLLs (wintun, VC-CRT)
@@ -187,8 +187,8 @@ jobs:
         uses: ./.github/actions/sign-windows
         with:
           files: |
-            target\release\roomlerd.exe
-            target\release\roomler-shim.exe
+            target\release\meshharbord.exe
+            target\release\meshharbor-shim.exe
           mode:               local
           require:            'true'
           # The action imports the self-signed cert into the runner's Root +
@@ -220,7 +220,7 @@ jobs:
         run: |
           # wix/main.wxs UNCONDITIONALLY bundles a `VcRedistCrt` component
           # (app-local Microsoft.VC14x.CRT so fresh machines without the
-          # VC++ redistributable can run roomlerd.exe -- field report
+          # VC++ redistributable can run meshharbord.exe -- field report
           # 2026-07-28) from target\release\*.dll, so the WiX `light`
           # step needs the DLLs present or it fails with LGHT0103.
           # Mirrors release-agent.yml's staging step.
@@ -312,7 +312,7 @@ jobs:
           #
           # The verbose MSI log from run 30843667006 settles what actually
           # happens: the payload installs per-user exactly as intended
-          # (APPLICATIONFOLDER = C:\Users\<u>\AppData\Local\Programs\Roomler,
+          # (APPLICATIONFOLDER = C:\Users\<u>\AppData\Local\Programs\MeshHarbor,
           # Start Menu under the user's Roaming profile, no ALLUSERS authored),
           # while Windows Server 2025 still mirrors the ARP record into an HKLM
           # Uninstall hive. So the install is correct and the assertion was
@@ -384,19 +384,19 @@ jobs:
         shell: pwsh
         run: |
           # P4b renamed the per-User install dir to
-          # %LOCALAPPDATA%\Programs\Roomler and added the tunnel CLI
+          # %LOCALAPPDATA%\Programs\MeshHarbor and added the tunnel CLI
           # to the bundle. Assert the EXACT canonical layout (the old
           # loose multi-candidate probe would silently pass on a
           # regression back to the pre-rename dir): daemon
           # + tunnel CLI + wintun must all land. Also assert the
           # TunnelExe component's user-PATH append took (HKCU\
           # Environment — MSI writes it for Environment System='no').
-          # P3d Slice C: the roomler-agent.exe alias is retired — the MSI
+          # P3d Slice C: the meshharbor-agent.exe alias is retired — the MSI
           # ships only the canonical names now.
-          $installDir = Join-Path $env:LOCALAPPDATA 'Programs\Roomler'
+          $installDir = Join-Path $env:LOCALAPPDATA 'Programs\MeshHarbor'
           # msvcp140/vcruntime140* lock the app-local VcRedistCrt component
           # (fresh machines without the VC++ redist -- 2026-07-28 fix).
-          $mustExist = @('roomlerd.exe', 'roomler.exe', 'wintun.dll',
+          $mustExist = @('meshharbord.exe', 'meshharbor.exe', 'wintun.dll',
                          'msvcp140.dll', 'vcruntime140.dll', 'vcruntime140_1.dll')
           $missing = @()
           foreach ($f in $mustExist) {
@@ -414,14 +414,14 @@ jobs:
               $env:ProgramFiles
             ) | Where-Object { Test-Path $_ }
             foreach ($r in $roots) {
-              Get-ChildItem -Path $r -Include 'roomlerd.exe','roomler-agent.exe' -Recurse -ErrorAction SilentlyContinue |
+              Get-ChildItem -Path $r -Include 'meshharbord.exe','meshharbor-agent.exe' -Recurse -ErrorAction SilentlyContinue |
                 ForEach-Object { Write-Host "  found at: $($_.FullName)" }
             }
             throw "missing from $($installDir): $($missing -join ', ')"
           }
           $userPath = (Get-ItemProperty -Path 'HKCU:\Environment' -ErrorAction SilentlyContinue).PATH
-          if (-not ($userPath -and $userPath -match [regex]::Escape('Programs\Roomler'))) {
-            throw "user PATH does not contain Programs\Roomler after install (HKCU\Environment PATH = '$userPath')"
+          if (-not ($userPath -and $userPath -match [regex]::Escape('Programs\MeshHarbor'))) {
+            throw "user PATH does not contain Programs\MeshHarbor after install (HKCU\Environment PATH = '$userPath')"
           }
           Write-Host "User PATH contains the install dir"
 
@@ -446,7 +446,7 @@ jobs:
           # the `dumpbin -dependents` check CLAUDE.md tells humans to run by
           # hand before adding a C++ dependency, made automatic.
           $ErrorActionPreference = 'Stop'
-          $installDir = Join-Path $env:LOCALAPPDATA 'Programs\Roomler'
+          $installDir = Join-Path $env:LOCALAPPDATA 'Programs\MeshHarbor'
 
           $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
           $vsRoot  = & $vswhere -latest -products * -property installationPath
@@ -463,7 +463,7 @@ jobs:
             param([switch]$Quiet)
             $found    = @()
             $appLocal = @()
-            foreach ($exe in @('roomlerd.exe', 'roomler.exe')) {
+            foreach ($exe in @('meshharbord.exe', 'meshharbor.exe')) {
               $path = Join-Path $installDir $exe
               if (-not (Test-Path $path)) { $found += "$exe missing"; continue }
               $imports = & $dumpbin /dependents $path |
@@ -568,13 +568,13 @@ jobs:
             throw "roomler-agent install record still present after uninstall: $($stragglers.DisplayName -join ', ')"
           }
           # P4b canonical layout: every component-managed payload must
-          # be gone from Programs\Roomler (all files are component-
+          # be gone from Programs\MeshHarbor (all files are component-
           # managed, and the wxs RemoveFolder pair drops the dir when
           # empty), and the TunnelExe component's user-PATH append
           # must have been removed (Environment Part='last' +
           # implicit Permanent='no').
-          $installDir = Join-Path $env:LOCALAPPDATA 'Programs\Roomler'
-          foreach ($f in @('roomlerd.exe', 'roomler-agent.exe', 'roomler.exe', 'wintun.dll', 'msvcp140.dll', 'vcruntime140_1.dll')) {
+          $installDir = Join-Path $env:LOCALAPPDATA 'Programs\MeshHarbor'
+          foreach ($f in @('meshharbord.exe', 'meshharbor-agent.exe', 'meshharbor.exe', 'wintun.dll', 'msvcp140.dll', 'vcruntime140_1.dll')) {
             $p = Join-Path $installDir $f
             if (Test-Path $p) {
               throw "$f still at $p after uninstall — MSI uninstaller is broken"
@@ -585,8 +585,8 @@ jobs:
             Get-ChildItem $installDir -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "  leftover: $($_.FullName)" }
           }
           $userPath = (Get-ItemProperty -Path 'HKCU:\Environment' -ErrorAction SilentlyContinue).PATH
-          if ($userPath -and $userPath -match [regex]::Escape('Programs\Roomler')) {
-            throw "user PATH still contains Programs\Roomler after uninstall (HKCU\Environment PATH = '$userPath')"
+          if ($userPath -and $userPath -match [regex]::Escape('Programs\MeshHarbor')) {
+            throw "user PATH still contains Programs\MeshHarbor after uninstall (HKCU\Environment PATH = '$userPath')"
           }
           Write-Host 'Uninstall left no traces: payload, install dir contents, PATH entry and MSI registry record all clean'
 
@@ -685,7 +685,7 @@ jobs:
               Start-Sleep -Seconds 1
             }
             $swap = Get-Swap
-            $rec = Get-Content "$env:ProgramData\roomler\last-system-context-attempt.json" -Raw -ErrorAction SilentlyContinue | ConvertFrom-Json
+            $rec = Get-Content "$env:ProgramData\meshharbor\last-system-context-attempt.json" -Raw -ErrorAction SilentlyContinue | ConvertFrom-Json
             $products = @(Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*' -ErrorAction SilentlyContinue |
               Where-Object { $_.DisplayName -like 'Roomler*per-Machine*' })
             Write-Host ("{0}: swap={1} (want {2}) service={3} record={4}/{5} products={6}" -f $label, $swap, $want, $svc.Status, $rec.command, $rec.stage, (($products | ForEach-Object { $_.DisplayVersion }) -join ','))
@@ -707,8 +707,8 @@ jobs:
             Invoke-Msi '/i' (Join-Path $out 'pm-4.msi') (Join-Path $logDir 'pm-4.log') ''
             Assert-Mode 'v4, hand-run upgrade with no property' $false '0.0.4.1'
           } finally {
-            Copy-Item "$env:ProgramData\roomler\roomler\service-logs" (Join-Path $logDir 'service-logs') -Recurse -Force -ErrorAction SilentlyContinue
-            Copy-Item "$env:ProgramData\roomler\last-system-context-attempt.json" $logDir -Force -ErrorAction SilentlyContinue
+            Copy-Item "$env:ProgramData\meshharbor\roomler\service-logs" (Join-Path $logDir 'service-logs') -Recurse -Force -ErrorAction SilentlyContinue
+            Copy-Item "$env:ProgramData\meshharbor\last-system-context-attempt.json" $logDir -Force -ErrorAction SilentlyContinue
           }
 
           Invoke-Msi '/x' (Join-Path $out 'pm-4.msi') (Join-Path $logDir 'pm-uninstall.log') ''
@@ -806,7 +806,7 @@ jobs:
         run: |
           set -euo pipefail
           VERSION="0.0.0-smoke"
-          APP=stage/roomlerd.app
+          APP=stage/meshharbord.app
           mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Frameworks"
           cp target/aarch64-apple-darwin/release/roomlerd "$APP/Contents/MacOS/roomlerd"
 
@@ -837,16 +837,16 @@ jobs:
           find "$APP" -type f \( -name '*.dylib' -o -name 'roomlerd' \) \
             -exec codesign --force --sign - {} \;
 
-          cp agents/meshharbord/packaging/macos/com.roomler.agent.plist "$APP/Contents/Resources/"
-          cp agents/meshharbord/packaging/macos/com.roomler.daemon.plist "$APP/Contents/Resources/"
-          cp agents/meshharbord/packaging/macos/com.roomler.desktop.plist "$APP/Contents/Resources/"
-          cp agents/meshharbord/packaging/macos/com.roomler.update.plist "$APP/Contents/Resources/"
+          cp agents/meshharbord/packaging/macos/fans.itachi.meshharbor.agent.plist "$APP/Contents/Resources/"
+          cp agents/meshharbord/packaging/macos/fans.itachi.meshharbor.daemon.plist "$APP/Contents/Resources/"
+          cp agents/meshharbord/packaging/macos/fans.itachi.meshharbor.desktop.plist "$APP/Contents/Resources/"
+          cp agents/meshharbord/packaging/macos/fans.itachi.meshharbor.update.plist "$APP/Contents/Resources/"
           cat > "$APP/Contents/Info.plist" <<PLIST
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
           <plist version="1.0"><dict>
             <key>CFBundleExecutable</key><string>roomlerd</string>
-            <key>CFBundleIdentifier</key><string>com.roomler.agent</string>
+            <key>CFBundleIdentifier</key><string>fans.itachi.meshharbor.agent</string>
             <key>CFBundleVersion</key><string>${VERSION}</string>
             <key>LSUIElement</key><true/>
           </dict></plist>
@@ -863,7 +863,7 @@ jobs:
           }
 
           # The companion, staged the same way the release lane does it.
-          DESK=stage/Roomler.app
+          DESK=stage/MeshHarbor.app
           mkdir -p "$DESK/Contents/MacOS" "$DESK/Contents/Resources"
           cp target/aarch64-apple-darwin/release/meshharbor-desktop "$DESK/Contents/MacOS/meshharbor-desktop"
           cat > "$DESK/Contents/Info.plist" <<PLIST
@@ -871,7 +871,7 @@ jobs:
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
           <plist version="1.0"><dict>
             <key>CFBundleExecutable</key><string>meshharbor-desktop</string>
-            <key>CFBundleIdentifier</key><string>ai.roomler.agent-tray</string>
+            <key>CFBundleIdentifier</key><string>fans.itachi.meshharbor.agent-tray</string>
             <key>CFBundleName</key><string>Roomler</string>
             <key>CFBundleVersion</key><string>${VERSION}</string>
             <key>LSUIElement</key><true/>
@@ -885,7 +885,7 @@ jobs:
           cp -R "$DESK" payload/Applications/
           cp target/aarch64-apple-darwin/release/roomler-shim payload/usr/local/bin/roomler
           chmod 755 payload/usr/local/bin/roomler
-          ln -s /Library/Roomler/roomlerd.app/Contents/MacOS/roomlerd \
+          ln -s /Library/Roomler/meshharbord.app/Contents/MacOS/roomlerd \
             payload/usr/local/bin/roomlerd
           cp agents/meshharbord/packaging/macos/postinstall scripts/postinstall
           chmod 755 scripts/postinstall
@@ -919,7 +919,7 @@ jobs:
           plutil -p component.plist
 
           pkgbuild --root payload --component-plist component.plist \
-            --scripts scripts --identifier com.roomler.agent \
+            --scripts scripts --identifier fans.itachi.meshharbor.agent \
             --version "$VERSION" --install-location / component.pkg
           # Gated exactly as the release is (release-agent.yml's MACOS_FLOOR), and
           # a second product gated at an impossible macOS for the negative
@@ -931,7 +931,7 @@ jobs:
           # script failure can never again be confused with a staging failure.
           echo "=== payload ==="
           pkgutil --payload-files component.pkg | sed -n '1,40p'
-          pkgutil --payload-files component.pkg | grep -q 'Contents/Resources/com.roomler.agent.plist' \
+          pkgutil --payload-files component.pkg | grep -q 'Contents/Resources/fans.itachi.meshharbor.agent.plist' \
             || { echo "::error::the LaunchAgent plist is not in the payload"; exit 1; }
           pkgutil --payload-files component.pkg | grep -q 'usr/local/bin/roomler' \
             || { echo "::error::the CLI is not in the payload"; exit 1; }
@@ -950,7 +950,7 @@ jobs:
             exit 1
           fi
           cat gate.log
-          [ ! -e /Library/Roomler/roomlerd.app ] \
+          [ ! -e /Library/Roomler/meshharbord.app ] \
             || { echo "::error::the refused install still put the daemon bundle down"; exit 1; }
           echo "refused, and nothing landed"
 
@@ -969,7 +969,7 @@ jobs:
           echo "=== install.log (roomler + script lines) ==="
           sudo tail -200 /var/log/install.log | grep -iE "roomler|script|error|fail" || true
           echo "=== what landed anyway ==="
-          ls -la /Library/Roomler/roomlerd.app/Contents/MacOS/ 2>&1 || true
+          ls -la /Library/Roomler/meshharbord.app/Contents/MacOS/ 2>&1 || true
           ls -la /usr/local/bin/roomler 2>&1 || true
           echo "=== is /Applications what we think it is? ==="
           ls -ld /Applications 2>&1 || true
@@ -977,7 +977,7 @@ jobs:
           # pkgbuild infers the .app as a bundle component, and bundle
           # components are RELOCATABLE by default: PackageKit may install one
           # wherever it finds an existing copy rather than at the payload path.
-          sudo find / -maxdepth 6 -name 'roomlerd.app' -not -path '*/work/*' 2>/dev/null || true
+          sudo find / -maxdepth 6 -name 'meshharbord.app' -not -path '*/work/*' 2>/dev/null || true
           echo "=== component metadata (relocatable? install-location?) ==="
           rm -rf /tmp/pkgexp
           pkgutil --expand dist/smoke.pkg /tmp/pkgexp 2>&1 || true
@@ -987,7 +987,7 @@ jobs:
       - name: Assert the payload landed where everything expects it
         run: |
           set -euo pipefail
-          BIN=/Library/Roomler/roomlerd.app/Contents/MacOS/roomlerd
+          BIN=/Library/Roomler/meshharbord.app/Contents/MacOS/roomlerd
           # Both plists and the docs name this path literally, and a rename
           # would void every TCC grant keyed to the binary.
           test -x "$BIN" || { echo "::error::missing $BIN"; exit 1; }
@@ -1014,15 +1014,15 @@ jobs:
       - name: The pre-rename bundle is swept by an upgrade
         run: |
           set -euo pipefail
-          sudo mkdir -p /Library/Roomler/roomler-agent.app/Contents/MacOS
-          sudo cp /Library/Roomler/roomlerd.app/Contents/MacOS/roomlerd \
-            /Library/Roomler/roomler-agent.app/Contents/MacOS/roomler-agent
-          test -d /Library/Roomler/roomler-agent.app \
+          sudo mkdir -p /Library/Roomler/meshharbor-agent.app/Contents/MacOS
+          sudo cp /Library/Roomler/meshharbord.app/Contents/MacOS/roomlerd \
+            /Library/Roomler/meshharbor-agent.app/Contents/MacOS/roomler-agent
+          test -d /Library/Roomler/meshharbor-agent.app \
             || { echo "::error::could not seed the pre-rename bundle"; exit 1; }
           sudo installer -verbose -pkg dist/smoke.pkg -target /
-          test ! -d /Library/Roomler/roomler-agent.app \
+          test ! -d /Library/Roomler/meshharbor-agent.app \
             || { echo "::error::the pre-rename bundle survived the upgrade"; exit 1; }
-          test -x /Library/Roomler/roomlerd.app/Contents/MacOS/roomlerd \
+          test -x /Library/Roomler/meshharbord.app/Contents/MacOS/roomlerd \
             || { echo "::error::the sweep took the CURRENT bundle with it"; exit 1; }
           echo "  pre-rename bundle swept; current bundle intact"
 
@@ -1045,10 +1045,10 @@ jobs:
             echo "  no GUI session — install completed without registering the agent, as intended"
           else
             uid_now=$(id -u "$console_user")
-            plist="$(dscl . -read /Users/"$console_user" NFSHomeDirectory | awk '{print $2}')/Library/LaunchAgents/com.roomler.agent.plist"
+            plist="$(dscl . -read /Users/"$console_user" NFSHomeDirectory | awk '{print $2}')/Library/LaunchAgents/fans.itachi.meshharbor.agent.plist"
             test -f "$plist" || { echo "::error::plist not placed at $plist"; exit 1; }
             echo "  plist placed at $plist"
-            if launchctl print "gui/$uid_now/com.roomler.agent" >/dev/null 2>&1; then
+            if launchctl print "gui/$uid_now/fans.itachi.meshharbor.agent" >/dev/null 2>&1; then
               echo "  LaunchAgent loaded in gui/$uid_now"
             else
               # Placed but not loaded is the documented degraded outcome (it
@@ -1059,7 +1059,7 @@ jobs:
           # Opt-in, and NOT requested here, so it must be absent. The
           # postinstall declining to install a root daemon nobody asked for is
           # as load-bearing as installing one that was asked for.
-          if [ -f /Library/LaunchDaemons/com.roomler.daemon.plist ]; then
+          if [ -f /Library/LaunchDaemons/fans.itachi.meshharbor.daemon.plist ]; then
             echo "::error::the root LaunchDaemon appeared without the enable-daemon marker"
             exit 1
           fi
@@ -1072,14 +1072,14 @@ jobs:
           # default ON, marker opts OUT. A default install must carry it, or
           # the DEFAULT macOS flavour (per-user only) can never self-update —
           # which is the exact state that left a Mac permanently stale.
-          test -f /Library/LaunchDaemons/com.roomler.update.plist \
-            || { echo "::error::com.roomler.update.plist missing — default install has no updater"; exit 1; }
+          test -f /Library/LaunchDaemons/fans.itachi.meshharbor.update.plist \
+            || { echo "::error::fans.itachi.meshharbor.update.plist missing — default install has no updater"; exit 1; }
           # Loaded, not merely placed: RunAtLoad/StartInterval/WatchPaths all
           # hang off the loaded job. (Its RunAtLoad fires the helper once here;
           # the smoke binary's version >= the latest published release, so the
           # helper reports up-to-date/skipped and exits — no install happens.)
-          launchctl print system/com.roomler.update >/dev/null 2>&1 \
-            || { echo "::error::com.roomler.update installed but not loaded"; exit 1; }
+          launchctl print system/fans.itachi.meshharbor.update >/dev/null 2>&1 \
+            || { echo "::error::fans.itachi.meshharbor.update installed but not loaded"; exit 1; }
           echo "  update helper installed + loaded (default ON)"
 
       - name: Assert the menu-bar companion shipped and registered
@@ -1088,16 +1088,16 @@ jobs:
           # macOS had no companion at all before rc.456 — the platform where the
           # OS silently withholds capture and input was the one with nowhere to
           # SAY so.
-          test -x /Applications/Roomler.app/Contents/MacOS/meshharbor-desktop \
+          test -x /Applications/MeshHarbor.app/Contents/MacOS/meshharbor-desktop \
             || { echo "::error::the companion .app is missing"; exit 1; }
           # LSUIElement is what keeps a menu-bar app out of the Dock; without it
           # the user gets a Dock tile for something that has no main window.
-          [ "$(plutil -extract LSUIElement raw /Applications/Roomler.app/Contents/Info.plist)" = "true" ] \
+          [ "$(plutil -extract LSUIElement raw /Applications/MeshHarbor.app/Contents/Info.plist)" = "true" ] \
             || { echo "::error::the companion is not marked LSUIElement"; exit 1; }
           console_user=$(stat -f "%Su" /dev/console 2>/dev/null || echo "")
           if [ -n "$console_user" ] && [ "$console_user" != root ]; then
             home=$(dscl . -read /Users/"$console_user" NFSHomeDirectory | awk '{print $2}')
-            test -f "$home/Library/LaunchAgents/com.roomler.desktop.plist" \
+            test -f "$home/Library/LaunchAgents/fans.itachi.meshharbor.desktop.plist" \
               || { echo "::error::the companion LaunchAgent was not installed"; exit 1; }
             echo "  companion registered for $console_user"
           else
@@ -1129,7 +1129,7 @@ jobs:
           # as working because `has_input_permission` was a compile-time
           # constant. Being able to assert this at all is the point of moving
           # it to a runtime probe.
-          caps="$(/Library/Roomler/roomlerd.app/Contents/MacOS/roomlerd caps 2>&1 || true)"
+          caps="$(/Library/Roomler/meshharbord.app/Contents/MacOS/roomlerd caps 2>&1 || true)"
           echo "$caps"
           if echo "$caps" | grep -qi 'has_input_permission: true'; then
             echo "::error::input advertised as granted on a runner that granted nothing"
@@ -1176,7 +1176,7 @@ jobs:
           sudo touch /etc/roomler-agent/enable-daemon
           sudo installer -verbose -pkg dist/smoke.pkg -target /
           dump_log
-          test -f /Library/LaunchDaemons/com.roomler.daemon.plist \
+          test -f /Library/LaunchDaemons/fans.itachi.meshharbor.daemon.plist \
             || { echo "::error::daemon plist missing after an enabled install"; exit 1; }
           echo "  daemon installed"
           # The migration must have MOVED it, not copied it: a legacy directory
@@ -1190,7 +1190,7 @@ jobs:
           echo "=== install 2: plain, i.e. what a self-update runs ==="
           sudo installer -verbose -pkg dist/smoke.pkg -target /
           dump_log
-          test -f /Library/LaunchDaemons/com.roomler.daemon.plist \
+          test -f /Library/LaunchDaemons/fans.itachi.meshharbor.daemon.plist \
             || { echo "::error::a plain re-install DELETED the enabled daemon — \
                  the self-update regression is back"; exit 1; }
           echo "  daemon survived the update"
@@ -1202,7 +1202,7 @@ jobs:
           sudo rm -f /etc/roomler/enable-daemon
           sudo installer -verbose -pkg dist/smoke.pkg -target /
           dump_log
-          if [ -f /Library/LaunchDaemons/com.roomler.daemon.plist ]; then
+          if [ -f /Library/LaunchDaemons/fans.itachi.meshharbor.daemon.plist ]; then
             echo "::error::opt-out no longer removes the daemon"
             exit 1
           fi
@@ -1221,7 +1221,7 @@ jobs:
           # The three installs above all ran WITHOUT the disable marker, so the
           # helper must still be present at this point (regression guard for
           # "an unrelated re-install dropped the updater").
-          test -f /Library/LaunchDaemons/com.roomler.update.plist \
+          test -f /Library/LaunchDaemons/fans.itachi.meshharbor.update.plist \
             || { echo "::error::update plist vanished across plain re-installs"; exit 1; }
 
           echo "=== opt out: marker set -> the helper must GO ==="
@@ -1236,13 +1236,13 @@ jobs:
           sudo touch /etc/roomler-agent/disable-auto-update
           sudo installer -verbose -pkg dist/smoke.pkg -target /
           dump_log
-          if [ -f /Library/LaunchDaemons/com.roomler.update.plist ]; then
+          if [ -f /Library/LaunchDaemons/fans.itachi.meshharbor.update.plist ]; then
             echo "::error::disable-auto-update did not remove the helper plist"
             exit 1
           fi
           # The idle job must have been booted out too (the in-flight guard
           # only defers when an update is actually running, which none is here).
-          if launchctl print system/com.roomler.update >/dev/null 2>&1; then
+          if launchctl print system/fans.itachi.meshharbor.update >/dev/null 2>&1; then
             echo "::error::helper job still loaded after opt-out"
             exit 1
           fi
@@ -1252,9 +1252,9 @@ jobs:
           sudo rm -f /etc/roomler-agent/disable-auto-update
           sudo installer -verbose -pkg dist/smoke.pkg -target /
           dump_log
-          test -f /Library/LaunchDaemons/com.roomler.update.plist \
+          test -f /Library/LaunchDaemons/fans.itachi.meshharbor.update.plist \
             || { echo "::error::helper plist not restored after removing the opt-out"; exit 1; }
-          launchctl print system/com.roomler.update >/dev/null 2>&1 \
+          launchctl print system/fans.itachi.meshharbor.update >/dev/null 2>&1 \
             || { echo "::error::helper not re-loaded after removing the opt-out"; exit 1; }
           echo "  opt-in restores the helper"
 

@@ -35,7 +35,7 @@ param(
     # location. The MSI is installed under the *current* user's
     # %LOCALAPPDATA%, so when running elevated as an admin who is not
     # the install user, supply -AgentExe explicitly.
-    [string]$AgentExe = (Join-Path $env:LOCALAPPDATA 'Programs\Roomler\roomlerd.exe'),
+    [string]$AgentExe = (Join-Path $env:LOCALAPPDATA 'Programs\MeshHarbor\meshharbord.exe'),
 
     # How many tail lines to print per log file in Logs action.
     [int]$LogTail = 80
@@ -224,7 +224,7 @@ function Do-Smoke {
     # alive and the persistent-instance lock is held.
     $procs = Get-Process -Name 'roomlerd' -ErrorAction SilentlyContinue
     if (-not $procs) {
-        Write-Host 'No roomlerd.exe processes running.' -ForegroundColor Red
+        Write-Host 'No meshharbord.exe processes running.' -ForegroundColor Red
         exit 1
     }
     foreach ($p in $procs) {
@@ -368,7 +368,7 @@ function Do-Rollback {
 
     Write-Host ''
     Write-Host 'Rollback complete. Log out + back in to trigger the Scheduled Task ONLOGON,' -ForegroundColor Cyan
-    Write-Host 'or run the agent manually:  $env:LOCALAPPDATA\Programs\Roomler\roomlerd.exe run'
+    Write-Host 'or run the agent manually:  $env:LOCALAPPDATA\Programs\MeshHarbor\meshharbord.exe run'
     Write-Host ''
 }
 

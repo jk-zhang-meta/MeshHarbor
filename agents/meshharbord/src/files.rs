@@ -2305,7 +2305,7 @@ const DIR_LIST_TIMEOUT_SECS: u64 = 3;
 // segment while that tree exists, so a host installed before the rename
 // keeps finding its own staging dir and uploads. Every occurrence below is
 // that fallback or a test pinning it — the retired name is the INPUT.
-/// `C:\ProgramData\roomler\roomler-agent\staging`, but `machine_global_dir()`
+/// `C:\ProgramData\meshharbor\roomler-agent\staging`, but `machine_global_dir()`
 /// resolves the `roomler` segment on a fresh install and only falls back to the
 /// pre-rename `roomler-agent` segment when that tree already exists — so the
 /// literal was correct on exactly one class of host and silently wrong on the
@@ -2959,7 +2959,7 @@ mod tests {
 
     /// FR-21 P4 — the sentinel must resolve on the AGENT, never in the viewer.
     ///
-    /// The viewer used to hardcode `C:\ProgramData\roomler\roomler-agent\staging`,
+    /// The viewer used to hardcode `C:\ProgramData\meshharbor\roomler-agent\staging`,
     /// which `machine_global_dir()` only resolves to on a host that already
     /// carries the pre-rename tree. Verified broken on a real SYSTEM-mode
     /// Windows host, where that parent does not exist at all.
@@ -3448,8 +3448,8 @@ mod tests {
         #[cfg(target_os = "windows")]
         {
             for p in [
-                r"C:\ProgramData\roomler\roomler\config.toml",
-                r"\\?\C:\PROGRAMDATA\Roomler\ROOMLER\service-logs\x.log",
+                r"C:\ProgramData\meshharbor\roomler\config.toml",
+                r"\\?\C:\PROGRAMDATA\MeshHarbor\ROOMLER\service-logs\x.log",
                 r"C:\Users\u\AppData\Roaming\roomler\roomler\config\config.toml",
                 r"C:\Users\u\AppData\Local\roomler\roomler\data\desktop\desktop.log",
             ] {

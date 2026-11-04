@@ -3,7 +3,7 @@ name: LGPL corresponding source
 # FR-24 P4 — make the LGPL written offer in THIRD-PARTY-NOTICES.md real.
 #
 # The Windows agent links FFmpeg STATICALLY (x64-windows-static-md), which puts
-# us under LGPL-2.1 §6: a recipient must be able to relink `roomlerd.exe`
+# us under LGPL-2.1 §6: a recipient must be able to relink `meshharbord.exe`
 # against their own build of the library. Discharging that needs the library's
 # complete corresponding source available for at least three years — and an
 # Actions artifact expires in 90 days, so it cannot carry the offer.
@@ -176,7 +176,7 @@ jobs:
 
           | Platform | Linkage | Source changes applied | LGPL clause |
           |---|---|---|---|
-          | Windows (\`roomlerd.exe\`) | **static** (\`x64-windows-static-md\`) | our patches, then the vcpkg port's own, in its \`PATCHES\` list | §6: relinking must be possible |
+          | Windows (\`meshharbord.exe\`) | **static** (\`x64-windows-static-md\`) | our patches, then the vcpkg port's own, in its \`PATCHES\` list | §6: relinking must be possible |
           | Linux (\`.deb\`) | shared (\`--enable-shared --disable-static\`) | our patches (\`patch -p1\` from the source root, in file-name order) | §6(b): the shared mechanism satisfies it |
           | macOS (\`.pkg\`) | shared (the \`*_videotoolbox\` encoders as dylibs in the app bundle) | none | §6(b): the shared mechanism satisfies it |
 
@@ -205,7 +205,7 @@ jobs:
           To exercise your §6 rights on the statically-linked Windows build,
           request the linkable object files for a specific released version at
           **legal@roomler.ai**, quoting the version string from
-          \`roomlerd.exe --version\`. See THIRD-PARTY-NOTICES.md in the Roomler
+          \`meshharbord.exe --version\`. See THIRD-PARTY-NOTICES.md in the Roomler
           repository for the full written offer.
           RECIPE
           cat bundle/recipe/README.md

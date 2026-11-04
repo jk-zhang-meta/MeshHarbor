@@ -1,7 +1,7 @@
 [Unit]
-# FR-96 — the UPDATE HALF of a per-user install: `roomlerd update-helper`, as
-# root, once per wake. The systemd twin of the macOS `com.roomler.update`
-# LaunchDaemon (agents/meshharbord/packaging/macos/com.roomler.update.plist).
+# FR-96 — the UPDATE HALF of a per-user install: `meshharbord update-helper`, as
+# root, once per wake. The systemd twin of the macOS `fans.itachi.meshharbor.update`
+# LaunchDaemon (agents/meshharbord/packaging/macos/fans.itachi.meshharbor.update.plist).
 #
 # Why it exists: a per-user daemon runs as the user, and writing /usr needs
 # root, whichever format the host takes (the .deb or the tarball). So a

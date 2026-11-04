@@ -51,7 +51,7 @@ credential never passes through a process the signed-in user controls.
 ### 3c. The wizard
 
 - **Offer.** The token peek (`agents/meshharbor-setup/src/commands.rs` L198–221) reads the `anchor` claim. The anchor step is offered only for `DaemonSystem` / `DaemonMachine` on Windows.
-- **The step.** After `EnrollOk`, a new best-effort step (shaped like the companion step, `orchestrator_agent.rs` L513–519) runs `roomlerd.exe anchor create --server <origin> --token <the same token> --device <agent_id> --force`.
+- **The step.** After `EnrollOk`, a new best-effort step (shaped like the companion step, `orchestrator_agent.rs` L513–519) runs `meshharbord.exe anchor create --server <origin> --token <the same token> --device <agent_id> --force`.
   - It runs **elevated** through a generalised `spawn_elevated(file, argv)` in `meshharbor-setup-core`, beside `msi_runner.rs`; `spawn_msiexec_elevated` becomes a call to it.
   - It is awaited with `MsiRunner::attach(pid).wait_for_exit()`, and success is the exit code.
   - `--force` because the wizard enrolled this very host by id a moment earlier.

@@ -72,7 +72,7 @@ Two transport families with different latency behaviour:
 One build per OS and architecture carries **every** hardware backend FFmpeg offers
 for that platform; the probe below discovers at runtime which ones the host can
 open. That was decided by a measurement, not a preference — every wrapper is under
-1 MB against a 35 MiB `roomlerd.exe` (ADR
+1 MB against a 35 MiB `meshharbord.exe` (ADR
 [0001](adr/0001-encoder-backends-compiled-in-discovered-at-runtime.md)).
 
 | Codec | Windows | Linux x86_64 | macOS arm64 | Notes |
@@ -663,7 +663,7 @@ pwsh scripts/dev-ffmpeg-windows.ps1          # download + verify + stage under C
 # in a vcvars64 / "x64 Native Tools" shell (bindgen wants MSVC's stdint.h):
 Invoke-Expression (pwsh scripts/dev-ffmpeg-windows.ps1 -Env | Out-String)
 cargo build -p meshharbord --release --features "full-hw,vp9-444,system-context,ffmpeg-encoder,overlay-l3,overlay-netstack,ssh-server"
-.\target\release\roomlerd.exe encoder-smoke --encoder hardware --codec hevc
+.\target\release\meshharbord.exe encoder-smoke --encoder hardware --codec hevc
 ```
 
 It stages FFmpeg under `C:\ffmpeg-pin\installed\x64-windows-static-md` and libvpx

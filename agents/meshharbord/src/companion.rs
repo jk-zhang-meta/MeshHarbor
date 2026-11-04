@@ -24,7 +24,7 @@
 //! the worker runs elevated by default, so "it cannot write `%ProgramFiles%`
 //! and skips" stopped being true, and the two used to swap concurrently,
 //! each renaming the other's fresh copy under a live companion. A per-user
-//! task daemon owns `%LOCALAPPDATA%\Programs\Roomler` and refreshes itself.
+//! task daemon owns `%LOCALAPPDATA%\Programs\MeshHarbor` and refreshes itself.
 //! Running companions are found by the path they were started from and
 //! stopped by pid before the swap (`win_service::companion_procs`), never by
 //! image name. Failures are always skip-and-retry-next-start, never fatal.
@@ -343,7 +343,7 @@ fn installed_version_inner() -> Option<String> {
 /// removing.
 #[cfg(target_os = "macos")]
 fn installed_version_inner() -> Option<String> {
-    const PLIST: &str = "/Applications/Roomler.app/Contents/Info.plist";
+    const PLIST: &str = "/Applications/MeshHarbor.app/Contents/Info.plist";
     let text = std::fs::read_to_string(PLIST).ok()?;
     let after = text.split("<key>CFBundleShortVersionString</key>").nth(1)?;
     let open = after.find("<string>")? + "<string>".len();
@@ -556,8 +556,8 @@ fn respawn_context_for_self() -> RespawnContext {
 
 #[cfg(target_os = "macos")]
 async fn ensure_running_inner() -> Result<EnsureOutcome> {
-    const BUNDLE: &str = "/Applications/Roomler.app";
-    const LABEL: &str = "com.roomler.desktop";
+    const BUNDLE: &str = "/Applications/MeshHarbor.app";
+    const LABEL: &str = "fans.itachi.meshharbor.desktop";
 
     if !std::path::Path::new(BUNDLE).exists() {
         // Not an error, for the same reason as the Windows arm: a daemon-only
@@ -970,7 +970,7 @@ pub async fn refresh_if_stale(respawn: RespawnContext) {
         // This function exists because the Windows companion is a standalone
         // EXE placed BESIDE the daemon by the wizard / install.ps1, in neither
         // MSI, so nothing else would ever move it forward. The macOS .pkg
-        // carries `/Applications/Roomler.app`. On Linux the companion is its
+        // carries `/Applications/MeshHarbor.app`. On Linux the companion is its
         // own `.deb`/`.rpm`, which ⚠️ NOTHING upgraded (there is no apt or dnf
         // repository): FR-117 moves it through the host's package manager, in
         // the updater's loop (`sync_package`), never by swapping a file the

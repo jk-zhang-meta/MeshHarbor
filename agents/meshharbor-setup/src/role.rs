@@ -19,7 +19,7 @@
 //!
 //! Role→action COMPOSITION (P4b): a daemon role ALSO delivers the
 //! CLI — not by running a second pipeline, but because the daemon
-//! MSIs carry `roomler.exe` (wxs `TunnelExe` component) + a PATH
+//! MSIs carry `meshharbor.exe` (wxs `TunnelExe` component) + a PATH
 //! append since P4b. Each role therefore still runs exactly one
 //! orchestrator: the three daemon roles map onto
 //! [`crate::orchestrator_agent`] (which existence-checks the

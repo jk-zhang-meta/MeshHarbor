@@ -1,7 +1,7 @@
-# roomler install.ps1 -- terminal-driven install of the Roomler node stack on
+# meshharbor install.ps1 -- terminal-driven install of the MeshHarbor node stack on
 # Windows, replicating the meshharbor-setup wizard's steps without a GUI:
 # resolve via the roomler.ai proxy -> download -> sha256-verify -> install ->
-# enroll -> autostart. Installs roomlerd + the roomler CLI (both inside the
+# enroll -> autostart. Installs meshharbord + the meshharbor CLI (both inside the
 # MSI since P4b) and places the meshharbor-desktop companion beside them.
 #
 # NB this file is deliberately ASCII-only: it is served raw over HTTP
@@ -23,13 +23,13 @@
 # Roles (same vocabulary as the meshharbor-setup wizard):
 #   daemon-user     perUser MSI -- Scheduled-Task autostart, no UAC.
 #                   Run from a NORMAL (non-elevated) shell -- see -AllowElevated.
-#   daemon-machine  perMachine MSI -- SCM service 'Roomler'. ELEVATED shell required.
+#   daemon-machine  perMachine MSI -- SCM service 'MeshHarbor'. ELEVATED shell required.
 #   daemon-system   perMachine MSI + SystemContext (pre-logon / lock screen /
 #                   UAC control). ELEVATED shell required. Default.
 #
 #   The default role needs an ELEVATED shell; pass '-Role daemon-user' from a
 #   normal shell for a no-admin per-user install.
-#   tunnel-client   the roomler CLI only ("reach others") -- zip + user PATH.
+#   tunnel-client   the meshharbor CLI only ("reach others") -- zip + user PATH.
 #                   Run from a NORMAL (non-elevated) shell -- see -AllowElevated.
 #
 # Switches:
@@ -45,11 +45,11 @@
 #   -AllowPublicFirewall  with -PrepareFirewall: also allow Public networks.
 #                   By default the new TCP/UDP rules cover Private + Domain.
 # RETIRED-NAME-ANCHOR-BEGIN
-# 'Roomler Agent' IS the MSI ARP DisplayName, so the uninstall lookups below
+# 'MeshHarbor Agent' IS the MSI ARP DisplayName, so the uninstall lookups below
 # must match it exactly or they find nothing and silently do nothing. The
-# roomler-tunnel paths and probes are the install layout on hosts that predate
+# meshharbor-tunnel paths and probes are the install layout on hosts that predate
 # the rename; the script has to keep finding what is actually there.
-#   -Uninstall      remove Roomler from this box: every 'Roomler Agent' MSI
+#   -Uninstall      remove MeshHarbor from this box: every 'MeshHarbor Agent' MSI
 #                   product registered for this user (HKCU) or machine-wide
 #                   (HKLM; needs elevation), plus the tunnel-client archive
 #                   install and script-copied leftovers. Ignores -Role.
@@ -70,7 +70,7 @@ param(
     [string]$Role = 'daemon-system',
     # ⚠️ FR-50 — REWRITTEN at serve time by the server that hands you this
     # script (crates/modules/fleet/src/setup_release.rs), so a script fetched from
-    # a self-hosted Roomler enrols against THAT server. Full reasoning in the
+    # a self-hosted MeshHarbor enrols against THAT server. Full reasoning in the
     # matching comment in install.sh. ⚠️ The API holds this exact text as a
     # needle and a unit test asserts it appears exactly once, so editing it
     # fails the build rather than silently disabling the substitution.
@@ -140,7 +140,7 @@ function Assert-Sha256([string]$File, [string]$Digest) {
     Say ("sha256 verified: " + (Split-Path -Leaf $File))
 }
 
-# The release roomlerd.exe links the MSVC runtime dynamically (its C++
+# The release meshharbord.exe links the MSVC runtime dynamically (its C++
 # encoder objects), and pre-rc.266 MSIs ship no app-local CRT: on a fresh
 # Windows box without any VC++ 2015-2022 x64 redistributable the first
 # daemon run dies with a loader dialog ("vcruntime140_1.dll was not
@@ -187,7 +187,7 @@ if ($AllowPublicFirewall -and -not $PrepareFirewall) {
     throw "-AllowPublicFirewall requires -PrepareFirewall."
 }
 
-$stage = Join-Path $env:TEMP ("roomler-install-" + [guid]::NewGuid().ToString('N').Substring(0, 8))
+$stage = Join-Path $env:TEMP ("meshharbor-install-" + [guid]::NewGuid().ToString('N').Substring(0, 8))
 New-Item -ItemType Directory -Path $stage -Force | Out-Null
 
 $machineRole = $Role -in @('daemon-machine', 'daemon-system')
@@ -226,9 +226,9 @@ if (-not $machineRole -and -not $DownloadOnly -and -not $Uninstall -and -not $Al
 $mgFlag = ''
 if ($Role -eq 'daemon-system') { $mgFlag = ' --machine-global' }
 
-Say "roomler install.ps1 -- role=$Role server=$Server"
+Say "meshharbor install.ps1 -- role=$Role server=$Server"
 
-# --- daemon roles: MSI (carries roomlerd + the roomler CLI) -----------------
+# --- daemon roles: MSI (carries meshharbord + the meshharbor CLI) -----------------
 
 function Install-Daemon {
     if (-not $DownloadOnly) { Ensure-VcRuntime }
@@ -249,9 +249,9 @@ function Install-Daemon {
     # cancels the optional firewall preparation on a fresh installation.
     if ($PrepareFirewall) { $msiArgs = $msiArgs + " MESH_SKIP_AUTOSTART=1" }
 
-    $installDir = Join-Path $env:ProgramFiles 'Roomler'
-    if ($Role -eq 'daemon-user') { $installDir = Join-Path $env:LOCALAPPDATA 'Programs\Roomler' }
-    $daemon = Join-Path $installDir 'roomlerd.exe'
+    $installDir = Join-Path $env:ProgramFiles 'MeshHarbor'
+    if ($Role -eq 'daemon-user') { $installDir = Join-Path $env:LOCALAPPDATA 'Programs\MeshHarbor' }
+    $daemon = Join-Path $installDir 'meshharbord.exe'
 
     if ($DownloadOnly) {
         Say "download-only: would run: msiexec $msiArgs"
@@ -266,7 +266,7 @@ function Install-Daemon {
     if ($proc.ExitCode -ne 0 -and $proc.ExitCode -ne 3010) { throw "msiexec exited $($proc.ExitCode)" }
     if ($proc.ExitCode -eq 3010) { Warn "MSI installation succeeded; restart Windows to complete it." }
     if (-not (Test-Path $daemon)) { throw "install finished but $daemon is missing" }
-    Say "installed: $installDir (roomlerd.exe + roomler.exe on PATH for new shells)"
+    Say "installed: $installDir (meshharbord.exe + meshharbor.exe on PATH for new shells)"
 
     if ($PrepareFirewall) {
         Initialize-DaemonFirewall -Daemon $daemon
@@ -282,14 +282,14 @@ function Install-Daemon {
     if ($Role -eq 'daemon-user') { $uninstRoot = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall' }
     $arp = Get-ChildItem $uninstRoot -ErrorAction SilentlyContinue |
         ForEach-Object { Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue } |
-        Where-Object { $_.DisplayName -like 'Roomler Agent*' } |
+        Where-Object { $_.DisplayName -like 'MeshHarbor Agent*' } |
         Select-Object -First 1
     if ($arp) {
         $hive = ($uninstRoot -split ':')[0]
         Say ("registered: '" + $arp.DisplayName + "' " + $arp.DisplayVersion + " in " + $hive + " (account: " + $env:USERNAME + ")")
         Say ("uninstall later with: msiexec /x " + $arp.PSChildName + "  (or re-run this script with -Uninstall)")
     } else {
-        Warn "no 'Roomler Agent' record found in $uninstRoot after install -- uninstall via: install.ps1 -Uninstall"
+        Warn "no 'MeshHarbor Agent' record found in $uninstRoot after install -- uninstall via: install.ps1 -Uninstall"
     }
 
     if (-not $SkipDesktop) { Install-Desktop -InstallDir $installDir }
@@ -313,10 +313,10 @@ function Install-Daemon {
     # Scope follows the role: daemon-system = system (LocalSystem service),
     # daemon-user = per-user (Scheduled Task), daemon-machine = attended (a
     # service without SystemContext, usable only beside a signed-in session).
-    $env:ROOMLER_INSTALL_METHOD = 'script-ps1'
-    $env:ROOMLER_INSTALL_SCOPE = 'system'
-    if ($Role -eq 'daemon-user') { $env:ROOMLER_INSTALL_SCOPE = 'per-user' }
-    if ($Role -eq 'daemon-machine') { $env:ROOMLER_INSTALL_SCOPE = 'attended' }
+    $env:MESHHARBOR_INSTALL_METHOD = 'script-ps1'
+    $env:MESHHARBOR_INSTALL_SCOPE = 'system'
+    if ($Role -eq 'daemon-user') { $env:MESHHARBOR_INSTALL_SCOPE = 'per-user' }
+    if ($Role -eq 'daemon-machine') { $env:MESHHARBOR_INSTALL_SCOPE = 'attended' }
     try {
         & $daemon @enrollArgs
         $enrollExit = $LASTEXITCODE
@@ -324,30 +324,30 @@ function Install-Daemon {
         # $env: is process-wide, and an `irm | iex` run shares the caller's
         # process: left set, a later hand-typed enroll in the same window
         # would be recorded as this script's.
-        Remove-Item Env:ROOMLER_INSTALL_METHOD, Env:ROOMLER_INSTALL_SCOPE -ErrorAction SilentlyContinue
+        Remove-Item Env:MESHHARBOR_INSTALL_METHOD, Env:MESHHARBOR_INSTALL_SCOPE -ErrorAction SilentlyContinue
     }
     if ($enrollExit -ne 0) { throw "enrollment failed (exit $enrollExit)" }
 
     # Kick the autostart so the daemon picks up the fresh config now
     # rather than at the next logon / service cycle. Best-effort.
     if ($Role -eq 'daemon-user') {
-        Say "starting the Scheduled Task 'Roomler'"
-        schtasks /Run /TN Roomler | Out-Null
+        Say "starting the Scheduled Task 'MeshHarbor'"
+        schtasks /Run /TN MeshHarbor | Out-Null
     } else {
-        Say "restarting the 'Roomler' service so it picks up the enrollment"
-        try { Restart-Service -Name Roomler -Force } catch { Warn "Restart-Service Roomler: $_" }
+        Say "restarting the 'MeshHarbor' service so it picks up the enrollment"
+        try { Restart-Service -Name MeshHarbor -Force } catch { Warn "Restart-Service MeshHarbor: $_" }
     }
     # FR-84 D6: the daemon opens the companion ONCE after a fresh install (the
     # Welcome tour) in the signed-in desktop session, and registers it to start
-    # at login ('Roomler Desktop' under ...\CurrentVersion\Run). Nothing to do
+    # at login ('MeshHarbor Desktop' under ...\CurrentVersion\Run). Nothing to do
     # here -- say so, so an unattended run's log explains the window.
     if (-not $SkipDesktop) {
-        Say "on a fresh install the Roomler app opens on the signed-in desktop in a few seconds (Welcome tour)"
+        Say "on a fresh install the MeshHarbor app opens on the signed-in desktop in a few seconds (Welcome tour)"
     }
 }
 
 # The desktop companion is a standalone release EXE (not in the MSI).
-# Placing it BESIDE roomlerd.exe is the supported layout -- the tray
+# Placing it BESIDE meshharbord.exe is the supported layout -- the tray
 # resolves the daemon as a sibling of its own EXE.
 function Install-Desktop([string]$InstallDir) {
     Say "resolving meshharbor-desktop from $Server/api/agent/latest-release"
@@ -385,23 +385,23 @@ function Install-TunnelClient {
 
     # The meshharbor-setup wizard's canonical per-user install root -- a
     # script install lands where the wizard (and its detect) expects.
-    $installDir = Join-Path $env:LOCALAPPDATA 'roomler\roomler-tunnel\Programs\roomler-tunnel'
+    $installDir = Join-Path $env:LOCALAPPDATA 'meshharbor\meshharbor-tunnel\Programs\meshharbor-tunnel'
 
     if ($DownloadOnly) {
         Say "download-only: would extract to $installDir, append it to the user PATH,"
-        Say "download-only: then enroll via: roomler.exe enroll --server $Server --token <token> --name '$Name'"
+        Say "download-only: then enroll via: meshharbor.exe enroll --server $Server --token <token> --name '$Name'"
         return
     }
 
     New-Item -ItemType Directory -Path $installDir -Force | Out-Null
     Expand-Archive -Path $zip -DestinationPath $installDir -Force
-    # Archives ship BOTH names since the P3d rename; prefer 'roomler'.
+    # Archives ship BOTH names since the P3d rename; prefer 'meshharbor'.
     $cli = $null
-    foreach ($n in @('roomler.exe', 'roomler-tunnel.exe')) {
+    foreach ($n in @('meshharbor.exe', 'meshharbor-tunnel.exe')) {
         $found = Get-ChildItem -Path $installDir -Filter $n -Recurse | Select-Object -First 1
         if ($found) { $cli = $found.FullName; break }
     }
-    if (-not $cli) { throw "no roomler.exe / roomler-tunnel.exe in the extracted archive" }
+    if (-not $cli) { throw "no meshharbor.exe / meshharbor-tunnel.exe in the extracted archive" }
     $cliDir = Split-Path -Parent $cli
     Say "installed: $cli"
 
@@ -422,9 +422,9 @@ function Install-TunnelClient {
     if ($LASTEXITCODE -ne 0) { throw "enrollment failed (exit $LASTEXITCODE)" }
 }
 
-# --- uninstall: every Roomler install this account can see ------------------
+# --- uninstall: every MeshHarbor install this account can see ------------------
 
-function Uninstall-Roomler {
+function Uninstall-MeshHarbor {
     # 1) MSI products, both hives. HKCU = perUser flavour (visible only to
     #    the account that installed it -- the reason -Uninstall exists);
     #    HKLM = perMachine flavours (need elevation to remove).
@@ -436,13 +436,13 @@ function Uninstall-Roomler {
     foreach ($r in $roots) {
         Get-ChildItem $r.Path -ErrorAction SilentlyContinue |
             ForEach-Object { Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue } |
-            Where-Object { $_.DisplayName -like 'Roomler Agent*' -and $_.PSChildName -like '{*}' } |
+            Where-Object { $_.DisplayName -like 'MeshHarbor Agent*' -and $_.PSChildName -like '{*}' } |
             ForEach-Object {
                 $found += @{ Hive = $r.Hive; Code = $_.PSChildName; Name = $_.DisplayName; Version = $_.DisplayVersion }
             }
     }
     if ($found.Count -eq 0) {
-        Say "no 'Roomler Agent' MSI products registered for this account or machine-wide."
+        Say "no 'MeshHarbor Agent' MSI products registered for this account or machine-wide."
     }
     $uninstallProblems = @()
     foreach ($p in $found) {
@@ -455,8 +455,8 @@ function Uninstall-Roomler {
         # Best-effort pre-stop so msiexec's FilesInUse never wedges a /qn
         # uninstall (the rc.236 self-update lesson): the MSI's own custom
         # actions also stop these, this just makes it deterministic.
-        if ($p.Hive -eq 'HKCU') { schtasks /End /TN Roomler 2>$null | Out-Null }
-        else { try { Stop-Service -Name Roomler -Force -ErrorAction SilentlyContinue } catch {} }
+        if ($p.Hive -eq 'HKCU') { schtasks /End /TN MeshHarbor 2>$null | Out-Null }
+        else { try { Stop-Service -Name MeshHarbor -Force -ErrorAction SilentlyContinue } catch {} }
         Say ("uninstalling '" + $p.Name + "' " + $p.Version + " (" + $p.Code + ", " + $p.Hive + ")")
         $proc = Start-Process -FilePath 'msiexec.exe' -ArgumentList ("/x " + $p.Code + " /qn /norestart") -Wait -PassThru
         if ($proc.ExitCode -ne 0 -and $proc.ExitCode -ne 3010) {
@@ -471,7 +471,7 @@ function Uninstall-Roomler {
     # login start and client state; a warning followed by "done" hid a partial
     # uninstall and removed files that the surviving product still needed.
     if ($uninstallProblems.Count -gt 0) {
-        throw ("Roomler MSI removal is incomplete: " + ($uninstallProblems -join "; ") + ". Remaining companion, startup and tunnel-client state was preserved.")
+        throw ("MeshHarbor MSI removal is incomplete: " + ($uninstallProblems -join "; ") + ". Remaining companion, startup and tunnel-client state was preserved.")
     }
     # Observe product absence before removing script-owned leftovers. Registry
     # views can settle briefly after msiexec; read only, never repeat /x.
@@ -487,7 +487,7 @@ function Uninstall-Roomler {
                 try { $product = Get-ItemProperty -LiteralPath $key.PSPath -ErrorAction Stop }
                 catch [System.Management.Automation.ItemNotFoundException] { continue }
                 catch { throw "Could not read an MSI registration in $($r.Hive); remaining companion, startup and tunnel-client state was preserved." }
-                if ($product.DisplayName -like 'Roomler Agent*' -and $product.PSChildName -like '{*}') {
+                if ($product.DisplayName -like 'MeshHarbor Agent*' -and $product.PSChildName -like '{*}') {
                     $remaining += $product.PSChildName
                 }
             }
@@ -496,7 +496,7 @@ function Uninstall-Roomler {
         if ($attempt -lt 2) { Start-Sleep -Milliseconds 200 }
     }
     if ($remaining.Count -gt 0) {
-        throw "Roomler MSI products are still registered; removal is pending or incomplete. Remaining companion, startup and tunnel-client state was preserved. Resolve the MSI state and re-run -Uninstall."
+        throw "MeshHarbor MSI products are still registered; removal is pending or incomplete. Remaining companion, startup and tunnel-client state was preserved. Resolve the MSI state and re-run -Uninstall."
     }
 
     # 1b) FR-84 D6: the companion's login start. The MSI's uninstall custom
@@ -505,17 +505,17 @@ function Uninstall-Roomler {
     $runKeys = @('HKCU:\Software\Microsoft\Windows\CurrentVersion\Run')
     if (Test-Elevated) { $runKeys += 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run' }
     foreach ($rk in $runKeys) {
-        if (Get-ItemProperty -Path $rk -Name 'Roomler Desktop' -ErrorAction SilentlyContinue) {
+        if (Get-ItemProperty -Path $rk -Name 'MeshHarbor Desktop' -ErrorAction SilentlyContinue) {
             try {
-                Remove-ItemProperty -Path $rk -Name 'Roomler Desktop' -ErrorAction Stop
-                Say "removed the Roomler Desktop login start ($rk)"
-            } catch { Warn "could not remove the Roomler Desktop login start in ${rk}: $_" }
+                Remove-ItemProperty -Path $rk -Name 'MeshHarbor Desktop' -ErrorAction Stop
+                Say "removed the MeshHarbor Desktop login start ($rk)"
+            } catch { Warn "could not remove the MeshHarbor Desktop login start in ${rk}: $_" }
         }
     }
 
     # 2) Script-copied leftovers the MSI never owned: meshharbor-desktop.exe
     #    (placed by Install-Desktop) + the then-empty install dir.
-    foreach ($dir in @((Join-Path $env:ProgramFiles 'Roomler'), (Join-Path $env:LOCALAPPDATA 'Programs\Roomler'))) {
+    foreach ($dir in @((Join-Path $env:ProgramFiles 'MeshHarbor'), (Join-Path $env:LOCALAPPDATA 'Programs\MeshHarbor'))) {
         $desk = Join-Path $dir 'meshharbor-desktop.exe'
         if (Test-Path $desk) {
             try {
@@ -530,10 +530,10 @@ function Uninstall-Roomler {
 
     # 3) The tunnel-client role (archive install -- by construction it has
     #    NO Add/Remove record anywhere): dir + its user-PATH entry.
-    $tcRoot = Join-Path $env:LOCALAPPDATA 'roomler\roomler-tunnel'
+    $tcRoot = Join-Path $env:LOCALAPPDATA 'meshharbor\meshharbor-tunnel'
     if (Test-Path $tcRoot) {
         try {
-            Get-Process -Name 'roomler', 'roomler-tunnel' -ErrorAction SilentlyContinue |
+            Get-Process -Name 'meshharbor', 'meshharbor-tunnel' -ErrorAction SilentlyContinue |
                 Where-Object { $_.Path -like ($tcRoot + '*') } | Stop-Process -Force -ErrorAction SilentlyContinue
             $userPath = [Environment]::GetEnvironmentVariable('PATH', 'User')
             if ($userPath) {
@@ -552,7 +552,7 @@ function Uninstall-Roomler {
 # --- main -------------------------------------------------------------------
 
 try {
-    if ($Uninstall) { Uninstall-Roomler }
+    if ($Uninstall) { Uninstall-MeshHarbor }
     elseif ($Role -eq 'tunnel-client') { Install-TunnelClient }
     else { Install-Daemon }
     Say "done."

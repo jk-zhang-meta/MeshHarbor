@@ -5,7 +5,7 @@
 // name in it is something it must still recognise on a host that has one: the
 // legacy SCM service `RoomlerAgentService`, the legacy Scheduled Task
 // `RoomlerAgent`, the pre-P4b `roomler-agent` install folders, the
-// `roomler-agent` app segment, the inert `roomler-agent.exe` alias and the
+// `roomler-agent` app segment, the inert `meshharbor-agent.exe` alias and the
 // `roomler_agent_exe` MSI FileKey.
 // INVARIANT: a retired name here must be one this cleanup has to FIND. If you add
 // one that is not, that is a bug, not a new exemption. docs/fr/FR-21
@@ -78,7 +78,7 @@
 //! deterministic exe. The CA does:
 //!
 //! ```text
-//! "[INSTALLDIR]roomler-agent.exe" cleanup-legacy-install \
+//! "[INSTALLDIR]meshharbor-agent.exe" cleanup-legacy-install \
 //!     --target-flavour {perUser|perMachine}
 //! ```
 //!
@@ -199,18 +199,18 @@ pub fn run_cleanup(target: TargetFlavour, dry_run: bool) -> Result<CleanupReport
 /// Filenames the MSIs have ever shipped into the install folder,
 /// plus the tunnel CLI pair. The vacated-dir sweep deletes ONLY
 /// these — never arbitrary files an operator parked there. The CLI
-/// pair (`roomler.exe` / `roomler-tunnel.exe`) is included even
+/// pair (`meshharbor.exe` / `meshharbor-tunnel.exe`) is included even
 /// though pre-P4b MSIs never shipped it: in the OLD dir those can
 /// only be manually-copied tunnel CLIs (field-observed), they are
 /// OUR binaries in OUR dead directory, and a stale copy in a
 /// manually-PATH'd old dir is a version-skew hazard once the new
-/// dir's `roomler.exe` is authoritative.
+/// dir's `meshharbor.exe` is authoritative.
 #[cfg(target_os = "windows")]
 const INSTALL_DIR_PRODUCT_FILES: &[&str] = &[
-    "roomlerd.exe",
-    "roomler-agent.exe",
-    "roomler.exe",
-    "roomler-tunnel.exe",
+    "meshharbord.exe",
+    "meshharbor-agent.exe",
+    "meshharbor.exe",
+    "meshharbor-tunnel.exe",
     // S1a — the desktop companion + its refresh sidecars live beside the
     // daemon (placed by the wizard / companion-refresh, not the MSI);
     // without these entries the vacated-dir sweep strands a stale copy.
@@ -224,7 +224,7 @@ const INSTALL_DIR_PRODUCT_FILES: &[&str] = &[
 
 /// P4b: sweep the VACATED pre-rename install directory for the
 /// TARGET flavour's scope (perUser →
-/// `%LOCALAPPDATA%\Programs\roomler-agent`, perMachine →
+/// `%LOCALAPPDATA%\Programs\meshharbor-agent`, perMachine →
 /// `%ProgramFiles%\roomler-agent`).
 ///
 /// Policy: conservative. Skip outright when the candidate IS the

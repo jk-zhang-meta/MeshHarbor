@@ -1,8 +1,8 @@
 [Desktop Entry]
 Type=Application
-Name=Roomler
+Name=MeshHarbor
 GenericName=Remote access companion
-Comment=Start the Roomler companion in the tray at login
+Comment=Start the MeshHarbor companion in the tray at login
 Exec=/usr/bin/meshharbor-desktop --autostart
 Icon=meshharbor-desktop
 Terminal=false
@@ -16,7 +16,7 @@ Categories=Network;RemoteAccess;Utility;
 # `--autostart` is the only difference from the launcher entry, and it is the
 # point: a login start stays in the tray (the companion is this device's
 # consent PROMPT surface — a device set to "Prompt on host" whose companion is
-# not running cannot ask anybody), while a person opening Roomler from the
+# not running cannot ask anybody), while a person opening MeshHarbor from the
 # app menu gets the window. Until the person has been through the Welcome
 # tour, a login start opens it.
 #

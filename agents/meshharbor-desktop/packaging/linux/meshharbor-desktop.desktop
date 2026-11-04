@@ -1,13 +1,13 @@
 [Desktop Entry]
 Type=Application
-Name=Roomler
+Name=MeshHarbor
 GenericName=Remote access companion
 Comment=Device status, network peers, tunnel routes, and remote-control consent prompts
 Exec=/usr/bin/meshharbor-desktop
 Icon=meshharbor-desktop
 Terminal=false
 Categories=Network;RemoteAccess;Utility;
-Keywords=roomler;remote;mesh;vpn;tunnel;
+Keywords=meshharbor;remote;mesh;vpn;tunnel;
 
 # The launcher entry (/usr/share/applications). The login start is its sibling
 # meshharbor-desktop-autostart.desktop, installed as

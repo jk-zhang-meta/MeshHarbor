@@ -1,43 +1,43 @@
 # RETIRED-NAME-ANCHOR-BEGIN
 # Every retired name left in this file is ACCURATE and must stay:
-#   * "Roomler Agent" IS the MSI ARP DisplayName (wix/main.wxs Name=)
-#   * roomler-agent-<version>-…msi ARE the published asset filenames
-#   * roomler-agent.exe IS the compatibility alias the MSI installs
+#   * "MeshHarbor Agent" IS the MSI ARP DisplayName (wix/main.wxs Name=)
+#   * meshharbor-agent-<version>-…msi ARE the published asset filenames
+#   * meshharbor-agent.exe IS the compatibility alias the MSI installs
 # The service name, task name and config paths in here were NOT accurate and
 # were corrected; this file ships to operators, so a wrong instruction here is
 # a support ticket.
 # INVARIANT: a retired name here must be one a user can actually see on their
 # machine. docs/fr/FR-21
-Roomler Agent — README
+MeshHarbor Agent — README
 ======================
 
-The Roomler AI remote-control agent runs on this machine, maintains an
-outbound WebSocket connection to the Roomler API, and (on demand) serves
+The MeshHarbor remote-control agent runs on this machine, maintains an
+outbound WebSocket connection to the MeshHarbor API, and (on demand) serves
 a WebRTC peer directly to a browser controller. All screen video and
-input events travel on that P2P channel — the Roomler server never sees
+input events travel on that P2P channel — the MeshHarbor server never sees
 them.
 
 Installation
 ------------
-This installer placed the daemon `roomlerd.exe` (plus a
-`roomler-agent.exe` compatibility alias and the `roomler` tunnel CLI)
+This installer placed the daemon `meshharbord.exe` (plus a
+`meshharbor-agent.exe` compatibility alias and the `meshharbor` tunnel CLI)
 at:
 
-    %LOCALAPPDATA%\Programs\Roomler\roomlerd.exe
-    %LOCALAPPDATA%\Programs\Roomler\roomler.exe
+    %LOCALAPPDATA%\Programs\MeshHarbor\meshharbord.exe
+    %LOCALAPPDATA%\Programs\MeshHarbor\meshharbor.exe
 
-The install directory is appended to your user PATH, so `roomler`
-and `roomlerd` work from any NEW terminal. No admin rights were
+The install directory is appended to your user PATH, so `meshharbor`
+and `meshharbord` work from any NEW terminal. No admin rights were
 required (per-user install, no UAC).
 
-Configuration is stored under `%APPDATA%\roomler\roomler\` once you run
+Configuration is stored under `%APPDATA%\meshharbor\meshharbor\` once you run
 the enroll step below.
 
 First-time setup
 ----------------
 Open PowerShell (no need to run as administrator) and run:
 
-    $agent = "$env:LOCALAPPDATA\Programs\Roomler\roomlerd.exe"
+    $agent = "$env:LOCALAPPDATA\Programs\MeshHarbor\meshharbord.exe"
 
     # 1. Generate an enrollment JWT in the admin UI at
     #    http://roomler.ai/ (Admin -> Agents -> New agent).
@@ -50,7 +50,7 @@ Open PowerShell (no need to run as administrator) and run:
         --name $env:COMPUTERNAME
 
     # 3. Run the agent (foreground — confirm capture + signalling work):
-    $env:RUST_LOG = "roomlerd=debug,webrtc=info"
+    $env:RUST_LOG = "meshharbord=debug,webrtc=info"
     & $agent run
 
 You should see log lines like:
@@ -66,11 +66,11 @@ Autostart on logon (registered automatically since 0.1.54)
 ----------------------------------------------------------
 The MSI registers the auto-start hook automatically on install + on
 every upgrade. After running the MSI you should already have a
-Scheduled Task called `Roomler` with the resilience XML
+Scheduled Task called `MeshHarbor` with the resilience XML
 (restart-on-failure, battery-defeat, single-instance belt). Confirm
 with:
 
-    schtasks /Query /TN Roomler
+    schtasks /Query /TN MeshHarbor
 
 If you ever need to manage the hook manually (e.g. after restoring a
 backup or recovering from the rare Win11 ACL-locked-task scenario):
@@ -87,7 +87,7 @@ Win11 quirk), the MSI's RegisterAutostart custom action will silently
 skip (Return="ignore" so install completes), and the operator can
 delete the locked task from an elevated PowerShell once with:
 
-    schtasks /Delete /TN Roomler /F
+    schtasks /Delete /TN MeshHarbor /F
 
 then re-run `service install` from a normal shell.
 
@@ -101,7 +101,7 @@ overwrite the binary. The Scheduled Task registered by
 
 Disable for air-gapped deployments with:
 
-    setx ROOMLERD_AUTO_UPDATE 0
+    setx MESHHARBORD_AUTO_UPDATE 0
 
 Manual check without installing:
 
@@ -113,17 +113,17 @@ For fleet / unattended deployments where the host needs to be reachable
 *before* anyone logs in (e.g. driving the lock screen for remote
 login), the agent ships an opt-in alternative to the per-user
 Scheduled Task: it can register itself with the Service Control
-Manager as `Roomler`, running under LocalSystem with
+Manager as `MeshHarbor`, running under LocalSystem with
 AutoStart at boot.
 
 Two ways to get there:
 
   Option A: download the **per-Machine MSI** (since 0.2.x). The
   release page on GitHub publishes two MSIs side-by-side:
-      roomler-agent-<version>-x86_64-pc-windows-msvc.msi
-      roomler-agent-<version>-perMachine-x86_64-pc-windows-msvc.msi
+      meshharbor-agent-<version>-x86_64-pc-windows-msvc.msi
+      meshharbor-agent-<version>-perMachine-x86_64-pc-windows-msvc.msi
   The per-Machine MSI installs files under %ProgramFiles%
-  \Roomler and auto-registers the SCM service via a deferred
+  \MeshHarbor and auto-registers the SCM service via a deferred
   custom action. UAC fires once during install. Single
   msiexec invocation, no elevated-PS follow-up. Recommended for
   managed-fleet deployments via group policy / Intune.
@@ -138,12 +138,12 @@ Two ways to get there:
   promote to service mode. Open an elevated PowerShell ("Terminal
   (Admin)"):
 
-    & "$env:LOCALAPPDATA\Programs\Roomler\roomlerd.exe" `
+    & "$env:LOCALAPPDATA\Programs\MeshHarbor\meshharbord.exe" `
         service install --as-service
 
 The SCM service supervises a per-session worker via WTSQueryUserToken
 + CreateProcessAsUserW: when a user logs in, the service spawns
-`roomlerd run` in their session; on logoff / fast-user-switch
+`meshharbord run` in their session; on logoff / fast-user-switch
 the worker is replaced; on Stop the worker is terminated.
 
 Service-mode and Scheduled-Task-mode are independent — installing the
@@ -156,8 +156,8 @@ the same agent, uninstall the Scheduled Task first:
 Inspect / manage:
 
     & $agent service status --as-service      # NotInstalled / Stopped / Running
-    Get-Service Roomler           # PowerShell native
-    sc.exe stop Roomler           # explicit stop
+    Get-Service MeshHarbor           # PowerShell native
+    sc.exe stop MeshHarbor           # explicit stop
 
 Pre-logon SYSTEM-context capture (the agent itself running capture +
 input under SYSTEM when no user is logged in) is planned for a future
@@ -179,7 +179,7 @@ that window un-elevated, or use the Windows Security Attention Sequence
 
 Uninstall
 ---------
-Settings -> Apps -> Installed apps -> Roomler Agent -> Uninstall.
+Settings -> Apps -> Installed apps -> MeshHarbor Agent -> Uninstall.
 
 NOTE (per-User MSI): the Add/Remove record lives ONLY in the HKCU hive
 of the account that ran the install. If the install ran from an
@@ -189,13 +189,13 @@ or use one of the account-independent routes below.
 
 From PowerShell (either finds the product code for you):
 
-    # one-shot, removes every Roomler install this account can see:
+    # one-shot, removes every MeshHarbor install this account can see:
     & ([scriptblock]::Create((irm https://roomler.ai/api/setup/install.ps1))) -Uninstall
 
     # or manually:
     Get-ChildItem HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall,
                   HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall |
-        Get-ItemProperty | Where-Object DisplayName -like 'Roomler Agent*' |
+        Get-ItemProperty | Where-Object DisplayName -like 'MeshHarbor Agent*' |
         Select-Object DisplayName, DisplayVersion, PSChildName
     msiexec /x {product-code-from-PSChildName}
 
@@ -203,9 +203,9 @@ Logs
 ----
 The agent writes to stderr. To capture a log file for troubleshooting:
 
-    & $agent run 2>&1 | Tee-Object -FilePath "$env:TEMP\roomlerd.log"
+    & $agent run 2>&1 | Tee-Object -FilePath "$env:TEMP\meshharbord.log"
 
-Set `RUST_LOG=roomlerd=debug,webrtc=debug` for verbose output.
+Set `RUST_LOG=meshharbord=debug,webrtc=debug` for verbose output.
 
 Support
 -------

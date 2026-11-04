@@ -160,7 +160,7 @@ graph LR
     TAG["a release tag<br/>agent-v* · setup-v* · tunnel-v*"]
 
     subgraph WIN["Windows — sign-windows · Azure Artifact Signing over OIDC"]
-        W1["the payload first<br/>roomlerd.exe · roomler.exe"]
+        W1["the payload first<br/>meshharbord.exe · meshharbor.exe"]
         W2["wintun.dll staged<br/>NEVER re-signed —<br/>WireGuard LLC's signature survives"]
         W3["then the MSIs<br/>harvested, then signed"]
         W1 -->|"no cargo build after this —<br/>a relink strips the signature"| W2 --> W3
@@ -190,19 +190,19 @@ installing it, and is also bound to the release it claims to be: the Windows
 
 | Artifact | Workflow | Mechanism |
 |---|---|---|
-| `roomlerd.exe`, `roomler.exe` **inside** both MSIs | release-agent | sign-windows, *before* `cargo wix` harvests |
+| `meshharbord.exe`, `meshharbor.exe` **inside** both MSIs | release-agent | sign-windows, *before* `cargo wix` harvests |
 | perUser + perMachine `.msi` | release-agent | sign-windows, before the size-budget/sha256 steps |
 | `meshharbor-desktop-<v>….exe` | release-agent | sign-windows |
 | `roomler-agent-<v>-aarch64-apple-darwin.pkg` | release-agent | inline codesign → productbuild → notarytool → staple → **verify** |
 | `meshharbor-setup.exe` (in the zip) | release-setup | sign-windows, before zipping |
 | `Roomler Setup.app` (in the macOS tarball) | release-setup | sign-macos: bundle → notarise → **staple** (ticket survives tar) |
-| `roomler.exe` (tunnel zip) | release-tunnel | sign-windows (was never signed before) |
+| `meshharbor.exe` (tunnel zip) | release-tunnel | sign-windows (was never signed before) |
 | `roomler` (macOS universal, tunnel tarball) | release-tunnel | sign-macos: bare binary → notarise, **no staple** (Apple can't staple a loose Mach-O; curl\|tar installs never set quarantine, so unaffected) |
 | every published asset | all three publish jobs | GPG `.asc` (when key configured) + SLSA provenance attestation (always) |
 | `wintun.dll` | — | **never re-signed** — WireGuard LLC's Authenticode signature must survive; CI asserts it still says WireGuard |
 | `.deb` contents | — | not signed (dpkg doesn't verify; apt-repo signing deferred until an apt channel exists) |
 
-Payload-before-wrapper ordering matters: the on-disk `roomlerd.exe` is what AV
+Payload-before-wrapper ordering matters: the on-disk `meshharbord.exe` is what AV
 scans, what Task Manager attributes, and what an AppLocker/WDAC publisher rule
 evaluates — an MSI-only signature covers none of that. The payload signing
 step sits after `encoder-smoke` (fail before spending a signature) and before
@@ -295,7 +295,7 @@ The PowerShell verifier also does an administrative extract of each MSI
 `wintun.dll` still says WireGuard LLC. Manual user-level checks:
 
 ```powershell
-Get-AuthenticodeSignature "$env:ProgramFiles\Roomler\roomlerd.exe"   # Valid, G ROX LTD
+Get-AuthenticodeSignature "$env:ProgramFiles\Roomler\meshharbord.exe"   # Valid, G ROX LTD
 ```
 ```bash
 spctl -a -vvv -t install roomler-agent-<v>-aarch64-apple-darwin.pkg  # source=Notarized Developer ID
@@ -355,7 +355,7 @@ bytes, and the updater refuses when it disagrees with the tag
 |---|---|---|---|
 | `.msi` | `ProductVersion` in the `Property` table | the Windows Installer database API | `artifact_version.rs:482` |
 | `.deb` | `Version` in its control file, `0.4.142-1` — the Debian revision (cargo-deb's `-1`) and any epoch dropped, a `~` read back as `-` | `dpkg-deb --field`, from the dpkg the updater requires before it picks a `.deb` | `artifact_version.rs:288` |
-| `.pkg` | `version` on the component `PackageInfo`'s `<pkg-info identifier="com.roomler.agent">` | `pkgutil --expand` into a fresh directory | `artifact_version.rs:429` |
+| `.pkg` | `version` on the component `PackageInfo`'s `<pkg-info identifier="fans.itachi.meshharbor.agent">` | `pkgutil --expand` into a fresh directory | `artifact_version.rs:429` |
 | tarball | its one top directory, `roomlerd-<version>-<target>` | `tar -tzf`, which the tarball install runs anyway | `artifact_version.rs:386` |
 
 ```mermaid
@@ -399,7 +399,7 @@ The `.deb`'s `Package` field is deliberately **not** bound (every published
 daemon `.deb` says `roomlerd`). A feed that swapped in the companion's `.deb` at
 the same version would gain a freeze, which withholding the update gives it
 anyway, while a name check would be one more way to refuse every update. The
-`.pkg` reader names `com.roomler.agent` for a different reason: a product
+`.pkg` reader names `fans.itachi.meshharbor.agent` for a different reason: a product
 archive can carry several components, and it must read the right one.
 
 The key, verified 2026-08-24 against `agent-v0.3.0-rc.458`: an ed25519 primary
@@ -484,7 +484,7 @@ copyright grant to the company is a legal decision, not a packaging one.
 
 ## 10. Version info
 
-`roomlerd.exe` and `roomler.exe` embed a full `VS_VERSION_INFO` via
+`meshharbord.exe` and `meshharbor.exe` embed a full `VS_VERSION_INFO` via
 `build.rs` + `embed-resource` (`compile_for` → per-binary
 `rustc-link-arg-bin`, chosen because `winres`/`winresource` link-lib
 directives would propagate a *second* version resource into the Tauri EXEs

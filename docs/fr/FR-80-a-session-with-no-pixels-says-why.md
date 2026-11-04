@@ -28,7 +28,7 @@ What actually happened, in order:
   (`Developer ID Application: G ROX EOOD (4TG7586MY5)`), replacing the interim
   self-signed identity. macOS binds a TCC grant to the signature, so the
   host's existing Screen Recording permission stopped matching:
-  `Failed to match existing code requirement for subject com.roomler.agent and
+  `Failed to match existing code requirement for subject fans.itachi.meshharbor.agent and
   service kTCCServiceScreenCapture` — the stored requirement named the old
   certificate root, the binary presented the Developer ID leaf.
 - `scrap::Capturer` therefore failed to open. `capture::open_default` logged

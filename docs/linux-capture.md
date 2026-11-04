@@ -1057,7 +1057,7 @@ than a misconfiguration. So the daemon spawns **itself** — the hidden
 `CommandExt::uid()` (which leaves the child in root's supplementary groups — a
 silent retention bug, not a visible failure).
 
-⚠️ **Only a root daemon drops.** A per-user daemon (`roomler.service`, the
+⚠️ **Only a root daemon drops.** A per-user daemon (`meshharbor.service`, the
 `install.sh` default) already *is* the session's owner, and "dropping" to
 itself is not a no-op: `setgroups(2)` needs `CAP_SETGID` even to set the groups
 a process already holds, so the drop's pre-exec hook failed `EPERM`, the helper

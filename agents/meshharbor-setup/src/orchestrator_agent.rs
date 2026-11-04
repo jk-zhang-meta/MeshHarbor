@@ -524,7 +524,7 @@ async fn run_install_inner(
                     "The installed daemon folder was not found".into(),
                 )
             })?;
-        let exe = dir.join("roomlerd.exe");
+        let exe = dir.join("meshharbord.exe");
         let result = tokio::task::spawn_blocking(move || -> Result<(), String> {
             use std::os::windows::process::CommandExt;
             // Invoke the installed binary so current_exe names the rule's
@@ -785,7 +785,7 @@ async fn anchor_device(
     else {
         return skipped("the install folder could not be found".to_string());
     };
-    let exe = dir.join("roomlerd.exe");
+    let exe = dir.join("meshharbord.exe");
     if !exe.exists() {
         return skipped(format!("{} is missing", exe.display()));
     }
@@ -982,8 +982,8 @@ async fn place_desktop_companion(
 }
 
 /// Post-install probe for the MSI-carried tunnel CLI: derive the
-/// flavour's install dir (perUser `%LOCALAPPDATA%\Programs\Roomler`,
-/// perMachine `%ProgramFiles%\Roomler`) and check `roomler.exe`
+/// flavour's install dir (perUser `%LOCALAPPDATA%\Programs\MeshHarbor`,
+/// perMachine `%ProgramFiles%\Roomler`) and check `meshharbor.exe`
 /// landed. `path_updated=Some(true)` piggybacks on the same check —
 /// the wxs `TunnelExe` component carries both the file AND the PATH
 /// append, so they land (or don't) together.
@@ -996,7 +996,7 @@ fn cli_done_surface(
     else {
         return (None, Some(false), None);
     };
-    let cli = dir.join("roomler.exe");
+    let cli = dir.join("meshharbor.exe");
     if cli.is_file() {
         (Some(cli.display().to_string()), Some(true), Some(true))
     } else {

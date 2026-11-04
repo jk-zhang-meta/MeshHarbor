@@ -27,8 +27,8 @@ One mechanism explains two long-standing user reports:
 - *"When winhost-a connects to the corporate VPN, roomlerd gets restarted."*
 
 The Windows agent is **two processes from one EXE**: the SCM runs
-`roomlerd.exe service-run` (LocalSystem, session 0 — the *supervisor*), which
-spawns `roomlerd.exe run` (the *worker*) into the **console session** via
+`meshharbord.exe service-run` (LocalSystem, session 0 — the *supervisor*), which
+spawns `meshharbord.exe run` (the *worker*) into the **console session** via
 `CreateProcessAsUserW` (winlogon token under SystemContext swap). The worker
 hosts **everything**: the control WS, the whole overlay runtime (Wintun, WG
 peers, carriers, route guard, MagicDNS resolver, LocalAPI) *and* the

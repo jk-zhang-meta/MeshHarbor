@@ -119,7 +119,7 @@ fn log_basename() -> &'static str {
 /// matching the daemon's own events the moment the rename shipped. That is not a
 /// theoretical concern: five places set an explicit override that BEATS the dual
 /// default above, three of them shipped units already on disk in the field
-/// (`packaging/linux/{roomler,roomlerd}.service`, `com.roomler.agent.plist`) plus the
+/// (`packaging/linux/{roomler,roomlerd}.service`, `fans.itachi.meshharbor.agent.plist`) plus the
 /// two units `service.rs` generates. A host whose unit is not rewritten would keep
 /// running and log nothing but `warn` from the daemon — a silent, fleet-wide
 /// observability blackout with no error anywhere.

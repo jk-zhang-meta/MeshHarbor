@@ -35,7 +35,7 @@ roomler status
 ```
 @macos
 ```bash
-launchctl print gui/$(id -u)/com.roomler.agent | head -20
+launchctl print gui/$(id -u)/fans.itachi.meshharbor.agent | head -20
 roomler status
 sudo roomler status    # the root half, if installed
 ```

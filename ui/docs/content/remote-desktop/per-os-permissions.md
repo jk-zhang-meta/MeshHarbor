@@ -60,7 +60,7 @@ access"* rather than letting you find out by connecting.
 After granting, restart the user half:
 
 ```bash
-launchctl kickstart -k gui/$(id -u)/com.roomler.agent
+launchctl kickstart -k gui/$(id -u)/fans.itachi.meshharbor.agent
 ```
 
 :::warning A grant is bound to the signed binary
