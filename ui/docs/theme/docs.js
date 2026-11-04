@@ -131,7 +131,7 @@
   // ── the repository goal (FR-88) ───────────────────────────────────────
   // Any link into the repository: the top bar's GitHub link, the ones in the
   // prose, "Edit this page". Not the author's profile, not another repo.
-  var REPO = /^https:\/\/github\.com\/gjovanov\/meshharbor(?:[/?#]|\.git|$)/i
+  var REPO = /^https:\/\/github\.com\/jk-zhang-meta\/MeshHarbor(?:[/?#]|\.git|$)/i
 
   function initOutbound() {
     function onClick(ev) {

@@ -276,7 +276,7 @@ export interface IndexCtx extends BlogCtx {
 
 /** The whole `<title>` of index page N; page 1 carries the keywords. */
 export function indexTitle(pageNo: number): string {
-  return pageNo <= 1 ? `${BLOG_TITLE} — remote desktop, private network, self-hosting` : `${BLOG_TITLE} — page ${pageNo}`
+  return pageNo <= 1 ? `${BLOG_TITLE} — remote desktop, mesh network, self-hosting` : `${BLOG_TITLE} — page ${pageNo}`
 }
 
 export function renderBlogIndex(ctx: IndexCtx): string {

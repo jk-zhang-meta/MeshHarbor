@@ -119,7 +119,7 @@ export function isListing(page: DocPage): boolean {
  */
 export function docsTitle(page: DocPage): string | null {
   if (page.seoTitle) return page.seoTitle
-  if (page.slug === 'index') return fitTitle([`${SITE_TITLE_SUFFIX} — remote desktop, private network, chat & video`])
+  if (page.slug === 'index') return fitTitle([`${SITE_TITLE_SUFFIX} — remote desktop, mesh network, chat & video`])
   const leafOfSection = page.section && !isListing(page)
   return fitTitle([
     ...(leafOfSection ? [`${page.title} · ${page.section!.title} — ${SITE_TITLE_SUFFIX}`] : []),

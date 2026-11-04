@@ -302,7 +302,7 @@ describe('the build publishes the loader into both trees', () => {
     const names = new Set<string>()
     for (const f of html) {
       const text = readFileSync(join(root, f), 'utf8')
-      const m = text.match(new RegExp(`<script src="(${assetBase}/analytics\\.[0-9a-f]{10}\\.js)" defer data-src="https://purestat\\.ai/js/purestat\\.js" data-domain="meshharbor\\.ai" data-hosts="meshharbor\\.ai,www\\.meshharbor\\.ai"></script>`, 'g'))
+      const m = text.match(new RegExp(`<script src="(${assetBase}/analytics\\.[0-9a-f]{10}\\.js)" defer data-src="https://purestat\\.ai/js/purestat\\.js" data-domain="meshharbor\\.itachi\\.fans" data-hosts="meshharbor\\.itachi\\.fans,www\\.meshharbor\\.itachi\\.fans"></script>`, 'g'))
       expect(m, `${f} does not carry the loader`).toHaveLength(1)
       names.add(m![0]!.match(/src="([^"]+)"/)![1]!)
       expect(text, `${f} carries the tracker itself`).not.toMatch(TRACKER_TAG)

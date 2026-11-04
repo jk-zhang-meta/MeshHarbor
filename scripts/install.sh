@@ -1582,7 +1582,7 @@ EOF
         /usr/local/bin/mh /usr/local/bin/meshharbord /usr/local/bin/meshharbor-tunnel \
         /private/var/tmp/meshharbor-update-check /var/run/meshharbor
     remove_listed "$agents"
-    for id in $(pkgutil --pkgs 2>/dev/null | grep '^com\.meshharbor\.' || true); do
+    for id in $(pkgutil --pkgs 2>/dev/null | grep '^fans\.itachi\.meshharbor\.' || true); do
         if as_root pkgutil --forget "$id" >/dev/null 2>&1; then
             say "forgot the package receipt $id"
         else
@@ -1668,7 +1668,7 @@ local_fresh_install_only() {
         command -v pkgutil >/dev/null 2>&1 || { echo "error: native macOS package inventory is unavailable" >&2; exit 1; }
         registered_packages="$(pkgutil --pkgs 2>/dev/null)" || { echo "error: native macOS package inventory failed" >&2; exit 1; }
         [ "${#registered_packages}" -le 65536 ] || { echo "error: native package inventory exceeds bootstrap bound" >&2; exit 1; }
-        if printf '%s\n' "$registered_packages" | grep -q '^com\.meshharbor\.'; then
+        if printf '%s\n' "$registered_packages" | grep -q '^fans\.itachi\.meshharbor\.'; then
             echo "error: existing macOS MeshHarbor package requires reviewed migration" >&2; exit 1
         fi
         for existing in /Library/MeshHarbor /Library/LaunchDaemons/fans.itachi.meshharbor.daemon.plist /Library/LaunchDaemons/fans.itachi.meshharbor.update.plist /Library/LaunchAgents/fans.itachi.meshharbor.agent.plist /Library/LaunchAgents/fans.itachi.meshharbor.desktop.plist; do

@@ -1,6 +1,6 @@
 ---
 title: Install on Linux
-description: Install the MeshHarbor agent on Linux with one command — as a root systemd service or a per-user unit — including headless servers, containers and cluster nodes.
+description: Install MeshHarbor on Linux with one command — as a root systemd service or a per-user unit — including headless servers, containers and cluster nodes.
 tags: [install, linux, getting-started, enrollment, headless]
 order: 12
 ---

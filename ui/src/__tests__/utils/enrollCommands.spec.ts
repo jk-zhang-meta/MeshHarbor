@@ -115,7 +115,7 @@ describe('enrollCommands', () => {
     }
   })
 
-  it('tunnel commands use the tunnel roles + the meshharbor CLI', () => {
+  it('tunnel commands use the tunnel roles + the mh CLI', () => {
     const [windows, linux] = enrollCommands('tunnel', ORIGIN, TOKEN)
     expect(windows!.blocks[0]!.command).toContain('-Role tunnel-client')
     expect(linux!.blocks[0]!.command).toContain('--role tunnel')

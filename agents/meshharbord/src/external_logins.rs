@@ -713,7 +713,7 @@ mod tests {
         let key = derive_app_key(&ikm, "a1b2c3d4e5f60718293a4b5c6d7e8f90", WHO);
         let hex: String = key.expose().iter().map(|b| format!("{b:02x}")).collect();
         assert_eq!(
-            hex, "7718aa60e955c361d08a866cc97778ce06006d767a0d0d5503510b98cde651e5",
+            hex, "954ea3ac4b530943febcf31adc09b4d1809043e30848d9623dff80e24d97085f",
             "the app key no longer matches what the browser will derive"
         );
     }
@@ -1104,11 +1104,11 @@ mod tests {
         let key: [u8; 32] = std::array::from_fn(|i| i as u8);
         assert_eq!(
             mac(key, "offer", FP),
-            "9C7Hj7E39lXWd1VP-ttMoR3G39CrYJLXbaNjkGJ4W5w"
+            "zHMNxMvv1Ltc8K1Ixg4v64XqQKmQUy6_5UnmxIwX3js"
         );
         assert_eq!(
             mac(key, "answer", FP),
-            "dvUftw510jDyQn0j9c6XslWOoB19z-QTW3FUgUCz6rY"
+            "WHXJ-r2tZDGvmjehcBCknC72dHrmA-7UCstd26EboRI"
         );
     }
 

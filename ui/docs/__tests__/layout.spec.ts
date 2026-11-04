@@ -96,7 +96,7 @@ describe('the <title>', () => {
   const leaf = (title: string, extra: Partial<DocPage> = {}): DocPage => ({ ...base, slug: 'compare/x', url: '/docs/compare/x/', section, title, ...extra })
 
   it('keeps the section when everything fits', () => {
-    expect(docsTitle(leaf('MeshHarbor vs Tailscale'))).toBe('MeshHarbor vs Tailscale · How MeshHarbor compares — MeshHarbor Docs')
+    expect(docsTitle(leaf('vs Tailscale'))).toBe('vs Tailscale · How MeshHarbor compares — MeshHarbor Docs')
   })
 
   it('drops the section, then the site name, to fit 60', () => {

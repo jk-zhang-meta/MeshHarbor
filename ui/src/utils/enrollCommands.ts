@@ -11,7 +11,7 @@
  *                            (Linux-only root systemd SYSTEM unit)
  *   - scripts/install.ps1  — roles `daemon-user` | `daemon-machine` |
  *                            `daemon-system` | `tunnel-client`
- *   - meshharbord / meshharbor   — `enroll --server … --token … --name …`
+ *   - meshharbord / mh   — `enroll --server … --token … --name …`
  *     (+ `--machine-global` for the Windows SystemContext flavour ONLY —
  *     S1b: a plain-SCM daemon-machine service reads the per-user config)
  *   - /api/setup/{platform} — wizard EXE download proxy
@@ -97,7 +97,7 @@ export function enrollCommands(
   const psRole = kind === 'agent' ? PS_ROLE[scoped] : 'tunnel-client'
   // S1b: ONLY the SystemContext flavour reads the machine-global config.
   const psMg = kind === 'agent' && scoped === 'system' ? ' --machine-global' : ''
-  const manualBin = kind === 'agent' ? 'meshharbord' : 'meshharbor'
+  const manualBin = kind === 'agent' ? 'meshharbord' : 'mh'
   const manualName = kind === 'agent' ? '"$(hostname)"' : '"My laptop"'
 
   const shOneLiner = (os: EnrollOs): CommandBlock => ({

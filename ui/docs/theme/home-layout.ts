@@ -43,7 +43,7 @@ import {
 } from './shell.ts'
 import { graph, organization, videoObject, website } from './structured.ts'
 
-export const HOME_TITLE = 'MeshHarbor — remote desktop, private mesh network, chat & video'
+export const HOME_TITLE = 'MeshHarbor — remote desktop, mesh network, chat & video'
 export const HOME_DESCRIPTION =
   'Remote desktop in a browser tab and a private WireGuard-style mesh between your machines, team chat and video included. Self-hostable, end-to-end encrypted.'
 

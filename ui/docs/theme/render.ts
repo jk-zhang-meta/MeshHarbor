@@ -183,7 +183,7 @@ function renderEnroll(kind: 'agent' | 'tunnel', groupId: string): string {
 export function isInstallCommand(code: string): boolean {
   return (
     /\/api\/setup\/install\.(?:sh|ps1)\b/.test(code) ||
-    /\bmeshharbord?\b[^\n]*\benroll\b[^\n]*--server\b/.test(code)
+    /\b(?:meshharbord|mh)\b[^\n]*\benroll\b[^\n]*--server\b/.test(code)
   )
 }
 

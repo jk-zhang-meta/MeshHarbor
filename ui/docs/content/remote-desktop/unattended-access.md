@@ -1,6 +1,6 @@
 ---
 title: Unattended access
-seoTitle: Unattended remote access, even at the lock screen — MeshHarbor
+seoTitle: Unattended access, even at the lock screen — MeshHarbor
 description: Unattended remote access to your own servers and workstations — nobody approves at the far end, even at the Windows lock screen or before anyone logs in.
 tags: [remote-desktop, unattended, windows, linux, access-control]
 order: 2
