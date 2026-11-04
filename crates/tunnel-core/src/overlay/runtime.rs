@@ -6867,7 +6867,9 @@ mod tests {
     /// server revoked it, the very next sweep convicts the carrier, with no
     /// send needed to trip the latch first. Field 2026-10-27 (rf-84f661a5a7e3,
     /// finding 4): a revoke left the pair with no send carrier for 2.8 s and
-    /// 4.5 s, until a send failed and the next 5 s tick saw it.
+    /// 4.5 s, until a send failed and the next 5 s tick saw it. A recent relay
+    /// refresh must not postpone this authoritative withdrawal; an ordinary
+    /// stale DERP carrier still observes the refresh holdoff.
     #[tokio::test(flavor = "multi_thread")]
     async fn sweep_convicts_an_org_carrier_whose_session_is_gone() {
         for (kind, lost) in [(RelayKind::Derp, false), (RelayKind::Org, true)] {
@@ -6896,18 +6898,20 @@ mod tests {
                 .await;
             wg.test_latch_handshake_done(&pk);
             let nid = ObjectId::from_bytes([75, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+            let now = Instant::now();
+            let stale = now.checked_sub(Duration::from_secs(180)).unwrap();
             let mut by_node = HashMap::new();
             by_node.insert(
                 nid,
                 Installed {
-                    since: Instant::now().checked_sub(Duration::from_secs(20)).unwrap(),
-                    last_rx_at: Instant::now(),
+                    since: stale,
+                    last_rx_at: if kind == RelayKind::Derp { stale } else { now },
                     relay_kind: Some(kind),
                     ..Installed::base(pk, ip, DirectTier::Relay, Instant::now())
                 },
             );
             let tun: Arc<dyn TunIo> = tun_mock;
-            let mut refresh = HashMap::new();
+            let mut refresh = HashMap::from([(nid, now + RELAY_REFRESH_COOLDOWN)]);
             let peers = HashMap::new();
             assert_eq!(
                 rt.sweep_carrier_health(
@@ -6921,8 +6925,28 @@ mod tests {
                 )
                 .await,
                 lost,
-                "{kind:?} carrier with no org session"
+                "{kind:?} carrier with no org session during relay refresh holdoff"
             );
+            assert_eq!(by_node.contains_key(&nid), !lost);
+            if kind == RelayKind::Derp {
+                // The held carrier is actually stale: without the holdoff the
+                // same sweep must remove it. Missing ORG authority alone gets
+                // the immediate-withdrawal exception above.
+                refresh.remove(&nid);
+                assert!(
+                    rt.sweep_carrier_health(
+                        &mut wg,
+                        &mut by_node,
+                        &mut relay,
+                        &tun,
+                        &mut refresh,
+                        &peers,
+                        ForcedPoke::No
+                    )
+                    .await
+                );
+                assert!(!by_node.contains_key(&nid));
+            }
         }
     }
 

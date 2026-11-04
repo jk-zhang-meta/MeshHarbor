@@ -685,9 +685,9 @@ impl OverlayRuntime {
             let Some(handshake_done) = wg.peer_handshake_done(&e.pubkey) else {
                 continue;
             };
-            let hard_dead = wg.peer_carrier_dead(&e.pubkey).unwrap_or(false)
-                || (e.relay_kind == Some(RelayKind::Org)
-                    && relay.as_ref().is_some_and(|r| !r.holds_org_session(nid)));
+            let org_session_gone = e.relay_kind == Some(RelayKind::Org)
+                && relay.as_ref().is_some_and(|r| !r.holds_org_session(nid));
+            let hard_dead = wg.peer_carrier_dead(&e.pubkey).unwrap_or(false) || org_session_gone;
             // MeshHarbor B6 — while a peer is intentionally `Dormant` or `Waking`
             // (or was `Dormant` at any point since the previous health sweep, and
             // its carrier is not `hard_dead`), periodic keepalives and handshake
@@ -760,9 +760,10 @@ impl OverlayRuntime {
                 traffic: (tx, rx),
                 last_traffic: (last_tx, last_rx),
                 bad_sweeps: e.bad_sweeps,
-                relay_refresh_held: relay_refresh_cooldown
-                    .get(nid)
-                    .is_some_and(|&until| until > now),
+                relay_refresh_held: !org_session_gone
+                    && relay_refresh_cooldown
+                        .get(nid)
+                        .is_some_and(|&until| until > now),
                 poke,
             });
             // Diagnostic — per-carrier health/poke trace (see
