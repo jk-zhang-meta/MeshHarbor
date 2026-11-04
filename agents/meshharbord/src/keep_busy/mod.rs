@@ -193,8 +193,8 @@ pub(crate) fn wall_ms() -> u64 {
 /// Start the engine thread — once per process, from inside the tokio
 /// runtime. `device_enabled` is the owner's `keep_busy_enabled`;
 /// `enrolled_tenants` is every org this device is enrolled in (the primary
-/// and each `[[orgs]]` entry, enabled or not), so a stored deny from an org
-/// it has LEFT can be dropped ([`prune_departed_orgs`]).
+/// and each `[[orgs]]` entry, enabled or not). Only those stored policies
+/// apply here; another configuration's policies stay in the shared store.
 ///
 /// ⚠️ It initialises the input arbiter FIRST: `arbiter::global()` captures
 /// the tokio handle at its first call, and the engine thread (a plain std
@@ -367,20 +367,19 @@ pub fn org_denied(policies: &std::collections::BTreeMap<String, bool>) -> bool {
     policies.values().any(|d| *d)
 }
 
-/// Drop the stored policy of every org this device is no longer enrolled
-/// in, and say how many went. Without it, leaving an org that had denied
-/// keep busy would deny it here for good: no server would ever push that
-/// org's re-allow. An empty `enrolled` (no identity known) drops nothing.
-pub fn prune_departed_orgs(
-    policies: &mut std::collections::BTreeMap<String, bool>,
+/// The policies relevant to this configuration, without editing the shared
+/// per-person store. A missing enrollment may belong to another daemon;
+/// it is not evidence that the person left that org. With no identity known,
+/// retain all denies, as before.
+fn scoped_org_policies(
+    policies: &std::collections::BTreeMap<String, bool>,
     enrolled: &[String],
-) -> usize {
-    if enrolled.is_empty() {
-        return 0;
+) -> std::collections::BTreeMap<String, bool> {
+    let mut active = policies.clone();
+    if !enrolled.is_empty() {
+        active.retain(|tenant, _| enrolled.iter().any(|e| e == tenant));
     }
-    let before = policies.len();
-    policies.retain(|tenant, _| enrolled.iter().any(|e| e == tenant));
-    before - policies.len()
+    active
 }
 
 /// Should `AgentCaps.input` carry `keep-busy`? Built for this host, the
@@ -564,19 +563,8 @@ fn run_with<H: Host>(
     let mut person_at = start + PERSON_EVERY;
     // The running keep busy was turned on while nobody was signed in.
     let mut set_while_nobody = false;
-    let departed = prune_departed_orgs(&mut stored.org_denied, enrolled_tenants);
-    if departed > 0 {
-        tracing::info!(
-            departed,
-            "keep-busy: dropped the stored policy of orgs this device has left"
-        );
-        if let Some(p) = path.as_deref()
-            && let Err(e) = state::save_to(p, &stored)
-        {
-            tracing::warn!(path = %p.display(), error = %e, "keep-busy: could not save the store");
-        }
-    }
-    if org_denied(&stored.org_denied) {
+    let mut active_org_policies = scoped_org_policies(&stored.org_denied, enrolled_tenants);
+    if org_denied(&active_org_policies) {
         engine.set_org_denied(true, start);
     }
     if let Some(act) = stored.activation(wall_ms()) {
@@ -620,7 +608,9 @@ fn run_with<H: Host>(
                         .map(state::load_from)
                         .unwrap_or_default();
                     // The org's word is the DEVICE's, not a person's.
-                    theirs.org_denied = stored.org_denied.clone();
+                    // Carry this daemon's policies, preserving the new
+                    // person's entries for other configurations.
+                    theirs.org_denied.extend(active_org_policies.clone());
                     let decision = person_switch(
                         engine.is_on(),
                         set_while_nobody,
@@ -653,6 +643,9 @@ fn run_with<H: Host>(
         match msg {
             // The org policy needs the store, so it is handled here.
             Ok(Command::OrgPolicy { tenant, denied }) => {
+                // An authenticated policy push also covers an enrollment
+                // added since startup, even if its stored value is unchanged.
+                active_org_policies.insert(tenant.clone(), denied);
                 if stored.org_denied.get(&tenant) != Some(&denied) {
                     stored.org_denied.insert(tenant, denied);
                     if let Some(p) = path.as_deref()
@@ -661,7 +654,7 @@ fn run_with<H: Host>(
                         tracing::warn!(path = %p.display(), error = %e, "keep-busy: could not save the store");
                     }
                 }
-                engine.set_org_denied(org_denied(&stored.org_denied), now);
+                engine.set_org_denied(org_denied(&active_org_policies), now);
             }
             Ok(cmd) => apply(&mut engine, cmd, now),
             Err(RecvTimeoutError::Timeout) => {}
@@ -814,21 +807,40 @@ mod tests {
         assert!(!org_denied(&m), "a re-allow clears it");
     }
 
-    /// FR-92 — a device that LEFT an org which had denied keep busy must
-    /// not stay denied for good: no server will ever push that org's
-    /// re-allow. An empty enrolled list (no identity known) drops nothing.
     #[test]
-    fn leaving_an_org_drops_its_stored_deny() {
+    fn another_configuration_never_deletes_the_persons_org_policies() {
         let mut m = std::collections::BTreeMap::new();
         m.insert("primary".to_string(), false);
-        m.insert("left".to_string(), true);
-        assert_eq!(prune_departed_orgs(&mut m, &[]), 0);
-        assert!(org_denied(&m), "nothing known: the deny stands");
+        m.insert("other-config".to_string(), true);
+        let saved = m.clone();
         let enrolled = ["primary".to_string(), "joined-but-silent".to_string()];
-        assert_eq!(prune_departed_orgs(&mut m, &enrolled), 1);
-        assert!(!org_denied(&m), "the departed org's deny is gone");
-        assert_eq!(m.len(), 1);
-        assert_eq!(prune_departed_orgs(&mut m, &enrolled), 0, "idempotent");
+        assert!(!org_denied(&scoped_org_policies(&m, &enrolled)));
+        assert_eq!(m, saved, "a second config must not destroy shared state");
+        assert!(
+            org_denied(&scoped_org_policies(&m, &["other-config".to_string()])),
+            "the first config still sees its deny after the second starts"
+        );
+    }
+
+    #[test]
+    fn a_secondary_enrollments_stored_deny_still_applies() {
+        let m = [
+            ("primary".to_string(), false),
+            ("secondary".to_string(), true),
+        ]
+        .into_iter()
+        .collect();
+        assert!(org_denied(&scoped_org_policies(
+            &m,
+            &["primary".to_string(), "secondary".to_string()]
+        )));
+    }
+
+    #[test]
+    fn no_known_identity_keeps_existing_denies() {
+        let m = [("org".to_string(), true)].into_iter().collect();
+        assert!(org_denied(&scoped_org_policies(&m, &[])));
+        assert_eq!(scoped_org_policies(&m, &[]), m);
     }
 
     fn act(by: &str) -> engine::Activation {

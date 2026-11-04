@@ -4439,8 +4439,8 @@ async fn run_cmd(
     // person left on (it waits for an unlocked session before touching the
     // pointer), and answers `rc:keep-busy.*` from any viewer. Started here,
     // inside the runtime, because it initialises the input arbiter. Every
-    // org this device is enrolled in, so a deny stored by an org it has
-    // since left is dropped rather than held for good.
+    // org this configuration is enrolled in, so other configurations'
+    // stored policies are preserved without applying to this daemon.
     let enrolled_tenants: Vec<String> = std::iter::once(cfg.tenant_id.clone())
         .chain(cfg.orgs.iter().map(|o| o.tenant_id.clone()))
         .collect();
