@@ -7,7 +7,7 @@ Everything else about how the codebase works lives in
 
 ## Which licence your PR falls under
 
-Roomler is split-licensed, and **the licence follows the directory you touch**:
+MeshHarbor is split-licensed, and **the licence follows the directory you touch**:
 
 | You edited… | Your contribution is |
 |---|---|

@@ -17,10 +17,10 @@ browser halves, then the daemon's own hop through a TLS-fronted cell), a single-
 observable on the fleet · **P10 docs (2026-09-05)**: `docs/modular-monolith.md` — the shipped shape with
 diagrams, under the standing rule that closing an FR requires its docs (CLAUDE.md § FR workflow step 5) ·
 **Owner**: server / architecture ·
-**Issue**: [#1307](https://github.com/gjovanov/roomler-ai/issues/1307) ·
-**PRs**: P0 claim [#1309](https://github.com/gjovanov/roomler-ai/pull/1309) · P0 rename
-[#1311](https://github.com/gjovanov/roomler-ai/pull/1311) · P0 contract + baseline
-[#1312](https://github.com/gjovanov/roomler-ai/pull/1312)
+**Issue**: [#1307](https://github.com/jk-zhang-meta/MeshHarbor/issues/1307) ·
+**PRs**: P0 claim [#1309](https://github.com/jk-zhang-meta/MeshHarbor/pull/1309) · P0 rename
+[#1311](https://github.com/jk-zhang-meta/MeshHarbor/pull/1311) · P0 contract + baseline
+[#1312](https://github.com/jk-zhang-meta/MeshHarbor/pull/1312)
 
 ## Goal
 
@@ -128,15 +128,15 @@ Considered: keep the monolith · **modular monolith** · microservices · dynami
 - `crates/core` → package **`meshharbor-core`**, lib `meshharbor_core`, AGPL-3.0-only (server side).
 - `crates/agent-core` → package **`meshharbor-node-core`**, lib `meshharbor_node_core`, MPL-2.0
   (unchanged licence, unchanged directory). Until this FR it was `meshharbor-core` (FR-21 P2a).
-- Module crates → `crates/modules/<name>` = package **`roomler-ai-mod-<name>`**, lib
-  `roomler_ai_mod_<name>`. The `mod-` infix marks the layer and keeps `meshharbor-mod-remote`
+- Module crates → `crates/modules/<name>` = package **`meshharbor-mod-<name>`**, lib
+  `meshharbor_mod_<name>`. The `mod-` infix marks the layer and keeps `meshharbor-mod-remote`
   from being confused with the existing `meshharbor-remote-control` wire crate.
-- *Cons accepted*: the server-side prefix `roomler-ai-*` is a **side** marker, not a licence
+- *Cons accepted*: the server-side prefix `meshharbor-*` is a **side** marker, not a licence
   marker (`meshharbor-remote-control` and `meshharbor-tunnel-core` are MPL because agents link
   them); `scripts/licence-classes.sh` is the source of truth and gains both new names.
 - *Why*: the operator's call (decision 1). The rename is one mechanical PR, and it buys a free
   structural guard: the licensing workflow asserts that no `SERVER_CRATES` entry appears in any
-  shipped agent's dependency graph, so `meshharbor-core` **cannot** leak into `roomlerd` without CI
+  shipped agent's dependency graph, so `meshharbor-core` **cannot** leak into `meshharbord` without CI
   failing (AC10).
 
 ### D3 — Boundaries: one core, six modules
@@ -166,7 +166,7 @@ one "devices" module for remote + network.
   credentials are consumed by RC, tunnels **and** mediasoup ICE (the blank `turn.url` incident was
   a conference outage), so `core`. Recordings → `conference`; files → `chat`. Stats, usage and cost
   are a core **metering sink** so "bill only on server-measured bytes" has one owner and modules
-  write through it. Stripe and the newsletter exist because roomler.ai is a hosted product, so
+  write through it. Stripe and the newsletter exist because meshharbor.itachi.fans is a hosted product, so
   `saas`.
 
 Where the 83 `AppState` fields go (the P1 checklist; counts add up to 83):
@@ -320,7 +320,7 @@ extracting it — a self-hoster's image stops shipping a Stripe webhook and a ne
 
 - *Pros*: any profile without `conference` skips the C++ worker build, the longest step in the
   Docker build; each profile maps to a product story and to a compose file a self-hoster can
-  read; mirrors the discipline `roomlerd` already has (`default` / `media` / `full` / `full-hw`).
+  read; mirrors the discipline `meshharbord` already has (`default` / `media` / `full` / `full-hw`).
 - *Cons*: feature unification — `cargo clippy --workspace` compiles the union, so profile checks
   must run per package (D13); five profiles is five images if all are published.
 - *Why*: hiding by config keeps the mesh buyer's image carrying a Giphy client, and keeps the
@@ -331,7 +331,7 @@ extracting it — a self-hoster's image stops shipping a Stripe webhook and a ne
 
 Unauthenticated: `{ version, modules: […] }`. With a tenant: the plan-and-tenant-gated map per
 module, also mirrored into the existing `/api/auth/me` response. `/health` lists `modules`.
-Consumers: the SPA (nav and routes), `roomlerd` (a `mesh` server never receives RC offers), the CLI.
+Consumers: the SPA (nav and routes), `meshharbord` (a `mesh` server never receives RC offers), the CLI.
 
 - *Pros*: one UI build works against any server; a fleet-versus-server mismatch is explicit and
   logged instead of a blank page; profile smoke tests have something to assert.
@@ -371,7 +371,7 @@ per-module runtime switches.
 
 - One `Dockerfile` with `ARG PROFILE=full` (and `ARG SAAS=0`) →
   `cargo build … --no-default-features --features profile-$PROFILE[,saas]`. Image tags stay
-  `roomler-ai:<tag>` for `full` and add `-collab`, `-remote`, `-mesh`, `-access`.
+  `meshharbor:<tag>` for `full` and add `-collab`, `-remote`, `-mesh`, `-access`.
 - `publish-selfhost-image.yml` gains a `profile` axis: `full` on every tag; the others on dispatch
   until a trigger (each is a separate ~20-minute build).
 - `ci.yml` gains a `profiles` job: `cargo check -p meshharbor-api --no-default-features
@@ -386,7 +386,7 @@ per-module runtime switches.
 
 ### D14 — Daemon: code modularity later; build modularity already exists
 
-No `roomlerd` change in P0–P9. A later phase (its own FR) introduces a `Subsystem` trait and
+No `meshharbord` change in P0–P9. A later phase (its own FR) introduces a `Subsystem` trait and
 peels `main.rs` (5 199 lines) into `subsystems/{control_ws, overlay, tunnels, rc, ssh, updater}`;
 `peer.rs` (10 562 lines) stays untouched. The daemon's profiles (`default` signalling-only,
 `media`, `full`, `full-hw`, the overlay features, `ssh-server`; `meshharbor-cli` as the tunnel-only
@@ -398,7 +398,7 @@ FR-59, FR-63 and FR-65.
 Every PR is pure moves plus signature changes. The gate is (1) the composition baseline
 (`crates/tests/fixtures/composition.baseline.json`, asserted by
 `composition_tests::composition_matches_baseline`), (2) the integration lane at its floor with
-the same two skips, (3) a prod roll verified from the fleet (`roomler exec` sweep, server-side
+the same two skips, (3) a prod roll verified from the fleet (`meshharbor exec` sweep, server-side
 presence counts, the e2e nightly). The kill switch for the PR that introduced a module is its
 `[modules]` switch; the kill switch for P1 is a revert.
 
@@ -474,13 +474,13 @@ is the smallest and exercises the whole contract (`unlimited_routes` for the Str
 | **P8** ✅ (CI) | profiles: `profile-full` … `profile-access` as feature aggregates on the api crate (`default = ["profile-full", "saas"]`, `conference` implies `chat`); `ARG PROFILE` + `ARG SAAS` on the Dockerfile with package-qualified features; `/health` + `/api/capabilities` report the MOUNTED set (+ `compiled`); the `profiles` job in `ci.yml` (four reduced profiles `cargo check`ed + the AC3 `cargo tree` assertions with a positive control); the `profile` input on the self-host publish (tag `<tag>-<profile>`, `SAAS=0`, the boot smoke asserts the module set, `latest` reserved for full); compose/env passthrough; self-host + deployment docs. Field log: "P8" | the five checks green; `mesh` image boots — the smoke half of AC5; the "a daemon enrolls against it" half is a vmtest cell still to run | `full` stays default; the hosted build passes no args | medium | — |
 | **P9** ✅ (CI) | UI module registry (`ui/src/modules/registry.ts`: the six module ids, `VITE_MODULES` build-time pruning, the graph's dependency closure) + runtime gating: a `capabilities` store that asks `GET /api/capabilities` once per page load and answers `has(module)` (bundle AND server, fail-OPEN until the server has answered), `meta.module` on every pillar route with a second router guard that awaits the answer and lands a refused route on the org dashboard, and the layout + tenant dashboard hiding what the server does not mount. Field log: "P9" | Vitest (the store + registry: 10 cases; the full suite); `bun run build`; the e2e nightly against `full` unchanged by construction (no path moved). **AC7's "full UI against a `mesh` server" half is a field check still to run** | `VITE_MODULES` unset (the published bundle carries everything; the runtime gate alone decides) | medium | — |
 | **P10** ✅ (docs, 2026-09-05) | `docs/modular-monolith.md` — the shipped shape with diagrams (the DAG, the contract and composition order, the profiles and what each leaves out, runtime gating, wire ownership, the hooks, the composition gate); `architecture.md` re-pointed from "target" to "shipped"; `docs/README.md` map + row — under the standing rule that closing an FR requires its docs (CLAUDE.md § FR workflow step 5), owed after the close | the rule | — | low | — |
-| later | `roomlerd` `Subsystem` trait — its own FR, after FR-59/63/65 settle | fleet roll + FR-61 matrix | release revert | high | 5–8 |
+| later | `meshharbord` `Subsystem` trait — its own FR, after FR-59/63/65 settle | fleet roll + FR-61 matrix | release revert | high | 5–8 |
 
 **P0 in detail** (three PRs, merged in this order):
 
 1. *Claim* — this spec, the ledger row, the ADR section in `docs/architecture.md`.
 2. *Rename* — `crates/agent-core` package `meshharbor-core` → `meshharbor-node-core` (lib
-   `meshharbor_node_core`); consumers `roomlerd` and `meshharbor-desktop`; the two comments in
+   `meshharbor_node_core`); consumers `meshharbord` and `meshharbor-desktop`; the two comments in
    `remote_control/src/models.rs` and `tunnel-core/src/policy.rs`; `scripts/licence-classes.sh`;
    FR-21's naming record gains a dated note. Directory unchanged.
 3. *Contract + baseline* — `crates/core` with the `Module`, `Hooks`, `WsRegistration`,
@@ -512,7 +512,7 @@ is the smallest and exercises the whole contract (`unlimited_routes` for the Str
       and `network`; a daemon enrolls and joins the overlay against it (a vmtest cell). — The
       smoke half held on the `mesh` dry-run (Mongo + Redis only, `/health` →
       `modules: ["fleet","network"]` in 20 s, the SPA served); the daemon half in a local
-      container cell (2026-09-05): the signed `roomlerd 0.4.65` enrolled, sent its hello,
+      container cell (2026-09-05): the signed `meshharbord 0.4.65` enrolled, sent its hello,
       joined the overlay as `100.65.0.1` in userspace netstack mode and registered on the
       network module's `/derp` — the device listing and the overlay node list both showed it
       online. Field log: "AC5, the daemon half". The same hop across a real network followed
@@ -1194,7 +1194,7 @@ carrier class, a DERP-floor host, an SSH session — read from the fleet, not fr
   `{"status":"ok","version":"0.4.64","modules":["fleet","network"],"compiled":["fleet","network"]}`,
   served the SPA, and the module assertion held. The `full` dry-run listed the five pillars
   and no `saas` — the first published-image build the `SAAS=0` guarantee was asserted on.
-  The daemon half — enrol a `roomlerd` against the `mesh` image and join its overlay — is a
+  The daemon half — enrol a `meshharbord` against the `mesh` image and join its overlay — is a
   vmtest cell still to run.
 - **The UI half of the same gap**: `AgentsSection.vue` offers the overlay-key rotation and the
   SSH policy on every device — network's routes; on a `remote`
@@ -1237,13 +1237,13 @@ and the spec asserts zero console errors and zero failed `/api/` calls across th
 so the next call to an absent module fails the spec rather than a self-hoster's console.
 
 Not covered here: AC7 against a REMOTE `mesh` server over the real network (this is the same
-image on loopback), and AC5's daemon half (a `roomlerd` enrolled against it) — still the fleet's
+image on loopback), and AC5's daemon half (a `meshharbord` enrolled against it) — still the fleet's
 to run.
 
 ### 2026-09-05 — AC5, the daemon half: a release daemon enrols and joins the `mesh` overlay
 
 
-The cell: the `mesh` image built from master `89ea3128` through the self-host compose (`MESHHARBOR_PROFILE=mesh`, Mongo + Redis + MinIO, no coturn), and the **signed release daemon** `roomlerd 0.4.65` from the Linux `.deb` (`gpg`: `Good signature from "Roomler Release Signing"` against the pinned release key) extracted into a `debian:bookworm-slim` container that shares the server container's network namespace — the daemon upgrades any non-loopback `http://` enrollment URL to TLS, and loopback is the exemption a local trial gets. Overlay in **userspace netstack** mode (`overlay_enabled = true` + `netstack_socks_port = 1080`: no TUN, no `NET_ADMIN`, no routing changes), `auto_update = false`.
+The cell: the `mesh` image built from master `89ea3128` through the self-host compose (`MESHHARBOR_PROFILE=mesh`, Mongo + Redis + MinIO, no coturn), and the **signed release daemon** `meshharbord 0.4.65` from the Linux `.deb` (`gpg`: `Good signature from "MeshHarbor Release Signing"` against the pinned release key) extracted into a `debian:bookworm-slim` container that shares the server container's network namespace — the daemon upgrades any non-loopback `http://` enrollment URL to TLS, and loopback is the exemption a local trial gets. Overlay in **userspace netstack** mode (`overlay_enabled = true` + `netstack_socks_port = 1080`: no TUN, no `NET_ADMIN`, no routing changes), `auto_update = false`.
 
 | Step | Daemon log (`docker logs`) | Server side |
 |---|---|---|
@@ -1260,19 +1260,19 @@ Not covered: a second node and traffic between them (one node is what AC5 asks: 
 ### 2026-09-05 — the first prod roll, field-verified
 
 
-**The roll.** Deployed 2026-09-05 08:49 UTC via `deploy-api.sh` from origin/master `89ea3128` (the last code commit of FR-69 — #1354/#1356 after it are docs only), by the FR-70 session's web deploy; both `roomler2` pods Ready at 08:49:35 / 08:49:52 UTC, `0` restarts, `RollingUpdate maxSurge 0 / maxUnavailable 1`. Nothing needed rebuilding for FR-69 — the image already carried everything, so this is the verification, taken 09:00–09:20 UTC.
+**The roll.** Deployed 2026-09-05 08:49 UTC via `deploy-api.sh` from origin/master `89ea3128` (the last code commit of FR-69 — #1354/#1356 after it are docs only), by the FR-70 session's web deploy; both `meshharbor2` pods Ready at 08:49:35 / 08:49:52 UTC, `0` restarts, `RollingUpdate maxSurge 0 / maxUnavailable 1`. Nothing needed rebuilding for FR-69 — the image already carried everything, so this is the verification, taken 09:00–09:20 UTC.
 
 **Composition, both pods.** Each pod's log: `module mounted` × 6 (`saas`, `chat`, `conference`, `fleet`, `remote`, `network`) at boot; `/health` and `/api/capabilities` on both pods (the LB hashes — several hits): `modules` = `compiled` = the six, `switched_off: []`. **Zero `ERROR` / `panicked` lines on either pod in the 25 min after boot.**
 
 | Gate | Reading | Verdict |
 |---|---|---|
 | no dip in online agents | `agents`: 31 enrolled, **20 seen in the last 10 min**, 19 `status: online`, **0 online-but-stale**; the pod this browser hashed to: `agents_online 14`, `pods_alive 2`, cluster bus alive; version mix 0.4.65 ×18 · 0.4.66 ×2 · 0.4.63 ×4 (+ 7 long-offline legacy rows) | ✓ |
-| P5 fleet RPC | `roomler exec` `hostname` round-trips to mars, jupiter, zeus through the new pods; **65 `exec_audit` rows since the roll** (the FR-70 session's field test + these) | ✓ |
-| P6 remote control | **5 RC sessions served since the roll** (CORPLAP-1, LAN class, 08:55–09:02 UTC, `peak_fps` 15–16, clean `controller_hangup` ends) — the FR-70 session's field test on this deploy; **and one I drove myself at 09:13 UTC: MacBook-1 (macOS 0.4.65), WAN-direct class — the viewer chips read `connected · H.265 4:2:0 HW (hevc_videotoolbox) · direct · dec HW · 10.4 Mbps · 30 fps · 3024×1964 · ~8 ms`, ended by DISCONNECT (server row: 09:13:30 → 09:14:14 UTC, `controller_hangup`, `peak_fps 30`; the agent-side heartbeat read over `roomler exec` came back empty on the Mac, so the viewer chips and the row are the reading)** | ✓ (LAN + WAN-direct classes) |
-| P7 overlay — a pair on each carrier class | from this box's `roomler peers`: **LAN** CORPLAP-2 5 ms · CORPLAP-1 4 ms · CORPLAP-3 3 ms; **srflx/direct WAN** mars 39 ms · jupiter 40 ms · zeus 41 ms · Apple-Asahi 33 ms · MacBook-1-Daemon 48 ms; **DERP floor** NEO16-WSL-2 on `relay:derp/tcp`; the secondary org's four peers direct; the offline rows are long-offline desktops | ✓ (LAN, srflx, DERP; no pair is on the single-relay TURN tier right now) |
+| P5 fleet RPC | `meshharbor exec` `hostname` round-trips to mars, jupiter, zeus through the new pods; **65 `exec_audit` rows since the roll** (the FR-70 session's field test + these) | ✓ |
+| P6 remote control | **5 RC sessions served since the roll** (CORPLAP-1, LAN class, 08:55–09:02 UTC, `peak_fps` 15–16, clean `controller_hangup` ends) — the FR-70 session's field test on this deploy; **and one I drove myself at 09:13 UTC: MacBook-1 (macOS 0.4.65), WAN-direct class — the viewer chips read `connected · H.265 4:2:0 HW (hevc_videotoolbox) · direct · dec HW · 10.4 Mbps · 30 fps · 3024×1964 · ~8 ms`, ended by DISCONNECT (server row: 09:13:30 → 09:14:14 UTC, `controller_hangup`, `peak_fps 30`; the agent-side heartbeat read over `meshharbor exec` came back empty on the Mac, so the viewer chips and the row are the reading)** | ✓ (LAN + WAN-direct classes) |
+| P7 overlay — a pair on each carrier class | from this box's `meshharbor peers`: **LAN** CORPLAP-2 5 ms · CORPLAP-1 4 ms · CORPLAP-3 3 ms; **srflx/direct WAN** mars 39 ms · jupiter 40 ms · zeus 41 ms · Apple-Asahi 33 ms · MacBook-1-Daemon 48 ms; **DERP floor** NEO16-WSL-2 on `relay:derp/tcp`; the secondary org's four peers direct; the offline rows are long-offline desktops | ✓ (LAN, srflx, DERP; no pair is on the single-relay TURN tier right now) |
 | P7 — a DERP-floor host reaching a peer | the pod's `derp_bytes_relayed_total: 992 479` since boot, `derp_registrations 13` on that pod; (the pod-log census lines are below INFO on prod, so the gauge is the reading) | ✓ |
 | P7 — a tunnel opened | the seven declared routes on this box all `active` after the roll; **three TCP forwards connect and hold through the new pods** (a database forward and two RDP forwards into corporate networks — curl exit 28 = connected, idle); the pod reports `tunnel_sessions 21`. The two SOCKS routes refuse a remote-DNS `CONNECT` to a public site (`general SOCKS failure` within 45 ms) — the corp hosts' egress, not the pods, and the same as before the roll | ✓ |
-| P7 — an SSH session | `roomler ssh mars` → `this device does not accept SSH sessions (its policy is off)` — the enumerated refusal from the moved dispatch (`network`); no fleet device has an SSH policy, so a session cannot be opened without first enabling one (unchanged by the roll) | ✓ (dispatch) / not configured |
+| P7 — an SSH session | `meshharbor ssh mars` → `this device does not accept SSH sessions (its policy is off)` — the enumerated refusal from the moved dispatch (`network`); no fleet device has an SSH policy, so a session cannot be opened without first enabling one (unchanged by the roll) | ✓ (dispatch) / not configured |
 | P7b device listing on prod | the Devices page lists **21 devices** with Overlay (v4 + ULA v6 + key epoch), MagicDNS and Tags columns and the Devices / Tunnels / Both filter — the listing that returned to the host in #1352, reading the network module's overlay rows | ✓ |
 | P8/P9 SPA against prod | every pillar renders: Dashboard, Devices (with the live device list), Network, Rooms, Files, Invites, Analytics, Observability, Settings; the remote view, the devices grid and the dashboard load with no gating regression; `mesh-profile.spec.ts` skips (prod mounts `chat`) | ✓ |
 
@@ -1287,7 +1287,7 @@ The three refinements the closing summary named, taken one by one.
 
 ### 1. A relay-class remote-control session — ✓ served through the new deploy
 
-`ice_relay_tcp` was at its default on every fleet device, and no viewer can choose its path, so the relay class had to be forced on a device: CORPLAP-1 (Windows, on the same LAN as the controller — the hardest case to push onto a relay), `roomler config set ice_relay_tcp true` over `roomler exec`, then a restart the exec channel cannot tear down — two one-shot scheduled tasks as SYSTEM, `sc stop Roomler` at 15:42 and `sc start Roomler` at 15:43 on the device's clock — because `Restart-Service` from inside `roomler exec` would be killed with the exec's own process tree between the stop and the start. Both daemon pids changed and the service read `Running` at 15:43:41; the session from this controller at 13:44 UTC then came up with the viewer chips reading `connected · H.265 4:2:0 HW (hevc_qsv) · relay · dec HW · FSR · 1.4–1.8 Mbps · 16 fps · 1920×1200 · ~45 ms` (the device's screen was locked — static content, hence the low rate), and the device's own log says why: `selected pair changed: … udp4 relay ↔ udp4 relay` — both ICE candidates are allocations on the cluster's TURN server (`TURN allocation established … TURN relay allocated (tier2-udp)`), the credentials minted by the `remote` module's `/turn/credentials`. Ended with DISCONNECT (server row: 13:44:07 → 13:44:49 UTC, `controller_hangup`, `peak_fps 16`). The flag was then cleared and the daemon restarted the same way, back to its default direct path.
+`ice_relay_tcp` was at its default on every fleet device, and no viewer can choose its path, so the relay class had to be forced on a device: CORPLAP-1 (Windows, on the same LAN as the controller — the hardest case to push onto a relay), `meshharbor config set ice_relay_tcp true` over `meshharbor exec`, then a restart the exec channel cannot tear down — two one-shot scheduled tasks as SYSTEM, `sc stop MeshHarbor` at 15:42 and `sc start MeshHarbor` at 15:43 on the device's clock — because `Restart-Service` from inside `meshharbor exec` would be killed with the exec's own process tree between the stop and the start. Both daemon pids changed and the service read `Running` at 15:43:41; the session from this controller at 13:44 UTC then came up with the viewer chips reading `connected · H.265 4:2:0 HW (hevc_qsv) · relay · dec HW · FSR · 1.4–1.8 Mbps · 16 fps · 1920×1200 · ~45 ms` (the device's screen was locked — static content, hence the low rate), and the device's own log says why: `selected pair changed: … udp4 relay ↔ udp4 relay` — both ICE candidates are allocations on the cluster's TURN server (`TURN allocation established … TURN relay allocated (tier2-udp)`), the credentials minted by the `remote` module's `/turn/credentials`. Ended with DISCONNECT (server row: 13:44:07 → 13:44:49 UTC, `controller_hangup`, `peak_fps 16`). The flag was then cleared and the daemon restarted the same way, back to its default direct path.
 
 ### 2. A `mesh` server across a real network — ✓ the server and the browser halves; the daemon hop followed the same day in a TLS-fronted cell (next entry)
 
@@ -1319,7 +1319,7 @@ The cell: the `mesh` image on the cluster's build host as above (bound to its ov
 
 AC7's second half ("against `full` the e2e nightly is unchanged") was still a claim by construction when #1307 closed: no nightly had yet run against a modular image. Reading it on demand (`scripts/e2e-run.sh v20260905-1c2753684ab9` from the cluster's build host) turned up two defects in the lane before it produced a number — both filed as #1385, neither in the product:
 
-- **The nightly is not running.** The build host's user crontab holds no roomler line any more (the e2e nightly, the registry-retention GC and the mediasoup RTC-forwarding audit are all absent); the last nightly log is 2026-09-04 01:30 UTC. The crontab was rewritten on 2026-09-04 13:48 UTC by another project's backup-cron install, and the `crontab -l` capture it kept from two minutes earlier was already empty — the roomler lines were gone before that install ran, and who removed them is not visible from the host. Restoring them is the operator's call, not this program's.
+- **The nightly is not running.** The build host's user crontab holds no meshharbor line any more (the e2e nightly, the registry-retention GC and the mediasoup RTC-forwarding audit are all absent); the last nightly log is 2026-09-04 01:30 UTC. The crontab was rewritten on 2026-09-04 13:48 UTC by another project's backup-cron install, and the `crontab -l` capture it kept from two minutes earlier was already empty — the meshharbor lines were gone before that install ran, and who removed them is not visible from the host. Restoring them is the operator's call, not this program's.
 - **The runner would have failed anyway.** The first run returned 146 failed / 21 passed in 45 s with one error for all 146: the `pwrunner` sidecar image pins Playwright v1.62.0's browsers, while the runner's `npm i` resolves `"@playwright/test": "^1.62.0"` from the registry at run time (`ui/package-lock.json` is a fossil pinning 1.58.2, so npm ignores it; the real lock is `bun.lock`, which npm does not read) — and Playwright 1.63.0 had just shipped. A product regression does not fail 146 browser specs faster than a page load. Ephemeral repair: `npx playwright install chromium` inside the sidecar (it lives as long as the pod), then the suite again with the stack still pinned.
 
 The reading — specs at master `b3ce69b1`, stack on `v20260905-1c2753684ab9`:

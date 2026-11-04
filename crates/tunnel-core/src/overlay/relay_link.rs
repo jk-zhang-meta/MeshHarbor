@@ -2451,7 +2451,7 @@ pub(crate) fn turn_creds(ice_servers: &[IceServer]) -> Option<(Vec<String>, Stri
 }
 
 /// Host + port of the first `turn:`/`turns:` ICE url (e.g.
-/// `("coturn.roomler.ai", 3478)`). Skips `stun:` entries; the port defaults to
+/// `("coturn.meshharbor.itachi.fans", 3478)`). Skips `stun:` entries; the port defaults to
 /// 3478 when the url carries none.
 fn turn_host_port(ice: &[IceServer]) -> Option<(String, u16)> {
     ice.iter().flat_map(|s| s.urls.iter()).find_map(|u| {
@@ -2943,15 +2943,15 @@ mod tests {
                 username: None,
                 credential: None,
             },
-            ice("turn:coturn.roomler.ai:3478?transport=udp"),
+            ice("turn:coturn.meshharbor.itachi.fans:3478?transport=udp"),
         ];
         assert_eq!(
             turn_host_port(&servers),
-            Some(("coturn.roomler.ai".into(), 3478))
+            Some(("coturn.meshharbor.itachi.fans".into(), 3478))
         );
         assert_eq!(
-            turn_host_port(&[ice("turns:coturn.roomler.ai:443?transport=tcp")]),
-            Some(("coturn.roomler.ai".into(), 443))
+            turn_host_port(&[ice("turns:coturn.meshharbor.itachi.fans:443?transport=tcp")]),
+            Some(("coturn.meshharbor.itachi.fans".into(), 443))
         );
         // A portless url resolves on the default TURN port.
         assert_eq!(

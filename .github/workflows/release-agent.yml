@@ -2,14 +2,14 @@
 # Every retired name in this workflow is either a PUBLISHED release-asset name
 # (already-released files cannot be renamed, and the updater's picker matches
 # those strings) or a FROZEN install path — the RPATH-bound
-# /usr/lib/roomler-agent, the macOS .app bundle whose name keys the TCC grants,
+# /usr/lib/meshharbor-agent, the macOS .app bundle whose name keys the TCC grants,
 # or the inert meshharbor-agent.exe alias the deployed fleet still resolves.
 # INVARIANT: a retired name here must be a published artifact name or a path a
 # real host has. If you add one that is neither, that is a bug, not a new
 # exemption. docs/fr/FR-21
-name: Release roomlerd
+name: Release meshharbord
 
-# Builds per-OS installers for the roomlerd binary (MSI on Windows,
+# Builds per-OS installers for the meshharbord binary (MSI on Windows,
 # notarised .pkg on macOS, .deb on Linux). Triggered either by pushing a
 # tag matching `agent-v*` (publishes a GitHub Release) or manually via
 # workflow_dispatch (uploads workflow artifacts for 30-day retention).
@@ -100,7 +100,7 @@ concurrency:
 # key) instead of the workspace manifest, deliberately: the manifest form
 # would also slow the API docker image build on the build host, which ships
 # in a container where binary size is irrelevant. Measured on the rc.363
-# tree (32-core box, cold): roomlerd 31.95 -> 26.07 MiB (-18.4%) at 128 ->
+# tree (32-core box, cold): meshharbord 31.95 -> 26.07 MiB (-18.4%) at 128 ->
 # 200 s; the standalone CLI 21.29 -> 15.53 MiB (-27.1%). NB fat/thin LTO
 # both LOSE to this on size AND build time for these binaries (thin is
 # +5% SIZE over baseline) — do not "upgrade" this to lto without
@@ -210,7 +210,7 @@ jobs:
           # agents/meshharbord/src/version_sweep.rs::own_msi_version
           # (coexisting-MSI sweep — a divergence there makes an agent rank
           # its OWN install as older and uninstall itself), and the three
-          # build.rs VERSIONINFO embeds (roomlerd, meshharbor-cli-shim,
+          # build.rs VERSIONINFO embeds (meshharbord, meshharbor-cli-shim,
           # meshharbor-cli — `file_version`): those stamp the EXE
           # FILEVERSION shown by Explorer/EDR inventory; a divergence there
           # is cosmetic-but-confusing (EXE claims a different version than
@@ -410,17 +410,17 @@ jobs:
           # added `-h264dec-aac` (the software h264 decoder the recorder's
           # editor needs and the aac encoder for its sound, inside libavcodec,
           # no new DT_NEEDED); rollback = drop that one.
-          sudo mkdir -p /opt/roomler-ffmpeg
+          sudo mkdir -p /opt/meshharbor-ffmpeg
           sudo tar xf /tmp/ffdl/ffmpeg-9.0.1-linux64-lgpl-shared-minimal-vaapi-vulkan-h264dec-aac.tar.xz \
-            -C /opt/roomler-ffmpeg --strip-components=1
+            -C /opt/meshharbor-ffmpeg --strip-components=1
           # BtbN's pkgconfig files hardcode the build-machine prefix; rewrite
           # it to our extract path so pkg-config emits correct -L/-I flags.
-          sudo sed -i "s|^prefix=.*|prefix=/opt/roomler-ffmpeg|" \
-            /opt/roomler-ffmpeg/lib/pkgconfig/*.pc
+          sudo sed -i "s|^prefix=.*|prefix=/opt/meshharbor-ffmpeg|" \
+            /opt/meshharbor-ffmpeg/lib/pkgconfig/*.pc
           {
-            echo "FFMPEG_DIR=/opt/roomler-ffmpeg"
-            echo "PKG_CONFIG_PATH=/opt/roomler-ffmpeg/lib/pkgconfig"
-            echo "LD_LIBRARY_PATH=/opt/roomler-ffmpeg/lib"
+            echo "FFMPEG_DIR=/opt/meshharbor-ffmpeg"
+            echo "PKG_CONFIG_PATH=/opt/meshharbor-ffmpeg/lib/pkgconfig"
+            echo "LD_LIBRARY_PATH=/opt/meshharbor-ffmpeg/lib"
           } >> "$GITHUB_ENV"
           # ── FR-62 A2 drift gate: the vendored libs must have been built from
           #    the FFmpeg source patches committed in this checkout. The vendor
@@ -440,7 +440,7 @@ jobs:
             # since `.` matches the spaces before the path — the bug this
             # replaces.)
             want=$(for f in "${committed[@]}"; do printf '%s %s\n' "$(sha256sum "$f" | cut -d' ' -f1)" "$(basename "$f")"; done | sort)
-            got_file=/opt/roomler-ffmpeg/MESHHARBOR-PATCHES.txt
+            got_file=/opt/meshharbor-ffmpeg/MESHHARBOR-PATCHES.txt
             if [ ! -f "$got_file" ]; then
               echo "::error::vendored FFmpeg carries no MESHHARBOR-PATCHES.txt but ${#committed[@]} patch(es) are committed — re-vendor before tagging (see .github/ffmpeg-patches/)"; exit 1
             fi
@@ -529,19 +529,19 @@ jobs:
           CMAKE_POLICY_VERSION_MINIMUM: "3.5"
         run: cargo build -p meshharbord --release --features "full,hive,vp9-444,vp9-444-bindgen,overlay-l3,overlay-netstack,ffmpeg-encoder,ssh-server,viewer-indicator-x11"
 
-      # P3e Phase 2: the .deb's `roomler` is now the CLI SHIM (re-execs
-      # `roomlerd cli`) — the Linux twin of the rc.365 MSI change. It must
+      # P3e Phase 2: the .deb's `meshharbor` is now the CLI SHIM (re-execs
+      # `meshharbord cli`) — the Linux twin of the rc.365 MSI change. It must
       # exist before `cargo deb --no-build` runs (the assets list references
-      # target/release/roomler-shim). Replaces the 143 s full-CLI build that
+      # target/release/meshharbor-shim). Replaces the 143 s full-CLI build that
       # duplicated ~21 MiB of the daemon's crates inside the .deb, and
       # structurally retires the CLI/daemon version-skew failure class
       # (field-caught 2026-08-06: rc.205 CLI vs rc.311 daemon) — the command
-      # surface now lives inside roomlerd itself. Tunnel-ONLY Linux hosts
+      # surface now lives inside meshharbord itself. Tunnel-ONLY Linux hosts
       # still get the real standalone binary from release-tunnel.yml.
-      - name: Build the roomler CLI shim (shipped in the .deb alongside roomlerd)
+      - name: Build the meshharbor CLI shim (shipped in the .deb alongside meshharbord)
         run: |
           cargo build -p meshharbor-cli-shim --release
-          test -f target/release/roomler-shim || { echo "::error::roomler-shim not produced — the cargo-deb assets entry would fail"; exit 1; }
+          test -f target/release/meshharbor-shim || { echo "::error::meshharbor-shim not produced — the cargo-deb assets entry would fail"; exit 1; }
 
       - name: Bundle FFmpeg into the .deb (self-contained, RPATH)
         run: |
@@ -549,7 +549,7 @@ jobs:
           # Ubuntu 24.04 ships FFmpeg 6.1 (libavcodec.so.60) but the agent links
           # 9.0.1 (libavcodec.so.63), so the .deb must CARRY its own FFmpeg or it
           # won't start on a stock box. Ship each lib under its SONAME as a real
-          # file (no symlinks) into /usr/lib/roomler-agent; RPATH wires it up.
+          # file (no symlinks) into /usr/lib/meshharbor-agent; RPATH wires it up.
           # patchelf comes from the cached apt set at the top of this job.
           dst=agents/meshharbord/vendor-ffmpeg
           rm -rf "$dst" && mkdir -p "$dst"
@@ -568,10 +568,10 @@ jobs:
           # OWN needs — ldd cannot traverse INTO a lib it can't find, so
           # vendored-lib -> vendored-lib edges (e.g. avformat -> swresample)
           # need the fixpoint. Converges in 2 passes today; capped at 5.
-          needed=$(ldd target/release/roomlerd | awk '{print $1}')
+          needed=$(ldd target/release/meshharbord | awk '{print $1}')
           for _pass in 1 2 3 4 5; do
             grew=0
-            for real in $(find /opt/roomler-ffmpeg/lib -maxdepth 1 -type f -name 'lib*.so.*'); do
+            for real in $(find /opt/meshharbor-ffmpeg/lib -maxdepth 1 -type f -name 'lib*.so.*'); do
               soname=$(patchelf --print-soname "$real")
               [ -f "$dst/$soname" ] && continue
               if echo "$needed" | grep -qx "$soname"; then
@@ -583,7 +583,7 @@ jobs:
             needed=$(printf '%s\n' "$needed"; for l in "$dst"/lib*.so.*; do patchelf --print-needed "$l"; done)
           done
           copied=$(ls "$dst" | wc -l)
-          for real in $(find /opt/roomler-ffmpeg/lib -maxdepth 1 -type f -name 'lib*.so.*'); do
+          for real in $(find /opt/meshharbor-ffmpeg/lib -maxdepth 1 -type f -name 'lib*.so.*'); do
             soname=$(patchelf --print-soname "$real")
             [ -f "$dst/$soname" ] || echo "skipping unreferenced vendored lib: $soname"
           done
@@ -613,11 +613,11 @@ jobs:
           # vaapi/vulkan) dlopen their driver libs at runtime, so no extra
           # .deb `depends` are needed.
           for lib in "$dst"/*.so.*; do patchelf --set-rpath '$ORIGIN' "$lib"; done
-          # P3d Slice B: the daemon binary is now `roomlerd` (the [[bin]] output
-          # name); the .deb assets map installs it to /usr/lib/roomler-agent RPATH.
-          patchelf --set-rpath '/usr/lib/roomler-agent' target/release/roomlerd
+          # P3d Slice B: the daemon binary is now `meshharbord` (the [[bin]] output
+          # name); the .deb assets map installs it to /usr/lib/meshharbor-agent RPATH.
+          patchelf --set-rpath '/usr/lib/meshharbor-agent' target/release/meshharbord
           echo "bundled: $(ls "$dst" | tr '\n' ' ')"
-          echo "binary RUNPATH -> $(patchelf --print-rpath target/release/roomlerd)"
+          echo "binary RUNPATH -> $(patchelf --print-rpath target/release/meshharbord)"
 
       - name: Verify the bundled agent loads on stock Ubuntu 24.04
         # The binary is a 22.04 build (glibc 2.34) that links libvpx.so.7; 24.04
@@ -630,7 +630,7 @@ jobs:
           docker run --rm -v "$PWD:/w" ubuntu:24.04 bash -euc '
             apt-get update -qq
             apt-get install -y -qq libxcb1 libxcb-shm0 libxcb-randr0 libasound2t64 >/dev/null
-            LD_LIBRARY_PATH=/w/agents/meshharbord/vendor-ffmpeg /w/target/release/roomlerd --version
+            LD_LIBRARY_PATH=/w/agents/meshharbord/vendor-ffmpeg /w/target/release/meshharbord --version
             # FR-77 P4 — the VA loader chain must come from the bundle: a stock
             # host has no libva2, and the daemon must still start there.
             for l in libva.so.2 libva-drm.so.2 libdrm.so.2; do
@@ -656,11 +656,11 @@ jobs:
         # only the new step broke.
         run: |
           set -euo pipefail
-          deb=$(ls target/debian/roomlerd_*_amd64.deb | head -n1)
+          deb=$(ls target/debian/meshharbord_*_amd64.deb | head -n1)
           depends=$(dpkg-deb -f "$deb" Depends)
-          echo "roomlerd Depends: $depends"
+          echo "meshharbord Depends: $depends"
           if echo "$depends" | grep -qiE 'webkit|gtk|appindicator|libx11|wayland'; then
-            echo "::error::the roomlerd .deb grew a desktop dependency — the companion belongs in its own package (FR-27)"
+            echo "::error::the meshharbord .deb grew a desktop dependency — the companion belongs in its own package (FR-27)"
             exit 1
           fi
 
@@ -671,17 +671,17 @@ jobs:
           set -euo pipefail
           version="${{ needs.validate-version.outputs.version }}"
           # FR-21 P2a: cargo-deb emits `<package>_<version>_<arch>.deb`, and the
-          # package is `roomlerd`. FR-46 (#1051) took the DESTINATION name over
+          # package is `meshharbord`. FR-46 (#1051) took the DESTINATION name over
           # too, after measuring every consumer rather than assuming: Windows
           # keys on `.msi` + the `-permachine-` infix, macOS on `.pkg`, Linux
-          # >=0.4.16 on `is_daemon_asset` (which ALREADY accepts `roomlerd`),
+          # >=0.4.16 on `is_daemon_asset` (which ALREADY accepts `meshharbord`),
           # <=0.4.15 on the first `.deb` matching arch, `scripts/install.sh` on
           # an arch+format SUFFIX, and the server-side ordering on a
           # `meshharbor-desktop-` denylist. Not one of them keys on this prefix, so
           # the rename freezes nothing. Already-published assets keep their old
           # names and stay reachable through the legacy arm.
-          src=$(ls target/debian/roomlerd_*_amd64.deb | head -n1)
-          dst="roomlerd-${version}-x86_64-unknown-linux-gnu.deb"
+          src=$(ls target/debian/meshharbord_*_amd64.deb | head -n1)
+          dst="meshharbord-${version}-x86_64-unknown-linux-gnu.deb"
           mv "$src" "$dst"
           sha256sum "$dst" | awk '{print $1"  "$2}' > "${dst}.sha256"
           echo "artifact=${dst}" >> "$GITHUB_OUTPUT"
@@ -698,7 +698,7 @@ jobs:
           set -euo pipefail
           version="${{ needs.validate-version.outputs.version }}"
           sh scripts/stage-linux-tarball.sh "$version" x86_64-unknown-linux-gnu
-          echo "artifact=roomlerd-${version}-x86_64-unknown-linux-gnu.tar.gz" >> "$GITHUB_OUTPUT"
+          echo "artifact=meshharbord-${version}-x86_64-unknown-linux-gnu.tar.gz" >> "$GITHUB_OUTPUT"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -850,7 +850,7 @@ jobs:
               missing=$((missing + 1))
             fi
           done
-          if grep -qiE 'libicu|roomlerd' rpm-requires.txt; then
+          if grep -qiE 'libicu|meshharbord' rpm-requires.txt; then
             echo "::error::the companion .rpm requires the daemon package or ICU by a name no RPM distro shares"
             missing=$((missing + 1))
           fi
@@ -866,7 +866,7 @@ jobs:
           # find rather than a guess: a wrong path here fails the whole release
           # job at its last step.
           src=$(find . -path ./node_modules -prune -o \
-                       -name 'roomler-desktop_*_amd64.deb' -print | head -n1)
+                       -name 'meshharbor-desktop_*_amd64.deb' -print | head -n1)
           [ -n "$src" ] || { echo "::error::cargo deb produced no companion .deb"; exit 1; }
           dst="meshharbor-desktop-${version}-x86_64-unknown-linux-gnu.deb"
           mv "$src" "$dst"
@@ -973,7 +973,7 @@ jobs:
               missing=$((missing + 1))
             fi
           done
-          if grep -qiE 'libicu|roomlerd' rpm-requires.txt; then
+          if grep -qiE 'libicu|meshharbord' rpm-requires.txt; then
             echo "::error::the companion .rpm requires the daemon package or ICU by a name no RPM distro shares"
             missing=$((missing + 1))
           fi
@@ -986,7 +986,7 @@ jobs:
           set -euo pipefail
           version="${{ needs.validate-version.outputs.version }}"
           src=$(find . -path ./node_modules -prune -o \
-                       -name 'roomler-desktop_*_arm64.deb' -print | head -n1)
+                       -name 'meshharbor-desktop_*_arm64.deb' -print | head -n1)
           [ -n "$src" ] || { echo "::error::cargo deb produced no arm64 companion .deb"; exit 1; }
           dst="meshharbor-desktop-${version}-aarch64-unknown-linux-gnu.deb"
           mv "$src" "$dst"
@@ -1092,11 +1092,11 @@ jobs:
           CMAKE_POLICY_VERSION_MINIMUM: "3.5"
         run: cargo build -p meshharbord --release --features "full,hive,vp9-444,vp9-444-bindgen,overlay-l3,overlay-netstack,ssh-server,viewer-indicator-x11"
 
-      - name: Build the roomler CLI shim (shipped in the .deb alongside roomlerd)
+      - name: Build the meshharbor CLI shim (shipped in the .deb alongside meshharbord)
         run: |
           set -euo pipefail
           cargo build -p meshharbor-cli-shim --release
-          test -f target/release/roomler-shim || { echo "::error::roomler-shim not produced — the cargo-deb assets entry would fail"; exit 1; }
+          test -f target/release/meshharbor-shim || { echo "::error::meshharbor-shim not produced — the cargo-deb assets entry would fail"; exit 1; }
 
       - name: Bundle libvpx into the .deb (self-contained, RPATH)
         run: |
@@ -1113,9 +1113,9 @@ jobs:
           cp "$vpx7" "$dst/libvpx.so.7"
           [ -f "$dst/libvpx.so.7" ] || { echo "::error::libvpx.so.7 not bundled — agent aborts at load on 24.04"; exit 1; }
           for lib in "$dst"/*.so.*; do patchelf --set-rpath '$ORIGIN' "$lib"; done
-          patchelf --set-rpath '/usr/lib/roomler-agent' target/release/roomlerd
+          patchelf --set-rpath '/usr/lib/meshharbor-agent' target/release/meshharbord
           echo "bundled: $(ls "$dst" | tr '\n' ' ')"
-          echo "binary RUNPATH -> $(patchelf --print-rpath target/release/roomlerd)"
+          echo "binary RUNPATH -> $(patchelf --print-rpath target/release/meshharbord)"
 
       - name: Verify the bundled agent loads on stock Ubuntu 24.04 (arm64)
         run: |
@@ -1123,7 +1123,7 @@ jobs:
           docker run --rm -v "$PWD:/w" ubuntu:24.04 bash -euc '
             apt-get update -qq
             apt-get install -y -qq libxcb1 libxcb-shm0 libxcb-randr0 libasound2t64 >/dev/null
-            LD_LIBRARY_PATH=/w/agents/meshharbord/vendor-ffmpeg /w/target/release/roomlerd --version'
+            LD_LIBRARY_PATH=/w/agents/meshharbord/vendor-ffmpeg /w/target/release/meshharbord --version'
 
       - name: Build .deb
         working-directory: agents/meshharbord
@@ -1136,17 +1136,17 @@ jobs:
           set -euo pipefail
           version="${{ needs.validate-version.outputs.version }}"
           # FR-21 P2a: cargo-deb emits `<package>_<version>_<arch>.deb`, and the
-          # package is `roomlerd`. FR-46 (#1051) took the DESTINATION name over
+          # package is `meshharbord`. FR-46 (#1051) took the DESTINATION name over
           # too, after measuring every consumer rather than assuming: Windows
           # keys on `.msi` + the `-permachine-` infix, macOS on `.pkg`, Linux
-          # >=0.4.16 on `is_daemon_asset` (which ALREADY accepts `roomlerd`),
+          # >=0.4.16 on `is_daemon_asset` (which ALREADY accepts `meshharbord`),
           # <=0.4.15 on the first `.deb` matching arch, `scripts/install.sh` on
           # an arch+format SUFFIX, and the server-side ordering on a
           # `meshharbor-desktop-` denylist. Not one of them keys on this prefix, so
           # the rename freezes nothing. Already-published assets keep their old
           # names and stay reachable through the legacy arm.
-          src=$(ls target/debian/roomlerd_*_arm64.deb | head -n1)
-          dst="roomlerd-${version}-aarch64-unknown-linux-gnu.deb"
+          src=$(ls target/debian/meshharbord_*_arm64.deb | head -n1)
+          dst="meshharbord-${version}-aarch64-unknown-linux-gnu.deb"
           mv "$src" "$dst"
           sha256sum "$dst" | awk '{print $1"  "$2}' > "${dst}.sha256"
           echo "artifact=${dst}" >> "$GITHUB_OUTPUT"
@@ -1159,7 +1159,7 @@ jobs:
           set -euo pipefail
           version="${{ needs.validate-version.outputs.version }}"
           sh scripts/stage-linux-tarball.sh "$version" aarch64-unknown-linux-gnu
-          echo "artifact=roomlerd-${version}-aarch64-unknown-linux-gnu.tar.gz" >> "$GITHUB_OUTPUT"
+          echo "artifact=meshharbord-${version}-aarch64-unknown-linux-gnu.tar.gz" >> "$GITHUB_OUTPUT"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -1548,13 +1548,13 @@ jobs:
           CMAKE_POLICY_VERSION_MINIMUM: "3.5"
         run: cargo build -p meshharbord --release --features "full-hw,hive,vp9-444,system-context,ffmpeg-encoder,overlay-l3,overlay-netstack,ssh-server"
 
-      - name: Build the roomler CLI shim for the MSI bundle (P3e lever D)
+      - name: Build the meshharbor CLI shim for the MSI bundle (P3e lever D)
         shell: pwsh
         run: |
           # P4b put the tunnel CLI inside both MSIs so daemon installs subsume
           # it and the MSI stays the ONE updater for the node stack. That is
           # unchanged — what changed (P3e lever D) is HOW: the daemon now owns
-          # the command surface (`roomlerd cli` → meshharbor_cli::cli) and the
+          # the command surface (`meshharbord cli` → meshharbor_cli::cli) and the
           # MSI carries a ~150 KB shim instead of a second full binary.
           #
           # rc.361 measurements that motivated it: meshharbor.exe was 22.1 MiB of
@@ -1567,7 +1567,7 @@ jobs:
           # Both wxs files reference target\release\meshharbor-shim.exe at harvest
           # time, so this MUST still run before the two cargo-wix builds below.
           # Tunnel-ONLY hosts are unaffected: release-tunnel.yml keeps building
-          # and shipping the real standalone `roomler` binary.
+          # and shipping the real standalone `meshharbor` binary.
           cargo build -p meshharbor-cli-shim --release
           if (-not (Test-Path target\release\meshharbor-shim.exe)) {
             Write-Host "::error::meshharbor-shim.exe not produced — the TunnelExe wxs component would fail the MSI harvest (LGHT0103)"
@@ -1629,7 +1629,7 @@ jobs:
       - name: Encoder smoke test (FFmpeg link check + MF cascade → openh264 fallback)
         shell: pwsh
         env:
-          RUST_LOG: roomlerd=debug,info
+          RUST_LOG: meshharbord=debug,info
         run: |
           # Probe the hardware encoder path. On windows-latest the runner
           # exposes a WARP software D3D11 device; the MS H264 Encoder MFT
@@ -1652,7 +1652,7 @@ jobs:
       # Manager shows a publisher for, and what an AppLocker/WDAC publisher
       # rule matches. An MSI-only signature buys none of that.
       #
-      # Both wxs files reference target\release\{roomlerd,roomler-shim}.exe by
+      # Both wxs files reference target\release\{meshharbord,meshharbor-shim}.exe by
       # literal path and BOTH cargo-wix runs are --no-build, so signing once
       # here covers the perUser AND perMachine MSIs.
       #
@@ -1676,7 +1676,7 @@ jobs:
           files: |
             target\release\meshharbord.exe
             target\release\meshharbor-shim.exe
-          description:              'Roomler Daemon'
+          description:              'MeshHarbor Daemon'
           mode:                     ${{ github.event.inputs.signing_mode || 'auto' }}
           require:                  ${{ needs.validate-version.outputs.is_release == 'true' || github.event.inputs.require_signing == 'true' }}
           expect-subject-contains:  ${{ vars.AZURE_SIGNING_EXPECT_SUBJECT }}
@@ -1768,7 +1768,7 @@ jobs:
           # release run. Consumers are suffix-agnostic in both directions
           # (agent_release.rs / updater.rs match on ".msi" + the
           # "-permachine-" infix), so older published releases keep resolving.
-          $dst = "roomlerd-$env:VERSION-x86_64-pc-windows-msvc.msi"
+          $dst = "meshharbord-$env:VERSION-x86_64-pc-windows-msvc.msi"
           Move-Item $msi.FullName $dst
           "artifact=$dst" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
@@ -1784,8 +1784,8 @@ jobs:
           # to disambiguate. Different UpgradeCode + the mutually-
           # exclusive LaunchConditions ensure a host can only ever
           # have one of the two installed at a time.
-          $wixDir = "agents\roomlerd\wix"
-          $pmSrc  = "agents\roomlerd\wix-perMachine\main.wxs"
+          $wixDir = "agents\meshharbord\wix"
+          $pmSrc  = "agents\meshharbord\wix-perMachine\main.wxs"
           Copy-Item "$wixDir\main.wxs" "$wixDir\main.wxs.bak" -Force
           Copy-Item $pmSrc "$wixDir\main.wxs" -Force
           try {
@@ -1801,7 +1801,7 @@ jobs:
           $msi = Get-ChildItem "target/wix/*.msi" | Select-Object -First 1
           if (-not $msi) { throw "per-Machine MSI not produced" }
           # Suffix-free -- see the per-User rename above.
-          $dst = "roomlerd-$env:VERSION-perMachine-x86_64-pc-windows-msvc.msi"
+          $dst = "meshharbord-$env:VERSION-perMachine-x86_64-pc-windows-msvc.msi"
           Move-Item $msi.FullName $dst
           "artifact=$dst" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
@@ -1817,7 +1817,7 @@ jobs:
           files: |
             ${{ steps.locate.outputs.artifact }}
             ${{ steps.locate_pm.outputs.artifact }}
-          description:              'Roomler Agent installer'
+          description:              'MeshHarbor Agent installer'
           mode:                     ${{ github.event.inputs.signing_mode || 'auto' }}
           require:                  ${{ needs.validate-version.outputs.is_release == 'true' || github.event.inputs.require_signing == 'true' }}
           expect-subject-contains:  ${{ vars.AZURE_SIGNING_EXPECT_SUBJECT }}
@@ -2007,8 +2007,8 @@ jobs:
           # 13.13 MB (minimal vendored FFmpeg). A baseline left above the real value is
           # exactly the silent failure this guard exists to catch — it would
           # swallow a multi-MB regression as "within budget".
-          # Roomler SSH (`ssh-server`) is a DELIBERATE growth on top of that
-          # baseline: russh measured +1.86 MiB in roomlerd, ~+0.7 MB
+          # MeshHarbor SSH (`ssh-server`) is a DELIBERATE growth on top of that
+          # baseline: russh measured +1.86 MiB in meshharbord, ~+0.7 MB
           # compressed here. That stays inside the +2 warn band, so the guard
           # is deliberately NOT re-pinned in the same commit that adds it —
           # re-pin from the first measured release run, never from an
@@ -2090,12 +2090,12 @@ jobs:
 
   # ---------------------------------------------------------------------------
   # 2b. Windows companion — the meshharbor-desktop EXE, built in PARALLEL with
-  #     the MSI job. The crate deps on roomlerd with DEFAULT features
+  #     the MSI job. The crate deps on meshharbord with DEFAULT features
   #     (`default = []`, signalling-only), so this job needs no vcpkg /
   #     FFmpeg / libvpx / LLVM — Tauri 2 + the agent-default graph build on
   #     a bare windows-latest. The MSIs never contained this EXE (it ships
   #     standalone), so the split changes wall-clock only. (P4c-2 retired
-  #     the legacy roomler-installer wizard EXE this job also used to build
+  #     the legacy meshharbor-installer wizard EXE this job also used to build
   #     — the unified meshharbor-setup wizard ships via release-setup.yml,
   #     which the `dispatch-setup-release` job at the end of this file runs
   #     in LOCKSTEP with every agent release: FR-84 S1.)
@@ -2183,7 +2183,7 @@ jobs:
         uses: ./.github/actions/sign-windows
         with:
           files:                    ${{ steps.locate_tray.outputs.artifact }}
-          description:              'Roomler desktop'
+          description:              'MeshHarbor desktop'
           mode:                     ${{ github.event.inputs.signing_mode || 'auto' }}
           require:                  ${{ needs.validate-version.outputs.is_release == 'true' || github.event.inputs.require_signing == 'true' }}
           expect-subject-contains:  ${{ vars.AZURE_SIGNING_EXPECT_SUBJECT }}
@@ -2241,7 +2241,7 @@ jobs:
   #     to 0.4.114 the job took 12.2 min, 158–177 s of it this build, after a
   #     450–603 s agent build. The crate needs none of that job's setup (its
   #     deps are agent-core + localapi + Tauri: no brew libvpx, no FFmpeg, no
-  #     roomlerd), so it builds on a bare macos-15 while the agent compiles,
+  #     meshharbord), so it builds on a bare macos-15 while the agent compiles,
   #     and build-macos picks the binary up at the point it used to build it.
   #     Signing, staging and the .app checks stay in build-macos, unchanged.
   #
@@ -2483,7 +2483,7 @@ jobs:
           # the .pkg. FR-85 P4c added `-h264dec-aac` (the software h264
           # decoder the recorder's editor needs and the aac encoder for its
           # sound; 1,071,108 B packed, ~3.0 MB of dylibs); rollback = drop it.
-          mkdir -p /tmp/ffdl "$RUNNER_TEMP/roomler-ffmpeg"
+          mkdir -p /tmp/ffdl "$RUNNER_TEMP/meshharbor-ffmpeg"
           gh release download vendored-ffmpeg-9.0.1 \
             --repo "${{ github.repository }}" \
             --pattern 'ffmpeg-9.0.1-macos-arm64-lgpl-shared-h264dec-aac.tar.xz' \
@@ -2493,21 +2493,21 @@ jobs:
           # include/ are already at the root — unlike the Linux one, which
           # has a wrapping directory and does strip 1.
           tar xf /tmp/ffdl/ffmpeg-9.0.1-macos-arm64-lgpl-shared-h264dec-aac.tar.xz \
-            -C "$RUNNER_TEMP/roomler-ffmpeg"
+            -C "$RUNNER_TEMP/meshharbor-ffmpeg"
           # BSD sed needs an explicit (empty) backup suffix; GNU `sed -i`
           # would silently create files named after the next argument.
-          sed -i '' "s|^prefix=.*|prefix=$RUNNER_TEMP/roomler-ffmpeg|" \
-            "$RUNNER_TEMP/roomler-ffmpeg"/lib/pkgconfig/*.pc
+          sed -i '' "s|^prefix=.*|prefix=$RUNNER_TEMP/meshharbor-ffmpeg|" \
+            "$RUNNER_TEMP/meshharbor-ffmpeg"/lib/pkgconfig/*.pc
           {
-            echo "FFMPEG_DIR=$RUNNER_TEMP/roomler-ffmpeg"
-            echo "PKG_CONFIG_PATH=$RUNNER_TEMP/roomler-ffmpeg/lib/pkgconfig"
+            echo "FFMPEG_DIR=$RUNNER_TEMP/meshharbor-ffmpeg"
+            echo "PKG_CONFIG_PATH=$RUNNER_TEMP/meshharbor-ffmpeg/lib/pkgconfig"
           } >> "$GITHUB_ENV"
           echo "=== vendored dylibs ==="
-          ls -1 "$RUNNER_TEMP/roomler-ffmpeg/lib"/*.dylib | sed 's|.*/|    |'
+          ls -1 "$RUNNER_TEMP/meshharbor-ffmpeg/lib"/*.dylib | sed 's|.*/|    |'
           # Fail here rather than at link time if the artifact is the old
           # poisoned build — it is the cheapest place to catch it, and the
           # failure mode it prevents is every Mac dying at launch.
-          if grep -rqa -E '/opt/homebrew|/usr/local/' "$RUNNER_TEMP/roomler-ffmpeg/lib"/*.dylib; then
+          if grep -rqa -E '/opt/homebrew|/usr/local/' "$RUNNER_TEMP/meshharbor-ffmpeg/lib"/*.dylib; then
             echo "::error::vendored FFmpeg carries Homebrew paths — re-run vendor-ffmpeg-macos.yml"
             exit 1
           fi
@@ -2581,12 +2581,12 @@ jobs:
           CMAKE_POLICY_VERSION_MINIMUM: "3.5"
         run: cargo build -p meshharbord --release --features "full,hive,vp9-444,vp9-444-bindgen,overlay-l3,overlay-netstack,ssh-server,ffmpeg-encoder" --target aarch64-apple-darwin
 
-      # The `roomler` CLI. macOS shipped WITHOUT one until rc.454 — the pkg
-      # payload was the .app and nothing else — so `roomler peers` was
+      # The `meshharbor` CLI. macOS shipped WITHOUT one until rc.454 — the pkg
+      # payload was the .app and nothing else — so `meshharbor peers` was
       # impossible on a Mac despite the daemon carrying the entire command
-      # surface behind `roomlerd cli`. Same ~150 KB shim as the .deb and the
-      # MSI (P3e lever D); it lands at /usr/local/bin/roomler below.
-      - name: Build the roomler CLI shim
+      # surface behind `meshharbord cli`. Same ~150 KB shim as the .deb and the
+      # MSI (P3e lever D); it lands at /usr/local/bin/meshharbor below.
+      - name: Build the meshharbor CLI shim
         run: cargo build -p meshharbor-cli-shim --release --target aarch64-apple-darwin
 
       # The desktop companion — the macOS counterpart of meshharbor-desktop.exe —
@@ -2654,7 +2654,7 @@ jobs:
       # Fallback is ad-hoc so artifacts-only runs and forks keep building;
       # a RELEASE tag without the secret gets a loud warning because it
       # re-introduces the wipe. Public cert (for fingerprint checks):
-      # scripts/signing/macos/roomler-selfsign-cert.pem.
+      # scripts/signing/macos/meshharbor-selfsign-cert.pem.
       - name: Import the stable self-signed signing identity
         env:
           SELFSIGN_P12_BASE64: ${{ secrets.MACOS_SELFSIGN_P12 }}
@@ -2693,20 +2693,20 @@ jobs:
           # policy we need.
           sudo security add-trusted-cert -d -r trustRoot -p codeSign \
             -k /Library/Keychains/System.keychain \
-            scripts/signing/macos/roomler-selfsign-cert.pem
+            scripts/signing/macos/meshharbor-selfsign-cert.pem
           # Identity presence is the gate: a p12 that imported but yields no
           # VALID signing identity must fail HERE, not as a cryptic codesign
           # error three steps later. Dump what the keychain does hold on
           # failure so the next person is not diagnosing blind.
           security find-identity -v -p codesigning "$KEYCHAIN" \
-            | grep -q "Roomler Self-Signed Code Signing" \
+            | grep -q "MeshHarbor Self-Signed Code Signing" \
             || {
-              echo "::error::imported p12 yields no VALID 'Roomler Self-Signed Code Signing' identity"
+              echo "::error::imported p12 yields no VALID 'MeshHarbor Self-Signed Code Signing' identity"
               echo "--- all identities in $KEYCHAIN (unfiltered) ---"
               security find-identity "$KEYCHAIN" || true
               exit 1
             }
-          echo 'SIGN_ID=Roomler Self-Signed Code Signing' >> "$GITHUB_ENV"
+          echo 'SIGN_ID=MeshHarbor Self-Signed Code Signing' >> "$GITHUB_ENV"
           echo "stable signing identity imported"
 
       - name: Stage .app bundle
@@ -2718,10 +2718,10 @@ jobs:
           # it is not a retired name, it doubles as the launchd Label, and it is what
           # TCC attributes the grants to, so changing it would widen the blast radius
           # of a rename that already costs a re-approval at every Mac.
-          BIN=target/aarch64-apple-darwin/release/roomlerd
+          BIN=target/aarch64-apple-darwin/release/meshharbord
           APP=stage/meshharbord.app
           mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-          cp "$BIN" "$APP/Contents/MacOS/roomlerd"
+          cp "$BIN" "$APP/Contents/MacOS/meshharbord"
           # Bundle every non-system dylib the binary loads into the .app, so
           # it is self-contained on a Mac that has never seen Homebrew.
           #
@@ -2797,8 +2797,8 @@ jobs:
             done < <(otool -L "$target" | tail -n +2 | awk '{print $1}')
           }
           echo "=== bundling non-system dylibs ==="
-          install_name_tool -add_rpath "@executable_path/../Frameworks" "$APP/Contents/MacOS/roomlerd"
-          bundle_deps "$APP/Contents/MacOS/roomlerd"
+          install_name_tool -add_rpath "@executable_path/../Frameworks" "$APP/Contents/MacOS/meshharbord"
+          bundle_deps "$APP/Contents/MacOS/meshharbord"
           ls -1 "$FW" 2>/dev/null || echo "    (none needed)"
 
           # install_name_tool invalidates the linker's ad-hoc signature, and an
@@ -2808,7 +2808,7 @@ jobs:
           # codesign steps below replace these with the Developer ID identity.
           # $SIGN_ID is the STABLE self-signed identity (or "-" ad-hoc
           # fallback) — see the import step for why stability matters (TCC).
-          find "$APP" -type f \( -name '*.dylib' -o -name 'roomlerd' \) \
+          find "$APP" -type f \( -name '*.dylib' -o -name 'meshharbord' \) \
             -exec codesign --force --timestamp=none --sign "$SIGN_ID" {} \;
 
           echo "=== GATE: no Mach-O in the .app may reference a non-system path ==="
@@ -2844,7 +2844,7 @@ jobs:
             hidden=1
           fi
           rc=0
-          "$APP/Contents/MacOS/roomlerd" --version || rc=$?
+          "$APP/Contents/MacOS/meshharbord" --version || rc=$?
           [ "$hidden" -eq 1 ] && mv /opt/homebrew/opt.hidden /opt/homebrew/opt
           if [ "$rc" -ne 0 ]; then
             echo "::error::the staged binary does not start without Homebrew (exit $rc) — it is not self-contained"
@@ -2860,7 +2860,7 @@ jobs:
           # every plist it installs out of this one directory.
           cp agents/meshharbord/packaging/macos/fans.itachi.meshharbor.desktop.plist "$APP/Contents/Resources/"
           # The update half (root LaunchDaemon, DEFAULT ON, opt-out marker
-          # /etc/roomler/disable-auto-update). Owns check+download+
+          # /etc/meshharbor/disable-auto-update). Owns check+download+
           # install so no agent process ever execs its own replacement.
           cp agents/meshharbord/packaging/macos/fans.itachi.meshharbor.update.plist "$APP/Contents/Resources/"
           cat > "$APP/Contents/Info.plist" <<PLIST
@@ -2868,9 +2868,9 @@ jobs:
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
           <plist version="1.0">
           <dict>
-              <key>CFBundleExecutable</key>          <string>roomlerd</string>
+              <key>CFBundleExecutable</key>          <string>meshharbord</string>
               <key>CFBundleIdentifier</key>          <string>fans.itachi.meshharbor.agent</string>
-              <key>CFBundleName</key>                <string>Roomler Daemon</string>
+              <key>CFBundleName</key>                <string>MeshHarbor Daemon</string>
               <key>CFBundleShortVersionString</key>  <string>${VERSION}</string>
               <key>CFBundleVersion</key>             <string>${VERSION}</string>
               <key>CFBundlePackageType</key>         <string>APPL</string>
@@ -2878,9 +2878,9 @@ jobs:
               <key>LSUIElement</key>                 <true/>
               <key>NSPrincipalClass</key>            <string>NSApplication</string>
               <key>NSScreenCaptureUsageDescription</key>
-                  <string>Roomler Daemon captures the screen to stream it to an authorised remote controller.</string>
+                  <string>MeshHarbor Daemon captures the screen to stream it to an authorised remote controller.</string>
               <key>NSAppleEventsUsageDescription</key>
-                  <string>Roomler Daemon injects input events on behalf of an authorised remote controller.</string>
+                  <string>MeshHarbor Daemon injects input events on behalf of an authorised remote controller.</string>
           </dict>
           </plist>
           PLIST
@@ -2916,7 +2916,7 @@ jobs:
             # failed on a perfectly-signed bundle. Same lesson as the smoke's
             # own history: an assert that can't distinguish pass from fail
             # must dump what it actually saw.
-            codesign -d --verbose=2 "$APP" 2>&1 | grep -q "Authority=Roomler Self-Signed Code Signing" || {
+            codesign -d --verbose=2 "$APP" 2>&1 | grep -q "Authority=MeshHarbor Self-Signed Code Signing" || {
               echo "::error::bundle is not signed by the stable identity (Authority missing)"
               echo "--- codesign -d --verbose=2 output ---"
               codesign -d --verbose=2 "$APP" 2>&1 || true
@@ -2946,7 +2946,7 @@ jobs:
           <dict>
               <key>CFBundleExecutable</key>          <string>meshharbor-desktop</string>
               <key>CFBundleIdentifier</key>          <string>fans.itachi.meshharbor.agent-tray</string>
-              <key>CFBundleName</key>                <string>Roomler</string>
+              <key>CFBundleName</key>                <string>MeshHarbor</string>
               <key>CFBundleShortVersionString</key>  <string>${VERSION}</string>
               <key>CFBundleVersion</key>             <string>${VERSION}</string>
               <key>CFBundlePackageType</key>         <string>APPL</string>
@@ -3038,7 +3038,7 @@ jobs:
           codesign --force --sign "Developer ID Application" \
                    --options runtime --timestamp \
                    --entitlements agents/meshharbord/packaging/macos/entitlements.plist \
-                   "stage/meshharbord.app/Contents/MacOS/roomlerd"
+                   "stage/meshharbord.app/Contents/MacOS/meshharbord"
 
           codesign --force --sign "Developer ID Application" \
                    --options runtime --timestamp \
@@ -3049,7 +3049,7 @@ jobs:
           # signatures), and pkgbuild harvests it in the very next step.
           codesign --force --sign "Developer ID Application" \
                    --options runtime --timestamp \
-                   "target/aarch64-apple-darwin/release/roomler-shim"
+                   "target/aarch64-apple-darwin/release/meshharbor-shim"
 
           # The desktop companion ships in the SAME .pkg (payload/Applications),
           # and it was sealed earlier with $SIGN_ID -- the stable SELF-SIGNED
@@ -3060,7 +3060,7 @@ jobs:
           # identity, inside-out, BEFORE `cp -R stage/MeshHarbor.app` runs.
           #
           # Field evidence (2026-09-08, the first run that ever had Apple
-          # credentials): meshharbord.app and roomler-shim were correctly
+          # credentials): meshharbord.app and meshharbor-shim were correctly
           # Developer-ID-signed and the .pkg itself carried "Developer ID
           # Installer: G ROX EOOD", yet notarisation still returned
           # `status: Invalid` -- because MeshHarbor.app inside it was self-signed.
@@ -3101,7 +3101,7 @@ jobs:
               echo "::error::$f requires macOS $m, above this .pkg's floor of $MACOS_FLOOR"; fail=1
             fi
           done < <(find stage/meshharbord.app stage/MeshHarbor.app \
-                        target/aarch64-apple-darwin/release/roomler-shim -type f -print0)
+                        target/aarch64-apple-darwin/release/meshharbor-shim -type f -print0)
           [ "$n" -gt 0 ] || { echo "::error::found no Mach-O files to check"; exit 1; }
           for p in stage/meshharbord.app/Contents/Info.plist stage/MeshHarbor.app/Contents/Info.plist; do
             v=$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$p")
@@ -3115,13 +3115,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p payload/Applications payload/Library/Roomler payload/usr/local/bin scripts dist
-          # The DAEMON bundle goes to /Library/Roomler, NOT /Applications.
+          mkdir -p payload/Applications payload/Library/MeshHarbor payload/usr/local/bin scripts dist
+          # The DAEMON bundle goes to /Library/MeshHarbor, NOT /Applications.
           #
           # It is a background service with no window and nothing to launch —
-          # putting it in /Applications gave the user two Roomler icons, one of
+          # putting it in /Applications gave the user two MeshHarbor icons, one of
           # which does nothing when double-clicked, and made the internal
-          # internal daemon name look like a stale leftover next to `Roomler`.
+          # internal daemon name look like a stale leftover next to `MeshHarbor`.
           # /Library/<Vendor> is the conventional home for a helper the user
           # never opens, and Finder and Launchpad do not surface it.
           #
@@ -3132,25 +3132,25 @@ jobs:
           # ⚠️ The path is part of the TCC identity, so this move costs every
           # existing Mac one re-grant. Unavoidable, and cheapest now while the
           # platform has almost no installs.
-          cp -R stage/meshharbord.app payload/Library/Roomler/
+          cp -R stage/meshharbord.app payload/Library/MeshHarbor/
           # The CLI. Until rc.454 the macOS payload was the .app and NOTHING
-          # else — no `roomler` on PATH, so `roomler peers` was impossible on a
+          # else — no `meshharbor` on PATH, so `meshharbor peers` was impossible on a
           # Mac even though the daemon carries the whole command surface. Same
           # ~150 KB shim the .deb and the MSI install; it re-execs
           # `<daemon> cli <args>`, resolving the bundle path on macOS because
           # the two binaries cannot be siblings here.
-          cp target/aarch64-apple-darwin/release/roomler-shim payload/usr/local/bin/roomler
-          chmod 755 payload/usr/local/bin/roomler
+          cp target/aarch64-apple-darwin/release/meshharbor-shim payload/usr/local/bin/meshharbor
+          chmod 755 payload/usr/local/bin/meshharbor
           # The menu-bar companion, and its LaunchAgent (installed by the
           # postinstall alongside the agent's).
           cp -R stage/MeshHarbor.app payload/Applications/
-          # `roomlerd` on PATH for command-surface parity with Linux and
+          # `meshharbord` on PATH for command-surface parity with Linux and
           # Windows. A symlink, not a copy: the daemon binary lives inside the
           # bundle (its name is CFBundleExecutable and every launchd plist and
           # TCC grant is keyed to that path), so this is a convenience entry
-          # point for `roomlerd enroll` / `--version`, not a second install.
-          ln -s /Library/Roomler/meshharbord.app/Contents/MacOS/roomlerd \
-            payload/usr/local/bin/roomlerd
+          # point for `meshharbord enroll` / `--version`, not a second install.
+          ln -s /Library/MeshHarbor/meshharbord.app/Contents/MacOS/meshharbord \
+            payload/usr/local/bin/meshharbord
           cp agents/meshharbord/packaging/macos/postinstall scripts/postinstall
           chmod 755 scripts/postinstall
 
@@ -3196,7 +3196,7 @@ jobs:
           # step below, not encoded in a filename. install.sh's
           # `aarch64-apple-darwin[^"]*\.pkg` regex matches either way, so
           # already-published `-unsigned` releases keep resolving too.
-          artifact="dist/roomlerd-$VERSION-aarch64-apple-darwin.pkg"
+          artifact="dist/meshharbord-$VERSION-aarch64-apple-darwin.pkg"
 
           # The product archive carries an installer-enforced minimum macOS
           # (MACOS_FLOOR): a Mac below it refuses the update and keeps running
@@ -3430,7 +3430,7 @@ jobs:
           done
           # Republish the public key alongside the assets so verification
           # never depends on a checkout of this repo.
-          gpg --batch --armor --export > release/roomler-release-pubkey.asc
+          gpg --batch --armor --export > release/meshharbor-release-pubkey.asc
 
           # Assert the loop actually produced sidecars. `set -e` covers a gpg
           # that FAILS, but not the case that matters here — a `release/` whose
@@ -3445,7 +3445,7 @@ jobs:
               missing=$((missing + 1))
             fi
           done
-          signed=$(ls release/*.asc 2>/dev/null | grep -vc 'roomler-release-pubkey' || true)
+          signed=$(ls release/*.asc 2>/dev/null | grep -vc 'meshharbor-release-pubkey' || true)
           echo "signed $signed asset(s); $missing installer(s) unsigned"
           if [ "$missing" -gt 0 ] || [ "$signed" -eq 0 ]; then
             echo "::error::refusing to publish a release the fleet would refuse to install."
@@ -3454,7 +3454,7 @@ jobs:
 
       # SLSA build provenance for EVERY asset (all platforms in one step) --
       # ties each artifact to this exact workflow run + commit, verifiable
-      # with `gh attestation verify <file> --repo gjovanov/roomler-ai`
+      # with `gh attestation verify <file> --repo jk-zhang-meta/MeshHarbor`
       # independently of GitHub's per-asset digest field.
       - name: Attest build provenance
         uses: actions/attest-build-provenance@v3
@@ -3465,7 +3465,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.validate-version.outputs.tag }}
-          name: roomlerd ${{ needs.validate-version.outputs.version }}
+          name: meshharbord ${{ needs.validate-version.outputs.version }}
           # prerelease must stay false so GitHub's /releases/latest API
           # returns this release — the agent's built-in auto-updater
           # polls that endpoint every 6 h. Marking 0.x as prerelease
@@ -3640,14 +3640,14 @@ jobs:
             -f version="${version}" -f publish_release=false
 
   # ---------------------------------------------------------------------------
-  # 7. Bust the roomler.ai release cache.
+  # 7. Bust the meshharbor.itachi.fans release cache.
   #
   #    `/api/{agent,tunnel,setup}/latest-release` is served from a per-pod,
   #    in-process cache, so without this step a freshly published tag stays
   #    invisible to the fleet for up to one TTL — and, with more than one pod,
   #    non-deterministically so (which answer you get depends on which pod the
   #    LB picked). Field repro 2026-08-04: agent-v0.3.0-rc.305 published 21:14
-  #    UTC, `roomlerd self-update` still reported rc.304 at 21:33 because both
+  #    UTC, `meshharbord self-update` still reported rc.304 at 21:33 because both
   #    pods had warmed their caches at 21:05.
   #
   #    One POST busts the whole cluster: the receiving pod refetches and fans
@@ -3660,7 +3660,7 @@ jobs:
   #    a transient prod blip must not mark an already-shipped release failed.
   # ---------------------------------------------------------------------------
   refresh-release-cache:
-    name: Refresh roomler.ai release cache
+    name: Refresh meshharbor.itachi.fans release cache
     if: needs.validate-version.outputs.is_release == 'true'
     needs: [validate-version, release]
     runs-on: ubuntu-latest
@@ -3679,7 +3679,7 @@ jobs:
           for attempt in 1 2 3; do
             body=$(curl -sS -m 90 -X POST \
               -H "Authorization: Bearer ${TOKEN}" \
-              "https://roomler.ai/api/releases/refresh?expect_tag=${TAG}")
+              "https://meshharbor.itachi.fans/api/releases/refresh?expect_tag=${TAG}")
             if [ "$(jq -r '.all_ok' <<<"$body" 2>/dev/null)" = "true" ]; then
               jq . <<<"$body"
               echo "Release cache refreshed on every live pod for ${TAG}"
@@ -3710,7 +3710,7 @@ jobs:
       - name: Guard — the daemon .deb still wins the pre-0.4.16 picker
         run: |
           set -uo pipefail
-          feed=$(curl -sS -m 60 https://roomler.ai/api/agent/latest-release) || {
+          feed=$(curl -sS -m 60 https://meshharbor.itachi.fans/api/agent/latest-release) || {
             echo "::warning::could not read the release feed; ordering unverified"; exit 0; }
           for arch in x86_64 aarch64; do
             # `endswith`/`contains`, not a regex — the picker being replayed
@@ -3723,7 +3723,7 @@ jobs:
                 | select(contains($a)) ] | first // ""' <<<"$feed")
             echo "$arch -> ${first:-<no .deb>}"
             # FR-46: match the COMPANION, not an allowlist of daemon prefixes. The
-            # old form (`""|roomler-agent-*`) hard-coded the daemon asset name, so
+            # old form (`""|meshharbor-agent-*`) hard-coded the daemon asset name, so
             # renaming that asset silently turned this guard into a permanent
             # warning — a stale allowlist that fires on the correct state. What
             # `order_assets_daemon_first` actually asserts server-side is a
@@ -3819,6 +3819,6 @@ jobs:
 
           gh workflow run release-setup.yml --ref "${setup_tag}" \
             -f version="${VERSION}" -f publish_release=true
-          echo "dispatched release-setup.yml on ${setup_tag}: it builds all three platforms, publishes the release on the tag (which pins ${commit}), refreshes the roomler.ai cache, and opens an issue if it fails"
-          echo "verify: git ls-remote origin 'refs/tags/${setup_tag}^{}' (must be ${commit}) ; gh release view ${setup_tag} --json assets ; curl -sI https://roomler.ai/api/setup/windows | grep -i content-disposition"
+          echo "dispatched release-setup.yml on ${setup_tag}: it builds all three platforms, publishes the release on the tag (which pins ${commit}), refreshes the meshharbor.itachi.fans cache, and opens an issue if it fails"
+          echo "verify: git ls-remote origin 'refs/tags/${setup_tag}^{}' (must be ${commit}) ; gh release view ${setup_tag} --json assets ; curl -sI https://meshharbor.itachi.fans/api/setup/windows | grep -i content-disposition"
 # RETIRED-NAME-ANCHOR-END

@@ -42,7 +42,7 @@ async fn meta_app() -> TestApp {
 /// `dev` may list what is under `db/`, as `seed_vault` lets it use it.
 async fn let_dev_list_db(app: &TestApp, t: &SeededTenant) {
     let text = format!(
-        r#"permit (principal in Roomler::Role::"dev", action == Roomler::Action::"secret:list", resource in Roomler::SecretFolder::"rrn:{}:secret:db");"#,
+        r#"permit (principal in MeshHarbor::Role::"dev", action == MeshHarbor::Action::"secret:list", resource in MeshHarbor::SecretFolder::"rrn:{}:secret:db");"#,
         t.tenant_slug
     );
     let (code, body) = post(

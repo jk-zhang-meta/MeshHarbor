@@ -1740,14 +1740,14 @@ describe('FR-17 stage B opt-in', () => {
 
   it('is off unless explicitly enabled', () => {
     expect(storedUnorderedVideo()).toBe(false)
-    globalThis.localStorage?.setItem('roomler-rc-unordered-video', '0')
+    globalThis.localStorage?.setItem('meshharbor-rc-unordered-video', '0')
     expect(storedUnorderedVideo()).toBe(false)
-    globalThis.localStorage?.setItem('roomler-rc-unordered-video', 'true')
+    globalThis.localStorage?.setItem('meshharbor-rc-unordered-video', 'true')
     expect(storedUnorderedVideo()).toBe(false)
   })
 
   it('turns on for exactly the documented value', () => {
-    globalThis.localStorage?.setItem('roomler-rc-unordered-video', '1')
+    globalThis.localStorage?.setItem('meshharbor-rc-unordered-video', '1')
     expect(storedUnorderedVideo()).toBe(true)
   })
 })
@@ -1769,7 +1769,7 @@ describe('audio opt-in (persist + request wire shape)', () => {
   })
 
   it('treats any non-"1" stored value as OFF (only the exact flag is truthy)', () => {
-    globalThis.localStorage?.setItem('roomler-rc-audio-enabled', 'true')
+    globalThis.localStorage?.setItem('meshharbor-rc-audio-enabled', 'true')
     expect(readStoredAudioEnabled()).toBe(false)
   })
 
@@ -2315,11 +2315,11 @@ describe('parseControlInbound', () => {
     const r = parseControlInbound(
       // RETIRED-NAME-ANCHOR(6): mirrors the daemon's real message, which names
       // BOTH prefixes because an upgraded host still has pre-rename log files.
-      '{"t":"rc:logs-fetch.reply","ok":false,"error":"no roomlerd.log* or roomler-agent.log* file"}'
+      '{"t":"rc:logs-fetch.reply","ok":false,"error":"no meshharbord.log* or meshharbor-agent.log* file"}'
     )
     expect(r).toEqual({
       kind: 'logs_fetch_reply',
-      reply: { ok: false, error: 'no roomlerd.log* or roomler-agent.log* file' },
+      reply: { ok: false, error: 'no meshharbord.log* or meshharbor-agent.log* file' },
     })
   })
 
@@ -3941,19 +3941,19 @@ describe('storedInputGapMs (FR-98 C3)', () => {
 
 describe('storedDecodePref (2026-07-24 decode-stall A/B)', () => {
   afterEach(() => {
-    localStorage.removeItem('roomler-rc-decode-pref')
+    localStorage.removeItem('meshharbor-rc-decode-pref')
   })
 
   it('maps the localStorage values to VideoDecoder hardwareAcceleration', () => {
-    localStorage.setItem('roomler-rc-decode-pref', 'software')
+    localStorage.setItem('meshharbor-rc-decode-pref', 'software')
     expect(storedDecodePref()).toBe('prefer-software')
-    localStorage.setItem('roomler-rc-decode-pref', 'hardware')
+    localStorage.setItem('meshharbor-rc-decode-pref', 'hardware')
     expect(storedDecodePref()).toBe('prefer-hardware')
   })
 
   it('defaults to no-preference (unset or garbage)', () => {
     expect(storedDecodePref()).toBe('no-preference')
-    localStorage.setItem('roomler-rc-decode-pref', 'banana')
+    localStorage.setItem('meshharbor-rc-decode-pref', 'banana')
     expect(storedDecodePref()).toBe('no-preference')
   })
 })
@@ -4068,41 +4068,41 @@ describe('P1 — hop-stats helpers (rc-hop-stats)', () => {
 
 describe('P1 — viewer diagnosis localStorage knobs', () => {
   afterEach(() => {
-    localStorage.removeItem('roomler-rc-ctx-mode')
-    localStorage.removeItem('roomler-rc-per-frame-msg')
-    localStorage.removeItem('roomler-rc-diag-hud')
+    localStorage.removeItem('meshharbor-rc-ctx-mode')
+    localStorage.removeItem('meshharbor-rc-per-frame-msg')
+    localStorage.removeItem('meshharbor-rc-diag-hud')
   })
 
   it('storedCtxMode defaults to opaque-desync and honours the A/B values', () => {
     expect(storedCtxMode()).toBe('opaque-desync')
-    localStorage.setItem('roomler-rc-ctx-mode', 'legacy')
+    localStorage.setItem('meshharbor-rc-ctx-mode', 'legacy')
     expect(storedCtxMode()).toBe('legacy')
-    localStorage.setItem('roomler-rc-ctx-mode', 'opaque')
+    localStorage.setItem('meshharbor-rc-ctx-mode', 'opaque')
     expect(storedCtxMode()).toBe('opaque')
-    localStorage.setItem('roomler-rc-ctx-mode', 'banana')
+    localStorage.setItem('meshharbor-rc-ctx-mode', 'banana')
     expect(storedCtxMode()).toBe('opaque-desync')
   })
 
   it('storedPerFrameMsg is OFF unless explicitly "1"', () => {
     expect(storedPerFrameMsg()).toBe(false)
-    localStorage.setItem('roomler-rc-per-frame-msg', '1')
+    localStorage.setItem('meshharbor-rc-per-frame-msg', '1')
     expect(storedPerFrameMsg()).toBe(true)
-    localStorage.setItem('roomler-rc-per-frame-msg', 'true')
+    localStorage.setItem('meshharbor-rc-per-frame-msg', 'true')
     expect(storedPerFrameMsg()).toBe(false)
   })
 
   it('diagHudEnabled is OFF unless explicitly "1"', () => {
     expect(diagHudEnabled()).toBe(false)
-    localStorage.setItem('roomler-rc-diag-hud', '1')
+    localStorage.setItem('meshharbor-rc-diag-hud', '1')
     expect(diagHudEnabled()).toBe(true)
   })
 })
 
 describe('P6 — flow-control knobs + sustained-window struggle rule', () => {
   afterEach(() => {
-    localStorage.removeItem('roomler-rc-max-queue')
-    localStorage.removeItem('roomler-rc-struggle-queue')
-    localStorage.removeItem('roomler-rc-struggle-windows')
+    localStorage.removeItem('meshharbor-rc-max-queue')
+    localStorage.removeItem('meshharbor-rc-struggle-queue')
+    localStorage.removeItem('meshharbor-rc-struggle-windows')
   })
 
   it('storedFlowParams defaults match the pre-P6 baked constants', () => {
@@ -4116,18 +4116,18 @@ describe('P6 — flow-control knobs + sustained-window struggle rule', () => {
   })
 
   it('storedFlowParams honours the localStorage overrides with clamps', () => {
-    localStorage.setItem('roomler-rc-max-queue', '8')
-    localStorage.setItem('roomler-rc-struggle-queue', '0')
-    localStorage.setItem('roomler-rc-struggle-windows', '1')
+    localStorage.setItem('meshharbor-rc-max-queue', '8')
+    localStorage.setItem('meshharbor-rc-struggle-queue', '0')
+    localStorage.setItem('meshharbor-rc-struggle-windows', '1')
     expect(storedFlowParams()).toEqual({ maxQueue: 8, struggleQueue: 0, struggleWindows: 1 })
     // Out-of-range clamps instead of trusting the raw value.
-    localStorage.setItem('roomler-rc-max-queue', '9999')
-    localStorage.setItem('roomler-rc-struggle-windows', '0')
+    localStorage.setItem('meshharbor-rc-max-queue', '9999')
+    localStorage.setItem('meshharbor-rc-struggle-windows', '0')
     const clamped = storedFlowParams()
     expect(clamped.maxQueue).toBe(60)
     expect(clamped.struggleWindows).toBe(1)
     // Garbage falls back to the defaults.
-    localStorage.setItem('roomler-rc-max-queue', 'banana')
+    localStorage.setItem('meshharbor-rc-max-queue', 'banana')
     expect(storedFlowParams().maxQueue).toBe(DEFAULT_MAX_DECODE_QUEUE)
   })
 
@@ -4997,8 +4997,8 @@ describe('P7 — FSR sharpening sizing policy (computeRenderTarget)', () => {
 
 describe('P7 — FSR localStorage knobs', () => {
   afterEach(() => {
-    localStorage.removeItem('roomler-rc-sharpen')
-    localStorage.removeItem('roomler-rc-fsr-sharpness')
+    localStorage.removeItem('meshharbor-rc-sharpen')
+    localStorage.removeItem('meshharbor-rc-fsr-sharpness')
   })
 
   // FR-26 flipped the default to 'on', but 'on' runs RCAS at 1:1 and turned
@@ -5006,11 +5006,11 @@ describe('P7 — FSR localStorage knobs', () => {
   // 2026-08-31). Reverted the default to 'auto' — sharpen only when upscaling.
   it('storedSharpenMode defaults to AUTO and honours on/off', () => {
     expect(storedSharpenMode()).toBe('auto')
-    localStorage.setItem('roomler-rc-sharpen', 'off')
+    localStorage.setItem('meshharbor-rc-sharpen', 'off')
     expect(storedSharpenMode()).toBe('off')
-    localStorage.setItem('roomler-rc-sharpen', 'on')
+    localStorage.setItem('meshharbor-rc-sharpen', 'on')
     expect(storedSharpenMode()).toBe('on')
-    localStorage.setItem('roomler-rc-sharpen', 'banana')
+    localStorage.setItem('meshharbor-rc-sharpen', 'banana')
     expect(storedSharpenMode()).toBe('auto')
   })
 
@@ -5033,7 +5033,7 @@ describe('P7 — FSR localStorage knobs', () => {
     // Written by a build that only knew three pills: the keys it never
     // heard of must read as their defaults, not as false.
     localStorage.setItem(
-      'roomler-rc-metrics',
+      'meshharbor-rc-metrics',
       JSON.stringify({ codec: false, bitrate: true, paint: true }),
     )
     expect(storedMetricToggles()).toEqual({
@@ -5049,15 +5049,15 @@ describe('P7 — FSR localStorage knobs', () => {
 
   it('storedMetricToggles survives corrupt or hostile storage', () => {
     for (const junk of ['{not json', '[]', 'null', '42', '"nope"']) {
-      localStorage.setItem('roomler-rc-metrics', junk)
+      localStorage.setItem('meshharbor-rc-metrics', junk)
       expect(storedMetricToggles()).toEqual(DEFAULT_RC_METRICS)
     }
   })
 
-  it('paint inherits the legacy roomler-rc-diag-hud flag exactly once', () => {
+  it('paint inherits the legacy meshharbor-rc-diag-hud flag exactly once', () => {
     // Anyone who set the undiscoverable flag by hand keeps their HUD; once
     // the checkbox is used, the stored object wins.
-    localStorage.setItem('roomler-rc-diag-hud', '1')
+    localStorage.setItem('meshharbor-rc-diag-hud', '1')
     expect(storedMetricToggles().paint).toBe(true)
     persistMetricToggles({ ...DEFAULT_RC_METRICS, paint: false })
     expect(storedMetricToggles().paint).toBe(false)
@@ -5071,11 +5071,11 @@ describe('P7 — FSR localStorage knobs', () => {
 
   it('storedSharpness defaults to 0.25 and clamps overrides', () => {
     expect(storedSharpness()).toBe(DEFAULT_RCAS_SHARPNESS)
-    localStorage.setItem('roomler-rc-fsr-sharpness', '0.5')
+    localStorage.setItem('meshharbor-rc-fsr-sharpness', '0.5')
     expect(storedSharpness()).toBe(0.5)
-    localStorage.setItem('roomler-rc-fsr-sharpness', '99')
+    localStorage.setItem('meshharbor-rc-fsr-sharpness', '99')
     expect(storedSharpness()).toBe(2)
-    localStorage.setItem('roomler-rc-fsr-sharpness', 'banana')
+    localStorage.setItem('meshharbor-rc-fsr-sharpness', 'banana')
     expect(storedSharpness()).toBe(DEFAULT_RCAS_SHARPNESS)
   })
 })

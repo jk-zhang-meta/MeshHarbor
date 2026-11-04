@@ -29,9 +29,9 @@ type HmacSha1 = Hmac<Sha1>;
 
 #[derive(Debug, Clone)]
 pub struct TurnConfig {
-    /// e.g. ["turn:coturn.roomler.live:3478?transport=udp",
-    ///        "turn:coturn.roomler.live:3478?transport=tcp",
-    ///        "turns:coturn.roomler.live:5349?transport=tcp"]
+    /// e.g. ["turn:coturn.meshharbor.itachi.fans:3478?transport=udp",
+    ///        "turn:coturn.meshharbor.itachi.fans:3478?transport=tcp",
+    ///        "turns:coturn.meshharbor.itachi.fans:5349?transport=tcp"]
     pub urls: Vec<String>,
     /// Same-worker TURN affinity (2026-07-14): per-worker URL variant lists,
     /// one inner `Vec` per coturn worker (each expanded like `urls`). The
@@ -124,14 +124,14 @@ impl TurnConfig {
 pub struct RelayRegionSpec {
     /// Region id, e.g. `"us-east"` — the value carried in `relay_home`.
     pub id: String,
-    /// Generic base URL, e.g. `"turn:coturn-us-east.roomler.ai:3478"`.
+    /// Generic base URL, e.g. `"turn:coturn-us-east.meshharbor.itachi.fans:3478"`.
     pub turn_url: String,
     /// Optional per-worker base URLs (multi-worker regions), like
     /// `MESHHARBOR__TURN__WORKER_URLS`.
     #[serde(default)]
     pub worker_urls: Vec<String>,
     /// The region's DERP relay endpoint, e.g.
-    /// `"wss://derp-us-east.roomler.ai/derp"`. Absent = the region has no
+    /// `"wss://derp-us-east.meshharbor.itachi.fans/derp"`. Absent = the region has no
     /// regional DERP; pairs fall back to the central `/derp`.
     #[serde(default)]
     pub derp_url: Option<String>,
@@ -969,8 +969,8 @@ mod tests {
     #[test]
     fn region_spec_parses_with_defaults() {
         let spec: RelayRegionSpec = serde_json::from_str(
-            r#"{"id":"us-east","turn_url":"turn:coturn-us-east.roomler.ai:3478",
-                "derp_url":"wss://derp-us-east.roomler.ai/derp",
+            r#"{"id":"us-east","turn_url":"turn:coturn-us-east.meshharbor.itachi.fans:3478",
+                "derp_url":"wss://derp-us-east.meshharbor.itachi.fans/derp",
                 "caps":{"tls_443_tcp":false}}"#,
         )
         .unwrap();

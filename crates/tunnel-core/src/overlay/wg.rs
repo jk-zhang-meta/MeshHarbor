@@ -8710,7 +8710,7 @@ mod tests {
     // devices, each riding its own coturn allocation, complete a
     // handshake + round-trip a packet over the live cluster. `#[ignore]`
     // + env-gated. Provide:
-    //   MESHHARBOR_TEST_TURN_HOST   = coturn.roomler.ai
+    //   MESHHARBOR_TEST_TURN_HOST   = coturn.meshharbor.itachi.fans
     //   MESHHARBOR_TEST_TURN_SECRET = coturn's static-auth-secret
     // and run on a host with outbound UDP/3478 (or TCP/443 for the TURNS
     // variant) to coturn:
@@ -8844,7 +8844,7 @@ mod tests {
     /// allocation with one IP-only permission.
     ///
     /// Run on a host with UDP/3478 to the worker (e.g. buildhost → fleet-host-1's worker):
-    ///   MESHHARBOR_TEST_TURN_HOST=coturn.roomler.ai \
+    ///   MESHHARBOR_TEST_TURN_HOST=coturn.meshharbor.itachi.fans \
     ///   MESHHARBOR_TEST_TURN_SECRET=<coturn static-auth-secret> \
     ///   MESHHARBOR_TEST_TURN_WORKER=5.9.157.221 \
     ///   cargo test -p meshharbor-tunnel-core --features overlay-l3 \

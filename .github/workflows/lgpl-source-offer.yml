@@ -86,7 +86,7 @@ jobs:
           if [ "${#shipped[@]}" -ne "${#patches[@]}" ]; then
             echo "::error::bundle carries ${#shipped[@]} patch(es) but ${#patches[@]} are committed"; exit 1
           fi
-          echo "roomler patches in the bundle: ${#shipped[@]}"; cat bundle/patches/MESHHARBOR-PATCHES.txt
+          echo "meshharbor patches in the bundle: ${#shipped[@]}"; cat bundle/patches/MESHHARBOR-PATCHES.txt
 
           # 2. The vcpkg port the Windows build starts from, at the SAME
           #    baseline the recipe pins — read from the recipe, never restated
@@ -156,7 +156,7 @@ jobs:
           # FFmpeg $V — corresponding source and build recipe
 
           This bundle is published to satisfy LGPL-2.1 §6 for the FFmpeg
-          libraries distributed with Roomler. It is the upstream source plus
+          libraries distributed with MeshHarbor. It is the upstream source plus
           **every change our builds make to it**:
 
           * \`ffmpeg-$V.tar.gz\` — the upstream source, exactly as tagged
@@ -204,8 +204,8 @@ jobs:
 
           To exercise your §6 rights on the statically-linked Windows build,
           request the linkable object files for a specific released version at
-          **legal@roomler.ai**, quoting the version string from
-          \`meshharbord.exe --version\`. See THIRD-PARTY-NOTICES.md in the Roomler
+          **legal@meshharbor.itachi.fans**, quoting the version string from
+          \`meshharbord.exe --version\`. See THIRD-PARTY-NOTICES.md in the MeshHarbor
           repository for the full written offer.
           RECIPE
           cat bundle/recipe/README.md

@@ -15,7 +15,7 @@
         <section class="mb-8">
           <h2 class="text-h5 font-weight-bold mb-3">1. Operator</h2>
           <p class="text-body-1 legal-muted">
-            Roomler is operated by <strong>G ROX EOOD</strong>, a single-member limited liability company
+            MeshHarbor is operated by <strong>G ROX EOOD</strong>, a single-member limited liability company
             (ЕООД) registered in the Bulgarian Commercial Register.
           </p>
           <p class="text-body-1 legal-muted mt-2">
@@ -55,9 +55,9 @@
         <section class="mb-8">
           <h2 class="text-h5 font-weight-bold mb-3">5. Contact</h2>
           <p class="text-body-1 legal-muted">
-            <strong>Email:</strong> <a href="mailto:legal@roomler.ai" class="text-primary">legal@roomler.ai</a><br>
+            <strong>Email:</strong> <a href="mailto:legal@meshharbor.itachi.fans" class="text-primary">legal@meshharbor.itachi.fans</a><br>
             <strong>Privacy and data protection:</strong>
-            <a href="mailto:privacy@roomler.ai" class="text-primary">privacy@roomler.ai</a><br>
+            <a href="mailto:privacy@meshharbor.itachi.fans" class="text-primary">privacy@meshharbor.itachi.fans</a><br>
             <strong>Telephone:</strong> <a href="tel:+359877118883" class="text-primary">+359 87 711 8883</a>
           </p>
         </section>
@@ -65,8 +65,8 @@
         <section class="mb-8">
           <h2 class="text-h5 font-weight-bold mb-3">6. Websites Operated by G ROX EOOD</h2>
           <p class="text-body-1 legal-muted">
-            <a href="https://roomler.ai" class="text-primary">roomler.ai</a> and
-            <a href="https://roomler.live" class="text-primary">roomler.live</a> are both owned and operated by
+            <a href="https://meshharbor.itachi.fans" class="text-primary">meshharbor.itachi.fans</a> and
+            <a href="https://meshharbor.itachi.fans" class="text-primary">meshharbor.itachi.fans</a> are both owned and operated by
             G ROX EOOD, and email addresses on either domain belong to the company.
           </p>
         </section>
@@ -93,7 +93,7 @@
           <p class="text-body-1 legal-muted">
             We are neither obliged nor willing to participate in dispute resolution proceedings before a
             consumer arbitration board. We would much rather resolve any concern directly — please write to
-            <a href="mailto:legal@roomler.ai" class="text-primary">legal@roomler.ai</a> and we will respond.
+            <a href="mailto:legal@meshharbor.itachi.fans" class="text-primary">legal@meshharbor.itachi.fans</a> and we will respond.
           </p>
         </section>
       </v-container>

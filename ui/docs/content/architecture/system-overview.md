@@ -1,9 +1,9 @@
 ---
 title: System overview
-description: The pieces of a Roomler deployment — agent, CLI, server and browser — and how a remote session travels through them without the server carrying it.
+description: The pieces of a MeshHarbor deployment — agent, CLI, server and browser — and how a remote session travels through them without the server carrying it.
 tags: [architecture, design, overview, security]
 hero: control-vs-data-planes.svg
-heroAlt: The Roomler server exchanges only control messages with the browser and the agent, while pixels, input, mesh traffic, tunnels and SSH flow directly between them
+heroAlt: The MeshHarbor server exchanges only control messages with the browser and the agent, while pixels, input, mesh traffic, tunnels and SSH flow directly between them
 order: 1
 ---
 
@@ -11,8 +11,8 @@ Four pieces, and the important part is which arrows are thick.
 
 | Piece | What it is | Where it runs |
 |---|---|---|
-| **The agent** (`roomlerd`) | A native binary: remote-desktop target, mesh node, tunnel endpoint, SSH server | Every machine you enroll |
-| **The CLI** (`roomler`) | Status, peers, tunnels, forwards, exec, ssh, diagnostics | The same machine |
+| **The agent** (`meshharbord`) | A native binary: remote-desktop target, mesh node, tunnel endpoint, SSH server | Every machine you enroll |
+| **The CLI** (`meshharbor`) | Status, peers, tunnels, forwards, exec, ssh, diagnostics | The same machine |
 | **The server** | Accounts, permissions, device registry, signalling, chat, conferencing | Our cloud, or yours |
 | **The controller** | A browser (Chromium browsers work best; Safari and Firefox work too) | Wherever you are |
 

@@ -30,7 +30,7 @@
 
       <p v-if="!store.loading && store.policies.length === 0" class="text-medium-emphasis">
         <i18n-t keypath="mh.tp.empty" tag="span">
-          <template #cmd><code>roomler forward</code></template>
+          <template #cmd><code>meshharbor forward</code></template>
           <template #code><code>acl_denied</code></template>
         </i18n-t>
       </p>

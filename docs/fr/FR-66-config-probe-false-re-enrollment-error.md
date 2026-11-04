@@ -1,13 +1,13 @@
 # FR-66: A healthy host is told to re-enroll, on every single service start
 
-**Issue:** [#1263](https://github.com/gjovanov/roomler-ai/issues/1263) ·
+**Issue:** [#1263](https://github.com/jk-zhang-meta/MeshHarbor/issues/1263) ·
 **Status:** **COMPLETE** — P1 + P2 shipped and mutation-checked, P3 field-verified
 on 0.4.55 → 0.4.73 with the failing run on 0.4.53 recorded beside it ·
 **Owner:** agent/windows-service
 
 ## Goal
 
-`roomlerd` must not log an operator-actionable ERROR that is false. Specifically:
+`meshharbord` must not log an operator-actionable ERROR that is false. Specifically:
 a feature-flag probe that expects to find nothing, and correctly handles finding
 nothing, must not emit `the host must be re-enrolled` about a host that is
 enrolled, connected, and serving.
@@ -18,10 +18,10 @@ Every service start logs this — three times on the day it was found:
 
 ```
 ERROR config unreadable and no usable previous copy — the host must be re-enrolled
-  path=C:\ProgramData\meshharbor\roomler\config.toml
-  error=reading config at C:\ProgramData\meshharbor\roomler\config.toml:
+  path=C:\ProgramData\meshharbor\meshharbor\config.toml
+  error=reading config at C:\ProgramData\meshharbor\meshharbor\config.toml:
         The system cannot find the file specified. (os error 2)
-  prev=C:\ProgramData\meshharbor\roomler\config.toml.prev
+  prev=C:\ProgramData\meshharbor\meshharbor\config.toml.prev
   prev_error=... (os error 2)
 ```
 
@@ -43,15 +43,15 @@ Three log lines apart, the same start says:
 
 ```
 config: resolved load path
-  config_path=C:\Windows\system32\config\systemprofile\...\roomler\config\config.toml
+  config_path=C:\Windows\system32\config\systemprofile\...\meshharbor\config\config.toml
   is_system_context=true
-  machine_global=C:\ProgramData\meshharbor\roomler\config.toml
+  machine_global=C:\ProgramData\meshharbor\meshharbor\config.toml
 supervisor: M3 A1 auto-swap (user-context -> SystemContext) is DISABLED (default)
 supervisor: spawned worker  pid=109640  session_id=1  elevated=true
 ```
 
 The worker runs **in session 1 as the elevated user**, so the config it actually
-uses is `%APPDATA%\roomler\roomler\config\config.toml` — live, 3 670 bytes,
+uses is `%APPDATA%\meshharbor\meshharbor\config\config.toml` — live, 3 670 bytes,
 rewritten the same day, with a healthy same-second `.prev` beside it (the atomic
 save working exactly as designed). The machine-global path is simply not this
 install's topology. Nothing is wrong.
@@ -103,7 +103,7 @@ that failure is the normal case.
    indistinguishable from routine start-up noise. The self-heal's own comment
    says *"Loud, because silently running on an older config must never look like
    a normal boot"* — that property is already lost.
-3. **It is invisible to every health check.** `roomler status`, `roomler peers`
+3. **It is invisible to every health check.** `meshharbor status`, `meshharbor peers`
    and the server's `is_online` all read healthy, so nothing contradicts the log.
    This is the inverse of the `systemctl is-active` trap in `CLAUDE.md`: there,
    a healthy host reads dead; here, a healthy host reads doomed.
@@ -215,4 +215,4 @@ enrollment, whereas the supervisor's fires on every start forever.
 | 2026-09-06 | ⚠️ method | **I called this "not verified" first, and the reason is worth more than the verdict.** `git tag --contains <the master SHA>` reported the fix's first release as **0.4.72**, which put it *after* every build whose logs were clean and made the pass look like a coincidence that had already happened for some other reason. It is wrong because **release tags here are cut from a lineage separate from master**: the same change exists on that lineage under a different SHA, and asking whether the *master* commit is an ancestor of a *tag* answers "have the two lineages converged", not "does this release contain this change". The first question resolves 18 releases too late. ⇒ to date a fix against releases, find the SHA **on the tag lineage** (`git log <tag-a>..<tag-b> -- <path>`) and test ancestry with that. 🔑 The generalisable form: an ancestry query answers a question about **one graph**, and a repo with two publishing lineages has two |
 | 2026-09-03 | CI | **FR-46's guard caught this FR's own spec, on the first push.** The out-of-scope paragraph originally spelled the peer-presence marker path out in full, which is an unclassified retired-name occurrence; `Retired-name audit (FR-21)` failed the PR with `unclassified rose 0 -> 1` and named the file and line. Reworded to point at `peer_presence::marker_path()` instead — a new document is exactly where the old spelling should stop spreading, and there is no "current name" to substitute because the path is a deliberately frozen anchor. ⚠️ Recorded rather than silently fixed: this is the first time that guard has fired on a document nobody was thinking about it in, which is the only kind of evidence that it works |
 | 2026-09-03 | P1+P2, local | **The test is mutation-checked, so its pass means something.** Reverting `read_if_present` to `load` fails it with the production defect quoted back: `ERROR … the host must be re-enrolled path=/tmp/…/config.toml`. Both halves live in one test on purpose — without the *load must still shout* half, "make it quiet" passes by softening `load`'s ERROR to `warn!`, which trades a false alarm for a missed one; without the *probe must be silent* half the defect is unobservable, since `netd_enabled()` already returned the correct boolean while telling every healthy host to re-enroll. ⚠️ Nothing weaker than reading the emitted tracing events can lock this: the bug is entirely in SEVERITY, and every return value involved was already right |
-| 2026-09-02 | 0.4.48, neo16 | The ERROR fires on every service start of a fully healthy host. Established that the worker runs `session_id=1 elevated=true` and uses `%APPDATA%\roomler\roomler\config\config.toml` (live, rewritten same day, healthy `.prev`), so the machine-global path it names is legitimately absent rather than lost. Traced to `netd_enabled()` probing that path for one optional flag through `config::load`, which logs the re-enroll ERROR on the both-copies-missing arm |
+| 2026-09-02 | 0.4.48, neo16 | The ERROR fires on every service start of a fully healthy host. Established that the worker runs `session_id=1 elevated=true` and uses `%APPDATA%\meshharbor\meshharbor\config\config.toml` (live, rewritten same day, healthy `.prev`), so the machine-global path it names is legitimately absent rather than lost. Traced to `netd_enabled()` probing that path for one optional flag through `config::load`, which logs the re-enroll ERROR on the both-copies-missing arm |

@@ -96,15 +96,15 @@ async fn seed_net(app: &TestApp, t: &SeededTenant) {
     for (name, text) in [
         (
             "anyone-may-be-dev",
-            r#"permit (principal, action == Roomler::Action::"role:assume", resource == Roomler::Role::"dev");"#,
+            r#"permit (principal, action == MeshHarbor::Action::"role:assume", resource == MeshHarbor::Role::"dev");"#,
         ),
         (
             "dev-socks-via-the-office",
-            r#"permit (principal in Roomler::Role::"dev", action == Roomler::Action::"net:socks", resource) when { resource.tags.contains("office") };"#,
+            r#"permit (principal in MeshHarbor::Role::"dev", action == MeshHarbor::Action::"net:socks", resource) when { resource.tags.contains("office") };"#,
         ),
         (
             "dev-forwards-to-postgres",
-            r#"permit (principal in Roomler::Role::"dev", action == Roomler::Action::"net:forward", resource) when { context.host == "db.internal" && context.port == 5432 };"#,
+            r#"permit (principal in MeshHarbor::Role::"dev", action == MeshHarbor::Action::"net:forward", resource) when { context.host == "db.internal" && context.port == 5432 };"#,
         ),
     ] {
         let (code, body) = post(

@@ -2302,7 +2302,7 @@ mod tests {
             }),
             github: crate::growth::github::GithubSection {
                 counters: Measured::Value(crate::growth::github::GithubCounters {
-                    repo: "gjovanov/roomler-ai".into(),
+                    repo: "jk-zhang-meta/MeshHarbor".into(),
                     at: "2026-10-12".into(),
                     stars: 130,
                     forks: 11,
@@ -2618,7 +2618,7 @@ mod tests {
         // list that cannot be differenced yet and traffic without a token
         // as not measured, and the note that downloads are not installs.
         assert!(text.contains("== GitHub =="), "{text}");
-        assert!(text.contains("gjovanov/roomler-ai at the close of 2026-10-12 (UTC)"));
+        assert!(text.contains("jk-zhang-meta/MeshHarbor at the close of 2026-10-12 (UTC)"));
         assert!(
             text.contains("Stars: 130 (day +2 · 7d +9 · 28d —)"),
             "{text}"

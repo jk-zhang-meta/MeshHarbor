@@ -420,8 +420,8 @@ impl ScClient {
         serde_json::from_slice::<T>(&body).map_err(|e| ScError::Decode(short(&e.to_string())))
     }
 
-    /// The property's path segment: `sc-domain:roomler.ai` →
-    /// `sc-domain%3Aroomler.ai` (every reserved character encoded).
+    /// The property's path segment: `sc-domain:meshharbor.itachi.fans` →
+    /// `sc-domain%3Ameshharbor.itachi.fans` (every reserved character encoded).
     fn site_segment(&self) -> String {
         url::form_urlencoded::byte_serialize(self.site.as_bytes()).collect()
     }
@@ -562,7 +562,7 @@ mod tests {
                 "indexStatusResult":{"verdict":"PASS","coverageState":"Submitted and indexed",
                 "robotsTxtState":"ALLOWED","indexingState":"INDEXING_ALLOWED",
                 "lastCrawlTime":"2026-10-12T08:00:00Z","pageFetchState":"SUCCESSFUL",
-                "googleCanonical":"https://roomler.ai/blog/x/","crawledAs":"MOBILE"}}}"#,
+                "googleCanonical":"https://meshharbor.itachi.fans/blog/x/","crawledAs":"MOBILE"}}}"#,
         )
         .unwrap();
         let s = r.inspection_result.unwrap().index_status_result.unwrap();
@@ -575,7 +575,7 @@ mod tests {
     /// read-only scope, the token endpoint as audience, an hour at most.
     #[test]
     fn the_assertion_carries_the_grants_claims() {
-        let c = hs_client("sc-domain:roomler.ai");
+        let c = hs_client("sc-domain:meshharbor.itachi.fans");
         let jwt = c.assertion(1_760_000_000).unwrap();
         let mut v = jsonwebtoken::Validation::new(Algorithm::HS256);
         v.set_audience(&["https://oauth2.example.test/token"]);
@@ -618,7 +618,7 @@ mod tests {
             "token_uri": "https://oauth2.googleapis.com/token",
         })
         .to_string();
-        let c = ScClient::from_key_json("sc-domain:roomler.ai", "https://x", &key_json).unwrap();
+        let c = ScClient::from_key_json("sc-domain:meshharbor.itachi.fans", "https://x", &key_json).unwrap();
         let now = DateTime::now().timestamp_millis() / 1000;
         let jwt = c.assertion(now).unwrap();
         let mut v = jsonwebtoken::Validation::new(Algorithm::RS256);
@@ -655,12 +655,12 @@ mod tests {
     #[test]
     fn the_property_is_one_encoded_path_segment() {
         assert_eq!(
-            hs_client("sc-domain:roomler.ai").site_segment(),
-            "sc-domain%3Aroomler.ai"
+            hs_client("sc-domain:meshharbor.itachi.fans").site_segment(),
+            "sc-domain%3Ameshharbor.itachi.fans"
         );
         assert_eq!(
-            hs_client("https://roomler.ai/").site_segment(),
-            "https%3A%2F%2Froomler.ai%2F"
+            hs_client("https://meshharbor.itachi.fans/").site_segment(),
+            "https%3A%2F%2Fmeshharbor.itachi.fans%2F"
         );
     }
 

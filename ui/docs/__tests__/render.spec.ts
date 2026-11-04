@@ -175,7 +175,7 @@ describe('slugify', () => {
   it.each([
     ['Exit nodes', 'exit-nodes'],
     ['What the server sees', 'what-the-server-sees'],
-    ['`roomler status`', 'roomler-status'],
+    ['`meshharbor status`', 'meshharbor-status'],
     ['Consent — and audit', 'consent-and-audit'],
     ['Ports & firewall', 'ports-firewall'],
     ['  Trailing  ', 'trailing'],
@@ -186,7 +186,7 @@ describe('slugify', () => {
 
 describe('external links', () => {
   it('opens off-site links in a new tab with rel=noopener', () => {
-    const html = render('[GitHub](https://github.com/gjovanov/roomler-ai)')
+    const html = render('[GitHub](https://github.com/jk-zhang-meta/MeshHarbor)')
     expect(html).toContain('target="_blank"')
     expect(html).toContain('rel="noopener noreferrer"')
   })

@@ -26,7 +26,7 @@ param(
 
 . "$PSScriptRoot\_common.ps1"
 
-if (-not $CerPath) { $CerPath = Join-Path $PSScriptRoot 'dev-cert\roomler-dev.cer' }
+if (-not $CerPath) { $CerPath = Join-Path $PSScriptRoot 'dev-cert\meshharbor-dev.cer' }
 
 function Test-Elevated {
     $id = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -78,7 +78,7 @@ if (Test-Path $CerPath) {
 Say 'Fleet deployment -- Group Policy'
 Info '  Group Policy Management -> edit a GPO linked to the pilot OU ->'
 Info '  Computer Configuration -> Policies -> Windows Settings -> Security Settings'
-Info '  -> Public Key Policies, then import roomler-dev.cer into BOTH:'
+Info '  -> Public Key Policies, then import meshharbor-dev.cer into BOTH:'
 Info '       * Trusted Root Certification Authorities'
 Info '       * Trusted Publishers'
 Info '  Both are required: Root makes the chain valid, TrustedPublisher is what'
@@ -90,22 +90,22 @@ Info '  Intune has no built-in template for TrustedPublisher, so it takes two pr
 Info ''
 Info '  1. Devices -> Configuration -> Create -> Windows 10 and later ->'
 Info '     Templates -> Trusted certificate'
-Info '       upload roomler-dev.cer'
+Info '       upload meshharbor-dev.cer'
 Info '       Destination store: Computer certificate store - Root'
 Info ''
 Info '  2. Devices -> Configuration -> Create -> Windows 10 and later -> Templates -> Custom'
 Info "       OMA-URI: ./Device/Vendor/MSFT/RootCATrustedCertificates/TrustedPublisher/$thumbHint/EncodedCertificate"
 Info '       Data type: String'
-Info '       Value:     the base64 of roomler-dev.cer (below)'
+Info '       Value:     the base64 of meshharbor-dev.cer (below)'
 Write-Host ''
 Info '  Equivalent if you deploy a platform script instead of a profile:'
-Info '       Import-Certificate -FilePath roomler-dev.cer -CertStoreLocation Cert:\LocalMachine\Root'
-Info '       Import-Certificate -FilePath roomler-dev.cer -CertStoreLocation Cert:\LocalMachine\TrustedPublisher'
+Info '       Import-Certificate -FilePath meshharbor-dev.cer -CertStoreLocation Cert:\LocalMachine\Root'
+Info '       Import-Certificate -FilePath meshharbor-dev.cer -CertStoreLocation Cert:\LocalMachine\TrustedPublisher'
 Write-Host ''
 
 if (Test-Path $CerPath) {
     $b64 = [Convert]::ToBase64String([IO.File]::ReadAllBytes($CerPath))
-    $b64Path = Join-Path (Split-Path -Parent $CerPath) 'roomler-dev.cer.base64'
+    $b64Path = Join-Path (Split-Path -Parent $CerPath) 'meshharbor-dev.cer.base64'
     Set-Content -Path $b64Path -Value $b64 -Encoding ascii
     Ok "base64 for the OMA-URI value written to $b64Path"
 }

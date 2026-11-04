@@ -7,7 +7,7 @@
  * Everything a crawler reads is emitted statically, per page: a unique
  * <title> that fits, a real <meta name="description">, an ABSOLUTE
  * canonical, OG/Twitter tags and JSON-LD. The SPA next door has none of these
- * — one `<title>Roomler</title>` for every public route — which is the gap
+ * — one `<title>MeshHarbor</title>` for every public route — which is the gap
  * FR-60 exists to close.
  */
 import { BASE, SITE_ORIGIN, SITE_TITLE_SUFFIX, type SectionDef } from '../site.ts'
@@ -276,7 +276,7 @@ function pageMeta(page: DocPage): string {
   if (page.lastmod) parts.push(`Last updated <time datetime="${page.lastmod}">${page.lastmod.slice(0, 10)}</time>`)
   if (page.sourceFile) {
     parts.push(
-      `<a href="https://github.com/gjovanov/roomler-ai/edit/master/ui/docs/content/${page.sourceFile}.md" target="_blank" rel="noopener noreferrer">Edit this page</a>`,
+      `<a href="https://github.com/jk-zhang-meta/MeshHarbor/edit/master/ui/docs/content/${page.sourceFile}.md" target="_blank" rel="noopener noreferrer">Edit this page</a>`,
     )
   }
   return parts.length ? `<p class="page-meta">\n      ${parts.join(' ·\n      ')}\n    </p>` : ''

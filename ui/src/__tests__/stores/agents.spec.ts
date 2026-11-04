@@ -408,7 +408,7 @@ describe('useAgentStore', () => {
     expect(url).toContain('per_page=25')
   })
 
-  // ── Roomler SSH ────────────────────────────────────────────────────
+  // ── MeshHarbor SSH ────────────────────────────────────────────────────
 
   it('an agent with no ssh_policy is treated as closed, not permissive', () => {
     // Same rule as exec: a device that predates the feature, or whose API

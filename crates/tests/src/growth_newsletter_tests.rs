@@ -400,7 +400,7 @@ async fn delivered_and_a_hard_bounce_are_recorded_and_the_bounce_is_suppressed_a
         .auth_post("/api/admin/newsletter/issues", &token)
         .json(&json!({
             "slug": "nov", "subject": "November", "preheader": "p",
-            "body_md": "Read [the docs](https://roomler.ai/docs).",
+            "body_md": "Read [the docs](https://meshharbor.itachi.fans/docs).",
         }))
         .send()
         .await
@@ -477,7 +477,7 @@ async fn a_test_issue_goes_only_to_its_audience() {
         .auth_post("/api/admin/newsletter/issues", &token)
         .json(&json!({
             "slug": "field-test", "subject": "Field test", "preheader": "p",
-            "body_md": "Read [the docs](https://roomler.ai/docs).",
+            "body_md": "Read [the docs](https://meshharbor.itachi.fans/docs).",
             "audience": ["A@Test.io", "c@test.io", "nobody@test.io"],
         }))
         .send()

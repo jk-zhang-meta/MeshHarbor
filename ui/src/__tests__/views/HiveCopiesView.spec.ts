@@ -222,7 +222,7 @@ describe('HiveCopiesView (FR-90 P2h-2)', () => {
     expect(docker).toContain('-e MESHHARBOR_ENROLL_TOKEN=tok-123')
     expect(docker).toContain('--hostname hive-archive-1')
     expect(docker).toContain('-v hive-archive:/data')
-    expect(docker).toContain('ghcr.io/gjovanov/roomler-ai/hive-archive:latest')
+    expect(docker).toContain('ghcr.io/jk-zhang-meta/meshharbor/hive-archive:latest')
     const compose = w.find('[data-testid="hive-copies-snippet-compose"]').text()
     expect(compose).toContain('MESHHARBOR_ENROLL_TOKEN: tok-123')
     expect(compose).toContain('hostname: hive-archive-1')

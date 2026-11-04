@@ -344,7 +344,7 @@
         { class: 'mesh-center-label', 'text-anchor': 'middle', dy: 34 },
         centre,
       );
-      centreLabel.textContent = (view && view.center && view.center.name) || 'roomler.ai';
+      centreLabel.textContent = (view && view.center && view.center.name) || 'meshharbor.itachi.fans';
 
       const nodesG = svgEl('g', { class: 'mesh-nodes' }, root);
       for (const n of visible) {

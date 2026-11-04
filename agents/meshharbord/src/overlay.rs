@@ -454,7 +454,7 @@ pub async fn maybe_start(
 /// resolved BEFORE any `0.0.0.0/1` is installed — once the default is captured,
 /// DNS to a remote resolver may itself be swallowed. Best-effort + timeout-bound:
 /// an empty result just means the runtime's exemption gate withholds default
-/// routing (fail-safe — never a wedge). roomler.ai sits behind nginx/HAProxy and
+/// routing (fail-safe — never a wedge). meshharbor.itachi.fans sits behind nginx/HAProxy and
 /// may be multi-A, so every returned address is exempted.
 async fn resolve_server_ips(server_url: &str) -> Vec<std::net::IpAddr> {
     use std::collections::HashSet;
@@ -1324,7 +1324,7 @@ mod fingerprint_tests {
             advertised_routes: vec!["10.0.0.0/24".into()],
             exit_node: None,
             tenant_id: "t1".into(),
-            server_url: "https://roomler.ai".into(),
+            server_url: "https://meshharbor.itachi.fans".into(),
             lan_ips: vec!["192.168.68.5".into()],
         }
     }

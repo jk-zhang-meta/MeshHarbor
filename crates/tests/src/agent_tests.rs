@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 G ROX EOOD
-//! End-to-end tests that drive the `roomlerd` library crate against a
+//! End-to-end tests that drive the `meshharbord` library crate against a
 //! live `TestApp`. Unlike the REST-only `remote_control_tests`, these
 //! exercise the agent's HTTP enrollment + WSS signaling loop in-process,
 //! so a regression in either side (server rename, protocol drift, WS auth)
@@ -80,7 +80,7 @@ async fn run_agent_signaling_on(
     let (view_tx, _view_rx) = tokio::sync::watch::channel(Default::default());
     let broker = meshharbord::consent::ConsentBroker::new(
         meshharbord::consent::Mode::AutoGrant,
-        std::env::temp_dir().join(format!("roomler-test-consent-{}", cfg.agent_id)),
+        std::env::temp_dir().join(format!("meshharbor-test-consent-{}", cfg.agent_id)),
     )
     .expect("consent broker init");
     // Read before `cfg` is moved into the call below.
@@ -399,7 +399,7 @@ async fn update_all_from_a_secondary_org_is_refused_not_counted_delivered() {
     assert!(
         resp["results"][0]["refused"]
             .as_str()
-            .is_some_and(|r| r.contains("roomlerd org set-primary")),
+            .is_some_and(|r| r.contains("meshharbord org set-primary")),
         "the reason names the way out: {resp}"
     );
 
@@ -412,7 +412,7 @@ async fn update_all_from_a_secondary_org_is_refused_not_counted_delivered() {
 /// refuses the org's WS with `rc:goodbye AgentDeleted`, and its loop must END
 /// (not retry) on the TYPED error `run_cmd`'s supervisors log at DEBUG — the
 /// loop's own WARN already said it, once — carrying text that names every way
-/// out with this org's label, since that text is what `roomler status` shows.
+/// out with this org's label, since that text is what `meshharbor status` shows.
 /// Before, it was a plain `anyhow!` naming only re-enrollment, and every
 /// daemon start logged two ERRORs and a WARN per dead org.
 #[tokio::test]
@@ -459,9 +459,9 @@ async fn a_refused_secondary_org_ends_on_a_typed_goodbye_naming_the_ways_out() {
     let text = format!("{err:#}");
     for want in [
         "server goodbye (AgentDeleted)",
-        "roomlerd re-enroll --org demo --token",
-        "roomlerd org disable demo",
-        "roomlerd org rm demo",
+        "meshharbord re-enroll --org demo --token",
+        "meshharbord org disable demo",
+        "meshharbord org rm demo",
     ] {
         assert!(text.contains(want), "{want:?} missing from: {text}");
     }

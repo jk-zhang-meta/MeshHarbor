@@ -189,11 +189,11 @@ module.exports = defineConfig({
             // gets the right transport.
             '--remote-debugging-port=0',
             // Disable Chromium feature gates that intermittently fire
-            // `net::ERR_ACCESS_DENIED` against `http://roomler2/...`
+            // `net::ERR_ACCESS_DENIED` against `http://meshharbor2/...`
             // from inside the e2e cluster:
             //   - BlockInsecurePrivateNetworkRequests / InsecurePrivate
             //     NetworkSubresources: Chrome's CORS-RFC1918 gate; a
-            //     page on `roomler2` (cluster-private IP) loading
+            //     page on `meshharbor2` (cluster-private IP) loading
             //     subresources from the same private IP can be blocked
             //     post-redirect once the navigation crosses the
             //     "treat-as-public" heuristic threshold for any frame.

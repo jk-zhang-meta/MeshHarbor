@@ -15,13 +15,13 @@ import { ANALYTICS_DOMAIN, ANALYTICS_HOSTS, ANALYTICS_SRC } from '../src/utils/a
 /** Absolute origin. Canonicals, OG URLs and the sitemap are absolute — a
  *  relative canonical is legal but silently useless when a crawler reaches
  *  the page through any other host (a preview deploy, a staging origin). */
-export const SITE_ORIGIN = 'https://roomler.ai'
+export const SITE_ORIGIN = 'https://meshharbor.itachi.fans'
 
 /** Everything is served under this path prefix by nginx. */
 export const BASE = '/docs'
 
-export const SITE_NAME = 'Roomler'
-export const SITE_TITLE_SUFFIX = 'Roomler Docs'
+export const SITE_NAME = 'MeshHarbor'
+export const SITE_TITLE_SUFFIX = 'MeshHarbor Docs'
 
 /** Social card. Lives in the repo already (`docs/assets/social-preview.png`)
  *  and is copied into the output by the build. It is final artwork from the
@@ -48,7 +48,7 @@ export const SEARCH_INDEX_MAX_GZIP_BYTES = 150 * 1024
 export const MAX_DESCRIPTION_CHARS = 160
 
 /** FR-87 (#1776): a `<title>` past this is cut off in search results. The
- *  default drops " · section", then " — Roomler Docs", to fit; a title that
+ *  default drops " · section", then " — MeshHarbor Docs", to fit; a title that
  *  still does not fit must say so with a `seoTitle`, which is a build error
  *  over this length. Measured before: 8 of 65 docs titles ran 62–71. */
 export const MAX_TITLE_CHARS = 60
@@ -69,10 +69,10 @@ export const DOCS_FRONTMATTER_KEYS = [
   'seoTitle',
 ] as const
 
-export const REPO_URL = 'https://github.com/gjovanov/roomler-ai'
+export const REPO_URL = 'https://github.com/jk-zhang-meta/MeshHarbor'
 
 /**
- * FR-88 (#1790) P2: Roomler's own channel profiles, the ONE list of them.
+ * FR-88 (#1790) P2: MeshHarbor's own channel profiles, the ONE list of them.
  *
  * - `/links/` lists them, and `ORG.sameAs` names them to search engines.
  * - Each has a short path that nginx answers with a 302 to `/links/`
@@ -82,13 +82,13 @@ export const REPO_URL = 'https://github.com/gjovanov/roomler-ai'
  *   this list, both ways, and checks that no SPA route shares a short path.
  */
 export const CHANNELS = [
-  { id: 'youtube', name: 'YouTube', handle: '@RoomlerAI', url: 'https://www.youtube.com/@RoomlerAI', short: '/yt' },
-  { id: 'tiktok', name: 'TikTok', handle: '@roomler.ai', url: 'https://www.tiktok.com/@roomler.ai', short: '/tt' },
+  { id: 'youtube', name: 'YouTube', handle: '@MeshHarbor', url: 'https://www.youtube.com/@MeshHarbor', short: '/yt' },
+  { id: 'tiktok', name: 'TikTok', handle: '@meshharbor.itachi.fans', url: 'https://www.tiktok.com/@meshharbor.itachi.fans', short: '/tt' },
   // X took Instagram's place on 2026-10-11, after Instagram disabled the account.
   // A channel leaves this list together with its short path, so `/ig` is gone.
-  { id: 'x', name: 'X', handle: '@roomler_ai', url: 'https://x.com/roomler_ai', short: '/x' },
+  { id: 'x', name: 'X', handle: '@meshharbor', url: 'https://x.com/meshharbor', short: '/x' },
   // The page has no @username yet, so this is its numeric address.
-  { id: 'facebook', name: 'Facebook', handle: 'Roomler', url: 'https://www.facebook.com/profile.php?id=100044550434196', short: '/fb' },
+  { id: 'facebook', name: 'Facebook', handle: 'MeshHarbor', url: 'https://www.facebook.com/profile.php?id=100044550434196', short: '/fb' },
 ] as const
 
 export type Channel = (typeof CHANNELS)[number]
@@ -125,16 +125,16 @@ export const ORG = {
 export const OG_IMAGE_META = {
   width: 1280,
   height: 640,
-  alt: 'The Roomler logo, with the line: remote desktop, private mesh network, chat & video',
+  alt: 'The MeshHarbor logo, with the line: remote desktop, private mesh network, chat & video',
 } as const
 
 // ── the blog (FR-87 P4) ─────────────────────────────────────────────────
 
 /** Posts are `ui/blog/posts/<slug>.md`, served under this prefix. */
 export const BLOG_BASE = '/blog'
-export const BLOG_TITLE = 'Roomler blog'
+export const BLOG_TITLE = 'MeshHarbor blog'
 export const BLOG_DESCRIPTION =
-  'Why Roomler exists and how it is built: remote desktop from a browser tab, a private mesh network and team collaboration on one open-source agent.'
+  'Why MeshHarbor exists and how it is built: remote desktop from a browser tab, a private mesh network and team collaboration on one open-source agent.'
 export const POSTS_PER_PAGE = 10
 /** As with docs tags: a tag page below this is a doorway page, not a page. */
 export const MIN_POSTS_PER_TAG_INDEX = 3
@@ -170,7 +170,7 @@ export const BLOG_FRONTMATTER_KEYS = [
 ] as const
 
 /**
- * FR-91 (#1880): the blog is served by its own lane (`roomler-blog`, routed at
+ * FR-91 (#1880): the blog is served by its own lane (`meshharbor-blog`, routed at
  * the edge for `/blog/` and `/sitemap-blog.xml`) and published without this
  * image. While true, the sitemap index lists `sitemap-blog.xml` WITHOUT a
  * `lastmod` and whether or not this image has posts: the image cannot know the
@@ -277,7 +277,7 @@ export const SECTIONS: SectionDef[] = [
   {
     dir: 'start',
     title: 'Get started',
-    blurb: 'Install Roomler on Windows, macOS or Linux and reach your first device',
+    blurb: 'Install MeshHarbor on Windows, macOS or Linux and reach your first device',
     icon: 'flag',
     accent: 'teal',
   },
@@ -339,7 +339,7 @@ export const SECTIONS: SectionDef[] = [
   },
   {
     dir: 'compare',
-    title: 'How Roomler compares',
+    title: 'How MeshHarbor compares',
     blurb: 'Against Tailscale, RustDesk, TeamViewer, MeshCentral and NetBird',
     icon: 'compare',
     accent: 'coral',

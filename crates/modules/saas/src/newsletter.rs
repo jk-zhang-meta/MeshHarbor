@@ -780,12 +780,12 @@ mod tests {
     #[test]
     fn the_unsubscribe_link_names_the_issue() {
         assert_eq!(
-            unsubscribe_link("https://roomler.ai/", "tok", Some("oct")),
-            "https://roomler.ai/api/subscribe/unsubscribe/tok?i=oct"
+            unsubscribe_link("https://meshharbor.itachi.fans/", "tok", Some("oct")),
+            "https://meshharbor.itachi.fans/api/subscribe/unsubscribe/tok?i=oct"
         );
         assert_eq!(
-            unsubscribe_link("https://roomler.ai", "tok", None),
-            "https://roomler.ai/api/subscribe/unsubscribe/tok"
+            unsubscribe_link("https://meshharbor.itachi.fans", "tok", None),
+            "https://meshharbor.itachi.fans/api/subscribe/unsubscribe/tok"
         );
     }
 }

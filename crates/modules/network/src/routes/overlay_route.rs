@@ -681,13 +681,13 @@ pub async fn set_magic_dns(
     // agent resolver is AUTHORITATIVE for its zone (in-zone miss =
     // NXDOMAIN, never forwarded), so a tenant zone named after fleet
     // infrastructure would shadow it org-wide from EVERY member host — a
-    // zone `coturn.roomler.ai` NXDOMAINs the relay fleet itself. Only
-    // `*.roomler.ai` is guarded; foreign apex domains are the operator's
+    // zone `coturn.meshharbor.itachi.fans` NXDOMAINs the relay fleet itself. Only
+    // `*.meshharbor.itachi.fans` is guarded; foreign apex domains are the operator's
     // own business.
     if let Some(d) = &domain
-        && let Some(label) = d.strip_suffix(".roomler.ai").map(|p| {
+        && let Some(label) = d.strip_suffix(".meshharbor.itachi.fans").map(|p| {
             // The rightmost remaining label is the [org] slot directly
-            // under roomler.ai (e.g. "grox" from "grox.roomler.ai").
+            // under meshharbor.itachi.fans (e.g. "grox" from "grox.meshharbor.itachi.fans").
             p.rsplit('.').next().unwrap_or(p).to_string()
         })
     {
@@ -699,7 +699,7 @@ pub async fn set_magic_dns(
             || label.starts_with("derp");
         if shadowed {
             return Err(ApiError::BadRequest(format!(
-                "magic_dns_domain '{label}.roomler.ai' would shadow reserved \
+                "magic_dns_domain '{label}.meshharbor.itachi.fans' would shadow reserved \
                  infrastructure names for every org member; pick another name"
             )));
         }

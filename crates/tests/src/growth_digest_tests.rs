@@ -909,7 +909,7 @@ async fn two_concurrent_runs_store_once_and_send_once() {
         let sends = mailer.sends.lock().unwrap();
         let (to, subject, html, text) = &sends[0];
         assert_eq!(to, "padmin@test.io");
-        assert_eq!(subject, &format!("Roomler daily digest — {DAY}"));
+        assert_eq!(subject, &format!("MeshHarbor daily digest — {DAY}"));
         assert!(
             html.contains("Sign-ups</strong>: 2 (7d 3 · 28d 31)")
                 || html.contains("2 (7d 3 · 28d 4)"),
@@ -1375,7 +1375,7 @@ async fn fake_query(
         .map(str::to_string);
     f.seen.lock().unwrap().push((key.clone(), body.clone()));
     let meta = |has_more: bool, offset: u64| {
-        json!({ "site_domain": "roomler.ai", "hostnames": ["roomler.ai"], "date_from": body["date_from"],
+        json!({ "site_domain": "meshharbor.itachi.fans", "hostnames": ["meshharbor.itachi.fans"], "date_from": body["date_from"],
                 "date_to": body["date_to"], "limit": 100, "offset": offset, "has_more": has_more })
     };
     match key.as_deref() {

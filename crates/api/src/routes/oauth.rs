@@ -244,10 +244,10 @@ mod tests {
 
     #[test]
     fn the_callback_redirect_carries_a_signup_marker_and_never_a_token() {
-        let created = callback_redirect("https://roomler.ai", true);
-        assert_eq!(created, "https://roomler.ai/oauth/callback#signup=1");
-        let returning = callback_redirect("https://roomler.ai", false);
-        assert_eq!(returning, "https://roomler.ai/oauth/callback");
+        let created = callback_redirect("https://meshharbor.itachi.fans", true);
+        assert_eq!(created, "https://meshharbor.itachi.fans/oauth/callback#signup=1");
+        let returning = callback_redirect("https://meshharbor.itachi.fans", false);
+        assert_eq!(returning, "https://meshharbor.itachi.fans/oauth/callback");
         for url in [&created, &returning] {
             assert!(!url.contains("token"), "{url}");
             assert!(!url.contains('?'), "nothing in the query either: {url}");

@@ -55,7 +55,7 @@ pub enum ProgressEvent {
     /// renders inline; install still proceeds.
     PreflightWarning { message: String },
 
-    /// Resolving the artifact URL via the roomler.ai installer proxy.
+    /// Resolving the artifact URL via the meshharbor.itachi.fans installer proxy.
     /// `artifact` is the discriminator being resolved — an MSI
     /// flavour (`"permachine"`) for daemon roles, a platform string
     /// (`"windows-x86_64"`) for the tunnel-client role.

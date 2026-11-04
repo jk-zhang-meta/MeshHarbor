@@ -4,7 +4,7 @@
 //! server, and the device verifies.
 //!
 //! Everything real except the browser: a real API server, the REAL agent
-//! signalling loop (`roomlerd`, with `external-access`) reading a real config
+//! signalling loop (`meshharbord`, with `external-access`) reading a real config
 //! file for gate 3 and the password record, an org-less user on a real user
 //! socket, and opaque-ke standing in for `@serenity-kit/opaque` — which is
 //! opaque-ke compiled to WASM, and was proven to log into this agent's records
@@ -102,7 +102,7 @@ fn spawn_agent(
         let (view_tx, _view_rx) = tokio::sync::watch::channel(Default::default());
         let broker = meshharbord::consent::ConsentBroker::new(
             meshharbord::consent::Mode::AutoGrant,
-            std::env::temp_dir().join(format!("roomler-extauth-consent-{}", cfg.agent_id)),
+            std::env::temp_dir().join(format!("meshharbor-extauth-consent-{}", cfg.agent_id)),
         )
         .expect("consent broker init");
         let (exec_enabled, remote_config_enabled) = (cfg.exec_enabled, cfg.remote_config_enabled);
@@ -600,7 +600,7 @@ fn app_key(session_key: &[u8], attempt_id: &str, principal: &str) -> [u8; 32] {
     extract.update(session_key);
     let prk = extract.finalize().into_bytes();
     // Expand, one block: T(1) = HMAC(PRK, info ‖ 0x01), truncated to 32.
-    let mut info = b"roomler-extauth-v1 app-key".to_vec();
+    let mut info = b"meshharbor-extauth-v1 app-key".to_vec();
     for field in [attempt_id.as_bytes(), principal.as_bytes()] {
         info.extend_from_slice(&(field.len() as u16).to_be_bytes());
         info.extend_from_slice(field);
@@ -615,7 +615,7 @@ fn app_key(session_key: &[u8], attempt_id: &str, principal: &str) -> [u8; 32] {
 fn transport_mac(key: &[u8; 32], role: &str, fingerprint: &str) -> String {
     use hmac::Mac as _;
     let mut mac = <hmac::Hmac<sha2::Sha256> as hmac::Mac>::new_from_slice(key).unwrap();
-    mac.update(b"roomler-extauth-v1 transport");
+    mac.update(b"meshharbor-extauth-v1 transport");
     for field in [role.as_bytes(), fingerprint.as_bytes()] {
         mac.update(&(field.len() as u16).to_be_bytes());
         mac.update(field);

@@ -33,9 +33,9 @@ on:
         required: false
         default: ""
       server:
-        description: "Roomler API base URL"
+        description: "MeshHarbor API base URL"
         required: false
-        default: "https://roomler.ai"
+        default: "https://meshharbor.itachi.fans"
 
 jobs:
   mesh:
@@ -55,7 +55,7 @@ jobs:
       - name: Build the daemon and the CLI
         # overlay-l3 only: this test is about the mesh, not media, and the
         # full release feature set drags in FFmpeg/VP9 for no benefit here.
-        # The `roomler` CLI comes too — it is how a user session reaches the
+        # The `meshharbor` CLI comes too — it is how a user session reaches the
         # ROOT daemon, which is the thing the system socket exists for.
         run: |
           cargo build -p meshharbord --release --features overlay-l3
@@ -67,15 +67,15 @@ jobs:
           TOKEN: ${{ inputs.enrollment_token }}
         run: |
           set -euo pipefail
-          sudo mkdir -p /etc/roomler-ci
+          sudo mkdir -p /etc/meshharbor-ci
           # Enrolled AND run as root: creating a utun and installing routes
           # both require it. The shipped .pkg installs a per-user LaunchAgent
           # instead, which is why the overlay has never come up on a real
           # macOS install — see docs/multi-org.md.
-          sudo ./target/release/roomlerd --config /etc/roomler-ci/config.toml \
+          sudo ./target/release/meshharbord --config /etc/meshharbor-ci/config.toml \
             enroll --server "${{ inputs.server }}" --token "$TOKEN" \
             --name "ci-macos-${GITHUB_RUN_ID}"
-          AGENT_ID=$(sudo grep -E '^agent_id' /etc/roomler-ci/config.toml | head -1 | cut -d'"' -f2)
+          AGENT_ID=$(sudo grep -E '^agent_id' /etc/meshharbor-ci/config.toml | head -1 | cut -d'"' -f2)
           echo "agent_id=$AGENT_ID" >> "$GITHUB_OUTPUT"
           echo "::notice title=Enrolled::agent_id=$AGENT_ID — delete this device row when you are done"
 
@@ -84,19 +84,19 @@ jobs:
         # to join a mesh.
         run: |
           set -euo pipefail
-          sudo sed -i '' 's/^overlay_enabled = false/overlay_enabled = true/' /etc/roomler-ci/config.toml
+          sudo sed -i '' 's/^overlay_enabled = false/overlay_enabled = true/' /etc/meshharbor-ci/config.toml
           # Verify rather than trust the sed — a serialisation change would
           # otherwise leave the overlay off and this test would "pass" by
           # never having tried.
-          if ! sudo grep -qE '^overlay_enabled = true' /etc/roomler-ci/config.toml; then
-            echo "overlay_enabled = true" | sudo tee -a /etc/roomler-ci/config.toml >/dev/null
+          if ! sudo grep -qE '^overlay_enabled = true' /etc/meshharbor-ci/config.toml; then
+            echo "overlay_enabled = true" | sudo tee -a /etc/meshharbor-ci/config.toml >/dev/null
           fi
-          sudo grep -E '^overlay_enabled' /etc/roomler-ci/config.toml
+          sudo grep -E '^overlay_enabled' /etc/meshharbor-ci/config.toml
 
       - name: Run the daemon
         run: |
           set -euo pipefail
-          sudo mkdir -p /var/log/roomler-ci
+          sudo mkdir -p /var/log/meshharbor-ci
           # MESHHARBORD_AUTO_UPDATE=0 is load-bearing, not tidiness: this
           # daemon is built FROM SOURCE on a branch, so its version usually
           # lags the newest release and the updater would download it, spawn
@@ -106,31 +106,31 @@ jobs:
           # only passed because the branch happened to equal the latest tag.
           sudo bash -c 'MESHHARBORD_AUTO_UPDATE=0 \
             RUST_LOG=info,tunnel_core::overlay=debug \
-            ./target/release/roomlerd --config /etc/roomler-ci/config.toml run \
-            > /var/log/roomler-ci/agent.log 2>&1 &'
+            ./target/release/meshharbord --config /etc/meshharbor-ci/config.toml run \
+            > /var/log/meshharbor-ci/agent.log 2>&1 &'
           sleep 5
-          pgrep -f roomlerd >/dev/null && echo "daemon up" || (sudo cat /var/log/roomler-ci/agent.log; exit 1)
+          pgrep -f meshharbord >/dev/null && echo "daemon up" || (sudo cat /var/log/meshharbor-ci/agent.log; exit 1)
 
       - name: The root daemon's LocalAPI must be findable
         # A root daemon cannot use the per-user socket path: `temp_dir()` is
         # per-user on macOS, so it would land in ROOT's /var/folders/… and a
-        # user-session `roomler peers` would search its own, find nothing,
+        # user-session `meshharbor peers` would search its own, find nothing,
         # and report "not running" for a daemon that is running. This job is
         # the only place a root daemon actually runs, so it is the only place
         # that assertion can be made.
         run: |
           set -euo pipefail
           for i in $(seq 1 20); do
-            if sudo test -S /var/run/roomler/roomler.sock; then
-              echo "::notice title=System socket::/var/run/roomler/roomler.sock is bound after ${i}s"
-              sudo ls -l /var/run/roomler/
+            if sudo test -S /var/run/meshharbor/meshharbor.sock; then
+              echo "::notice title=System socket::/var/run/meshharbor/meshharbor.sock is bound after ${i}s"
+              sudo ls -l /var/run/meshharbor/
               exit 0
             fi
             sleep 3
           done
-          echo "::error title=No system socket::a root daemon must bind /var/run/roomler/roomler.sock"
-          sudo ls -l /var/run/roomler/ 2>&1 || echo "(dir absent)"
-          sudo tail -60 /var/log/roomler-ci/agent.log || true
+          echo "::error title=No system socket::a root daemon must bind /var/run/meshharbor/meshharbor.sock"
+          sudo ls -l /var/run/meshharbor/ 2>&1 || echo "(dir absent)"
+          sudo tail -60 /var/log/meshharbor-ci/agent.log || true
           exit 1
 
       - name: Wait for the utun to carry an overlay address
@@ -152,7 +152,7 @@ jobs:
             sleep 5
           done
           echo "::error title=No overlay address::the daemon never brought up a utun with a CGNAT address"
-          sudo tail -100 /var/log/roomler-ci/agent.log
+          sudo tail -100 /var/log/meshharbor-ci/agent.log
           exit 1
 
       - name: The CLI reaches the root daemon, and names a peer
@@ -169,7 +169,7 @@ jobs:
         run: |
           set -euo pipefail
           for i in $(seq 1 30); do
-            if OUT=$(sudo ./target/release/roomler peers --json 2>/tmp/peers.err); then
+            if OUT=$(sudo ./target/release/meshharbor peers --json 2>/tmp/peers.err); then
               echo "$OUT" > /tmp/peers.json
               break
             fi
@@ -180,7 +180,7 @@ jobs:
             cat /tmp/peers.err || true
             exit 1
           fi
-          echo "::notice title=CLI reached the root daemon::via /var/run/roomler/roomler.sock"
+          echo "::notice title=CLI reached the root daemon::via /var/run/meshharbor/meshharbor.sock"
           head -c 600 /tmp/peers.json; echo
           IP="${{ inputs.peer_ip }}"
           if [ -z "$IP" ]; then
@@ -216,7 +216,7 @@ jobs:
           done
           echo "::error title=No data plane::the overlay came up but ${{ steps.peer.outputs.peer_ip }} never answered"
           cat /tmp/ping.txt || true
-          sudo grep -iE "carrier|handshake|peer installed|relay|derp" /var/log/roomler-ci/agent.log | tail -40
+          sudo grep -iE "carrier|handshake|peer installed|relay|derp" /var/log/meshharbor-ci/agent.log | tail -40
           exit 1
 
       - name: Evidence
@@ -224,8 +224,8 @@ jobs:
         run: |
           echo "=== interfaces ==="; ifconfig | grep -A4 '^utun' || true
           echo "=== routes ==="; netstat -rn -f inet | head -40
-          echo "=== agent log (tail) ==="; sudo tail -200 /var/log/roomler-ci/agent.log || true
+          echo "=== agent log (tail) ==="; sudo tail -200 /var/log/meshharbor-ci/agent.log || true
 
       - name: Stop the daemon
         if: always()
-        run: sudo pkill -f roomlerd || true
+        run: sudo pkill -f meshharbord || true

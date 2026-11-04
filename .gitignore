@@ -70,7 +70,7 @@ ui/e2e/video/output/
 # is PUBLIC, and a git history is not something you can take back -- the
 # identity rewrite of 2026-09-06 proved that, leaving 529 commits reachable
 # through refs/pull/* forever. Those skills belong sanitised, or in the private
-# roomler-ai-docs repo. Do not "finish the job" by deleting this rule.
+# meshharbor-docs repo. Do not "finish the job" by deleting this rule.
 dist/
 # The image's GeoIP country database and its provenance note, staged by
 # scripts/fetch-geoip.sh before `docker build` (#1896): fetched, never
@@ -82,13 +82,13 @@ files/geoip/*
 # Code-signing operator state + local key material (scripts/signing/).
 # The state file holds only public identifiers, but dev-cert/ holds a real
 # private key -- never commit either.
-scripts/signing/.roomler-signing.json
+scripts/signing/.meshharbor-signing.json
 scripts/signing/dev-cert/
 scripts/signing/apple/
 # gpg/: everything is secret EXCEPT the public key, which must be committed
 # so the API can serve it (include_str! in setup_release.rs).
 scripts/signing/gpg/*
-!scripts/signing/gpg/roomler-release-pubkey.asc
+!scripts/signing/gpg/meshharbor-release-pubkey.asc
 *.pfx
 *.p12
 *.key

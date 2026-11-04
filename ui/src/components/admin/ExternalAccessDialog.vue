@@ -107,7 +107,7 @@
         </v-alert>
         <v-alert type="info" variant="tonal" density="compact" class="mt-4">
           <i18n-t keypath="mh.ext.devicePassword" tag="span" scope="global">
-            <template #cmd><code>roomler rc password set</code></template>
+            <template #cmd><code>meshharbor rc password set</code></template>
           </i18n-t>
         </v-alert>
 

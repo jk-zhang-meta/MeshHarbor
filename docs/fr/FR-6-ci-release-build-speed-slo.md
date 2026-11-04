@@ -2,7 +2,7 @@
 
 **Status:** shipped + field-verified through 2026-08-26 (retroactive FR per the CLAUDE.md
 standing rule — the program ran 2026-07-13 → 2026-08-26 across ~20 PRs). Tracking issue:
-`FR-6` (#773) in gjovanov/roomler-ai/issues.
+`FR-6` (#773) in jk-zhang-meta/MeshHarbor/issues.
 
 ## Goal
 
@@ -148,7 +148,7 @@ itself on the affected run's page. Baseline when the program started: releases t
       waves 18 and 19, whose agent code is 0.4.114's) took **14.9 min**: Windows MSI
       13.9, macOS `.pkg` 10.4, Linux x86_64 9.9, aarch64 7.4. Over the 12 tags 0.4.102–
       0.4.115 the MSI job ran 9.2–14.9 min and is the steady long pole. Of its 13.9 min,
-      586 s were the final single-crate compile of `roomlerd` under `codegen-units=1`, which
+      586 s were the final single-crate compile of `meshharbord` under `codegen-units=1`, which
       took 349 s on 0.4.114 for the same code: runner speed, not work. The remaining
       levers are the operator's (see Open decisions)
 
@@ -158,7 +158,7 @@ itself on the affected run's page. Baseline when the program started: releases t
   size-optimized `cgu=1` profile, plus Azure signing steps. **Measured 2026-10-01, now
   that macOS and Linux are off the critical path (waves 18–19):** normal-delta tags still
   exceed 10 min (agent-v0.4.115, 14.9 min). The MSI job is the pole (9.2–14.9 min across
-  12 tags), and most of it is `roomlerd`'s own compile. Three levers were proposed:
+  12 tags), and most of it is `meshharbord`'s own compile. Three levers were proposed:
   relax `cgu=1`, decouple the per-release version bump, or pay for 8-core runners. The
   2026-10-06 probe (log) narrowed them to one:
   - **Decoupling the version bump cannot help.** The path crates rebuild because the
@@ -170,8 +170,8 @@ itself on the affected run's page. Baseline when the program started: releases t
     core, so extra cores sit idle. The runner is an AMD EPYC 7763 with **2 physical cores
     (4 threads)**, and Defender real-time scanning is already off (exclusions `C:\`,
     `D:\`), so that is not a lever either.
-  - **`codegen-units` for `roomlerd` alone is the one real lever, and it buys ~2 min:**
-    roomlerd's lib + bin took 355 → 244 s (`cgu=4`, −31%) on one runner and 496 → 358 s
+  - **`codegen-units` for `meshharbord` alone is the one real lever, and it buys ~2 min:**
+    meshharbord's lib + bin took 355 → 244 s (`cgu=4`, −31%) on one runner and 496 → 358 s
     (−28%) on another; `cgu=16` was no better than 4, and `opt-level=2` at `cgu=1` saved
     nothing. Its size cost on the shipped binary is not yet measured. The bin (`main.rs`)
     alone takes 100–230 s after the lib, much of it plausibly the lib's generics
@@ -200,7 +200,7 @@ itself on the affected run's page. Baseline when the program started: releases t
   hosted minutes exhausted it on 10-07 (6,667 weighted minutes on October 1–9 against
   2,000 included; macOS 57% of it). The pool went read-only again on 2026-10-09 ("Cache
   reservation failed: You have reached your configured budget"), so every lane restored
-  an ever-older generation, though roomler-ai's own share of the bill was ~1 GB of
+  an ever-older generation, though meshharbor's own share of the bill was ~1 GB of
   storage. A paid tier that another repository can switch off is not a design. Wave 21
   took the two cuts this paragraph once held in reserve, and **only one of them works**.
   - The plain recorder lane restores `recorder-audio`'s family and keeps none of its own
@@ -290,7 +290,7 @@ itself on the affected run's page. Baseline when the program started: releases t
   match at 15:58, the second got `No cache found` at 18:15. The pool read 15.0 GB
   against its 10 GB limit, 13.1 GB of it on `refs/pull/*/merge`: two concurrent PRs
   had each saved ~9–10 GB across eight job caches, and LRU evicted master's. On the
-  warm run, test execution was ~3.5 of the 20 minutes; the rest was `roomlerd` and
+  warm run, test execution was ~3.5 of the 20 minutes; the rest was `meshharbord` and
   friends compiled in ~12 feature configurations, one after another. Wave 14 plan and
   numbers: #773.
 - 2026-09-27: **Wave 14 (#1743) cold numbers.** Its own PR runs are cold by
@@ -456,7 +456,7 @@ itself on the affected run's page. Baseline when the program started: releases t
   agent-v0.4.116 and 10.2 on the master rehearsal before it (37237655417).
 - 2026-10-06: **the codegen probe** (branch `ci/fr6-cgu-probe`, never merged, run
   37539178203). It restored the release lane's Windows seed read-only and rebuilt
-  `roomlerd` once per variant on one machine, two machines in opposite orders. lib + bin
+  `meshharbord` once per variant on one machine, two machines in opposite orders. lib + bin
   seconds:
 
   | Variant | Runner A | Runner B |
@@ -479,7 +479,7 @@ itself on the affected run's page. Baseline when the program started: releases t
     generation (`full match: false`), then `Cache reservation failed: You have reached your
     configured budget, your cache is now read only to prevent additional charges`. The pool
     held 11.48 GB in 16 entries against the 20 GB limit.
-  - The budget went elsewhere. roomler-ai's minutes are free (public repository), and its
+  - The budget went elsewhere. meshharbor's minutes are free (public repository), and its
     storage was ~1 GB over the free tier. The private `lgr` repository's hosted jobs on
     October 1–9, from the jobs API (the run-timing API's `billable` field now reads 0 for
     every run, private ones included, so it measures nothing): Linux 1,895 min, Windows 491,
@@ -498,7 +498,7 @@ itself on the affected run's page. Baseline when the program started: releases t
     re-extraction would bump directory mtimes that their build scripts watch. So the trim
     deletes only the `.crate` files and keeps the directories, which that cleanup scans.
   - `cargo tree -p meshharbord -e normal,build,dev --target x86_64-unknown-linux-gnu`: the plain
-    recorder graph and the `+audio` graph differ in roomlerd itself and 7 audio-only crates
+    recorder graph and the `+audio` graph differ in meshharbord itself and 7 audio-only crates
     (alsa, alsa-sys, audiopus, audiopus_sys, cmake, cpal, dasp_sample), and in nothing else.
     ⚠ That comparison covered the TEST graphs only. On the PR (run 38081437008) the plain
     lane restored `v0-rust-ci-recorder-audio-…` and still compiled 40 crates against

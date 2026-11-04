@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TunnelConfig {
     /// Base URL of the MeshHarbor API (no trailing slash needed,
-    /// e.g. `https://roomler.ai`). Used to derive the WS URL by
+    /// e.g. `https://meshharbor.itachi.fans`). Used to derive the WS URL by
     /// rewriting the scheme to `wss://` and appending `/ws`.
     pub server_url: String,
 
@@ -300,16 +300,16 @@ mod tests {
     #[test]
     fn derive_ws_url_https_becomes_wss() {
         assert_eq!(
-            derive_ws_url("https://roomler.ai").unwrap(),
-            "wss://roomler.ai/ws"
+            derive_ws_url("https://meshharbor.itachi.fans").unwrap(),
+            "wss://meshharbor.itachi.fans/ws"
         );
     }
 
     #[test]
     fn derive_ws_url_strips_trailing_slash() {
         assert_eq!(
-            derive_ws_url("https://roomler.ai/").unwrap(),
-            "wss://roomler.ai/ws"
+            derive_ws_url("https://meshharbor.itachi.fans/").unwrap(),
+            "wss://meshharbor.itachi.fans/ws"
         );
     }
 
@@ -324,8 +324,8 @@ mod tests {
     #[test]
     fn derive_ws_url_passes_ws_through() {
         assert_eq!(
-            derive_ws_url("wss://roomler.ai").unwrap(),
-            "wss://roomler.ai/ws"
+            derive_ws_url("wss://meshharbor.itachi.fans").unwrap(),
+            "wss://meshharbor.itachi.fans/ws"
         );
     }
 
@@ -369,11 +369,11 @@ mod tests {
             save(&cfg, Some(&path)).unwrap();
             load(Some(path)).unwrap()
         };
-        let remote = load_with("remote", "http://roomler.ai", false);
-        assert_eq!(remote.server_url, "https://roomler.ai");
+        let remote = load_with("remote", "http://meshharbor.itachi.fans", false);
+        assert_eq!(remote.server_url, "https://meshharbor.itachi.fans");
         assert_eq!(
             derive_ws_url(&remote.server_url).unwrap(),
-            "wss://roomler.ai/ws"
+            "wss://meshharbor.itachi.fans/ws"
         );
         let local = load_with("local", "http://127.0.0.1:3000", false);
         assert_eq!(
@@ -389,16 +389,16 @@ mod tests {
     #[test]
     fn an_enrollment_posts_its_token_over_tls() {
         assert_eq!(
-            enrollment_server_url("http://roomler.ai/"),
-            "https://roomler.ai"
+            enrollment_server_url("http://meshharbor.itachi.fans/"),
+            "https://meshharbor.itachi.fans"
         );
         assert_eq!(
-            enrollment_server_url("HTTP:roomler.ai"),
-            "https://roomler.ai"
+            enrollment_server_url("HTTP:meshharbor.itachi.fans"),
+            "https://meshharbor.itachi.fans"
         );
         assert_eq!(
-            enrollment_server_url("https://roomler.ai/"),
-            "https://roomler.ai"
+            enrollment_server_url("https://meshharbor.itachi.fans/"),
+            "https://meshharbor.itachi.fans"
         );
         assert_eq!(
             enrollment_server_url("http://127.0.0.1:3000/"),

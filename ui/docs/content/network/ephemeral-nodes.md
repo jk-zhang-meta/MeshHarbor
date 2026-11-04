@@ -33,7 +33,7 @@ Create one in the dashboard under **Devices → Enrollment keys**.
 ## Enrolling as ephemeral
 
 ```bash
-roomlerd enroll --server https://roomler.ai --token <reusable-key> --ephemeral --name ci-runner
+meshharbord enroll --server https://meshharbor.itachi.fans --token <reusable-key> --ephemeral --name ci-runner
 ```
 
 :::warning Ephemeral is a property of the credential, not a flag on a request
@@ -66,7 +66,7 @@ ephemeral.
 Two mechanisms, because a machine cannot always announce its own exit:
 
 - **On a clean stop**, the agent removes itself as it shuts down. A Windows
-  per-user install stops cleanly on `roomlerd service stop`, on sign-out and on
+  per-user install stops cleanly on `meshharbord service stop`, on sign-out and on
   shutdown. Ending its task (Task Manager, `schtasks /End`) is not a clean stop.
 - **Otherwise**, a reaper removes ephemeral devices that have stopped reporting.
 
@@ -76,9 +76,9 @@ every update would silently delete the device it was updating.
 ## Using it in CI
 
 ```bash
-curl -fsSL https://roomler.ai/api/setup/install.sh | sh -s -- \
+curl -fsSL https://meshharbor.itachi.fans/api/setup/install.sh | sh -s -- \
   --role daemon --system --token "$MESHHARBOR_ENROLL_KEY" \
-  --server https://roomler.ai --name "ci-$CI_JOB_ID" --ephemeral
+  --server https://meshharbor.itachi.fans --name "ci-$CI_JOB_ID" --ephemeral
 ```
 
 The runner joins the mesh, can reach your private services for the length of the

@@ -92,7 +92,7 @@ describe('FR-100 P2a: the transcript, as the device frames it', () => {
   it('frames each field with its length, by hand', () => {
     const t = peerAuthTranscript('offer', 'a', 'b', 'c', 'd', 'e', 'f')!
     const want = [
-      ...new TextEncoder().encode('roomler-peer-auth-v1'),
+      ...new TextEncoder().encode('meshharbor-peer-auth-v1'),
       0, 5, ...new TextEncoder().encode('offer'),
       ...['a', 'b', 'c', 'd', 'e', 'f'].flatMap((f) => [0, 1, f.charCodeAt(0)]),
     ]

@@ -122,7 +122,7 @@ describe('EnrollmentDialog — the anchor box (FR-104)', () => {
     document.body.querySelector('[data-test="enroll-anchor"] input') as HTMLInputElement | null
   const anchorCommand = () =>
     [...document.body.querySelectorAll('pre')].find((p) =>
-      p.textContent!.includes('roomlerd anchor create'),
+      p.textContent!.includes('meshharbord anchor create'),
     )
 
   afterEach(() => vi.restoreAllMocks())

@@ -55,7 +55,7 @@ describe('NewsletterPrompt', () => {
     await w.vm.$nextTick()
     await w.find('.prompt-close').trigger('click')
     expect(w.find('.newsletter-prompt').exists()).toBe(false)
-    expect(localStorage.getItem('roomler-newsletter-dismissed')).not.toBeNull()
+    expect(localStorage.getItem('meshharbor-newsletter-dismissed')).not.toBeNull()
 
     const again = mountPrompt()
     vi.advanceTimersByTime(60_000)
@@ -83,6 +83,6 @@ describe('NewsletterPrompt', () => {
     const stay = w.findComponent({ name: 'StayInTouch' })
     stay.vm.$emit('subscribed')
     await w.vm.$nextTick()
-    expect(localStorage.getItem('roomler-newsletter-dismissed')).not.toBeNull()
+    expect(localStorage.getItem('meshharbor-newsletter-dismissed')).not.toBeNull()
   })
 })

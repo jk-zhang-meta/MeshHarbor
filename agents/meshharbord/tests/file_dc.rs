@@ -20,7 +20,7 @@
 //!   safety.
 //!
 //! No MongoDB / Redis required — these test the agent-side wire
-//! protocol in isolation. The `roomlerd` library is a direct
+//! protocol in isolation. The `meshharbord` library is a direct
 //! dependency of this crate, so the production dispatch code runs
 //! in-process.
 

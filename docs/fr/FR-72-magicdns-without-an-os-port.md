@@ -1,11 +1,11 @@
 # FR-72 — One MagicDNS resolver per daemon
 
-**Issue:** [#1382](https://github.com/gjovanov/roomler-ai/issues/1382) · **Status:** P1 + P2 + P6 shipped and field-verified — **MagicDNS now resolves on the enforced-DNS host too**; P5 parked, P3 (#1363) open · **Opened:** 2026-09-05
+**Issue:** [#1382](https://github.com/jk-zhang-meta/MeshHarbor/issues/1382) · **Status:** P1 + P2 + P6 shipped and field-verified — **MagicDNS now resolves on the enforced-DNS host too**; P5 parked, P3 (#1363) open · **Opened:** 2026-09-05
 
 > ⚠️ **Re-aimed 2026-09-05, same day, after the verification overturned the
 > original premise.** This FR opened as *"MagicDNS without an OS port"* — the
 > theory that a third party owning `0.0.0.0:53` was killing the feature, to be
-> fixed by intercepting DNS below the OS the way roomler SSH intercepts `:22`.
+> fixed by intercepting DNS below the OS the way meshharbor SSH intercepts `:22`.
 > That theory was wrong in an instructive way and the history is kept below,
 > because the wrong turn is the most useful part of the record.
 
@@ -40,7 +40,7 @@ rule the carrier cascade already follows:
 3. **hosts-file entries** when it does not — and **climb back** when DNS returns
 
 🔑 **The probe is the load-bearing part.** `dns::PROBE_LABEL`
-(`_roomler-probe.<magic domain>`) is answered by our resolver and by nothing
+(`_meshharbor-probe.<magic domain>`) is answered by our resolver and by nothing
 else, so resolving it *through the OS* succeeds exactly when the steer reaches
 us. ⚠️ The fallback must never write that name: it would then answer its own
 probe, and the ladder could never climb back — a check that cannot fail.
@@ -54,7 +54,7 @@ climbing back, **and at construction** — the boot reconciler for whatever a de
 process left. ⚠️ **FQDNs only** — a bare `mars` would shadow a real corporate
 host.
 
-⚠️ **Known gap before the default flip**: `roomler config set magicdns_hosts` is
+⚠️ **Known gap before the default flip**: `meshharbor config set magicdns_hosts` is
 **refused** — the key is in the config file and the env bridge but not in the S2
 config surface, so a fleet operator cannot flip it remotely. A feature that
 cannot be switched on from the dashboard is not yet usable at fleet scale.
@@ -66,7 +66,7 @@ other part of the feature can be perfectly healthy and no query ever reaches the
 resolver. Measured on 0.4.73, on the host that opened this FR:
 
 ```
-Get-NetUDPEndpoint 53               ->  <self overlay ip>  by roomlerd     ← bound, correct address
+Get-NetUDPEndpoint 53               ->  <self overlay ip>  by meshharbord     ← bound, correct address
 Get-DnsClientNrptRule   (local)     ->  .<magic domain> -> <self ip>       ← we wrote it
 Get-DnsClientNrptPolicy -Effective  ->  0 rules                            ← nothing honours it
 Resolve-DnsName <peer>.<domain>     ->  NO ANSWER   (out-of-zone control: ok)
@@ -108,7 +108,7 @@ found why:
 | the host → `1.1.1.1`, `8.8.8.8` | **timeout** (dropped) |
 | the host's configured DNS | corporate `10.130.x.x` |
 
-`roomlerd` holds that socket and our resolver **never returns REFUSED** — it
+`meshharbord` holds that socket and our resolver **never returns REFUSED** — it
 answers in-zone from the map and forwards out-of-zone. So the host's own DNS
 packets never reach it: a corporate DNS-enforcement layer intercepts local DNS
 egress, dropping queries to public resolvers and refusing them to any
@@ -165,11 +165,11 @@ Three consequences, all observed:
 1. **MagicDNS dies at the first reconnect** and stays dead until the process
    restarts. On a host whose overlay churns — a corp VPN reaping routes, say —
    reconnects are frequent, so this is the normal state there, not a rare race.
-2. **`roomler status` reports whichever runtime's flag it reads**, so the same
+2. **`meshharbor status` reports whichever runtime's flag it reads**, so the same
    host showed `resolver DOWN` and `active` hours apart. That intermittency was
    the most misleading symptom (see #1363).
 3. **The survivor answers from the DEAD session's name map**, so names NXDOMAIN
-   while the port looks healthy — bound, owned by `roomlerd`, serving nothing
+   while the port looks healthy — bound, owned by `meshharbord`, serving nothing
    useful.
 
 ## The bug, part 2 — a failed bind was never retried (P2)
@@ -227,7 +227,7 @@ bind <self>:53 + SO_REUSEADDR  -> AddressAlreadyInUse (10048)
 ```
 
 `0.0.0.0:53` was held by a Windows service at the time, so that was blamed. It
-was not the cause: **the probe was colliding with `roomlerd`'s own resolver.**
+was not the cause: **the probe was colliding with `meshharbord`'s own resolver.**
 
 Re-measured properly during P2, on a host where Internet Connection Sharing
 (`SharedAccess`) holds `0.0.0.0:53` and nothing of ours held the port:
@@ -328,7 +328,7 @@ separate times.
 
 ## Open
 
-- **#1363** — `roomler status` said `active` over a resolver that had lost its
+- **#1363** — `meshharbor status` said `active` over a resolver that had lost its
   own bind race. ⚠️ Verifying the NRPT effective table would **not** have caught
   this; the check has to be *does our resolver answer*. Still open, and P2 adds a
   state it must now express: *retrying* is neither `active` nor a permanent

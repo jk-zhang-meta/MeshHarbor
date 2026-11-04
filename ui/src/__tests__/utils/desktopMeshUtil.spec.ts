@@ -23,7 +23,7 @@ interface MeshUtil {
 /** Run the classic-script text the way a <script src> would, and hand back
  *  the global it defines. */
 function load(text: string): MeshUtil {
-  return new Function(`${text}\nreturn RoomlerMesh;`)() as MeshUtil
+  return new Function(`${text}\nreturn MeshHarborMesh;`)() as MeshUtil
 }
 
 describe('desktop mesh-util.js', () => {
@@ -37,7 +37,7 @@ describe('desktop mesh-util.js', () => {
     ).toBe(fresh)
   })
 
-  it('defines window.RoomlerMesh with helpers that answer like mesh.ts', () => {
+  it('defines window.MeshHarborMesh with helpers that answer like mesh.ts', () => {
     const util = load(readFileSync(TARGET, 'utf8'))
     const ends = [
       { node: 'a', carrier: 'direct', rtt_ms: 4 },

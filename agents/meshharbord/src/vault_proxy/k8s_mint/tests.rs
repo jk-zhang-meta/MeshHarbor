@@ -67,10 +67,10 @@ async fn a_token_is_minted_bound_to_a_secret_made_for_its_lease() {
         let st = k.state();
         let held = st.secrets.get(&secret).expect("the lease's Secret is held");
         assert_eq!(m.uid, held.uid);
-        assert_eq!(held.labels, json!({"roomler.ai/lease": lease}));
+        assert_eq!(held.labels, json!({"meshharbor.itachi.fans/lease": lease}));
         assert_eq!(
             held.annotations,
-            json!({"roomler.ai/until": rfc3339(until)})
+            json!({"meshharbor.itachi.fans/until": rfc3339(until)})
         );
         let asked: Vec<(&str, &str)> = st
             .saw
@@ -82,7 +82,7 @@ async fn a_token_is_minted_bound_to_a_secret_made_for_its_lease() {
             [
                 (
                     "GET",
-                    "/api/v1/namespaces/hive-tokens/secrets?labelSelector=roomler.ai%2Flease"
+                    "/api/v1/namespaces/hive-tokens/secrets?labelSelector=meshharbor.itachi.fans%2Flease"
                 ),
                 ("POST", "/api/v1/namespaces/hive-tokens/secrets"),
                 (
@@ -228,24 +228,24 @@ async fn the_sweep_deletes_the_ended_secrets_a_mint_made_and_nothing_else() {
         format!("meshharbor-{}", lease()),
         format!("meshharbor-{}", lease()),
     );
-    let label = json!({"roomler.ai/lease": "an-earlier-lease"});
+    let label = json!({"meshharbor.itachi.fans/lease": "an-earlier-lease"});
     {
         let mut st = k.state();
         st.put(
             &ended,
             label.clone(),
-            json!({"roomler.ai/until": rfc3339(in_ms(-60))}),
+            json!({"meshharbor.itachi.fans/until": rfc3339(in_ms(-60))}),
         );
         st.put(
             &live,
             label.clone(),
-            json!({"roomler.ai/until": rfc3339(in_ms(600))}),
+            json!({"meshharbor.itachi.fans/until": rfc3339(in_ms(600))}),
         );
         st.put(&endless, label.clone(), json!({}));
         st.put(
             "app-config",
             label.clone(),
-            json!({"roomler.ai/until": rfc3339(in_ms(-60))}),
+            json!({"meshharbor.itachi.fans/until": rfc3339(in_ms(-60))}),
         );
     }
     let m = mint(&issuer(&k), &lease(), 60, in_ms(60)).await.unwrap();
@@ -271,8 +271,8 @@ async fn an_issuer_that_may_not_list_mints_with_no_sweep() {
         st.refuse_list = true;
         st.put(
             &ended,
-            json!({"roomler.ai/lease": "an-earlier-lease"}),
-            json!({"roomler.ai/until": rfc3339(in_ms(-60))}),
+            json!({"meshharbor.itachi.fans/lease": "an-earlier-lease"}),
+            json!({"meshharbor.itachi.fans/until": rfc3339(in_ms(-60))}),
         );
     }
     mint(&issuer(&k), &lease(), 60, in_ms(60)).await.unwrap();

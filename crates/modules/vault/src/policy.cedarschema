@@ -6,8 +6,8 @@
 // stored: a policy that names an attribute or an action this schema does
 // not have is refused, never kept to do nothing.
 
-namespace Roomler {
-  // A person in the organization, in one Group per roomler role they hold
+namespace MeshHarbor {
+  // A person in the organization, in one Group per meshharbor role they hold
   // (`owner`, `admin`, `member`, … and the organization's own).
   entity Group;
   entity User in [Group];
@@ -97,7 +97,7 @@ namespace Roomler {
   };
 
   // P3-9-1 — a PERSON using a secret through an endpoint their device serves
-  // them (`roomler connect`): always as a proxy, toward `audience`, the
+  // them (`meshharbor connect`): always as a proxy, toward `audience`, the
   // upstream the endpoint signs in to, for `ttl_s`, from `device`, whose
   // owner the person is — its row says so, never the request. A person's own
   // action: `secret:use` is a session's, so no policy written for sessions
@@ -138,7 +138,7 @@ namespace Roomler {
     },
   };
 
-  // P3-8 — a session running one command on `resource` over Roomler SSH, as
+  // P3-8 — a session running one command on `resource` over MeshHarbor SSH, as
   // `account`: the account that device's SSH policy maps (`daemon`,
   // `console_user` or `named`), read from its row, so an organization can
   // forbid a session the daemon's (SYSTEM or root). Never the device the

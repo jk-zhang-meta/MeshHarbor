@@ -1,6 +1,6 @@
 # FR-26 — Remote-desktop viewer: display name, quality-metric toggles, FSR default, settings reorg
 
-**Issue:** [#840](https://github.com/gjovanov/roomler-ai/issues/840)
+**Issue:** [#840](https://github.com/jk-zhang-meta/MeshHarbor/issues/840)
 **Status:** shipped in #845 — **field-verified 2026-08-29, all criteria met**
 
 > **Renumbered from FR-24.** #838 (licensing split) claimed FR-24 in the same
@@ -50,7 +50,7 @@ The toolbar readout grew one pill at a time until it was six wide:
 | pipeline diagnostics | `paint 0.3/0.4 · fwd 0.1/0.1 · dec …` |
 
 Each now has a checkbox in **Viewer settings → Metrics**, stored as one object
-under `roomler-rc-metrics`. **All default ON except `paint`** — the per-hop
+under `meshharbor-rc-metrics`. **All default ON except `paint`** — the per-hop
 numbers answer a question ("is this fps ceiling paint-, decode- or
 main-thread-bound?") that only matters while you are chasing it.
 
@@ -59,7 +59,7 @@ Two details worth keeping:
 - the fallback is **per key**, so an object written by an older build (fewer
   pills) keeps working and a newly added pill appears rather than silently
   reading `false`;
-- `paint` **inherits the legacy `roomler-rc-diag-hud=1` flag** on first read, so
+- `paint` **inherits the legacy `meshharbor-rc-diag-hud=1` flag** on first read, so
   anyone who set that undiscoverable knob by hand keeps their HUD; once the
   checkbox is used the stored object wins.
 
@@ -106,7 +106,7 @@ sections except the new Metrics pane; FSR stays in **Display**, where it belongs
 - **2026-08-28 — deployed and verified in the shipped bundle.** Prod
   `v20260828-f98ca7c0b356`, `/health` 200. The live `RemoteControl` chunk
   (`RemoteControl-AWwCL_GH.js`, reached from the current `index-peS0x4jI.js`)
-  carries `roomler-rc-metrics`, `roomler-rc-sharpen` and `display_name` — i.e.
+  carries `meshharbor-rc-metrics`, `meshharbor-rc-sharpen` and `display_name` — i.e.
   all four items are in the code the browser actually runs, not merely on
   master. ⚠️ This is a **deployment** check, not a field result: it proves the
   build reached prod, and says nothing about whether a renamed device reads
@@ -127,12 +127,12 @@ sections except the new Metrics pane; FSR stays in **Display**, where it belongs
   - **Tabs**: the dialog opens on `VIDEO · DISPLAY · METRICS · SESSION`.
   - **Metrics**: all six checkboxes present. `Pipeline diagnostics` read
     CHECKED, which looked wrong for one beat and is exactly right: stored
-    `roomler-rc-metrics` was **absent** while the legacy
-    `roomler-rc-diag-hud` was `"1"`, so `paint` inherited the hand-set flag as
+    `meshharbor-rc-metrics` was **absent** while the legacy
+    `meshharbor-rc-diag-hud` was `"1"`, so `paint` inherited the hand-set flag as
     designed. Unchecking `Bitrate` wrote the full object
     (`{codec,bitrate:false,fps,resolution,age,paint}`) and **survived a full
     page reload**.
-  - **FSR default**: with `roomler-rc-sharpen` REMOVED — i.e. a fresh profile —
+  - **FSR default**: with `meshharbor-rc-sharpen` REMOVED — i.e. a fresh profile —
     Display reads **ON** ("Always sharpen (AMD FSR), even at 1:1"). Proven from
     a clean slate rather than from a stored choice.
   - Every preference touched was restored to its original value afterwards.

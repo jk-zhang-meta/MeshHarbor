@@ -1,17 +1,17 @@
-# Implementation Plan: Daily Automated Health Check for Roomler AI
+# Implementation Plan: Daily Automated Health Check for MeshHarbor
 
 ## Requirements Restatement
 
-Replicate the same health check infrastructure from the lgr repo, adapted for roomler-ai's Rust/Axum/Vue 3/MongoDB stack:
+Replicate the same health check infrastructure from the lgr repo, adapted for meshharbor's Rust/Axum/Vue 3/MongoDB stack:
 
 1. **`CLAUDE.md`** — Project knowledge base (architecture, commands, patterns, known issues, health check results)
 2. **`.claude/skills/`** — Domain knowledge files (performance-patterns.md, security-patterns.md)
 3. **`.claude/daily-health-check-prompt.md`** — Self-contained health check prompt adapted from the template (Elysia→Axum, bun test→cargo test, etc.)
 4. **`.github/workflows/daily-health-check.yml`** — GitHub Actions workflow for automated daily execution
 
-## Key Differences from lgr (Elysia.js) → roomler-ai (Rust/Axum)
+## Key Differences from lgr (Elysia.js) → meshharbor (Rust/Axum)
 
-| Aspect | lgr | roomler-ai |
+| Aspect | lgr | meshharbor |
 |--------|-----|------------|
 | Backend | Elysia.js (Bun) | Rust (Axum 0.8) |
 | Backend test | `bun run test` | `cargo test -p meshharbor-tests` |
@@ -21,7 +21,7 @@ Replicate the same health check infrastructure from the lgr repo, adapted for ro
 | Dep outdated | `bun outdated` | `cargo outdated` (Rust) + `bun outdated` (UI) |
 | Frontend | Vue 3 + Vuetify 3 | Same |
 | DB | MongoDB (Mongoose) | MongoDB (native driver v3.2) |
-| Deploy | Docker Compose | Ansible → K8s (roomler-ai-deploy) |
+| Deploy | Docker Compose | Ansible → K8s (meshharbor-deploy) |
 | CI | None | None (creating new) |
 
 ## Phase 1: Create `CLAUDE.md`
@@ -29,7 +29,7 @@ Replicate the same health check infrastructure from the lgr repo, adapted for ro
 **File**: `<repo>/CLAUDE.md`
 
 Content sections (mirroring lgr's structure):
-- **Project Overview**: Roomler AI — real-time collaboration platform (chat, video conferencing, file sharing, rooms). Rust backend + Vue 3 frontend + MongoDB.
+- **Project Overview**: MeshHarbor — real-time collaboration platform (chat, video conferencing, file sharing, rooms). Rust backend + Vue 3 frontend + MongoDB.
 - **Commands**: cargo build, cargo test, cargo clippy, bun run dev, bun run build, bun run test:unit, bun run e2e, docker compose up -d
 - **Architecture**: 5-crate workspace (config, db, services, api, tests), crate dependency flow, ~75 API routes
 - **Crate Structure**: config → db → services → api; tests depends on api+config+db
@@ -40,7 +40,7 @@ Content sections (mirroring lgr's structure):
 - **Frontend Conventions**: Vue 3 + Vuetify 3 + Pinia (setup stores), TipTap editor, mediasoup WebRTC
 - **Test Setup**: Cargo integration tests (random DB per test), Vitest (1 spec), Playwright (18 specs)
 - **Environment**: docker-compose.yml (MongoDB:27019, Redis:6379, MinIO:9000, coturn)
-- **Deployment**: Docker multi-stage build → Ansible → K8s (roomler-ai-deploy repo)
+- **Deployment**: Docker multi-stage build → Ansible → K8s (meshharbor-deploy repo)
 - **Known Issues**: (initially populated with current findings from exploration)
 - **Last Health Check**: (placeholder for first run)
 
@@ -67,7 +67,7 @@ Heavily adapted from the template. Key adaptations:
 - Code smell scan: TODO/FIXME/HACK/XXX/SECURITY/UNSAFE in *.rs, *.ts, *.vue
 - Hardcoded secrets scan in *.rs, *.ts, *.vue, *.env*
 - Dockerfile base image check (rust:1.88-bookworm, oven/bun:1, debian:trixie-slim)
-- K8s manifest check in roomler-ai-deploy templates
+- K8s manifest check in meshharbor-deploy templates
 
 ### Phase 2 — Static Analysis & Type Safety
 - `cargo check --workspace` (compilation)
@@ -145,7 +145,7 @@ jobs:
         image: mongo:7
         ports: ['27019:27017']
         env:
-          MONGO_INITDB_ROOT_USERNAME: roomler
+          MONGO_INITDB_ROOT_USERNAME: meshharbor
           MONGO_INITDB_ROOT_PASSWORD: R00m1eR_5uper5ecretPa55word
       redis:
         image: redis:7-alpine

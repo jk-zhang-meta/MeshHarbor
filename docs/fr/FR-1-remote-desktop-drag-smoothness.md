@@ -1,14 +1,14 @@
 # FR-1: RustDesk-parity remote-desktop drag smoothness
 
 **Status:** phases P1–P4 shipped + field-verified; P2/P3 shipped, relay-gated after field
-read; P5 shipped in 0.4.4 (field gate pending); P6 + P7-HUD remaining. Tracking issue: `FR-1` in gjovanov/roomler-ai/issues.
+read; P5 shipped in 0.4.4 (field gate pending); P6 + P7-HUD remaining. Tracking issue: `FR-1` in jk-zhang-meta/MeshHarbor/issues.
 
 ## Goal
 
 Dragging a window on a remote screen through the browser viewer must feel as fast and
 smooth as RustDesk on the same pair — and better where our hardware allows. Reference
 field test (2026-08-26, neo16 → Rozalina, same LAN, direct): RustDesk H265 @ ~7 Mbps /
-29 fps felt instant; roomler hevc_qsv 2880×1800 @ "10 Mbps / 40 fps" felt sluggish,
+29 fps felt instant; meshharbor hevc_qsv 2880×1800 @ "10 Mbps / 40 fps" felt sluggish,
 bulky, with occasional freezes.
 
 ## Root cause (field-evidenced from the agent's own 2 s heartbeats)

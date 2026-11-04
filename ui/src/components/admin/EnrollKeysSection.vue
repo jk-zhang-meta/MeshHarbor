@@ -167,7 +167,7 @@
         </v-btn>
         <p class="text-caption text-medium-emphasis mt-3 mb-0">
           {{ $t('mh.ek.enrollWith') }}
-          <code>roomlerd enroll --server {{ origin }} --token &lt;key&gt; --name &lt;label&gt; --ephemeral</code>
+          <code>meshharbord enroll --server {{ origin }} --token &lt;key&gt; --name &lt;label&gt; --ephemeral</code>
         </p>
       </v-card-text>
       <v-card-actions>

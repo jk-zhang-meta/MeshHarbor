@@ -84,7 +84,7 @@
     "noAccount": "Don't have an account?",
     "hasAccount": "Already have an account?",
     "orRegisterWith": "Or register with",
-    "heardAbout": "How did you hear about Roomler?",
+    "heardAbout": "How did you hear about MeshHarbor?",
     "heardAboutHint": "Optional. It tells us which channels work.",
     "heardAboutOptions": {
       "search": "A search engine",
@@ -233,7 +233,7 @@
     "stop": "Stop",
     "stopMirroring": "Stop mirroring",
     "adopted": "Adopted",
-    "adoptedExplain": "A session you run in a terminal, mirrored here for you alone. It is read-only: nobody prompts it from Roomler.",
+    "adoptedExplain": "A session you run in a terminal, mirrored here for you alone. It is read-only: nobody prompts it from MeshHarbor.",
     "empty": {
       "title": "No agent sessions yet",
       "body": "Start one on a device whose owner has turned agent sessions on (hive_enabled). It runs there, as the account the device maps you to, and its transcript stays on the device."
@@ -309,7 +309,7 @@
       "askPlaceholder": "Ask the agent…",
       "askFailed": "The prompt did not reach the agent.",
       "readOnly": "You can read this session and talk in its room. Only its drivers can prompt the agent.",
-      "adoptedReadOnly": "This session runs in a terminal on its device, so it is read-only here: nobody prompts it from Roomler.",
+      "adoptedReadOnly": "This session runs in a terminal on its device, so it is read-only here: nobody prompts it from MeshHarbor.",
       "copyReadOnly": "You are reading a copy another device holds, because the device that runs this session cannot serve it now. It is read-only: only that device takes prompts.",
       "drivingRefused": "You drive this session, but its device does not let you act there: {why}",
       "approval": {
@@ -456,7 +456,7 @@
     "manage": {
       "button": "Make it managed",
       "title": "Make it a managed session",
-      "explain": "Its terminal session ended. Roomler can carry it on as a managed session on {device}: the same conversation, resumed from its terminal's own history, then run, copied and driven like any session started here.",
+      "explain": "Its terminal session ended. MeshHarbor can carry it on as a managed session on {device}: the same conversation, resumed from its terminal's own history, then run, copied and driven like any session started here.",
       "folder": "Folder on {device}",
       "folderHint": "Where its terminal ran, unless you name another",
       "submit": "Make it managed",
@@ -1483,7 +1483,7 @@
       "unanchor": "Un-anchor",
       "notAnchored": "Not anchored: commands run as the {signedIn} (an attended install) or as SYSTEM (SystemContext mode). To run them as SYSTEM, on the device, from an elevated prompt:",
       "accept": "Accept remote commands on this device",
-      "originate": "Allow this device to run commands on OTHER devices (roomler exec)",
+      "originate": "Allow this device to run commands on OTHER devices (meshharbor exec)",
       "originateHint": "Off by default. Without it, a compromised copy of this device could use its owner's permissions across the whole fleet.",
       "runAs": "Run commands as",
       "runAsWin": "{system} is the default. {signedIn} runs each command as whoever is signed in at the console, and is refused when nobody is. Both go through the device's service, so the device must be anchored.",
@@ -1610,8 +1610,8 @@
       "days": "{n} d",
       "hours": "{n} h",
       "tooltip": "v{version} is {behind} behind: {first} came out {ago} ago and this device, online, has not installed it.",
-      "remedyLinux": "A per-user Linux install made before 0.4.138 cannot install updates by itself. Install the current release on it once (sudo apt install ./meshharbord.deb, the Software app, or a re-run of the install script), and it updates itself from then on. On a system install that stopped, check auto_update in 'roomler config ls' and the log ('roomler logs --grep update') on it.",
-      "remedyOther": "Check auto_update in 'roomler config ls' and the log ('roomler logs --grep update') on it."
+      "remedyLinux": "A per-user Linux install made before 0.4.138 cannot install updates by itself. Install the current release on it once (sudo apt install ./meshharbord.deb, the Software app, or a re-run of the install script), and it updates itself from then on. On a system install that stopped, check auto_update in 'meshharbor config ls' and the log ('meshharbor logs --grep update') on it.",
+      "remedyOther": "Check auto_update in 'meshharbor config ls' and the log ('meshharbor logs --grep update') on it."
     },
     "cred": {
       "today": "credential expires today",
@@ -1777,7 +1777,7 @@
       },
       "offDeviceGate": "Off by default. Turning it on does not enable any device on its own — each device must also be allowed individually, and the device's own {setting} setting must permit it.",
       "ssh": {
-        "title": "Roomler SSH",
+        "title": "MeshHarbor SSH",
         "warn": "When enabled, users holding the {perm} permission can open an interactive shell on devices that individually opt in. A session lasts, unlike a single command — and which account it runs as is set per device.",
         "allow": "Allow SSH sessions in this organization"
       },
@@ -2007,11 +2007,11 @@
       },
       "SSH_DEVICE": {
         "label": "SSH to devices",
-        "description": "Open an interactive roomler SSH session to a device. Strictly more than a single command: it lasts, and it carries file transfer."
+        "description": "Open an interactive meshharbor SSH session to a device. Strictly more than a single command: it lasts, and it carries file transfer."
       },
       "VIEW_SSH_AUDIT": {
         "label": "View SSH audit log",
-        "description": "Read the roomler-SSH audit trail — who was granted, or refused, a session."
+        "description": "Read the meshharbor-SSH audit trail — who was granted, or refused, a session."
       },
       "RECORD_REMOTE_SCREEN": {
         "label": "Record remote screens",
@@ -2092,7 +2092,7 @@
       "ssh": {
         "title": "SSH audit",
         "subtitle": "Every SSH session requested on this organization's devices — including the ones that were refused. Retained for 90 days.",
-        "info": "These are access {decisions}, not session recordings. Roomler SSH runs peer-to-peer over the mesh, so the server sees who was allowed in and as which account — never what was typed.",
+        "info": "These are access {decisions}, not session recordings. MeshHarbor SSH runs peer-to-peer over the mesh, so the server sees who was allowed in and as which account — never what was typed.",
         "decisions": "decisions",
         "empty": "No SSH sessions have been requested yet."
       },
@@ -2127,7 +2127,7 @@
     "console": {
       "title": "Device console — {name}",
       "close": "Close",
-      "warn": "Commands run with the Roomler daemon's privileges: {root} on Linux. On Windows they run as the {user} on an attended install, or as {system} in SystemContext mode. Every attempt is recorded in the org's execution audit log.",
+      "warn": "Commands run with the MeshHarbor daemon's privileges: {root} on Linux. On Windows they run as the {user} on an attended install, or as {system} in SystemContext mode. Every attempt is recorded in the org's execution audit log.",
       "shell": "Shell",
       "timeout": "Timeout (s)",
       "command": "Command",
@@ -2160,8 +2160,8 @@
       "hintMachine": "Machine-wide service that runs while a user is logged in.",
       "hintUser": "Installs and autostarts for your account only — no admin rights needed.",
       "anchorLabel": "Also let administrators run commands as SYSTEM on this device",
-      "anchorHint": "The token can then also anchor the device it enrolls, once. Roomler Setup does that itself after a second administrator prompt; after the script or a manual install, run the anchor command below. Give this token only to the person installing it as an administrator.",
-      "download": "Download Roomler Setup",
+      "anchorHint": "The token can then also anchor the device it enrolls, once. MeshHarbor Setup does that itself after a second administrator prompt; after the script or a manual install, run the anchor command below. Give this token only to the person installing it as an administrator.",
+      "download": "Download MeshHarbor Setup",
       "thenPaste": "then paste the token into the wizard",
       "close": "Close"
     },
@@ -2169,7 +2169,7 @@
       "oneLine": "Recommended — one-line install",
       "oneLinePs": "Recommended — one-line install (PowerShell)",
       "manual": "Already installed? Enroll manually",
-      "wizard": "Graphical installer (Roomler Setup)",
+      "wizard": "Graphical installer (MeshHarbor Setup)",
       "anchor": "Then anchor it, from the same Administrator PowerShell (replace {placeholder} with the id on the device's page)",
       "noteWindows": "Machine-wide install — run the commands below from an Administrator PowerShell (Terminal (Admin)).",
       "noteLinux": "Installs a root systemd system service (sudo will prompt). Screen capture needs a logged-in session — pick 'This user only' for desktops.",
@@ -2245,8 +2245,8 @@
     },
     "news": {
       "getUpdates": "Get product updates",
-      "blurbTo": "Roomler Field Notes — never more than monthly, one-click unsubscribe, straight to {email}.",
-      "blurb": "Roomler Field Notes — never more than monthly, one-click unsubscribe.",
+      "blurbTo": "MeshHarbor Field Notes — never more than monthly, one-click unsubscribe, straight to {email}.",
+      "blurb": "MeshHarbor Field Notes — never more than monthly, one-click unsubscribe.",
       "keepPosted": "Keep me posted",
       "noThanks": "No thanks",
       "subscribedToast": "Subscribed — product updates only, never more than monthly",
@@ -2387,11 +2387,11 @@
     },
     "nl": {
       "confirmTitle": "One click to confirm",
-      "confirmBody": "Confirm you want Roomler product updates at this address. Never more than monthly, one-click unsubscribe in every email.",
+      "confirmBody": "Confirm you want MeshHarbor product updates at this address. Never more than monthly, one-click unsubscribe in every email.",
       "confirmBtn": "Confirm my subscription",
       "onList": "You're on the list",
       "onListBody": "Thanks for confirming. Product updates only, never more than monthly — and a one-click unsubscribe in every email.",
-      "home": "Go to roomler.ai",
+      "home": "Go to meshharbor.itachi.fans",
       "badLink": "That link didn't work",
       "badLinkBody": "It may already have been used — if you confirmed before, you're set. Otherwise you can sign up again from the home page.",
       "noServer": "Could not reach the server",

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 G ROX EOOD
-//! FR-105 — roomler SSH through a Windows device's SYSTEM service, the
+//! FR-105 — meshharbor SSH through a Windows device's SYSTEM service, the
 //! server's half.
 //!
 //! The device is a RAW agent socket (the test crate builds the agent without
@@ -304,7 +304,7 @@ async fn request_session(app: &TestApp, seeded: &SeededTenant, agent_id: &str) -
             .unwrap();
         let unsupported = body["error"]
             .as_str()
-            .is_some_and(|e| e.contains("does not support roomler SSH"));
+            .is_some_and(|e| e.contains("does not support meshharbor SSH"));
         if !unsupported {
             return body;
         }

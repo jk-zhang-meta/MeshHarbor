@@ -1,6 +1,6 @@
 # FR-113: A system install on an X11 desktop shows it by default — FR-95's plan for X11 seats
 
-**Issue:** [#2458](https://github.com/gjovanov/roomler-ai/issues/2458) · **Status:** ✅ **closed 2026-10-19, every
+**Issue:** [#2458](https://github.com/jk-zhang-meta/MeshHarbor/issues/2458) · **Status:** ✅ **closed 2026-10-19, every
 criterion ticked**. Proposed 2026-10-18, spec and claim, on the operator's go-ahead (*"5. yes"*) from #2450. P1 + P2
 (D1–D3 as recommended, docs in the same change) were **released in 0.4.144**, whose release run (§8) ticked AC1, AC2,
 AC4, AC5, AC6 and AC7. On 0.4.144 AC3 passed lock, unlock and both user switches but failed the logout, because the
@@ -178,7 +178,7 @@ flowchart LR
   told they are being viewed…*, with the code `x11_not_enabled`.
 - [x] **AC6** — An idle X11 desktop through DRM costs within 2× of FR-29's X11 figure.
   ✅ **On the candidate** (§8; `linux-capture.md` §3.2). An idle GNOME/Xorg desktop, two 60 s windows, every
-  `roomlerd` process: **5.5 % and 5.5 %** of a core, inside 6.8 %. Every frame read (`MESHHARBORD_DRM_IDLE_SKIP=0`)
+  `meshharbord` process: **5.5 % and 5.5 %** of a core, inside 6.8 %. Every frame read (`MESHHARBORD_DRM_IDLE_SKIP=0`)
   costs 46.3 % and 46.5 %.
   ✅ **On the release 0.4.144** (2026-10-19, the release's full feature set, `ffmpeg-encoder` included):
   **6.1 % and 6.1 %** of a core, inside 6.8 %. All 268 samples had a picture.
@@ -224,7 +224,7 @@ flowchart LR
 | 2026-10-19 08:52Z | the same, `MESHHARBORD_VIEWING_NOTICE=0` (proven in the unit's environment) | the release | AC5 | ✅ `code="x11_not_enabled"`, and the hint on prod's viewer |
 | 2026-10-19 08:56Z | the same, `MESHHARBORD_X11_AUTO_SYSTEM=0` (proven) | the release | AC4: the kill switch | ✅ no picture, `code="no_display"`, reach `none` |
 | 2026-10-19 08:58Z | the same, GDM back on Wayland, the drop-in removed | the release | AC4: Wayland unchanged; #2473 on Wayland | ✅ FR-95's plan, `idle_skip=Flips`, 64/64 samples with a picture; the brief `kind=wayland capture_arm=drm input_reach=full` |
-| 2026-10-19 09:04–09:10Z | the GNOME cell back on Xorg (auto-login), the release kept as `/usr/bin/roomlerd.rel` | **candidate `73539996e` (P4)**, the release's Linux features minus `ffmpeg-encoder`, sha256 `17463b8a…`, re-enrolled on defaults | AC3: logout, then a typed login; then a new viewer session | ✅ `verdict.py` PASS 2/2. The guard: `closing=true` 29 ms after `terminate-session`, before Xorg exited; nothing read after (the encoder's last window ended 09:05:49.15); named +2.5 s; one black transition frame from those 29 ms. GDM hung 90 s again, and the viewer said why throughout. The typed login went through once the greeter was up; a new viewer session bound to it: 34/34 samples with a picture, the pointer (100,100) → (716,448) |
+| 2026-10-19 09:04–09:10Z | the GNOME cell back on Xorg (auto-login), the release kept as `/usr/bin/meshharbord.rel` | **candidate `73539996e` (P4)**, the release's Linux features minus `ffmpeg-encoder`, sha256 `17463b8a…`, re-enrolled on defaults | AC3: logout, then a typed login; then a new viewer session | ✅ `verdict.py` PASS 2/2. The guard: `closing=true` 29 ms after `terminate-session`, before Xorg exited; nothing read after (the encoder's last window ended 09:05:49.15); named +2.5 s; one black transition frame from those 29 ms. GDM hung 90 s again, and the viewer said why throughout. The typed login went through once the greeter was up; a new viewer session bound to it: 34/34 samples with a picture, the pointer (100,100) → (716,448) |
 | 2026-10-19 09:10–09:14Z | the same, the new login, the probe restarted | the same | AC3 regression: lock, unlock, both user switches | ✅ 7/7 PASS: lock named +2.5 s, unlock live +2.1 s, switch-user named +2.9 s, switch-back live +1.9 s, lock-switch named +2.9 s, switch-back (still locked) named +0.0 s, unlock live +2.2 s; no new picture inside any lock or greeter window |
 | 2026-10-19 12:22–12:30Z | a fresh kept GNOME/Xorg cell (auto-login), cloned after deploy#44 (a guest `sudo` no longer costs 15 s) | **the 0.4.145 candidate** (run 39248610025, the `.deb` `8027436957b5dd33`, binary `07412c9f…`), re-enrolled on defaults | AC3 before the tag: logout, typed login, a new viewer, the regression | ✅ logout + login `verdict.py` PASS (`closing=true` at the logout's second, named +2.4 s); a new viewer on the new login: (100,100) → (716,448); the regression 7/7 PASS |
 | 2026-10-19 13:00–13:09Z | a fresh cell the lane installed **the published 0.4.145** on (served installer, its eleven checks green), GDM switched to Xorg with auto-login, re-enrolled on defaults | **the release 0.4.145** (binary `07412c9f…`; its `.deb` bit-identical to the candidate's) | AC3 on the release | ✅ logout: `closing=true` at 13:02:09.734, named +2.6 s, nothing new through GDM's 90 s hang or its greeter; typed login (session 36): a new viewer with picture and input (100,100) → (716,448); the regression 7/7 PASS (named +2.9 / +3.0 / +2.9 / +0.0 s, live +2.0 / +1.9 / +2.2 s) |

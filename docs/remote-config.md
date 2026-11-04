@@ -5,7 +5,7 @@ option **C** from the fork in §7b — `exec_enabled` is live, `ssh_*` are
 persisted and honestly reported as needing a restart. Option **A**
 (supervisor-detected exit-to-restart) now exists **for the LOCAL path only**
 (FR-84 D3: the LocalAPI's `RestartDaemon`, the companion's "Apply now",
-`roomler restart`); remote configuration still never restarts a daemon, and
+`meshharbor restart`); remote configuration still never restarts a daemon, and
 §7b records why both halves of that are deliberate.
 
 This documents a design and the reasoning that constrains it. Claims about
@@ -14,7 +14,7 @@ says where a check would need repeating.
 
 ## 1. The problem
 
-Turning on `roomler exec` or roomler SSH for a device today means editing
+Turning on `meshharbor exec` or meshharbor SSH for a device today means editing
 `config.toml` on that host by hand and restarting the daemon. For one machine
 that is fine. For a fleet it is the reason both features are still off nearly
 everywhere: the last gate is the one nobody can reach.
@@ -220,7 +220,7 @@ registered once per process; audited like the rest. Unset on the device denies
 nothing, so `none` is how a push says the same thing while a blank box hands the
 key back to the device. A pushed value is not validated by the server, as with
 `encoder_cells_deny`: an entry the device cannot parse is skipped, never widened
-into a match, and `roomler config set fps_deny` refuses it locally.
+into a match, and `meshharbor config set fps_deny` refuses it locally.
 
 ## 7. What this does not do
 
@@ -254,7 +254,7 @@ install* (the `.deb` postinst, the MSI), not something callable.
 three platforms** — systemd `Restart=always`, the Windows supervisor's
 `ExitReaction::Respawn`, launchd `KeepAlive` — **and the daemon cannot currently
 tell whether it is supervised.** Nothing in the tree checks `INVOCATION_ID` or
-equivalent. Orphan `roomlerd run` processes demonstrably exist in the field (the
+equivalent. Orphan `meshharbord run` processes demonstrably exist in the field (the
 pre-rc.435 hosts). A fleet-wide config push that exits them would take every one
 **permanently offline**, which is a far worse outcome than the manual edit this
 feature exists to remove.
@@ -306,15 +306,15 @@ silently.
 ### A, built — for the local path only (FR-84 D3, 2026-09-25)
 
 Option A now exists, as the LocalAPI verb `RestartDaemon`: the desktop
-companion's **Apply now** and `roomler restart` ask the daemon to exit so its
+companion's **Apply now** and `meshharbor restart` ask the daemon to exit so its
 supervisor relaunches it. Every objection above got an answer rather than a
 waiver, and one did not — which is why remote configuration still does not use
 it.
 
 ```mermaid
 flowchart TD
-    Ask["RestartDaemon over the LocalAPI<br/>(companion Apply now · roomler restart)"] --> Sup{"supervisor PROVEN<br/>at startup?"}
-    Sup -- "none (orphan roomlerd run)" --> R1["refuse — exiting would take<br/>the device offline"]
+    Ask["RestartDaemon over the LocalAPI<br/>(companion Apply now · meshharbor restart)"] --> Sup{"supervisor PROVEN<br/>at startup?"}
+    Sup -- "none (orphan meshharbord run)" --> R1["refuse — exiting would take<br/>the device offline"]
     Sup -- "scm · task · systemd · launchd · FR-43" --> On{"local_restart_enabled<br/>(read from the file)"}
     On -- off --> R2[refuse]
     On -- on --> Rate{"last accepted restart<br/>≥ 30 s ago? (record on disk)"}
@@ -330,7 +330,7 @@ flowchart TD
 | objection (§7b, above) | answer in D3 |
 |---|---|
 | **The daemon cannot tell whether it is supervised.** | `supervision::detect` decides once at startup, from evidence only a supervisor leaves: the SCM host and the Scheduled Task pass a hidden `run --supervisor scm\|task`; the FR-43 root daemon passes `--supervised`; launchd sets `XPC_SERVICE_NAME` to one of our `fans.itachi.meshharbor.*` labels; systemd sets `INVOCATION_ID` **and** the process sits in one of our units' cgroups (the id alone is inherited by every shell under GNOME Terminal). Never the config file. Anything else is `none`. |
-| **Orphan `roomlerd run` processes exist.** | `none` always refuses. A pre-rc.435 root daemon, a hand-run process, a container's PID 1 — none of them is ever asked to exit. |
+| **Orphan `meshharbord run` processes exist.** | `none` always refuses. A pre-rc.435 root daemon, a hand-run process, a container's PID 1 — none of them is ever asked to exit. |
 | **systemd: what if the unit does not restart?** | Before accepting, the daemon asks systemd itself (`systemctl show`: `MainPID`, `Restart`, `RestartPreventExitStatus`, `RestartForceExitStatus`, `SuccessExitStatus`) and mirrors `service_shall_restart`: this pid must be the unit's main process, and the effective policy — drop-ins included — must restart exit status 9. Any failure to get that answer is a refusal. |
 | **The Windows respawn has zero backoff** (`decide_exit_reaction` maps 0 to `Respawn`). | Exactly what ONE deliberate restart wants, so an SCM worker exits **0**. A loop is impossible because the verb refuses a second request within 30 s of the last *accepted* one, and that record lives on disk beside the config — it binds the relaunched process too. At most one restart per 30 s, whatever a client does. |
 | **A restart must not look like a crash.** | It rides the internal-shutdown path the auto-updater already uses: `mark_clean_shutdown`, the runtime torn down as for an update, then the exit code. The SCM supervisor also maps the sentinel 9 to `Respawn` and records no crash for it. |
@@ -354,7 +354,7 @@ old value), or need its own reporting for a state that has no local person to
 read it. And a server able to restart daemons holds every device's uptime on a
 button, which is the same compromise this document exists to refuse for
 `exec_enabled`. So a pushed key stays `applied-pending-restart` until someone at
-the device applies it — or an operator runs `roomler exec … -- roomler restart`,
+the device applies it — or an operator runs `meshharbor exec … -- meshharbor restart`,
 which needs every one of exec's four gates, the device's own `exec_enabled`
 included (exec already runs anything as root, so it grants nothing new), and
 which the daemon still refuses on the same terms as a local request.
@@ -414,7 +414,7 @@ which the daemon still refuses on the same terms as a local request.
   reported as such rather than pretended into effect.
 - **A server-side restart verb.** A server able to restart daemons would hold
   every device's uptime on a button, and the devices that could not come back
-  (orphan `roomlerd run` hosts) are exactly the ones it could not see. The
+  (orphan `meshharbord run` hosts) are exactly the ones it could not see. The
   local verb refuses those; there is nothing for a server to send.
 - **Secondary-org control** (§4). A borrowed device is not yours to
   reconfigure; the UI says so instead of showing a switch that does nothing.

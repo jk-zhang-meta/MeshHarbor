@@ -5,7 +5,7 @@
  *
  * Until this, `ui/index.html` carried purestat's tag outright, so every
  * self-hosted install, every fork and every `localhost` dev or test run
- * beaconed to purestat.ai as `roomler.ai`: measured over 90 days, 42 % of
+ * beaconed to purestat.ai as `meshharbor.itachi.fans`: measured over 90 days, 42 % of
  * the site's events came from loopback and private hosts or other domains.
  * It also contradicted `LICENSING.md`'s promise that a self-hosted deployment
  * sends no telemetry.
@@ -33,15 +33,15 @@
 export const ANALYTICS_SRC = 'https://purestat.ai/js/purestat.js'
 
 /** The purestat site the events belong to. */
-export const ANALYTICS_DOMAIN = 'roomler.ai'
+export const ANALYTICS_DOMAIN = 'meshharbor.itachi.fans'
 
 /**
- * Where the tracker may load. Exact hostnames: `app.roomler.ai` is not on
+ * Where the tracker may load. Exact hostnames: `app.meshharbor.itachi.fans` is not on
  * it, nor a fork, a staging origin, a self-hosted install or `localhost`,
  * and that is the point. An empty list loads it nowhere — the SPA's kill
  * switch; the static site's is `ANALYTICS = null` in `ui/docs/site.ts`.
  */
-export const ANALYTICS_HOSTS: readonly string[] = ['roomler.ai', 'www.roomler.ai']
+export const ANALYTICS_HOSTS: readonly string[] = ['meshharbor.itachi.fans', 'www.meshharbor.itachi.fans']
 
 /** What the decision reads: `location.hostname`, `location.protocol` and
  *  `navigator.webdriver`. */

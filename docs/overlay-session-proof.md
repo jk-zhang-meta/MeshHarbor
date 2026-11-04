@@ -24,7 +24,7 @@
 One mechanism explains two long-standing user reports:
 
 - *"When the Windows logon screen is shown, the overlay stops working."*
-- *"When winhost-a connects to the corporate VPN, roomlerd gets restarted."*
+- *"When winhost-a connects to the corporate VPN, meshharbord gets restarted."*
 
 The Windows agent is **two processes from one EXE**: the SCM runs
 `meshharbord.exe service-run` (LocalSystem, session 0 — the *supervisor*), which
@@ -84,14 +84,14 @@ Move the runtime into `service-run` itself (session 0, LocalSystem).
   replaces the worker binary on disk; an in-supervisor overlay means the
   updater restarts the network plane with itself.
 
-### B. A third child: `roomlerd netd` (RECOMMENDED)
+### B. A third child: `meshharbord netd` (RECOMMENDED)
 
 The supervisor spawns **two** children with independent lifecycles:
 
 ```mermaid
 flowchart TB
-    SCM[SCM service<br/>roomlerd service-run<br/>LocalSystem, session 0] --> NETD[netd child<br/>roomlerd netd<br/>LocalSystem, session 0<br/>control WS + overlay + LocalAPI + DNS]
-    SCM --> WORKER[session worker<br/>roomlerd run --rc-only<br/>console session, follows session events<br/>capture + input + companion]
+    SCM[SCM service<br/>meshharbord service-run<br/>LocalSystem, session 0] --> NETD[netd child<br/>meshharbord netd<br/>LocalSystem, session 0<br/>control WS + overlay + LocalAPI + DNS]
+    SCM --> WORKER[session worker<br/>meshharbord run --rc-only<br/>console session, follows session events<br/>capture + input + companion]
     NETD <-->|localhost IPC<br/>signalling relay + state| WORKER
 ```
 
@@ -110,7 +110,7 @@ flowchart TB
 
 ### C. Two SCM services
 
-A separate `RoomlerNet` Windows service beside `Roomler`.
+A separate `MeshHarborNet` Windows service beside `MeshHarbor`.
 
 - ➕ Cleanest OS-level isolation; SCM restarts each independently.
 - ➖ Doubles the install/upgrade/ACL surface (two services in the MSI, two

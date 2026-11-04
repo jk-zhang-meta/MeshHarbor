@@ -407,8 +407,8 @@ mod tests {
     #[test]
     fn derp_url_swaps_ws_for_derp() {
         assert_eq!(
-            derp_url_from_ws("wss://roomler.ai/ws"),
-            "wss://roomler.ai/derp"
+            derp_url_from_ws("wss://meshharbor.itachi.fans/ws"),
+            "wss://meshharbor.itachi.fans/derp"
         );
         assert_eq!(
             derp_url_from_ws("ws://localhost:3000/ws"),

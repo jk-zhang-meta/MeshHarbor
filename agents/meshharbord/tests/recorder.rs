@@ -740,7 +740,7 @@ async fn a_recording_without_audio_has_no_audio_track() {
     assert!(pf.samples(AUDIO_TRACK_ID).is_err() || pf.samples(AUDIO_TRACK_ID).unwrap().is_empty());
 }
 
-// ── the real `roomlerd record` process ──────────────────────────────────────
+// ── the real `meshharbord record` process ──────────────────────────────────────
 
 #[cfg(feature = "synthetic-frame-source")]
 mod process {
@@ -762,7 +762,7 @@ mod process {
     }
 
     fn spawn_with(out: &Path, extra_args: &[&str], extra_env: &[(&str, &str)]) -> Rec {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_roomlerd"))
+        let mut child = Command::new(env!("CARGO_BIN_EXE_meshharbord"))
             .args(["record", "--encoder", "software", "--fps", "30", "--out"])
             .arg(out)
             .args(extra_args)
@@ -776,7 +776,7 @@ mod process {
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
             .spawn()
-            .expect("spawn roomlerd record");
+            .expect("spawn meshharbord record");
         let stdout = child.stdout.take().unwrap();
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
@@ -982,7 +982,7 @@ mod process {
     }
 
     /// P2a — the daemon's side, end to end: the manager launches the real
-    /// `roomlerd record` into the configured `record_dir`, answers `start`
+    /// `meshharbord record` into the configured `record_dir`, answers `start`
     /// once encoding began, refuses a second one, answers `stop` once the
     /// file is final, lists it from its sidecar, and deletes it by name only.
     /// The manager tests share the process-wide "a recording is running" mark
@@ -1002,7 +1002,7 @@ mod process {
         cfg.record_dir = Some(out.to_string_lossy().into_owned());
         meshharbor_node_core::config::save(&cfg_path, &cfg).unwrap();
 
-        let m = RecordingManager::new(PathBuf::from(env!("CARGO_BIN_EXE_roomlerd")), cfg_path)
+        let m = RecordingManager::new(PathBuf::from(env!("CARGO_BIN_EXE_meshharbord")), cfg_path)
             .with_service_identity(false)
             .with_child_env([("MESHHARBORD_SYNTHETIC_FRAMES", "1")]);
         let software = || RecordStartOpts {
@@ -1082,7 +1082,7 @@ mod process {
         let mut cfg = meshharbor_node_core::config::test_fixture();
         cfg.record_dir = Some(out.to_string_lossy().into_owned());
         meshharbor_node_core::config::save(&cfg_path, &cfg).unwrap();
-        let m = RecordingManager::new(PathBuf::from(env!("CARGO_BIN_EXE_roomlerd")), cfg_path)
+        let m = RecordingManager::new(PathBuf::from(env!("CARGO_BIN_EXE_meshharbord")), cfg_path)
             .with_service_identity(false)
             .with_child_env([("MESHHARBORD_SYNTHETIC_FRAMES", "1")])
             // Far shorter than a process spawn: the deadline always wins.
@@ -1342,7 +1342,7 @@ mod process {
         let whoami = |identity: Identity| async move {
             let l = launch::spawn(
                 identity,
-                Path::new(env!("CARGO_BIN_EXE_roomlerd")),
+                Path::new(env!("CARGO_BIN_EXE_meshharbord")),
                 &["record".into(), "--whoami".into()],
                 &[],
             )
@@ -1420,7 +1420,7 @@ mod process {
         let mut cfg = meshharbor_node_core::config::test_fixture();
         cfg.record_dir = Some(out.to_string_lossy().into_owned());
         meshharbor_node_core::config::save(&cfg_path, &cfg).unwrap();
-        let exe = PathBuf::from(env!("CARGO_BIN_EXE_roomlerd"));
+        let exe = PathBuf::from(env!("CARGO_BIN_EXE_meshharbord"));
         let manager = || {
             RecordingManager::new(exe.clone(), cfg_path.clone())
                 .with_identity(Ok(identity))

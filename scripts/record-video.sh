@@ -1,5 +1,5 @@
 #!/bin/bash
-# Record and convert the Roomler intro video
+# Record and convert the MeshHarbor intro video
 #
 # Prerequisites:
 #   - API running (cargo run) at port 5001
@@ -27,7 +27,7 @@ if [ -d "$HOME/.local/share/fnm" ]; then
   fnm use --install-if-missing lts 2>/dev/null || fnm use default 2>/dev/null
 fi
 
-echo "=== Roomler Intro Video Recording ==="
+echo "=== MeshHarbor Intro Video Recording ==="
 echo "Node: $(which node) ($(node -e 'console.log(process.version)'))"
 echo ""
 
@@ -43,7 +43,7 @@ E2E_BASE_URL="${E2E_BASE_URL:-http://localhost:5000}" E2E_API_URL="${E2E_API_URL
   --reporter=list 2>&1 || true
 
 # Check for the saved WebM
-WEBM_FILE="$OUTPUT_DIR/roomler-intro.webm"
+WEBM_FILE="$OUTPUT_DIR/meshharbor-intro.webm"
 
 if [ ! -f "$WEBM_FILE" ]; then
   echo "ERROR: No video file found at $WEBM_FILE"
@@ -54,7 +54,7 @@ fi
 echo "Found recording: $WEBM_FILE ($(du -h "$WEBM_FILE" | cut -f1))"
 
 # Convert to MP4 with ffmpeg, optionally mixing in background music
-MP4_FILE="$OUTPUT_DIR/roomler-intro.mp4"
+MP4_FILE="$OUTPUT_DIR/meshharbor-intro.mp4"
 
 if command -v ffmpeg &>/dev/null; then
   if [ -f "$MUSIC_FILE" ]; then

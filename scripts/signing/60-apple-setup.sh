@@ -32,7 +32,7 @@
 
 set -euo pipefail
 
-REPO="${REPO:-gjovanov/roomler-ai}"
+REPO="${REPO:-jk-zhang-meta/MeshHarbor}"
 OUTDIR="${OUTDIR:-$(cd "$(dirname "$0")" && pwd)/apple}"
 CERT_PASSWORD="${CERT_PASSWORD:-}"
 

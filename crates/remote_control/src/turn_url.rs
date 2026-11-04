@@ -198,14 +198,14 @@ mod tests {
     #[test]
     fn legacy_six_variant_golden() {
         assert_eq!(
-            expand_turn_url("turn:coturn.roomler.live:3478", &VariantCaps::default()),
+            expand_turn_url("turn:coturn.meshharbor.itachi.fans:3478", &VariantCaps::default()),
             vec![
-                "turn:coturn.roomler.live:3478",
-                "turn:coturn.roomler.live:443?transport=udp",
-                "turn:coturn.roomler.live:3478?transport=tcp",
-                "turns:coturn.roomler.live:5349?transport=tcp",
-                "turns:coturn.roomler.live:443?transport=udp",
-                "turns:coturn.roomler.live:443?transport=tcp",
+                "turn:coturn.meshharbor.itachi.fans:3478",
+                "turn:coturn.meshharbor.itachi.fans:443?transport=udp",
+                "turn:coturn.meshharbor.itachi.fans:3478?transport=tcp",
+                "turns:coturn.meshharbor.itachi.fans:5349?transport=tcp",
+                "turns:coturn.meshharbor.itachi.fans:443?transport=udp",
+                "turns:coturn.meshharbor.itachi.fans:443?transport=tcp",
             ]
         );
     }
@@ -214,12 +214,12 @@ mod tests {
     #[test]
     fn media_subset_golden() {
         assert_eq!(
-            expand_turn_url("turn:coturn.roomler.live:3478", &VariantCaps::media()),
+            expand_turn_url("turn:coturn.meshharbor.itachi.fans:3478", &VariantCaps::media()),
             vec![
-                "turn:coturn.roomler.live:3478",
-                "turn:coturn.roomler.live:443?transport=udp",
-                "turn:coturn.roomler.live:3478?transport=tcp",
-                "turns:coturn.roomler.live:5349?transport=tcp",
+                "turn:coturn.meshharbor.itachi.fans:3478",
+                "turn:coturn.meshharbor.itachi.fans:443?transport=udp",
+                "turn:coturn.meshharbor.itachi.fans:3478?transport=tcp",
+                "turns:coturn.meshharbor.itachi.fans:5349?transport=tcp",
             ]
         );
     }
@@ -292,12 +292,12 @@ mod tests {
     #[test]
     fn host_port_parses_all_shapes() {
         assert_eq!(
-            host_port("turn:coturn.roomler.ai:3478?transport=udp"),
-            Some(("coturn.roomler.ai".into(), 3478))
+            host_port("turn:coturn.meshharbor.itachi.fans:3478?transport=udp"),
+            Some(("coturn.meshharbor.itachi.fans".into(), 3478))
         );
         assert_eq!(
-            host_port("turns:coturn.roomler.ai:5349?transport=tcp"),
-            Some(("coturn.roomler.ai".into(), 5349))
+            host_port("turns:coturn.meshharbor.itachi.fans:5349?transport=tcp"),
+            Some(("coturn.meshharbor.itachi.fans".into(), 5349))
         );
         assert_eq!(
             host_port("turn:pop.example.com"),
@@ -323,9 +323,9 @@ mod tests {
     fn first_udp_port_skips_stun_and_tcp() {
         let urls = [
             "stun:stun.l.google.com:19302",
-            "turns:coturn.roomler.ai:5349?transport=tcp",
-            "turn:coturn.roomler.ai:3479",
-            "turn:coturn.roomler.ai:443?transport=udp",
+            "turns:coturn.meshharbor.itachi.fans:5349?transport=tcp",
+            "turn:coturn.meshharbor.itachi.fans:3479",
+            "turn:coturn.meshharbor.itachi.fans:443?transport=udp",
         ];
         assert_eq!(first_udp_port(urls), 3479);
         assert_eq!(first_udp_port(["stun:s.example:19302"]), 3478);

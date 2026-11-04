@@ -287,7 +287,7 @@ function Action-LockUnlockCycle {
     Require-AgentExe
     Write-Host '== Lock/Unlock cycle harness ==============================' -ForegroundColor Cyan
     Write-Host "About to run $Cycles lock/unlock cycles. For each cycle:"
-    Write-Host '  1. Connect from a browser controller (roomler.ai)'
+    Write-Host '  1. Connect from a browser controller (meshharbor.itachi.fans)'
     Write-Host '  2. Press Win+L on the host'
     Write-Host '  3. Observe the browser viewer — should show real lock-screen pixels (not Z-path overlay)'
     Write-Host '  4. Type the host password from the browser controller'

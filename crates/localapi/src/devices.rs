@@ -517,7 +517,7 @@ mod tests {
     fn mesh_view_parses_the_servers_hand_built_payload() {
         let body = r#"{
           "enabled": true,
-          "center": {"id": "control-plane", "name": "roomler.ai"},
+          "center": {"id": "control-plane", "name": "meshharbor.itachi.fans"},
           "nodes": [
             {"id": "aaaaaaaaaaaaaaaaaaaaaaaa", "agent_id_hex": "111111111111111111111111",
              "name": "alpha", "overlay_ip": "100.64.0.2", "status": "online",
@@ -545,7 +545,7 @@ mod tests {
         }"#;
         let v: MeshView = serde_json::from_str(body).unwrap();
         assert!(v.enabled);
-        assert_eq!(v.center.as_ref().unwrap().name, "roomler.ai");
+        assert_eq!(v.center.as_ref().unwrap().name, "meshharbor.itachi.fans");
         assert_eq!(v.nodes.len(), 2);
         assert_eq!(v.nodes[0].label, "Alpha");
         assert_eq!(v.nodes[1].agent_id_hex, None);

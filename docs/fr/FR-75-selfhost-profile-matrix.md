@@ -1,6 +1,6 @@
 # FR-75: Self-host **profile** install & verify matrix — every profile does the job it advertises
 
-**Issue:** [#1447](https://github.com/gjovanov/roomler-ai/issues/1447) ·
+**Issue:** [#1447](https://github.com/jk-zhang-meta/MeshHarbor/issues/1447) ·
 **Status:** proposed 2026-09-06 ·
 **Handover this came from:** `docs/handover/modular-monolith.md`
 
@@ -44,7 +44,7 @@ pillar works** → **what it drops is absent**.
 | 1 | `full` | `<tag>` | chat · 2-party call · remote desktop · overlay peers+ping | — (positive control for every absence probe) | server + 2 agents |
 | 2 | `collab` | `<tag>-collab` | chat between two browser contexts · a real video call, media both ways | fleet · remote · network | server only |
 | 3 | `remote` | `<tag>-remote` | agent enrols · remote-desktop frames decode and advance | chat · conference · network | server + 1 agent |
-| 4 | `mesh` | `<tag>-mesh` | **two** agents see each other in `roomler peers`; `roomler ping` round-trips | chat · conference · remote | server + 2 agents |
+| 4 | `mesh` | `<tag>-mesh` | **two** agents see each other in `meshharbor peers`; `meshharbor ping` round-trips | chat · conference · remote | server + 2 agents |
 | 5 | `access` | `<tag>-access` | remote desktop **and** mesh on one server | chat · conference | server + 2 agents |
 
 ⚠️ **Absence is asserted positively.** A probe answering 404 is the claim; the **same probe on
@@ -58,7 +58,7 @@ FR-46 lesson, where an audit died silently at the moment it succeeded.
 ```
 audit host capacity → boot server VM (COW off the docker golden)
   → clone the repo, cp .env.selfhost.example .env.selfhost, fill 4 secrets,
-    MESHHARBOR_IMAGE=ghcr.io/gjovanov/roomler-ai:<tag>[-<profile>]
+    MESHHARBOR_IMAGE=ghcr.io/jk-zhang-meta/meshharbor:<tag>[-<profile>]
   → docker compose … pull && up -d          ← the documented order; `up` alone BUILDS
   → wait /health
   → GATE 1  /health .modules == WANT_<profile> AND /api/capabilities agrees
@@ -104,7 +104,7 @@ Keep the compose file's **default port-mapped form** (`40000-40031` UDP+TCP publ
 
 - it is what a self-hoster gets out of the box, so the cell measures the **documented** path;
 - with the browser on the VM itself, `127.0.0.1` is exactly the case the doc says it works for;
-- `network_mode: host` would break the roomler container's `mongo:27017` / `redis:6379` /
+- `network_mode: host` would break the meshharbor container's `mongo:27017` / `redis:6379` /
   `minio:9000` service-name resolution, since host networking leaves the compose network — a
   change with its own failure mode, adopted for no gain here.
 
@@ -138,8 +138,8 @@ mounted onto absent state.
 
 | repo | contribution |
 |---|---|
-| `roomler-ai` (public) | this spec + the ledger row; a `profile` e2e spec pair (`selfhost-collab.spec.ts` for chat+call, reusing `vmtest-remote.spec.ts` verbatim for RD) |
-| `roomler-ai-deploy` (private) | `profiletest/` — orchestrator, per-profile cell scripts, guest drivers, report |
+| `meshharbor` (public) | this spec + the ledger row; a `profile` e2e spec pair (`selfhost-collab.spec.ts` for chat+call, reusing `vmtest-remote.spec.ts` verbatim for RD) |
+| `meshharbor-deploy` (private) | `profiletest/` — orchestrator, per-profile cell scripts, guest drivers, report |
 | `k8s-cluster-multi` (private) | nothing new: FR-61's `vmtest-host` role and `vmtest-net` already provide libvirt, the network and the capacity audit |
 | local, gitignored | the `profiletest` skill (P10) — it names fleet hosts |
 
@@ -228,8 +228,8 @@ screenshot or a log before reporting it as one.
 1. **Which image tag?** v1 pins `latest` + `latest-<profile>` (the published self-host family).
    Pinning a `v*` tag makes a run reproducible but stops it from catching a regression the day it
    publishes. Recorded either way in the run's report.
-2. **Does `mesh` prove a tunnel or `roomler ssh` too?** `peers`+`ping` is the hard gate for v1; a
-   `roomler ssh` probe is a cheap add once two agents are up, and is listed as a stretch check
+2. **Does `mesh` prove a tunnel or `meshharbor ssh` too?** `peers`+`ping` is the hard gate for v1; a
+   `meshharbor ssh` probe is a cheap add once two agents are up, and is listed as a stretch check
    rather than an AC.
 3. **A LAN-`ANNOUNCED_IP` cell** (browser off-box, host networking) is deliberately deferred — it
    tests the *operator's* network, not the profile.
@@ -248,16 +248,16 @@ first has not been shown to work.
 
 ### 2026-09-06 — bring-up, `full` cell on zeus
 
-Harness: `roomler-ai-deploy/profiletest/` (sibling of `vmtest/`), server golden
+Harness: `meshharbor-deploy/profiletest/` (sibling of `vmtest/`), server golden
 `ubuntu-docker-noble.qcow2`, agents on FR-61's `ubuntu-gui-noble.qcow2`.
 
 **Findings against the product / the docs**
 
 | # | finding | evidence |
 |---|---|---|
-| 1 | **The four non-`full` profile images have never been published.** `ghcr.io/gjovanov/roomler-ai:latest-collab` does not resolve, and no `-remote`/`-mesh`/`-access` tag exists on any tag family. `publish-selfhost-image.yml` is dispatch-only with `profile` defaulting to `full`, and has only ever been dispatched that way | first cell, at the cheapest gate, before a browser booted |
+| 1 | **The four non-`full` profile images have never been published.** `ghcr.io/jk-zhang-meta/meshharbor:latest-collab` does not resolve, and no `-remote`/`-mesh`/`-access` tag exists on any tag family. `publish-selfhost-image.yml` is dispatch-only with `profile` defaulting to `full`, and has only ever been dispatched that way | first cell, at the cheapest gate, before a browser booted |
 | 2 | **The one image that does exist predates the feature it is documented around.** `latest` = `v0.4.45` (2026-09-01); `/api/capabilities` + `/health .modules` landed 2026-09-04 (`4f8296fa7`, FR-69 P8). `merge-base --is-ancestor` says false. The workspace is at 0.4.76 — 31 versions ahead | `/health` → `{"status":"ok","version":"0.4.45"}` with no `.modules`; `/api/capabilities` → **404** |
-| 3 | **Enrollment refuses plaintext off-loopback, and `docs/self-hosting.md` does not say so.** `normalize_server_url` upgrades `http://`→`https://` for any non-loopback host; loopback is exempt. So "Add your first machine" cannot work until the *later*, optional-looking "Putting it behind a real hostname" section has been done, and the error names nothing | `roomlerd enroll` → `POST https://…:8080/api/agent/enroll` → `SSL routines:ssl3_get_record:wrong version number` |
+| 3 | **Enrollment refuses plaintext off-loopback, and `docs/self-hosting.md` does not say so.** `normalize_server_url` upgrades `http://`→`https://` for any non-loopback host; loopback is exempt. So "Add your first machine" cannot work until the *later*, optional-looking "Putting it behind a real hostname" section has been done, and the error names nothing | `meshharbord enroll` → `POST https://…:8080/api/agent/enroll` → `SSL routines:ssl3_get_record:wrong version number` |
 
 Findings 1 and 2 are reported, not fixed: publishing puts a public package under the operator's
 account and is theirs to decide by the workflow's own design. The matrix therefore runs against a
@@ -308,7 +308,7 @@ agent1/install PASS  agent2/install PASS   (served install.sh, release resolved 
 agent1/enroll  PASS  agent2/enroll  PASS
 ```
 
-`collab` is the headline: the first time a Roomler call has been asserted end-to-end with a media
+`collab` is the headline: the first time a MeshHarbor call has been asserted end-to-end with a media
 oracle that **can fail** — `conference-multi.spec.ts` swallows its tile assertion by design, which
 is the same shape as the incident this FR cites.
 
@@ -372,7 +372,7 @@ network-owned surfaces are conditional. Fixed in `c3613debd`.
 
 ```
 2026-09-07T15:56:30Z PASS pass=80 fail=0 warn=0 na=5 total=85
-image=ghcr.io/gjovanov/roomler-ai:v0.4.81   run=20260907-141658
+image=ghcr.io/jk-zhang-meta/meshharbor:v0.4.81   run=20260907-141658
 ```
 
 | cell | image | result |

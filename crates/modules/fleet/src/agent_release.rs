@@ -23,7 +23,7 @@
 //!
 //! No auth: agents call this endpoint before they have a session
 //! and pretty much all the data is already public anyway via
-//! github.com/gjovanov/roomler-ai/releases. CORS-OK by default.
+//! github.com/jk-zhang-meta/MeshHarbor/releases. CORS-OK by default.
 
 use axum::{
     Json,
@@ -172,14 +172,14 @@ fn order_assets_daemon_first(assets: &mut [AgentReleaseAsset]) {
 // from GitHub releases through our domain. Two reasons to proxy
 // instead of redirecting to github.com:
 //   1. Corporate ESET / Defender allow-lists are typically per-domain.
-//      `roomler.ai`'s TLS cert is already in IT-managed allow-lists
+//      `meshharbor.itachi.fans`'s TLS cert is already in IT-managed allow-lists
 //      (the agent's signaling traffic uses it); github.com is often
 //      blocked outright in locked-down environments. the field-test host field
 //      repro 2026-05-11.
 //   2. Single source-of-truth for asset selection (perUser vs
 //      perMachine). The wizard hits one URL per flavour, never picks
 //      the wrong MSI alphabetically.
-// Cache-Control: public, max-age=3600 so a CDN in front of roomler.ai
+// Cache-Control: public, max-age=3600 so a CDN in front of meshharbor.itachi.fans
 // can coalesce identical requests during a fleet rollout.
 
 /// Query parameter for both `/installer/{flavour}` and
@@ -219,7 +219,7 @@ pub struct InstallerHealth {
     pub digest: Option<String>,
     /// The URI that, when GET'd, streams the MSI bytes. Always
     /// relative to the API root so the wizard composes it under
-    /// roomler.ai (or staging.roomler.ai) transparently.
+    /// meshharbor.itachi.fans (or staging.meshharbor.itachi.fans) transparently.
     pub uri: String,
 }
 

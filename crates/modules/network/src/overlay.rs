@@ -4475,7 +4475,7 @@ fn next_epoch() -> u64 {
 /// traffic drops under buildhost's dual-public-IP SNAT (the flakiness the QUIC
 /// tunnel pinned around in rc.112). The agent's own deterministic pick
 /// (`relay_link::pick_worker`) can't co-locate the two nodes because they
-/// resolve `coturn.roomler.ai` to *different* IP sets per host. The broker
+/// resolve `coturn.meshharbor.itachi.fans` to *different* IP sets per host. The broker
 /// resolves it ONCE and picks one worker by `pair_key`, so its choice is
 /// authoritative for both peers → guaranteed intra-worker hairpin. Falls back
 /// to the hostname-based servers (pre-fix behaviour) with no TURN config or on
@@ -4576,7 +4576,7 @@ fn rewrite_ice_hosts(servers: Vec<IceServer>, host: &str, ip: &str) -> Vec<IceSe
 }
 
 /// `host:port` of a `turn:`/`turns:` url (strips scheme + `?query`), e.g.
-/// `turn:coturn.roomler.ai:3478?transport=udp` → `coturn.roomler.ai:3478`.
+/// `turn:coturn.meshharbor.itachi.fans:3478?transport=udp` → `coturn.meshharbor.itachi.fans:3478`.
 /// `None` if there's no `host:port` pair.
 fn turn_url_host_port(u: &str) -> Option<String> {
     let rest = u
@@ -5256,15 +5256,15 @@ mod tests {
     #[test]
     fn turn_url_host_port_keeps_the_port() {
         assert_eq!(
-            turn_url_host_port("turn:coturn.roomler.ai:3478?transport=udp").as_deref(),
-            Some("coturn.roomler.ai:3478")
+            turn_url_host_port("turn:coturn.meshharbor.itachi.fans:3478?transport=udp").as_deref(),
+            Some("coturn.meshharbor.itachi.fans:3478")
         );
         assert_eq!(
-            turn_url_host_port("turn:coturn.roomler.ai:443").as_deref(),
-            Some("coturn.roomler.ai:443")
+            turn_url_host_port("turn:coturn.meshharbor.itachi.fans:443").as_deref(),
+            Some("coturn.meshharbor.itachi.fans:443")
         );
         // No port → None (STUN needs an explicit endpoint).
-        assert_eq!(turn_url_host_port("turn:coturn.roomler.ai"), None);
+        assert_eq!(turn_url_host_port("turn:coturn.meshharbor.itachi.fans"), None);
     }
 
     #[test]
@@ -5273,18 +5273,18 @@ mod tests {
         // UDP `turn:` on 3478 + 443, plus TCP + TLS variants. STUN wants only the
         // UDP `turn:` listeners → two `stun:` URLs, deduped, TLS/TCP skipped.
         let turn_urls = vec![
-            "turn:coturn.roomler.ai:3478".to_string(),
-            "turn:coturn.roomler.ai:443?transport=udp".to_string(),
-            "turn:coturn.roomler.ai:3478?transport=tcp".to_string(),
-            "turns:coturn.roomler.ai:5349?transport=tcp".to_string(),
-            "turns:coturn.roomler.ai:443?transport=udp".to_string(),
-            "turns:coturn.roomler.ai:443?transport=tcp".to_string(),
+            "turn:coturn.meshharbor.itachi.fans:3478".to_string(),
+            "turn:coturn.meshharbor.itachi.fans:443?transport=udp".to_string(),
+            "turn:coturn.meshharbor.itachi.fans:3478?transport=tcp".to_string(),
+            "turns:coturn.meshharbor.itachi.fans:5349?transport=tcp".to_string(),
+            "turns:coturn.meshharbor.itachi.fans:443?transport=udp".to_string(),
+            "turns:coturn.meshharbor.itachi.fans:443?transport=tcp".to_string(),
         ];
         assert_eq!(
             stun_urls_from_turn_urls(&turn_urls),
             vec![
-                "stun:coturn.roomler.ai:3478".to_string(),
-                "stun:coturn.roomler.ai:443".to_string(),
+                "stun:coturn.meshharbor.itachi.fans:3478".to_string(),
+                "stun:coturn.meshharbor.itachi.fans:443".to_string(),
             ]
         );
         // No usable UDP TURN worker still permits unauthenticated discovery.
@@ -5441,24 +5441,24 @@ mod tests {
         // verification (NotValidForName), yet we still need the same-worker pin.
         let servers = vec![IceServer {
             urls: vec![
-                "stun:coturn.roomler.ai:3478".to_string(),
-                "turn:coturn.roomler.ai:3478?transport=udp".to_string(),
-                "turn:coturn.roomler.ai:443?transport=udp".to_string(),
-                "turns:coturn.roomler.ai:443?transport=tcp".to_string(),
-                "turns:coturn.roomler.ai:5349?transport=tcp".to_string(),
+                "stun:coturn.meshharbor.itachi.fans:3478".to_string(),
+                "turn:coturn.meshharbor.itachi.fans:3478?transport=udp".to_string(),
+                "turn:coturn.meshharbor.itachi.fans:443?transport=udp".to_string(),
+                "turns:coturn.meshharbor.itachi.fans:443?transport=tcp".to_string(),
+                "turns:coturn.meshharbor.itachi.fans:5349?transport=tcp".to_string(),
             ],
             username: Some("u".to_string()),
             credential: Some("c".to_string()),
         }];
-        let out = rewrite_ice_hosts(servers, "coturn.roomler.ai", "94.130.141.74");
+        let out = rewrite_ice_hosts(servers, "coturn.meshharbor.itachi.fans", "94.130.141.74");
         assert_eq!(
             out[0].urls,
             vec![
                 "stun:94.130.141.74:3478".to_string(),
                 "turn:94.130.141.74:3478?transport=udp".to_string(),
                 "turn:94.130.141.74:443?transport=udp".to_string(),
-                "turns:coturn.roomler.ai:443?transport=tcp&pin=94.130.141.74".to_string(),
-                "turns:coturn.roomler.ai:5349?transport=tcp&pin=94.130.141.74".to_string(),
+                "turns:coturn.meshharbor.itachi.fans:443?transport=tcp&pin=94.130.141.74".to_string(),
+                "turns:coturn.meshharbor.itachi.fans:5349?transport=tcp&pin=94.130.141.74".to_string(),
             ]
         );
     }

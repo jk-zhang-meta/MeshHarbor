@@ -296,7 +296,7 @@ function Do-Install {
 
     Write-Host ''
     Write-Host '=== Next manual steps for M5 verification ===' -ForegroundColor Cyan
-    Write-Host '  1. Open the controller (https://roomler.ai/) on a *separate* device,'
+    Write-Host '  1. Open the controller (https://meshharbor.itachi.fans/) on a *separate* device,'
     Write-Host '     connect to the field-test host. Confirm video + mouse + keyboard work.'
     Write-Host ''
     Write-Host '  2. While streaming, log out of the field-test host. Expected:'

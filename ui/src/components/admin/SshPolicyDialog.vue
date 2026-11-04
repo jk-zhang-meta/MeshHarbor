@@ -89,7 +89,7 @@
             <template #system><strong>SYSTEM</strong></template>
             <template #signedInLower><strong>{{ t('mh.sshp.signedInLower') }}</strong></template>
             <template #signedIn><strong>{{ t('mh.sshp.signedIn') }}</strong></template>
-            <template #cmd><code>roomlerd anchor ssh system</code></template>
+            <template #cmd><code>meshharbord anchor ssh system</code></template>
           </i18n-t>
         </div>
         <div v-else class="text-caption text-medium-emphasis mb-4" data-test="ssh-identity-unix">
@@ -166,7 +166,7 @@
         </v-alert>
         <v-alert type="info" variant="tonal" density="compact" class="mt-4">
           <i18n-t keypath="mh.exec.deviceSwitch" tag="span" scope="global">
-            <template #cmd><code>roomler config set ssh_enabled true</code></template>
+            <template #cmd><code>meshharbor config set ssh_enabled true</code></template>
           </i18n-t>
         </v-alert>
 

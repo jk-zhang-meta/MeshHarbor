@@ -33,9 +33,9 @@ spec:
           image: curlimages/curl:8.10.1
           env:
             - name: SERVER
-              value: http://roomler2
+              value: http://meshharbor2
             - name: ADMIN_EMAIL
-              value: agent-e2e-admin@roomler.local
+              value: agent-e2e-admin@meshharbor.local
             - name: ADMIN_PASSWORD
               value: agent-e2e-bootstrap-pw-2026
             - name: TENANT_SLUG

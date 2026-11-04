@@ -30,13 +30,13 @@ flowchart TB
 | E2E | `cd ui && bun run e2e` | dev stack on :5000/:5001 (`E2E_BASE_URL`, `E2E_API_URL`, `E2E_MAILPIT_URL` to point elsewhere) |
 | Phone-width smoke | `cd ui && bun run test:phone` | nothing — the built SPA with every `/api` call mocked (`ui/e2e-phone/`) |
 | Capture smoke | `./scripts/dev-xvfb.sh` | Xvfb — paints an xterm, runs the scrap-capture path headless |
-| Encoder smoke | `roomlerd encoder-smoke --encoder hardware [--codec hevc]` | the host's GPU — 10 synthetic frames, prints the cascade's decisions |
+| Encoder smoke | `meshharbord encoder-smoke --encoder hardware [--codec hevc]` | the host's GPU — 10 synthetic frames, prints the cascade's decisions |
 
 ## Rust integration tests (`crates/tests/`)
 
 Each test spawns a **real Axum server** on a random port against a **unique
 UUID-named database** (dropped on teardown). The agent-facing modules drive the
-actual `roomlerd` library in-process for full `rc:*` round-trips against a
+actual `meshharbord` library in-process for full `rc:*` round-trips against a
 TestApp — enrollment, sessions, tunnels, overlay joins, exec.
 
 Coverage areas: auth · tenant (+archive) · member · role · room/channel · message ·
@@ -51,7 +51,7 @@ multi-tenancy · pagination · rate-limit · CORS · export (xlsx/pdf) · confer
 > on, and that supervisor is process-global. In the lib's binary every other
 > in-process agent would re-point it at its own socket. `cargo test -p
 > meshharbor-tests` runs both binaries, and the lane's count sums them. The
-> test is Linux-only and turns on `roomlerd`'s `hive-test-launcher` feature
+> test is Linux-only and turns on `meshharbord`'s `hive-test-launcher` feature
 > through a Linux-only dev-dependency. That feature launches sessions as the
 > test's own account and refuses to run as root. Its log checks run under a
 > thread-default subscriber around a current-thread runtime, so they see
@@ -138,7 +138,7 @@ multi-tenancy · pagination · rate-limit · CORS · export (xlsx/pdf) · confer
 The load-bearing ones: `remote_control` locks the **wire format** (every `rc:*`
 tag pinned, ObjectId-as-hex, pipe-separated `Permissions`) so a rename is a
 deliberate break; agent-side crates cover encoder cascades, config migration,
-ACLs, and overlay internals under their feature flags. `roomlerd`'s Hive
+ACLs, and overlay internals under their feature flags. `meshharbord`'s Hive
 supervisor tests (`--features hive -- hive::`) run twice: on Linux in the agent job, and on macOS
 in the macOS job (FR-90 P1h-1), which before it never compiled the supervisor for a Mac.
 
@@ -161,7 +161,7 @@ in the macOS job (FR-90 P1h-1), which before it never compiled the supervisor fo
 | `integration-tests.yml` | The integration suite against a real MongoDB and Redis, as **three shards** (FR-6 wave 24). Each shard lists the same test binaries, sorts the (test, binary) pairs and runs every third with `--exact`, so between them the shards run each test once. Each shard must report every test it was handed, and the whole listing must clear a floor. 2 threads per shard, each with its own mongod: at 4 threads against one mongod, the dropped test databases' files reached the 64,000-descriptor ceiling and mongod aborted. Dispatch inputs: `filter`, `threads`, `mongo_tmpfs`, `report_time` (per-test durations and the slowest tests, in the step summary) |
 | k8s e2e (`scripts/e2e-k8s.sh`, `Dockerfile.agent-e2e`) | The suite against a standing cluster namespace — validates the real multi-pod topology |
 | Nightly (`scripts/e2e-nightly.sh`) | Full E2E against the current prod tag, **with the specs from the commit that image was built from** (master's can run ahead of the image: #2573), diffed against an expected-failures list; regressions file an issue. With the **agent-e2e harness** up, its six remote-session specs run against three synthetic-frame agents — [below](#the-agent-e2e-lane-fr-114) |
-| vmtest (`roomler-ai-deploy/vmtest/vmtest.sh`, on demand) | Installs the product the way users do on throwaway Win11 / Ubuntu-Wayland / ARM / macOS VMs, enrols against prod, proves remote desktop + overlay + `meshharbor-desktop`, destroys the VM; one issue per failing condition, closed on green — [vmtest.md](vmtest.md) |
+| vmtest (`meshharbor-deploy/vmtest/vmtest.sh`, on demand) | Installs the product the way users do on throwaway Win11 / Ubuntu-Wayland / ARM / macOS VMs, enrols against prod, proves remote desktop + overlay + `meshharbor-desktop`, destroys the VM; one issue per failing condition, closed on green — [vmtest.md](vmtest.md) |
 | **Overlay stress lane** (FR-81, `vmtest.sh run --lane stress`) | A throwaway VM enrolled into the **fleet** org measures latency distributions, SSH success, bulk transfer and carrier stability against the real fleet, on a direct and a forced-relay arm — [below](#the-overlay-stress-lane-fr-81) |
 | **L0 latency harness** (FR-16, `ci.yml` recorder job) | A real remote-desktop session in one process measures capture → decode latency, and the bench probe's input → decoded-frame round trip (L4 in process), on one clock, over a simulated link, and proves it can fail — [below](#the-l0-latency-harness-fr-16) |
 
@@ -172,7 +172,7 @@ are tracked in `scripts/e2e-expected-failures.txt` rather than papered over.
 ## The agent-e2e lane (FR-114)
 
 The remote-desktop specs that need a real agent run in the nightly against three
-synthetic-frame agents in the `roomler-ai-e2e` namespace, one per recording state. Until FR-114 they were
+synthetic-frame agents in the `meshharbor-e2e` namespace, one per recording state. Until FR-114 they were
 listed and skipped every night: no harness, no tenant, a seed that could not
 finish, and four specs that signed in with tokens the server stopped reading.
 [FR-114](fr/FR-114-agent-e2e-lane-runs-nightly.md) · runbook
@@ -180,13 +180,13 @@ finish, and four specs that signed in with tokens the server stopped reading.
 
 ```mermaid
 flowchart LR
-  subgraph ns["namespace roomler-ai-e2e"]
-    subgraph pod["roomler2 pod"]
-      app["roomler2 (the prod tag)"]
+  subgraph ns["namespace meshharbor-e2e"]
+    subgraph pod["meshharbor2 pod"]
+      app["meshharbor2 (the prod tag)"]
       pw["pwrunner sidecar (Playwright)"]
     end
     seed["Job agent-e2e-seed"]
-    sts["StatefulSet agent-e2e ×3<br/>roomlerd-e2e, synthetic frames"]
+    sts["StatefulSet agent-e2e ×3<br/>meshharbord-e2e, synthetic frames"]
   end
   seed -->|"admin + tenant 'agent-e2e'"| app
   sts -->|"tenant by slug → enroll"| app
@@ -196,7 +196,7 @@ flowchart LR
 
 | Piece | Where | The rule it keeps |
 |---|---|---|
-| The image | `Dockerfile.agent-e2e`, pushed to `registry.roomler.ai/roomlerd-e2e:agent-e2e-<date>-<sha7>` | the workspace's toolchain (rust 1.95); a dated tag the overlay pins, never `latest` |
+| The image | `Dockerfile.agent-e2e`, pushed to `registry.meshharbor.itachi.fans/meshharbord-e2e:agent-e2e-<date>-<sha7>` | the workspace's toolchain (rust 1.95); a dated tag the overlay pins, never `latest` |
 | The tenant | the seed ([`job-agent-e2e-seed.yaml:79`](../scripts/e2e-k8s/overlay-template/job-agent-e2e-seed.yaml)), the agents' bootstrap ([`Dockerfile.agent-e2e:119`](../Dockerfile.agent-e2e)), the nightly ([`e2e-nightly.sh:128`](../scripts/e2e-nightly.sh)) | found **by slug** through `GET /api/tenant`, never pasted into a Secret: a wiped e2e DB still resolves |
 | The sign-in | [`signInContext`, `ui/e2e/fixtures/test-helpers.ts:99`](../ui/e2e/fixtures/test-helpers.ts) | the context's own cookie jar. Sessions are cookie-only (#691); a token in `localStorage` grants nothing |
 | The recording states | the StatefulSet's ordinal lists ([`statefulset-agent-e2e.yaml:98`](../scripts/e2e-k8s/overlay-template/statefulset-agent-e2e.yaml)); the opt-in in the bootstrap ([`Dockerfile.agent-e2e:157`](../Dockerfile.agent-e2e)); no recorder in the run script ([`:193`](../Dockerfile.agent-e2e)) | `agent-e2e-0` records but is not opted in, `-1` is opted in, `-2` has no recorder. `record_remote_enabled` is device-owned, so the bootstrap writes it as the owner would, **replacing** the `= false` enroll wrote: a second copy is a duplicate TOML key, and the daemon refuses the whole config |
@@ -358,7 +358,7 @@ sequenceDiagram
 
 **Run it.** Start an agent built with `synthetic-frame-source` with `MESHHARBORD_SYNTHETIC_FRAMES=1`
 and `MESHHARBORD_BENCH=1`; its hello then advertises `bench` in `AgentCaps.video`. In the viewer's
-browser, set `localStorage['roomler-rc-bench'] = '1'`, reload, and connect with input. About
+browser, set `localStorage['meshharbor-rc-bench'] = '1'`, reload, and connect with input. About
 every ten seconds the console prints `[rc] bench L4 n=… lost=… p50=… p95=… max=… path=…`, and
 the same batch is posted as one `rc.l4` line to `agent_logs`.
 
@@ -399,10 +399,10 @@ db.agent_logs.aggregate([
               lost: { $sum: '$lines.fields.lost' } } } ])
 ```
 
-### L4 on a release build: `roomlerd probe-target`
+### L4 on a release build: `meshharbord probe-target`
 
 The probe above needs an agent built with the synthetic source, and no release profile has
-it. `roomlerd probe-target` brings L4 to any Windows host. It opens a small topmost window
+it. `meshharbord probe-target` brings L4 to any Windows host. It opens a small topmost window
 flush in the primary monitor's bottom-right corner. Its marker changes when a **real pointer
 move** reaches one of the 16 cells across its pad. The probe is therefore an ordinary
 `mouse_move`, and a round trip also counts what the in-process probe cannot: injection, the
@@ -410,7 +410,7 @@ host's compositor and the capture.
 
 ```mermaid
 sequenceDiagram
-    participant V as viewer (roomler-rc-bench=target)
+    participant V as viewer (meshharbor-rc-bench=target)
     participant A as agent (any build)
     participant T as probe-target window
     participant S as painter: decode worker or <video>
@@ -428,10 +428,10 @@ sequenceDiagram
 | Numbers | Probe numbers are the cells, 1..16. At ~4 probes a second, a number comes round again only after its last probe has expired (2 s) |
 
 **Run it.**
-1. On the host, start it in the signed-in desktop session: `roomlerd probe-target` from a
+1. On the host, start it in the signed-in desktop session: `meshharbord probe-target` from a
    terminal there. It prints its placement, and closes after `--seconds` (default 600) or
    on a right-click.
-2. In the viewer, set `localStorage['roomler-rc-bench'] = 'target'`, reload, and connect with
+2. In the viewer, set `localStorage['meshharbor-rc-bench'] = 'target'`, reload, and connect with
    input. Keep the session on the **primary** monitor, at native resolution or an exact 2× or
    4× downscale.
 3. Don't touch the mouse while it runs: a person's own move across the pad paints a number
@@ -463,7 +463,7 @@ flowchart LR
         S["2 fleet servers"]
     end
     D -- "boot · enrol · drive · collect · delete the row" --> VM
-    VM -- "ping ×40 · ssh ×3 · scp 32 MiB ↑↓<br/>roomler peers every 10 s" --> L & S
+    VM -- "ping ×40 · ssh ×3 · scp 32 MiB ↑↓<br/>meshharbor peers every 10 s" --> L & S
 ```
 
 ### The two arms
@@ -481,11 +481,11 @@ the relay arm measures.
 
 | column | what it measures | how |
 |---|---|---|
-| `carrier` | the carrier in use, with its `why` evidence | `roomler peers` / `roomler why` |
-| latency | p50 / p95 / max / loss over 40 samples | `roomler ping` |
-| SSH | grant-issued session success, 3 per target | `roomler ssh <t> -- <trivial>` |
-| throughput | 32 MiB up and down, sha256-verified, per-direction ms timing | `scp` over `roomler proxy` with a client key in the target's `ssh_authorized_keys` |
-| stability | carrier **transitions** over the arm | `roomler peers` sampled every 10 s from the VM |
+| `carrier` | the carrier in use, with its `why` evidence | `meshharbor peers` / `meshharbor why` |
+| latency | p50 / p95 / max / loss over 40 samples | `meshharbor ping` |
+| SSH | grant-issued session success, 3 per target | `meshharbor ssh <t> -- <trivial>` |
+| throughput | 32 MiB up and down, sha256-verified, per-direction ms timing | `scp` over `meshharbor proxy` with a client key in the target's `ssh_authorized_keys` |
+| stability | carrier **transitions** over the arm | `meshharbor peers` sampled every 10 s from the VM |
 
 ⚠️ **The carrier is reported, never asserted.** The recon behind FR-81 found two of the corp
 laptops with no UDP egress at all and the third behind a symmetric NAT with the relay band
@@ -494,7 +494,7 @@ three permanent reds for a mesh behaving correctly. The lane asserts only what m
 carrier: the target is reachable, the bytes arrive intact, and the carrier stays put.
 
 ⚠️ **Stability counts transitions from an allow-list of carrier shapes** (`direct`, `lan`,
-`relay:*`). The `CONN` column of `roomler peers` also carries *states* — `upgrading` (a
+`relay:*`). The `CONN` column of `meshharbor peers` also carries *states* — `upgrading` (a
 make-before-break probe on a relayed peer, [`localclient.rs:1259`](../agents/meshharbor-cli/src/localclient.rs#L1259)),
 `stalled`, `offline` — and counting those as carriers once reported a healthy peer as flapping.
 They are tallied separately, and any value outside both lists is **reported, never counted**.
@@ -517,7 +517,7 @@ corporate laptop, a real relay path, or both:
 | round 2 | `scp` exited 1 after every *successful* transfer: the sftp subsystem never sent an exit status | #1559 — the pump waits for the child and reports it ([`ssh.rs:1093`](../agents/meshharbord/src/ssh.rs#L1093)) |
 | round 2 | a device whose stored SSH host key was unreadable published **no** key, permanently, so no caller could verify it | #1565 — an unreadable key counts as no key and is replaced ([`ssh.rs:404`](../agents/meshharbord/src/ssh.rs#L404)) |
 | round 3 | a caller with a faster control path than the target dialled before the target had its grant: `Permission denied (publickey)`, 0/3 on one laptop | FR-83 (#1597) — the server answers only after the device confirms the grant ([`agent_ssh.rs:587`](../crates/modules/network/src/routes/agent_ssh.rs#L587)) |
-| round 3 | `roomler proxy`'s own `--help` recipe could not work (`%h` arrives as `<name>.roomler`) | #1573 — the suffix and the MagicDNS domain are stripped ([`localclient.rs:598`](../agents/meshharbor-cli/src/localclient.rs#L598)) |
+| round 3 | `meshharbor proxy`'s own `--help` recipe could not work (`%h` arrives as `<name>.meshharbor`) | #1573 — the suffix and the MagicDNS domain are stripped ([`localclient.rs:598`](../agents/meshharbor-cli/src/localclient.rs#L598)) |
 
 ### Reference run — `20260924-155559`, every target on agent 0.4.101
 

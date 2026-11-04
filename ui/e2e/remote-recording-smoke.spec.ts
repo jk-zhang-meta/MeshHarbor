@@ -20,7 +20,7 @@ import { signInContext } from './fixtures/test-helpers'
 const API_URL = process.env.E2E_API_URL || 'http://localhost:5001'
 const BASE_URL = process.env.E2E_BASE_URL || 'http://localhost:5000'
 const TENANT_ID = process.env.E2E_AGENT_E2E_TENANT_ID || ''
-const ADMIN_EMAIL = process.env.E2E_AGENT_E2E_ADMIN_EMAIL || 'agent-e2e-admin@roomler.local'
+const ADMIN_EMAIL = process.env.E2E_AGENT_E2E_ADMIN_EMAIL || 'agent-e2e-admin@meshharbor.local'
 const ADMIN_PASSWORD =
   process.env.E2E_AGENT_E2E_ADMIN_PASSWORD || 'agent-e2e-bootstrap-pw-2026'
 

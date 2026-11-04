@@ -1,6 +1,6 @@
 ---
 title: One machine in several organizations
-description: Put a single machine in more than one Roomler workspace at once — how identity, addressing and host-global settings behave when organizations overlap.
+description: Put a single machine in more than one MeshHarbor workspace at once — how identity, addressing and host-global settings behave when organizations overlap.
 tags: [network, multi-org, devices, enrollment, advanced]
 order: 8
 ---
@@ -65,26 +65,26 @@ that, restart the agent.
 ## Checking which organizations are live
 
 ```bash
-roomler org ls    # every organization this machine belongs to
-roomler status    # connection AND mesh state, per organization
+meshharbor org ls    # every organization this machine belongs to
+meshharbor status    # connection AND mesh state, per organization
 ```
 
 :::warning "Connected" and "mesh on" are different claims
 An organization can be connected to the control plane with its mesh switched
-off, and every surface will otherwise look healthy. `roomler status` prints both
+off, and every surface will otherwise look healthy. `meshharbor status` prints both
 on one line for that reason, and an organization with the mesh off is named in
-`roomler peers` rather than silently omitted.
+`meshharbor peers` rather than silently omitted.
 
 If a second organization has no mesh, turn it on explicitly and restart:
 
 ```bash
-roomler org overlay <org> netstack   # no adapter: programs reach it through a SOCKS5 port
-roomler org overlay <org> tun        # a network adapter of its own (a system install)
+meshharbor org overlay <org> netstack   # no adapter: programs reach it through a SOCKS5 port
+meshharbor org overlay <org> tun        # a network adapter of its own (a system install)
 ```
 
 `netstack` needs no privileges and works with any organization's server. The
 command prints the SOCKS5 address programs should use (`127.0.0.1:10800`, or the
-next free port). It is also what `roomler enroll --overlay` picks for a second
+next free port). It is also what `meshharbor enroll --overlay` picks for a second
 organization.
 :::
 
@@ -98,7 +98,7 @@ organization.
 Remove the device in that organization's dashboard, or from the machine:
 
 ```bash
-roomler org rm <org>
+meshharbor org rm <org>
 ```
 
 Removing a secondary leaves the primary untouched. Removing the primary is the

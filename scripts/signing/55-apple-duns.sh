@@ -63,7 +63,7 @@ field_sheet() {
     info 'Phone:               +359877118883'
     info 'Registration (UIC):  205174895        (Bulgarian commercial register)'
     info 'VAT:                 BG205174895'
-    info 'Website:             https://roomler.ai'
+    info 'Website:             https://meshharbor.itachi.fans'
     info 'Your name:           Goran Jovanov    (owner & CEO, 100%)'
     info ''
 }
@@ -73,7 +73,7 @@ case "${1:-flow}" in
         say 'Before the lookup'
         info '* Decide which Apple ID owns the developer account (it receives the'
         info '  D-U-N-S e-mail and, later, the enrolment). A company-domain address'
-        info '  (e.g. goran.jovanov@roomler.ai) looks better in org verification'
+        info '  (e.g. goran.jovanov@meshharbor.itachi.fans) looks better in org verification'
         info '  than a personal gmail.'
         info '* Have the UIC handy for the D&B verification call: 205174895.'
         echo

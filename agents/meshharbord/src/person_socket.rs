@@ -492,7 +492,7 @@ mod tests {
         let machine = status(
             r#"{"node_id":"d","name":"mac-d","version":"0.4.149","mode":"service","connected":true,
                 "overlay_ip":"100.64.0.9","overlay_ip6":"fd7a:115c:a1e0::9","overlay_socks5_port":1089,
-                "dns":{"magic_domain":"vmtest.roomler.ai","resolver_bound":true,
+                "dns":{"magic_domain":"vmtest.meshharbor.itachi.fans","resolver_bound":true,
                        "os_steer_active":true,"upstream":"192.0.2.53:53","answer_aaaa":true}}"#,
         );
         let merged = with_machine_network(own.clone(), &machine);

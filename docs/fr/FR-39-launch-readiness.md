@@ -7,15 +7,15 @@ Spec on master up front; the work is known and mostly mechanical.
 
 ## The measurement that motivates it
 
-Roomler ships. Roomler is not findable. Measured 2026-08-29, all of it from public surfaces:
+MeshHarbor ships. MeshHarbor is not findable. Measured 2026-08-29, all of it from public surfaces:
 
 | surface | what it says today |
 |---|---|
 | GitHub repo description | *"Real-time team collaboration with chat, video conferencing, and AI transcription"* — the pillar this project deliberately demoted to third place in `#490`. Remote desktop and overlay networking are not mentioned. |
 | GitHub topics | `axum` `chat` `collaboration` `mediasoup` `mongodb` `real-time` `rust` `saas` `video-conferencing` `vue3` `vuetify3` `webrtc`. Nothing for remote desktop, WireGuard, mesh, VPN or NAT traversal. |
 | GitHub stars / forks | **0 / 0**, on a public repository with 577 releases since `agent-v0.1.0` (2026-04-17). |
-| Web search for the product | returns the **retired** `roomler.live` identity, still described as a chat-and-video platform. FR-23 301'd the domain; search engines still carry the old description. |
-| `roomler.ai` landing page | has no email capture of any kind (`ui/src/views/LandingView.vue` — no newsletter, no waitlist, no changelog subscribe). A visitor who does not register on the spot leaves no trace and cannot be reached again. |
+| Web search for the product | returns the **retired** `meshharbor.itachi.fans` identity, still described as a chat-and-video platform. FR-23 301'd the domain; search engines still carry the old description. |
+| `meshharbor.itachi.fans` landing page | has no email capture of any kind (`ui/src/views/LandingView.vue` — no newsletter, no waitlist, no changelog subscribe). A visitor who does not register on the spot leaves no trace and cannot be reached again. |
 | Self-hosting the server | **there is no path.** `docker-compose.yml` brings up *dependencies only* (Mongo/Redis/MinIO/coturn) — it does not run the application — and **no container image is published anywhere** (no workflow pushes to GHCR or Docker Hub). `LICENSING.md` promises "you can self-host all of it, free, on unlimited devices, forever"; the licence delivers that, the tooling did not. |
 | Self-hosted software directories | absent from awesome-selfhosted (its *Remote Access* category holds 14 projects), awesome-sysadmin, AlternativeTo, SaaSHub, LibHunt. |
 
@@ -32,7 +32,7 @@ already been and gone.
 
 ## Goal
 
-A stranger who arrives at the repository or the landing page can say what Roomler is
+A stranger who arrives at the repository or the landing page can say what MeshHarbor is
 within ten seconds, run it within ten minutes, and **leave an address without creating an
 account** — so that interest which does not convert immediately is not lost permanently.
 
@@ -122,7 +122,7 @@ account** — so that interest which does not convert immediately is not lost pe
       description is true of the code that ships with it — **done** (§2.14 + retention),
       written from the implementation rather than from a template
 - [ ] `docker compose -f docker-compose.selfhost.yml --env-file .env.selfhost up -d --build` brings up a working instance on a clean machine, and `/health` answers 200 **(operator — needs a clean box and a 10–20 min build)**
-- [ ] a 60–90 s demo (enroll → browser desktop → `roomler ssh` → `roomler forward`) exists
+- [ ] a 60–90 s demo (enroll → browser desktop → `meshharbor ssh` → `meshharbor forward`) exists
       and is embedded in the README **(operator — needs a real capture session)**
 
 ## Open decisions
@@ -131,7 +131,7 @@ account** — so that interest which does not convert immediately is not lost pe
   be mailed, but list *sending* is a separate program; P4 stores the token and attempts the
   send through the existing mail path, and an unconfirmed row is still a row.
 - **Where the comparison documents ultimately live.** `docs/` is crawlable through GitHub
-  today, which is enough to be useful and to link from. Ranking them on `roomler.ai`
+  today, which is enough to be useful and to link from. Ranking them on `meshharbor.itachi.fans`
   needs server-side rendering, which the SPA does not do — a separate FR if it is wanted.
 
 ## Out of scope

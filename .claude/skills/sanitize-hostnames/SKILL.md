@@ -61,7 +61,7 @@ lowercase form is a profile directory and an email local part.
 ## Running it
 
 ```bash
-R=/mnt/c/dev/gjovanov/roomler-ai; M=/mnt/c/dev/gjovanov/sanitize-map.txt
+R=/mnt/c/dev/jk-zhang-meta/MeshHarbor; M=/mnt/c/dev/gjovanov/sanitize-map.txt
 S=$R/.claude/skills/sanitize-hostnames
 
 # 1. working tree

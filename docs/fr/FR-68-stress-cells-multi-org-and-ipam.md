@@ -3,7 +3,7 @@
 **Status**: shipped and field-verified — **every AC met except AC2**, which is
 deliberately deferred (see "Is AC2 worth its cost?"). All PRs merged, both
 repos. · **Owner**: overlay/networking ·
-**Issue**: [#1272](https://github.com/gjovanov/roomler-ai/issues/1272)
+**Issue**: [#1272](https://github.com/jk-zhang-meta/MeshHarbor/issues/1272)
 
 ## Goal
 
@@ -64,7 +64,7 @@ Turn two overlay properties from **promises into properties**:
 
 **L2 — two VM cells** (FR-61 matrix, dedicated vmtest orgs, destructive).
 
-**L3 — fleet, read-only.** Two `roomler peers --json` + `roomler status` snapshots ≥30 s
+**L3 — fleet, read-only.** Two `meshharbor peers --json` + `meshharbor status` snapshots ≥30 s
 apart on the real multi-org Windows hosts (neo16, CORPLAP-3). No mutation, no VPN cycling,
 nothing on prod cluster nodes.
 
@@ -213,7 +213,7 @@ proves nothing that `a35720b6`/`182a4121` do not already prove.
 
 Growth is gated server-side on `overlay.multi_block_enabled`
 (`crates/api/src/ws/overlay.rs:393`). The prod configmap
-(`k8s/base/configmap-roomler2-config.yaml:62`) sets
+(`k8s/base/configmap-meshharbor2-config.yaml:62`) sets
 `MESHHARBOR__OVERLAY__BLOCKS_ENABLED: "true"` and **sets `MULTI_BLOCK` nowhere**, so
 production runs the code default `false`. Turning it on is a **one-way door for
 that database**: once any network holds two assigned blocks the
@@ -226,7 +226,7 @@ verification exists to license.
 
 **~~Resolution — the `e2e` overlay.~~ ⚠️ RETRACTED 2026-09-04 — do NOT use it.**
 `k8s/overlays/e2e` is a complete, separate, non-ArgoCD-managed stack, which is
-why it looked right. But measured on the cluster: the `roomler-ai-e2e`
+why it looked right. But measured on the cluster: the `meshharbor-e2e`
 namespace is **live and 120 days old**, and a **cron job runs against it nightly
 at 03:30 UTC** (`e2e-nightly.sh` out of `~/wt-e2e-lane`, FR-37). It is a
 standing shared dependency, not a scratch stack.
@@ -238,7 +238,7 @@ unrelated boot error. (Its mongo is `emptyDir`, so the door resets on a pod
 recycle — that lowers the severity but does not make it someone else's stack to
 change.)
 
-**Use a separate disposable namespace instead** — `roomler-ai-ipam`, copied
+**Use a separate disposable namespace instead** — `meshharbor-ipam`, copied
 from the e2e overlay as a template (it already has ephemeral storage and
 plaintext secrets, both of which suit a throwaway). The door is then confined to
 a database that exists only for the test.
@@ -317,7 +317,7 @@ inverted cell in it would rot the ledger. `multiorg-control` re-runs with
 eviction counter climbs**. A cell whose control does not reproduce the war is
 not measuring anything.
 
-⚠️ `roomler status --json` has **no per-org address field** — the overlay
+⚠️ `meshharbor status --json` has **no per-org address field** — the overlay
 address is top-level `.overlay_ip`. A multi-org cell needs a per-org assertion
 surface that does not exist yet; the `route guard` counters (C1) are the
 substitute.
@@ -344,7 +344,7 @@ is a multi-org host again. CORPLAP-3 is the other.
 - Integration tests need BOTH `MESHHARBOR__DATABASE__URL` and
   `MESHHARBOR__REDIS__URL` on this box; without mongo auth every test dies in
   ~0.03 s with `Command createIndexes requires authentication`.
-- `roomler ssh mars` is refused (policy off); `roomler exec` works but
+- `meshharbor ssh mars` is refused (policy off); `meshharbor exec` works but
   re-splits argv, so multi-word commands need care.
 - The deploy repo stores **LF** (`git ls-files --eol` → `i/lf w/crlf`); the
   Windows worktree is CRLF via `autocrlf`. `git cat-file -p` applies the smudge
@@ -402,7 +402,7 @@ enrolled into TWO orgs, 120 s guard window:
 | `multiorg-narrow` | +0 | **+80** | +80 | the exemption IS load-bearing: one spare per wave |
 | `multiorg-war` | **+67** | +0 | +80 | the pre-#1246 war reproduces |
 
-Each run verified two adapters (`roomler` + `roomler-6a99ff0`) and dumped
+Each run verified two adapters (`meshharbor` + `meshharbor-6a99ff0`) and dumped
 `org ls` and every `fd72:*` route, so the numbers are anchored to an observed
 topology rather than a bare PASS.
 
@@ -417,7 +417,7 @@ topology rather than a bare PASS.
    `enroll` appends every org entry with `overlay_mode: Off`, hardcoded
    (`agent-core/src/enrollment.rs`, with a test asserting it); `--overlay` sets
    the PRIMARY's `overlay_enabled` and cannot switch a secondary on. The
-   sequence needs `roomlerd org overlay <label> tun` — which this FR's own plan
+   sequence needs `meshharbord org overlay <label> tun` — which this FR's own plan
    specified and the driver never called. The guest came up with ONE adapter,
    so `evicted=0 spared=0` was a structural zero with no sibling to contend
    with. Caught only because the `narrow` control refused to reproduce.
@@ -461,7 +461,7 @@ which is what a deterministic path should give.
 The 12 NA are the by-design impossible combinations, and the 15 WARNs are the
 best-effort `overlay-reverse` checks plus one teardown row awaiting the reaper's
 TTL. ⚠️ `overlay-reverse` WARNs on every cell; it does not gate the verdict and
-touches none of the changed helpers (it is `docker exec vmtest-anchor roomler
+touches none of the changed helpers (it is `docker exec vmtest-anchor meshharbor
 ping`), so it is a standing property of the anchor's reverse path to a fresh VM,
 not a regression. No retained earlier run carries these lanes to compare
 against — stated as reasoning from the code, not as a measured before/after.

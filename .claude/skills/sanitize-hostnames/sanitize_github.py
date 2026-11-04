@@ -98,7 +98,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--map", required=True, type=Path)
-    ap.add_argument("--repo", default="gjovanov/roomler-ai")
+    ap.add_argument("--repo", default="jk-zhang-meta/MeshHarbor")
     g = ap.add_mutually_exclusive_group(required=True)
     g.add_argument("--apply", action="store_true")
     g.add_argument("--check", action="store_true")

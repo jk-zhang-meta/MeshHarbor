@@ -4,7 +4,7 @@ Status: **CLOSED — all three causes fixed and field-verified (agent-v0.4.31 / 
 
 ## Goal
 
-Two people viewing the **same** remote screen at once must both see it, and neither may disrupt the other. Roomler already shares ONE encoder across same-profile viewers (`crates`… `agents/meshharbord/src/media_share.rs` — the P5 shared pipeline: a LEADER runs the capture/encode pump, later same-profile sessions register as FOLLOWERS and receive every encoded packet via their own DataChannel). The sharing existed; its correctness under a real second viewer did not.
+Two people viewing the **same** remote screen at once must both see it, and neither may disrupt the other. MeshHarbor already shares ONE encoder across same-profile viewers (`crates`… `agents/meshharbord/src/media_share.rs` — the P5 shared pipeline: a LEADER runs the capture/encode pump, later same-profile sessions register as FOLLOWERS and receive every encoded packet via their own DataChannel). The sharing existed; its correctness under a real second viewer did not.
 
 ## Field evidence
 

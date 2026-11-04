@@ -365,7 +365,7 @@ mod tests {
 
     #[test]
     fn hostport_brackets_a_v6_literal() {
-        assert_eq!(hostport("roomler.ai", 443), "roomler.ai:443");
+        assert_eq!(hostport("meshharbor.itachi.fans", 443), "meshharbor.itachi.fans:443");
         assert_eq!(hostport("2001:db8::1", 3478), "[2001:db8::1]:3478");
         assert_eq!(hostport("[2001:db8::1]", 3478), "[2001:db8::1]:3478");
     }

@@ -2338,7 +2338,7 @@ mod tests {
             Some(IpAddr::V4(Ipv4Addr::new(100, 64, 0, 1)))
         );
         assert_eq!(
-            st.resolve_overlay("PEER.myorg.roomler.net", false),
+            st.resolve_overlay("PEER.myorg.meshharbor.net", false),
             Some(IpAddr::V4(Ipv4Addr::new(100, 64, 0, 1)))
         );
         assert_eq!(

@@ -4,38 +4,38 @@
 #   - drop nodeSelector pinning to k8s-worker-3 (no PVC binding here)
 #   - drop tier=high-performance affinity (any node is fine for e2e)
 #   - lower resource requests/limits (e2e doesn't need 2GB / 2 CPU)
-#   - regcred imagePullSecret (registry.roomler.ai is private)
+#   - regcred imagePullSecret (registry.meshharbor.itachi.fans is private)
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: roomler2
+  name: meshharbor2
   labels:
-    app: roomler2
+    app: meshharbor2
 spec:
   replicas: 1
   strategy:
     type: Recreate
   selector:
     matchLabels:
-      app: roomler2
+      app: meshharbor2
   template:
     metadata:
       labels:
-        app: roomler2
+        app: meshharbor2
     spec:
       imagePullSecrets:
         - name: regcred
       containers:
-        - name: roomler2
-          image: gjovanov/roomler-ai:latest # rewritten by kustomization images:
+        - name: meshharbor2
+          image: jk-zhang-meta/MeshHarbor:latest # rewritten by kustomization images:
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 80
           envFrom:
             - configMapRef:
-                name: roomler2-config
+                name: meshharbor2-config
             - secretRef:
-                name: roomler2-secret
+                name: meshharbor2-secret
           startupProbe:
             httpGet:
               path: /health

@@ -26,7 +26,7 @@ function roundTrip(message: Uint8Array): Uint8Array {
   return out as Uint8Array
 }
 
-describe('hive framing (the browser half of roomlerd/src/hive/framing.rs)', () => {
+describe('hive framing (the browser half of meshharbord/src/hive/framing.rs)', () => {
   it('carries messages of every size', () => {
     for (const len of [0, 1, MAX_PAYLOAD - 1, MAX_PAYLOAD, MAX_PAYLOAD + 1, 300_000]) {
       const message = new Uint8Array(len).map((_, i) => i % 251)

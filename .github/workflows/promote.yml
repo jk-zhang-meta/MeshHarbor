@@ -32,7 +32,7 @@ on:
       deploy_repo:
         description: 'Deploy repository (owner/name)'
         type: string
-        default: 'gjovanov/roomler-ai-deploy'
+        default: 'jk-zhang-meta/meshharbor-deploy'
 
 permissions:
   contents: read
@@ -85,7 +85,7 @@ jobs:
       # whose content changed. Off unless the repository variable
       # INDEXNOW_ENABLED is 'true'. Warn-only: a missed hint to a crawler never
       # fails a promote. The key is public by design: an engine verifies a
-      # submission by fetching https://roomler.ai/<key>.txt (`ui/public/`).
+      # submission by fetching https://meshharbor.itachi.fans/<key>.txt (`ui/public/`).
       - name: IndexNow — check out the script and the key
         if: vars.INDEXNOW_ENABLED == 'true'
         uses: actions/checkout@v4
@@ -98,7 +98,7 @@ jobs:
       - name: IndexNow — snapshot the served sitemaps before the bump
         if: vars.INDEXNOW_ENABLED == 'true'
         continue-on-error: true
-        run: bash scripts/indexnow.sh snapshot https://roomler.ai "$RUNNER_TEMP/sitemaps-before.tsv"
+        run: bash scripts/indexnow.sh snapshot https://meshharbor.itachi.fans "$RUNNER_TEMP/sitemaps-before.tsv"
 
       - name: Bump the deploy repo
         id: bump
@@ -110,15 +110,15 @@ jobs:
           set -euo pipefail
           if [ -z "${DEPLOY_REPO_TOKEN:-}" ]; then
             echo "::warning title=DEPLOY_REPO_TOKEN is not set::No bump made. Run on any machine with the deploy repo:"
-            echo "    sed -i 's|newTag:.*|newTag: ${TAG}|' ${KUSTOMIZATION} && git commit -am 'chore(k8s): bump roomler-ai to ${TAG}' && git push"
+            echo "    sed -i 's|newTag:.*|newTag: ${TAG}|' ${KUSTOMIZATION} && git commit -am 'chore(k8s): bump meshharbor to ${TAG}' && git push"
             echo "bumped=no" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           git clone --depth 1 "https://x-access-token:${DEPLOY_REPO_TOKEN}@github.com/${DEPLOY_REPO}.git" deploy \
             || { echo "::error::could not clone ${DEPLOY_REPO} with DEPLOY_REPO_TOKEN — the token cannot READ the deploy repo (wrong repo scope, or expired)"; exit 1; }
           cd deploy
-          git config user.name  'roomler-promote[bot]'
-          git config user.email 'promote@roomler.ai'
+          git config user.name  'meshharbor-promote[bot]'
+          git config user.email 'promote@meshharbor.itachi.fans'
           # Prove WRITE access before touching anything: an empty commit pushed
           # with --dry-run makes the server run its receive-pack permission
           # check and update nothing. A Contents:read-only token dies here.
@@ -149,7 +149,7 @@ jobs:
             exit 0
           fi
           sed -i "s|^\(\s*newTag:\).*|\1 ${TAG}|" "$KUSTOMIZATION"
-          git commit -am "chore(k8s): bump roomler-ai to ${TAG} (was ${OLD}) — promoted by ${GITHUB_ACTOR} via FR-73"
+          git commit -am "chore(k8s): bump meshharbor to ${TAG} (was ${OLD}) — promoted by ${GITHUB_ACTOR} via FR-73"
           git push
           echo "bumped=yes" >> "$GITHUB_OUTPUT"
           echo "old=$OLD" >> "$GITHUB_OUTPUT"
@@ -166,7 +166,7 @@ jobs:
           T0=$(date +%s)
           BAD=0
           for i in $(seq 1 60); do
-            C="$(curl -s -o /dev/null -m 5 -w '%{http_code}' https://roomler.ai/health || echo 000)"
+            C="$(curl -s -o /dev/null -m 5 -w '%{http_code}' https://meshharbor.itachi.fans/health || echo 000)"
             [ "$C" = "200" ] || BAD=$((BAD + 1))
             sleep 10
           done
@@ -182,9 +182,9 @@ jobs:
           set -u
           KEY="$(ls ui/public | sed -nE 's/^([0-9a-f]{32})\.txt$/\1/p' | head -1)"
           [ -n "$KEY" ] || { echo "::warning title=IndexNow::no ui/public/<key>.txt in the checkout — nothing submitted"; exit 1; }
-          bash scripts/indexnow.sh snapshot https://roomler.ai "$RUNNER_TEMP/sitemaps-after.tsv" || exit 1
+          bash scripts/indexnow.sh snapshot https://meshharbor.itachi.fans "$RUNNER_TEMP/sitemaps-after.tsv" || exit 1
           bash scripts/indexnow.sh changed "$RUNNER_TEMP/sitemaps-before.tsv" "$RUNNER_TEMP/sitemaps-after.tsv" > "$RUNNER_TEMP/changed.txt"
-          bash scripts/indexnow.sh submit https://roomler.ai "$KEY" < "$RUNNER_TEMP/changed.txt" > "$RUNNER_TEMP/indexnow.txt" 2>&1
+          bash scripts/indexnow.sh submit https://meshharbor.itachi.fans "$KEY" < "$RUNNER_TEMP/changed.txt" > "$RUNNER_TEMP/indexnow.txt" 2>&1
           RC=$?
           cat "$RUNNER_TEMP/indexnow.txt"
           { echo '### IndexNow'; echo '```'; cat "$RUNNER_TEMP/indexnow.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"

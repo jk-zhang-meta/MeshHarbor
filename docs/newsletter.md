@@ -87,7 +87,7 @@ issue's canonical `.md` source (frontmatter + markdown body).
   also switches subscription, open, click and Google Analytics tracking off in the request
   itself; the account setting still governs every other mail.)
 - **Delivery events** (FR-102 P5): in SendGrid → Mail Settings → Event Webhook, POST to
-  `https://roomler.ai/api/sendgrid/webhook` with **Delivered, Bounced, Dropped, Spam
+  `https://meshharbor.itachi.fans/api/sendgrid/webhook` with **Delivered, Bounced, Dropped, Spam
   Reports** selected (never Opened or Clicked), enable **Signature Verification** and put
   the public key it shows in `MESHHARBOR__NEWSLETTER__EVENT_WEBHOOK_PUBLIC_KEY`. At boot the
   module reads the account's open/click tracking and logs a WARN if either is on — give the
@@ -97,7 +97,7 @@ issue's canonical `.md` source (frontmatter + markdown body).
   never edit one in place, bump the version).
 - **No tracking pixels, nothing per reader** — the email footer's promise ("the only
   per-recipient thing in this email is your unsubscribe link") is literally true. FR-102 P5
-  counts each **issue**: its links to roomler.ai carry `utm_source=newsletter&utm_medium=email&
+  counts each **issue**: its links to meshharbor.itachi.fans carry `utm_source=newsletter&utm_medium=email&
   utm_campaign=nl-<slug>`, identical for every recipient (rendered before the per-recipient
   substitution, and pinned by a test that two recipients' messages differ only in the
   unsubscribe link); the unsubscribe link adds `i=<slug>`; SendGrid's delivery events are

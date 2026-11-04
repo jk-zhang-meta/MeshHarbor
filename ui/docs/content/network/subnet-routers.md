@@ -71,7 +71,7 @@ bridge into a production network.
 From another device:
 
 ```bash
-roomler status     # confirm you have the route
+meshharbor status     # confirm you have the route
 ping <an-address-in-the-range>
 ```
 

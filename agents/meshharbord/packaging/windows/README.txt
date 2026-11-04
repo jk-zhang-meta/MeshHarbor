@@ -40,12 +40,12 @@ Open PowerShell (no need to run as administrator) and run:
     $agent = "$env:LOCALAPPDATA\Programs\MeshHarbor\meshharbord.exe"
 
     # 1. Generate an enrollment JWT in the admin UI at
-    #    http://roomler.ai/ (Admin -> Agents -> New agent).
+    #    http://meshharbor.itachi.fans/ (Admin -> Agents -> New agent).
     #    It is valid for 10 minutes and can only be used once.
     #
     # 2. Enroll this machine:
     & $agent enroll `
-        --server http://roomler.ai/ `
+        --server http://meshharbor.itachi.fans/ `
         --token <paste-enrollment-jwt> `
         --name $env:COMPUTERNAME
 
@@ -59,7 +59,7 @@ You should see log lines like:
     awaiting session
 
 At that point this machine appears (online) in the admin UI at
-http://roomler.ai/ under Admin -> Agents. A controller can click
+http://meshharbor.itachi.fans/ under Admin -> Agents. A controller can click
 "Connect" to open a remote desktop session.
 
 Autostart on logon (registered automatically since 0.1.54)
@@ -190,7 +190,7 @@ or use one of the account-independent routes below.
 From PowerShell (either finds the product code for you):
 
     # one-shot, removes every MeshHarbor install this account can see:
-    & ([scriptblock]::Create((irm https://roomler.ai/api/setup/install.ps1))) -Uninstall
+    & ([scriptblock]::Create((irm https://meshharbor.itachi.fans/api/setup/install.ps1))) -Uninstall
 
     # or manually:
     Get-ChildItem HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall,
@@ -209,6 +209,6 @@ Set `RUST_LOG=meshharbord=debug,webrtc=debug` for verbose output.
 
 Support
 -------
-Project:  https://roomler.ai/
-Source:   https://github.com/gjovanov/roomler-ai
+Project:  https://meshharbor.itachi.fans/
+Source:   https://github.com/jk-zhang-meta/MeshHarbor
 # RETIRED-NAME-ANCHOR-END

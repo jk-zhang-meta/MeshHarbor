@@ -63,8 +63,8 @@ $cert = New-SelfSignedCertificate `
 Ok "thumbprint: $($cert.Thumbprint)"
 Ok "expires:    $($cert.NotAfter)"
 
-$pfxPath = Join-Path $OutDir 'roomler-dev.pfx'
-$cerPath = Join-Path $OutDir 'roomler-dev.cer'
+$pfxPath = Join-Path $OutDir 'meshharbor-dev.pfx'
+$cerPath = Join-Path $OutDir 'meshharbor-dev.cer'
 $pwSecure = ConvertTo-SecureString -String $Password -Force -AsPlainText
 
 Export-PfxCertificate -Cert $cert -FilePath $pfxPath -Password $pwSecure | Out-Null
@@ -73,9 +73,9 @@ Ok "pfx: $pfxPath   (PRIVATE KEY -- gitignored, never commit)"
 Ok "cer: $cerPath   (public, safe to distribute for GPO/Intune trust)"
 
 $b64 = [Convert]::ToBase64String([IO.File]::ReadAllBytes($pfxPath))
-$b64Path = Join-Path $OutDir 'roomler-dev.pfx.base64'
+$b64Path = Join-Path $OutDir 'meshharbor-dev.pfx.base64'
 Set-Content -Path $b64Path -Value $b64 -Encoding ascii
-$pwPath = Join-Path $OutDir 'roomler-dev.password.txt'
+$pwPath = Join-Path $OutDir 'meshharbor-dev.password.txt'
 Set-Content -Path $pwPath -Value $Password -Encoding ascii
 
 Write-Host ''

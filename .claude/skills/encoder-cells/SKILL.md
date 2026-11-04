@@ -1,6 +1,6 @@
 ---
 name: encoder-cells
-description: The invariants that govern roomler's video-encoder surface — the capability probe (child processes, phases, cache, denylist), the codec × backend × chroma cell matrix, and the per-backend FFmpeg gotchas (NVENC, QSV, AMF, VAAPI, D3D12, Vulkan, VideoToolbox). Load BEFORE touching anything under agents/meshharbord/src/encode/, the caps/hello wire, encoder cascades or chroma selection, before adding or denying a codec/backend cell, when a host advertises no hardware or a session paints garbage, or when changing the vendored FFmpeg build. FR-77 / FR-78.
+description: The invariants that govern meshharbor's video-encoder surface — the capability probe (child processes, phases, cache, denylist), the codec × backend × chroma cell matrix, and the per-backend FFmpeg gotchas (NVENC, QSV, AMF, VAAPI, D3D12, Vulkan, VideoToolbox). Load BEFORE touching anything under agents/meshharbord/src/encode/, the caps/hello wire, encoder cascades or chroma selection, before adding or denying a codec/backend cell, when a host advertises no hardware or a session paints garbage, or when changing the vendored FFmpeg build. FR-77 / FR-78.
 ---
 
 # Encoder cells and the capability probe
@@ -11,14 +11,14 @@ are cheap to break and expensive to have broken.
 
 ## 1 · The probe is a child process, and any failure means "no hardware"
 
-`encode::caps::detect()` spawns `roomlerd caps-probe` (hidden subcommand), reads
+`encode::caps::detect()` spawns `meshharbord caps-probe` (hidden subcommand), reads
 one `MESHHARBOR_CAPS_JSON:{…}` line, and treats **any** failure — non-zero exit,
 killed by a signal, 60 s timeout, unspawnable, unparseable — as *every hardware
 codec is unavailable*, falling back to `compute_caps(false)`.
 
 A capability probe is untrusted third-party code by definition (vendor drivers,
 GPU firmware) and does not belong in the daemon's address space. Before this, a
-fault inside a probe took `roomlerd` down and the service manager restarted it
+fault inside a probe took `meshharbord` down and the service manager restarted it
 straight back into the same probe — a **crash-loop**, not a degraded agent.
 
 ⚠️ `MESHHARBORD_HW_AUTO=0` / `MESHHARBORD_ENCODER=software` do **not** skip the probe.
@@ -105,7 +105,7 @@ lacking one (`with_av1_temporal_delimiter`), for every AV1 backend — **necessa
 not sufficient**: the repaired build still showed correct keyframes and corrupt
 inter frames, and the FFmpeg CLI's own `av1_vulkan` on the same GPU emits frames
 dav1d cannot parse. That is an FFmpeg 9.0.1 / NVIDIA driver defect with no
-roomler code in the loop, so `av1_vulkan:yuv420` is the built-in denylist's one
+meshharbor code in the loop, so `av1_vulkan:yuv420` is the built-in denylist's one
 4:2:0 entry.
 
 Diagnostic that attributed it in one run:

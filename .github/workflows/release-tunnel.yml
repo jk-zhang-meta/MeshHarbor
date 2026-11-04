@@ -2,14 +2,14 @@
 # Every retired name in this workflow is either a PUBLISHED release-asset name
 # (already-released files cannot be renamed, and the updater's picker matches
 # those strings) or a FROZEN install path — the RPATH-bound
-# /usr/lib/roomler-agent, the macOS .app bundle whose name keys the TCC grants,
+# /usr/lib/meshharbor-agent, the macOS .app bundle whose name keys the TCC grants,
 # or the inert meshharbor-agent.exe alias the deployed fleet still resolves.
 # INVARIANT: a retired name here must be a published artifact name or a path a
 # real host has. If you add one that is neither, that is a bug, not a new
 # exemption. docs/fr/FR-21
-name: Release roomler-tunnel
+name: Release meshharbor-tunnel
 
-# Builds the `roomler-tunnel` CLI binary for the desktop targets the
+# Builds the `meshharbor-tunnel` CLI binary for the desktop targets the
 # operator might run on — Linux x86_64, Linux aarch64 (FR-97 P7b), macOS
 # (universal — x86_64 + aarch64), and Windows x86_64. Outputs a plain archive
 # (tar.gz / zip) per target, plus a `.deb` per Linux arch for Debian / Ubuntu
@@ -28,7 +28,7 @@ name: Release roomler-tunnel
 #  - `workflow_dispatch` with `version` + optional `publish_release` →
 #    artifacts only (30-day retention) unless `publish_release=true`.
 #
-# roomler-tunnel has NO native deps beyond what `webrtc-rs` brings (rustls,
+# meshharbor-tunnel has NO native deps beyond what `webrtc-rs` brings (rustls,
 # pure Rust). No libvpx, no scrap, no enigo. Builds compile cleanly on every
 # target's default GitHub runner.
 
@@ -151,24 +151,24 @@ jobs:
         # the tool present; a plain install hard-errors on it (rc.383's
         # agent release died on exactly this).
         run: command -v cargo-deb >/dev/null || cargo install cargo-deb --locked
-      - name: Build roomler-tunnel (release)
+      - name: Build meshharbor-tunnel (release)
         run: cargo build -p meshharbor-cli --release
       - name: Strip binary
-        # P3d Slice B: CLI OUTPUT binary is now `roomler` (was `roomler-tunnel`).
-        run: strip target/release/roomler
+        # P3d Slice B: CLI OUTPUT binary is now `meshharbor` (was `meshharbor-tunnel`).
+        run: strip target/release/meshharbor
       - name: Pack tarball
         id: tar
         shell: bash
         run: |
           set -euo pipefail
           version="${{ needs.validate-version.outputs.version }}"
-          name="roomler-tunnel-${version}-x86_64-unknown-linux-gnu"
+          name="meshharbor-tunnel-${version}-x86_64-unknown-linux-gnu"
           mkdir -p "/tmp/${name}"
-          # P3d Slice C: the legacy `roomler-tunnel` in-archive alias is retired —
+          # P3d Slice C: the legacy `meshharbor-tunnel` in-archive alias is retired —
           # every live consumer (rc.194+ self-update, meshharbor-setup's
-          # find_tunnel_binary, install.sh) resolves the new `roomler` name first.
-          # Archive NAME keeps the roomler-tunnel-… prefix (frozen contract).
-          cp target/release/roomler "/tmp/${name}/"
+          # find_tunnel_binary, install.sh) resolves the new `meshharbor` name first.
+          # Archive NAME keeps the meshharbor-tunnel-… prefix (frozen contract).
+          cp target/release/meshharbor "/tmp/${name}/"
           cp LICENSE README.md "/tmp/${name}/" 2>/dev/null || true
           (cd /tmp && tar czf "${name}.tar.gz" "${name}")
           sha256sum "/tmp/${name}.tar.gz" | awk '{print $1"  "$2}' > "/tmp/${name}.tar.gz.sha256"
@@ -185,11 +185,11 @@ jobs:
           version="${{ needs.validate-version.outputs.version }}"
           # FR-21 P2b: cargo-deb emits `<package>_…`, and the package is
           # `meshharbor-cli` now. The DESTINATION asset name deliberately stays
-          # `roomler-tunnel-…` — a published, immutable surface that every prior
+          # `meshharbor-tunnel-…` — a published, immutable surface that every prior
           # release carries, and the updater matches on extension + arch, not
           # the prefix.
-          src=$(ls target/debian/roomler-cli_*_amd64.deb | head -n1)
-          dst="roomler-tunnel-${version}-x86_64-unknown-linux-gnu.deb"
+          src=$(ls target/debian/meshharbor-cli_*_amd64.deb | head -n1)
+          dst="meshharbor-tunnel-${version}-x86_64-unknown-linux-gnu.deb"
           mv "$src" "$dst"
           sha256sum "$dst" | awk '{print $1"  "$2}' > "${dst}.sha256"
           echo "artifact=${dst}" >> "$GITHUB_OUTPUT"
@@ -208,7 +208,7 @@ jobs:
   # 1b. Linux aarch64 — tarball + .deb (FR-97 P7b)
   # ---------------------------------------------------------------------------
   # The same two artifacts, built natively on the arm64 runner. The asset names
-  # follow the frozen `roomler-tunnel-<version>-<target>` contract with the
+  # follow the frozen `meshharbor-tunnel-<version>-<target>` contract with the
   # aarch64 triple, which is what the installer proxy matches
   # (tunnel_release.rs: `linux-aarch64`, `linux-deb-aarch64`). An x86_64 client
   # can never be handed one: every x86_64 pattern names its own triple.
@@ -234,19 +234,19 @@ jobs:
           save-if: ${{ github.ref_type != 'tag' }}
       - name: Install cargo-deb
         run: command -v cargo-deb >/dev/null || cargo install cargo-deb --locked
-      - name: Build roomler-tunnel (release)
+      - name: Build meshharbor-tunnel (release)
         run: cargo build -p meshharbor-cli --release
       - name: Strip binary
-        run: strip target/release/roomler
+        run: strip target/release/meshharbor
       - name: Pack tarball
         id: tar
         shell: bash
         run: |
           set -euo pipefail
           version="${{ needs.validate-version.outputs.version }}"
-          name="roomler-tunnel-${version}-aarch64-unknown-linux-gnu"
+          name="meshharbor-tunnel-${version}-aarch64-unknown-linux-gnu"
           mkdir -p "/tmp/${name}"
-          cp target/release/roomler "/tmp/${name}/"
+          cp target/release/meshharbor "/tmp/${name}/"
           cp LICENSE README.md "/tmp/${name}/" 2>/dev/null || true
           (cd /tmp && tar czf "${name}.tar.gz" "${name}")
           sha256sum "/tmp/${name}.tar.gz" | awk '{print $1"  "$2}' > "/tmp/${name}.tar.gz.sha256"
@@ -261,8 +261,8 @@ jobs:
         run: |
           set -euo pipefail
           version="${{ needs.validate-version.outputs.version }}"
-          src=$(ls target/debian/roomler-cli_*_arm64.deb | head -n1)
-          dst="roomler-tunnel-${version}-aarch64-unknown-linux-gnu.deb"
+          src=$(ls target/debian/meshharbor-cli_*_arm64.deb | head -n1)
+          dst="meshharbor-tunnel-${version}-aarch64-unknown-linux-gnu.deb"
           mv "$src" "$dst"
           sha256sum "$dst" | awk '{print $1"  "$2}' > "${dst}.sha256"
           echo "artifact=${dst}" >> "$GITHUB_OUTPUT"
@@ -274,8 +274,8 @@ jobs:
           set -euo pipefail
           dpkg-deb --field "${{ steps.deb.outputs.artifact }}" Architecture | grep -qx arm64
           sudo dpkg -i "${{ steps.deb.outputs.artifact }}"
-          readelf -h /usr/bin/roomler | grep -q 'Machine:.*AArch64'
-          roomler --version
+          readelf -h /usr/bin/meshharbor | grep -q 'Machine:.*AArch64'
+          meshharbor --version
           sudo dpkg -r meshharbor-cli
       - name: Upload Linux aarch64 artifacts
         uses: actions/upload-artifact@v4
@@ -312,33 +312,33 @@ jobs:
           # (GH cache isolation: own ref or default branch only) — only
           # non-tag runs (dispatch rehearsals on master) save.
           save-if: ${{ github.ref_type != 'tag' }}
-      - name: Build roomler-tunnel x86_64
+      - name: Build meshharbor-tunnel x86_64
         run: cargo build -p meshharbor-cli --release --target x86_64-apple-darwin
-      - name: Build roomler-tunnel aarch64
+      - name: Build meshharbor-tunnel aarch64
         run: cargo build -p meshharbor-cli --release --target aarch64-apple-darwin
       - name: Lipo into universal
         run: |
-          # P3d Slice B: per-target CLI binary is now `roomler` (was
-          # `roomler-tunnel`); lipo the two arch builds into the new name.
+          # P3d Slice B: per-target CLI binary is now `meshharbor` (was
+          # `meshharbor-tunnel`); lipo the two arch builds into the new name.
           mkdir -p target/release-universal
-          lipo -create -output target/release-universal/roomler \
-            target/x86_64-apple-darwin/release/roomler \
-            target/aarch64-apple-darwin/release/roomler
-          strip target/release-universal/roomler
-          file target/release-universal/roomler
+          lipo -create -output target/release-universal/meshharbor \
+            target/x86_64-apple-darwin/release/meshharbor \
+            target/aarch64-apple-darwin/release/meshharbor
+          strip target/release-universal/meshharbor
+          file target/release-universal/meshharbor
       # Sign + notarise the bare CLI. NOT stapled -- Apple only staples
       # bundles/.dmg/.pkg, never a loose Mach-O. That is acceptable here
       # because the CLI's install paths (`curl … | tar`, scripts/install.sh,
-      # `roomler self-update`) never set the quarantine attribute, so
+      # `meshharbor self-update`) never set the quarantine attribute, so
       # Gatekeeper does not evaluate those copies at all; signing +
       # notarisation covers the browser-download case on ONLINE Macs and
       # satisfies `spctl` policy on managed fleets. If offline validation is
       # ever needed, add a second stapled .pkg asset + a `macos-pkg` platform
       # key in tunnel_release.rs (the linux-deb precedent).
-      - name: Sign + notarise roomler (universal)
+      - name: Sign + notarise meshharbor (universal)
         uses: ./.github/actions/sign-macos
         with:
-          binary-path:          target/release-universal/roomler
+          binary-path:          target/release-universal/meshharbor
           require:              ${{ needs.validate-version.outputs.is_release == 'true' }}
           app-p12-base64:       ${{ secrets.APPLE_DEVELOPER_ID_APP_P12_BASE64 }}
           installer-p12-base64: ${{ secrets.APPLE_DEVELOPER_ID_INSTALLER_P12_BASE64 }}
@@ -352,11 +352,11 @@ jobs:
         run: |
           set -euo pipefail
           version="${{ needs.validate-version.outputs.version }}"
-          name="roomler-tunnel-${version}-universal-apple-darwin"
+          name="meshharbor-tunnel-${version}-universal-apple-darwin"
           mkdir -p "/tmp/${name}"
-          # P3d Slice C: legacy `roomler-tunnel` in-archive alias retired
+          # P3d Slice C: legacy `meshharbor-tunnel` in-archive alias retired
           # (see the Linux tarball step for the rationale).
-          cp target/release-universal/roomler "/tmp/${name}/"
+          cp target/release-universal/meshharbor "/tmp/${name}/"
           cp LICENSE README.md "/tmp/${name}/" 2>/dev/null || true
           (cd /tmp && tar czf "${name}.tar.gz" "${name}")
           shasum -a 256 "/tmp/${name}.tar.gz" | awk '{print $1"  "$2}' > "/tmp/${name}.tar.gz.sha256"
@@ -399,7 +399,7 @@ jobs:
           # (GH cache isolation: own ref or default branch only) — only
           # non-tag runs (dispatch rehearsals on master) save.
           save-if: ${{ github.ref_type != 'tag' }}
-      - name: Build roomler-tunnel (release)
+      - name: Build meshharbor-tunnel (release)
         shell: pwsh
         # Static CRT: the standalone zip's meshharbor.exe runs from any
         # dir on arbitrary fresh machines -- it must not assume the
@@ -418,7 +418,7 @@ jobs:
         uses: ./.github/actions/sign-windows
         with:
           files:                    target\release\meshharbor.exe
-          description:              'Roomler CLI'
+          description:              'MeshHarbor CLI'
           mode:                     ${{ github.event.inputs.signing_mode || 'auto' }}
           require:                  ${{ needs.validate-version.outputs.is_release == 'true' || github.event.inputs.require_signing == 'true' }}
           expect-subject-contains:  ${{ vars.AZURE_SIGNING_EXPECT_SUBJECT }}
@@ -435,14 +435,14 @@ jobs:
         shell: pwsh
         run: |
           $version = "${{ needs.validate-version.outputs.version }}"
-          $name = "roomler-tunnel-$version-x86_64-pc-windows-msvc"
+          $name = "meshharbor-tunnel-$version-x86_64-pc-windows-msvc"
           New-Item -ItemType Directory -Path "$env:RUNNER_TEMP\$name" -Force | Out-Null
           # P3d Slice C: legacy `meshharbor-tunnel.exe` in-zip alias retired — rc.194+
           # self-updaters and the setup wizard both extract `meshharbor.exe` first.
           # (A pre-rc.194 CLI waking from dormancy can still RUN; only its
           # self-update would need a manual refresh — none live in the fleet,
           # verified against prod tunnel_clients 2026-07-22.) Zip asset name
-          # keeps the `roomler-tunnel-…zip` prefix (updater/proxy prefix-agnostic).
+          # keeps the `meshharbor-tunnel-…zip` prefix (updater/proxy prefix-agnostic).
           Copy-Item target\release\meshharbor.exe "$env:RUNNER_TEMP\$name\"
           if (Test-Path LICENSE) { Copy-Item LICENSE "$env:RUNNER_TEMP\$name\" }
           if (Test-Path README.md) { Copy-Item README.md "$env:RUNNER_TEMP\$name\" }
@@ -501,7 +501,7 @@ jobs:
             gpg --batch --yes --pinentry-mode loopback --passphrase "$GPG_PASSPHRASE" \
                 --armor --detach-sign "$f"
           done
-          gpg --batch --armor --export > release/roomler-release-pubkey.asc
+          gpg --batch --armor --export > release/meshharbor-release-pubkey.asc
       - name: Attest build provenance
         uses: actions/attest-build-provenance@v3
         with:
@@ -510,11 +510,11 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.validate-version.outputs.tag }}
-          name: roomler-tunnel ${{ needs.validate-version.outputs.version }}
+          name: meshharbor-tunnel ${{ needs.validate-version.outputs.version }}
           draft: false
           prerelease: ${{ contains(needs.validate-version.outputs.version, 'rc.') || contains(needs.validate-version.outputs.version, 'alpha') || contains(needs.validate-version.outputs.version, 'beta') }}
           body: |
-            Automated build of `roomler-tunnel` ${{ needs.validate-version.outputs.version }} via
+            Automated build of `meshharbor-tunnel` ${{ needs.validate-version.outputs.version }} via
             [release-tunnel.yml](.github/workflows/release-tunnel.yml).
 
             **Install / download:**
@@ -525,21 +525,21 @@ jobs:
 
             **First-use:**
             1. Extract the archive.
-            2. From the Roomler admin UI → Tenant → Tunnels, click "Issue enrollment token".
-            3. Run the copied `roomler enroll …` command.
+            2. From the MeshHarbor admin UI → Tenant → Tunnels, click "Issue enrollment token".
+            3. Run the copied `meshharbor enroll …` command.
             4. From Admin → Tunnel ACL, create at least one policy authorising your subject + agent + destination.
-            5. Run `roomler forward --agent <hex> --local <port> --remote <host:port>`.
+            5. Run `meshharbor forward --agent <hex> --local <port> --remote <host:port>`.
           files: release/*
 
   # ---------------------------------------------------------------------------
-  # Bust the roomler.ai release cache — see the long-form rationale in
+  # Bust the meshharbor.itachi.fans release cache — see the long-form rationale in
   # release-agent.yml. `/api/{agent,tunnel,setup}/latest-release` share ONE
   # per-pod cache, so every release family needs this step; one POST busts
   # every pod (the receiving pod fans out over the C-1 control bus).
   # Non-blocking: the 15-minute cache TTL is the backstop.
   # ---------------------------------------------------------------------------
   refresh-release-cache:
-    name: Refresh roomler.ai release cache
+    name: Refresh meshharbor.itachi.fans release cache
     if: needs.validate-version.outputs.is_release == 'true'
     needs: [validate-version, publish-release]
     runs-on: ubuntu-latest
@@ -558,7 +558,7 @@ jobs:
           for attempt in 1 2 3; do
             body=$(curl -sS -m 90 -X POST \
               -H "Authorization: Bearer ${TOKEN}" \
-              "https://roomler.ai/api/releases/refresh?expect_tag=${TAG}")
+              "https://meshharbor.itachi.fans/api/releases/refresh?expect_tag=${TAG}")
             if [ "$(jq -r '.all_ok' <<<"$body" 2>/dev/null)" = "true" ]; then
               jq . <<<"$body"
               echo "Release cache refreshed on every live pod for ${TAG}"

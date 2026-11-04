@@ -1,6 +1,6 @@
 # FR-64 — Remote desktop never rides the overlay
 
-**Issue:** [#1244](https://github.com/gjovanov/roomler-ai/issues/1244) · **Status:** proposed · **Plan:** `immutable-doodling-neumann` (approved 2026-09-02)
+**Issue:** [#1244](https://github.com/jk-zhang-meta/MeshHarbor/issues/1244) · **Status:** proposed · **Plan:** `immutable-doodling-neumann` (approved 2026-09-02)
 
 **Parent/siblings:** FR-59 (the regression that motivated the arc). This is one of three FRs from that plan (FR-62 encoder apply path, FR-63 the controller, FR-64 the data path).
 
@@ -21,7 +21,7 @@ Same root, second symptom: **#1237** — on multi-org hosts the two org runtimes
 - [ ] AC2 — CORPLAP-3 on the LAN: the native `192.168.0.x` pair, p50 ≤ 50 ms.
 - [ ] AC3 — `overlay_ice_candidates = true` brings the old `100.65.0.5 ↔ 100.65.0.6` pair back.
 - [ ] AC4 — 24 h on neo16 / CORPLAP-1 / CORPLAP-3: sibling evictions **0** (today 718/day), forced-revalidation pokes at idle baseline (today ~100/min), no withheld block floor on the primary.
-- [ ] AC5 — `docs/multi-org.md` and `docs/overlay-nat-traversal.md` state the rule (the former's "ICE never gathers on roomler-*" is true only on Linux today).
+- [ ] AC5 — `docs/multi-org.md` and `docs/overlay-nat-traversal.md` state the rule (the former's "ICE never gathers on meshharbor-*" is true only on Linux today).
 
 ## Open decisions
 

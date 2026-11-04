@@ -7,7 +7,7 @@ over-complication to someone who did not see the failure.
 
 > **Scope.** This is the *server and web* baseline. The device-side gates —
 > exec, SSH, remote config, peer relays — are default-deny ladders documented
-> with their features: [fleet-rpc.md](fleet-rpc.md), [roomler-ssh.md](roomler-ssh.md),
+> with their features: [fleet-rpc.md](fleet-rpc.md), [meshharbor-ssh.md](meshharbor-ssh.md),
 > [remote-config.md](remote-config.md), [peer-relays.md](peer-relays.md).
 > The permission bit catalogue is [permissions.md](permissions.md).
 
@@ -305,7 +305,7 @@ verifies: [`overlay-key-rotation.md`](overlay-key-rotation.md) (FR-40).
 endpoint carries administrative verbs: exec, SSH grants, config, routes, restart. On
 Windows it is a named pipe whose security descriptor admits `SYSTEM`,
 `Administrators` and the interactive user. On Unix a root daemon's socket is
-`/var/run/roomler/roomler.sock`, 0700 / 0600, root only. Per-verb checks sit on top:
+`/var/run/meshharbor/meshharbor.sock`, 0700 / 0600, root only. Per-verb checks sit on top:
 the recording verbs require the console user (FR-85) and an update hold requires
 root (FR-90).
 
@@ -313,7 +313,7 @@ root (FR-90).
 Linux system install's companion runs as the desktop user and could not reach the root
 socket. That left the person at the screen with no "being viewed" banner, no
 Disconnect, and on Wayland no consent prompt. The root daemon therefore also serves
-`/run/user/<uid>/roomler.sock`:
+`/run/user/<uid>/meshharbor.sock`:
 - it belongs to the user of the **active** graphical session only;
 - it is 0600 and theirs because it is **made as them**: the bind and the `chmod` run on a
   thread switched to their filesystem ids (`setfsuid`/`setfsgid`). Their own directory
@@ -344,10 +344,10 @@ which the overlay addresses already on the Devices page do not.
 **A Mac's root half serves one too (FR-97 P2g).** Only root can hold a utun, so a
 two-half Mac (FR-43) is on the private network through its root half alone, and the
 per-user half that the companion talks to has no node. The root half therefore serves
-the console user a person socket at `/var/run/roomler-person/<uid>.sock`, and the
+the console user a person socket at `/var/run/meshharbor-person/<uid>.sock`, and the
 per-user half asks it for `Devices` and `Mesh`. The bind is not the Linux one, because
 the directory is not the person's:
-- `/var/run/roomler-person` must be a real directory (not a link), owned by root, and
+- `/var/run/meshharbor-person` must be a real directory (not a link), owned by root, and
   writable by nobody else (`root_only_dir`, checked on every bind). Nobody but root
   can create, swap or link an entry there, so root may bind and then hand the socket
   over (`lchown` to the person, then 0600). In a directory the person owns, that is
@@ -406,16 +406,16 @@ enters: a remote `http://` is read as `https://`, and `ws://` as `wss://`.
 
 | Entry point | A remote plaintext URL | Before |
 |---|---|---|
-| The agent's enrollment: `roomlerd enroll` and `re-enroll`, the wizard's agent role, the desktop companion | promoted | promoted, but only when spelled `http://` in lower case |
+| The agent's enrollment: `meshharbord enroll` and `re-enroll`, the wizard's agent role, the desktop companion | promoted | promoted, but only when spelled `http://` in lower case |
 | Every load of the agent's config: `server_url`, `ws_url`, and each `[[orgs]]` entry's | promoted, with a warning naming the field | dialled as written |
-| `roomler enroll`, the wizard's tunnel role | promoted | **the tunnel enrollment token was posted in plaintext** |
+| `meshharbor enroll`, the wizard's tunnel role | promoted | **the tunnel enrollment token was posted in plaintext** |
 | The tunnel CLI's config, from the file or `MESHHARBOR_TUNNEL_SERVER` | promoted | dialled as written |
-| `roomlerd anchor create` (FR-104) | refused, unchanged: the claim's answer is the command SYSTEM runs | refused |
+| `meshharbord anchor create` (FR-104) | refused, unchanged: the claim's answer is the command SYSTEM runs | refused |
 
 - **Loopback is exempt** (`localhost`, `127.0.0.0/8`, `::1`). It has no off-host path to
   defend, and dev, test and CI servers run plaintext there.
 - ⚠️ **The guard reads a URL the way its dialler does.** reqwest parses by the WHATWG
-  rules, which accept `HTTP:roomler.ai`, `http:\\roomler.ai`, surrounding whitespace and
+  rules, which accept `HTTP:meshharbor.itachi.fans`, `http:\\meshharbor.itachi.fans`, surrounding whitespace and
   a tab inside the scheme. They also put the host after the authority's last `@`, so
   `http://localhost:80@evil.example` dials `evil.example`. A guard stricter than its
   dialler is a guard with a hole. A unit test therefore parses every spelling with the
@@ -455,7 +455,7 @@ flowchart LR
         REQ["session_requested:<br/>features_stripped, idle_secs"]
         END["session_ended:<br/>reason, limit (max_duration / idle)"]
     end
-    subgraph dev["roomlerd (the device's claims)"]
+    subgraph dev["meshharbord (the device's claims)"]
         TR["clipboard + file tallies<br/>on rc:session.stats"]
     end
     REQ --> RA[("remote_audit")]

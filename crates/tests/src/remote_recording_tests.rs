@@ -412,7 +412,7 @@ async fn report(ws: &mut Ws, session_id: &str, kind: &str) {
         "t": "rc:recording.activity",
         "session_id": session_id,
         "kind": kind,
-        "name": "Roomler Recording 2026-09-25 14-30-12.mp4",
+        "name": "MeshHarbor Recording 2026-09-25 14-30-12.mp4",
         "bytes": 1234,
         "duration_ms": 5000,
         "reason": "requested",

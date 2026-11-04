@@ -6309,7 +6309,7 @@ pub enum CrashReason {
     SupervisorDetected,
 }
 
-/// Wire shape for the agent → roomler.ai crash-report upload AND the
+/// Wire shape for the agent → meshharbor.itachi.fans crash-report upload AND the
 /// on-disk sidecar the agent writes between crash + upload. `rename_
 /// all = "camelCase"` so JS clients get `crashedAtUnix` etc. without
 /// a translation step.

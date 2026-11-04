@@ -1,6 +1,6 @@
 # FR-82: A permission refusal is not a logout, and a managed role is not frozen at its birthday
 
-**Issue:** [#1540](https://github.com/gjovanov/roomler-ai/issues/1540) · **Status:** **shipped + field-verified 2026-09-09** (`865a261c2`, image `hosted-20260909-786f016`) — **all 10 criteria met; AC8 closed by the operator from the reporting seat on 2026-09-09** ·
+**Issue:** [#1540](https://github.com/jk-zhang-meta/MeshHarbor/issues/1540) · **Status:** **shipped + field-verified 2026-09-09** (`865a261c2`, image `hosted-20260909-786f016`) — **all 10 criteria met; AC8 closed by the operator from the reporting seat on 2026-09-09** ·
 **Field report:** a GROX member opened `/tenant/69a1dbba…/devices`, got a 403 and
 was signed out of the product.
 
@@ -340,7 +340,7 @@ read is a coin-flip between "hidden from the owner" and "fires anyway".
 
 | Date | What | Result |
 |---|---|---|
-| 2026-09-09 | **BEFORE**, measured on prod Mongo (`roomler2.roles`) while the *previous* image was still serving — so the pass below means something | 72 tenants · 360 managed rows · **12 drift strata**: `admin 0x7ffff7 ×63`, `owner 0xffffff ×63`, `moderator 0x07ef91 ×63`, plus 6 singleton/small strata. The defect reproduced exactly as surveyed |
+| 2026-09-09 | **BEFORE**, measured on prod Mongo (`meshharbor2.roles`) while the *previous* image was still serving — so the pass below means something | 72 tenants · 360 managed rows · **12 drift strata**: `admin 0x7ffff7 ×63`, `owner 0xffffff ×63`, `moderator 0x07ef91 ×63`, plus 6 singleton/small strata. The defect reproduced exactly as surveyed |
 | 2026-09-09 | Pre-flight, with a **positive control** (an absent key and a broken `kubectl` look identical) | control `MESHHARBOR__APP__ENVIRONMENT` → `production`; `RUST_LOG` **absent** ⇒ the compiled `EnvFilter` default applies ⇒ `meshharbor_api=debug` ⇒ the reconcile's INFO lines can actually reach the log; `MESHHARBOR__AUTH__RECONCILE_MANAGED_ROLES` **absent** ⇒ defaults on |
 | 2026-09-09 07:35 | Promoted `hosted-20260909-786f016` (from `865a261c2`) | both pods on it, `/health` 200 |
 | 2026-09-09 07:37 | **The arithmetic**, read live from the leader pod | 7 `managed role reconciled to its definition` lines; `admin rows=63 stored=0x7ffff7 gained=0x57000000` ⇒ `MANAGE_AGENTS, REMOTE_CONTROL, VIEW_REMOTE_AUDIT, VIEW_EXEC_AUDIT, VIEW_SSH_AUDIT`. The other pod: `lease held elsewhere` — the leader gate held |
@@ -350,7 +350,7 @@ read is a coin-flip between "hidden from the owner" and "fires anyway".
 | 2026-09-09 | Idempotence | a later leader logged `managed roles already match their definitions groups=5`. ⚠️ A restart is **not** automatically a second run: the first replacement booted inside the previous leader's 120 s lease and correctly skipped |
 | 2026-09-09 | ⚠️⚠️ **The arithmetic no longer exists anywhere** — searched both surviving pods' full logs ~10 min later: zero `managed role reconciled` lines, only the one `already match` | The code's own comment asks for it to be *"readable in `kubectl logs` afterwards"* because this **grants permissions across every tenant**. `kubectl logs` holds only the current container, so the sole record of a one-way, fleet-wide grant has a pod's lifetime. It survived here only because someone was watching live and because a before-state had been captured. See "Open decisions" |
 
-| 2026-09-09 | **AC8 — the reporting member, on the shipped build** | `goran.jovanov@roomler.ai` opened `/tenant/69a1dbba…/devices`: the grid rendered and the session survived |
+| 2026-09-09 | **AC8 — the reporting member, on the shipped build** | `goran.jovanov@meshharbor.itachi.fans` opened `/tenant/69a1dbba…/devices`: the grid rendered and the session survived |
 | 2026-09-09 | ⚠️ **AC8's negative control**, checked BEFORE believing the pass | not the tenant owner; effective mask `0x303cf81` = `member 0x3cf81` + custom `Remote Operator 0x3000000`; `MANAGE_TENANT` **absent**, `ADMINISTRATOR` **absent** — so it is a seat that could falsify the criterion, unlike the owner's. (A pass from a seat holding either bit would have proved nothing, which is exactly how this defect survived a week.) |
 | 2026-09-09 | ⚠️⚠️ **Correction to the row above, and to what I first said about it** | I wrote that "the 403 still happened and the old rule would still have fired". **It did not.** AC7's store-level gate (`fetchOrgEphemeralKeysEnabled` short-circuits on `mayReadOrgSettings`) means that seat never fires the request at all, so the pass exercises AC7's gate rather than AC1's branch. The symptom is genuinely gone; the `forbidden` flavour of the 403 branch stays field-unproven, and only the unit tests cover it. Two fixes shipped together and the field test reaches the outer one — a real limit on what AC8 establishes, not a quibble |
 

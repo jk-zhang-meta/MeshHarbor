@@ -24,8 +24,8 @@ order, and demotes to the next tier if it can't establish:
 | **A** direct-to-public | UDP via an unbound egress socket | peer's NIC holds a public IP | `MESHHARBORD_OVERLAY_PUBLIC_DIRECT` (**off**) |
 | **C** srflx hole-punch | UDP via the **punch socket** | both ends NAT'd (not both symmetric) | `MESHHARBORD_OVERLAY_SRFLX` (**on** since rc.200) |
 | **D** single-relay | ONE coturn allocation + a raw dialer, QUIC-over-TURN | nothing direct works **and ≥1 side is UDP-capable** | `MESHHARBORD_OVERLAY_RELAY_SINGLE` (**on** since rc.200) |
-| **D″** DERP | `/derp` WSS on `roomler.ai:443`, pubkey-addressed, raw WG | **both** ends UDP-blocked (TCP-only net) | `MESHHARBORD_OVERLAY_DERP` (**on** since rc.203) |
-| **D‴** org relay | a tenant-owned `roomlerd` forwarding Geneve-framed WG ciphertext on UDP 3478 (FR-19) | the server **minted a session** for the pair (org switch, ACL grant per member, an approved + serving relay) — a relay *kind* beside TURN/DERP, not a new tier | `MESHHARBORD_OVERLAY_ORG_RELAY` (**off**) |
+| **D″** DERP | `/derp` WSS on `meshharbor.itachi.fans:443`, pubkey-addressed, raw WG | **both** ends UDP-blocked (TCP-only net) | `MESHHARBORD_OVERLAY_DERP` (**on** since rc.203) |
+| **D‴** org relay | a tenant-owned `meshharbord` forwarding Geneve-framed WG ciphertext on UDP 3478 (FR-19) | the server **minted a session** for the pair (org switch, ACL grant per member, an approved + serving relay) — a relay *kind* beside TURN/DERP, not a new tier | `MESHHARBORD_OVERLAY_ORG_RELAY` (**off**) |
 | **D′** both-allocate relay | two coturn allocations (raw / QUIC) | single-relay off, or a mixed-capability pair | always available (fall-through) |
 
 LAN direct and the relay predate this work (rc.131–rc.135; the relay is the
@@ -195,7 +195,7 @@ byte 1 — so a WG data packet whose index bytes collide with the cookie is stil
 routed as WG.)
 
 The STUN target is **pinned** once at startup (re-resolved only after several
-failures): the fleet resolves `coturn.roomler.ai` to several workers, and an
+failures): the fleet resolves `coturn.meshharbor.itachi.fans` to several workers, and an
 unpinned target would make every DNS rotation look like a mapping change and fan
 a network-wide re-trickle every tick. Re-trickle happens **only** when the punch
 mapping actually changes; a STUN outage retains the last-known advert.
@@ -285,7 +285,7 @@ protocols. Mainland ISP gateways mostly speak only UPnP.
   (`NOT_AUTHORIZED`, for the rest of the old lifetime). With the same nonce, a
   restart or rebuild re-requesting the port is a refresh. In plane mode the
   first org runtime's key wins, like the gather.
-- **Visibility:** `roomler status` shows `gateway pcp <ip:port>` on the srflx
+- **Visibility:** `meshharbor status` shows `gateway pcp <ip:port>` on the srflx
   line, in plane mode. Legacy mode logs the grant (`gateway port mapping
   granted`) but its status keeps the startup snapshot.
 - **Kill switch:** `MESHHARBORD_OVERLAY_PORTMAP=0`, config key `overlay_portmap`.
@@ -510,7 +510,7 @@ cascade's guarantees while replacing its reactive counters:
   the peer has a dialable candidate for it (`TierAvailability`, built from the
   netmap candidates in `runtime/establish.rs`): a NATed peer has no public
   tier at all. An untried tier carries no penalty, so it always reads
-  *eligible*. `roomler why` therefore shows availability as well: an
+  *eligible*. `meshharbor why` therefore shows availability as well: an
   unavailable tier reads `—` in ELIGIBLE and `no candidate` in WHY NOT
   (#2089). Before that, a NATed peer's `public yes 330` out-scored the relay
   the pair was actually on, which read as the selector ignoring its best tier.
@@ -653,7 +653,7 @@ cascade's guarantees while replacing its reactive counters:
 - **The counters are readable (#32).** `drop_counts()` shipped with the signal
   and was surfaced nowhere for a day, so a real 2026-08-25 transition could only
   be argued about from an absence of log lines. `NodeStatus.derp_inbound_drops`
-  carries `(unrouted, backpressure)` and `roomler status` prints a `derp drops`
+  carries `(unrouted, backpressure)` and `meshharbor status` prints a `derp drops`
   line when either is non-zero — silent at zero, because a permanent zero line
   is noise, but after a transition `unrouted` is the first thing to read.
   ⚠️ Cumulative since daemon start: **diff two readings**, never judge the
@@ -799,7 +799,7 @@ field. Pubkey order is only the tie-break when both are UDP-capable.
 That leaves exactly one pair the tier cannot serve: **both** ends UDP-blocked —
 there is no side left to be the raw-UDP dialer. That case is now covered by
 **DERP** (tier D″, shipped default-ON in rc.203): a pubkey-addressed WebSocket
-relay at `/derp` on `roomler.ai:443` where **both** peers dial *out* over
+relay at `/derp` on `meshharbor.itachi.fans:443` where **both** peers dial *out* over
 TCP/TLS, so no UDP, no inbound reachability, and no coturn permission model is
 involved at all. It is NAT-type agnostic by construction. Because a `DerpConn` is
 pinned to one peer pubkey, raw WireGuard rides it correctly — unlike single-relay,
@@ -867,7 +867,7 @@ each behind its own nftables NAT gateway:
 - low `conntrack` UDP timeouts force the stale-srflx case; `conntrack -F` forces
   a mid-punch mapping rotation.
 
-Server = prod `roomler.ai` (already wire-capable); test daemons run the branch
+Server = prod `meshharbor.itachi.fans` (already wire-capable); test daemons run the branch
 build via `--config` with `MESHHARBORD_OVERLAY_SRFLX=1` set only on them. The
 matrix: cone↔cone punches ≤ ~10 s (both `Direct`, zero coturn allocations for
 the pair); cone↔symmetric attempts once then relays; symmetric↔symmetric skips

@@ -326,12 +326,12 @@ async fn fetches_count_by_client_class_and_never_the_updater() {
         .unwrap();
     get("/api/setup/install.sh", None).await.unwrap();
     // The updater, and any other identity of ours: never.
-    get("/api/setup/install.sh", Some("roomlerd/0.4.135"))
+    get("/api/setup/install.sh", Some("meshharbord/0.4.135"))
         .await
         .unwrap();
     get(
         "/api/setup/install.ps1",
-        Some("roomler-token-renewal/0.4.135"),
+        Some("meshharbor-token-renewal/0.4.135"),
     )
     .await
     .unwrap();
@@ -342,7 +342,7 @@ async fn fetches_count_by_client_class_and_never_the_updater() {
     tokio::spawn(async move {
         let _ = reqwest::Client::new()
             .get(manifest)
-            .header("User-Agent", "roomlerd/0.4.135")
+            .header("User-Agent", "meshharbord/0.4.135")
             .send()
             .await;
     });
@@ -502,7 +502,7 @@ async fn fetches_from_internal_networks_count_as_internal_and_store_no_address()
     assert_eq!(r.status().as_u16(), 200, "the script is served either way");
     get("/api/setup/install.ps1", PS51, lab_v6).await.unwrap();
     // The updater from the lab: still nothing at all.
-    get("/api/setup/install.sh", "roomlerd/0.4.141", lab_v4)
+    get("/api/setup/install.sh", "meshharbord/0.4.141", lab_v4)
         .await
         .unwrap();
     // Outside: the class.

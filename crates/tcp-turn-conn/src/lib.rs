@@ -148,8 +148,8 @@ impl TcpTurnConn {
     /// wrap the result for use by `turn::client::Client`.
     ///
     /// `hostname` is used for SNI + server certificate verification.
-    /// For an enrollment URL `turns:coturn.roomler.ai:443?transport=tcp`,
-    /// pass `"coturn.roomler.ai"`.
+    /// For an enrollment URL `turns:coturn.meshharbor.itachi.fans:443?transport=tcp`,
+    /// pass `"coturn.meshharbor.itachi.fans"`.
     pub async fn connect_tls(tcp: TcpStream, hostname: &str) -> Result<Self, std::io::Error> {
         let local = tcp.local_addr()?;
         let remote = tcp.peer_addr()?;

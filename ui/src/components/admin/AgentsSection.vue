@@ -1265,7 +1265,7 @@
         <p class="text-body-2 mb-3">
           <i18n-t keypath="mh.dev.routes.body" tag="span">
             <template #name><strong>{{ deviceLabel(routesTarget) }}</strong></template>
-            <template #cmd><code>roomler socks5</code></template>
+            <template #cmd><code>meshharbor socks5</code></template>
             <template #acl><strong>{{ $t('mh.tp.title') }}</strong></template>
           </i18n-t>
         </p>
@@ -2300,7 +2300,7 @@ function closeEnrollDialog() {
 
 /**
  * Copy an agent's hex ObjectId to the clipboard so the operator can
- * paste it into `roomler forward --agent <hex>` (or any other
+ * paste it into `meshharbor forward --agent <hex>` (or any other
  * CLI / API call that needs the agent identifier).
  *
  * Surfaces transient success state via [`copiedAgentId`] for 2 s —

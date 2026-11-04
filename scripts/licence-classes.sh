@@ -97,7 +97,7 @@ SERVER_CRATES=(
 )
 
 CLIENT_CRATES=(
-  roomlerd
+  meshharbord
   meshharbor-desktop
   meshharbor-cli-shim
   meshharbor-setup
@@ -115,7 +115,7 @@ CLIENT_CRATES=(
 # SERVER_CRATE appears anywhere in these dependency graphs — that assertion, not
 # the header sweep, is what stops the split from silently rotting.
 SHIPPED_AGENT_CRATES=(
-  roomlerd
+  meshharbord
   meshharbor-cli
   meshharbor-cli-shim
   meshharbor-desktop

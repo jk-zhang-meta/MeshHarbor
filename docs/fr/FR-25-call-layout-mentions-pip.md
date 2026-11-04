@@ -1,6 +1,6 @@
 # FR-25 — Call UX: layout controls that honour their labels, mentions, PiP, spotlight
 
-**Issue:** [#839](https://github.com/gjovanov/roomler-ai/issues/839)
+**Issue:** [#839](https://github.com/jk-zhang-meta/MeshHarbor/issues/839)
 **Status:** shipped in #842 + #859 + #873; field-verified 2026-08-29. One criterion (hide-non-video) is **not achievable without a protocol change** and is written up for its own FR
 
 ## Goal

@@ -186,11 +186,11 @@ jobs:
           IMG='${{ env.IMAGE }}:${{ steps.tag.outputs.tag }}'
           DBPW="$(openssl rand -hex 16)"
           JWT="$(openssl rand -hex 32)"
-          docker network create roomler-smoke
-          docker run -d --name mongo --network roomler-smoke \
+          docker network create meshharbor-smoke
+          docker run -d --name mongo --network meshharbor-smoke \
             -e MONGO_INITDB_ROOT_USERNAME=smoke -e MONGO_INITDB_ROOT_PASSWORD="$DBPW" mongo:7
-          docker run -d --name redis --network roomler-smoke redis:7-alpine
-          docker run -d --name roomler --network roomler-smoke -p 8080:80 \
+          docker run -d --name redis --network meshharbor-smoke redis:7-alpine
+          docker run -d --name meshharbor --network meshharbor-smoke -p 8080:80 \
             -e MESHHARBOR__APP__ENVIRONMENT=development \
             -e MESHHARBOR__JWT__SECRET="$JWT" \
             -e MESHHARBOR__DATABASE__URL="mongodb://smoke:${DBPW}@mongo:27017/?authSource=admin" \
@@ -221,8 +221,8 @@ jobs:
               # then does not load is our bug (the ENV and the file name
               # drifted, or the reader refused it), and it fails here rather
               # than as weeks of `unknown` on the dashboard.
-              docker logs roomler > /tmp/roomler.log 2>&1 || true
-              GEO="$(grep -m1 'geoip database' /tmp/roomler.log || true)"
+              docker logs meshharbor > /tmp/meshharbor.log 2>&1 || true
+              GEO="$(grep -m1 'geoip database' /tmp/meshharbor.log || true)"
               echo "  geoip: ${GEO:-no geoip line in the boot log}"
               if [ '${{ steps.geoip.outputs.present }}' = 'true' ]; then
                 case "$GEO" in
@@ -234,8 +234,8 @@ jobs:
                 esac
                 # This smoke runs as root, which reads anything; a container
                 # run as any other user must be able to read the file too.
-                GEO_PATH="$(docker exec roomler printenv MESHHARBOR__STATS__GEOIP_MMDB)"
-                if ! docker exec --user 65534:65534 roomler test -r "$GEO_PATH"; then
+                GEO_PATH="$(docker exec meshharbor printenv MESHHARBOR__STATS__GEOIP_MMDB)"
+                if ! docker exec --user 65534:65534 meshharbor test -r "$GEO_PATH"; then
                   echo "::error::$GEO_PATH is not readable by a non-root user: a container not run as root would read every country as 'unknown'"
                   exit 1
                 fi
@@ -255,7 +255,7 @@ jobs:
             sleep 10
           done
           echo "::error::the image did not answer /health within 600s"
-          docker logs roomler 2>&1 | tail -60
+          docker logs meshharbor 2>&1 | tail -60
           exit 1
 
       - name: Push the tag and move `hosted`

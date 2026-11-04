@@ -1,6 +1,6 @@
 # Keep busy
 
-> **FR-92** ([#1942](https://github.com/gjovanov/roomler-ai/issues/1942),
+> **FR-92** ([#1942](https://github.com/jk-zhang-meta/MeshHarbor/issues/1942),
 > [spec](fr/FR-92-keep-busy.md)).
 >
 > **Status: released (0.4.125; GNOME Wayland in 0.4.126) and field-verified on
@@ -15,21 +15,21 @@
 > | P2 | the viewer's menu |
 > | P3a | **Linux X11**, proven against a real X server in CI |
 > | P3b | **macOS**, including a supervised Mac's GUI worker |
-> | P4 | the person at the device sees it and stops it: tray, `roomler keep-busy`, LocalAPI |
+> | P4 | the person at the device sees it and stops it: tray, `meshharbor keep-busy`, LocalAPI |
 > | P5 | the org deny |
 > | P5b | the device list shows where it runs and who turned it on |
 > | P7 | a **permanent history**: every on and off on every device, every change to the org's settings (§11) |
 > | P8 | the org's **default pattern** (§12) |
 > | P9 | **GNOME on Wayland**, and GNOME on Xorg under a root daemon, through uinput ([§2](#a-blind-host-gnome-through-uinput)) |
-> | P10 | a **local On**: the tray's "Start keep busy" and `roomler keep-busy on`, for the person at the computer only (§9) |
+> | P10 | a **local On**: the tray's "Start keep busy" and `meshharbor keep-busy on`, for the person at the computer only (§9) |
 > | P10b | **SYSTEM never** starts it: on Windows the pipe listener reads the client's account from its token (§9) |
 >
 > Any other Wayland desktop is detected and reported unavailable, with its reason.
 >
 > It is turned on from a remote-desktop session that holds input, or (P10) by
-> the person at the computer. There is no server "on". ⚠️ `roomler exec` is not
+> the person at the computer. There is no server "on". ⚠️ `meshharbor exec` is not
 > kept out everywhere: on an attended Windows install it runs as the person, and
-> its `roomler keep-busy on` passes the local gate. Root and (P10b) SYSTEM are
+> its `meshharbor keep-busy on` passes the local gate. Root and (P10b) SYSTEM are
 > refused (§9).
 
 Keep busy moves a device's pointer in a pattern so the computer stays
@@ -148,7 +148,7 @@ the pointer back. So the GNOME host (`keep_busy/host_gnome.rs`) is **blind**:
 flowchart LR
   E[keep-busy engine] -- "MoveNorm (a fraction of the desktop)" --> A[input arbiter]
   A -- "EV_ABS, the ONE uinput device" --> K[(kernel → libinput → Mutter)]
-  E -- "idle · geom (one line each)" --> H["roomlerd portal-helper --keep-busy<br/>AS the person, in their session"]
+  E -- "idle · geom (one line each)" --> H["meshharbord portal-helper --keep-busy<br/>AS the person, in their session"]
   H -- "IdleMonitor.GetIdletime" --> M[Mutter]
   H -- "DisplayConfig.GetCurrentState" --> M
   E -- "LockedHint" --> L[logind]
@@ -343,11 +343,11 @@ change to the org's settings — is the permanent history (§11), derived from t
 
 | Host | The file | Written as |
 |---|---|---|
-| Windows, user worker | `%LOCALAPPDATA%\roomler\roomler\data\keep-busy.json` | the user |
+| Windows, user worker | `%LOCALAPPDATA%\meshharbor\meshharbor\data\keep-busy.json` | the user |
 | Windows, SystemContext worker | the **console user's** file, resolved through `session_user_profile_dir` | **the user**, impersonated (`win_identity.rs` `as_session_user`, L137; `state.rs` `as_owner`, L132) |
-| Linux, per-user daemon | `~/.local/share/roomler/keep-busy.json` | the user |
-| Linux, root daemon | **root's own** data dir: `/root/.local/share/roomler/keep-busy-<uid>.json`, for the person on our display, else in the active graphical session (`state.rs` `default_path`, L209; `logind.rs` `pick`) | root, in a directory only root can write |
-| macOS GUI worker / LaunchAgent | `~/Library/Application Support/live.roomler.roomler/keep-busy.json` | the user |
+| Linux, per-user daemon | `~/.local/share/meshharbor/keep-busy.json` | the user |
+| Linux, root daemon | **root's own** data dir: `/root/.local/share/meshharbor/keep-busy-<uid>.json`, for the person on our display, else in the active graphical session (`state.rs` `default_path`, L209; `logind.rs` `pick`) | root, in a directory only root can write |
+| macOS GUI worker / LaunchAgent | `~/Library/Application Support/live.meshharbor.meshharbor/keep-busy.json` | the user |
 
 On a host installed before the rename, the directory keeps its pre-rename name
 (`appdirs::project_dirs`), like the rest of that host's state.
@@ -392,8 +392,8 @@ does not spawn `loginctl` forever.
 | Surface | What |
 |---|---|
 | **Tray** (`meshharbor-desktop`, `tray.rs` L47) | A toggle, polled every 3 s: "Stop keep busy (Heart · paused)" while it is on, whoever turned it on; **"Start keep busy"** while it is off and can run here (P10, the product default pattern); "Keep busy: unavailable", disabled, where it cannot. The click reads the state at that moment |
-| **CLI** (`meshharbor-cli/src/cli.rs` L336) | `roomler keep-busy status\|off [--json]`, and (P10) `roomler keep-busy on [--pattern P] [--size s\|m\|l] [--speed slow\|normal\|fast] [--resume-after SECONDS] [--auto-off MINUTES]` |
-| **LocalAPI** | All three verbs are on the person-socket allowlist, so a Linux system install's companion reaches them. Off is open to every peer the endpoint admits, because it is the safe direction (`roomler exec` included). **On** is the console person's alone (below). On a supervised Mac the root daemon asks the GUI worker for status and off (below) |
+| **CLI** (`meshharbor-cli/src/cli.rs` L336) | `meshharbor keep-busy status\|off [--json]`, and (P10) `meshharbor keep-busy on [--pattern P] [--size s\|m\|l] [--speed slow\|normal\|fast] [--resume-after SECONDS] [--auto-off MINUTES]` |
+| **LocalAPI** | All three verbs are on the person-socket allowlist, so a Linux system install's companion reaches them. Off is open to every peer the endpoint admits, because it is the safe direction (`meshharbor exec` included). **On** is the console person's alone (below). On a supervised Mac the root daemon asks the GUI worker for status and off (below) |
 
 **Who may turn it ON here (P10).** Whoever stands where the person does: the
 console session on Windows, the person's own uid elsewhere. Never root, and
@@ -403,13 +403,13 @@ answers per endpoint:
 ```mermaid
 flowchart TD
   P[a LocalAPI keep_busy_on] --> R{peer is root?}
-  R -- yes --> X[refused: sudo, and roomler exec on Unix]
+  R -- yes --> X[refused: sudo, and meshharbor exec on Unix]
   R -- no --> W{Windows peer?}
   W -- yes --> S{the active console session, and not session 0?}
   S -- no --> X2[refused: an RDP guest, a service in session 0]
   S -- yes --> A{"the token's account (P10b)"}
   A -- "a person" --> OK[the engine starts it: set_by = the person at this computer]
-  A -- "SYSTEM, LocalService, NetworkService" --> X4[refused: roomler exec in SystemContext mode]
+  A -- "SYSTEM, LocalService, NetworkService" --> X4[refused: meshharbor exec in SystemContext mode]
   A -- "could not be read" --> X5[refused: fail closed]
   W -- no --> E{which endpoint?}
   E -- a per-user daemon's socket --> O{the socket's owner?}
@@ -427,13 +427,13 @@ flowchart TD
   the person, and the worker serving the pipe can always read its own user's
   token. In SystemContext mode the worker is SYSTEM, so it can read every
   client's token.
-- ⚠️ **Not a wall against `roomler exec`** (measured on 0.4.129, FR-92 §9
+- ⚠️ **Not a wall against `meshharbor exec`** (measured on 0.4.129, FR-92 §9
   row 43). On Windows, exec runs in the worker that holds the agent socket,
   and that worker lives in the console session: as the signed-in user (their
   elevated token) on an attended install, and as SYSTEM in that session in
   SystemContext mode (`MESHHARBORD_ENABLE_SYSTEM_SWAP`). P10b refuses the
   SystemContext case. On an attended install,
-  `roomler exec <win> -- roomler keep-busy on` still passes, and the start is
+  `meshharbor exec <win> -- meshharbor keep-busy on` still passes, and the start is
   named "the person at this computer". On Unix exec arrives as root and is
   refused, but root can `sudo -u` the person. No local gate can tell them
   apart: an exec caller could as well write the person's `keep-busy.json`, or
@@ -443,8 +443,8 @@ flowchart TD
   #2021. Once exec runs as SYSTEM there, the same check refuses it everywhere
   (FR-92 §6).
 - **Not the recording verbs' gate**: on Unix that one lets root through, and
-  root is how `roomler exec` arrives there. With it, a plain
-  `roomler exec <host> -- roomler keep-busy on` would start keep busy under the
+  root is how `meshharbor exec` arrives there. With it, a plain
+  `meshharbor exec <host> -- meshharbor keep-busy on` would start keep busy under the
   person's name (FR-92 §8).
 - **Never relayed**: a supervised Mac's root daemon refuses a local On rather
   than pass it to the worker. The person's own clients reach the worker
@@ -458,8 +458,8 @@ flowchart TD
 **The supervised Mac.** Two processes, two engines: the root daemon starts one
 like every host does, but only the GUI worker in the person's session runs keep
 busy. The person's own clients reach the worker directly: the tray and a
-`roomler` run as the person dial the per-user socket first. A **root** client
-cannot: `roomler exec <mac> roomler keep-busy off` runs as root and lands on the
+`meshharbor` run as the person dial the per-user socket first. A **root** client
+cannot: `meshharbor exec <mac> meshharbor keep-busy off` runs as root and lands on the
 root daemon's socket. So the daemon does not answer for itself while a worker is
 attached. It asks the worker over the delegation channel and answers with what
 the worker says (`localapi_state.rs` `keep_busy_answer`, L408; `delegate.rs`
@@ -467,7 +467,7 @@ the worker says (`localapi_state.rs` `keep_busy_answer`, L408; `delegate.rs`
 
 ```mermaid
 sequenceDiagram
-  participant C as roomler keep-busy off (root)
+  participant C as meshharbor keep-busy off (root)
   participant D as root daemon (LocalAPI)
   participant W as GUI worker (keep busy runs here)
   C->>D: KeepBusyOff
@@ -487,7 +487,7 @@ sequenceDiagram
 > [!WARNING]
 > Before this relay the root daemon answered for its own engine, which never
 > runs on a supervised Mac. Field, 0.4.126, on a MacBook: with keep busy running
-> in the worker, a root `roomler keep-busy off` answered `on: false` and logged
+> in the worker, a root `meshharbor keep-busy off` answered `on: false` and logged
 > `keep-busy: turned off reason="stopped_locally"`. Six seconds later the worker
 > still reported `running`, and the session's idle clock still read 6–505 ms. The
 > remote off-switch the LocalAPI row promises stopped nothing.
@@ -540,8 +540,8 @@ sequenceDiagram
 > as a 5 s idle that is not there.
 >
 > **The Accessibility grant.** macOS 27 lists it under Privacy & Security →
-> **Device Control & Data Access**, with two entries: "Roomler" (the companion)
-> and "roomlerd" (the agent). Only `roomlerd`'s gates input, and the agent
+> **Device Control & Data Access**, with two entries: "MeshHarbor" (the companion)
+> and "meshharbord" (the agent). Only `meshharbord`'s gates input, and the agent
 > reads it at start.
 > - A worker that **loses** the grant while running keeps its start-time view,
 >   but its moves stop landing. Keep busy then says `calibration_failed` and
@@ -668,7 +668,7 @@ choose another: `TenantSettings.keep_busy_default_pattern`, `None` = circle.
 | `PUT …/keep-busy-settings` takes each field optionally: absent = unchanged, so the pre-P8 body `{keep_busy_denied}` still changes nothing else; `keep_busy_default_pattern: null` clears to the product default | `OrgKeepBusySettingsUpdate` |
 | `GET …/keep-busy-settings` returns both fields, and is readable by **any member** of the org (it was `MANAGE_AGENTS`): the payload is only the org's keep-busy policy, which every device and every viewer is already told. `PUT` stays `MANAGE_TENANT` | `get_org_settings` |
 | **No agent change, no wire change.** The default never reaches a device; the viewer reads it and pre-selects it | — |
-| The viewer pre-selects the org default **only** for a device the person has no remembered choice on (`roomler-rc-keep-busy.v1:<agent>` in localStorage), and never while keep busy runs (the device's pattern shows); a fetch failure means circle | `KeepBusyMenu.vue` `defaultPattern`, `stores/agents.ts` `fetchKeepBusyDefaultPattern` |
+| The viewer pre-selects the org default **only** for a device the person has no remembered choice on (`meshharbor-rc-keep-busy.v1:<agent>` in localStorage), and never while keep busy runs (the device's pattern shows); a fetch failure means circle | `KeepBusyMenu.vue` `defaultPattern`, `stores/agents.ts` `fetchKeepBusyDefaultPattern` |
 | The org's card has a pattern select beside the switch, with the viewer's own labels | `SettingsSection.vue` |
 
 ## 13. Tests
@@ -764,7 +764,7 @@ build (cell 8); macOS on 0.4.126 (cells 1–3 and 6, spec rows 30–37).
 > `input-send-event {"events":[{"type":"abs","data":{"axis":"x","value":9000}}, …]}`.
 
 1. **Negative control.** A host with a 1-minute lock and Teams open, keep busy
-   OFF: it locks, and Teams goes Away. Measure idle with `roomler exec`:
+   OFF: it locks, and Teams goes Away. Measure idle with `meshharbor exec`:
    - Windows: a `GetLastInputInfo` one-liner;
    - macOS: the session clock, `osascript -l JavaScript -e
      'ObjC.import("CoreGraphics"); $.CGEventSourceSecondsSinceLastEventType(0, 4294967295)'`.
@@ -782,9 +782,9 @@ build (cell 8); macOS on 0.4.126 (cells 1–3 and 6, spec rows 30–37).
    - with a lock hot corner set, it never fires in 30 min at size l. Prove the
      corner is live first: a viewer move to the exact corner must lock the Mac;
    - with Accessibility denied, it reports `no_permission`. Switch off
-     **roomlerd** (not "Roomler", the companion), then restart the GUI worker:
+     **meshharbord** (not "MeshHarbor", the companion), then restart the GUI worker:
      the grant is read at start (§10).
-   - On a **supervised** Mac, `roomler keep-busy status` and the tray reach
+   - On a **supervised** Mac, `meshharbor keep-busy status` and the tray reach
      the **GUI worker**, which runs keep busy, and not the root daemon. The
      worker serves the per-user LocalAPI socket that clients try first. `sudo`
      drops `TMPDIR`, but `temp_dir()` falls back to the same per-user folder:

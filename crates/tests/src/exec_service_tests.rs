@@ -211,7 +211,7 @@ async fn put_policy(
     .unwrap()
 }
 
-/// `POST /api/agent/anchor`, the request `roomlerd anchor` sends.
+/// `POST /api/agent/anchor`, the request `meshharbord anchor` sends.
 async fn anchor_req(app: &TestApp, body: Value) -> reqwest::Response {
     app.client
         .post(app.url("/api/agent/anchor"))

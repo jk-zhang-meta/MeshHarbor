@@ -32,7 +32,7 @@ test.describe('Email-related flows', () => {
       expect(mail.subject.toLowerCase()).toContain('activate')
       expect(mail.html.length).toBeGreaterThan(0)
       expect(mail.activationUrl).toBeTruthy()
-      // Activation URL targets the configured FRONTEND_URL (http://roomler2
+      // Activation URL targets the configured FRONTEND_URL (http://meshharbor2
       // in cluster) plus the /auth/activate path. It carries a 24-char
       // hex userId and a 7-char nanoid token.
       expect(mail.activationUrl).toMatch(

@@ -83,7 +83,7 @@ const MAX_HEAD: usize = 16 * 1024;
 /// (Private-Network-Access) boundary. An origin outside this set gets no CORS
 /// headers → the browser blocks the read → the probe is a graceful no-op.
 const ALLOWED_ORIGINS: &[&str] = &[
-    "https://roomler.ai",
+    "https://meshharbor.itachi.fans",
     "http://localhost:5000",
     "http://localhost:5173",
 ];
@@ -100,7 +100,7 @@ pub fn enabled() -> bool {
 }
 
 /// v2.2 — the loopback CLIPBOARD BRIDGE half (`/rc-clipboard`): lets the
-/// roomler.ai page on THIS machine read/write the machine's NATIVE clipboard
+/// meshharbor.itachi.fans page on THIS machine read/write the machine's NATIVE clipboard
 /// formats (RTF with embedded images) that no browser API exposes. Default-ON;
 /// `MESHHARBORD_CLIPBOARD_BRIDGE=0` disables. Only meaningful on builds with
 /// the `clipboard` feature — the routes 404 otherwise.
@@ -630,8 +630,8 @@ mod tests {
     #[test]
     fn allowlist_only_passes_known_origins() {
         assert_eq!(
-            allowed_origin(Some("https://roomler.ai")),
-            Some("https://roomler.ai")
+            allowed_origin(Some("https://meshharbor.itachi.fans")),
+            Some("https://meshharbor.itachi.fans")
         );
         assert_eq!(
             allowed_origin(Some("http://localhost:5000")),
@@ -643,18 +643,18 @@ mod tests {
 
     #[test]
     fn parses_verb_path_and_origin() {
-        let head = "GET /rc-local-turn HTTP/1.1\r\nHost: 127.0.0.1:47989\r\nOrigin: https://roomler.ai\r\n\r\n";
+        let head = "GET /rc-local-turn HTTP/1.1\r\nHost: 127.0.0.1:47989\r\nOrigin: https://meshharbor.itachi.fans\r\n\r\n";
         let (verb, path, origin) = parse_request_head(head);
         assert_eq!(verb, "GET");
         assert_eq!(path, "/rc-local-turn");
-        assert_eq!(origin.as_deref(), Some("https://roomler.ai"));
+        assert_eq!(origin.as_deref(), Some("https://meshharbor.itachi.fans"));
     }
 
     #[test]
     fn preflight_carries_pna_header_for_allowed_origin() {
-        let r = preflight_response(Some("https://roomler.ai"));
+        let r = preflight_response(Some("https://meshharbor.itachi.fans"));
         assert!(r.starts_with("HTTP/1.1 204"));
-        assert!(r.contains("Access-Control-Allow-Origin: https://roomler.ai\r\n"));
+        assert!(r.contains("Access-Control-Allow-Origin: https://meshharbor.itachi.fans\r\n"));
         assert!(r.contains("Access-Control-Allow-Private-Network: true\r\n"));
         assert!(r.contains("Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"));
     }
@@ -704,11 +704,11 @@ mod tests {
         let r = status_response_ext(
             204,
             "No Content",
-            Some("https://roomler.ai"),
+            Some("https://meshharbor.itachi.fans"),
             "X-Test: 1\r\n",
         );
         assert!(r.starts_with("HTTP/1.1 204 No Content\r\n"));
-        assert!(r.contains("Access-Control-Allow-Origin: https://roomler.ai\r\n"));
+        assert!(r.contains("Access-Control-Allow-Origin: https://meshharbor.itachi.fans\r\n"));
         assert!(r.contains("X-Test: 1\r\n"));
         assert!(r.trim_end().ends_with("Connection: close"));
     }
@@ -751,7 +751,7 @@ mod tests {
     #[test]
     fn json_response_has_body_and_content_length() {
         let body = serde_json::to_string(&desc()).unwrap();
-        let r = json_response(Some("https://roomler.ai"), &body);
+        let r = json_response(Some("https://meshharbor.itachi.fans"), &body);
         assert!(r.starts_with("HTTP/1.1 200 OK"));
         assert!(r.contains(&format!("Content-Length: {}\r\n", body.len())));
         assert!(r.contains("Content-Type: application/json"));
@@ -764,7 +764,7 @@ mod tests {
         let (mut client, server) = tokio::io::duplex(8192);
         let task = tokio::spawn(handle_conn(server, Some(desc())));
         client
-            .write_all(b"GET /rc-local-turn HTTP/1.1\r\nOrigin: https://roomler.ai\r\n\r\n")
+            .write_all(b"GET /rc-local-turn HTTP/1.1\r\nOrigin: https://meshharbor.itachi.fans\r\n\r\n")
             .await
             .unwrap();
         let mut out = Vec::new();
@@ -782,7 +782,7 @@ mod tests {
         let (mut client, server) = tokio::io::duplex(8192);
         let task = tokio::spawn(handle_conn(server, None));
         client
-            .write_all(b"GET /rc-local-turn HTTP/1.1\r\nOrigin: https://roomler.ai\r\n\r\n")
+            .write_all(b"GET /rc-local-turn HTTP/1.1\r\nOrigin: https://meshharbor.itachi.fans\r\n\r\n")
             .await
             .unwrap();
         let mut out = Vec::new();
@@ -797,7 +797,7 @@ mod tests {
         let task = tokio::spawn(handle_conn(server, None));
         client
             .write_all(
-                b"OPTIONS /rc-local-turn HTTP/1.1\r\nOrigin: https://roomler.ai\r\n\
+                b"OPTIONS /rc-local-turn HTTP/1.1\r\nOrigin: https://meshharbor.itachi.fans\r\n\
                   Access-Control-Request-Private-Network: true\r\n\r\n",
             )
             .await

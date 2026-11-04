@@ -9,10 +9,10 @@
 //! User-Agent, and origin/suffix stripping. This module is that
 //! identity for `meshharbor-setup`.
 //!
-//! The wizards hit roomler.ai's installer proxies (`/api/agent/
+//! The wizards hit meshharbor.itachi.fans's installer proxies (`/api/agent/
 //! installer/{flavour}`, `/api/tunnel/installer/{platform}`) instead
 //! of downloading directly from `github.com`: corporate ESET /
-//! Defender allow-lists are typically per-domain; `roomler.ai`'s TLS
+//! Defender allow-lists are typically per-domain; `meshharbor.itachi.fans`'s TLS
 //! cert is already trusted by IT, `github.com` is often blocked
 //! outright (field repro 2026-05-11).
 
@@ -96,8 +96,8 @@ mod tests {
             "https://staging.local/api/agent/installer"
         );
         assert_eq!(
-            normalise("https://roomler.ai/api/tunnel/installer"),
-            "https://roomler.ai/api/tunnel/installer"
+            normalise("https://meshharbor.itachi.fans/api/tunnel/installer"),
+            "https://meshharbor.itachi.fans/api/tunnel/installer"
         );
     }
 
@@ -114,16 +114,16 @@ mod tests {
     #[test]
     fn origin_of_strips_agent_suffix() {
         assert_eq!(
-            origin_of("https://roomler.ai/api/agent/installer"),
-            "https://roomler.ai"
+            origin_of("https://meshharbor.itachi.fans/api/agent/installer"),
+            "https://meshharbor.itachi.fans"
         );
     }
 
     #[test]
     fn origin_of_strips_tunnel_suffix() {
         assert_eq!(
-            origin_of("https://roomler.ai/api/tunnel/installer"),
-            "https://roomler.ai"
+            origin_of("https://meshharbor.itachi.fans/api/tunnel/installer"),
+            "https://meshharbor.itachi.fans"
         );
     }
 

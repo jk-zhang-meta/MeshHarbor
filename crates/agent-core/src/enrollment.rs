@@ -747,7 +747,7 @@ pub fn apply_service_install_defaults(cfg: &mut AgentConfig) {
 fn normalize_server_url(raw: &str) -> String {
     // FR-101 P1b — the same rule every reader of a server URL applies now
     // (`meshharbor_remote_control::server_url`), which reads the URL as
-    // reqwest will: `HTTP:roomler.ai` is plaintext too. No plaintext escape
+    // reqwest will: `HTTP:meshharbor.itachi.fans` is plaintext too. No plaintext escape
     // at enrollment: the token must travel over TLS.
     let secured = meshharbor_remote_control::server_url::secure(raw, false);
     if secured.promoted {
@@ -778,12 +778,12 @@ mod tests {
     #[test]
     fn http_is_promoted_to_https() {
         assert_eq!(
-            normalize_server_url("http://roomler.ai"),
-            "https://roomler.ai"
+            normalize_server_url("http://meshharbor.itachi.fans"),
+            "https://meshharbor.itachi.fans"
         );
         assert_eq!(
-            normalize_server_url("http://roomler.ai/"),
-            "https://roomler.ai"
+            normalize_server_url("http://meshharbor.itachi.fans/"),
+            "https://meshharbor.itachi.fans"
         );
         assert_eq!(
             normalize_server_url("http://10.0.0.5:3000"),
@@ -791,8 +791,8 @@ mod tests {
         );
         // FR-101 P1b — spelled as reqwest would still dial it in plaintext.
         assert_eq!(
-            normalize_server_url(" HTTP:roomler.ai/ "),
-            "https://roomler.ai"
+            normalize_server_url(" HTTP:meshharbor.itachi.fans/ "),
+            "https://meshharbor.itachi.fans"
         );
     }
 
@@ -823,12 +823,12 @@ mod tests {
     #[test]
     fn https_is_left_alone() {
         assert_eq!(
-            normalize_server_url("https://roomler.ai"),
-            "https://roomler.ai"
+            normalize_server_url("https://meshharbor.itachi.fans"),
+            "https://meshharbor.itachi.fans"
         );
         assert_eq!(
-            normalize_server_url("https://roomler.ai/"),
-            "https://roomler.ai"
+            normalize_server_url("https://meshharbor.itachi.fans/"),
+            "https://meshharbor.itachi.fans"
         );
     }
 
@@ -837,7 +837,7 @@ mod tests {
         // We don't validate — the reqwest call will fail with a clearer
         // error than we could produce here. Just confirm we don't
         // accidentally rewrite these.
-        assert_eq!(normalize_server_url("roomler.ai"), "roomler.ai");
+        assert_eq!(normalize_server_url("meshharbor.itachi.fans"), "meshharbor.itachi.fans");
         assert_eq!(normalize_server_url("file:///tmp/foo"), "file:///tmp/foo");
     }
 
@@ -957,7 +957,7 @@ mod tests {
         existing.last_known_good_version = Some("0.3.0-rc.199".into());
 
         let mut fresh = crate::config::test_fixture();
-        fresh.server_url = "https://roomler.ai".into();
+        fresh.server_url = "https://meshharbor.itachi.fans".into();
         fresh.agent_token = "NEW-TOKEN".into();
         fresh.agent_id = "NEW-AGENT-ID".into();
         fresh.tenant_id = "NEW-TENANT".into();
@@ -978,7 +978,7 @@ mod tests {
         );
 
         // Identity comes from the fresh enrollment…
-        assert_eq!(merged.server_url, "https://roomler.ai");
+        assert_eq!(merged.server_url, "https://meshharbor.itachi.fans");
         assert_eq!(merged.agent_token, "NEW-TOKEN");
         assert_eq!(merged.agent_id, "NEW-AGENT-ID");
         assert_eq!(merged.tenant_id, "NEW-TENANT");
@@ -1132,7 +1132,7 @@ mod tests {
     #[test]
     fn apply_enrollment_new_identity_appends_secondary() {
         let existing = crate::config::test_fixture();
-        let fresh = fresh_for("https://roomler.ai", "t-new", "tok-new");
+        let fresh = fresh_for("https://meshharbor.itachi.fans", "t-new", "tok-new");
         let (cfg, outcome) = apply_enrollment(Some(existing), fresh, None, false).unwrap();
         let EnrollOutcome::AppendedOrg { label } = outcome else {
             panic!("expected append, got {outcome:?}");
@@ -1210,7 +1210,7 @@ mod tests {
     fn apply_enrollment_appended_label_uniquifies_on_collision() {
         let mut existing = crate::config::test_fixture();
         existing.orgs = vec![org("meshharbor", "https://other.invalid", "t-x")];
-        let fresh = fresh_for("https://roomler.ai", "t-y", "tok-y");
+        let fresh = fresh_for("https://meshharbor.itachi.fans", "t-y", "tok-y");
         let (_cfg, outcome) = apply_enrollment(Some(existing), fresh, None, false).unwrap();
         assert_eq!(
             outcome,

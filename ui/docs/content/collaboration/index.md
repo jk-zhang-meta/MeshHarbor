@@ -1,6 +1,6 @@
 ---
 title: Chat & video
-description: Rooms with threaded chat, HD video conferencing with screen sharing, and file sharing — included with every Roomler plan, on the same accounts and server.
+description: Rooms with threaded chat, HD video conferencing with screen sharing, and file sharing — included with every MeshHarbor plan, on the same accounts and server.
 tags: [collaboration, chat, video, rooms, overview]
 hero: rooms.svg
 heroAlt: Rooms with threaded conversations, file attachments and a video call in progress

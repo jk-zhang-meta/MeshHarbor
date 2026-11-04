@@ -40,7 +40,7 @@ mid-2026 — re-quote at signup.
 ## Bring-up (per PoP)
 
 1. **VPS + DNS.** Order the VPS (Debian 12/Ubuntu 22.04+). Create A records
-   `coturn-{region}.roomler.ai` and `derp-{region}.roomler.ai` → its IP.
+   `coturn-{region}.meshharbor.itachi.fans` and `derp-{region}.meshharbor.itachi.fans` → its IP.
 2. **Copy this kit** to the box and stage the daemon binary (built by CI or
    the build host — `cargo build -p derp-relay --release`):
    ```bash
@@ -65,14 +65,14 @@ mid-2026 — re-quote at signup.
    missing-`relay-ip` loopback blackhole:
    ```bash
    TURN_SECRET_FILE=~/coturn.auth python3 scripts/relay-pop/healthcheck.py \
-     us-east=coturn-us-east.roomler.ai:3478,derp-us-east.roomler.ai
+     us-east=coturn-us-east.meshharbor.itachi.fans:3478,derp-us-east.meshharbor.itachi.fans
    ```
 6. **Register the region** — append to `MESHHARBOR__RELAY__REGIONS` in the prod
    configmap (deploy repo) and redeploy the web:
    ```json
    {"id":"us-east",
-    "turn_url":"turn:coturn-us-east.roomler.ai:3478",
-    "derp_url":"wss://derp-us-east.roomler.ai/derp",
+    "turn_url":"turn:coturn-us-east.meshharbor.itachi.fans:3478",
+    "derp_url":"wss://derp-us-east.meshharbor.itachi.fans/derp",
     "caps":{"tls_443_udp":false}}
    ```
    `tls_443_udp: false` because that variant is DTLS and structurally dead
@@ -96,10 +96,10 @@ coturn's own :443 DNAT under the same watch:
 
 ```cron
 */15 * * * * TURN_SECRET_FILE=/home/gjovanov/coturn.auth \
-  python3 /opt/roomler/relay-pop/healthcheck.py \
-  us-east=coturn-us-east.roomler.ai:3478,derp-us-east.roomler.ai \
+  python3 /opt/meshharbor/relay-pop/healthcheck.py \
+  us-east=coturn-us-east.meshharbor.itachi.fans:3478,derp-us-east.meshharbor.itachi.fans \
   ... \
-  eu-central=coturn.roomler.ai:3478, \
+  eu-central=coturn.meshharbor.itachi.fans:3478, \
   >> ~/relay-pop-health.log 2>&1 || <alert: gh issue / mail>
 ```
 

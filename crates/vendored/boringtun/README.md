@@ -110,7 +110,7 @@ If you want to contribute to this project, please read our [`CONTRIBUTING.md`].
 
 ---
 
-## Roomler Vendored Provenance (`crates/vendored/boringtun.patch`)
+## MeshHarbor Vendored Provenance (`crates/vendored/boringtun.patch`)
 
 - **Upstream crate**: `boringtun` `0.7.1` (`https://github.com/cloudflare/boringtun`, VCS commit `051c9d47dc9c5cb36e461b7d36dcd673820dc98b`)
 - **Local patch (`crates/vendored/boringtun.patch`)**:

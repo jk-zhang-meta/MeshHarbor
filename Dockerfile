@@ -118,12 +118,12 @@ ARG VERSION=dev
 ARG GIT_SHA=unknown
 LABEL org.opencontainers.image.title="MeshHarbor" \
       org.opencontainers.image.description="Remote desktop in a browser tab + WireGuard mesh VPN. Self-hosted, end-to-end encrypted." \
-      org.opencontainers.image.url="https://roomler.ai" \
-      org.opencontainers.image.source="https://github.com/gjovanov/roomler-ai" \
-      org.opencontainers.image.documentation="https://roomler.ai/docs/" \
+      org.opencontainers.image.url="https://meshharbor.itachi.fans" \
+      org.opencontainers.image.source="https://github.com/jk-zhang-meta/MeshHarbor" \
+      org.opencontainers.image.documentation="https://meshharbor.itachi.fans/docs/" \
       org.opencontainers.image.licenses="AGPL-3.0-only" \
       org.opencontainers.image.vendor="G ROX EOOD" \
-      org.opencontainers.image.authors="legal@roomler.ai" \
+      org.opencontainers.image.authors="legal@meshharbor.itachi.fans" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.revision="${GIT_SHA}"
 RUN apt-get update && apt-get install -y ca-certificates nginx && rm -rf /var/lib/apt/lists/*

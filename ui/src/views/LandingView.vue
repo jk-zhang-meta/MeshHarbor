@@ -123,7 +123,7 @@
                 prepend-icon="mdi-download"
                 class="mb-4 align-self-start"
               >
-                Roomler Setup
+                MeshHarbor Setup
               </v-btn>
               <p class="text-body-2 landing-muted mb-1">
                 {{ os.wizardUrl ? 'Or from a terminal:' : 'From a terminal:' }}

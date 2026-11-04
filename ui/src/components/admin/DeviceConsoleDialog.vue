@@ -21,7 +21,7 @@
            UI, not from an incident. -->
       <!-- In the card text, not a v-card-subtitle: a subtitle never wraps and
            dims its content, which turned this warning into one clipped grey
-           line ("Commands run with the Roomler d…") at every width. -->
+           line ("Commands run with the MeshHarbor d…") at every width. -->
       <v-card-text :style="fullscreen ? undefined : 'max-height: 70vh'">
         <v-alert
           type="warning"

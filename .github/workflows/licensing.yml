@@ -98,7 +98,7 @@ jobs:
         run: bash scripts/apply-spdx.sh --check
 
       # ── The one that matters ────────────────────────────────────────────────
-      # An AGPL crate inside roomlerd would make the agent effectively AGPL,
+      # An AGPL crate inside meshharbord would make the agent effectively AGPL,
       # which is a procurement blocker at most enterprises and would falsify the
       # MSP paragraph in LICENSING.md. Nothing else in this workflow would catch
       # it: the new edge would be a one-line Cargo.toml change that compiles.

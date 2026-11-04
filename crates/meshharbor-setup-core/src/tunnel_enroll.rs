@@ -216,7 +216,7 @@ mod tests {
             // shape so GitGuardian's `eyJ...` JWT-prefix scanner
             // doesn't flag this fixture as a real secret leak.
             tunnel_client_token: "fake-tunnel-token-for-tests".to_string(),
-            server_url: "https://roomler.ai".to_string(),
+            server_url: "https://meshharbor.itachi.fans".to_string(),
             machine_name: "field-laptop".to_string(),
         };
         let json = serde_json::to_string(&r).unwrap();

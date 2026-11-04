@@ -207,13 +207,13 @@ pub(crate) async fn seed_vault(app: &TestApp, t: &SeededTenant) -> String {
     for (name, text) in [
         (
             "anyone-may-be-dev",
-            r#"permit (principal, action == Roomler::Action::"role:assume", resource == Roomler::Role::"dev");"#
+            r#"permit (principal, action == MeshHarbor::Action::"role:assume", resource == MeshHarbor::Role::"dev");"#
                 .to_string(),
         ),
         (
             "dev-uses-db",
             format!(
-                r#"permit (principal in Roomler::Role::"dev", action == Roomler::Action::"secret:use", resource in Roomler::SecretFolder::"rrn:{}:secret:db");"#,
+                r#"permit (principal in MeshHarbor::Role::"dev", action == MeshHarbor::Action::"secret:use", resource in MeshHarbor::SecretFolder::"rrn:{}:secret:db");"#,
                 t.tenant_slug
             ),
         ),

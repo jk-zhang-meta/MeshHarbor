@@ -251,7 +251,7 @@ mod tests {
 
     use crate::newsletter::{compose, unsubscribe_link};
 
-    const FRONTEND: &str = "https://roomler.ai";
+    const FRONTEND: &str = "https://meshharbor.itachi.fans";
 
     fn issue() -> NewsletterIssue {
         NewsletterIssue {
@@ -259,15 +259,15 @@ mod tests {
             slug: "october-notes".into(),
             subject: "Three products, one daemon".into(),
             preheader: "Why one agent per machine is the whole point.".into(),
-            body_md: "## The story\n\nRead [the docs](https://roomler.ai/docs/install), \
-                      [the post](https://roomler.ai/blog/one-daemon#why), the \
-                      [source](https://github.com/gjovanov/roomler-ai) and \
-                      <https://www.roomler.ai/pricing>.\n\n![a diagram](https://roomler.ai/newsletter-img/d.png)\n"
+            body_md: "## The story\n\nRead [the docs](https://meshharbor.itachi.fans/docs/install), \
+                      [the post](https://meshharbor.itachi.fans/blog/one-daemon#why), the \
+                      [source](https://github.com/jk-zhang-meta/MeshHarbor) and \
+                      <https://www.meshharbor.itachi.fans/pricing>.\n\n![a diagram](https://meshharbor.itachi.fans/newsletter-img/d.png)\n"
                 .into(),
-            hero_url: Some("https://roomler.ai/newsletter-img/october-notes-v1.png".into()),
+            hero_url: Some("https://meshharbor.itachi.fans/newsletter-img/october-notes-v1.png".into()),
             hero_alt: Some("One daemon".into()),
             cta_text: Some("Try MeshHarbor".into()),
-            cta_url: Some("https://roomler.ai/register".into()),
+            cta_url: Some("https://meshharbor.itachi.fans/register".into()),
             audience: None,
             status: IssueStatus::Sending,
             claimed_by: None,
@@ -331,7 +331,7 @@ mod tests {
         // The links to this site carry the issue's tags; the rest do not.
         let tagged = "utm_source=newsletter&amp;utm_medium=email&amp;utm_campaign=nl-october-notes";
         for l in &la {
-            let ours = l.contains("://roomler.ai/") || l.contains("://www.roomler.ai/");
+            let ours = l.contains("://meshharbor.itachi.fans/") || l.contains("://www.meshharbor.itachi.fans/");
             let is_link = l.starts_with("href=");
             let is_unsub = l.contains("/api/subscribe/unsubscribe/");
             if is_link && ours && !is_unsub {
@@ -376,7 +376,7 @@ mod tests {
             None,
         );
         assert!(!html.contains("utm_"));
-        assert!(html.contains("href=\"https://roomler.ai/register\""));
+        assert!(html.contains("href=\"https://meshharbor.itachi.fans/register\""));
     }
 
     /// A test-send carries no custom arg: it has no ledger row, so an event

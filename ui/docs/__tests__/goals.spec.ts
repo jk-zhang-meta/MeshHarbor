@@ -39,11 +39,11 @@ const body = renderMarkdown(
     ':::',
     '',
     '```bash',
-    'roomler ssh my-laptop',
+    'meshharbor ssh my-laptop',
     '```',
     '',
-    'Source: [the repository](https://github.com/gjovanov/roomler-ai/blob/master/LICENSING.md),',
-    '[the author](https://github.com/gjovanov), [another repo](https://github.com/gjovanov/roomler-ai-docs),',
+    'Source: [the repository](https://github.com/jk-zhang-meta/MeshHarbor/blob/master/LICENSING.md),',
+    '[the author](https://github.com/gjovanov), [another repo](https://github.com/jk-zhang-meta/meshharbor-docs),',
     '[the docs](/docs/faq/).',
   ].join('\n'),
   'test.md',
@@ -102,19 +102,19 @@ describe('isInstallCommand — what counts as an install/enroll command', () => 
   })
 
   it('recognises the install guides’ hand-written one-liners', () => {
-    expect(isInstallCommand('curl -fsSL https://roomler.ai/api/setup/install.sh | sh -s -- \\\n  --role daemon --token <t>')).toBe(true)
-    expect(isInstallCommand('& ([scriptblock]::Create((irm https://roomler.ai/api/setup/install.ps1))) -Role daemon-system')).toBe(true)
-    expect(isInstallCommand('roomlerd enroll --server https://roomler.ai --token <reusable-key> --ephemeral --name ci-runner')).toBe(true)
+    expect(isInstallCommand('curl -fsSL https://meshharbor.itachi.fans/api/setup/install.sh | sh -s -- \\\n  --role daemon --token <t>')).toBe(true)
+    expect(isInstallCommand('& ([scriptblock]::Create((irm https://meshharbor.itachi.fans/api/setup/install.ps1))) -Role daemon-system')).toBe(true)
+    expect(isInstallCommand('meshharbord enroll --server https://meshharbor.itachi.fans --token <reusable-key> --ephemeral --name ci-runner')).toBe(true)
   })
 
-  it('does not count commands that USE Roomler, or anything else', () => {
+  it('does not count commands that USE MeshHarbor, or anything else', () => {
     for (const cmd of [
-      'roomler ssh <device-name>',
-      'roomler forward --agent <device-name> --local 127.0.0.1:5432 --remote db:5432',
-      'git clone https://github.com/gjovanov/roomler-ai.git',
+      'meshharbor ssh <device-name>',
+      'meshharbor forward --agent <device-name> --local 127.0.0.1:5432 --remote db:5432',
+      'git clone https://github.com/jk-zhang-meta/MeshHarbor.git',
       'docker compose up -d',
       'echo enroll --server',
-      'roomlerd --version',
+      'meshharbord --version',
     ]) {
       expect(isInstallCommand(cmd), cmd).toBe(false)
     }
@@ -126,7 +126,7 @@ describe('isInstallCommand — what counts as an install/enroll command', () => 
     const marked = blocks.filter((b) => b.hasAttribute('data-install'))
     expect(marked.length).toBeGreaterThanOrEqual(3)
     for (const b of marked) expect(isInstallCommand(b.querySelector('code')!.textContent!)).toBe(true)
-    const plain = blocks.find((b) => b.textContent!.includes('roomler ssh'))!
+    const plain = blocks.find((b) => b.textContent!.includes('meshharbor ssh'))!
     expect(plain.hasAttribute('data-install')).toBe(false)
   })
 })
@@ -164,23 +164,23 @@ describe('docs.js — github-outbound', () => {
 
   it('fires for every link into the repository: the top bar, the prose, "Edit this page"', () => {
     const { doc, purestat } = run()
-    click(link(doc, 'https://github.com/gjovanov/roomler-ai'))
-    click(link(doc, 'https://github.com/gjovanov/roomler-ai/blob/master/LICENSING.md'))
-    click(link(doc, 'https://github.com/gjovanov/roomler-ai/edit/master/ui/docs/content/start/quickstart.md'))
+    click(link(doc, 'https://github.com/jk-zhang-meta/MeshHarbor'))
+    click(link(doc, 'https://github.com/jk-zhang-meta/MeshHarbor/blob/master/LICENSING.md'))
+    click(link(doc, 'https://github.com/jk-zhang-meta/MeshHarbor/edit/master/ui/docs/content/start/quickstart.md'))
     expect(purestat.mock.calls).toEqual([['github-outbound'], ['github-outbound'], ['github-outbound']])
   })
 
   it('does not fire for the author’s profile, another repository, or an internal link', () => {
     const { doc, purestat } = run()
     click(link(doc, 'https://github.com/gjovanov'))
-    click(link(doc, 'https://github.com/gjovanov/roomler-ai-docs'))
+    click(link(doc, 'https://github.com/jk-zhang-meta/meshharbor-docs'))
     click(link(doc, '/docs/faq/'))
     expect(purestat).not.toHaveBeenCalled()
   })
 
   it('counts a middle click (a new tab has no click event), and nothing else', () => {
     const { doc, purestat } = run()
-    const a = link(doc, 'https://github.com/gjovanov/roomler-ai')
+    const a = link(doc, 'https://github.com/jk-zhang-meta/MeshHarbor')
     a.dispatchEvent(new MouseEvent('auxclick', { bubbles: true, button: 1 }))
     a.dispatchEvent(new MouseEvent('auxclick', { bubbles: true, button: 2 }))
     expect(purestat.mock.calls).toEqual([['github-outbound']])
@@ -188,6 +188,6 @@ describe('docs.js — github-outbound', () => {
 
   it('is a no-op without purestat', () => {
     const { doc } = run(false)
-    expect(() => click(link(doc, 'https://github.com/gjovanov/roomler-ai'))).not.toThrow()
+    expect(() => click(link(doc, 'https://github.com/jk-zhang-meta/MeshHarbor'))).not.toThrow()
   })
 })

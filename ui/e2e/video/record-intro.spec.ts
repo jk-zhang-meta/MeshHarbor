@@ -1,5 +1,5 @@
 /**
- * Roomler Intro Video Recording
+ * MeshHarbor Intro Video Recording
  *
  * This Playwright test records a full user journey as a video.
  * It injects an on-screen transcription overlay at each scene,
@@ -15,7 +15,7 @@
  *
  * Output:
  *   test-results/record-intro-{hash}/video.webm
- *   Convert to MP4: ffmpeg -i video.webm -c:v libx264 -crf 18 roomler-intro.mp4
+ *   Convert to MP4: ffmpeg -i video.webm -c:v libx264 -crf 18 meshharbor-intro.mp4
  */
 import { test, type Page } from '@playwright/test'
 import transcriptions from './transcriptions.json' with { type: 'json' }
@@ -97,7 +97,7 @@ function delay(page: Page, ms: number) {
 // Video recording test
 // ---------------------------------------------------------------------------
 
-test.describe('Roomler Intro Video', () => {
+test.describe('MeshHarbor Intro Video', () => {
   test('record full intro walkthrough', async ({ page, context }) => {
     test.setTimeout(420_000) // 7 minutes max
 
@@ -111,7 +111,7 @@ test.describe('Roomler Intro Video', () => {
     // Credentials used throughout
     const username = useExisting ? EXISTING_USERNAME : `demo${suffix}`
     const password = useExisting ? EXISTING_PASSWORD : 'SecureP@ss123'
-    const email = useExisting ? '' : `demo${suffix}@roomler.live`
+    const email = useExisting ? '' : `demo${suffix}@meshharbor.itachi.fans`
 
     await injectOverlay(page)
 
@@ -154,7 +154,7 @@ test.describe('Roomler Intro Video', () => {
     const regInputs = page.locator('input')
     const emailInput = regInputs.nth(0)
     await emailInput.click()
-    await emailInput.pressSequentially(email || `demo${suffix}@roomler.live`, { delay: 60 })
+    await emailInput.pressSequentially(email || `demo${suffix}@meshharbor.itachi.fans`, { delay: 60 })
     await delay(page, 300)
 
     const usernameInput = regInputs.nth(1)
@@ -688,8 +688,8 @@ test.describe('Roomler Intro Video', () => {
       const { mkdirSync } = await import('fs')
       mkdirSync(outDir, { recursive: true })
       await page.close() // flush the video file
-      await video.saveAs(outDir + 'roomler-intro.webm')
-      console.log(`Video saved to: ${outDir}roomler-intro.webm`)
+      await video.saveAs(outDir + 'meshharbor-intro.webm')
+      console.log(`Video saved to: ${outDir}meshharbor-intro.webm`)
     }
   })
 })

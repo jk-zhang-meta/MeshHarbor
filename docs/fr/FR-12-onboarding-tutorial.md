@@ -1,6 +1,6 @@
 # FR-12 — Onboarding tutorial ("Welcome tour")
 
-**Issue:** [#788](https://github.com/gjovanov/roomler-ai/issues/788)
+**Issue:** [#788](https://github.com/jk-zhang-meta/MeshHarbor/issues/788)
 **Status:** P1 + P2 + **P3 shipped and FIELD-VERIFIED** — the arc is complete
 
 ## Goal
@@ -34,8 +34,8 @@ left chapter rail + scrollable chapter body:
 | 0 | Get started | hero-mesh | create/rename org → enroll first device (opens the Enroll dialog on /devices) |
 | 1 | Devices | hero-mesh | enroll (device vs tunnel client), grid tour (search/columns/tags/display name), update/pin |
 | 2 | Remote desktop | remote-desktop | Connect from the grid, consent modes, clipboard + file transfer, codecs note |
-| 3 | Private network | private-network | overlay addresses + MagicDNS name (copy from the grid), `roomler ssh <name>` |
-| 4 | Tunnels | private-network | `roomler forward` / SOCKS5 one-liners (copyable, org-scoped), declared routes |
+| 3 | Private network | private-network | overlay addresses + MagicDNS name (copy from the grid), `meshharbor ssh <name>` |
+| 4 | Tunnels | private-network | `meshharbor forward` / SOCKS5 one-liners (copyable, org-scoped), declared routes |
 | 5 | ACL & policy | private-network | tunnel ACL default-deny, overlay ACL modes, subnet-route approval (/network/acl) |
 | 6 | Rooms & chat | collaboration | create a room, invite someone (deep link /invites), mentions/files |
 | 7 | Calls | collaboration | start a call from a room, screen share, the call badge |
@@ -47,7 +47,7 @@ an "In detail" table borrowed/condensed from the README section.
 ### Entry points
 
 1. **First login, auto-open**: after login, if `localStorage
-   roomler-tour-seen:<userId>` is absent AND the active org looks fresh
+   meshharbor-tour-seen:<userId>` is absent AND the active org looks fresh
    (0 devices — `deviceStore.total === 0` — and ≤1 room), route to the
    Tutorial instead of the dashboard, set the flag on first render.
    Dismissible instantly (the flag persists); never auto-opens twice.
@@ -60,7 +60,7 @@ an "In detail" table borrowed/condensed from the README section.
 ### Progress
 
 P1: per-chapter "done" checkmarks in `localStorage`
-(`roomler:tour-progress:<userId>` — the useGridColumns storage conventions).
+(`meshharbor:tour-progress:<userId>` — the useGridColumns storage conventions).
 P3 (optional): mirror server-side on the user profile so progress follows
 devices.
 
@@ -180,7 +180,7 @@ attempt navigated `…/tutorial#acl` → `…/tutorial#acl`, Chrome did nothing,
 in-memory state survived, and the bug looked FIXED. Force `location.reload()`.
 
 **Re-tested on `v20260901-ee1ac3d00a2d` — PASS.** Same account, same browser,
-same procedure as the failing run: clear `roomler:tour-progress:<uid>`, load
+same procedure as the failing run: clear `meshharbor:tour-progress:<uid>`, load
 `/tenant/{tid}/tutorial` — deliberately the route the old code bailed on — and
 the badge reads **`1/8 done`** with the key restored to `["acl"]` from the
 account, against **`0/8`** and `null` before the fix. Un-ticking then wrote

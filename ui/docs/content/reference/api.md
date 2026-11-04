@@ -1,6 +1,6 @@
 ---
 title: HTTP API
-description: Roomler's REST API — how it is authenticated, how routes are scoped per organization, and where to find the full route list.
+description: MeshHarbor's REST API — how it is authenticated, how routes are scoped per organization, and where to find the full route list.
 tags: [reference, api, http, developers, automation]
 order: 4
 ---
@@ -10,7 +10,7 @@ Everything the web application does, it does through a REST API you can use too.
 ## Base and scoping
 
 ```
-https://roomler.ai/api/...
+https://meshharbor.itachi.fans/api/...
 ```
 
 Almost every route is **scoped to an organization** and nested accordingly:
@@ -81,8 +81,8 @@ be correlated.
 ## Health
 
 ```bash
-curl -sI https://roomler.ai/health         # liveness
-curl -s  https://roomler.ai/health/ready   # readiness, with dependencies
+curl -sI https://meshharbor.itachi.fans/health         # liveness
+curl -s  https://meshharbor.itachi.fans/health/ready   # readiness, with dependencies
 ```
 
 Useful for a self-hosted deployment's monitoring.
@@ -96,7 +96,7 @@ audiences.
 ## Full route list
 
 The complete surface, with request and response shapes, is in
-[`docs/api.md`](https://github.com/gjovanov/roomler-ai/blob/master/docs/api.md)
+[`docs/api.md`](https://github.com/jk-zhang-meta/MeshHarbor/blob/master/docs/api.md)
 in the repository — generated from the routes themselves rather than maintained
 separately, so it does not drift.
 

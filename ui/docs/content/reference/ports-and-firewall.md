@@ -1,6 +1,6 @@
 ---
 title: Ports and firewall
-description: What Roomler needs to reach, what it never needs opened inbound, and the one port range that matters if you self-host video calls.
+description: What MeshHarbor needs to reach, what it never needs opened inbound, and the one port range that matters if you self-host video calls.
 tags: [reference, network, firewall, ports, self-hosting]
 order: 3
 ---
@@ -42,7 +42,7 @@ allow-list needs:
 
 | Host | For |
 |---|---|
-| `roomler.ai` — or your own server's hostname | The API, the control connection, the relay floor, the Windows installer (MSI) and the tunnel CLI |
+| `meshharbor.itachi.fans` — or your own server's hostname | The API, the control connection, the relay floor, the Windows installer (MSI) and the tunnel CLI |
 | `github.com` and `release-assets.githubusercontent.com` | The Linux and macOS packages, the desktop companion, and every automatic update |
 | `aka.ms` | Windows only: Microsoft's Visual C++ runtime, when the installer script finds it missing |
 
@@ -86,9 +86,9 @@ enable relaying on it. No other machine needs anything inbound.
 From a machine:
 
 ```bash
-curl -sI https://roomler.ai/health     # or your own server
-roomler netcheck                       # what this machine can actually reach
-roomler peers                          # which path each peer is on
+curl -sI https://meshharbor.itachi.fans/health     # or your own server
+meshharbor netcheck                       # what this machine can actually reach
+meshharbor peers                          # which path each peer is on
 ```
 
 `netcheck` is the one to read on a restrictive network: it reports reachability,

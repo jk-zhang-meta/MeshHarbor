@@ -1,6 +1,6 @@
-diff -ruN --strip-trailing-cr /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/boringtun-0.7.1/src/noise/handshake.rs /root/.agent-work/runtime/pac/roomler-ai-20261022/codex-on-demand-b6-20261030/crates/vendored/boringtun/src/noise/handshake.rs
+diff -ruN --strip-trailing-cr /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/boringtun-0.7.1/src/noise/handshake.rs /root/.agent-work/runtime/pac/meshharbor-20261022/codex-on-demand-b6-20261030/crates/vendored/boringtun/src/noise/handshake.rs
 --- /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/boringtun-0.7.1/src/noise/handshake.rs	2006-07-24 09:21:28.000000000 +0800
-+++ /root/.agent-work/runtime/pac/roomler-ai-20261022/codex-on-demand-b6-20261030/crates/vendored/boringtun/src/noise/handshake.rs	2026-10-30 21:49:33.656723495 +0800
++++ /root/.agent-work/runtime/pac/meshharbor-20261022/codex-on-demand-b6-20261030/crates/vendored/boringtun/src/noise/handshake.rs	2026-10-30 21:49:33.656723495 +0800
 @@ -252,7 +252,10 @@
              .field("peer_static_public", &self.peer_static_public)
              .field("static_shared", &"<redacted>")
@@ -35,9 +35,9 @@ diff -ruN --strip-trailing-cr /root/.cargo/registry/src/index.crates.io-1949cf8c
      pub(super) fn receive_handshake_initialization<'a>(
          &mut self,
          packet: HandshakeInit,
-diff -ruN --strip-trailing-cr /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/boringtun-0.7.1/src/noise/mod.rs /root/.agent-work/runtime/pac/roomler-ai-20261022/codex-on-demand-b6-20261030/crates/vendored/boringtun/src/noise/mod.rs
+diff -ruN --strip-trailing-cr /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/boringtun-0.7.1/src/noise/mod.rs /root/.agent-work/runtime/pac/meshharbor-20261022/codex-on-demand-b6-20261030/crates/vendored/boringtun/src/noise/mod.rs
 --- /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/boringtun-0.7.1/src/noise/mod.rs	2006-07-24 09:21:28.000000000 +0800
-+++ /root/.agent-work/runtime/pac/roomler-ai-20261022/codex-on-demand-b6-20261030/crates/vendored/boringtun/src/noise/mod.rs	2026-10-31 10:02:15.974738860 +0800
++++ /root/.agent-work/runtime/pac/meshharbor-20261022/codex-on-demand-b6-20261030/crates/vendored/boringtun/src/noise/mod.rs	2026-10-31 10:02:15.974738860 +0800
 @@ -241,6 +241,51 @@
          }
      }
@@ -90,9 +90,9 @@ diff -ruN --strip-trailing-cr /root/.cargo/registry/src/index.crates.io-1949cf8c
      /// Encapsulate a single packet from the tunnel interface.
      /// Returns TunnResult.
      ///
-diff -ruN --strip-trailing-cr /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/boringtun-0.7.1/src/noise/timers.rs /root/.agent-work/runtime/pac/roomler-ai-20261022/codex-on-demand-b6-20261030/crates/vendored/boringtun/src/noise/timers.rs
+diff -ruN --strip-trailing-cr /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/boringtun-0.7.1/src/noise/timers.rs /root/.agent-work/runtime/pac/meshharbor-20261022/codex-on-demand-b6-20261030/crates/vendored/boringtun/src/noise/timers.rs
 --- /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/boringtun-0.7.1/src/noise/timers.rs	2006-07-24 09:21:28.000000000 +0800
-+++ /root/.agent-work/runtime/pac/roomler-ai-20261022/codex-on-demand-b6-20261030/crates/vendored/boringtun/src/noise/timers.rs	2026-10-30 22:09:56.808631439 +0800
++++ /root/.agent-work/runtime/pac/meshharbor-20261022/codex-on-demand-b6-20261030/crates/vendored/boringtun/src/noise/timers.rs	2026-10-30 22:09:56.808631439 +0800
 @@ -90,9 +90,15 @@
          for t in &mut self.timers[..] {
              *t = now;

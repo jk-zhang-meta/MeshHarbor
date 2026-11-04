@@ -28,7 +28,7 @@ done
 [[ ! -L $LOCK_FILE ]] || die 'symlink lock refused'
 lock_parent=$(dirname "$LOCK_FILE")
 [[ $(realpath "$lock_parent") == "$lock_parent" && $(stat -c '%u' "$lock_parent") == 0 && $((8#$(stat -c '%a' "$lock_parent") & 8#022)) == 0 ]] || die 'unsafe lock parent'
-mount_at=/usr/share/roomler/geoip-managed
+mount_at=/usr/share/meshharbor/geoip-managed
 db_name=dbip-country-lite.mmdb
 prov_name=dbip-country-lite.provenance.txt
 snapshot() {

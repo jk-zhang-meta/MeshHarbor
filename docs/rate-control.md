@@ -147,7 +147,7 @@ flowchart LR
 | the key | `remote_addr\|carrier` — `direct`, `tunnel`, `relay:<kind>/<transport>` from the LocalAPI peer record; a mid-churn carrier (`blocked` / `offline`) leaves the bare pre-FR-79 key. DERP-over-TLS and a UDP relay are different pipes on the same address, four times apart in capacity | `rate_memory.rs:42`, `:65`; `peer.rs:1567` |
 | the opener | measured by the goodput estimator (bytes over blocked time) for a burst that queued; `None` for one the socket absorbed. The old `bytes × 8 / longest_single_wait × 75 %` recorded 6–8 M against a 1.8–3.4 M pipe | `peer.rs:7517` (`opener_measured_bps`) |
 | the write | `record_session(peer, evidence, now)`: `None` or 0 ⇒ **no write**; first evidence ⇒ adopted outright; otherwise `damp` with the goodput estimator's own asymmetry (`ALPHA_DOWN` 0.50 / `ALPHA_UP` 0.10, `goodput.rs:94`, `:98`). The maximum rule, `had_decrease`, the unqueued ×1.5 step and its constants are gone | `rate_memory.rs:147`, `:79`; `peer.rs:1616` |
-| the file | `rate_memory.json` in the daemon's data dir (`appdirs::project_dirs().data_dir()` — on a Windows SYSTEM service `…\config\systemprofile\AppData\Roaming\roomler\roomler\data\`); whole-file atomic write; a missing or corrupt file is an empty memory; an entry older than 7 days never seeds and is pruned on the next write | `rate_memory.rs:185`, `:22` |
+| the file | `rate_memory.json` in the daemon's data dir (`appdirs::project_dirs().data_dir()` — on a Windows SYSTEM service `…\config\systemprofile\AppData\Roaming\meshharbor\meshharbor\data\`); whole-file atomic write; a missing or corrupt file is an empty memory; an entry older than 7 days never seeds and is pruned on the next write | `rate_memory.rs:185`, `:22` |
 | the log line | `FR-79 V4 rate memory: … peer=… evidence_bps=… kept_bps=…` at every session end that had a key. **`kept` lies between the old value and the evidence**, so `kept > evidence` on one line proves the entry moved DOWN — no old value needed | `peer.rs:1605` |
 
 Field reads of the write-back so far (key `100.65.4.2\|relay:derp/tcp` unless noted):
@@ -452,7 +452,7 @@ paced by it, and is limited by its own loop as before.
 always differ by at least a whole step. So on 0.4.142 an estimate hovering on a step boundary moved the pace every window it
 crossed (a field trace: 55 → 50 → 55 → 50 → 45 → 50, five moves in ten windows). The software pace now steps down at
 once and up only when the encoder clears the higher step by 2.5 fps. The hardware pace keeps margin 0 until it
-is measured on hardware ([#2432](https://github.com/gjovanov/roomler-ai/issues/2432)).
+is measured on hardware ([#2432](https://github.com/jk-zhang-meta/MeshHarbor/issues/2432)).
 
 ## The media plan, in shadow (FR-70 M3a)
 
@@ -525,7 +525,7 @@ software pump reads the same plan; the RTP pump has no governor).
 
 ## Config / env reference
 
-All keys live in the agent config (`roomler config set …`) with
+All keys live in the agent config (`meshharbor config set …`) with
 `MESHHARBORD_*` env twins; restart required.
 
 | Key | Default | Meaning |

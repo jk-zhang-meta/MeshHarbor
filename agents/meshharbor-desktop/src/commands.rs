@@ -2696,7 +2696,7 @@ mod tests {
         serde_json::from_str(&format!(
             r#"{{"node_id":"{node_id}","name":"vmtest-w-ins-sys-104457","version":"0.4.104",
                 "mode":"service","connected":true{tenant_json},
-                "orgs":[{{"label":"primary","server_url":"https://roomler.ai","agent_id":"{node_id}",
+                "orgs":[{{"label":"primary","server_url":"https://meshharbor.itachi.fans","agent_id":"{node_id}",
                           "primary":true,"enabled":true,"connected":true}}]}}"#
         ))
         .expect("a NodeStatus the daemon could send")
@@ -2738,7 +2738,7 @@ mod tests {
         assert!(r.enrolled);
         assert_eq!(r.agent_id.as_deref(), Some("6ab7a24f352abff7547c5062"));
         assert_eq!(r.tenant_id.as_deref(), Some("6a975e17971e2d55ddcdedb2"));
-        assert_eq!(r.server_url.as_deref(), Some("https://roomler.ai"));
+        assert_eq!(r.server_url.as_deref(), Some("https://meshharbor.itachi.fans"));
         assert_eq!(r.device_name.as_deref(), Some("vmtest-w-ins-sys-104457"));
     }
 
@@ -3098,7 +3098,7 @@ mod tests {
 
     fn two_org_config() -> AgentConfig {
         serde_json::from_value(serde_json::json!({
-            "server_url": "https://roomler.ai/",
+            "server_url": "https://meshharbor.itachi.fans/",
             "agent_token": "tok",
             "agent_id": "a1a1a1a1a1a1a1a1a1a1a1a1",
             "tenant_id": "AAAAAAAAAAAAAAAAAAAAAAAA",
@@ -3128,7 +3128,7 @@ mod tests {
     fn remote_target_follows_the_devices_org() {
         let cfg = two_org_config();
         let primary = (
-            "https://roomler.ai".to_string(),
+            "https://meshharbor.itachi.fans".to_string(),
             "aaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
         );
         assert_eq!(remote_target(&cfg, None).unwrap(), primary);

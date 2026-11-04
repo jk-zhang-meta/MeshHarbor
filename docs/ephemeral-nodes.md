@@ -1,7 +1,7 @@
 # Ephemeral nodes — devices that remove themselves
 
-**FR-51** ([#1095](https://github.com/gjovanov/roomler-ai/issues/1095), spec:
-[`docs/fr/FR-51-ephemeral-nodes.md`](fr/FR-51-ephemeral-nodes.md)). The roomler
+**FR-51** ([#1095](https://github.com/jk-zhang-meta/MeshHarbor/issues/1095), spec:
+[`docs/fr/FR-51-ephemeral-nodes.md`](fr/FR-51-ephemeral-nodes.md)). The meshharbor
 answer to Tailscale's ephemeral nodes: a device that joins an org **knowing in
 advance that it is temporary**, and then removes itself — device row, overlay
 lease, address, MagicDNS name — shortly after it stops. For CI runners,
@@ -14,10 +14,10 @@ turns over faster than a human can curate it.
 admin mints an EPHEMERAL ENROLLMENT KEY  (reusable, capped, revocable, audited)
         │
         ▼
-roomlerd enroll --server … --token <key> --name runner-1 --ephemeral
+meshharbord enroll --server … --token <key> --name runner-1 --ephemeral
         │   random machine fingerprint → a NEW device row, ephemeral: true
         ▼
-roomlerd run          … the device works like any other …
+meshharbord run          … the device works like any other …
         │
         ├── clean stop
         │     • Unix: SIGTERM / SIGINT (e.g. `docker stop`, `systemctl stop`)
@@ -25,7 +25,7 @@ roomlerd run          … the device works like any other …
         │       signals the worker's stop event and waits (#1683)
         │       (an update's OWN service stop is not a leave — the device
         │        stays enrolled; see below)
-        │     • Windows per-user install (the Scheduled Task): `roomlerd service
+        │     • Windows per-user install (the Scheduled Task): `meshharbord service
         │       stop`, sign-out, shutdown (FR-97 P4d; see below)
         │       → the daemon calls POST /api/agent/self/unenroll
         │       → removed within seconds
@@ -93,12 +93,12 @@ after itself:
 
 ```bash
 # entrypoint.sh — each replica is its own device
-roomlerd enroll \
-  --server https://roomler.ai \
+meshharbord enroll \
+  --server https://meshharbor.itachi.fans \
   --token  "$MESHHARBOR_EPHEMERAL_KEY" \
   --name   "runner-${HOSTNAME}" \
   --ephemeral
-exec roomlerd run
+exec meshharbord run
 ```
 
 - `--ephemeral` mints a **random** machine fingerprint. Without it, N replicas
@@ -138,7 +138,7 @@ exec roomlerd run
   `spawn_installer_with_watch` touches, rollbacks included) keeps the device
   enrolled and logs why. An operator stop inside that window leaves the row to
   the reaper — which is what every Windows-service stop did before #1683.
-- `roomler status` on an ephemeral device says so
+- `meshharbor status` on an ephemeral device says so
   (`ephemeral   yes — removes itself after inactivity, or on clean stop`).
 
 ## A per-user Windows install (FR-97 P4d)
@@ -152,7 +152,7 @@ into the same `os_initiated_stop` arm a Unix SIGTERM takes:
 
 ```mermaid
 flowchart LR
-  A["roomlerd service stop"] -->|"SetEvent on<br/>Local\roomler-user-stop-&lt;config id&gt;"| W
+  A["meshharbord service stop"] -->|"SetEvent on<br/>Local\meshharbor-user-stop-&lt;config id&gt;"| W
   S["sign-out · shutdown · restart"] -->|"WM_ENDSESSION to<br/>a hidden window"| W
   R["an installer's Restart Manager<br/>(ENDSESSION_CLOSEAPP)"] -.->|ignored| K["the daemon runs on"]
   W["terminate_signal:<br/>the OS-initiated arm"] --> U["self-unenroll, ≤ 3 s<br/>(ephemeral, no update in flight)"]
@@ -162,12 +162,12 @@ flowchart LR
 
 | What ends the per-user daemon | Before P4d | Since P4d |
 |---|---|---|
-| `roomlerd service stop` | (no such command) | A clean stop: an ephemeral device unenrolls. It waits up to 15 s for the daemon to leave, then falls back to `schtasks /End` |
+| `meshharbord service stop` | (no such command) | A clean stop: an ephemeral device unenrolls. It waits up to 15 s for the daemon to leave, then falls back to `schtasks /End` |
 | Sign-out, shutdown, restart | Killed with the session; the reaper collects an ephemeral device | A clean stop, which the window holds the session's end for, at most 5 s (`SESSION_END_BUDGET`) |
 | An installer's Restart Manager (`ENDSESSION_CLOSEAPP`) | — | Ignored: never a leave |
-| `roomlerd service stop` from an SSH login (session 0) | (no such command) | A hard stop (`schtasks /End`), and it says why: the person's event lives in their own session, which session 0 cannot see |
+| `meshharbord service stop` from an SSH login (session 0) | (no such command) | A hard stop (`schtasks /End`), and it says why: the person's event lives in their own session, which session 0 cannot see |
 | `schtasks /End`, Task Manager's End task, `taskkill /F` | A hard kill; the reaper | The same |
-| `taskkill` without `/F` (`WM_CLOSE`) | Refused: "can only be terminated forcefully" | In the person's session, taskkill reports that it sent the signal, and the daemon keeps running. Use `roomlerd service stop` |
+| `taskkill` without `/F` (`WM_CLOSE`) | Refused: "can only be terminated forcefully" | In the person's session, taskkill reports that it sent the signal, and the daemon keeps running. Use `meshharbord service stop` |
 | An auto-update | The internal arm: stays enrolled | The same |
 
 - **Which daemon.** The event is keyed by the config's instance id, the
@@ -211,8 +211,8 @@ device left").
 
 ## What this is deliberately NOT
 
-- **Not a stateless daemon.** `roomlerd` persists its config (WG key, SSH host
-  key); Tailscale's `--state=mem:` has no roomler equivalent. The
+- **Not a stateless daemon.** `meshharbord` persists its config (WG key, SSH host
+  key); Tailscale's `--state=mem:` has no meshharbor equivalent. The
   refuse-if-config-exists guard plus a container's fresh filesystem covers the
   motivating case without one.
 - **Not tunnel clients (yet).** `tunnel_clients` rows stay permanent: the

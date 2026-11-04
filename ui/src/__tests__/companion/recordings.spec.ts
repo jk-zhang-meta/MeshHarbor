@@ -53,7 +53,7 @@ function mount(invoke: Invoke): Api {
   document.body.innerHTML = ''
   document.body.appendChild(section)
   const w = window as unknown as Record<string, unknown>
-  w.Roomler = {
+  w.MeshHarbor = {
     $: (id: string) => document.getElementById(id),
     invoke,
     show: (el: HTMLElement | null) => el && (el.hidden = false),
@@ -65,7 +65,7 @@ function mount(invoke: Invoke): Api {
     fmtBytes,
   }
   window.eval(SCRIPT)
-  return w.RoomlerRecordings as Api
+  return w.MeshHarborRecordings as Api
 }
 
 const $ = (id: string) => document.getElementById(id) as HTMLElement
@@ -79,10 +79,10 @@ function view(over: Record<string, unknown> = {}) {
     record_dir: null,
     state: { available: true, active: false, duration_ms: 0, bytes: 0, frames: 0 },
     listing: {
-      dir: 'C:\\Users\\me\\Videos\\Roomler',
+      dir: 'C:\\Users\\me\\Videos\\MeshHarbor',
       items: [
         {
-          name: 'Roomler Recording 2026-09-25 14-30-12.mp4',
+          name: 'MeshHarbor Recording 2026-09-25 14-30-12.mp4',
           bytes: 5 * 1024 * 1024,
           duration_ms: 65_000,
           started_at: '2026-09-25T12:30:12Z',
@@ -92,7 +92,7 @@ function view(over: Record<string, unknown> = {}) {
           height: 1080,
         },
         {
-          name: 'Roomler Recording 2026-09-24 09-00-00.mp4',
+          name: 'MeshHarbor Recording 2026-09-24 09-00-00.mp4',
           bytes: 1024,
           duration_ms: 2_000,
           started_at: '2026-09-24T07:00:00Z',
@@ -190,13 +190,13 @@ describe('companion Recordings view (FR-85 P2b)', () => {
     expect(($('rec-start') as HTMLButtonElement).disabled).toBe(false)
     expect($('rec-stop').hidden).toBe(true)
     expect($('rec-live').hidden).toBe(true)
-    expect($('rec-folder').textContent).toBe('C:\\Users\\me\\Videos\\Roomler')
+    expect($('rec-folder').textContent).toBe('C:\\Users\\me\\Videos\\MeshHarbor')
     expect($('rec-folder-note').textContent).toBe('The default folder.')
     expect($('rec-folder-default').hidden).toBe(true)
     const rows = [...$('rec-body').querySelectorAll('tr')]
     expect(rows.map((r) => r.dataset.name)).toEqual([
-      'Roomler Recording 2026-09-25 14-30-12.mp4',
-      'Roomler Recording 2026-09-24 09-00-00.mp4',
+      'MeshHarbor Recording 2026-09-25 14-30-12.mp4',
+      'MeshHarbor Recording 2026-09-24 09-00-00.mp4',
     ])
     expect(rows[0].textContent).toContain('1:05')
     expect(rows[0].textContent).toContain('5.0 MiB')
@@ -320,7 +320,7 @@ describe('companion Recordings view (FR-85 P2b)', () => {
     del().click()
     await settle()
     expect(invoke).toHaveBeenCalledWith('cmd_recording_delete', {
-      name: 'Roomler Recording 2026-09-25 14-30-12.mp4',
+      name: 'MeshHarbor Recording 2026-09-25 14-30-12.mp4',
     })
   })
 
@@ -347,7 +347,7 @@ describe('companion Recordings view (FR-85 P2b)', () => {
     $('rec-folder-change').click()
     await settle()
     expect(invoke).toHaveBeenCalledWith('cmd_pick_record_dir', {
-      current: 'C:\\Users\\me\\Videos\\Roomler',
+      current: 'C:\\Users\\me\\Videos\\MeshHarbor',
     })
     expect(invoke).toHaveBeenCalledWith('cmd_config_set', {
       key: 'record_dir',
@@ -375,11 +375,11 @@ describe('companion Recordings view (FR-85 P2b)', () => {
     const api = mount(vi.fn())
     const v = view()
     ;(v.listing as Record<string, unknown>).folder_reason =
-      'C:\\Users\\me\\Videos\\Roomler is under OneDrive'
+      'C:\\Users\\me\\Videos\\MeshHarbor is under OneDrive'
     api.render(v)
     expect($('rec-folder-reason').hidden).toBe(false)
     expect($('rec-folder-reason').textContent).toBe(
-      'Not the usual folder: C:\\Users\\me\\Videos\\Roomler is under OneDrive.',
+      'Not the usual folder: C:\\Users\\me\\Videos\\MeshHarbor is under OneDrive.',
     )
   })
 

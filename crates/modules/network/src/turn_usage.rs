@@ -218,7 +218,7 @@ mod tests {
     fn both_legs_of_a_total_parse() {
         let u = user();
         let client = parse(
-            &format!("turn/realm/roomler.ai/user/{u}/allocation/001000000000000042/total_traffic"),
+            &format!("turn/realm/meshharbor.itachi.fans/user/{u}/allocation/001000000000000042/total_traffic"),
             "rcvp=10, rcvb=1200, sentp=12, sentb=34567",
         )
         .unwrap();
@@ -233,7 +233,7 @@ mod tests {
         );
         let peer = parse(
             &format!(
-                "turn/realm/roomler.ai/user/{u}/allocation/001000000000000042/total_traffic/peer"
+                "turn/realm/meshharbor.itachi.fans/user/{u}/allocation/001000000000000042/total_traffic/peer"
             ),
             "rcvp=12, rcvb=34567, sentp=10, sentb=1200",
         )

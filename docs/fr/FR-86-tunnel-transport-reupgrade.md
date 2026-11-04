@@ -1,8 +1,8 @@
 # FR-86: Tunnel routes return to the best transport — make-before-break re-upgrade, never cutting a connection
 
-Issue: [#1769](https://github.com/gjovanov/roomler-ai/issues/1769) · supersedes [#1768](https://github.com/gjovanov/roomler-ai/issues/1768) ·
-related [#1761](https://github.com/gjovanov/roomler-ai/issues/1761) (the churn cause, fixed in 0.4.113) and
-[#1754](https://github.com/gjovanov/roomler-ai/issues/1754) (the terminate guard and the exit-side reap).
+Issue: [#1769](https://github.com/jk-zhang-meta/MeshHarbor/issues/1769) · supersedes [#1768](https://github.com/jk-zhang-meta/MeshHarbor/issues/1768) ·
+related [#1761](https://github.com/jk-zhang-meta/MeshHarbor/issues/1761) (the churn cause, fixed in 0.4.113) and
+[#1754](https://github.com/jk-zhang-meta/MeshHarbor/issues/1754) (the terminate guard and the exit-side reap).
 
 ## Goal
 
@@ -21,7 +21,7 @@ The operator's decision (2026-09-28, on #1768): *"they should switch to the bett
 |---|---|
 | 2026-09-28 07:27–07:29 and 12:25–12:28 | After each client-daemon restart, the declared routes ran the ladder (`quic-v1` → `quic-derp-v1` → `webrtc-dc-v1`). Routes whose exit was busy or restarting at that moment settled on `webrtc-dc-v1`. |
 | 2026-09-28 12:26:55 | One exit (UDP-capable) restarted while the client's routes were retrying; two of its routes settled on `webrtc-dc-v1` and **stayed there for hours**. |
-| 2026-09-28 12:4x | A forced `roomler forward --transport quic` through that same exit worked (the SSH banner came back over `quic-v1`) — the better transport was available the whole time. |
+| 2026-09-28 12:4x | A forced `meshharbor forward --transport quic` through that same exit worked (the SSH banner came back over `quic-v1`) — the better transport was available the whole time. |
 
 The ladder runs **only when a session opens**, and nothing ever re-opens a healthy session, so a route keeps the
 transport it happened to land on. The flow supervisor even remembers that QUIC-over-TURN failed
@@ -54,7 +54,7 @@ Split each transport's session runner into **establishment** and **carrying**:
   current carrier. With no carrier (a reconnect in progress) the connection is **held** — up to a bound
   (default 30 s) — until a carrier is ready, instead of the kernel refusing it; past the bound it is closed.
 - `run_tunnel_session` keeps its public contract for the standalone CLI by composing establish + a private
-  accept loop, so `roomler forward` (the CLI) is unchanged.
+  accept loop, so `meshharbor forward` (the CLI) is unchanged.
 
 P1 changes no transport behaviour, only who owns the port: sessions, pools, keepalives, the terminate guard and
 the exit side are untouched. Its visible effect is that a route no longer refuses connections during a reconnect.
@@ -179,7 +179,7 @@ sequenceDiagram
 ## Open decisions
 
 - The probe cadence and backoff numbers (proposed above).
-- Whether the standalone `roomler forward` CLI gets the probe (proposed: later — P1 keeps its contract).
+- Whether the standalone `meshharbor forward` CLI gets the probe (proposed: later — P1 keeps its contract).
 - Whether a pinned `--transport` should ever probe (proposed: never — a pin is a decision).
 
 ## Out of scope

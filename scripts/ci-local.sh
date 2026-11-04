@@ -45,8 +45,8 @@ QUICK=0
 # file matches", and a lane that passes cleanly in isolation showed FAIL.
 # A local check you cannot trust is worse than no local check — that is the
 # whole reason this script exists — so the path is keyed to the checkout.
-LOGDIR="${TMPDIR:-/tmp}/roomler-ci-local/$(basename "$(cd "$(dirname "$0")/.." && pwd)")-$$"
-mkdir -p "$LOGDIR" 2>/dev/null || { LOGDIR="$HOME/.cache/roomler-ci-local-$$"; mkdir -p "$LOGDIR"; }
+LOGDIR="${TMPDIR:-/tmp}/meshharbor-ci-local/$(basename "$(cd "$(dirname "$0")/.." && pwd)")-$$"
+mkdir -p "$LOGDIR" 2>/dev/null || { LOGDIR="$HOME/.cache/meshharbor-ci-local-$$"; mkdir -p "$LOGDIR"; }
 
 FAILED=()
 run() {

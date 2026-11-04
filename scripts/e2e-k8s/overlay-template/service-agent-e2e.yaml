@@ -1,6 +1,6 @@
 # Phase 1 Chunk 1B — Headless Service for the agent-e2e StatefulSet.
 # A headless Service (clusterIP: None) gives each Pod a stable DNS
-# name like `agent-e2e-0.agent-e2e.roomler-ai-e2e.svc.cluster.local`
+# name like `agent-e2e-0.agent-e2e.meshharbor-e2e.svc.cluster.local`
 # so tests + ICE candidates can address individual replicas. The
 # agent itself doesn't accept inbound HTTP (it's an outbound-WS
 # client) — the Service exists purely to satisfy the StatefulSet's

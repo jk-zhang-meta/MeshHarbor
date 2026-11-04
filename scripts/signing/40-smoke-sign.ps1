@@ -27,7 +27,7 @@ $profile  = Get-StateValue $state 'profileName'
 if (-not $endpoint -or -not $account -or -not $profile) {
     Fail 'missing state. Run 00-preflight.ps1, 10-azure-provision.ps1 and 20-azure-cert-profile.ps1 first.'
 }
-if (-not $CacheDir) { $CacheDir = Join-Path $env:LOCALAPPDATA 'roomler-signing-tools' }
+if (-not $CacheDir) { $CacheDir = Join-Path $env:LOCALAPPDATA 'meshharbor-signing-tools' }
 
 # --------------------------------------------------------------- signtool
 $signtool = Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe' -ErrorAction SilentlyContinue |
@@ -76,19 +76,19 @@ $meta = [ordered]@{
     CodeSigningAccountName = $account
     CertificateProfileName = $profile
 }
-$metaPath = Join-Path $CacheDir 'roomler-signing-metadata.json'
+$metaPath = Join-Path $CacheDir 'meshharbor-signing-metadata.json'
 ($meta | ConvertTo-Json) | Set-Content -Path $metaPath -Encoding ascii
 Ok "metadata: $metaPath"
 
 # ------------------------------------------------------------ target file
-$stage = Join-Path ([IO.Path]::GetTempPath()) ("roomler-signsmoke-" + [guid]::NewGuid().ToString('N').Substring(0, 8))
+$stage = Join-Path ([IO.Path]::GetTempPath()) ("meshharbor-signsmoke-" + [guid]::NewGuid().ToString('N').Substring(0, 8))
 New-Item -ItemType Directory -Path $stage -Force | Out-Null
 if (-not $File) {
     # Prefer a REAL project binary over a Windows system EXE. System EXEs are
     # catalog-signed: even after our signature is embedded, catalog matching
     # takes precedence in Get-AuthenticodeSignature, so the readout below
     # reports "CN=Microsoft Windows" instead of the actual signer (verified
-    # the hard way, 2026-08-22). A roomler build has no catalog entry.
+    # the hard way, 2026-08-22). A meshharbor build has no catalog entry.
     $candidates = @(
         (Join-Path $PSScriptRoot '..\..\target\release\meshharbor.exe'),
         (Join-Path $PSScriptRoot '..\..\target\release\meshharbord.exe'),
@@ -101,9 +101,9 @@ if (-not $File) {
         Info "  target: a throwaway copy of $src"
     } else {
         Copy-Item (Join-Path $env:WINDIR 'System32\where.exe') $File -Force
-        Warn 'no roomler build found under target/ -- falling back to a system-EXE copy.'
+        Warn 'no meshharbor build found under target/ -- falling back to a system-EXE copy.'
         Warn 'The signature will be REAL, but the subject readout below will show the'
-        Warn 'CATALOG signer (Microsoft), not ours. Build any roomler binary first for'
+        Warn 'CATALOG signer (Microsoft), not ours. Build any meshharbor binary first for'
         Warn 'a faithful readout, or pass -File <path-to-unsigned.exe>.'
     }
 } else {

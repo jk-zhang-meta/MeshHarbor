@@ -21,7 +21,7 @@ async function attachRtcDiagnostic(page: Page, outcome: 'passed' | 'failed') {
   try {
     diagnostic = await Promise.race([
       page.evaluate(async () => {
-        const pc = (window as unknown as { __roomler_remote_pc?: RTCPeerConnection }).__roomler_remote_pc
+        const pc = (window as unknown as { __meshharbor_remote_pc?: RTCPeerConnection }).__meshharbor_remote_pc
         if (!pc) return { available: false, reason: 'peer-connection-absent' }
         const choice = (value: unknown, allowed: string[]) => typeof value === 'string' && allowed.includes(value) ? value : 'unknown'
         const counter = (value: unknown) => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.min(value, Number.MAX_SAFE_INTEGER) : 0
@@ -95,7 +95,7 @@ export async function connectFixture(page: Page, context: BrowserContext) {
   await context.route('https://purestat.ai/**', (route) => route.abort())
   const login = await context.request.post(`${API_URL}/api/auth/login`, {
     data: {
-      email: process.env.E2E_AGENT_E2E_ADMIN_EMAIL || 'agent-e2e-admin@roomler.local',
+      email: process.env.E2E_AGENT_E2E_ADMIN_EMAIL || 'agent-e2e-admin@meshharbor.local',
       password: process.env.E2E_AGENT_E2E_ADMIN_PASSWORD || 'agent-e2e-bootstrap-pw-2026',
     },
     timeout: 15_000,
@@ -111,7 +111,7 @@ export async function connectFixture(page: Page, context: BrowserContext) {
     expect(agent.id, 'server returned a different fixture').toBe(AGENT_ID)
     return agent.is_online === true
   }, { timeout: 30_000, message: 'selected synthetic fixture never became online' }).toBe(true)
-  await context.addInitScript(() => localStorage.setItem('roomler-signed-in', '1'))
+  await context.addInitScript(() => localStorage.setItem('meshharbor-signed-in', '1'))
   await page.goto(`${BASE_URL}/tenant/${TENANT_ID}/agent/${AGENT_ID}/remote`)
   const connect = page.getByRole('button', { name: /^connect$/i }).first()
   await expect(connect).toBeVisible({ timeout: 30_000 })

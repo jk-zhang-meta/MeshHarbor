@@ -209,9 +209,9 @@ mod tests {
         let servers = vec![
             IceServer {
                 urls: vec![
-                    "stun:turn.roomler.ai:3478".into(),
-                    "turn:turn.roomler.ai:3478?transport=udp".into(),
-                    "turns:turn.roomler.ai:443?transport=tcp".into(),
+                    "stun:turn.meshharbor.itachi.fans:3478".into(),
+                    "turn:turn.meshharbor.itachi.fans:3478?transport=udp".into(),
+                    "turns:turn.meshharbor.itachi.fans:443?transport=tcp".into(),
                 ],
                 username: Some("u".into()),
                 credential: Some("c".into()),
@@ -238,9 +238,9 @@ mod tests {
         assert_eq!(
             urls,
             [
-                "stun:turn.roomler.ai:3478",
-                "turn:turn.roomler.ai:3478?transport=udp",
-                "turns:turn.roomler.ai:443?transport=tcp",
+                "stun:turn.meshharbor.itachi.fans:3478",
+                "turn:turn.meshharbor.itachi.fans:3478?transport=udp",
+                "turns:turn.meshharbor.itachi.fans:443?transport=tcp",
                 "turn:203.0.113.7:3478",
             ]
         );

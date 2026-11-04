@@ -29,7 +29,7 @@ async fn directory_claim_refresh_release_conflict() {
         eprintln!("skipping: no Redis available");
         return;
     };
-    let key = format!("roomler:test:own:{}", uuid::Uuid::new_v4().simple());
+    let key = format!("meshharbor:test:own:{}", uuid::Uuid::new_v4().simple());
 
     // LWW: pod1 claims, pod2 overwrites (newest wins), pod1's late release
     // must NOT free pod2's claim.
@@ -59,7 +59,7 @@ async fn directory_claim_refresh_release_conflict() {
     assert_eq!(d1.get(&key).await.unwrap(), None);
 
     // NX mutex: exactly one winner; loser learns the holder.
-    let m_key = format!("roomler:test:mutex:{}", uuid::Uuid::new_v4().simple());
+    let m_key = format!("meshharbor:test:mutex:{}", uuid::Uuid::new_v4().simple());
     let (m1, m2) = (d1.owner_token("x"), d2.owner_token("y"));
     assert_eq!(
         d1.claim_nx(&m_key, &m1, 30).await.unwrap(),

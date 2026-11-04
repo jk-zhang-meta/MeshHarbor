@@ -282,7 +282,7 @@ fn spawn_real_agent(
         let (view_tx, _view_rx) = tokio::sync::watch::channel(Default::default());
         let broker = meshharbord::consent::ConsentBroker::new(
             meshharbord::consent::Mode::AutoGrant,
-            std::env::temp_dir().join(format!("roomler-test-consent-{}", cfg.agent_id)),
+            std::env::temp_dir().join(format!("meshharbor-test-consent-{}", cfg.agent_id)),
         )
         .expect("consent broker init");
         let exec_enabled = cfg.exec_enabled;

@@ -179,7 +179,7 @@ describe('tutorial chapters (FR-12 content contract)', () => {
   })
 
   it('opens with the landing page’s own promise — headline, sub and three badges', () => {
-    // The visual pass (#799): someone arriving from roomler.ai must meet
+    // The visual pass (#799): someone arriving from meshharbor.itachi.fans must meet
     // the same three promises, in the same words, once they are inside.
     const start = chapterById('get-started')!
     expect(start.tagline?.headline).toBe('Every device you own,')

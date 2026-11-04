@@ -6,8 +6,8 @@
 #
 # WHAT IT IS FOR
 #
-#   The product renamed its binaries (`roomler-agent` -> `roomlerd`,
-#   `roomler-agent-tray` -> `meshharbor-desktop`, `roomler-tunnel` -> `roomler`)
+#   The product renamed its binaries (`meshharbor-agent` -> `meshharbord`,
+#   `meshharbor-agent-tray` -> `meshharbor-desktop`, `meshharbor-tunnel` -> `meshharbor`)
 #   but ~1 765 references to the retired names survive across ~233 files.
 #   Sweeping them blind is NOT safe: earlier slices (P3d A/B/C, P3e) left
 #   deliberate DUAL-READ FALLBACKS so hosts enrolled under the old names keep
@@ -32,7 +32,7 @@
 #   uses. It covers the marker line plus the next N lines (default 1):
 #
 #     // RETIRED-NAME-ANCHOR: pre-rename hosts still resolve this tree.
-#     const OLD_APP: &str = "roomler-agent";
+#     const OLD_APP: &str = "meshharbor-agent";
 #
 #     <!-- RETIRED-NAME-ANCHOR(12): the bundle name keys the macOS TCC grants;
 #          renaming it drops Screen Recording + Accessibility fleet-wide. -->
@@ -134,12 +134,12 @@ fi
 
 BASELINE_FILE="scripts/name-audit-baseline.txt"
 
-# The retired names, as extended-regex alternatives. `roomler-agent` also
-# covers `roomler-agent-tray` and `roomler-agent-core`; `roomler-tunnel` also
-# covers `roomler-tunnel-installer`. The CamelCase and spaced forms are the
+# The retired names, as extended-regex alternatives. `meshharbor-agent` also
+# covers `meshharbor-agent-tray` and `meshharbor-agent-core`; `meshharbor-tunnel` also
+# covers `meshharbor-tunnel-installer`. The CamelCase and spaced forms are the
 # Windows service/task identifiers and the WiX DisplayName — user-visible
 # surfaces that belong in the inventory, not just the snake/kebab code forms.
-TOKENS='roomler-agent|roomler_agent|MESHHARBOR_AGENT_|RoomlerAgent|Roomler Agent|roomler-tunnel|roomler_tunnel|Roomler Tunnel|roomler-installer'
+TOKENS='meshharbor-agent|meshharbor_agent|MESHHARBOR_AGENT_|MeshHarborAgent|MeshHarbor Agent|meshharbor-tunnel|meshharbor_tunnel|MeshHarbor Tunnel|meshharbor-installer'
 
 # Files excluded from the scan, each for a reason that is about the FILE'S JOB,
 # not about it being inconvenient. This list must stay this short: a growing
@@ -425,7 +425,7 @@ EOF
     # nothing catches it: the file still compiles, still passes `cargo fmt`,
     # and the audit still counts the anchor. It happened in
     # `meshharbor-setup-core/src/integration.rs`, where the module doc read
-    # "...v1 just" and resumed five lines later at "ensures `roomler-tunnel`
+    # "...v1 just" and resumed five lines later at "ensures `meshharbor-tunnel`
     # is on PATH", while the anchor's own "(it leaves" ... "the old entry
     # stranded" was split around it. Leftover from converting `///` markers
     # to `//`: they were converted in place instead of being hoisted out.

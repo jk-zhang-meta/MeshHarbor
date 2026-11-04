@@ -130,18 +130,18 @@ for p in $(kubectl -n tickytack get pods -o jsonpath='{range .items[?(@.status.p
 done
 
 # ======================================================================
-# roomler-old — recreate uploads PV/PVC on worker-2 + clean old worker-1 pods
+# meshharbor-old — recreate uploads PV/PVC on worker-2 + clean old worker-1 pods
 # ======================================================================
 echo
-echo "--- roomler-old: recreate uploads PV/PVC + clean worker-1 pods ---"
-for p in $(kubectl -n roomler get pods -o jsonpath='{range .items[?(@.spec.nodeName=="k8s-worker-1")]}{.metadata.name} {end}'); do
-  force_kill_pod roomler "$p"
+echo "--- meshharbor-old: recreate uploads PV/PVC + clean worker-1 pods ---"
+for p in $(kubectl -n meshharbor get pods -o jsonpath='{range .items[?(@.spec.nodeName=="k8s-worker-1")]}{.metadata.name} {end}'); do
+  force_kill_pod meshharbor "$p"
 done
-force_delete_pvc roomler roomler-uploads
-force_delete_pv  roomler-uploads-pv
-make_pv  roomler-uploads-pv roomler roomler 5Gi /data/roomler/uploads k8s-worker-2 roomler-uploads
-make_pvc roomler roomler-uploads roomler-uploads-pv 5Gi
-wait_pvc_bound roomler roomler-uploads
+force_delete_pvc meshharbor meshharbor-uploads
+force_delete_pv  meshharbor-uploads-pv
+make_pv  meshharbor-uploads-pv meshharbor meshharbor 5Gi /data/meshharbor/uploads k8s-worker-2 meshharbor-uploads
+make_pvc meshharbor meshharbor-uploads meshharbor-uploads-pv 5Gi
+wait_pvc_bound meshharbor meshharbor-uploads
 
 # ======================================================================
 # bauleiter — scale to 0, clear PVCs/PVs, recreate on worker-1, restore
@@ -274,7 +274,7 @@ echo
 echo "=================================================="
 echo "=== RECOVER END $(date) ==="
 echo "=================================================="
-for ns in tickytack roomler bauleiter regal; do
+for ns in tickytack meshharbor bauleiter regal; do
   echo "--- $ns ---"
   kubectl -n "$ns" get pods,pvc -o wide --no-headers 2>/dev/null \
     | awk '{printf "  %-40s %s\n", $1, $2"  "$3"  "$NF}'
@@ -282,4 +282,4 @@ done
 echo
 echo "PV nodeAffinity:"
 kubectl get pv -o jsonpath='{range .items[*]}{.metadata.name}{"  -> "}{.spec.nodeAffinity.required.nodeSelectorTerms[0].matchExpressions[0].values[0]}{"  ("}{.status.phase}{")\n"}{end}' \
-  | grep -E 'tickytack|roomler|bauleiter|regal' | sort
+  | grep -E 'tickytack|meshharbor|bauleiter|regal' | sort

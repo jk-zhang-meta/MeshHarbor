@@ -5,7 +5,7 @@
   ever, after real engagement (60% scroll or ~20 s), never a blocking modal.
 
   Latch rules (the useTutorialProgress house style):
-  - flat key `roomler-newsletter-dismissed` — an anonymous visitor has no
+  - flat key `meshharbor-newsletter-dismissed` — an anonymous visitor has no
     user id to scope by;
   - every storage access try/caught;
   - unreadable storage ⇒ treated as dismissed — failing that way means we
@@ -48,7 +48,7 @@ import { useI18n } from 'vue-i18n'
 
 const { t } = useI18n()
 
-const LATCH_KEY = 'roomler-newsletter-dismissed'
+const LATCH_KEY = 'meshharbor-newsletter-dismissed'
 const SHOW_AFTER_MS = 20_000
 const SHOW_AFTER_SCROLL = 0.6
 

@@ -21,7 +21,7 @@
  */
 (function () {
   try {
-    var os = localStorage.getItem('roomler-docs-os')
+    var os = localStorage.getItem('meshharbor-docs-os')
     if (os === 'windows' || os === 'macos' || os === 'linux') {
       document.documentElement.setAttribute('data-os', os)
     }

@@ -11,7 +11,7 @@
 //! [`AgentCrashPayload`] (shared wire type defined in
 //! `meshharbor_remote_control::models`) to a sidecar JSON file under
 //! the appropriate crashes dir; on next agent startup,
-//! `crash_uploader::drain_and_upload` POSTs each file to roomler.ai
+//! `crash_uploader::drain_and_upload` POSTs each file to meshharbor.itachi.fans
 //! and deletes it on 2xx.
 //!
 //! ## Two writer contexts on Windows

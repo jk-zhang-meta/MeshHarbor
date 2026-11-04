@@ -107,11 +107,11 @@ inputs:
   description:
     description: 'Signed-content description embedded in the signature.'
     required: false
-    default: 'Roomler'
+    default: 'MeshHarbor'
   description-url:
     description: 'URL embedded alongside the description.'
     required: false
-    default: 'https://roomler.ai/'
+    default: 'https://meshharbor.itachi.fans/'
   file-digest:
     description: 'SHA256 | SHA384 | SHA512'
     required: false

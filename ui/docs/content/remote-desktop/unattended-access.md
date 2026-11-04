@@ -1,6 +1,6 @@
 ---
 title: Unattended access
-seoTitle: Unattended remote access, even at the lock screen — Roomler
+seoTitle: Unattended remote access, even at the lock screen — MeshHarbor
 description: Unattended remote access to your own servers and workstations — nobody approves at the far end, even at the Windows lock screen or before anyone logs in.
 tags: [remote-desktop, unattended, windows, linux, access-control]
 order: 2
@@ -84,7 +84,7 @@ is the problem:
 
 :::cards
 - **Remote commands** icon:terminal — Run a command on a trusted device from the dashboard or the CLI. Four independent gates, every attempt audited.
-- **[Roomler SSH](/docs/network/ssh/)** icon:shield — A real shell, with no `sshd` and no open port on the target.
+- **[MeshHarbor SSH](/docs/network/ssh/)** icon:shield — A real shell, with no `sshd` and no open port on the target.
 :::
 
 Both are **off by default** and stay off until enabled at several independent

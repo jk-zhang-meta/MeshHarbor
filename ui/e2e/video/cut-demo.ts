@@ -82,7 +82,7 @@ type Blur = { device: number; phase: 'page' | 'full'; rect: [number, number, num
 const blurs: Blur[] = JSON.parse(process.env.MESHHARBOR_DEMO_BLUR || '[]')
 const EDGE_S = 0.3
 
-writeFileSync(join(TAKE, 'card1.txt'), 'roomler.ai')
+writeFileSync(join(TAKE, 'card1.txt'), 'meshharbor.itachi.fans')
 writeFileSync(join(TAKE, 'card2.txt'), process.env.MESHHARBOR_DEMO_TAGLINE || 'Open source · self-hostable')
 take.devices.forEach((d, i) => writeFileSync(join(TAKE, `cap${i}.txt`), captions[i] || d.name))
 
@@ -202,7 +202,7 @@ function render(segs: Seg[], out: string, crf: string) {
   ])
 }
 
-const mp4 = join(OUT, 'roomler-demo.mp4')
+const mp4 = join(OUT, 'meshharbor-demo.mp4')
 const gif = join(OUT, 'demo-preview.gif')
 render(segments(HOLD_S, 'mp4'), mp4, process.env.MESHHARBOR_DEMO_CRF || '20')
 

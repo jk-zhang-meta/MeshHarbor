@@ -110,7 +110,7 @@ revalidated on every load (`expires -1`, §5), and it is what moves a reader to 
 
 - The search index is hashed too; its URL reaches `search.js` through `data-search-index`.
 - The top bar's logo is hashed the same way: the generator publishes the SPA's own
-  `ui/src/assets/brand/roomler-logo.svg` (`logo` in `SiteAssets`), so the two never drift.
+  `ui/src/assets/brand/meshharbor-logo.svg` (`logo` in `SiteAssets`), so the two never drift.
 - `social-preview.png` keeps a stable name: `ui/index.html` names it as the SPA's `og:image`.
   It is final artwork from the brand kit, as is the repo root's copy that GitHub shows; there
   is no source to re-render it from.
@@ -140,7 +140,7 @@ Built once, in [`theme/shell.ts:91`](../ui/docs/theme/shell.ts), for every colle
 
 | | Docs page | Docs listing (home, section, tag) | Post | Blog index | Homepage `/` |
 |---|---|---|---|---|---|
-| `<title>` | ≤60: the author's `seoTitle`, else the first default that fits (with the section, without it, bare) — [`layout.ts:114`](../ui/docs/theme/layout.ts) | same | `seoTitle`, else `title — Roomler blog` if it fits | fixed, ≤60 | fixed, ≤60 (a unit test) |
+| `<title>` | ≤60: the author's `seoTitle`, else the first default that fits (with the section, without it, bare) — [`layout.ts:114`](../ui/docs/theme/layout.ts) | same | `seoTitle`, else `title — MeshHarbor blog` if it fits | fixed, ≤60 | fixed, ≤60 (a unit test) |
 | `og:type` | `article` | `website` | `article` | `website` | `website` |
 | JSON-LD (one `@graph`) | Organization + `TechArticle` + BreadcrumbList (+ FAQPage) | Organization + `CollectionPage` | Organization + `BlogPosting` (a **Person** author) + BreadcrumbList | Organization + `Blog` | Organization + `WebSite` |
 | share image | the social card | the social card | the post's own, raster, ≥1200 px | the social card | the social card |
@@ -149,7 +149,7 @@ Built once, in [`theme/shell.ts:91`](../ui/docs/theme/shell.ts), for every colle
 > or `review`, and a page without them reports the markup as an error. Ratings are never
 > invented to make it pass; `home.spec.ts` fails if the type appears.
 
-- **One Organization** (`@id https://roomler.ai/#organization`, legalName **G ROX EOOD**) is a
+- **One Organization** (`@id https://meshharbor.itachi.fans/#organization`, legalName **G ROX EOOD**) is a
   node of every graph, and every author and publisher points at it. FR-60 wrote "G ROX LTD".
 - Indexable pages ask for `max-image-preview:large`; the rest get `noindex, follow`.
 - `/sitemap.xml` is a **sitemap index** over `sitemap-docs.xml` and `sitemap-blog.xml`, so
@@ -164,14 +164,14 @@ Built once, in [`theme/shell.ts:91`](../ui/docs/theme/shell.ts), for every colle
   `ANALYTICS` ([`site.ts:215`](../ui/docs/site.ts)); there is no inline script, so the CSP is
   unchanged (`script-src 'self' https://purestat.ai` already covers both). The loader injects
   the tracker only when **all three** hold: the page's hostname is on the allowlist exactly
-  (`roomler.ai`, `www.roomler.ai`; no subdomain, no fork, no preview origin), the page is
+  (`meshharbor.itachi.fans`, `www.meshharbor.itachi.fans`; no subdomain, no fork, no preview origin), the page is
   `https:`, and `navigator.webdriver` is not set (a Playwright run is not a visit). The SPA
   applies the same rule from `main.ts` through
   [`ui/src/utils/analytics.ts`](../ui/src/utils/analytics.ts), in place of the tag
   `ui/index.html` used to carry, and `site.ts` takes its values from that module so the two
   cannot drift. The reason: the product promises no telemetry from self-hosted deployments
   (`LICENSING.md`), and before this every self-hosted install, fork and `localhost` run beaconed
-  as `roomler.ai` — 42 % of the site's events over 90 days. The loader reads and writes nothing
+  as `meshharbor.itachi.fans` — 42 % of the site's events over 90 days. The loader reads and writes nothing
   on the visitor's device. `ANALYTICS = null` still turns it all off: no loader, no tag.
 
 ## 5. How nginx serves it
@@ -208,7 +208,7 @@ the server's security headers, and `internal` on `/home/` does not block it.
 > 30, but it is scoped to `Path=/api/auth/refresh`, so nginx never sees it at `/`: a returning
 > user on day 8 would get the sign-up page from a site that could still sign them in.
 > [`home.js`](../ui/docs/theme/home.js) closes the gap. It loads in `<head>`, without
-> `defer`, and when the SPA's localStorage hint (`roomler-signed-in`, from
+> `defer`, and when the SPA's localStorage hint (`meshharbor-signed-in`, from
 > `ui/src/api/session.ts`) says signed in, it replaces the page with `/login`. The SPA's
 > guest guard sends a signed-in visitor on to the dashboard, whose first 401 refreshes the
 > session.
@@ -243,7 +243,7 @@ checks the **served** site. It runs against every image in `hosted-image.yml`
 ([`:209`](../.github/workflows/hosted-image.yml)) and belongs against production after a promote:
 
 ```bash
-bash scripts/public-site-smoke.sh https://roomler.ai . <deployed-sha>
+bash scripts/public-site-smoke.sh https://meshharbor.itachi.fans . <deployed-sha>
 ```
 
 | Check | Catches |
@@ -303,7 +303,7 @@ The video facade loads nothing from YouTube until someone presses play:
 ```mermaid
 sequenceDiagram
   participant B as Browser
-  participant R as roomler.ai
+  participant R as meshharbor.itachi.fans
   participant Y as youtube-nocookie.com
   B->>R: the page, docs.css, docs.js and the poster (our own copy)
   Note over B: a poster, a play button and a link to YouTube. No iframe.
@@ -334,7 +334,7 @@ not take part. `promote.yml` does it around the roll, with
 ```mermaid
 sequenceDiagram
     participant P as promote.yml
-    participant S as roomler.ai
+    participant S as meshharbor.itachi.fans
     participant I as api.indexnow.org
     P->>S: snapshot: every child of /sitemap.xml → loc⇥lastmod
     P->>P: bump the deploy repo · watch /health for 10 min (the roll)
@@ -351,16 +351,16 @@ sequenceDiagram
   (`/`, generated listings) is submitted once, when it first appears. With no before-snapshot,
   nothing is submitted, never everything.
 - **The key is public by design.** Engines verify a submission by fetching
-  `https://roomler.ai/<key>.txt`, so the file in `ui/public/` is its only source: the promote
+  `https://meshharbor.itachi.fans/<key>.txt`, so the file in `ui/public/` is its only source: the promote
   job checks out just `scripts/indexnow.sh` and `ui/public/*.txt`, and the smoke (§6) checks
   the file is served as committed.
 - **Off unless the repository variable `INDEXNOW_ENABLED` is `true`**, and warn-only: a missed
   hint to a crawler never fails a promote.
 
-**Search Console** holds the Domain property `sc-domain:roomler.ai`. It sits under the
+**Search Console** holds the Domain property `sc-domain:meshharbor.itachi.fans`. It sits under the
 Workspace account that owns the domain, and it verified itself from the domain's existing
 `google-site-verification` TXT record (2026-09-29). Two things live there:
-- **the sitemap index** `https://roomler.ai/sitemap.xml`, read as "Success";
+- **the sitemap index** `https://meshharbor.itachi.fans/sitemap.xml`, read as "Success";
 - **per-page reindexing**: URL Inspection → *Request indexing*, about 10 a day. Use it after a
   page's content changes in a way that matters for search: a new page, or a new title.
 

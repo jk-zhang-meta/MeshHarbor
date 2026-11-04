@@ -294,4 +294,4 @@ own terms; FR-71's shadow classification runs beside it.
 - **Field:** the same three CORPLAP hosts, before/after on the same instrument
   (FR-65 AC7). ⚠️ **A field test must be shown to FAIL on the current deploy
   first** — record both runs.
-- **Fleet:** heartbeat counters read via `roomler exec` after every roll.
+- **Fleet:** heartbeat counters read via `meshharbor exec` after every roll.

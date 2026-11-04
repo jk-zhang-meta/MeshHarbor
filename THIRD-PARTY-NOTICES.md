@@ -1,6 +1,6 @@
 # Third-party notices
 
-Roomler incorporates third-party software. This file records the components
+MeshHarbor incorporates third-party software. This file records the components
 whose licences place an obligation on us, and how we discharge it. It is not a
 complete dependency inventory — for that, run `cargo deny check licenses` (policy
 in [deny.toml](deny.toml)) or `cargo license`.
@@ -9,7 +9,7 @@ in [deny.toml](deny.toml)) or `cargo license`.
 
 ## FFmpeg — LGPL-2.1-or-later
 
-The Roomler agent uses FFmpeg for hardware video encoding (NVENC, Intel QSV,
+The MeshHarbor agent uses FFmpeg for hardware video encoding (NVENC, Intel QSV,
 AMD AMF, VAAPI and Vulkan video encode on Linux, D3D12 and Vulkan video encode
 on Windows, Apple VideoToolbox on macOS). Since the screen recorder shipped
 (FR-85 P4c), the same builds also carry FFmpeg's software **H.264 decoder**,
@@ -32,23 +32,23 @@ the build if one appears.
 ### Written offer
 
 > **G ROX EOOD** hereby offers, to any third party who has received a copy of a
-> Roomler binary that statically links FFmpeg, and **for a period of three (3)
+> MeshHarbor binary that statically links FFmpeg, and **for a period of three (3)
 > years from the date that binary was distributed**, to provide:
 >
 > 1. the complete corresponding machine-readable source code of the FFmpeg
 >    libraries as used in that binary, together with the exact scripts and
 >    configuration used to build them; and
-> 2. the linkable object files of the Roomler component that links FFmpeg,
+> 2. the linkable object files of the MeshHarbor component that links FFmpeg,
 >    sufficient to relink it against a modified version of the library,
 >
 > at no charge beyond the cost of physically performing the distribution.
 >
-> To exercise this offer, write to **legal@roomler.ai** quoting the version
-> string reported by `roomlerd --version`.
+> To exercise this offer, write to **legal@meshharbor.itachi.fans** quoting the version
+> string reported by `meshharbord --version`.
 
 Item **(1)** is published in advance and needs no request:
 
-**<https://github.com/gjovanov/roomler-ai/releases/tag/vendored-ffmpeg-9.0.1>**
+**<https://github.com/jk-zhang-meta/MeshHarbor/releases/tag/vendored-ffmpeg-9.0.1>**
 — asset `ffmpeg-<version>-corresponding-source.tar.xz`, containing the upstream
 tarball, every change our builds make to it, and the complete build recipe, with
 a SHA-256 sidecar. The changes are our own patches from
@@ -173,7 +173,7 @@ its **upstream licence, unmodified**, and is excluded from our SPDX header sweep
 | coturn | BSD-3-Clause | TURN relay, deployed not linked |
 | quinn | MIT/Apache-2.0 | QUIC |
 | smoltcp | 0BSD | userspace netstack |
-| russh | Apache-2.0 | Roomler SSH server |
+| russh | Apache-2.0 | MeshHarbor SSH server |
 | Wintun | third-party binary | redistributed unmodified, original signature preserved |
 | Microsoft VC++ runtime | Microsoft redistributable | shipped per redistribution terms, original signatures preserved |
 | libva + libdrm | MIT | bundled in the Linux `.deb` next to the vendored FFmpeg (FR-77 P4): the VA-API dispatcher the `*_vaapi` encoders need at load time; the VA driver itself is the host's and never redistributed |
@@ -182,6 +182,6 @@ its **upstream licence, unmodified**, and is excluded from our SPDX header sweep
 
 ---
 
-Questions about any notice on this page: **legal@roomler.ai**
+Questions about any notice on this page: **legal@meshharbor.itachi.fans**
 
 G ROX EOOD · Plovdivska 110, 4400 Pazardzhik, Bulgaria · UIC 205174895

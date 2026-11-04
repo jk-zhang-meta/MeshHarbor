@@ -1,6 +1,6 @@
 # Licensing — how the split stays true
 
-Roomler's code carries three licences. The server a customer would host is
+MeshHarbor's code carries three licences. The server a customer would host is
 **AGPL-3.0-only**, everything installed on a customer's machine is **MPL-2.0**, and
 the documentation is **CC-BY-4.0**. [`LICENSING.md`](../LICENSING.md) answers the
 practical questions: self-hosting, MSPs, reselling, and what happened to code
@@ -20,7 +20,7 @@ flowchart LR
         MISC["crates/derp-relay · tests · ui/"]
     end
     subgraph client["MPL-2.0: installed on customer machines"]
-        AGENTS["agents/*<br/>roomlerd · meshharbor-cli · shim<br/>meshharbor-desktop · meshharbor-setup"]
+        AGENTS["agents/*<br/>meshharbord · meshharbor-cli · shim<br/>meshharbor-desktop · meshharbor-setup"]
         SHARED["crates/tunnel-core · remote_control<br/>agent-core · localapi · tcp-turn-conn<br/>meshharbor-setup-core"]
     end
     API --> SHARED
@@ -42,13 +42,13 @@ table mirrors it for readers, and CI reads only the script.
 
 | class | by path ([`:31`](../scripts/licence-classes.sh#L31), [`:45`](../scripts/licence-classes.sh#L45)) | by crate ([`:81`](../scripts/licence-classes.sh#L81), [`:99`](../scripts/licence-classes.sh#L99)) | SPDX |
 |---|---|---|---|
-| server | `crates/{api,services,db,config,core,modules,derp-relay,tests}`, `ui/` | `roomler-ai-*`, `meshharbor-core`, all six `roomler-ai-mod-*`, `derp-relay` | `AGPL-3.0-only` |
-| client | `agents/*`, `crates/{agent-core,meshharbor-setup-core,tunnel-core,remote_control,localapi,tcp-turn-conn}` | `roomlerd`, `meshharbor-cli`, `meshharbor-node-core`, `meshharbor-tunnel-core`, … | `MPL-2.0` |
+| server | `crates/{api,services,db,config,core,modules,derp-relay,tests}`, `ui/` | `meshharbor-*`, `meshharbor-core`, all six `meshharbor-mod-*`, `derp-relay` | `AGPL-3.0-only` |
+| client | `agents/*`, `crates/{agent-core,meshharbor-setup-core,tunnel-core,remote_control,localapi,tcp-turn-conn}` | `meshharbord`, `meshharbor-cli`, `meshharbor-node-core`, `meshharbor-tunnel-core`, … | `MPL-2.0` |
 | docs | `docs/` | — | `CC-BY-4.0` |
 | excluded | `crates/vendored/*` (upstream terms, unchanged), build output | — | upstream |
 
 The **shipped** agents, the binaries the graph check guards, are listed separately
-([`:117`](../scripts/licence-classes.sh#L117)): `roomlerd`, `meshharbor-cli`,
+([`:117`](../scripts/licence-classes.sh#L117)): `meshharbord`, `meshharbor-cli`,
 `meshharbor-cli-shim`, `meshharbor-desktop` and `meshharbor-setup`.
 
 ⚠️ **A new crate must be added to one of the two crate lists.** The manifest check

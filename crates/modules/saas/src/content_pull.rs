@@ -507,14 +507,14 @@ mod tests {
     /// The feed exactly as `ui/docs/theme/xml.ts` writes it.
     const FEED: &str = r#"<?xml version="1.0" encoding="utf-8"?>
 <feed xmlns="http://www.w3.org/2005/Atom" xml:lang="en">
-  <id>https://roomler.ai/blog/</id>
+  <id>https://meshharbor.itachi.fans/blog/</id>
   <title>MeshHarbor blog</title>
-  <link rel="self" type="application/atom+xml" href="https://roomler.ai/blog/feed.xml"/>
+  <link rel="self" type="application/atom+xml" href="https://meshharbor.itachi.fans/blog/feed.xml"/>
   <updated>2026-10-13T14:49:49Z</updated>
   <entry>
-    <id>https://roomler.ai/blog/self-hosted-teamviewer-alternative/</id>
+    <id>https://meshharbor.itachi.fans/blog/self-hosted-teamviewer-alternative/</id>
     <title>A self-hosted TeamViewer alternative &amp; why &lt;it&gt; matters</title>
-    <link rel="alternate" type="text/html" href="https://roomler.ai/blog/self-hosted-teamviewer-alternative/"/>
+    <link rel="alternate" type="text/html" href="https://meshharbor.itachi.fans/blog/self-hosted-teamviewer-alternative/"/>
     <published>2026-09-25T22:45:13Z</published>
     <updated>2026-10-01T08:00:00Z</updated>
     <author><name>Goran</name></author>
@@ -522,26 +522,26 @@ mod tests {
     <content type="html">&lt;title&gt;not the title&lt;/title&gt;&lt;p&gt;Body&lt;/p&gt;</content>
   </entry>
   <entry>
-    <id>https://roomler.ai/blog/ssh-without-port-forwarding/</id>
+    <id>https://meshharbor.itachi.fans/blog/ssh-without-port-forwarding/</id>
     <title>SSH without port forwarding</title>
-    <link rel="alternate" type="text/html" href="https://roomler.ai/blog/ssh-without-port-forwarding/"/>
+    <link rel="alternate" type="text/html" href="https://meshharbor.itachi.fans/blog/ssh-without-port-forwarding/"/>
     <published>2026-10-19T06:00:00+02:00</published>
     <updated>2026-10-19T06:00:00+02:00</updated>
     <author><name>Goran</name></author>
   </entry>
   <entry>
-    <id>https://roomler.ai/docs/x/</id>
+    <id>https://meshharbor.itachi.fans/docs/x/</id>
     <title>Not a post</title>
-    <link rel="alternate" type="text/html" href="https://roomler.ai/docs/x/"/>
+    <link rel="alternate" type="text/html" href="https://meshharbor.itachi.fans/docs/x/"/>
     <published>2026-10-01T00:00:00Z</published>
   </entry>
   <entry>
     <title>No date</title>
-    <link rel="alternate" type="text/html" href="https://roomler.ai/blog/undated/"/>
+    <link rel="alternate" type="text/html" href="https://meshharbor.itachi.fans/blog/undated/"/>
   </entry>
   <entry>
     <title>Plain http</title>
-    <link rel="alternate" type="text/html" href="http://roomler.ai/blog/plain/"/>
+    <link rel="alternate" type="text/html" href="http://meshharbor.itachi.fans/blog/plain/"/>
     <published>2026-10-02T00:00:00Z</published>
   </entry>
   <entry>
@@ -560,7 +560,7 @@ mod tests {
         assert_eq!(a.path, "/blog/self-hosted-teamviewer-alternative/");
         assert_eq!(
             a.url,
-            "https://roomler.ai/blog/self-hosted-teamviewer-alternative/"
+            "https://meshharbor.itachi.fans/blog/self-hosted-teamviewer-alternative/"
         );
         assert_eq!(
             a.title,
@@ -612,13 +612,13 @@ mod tests {
     /// site.
     #[test]
     fn the_feed_url_must_be_https() {
-        assert!(feed_url_allowed("https://roomler.ai/blog/feed.xml"));
+        assert!(feed_url_allowed("https://meshharbor.itachi.fans/blog/feed.xml"));
         assert!(feed_url_allowed("http://127.0.0.1:5000/blog/feed.xml"));
         assert!(feed_url_allowed("http://localhost/blog/feed.xml"));
         assert!(feed_url_allowed("http://[::1]:8080/blog/feed.xml"));
         for bad in [
-            "http://roomler.ai/blog/feed.xml",
-            "ftp://roomler.ai/feed.xml",
+            "http://meshharbor.itachi.fans/blog/feed.xml",
+            "ftp://meshharbor.itachi.fans/feed.xml",
             "file:///etc/passwd",
             "not a url",
             "",

@@ -1,6 +1,6 @@
 # Screen recording
 
-> **FR-85** ([#1634](https://github.com/gjovanov/roomler-ai/issues/1634),
+> **FR-85** ([#1634](https://github.com/jk-zhang-meta/MeshHarbor/issues/1634),
 > [spec](fr/FR-85-hq-screen-recording.md)). **Status: P1 (the recorder core
 > and its mouse pointer, §1; its audio on Windows and Linux; and on Windows
 > and Linux the identity rule: it runs as the person at the device, or, for a
@@ -26,10 +26,10 @@
 > only when the person at the device presses Record, a remote one only once
 > the device's owner allows it, and `MESHHARBORD_RECORDING=0` in the service's
 > environment switches recording off, local and remote. It is driven by
-> `roomlerd record`, by the daemon for the LocalAPI recording verbs and
-> `roomler record` (§6), by meshharbor-desktop (§7), by a remote controller
+> `meshharbord record`, by the daemon for the LocalAPI recording verbs and
+> `meshharbor record` (§6), by meshharbor-desktop (§7), by a remote controller
 > from the viewer's toolbar, over the session's `record` channel (§10), and
-> by `roomlerd media` for an export (§11), which touches only the files the
+> by `meshharbord media` for an export (§11), which touches only the files the
 > person hands it. Still to come: the microphone and computer audio on macOS
 > (neither offered there, §9).
 
@@ -42,7 +42,7 @@ capped by the viewer's rung, so recording it would give transport quality.
 
 ```mermaid
 flowchart LR
-    subgraph child["roomlerd record (its own process)"]
+    subgraph child["meshharbord record (its own process)"]
         CAP["capturer<br/>capture::open_for_recording<br/>(native resolution, the pointer<br/>in the frame where it can)"] -->|latest frame wins| W[("latest slot")]
         W --> P{{"pacer tick<br/>1/fps on its own clock"}}
         P -->|"same frame again<br/>on a still screen"| ENC["encoder<br/>recording profile"]
@@ -51,8 +51,8 @@ flowchart LR
         ENC -->|"Annex-B access units<br/>(TickFifo → PTS)"| FW["FragmentedWriter<br/>moof+mdat per GOP"]
     end
     FW -->|"stop / guard / parent gone"| FIN["finalize<br/>remux → moov-first MP4"]
-    FIN --> OUT[("Roomler Recording ….mp4<br/>+ .roomler.json")]
-    CRASH["recorder killed"] -.-> PART[(".roomler-partial/….partial")]
+    FIN --> OUT[("MeshHarbor Recording ….mp4<br/>+ .meshharbor.json")]
+    CRASH["recorder killed"] -.-> PART[(".meshharbor-partial/….partial")]
     PART -.->|"reconcile_partials"| FIN
 ```
 
@@ -65,7 +65,7 @@ flowchart LR
 | Writer | `recording/mp4.rs` `FragmentedWriter` | Fragmented while recording, so a crash loses at most one fragment (~2 s). See §2. |
 | Finalize | `recording/mp4.rs` `finalize` | A remux to a progressive, `moov`-first file that QuickTime, Movies & TV and editors open. Payloads are copied, never re-encoded. |
 
-⚠️ **A process of its own.** `roomlerd record` is a child, like the capability
+⚠️ **A process of its own.** `meshharbord record` is a child, like the capability
 probe, so a driver fault in a recording's encoder costs the recorder, never
 the daemon or a live session. It stops when its stdin closes, so a recorder
 never outlives whatever launched it.
@@ -204,7 +204,7 @@ Both are 30 fps constant, decode with zero errors, and are laid out `ftyp → mo
 
 ⚠️ **The encoder denylist applies here too.** The FFmpeg constructors read
 `ENCODER_CELLS_DENY` through `node_env`. A child the daemon spawns inherits it
-as env; `roomlerd record` run by hand reads it from the config file
+as env; `meshharbord record` run by hand reads it from the config file
 (`register_encoder_fallbacks`). A gate the probe and the live session honour
 but the recorder skipped would only be a courtesy.
 
@@ -212,9 +212,9 @@ but the recorder skipped would only be a courtesy.
 
 | | Windows | macOS | Linux |
 |---|---|---|---|
-| Default | `Videos\Roomler`, **only if** local, not under OneDrive, and it survives a real write probe | `~/Movies/Roomler` | XDG videos dir + `Roomler` |
-| Fallback | `%USERPROFILE%\Roomler Recordings` | same rule | same rule |
-| Last resort | the recorder's data dir (`%LOCALAPPDATA%\…\recordings`, never roaming) | `~/Library/Application Support/…/recordings` | `~/.local/share/roomler/recordings` |
+| Default | `Videos\MeshHarbor`, **only if** local, not under OneDrive, and it survives a real write probe | `~/Movies/MeshHarbor` | XDG videos dir + `MeshHarbor` |
+| Fallback | `%USERPROFILE%\MeshHarbor Recordings` | same rule | same rule |
+| Last resort | the recorder's data dir (`%LOCALAPPDATA%\…\recordings`, never roaming) | `~/Library/Application Support/…/recordings` | `~/.local/share/meshharbor/recordings` |
 
 **The write rule** — which identity writes where, and the fallback:
 
@@ -223,14 +223,14 @@ flowchart TD
     BYTES["a recording's first bytes"] --> WHO{"who runs the recorder?"}
     WHO -->|"nobody signed in<br/>— SYSTEM / root, unattended"| SVC["the daemon's own folder (%PROGRAMDATA% on Windows),<br/>locked down: a protected DACL<br/>(SYSTEM + Administrators) or mode 0700;<br/>a link on the path is refused. Never record_dir"]
     WHO -->|"the person at the console<br/>— the recorder IS that user"| CFG{"record_dir set, and it passes a real<br/>create + write + delete probe?"}
-    CFG -->|"yes"| STAGE["stage in &lt;folder&gt;/.roomler-partial/&lt;name&gt;.partial,<br/>create_new, rename into place on finish"]
-    CFG -->|"not set, or it failed the probe"| DEF{"Videos/Roomler: not under OneDrive<br/>or a network share, and passes the probe?"}
+    CFG -->|"yes"| STAGE["stage in &lt;folder&gt;/.meshharbor-partial/&lt;name&gt;.partial,<br/>create_new, rename into place on finish"]
+    CFG -->|"not set, or it failed the probe"| DEF{"Videos/MeshHarbor: not under OneDrive<br/>or a network share, and passes the probe?"}
     DEF -->|"yes"| STAGE
-    DEF -->|"no — OneDrive, Controlled Folder Access,<br/>a folder policy, the user unit's sandbox"| ALT{"~/Roomler Recordings<br/>passes the probe?"}
+    DEF -->|"no — OneDrive, Controlled Folder Access,<br/>a folder policy, the user unit's sandbox"| ALT{"~/MeshHarbor Recordings<br/>passes the probe?"}
     ALT -->|"yes"| STAGE
     ALT -->|"no"| DATA["the recorder's own data dir<br/>(local, never roaming)"]
     DATA --> STAGE
-    STAGE --> SIDE["the &lt;name&gt;.roomler.json sidecar beside it;<br/>the Recordings view shows why a fallback was taken"]
+    STAGE --> SIDE["the &lt;name&gt;.meshharbor.json sidecar beside it;<br/>the Recordings view shows why a fallback was taken"]
     SVC --> STAGE
 ```
 
@@ -247,7 +247,7 @@ weighed and deferred (below).
   (`ReadWritePaths=-%h/Videos`), so the default folder works there. Anywhere
   else under home is read-only to the service. A folder chosen there fails
   the test write and falls back, and the Recordings view names the cause
-  ("… is read-only for the Roomler service (on a Linux desktop it runs
+  ("… is read-only for the MeshHarbor service (on a Linux desktop it runs
   sandboxed: …)", `folder::sandboxed`). A **localized** Videos folder
   (`XDG_VIDEOS_DIR=~/Vidéos`) is not covered and falls back the same way, as
   does a `~/Videos` created after the service started (systemd sets up the
@@ -272,17 +272,17 @@ weighed and deferred (below).
   at all. `no_record_key_is_server_pushable_via_desired_config` locks that.
   Where screen recordings are kept is the owner's choice. A server that could
   move the folder could move them into a synced or shared one.
-- **Names never collide:** `Roomler Recording 2026-09-25 14-30-12.mp4`, then
+- **Names never collide:** `MeshHarbor Recording 2026-09-25 14-30-12.mp4`, then
   ` (2)`, ` (3)`, … A partial with the name counts as taken.
-- **Staging:** `<folder>/.roomler-partial/<name>.partial`, renamed into place on
+- **Staging:** `<folder>/.meshharbor-partial/<name>.partial`, renamed into place on
   finish. The file is created with `create_new`: a recording never replaces
   anything. Beside it sits `<name>.partial.lock`, an OS file lock the recorder
   holds until the file is final (see §5, crash recovery).
 
-## 5. `roomlerd record`
+## 5. `meshharbord record`
 
 ```
-roomlerd record [--out <dir>] [--fps 30] [--encoder auto|hardware|software] [--max-minutes 240]
+meshharbord record [--out <dir>] [--fps 30] [--encoder auto|hardware|software] [--max-minutes 240]
                 [--system-audio] [--microphone]
 ```
 
@@ -315,7 +315,7 @@ the file cleanly (`display_changed`) instead of scaling mid-recording.
 
 **Crash recovery.** A recorder that died (a crash, `kill -9`, the Windows
 installer's Restart Manager during an update) leaves its partial in the staging
-dir. Every `roomlerd record` runs `recorder::reconcile_partials` over its own
+dir. Every `meshharbord record` runs `recorder::reconcile_partials` over its own
 staging dir as it starts. That runs beside the new recording, never before it,
 because a multi-GB remux must not hold up `started`. Each complete fragment is
 remuxed into place, and the file is marked `interrupted` in its sidecar.
@@ -325,7 +325,7 @@ remuxed into place, and the file is marked `interrupted` in its sidecar.
 creates the partial, holds it until the file is final, and the kernel releases
 it however the process dies. Without it the reconciler could not tell a dead
 recorder's partial from a live one's. A second recorder in the same folder (a
-manual `roomlerd record` beside the daemon's) would remux a file under its
+manual `meshharbord record` beside the daemon's) would remux a file under its
 writer, or, before the writer's first fragment, **delete it as
 unrecoverable**. `a_live_partial_is_left_alone_by_the_reconciler` is red with
 the lock disabled.
@@ -333,17 +333,17 @@ the lock disabled.
 ## 6. Recording through the daemon — the local verbs (P2a)
 
 The person at the device records through the running daemon: from
-meshharbor-desktop (P2b) or from `roomler record`. The daemon never records in its
-own address space. It launches `roomlerd record` and follows its events
+meshharbor-desktop (P2b) or from `meshharbor record`. The daemon never records in its
+own address space. It launches `meshharbord record` and follows its events
 (`recording/manager.rs`, `RecordingManager`).
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant C as roomler record / meshharbor-desktop
+    participant C as meshharbor record / meshharbor-desktop
     participant L as LocalAPI listener
     participant M as RecordingManager (daemon)
-    participant R as roomlerd record (child)
+    participant R as meshharbord record (child)
     C->>L: RecordStart {fps, encoder, max_minutes}
     L->>L: peer is the console user?<br/>(else: refused, never reaches M)
     L->>M: record_start(opts)
@@ -384,7 +384,7 @@ sequenceDiagram
   SYSTEM with nobody signed in, or a macOS root daemon, which has no screen
   at all — a local recording is refused, and says why. On a supervised Mac
   the companion talks to the GUI worker, which is the person, and records
-  there (P1e-mac, "A supervised Mac" below). `roomlerd record` run in your
+  there (P1e-mac, "A supervised Mac" below). `meshharbord record` run in your
   own session always works.
 - **One recording at a time.** A second start answers an error. A child that
   exits without saying how it ended (a crash, bad arguments, a binary built
@@ -402,7 +402,7 @@ sequenceDiagram
   budget. An operator-forced update proceeds anyway and says so. The mark
   (`manager::is_recording`) is a count each recorder's reader task adds to once
   and removes once, so no code path can clear a recording it does not own.
-- **`roomler record start|stop|status|ls|rm`**
+- **`meshharbor record start|stop|status|ls|rm`**
   (`agents/meshharbor-cli/src/cli.rs`) wraps these verbs one to one. `--json`
   prints the wire shape.
 
@@ -512,9 +512,9 @@ into the daemon's log: a service has no stderr of its own to share.
   no one's).
 - **The folder is decided by the recorder, as the recorder.** A SYSTEM
   daemon's own "Videos" is SYSTEM's, and its write probe passes where the
-  person's would not. So the daemon asks `roomlerd record --where`, launched
+  person's would not. So the daemon asks `meshharbord record --where`, launched
   the same way, and reuses the answer for a minute (a recording's `started`
-  refreshes it). `roomlerd record --whoami` prints what a recorder actually
+  refreshes it). `meshharbord record --whoami` prints what a recorder actually
   got: user, integrity, whether an admin group is enabled.
 - **At the lock screen** a recorder running as the person cannot see the
   secure desktop. The recording holds its last frame, and a lock longer than
@@ -558,7 +558,7 @@ flowchart LR
       T["tray<br/>Start / Stop recording,<br/>RED while one runs"]
       P["native folder picker<br/>cmd_pick_record_dir"]
     end
-    subgraph daemon["roomlerd (LocalAPI)"]
+    subgraph daemon["meshharbord (LocalAPI)"]
       G{"console user?"}
       M["RecordingManager"]
       C["config surface<br/>record_dir (live)"]
@@ -577,7 +577,7 @@ flowchart LR
 | **Record this screen** | Start / Stop, the frame rate (30 or 60) and the encoder (automatic, GPU only, software only), a blinking REC chip with the running time, size, encoder and resolution. **Computer audio** and **Microphone** (§9) are boxes, off unless ticked; where the service says computer audio cannot be recorded here (`RecordingState.system_audio_unavailable_reason`, #1760: a Mac, a build without audio) that box is greyed out, unticked, with the words beside it, and so is the owner's **Include computer audio** toggle in the remote card. The options lock while a recording runs. How the last one ended is one sentence (`describeLast`); every closed stop reason and refusal code has words. |
 | **Where recordings are saved** | The folder in use, whether it is the default or one the person chose, **Change folder…** (the native picker), **Use the default folder**, and **Open folder**. A fallback is named ("Not the usual folder: … is under OneDrive"). |
 | **Saved recordings** | Newest first, from the sidecars: when, how long, size, by whom (this device, or a remote controller by name), how it ended on hover. **Play** (the OS's default player), **Edit** (P5c, §11; only where the service has the export engine), **Show** (selected in the file manager), **Delete** (two clicks, no modal: the first arms it for 4 s). |
-| **Tray** | **Start recording** / **Stop recording (m:ss)**, and the tooltip `Roomler — recording m:ss`, following the recorder whoever started it; a controller's recording names them (`Roomler — <name> is recording, m:ss`). **The icon turns red** (the mark in full colour with a red dot, `icons/tray-recording.png`) while any recording runs, this device's own or a controller's, and back when it ends. A refusal opens the Recordings view with the sentence. |
+| **Tray** | **Start recording** / **Stop recording (m:ss)**, and the tooltip `MeshHarbor — recording m:ss`, following the recorder whoever started it; a controller's recording names them (`MeshHarbor — <name> is recording, m:ss`). **The icon turns red** (the mark in full colour with a red dot, `icons/tray-recording.png`) while any recording runs, this device's own or a controller's, and back when it ends. A refusal opens the Recordings view with the sentence. |
 
 - ⚠️ **The red comes up with the banner.** Two polls turn it on, and either
   is enough. The session watch (`main.rs`, every 750 ms, the poll the "being
@@ -623,7 +623,7 @@ flowchart LR
 
 ## 8. The sidecar
 
-`<recording>.roomler.json`, beside the file: who started it (`local`, or
+`<recording>.meshharbor.json`, beside the file: who started it (`local`, or
 `remote` with the controller's **user id**, because remote downloads are
 owned by user and not by session id), start and end times, size and fps,
 codec and the backend that encoded it, colour, audio sources, frames,
@@ -796,7 +796,7 @@ before `available` existed and advertising `remote` still reads as serving.
 
 The owner switches it on in meshharbor-desktop's Recordings view ("Allow remote
 recording", and separately "Include computer audio"), or with
-`roomler config set record_remote_enabled true`. Both keys are device-only: the
+`meshharbor config set record_remote_enabled true`. Both keys are device-only: the
 console gate accepts them only from the person at the device, and
 `DesiredConfig` cannot carry them. Both are live. The agent re-announces its caps
 on the next heartbeat, so the hub follows within one beat, and an OFF also stops
@@ -818,7 +818,7 @@ sequenceDiagram
     participant V as viewer
     participant D as device (record DC)
     participant H as the host's screen
-    participant R as roomlerd record
+    participant R as meshharbord record
 
     V->>D: rc:record.start {id, audio?}
     D->>D: the owner's switch · a recorder here · audio possible here, then allowed · not busy
@@ -853,7 +853,7 @@ sequenceDiagram
 | `start_failed` | the recorder refused or failed; `detail` says which |
 
 A recording ends `requested` (the controller's Stop), `host_stopped` (the host's
-Stop: the banner, the tray, the Recordings view, `roomler record stop`),
+Stop: the banner, the tray, the Recordings view, `meshharbor record stop`),
 `gate_revoked`, `session_ended` (its session dropped and nobody came back
 within the re-attach grace, P3b-3 below), or with the recorder's own reasons
 (`disk_low`, `max_duration`, …). The device reports every outcome as
@@ -1031,7 +1031,7 @@ sequenceDiagram
     participant S as server (hub)
     participant D as root daemon
     participant W as GUI worker (the person)
-    participant R as roomlerd record (the person)
+    participant R as meshharbord record (the person)
     W->>D: WorkerCaps { record: [available, remote] } (at attach, and on every gate change)
     D->>S: heartbeat caps.record = the worker's (primary org only)
     V->>S: rc:session.request (RECORD)
@@ -1056,9 +1056,9 @@ sequenceDiagram
   worker runs without `--config`, so it reads the user's. The companion's
   Recordings view and settings reach the worker over its per-user LocalAPI
   socket (in the user's temp folder, where the companion looks first). The
-  root daemon's `/var/run/roomler/roomler.sock` is root-only, and its
+  root daemon's `/var/run/meshharbor/meshharbor.sock` is root-only, and its
   recording verbs refuse `RootDaemon`.
-  ⚠️ So `sudo roomler config set record_remote_enabled …` changes the ROOT
+  ⚠️ So `sudo meshharbor config set record_remote_enabled …` changes the ROOT
   daemon's copy, which a supervised Mac does not read for remote recording
   (the key's own description says so). ANDing it in as a second gate would
   make remote recording a double opt-in, a change to the shipped model: an
@@ -1211,7 +1211,7 @@ flowchart LR
     PLAN --> PICK{{"the frame shown<br/>at that time"}}
     DEC --> PICK
     PICK --> ENC["encode<br/>the recording profile"]
-    ENC --> FW["fragmented MP4<br/>.roomler-partial (locked)"]
+    ENC --> FW["fragmented MP4<br/>.meshharbor-partial (locked)"]
     FW --> FIN["finalize<br/>moov first"]
     FIN --> OUT[("recording (edited).mp4")]
 ```
@@ -1262,7 +1262,7 @@ flowchart LR
   recorder starting beside a running export never reconciles it. A failed or
   cancelled export leaves nothing behind.
 
-**`roomlerd media`** is the engine as a process of its own, launched by
+**`meshharbord media`** is the engine as a process of its own, launched by
 meshharbor-desktop **as the person** (never by the daemon), speaking the
 recorder's JSON-line protocol:
 
@@ -1319,14 +1319,14 @@ through symphonia (P4).
 meshharbor-desktop's editor. **Edit** on a saved recording's row puts that one
 recording in place of the list (`src/front/editor.js`, with its commands in
 `src/editor.rs`). The button shows only where this device's service has the
-engine: `cmd_media_available` runs `roomlerd media --help` once.
+engine: `cmd_media_available` runs `meshharbord media --help` once.
 
 ```mermaid
 sequenceDiagram
     participant P as the page (editor.js)
     participant C as meshharbor-desktop (editor.rs)
-    participant D as roomlerd (LocalAPI)
-    participant E as roomlerd media (as the person)
+    participant D as meshharbord (LocalAPI)
+    participant E as meshharbord media (as the person)
     P->>C: cmd_media_probe(name)
     C->>D: RecordingsList: the folder
     C->>E: media probe <folder>/<name>
@@ -1351,7 +1351,7 @@ sequenceDiagram
 | **Export** | The encoder, **Export**, a progress bar and **Cancel export**; then the new file's name, length, size and what its sound is, with **Play** and **Show in folder**. Every refusal code has words; one this page does not know reads as itself. |
 
 - **Every change is saved** beside the recording as `<name>.mp4.edit.json`,
-  the name roomlerd looks for, 400 ms after the last one, and reopening the
+  the name meshharbord looks for, 400 ms after the last one, and reopening the
   recording restores it. A saved list that does not fit (another version, a
   gap, a bad speed) starts over from the whole recording and says so. The
   file is replaced whole: a crash mid-write leaves the previous list.
@@ -1393,21 +1393,21 @@ the music in the preview.
 | `recording::launch` unit tests, Windows (P1e) | every argument comes back whole through Windows's own parser (`CommandLineToArgvW`): a display name full of quotes, backslashes and `--out` stays ONE argument; an added variable replaces its namesake whatever its case; **work done as the recorder gets only the recorder's rights**: an elevated run writes into an Administrators-only folder, and the same write made through `as_identity(RestrictedCopy)` is refused, then the thread is itself again (red without the impersonation) | `ci.yml` "Windows recorder identity (FR-85)", elevated on purpose (`MESHHARBORD_TEST_REQUIRE_ELEVATED` fails a runner that is not) |
 | `recording::launch` unit tests, Linux as root (P1e-unix) | work done as the person gets only the person's rights: a folder only root may write is refused, a `root:root 0640` file only root's group may read is refused, and afterwards the thread is root again; the launch runs as the person with none of root's groups (`id` says so); root is never the account a session resolves to. Red, each on its own cell: the fsuid left alone, the groups left alone (root's group 0 reads the file), the restore skipped, the drop skipped. The decision table gains the Linux rows (as the person; refused with nobody, or only a greeter, at the screen; a user unit unchanged), and the refusal names root, not SYSTEM | `ci.yml` "Linux recorder identity (FR-85)": the lib test binary built as the runner and run under `sudo`; `MESHHARBORD_TEST_REQUIRE_ROOT` fails a run that is not root instead of passing by skipping |
 | `recording::launch` and `recording::folder` unit tests (P1f) | Windows, elevated: a folder locked by `lock_to_service_accounts` takes the service side's write and refuses one made as the restricted copy (the person), red without the lock, since the user's own ACE on a temp folder lets the copy in. Unix: the unattended folder is made at 0700, tightened again after someone loosened it, and never made through a link on its path | Windows: "Windows recorder identity (FR-85)"; unix: "Test the recorder (FR-85)" |
-| `recording::folder` unit test and the CI unit start (P2c) | a read-only file system on Linux is named as the service's sandbox ("… read-only for the Roomler service (on a Linux desktop it runs sandboxed …)"), and any other refusal keeps its own words. In CI, a unit carrying `meshharbor.service`'s sandbox lines VERBATIM starts on a runner with no pre-rename folders, the real `roomlerd record --where` inside it chooses `~/Videos/Roomler`, and the rest of home stays read-only. Shown failing first, locally (systemd 255, a user unit): master's unit fails `226/NAMESPACE` on a host without the pre-rename folders, and with them present it starts but keeps the recorder out of `~/Videos` (the recording falls back to the data folder); the CI step's own commands fail on master's unit ("did not start") and pass on this one. With unprivileged user namespaces refused (`user.max_user_namespaces=0`), master's user unit STARTS and writes `~/Videos`: the user manager skips the whole sandbox, which the CI step's system unit never does | "Test the recorder (FR-85)" (`--lib recording::`); "The Linux user unit's sandbox (FR-85 P2c)" |
+| `recording::folder` unit test and the CI unit start (P2c) | a read-only file system on Linux is named as the service's sandbox ("… read-only for the MeshHarbor service (on a Linux desktop it runs sandboxed …)"), and any other refusal keeps its own words. In CI, a unit carrying `meshharbor.service`'s sandbox lines VERBATIM starts on a runner with no pre-rename folders, the real `meshharbord record --where` inside it chooses `~/Videos/MeshHarbor`, and the rest of home stays read-only. Shown failing first, locally (systemd 255, a user unit): master's unit fails `226/NAMESPACE` on a host without the pre-rename folders, and with them present it starts but keeps the recorder out of `~/Videos` (the recording falls back to the data folder); the CI step's own commands fail on master's unit ("did not start") and pass on this one. With unprivileged user namespaces refused (`user.max_user_namespaces=0`), master's user unit STARTS and writes `~/Videos`: the user manager skips the whole sandbox, which the CI step's system unit never does | "Test the recorder (FR-85)" (`--lib recording::`); "The Linux user unit's sandbox (FR-85 P2c)" |
 | `tests/recorder.rs`, Windows (P1e) | the recorder an elevated daemon launches reports (`record --whoami`) the same user at MEDIUM integrity with the admin group deny-only; red with the integrity left alone, red with no group made deny-only; the positive control, launched as the daemon itself, IS elevated. A whole recording through the rule: the folder asked of the recorder (`record --where`), start, stop, and the list and delete done as it | the same Windows job |
 | `tests/recorder.rs`, the kill switch | `MESHHARBORD_RECORDING=0` closes every path and says so: the state a client greys Start out with, a start, `available` (so the device stops advertising `record`), the listing and the folder a download is served from; the control, the same manager without the switch, can record. `launch::switched_off` reads only an explicit off (`0`, `false`, `off`, `no`), never a typo | "Test the recorder (FR-85)", `--test recorder` and `--lib recording::` |
-| `tests/recorder.rs` | A counter-pattern capture → openh264 recording encoder → MP4 → openh264 decode, reading the counters back (the oracle is proven to discriminate first); display change; disk-low and no-frame refusals; the real `roomlerd record` process: the stop command, stdin EOF, `kill -9` followed by `reconcile_partials`, a **live** partial left alone (red with the lock disabled); and the manager end to end (start into `record_dir`, a second start refused, stop, list, delete), a missed start deadline killing the child (red without the kill), and the refusal where there is nobody to record as | same step, `--test recorder` |
+| `tests/recorder.rs` | A counter-pattern capture → openh264 recording encoder → MP4 → openh264 decode, reading the counters back (the oracle is proven to discriminate first); display change; disk-low and no-frame refusals; the real `meshharbord record` process: the stop command, stdin EOF, `kill -9` followed by `reconcile_partials`, a **live** partial left alone (red with the lock disabled); and the manager end to end (start into `record_dir`, a second start refused, stop, list, delete), a missed start deadline killing the child (red without the kill), and the refusal where there is nobody to record as | same step, `--test recorder` |
 | `recording::pointer` unit tests (P1d) | the pointer lands where the source says and nowhere else; a translucent pixel blends (premultiplied "over"), a transparent one changes nothing, a malformed one saturates; moving it leaves no trail (byte-equal to drawing it once at the new place); hiding it gives the frame back byte for byte; clipped at every edge and never wrapped, wholly outside draws nothing; row padding respected; an unchanged pointer re-uses the same frame; **the frame the encoder still holds is never written** (red when the canvas is written without `make_mut`); a new capture is not patched with the old one's pixels (red when `replace` keeps them), and gets the pointer even when it did not move; a frame that is not BGRA passes untouched; a scaled frame takes the position through the ratio; one poll per frame | "Test the recorder (FR-85)" (`--lib recording::`) |
 | `capture::pointer` unit tests (P1d) | Windows' straight alpha premultiplied, XFixes' words read as B, G, R, A; a short or absurd image refused, never read past; the hotspot and the display's origin both taken off, a monitor left of the primary included. Windows only: a recording's WGC session draws the pointer, the live one only under `MESHHARBORD_WGC_CURSOR=1` | every unfiltered `--lib` run ("Test agent under vp9-444"); the WGC cell in "Windows recorder identity (FR-85)", which also compiles and lints the Windows capture code (WGC, DXGI, the cursor tracker) that no other lane builds |
 | `capture::pointer::x11_tests` (P1d) | against a real X server: the pointer warped to a known place reads back there less its hotspot, and less a monitor's origin; it follows a second warp; an unchanged shape is not rebuilt | `ci.yml` "The recorder's pointer on X11 (FR-85 P1d)", under Xvfb. `MESHHARBORD_TEST_X11=1` makes a missing server a failure, never a skip |
 | `tests/recorder.rs`, the pointer (P1d) | a "backend" that cannot draw the pointer hands the recorder a source: a 32×32 white square at A for the first half of the recording, at B after, and the screen goes **still** well before it moves. Decoded back, the first frame has it at A and nowhere else, it reaches B over the still screen, no frame has both (no trail), and once at B it stays there; the sidecar says `drawn`. The plain counter recording's sidecar says `none`. Red with the layer bypassed, and with the covered pixels never put back. ⚠️ Over a CHANGING screen the put-back cell stayed green (every tick brought a fresh capture that hid the trail), which is why the screen goes still | "Test the recorder (FR-85)", `--test recorder` |
 | `recording::edit` unit tests (P5a) | the keep / cut / 4× / keep list maps every output frame to exactly the frame the oracle expects; keeping everything is the identity (the control); an hour at 1.5× lands on the frame integer arithmetic says, no drift; what follows the last segment is kept and a long list is clipped; a bad list is refused by name (version, no segments, not from 0, a gap, an empty segment, nothing kept); speeds are 1.25–16 in quarter steps (NaN, infinity, 1×, 17× refused); the file reads as written | "Test the recorder (FR-85)" (`--lib recording::`) |
-| `tests/export.rs` (P5a) | a recording whose every frame paints its own index, exported keep 0–2 s · cut 2–4 s · 4× 4–8 s · keep 8–10 s, decodes to exactly `0..59, 120, 124 … 236, 240..299` (150 frames, 5 s, moov first, the recording byte-identical); the same comparison against the unedited source fails (the oracle discriminates); keeping everything reproduces the recording frame for frame; a cancelled export and one that keeps nothing leave no file and nothing staged; the real `roomlerd media probe` / `export` process (a cut plus 2× shows frames 30, 32 … 58, the `done` event says `audio: none`, the recording being silent), and a list naming `../elsewhere.mp4` is refused `bad_edit_list`. Red, each on its own cell: the map ignoring speed, the frame choice off by one, the cancel check removed, the name check removed | same step, `--test export` |
+| `tests/export.rs` (P5a) | a recording whose every frame paints its own index, exported keep 0–2 s · cut 2–4 s · 4× 4–8 s · keep 8–10 s, decodes to exactly `0..59, 120, 124 … 236, 240..299` (150 frames, 5 s, moov first, the recording byte-identical); the same comparison against the unedited source fails (the oracle discriminates); keeping everything reproduces the recording frame for frame; a cancelled export and one that keeps nothing leave no file and nothing staged; the real `meshharbord media probe` / `export` process (a cut plus 2× shows frames 30, 32 … 58, the `done` event says `audio: none`, the recording being silent), and a list naming `../elsewhere.mp4` is refused `bad_edit_list`. Red, each on its own cell: the map ignoring speed, the frame choice off by one, the cancel check removed, the name check removed | same step, `--test export` |
 | `recording::edit` and `recording::export_audio` unit tests (P5b) | the sound of keep / cut / 4× / keep: the kept stretches play from their own source sample, the speed-up is muted, the cut is gone, and the sound is exactly as long as the picture; a volume is 0 to 1 (1.5, NaN and −0.1 refused by name; 0 is a volume, the recording muted), and music needs a file; music defaults to half volume and looping, and an absent `original_volume` means as recorded; the music's gain is silent before its start, ramps in from it, and ramps out to the export's end; a music time too large to count in samples saturates instead of wrapping to an early start | "Test the recorder (FR-85)" (`--lib recording::`; `export_audio`'s in the `audio` run) |
 | `tests/export.rs`, `mod sound` (P5b) | a recording whose sound is a STEPPED tone, second k playing 300 + 100·k Hz, so every second of an export names the second of the recording it came from (the oracle reads the recording's own second 3 as 600 Hz first). Keep 0–2 s · cut 2–4 s · 4× 4–8 s · keep 8–10 s: the export's seconds 0, 1, 3 and 4 play 300, 400, 1100 and 1200 Hz at full level, second 2 (the speed-up) is muted, and the sound lasts as long as the picture. Music (a 2 s WAV at 44.1 kHz, so it is resampled) under a keep and a 4× speed-up: at its volume and pitch, still playing after its own 2 s (it looped), quieter while it fades in. Both together: under the speed-up only the music is heard. `original_volume` 0 with no music gives a file with no audio track (`audio: none`). A file that is not music, a WAV declaring 0 Hz (which panics symphonia 0.5.5's probe) and one declaring 1 Hz are refused `music_unreadable`, with nothing left staged; a 50 ms blip plays once. Red, each on its own cell: a speed-up not muted, the sound ignoring the cut, the music never looping, the fade-in ignored, the music's volume ignored, the panic guard removed, the rate range widened, the loop minimum removed (and, in the unit test, the saturation removed). ⚠️ The 1 Hz cell stays green with EITHER rate check deleted (at open, per buffer): each refuses that WAV on its own, so it is red only with the range widened | same step, the `audio` run of `--test export` |
-| `recording::edit` and `recording::manager` unit tests (P5c) | the edit list meshharbor-desktop writes is one roomlerd reads: `agents/meshharbor-desktop/tests/fixtures/edit-list.json`, the file the page's own test pins its output to, plans to 5 s with its music as written (red when roomlerd reads `looped` for `loop`); deleting a recording takes its edit list with it and leaves an export beside it (red when the list is left behind) | "Test the recorder (FR-85)" (`--lib recording::`) |
+| `recording::edit` and `recording::manager` unit tests (P5c) | the edit list meshharbor-desktop writes is one meshharbord reads: `agents/meshharbor-desktop/tests/fixtures/edit-list.json`, the file the page's own test pins its output to, plans to 5 s with its music as written (red when meshharbord reads `looped` for `loop`); deleting a recording takes its edit list with it and leaves an export beside it (red when the list is left behind) | "Test the recorder (FR-85)" (`--lib recording::`) |
 | `recording::audio` unit tests (P1c) | 48 kHz passes through exactly (one frame of interpolator latency); mono → both channels; a 44.1 kHz sine resamples to 48 kHz at the same pitch; a positive rate trim consumes faster; the soft clip is linear below the knee, monotonic, never wraps; a silent source still yields one frame per 20 ms; two sources sum; a backlog is cut to the lag keeping the newest; a 0.2 % fast source is held near the lag by the rate correction, never trimmed | "Test the recorder (FR-85)", the `audio` run |
-| `tests/recorder.rs`, audio (P1c) | a 440 Hz tone at 44.1 kHz mono plus a microphone that delivers nothing → an Opus track within 80 ms of the video, decoded back at 440 Hz with the right level; the same recording without audio has no audio track (the negative control); `roomlerd record --system-audio` through the real process; a build without `audio` refuses `--microphone` with `audio_unavailable` | both runs of the same step |
+| `tests/recorder.rs`, audio (P1c) | a 440 Hz tone at 44.1 kHz mono plus a microphone that delivers nothing → an Opus track within 80 ms of the video, decoded back at 440 Hz with the right level; the same recording without audio has no audio track (the negative control); `meshharbord record --system-audio` through the real process; a build without `audio` refuses `--microphone` with `audio_unavailable` | both runs of the same step |
 | `recording::audio_codec`, `recording::mp4`, `recording::recorder::tests::alignment`, `recording::export_audio` unit tests (P4) | odd-sized pushes come out as whole codec frames and the tail is padded into one more; an AAC track keeps its AudioSpecificConfig (`11 90`) through the crash-safe file and the remux, and an Opus track reads back as Opus (the control); a click the mixer made 30 000 samples after the first video frame decodes 30 000 samples into the track, in Opus AND in AAC — red with the sample-exact cut removed (the click lands 240 samples late), and an AAC priming left unpaid would put it 1024 late; the export's reader finds the same click at the same sample in either codec | the recorder step (Opus); the AAC halves in "Recording with FFmpeg" |
 | `recording::decode` unit tests and `tests/export.rs`, hardware recordings (P4b-2) | two COMMITTED recordings that `h264_nvenc` made of the counter pattern (`tests/fixtures/export-high-profile.mp4`, High; `export-high444-profile.mp4`, High 4:4:4; regenerated by the ignored `make_the_hardware_fixtures`), proven to be what they claim; where FFmpeg's decoder is linked, keep 0–1 s · cut 1–2 s · keep 2–3 s decodes to exactly `0..30, 60..90` in both, and `media probe` says `editable`; where it is not, the same export is refused `decoder_unavailable` with nothing written, and the probe gives the reason | the recorder step (the refusals); "Recording with FFmpeg" (the exports) |
 | `ci.yml` "Recording with FFmpeg — AAC and H.264 decode (FR-85 P4)" | the recorder and export suites built WITH `ffmpeg-encoder` against the `-h264dec-aac` vendored FFmpeg: the encoder's 1024-sample frames, declared priming and standard config; a recording's track and sidecar both AAC; an export written as AAC; an AAC recording read back through keep / cut / 4× / keep; the hardware fixtures exported frame for frame. ⚠️ `MESHHARBOR_EXPECT_FFMPEG_AAC=1` and `MESHHARBOR_EXPECT_FFMPEG_H264_DECODER=1` make a missing encoder or decoder a FAILURE, never a quiet pass on the fallback | its own job |
@@ -1432,13 +1432,13 @@ the music in the preview.
 | `ui/src/__tests__/companion/recordings.spec.ts` | meshharbor-desktop's REAL `index.html` section and `recordings.js`, in jsdom against a mocked `invoke`: Start greyed out with the reason, the running state, start options, a refusal said, delete only on the second click (red when a single click deletes), the arm expiring, the folder picker saving through `cmd_config_set` and a cancel saving nothing, keyed rows kept in place (red when rows are rebuilt), the last good data kept on a failed refresh, a service with no recorder; #1760: the computer-audio box greyed out, unticked, with the reason where the service says it cannot record it (the microphone still offered, a start then asking for none; red when the reason is ignored), and the recorder's refusal in plain words | "Frontend checks" (`bun run test:unit`) |
 | `ui/src/__tests__/companion/recordings.spec.ts` (P3b) | the remote-recording card: absent against a service that predates the gates; computer audio offered only once remote recording is allowed; each toggle saved through `cmd_config_set`; a refused toggle said and not faked; a remote recording's status names who it is for; #1760: the owner's computer-audio toggle greyed out, unticked, with the reason where the service cannot record it, remote recording itself still offered | "Frontend checks" |
 | `ui/src/__tests__/companion/viewing.spec.ts` (P3b) | the REAL banner (`panel-viewing.html` / `.js`): who is watching; a RECORDING controller leads, even when another viewer came first (red when the lookup is removed); Stop recording stops the recording and not the session; the notice comes down when the recording ends; P3b-3: a dropped session's recording reads "reconnecting" with its Stop and no Disconnect, and Disconnect returns while another session is live beside it | "Frontend checks" |
-| `ui/src/__tests__/companion/editor.spec.ts` (P5c) | meshharbor-desktop's REAL Edit section and `editor.js` in jsdom against a mocked `invoke`. The pieces: every split kept whatever its neighbours do (red when an action merges them), no sliver, the export's length as roomlerd's map; the page writes EXACTLY the shared fixture (red when it writes `looped`); a saved list read back fitted, clipped to a shorter recording, a kept last piece carried to a longer one, or started over and said (red when a gap is accepted); the preview's skip, rate and mute. The view: opens on the whole recording and hides the list; split and cut saved after a pause, not per click; speed from the timeline; music added and saved; saved edits restored; edits that do not fit said; a recording it cannot edit refused with the reason; everything cut greys Export out with why; an export that waits for the last save (red when it does not), shows its progress, locks the edits, names the new file and its sound, and opens it by its BARE name; a refusal in words; cancel through the service; an export already running shown on open. The Edit button shows only where the service has the engine (red when it shows without it) and opens that recording | "Frontend checks" (`bun run test:unit`) |
+| `ui/src/__tests__/companion/editor.spec.ts` (P5c) | meshharbor-desktop's REAL Edit section and `editor.js` in jsdom against a mocked `invoke`. The pieces: every split kept whatever its neighbours do (red when an action merges them), no sliver, the export's length as meshharbord's map; the page writes EXACTLY the shared fixture (red when it writes `looped`); a saved list read back fitted, clipped to a shorter recording, a kept last piece carried to a longer one, or started over and said (red when a gap is accepted); the preview's skip, rate and mute. The view: opens on the whole recording and hides the list; split and cut saved after a pause, not per click; speed from the timeline; music added and saved; saved edits restored; edits that do not fit said; a recording it cannot edit refused with the reason; everything cut greys Export out with why; an export that waits for the last save (red when it does not), shows its progress, locks the edits, names the new file and its sound, and opens it by its BARE name; a refusal in words; cancel through the service; an export already running shown on open. The Edit button shows only where the service has the engine (red when it shows without it) and opens that recording | "Frontend checks" (`bun run test:unit`) |
 | `ui/src/__tests__/composables/useRemoteRecording.spec.ts` (P3c) | the viewer's half of the `record` channel, against a scripted channel and an injected save sink: the status and the list asked for as the channel opens; a recording followed from the prompt to its end, a refusal said in words; a channel that closes mid-recording reads as reconnecting (P3b-3; a standing question dies with the session), the next session's channel picks the recording up and Stop names its id, even on a reloaded page, and coming back to nothing recording says it ended meanwhile; a download written in order, with the device's SHA-256 shown; a transfer the session cut, resumed from the bytes already held (red when it restarts from 0); in memory, a file kept only when its SHA-256 matches (red when any file is kept); a short file is an error (red without the length check); a refusal ends a transfer by name and a cancel tells the device; one transfer at a time; P3c-2: `showsRecordRefusal` hides the control for `device_cannot_record` only, and shows every other reason, one from a newer server included; P3b-3: a deliberate Disconnect stops a recording first and waits for the device's answer (or its timeout), and asks nothing of a channel already gone; #1760: `audio_unavailable` on a state greys the box out (`audioUnavailable`, with its sentence) and a start then asks for no audio, a state without the field offers the box again, and a refusal's `detail` is kept for the line under the sentence (red when the field is ignored) | "Frontend checks" (`bun run test:unit`) |
 | `ui/src/__tests__/composables/useRemoteControl.spec.ts`, the record channel (P3c) | RECORD read out of the effective grant by equality (a newer `RECORDING` is not it; red with a prefix match) and never assumed when a server sends no grant; the channel opened from the grant, once per PeerConnection (red without the already-open guard), and never without a PeerConnection | "Frontend checks" |
 | `ui/e2e/remote-recording-refused.spec.ts`, `remote-recording-smoke.spec.ts` (P3c) | against the `agent-e2e` harness: a device with a recorder that never opted in (`available` alone) shows a disabled Record control whose tooltip says why, and no Record button; a device with no recorder shows neither (P3c-2); on a device that advertises `remote`, Record ends in the REC chip or in a refusal said in words. The harness agents run as root with nobody at a console, so there a recording is UNATTENDED (P1f): `Dockerfile.agent-e2e` carries `recording` from P1f on, and a harness image built before it advertises nothing, so the smoke spec skips | the k8s agent lane (`scripts/e2e-k8s.sh`); each skips without a seeded tenant or a fitting device |
 | `agents/meshharbor-desktop` | the tray's wording and when its item is enabled, and a controller's recording named in the tooltip; the tray's red: the icon swapped in has a red dot in its corner and nowhere else, the idle one no red, the red one is not a template, and only an answer moves either input (a failed poll neither takes the red off nor puts it on; a viewer's session is not red, a recording one is); only a bare `*.mp4` name is opened; a service without the recorder reads as unsupported; recording keys (incl. both remote gates) are the daemon's to accept; the remote gates come from the listing and are absent on an older service | `ci.yml` "Test the desktop companion (meshharbor-desktop)", new with P2b. The crate's unit tests ran in NO lane before: the macOS job only `cargo check`s it, and the shared step is `--lib`, which a bin-only crate cannot join |
-| `agents/meshharbor-desktop` editor unit tests (P5c) | the event prefix is the recorder's; the probe's answer skips log lines and keeps a refusal; an export folded from the engine's events; a run that ends without an answer is `engine_failed` with its exit (red without the fallback) and a refusal the engine said is kept as said; the stderr tail reads everything and keeps the end; an edit list round-trips under roomlerd's name with no temporary file left; it names its own recording and nothing else, and needs one (red without the check); a directory at a recording's name is not one | `ci.yml` "Test the desktop companion (meshharbor-desktop)" |
+| `agents/meshharbor-desktop` editor unit tests (P5c) | the event prefix is the recorder's; the probe's answer skips log lines and keeps a refusal; an export folded from the engine's events; a run that ends without an answer is `engine_failed` with its exit (red without the fallback) and a refusal the engine said is kept as said; the stderr tail reads everything and keeps the end; an edit list round-trips under meshharbord's name with no temporary file left; it names its own recording and nothing else, and needs one (red without the check); a directory at a recording's name is not one | `ci.yml` "Test the desktop companion (meshharbor-desktop)" |
 
 ⚠️ `agents/meshharbord/tests/*.rs` runs only when a step **names** it. Every other
-roomlerd test step is `--lib`, which is why `tests/file_dc.rs` has never run in
+meshharbord test step is `--lib`, which is why `tests/file_dc.rs` has never run in
 CI.

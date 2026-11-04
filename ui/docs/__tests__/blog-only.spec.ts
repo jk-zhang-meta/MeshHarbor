@@ -110,20 +110,20 @@ describe('installCopy (AC7)', () => {
   const post = (installCopy: boolean) =>
     [
       '---',
-      'title: Install the Roomler agent on a Linux server in one line',
+      'title: Install the MeshHarbor agent on a Linux server in one line',
       'description: A fixture for FR-91: this post shows the install command, so it has to declare itself an install page.',
       'date: 2026-10-01T10:00:00Z',
       'author: goran',
       'tags: [install, linux]',
       'ogImage: social-preview.png',
-      'ogImageAlt: The Roomler social card',
+      'ogImageAlt: The MeshHarbor social card',
       ...(installCopy ? ['installCopy: true'] : []),
       '---',
       '',
       'Run this on the server:',
       '',
       '```bash',
-      'curl -fsSL https://roomler.ai/api/setup/install.sh | sh',
+      'curl -fsSL https://meshharbor.itachi.fans/api/setup/install.sh | sh',
       '```',
       '',
     ].join('\n')

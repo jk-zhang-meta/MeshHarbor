@@ -5,7 +5,7 @@
   (P2f-4b): the same record, its conversation resumed on the device that
   adopted it, from its terminal's own history. Offered to its owner where the
   server copies sessions (the route is the replicaset's), on an adopted
-  session its terminal ended; one stopped from Roomler, whose terminal went
+  session its terminal ended; one stopped from MeshHarbor, whose terminal went
   on after it, or ended any other way, is not offered it. The answer is a
   start's, in the server's words.
 -->

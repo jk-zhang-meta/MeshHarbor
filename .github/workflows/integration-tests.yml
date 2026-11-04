@@ -199,23 +199,23 @@ jobs:
           # ceiling: a bounded limit makes a future leak fail loudly and early
           # instead of quietly consuming a million descriptors. 64000 is
           # MongoDB's own documented production minimum.
-          docker run -d --name roomler-test-mongo -p 27019:27017 \
+          docker run -d --name meshharbor-test-mongo -p 27019:27017 \
             --ulimit nofile=64000:64000 \
             "${data[@]}" \
             --health-cmd "mongosh --quiet --eval 'db.adminCommand({ping:1})'" \
             --health-interval 5s --health-timeout 5s --health-retries 20 \
             mongo:7 --wiredTigerCacheSizeGB 0.5
           for i in $(seq 1 40); do
-            if docker exec roomler-test-mongo mongosh --quiet \
+            if docker exec meshharbor-test-mongo mongosh --quiet \
                  --eval 'db.adminCommand({ping:1})' >/dev/null 2>&1; then
               echo "mongo ready after ${i} attempt(s)"
               # Prove where the data directory is, rather than trust the flag.
-              docker exec roomler-test-mongo sh -c "grep ' /data/db ' /proc/mounts" || true
+              docker exec meshharbor-test-mongo sh -c "grep ' /data/db ' /proc/mounts" || true
               exit 0
             fi
             sleep 2
           done
-          echo "::error::MongoDB never became ready"; docker logs roomler-test-mongo | tail -40; exit 1
+          echo "::error::MongoDB never became ready"; docker logs meshharbor-test-mongo | tail -40; exit 1
 
       - name: Prove the ulimit actually applied
         # ⚠️ Do not assume a flag took. Two runs were "fixed" by raising
@@ -225,8 +225,8 @@ jobs:
         # page instead of by another guess-and-rerun cycle.
         run: |
           echo "--- mongod's effective limits ---"
-          docker exec roomler-test-mongo sh -c 'grep -i "open files" /proc/1/limits' || true
-          docker exec roomler-test-mongo sh -c 'ulimit -n' || true
+          docker exec meshharbor-test-mongo sh -c 'grep -i "open files" /proc/1/limits' || true
+          docker exec meshharbor-test-mongo sh -c 'ulimit -n' || true
 
       - name: Build the test binary
         # Separate from the run so a compile failure reads as a compile
@@ -252,7 +252,7 @@ jobs:
         #                index, per database. Climbs if databases leak.
         #   dhandles   — data handles active; the same story one level up.
         #   conns      — connections. Climbs if the driver leaks sockets.
-        #   leaked_dbs — `roomler_ai_test_*` databases still present.
+        #   leaked_dbs — `meshharbor_test_*` databases still present.
         #
         # Whichever curve climbs is the culprit; the flat ones are exonerated.
         #
@@ -269,8 +269,8 @@ jobs:
           setsid nohup bash -c '
             while true; do
               t=$(date -u +%H:%M:%S)
-              fd=$(docker exec roomler-test-mongo sh -c "ls /proc/1/fd 2>/dev/null | wc -l" 2>/dev/null || echo -1)
-              m=$(docker exec roomler-test-mongo mongosh --quiet --eval "const s=db.serverStatus();const n=db.adminCommand({listDatabases:1,nameOnly:true}).databases.filter(x=>x.name.startsWith(\"roomler_ai_test\")).length;print(\"wt_files=\"+s.wiredTiger[\"connection\"][\"files currently open\"]+\" dhandles=\"+s.wiredTiger[\"data-handle\"][\"connection data handles currently active\"]+\" conns=\"+s.connections.current+\" leaked_dbs=\"+n)" 2>/dev/null || echo "wt_files=-1 dhandles=-1 conns=-1 leaked_dbs=-1")
+              fd=$(docker exec meshharbor-test-mongo sh -c "ls /proc/1/fd 2>/dev/null | wc -l" 2>/dev/null || echo -1)
+              m=$(docker exec meshharbor-test-mongo mongosh --quiet --eval "const s=db.serverStatus();const n=db.adminCommand({listDatabases:1,nameOnly:true}).databases.filter(x=>x.name.startsWith(\"meshharbor_test\")).length;print(\"wt_files=\"+s.wiredTiger[\"connection\"][\"files currently open\"]+\" dhandles=\"+s.wiredTiger[\"data-handle\"][\"connection data handles currently active\"]+\" conns=\"+s.connections.current+\" leaked_dbs=\"+n)" 2>/dev/null || echo "wt_files=-1 dhandles=-1 conns=-1 leaked_dbs=-1")
               echo "$t fds=$fd $m"
               sleep 15
             done' > /tmp/mongo-watch.log 2>&1 < /dev/null &
@@ -457,8 +457,8 @@ jobs:
         if: always()
         run: |
           set -uo pipefail
-          n=$(docker exec roomler-test-mongo mongosh --quiet --eval \
-                'print(db.adminCommand({listDatabases:1,nameOnly:true}).databases.filter(d=>d.name.startsWith("roomler_ai_test")).length)' \
+          n=$(docker exec meshharbor-test-mongo mongosh --quiet --eval \
+                'print(db.adminCommand({listDatabases:1,nameOnly:true}).databases.filter(d=>d.name.startsWith("meshharbor_test")).length)' \
                 2>/dev/null) || n=""
           peak=$(grep -oE 'leaked_dbs=[0-9]+' /tmp/mongo-watch.log 2>/dev/null \
                  | grep -oE '[0-9]+' | sort -n | tail -1)
@@ -484,15 +484,15 @@ jobs:
         run: |
           echo "--- container state ---"
           docker inspect -f 'Status={{.State.Status}} OOMKilled={{.State.OOMKilled}} ExitCode={{.State.ExitCode}} Restarts={{.RestartCount}}' \
-            roomler-test-mongo || true
+            meshharbor-test-mongo || true
           echo "--- mongod fatal/error lines (the CAUSE) ---"
           # ⚠️ Grep for severity first. A plain `--tail` catches only the
           # BACKTRACE frames mongod prints on its way out — which says it died
           # but not why. That happened on run 32672829603: 59 `Frame` lines and
           # no assertion, because the fatal message had already scrolled past.
-          docker logs roomler-test-mongo 2>&1 | grep -E '"s":"[FE]"' | tail -20 || true
+          docker logs meshharbor-test-mongo 2>&1 | grep -E '"s":"[FE]"' | tail -20 || true
           echo "--- last 120 lines ---"
-          docker logs --tail 120 roomler-test-mongo 2>&1 || true
+          docker logs --tail 120 meshharbor-test-mongo 2>&1 || true
 
       - name: Upload the log on failure
         if: failure()

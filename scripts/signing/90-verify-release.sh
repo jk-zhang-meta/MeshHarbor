@@ -18,7 +18,7 @@
 
 set -uo pipefail
 
-REPO="${REPO:-gjovanov/roomler-ai}"
+REPO="${REPO:-jk-zhang-meta/MeshHarbor}"
 TAG=''
 LATEST=''
 KEEP=0
@@ -57,7 +57,7 @@ IS_MAC=0
 [ "$(uname -s)" = 'Darwin' ] && IS_MAC=1
 [ "$IS_MAC" -eq 1 ] || warn 'not macOS -- Gatekeeper checks (pkgutil/stapler/spctl) will be skipped.'
 
-STAGE="$(mktemp -d "${TMPDIR:-/tmp}/roomler-verify-XXXXXX")"
+STAGE="$(mktemp -d "${TMPDIR:-/tmp}/meshharbor-verify-XXXXXX")"
 cleanup() { [ "$KEEP" -eq 1 ] || rm -rf "$STAGE"; }
 trap cleanup EXIT
 

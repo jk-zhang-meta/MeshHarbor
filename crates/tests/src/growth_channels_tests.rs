@@ -74,7 +74,7 @@ fn post_body(platform: &str, id: &str, published: &str) -> Value {
     json!({
         "platform": platform,
         "platform_id": id,
-        "account": "roomler-ai",
+        "account": "meshharbor",
         "format": "post",
         "url": format!("https://www.linkedin.com/feed/update/{id}/"),
         "published_at": published,
@@ -520,7 +520,7 @@ async fn the_channels_view_joins_reach_visitors_signups_and_spend_by_each_posts_
     assert_eq!(push(&app, POSTS, &key, &yt).await.0, 201);
     // X with a key purestat never saw.
     let mut x = post_body("x", "1849000000000000001", &published);
-    x["url"] = json!("https://x.com/roomler_ai/status/1849000000000000001");
+    x["url"] = json!("https://x.com/meshharbor/status/1849000000000000001");
     x["utm_source"] = json!("x");
     x["utm_campaign"] = json!("c9");
     x.as_object_mut().unwrap().remove("cost_cents");

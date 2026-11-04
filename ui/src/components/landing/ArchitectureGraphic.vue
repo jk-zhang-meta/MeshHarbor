@@ -8,12 +8,12 @@
       role="img"
       aria-labelledby="arch-title arch-desc"
     >
-      <title id="arch-title">Roomler network architecture</title>
+      <title id="arch-title">MeshHarbor network architecture</title>
       <desc id="arch-desc">
         Four machines — your laptop, a GPU workstation, a Kubernetes cluster, and a
         home server routing its LAN as subnet router and exit node — joined in a
         direct encrypted mesh with stable 100.64 addresses that crosses NATs and
-        firewalls. Thin control channels link each machine to the roomler.ai control
+        firewalls. Thin control channels link each machine to the meshharbor.itachi.fans control
         plane, and a live remote desktop stream runs from the GPU workstation to the
         laptop's browser.
       </desc>
@@ -35,7 +35,7 @@
           stroke="rgba(0, 150, 136, 0.45)"
           stroke-width="1.5"
         />
-        <text x="277" y="60" text-anchor="middle" font-size="12" font-weight="700" fill="#00796B">roomler.ai</text>
+        <text x="277" y="60" text-anchor="middle" font-size="12" font-weight="700" fill="#00796B">meshharbor.itachi.fans</text>
         <text x="277" y="75" text-anchor="middle" font-size="9" fill="rgba(26, 26, 46, 0.55)">control plane</text>
         <path class="ctrl-line" d="M234 84 Q130 130 100 198" />
         <path class="ctrl-line" d="M324 84 Q430 128 458 192" />
@@ -214,7 +214,7 @@ const layers = [
     label: 'Control plane',
     color: '#009688',
     caption:
-      'roomler.ai only coordinates: keys, ACLs, presence. Your traffic never flows through our servers.',
+      'meshharbor.itachi.fans only coordinates: keys, ACLs, presence. Your traffic never flows through our servers.',
   },
 ] as const
 

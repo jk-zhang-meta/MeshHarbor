@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 # FR-32 — Eleven of fourteen plan limits are advertised and enforced nowhere
 
-**Issue:** [#898](https://github.com/gjovanov/roomler-ai/issues/898) ·
+**Issue:** [#898](https://github.com/jk-zhang-meta/MeshHarbor/issues/898) ·
 **Status:** P0–P1c + integration tests shipped; **P2 complete for existing tenants** (all 65 on `Enforce`); default stays `Warn` by standing decision · field-verified on `v20260830-eaba9f4b0554` ·
 **Parent arc:** pricing (P1 of the sequence agreed under [FR-24](FR-24-licensing-split.md))
 
@@ -347,7 +347,7 @@ step is a no-op**: tenants can be flipped to `Enforce` without any of them being
 
 ---
 
-**Renumbered from FR-31.** [#897](https://github.com/gjovanov/roomler-ai/issues/897)
+**Renumbered from FR-31.** [#897](https://github.com/jk-zhang-meta/MeshHarbor/issues/897)
 (opening-keyframe budget) claimed `FR-31` with the lower issue id, and the repair rule is
 that the lower issue number keeps `FR-N` while the higher renumbers. `FR-32` was checked to
 be *free* rather than *vacated* before being taken — `git log -S "FR-32"` over the ledger

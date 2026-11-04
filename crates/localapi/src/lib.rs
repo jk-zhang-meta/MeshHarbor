@@ -510,7 +510,7 @@ fn is_zero_u32(v: &u32) -> bool {
 /// per-node facts.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct DnsStatus {
-    /// The magic domain in effect (e.g. `tenant.roomler.net`).
+    /// The magic domain in effect (e.g. `tenant.meshharbor.net`).
     pub magic_domain: String,
     /// The local resolver bound `<overlay-ip>:53` (the split-DNS target).
     pub resolver_bound: bool,

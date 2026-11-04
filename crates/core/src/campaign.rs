@@ -19,7 +19,7 @@
 //!   what can be measured.
 //! * [`channel_for_referrer_host`] — the organic channels, from a bare
 //!   referrer host (spec §3b): search, AI assistants, social, community,
-//!   code, self (`roomler.ai` is navigation, never a source), direct.
+//!   code, self (`meshharbor.itachi.fans` is navigation, never a source), direct.
 //!
 //! * [`CampaignKey`] / [`KeyDepth`] (P6) — the key itself, normalised the
 //!   way a sign-up's was at ingress, so a row of purestat's breakdown and a
@@ -282,7 +282,7 @@ pub enum Channel {
     Social,
     Community,
     Code,
-    /// `roomler.ai` itself: navigation, never a source.
+    /// `meshharbor.itachi.fans` itself: navigation, never a source.
     #[serde(rename = "self")]
     SelfSite,
     /// No referrer at all.
@@ -354,7 +354,7 @@ const HOST_SUFFIXES: &[(&str, Channel)] = &[
     // Code
     ("github.com", Channel::Code),
     // Self
-    ("roomler.ai", Channel::SelfSite),
+    ("meshharbor.itachi.fans", Channel::SelfSite),
 ];
 
 /// Search engines whose registrable label is followed by any country TLD
@@ -524,8 +524,8 @@ mod tests {
             // code
             ("github.com", Code),
             // self
-            ("roomler.ai", SelfSite),
-            ("www.roomler.ai", SelfSite),
+            ("meshharbor.itachi.fans", SelfSite),
+            ("www.meshharbor.itachi.fans", SelfSite),
             // other
             ("example.com", Other),
             ("localhost", Other),
@@ -533,7 +533,7 @@ mod tests {
             ("googleusercontent.com", Other),
             ("notgoogle.com", Other),
             ("google", Other),
-            ("roomler.ai.evil.example", Other),
+            ("meshharbor.itachi.fans.evil.example", Other),
         ];
         for (host, expected) in cases {
             assert_eq!(channel_for_referrer_host(Some(host)), *expected, "{host}");

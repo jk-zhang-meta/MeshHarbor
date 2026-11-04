@@ -15,7 +15,7 @@
 #
 # Usage:
 #   ./scripts/record-demo.sh --login     once: sign in with the credentials below and
-#                                        save the session to ~/.roomler-demo-state.json
+#                                        save the session to ~/.meshharbor-demo-state.json
 #                                        (MESHHARBOR_DEMO_STATE); later takes need no password
 #   MESHHARBOR_DEMO_USER=…  MESHHARBOR_DEMO_PASS=…  MESHHARBOR_DEMO_TENANT=<org id> \
 #   MESHHARBOR_DEMO_DEVICES="office-mac,laptop-17,laptop-42" \
@@ -31,14 +31,14 @@
 #   MESHHARBOR_DEMO_RECORD / MESHHARBOR_DEMO_RECORD_PROBE   the viewer's Record button, filmed
 #   MESHHARBOR_DEMO_STEPS                                 scripted input on a remote app
 #   MESHHARBOR_DEMO_NETWORK=1                             the dashboard's Network card
-# MESHHARBOR_DEMO_LOCKCHECK (strongly advised): `roomler exec` selectors to check
+# MESHHARBOR_DEMO_LOCKCHECK (strongly advised): `meshharbor exec` selectors to check
 # for a signed-in screen right before the take — see below.
 # `bun ui/e2e/video/list-demo-devices.ts` lists, from the saved session, the
 # orgs and device display names the account can film.
 #
-# Output, in the take folder (default ~/Videos/Roomler/demo/<date-time>):
+# Output, in the take folder (default ~/Videos/MeshHarbor/demo/<date-time>):
 #   frames/ + take.json    the raw take: every composited frame, and the marks
-#   roomler-demo.mp4       1080p, for linking            → ./roomler-demo.mp4
+#   meshharbor-demo.mp4       1080p, for linking            → ./meshharbor-demo.mp4
 #   demo-preview.gif       1280 px, auto-plays in README → docs/assets/demo-preview.gif
 #   demo-preview-blog.gif  560 px, under the docs build's 3 MiB limit
 #                                                        → ui/blog/assets/demo-preview.gif
@@ -71,7 +71,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 UI_DIR="$PROJECT_DIR/ui"
 
-BASE_URL="${MESHHARBOR_DEMO_URL:-https://roomler.ai}"
+BASE_URL="${MESHHARBOR_DEMO_URL:-https://meshharbor.itachi.fans}"
 
 # `--login` signs in once and saves the browser session to $STATE; every take
 # after that starts from the session and never loads the password, so a take
@@ -79,24 +79,24 @@ BASE_URL="${MESHHARBOR_DEMO_URL:-https://roomler.ai}"
 # lasts as long as the refresh token (30 days); then run --login again.
 LOGIN=0
 [ "${1:-}" = "--login" ] && LOGIN=1
-STATE="${MESHHARBOR_DEMO_STATE:-$HOME/.roomler-demo-state.json}"
+STATE="${MESHHARBOR_DEMO_STATE:-$HOME/.meshharbor-demo-state.json}"
 
 if [ $LOGIN -eq 1 ] || [ ! -f "$STATE" ]; then
   # Credentials may come from the environment or from a 0600 file, so a
   # re-record does not need them re-typed. The file is never echoed.
-  for envfile in "${MESHHARBOR_DEMO_ENV:-}" "$HOME/.roomler-demo.env" ./.roomler-demo.env; do
+  for envfile in "${MESHHARBOR_DEMO_ENV:-}" "$HOME/.meshharbor-demo.env" ./.meshharbor-demo.env; do
     if [ -n "$envfile" ] && [ -f "$envfile" ]; then
       set -a; . "$envfile"; set +a
       echo "credentials: loaded from $envfile"
       break
     fi
   done
-  : "${MESHHARBOR_DEMO_USER:?set MESHHARBOR_DEMO_USER, or put it in ~/.roomler-demo.env}"
-  : "${MESHHARBOR_DEMO_PASS:?set MESHHARBOR_DEMO_PASS, or put it in ~/.roomler-demo.env}"
+  : "${MESHHARBOR_DEMO_USER:?set MESHHARBOR_DEMO_USER, or put it in ~/.meshharbor-demo.env}"
+  : "${MESHHARBOR_DEMO_PASS:?set MESHHARBOR_DEMO_PASS, or put it in ~/.meshharbor-demo.env}"
 fi
 
 if [ $LOGIN -eq 1 ]; then
-  echo "=== Roomler demo: sign in once and save the session ==="
+  echo "=== MeshHarbor demo: sign in once and save the session ==="
   cd "$UI_DIR" || exit 1
   E2E_BASE_URL="$BASE_URL" \
   E2E_USERNAME="$MESHHARBOR_DEMO_USER" \
@@ -120,10 +120,10 @@ fi
 
 # ⚠️ OUTSIDE ui/e2e/video/output: Playwright empties its outputDir at the start
 # of every run, so a take kept there is lost to the next run of anything.
-TAKE="${MESHHARBOR_DEMO_TAKE:-$HOME/Videos/Roomler/demo/$(date +%Y-%m-%d-%H%M%S)}"
+TAKE="${MESHHARBOR_DEMO_TAKE:-$HOME/Videos/MeshHarbor/demo/$(date +%Y-%m-%d-%H%M%S)}"
 mkdir -p "$TAKE"
 
-echo "=== Roomler demo recording ==="
+echo "=== MeshHarbor demo recording ==="
 echo "server  : $BASE_URL"
 echo "org     : $MESHHARBOR_DEMO_TENANT"
 echo "devices : $MESHHARBOR_DEMO_DEVICES"
@@ -139,7 +139,7 @@ fi
 # ⚠️ Every screen signed in, checked right before THIS take. A locked screen takes typed text
 # as a sign-in attempt (2026-10-06: a take that started after a Mac had locked typed a folder
 # path into its password field), and a managed laptop's lock screen prints its name and
-# addresses on every frame. MESHHARBOR_DEMO_LOCKCHECK lists `roomler exec` selectors, each with
+# addresses on every frame. MESHHARBOR_DEMO_LOCKCHECK lists `meshharbor exec` selectors, each with
 # the OS that decides how to ask: "laptop-17:win,office-mac:mac". A screen that is locked, or a
 # check that cannot answer, stops the take before anything is filmed. Selectors are machine
 # names: pass them at run time, never write them down here.
@@ -150,12 +150,12 @@ if [ -n "${MESHHARBOR_DEMO_LOCKCHECK:-}" ]; then
     os="${c##*:}"
     case "$os" in
       win)
-        out=$(timeout 60 roomler exec "$sel" 'tasklist /FI "IMAGENAME eq LogonUI.exe" /NH' 2>&1)
+        out=$(timeout 60 meshharbor exec "$sel" 'tasklist /FI "IMAGENAME eq LogonUI.exe" /NH' 2>&1)
         RC=$?
         # Decide on the process name and the INFO prefix alone: the "nothing found" sentence is
         # localized ("Es werden keine Aufgaben …" on a German laptop).
         if [ $RC -ne 0 ]; then
-          echo "ERROR: could not check $sel (roomler exec exited $RC) — not filming."
+          echo "ERROR: could not check $sel (meshharbor exec exited $RC) — not filming."
           exit 1
         elif printf '%s' "$out" | grep -q 'LogonUI.exe'; then
           echo "ERROR: $sel is at its lock screen — sign it in first."
@@ -167,12 +167,12 @@ if [ -n "${MESHHARBOR_DEMO_LOCKCHECK:-}" ]; then
         fi
         ;;
       mac)
-        out=$(timeout 60 roomler exec "$sel" 'ioreg -n Root -d1 -a' 2>&1)
+        out=$(timeout 60 meshharbor exec "$sel" 'ioreg -n Root -d1 -a' 2>&1)
         RC=$?
         # Unlocked here = the lock key absent (or false) while the console session reports
         # LoginDone true.
         if [ $RC -ne 0 ]; then
-          echo "ERROR: could not check $sel (roomler exec exited $RC) — not filming."
+          echo "ERROR: could not check $sel (meshharbor exec exited $RC) — not filming."
           exit 1
         elif printf '%s' "$out" | grep -A1 CGSSessionScreenIsLocked | grep -q '<true/>'; then
           echo "ERROR: $sel is locked — sign it in first."
@@ -223,6 +223,6 @@ echo "[3/3] Cutting…"
 bun e2e/video/cut-demo.ts "$TAKE" "$TAKE" || exit 1
 
 echo ""
-echo "Next: WATCH $TAKE/roomler-demo.mp4 end to end (see the note at the top of"
-echo "this script), then copy it to ./roomler-demo.mp4 and demo-preview.gif to"
+echo "Next: WATCH $TAKE/meshharbor-demo.mp4 end to end (see the note at the top of"
+echo "this script), then copy it to ./meshharbor-demo.mp4 and demo-preview.gif to"
 echo "docs/assets/ and ui/blog/assets/."

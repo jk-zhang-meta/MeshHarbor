@@ -71,12 +71,12 @@ ring = "0.17"
 # written down in the tree.
 age.workspace = true
 # FR-90 P3-3b — the lease tests' device holds a vault key of its own and opens
-# what the vault sealed to it, as `roomlerd`'s `vault` feature does.
+# what the vault sealed to it, as `meshharbord`'s `vault` feature does.
 crypto_box.workspace = true
 # FR-52 — the OUTSIDER's half of the login in `extauth_tests`, standing in for
-# the browser (P4). Same version and features as roomlerd's, so cargo unifies
+# the browser (P4). Same version and features as meshharbord's, so cargo unifies
 # them into one crate; `rand_opaque` is the rand 0.8 alias opaque-ke needs
-# (see roomlerd's Cargo.toml for why it cannot be the workspace rand).
+# (see meshharbord's Cargo.toml for why it cannot be the workspace rand).
 opaque-ke = { version = "4", default-features = false, features = ["ristretto255", "serde", "argon2", "std"] }
 rand_opaque = { package = "rand", version = "0.8" }
 
@@ -90,7 +90,7 @@ meshharbord = { path = "../../agents/meshharbord", features = ["hive-test-launch
 # FR-90 P2d-6 — the canary reads the member device's store, which its own
 # process wrote, after that process is gone.
 meshharbor-hive-node = { path = "../hive-node" }
-# FR-90 P2f-4 — the real hook client (`roomler hive hook`) adopts the terminal
+# FR-90 P2f-4 — the real hook client (`meshharbor hive hook`) adopts the terminal
 # session `tests/hive_manage.rs` makes managed, through the device's socket.
 meshharbor-cli = { path = "../../agents/meshharbor-cli" }
 

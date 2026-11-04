@@ -179,7 +179,7 @@ pub struct TenantSettings {
     // the same problem as the phantom `Enterprise` tier. Add it deliberately
     // then, with stated semantics, rather than inheriting one from an accident.
     /// Phase 2 MagicDNS — the tenant's overlay DNS suffix (e.g.
-    /// `"myorg.roomler.net"`). When set, overlay nodes run a local split-DNS
+    /// `"myorg.meshharbor.net"`). When set, overlay nodes run a local split-DNS
     /// resolver that answers `<node-name>.<domain>` with the peer's overlay IP.
     /// `None` = MagicDNS off for the tenant.
     #[serde(default)]

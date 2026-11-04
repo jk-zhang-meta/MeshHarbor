@@ -1,7 +1,7 @@
 version = 1
-SPDX-PackageName = "roomler-ai"
-SPDX-PackageSupplier = "G ROX EOOD <legal@roomler.ai>"
-SPDX-PackageDownloadLocation = "https://github.com/gjovanov/roomler-ai"
+SPDX-PackageName = "meshharbor"
+SPDX-PackageSupplier = "G ROX EOOD <legal@meshharbor.itachi.fans>"
+SPDX-PackageDownloadLocation = "https://github.com/jk-zhang-meta/MeshHarbor"
 
 # Files that carry their own SPDX header (all first-party source) need no entry
 # here — scripts/apply-spdx.sh writes those, and licensing.yml enforces them.

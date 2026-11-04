@@ -1,6 +1,6 @@
 ---
 name: autopilot
-description: Drive the open FR backlog toward closure — admit issues by label, rank them closest-to-done first, work one card at a time in its own worktree through implementation, CI, docs and REAL field verification, and park at Ready-to-close for the operator. Tracks every card as JSON in the private roomler-ai-docs repo and renders a kanban board from it. Use when working the backlog rather than a single named issue, when asking "what should I pick up next", when you want the board refreshed, or when you want to know what is waiting on the operator personally.
+description: Drive the open FR backlog toward closure — admit issues by label, rank them closest-to-done first, work one card at a time in its own worktree through implementation, CI, docs and REAL field verification, and park at Ready-to-close for the operator. Tracks every card as JSON in the private meshharbor-docs repo and renders a kanban board from it. Use when working the backlog rather than a single named issue, when asking "what should I pick up next", when you want the board refreshed, or when you want to know what is waiting on the operator personally.
 ---
 
 # Autopilot — the FR backlog, worked toward closure
@@ -19,7 +19,7 @@ would manufacture exactly the lie this codebase is built to prevent.
 The resolution is a split nobody had written down before: **every acceptance criterion is
 either agent-reachable or operator-only.**
 
-- **agent** — a measurement, a test, a fleet read via `roomler exec`, a `vmtest` /
+- **agent** — a measurement, a test, a fleet read via `meshharbor exec`, a `vmtest` /
   `profiletest` / `tunnel-fleet-test` cell, a Chrome-driven RC session, a doc.
 - **operator** — a human's perception or a human's decision. FR-77 is open *only for the
   operator's Notepad++ scroll*. FR-74's remainder is *the operator's cap call*. FR-1 was
@@ -37,8 +37,8 @@ That line is the whole classification.
 - **Driver**: the dev box, interactive. Deliberately **not** a workflow lane — the sibling
   `daily-health-check.yml` only *reports*; this one writes code and opens PRs, and those
   deserve different leashes until it has field hours.
-- **Cards + board**: `roomler-ai-docs` (private) `kanban/` — `state/<FR-n>.json` per card,
-  `BOARD.md` generated. Cloned at `C:/dev/gjovanov/roomler-ai-docs`.
+- **Cards + board**: `meshharbor-docs` (private) `kanban/` — `state/<FR-n>.json` per card,
+  `BOARD.md` generated. Cloned at `C:/dev/jk-zhang-meta/meshharbor-docs`.
 - **Engineering truth stays public**: the GitHub issue and `docs/fr/FR-n-*.md` remain
   authoritative for what was built and verified. The card holds only *run* state — branch,
   PR, attempts, blocker, next step — which has no public home. The docs repo's own rule:
@@ -50,14 +50,14 @@ That line is the whole classification.
 ## Driving it
 
 ```bash
-cd /c/dev/gjovanov/roomler-ai
+cd /c/dev/jk-zhang-meta/MeshHarbor
 git fetch origin '+refs/heads/*:refs/remotes/origin/*'   # origin/master goes stale otherwise
 
 node .claude/skills/autopilot/autopilot.mjs scan    # ledger + specs + issues + PRs -> cards
 node .claude/skills/autopilot/autopilot.mjs next    # what to pick up, closest-to-done first
 node .claude/skills/autopilot/autopilot.mjs board   # regenerate BOARD.md
 
-cd /c/dev/gjovanov/roomler-ai-docs && git add kanban && git commit -m "kanban: <what moved>" && git push
+cd /c/dev/jk-zhang-meta/meshharbor-docs && git add kanban && git commit -m "kanban: <what moved>" && git push
 ```
 
 `scan` is idempotent and safe to run any time. It **never** writes to the public repo,
@@ -148,7 +148,7 @@ never edits a spec, never touches an issue.
 
 - **A new field-verification route**: map the pillar to its skill in phase 5. Remote
   desktop → a Chrome-driven session; install/enrollment → `vmtest`; profiles →
-  `profiletest`; tunnels/overlay → `tunnel-fleet-test`; server → `roomler exec` reads.
+  `profiletest`; tunnels/overlay → `tunnel-fleet-test`; server → `meshharbor exec` reads.
 - **A new card kind** (a plain bug, not an FR): `kind: "bug"`, no spec, ACs authored on the
   card from the issue body. Everything downstream already treats `acs` as the spine.
 - **Re-classifying an AC**: edit `verify` on the card. `scan` preserves any value that is

@@ -52,7 +52,7 @@ pub const PROBE_LABEL: &str = "_meshharbor-probe";
 pub struct DnsConfig {
     /// Where to bind + serve (the node's overlay IP on :53).
     pub bind: SocketAddr,
-    /// Tenant DNS suffix, lowercased, no trailing dot (e.g. `myorg.roomler.net`).
+    /// Tenant DNS suffix, lowercased, no trailing dot (e.g. `myorg.meshharbor.net`).
     pub magic_domain: String,
     /// Upstream resolver for non-overlay queries.
     pub upstream: SocketAddr,
@@ -1065,14 +1065,14 @@ mod tests {
 
     #[test]
     fn parses_question_name_and_type() {
-        let q = parse_question(&query_for("devbox.myorg.roomler.net", 1)).unwrap();
-        assert_eq!(q.qname, "devbox.myorg.roomler.net");
+        let q = parse_question(&query_for("devbox.myorg.meshharbor.net", 1)).unwrap();
+        assert_eq!(q.qname, "devbox.myorg.meshharbor.net");
         assert_eq!(q.qtype, 1);
     }
 
     #[test]
     fn a_answer_is_well_formed() {
-        let query = query_for("devbox.myorg.roomler.net", 1);
+        let query = query_for("devbox.myorg.meshharbor.net", 1);
         let q = parse_question(&query).unwrap();
         let resp = build_a(&query, q.qend, Ipv4Addr::new(100, 64, 0, 7));
         assert_eq!(&resp[0..2], &query[0..2]); // ID echoed
@@ -1090,19 +1090,19 @@ mod tests {
         map.insert("devbox".to_string(), Ipv4Addr::new(100, 64, 0, 7));
         let cfg = DnsConfig {
             bind: "127.0.0.1:0".parse().unwrap(),
-            magic_domain: "myorg.roomler.net".into(),
+            magic_domain: "myorg.meshharbor.net".into(),
             upstream: "127.0.0.1:0".parse().unwrap(),
             names: Arc::new(RwLock::new(map)),
             answer_aaaa: true,
         };
 
-        let hit = build_response(&query_for("devbox.myorg.roomler.net", 1), &cfg)
+        let hit = build_response(&query_for("devbox.myorg.meshharbor.net", 1), &cfg)
             .await
             .unwrap();
         assert_eq!(u16::from_be_bytes([hit[6], hit[7]]), 1); // one answer
         assert_eq!(&hit[hit.len() - 4..], &[100, 64, 0, 7]);
 
-        let miss = build_response(&query_for("ghost.myorg.roomler.net", 1), &cfg)
+        let miss = build_response(&query_for("ghost.myorg.meshharbor.net", 1), &cfg)
             .await
             .unwrap();
         assert_eq!(miss[3] & 0x0F, 3); // NXDOMAIN
@@ -1115,14 +1115,14 @@ mod tests {
         map.insert("devbox".to_string(), Ipv4Addr::new(100, 64, 0, 7));
         let mut cfg = DnsConfig {
             bind: "127.0.0.1:0".parse().unwrap(),
-            magic_domain: "myorg.roomler.net".into(),
+            magic_domain: "myorg.meshharbor.net".into(),
             upstream: "127.0.0.1:0".parse().unwrap(),
             names: Arc::new(RwLock::new(map)),
             answer_aaaa: true,
         };
 
         // In-zone AAAA → one answer whose RDATA is the DERIVED overlay v6.
-        let hit = build_response(&query_for("devbox.myorg.roomler.net", 28), &cfg)
+        let hit = build_response(&query_for("devbox.myorg.meshharbor.net", 28), &cfg)
             .await
             .unwrap();
         assert_eq!(u16::from_be_bytes([hit[6], hit[7]]), 1); // one answer
@@ -1139,20 +1139,20 @@ mod tests {
         assert_eq!(&bare[bare.len() - 16..], &want);
 
         // Unknown in-zone name stays NXDOMAIN on AAAA too.
-        let miss = build_response(&query_for("ghost.myorg.roomler.net", 28), &cfg)
+        let miss = build_response(&query_for("ghost.myorg.meshharbor.net", 28), &cfg)
             .await
             .unwrap();
         assert_eq!(miss[3] & 0x0F, 3);
 
         // Kill switch: AAAA → NODATA (name exists, zero answers, rcode 0).
         cfg.answer_aaaa = false;
-        let off = build_response(&query_for("devbox.myorg.roomler.net", 28), &cfg)
+        let off = build_response(&query_for("devbox.myorg.meshharbor.net", 28), &cfg)
             .await
             .unwrap();
         assert_eq!(off[3] & 0x0F, 0);
         assert_eq!(u16::from_be_bytes([off[6], off[7]]), 0);
         // A records are unaffected by the switch.
-        let a = build_response(&query_for("devbox.myorg.roomler.net", 1), &cfg)
+        let a = build_response(&query_for("devbox.myorg.meshharbor.net", 1), &cfg)
             .await
             .unwrap();
         assert_eq!(&a[a.len() - 4..], &[100, 64, 0, 7]);
@@ -1164,7 +1164,7 @@ mod tests {
         map.insert("devbox".to_string(), Ipv4Addr::new(100, 64, 0, 9));
         let cfg = DnsConfig {
             bind: "127.0.0.1:0".parse().unwrap(),
-            magic_domain: "myorg.roomler.net".into(),
+            magic_domain: "myorg.meshharbor.net".into(),
             upstream: "127.0.0.1:0".parse().unwrap(),
             names: Arc::new(RwLock::new(map)),
             answer_aaaa: true,
@@ -1187,7 +1187,7 @@ mod tests {
         };
         let cfg = DnsConfig {
             bind: format!("127.0.0.1:{port}").parse().unwrap(),
-            magic_domain: "myorg.roomler.net".into(),
+            magic_domain: "myorg.meshharbor.net".into(),
             upstream: "127.0.0.1:0".parse().unwrap(),
             names: Arc::new(RwLock::new(HashMap::new())),
             answer_aaaa: true,
@@ -1198,7 +1198,7 @@ mod tests {
         assert!(*rx.borrow_and_update(), "the resolver should bind");
 
         let server: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
-        let probe = query_for(&format!("{PROBE_LABEL}.myorg.roomler.net"), 1);
+        let probe = query_for(&format!("{PROBE_LABEL}.myorg.meshharbor.net"), 1);
         for _ in 0..3 {
             // Blocking socket, no await between send and close: on this
             // current-thread runtime the resolver cannot answer before the
@@ -1242,7 +1242,7 @@ mod tests {
         };
         let cfg = |p: u16| DnsConfig {
             bind: format!("127.0.0.1:{p}").parse().unwrap(),
-            magic_domain: "myorg.roomler.net".into(),
+            magic_domain: "myorg.meshharbor.net".into(),
             upstream: "127.0.0.1:0".parse().unwrap(),
             names: Arc::new(RwLock::new(HashMap::new())),
             answer_aaaa: true,

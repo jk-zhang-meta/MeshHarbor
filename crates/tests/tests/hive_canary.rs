@@ -4,7 +4,7 @@
 //! nothing the server keeps.
 //!
 //! A real server (`TestApp`, module `hive` on) and a real device in-process:
-//! `roomlerd`'s signalling loop, its Hive supervisor, its replica store and
+//! `meshharbord`'s signalling loop, its Hive supervisor, its replica store and
 //! its viewer peer — sessions launched as this test's own account through
 //! `hive::init_as_daemon` (feature `hive-test-launcher`). This file is its own
 //! test BINARY because that supervisor is process-global: in the lib's test
@@ -114,7 +114,7 @@ impl Watch {
     }
 
     /// The SERVER's lines that carried `s`: every crate of the server is
-    /// `roomler_ai_*` or `meshharbor_core`; the device's are `roomlerd` and
+    /// `meshharbor_*` or `meshharbor_core`; the device's are `meshharbord` and
     /// `meshharbor_node_core`, and its store `meshharbor_hive_node`.
     fn server_hits(&self, s: &str) -> Vec<String> {
         self.hits
@@ -122,7 +122,7 @@ impl Watch {
             .unwrap()
             .iter()
             .filter(|(t, w)| {
-                w == s && (t.starts_with("roomler_ai") || t.starts_with("meshharbor_core"))
+                w == s && (t.starts_with("meshharbor") || t.starts_with("meshharbor_core"))
             })
             .map(|(t, _)| t.clone())
             .collect()

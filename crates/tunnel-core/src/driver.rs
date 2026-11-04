@@ -3069,8 +3069,8 @@ mod tests {
             },
             IceServer {
                 urls: vec![
-                    "turn:coturn.roomler.ai:3478?transport=udp".into(),
-                    "turns:coturn.roomler.ai:5349?transport=tcp".into(),
+                    "turn:coturn.meshharbor.itachi.fans:3478?transport=udp".into(),
+                    "turns:coturn.meshharbor.itachi.fans:5349?transport=tcp".into(),
                 ],
                 username: Some("1780000000:sess".into()),
                 credential: Some("base64hmac".into()),
@@ -3091,7 +3091,7 @@ mod tests {
 
         // TURN url present but no creds → unusable.
         let no_creds = vec![IceServer {
-            urls: vec!["turn:coturn.roomler.ai:3478?transport=udp".into()],
+            urls: vec!["turn:coturn.meshharbor.itachi.fans:3478?transport=udp".into()],
             username: None,
             credential: None,
         }];

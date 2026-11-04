@@ -499,16 +499,16 @@ mod tests {
     #[test]
     fn udp_url_filter_drops_tcp_and_turns() {
         let urls = vec![
-            "turn:coturn.roomler.ai:3478?transport=udp".to_string(),
-            "turn:coturn.roomler.ai:3478".to_string(),
-            "turn:coturn.roomler.ai:443?transport=tcp".to_string(),
-            "turns:coturn.roomler.ai:443".to_string(),
+            "turn:coturn.meshharbor.itachi.fans:3478?transport=udp".to_string(),
+            "turn:coturn.meshharbor.itachi.fans:3478".to_string(),
+            "turn:coturn.meshharbor.itachi.fans:443?transport=tcp".to_string(),
+            "turns:coturn.meshharbor.itachi.fans:443".to_string(),
         ];
         assert_eq!(
             udp_turn_urls(&urls),
             vec![
-                "turn:coturn.roomler.ai:3478?transport=udp".to_string(),
-                "turn:coturn.roomler.ai:3478".to_string(),
+                "turn:coturn.meshharbor.itachi.fans:3478?transport=udp".to_string(),
+                "turn:coturn.meshharbor.itachi.fans:3478".to_string(),
             ]
         );
     }

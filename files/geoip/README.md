@@ -4,7 +4,7 @@ The platform user analytics resolves a client's country at WebSocket
 connect time and then **drops the address**, so no IP is ever stored. That
 lookup needs a MaxMind-format country database. The server image carries
 one: DB-IP's **IP to Country Lite**, at
-`/usr/share/roomler/geoip/dbip-country-lite.mmdb`, the path the image's
+`/usr/share/meshharbor/geoip/dbip-country-lite.mmdb`, the path the image's
 `MESHHARBOR__STATS__GEOIP_MMDB` names (#1896).
 
 It is never committed. `scripts/fetch-geoip.sh` stages it in this

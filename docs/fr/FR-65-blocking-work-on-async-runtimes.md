@@ -1,11 +1,11 @@
 # FR-65 — Blocking work on async runtimes: measure first, then remove
 
-**Issue:** [#1255](https://github.com/gjovanov/roomler-ai/issues/1255) · **Status:** **P0 shipped and field-read on 0.4.60** — the watch (0.4.55, 100 ms bar, #1259), `open_ms`/`other_ms` (#1279), the `work_us` decision + off-thread encoder open (#1284), and the verdict as a pure tested type (#1304). **1 of 7 criteria ticked**: the rest are measurement criteria and none of them has its measurement yet, which is the point of an FR whose first rule is *measure first*. · **Parent:** the FR-62/63/64 rate-control arc (plan `immutable-doodling-neumann`)
+**Issue:** [#1255](https://github.com/jk-zhang-meta/MeshHarbor/issues/1255) · **Status:** **P0 shipped and field-read on 0.4.60** — the watch (0.4.55, 100 ms bar, #1259), `open_ms`/`other_ms` (#1279), the `work_us` decision + off-thread encoder open (#1284), and the verdict as a pure tested type (#1304). **1 of 7 criteria ticked**: the rest are measurement criteria and none of them has its measurement yet, which is the point of an FR whose first rule is *measure first*. · **Parent:** the FR-62/63/64 rate-control arc (plan `immutable-doodling-neumann`)
 
 ## Goal
 
 Find and remove synchronous vendor/OS calls that run on tokio worker threads in
-`roomlerd`'s hot paths — **driven by measurement, never by inference**. The
+`meshharbord`'s hot paths — **driven by measurement, never by inference**. The
 deliverable that matters most is the instrument: today nothing measures a stall,
 so stalls are found by accident, months late.
 
@@ -25,7 +25,7 @@ apply/rebuild phase was untimed and because a per-heartbeat *average* dilutes or
 hides a single outlier. It became visible only when `set_ms` was instrumented
 for FR-62 A0, for an unrelated reason.
 
-⚠️ `roomlerd` is **one process**: overlay, DERP, tunnels, the WS control plane
+⚠️ `meshharbord` is **one process**: overlay, DERP, tunnels, the WS control plane
 and RC share runtimes. A long synchronous call taxes all of them, which is why an
 encoder stall is not only an RC problem.
 
@@ -190,7 +190,7 @@ Observed on neo16: a `caps-probe` **child process every ~10 s for nearly three
 hours**. `detect()` is meant to cache in a `OnceLock`, so this is a bug — a
 process spawn plus a driver enumeration on a repeating timer. Measure the spawn
 rate per host, find the trigger (unshared cache vs. genuine re-detection), fix.
-⚠️ Fleet-wide counts via `roomler exec` are a **biased sample** (only exec-enabled,
+⚠️ Fleet-wide counts via `meshharbor exec` are a **biased sample** (only exec-enabled,
 reachable hosts) — say so rather than generalising.
 
 ### P5 — the remaining synchronous calls, triaged by measurement

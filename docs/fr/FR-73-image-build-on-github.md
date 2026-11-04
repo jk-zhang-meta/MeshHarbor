@@ -13,7 +13,7 @@ proves write access with a dry-run push) · **AC4 done 2026-09-06 12:14Z — the
 `hosted-20260906-5aa3c43` (0.4.74) rolled by dispatch, both pods 33 s later, merge → pods
 8 min 51 s, fleet verified** · **every acceptance criterion met** ·
 **Owner**: deploy / build ·
-**Issue**: [#1389](https://github.com/gjovanov/roomler-ai/issues/1389) ·
+**Issue**: [#1389](https://github.com/jk-zhang-meta/MeshHarbor/issues/1389) ·
 **Related**: FR-6 (build-speed SLO — this lane inherits its ≤10 min warm target as an aspiration, not a gate), FR-69 (the publish workflow this one copies its smoke from), FR-37 (the e2e lane, which pins by image tag and gains a second registry to pin from)
 
 ## Goal
@@ -21,7 +21,7 @@ proves write access with a dry-run push) · **AC4 done 2026-09-06 12:14Z — the
 Move the hosted (prod) image's build and storage off the build host and onto GitHub:
 
 - **build**: a merge to `master` that touches the server, the SPA or the image recipe produces
-  `ghcr.io/gjovanov/roomler-ai:hosted-<YYYYMMDD>-<sha7>` with no human step, smoke-booted and
+  `ghcr.io/jk-zhang-meta/meshharbor:hosted-<YYYYMMDD>-<sha7>` with no human step, smoke-booted and
   attested before it is pushed;
 - **registry**: the cluster pulls that image from GHCR — the same public package the self-host
   images already live in — instead of the registry container on the build host;
@@ -30,9 +30,9 @@ Move the hosted (prod) image's build and storage off the build host and onto Git
 
 What it replaces: the deploy recipe in `CLAUDE.md` — ssh to the build host, `docker build`
 (5–15 min warm, competing with every other project's builds and the registry on the same box),
-`docker push` to `registry.roomler.ai`, `docker system prune`, then a hand-edited `newTag` in the
+`docker push` to `registry.meshharbor.itachi.fans`, `docker system prune`, then a hand-edited `newTag` in the
 deploy repo. The build host stays the k8s utility worker and keeps its registry for the other
-projects; roomler-ai's image simply stops depending on it being healthy or idle.
+projects; meshharbor's image simply stops depending on it being healthy or idle.
 
 ## Why now
 
@@ -48,7 +48,7 @@ projects; roomler-ai's image simply stops depending on it being healthy or idle.
 
 ## Key design — every decision with its alternatives
 
-**D1 — Registry: GHCR.** Alternative: keep `registry.roomler.ai` and have Actions push to it
+**D1 — Registry: GHCR.** Alternative: keep `registry.meshharbor.itachi.fans` and have Actions push to it
 (it is internet-reachable with basic auth + an acme cert). Pros of the alternative: the cluster's
 pull stays LAN-fast. Cons: the registry is still the build host's disk and uptime; a push
 credential for it becomes a GitHub secret; it is a second channel next to the GHCR package the
@@ -56,8 +56,8 @@ self-host images already use. **Chosen: GHCR** — `GITHUB_TOKEN` suffices (no n
 provenance attestation comes for free, and the pull cost is bounded (D8).
 
 **D2 — One package, two tag families.** The hosted image lands in the existing public package
-`ghcr.io/gjovanov/roomler-ai` as `hosted-<date>-<sha7>` plus a moving `hosted` pointer.
-Alternative: a second package `roomler-ai-hosted`. Pros of two: no self-hoster can pull the
+`ghcr.io/jk-zhang-meta/meshharbor` as `hosted-<date>-<sha7>` plus a moving `hosted` pointer.
+Alternative: a second package `meshharbor-hosted`. Pros of two: no self-hoster can pull the
 wrong thing by accident. Cons: a second visibility setting, a second retention job, a second
 attestation subject. **Chosen: one package** — the tag prefix is the separation; `latest` stays
 reserved for the self-host `full` image (the self-host workflow's rule), and the hosted lane
@@ -66,7 +66,7 @@ it holds no secret (configuration is environment), so its being public changes n
 source does not already disclose — but `docs/self-hosting.md` says plainly that `hosted-*` tags
 are not for self-hosters.
 
-**D3 — Visibility: public, as it already is.** Verified 2026-09-05: `ghcr.io/gjovanov/roomler-ai`
+**D3 — Visibility: public, as it already is.** Verified 2026-09-05: `ghcr.io/jk-zhang-meta/meshharbor`
 answers an anonymous `tags/list` with 200 (tags `latest`, `v0.4.43`, `v0.4.45`, per-arch). A new
 tag in a public package is public. Consequence: **the cluster needs no pull secret** for GHCR;
 `regcred` stays on the Deployment (harmless, used by nothing) until the build-host registry is
@@ -87,7 +87,7 @@ DERP re-register. `master` takes 10–20 merges on a busy day; rolling each of t
 reconnect waves, and each roll is field-verified by hand today. **Chosen:** the build job runs
 on every merge; a separate `promote` dispatch (input: the hosted tag, default = the newest) bumps
 `newTag` in the deploy repo. Flipping to CD later is one `if:` on the promote job. The bump needs
-write access to the private deploy repo: a fine-grained PAT scoped to `roomler-ai-deploy`
+write access to the private deploy repo: a fine-grained PAT scoped to `meshharbor-deploy`
 (contents: write) stored as `DEPLOY_REPO_TOKEN` — the one operator-created secret in this FR.
 Until it exists the promote job prints the exact bump it would have made, and the bump is done by
 hand from any machine with the deploy repo (as today, minus the build).
@@ -95,7 +95,7 @@ hand from any machine with the deploy repo (as today, minus the build).
 **D6 — Cache: registry-backed BuildKit cache, and a Dockerfile that can use it.** The self-host
 workflow uses `type=gha` (10 GB per repo, LRU) scoped per arch and profile; a lane that runs on
 every merge would evict the self-host scopes. **Chosen:** `type=registry` at
-`ghcr.io/gjovanov/roomler-ai:buildcache-hosted` with `mode=max` — no cap, survives runner
+`ghcr.io/jk-zhang-meta/meshharbor:buildcache-hosted` with `mode=max` — no cap, survives runner
 churn, public like the package. And the honest part: the Dockerfile today does `COPY . .` before
 `cargo build`, so **any** source change invalidates the Rust layer and the cache buys nothing but
 the base image; a UI-only edit rebuilds the whole server. P1b restructures the builder stage:
@@ -115,7 +115,7 @@ workers pulls the changed layers over the site's uplink instead of the LAN (~100
 for a new binary layer; seconds when only the SPA layer changed). `RollingUpdate` is
 `maxSurge 0 / maxUnavailable 1`, so the pull happens one pod at a time and lengthens the roll
 without touching availability. AC3 records the per-node pull time from the pod events; if it is
-ever the long pole, a registry mirror on the build host (`registry.roomler.ai` as a pull-through
+ever the long pole, a registry mirror on the build host (`registry.meshharbor.itachi.fans` as a pull-through
 cache of GHCR) is the lever — it keeps the build off the host and only caches the pull.
 
 **D9 — Retention on GHCR.** The build-host registry had `registry-retention.sh` (2 tags per repo,
@@ -132,18 +132,18 @@ projects. Nothing on the host is torn down by this FR.
 
 | Phase | What | PR | Kill switch | Status |
 |---|---|---|---|---|
-| P0 | This spec, the ledger row, the issue | [#1390](https://github.com/gjovanov/roomler-ai/pull/1390) | — | ✅ merged `5a9f357a1` |
-| P1 | `.github/workflows/hosted-image.yml`: build on merge / dispatch, registry cache, smoke (`/health` = all six modules incl. `saas`, device route 401, SPA served), push `hosted-<date>-<sha7>` + `hosted`, attest, a summary with the measured build time | [#1391](https://github.com/gjovanov/roomler-ai/pull/1391) | `gh workflow disable hosted-image` | ✅ merged `5ef003087` — its merge was the cold run: 13 min 37 s build, 15 min 01 s merge → tag (field log) |
-| P1b | Dockerfile: `cargo chef` dependency layer + Rust stage copies only Rust sources; base image matches the pinned toolchain; measured against P1's numbers (cold, warm-no-change, warm-Rust-change, warm-UI-only) | [#1392](https://github.com/gjovanov/roomler-ai/pull/1392) | revert the Dockerfile PR — the workflow is indifferent to the layering | ✅ merged `3d2f31b23` after three dry runs (field log); measured: Rust change 6 min 49 s, UI-only 1 min 04 s |
-| P1c | The builder's final section keeps the agents' skeletons instead of copying `agents/` — a daemon-only merge no longer recompiles the server | [#1406](https://github.com/gjovanov/roomler-ai/pull/1406) | revert | ✅ merged `fb6f43ad7` after its dry run (33991818028); its own hosted build (a Dockerfile change, so the final layers rebuilt) 6 min 36 s |
-| P2 | The cluster pulls from GHCR: deploy repo `newName: ghcr.io/gjovanov/roomler-ai`, `newTag: hosted-…`; one roll, field-verified from the fleet; per-node pull time recorded | deploy repo `2efae23` | revert `newName`/`newTag` — the build-host registry still holds the previous tag | ✅ **rolled 2026-09-05 20:07Z**, field-verified (field log): pulls 3.3 s / 2.7 s per node, push → both pods 20 s |
-| P3 | `promote` dispatch: bump `newTag` in the deploy repo with `DEPLOY_REPO_TOKEN`; prints the bump when the secret is absent; refuses while `newName` is not GHCR | [#1393](https://github.com/gjovanov/roomler-ai/pull/1393), [#1416](https://github.com/gjovanov/roomler-ai/pull/1416) | remove the secret | ✅ merged; runs in the `release` environment; credential path verified 2026-09-06 (run 34030450507) |
-| P4 | GHCR retention job ([#1395](https://github.com/gjovanov/roomler-ai/pull/1395), fixed by [#1399](https://github.com/gjovanov/roomler-ai/pull/1399) after the first dry run: GHCR stores attestations UNTAGGED, so only BuildKit cache manifests may be deleted); `CLAUDE.md` deploy section rewritten (Actions path first, build-host path as break-glass, [#1398](https://github.com/gjovanov/roomler-ai/pull/1398)); `docs/self-hosting.md` on the `hosted-*` family ([#1396](https://github.com/gjovanov/roomler-ai/pull/1396)); **docs with diagrams**: the pipeline section of `docs/deployment.md` (the rule of CLAUDE.md § FR workflow step 5) | | — | ✅ retention merged + dry-run-verified; docs merged |
+| P0 | This spec, the ledger row, the issue | [#1390](https://github.com/jk-zhang-meta/MeshHarbor/pull/1390) | — | ✅ merged `5a9f357a1` |
+| P1 | `.github/workflows/hosted-image.yml`: build on merge / dispatch, registry cache, smoke (`/health` = all six modules incl. `saas`, device route 401, SPA served), push `hosted-<date>-<sha7>` + `hosted`, attest, a summary with the measured build time | [#1391](https://github.com/jk-zhang-meta/MeshHarbor/pull/1391) | `gh workflow disable hosted-image` | ✅ merged `5ef003087` — its merge was the cold run: 13 min 37 s build, 15 min 01 s merge → tag (field log) |
+| P1b | Dockerfile: `cargo chef` dependency layer + Rust stage copies only Rust sources; base image matches the pinned toolchain; measured against P1's numbers (cold, warm-no-change, warm-Rust-change, warm-UI-only) | [#1392](https://github.com/jk-zhang-meta/MeshHarbor/pull/1392) | revert the Dockerfile PR — the workflow is indifferent to the layering | ✅ merged `3d2f31b23` after three dry runs (field log); measured: Rust change 6 min 49 s, UI-only 1 min 04 s |
+| P1c | The builder's final section keeps the agents' skeletons instead of copying `agents/` — a daemon-only merge no longer recompiles the server | [#1406](https://github.com/jk-zhang-meta/MeshHarbor/pull/1406) | revert | ✅ merged `fb6f43ad7` after its dry run (33991818028); its own hosted build (a Dockerfile change, so the final layers rebuilt) 6 min 36 s |
+| P2 | The cluster pulls from GHCR: deploy repo `newName: ghcr.io/jk-zhang-meta/meshharbor`, `newTag: hosted-…`; one roll, field-verified from the fleet; per-node pull time recorded | deploy repo `2efae23` | revert `newName`/`newTag` — the build-host registry still holds the previous tag | ✅ **rolled 2026-09-05 20:07Z**, field-verified (field log): pulls 3.3 s / 2.7 s per node, push → both pods 20 s |
+| P3 | `promote` dispatch: bump `newTag` in the deploy repo with `DEPLOY_REPO_TOKEN`; prints the bump when the secret is absent; refuses while `newName` is not GHCR | [#1393](https://github.com/jk-zhang-meta/MeshHarbor/pull/1393), [#1416](https://github.com/jk-zhang-meta/MeshHarbor/pull/1416) | remove the secret | ✅ merged; runs in the `release` environment; credential path verified 2026-09-06 (run 34030450507) |
+| P4 | GHCR retention job ([#1395](https://github.com/jk-zhang-meta/MeshHarbor/pull/1395), fixed by [#1399](https://github.com/jk-zhang-meta/MeshHarbor/pull/1399) after the first dry run: GHCR stores attestations UNTAGGED, so only BuildKit cache manifests may be deleted); `CLAUDE.md` deploy section rewritten (Actions path first, build-host path as break-glass, [#1398](https://github.com/jk-zhang-meta/MeshHarbor/pull/1398)); `docs/self-hosting.md` on the `hosted-*` family ([#1396](https://github.com/jk-zhang-meta/MeshHarbor/pull/1396)); **docs with diagrams**: the pipeline section of `docs/deployment.md` (the rule of CLAUDE.md § FR workflow step 5) | | — | ✅ retention merged + dry-run-verified; docs merged |
 
 ## Acceptance criteria
 
 - [x] **AC1** A merge to `master` touching the server or the SPA produces
-      `ghcr.io/gjovanov/roomler-ai:hosted-<date>-<sha7>` with no human step; the smoke inside the
+      `ghcr.io/jk-zhang-meta/meshharbor:hosted-<date>-<sha7>` with no human step; the smoke inside the
       workflow asserts `/health` mounts `chat conference fleet network remote saas`, the device
       route answers 401, and `/` serves the SPA — before the push. — The merge of #1391 produced
       `hosted-20260905-5ef0030` (run 33988344500): smoke healthy in ~20 s, modules asserted, device
@@ -269,7 +269,7 @@ uncached build layer. The base now matches the pin.
 Between the running image (`89ea3128`, the FR-69 roll of 08:49Z) and `hosted-20260905-5ef0030`
 master had only workspace-version bumps and agent-side FR-70/FR-71 features — the least
 eventful roll available, which is what a registry switch wants. The deploy repo's prod overlay
-was set to `newName: ghcr.io/gjovanov/roomler-ai`, `newTag: hosted-20260905-5ef0030` and pushed
+was set to `newName: ghcr.io/jk-zhang-meta/meshharbor`, `newTag: hosted-20260905-5ef0030` and pushed
 at **20:07:38Z**. No pull secret was added (`regcred` stays on the Deployment, unused).
 
 | | |
@@ -278,7 +278,7 @@ at **20:07:38Z**. No pull secret was added (`regcred` stays on the Deployment, u
 | pull, per node (pod events) | **3.3 s** and **2.7 s** for the whole 80.96 MB image — nothing of it was cached on the nodes, the registry had changed |
 | public `/health` | 200 throughout; `version 0.4.70`, all six modules mounted and compiled |
 | `/` | 200 (the SPA) |
-| fleet RPC | `roomler exec` to the cluster's build host through the new pods answered (`uptime`) |
+| fleet RPC | `meshharbor exec` to the cluster's build host through the new pods answered (`uptime`) |
 | remote desktop | a session to a cluster node from this controller: `[WS] received: connected`, connect attempt 1, **ttff 633 ms**, `rc:video-info` vp9 4:4:4 on **transport direct**, clock echoes every second |
 | tunnels | this box's seven declared routes all `active` afterwards |
 | overlay | online peers unchanged (14 with a live carrier after vs 13–14 before; every device that was online stayed online); the direct pair to the build host survived (39 ms); the WAN peers behind NAT were on `relay:derp/tcp` before and after — from this box today the `srflx` tier is ineligible (`why.tiers`), unrelated to the roll — and re-registered on the restarted pods' DERP within seconds |
@@ -338,7 +338,7 @@ links but never executes) and the P1b/P1c Dockerfile — a low-risk roll for a f
 | pull, per node | 2.9 s and 2.2 s for the whole 81 MB image |
 | **merge → pods on the new image** | **8 min 51 s** (12:05:58Z → 12:14:49Z: 7 min 48 s of it the build and tag, 33 s the roll) — against the 10–15 min estimate this FR opened with |
 | public `/health` | 200 on every sample through and after the roll, `version 0.4.74`, all six modules; the promote job's own ten-minute watch: **0 of 60 probes were not 200** |
-| fleet RPC | `roomler exec` to the cluster's build host answered through the new pods |
+| fleet RPC | `meshharbor exec` to the cluster's build host answered through the new pods |
 | remote desktop | a session to a cluster node from this controller: connect attempt 1, **ttff 713 ms**, VP9 4:4:4 over the data channel on transport direct, first frame 1600 × 900 |
 | tunnels | this box's seven declared routes all `active` afterwards |
 | overlay | online peers unchanged (13 before, 13 after: 5 direct + 7 DERP + 1 `upgrading` at +5 min — the DERP pairs re-registered on the restarted pods and one pair was climbing back to direct, the make-before-break the carrier ladder is built for); the 7 offline rows were offline before |

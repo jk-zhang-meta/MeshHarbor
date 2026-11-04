@@ -15,7 +15,7 @@ running**. Every downstream channel reuses the same artifact — the README's fi
 a Reddit release post, a Hacker News thread, a Product Hunt listing, the first newsletter —
 and a still image cannot carry "your machine's desktop, in a browser tab, in ten seconds".
 
-⚠️ The existing `roomler-intro.mp4` is a **collaboration walkthrough** (2:24). It predates
+⚠️ The existing `meshharbor-intro.mp4` is a **collaboration walkthrough** (2:24). It predates
 the three-pillar pivot in #490 and shows the pillar that is now third. Linking it from a
 launch is worse than linking nothing: it confirms the stale positioning that a web search
 for the product still returns.
@@ -33,7 +33,7 @@ UI changes rather than becoming a fossil.
 |---|---|
 | **Controller** | neo16's browser, driven by Playwright |
 | **Target** | the **WSL2 Ubuntu 24.04 sibling** on neo16, enrolled into a fresh `demo` org |
-| **Server** | production `roomler.ai` |
+| **Server** | production `meshharbor.itachi.fans` |
 
 ⚠️ **Why not neo16 itself.** Two reasons, and the second is fatal to the footage:
 1. Removing neo16 from GROX is **irreversible** — agents are tombstoned, and a re-enrolled
@@ -43,7 +43,7 @@ UI changes rather than becoming a fossil.
    the whole video exists for.
 
 The WSL sibling is a genuinely separate machine identity (it already runs its own
-`roomlerd`), it is disposable, and the enrolment on camera is real rather than staged.
+`meshharbord`), it is disposable, and the enrolment on camera is real rather than staged.
 
 ## Key design
 
@@ -66,7 +66,7 @@ The WSL sibling is a genuinely separate machine identity (it already runs its ow
    | 62–82 s | a shell and a forwarded port | reach the machine's *services*, not just its screen |
    | 82–90 s | end card | where to get it |
 
-3. **The command scenes stay in the browser.** `roomler ssh` and `roomler forward` are
+3. **The command scenes stay in the browser.** `meshharbor ssh` and `meshharbor forward` are
    terminal commands, and compositing a separate terminal capture into a browser recording
    is where this kind of project stalls. The device console in `DevicesView.vue` runs
    commands *in the page*, so the recording stays one continuous browser take.
@@ -96,7 +96,7 @@ The WSL sibling is a genuinely separate machine identity (it already runs its ow
 
 - **Music.** The existing harness can mix a track. A silent demo is safer for embedding in
   a Reddit post; music helps on a landing page. Cheap to add later, so P2 ships silent.
-- **Where the file lives.** A 10 MB MP4 in the repository is what `roomler-intro.mp4`
+- **Where the file lives.** A 10 MB MP4 in the repository is what `meshharbor-intro.mp4`
   already does. A GIF is smaller and auto-plays in a README but looks far worse for a
   screen recording. Likely both: GIF in the README, MP4 linked.
 
@@ -109,13 +109,13 @@ anything that requires removing neo16 from GROX.
 
 | date | what was checked | result |
 |---|---|---|
-| 2026-08-30 | neo16 agent state before any change | `0.4.21`, service (SYSTEM), tenant `69a1dbba…`, overlay `100.65.4.2`, MagicDNS `grox.roomler.ai`, server connected — the baseline this FR must not disturb |
-| 2026-08-30 | WSL2 sibling is a usable target | Ubuntu 24.04.4, own `roomlerd` running, 45 GB RAM / 272 GB free, `DISPLAY=:0` via WSLg (no Xvfb needed) |
+| 2026-08-30 | neo16 agent state before any change | `0.4.21`, service (SYSTEM), tenant `69a1dbba…`, overlay `100.65.4.2`, MagicDNS `grox.meshharbor.itachi.fans`, server connected — the baseline this FR must not disturb |
+| 2026-08-30 | WSL2 sibling is a usable target | Ubuntu 24.04.4, own `meshharbord` running, 45 GB RAM / 272 GB free, `DISPLAY=:0` via WSLg (no Xvfb needed) |
 | 2026-08-30 | existing harness supports production | `record-intro.spec.ts` reads `E2E_USERNAME` / `E2E_PASSWORD` / `E2E_TENANT_ID` |
-| 2026-08-30 | **P0: the sibling joined `demo` as a SECONDARY org — GROX intact** | `roomlerd enroll --label demo` against a token for a new org on the SAME server **appends** rather than replaces (the flag's documented behaviour, confirmed live): the WSL sibling is online in `demo` AND still online in GROX under its original name. Option B therefore cost nothing — the irreversible-removal risk this FR was staged around does not apply when the target is a second org on one server |
+| 2026-08-30 | **P0: the sibling joined `demo` as a SECONDARY org — GROX intact** | `meshharbord enroll --label demo` against a token for a new org on the SAME server **appends** rather than replaces (the flag's documented behaviour, confirmed live): the WSL sibling is online in `demo` AND still online in GROX under its original name. Option B therefore cost nothing — the irreversible-removal risk this FR was staged around does not apply when the target is a second org on one server |
 | 2026-08-30 | agent capability is not the problem | `wsl-demo` advertises `permissions: [screen-capture, input]`, NVENC + openh264 + libvpx encoders, `multi_org: [join, tun]`, and rpc `exec` / `ssh` / `config` |
 | 2026-08-30 | ⚠️ **a session CONNECTS and negotiates a codec while delivering ZERO frames** | Connect reached `connected · VP9 4:4:4` with `— bps — fps`, `<video>` 0×0/paused and an unpainted 300×150 canvas. Cause: the agent is a **root systemd service with no `DISPLAY`** and there was no Xvfb, so X11 capture had nothing to open. ⚠️ Worth surfacing beyond this FR: a headless Linux agent reports FULL `screen-capture` capability and completes signalling, so at the viewer the failure is indistinguishable from a slow link. Same shape as the FR-34 (#917) stuck-capture class |
-| 2026-08-30 | ⚠️⚠️ **virtual-desktop startup apps WEDGE the systemd unit** | `MESHHARBORD_VIRTUAL_DESKTOP=1` with `STARTUP=xterm,pcmanfm` left the unit in `deactivating (stop-sigterm)`: `roomlerd` exited 0, but a **grandchild** — `/usr/libexec/at-spi-bus-launcher`, spawned by the GTK file manager — outlived it and held the cgroup open, so systemd could not finish stopping and never started the replacement. **The daemon was DOWN** until the stop timeout reaped it. A startup app that forks an accessibility or D-Bus helper is entirely ordinary, so this is not exotic: it wants `KillMode`/cgroup handling on the unit, or a virtual-desktop teardown that reaps its own descendants |
+| 2026-08-30 | ⚠️⚠️ **virtual-desktop startup apps WEDGE the systemd unit** | `MESHHARBORD_VIRTUAL_DESKTOP=1` with `STARTUP=xterm,pcmanfm` left the unit in `deactivating (stop-sigterm)`: `meshharbord` exited 0, but a **grandchild** — `/usr/libexec/at-spi-bus-launcher`, spawned by the GTK file manager — outlived it and held the cgroup open, so systemd could not finish stopping and never started the replacement. **The daemon was DOWN** until the stop timeout reaped it. A startup app that forks an accessibility or D-Bus helper is entirely ordinary, so this is not exotic: it wants `KillMode`/cgroup handling on the unit, or a virtual-desktop teardown that reaps its own descendants |
 | 2026-08-30 | the wedge cleared itself | systemd's stop timeout reaped the stray after **50 s** and started the replacement. So it self-heals — but the daemon is offline for the whole window, and nothing in the logs says why |
 | 2026-08-30 | ✅ **the remote-desktop scene is PROVEN end to end** | With `MESHHARBORD_VIRTUAL_DESKTOP=1`: Xvfb `:100` at 1920×1080, openbox, xterm and pcmanfm. The session streams **`H.265 4:2:0 HW (hevc_nvenc)` at 15 fps, 1920×1088, ~41 ms** over a relay carrier, canvas painting at 2026×1148. ⚠️ `<video>` stays 0×0/paused — that is the WebCodecs canvas path working, **not** a fault; judge the canvas dimensions instead |
 | 2026-08-30 | ✅ **input injection works** | Clicked into the remote xterm from the browser and typed `htop`; it ran on the WSL machine, and the bitrate rose **27 → 116 kbps** from the live redraw — which also proves the stream is live rather than a still. The FR-27 viewer-presence badge (`GJ`) renders on the remote desktop |

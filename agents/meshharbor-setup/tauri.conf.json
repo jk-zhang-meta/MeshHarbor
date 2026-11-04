@@ -34,7 +34,7 @@
     "copyright": "Copyright (C) 2026 G ROX LTD",
     "category": "Productivity",
     "shortDescription": "MeshHarbor setup + onboarding wizard",
-    "longDescription": "Unified installer for the MeshHarbor node stack. Pick the device's role (be accessed as a background service, per-user, attended — or reach others only as a tunnel client); the wizard detects existing installs, downloads the matching artifact through roomler.ai's proxy, installs it, and enrolls the device against the configured MeshHarbor server. No terminal commands required."
+    "longDescription": "Unified installer for the MeshHarbor node stack. Pick the device's role (be accessed as a background service, per-user, attended — or reach others only as a tunnel client); the wizard detects existing installs, downloads the matching artifact through meshharbor.itachi.fans's proxy, installs it, and enrolls the device against the configured MeshHarbor server. No terminal commands required."
   },
   "plugins": {
     "shell": {

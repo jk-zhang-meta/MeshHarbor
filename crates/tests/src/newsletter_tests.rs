@@ -18,11 +18,11 @@ fn issue_json(slug: &str) -> serde_json::Value {
         "slug": slug,
         "subject": "Three products, one daemon",
         "preheader": "Why one agent per machine is the whole point.",
-        "body_md": "## The story\n\nOne daemon per machine.\n\n[Read more](https://roomler.ai/)\n\n<script>alert(1)</script>",
-        "hero_url": "https://roomler.ai/newsletter-img/test-v1.png",
+        "body_md": "## The story\n\nOne daemon per machine.\n\n[Read more](https://meshharbor.itachi.fans/)\n\n<script>alert(1)</script>",
+        "hero_url": "https://meshharbor.itachi.fans/newsletter-img/test-v1.png",
         "hero_alt": "One daemon radiating four capabilities",
-        "cta_text": "Try Roomler",
-        "cta_url": "https://roomler.ai/"
+        "cta_text": "Try MeshHarbor",
+        "cta_url": "https://meshharbor.itachi.fans/"
     })
 }
 
@@ -223,7 +223,7 @@ async fn preview_is_the_branded_send_bytes_and_drops_raw_html() {
     // Branded wrapper + rendered markdown.
     assert!(html.contains("Field Notes"));
     assert!(html.contains("The story"), "the md body must be rendered");
-    assert!(html.contains("https://roomler.ai/newsletter-img/test-v1.png"));
+    assert!(html.contains("https://meshharbor.itachi.fans/newsletter-img/test-v1.png"));
     // The raw-HTML boundary: the <script> in body_md is structurally absent.
     assert!(
         !html.contains("<script"),
@@ -237,7 +237,7 @@ async fn preview_is_the_branded_send_bytes_and_drops_raw_html() {
     // unsubscribe link.
     assert!(
         html.contains(
-            "href=\"https://roomler.ai/?utm_source=newsletter&amp;utm_medium=email&amp;utm_campaign=nl-preview-me\""
+            "href=\"https://meshharbor.itachi.fans/?utm_source=newsletter&amp;utm_medium=email&amp;utm_campaign=nl-preview-me\""
         ),
         "{html}"
     );

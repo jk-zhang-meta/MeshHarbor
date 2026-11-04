@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 const source = readFileSync(resolve(import.meta.dirname, '../../../../agents/meshharbor-desktop/src/front/account.js'), 'utf8')
 const invoke = vi.fn()
-function start() { document.body.innerHTML = '<button id="account-devices">Devices</button><button id="account-received">Received</button><button id="account-sent">Sent</button><p id="account-error" hidden></p>'; new Function('window', source)({ Roomler: { $: (id: string) => document.getElementById(id), invoke } }) }
+function start() { document.body.innerHTML = '<button id="account-devices">Devices</button><button id="account-received">Received</button><button id="account-sent">Sent</button><p id="account-error" hidden></p>'; new Function('window', source)({ MeshHarbor: { $: (id: string) => document.getElementById(id), invoke } }) }
 beforeEach(() => { invoke.mockReset(); invoke.mockResolvedValue(undefined); start() })
 async function click(id: string) { document.getElementById(id)!.click(); await new Promise(resolve => setTimeout(resolve, 0)) }
 describe('desktop personal account entry uses whitelisted native IPC without credentials', () => {

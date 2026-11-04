@@ -96,9 +96,9 @@ jobs:
           set -euo pipefail
           IMG='${{ env.IMAGE }}:${{ env.tag }}'
           # The binary starts, with the libraries it links.
-          docker run --rm --entrypoint roomlerd "$IMG" --version
+          docker run --rm --entrypoint meshharbord "$IMG" --version
           # It is the build that enrolls archive replicas.
-          docker run --rm --entrypoint roomlerd "$IMG" enroll --help | grep -q -- '--archive-replica'
+          docker run --rm --entrypoint meshharbord "$IMG" enroll --help | grep -q -- '--archive-replica'
           # It runs as no one in particular, with the volume as its home.
           test "$(docker run --rm --entrypoint id "$IMG" -u)" = 10001
           # It says it is the archive image, so an archive replica enrolled

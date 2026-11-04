@@ -16,7 +16,7 @@
 //! Owns the 7-step pipeline:
 //!
 //!   1. Preflight: probe registry, surface cross-flavour warnings
-//!   2. Resolve installer metadata via the roomler.ai proxy (rc.27)
+//!   2. Resolve installer metadata via the meshharbor.itachi.fans proxy (rc.27)
 //!   3. Stream MSI bytes to `%TEMP%` with progress emits
 //!   4. Verify SHA256
 //!   5. Spawn msiexec via `meshharbord::updater::

@@ -2,7 +2,7 @@
 
 > **CLOSED 2026-08-30** — issue #917 is closed and its acceptance criteria are met. Any status line below is the state while the work was in flight, kept as the record.
 
-**Issue:** [#917](https://github.com/gjovanov/roomler-ai/issues/917)
+**Issue:** [#917](https://github.com/jk-zhang-meta/MeshHarbor/issues/917)
 **Status:** design
 
 ## Goal
@@ -27,7 +27,7 @@ Two independent defects, plus the trigger that chains them.
 
 ### 1. The consent panel is invisible on the lock screen — `indicator/win.rs`
 
-The FR-27 native consent panel (`RoomlerConsentWClass`) is a window on the
+The FR-27 native consent panel (`MeshHarborConsentWClass`) is a window on the
 **interactive** desktop. When the machine is locked, the input desktop is the
 secure `Winlogon` desktop, where an ordinary window cannot appear — so a locked
 host cannot show the prompt at all. The operator had to unlock first, which is

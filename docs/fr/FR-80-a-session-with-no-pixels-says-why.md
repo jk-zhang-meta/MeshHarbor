@@ -1,6 +1,6 @@
 # FR-80 — a session with no pixels says why
 
-**Issue:** [#1532](https://github.com/gjovanov/roomler-ai/issues/1532) · **Status:** **closed 2026-09-08** — shipped `agent-v0.4.94` + `hosted-20260908-aa36044`; both halves field-verified, with the failure cell created deliberately · **Glossary:** [`CONTEXT.md`](../../CONTEXT.md) · **Related:** [FR-27](FR-27-host-consent-prompt-surfaces.md) · [FR-77](FR-77-encoder-chroma-matrix.md) · [`docs/remote-control.md`](../remote-control.md)
+**Issue:** [#1532](https://github.com/jk-zhang-meta/MeshHarbor/issues/1532) · **Status:** **closed 2026-09-08** — shipped `agent-v0.4.94` + `hosted-20260908-aa36044`; both halves field-verified, with the failure cell created deliberately · **Glossary:** [`CONTEXT.md`](../../CONTEXT.md) · **Related:** [FR-27](FR-27-host-consent-prompt-surfaces.md) · [FR-77](FR-77-encoder-chroma-matrix.md) · [`docs/remote-control.md`](../remote-control.md)
 
 ## Goal
 

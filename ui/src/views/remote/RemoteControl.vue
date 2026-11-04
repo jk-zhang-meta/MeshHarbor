@@ -263,7 +263,7 @@
         <span v-if="metrics.age && statsAgeLabel" class="stats-pill">{{ statsAgeLabel }}</span>
         <!-- P1 — per-hop pipeline diagnostics (paint / fwd / decode ms,
              output gap, queue, drops, main-thread long tasks). Opt-in via
-             localStorage roomler-rc-diag-hud=1; the numbers that decide
+             localStorage meshharbor-rc-diag-hud=1; the numbers that decide
              whether an fps ceiling is paint-, decode-, or main-thread-bound. -->
         <span v-if="showDiagHud && diagLabel" class="stats-pill">{{ diagLabel }}</span>
       </div>
@@ -341,7 +341,7 @@
       </v-btn>
       <!-- FR-111 P2 — on a touch screen: the finger is the pointer (direct),
            or the screen is a trackpad that moves the pointer. Hidden where
-           there is no touch, and under the `roomler-rc-touch=legacy` switch. -->
+           there is no touch, and under the `meshharbor-rc-touch=legacy` switch. -->
       <v-btn
         v-if="rc.phase.value === 'connected' && touchModeOffered"
         icon
@@ -2779,9 +2779,9 @@ async function onFilePicked(ev: Event) {
 // FR-21 P4: this was a hardcoded
 // RETIRED-NAME-RECORD: quotes the defective literal this fix removed; the old
 // spelling is the evidence, not a stale reference. docs/fr/FR-21
-// `C:\ProgramData\meshharbor\roomler-agent\staging`, which was right only on
+// `C:\ProgramData\meshharbor\meshharbor-agent\staging`, which was right only on
 // hosts carrying the pre-rename tree — `machine_global_dir()` resolves the
-// `roomler` segment on a fresh install. Confirmed broken on a real
+// `meshharbor` segment on a fresh install. Confirmed broken on a real
 // SYSTEM-mode Windows host, where that parent directory does not exist.
 //
 // Sending a token instead of a path also retires the Vue-template /
@@ -3346,7 +3346,7 @@ function toggleAudio() {
 // toggle's next-Connect semantics: the probe + ICE injection happen in
 // connect(), so a mid-session flip would look like it did nothing —
 // disable while live. Reads the composable's persisted opt-in
-// (localStorage `roomler-rc-local-relay`).
+// (localStorage `meshharbor-rc-local-relay`).
 const localRelayOn = computed<boolean>(() => rc.localRelayEnabled.value)
 const localRelayTooltip = computed<string>(() => {
   if (sessionLive.value) {
@@ -3420,7 +3420,7 @@ const relativeMouseOffered = computed<boolean>(() => {
 watch(relativeMouseOffered, (offered) => rc.setRelativeMouseAllowed(offered), { immediate: true })
 // FR-111 — every touch on the picture belongs to the viewer. Without
 // `touch-action: none` a touch browser takes a drag over as a pan, and the
-// press already on the host is never let go. `roomler-rc-touch=legacy` gives
+// press already on the host is never let go. `meshharbor-rc-touch=legacy` gives
 // the stage back to the browser; read once, like the other kill switches.
 const stageTouchActionCss = (() => {
   let storage: Storage | null = null
@@ -3812,11 +3812,11 @@ function bindVp9_444Canvas(el: Element | unknown) {
 // canvas mount.
 const isHevcRender = computed<boolean>(() => rc.hevcActive.value)
 
-// P1 — per-hop diagnostics pill (opt-in localStorage roomler-rc-diag-hud=1).
+// P1 — per-hop diagnostics pill (opt-in localStorage meshharbor-rc-diag-hud=1).
 // Read once at mount: flipping the flag is a reload-scoped A/B, matching the
-// other roomler-rc-* diagnosis knobs.
+// other meshharbor-rc-* diagnosis knobs.
 // FR-26 - per-pill visibility, persisted per user. `paint` inherits the
-// legacy roomler-rc-diag-hud flag on first read (see storedMetricToggles).
+// legacy meshharbor-rc-diag-hud flag on first read (see storedMetricToggles).
 const settingsTab = ref<'video' | 'display' | 'metrics' | 'session'>('video')
 const metrics = ref(storedMetricToggles())
 watch(metrics, (m) => persistMetricToggles(m), { deep: true })
@@ -4113,7 +4113,7 @@ function applyFitResolution() {
 // pixel chain 1:1 so remote text is rendered AT the viewed size instead of
 // downscaled into mush. Opt-in (changing a host's display mode is
 // invasive), persisted per-agent, Windows hosts only (v1).
-const DISPLAY_MATCH_STORAGE_PREFIX = 'roomler-rc-display-match.v2:'
+const DISPLAY_MATCH_STORAGE_PREFIX = 'meshharbor-rc-display-match.v2:'
 const displayMatchOn = ref(false)
 // FR-97 P3e-2 — the device's own word, not its OS: a host whose display
 // cannot be switched says so (`AgentCaps.unavailable['display-match']`), with

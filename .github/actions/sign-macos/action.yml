@@ -150,7 +150,7 @@ runs:
         CERT_PW:       ${{ inputs.cert-password }}
       run: |
         set -euo pipefail
-        KEYCHAIN=roomler-signing.keychain
+        KEYCHAIN=meshharbor-signing.keychain
         KEYCHAIN_PASSWORD=$(openssl rand -hex 24)
 
         security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
@@ -269,7 +269,7 @@ runs:
     - name: Remove the ephemeral keychain
       if: always()
       shell: bash
-      run: security delete-keychain roomler-signing.keychain 2>/dev/null || true
+      run: security delete-keychain meshharbor-signing.keychain 2>/dev/null || true
 
     - name: Report
       id: report

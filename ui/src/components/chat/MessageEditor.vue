@@ -223,11 +223,11 @@ const emit = defineEmits<{
 }>()
 
 const mode = vueRef<EditorMode>(
-  (localStorage.getItem('roomler-editor-mode') as EditorMode) || 'minimal',
+  (localStorage.getItem('meshharbor-editor-mode') as EditorMode) || 'minimal',
 )
 // Ensure default is persisted
-if (!localStorage.getItem('roomler-editor-mode')) {
-  localStorage.setItem('roomler-editor-mode', 'minimal')
+if (!localStorage.getItem('meshharbor-editor-mode')) {
+  localStorage.setItem('meshharbor-editor-mode', 'minimal')
 }
 const pendingAttachmentIds = vueRef<string[]>([])
 const fileInputRef = vueRef<HTMLInputElement | null>(null)
@@ -235,7 +235,7 @@ const isDragging = vueRef(false)
 
 function toggleMode() {
   mode.value = mode.value === 'minimal' ? 'rich' : 'minimal'
-  localStorage.setItem('roomler-editor-mode', mode.value)
+  localStorage.setItem('meshharbor-editor-mode', mode.value)
 }
 
 function triggerFileInput() {

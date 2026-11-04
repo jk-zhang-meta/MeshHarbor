@@ -16,7 +16,7 @@
 //! backfill of Stripe's paid invoices), and P7's GitHub puller
 //! ([`github_pull`] — the repository's public counters as daily cumulative
 //! snapshots, its traffic with a token). Everything here
-//! exists because roomler.ai is a hosted product; a self-hosted deployment
+//! exists because meshharbor.itachi.fans is a hosted product; a self-hosted deployment
 //! runs without it, which is why it is an **add-on feature** on the host
 //! rather than part of any profile.
 //!

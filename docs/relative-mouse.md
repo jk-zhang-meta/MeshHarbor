@@ -1,6 +1,6 @@
 # Relative mouse — Pointer Lock for apps that capture the pointer
 
-> **Status** (FR-109, [#2333](https://github.com/gjovanov/roomler-ai/issues/2333); spec:
+> **Status** (FR-109, [#2333](https://github.com/jk-zhang-meta/MeshHarbor/issues/2333); spec:
 > [`docs/fr/FR-109-relative-mouse.md`](fr/FR-109-relative-mouse.md))
 >
 > | Phase | What | State |
@@ -11,7 +11,7 @@
 
 ## Why it exists
 
-Every pointer move Roomler sends is **absolute**: `mouse_move {x, y, mon}`, normalised to the monitor, so
+Every pointer move MeshHarbor sends is **absolute**: `mouse_move {x, y, mon}`, normalised to the monitor, so
 the host can change resolution mid-session without a resync. That is right for a desktop and wrong for
 an app that **captures the pointer**: a 3D or CAD viewport, a game camera, anything that hides the cursor
 and recentres it every frame. Such an app reads how far the mouse moved, not where it is. With absolute
@@ -27,7 +27,7 @@ nothing is installed on the controlling side.
 sequenceDiagram
     participant U as Controller
     participant V as Viewer
-    participant A as roomlerd (input arbiter)
+    participant A as meshharbord (input arbiter)
     participant O as Host app
     A-->>V: hello: AgentCaps.input includes "mouse-rel"
     U->>V: clicks the relative-mouse control (a user gesture)
@@ -197,7 +197,7 @@ stateDiagram-v2
   their first click would take the pointer. The price is small: a Windows session that starts with the
   cursor already hidden switches only after the cursor has shown once, and until then the toolbar control
   works.
-- Switched off in one browser with `localStorage['roomler-rc-relative-auto'] = 'off'`; the toolbar control
+- Switched off in one browser with `localStorage['meshharbor-rc-relative-auto'] = 'off'`; the toolbar control
   still works.
 
 ## The arbiter
@@ -213,13 +213,13 @@ person's.
 | Where | How |
 |---|---|
 | The device | `MESHHARBORD_INPUT_MOUSE_REL=0` (or `false`, `no`, `off`): the agent stops advertising `mouse-rel` ([`mod.rs:167`](../agents/meshharbord/src/input/mod.rs#L167)). On macOS it goes in the per-user agent's `EnvironmentVariables` in `~/Library/LaunchAgents/fans.itachi.meshharbor.agent.plist`, and takes effect after a `launchctl bootout` and `bootstrap` of `gui/<uid>` (FR-109 §8 row 33) |
-| One browser | `localStorage['roomler-rc-relative-mouse'] = 'off'` hides the control |
-| One browser, the auto-switch alone | `localStorage['roomler-rc-relative-auto'] = 'off'` ([`relativeMouse.ts:68`](../ui/src/composables/relativeMouse.ts#L68)): relative mode stays manual, and the toolbar control still works |
+| One browser | `localStorage['meshharbor-rc-relative-mouse'] = 'off'` hides the control |
+| One browser, the auto-switch alone | `localStorage['meshharbor-rc-relative-auto'] = 'off'` ([`relativeMouse.ts:68`](../ui/src/composables/relativeMouse.ts#L68)): relative mode stays manual, and the toolbar control still works |
 
 ## What it does not do
 
 - It never reads input on the host. The agent only injects; there is no hook and no raw-input reader in
-  `roomlerd` (FR-92's rule). A unit test scans the relative-mouse code for any of them
+  `meshharbord` (FR-92's rule). A unit test scans the relative-mouse code for any of them
   ([`input/mod.rs:846`](../agents/meshharbord/src/input/mod.rs#L846) `fr109_relative_mouse_reads_no_input`).
 - No ghost cursor in relative mode: other viewers see the host's own cursor in the picture.
 - The host's pointer speed and acceleration settings are not changed.

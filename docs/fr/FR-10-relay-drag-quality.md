@@ -3,7 +3,7 @@
 > **CLOSED 2026-08-27** — issue #783 is closed and its acceptance criteria are met. Any status line below is the state while the work was in flight, kept as the record.
 
 **Status:** shipped in `agent-v0.4.5` (#785); field gate pending.
-Tracking issue: `FR-10` in gjovanov/roomler-ai/issues. Child of FR-1 (#767), which
+Tracking issue: `FR-10` in jk-zhang-meta/MeshHarbor/issues. Child of FR-1 (#767), which
 gated the direct-path rate machinery off relay and left goodput observe-only there.
 
 ## Goal

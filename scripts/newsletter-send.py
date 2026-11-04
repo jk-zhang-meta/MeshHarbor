@@ -3,7 +3,7 @@
 # Copyright (C) 2026 G ROX EOOD
 """FR-58 — drive the newsletter admin API from an issue's canonical .md source.
 
-The .md lives in the private annex (roomler-ai-news:news/NN-slug.md; war stories in fixes/)
+The .md lives in the private annex (meshharbor-news:news/NN-slug.md; war stories in fixes/)
 with YAML-ish frontmatter (slug, subject, preheader, hero, hero_alt, cta_text,
 cta_url) followed by the markdown body. This script is deliberately
 stdlib-only (urllib, json, re, getpass) so it runs anywhere python3 exists —
@@ -21,7 +21,7 @@ Auth: a platform-admin bearer token, from (in order) --token, the
 MESHHARBOR_TOKEN env var, or an interactive login prompt (email + password,
 never echoed, nothing persisted).
 
-Server: --server (default https://roomler.ai).
+Server: --server (default https://meshharbor.itachi.fans).
 
 Examples:
   ./scripts/newsletter-send.py push  ../meshharbor-ai-news/news/01-three-products-one-daemon.md
@@ -135,7 +135,7 @@ def main():
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("command", choices=["push", "preview", "test-send", "send", "status", "list"])
     p.add_argument("target", nargs="?", help="issue .md file (push) or slug")
-    p.add_argument("--server", default=os.environ.get("MESHHARBOR_SERVER", "https://roomler.ai"))
+    p.add_argument("--server", default=os.environ.get("MESHHARBOR_SERVER", "https://meshharbor.itachi.fans"))
     p.add_argument("--token", default=os.environ.get("MESHHARBOR_TOKEN"))
     p.add_argument("--to", help="test-send recipient")
     p.add_argument("--retry-stale", action="store_true", help="send: re-attempt stale claimed rows")

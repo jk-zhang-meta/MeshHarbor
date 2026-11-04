@@ -25,7 +25,7 @@ $subscriptionId = Get-StateValue $state 'subscriptionId'
 $rg             = Get-StateValue $state 'resourceGroup'
 $account        = Get-StateValue $state 'accountName'
 $identityId     = Get-StateValue $state 'identityValidationId'
-if (-not $ProfileName) { $ProfileName = Get-StateValue $state 'profileName' 'roomler-public-trust' }
+if (-not $ProfileName) { $ProfileName = Get-StateValue $state 'profileName' 'meshharbor-public-trust' }
 
 if (-not $subscriptionId -or -not $rg -or -not $account) {
     Fail 'missing state. Run 00-preflight.ps1 and 10-azure-provision.ps1 first.'

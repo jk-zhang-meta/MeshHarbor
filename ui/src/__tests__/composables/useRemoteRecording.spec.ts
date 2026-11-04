@@ -110,14 +110,14 @@ describe('useRemoteRecording (FR-85 P3c)', () => {
       t: 'rc:record.state',
       id: start.id,
       state: 'recording',
-      name: 'Roomler Recording 2026-09-25 14-30-12.mp4',
+      name: 'MeshHarbor Recording 2026-09-25 14-30-12.mp4',
       bytes: 1024,
       duration_ms: 1500,
       audio: true,
     })
     expect([r.state.value, r.name.value, r.durationMs.value, r.audio.value]).toEqual([
       'recording',
-      'Roomler Recording 2026-09-25 14-30-12.mp4',
+      'MeshHarbor Recording 2026-09-25 14-30-12.mp4',
       1500,
       true,
     ])

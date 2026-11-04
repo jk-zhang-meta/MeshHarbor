@@ -18,7 +18,7 @@ stock install picks for itself where it safely can.
 
 ```mermaid
 flowchart TD
-    A([a Linux host showing a Wayland desktop]) --> I{"how was roomlerd installed?"}
+    A([a Linux host showing a Wayland desktop]) --> I{"how was meshharbord installed?"}
     I -- "per-user (install.sh's default)" --> D{"which desktop?"}
     D -- "GNOME" --> M["mutter's own screencast, automatic<br/>asks nobody · input through mutter's RemoteDesktop"]
     D -- "KDE Plasma, others" --> P["the desktop portal, automatic<br/>asks the person at the screen ONCE,<br/>then a restore token answers"]
@@ -101,7 +101,7 @@ notice at the first frame it counts. The viewer then reconnects once, and the ne
 ```mermaid
 sequenceDiagram
     participant H as the host
-    participant D as roomlerd
+    participant D as meshharbord
     participant V as the viewer
     H->>D: the screen locks / the display goes dark / another session takes the seat
     D->>V: rc:media-waiting (what for, a hint)
@@ -121,7 +121,7 @@ Two messages carry it (`useRemoteControl.ts`, `mediaWaitingCopy`).
 | `rc:media-unavailable` | `backend_error` | an arm that was on, or that switched itself on, failed; the detail is its own error | read the detail: it names the arm and the cause |
 | `rc:media-unavailable` | `backend_error`: *"…the person at the screen declined the request"* (0.4.136; before it, *"…exited before announcing a stream"*) | the person at the screen said no to remote control and then to a screen share | ask them; the next session asks again |
 | `rc:media-unavailable` | `backend_error`: *"…the portal ended the request on its own…"* (the same release) | the portal refused without a dialog: its backend for this desktop is stopped or missing | restart the backend the detail names, then `xdg-desktop-portal` (`systemctl --user restart …`) |
-| `rc:media-unavailable` | `backend_error`: *"…reading the scanout needs CAP_SYS_ADMIN (root)…"* (the same release; before it, the session re-created itself with no reason) | `drm_capture` is set on a per-user install, which cannot read the scanout | `roomler config clear drm_capture`: the desktop's own screencast takes over |
+| `rc:media-unavailable` | `backend_error`: *"…reading the scanout needs CAP_SYS_ADMIN (root)…"* (the same release; before it, the session re-created itself with no reason) | `drm_capture` is set on a per-user install, which cannot read the scanout | `meshharbor config clear drm_capture`: the desktop's own screencast takes over |
 | `rc:media-waiting` | `person_at_screen` | the desktop portal is asking the person at the screen to share it (or to allow remote control) | someone at the computer answers; the viewer waits for the dialog's deadline instead of reconnecting |
 | `rc:media-waiting` | `screen_unlock` | GNOME's screen is locked, and GNOME shares no locked screen | unlock it at the computer; the picture comes back by itself |
 | `rc:media-waiting` | `display_wake` | the display is off, so DRM has no scanout to read | move the viewer's mouse, or any input at the computer |

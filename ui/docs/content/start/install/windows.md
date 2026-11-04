@@ -1,6 +1,6 @@
 ---
 title: Install on Windows
-description: Install the Roomler agent on Windows with the signed MSI, the setup wizard or one PowerShell line — and pick the right service mode for your machine.
+description: Install the MeshHarbor agent on Windows with the signed MSI, the setup wizard or one PowerShell line — and pick the right service mode for your machine.
 tags: [install, windows, getting-started, enrollment]
 order: 10
 ---
@@ -31,7 +31,7 @@ form. The graphical wizard asks the same questions the flags answer.
 **One line, in an Administrator PowerShell** (Terminal (Admin)):
 
 ```powershell
-& ([scriptblock]::Create((irm https://roomler.ai/api/setup/install.ps1))) -Role daemon-system -Token <token> -Server https://roomler.ai
+& ([scriptblock]::Create((irm https://meshharbor.itachi.fans/api/setup/install.ps1))) -Role daemon-system -Token <token> -Server https://meshharbor.itachi.fans
 ```
 
 Swap `-Role` for `daemon-machine` (attended) or `daemon-user` (per user) to
@@ -39,12 +39,12 @@ change the service mode.
 
 **Or download the wizard** — a signed EXE with a role picker:
 
-[Roomler Setup for Windows](https://roomler.ai/api/setup/windows)
+[MeshHarbor Setup for Windows](https://meshharbor.itachi.fans/api/setup/windows)
 
 **Already installed and just need to enroll?**
 
 ```powershell
-roomler enroll --server https://roomler.ai --token <token> --name "$env:COMPUTERNAME" --machine-global
+meshharbor enroll --server https://meshharbor.itachi.fans --token <token> --name "$env:COMPUTERNAME" --machine-global
 ```
 
 :::warning Run elevated for a machine-wide install
@@ -83,7 +83,7 @@ expected publisher — and refuses an update that fails either.
 Then confirm it is running and enrolled:
 
 ```powershell
-roomler status
+meshharbor status
 ```
 
 ## Where things live
@@ -91,8 +91,8 @@ roomler status
 | Item | Path |
 |---|---|
 | Program files | `C:\Program Files\MeshHarbor\` (per-machine) or `%LOCALAPPDATA%\Programs\MeshHarbor\` (per-user) |
-| Per-user config | `%APPDATA%\roomler\config.toml` |
-| Machine-global config | `%PROGRAMDATA%\roomler\roomler\config.toml` |
+| Per-user config | `%APPDATA%\meshharbor\config.toml` |
+| Machine-global config | `%PROGRAMDATA%\meshharbor\meshharbor\config.toml` |
 
 :::danger The config file holds a credential
 `config.toml` contains the agent token, and — if you enable SSH — the SSH host
@@ -113,11 +113,11 @@ the dashboard.
 
 ## Uninstall
 
-Uninstall **Roomler** from *Settings → Apps → Installed apps*. If you registered
+Uninstall **MeshHarbor** from *Settings → Apps → Installed apps*. If you registered
 a service by hand rather than through an installer:
 
 ```powershell
-roomlerd service uninstall
+meshharbord service uninstall
 ```
 
 Then remove the device in the dashboard under **Devices**. That step matters: it
@@ -128,4 +128,4 @@ revokes the machine's credential and releases its mesh address back to the pool.
 - **The device never appears.** The enrollment token is single-use — if an earlier attempt consumed it, mint a fresh one.
 - **It appears, then goes stale.** See [device offline or stale](/docs/troubleshooting/device-offline/).
 - **Black screen when you connect.** Usually a capture problem rather than a network one — see [black screen](/docs/troubleshooting/black-screen/).
-- **Antivirus blocked the download.** Installers are served through `roomler.ai` rather than GitHub precisely so corporate allow-lists can trust one origin. If yours blocks it, allow-list `roomler.ai` and retry.
+- **Antivirus blocked the download.** Installers are served through `meshharbor.itachi.fans` rather than GitHub precisely so corporate allow-lists can trust one origin. If yours blocks it, allow-list `meshharbor.itachi.fans` and retry.

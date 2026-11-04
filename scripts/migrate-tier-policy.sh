@@ -2,7 +2,7 @@
 # migrate-tier-policy.sh — 2026-05-02
 #
 # One-shot migration to enforce the cluster tier policy:
-#   tickytack + roomler-old: utility-worker -> high-perf
+#   tickytack + meshharbor-old: utility-worker -> high-perf
 #                            (fresh init, old data on utility assumed stale)
 #   bauleiter + regal:       high-perf      -> utility-worker
 #                            (data restored from $BACKUP_DIR)
@@ -169,25 +169,25 @@ remove_hostname_pin "$DEPLOY_PARENT"/tickytack-deploy/k8s/base/statefulset-mongo
 push_deploy "$DEPLOY_PARENT"/tickytack-deploy 'feat(scheduling): unpin worker-1; tier=high-performance overlay handles placement (M5 migration)'
 
 # ======================================================================
-# roomler-old — to worker-2 (fleet-host-2 HP), fresh init
+# meshharbor-old — to worker-2 (fleet-host-2 HP), fresh init
 # ======================================================================
 echo
-echo "--- roomler-old -> fleet-host-2 (worker-2), fresh init ---"
-delete_pvc roomler mongodb-data
-delete_pvc roomler roomler-uploads
-delete_pv  roomler-mongodb-pv
-delete_pv  roomler-uploads-pv
-make_pv    roomler-mongodb-pv mongodb roomler 5Gi /data/roomler/mongodb k8s-worker-2 mongodb-data
-make_pv    roomler-uploads-pv roomler  roomler 5Gi /data/roomler/uploads k8s-worker-2 roomler-uploads
-make_pvc   roomler mongodb-data    roomler-mongodb-pv 5Gi
-make_pvc   roomler roomler-uploads roomler-uploads-pv 5Gi
-for f in "$DEPLOY_PARENT"/roomler-deploy/k8s/base/deployment-janus.yaml \
-         "$DEPLOY_PARENT"/roomler-deploy/k8s/base/deployment-redis.yaml \
-         "$DEPLOY_PARENT"/roomler-deploy/k8s/base/deployment-roomler.yaml \
-         "$DEPLOY_PARENT"/roomler-deploy/k8s/base/statefulset-mongodb.yaml; do
+echo "--- meshharbor-old -> fleet-host-2 (worker-2), fresh init ---"
+delete_pvc meshharbor mongodb-data
+delete_pvc meshharbor meshharbor-uploads
+delete_pv  meshharbor-mongodb-pv
+delete_pv  meshharbor-uploads-pv
+make_pv    meshharbor-mongodb-pv mongodb meshharbor 5Gi /data/meshharbor/mongodb k8s-worker-2 mongodb-data
+make_pv    meshharbor-uploads-pv meshharbor  meshharbor 5Gi /data/meshharbor/uploads k8s-worker-2 meshharbor-uploads
+make_pvc   meshharbor mongodb-data    meshharbor-mongodb-pv 5Gi
+make_pvc   meshharbor meshharbor-uploads meshharbor-uploads-pv 5Gi
+for f in "$DEPLOY_PARENT"/meshharbor-deploy/k8s/base/deployment-janus.yaml \
+         "$DEPLOY_PARENT"/meshharbor-deploy/k8s/base/deployment-redis.yaml \
+         "$DEPLOY_PARENT"/meshharbor-deploy/k8s/base/deployment-meshharbor.yaml \
+         "$DEPLOY_PARENT"/meshharbor-deploy/k8s/base/statefulset-mongodb.yaml; do
   remove_hostname_pin "$f"
 done
-push_deploy "$DEPLOY_PARENT"/roomler-deploy 'feat(scheduling): unpin worker-1; tier=high-performance overlay handles placement (M5 migration)'
+push_deploy "$DEPLOY_PARENT"/meshharbor-deploy 'feat(scheduling): unpin worker-1; tier=high-performance overlay handles placement (M5 migration)'
 
 # ======================================================================
 # bauleiter — to worker-1 (buildhost utility), data restored from backup
@@ -290,7 +290,7 @@ echo "=================================================="
 echo "=== END $(date) ==="
 echo "=================================================="
 echo "Final pod placement:"
-for ns in tickytack roomler bauleiter regal; do
+for ns in tickytack meshharbor bauleiter regal; do
   echo "--- $ns ---"
   kubectl -n "$ns" get pods -o wide --no-headers 2>/dev/null \
     | awk '{printf "  %-32s %-12s %s\n", $1, $3, $7}'
@@ -298,4 +298,4 @@ done
 echo
 echo "PV nodeAffinity:"
 kubectl get pv -o jsonpath='{range .items[*]}{.metadata.name}{"  -> "}{.spec.nodeAffinity.required.nodeSelectorTerms[0].matchExpressions[0].values[0]}{"  ("}{.status.phase}{")\n"}{end}' \
-  | grep -E 'tickytack|roomler|bauleiter|regal' | sort
+  | grep -E 'tickytack|meshharbor|bauleiter|regal' | sort

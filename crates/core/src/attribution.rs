@@ -470,7 +470,7 @@ mod tests {
             None
         );
         assert_eq!(
-            sanitize(input(json!({ "landing_path": "https://roomler.ai/" }))),
+            sanitize(input(json!({ "landing_path": "https://meshharbor.itachi.fans/" }))),
             None
         );
         // Protocol-relative and backslash forms are not paths either.

@@ -1,6 +1,6 @@
 # FR-63 — One delay-based rate controller for remote desktop
 
-**Issue:** [#1243](https://github.com/gjovanov/roomler-ai/issues/1243) · **Status:** in progress — B-opener shipped (default OFF); **B0 simulator shipped**, AC0b answered in simulation and still open in the field · **Plan:** `rate-control-architecture` (approved 2026-09-02)
+**Issue:** [#1243](https://github.com/jk-zhang-meta/MeshHarbor/issues/1243) · **Status:** in progress — B-opener shipped (default OFF); **B0 simulator shipped**, AC0b answered in simulation and still open in the field · **Plan:** `rate-control-architecture` (approved 2026-09-02)
 
 **Parent/siblings:** FR-59 (the regression that motivated the arc). This is one of three FRs from that plan (FR-62 encoder apply path, FR-63 the controller, FR-64 the data path).
 

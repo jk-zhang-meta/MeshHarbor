@@ -1,6 +1,6 @@
 # FR-74 — Text clarity on direct paths: the bitrate ceiling follows the content, not a constant
 
-**Issue:** [#1442](https://github.com/gjovanov/roomler-ai/issues/1442) · **Status:** P0 done 2026-09-06;
+**Issue:** [#1442](https://github.com/jk-zhang-meta/MeshHarbor/issues/1442) · **Status:** P0 done 2026-09-06;
 P1 (0.4.77) + P1b (0.4.79) + P3 (0.4.80) released and **field-verified 2026-09-07 on all four
 codecs** by the operator's read and the heartbeat; P2 retired by measurement (0 rate swaps);
 AC3 ticked; the thin-direct-path read of the q-cap done 2026-09-07 (sharp but laggy below the
@@ -129,7 +129,7 @@ sharpness. A cell that helps names the phase; a cell that does not retires a gue
   of 255 in the scroll, 5 at rest. That is P3's item, with its own mechanism.
 - Left live on CORPLAP-3 until P1 ships: `direct_queue_ms = 600` (config) and
   the machine environment `MESHHARBORD_FFMPEG_MAXRATE_KBPS=40000`. Revert:
-  `roomler config clear direct_queue_ms`, remove the variable, restart.
+  `meshharbor config clear direct_queue_ms`, remove the variable, restart.
 
 ### P1 — a content-following ceiling on direct paths
 
@@ -554,8 +554,8 @@ silent on the hosts that needed it, and the fleet had to tell us.
 
 ### The gate, read 2026-09-25 — P5 stays unbuilt
 
-**Method.** The hosts' own daemon log files (`service-logs\roomlerd.log.<date>`,
-`KEEP_DAYS = 14`) read over Fleet RPC — not `roomler logs`, whose 64 KiB tail
+**Method.** The hosts' own daemon log files (`service-logs\meshharbord.log.<date>`,
+`KEEP_DAYS = 14`) read over Fleet RPC — not `meshharbor logs`, whose 64 KiB tail
 a finished session ages out of. Every heartbeat carrying `pipe_belief=` was
 parsed on the host (one regex per pump) and aggregated per session there, so
 the wire carried summaries and the windows with a live capacity, never the

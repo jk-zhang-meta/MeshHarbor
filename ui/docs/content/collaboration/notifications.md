@@ -1,6 +1,6 @@
 ---
 title: Notifications
-description: How Roomler decides who to notify, where — in-app, browser push or email — and how to stop being told about things twice.
+description: How MeshHarbor decides who to notify, where — in-app, browser push or email — and how to stop being told about things twice.
 tags: [collaboration, notifications, push, email]
 order: 4
 ---

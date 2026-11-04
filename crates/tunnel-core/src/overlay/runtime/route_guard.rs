@@ -746,10 +746,10 @@ impl OverlayRuntime {
 
         // BLOCKER-1 safety gate — the v4 split-default gates ONLY on the v4
         // exemptions (server A-records + coturn workers). A v6-exemption failure
-        // (e.g. roomler.ai has an AAAA but this host has no v6 default route, so
+        // (e.g. meshharbor.itachi.fans has an AAAA but this host has no v6 default route, so
         // its `/128` can't pin) must NEVER withhold v4 exit — v6 is handled
         // separately below and simply stays fail-closed. Without this split, a
-        // pure-v6 feature would regress shipped v4 the moment roomler.ai gained
+        // pure-v6 feature would regress shipped v4 the moment meshharbor.itachi.fans gained
         // an AAAA.
         let v4_ok = want
             .iter()

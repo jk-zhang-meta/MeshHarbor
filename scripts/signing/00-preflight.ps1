@@ -3,7 +3,7 @@
 #
 # Checks tooling, Azure login, subscription, region eligibility, the
 # billing-account type (an INDIVIDUAL billing account cannot validate an
-# ORGANIZATION identity -- and roomler must sign as an organization,
+# ORGANIZATION identity -- and meshharbor must sign as an organization,
 # because Azure Artifact Signing only issues individual Public Trust
 # certificates to US/Canada residents), and GitHub CLI auth.
 #
@@ -12,16 +12,16 @@
 #   pwsh scripts/signing/00-preflight.ps1 -Country AT
 #   pwsh scripts/signing/00-preflight.ps1 -SubscriptionId <guid> -Location westeurope
 #
-# On success it writes scripts/signing/.roomler-signing.json, which every
+# On success it writes scripts/signing/.meshharbor-signing.json, which every
 # later script in this directory reads so values are typed exactly once.
 
 [CmdletBinding()]
 param(
     [string]$SubscriptionId = '',
     [string]$Location       = 'westeurope',
-    [string]$ResourceGroup  = 'rg-roomler-signing',
-    [string]$AccountName    = 'roomlersigning',
-    [string]$ProfileName    = 'roomler-public-trust',
+    [string]$ResourceGroup  = 'rg-meshharbor-signing',
+    [string]$AccountName    = 'meshharborsigning',
+    [string]$ProfileName    = 'meshharbor-public-trust',
     # ISO 3166-1 alpha-2 of the country the company is registered in.
     # G ROX LTD is registered in Bulgaria -- an EU member, so it qualifies for
     # ORGANIZATION Public Trust certificates. (Individual Public Trust is
@@ -167,7 +167,7 @@ Say 'Have these ready for the portal identity-validation form (step 10)'
 Info '  * Legal entity name EXACTLY as it appears in the business register'
 Info '  * Business/registry identifier (e.g. Firmenbuchnummer, HRB, Companies House no.)'
 Info '  * Registered address: street, city, state/province, postal code, country'
-Info '  * Website on the company domain: https://roomler.ai'
+Info '  * Website on the company domain: https://meshharbor.itachi.fans'
 Info '  * Primary AND secondary monitored email, BOTH on a domain the entity owns'
 Info '    (they must accept external links; verification links expire in 7 days)'
 Info '  * A government photo ID for the individual representing the organization'

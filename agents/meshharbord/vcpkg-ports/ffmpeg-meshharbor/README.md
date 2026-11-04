@@ -1,6 +1,6 @@
-# ffmpeg-roomler
+# ffmpeg-meshharbor
 
-Custom vcpkg port that builds a stripped FFmpeg for the Roomler agent.
+Custom vcpkg port that builds a stripped FFmpeg for the MeshHarbor agent.
 
 ## What it builds
 

@@ -91,8 +91,8 @@ mod tests {
     #[test]
     fn host_port_reads_the_url() {
         assert_eq!(
-            host_port("wss://roomler.ai/ws?token=x&role=agent&tid=y"),
-            Some(("roomler.ai".into(), 443))
+            host_port("wss://meshharbor.itachi.fans/ws?token=x&role=agent&tid=y"),
+            Some(("meshharbor.itachi.fans".into(), 443))
         );
         assert_eq!(
             host_port("ws://relay.example:8080/derp"),

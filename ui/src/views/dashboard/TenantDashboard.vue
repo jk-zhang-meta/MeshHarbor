@@ -320,7 +320,7 @@ const meshNodes = computed<MeshNode[]>(() => {
   })
 })
 const meshEdges = computed(() => statsStore.mesh?.edges ?? [])
-const centerName = computed(() => statsStore.mesh?.center?.name ?? 'roomler.ai')
+const centerName = computed(() => statsStore.mesh?.center?.name ?? 'meshharbor.itachi.fans')
 
 function onMeshSelect(nodeId: string) {
   // Clicking a device jumps to the fleet page it belongs to — the graph

@@ -457,7 +457,7 @@ function makeTagIndex(tag: string, pages: DocPage[]): DocPage {
     outFile: `tags/${tag}/index.html`,
     section: undefined,
     title: `${tag}`,
-    description: `Every Roomler documentation page tagged “${tag}”.`,
+    description: `Every MeshHarbor documentation page tagged “${tag}”.`,
     tags: [tag],
     order: 999,
     noindex: false,
@@ -822,7 +822,7 @@ function main(): void {
     // drops it, and with it every trace of the tracker.
     analytics: ANALYTICS ? emitter.publishFile(join(THEME_DIR, 'analytics.js')) : undefined,
     // The top bar's logo, from the SPA's own copy, so the two never drift.
-    logo: emitter.publishFile(join(UI_ROOT, 'src', 'assets', 'brand', 'roomler-logo.svg')),
+    logo: emitter.publishFile(join(UI_ROOT, 'src', 'assets', 'brand', 'meshharbor-logo.svg')),
   }
 
   const site: ShellNav = { current: 'docs', hasBlog }

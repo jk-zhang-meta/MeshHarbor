@@ -9,7 +9,7 @@
 #
 # Usage:
 #   ./scripts/dev-xvfb.sh                # runs the capture smoke test
-#   ./scripts/dev-xvfb.sh run            # runs `roomlerd run` (needs enrolled config)
+#   ./scripts/dev-xvfb.sh run            # runs `meshharbord run` (needs enrolled config)
 #   ./scripts/dev-xvfb.sh shell          # leaves Xvfb up and drops you into a shell
 #   ./scripts/dev-xvfb.sh <cmd> [args]   # runs <cmd> with DISPLAY set to the Xvfb
 #
@@ -88,7 +88,7 @@ fi
 # windows to a user's live session they're reusing.
 if (( started_xvfb )); then
     xterm -geometry 80x24+0+0 \
-        -e "echo 'roomlerd dev-xvfb canvas'; sleep 1d" >/dev/null 2>&1 &
+        -e "echo 'meshharbord dev-xvfb canvas'; sleep 1d" >/dev/null 2>&1 &
     pids+=($!)
     # Give the (WM-less) server a moment to map the window.
     sleep 0.3
@@ -110,7 +110,7 @@ fi
 # foreground instead so `cleanup()` tears them down when the command exits.
 case "$1" in
     run)
-        echo "→ running roomlerd (--features ${AGENT_FEATURES})"
+        echo "→ running meshharbord (--features ${AGENT_FEATURES})"
         cargo run -p meshharbord --features "$AGENT_FEATURES" -- run
         ;;
     shell)

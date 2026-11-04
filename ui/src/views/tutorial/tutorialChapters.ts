@@ -24,7 +24,7 @@ import { FEATURED_VIDEO_ID } from '@/utils/videos'
  * route that doesn't exist is a broken promise, and a test can catch it).
  *
  * Voice and substance come from the LANDING PAGE and README, deliberately:
- * a user who arrived through roomler.ai should meet the same three
+ * a user who arrived through meshharbor.itachi.fans should meet the same three
  * promises, in the same words, once they are inside. `**bold**` marks
  * emphasis — rendered as segments, never through v-html.
  */

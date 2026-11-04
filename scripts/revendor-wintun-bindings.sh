@@ -3,7 +3,7 @@
 # `crates/vendored/wintun-bindings` is pristine upstream + ONE canonical patch
 # (`crates/vendored/wintun-bindings.patch`: the on-drop NetworkList
 # Profiles/Signatures registry deletion removed, so an adapter drop no longer
-# erases the roomler network's NLA identity / Private-profile categorization).
+# erases the meshharbor network's NLA identity / Private-profile categorization).
 # This script makes that relationship mechanical:
 #
 #   scripts/revendor-wintun-bindings.sh [version]           rebuild the vendored tree

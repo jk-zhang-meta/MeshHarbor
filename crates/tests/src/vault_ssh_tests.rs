@@ -100,15 +100,15 @@ async fn seed_ssh(app: &TestApp, t: &SeededTenant) {
     for (name, text) in [
         (
             "anyone-may-be-dev",
-            r#"permit (principal, action == Roomler::Action::"role:assume", resource == Roomler::Role::"dev");"#,
+            r#"permit (principal, action == MeshHarbor::Action::"role:assume", resource == MeshHarbor::Role::"dev");"#,
         ),
         (
             "dev-runs-on-build",
-            r#"permit (principal in Roomler::Role::"dev", action == Roomler::Action::"ssh:run", resource) when { resource.tags.contains("build") };"#,
+            r#"permit (principal in MeshHarbor::Role::"dev", action == MeshHarbor::Action::"ssh:run", resource) when { resource.tags.contains("build") };"#,
         ),
         (
             "never-as-the-daemon",
-            r#"forbid (principal, action == Roomler::Action::"ssh:run", resource) when { context.account == "daemon" };"#,
+            r#"forbid (principal, action == MeshHarbor::Action::"ssh:run", resource) when { context.account == "daemon" };"#,
         ),
     ] {
         let (code, body) = post(

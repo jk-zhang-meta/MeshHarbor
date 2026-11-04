@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (C) 2026 G ROX EOOD
-//! Drain pending crash sidecars to the roomler.ai ingest endpoint.
+//! Drain pending crash sidecars to the meshharbor.itachi.fans ingest endpoint.
 //!
 //! Phase 1C of the agent-crash-upload feature (Task 9). The recorder
 //! (Phase 1A) wrote `*.json` sidecars to the Worker + Supervisor
 //! crashes dirs at crash time; on next agent startup [`drain_and_
-//! upload`] scans both dirs, POSTs each payload to roomler.ai with
+//! upload`] scans both dirs, POSTs each payload to meshharbor.itachi.fans with
 //! Bearer auth, and deletes successfully-uploaded sidecars.
 //!
 //! ## Delete policy
@@ -32,7 +32,7 @@
 //!
 //! Spawned as a `tokio::task::spawn` from `main.rs` AFTER the first
 //! successful WS connect — proves the agent JWT is valid + the
-//! network can reach roomler.ai, so we're not hammering an offline
+//! network can reach meshharbor.itachi.fans, so we're not hammering an offline
 //! host with retry storms. Gated through `tokio::sync::Notify` from
 //! the signaling loop's first `Ok(())` return.
 
@@ -73,7 +73,7 @@ pub const CRASH_DRAIN_INTERVAL_SECS: u64 = 5 * 60;
 /// operation.
 const INTER_REQUEST_DELAY: Duration = Duration::from_millis(1100);
 
-/// Drain every pending crash sidecar to roomler.ai. Best-effort:
+/// Drain every pending crash sidecar to meshharbor.itachi.fans. Best-effort:
 /// any IO / network / parse failure logs `warn!` and continues with
 /// the next sidecar so a single poisoned file doesn't block the
 /// fleet. Returns when the queue is empty.

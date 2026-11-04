@@ -434,7 +434,7 @@ mod tests {
             r#"{"rows":[{"dimensions":{"utm_source":"linkedin","utm_medium":null},
                 "metrics":{"visitors":52,"pageviews":265.0,"visits":null,"median_read_s":null},
                 "goals":{"signup":1}}],
-                "meta":{"site_domain":"roomler.ai","hostnames":["roomler.ai"],"date_from":"2026-10-13",
+                "meta":{"site_domain":"meshharbor.itachi.fans","hostnames":["meshharbor.itachi.fans"],"date_from":"2026-10-13",
                 "date_to":"2026-10-13","limit":100,"offset":0,"has_more":false}}"#,
         )
         .unwrap();

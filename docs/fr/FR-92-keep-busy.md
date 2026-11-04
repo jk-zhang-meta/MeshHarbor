@@ -1,6 +1,6 @@
 # FR-92: Keep busy — the agent keeps a host active with mouse patterns, and any real user takes over at once
 
-**Issue:** [#1942](https://github.com/gjovanov/roomler-ai/issues/1942) · **Status:** **closed (2026-10-13)** — P0–P9 shipped in 0.4.126, #1991 in 0.4.127, P10 (a local On) in 0.4.129, P10b (SYSTEM never starts it) in 0.4.130. Field-verified (§9, rows 1–57) on Windows, macOS, GNOME on Xorg and Wayland, and KDE Plasma; every criterion ticked (§5)
+**Issue:** [#1942](https://github.com/jk-zhang-meta/MeshHarbor/issues/1942) · **Status:** **closed (2026-10-13)** — P0–P9 shipped in 0.4.126, #1991 in 0.4.127, P10 (a local On) in 0.4.129, P10b (SYSTEM never starts it) in 0.4.130. Field-verified (§9, rows 1–57) on Windows, macOS, GNOME on Xorg and Wayland, and KDE Plasma; every criterion ticked (§5)
 · **Owner:** remote desktop (agent + viewer), fleet (the org switch) · **Anchors:**
 master `71afd2b4c` · **Builds on:** [FR-55](FR-55-always-reachable.md) (power),
 [FR-27](FR-27-consent-surfaces-and-desktop-companion.md) (consent, the companion banner, the person socket),
@@ -31,12 +31,12 @@ disconnects, self-updates and reboots.
 2. **Availability:** on by default for any session holding `INPUT`. The device owner can turn it off
    (`keep_busy_enabled`, never server-settable), and an **org admin can deny it org-wide** in v1. The
    deny also stops it where it is already running.
-3. **Host side:** a companion tray item ("Keep busy is on · Stop") and `roomler keep-busy status|off`.
+3. **Host side:** a companion tray item ("Keep busy is on · Stop") and `meshharbor keep-busy status|off`.
    - **Amended 2026-10-11** (operator, "i want an On in meshharbor-desktop too"): the person at the
-     computer can also turn it on, from the tray ("Start keep busy") and with `roomler keep-busy on`.
+     computer can also turn it on, from the tray ("Start keep busy") and with `meshharbor keep-busy on`.
      This is P10. Only that person's place may do it: never root, SYSTEM (P10b), a service or another
      session. The server itself still has no "on" (§7). That gate decides who is named. It is not a
-     wall against `roomler exec`, which on an attended Windows install runs as the person and passes
+     wall against `meshharbor exec`, which on an attended Windows install runs as the person and passes
      it (§3g, §9 row 43).
 
 ## 2. Evidence (master `71afd2b4c`, 2026-10-10)
@@ -44,7 +44,7 @@ disconnects, self-updates and reboots.
 | What | Where | Consequence |
 |---|---|---|
 | FR-55 holds `PowerCreateRequest(PowerRequestSystemRequired)` / `IOPMAssertion("PreventUserIdleSystemSleep")` | `agents/meshharbord/src/power.rs` L305-471 | stops sleep, but not the screensaver, the idle lock or presence, because none of these reset the user-idle clock |
-| Injected input does reset it: macOS logs a `UserIsActive` assertion "tickle … process:roomlerd" during a session | FR-55 field log; `power.rs` L17-22 | the mechanism works, but today it only runs while a controller types |
+| Injected input does reset it: macOS logs a `UserIsActive` assertion "tickle … process:meshharbord" during a session | FR-55 field log; `power.rs` L17-22 | the mechanism works, but today it only runs while a controller types |
 | One process-global injection worker owns the only OS injector, created lazily and **cached for the life of the process, Noop included** | `input/arbiter.rs` L581 `global()`, L646 `worker`, L652, L781 `get_or_insert_with` | a second injector would break modifier fencing and the portal route; an early Noop would break RC input until restart |
 | Every RC input event already passes through `ArbiterState::plan` with an exact per-session held-key/button set | `arbiter.rs` L286-355, L125-131 | the engine gets an exact "a controller is active" signal, and knows when a remote button is down |
 | Clicks carry coordinates, and dispatch **moves before every button event** | `input/mod.rs` L167-173; `input/enigo_backend.rs` L123-138 | a controller's click lands where they point, even after the engine moved the cursor |
@@ -250,7 +250,7 @@ stateDiagram-v2
 ### 3g. Host side
 
 - **LocalAPI `KeepBusyStatus` / `KeepBusyOff`**, both on the person-socket allowlist.
-  - Off is open to every peer the endpoint admits (including `roomler exec`), because stopping is
+  - Off is open to every peer the endpoint admits (including `meshharbor exec`), because stopping is
     the safe direction.
 - **LocalAPI `KeepBusyOn { opts }` (P10)**, also on the person-socket allowlist, and gated on the
   peer by `ClientPeer::may_start_keep_busy` (`crates/localapi`):
@@ -258,20 +258,20 @@ stateDiagram-v2
   - a per-user daemon's socket (the macOS GUI worker, a Linux user daemon): its owner;
   - a Linux system install's person socket: its person;
   - **root never**. The console-user gate the recording verbs use lets root through on Unix, and root
-    is how `roomler exec` arrives there.
+    is how `meshharbor exec` arrives there.
   - **SYSTEM never** (P10b, operator 2026-10-12), nor LocalService or NetworkService: Windows' root.
     The pipe listener reads the client's account from its token at accept time
     (`pipe_client_peer` → `GetNamedPipeClientProcessId` → `OpenProcessToken` →
     `IsWellKnownSid`), never from what the client says. A Windows peer whose account cannot be read is
-    refused. This closes `roomler exec` on a host in SystemContext mode, where exec runs as SYSTEM
+    refused. This closes `meshharbor exec` on a host in SystemContext mode, where exec runs as SYSTEM
     *inside* the console session. It also refuses structurally any later exec that runs as SYSTEM
     (#2021). The person's tray and CLI run as the person, whose token the worker can always read.
-  - ⚠️ **Not a wall against `roomler exec`** (§9 row 43, 0.4.129). On Windows exec runs in the worker
+  - ⚠️ **Not a wall against `meshharbor exec`** (§9 row 43, 0.4.129). On Windows exec runs in the worker
     that holds the agent socket (`RunAs::Daemon` is the worker's identity), and that worker lives in
     the console session: the signed-in user's elevated token on an attended install, SYSTEM in that
     session in SystemContext mode (`MESHHARBORD_ENABLE_SYSTEM_SWAP`). A controller connecting changes
     neither. So
-    `roomler exec <win> -- roomler keep-busy on` passes the session test and is named "the person at
+    `meshharbor exec <win> -- meshharbor keep-busy on` passes the session test and is named "the person at
     this computer". On Unix exec arrives as root and is refused, but root can `sudo -u` the person
     (row 42 did exactly that, to stand in for the person). No local gate can be that wall: an exec
     caller could as well write the person's `keep-busy.json`, or run an input loop of its own. What
@@ -284,7 +284,7 @@ stateDiagram-v2
     is not ours to show every viewer and the org's history.
   - A supervised Mac's root daemon refuses it rather than relay it. The person's clients reach the
     GUI worker directly, and nothing that can only reach the root daemon may start synthetic input.
-- **CLI:** `roomler keep-busy [status|on|off] [--json]`. `on` takes `--pattern`, `--size`, `--speed`,
+- **CLI:** `meshharbor keep-busy [status|on|off] [--json]`. `on` takes `--pattern`, `--size`, `--speed`,
   `--resume-after SECONDS` and `--auto-off MINUTES`.
 - **Companion:**
   - a tray item and tooltip, polled like the recording item (`meshharbor-desktop/src/tray.rs`
@@ -332,8 +332,8 @@ stateDiagram-v2
 | P7 | **A permanent history** (operator, 2026-10-11): `keep_busy_events`, owned by `fleet`, **no TTL**. Server rows (`org_denied` · `org_allowed` · `org_default_pattern`, only on a change, naming the admin) and device rows (`on` · `off`, derived on the heartbeat path from the previous stored brief against the new one — ONE `find_one_and_update` returning the row as it was — with a restart dedupe); `source` tells the server's decision from the device's claim. `GET …/keep-busy-history` (`MANAGE_AGENTS`, tenant + device scoped, `before`/`limit` paging); a History list with a device filter in the org's card. Resolution is the 30 s heartbeat; exact device-pushed edges would need an agent release | none (a record, not a gate; the route alone) | #1977 open |
 | P8 | **The default pattern**: circle stays the product default; `TenantSettings.keep_busy_default_pattern` lets an org choose another, validated by **equality** against the agent's 13 wire names, `null` clears, absent leaves alone; the settings `GET` becomes readable by any member so the viewer can pre-select it (`PUT` stays `MANAGE_TENANT`). No agent and no wire change: the menu pre-selects the org default only where the person has no remembered choice; a fetch failure means circle | unset the default (= circle) | #1977 open |
 | P9 | **GNOME on Wayland** (and GNOME on Xorg under a root daemon) through the arbiter's uinput device: a normalised move (`KbOp::MoveNorm`), Mutter's idle clock and layout asked by `portal-helper --keep-busy` inside the person's session, a **blind** host (`Host::blind`). Plus the GDM/Xorg lock fix found in the field: `logind::pick` | `uinput = false` (the GNOME host needs the uinput device); the cap word | #1978, merged `211f2dc18` |
-| P10 | **A local On** (operator, 2026-10-11). The person at the computer turns it on from the tray's "Start keep busy" or with `roomler keep-busy on [--pattern …]`. LocalAPI `KeepBusyOn`, gated to the console person: never root (`roomler exec` on Unix), never session 0, never relayed by a supervised Mac's root daemon. It names "the person at this computer". The server still has no "on". ⚠️ On Windows a `roomler exec` runs in the console session and passes the gate (§3g) | `keep_busy_enabled = false` and an org deny refuse it, as they refuse a viewer's | #2009, merged `97cc39b11`; released in **0.4.129** |
-| P10b | **SYSTEM never** (operator, 2026-10-12, §6). The Windows pipe listener reads the client's account from its token at accept time (`ClientPeer::system_account`). SYSTEM, LocalService, NetworkService, or an account that cannot be read, are refused keep busy's On, wherever they run. That closes `roomler exec` in SystemContext mode. No environment marker. Plus a Windows CI step for the LocalAPI crate, whose Windows tests ran in no lane | `keep_busy_enabled = false` and an org deny, as for P10; no switch of its own (a refusal, and only of SYSTEM) | #2037, merged `c46ef3297`; released in **0.4.130**; field-verified with its negative control (§9 rows 50–51) |
+| P10 | **A local On** (operator, 2026-10-11). The person at the computer turns it on from the tray's "Start keep busy" or with `meshharbor keep-busy on [--pattern …]`. LocalAPI `KeepBusyOn`, gated to the console person: never root (`meshharbor exec` on Unix), never session 0, never relayed by a supervised Mac's root daemon. It names "the person at this computer". The server still has no "on". ⚠️ On Windows a `meshharbor exec` runs in the console session and passes the gate (§3g) | `keep_busy_enabled = false` and an org deny refuse it, as they refuse a viewer's | #2009, merged `97cc39b11`; released in **0.4.129** |
+| P10b | **SYSTEM never** (operator, 2026-10-12, §6). The Windows pipe listener reads the client's account from its token at accept time (`ClientPeer::system_account`). SYSTEM, LocalService, NetworkService, or an account that cannot be read, are refused keep busy's On, wherever they run. That closes `meshharbor exec` in SystemContext mode. No environment marker. Plus a Windows CI step for the LocalAPI crate, whose Windows tests ran in no lane | `keep_busy_enabled = false` and an org deny, as for P10; no switch of its own (a refusal, and only of SYSTEM) | #2037, merged `c46ef3297`; released in **0.4.130**; field-verified with its negative control (§9 rows 50–51) |
 
 ## 5. Acceptance criteria
 
@@ -356,7 +356,7 @@ stateDiagram-v2
   (reworded 2026-10-11, operator: the connected viewer is told why rather than finding it gone).
 - [x] **AC6:** an org deny refuses new enables and stops running instances, including on devices that
   reconnect later and across pods.
-- [x] **AC7:** the tray's Stop and `roomler keep-busy status|off` work, including through a Linux
+- [x] **AC7:** the tray's Stop and `meshharbor keep-busy status|off` work, including through a Linux
   system install's person socket.
 - [x] **AC8:** no hook or raw-input API is used. A source-scan unit test passes (proven to fail on a
   planted line), the binary's import diff against the previous release is clean, and EDR stays quiet
@@ -365,10 +365,10 @@ stateDiagram-v2
   reason the viewer shows (`wayland` without the uinput path; `no_idle_clock` on a desktop with no idle
   clock a helper can read).
 - [x] **AC14 (P10):** the person at the computer turns it on from the tray's "Start keep busy", and
-  with `roomler keep-busy on` (any pattern, checked by the viewer's parser), on Windows and on a
+  with `meshharbor keep-busy on` (any pattern, checked by the viewer's parser), on Windows and on a
   supervised Mac. Every connected viewer shows "turned on by the person at this computer". A root or
   SYSTEM caller is refused (reworded 2026-10-12, operator). On an attended Windows install,
-  `roomler exec` runs as the signed-in user and is admitted until #2021 decides exec's identity. The
+  `meshharbor exec` runs as the signed-in user and is admitted until #2021 decides exec's identity. The
   owner's switch and an org deny refuse a local start as they refuse a viewer's.
 - [x] **AC13 (P9):** on GNOME on Wayland, through a system install with uinput on, keep busy runs:
   the negative control (OFF ⇒ GNOME locks at its idle delay) recorded first, then ON ⇒ no lock and
@@ -397,7 +397,7 @@ stateDiagram-v2
   (`keep_busy_op`). The open question is RC's path (`get_or_insert_with(open_default)`), which changes
   RC behaviour, needs its own test and field check, and is not FR-92's.
 **Resolved 2026-10-12 (operator: "do per recommendation and proceed"):**
-- *How an On started through `roomler exec` is handled* (§3g, §9 row 43). The decision is an
+- *How an On started through `meshharbor exec` is handled* (§3g, §9 row 43). The decision is an
   **identity check now, #2021's FR later, and no marker**.
   - P10b refuses SYSTEM, LocalService and NetworkService, read from the client's token, so an exec
     on a host in SystemContext mode is refused today. Once #2021 runs exec as SYSTEM, the same
@@ -431,7 +431,7 @@ stateDiagram-v2
 - Clicks, keys or scrolling of any kind.
 - **A server "on".** A server-side enable would be the only server-forgeable input path in the
   product, so there is none. The only ways to turn it on are a consented, `INPUT`-granted session
-  and, since P10, the person at the computer. `roomler exec` is refused for that start where it
+  and, since P10, the person at the computer. `meshharbor exec` is refused for that start where it
   arrives as root (Unix) or, since P10b, as SYSTEM (Windows in SystemContext mode). On an attended
   Windows install it runs inside the console session as the signed-in user, and passes (§3g,
   measured on 0.4.129). There it already holds every power a mouse jiggler needs, and the device
@@ -442,7 +442,7 @@ stateDiagram-v2
 ## 8. Rejected along the way
 
 - **Reusing the recording verbs' console-user gate for P10's local On.** `peer_is_console_user` lets
-  root through on Unix (`p == own || p == 0`), and root is how `roomler exec` arrives there. With it,
+  root through on Unix (`p == own || p == 0`), and root is how `meshharbor exec` arrives there. With it,
   the server could start synthetic input on every exec-enabled Linux or macOS device. The On has its
   own gate (`peer_may_start_keep_busy`): root never.
 - **Low-level hooks or raw input to tell real from synthetic input.** They're exact (`LLMHF_INJECTED`,
@@ -477,23 +477,23 @@ Mutter's `GetIdletime` over the person's bus.
 | 5 | AC3: local and controller input | same, `resume_after` 10 s | local mouse 0.83 s · controller mouse 0.27 s · controller key 12 ms · each resumed after 10.1 s |
 | 6 | AC3: a single local key | same | **8 of 9 isolated Shift taps** paused it (0.5–1.1 s, including ~0.5 s of injection path); one slipped through inside a `GetLastInputInfo` tick shared with an own move (`docs/keep-busy.md` §10). Bursts of four taps: 4/4 in 0.40–0.50 s |
 | 7 | AC3: a held button | same, QEMU `mouse_button 1` for 25 s | paused 0.81 s after the press, `button_held` when `resume_after` ran out, resumed 10.1 s after the release |
-| 8 | AC2 negative control | Ubuntu 24.04, GNOME on Xorg, root daemon given the display (`/etc/default/roomlerd`), uinput off | **OFF: X idle 123 s, GNOME locked** (`LockedHint=yes`) |
+| 8 | AC2 negative control | Ubuntu 24.04, GNOME on Xorg, root daemon given the display (`/etc/default/meshharbord`), uinput off | **OFF: X idle 123 s, GNOME locked** (`LockedHint=yes`) |
 | 9 | **a bug** | same, locked | turned ON while locked: **`running` behind GNOME's lock screen** (X idle 5 ms). GDM's Xorg session names no display to logind, so `logind::pick` matched nothing and the lock was never read. **Fixed in P9** |
 | 10 | AC2 ON | same, unlocked, GNOME's 60 s lock armed | **5 min: 301 samples, X idle max 33 ms, no lock** |
 | 11 | AC9 | Ubuntu 24.04 GNOME **Wayland**, system install, uinput on | `unavailable`, reason **`unsupported`** ("Unavailable on this computer."), not `wayland`: a root daemon has no `DISPLAY`, so the X11 host never even saw Xwayland. P9 makes this host run |
 | 12 | AC13 negative control | same, keep busy unavailable | **OFF: Mutter idle reached 60 s and GNOME locked** |
 | 13 | AC6: org deny, **across pods** | all three VMs' sockets on pod A; the PUT sent straight to pod B | every device logged `org policy received denied=true` and turned off, 17–38 ms after the PUT |
 | 14 | AC6: refuses new enables | Win11, denied | the viewer greys the switch ("Disabled by your organization."); a raw `rc:keep-busy.set on` sent past it, straight down the control channel, came back `on=false org_denied` in 10 ms |
-| 15 | AC6: a device that reconnects | Ubuntu (X11), denied, `roomler restart` | the policy arrived 5 ms after the new hello, and it stayed off. The re-allow (via pod B again) reached all three in ~20 ms and turned nothing back on |
-| 16 | AC7: the CLI | Win11, over the guest's own shell | `roomler keep-busy status` (and `--json`) read the live state; `roomler keep-busy off` turned it off, "Turned off at this computer." |
+| 15 | AC6: a device that reconnects | Ubuntu (X11), denied, `meshharbor restart` | the policy arrived 5 ms after the new hello, and it stayed off. The re-allow (via pod B again) reached all three in ~20 ms and turned nothing back on |
+| 16 | AC7: the CLI | Win11, over the guest's own shell | `meshharbor keep-busy status` (and `--json`) read the live state; `meshharbor keep-busy off` turned it off, "Turned off at this computer." |
 | 17 | AC8: imports | the release MSIs, `meshharbord.exe` 0.4.124 → 0.4.125 | **exactly two new imports**, `user32!GetLastInputInfo` and `user32!SystemParametersInfoW`; no hook, raw-input or keyboard-state API added (`GetAsyncKeyState`/`GetKeyState` predate keep busy) |
 | 18 | AC13 ON (**P9 build**) | Ubuntu 24.04 GNOME **Wayland**, system install, uinput on, GNOME's 60 s lock armed | the GNOME host came up 44 ms after the turn-on (`idle_clock=true geometry=true`), `detector` `clock`; **~5 min: 284 samples, Mutter idle max 46 ms (p99 33 ms), no lock** |
 | 19 | AC13: local input, lock (P9) | same | a key paused it in 0.64 s, a move of the VM's USB tablet in 0.54 s; each resumed after ~10 s. `loginctl lock-session` ⇒ `locked`; the unlock ⇒ paused for whoever unlocked, then running |
 | 20 | **the fix** (P9) | the Xorg host of cell 9, P9 installed | turned ON while locked: **`locked` in 229 ms, X idle growing** — the same cell 0.4.125 failed |
 | 21 | AC1: every viewer | two viewers on the GNOME Wayland guest, the second one with the floor | the floor holder switched it on; **the other viewer, doing nothing, saw it 13 ms later**, both toolbars "Keep busy · locked". The off reached the other in 15 ms (`stopped_by_controller`) |
-| 22 | AC5: the owner's off | the GNOME Wayland guest, running | `roomler config set keep_busy_enabled false` applied live: it stopped (`device_disabled`, "Turned off on this computer"), the `keep-busy` word left the server's listing within a heartbeat, and a raw `set on` was refused `device_disabled`. A connected viewer shows the control **disabled with the owner's reason** (the P2 design: `agentSupportsKeepBusy \|\| state`), not hidden |
-| 23 | AC7: a Linux system install's person socket | the GNOME Wayland guest, as the unprivileged user | `roomler keep-busy status` read the root daemon's state and `roomler keep-busy off` stopped it ("Turned off at this computer.") |
-| 24 | Worker types: the user-context worker | Win11 attended install (`worker role probed role=User`) | on ⇒ running in 228 ms; **69 samples before the touch, session idle max 32 ms**; a real local key paused it ~1 s later, and it resumed after 10.1 s. The store is the person's own `%LOCALAPPDATA%\roomler\roomler\data\keep-busy.json` (its owner reads `BUILTIN\Administrators`: the default owner of the worker's elevated token; access is the profile's inherited ACL) |
+| 22 | AC5: the owner's off | the GNOME Wayland guest, running | `meshharbor config set keep_busy_enabled false` applied live: it stopped (`device_disabled`, "Turned off on this computer"), the `keep-busy` word left the server's listing within a heartbeat, and a raw `set on` was refused `device_disabled`. A connected viewer shows the control **disabled with the owner's reason** (the P2 design: `agentSupportsKeepBusy \|\| state`), not hidden |
+| 23 | AC7: a Linux system install's person socket | the GNOME Wayland guest, as the unprivileged user | `meshharbor keep-busy status` read the root daemon's state and `meshharbor keep-busy off` stopped it ("Turned off at this computer.") |
+| 24 | Worker types: the user-context worker | Win11 attended install (`worker role probed role=User`) | on ⇒ running in 228 ms; **69 samples before the touch, session idle max 32 ms**; a real local key paused it ~1 s later, and it resumed after 10.1 s. The store is the person's own `%LOCALAPPDATA%\meshharbor\meshharbor\data\keep-busy.json` (its owner reads `BUILTIN\Administrators`: the default owner of the worker's elevated token; access is the profile's inherited ACL) |
 | 25 | AC12 (P8), **prod** `hosted-20261011-a5429ac` | the vmtest org | the admin set the org default to `heart` (200). A FRESH viewer, with nothing remembered for the device, pre-selected `["heart"]`. Reset to `null` afterwards |
 | 26 | AC11 (P7), **prod** | the GNOME Wayland guest | on from the viewer at 09:37:21 ⇒ an `on` row (device, `vmtest admin`, circle) at 09:37:50, the next heartbeat; off at 09:39:08 ⇒ an `off` row (`stopped_by_controller`) at 09:39:20. The org-wide list, newest first: `off` · `org_default_pattern` → null (server, the admin) · `on` · `org_default_pattern` heart (server, the admin) — exactly the four changes made, nothing else |
 | 27 | **The release**: `agent-v0.4.126` + `setup-v0.4.126` → `41abdd4c1` (#1981) | — | published 13:09:25Z / 13:10:31Z; 28 agent assets with 10 `.asc`; "Resolved MSI ProductVersion: 0.4.126 (from 0.4.126)"; `/api/agent/latest-release` served it at once. The merge tree was byte-identical to the rehearsed tree |
@@ -514,10 +514,10 @@ production SPA in the operator's Chrome, its control channel tapped as on the VM
 | 31 | **macOS idle clocks** (a finding, not a fault) | the MacBook | `HIDIdleTime` — what the screensaver and display sleep read — is refreshed by **posted** input only once per **5.0–5.1 s**: a sawtooth while keep busy posts about 30 moves a second. A remote controller's input showed the identical 5 s sawtooth. The session clock follows every move. Both stay far below any screensaver, lock or Away delay |
 | 32 | **Hot corners** (cell 6) | the MacBook | All four corners set to **Lock Screen**; size `l`, anchored near the top-right: **none fired in 2.5 h**. Positive control: a viewer move to the exact corner (0, 0) locked the Mac. Keep busy said **`locked` 259 ms after that move**, and posted nothing while locked (`HIDIdleTime` climbed to 19.9 s). After the unlock: `paused` (`local`), then `running` 10.1 s after the last input. The corners were restored afterwards |
 | 33 | **AC3 on macOS** | the MacBook | **Local**: a trackpad touch at 17:49:26.791 (a `HIDIdleTime` reset off the 5 s grid) gave `paused` (`local`) at 17:49:26.842, **51 ms**. A Shift tap gave `paused` 0.49 s **before** its key-up, which the 10 s resume dates exactly. **Remote**: a viewer's move gave `paused` (`remote`) in **109–126 ms**. Each resumed 10 s after the last input |
-| 34 | **AC4 on macOS**: disconnect, then a worker restart | the MacBook | Viewer closed at 14:52:25: keep busy ran 2.5 h with no viewer. A reconnecting viewer read `running` and re-asserted nothing. A restarted GUI worker logged **"keep-busy: restored from the per-person store"**. The worker's store is in the person's `~/Library/Application Support/live.roomler.roomler/` and owned by them; the root daemon keeps its own under `/var/root` |
+| 34 | **AC4 on macOS**: disconnect, then a worker restart | the MacBook | Viewer closed at 14:52:25: keep busy ran 2.5 h with no viewer. A reconnecting viewer read `running` and re-asserted nothing. A restarted GUI worker logged **"keep-busy: restored from the per-person store"**. The worker's store is in the person's `~/Library/Application Support/live.meshharbor.meshharbor/` and owned by them; the root daemon keeps its own under `/var/root` |
 | 35 | **AC1, two viewers** | the MacBook | Two Chrome instances on one session ("shared ×2"). A move from viewer 2: both showed `paused` (`remote`) **33 ms apart** and `running` 38 ms apart, identical states. (The second instance was not Edge: Edge was not connected to the extension) |
-| 36 | **AC7 on macOS**: the tray, and the CLI on a supervised Mac | the MacBook | **Tray**: the companion's "Stop keep busy (Wander · …)" reached the **worker**: `turned off reason="stopped_locally"` and `localapi: keep busy stopped at this computer`; every viewer showed `off`. The companion's own log reads the worker (`tray: keep busy is on pattern=wander`). **CLI as the person** (`sudo -u <person> roomler keep-busy status`, so `TMPDIR` dropped) reached the worker: `running`. **CLI as root**, what `roomler exec` runs, ❌: it reached the root daemon's own idle engine. `status` said `off`, and `off` stopped nothing — 6 s later the worker still said `running` and the session clock read 6–505 ms. Fixed in #1991 (the daemon asks the worker over the delegation channel); field confirmation rides the next release |
-| 37 | **Accessibility denied** (cell 6) | the MacBook | macOS 27 lists the grant under Privacy & Security → **Device Control & Data Access**, with two entries: "Roomler" (the companion) and "roomlerd" (the agent). Only `roomlerd`'s counts: switching off the companion's changed nothing. With `roomlerd`'s off, a **running** worker kept its start-time grant, but its moves stopped landing: `unavailable` (`calibration_failed`) on every 30 s retry, never a false `running`. A **restarted** worker could not inject (it announced `permissions: ["screen-capture"]`, no `input`); the pointer stayed still. But it reported `unsupported`, "Unavailable on this computer." ❌, instead of `no_permission`: the enigo we ship refuses to construct without the grant, and a Noop read as "no backend". Fixed in #1991 (`classify_unpermitted` asks the OS first). Re-granted, a worker restart brought input back (`["screen-capture", "input"]`) |
+| 36 | **AC7 on macOS**: the tray, and the CLI on a supervised Mac | the MacBook | **Tray**: the companion's "Stop keep busy (Wander · …)" reached the **worker**: `turned off reason="stopped_locally"` and `localapi: keep busy stopped at this computer`; every viewer showed `off`. The companion's own log reads the worker (`tray: keep busy is on pattern=wander`). **CLI as the person** (`sudo -u <person> meshharbor keep-busy status`, so `TMPDIR` dropped) reached the worker: `running`. **CLI as root**, what `meshharbor exec` runs, ❌: it reached the root daemon's own idle engine. `status` said `off`, and `off` stopped nothing — 6 s later the worker still said `running` and the session clock read 6–505 ms. Fixed in #1991 (the daemon asks the worker over the delegation channel); field confirmation rides the next release |
+| 37 | **Accessibility denied** (cell 6) | the MacBook | macOS 27 lists the grant under Privacy & Security → **Device Control & Data Access**, with two entries: "MeshHarbor" (the companion) and "meshharbord" (the agent). Only `meshharbord`'s counts: switching off the companion's changed nothing. With `meshharbord`'s off, a **running** worker kept its start-time grant, but its moves stopped landing: `unavailable` (`calibration_failed`) on every 30 s retry, never a false `running`. A **restarted** worker could not inject (it announced `permissions: ["screen-capture"]`, no `input`); the pointer stayed still. But it reported `unsupported`, "Unavailable on this computer." ❌, instead of `no_permission`: the enigo we ship refuses to construct without the grant, and a Noop read as "no backend". Fixed in #1991 (`classify_unpermitted` asks the OS first). Re-granted, a worker restart brought input back (`["screen-capture", "input"]`) |
 
 **The releases, 2026-10-11/12**: 0.4.127 carries #1991, and 0.4.129 carries P10 (#2009). The hosts
 are the operator's MacBook and the operator's Win11 PC, at the operator's request. The viewer is the
@@ -526,18 +526,18 @@ production SPA, as above.
 | # | Cell | Host | Result |
 |---|---|---|---|
 | 38 | **The release 0.4.127** (#1991) | — | `agent-v0.4.127` on `719b4a57d`, published 20:51:16Z: 28 assets, 10 `.asc`, every installable with its `.asc` and `.sha256`; "Resolved MSI ProductVersion: 0.4.127 (from 0.4.127)" |
-| 39 | **Row 36's ❌ on the release**: a root CLI on a supervised Mac | the MacBook on 0.4.127, keep busy on from the viewer (`wander`), the Mac locked | As root (`roomler exec`), `roomler keep-busy status` answered the **worker's** state: `locked` (wander, turned on by the viewer's user), where 0.4.126 answered the idle daemon's `off`. A root `off` stopped the worker (`turned off reason="stopped_locally"`). The worker then read `off` itself, and the viewer showed `off` (`stopped_locally`) live. The worker's log holds the daemon's two questions, `delegation: answered the daemon's keep-busy question id=0 … phase=locked` and `id=1 off=true … phase=off` ✅ |
+| 39 | **Row 36's ❌ on the release**: a root CLI on a supervised Mac | the MacBook on 0.4.127, keep busy on from the viewer (`wander`), the Mac locked | As root (`meshharbor exec`), `meshharbor keep-busy status` answered the **worker's** state: `locked` (wander, turned on by the viewer's user), where 0.4.126 answered the idle daemon's `off`. A root `off` stopped the worker (`turned off reason="stopped_locally"`). The worker then read `off` itself, and the viewer showed `off` (`stopped_locally`) live. The worker's log holds the daemon's two questions, `delegation: answered the daemon's keep-busy question id=0 … phase=locked` and `id=1 off=true … phase=off` ✅ |
 | 40 | RC after the server roll (no regression) | prod `hosted-20261011-ffa860c`: the MacBook (0.4.127) and the Win11 PC (0.4.126) | **Mac**: H.265 4:2:0 in hardware (`hevc_videotoolbox`), relayed, hardware decode, 28 fps at 3024×1968. **Win11 PC**: AV1 4:2:0 in hardware (`av1_nvenc`), relayed, 2560×1600. A viewer's input reached both |
 | 41 | **The release 0.4.129** (P10) | — | `agent-v0.4.129` on `f9ced3410`, published 23:24:42Z: 28 assets, 10 `.asc`; "Resolved MSI ProductVersion: 0.4.129 (from 0.4.129)". It was tagged on the rehearsed bump commit, so two hive PRs that merged together with the bump (#2017, #2018) are not in it. `setup-v0.4.129` points at the same commit, published 23:41:27Z with 10 assets. It is the first wizard release since #2014 (`setup-v0.4.128` failed with a 403, #2013), and `/api/setup/{windows,macos,linux}` serve 0.4.129 |
-| 42 | **AC14 on a supervised Mac** | the MacBook on 0.4.129 | **As root** (what `roomler exec` runs): `roomler keep-busy on` was **refused**: "only the person at this device's console can turn keep busy on here — …". **As the person** (`sudo -u <person> roomler keep-busy on --pattern subtle`, through exec): `on`, `running`, `set_by` "the person at this computer". Root `status` then read the same state from the worker (row 39's relay), and `off` stopped it ✅ |
-| 43 | **AC14 on Windows** | the Win11 PC on 0.4.129, a user-context worker | **In the person's own shell** (console session 1, 23:27:50Z): `roomler keep-busy on --pattern subtle` gave `running`, `set_by` "the person at this computer". `status` read it, and `off` gave `stopped_locally`, "Turned off at this computer." ✅. **Through `roomler exec`** (23:29:33Z) ❌, against AC14 as written and against what this spec and the refusal message said: the same `on` started it, named "the person at this computer". The exec ran as the signed-in user, in session 1, at **High** integrity. The worker that holds the agent socket (`roomlerd run --supervisor scm`) runs as that user in the console session, and exec runs as the worker (#2021). Not an escalation, since an exec caller already runs anything as that identity, but the claim was false. The docs and the message now say what the gate does; the naming is open (§6) |
+| 42 | **AC14 on a supervised Mac** | the MacBook on 0.4.129 | **As root** (what `meshharbor exec` runs): `meshharbor keep-busy on` was **refused**: "only the person at this device's console can turn keep busy on here — …". **As the person** (`sudo -u <person> meshharbor keep-busy on --pattern subtle`, through exec): `on`, `running`, `set_by` "the person at this computer". Root `status` then read the same state from the worker (row 39's relay), and `off` stopped it ✅ |
+| 43 | **AC14 on Windows** | the Win11 PC on 0.4.129, a user-context worker | **In the person's own shell** (console session 1, 23:27:50Z): `meshharbor keep-busy on --pattern subtle` gave `running`, `set_by` "the person at this computer". `status` read it, and `off` gave `stopped_locally`, "Turned off at this computer." ✅. **Through `meshharbor exec`** (23:29:33Z) ❌, against AC14 as written and against what this spec and the refusal message said: the same `on` started it, named "the person at this computer". The exec ran as the signed-in user, in session 1, at **High** integrity. The worker that holds the agent socket (`meshharbord run --supervisor scm`) runs as that user in the console session, and exec runs as the worker (#2021). Not an escalation, since an exec caller already runs anything as that identity, but the claim was false. The docs and the message now say what the gate does; the naming is open (§6) |
 
 **After the window, 2026-10-12**: the corporate laptop's 24 h EDR reading, taken on the device through
-`roomler exec`, and the tray on the Win11 PC.
+`meshharbor exec`, and the tray on the Win11 PC.
 
 | # | Cell | Host | Result |
 |---|---|---|---|
-| 44 | **AC8: 24 h of EDR** | the corporate laptop (Microsoft Defender Antivirus plus Defender for Endpoint), 10-11 07:00Z to 10-12 07:00Z, read at 07:18Z | **The engines were on**, which a quiet result needs before it counts: `AMServiceEnabled`, `RealTimeProtectionEnabled`, `BehaviorMonitorEnabled` and `IoavProtectionEnabled` all true, `AMRunningMode=Normal`, `Sense` and `WinDefend` running. **0 detections.** **0** malware (1006/1007/1015/1116–1119), ASR (1121/1122), controlled-folder (1123/1124) or network-protection (1125/1126) events. None of the window's 166 Operational events names roomler, and the log reaches back to 10-01. The binaries went from 0.4.125 to 0.4.126 (14:30Z) and on to 0.4.129 (01:36Z), each installed by the agent's own updater and scanned on access. **Caveats:** keep busy itself was off until 18:02:46Z, when it was turned on from the viewer (`circle`). After each overnight restart it was restored "waiting for an unlocked session", because the laptop was locked. So it injected input from 18:03Z until the lock (at most ~3.5 h), and again in the morning. Alerts that exist only in Defender for Endpoint's cloud portal can't be seen from the device. Taken as met, and ticked at the close with these caveats (operator, 2026-10-12) |
+| 44 | **AC8: 24 h of EDR** | the corporate laptop (Microsoft Defender Antivirus plus Defender for Endpoint), 10-11 07:00Z to 10-12 07:00Z, read at 07:18Z | **The engines were on**, which a quiet result needs before it counts: `AMServiceEnabled`, `RealTimeProtectionEnabled`, `BehaviorMonitorEnabled` and `IoavProtectionEnabled` all true, `AMRunningMode=Normal`, `Sense` and `WinDefend` running. **0 detections.** **0** malware (1006/1007/1015/1116–1119), ASR (1121/1122), controlled-folder (1123/1124) or network-protection (1125/1126) events. None of the window's 166 Operational events names meshharbor, and the log reaches back to 10-01. The binaries went from 0.4.125 to 0.4.126 (14:30Z) and on to 0.4.129 (01:36Z), each installed by the agent's own updater and scanned on access. **Caveats:** keep busy itself was off until 18:02:46Z, when it was turned on from the viewer (`circle`). After each overnight restart it was restored "waiting for an unlocked session", because the laptop was locked. So it injected input from 18:03Z until the lock (at most ~3.5 h), and again in the morning. Alerts that exist only in Defender for Endpoint's cloud portal can't be seen from the device. Taken as met, and ticked at the close with these caveats (operator, 2026-10-12) |
 | 45 | **AC14's tray half: the state read** | the Win11 PC on 0.4.129 (an attended install) | The companion's tray picked up both Ons from row 43 within 3 s: `tray: keep busy is on pattern=subtle set_by="the person at this computer"` at 23:27:53Z (the CLI's On, 23:27:50Z) and at 23:29:35Z (the exec's, 23:29:33Z). That is the state behind its "Stop keep busy (Subtle · …)" label. The **Start** click itself is still owed |
 
 **The visit, 2026-10-12**: the operator at both machines, both on 0.4.129. Results are read from each
@@ -547,7 +547,7 @@ machine's own logs, the companion's and the agent's.
 |---|---|---|---|
 | 46 | **AC14's tray half on Windows** | the Win11 PC (an attended install) | **First attempt:** Start from the tray at 11:05:31Z (`tray: keep busy toggled on=true phase=running`), and it circled. The **Stop** click left no trace. The handler logs every click it gets (toggled, did not start, could not toggle), and none appeared. Keep busy stayed on, only paused by the person's own hand ("Paused: someone is using this computer"), and was stopped from the CLI at 11:06:59Z. **Slow retry:** Start at 15:35:05Z, then Stop at 15:35:29Z, which took (`stopped_locally`) ✅. Why the first Stop never reached the handler is unexplained. Either a click landed off the item while keep busy still moved the pointer (it pauses ~0.8 s after the first local input, row 5), or the pause on the person's own input read as a stop |
 | 47 | **AC14's tray half on a supervised Mac** | the MacBook | Start from the menu bar at 12:31:27Z. The companion logged `tray: keep busy toggled on=true phase=running`, and the **GUI worker** logged `keep-busy: turned on session=None set_by=the person at this computer` and `localapi: keep busy turned on at this computer`: the person's own socket reaches the worker. It paused on the click itself (`user_active`, local) and ran again 31 s later. Stop from the menu bar at 18:23:17Z (`turned off reason="stopped_locally"`) ✅. In between, at 18:22:44Z, a viewer's switch set it again, relabelled with the viewer's name |
-| 48 | **Row 37's fix on a release** (#1991) | the MacBook | With `roomlerd` switched off under Device Control & Data Access by the operator and the GUI worker restarted (new in 5 s), the person's `roomler keep-busy on` answered `phase: unavailable`, **`reason: no_permission`**: "Unavailable: the agent is not allowed to control the pointer here (macOS: Accessibility)." On 0.4.126 the same cell said `unsupported` (row 37) ✅. The worker logged `enigo init failed — input injection disabled`, and a connected viewer was told its input would not reach the desktop. **A finding:** before that On, `status` said `available: true`. The missing grant only shows when an On probes, so the tray offers a Start that will answer `no_permission`. After the re-grant and a restart (new in 9 s): "Screen Recording + Accessibility both granted", the worker announced `["screen-capture", "input"]`, and the reconnected viewer had input ✅ |
+| 48 | **Row 37's fix on a release** (#1991) | the MacBook | With `meshharbord` switched off under Device Control & Data Access by the operator and the GUI worker restarted (new in 5 s), the person's `meshharbor keep-busy on` answered `phase: unavailable`, **`reason: no_permission`**: "Unavailable: the agent is not allowed to control the pointer here (macOS: Accessibility)." On 0.4.126 the same cell said `unsupported` (row 37) ✅. The worker logged `enigo init failed — input injection disabled`, and a connected viewer was told its input would not reach the desktop. **A finding:** before that On, `status` said `available: true`. The missing grant only shows when an On probes, so the tray offers a Start that will answer `no_permission`. After the re-grant and a restart (new in 9 s): "Screen Recording + Accessibility both granted", the worker announced `["screen-capture", "input"]`, and the reconnected viewer had input ✅ |
 | 49 | **A misleading tray log line** (fixed with these rows) | both | A successful **Stop** from the tray logged `WARN tray: keep busy did not start reason="stopped_locally"` (15:35:29Z on the PC, 18:23:17Z on the Mac). The outcome match didn't know which way it had toggled. It now logs by the action taken: `stopped`, `started`, or `did not start` only for an On that was refused |
 
 **P10b on vmtest, 2026-10-12**: throwaway Win11 VMs on zeus in the vmtest org, driven from mars as the
@@ -560,29 +560,29 @@ the console session, reached through an interactive scheduled task (`/IT`, the l
 
 | # | Cell | Host | Result |
 |---|---|---|---|
-| 50 | **P10b, the negative control** | `win11/installer/system`, SystemContext mode, **0.4.129** | Exec ran as `NT AUTHORITY\SYSTEM` in **session 1**, and `roomler keep-busy on --pattern subtle` **started it** (`running`), named "the person at this computer" ❌. That is the defect P10b closes. It was stopped again |
+| 50 | **P10b, the negative control** | `win11/installer/system`, SystemContext mode, **0.4.129** | Exec ran as `NT AUTHORITY\SYSTEM` in **session 1**, and `meshharbor keep-busy on --pattern subtle` **started it** (`running`), named "the person at this computer" ❌. That is the defect P10b closes. It was stopped again |
 | 51 | **P10b on the release** | the same cell on **0.4.131** | The same exec (`NT AUTHORITY\SYSTEM`, session 1) was **refused**: "only the person at this device's console can turn keep busy on here — not root or SYSTEM, not a background service, not another session (anyone may stop it)". The state stayed `off` ✅. The person (the guest's signed-in user, session 1) started it: `running`, "the person at this computer" ✅. An Off sent through exec, as SYSTEM, stopped it: stopping is open to every peer |
 | 52 | **AC14: the owner's switch and an org deny refuse a local start** | the 0.4.131 guest | With `keep_busy_enabled = false`, the person's On answered `device_disabled`: "Turned off on this computer (keep_busy_enabled = false)." With the org deny on (for 6 s, then restored), it answered `org_denied`: "Disabled by your organization." ✅ |
 | 53 | **AC14: every connected viewer shows who turned it on** | the 0.4.129 guest (P10 is in it); the production viewer as the org's admin, through the lane's Playwright container | The viewer connected at 20:59:42.251Z, and the person's local On was fired at 20:59:42. At 20:59:45.347Z the toolbar chip's title read "Running: subtle, turned on by the person at this computer." ✅ |
-| 54 | **P10b: no regression for the person on an attended install** | the Win11 PC on 0.4.131 (it had auto-updated) | The person's own `roomler keep-busy on` ran (`set_by` "the person at this computer"), and `off` stopped it ✅: the account check reads a user's own token. Exec there, as the signed-in user in session 1, still passes, as documented (§3g) |
+| 54 | **P10b: no regression for the person on an attended install** | the Win11 PC on 0.4.131 (it had auto-updated) | The person's own `meshharbor keep-busy on` ran (`set_by` "the person at this computer"), and `off` stopped it ✅: the account check reads a user's own token. Exec there, as the signed-in user in session 1, still passes, as documented (§3g) |
 | 55 | **AC8: the source scan fails on a planted line** | `no_keylogger_shaped_api_anywhere_in_keep_busy`, run locally on master `505175dbb` in a throwaway worktree | A real constant, `"SetWindowsHookExW"` (not a comment), was planted in `host_win.rs`, and the plant was confirmed to be there. The test **failed**, `host_win.rs:161: uses SetWindowsHookEx`. Restored (no diff), it passed ✅. With row 17's import diff and row 44's EDR window, every clause of AC8 has its evidence |
 
 **AC9 on KDE Plasma, 2026-10-12**: the FR-93 lab's `wlab-kde-sys` (Fedora 44, KDE Plasma 6 on Wayland,
 a system install of 0.4.130), with the lab owner's agreement. "The person" is the autologin user, whose
-`roomler` reaches the system install's person socket. The guest was used as found, returned to stock
+`meshharbor` reaches the system install's person socket. The guest was used as found, returned to stock
 afterwards (`uinput` unset, keep busy off), and shut down.
 
 | # | Cell | Host | Result |
 |---|---|---|---|
-| 56 | **AC9: `wayland`**, a Wayland desktop without the uinput path | `wlab-kde-sys` as found: stock, no `uinput` key | The person's `roomler keep-busy on` answered `phase: unavailable`, **`reason: wayland`**: "Unavailable on this Wayland desktop: here keep busy needs the system service with uinput input turned on, on GNOME." Twelve seconds later it was unchanged ✅ |
+| 56 | **AC9: `wayland`**, a Wayland desktop without the uinput path | `wlab-kde-sys` as found: stock, no `uinput` key | The person's `meshharbor keep-busy on` answered `phase: unavailable`, **`reason: wayland`**: "Unavailable on this Wayland desktop: here keep busy needs the system service with uinput input turned on, on GNOME." Twelve seconds later it was unchanged ✅ |
 | 57 | **AC9: `no_idle_clock`**, a desktop whose idle clock no helper can read | the same guest with `uinput = true` (one restart) | The person's On answered `phase: unavailable`, **`reason: no_idle_clock`**: "Unavailable: this desktop does not report when it was last used, so a person could not take over." The daemon logged `no X display to drive — asking the GNOME session`, then `GNOME session helper up idle_clock=false geometry=false`: KWin has no idle monitor for the helper to read ✅. A connected viewer shows that sentence as it shows every unavailable reason (rows 14, 22) |
 
 Wrong turns, recorded so nobody repeats them:
-- **On Windows, `roomler exec` is not SYSTEM in session 0.** P10's gate was designed on that belief,
+- **On Windows, `meshharbor exec` is not SYSTEM in session 0.** P10's gate was designed on that belief,
   which `docs/fleet-rpc.md` stated. Exec runs in the worker that holds the agent socket, inside the
   console session, as the signed-in user (row 43, #2021). Measure `whoami` and the session id before
   reasoning from a doc's claim about identity.
-- **On macOS, two Accessibility entries.** Switch off **roomlerd**, not "Roomler": the companion's
+- **On macOS, two Accessibility entries.** Switch off **meshharbord**, not "MeshHarbor": the companion's
   entry does not gate the agent's input. And a grant change reaches the agent only at its next
   start, so restart the GUI worker after flipping it.
 - **The viewer's menu was not clickable from the extension.** In a tab that is not focused, the

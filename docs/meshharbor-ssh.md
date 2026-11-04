@@ -1,14 +1,14 @@
-# Roomler SSH
+# MeshHarbor SSH
 
 SSH into any enrolled node by its overlay address, without installing `sshd`,
 without distributing `authorized_keys`, and without opening a port on the host.
-The roomler answer to [Tailscale SSH](https://tailscale.com/kb/1193/tailscale-ssh)
+The meshharbor answer to [Tailscale SSH](https://tailscale.com/kb/1193/tailscale-ssh)
 — with one capability theirs does not have: **it works on Windows.**
 
 Status: **the whole programme, P1 through P8, is shipped and field-proven** —
 transport, server, the full four-gate authorization path, the privilege model
 and interactive shells on **both** Windows and Unix, operator consent, the
-audit log, host-key verification, the `roomler ssh` / `roomler proxy` clients,
+audit log, host-key verification, the `meshharbor ssh` / `meshharbor proxy` clients,
 SFTP/scp, port forwarding, the device-reported session-activity log, and the
 admin UI for all of it.
 
@@ -38,7 +38,7 @@ the fleet on 2026-08-19, by actually binding those addresses:
 | corplap-3 | free, but useless | no `sshd` at all (`OpenSSH.Server` capability is `NotPresent`, corp-managed), WSL's `wslrelay` holds loopback `:22`, and all three firewall profiles are enabled so a new listener needs a rule an ordinary user cannot add |
 | winhost-a / winhost-b | free | `sshd` installed but `Stopped/Manual` |
 
-On four of seven hosts a bound socket is impossible. So roomler takes the
+On four of seven hosts a bound socket is impossible. So meshharbor takes the
 packets one layer lower, the way Tailscale does:
 
 ```
@@ -83,10 +83,10 @@ first fragment only, every field bounds-checked, malformed input answered with
 | `ssh_host_key` | *(minted on first use)* | This node's host identity — **not** exposed on the config surface |
 
 ```bash
-roomler config set ssh_enabled true
-roomler config set ssh_authorized_keys "ssh-ed25519 AAAAC3Nz... goran@devbox"
+meshharbor config set ssh_enabled true
+meshharbor config set ssh_authorized_keys "ssh-ed25519 AAAAC3Nz... goran@devbox"
 # restart to apply, then from any peer in the org:
-ssh -p 2222 roomler@100.65.4.30 -- whoami
+ssh -p 2222 meshharbor@100.65.4.30 -- whoami
 ```
 
 **Why 2222 and not 22.** Turning interception on for a port an OS daemon already
@@ -126,7 +126,7 @@ can be pinned out of band.
   command was cut off mid-write, died of SIGPIPE, and `ssh` exited 1 — on the
   `console_user` corporate laptops, where `scp`/`sftp` refused until FR-97 P4b,
   nothing could move a file over 1 MiB.
-  **The client's stdin reaches the command** ([#1747](https://github.com/gjovanov/roomler-ai/issues/1747)):
+  **The client's stdin reaches the command** ([#1747](https://github.com/jk-zhang-meta/MeshHarbor/issues/1747)):
   `ssh <node> 'cat > f' < file`, `tar c . | ssh <node> 'tar x'` and
   `ssh <node> 'sh -s' < script` work, and the client's EOF ends the input.
   ⚠️ Until #1747 the command read NUL and the bytes were dropped without a
@@ -151,12 +151,12 @@ can be pinned out of band.
 ### One-shot commands stream (FR-89)
 
 Spec: [`docs/fr/FR-89-ssh-exec-streaming.md`](fr/FR-89-ssh-exec-streaming.md) ·
-[#1826](https://github.com/gjovanov/roomler-ai/issues/1826).
+[#1826](https://github.com/jk-zhang-meta/MeshHarbor/issues/1826).
 
 Before FR-89, `ssh <node> 'cmd'` was handed to the Fleet-RPC engine's one
 bounded run (`ExecEngine::run_fed`): the whole output was collected against a
 1 MiB ceiling and sent when the process ended, under a 300 s wall clock.
-Correct for `roomler exec`, whose answer is one persisted audit row; wrong for
+Correct for `meshharbor exec`, whose answer is one persisted audit row; wrong for
 a byte stream. The engine now has a second entry point beside it,
 `ExecEngine::run_streamed` (`agents/meshharbord/src/exec.rs`), and the SSH server
 uses that one (`ssh.rs` `stream_to_channel`):
@@ -418,7 +418,7 @@ could not write to.
 - Fleet RPC is unchanged: a command starts in its `cwd`, or where it always has.
 - Kill switch: `MESHHARBORD_SSH_START_IN_HOME=0` puts the old start back. On a
   SystemContext Windows device, set it in the service's environment
-  (`roomlerd set-service-env-var`), as for `MESHHARBORD_SFTP_AS_USER`.
+  (`meshharbord set-service-env-var`), as for `MESHHARBORD_SFTP_AS_USER`.
 
 Field-proven 2026-10-18 on candidates (FR-97 §8). On a Linux root daemon, `named`
 and `console_user` sessions started in `/home/wlab`, where the release had started
@@ -480,7 +480,7 @@ help here; it governs only the key-list path.
 that still holds when the server is the compromised thing:
 
 ```bash
-roomler config set ssh_max_privilege console_user
+meshharbor config set ssh_max_privilege console_user
 ```
 
 Set to `console_user`, a grant asking for the daemon identity is **refused, not
@@ -510,12 +510,12 @@ service.
 **Turning it on**, elevated, on the device (from 0.4.136):
 
 ```
-roomlerd anchor create --server https://roomler.ai --token <enrollment-token> --device <device id> --ssh system
-roomlerd anchor ssh off|console_user|system   # an anchor that exists
-roomlerd anchor status                        # "ssh: ON, …" and the service's host-key fingerprint
+meshharbord anchor create --server https://meshharbor.itachi.fans --token <enrollment-token> --device <device id> --ssh system
+meshharbord anchor ssh off|console_user|system   # an anchor that exists
+meshharbord anchor status                        # "ssh: ON, …" and the service's host-key fingerprint
 ```
 
-The ceiling belongs to the anchor (`%ProgramData%\roomler\roomler\exec-service\anchor.json`,
+The ceiling belongs to the anchor (`%ProgramData%\meshharbor\meshharbor\exec-service\anchor.json`,
 SYSTEM and Administrators only) and defaults to **off**, so every FR-94 anchor
 reads as off and no device gains SYSTEM SSH by updating. `system` permits
 `daemon` and `console_user` grants; `console_user` permits only that one. A
@@ -534,7 +534,7 @@ both halves agree (`routes_ssh_via_service`,
 
 ```mermaid
 sequenceDiagram
-  participant C as caller (roomler ssh)
+  participant C as caller (meshharbor ssh)
   participant S as server
   participant W as worker (signed-in user)
   participant V as SYSTEM service
@@ -551,7 +551,7 @@ sequenceDiagram
   V-->>C: authenticated by the grant key, a shell as SYSTEM (session 0) or the console user
 ```
 
-- **The pipe** is `\\.\pipe\roomler-ssh-service`: the doorbell's DACL, created
+- **The pipe** is `\\.\pipe\meshharbor-ssh-service`: the doorbell's DACL, created
   first-instance only, at most 8 sessions, and the worker refuses one SYSTEM
   does not own. Frames are a kind byte, a big-endian `u32` length and a payload:
   `Hello`, `Data` (≤ 64 KiB), `Eof`, and `Ask`/`Answer` (≤ 4 KiB of JSON) for
@@ -578,7 +578,7 @@ What the signed-in user controls, and why none of it widens port 2223:
 | `forward_acl` | `direct-tcpip` is refused on the service's port in v1 |
 | the `ssh-system` word (a worker that lies) | the server also needs the endpoint the service published under the current anchor, and the caller pins a key only the real service holds |
 
-**Revocation.** `roomlerd anchor ssh off` (the device withdraws `ssh-system`
+**Revocation.** `meshharbord anchor ssh off` (the device withdraws `ssh-system`
 within about 30 s), un-anchoring (`DELETE …/agent/{id}/exec-anchor`, immediate:
 the server's half alone suffices), a re-anchor or a removal (the published
 endpoint names the old anchor). Each sends grants back to the worker, and the
@@ -588,9 +588,9 @@ audit says `worker`.
 `MESHHARBORD_SSH_VIA_SERVICE=0` (the worker drops the word and stops intercepting
 2223); the anchor's `ssh = off`, the default.
 
-**`roomler proxy` needs nothing new.** It carries bytes for stock `ssh` to the
+**`meshharbor proxy` needs nothing new.** It carries bytes for stock `ssh` to the
 port in your ssh config, for key-list sessions, and only the worker's port
-(2222) honours a key list. `roomler ssh` dials whatever port the grant names.
+(2222) honours a key list. `meshharbor ssh` dials whatever port the grant names.
 
 **The audit and the UI.** `ssh_audit.ran_as` records the server's decision. The
 admin UI's *As* chip reads it together with the grant's `account_mode`, so an
@@ -606,7 +606,7 @@ naming why.
 
 Field-verified on the 0.4.136 candidate, attended and SystemContext, including
 the claim landing on the other prod pod:
-`docs/fr/FR-105-roomler-ssh-as-system.md` §8.
+`docs/fr/FR-105-meshharbor-ssh-as-system.md` §8.
 
 ## 4. Authorization, and the gap P3 closes
 
@@ -629,7 +629,7 @@ compromise is sufficient.
 | `PUT …/agent/{id}/ssh-policy` | `MANAGE_AGENTS` | Gate 3. Deciding a device *may* be SSHed into is a management act, distinct from being allowed to do it |
 | `GET`/`PUT …/ssh-settings` | `MANAGE_AGENTS` / `MANAGE_TENANT` | Gate 1. Writing needs the higher bar — one switch governs the org |
 
-The device-originated leg (`rc:ssh.request`, for `roomler ssh` from a laptop's
+The device-originated leg (`rc:ssh.request`, for `meshharbor ssh` from a laptop's
 LocalAPI) goes through the **same** `dispatch`, so there is exactly one place
 the gates are evaluated regardless of how a request arrived.
 
@@ -745,7 +745,7 @@ reason to accept an unbounded table or an eternal key:
   when SSH is off, and the answer was a bare `Connection refused`.
 
 Grants are tried before `ssh_authorized_keys` and take precedence; sessions
-authenticated by a grant carry the roomler principal into the log and the audit
+authenticated by a grant carry the meshharbor principal into the log and the audit
 record, which a key-list session cannot.
 
 ### Operator consent (P5d — shipped)
@@ -764,7 +764,7 @@ time the session is live, so the refusal has somewhere to explain itself — and
 the caller is told *before* the wait begins:
 
 ```
-roomler-ssh: waiting up to 30s for approval at the device…
+meshharbor-ssh: waiting up to 30s for approval at the device…
 ```
 
 Without that line a policy of `prompt` is indistinguishable from a 30-second
@@ -823,12 +823,12 @@ It is re-derived on every hello, so rotating the key on the device and
 restarting moves the fleet view with it; and it is rewritten even when empty,
 so a device that switches SSH off stops advertising a key it no longer holds.
 
-### `roomler ssh <device>` (P6b — shipped)
+### `meshharbor ssh <device>` (P6b — shipped)
 
 ```
-roomler ssh winhost-a
-roomler ssh winhost-a -- uptime
-roomler ssh "Office PC"            # a dashboard display name works too
+meshharbor ssh winhost-a
+meshharbor ssh winhost-a -- uptime
+meshharbor ssh "Office PC"            # a dashboard display name works too
 ```
 
 `<device>` is a device name or a hex agent id — the server resolves it, as for
@@ -850,12 +850,12 @@ reported without retrying through an OS route. An older netstack controller
 daemon may need updating to report the port; exit-client daemons that already
 report `exit_node.socks5_port` remain supported.
 
-**It execs the system `ssh` rather than embedding a client.** What roomler adds
+**It execs the system `ssh` rather than embedding a client.** What meshharbor adds
 is discovery, authorization and host-key distribution — which device, may you,
 where does it live, what key will answer. Once those are known, the rest (raw
 mode, resize, escape sequences, agent forwarding, `scp`) is a problem OpenSSH
 already solves better than a second implementation would, and embedding a
-client would have meant owning a terminal stack forever. Roomler is not in the
+client would have meant owning a terminal stack forever. MeshHarbor is not in the
 data path, which is the same property the server has by design — and it makes
 P6c a small step rather than a rewrite.
 
@@ -905,7 +905,7 @@ console-session worker (SYSTEM in SystemContext mode). A session resolved to
 file transfer is the worst subsystem to get that wrong in. `exec` and the pty
 both drop privilege by handing work to a child; anything else here would be a
 second, weaker privilege story for the one subsystem that exists to touch
-files. Same `apply_run_as`, same consent gate, same identity — and roomler
+files. Same `apply_run_as`, same consent gate, same identity — and meshharbor
 never parses an SFTP packet.
 
 Which spawn serves the subsystem follows from the session's resolved identity:
@@ -947,7 +947,7 @@ below.
 
 Kill switch: `MESHHARBORD_SFTP_AS_USER=0` puts the pre-P4b refusal back. On a
 Windows service install, set it with
-`roomlerd set-service-env-var --name MESHHARBORD_SFTP_AS_USER --value 0`, then
+`meshharbord set-service-env-var --name MESHHARBORD_SFTP_AS_USER --value 0`, then
 restart the service. The SystemContext worker inherits the service's
 environment, so a machine-wide variable reaches it only after a reboot.
 ⚠️ Never replace the service's registry `Environment` value by hand. On a
@@ -981,11 +981,11 @@ ran as the person, and `sftp` and `scp` were refused (exit 255). On P4b:
 - a client killed mid-upload left no `sftp-server` running (`cancelled by the caller`);
 - the kill switch brought the refusal back.
 
-⚠️ Dial roomler's port, `ssh_port` (2222 by default; 2223 is the SYSTEM
+⚠️ Dial meshharbor's port, `ssh_port` (2222 by default; 2223 is the SYSTEM
 service's, FR-105). On a device that runs its own `sshd`, port 22 over the mesh
 reaches that server, which offers passwords too. A "Permission denied
 (publickey,password,keyboard-interactive)" is that `sshd` answering, not
-roomler. The first P4b run dialled 22 and met exactly that.
+meshharbor. The first P4b run dialled 22 and met exactly that.
 
 ### Bulk throughput: the channel window
 
@@ -1022,7 +1022,7 @@ sense for an empty allowlist:
 
 | | tunnel forward | SSH `direct-tcpip` |
 |---|---|---|
-| who authorized the destination | the **server**, before the agent ever sees it | **nobody** — roomler hands over a socket and never sees the bytes |
+| who authorized the destination | the **server**, before the agent ever sees it | **nobody** — meshharbor hands over a socket and never sees the bytes |
 | `forward_acl.allowlist = []` means | "no extra local restriction" | **"nowhere"** |
 
 That asymmetry is the whole point. A tunnel flow has already passed the
@@ -1033,7 +1033,7 @@ which on a corp laptop is the corporate network. So the operator opts in per
 destination:
 
 ```bash
-roomler config set forward_acl '{"enabled":true,"allowlist":[
+meshharbor config set forward_acl '{"enabled":true,"allowlist":[
   {"host_pattern":{"kind":"exact","value":"db.intranet"},"port_range":{"low":5432,"high":5432},"proto":"tcp"}]}'
 ```
 
@@ -1148,40 +1148,40 @@ both are properties of the design rather than caveats that go away later. A
 refused row is rendered in error red, since a forward the device turned down
 is the row an operator is usually hunting for.
 
-### `roomler proxy` for stock tools (P6c — shipped)
+### `meshharbor proxy` for stock tools (P6c — shipped)
 
 ```
 # ~/.ssh/config
-Host *.roomler
-  ProxyCommand roomler proxy %h %p
+Host *.meshharbor
+  ProxyCommand meshharbor proxy %h %p
   Port 2222
 
-scp report.pdf corplap-3.roomler:/tmp/
+scp report.pdf corplap-3.meshharbor:/tmp/
 ```
 
 Resolves a device **name** to its overlay address and pipes stdio. A literal
-IP short-circuits the lookup, so `%h` works either way. `Port 2222` is roomler
+IP short-circuits the lookup, so `%h` works either way. `Port 2222` is meshharbor
 SSH's default intercept port; without it `%p` is 22, which reaches only a
 device's own `sshd`.
 
 | `%h` as it arrives | looked up as | why it is accepted |
 |---|---|---|
 | `corplap-3` | `corplap-3` | the bare label — tried first, exactly as before |
-| `corplap-3.roomler` | `corplap-3` | what the `Host *.roomler` pattern above always produces |
+| `corplap-3.meshharbor` | `corplap-3` | what the `Host *.meshharbor` pattern above always produces |
 | `corplap-3.<magic domain>` | `corplap-3` | the MagicDNS name, when the daemon reports a magic domain |
 | anything else | verbatim — and fails | see below |
 
 ⚠️ Until #1573 the lookup was verbatim, so the recipe this section had always
-shown failed for **every** host (`no device named "zeus.roomler"`). The fix
+shown failed for **every** host (`no device named "zeus.meshharbor"`). The fix
 strips only suffixes the mesh owns: stripping "everything after the first dot"
-would let a `ProxyCommand` scoped wider than `*.roomler` turn `github.com`
+would let a `ProxyCommand` scoped wider than `*.meshharbor` turn `github.com`
 into a lookup for a device named `github` (`localclient::mesh_label`).
 
 ⚠️ **OpenSSH applies `HostName` before it substitutes `%h`.** A host that
 also has a `Host zeus / HostName <public ip>` block hands the ProxyCommand its
 *public* address, and the failure is a bare `actively refused` / `timed out`
 that names no device and reads exactly like a broken overlay. `scp -v` shows
-it (`Executing proxy command: exec roomler proxy <public ip> 2222`), and the
+it (`Executing proxy command: exec meshharbor proxy <public ip> 2222`), and the
 proxy now says so itself when a connect to a non-overlay literal fails.
 
 ⚠️ **Transport and resolution only, and the two commands are not
@@ -1193,8 +1193,8 @@ a single-use key with a ~60 s life, so it could not live in a static
 
 | | what it gives you |
 |---|---|
-| `roomler ssh` | the grant, the policy-resolved account, host key verified **for** you |
-| `roomler proxy` | reach it **by name** with keys **you** manage — its own `sshd`, or your key in `ssh_authorized_keys` |
+| `meshharbor ssh` | the grant, the policy-resolved account, host key verified **for** you |
+| `meshharbor proxy` | reach it **by name** with keys **you** manage — its own `sshd`, or your key in `ssh_authorized_keys` |
 
 Don't "unify" them: doing so would quietly drop verification from one path.
 
@@ -1202,7 +1202,7 @@ Don't "unify" them: doing so would quietly drop verification from one path.
 resolver see a mesh name invites it to find something else — a LAN host, a
 search-domain match, a wildcard DNS answer.
 
-For rsync with the grant path, `rsync -e 'roomler ssh' src box:/dst` already
+For rsync with the grant path, `rsync -e 'meshharbor ssh' src box:/dst` already
 works: the trailing args reach `ssh` verbatim.
 
 ### The audit trail (P3c-1 — shipped)
@@ -1441,7 +1441,7 @@ flowchart LR
 |---|---|
 | the offer | `hive_ssh`: device-owned, default off, and never pushable (`DesiredConfig` cannot carry it). Only beside `vault_enabled` |
 | the call | `device`, a device's id; `command`, one line of at most 8 KiB for that device's shell (PowerShell on Windows, bash elsewhere); `timeout_s`, 1 to 300 seconds, 60 if not given. A call that breaks one of these is refused before the vault is asked |
-| the approval | the session's settings ASK for `mcp__roomler__ssh_run` on every call, as they do for the vault's uses, so a repository's own allow rule cannot skip the person |
+| the approval | the session's settings ASK for `mcp__meshharbor__ssh_run` on every call, as they do for the vault's uses, so a repository's own allow rule cannot skip the person |
 | the ticket | asked for the session at its fence, toward `device`, to last the server's answer (30 s), the target's prompt (30 s) and the command. The network module ends the SSH session with what is left of the ticket, so a shorter one would cut the command off |
 | the run | this daemon's own client (above), on the primary connection the vault answered on |
 | the answer | the target's `os`, the `account` it ran as, the ticket's id (the join key to `ssh_audit`), the exit code, and both streams with `truncated`. Never the ticket itself |
@@ -1488,17 +1488,17 @@ never recorded: what a session typed is its own.
 | P4a | PTY / interactive shell on **Unix** (`openpty`, login shell, resize, group teardown) | **shipped** |
 | P4b | The same on **Windows** — ConPTY + `PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE` on `CreateProcessAsUserW`. The platform that needs this most | **shipped** rc.429, field-proven on corplap |
 | P6a | Devices publish their SSH host key; the server stores it and returns it with the grant, so a caller has something to verify against | **shipped** rc.444 |
-| P6b | `roomler ssh <name>` — ephemeral keypair → grant → verify against the published key → hand off to the system `ssh` | **shipped** rc.446, field-proven buildhost→corplap |
-| P6c | `roomler proxy` — stdio `ProxyCommand`, so stock `ssh`/`scp`/`rsync`/`git` reach devices BY NAME | **shipped** |
+| P6b | `meshharbor ssh <name>` — ephemeral keypair → grant → verify against the published key → hand off to the system `ssh` | **shipped** rc.446, field-proven buildhost→corplap |
+| P6c | `meshharbor proxy` — stdio `ProxyCommand`, so stock `ssh`/`scp`/`rsync`/`git` reach devices BY NAME | **shipped** |
 | P7a | SFTP subsystem — `sftp` and `scp` | **shipped** rc.450, field-proven buildhost→fleet-host-1 |
-| FR-97 P4b | SFTP and `scp` as the Windows `console_user`, through `exec`'s console-user spawn: raw bytes, the person's profile | **merged** [#2438](https://github.com/gjovanov/roomler-ai/pull/2438), field-verified on a candidate |
-| FR-97 P5a | `console_user` on Linux and macOS: the person at the screen (logind's seat0, `/dev/console`'s owner), by the `named` drop; refused while nobody is there | **in review** [#2082](https://github.com/gjovanov/roomler-ai/issues/2082) |
+| FR-97 P4b | SFTP and `scp` as the Windows `console_user`, through `exec`'s console-user spawn: raw bytes, the person's profile | **merged** [#2438](https://github.com/jk-zhang-meta/MeshHarbor/pull/2438), field-verified on a candidate |
+| FR-97 P5a | `console_user` on Linux and macOS: the person at the screen (logind's seat0, `/dev/console`'s owner), by the `named` drop; refused while nobody is there | **in review** [#2082](https://github.com/jk-zhang-meta/MeshHarbor/issues/2082) |
 | P7b | `-L` / `-J` / `-W` via `direct-tcpip`, default-deny on `forward_acl`. **`-R` deliberately not implemented** — it would make the device bind a listening socket | **shipped** |
 | P8a | Session **activity** log — commands + exit codes, shell/SFTP/forward events, device-reported into `ssh_activity`. Deliberately NOT session content | **shipped** |
 | P8b | Admin UI for the activity feed — `SshActivitySection`, under the audit log in org Settings | **shipped** |
 | FR-83 | `rc:ssh.grant_ack` + `ssh-grant-ack`: the caller is answered only once the target confirms the grant (≤ 10 s), and the device's refusals — gate 4, expired on arrival — reach the caller by name | **shipped** 0.4.101, field-verified — 40/40 grant-issued sessions recorded before they opened across the FR-81 matrix |
 | M5 | `ssh_max_privilege` — the device refuses a server grant that asks for the daemon identity. The one gate that survives a compromised control plane | **shipped**, default unset (permissive) |
-| FR-89 | One-shot commands **stream** — no 1 MiB ceiling, no 300 s wall clock, the channel owns the command's life (close/disconnect ⇒ tree kill), redaction across chunk boundaries, Windows `console_user` included; `ssh_exec_streaming` kill switch. Fleet RPC untouched | **in review** [#1826](https://github.com/gjovanov/roomler-ai/issues/1826); field verification owed |
+| FR-89 | One-shot commands **stream** — no 1 MiB ceiling, no 300 s wall clock, the channel owns the command's life (close/disconnect ⇒ tree kill), redaction across chunk boundaries, Windows `console_user` included; `ssh_exec_streaming` kill switch. Fleet RPC untouched | **in review** [#1826](https://github.com/jk-zhang-meta/MeshHarbor/issues/1826); field verification owed |
 
 ## 6. Build
 
@@ -1508,7 +1508,7 @@ never recorded: what a session typed is its own.
 `.github/workflows/release-agent.yml` — so every released daemon carries the
 server, off until the configuration below turns it on.
 
-Measured by building `roomlerd` both ways on x86_64-pc-windows-msvc with
+Measured by building `meshharbord` both ways on x86_64-pc-windows-msvc with
 `codegen-units=1`: **29.939 MiB → 31.795 MiB, +1.856 MiB (+6.2%)**. At the
 MSI's measured 2.67× compression that is roughly **+0.7 MiB** on the installer.
 (An isolated harness had predicted +2.57 MiB; the real binary absorbs more,
@@ -1528,7 +1528,7 @@ Two build constraints that must not be lost:
    break the deliberate ring-only / no-openssl invariant `tunnel-core` maintains
    for QUIC.
 2. **`rsa` stays off.** It costs ~0.32 MiB and drags a `0.10.0-rc` pre-release
-   into the graph. Roomler SSH authenticates ed25519.
+   into the graph. MeshHarbor SSH authenticates ed25519.
 
 russh has a real CVE history — CVE-2023-28113 (insufficient DH validation) and
 RUSTSEC-2026-0154 / CVE-2026-46673 (unbounded allocation, CVSS 7.5, fixed in

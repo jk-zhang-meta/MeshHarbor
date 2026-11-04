@@ -43,7 +43,7 @@ import {
 } from './shell.ts'
 import { graph, organization, videoObject, website } from './structured.ts'
 
-export const HOME_TITLE = 'Roomler — remote desktop, private mesh network, chat & video'
+export const HOME_TITLE = 'MeshHarbor — remote desktop, private mesh network, chat & video'
 export const HOME_DESCRIPTION =
   'Remote desktop in a browser tab and a private WireGuard-style mesh between your machines, team chat and video included. Self-hostable, end-to-end encrypted.'
 
@@ -146,7 +146,7 @@ export function renderHome(ctx: HomeCtx): string {
       (card) =>
         `<div class="home-card home-card--os"><h3 class="home-card__title home-os">${icon(OS_ICON[card.os]!, { size: 22 })}<span>${escapeHtml(card.title)}</span></h3>` +
         (card.wizardUrl
-          ? `<p><a class="btn btn--tonal" href="${escapeHtml(card.wizardUrl)}">${icon('download', { size: 17 })}<span>Roomler Setup</span></a></p>`
+          ? `<p><a class="btn btn--tonal" href="${escapeHtml(card.wizardUrl)}">${icon('download', { size: 17 })}<span>MeshHarbor Setup</span></a></p>`
           : '') +
         `<p class="home-muted">${card.wizardUrl ? 'Or from a terminal:' : 'From a terminal:'}</p><pre class="home-cmd"><code>${escapeHtml(card.command)}</code></pre>` +
         `</div>`,
@@ -165,7 +165,7 @@ export function renderHome(ctx: HomeCtx): string {
     </div>
   </section>
 
-  <section class="home-caps" aria-label="What Roomler does">
+  <section class="home-caps" aria-label="What MeshHarbor does">
     <ul class="chips home-wrap">${CAPABILITIES.map((c) => `<li><span class="chip">${escapeHtml(c)}</span></li>`).join('')}</ul>
   </section>
 ${

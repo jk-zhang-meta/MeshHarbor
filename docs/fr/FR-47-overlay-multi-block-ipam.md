@@ -1,6 +1,6 @@
 # FR-47: One address space per org — carve by default, grow without renumbering
 
-**Issue:** [#1071](https://github.com/gjovanov/roomler-ai/issues/1071) ·
+**Issue:** [#1071](https://github.com/jk-zhang-meta/MeshHarbor/issues/1071) ·
 **Status:** shipped — P0–P6 complete; the isolation half **field-verified in production**, the growth half (P5a–e) shipped **dark** behind `overlay.multi_block_enabled` · **Owner:** overlay/networking
 
 ## Goal
@@ -29,7 +29,7 @@ Two properties, stated as the acceptance bar rather than as slogans:
 ### 1a. Carving is OFF in production, so isolation is opt-in and nobody opts in
 
 There is no `MESHHARBOR__OVERLAY__*` key in the prod configmap
-(`k8s/base/configmap-roomler2-config.yaml` in the deploy repo), so the shipped default
+(`k8s/base/configmap-meshharbor2-config.yaml` in the deploy repo), so the shipped default
 `blocks_enabled: false` applies (`crates/config/src/settings.rs:144`, `:822`). Every
 organization created today lands on the shared `100.64.0.0/10` with its cursor seeded at 1.
 
@@ -185,7 +185,7 @@ leak is purely historical or still active.
 |---|---|---|---|
 | **P0** | Spec + ledger row + issue | ✅ shipped | — |
 | **P1** | Carving on by default; configmap key; carve-failure alert + `headroom` threshold | ✅ shipped + **field-verified** | `overlay.blocks_enabled` |
-| **P2** | `OverlayJoinRefused` frame + `roomler status` surface | ✅ shipped | additive; frame is ignorable |
+| **P2** | `OverlayJoinRefused` frame + `meshharbor status` surface | ✅ shipped | additive; frame is ignorable |
 | **P3** | `reconcile-hosts` admin route | ✅ shipped + **run against prod** (17 ordinals reclaimed) | dry-run default |
 | **P4** | Migrate `demo`; clean up the orphaned network | ✅ done — the legacy `/10` holds no live node | existing renumber runbook |
 | **P5a** | `BlockList` — the ordinal↔address model | ✅ shipped | — |
@@ -214,7 +214,7 @@ phase of it is behind one flag that is off.
 - [ ] Two organizations can never be issued overlapping ranges — asserted by test, and by
       the absence of any `100.64.0.0/10` network in production.
 - [ ] A device that cannot be allocated an address receives a stated reason, and
-      `roomler status` shows it.
+      `meshharbor status` shows it.
 - [ ] An org that fills its block is given a second one; no device changes address.
 - [ ] A pre-P5 agent meshes correctly against a multi-block org — verified with a real old
       binary, not a decoder test alone.

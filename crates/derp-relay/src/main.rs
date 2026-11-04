@@ -21,7 +21,7 @@
 //! — `DerpConn`/`DerpMux` on the agent work unchanged.
 //!
 //! Deployment: plain HTTP/WS on `DERP_BIND` (default `127.0.0.1:8443`); the
-//! PoP's nginx terminates TLS for `derp-{region}.roomler.ai:443` and proxies
+//! PoP's nginx terminates TLS for `derp-{region}.meshharbor.itachi.fans:443` and proxies
 //! here (`scripts/relay-pop/`). `/healthz` serves the health cron.
 //!
 //! v1 scope note: the central relay additionally consults the overlay-ACL

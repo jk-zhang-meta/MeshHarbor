@@ -6208,7 +6208,7 @@ pub struct OverlayNetworkInfo {
     pub cidrs: Vec<String>,
     pub mtu: u16,
     /// Phase 2 MagicDNS — the tenant's overlay DNS suffix (e.g.
-    /// `"myorg.roomler.net"`), or `None` when MagicDNS is off. A node with a
+    /// `"myorg.meshharbor.net"`), or `None` when MagicDNS is off. A node with a
     /// domain set brings up its local split-DNS resolver. `#[serde(default)]`
     /// for pre-Phase-2 servers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -9074,13 +9074,13 @@ mod tests {
             regions: vec![
                 RelayRegionInfo {
                     id: "us-east".into(),
-                    stun: "coturn-us-east.roomler.ai:3478".into(),
-                    derp_url: Some("wss://derp-us-east.roomler.ai/derp".into()),
+                    stun: "coturn-us-east.meshharbor.itachi.fans:3478".into(),
+                    derp_url: Some("wss://derp-us-east.meshharbor.itachi.fans/derp".into()),
                     relay_band: Some((49152, 65535)),
                 },
                 RelayRegionInfo {
                     id: "eu-central".into(),
-                    stun: "coturn.roomler.ai:3478".into(),
+                    stun: "coturn.meshharbor.itachi.fans:3478".into(),
                     derp_url: None,
                     relay_band: None,
                 },
@@ -9089,7 +9089,7 @@ mod tests {
         };
         let s = serde_json::to_string(&m).unwrap();
         assert!(s.contains(r#""t":"rc:relay.regions""#));
-        assert!(s.contains(r#""stun":"coturn-us-east.roomler.ai:3478""#));
+        assert!(s.contains(r#""stun":"coturn-us-east.meshharbor.itachi.fans:3478""#));
         // Absent derp_url is OMITTED, not null.
         assert!(!s.contains(r#""derp_url":null"#));
         match serde_json::from_str::<ServerMsg>(&s).unwrap() {
@@ -10562,7 +10562,7 @@ mod tests {
             session_id: ObjectId::new(),
             quic_auth_token: "tok-xyz".into(),
             ice_servers: vec![IceServer {
-                urls: vec!["turn:coturn.roomler.live:3478?transport=udp".into()],
+                urls: vec!["turn:coturn.meshharbor.itachi.fans:3478?transport=udp".into()],
                 username: Some("1780000000:agent".into()),
                 credential: Some("base64hmac".into()),
             }],
@@ -11093,14 +11093,14 @@ mod tests {
         let m = ServerMsg::OverlayForceDerp {
             peer_node_id: id,
             ttl_ms: 1,
-            derp_url: Some("wss://derp-us-east.roomler.ai/derp".into()),
+            derp_url: Some("wss://derp-us-east.meshharbor.itachi.fans/derp".into()),
         };
         let s = serde_json::to_string(&m).unwrap();
         match serde_json::from_str::<ServerMsg>(&s).unwrap() {
             ServerMsg::OverlayForceDerp { derp_url, .. } => {
                 assert_eq!(
                     derp_url.as_deref(),
-                    Some("wss://derp-us-east.roomler.ai/derp")
+                    Some("wss://derp-us-east.meshharbor.itachi.fans/derp")
                 );
             }
             other => panic!("expected OverlayForceDerp, got {other:?}"),
@@ -11693,7 +11693,7 @@ mod tests {
                 cidr: "100.64.0.0/10".into(),
                 cidrs: vec![],
                 mtu: 1280,
-                magic_domain: Some("myorg.roomler.net".into()),
+                magic_domain: Some("myorg.meshharbor.net".into()),
                 nameservers: vec!["1.1.1.1".into()],
                 self_name: None,
                 stun_urls: vec!["stun:5.9.157.221:3478".into()],
@@ -12294,7 +12294,7 @@ mod tests {
         let peer = ObjectId::parse_str("507f1f77bcf86cd799439013").unwrap();
         let m = ServerMsg::OverlayRelayGrant {
             ice_servers: vec![IceServer {
-                urls: vec!["turns:coturn.roomler.ai:443?transport=tcp".into()],
+                urls: vec!["turns:coturn.meshharbor.itachi.fans:443?transport=tcp".into()],
                 username: Some("u".into()),
                 credential: Some("c".into()),
             }],

@@ -8,7 +8,7 @@
 // desktop companion (agents/meshharbor-desktop/src/front) is plain JavaScript
 // that Tauri serves as-is — no bundler, `<script src>` tags, CSP
 // `script-src 'self'` — so it cannot import TypeScript. This bundles mesh.ts
-// into a classic-script IIFE that defines `window.RoomlerMesh`, and writes it
+// into a classic-script IIFE that defines `window.MeshHarborMesh`, and writes it
 // CHECKED IN to agents/meshharbor-desktop/src/front/mesh-util.js.
 //
 // ui/src/__tests__/utils/desktopMeshUtil.spec.ts rebuilds it in memory and
@@ -51,7 +51,7 @@ export async function buildDesktopMeshUtil() {
     bundle: true,
     write: false,
     format: 'iife',
-    globalName: 'RoomlerMesh',
+    globalName: 'MeshHarborMesh',
     platform: 'browser',
     // WebView2 (Chromium) and WebKitGTK 2.4x both run ES2019 natively.
     target: ['es2019'],

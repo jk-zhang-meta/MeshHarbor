@@ -340,7 +340,7 @@ import { canSetHivePolicy } from '@/utils/permissions'
 
 /** The archive replica image (`Dockerfile.hive-archive`), as the
  *  `Archive replica image` workflow publishes it. */
-const ARCHIVE_IMAGE = 'ghcr.io/gjovanov/roomler-ai/hive-archive:latest'
+const ARCHIVE_IMAGE = 'ghcr.io/jk-zhang-meta/meshharbor/hive-archive:latest'
 
 const route = useRoute()
 const { t } = useI18n()

@@ -109,7 +109,7 @@ describe('SettingsSection on a phone (FR-116 P3c)', () => {
     expect(summaries(w)).toEqual({
       'Workspace Settings': 'Acme Labs',
       'Remote command execution': 'On',
-      'Roomler SSH': 'Off',
+      'MeshHarbor SSH': 'Off',
       'External access': '', // not loaded / not readable: no guess
       'Keep busy': 'Allowed',
       'Remote session features': 'Files: ask · Audio: off',
@@ -148,7 +148,7 @@ describe('SettingsSection on a phone (FR-116 P3c)', () => {
     const w = mountAt('phone')
     await w
       .findAll('.v-expansion-panel-title')
-      .find((t) => t.text().includes('Roomler SSH'))!
+      .find((t) => t.text().includes('MeshHarbor SSH'))!
       .trigger('click')
     await flushPromises()
     expect(w.text()).toContain('Allow SSH sessions in this organization')

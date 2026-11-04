@@ -61,7 +61,7 @@ async function clickProvider(w: Awaited<ReturnType<typeof mountAt>>, label: stri
   await btn!.trigger('click')
   expect(mockStartOAuth).toHaveBeenCalledTimes(1)
   const [provider, attribution] = mockStartOAuth.mock.calls[0]!
-  return new URL(oauthStartUrl(provider, attribution), 'https://roomler.ai')
+  return new URL(oauthStartUrl(provider, attribution), 'https://meshharbor.itachi.fans')
 }
 
 let setItem: ReturnType<typeof vi.spyOn>
@@ -111,7 +111,7 @@ describe('LoginView — attribution (FR-88)', () => {
 
   it('starts a plain sign-in, exactly as before, without a campaign', async () => {
     const u = await clickProvider(await mountAt('/login'), 'Google')
-    expect(u.href).toBe('https://roomler.ai/api/oauth/google')
+    expect(u.href).toBe('https://meshharbor.itachi.fans/api/oauth/google')
     expect(mockStartOAuth).toHaveBeenCalledWith('google', undefined)
   })
 
@@ -125,7 +125,7 @@ describe('LoginView — attribution (FR-88)', () => {
 
   it('carries the keys onto the register link, and leaves it bare without a campaign', async () => {
     const tagged = await mountAt('/login?utm_source=youtube&utm_medium=video')
-    const u = new URL(tagged.find('a[href^="/register"]').attributes('href')!, 'https://roomler.ai')
+    const u = new URL(tagged.find('a[href^="/register"]').attributes('href')!, 'https://meshharbor.itachi.fans')
     expect(Object.fromEntries(u.searchParams)).toEqual({
       utm_source: 'youtube',
       utm_medium: 'video',

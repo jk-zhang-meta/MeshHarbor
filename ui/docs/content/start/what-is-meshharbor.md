@@ -1,6 +1,6 @@
 ---
-title: What is Roomler?
-description: Roomler is a browser-based remote desktop and a private WireGuard-style mesh network on one self-hostable agent, with team chat and video included.
+title: What is MeshHarbor?
+description: MeshHarbor is a browser-based remote desktop and a private WireGuard-style mesh network on one self-hostable agent, with team chat and video included.
 tags: [overview, getting-started, architecture, remote-desktop, mesh]
 hero: private-network.svg
 heroAlt: Home, office and cloud machines joined into one private encrypted network with stable addresses
@@ -9,7 +9,7 @@ order: 1
 
 Most people arrive here already running two products: something like
 **TeamViewer or RustDesk** to see a screen, and something like **Tailscale or a
-VPN** to reach a service. Roomler is one agent that is *both*, plus the team
+VPN** to reach a service. MeshHarbor is one agent that is *both*, plus the team
 layer, on one identity and one server you can host yourself.
 
 :::video C1YdfmhbAKM
@@ -59,9 +59,9 @@ the product's behaviour.
 
 | Piece | What it is | Where it runs |
 |---|---|---|
-| **The agent** (`roomlerd`) | A native binary — the remote-desktop target, the mesh node, the tunnel endpoint, the SSH server | Every machine you enroll |
-| **The CLI** (`roomler`) | Status, peers, tunnels, exec, ssh, diagnostics | Same machine, alongside the agent |
-| **The server** | Accounts, device registry, signalling, coordination, chat and the conferencing SFU | Roomler's cloud, or your own |
+| **The agent** (`meshharbord`) | A native binary — the remote-desktop target, the mesh node, the tunnel endpoint, the SSH server | Every machine you enroll |
+| **The CLI** (`meshharbor`) | Status, peers, tunnels, exec, ssh, diagnostics | Same machine, alongside the agent |
+| **The server** | Accounts, device registry, signalling, coordination, chat and the conferencing SFU | MeshHarbor's cloud, or your own |
 | **The controller** | A browser (Chromium browsers work best; Safari and Firefox work too) | Wherever you happen to be |
 
 ## What it is *not*

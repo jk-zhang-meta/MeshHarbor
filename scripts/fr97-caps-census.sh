@@ -11,16 +11,16 @@
 # Run on the build host, where kubectl reaches the cluster:
 #   scripts/fr97-caps-census.sh [days]      # agents seen in the last N days (30)
 #
-# The database URL is read from the roomler2 pod's environment and handed to
+# The database URL is read from the meshharbor2 pod's environment and handed to
 # mongosh in mongodb-0 over stdin: it is never printed, and it never appears in
 # an argument list on the build host. Only counts come out: no names, no ids.
 set -euo pipefail
-NS="${MESHHARBOR_NS:-roomler-ai}"
+NS="${MESHHARBOR_NS:-meshharbor}"
 DAYS="${1:-30}"
 case "$DAYS" in '' | *[!0-9]*) echo "days must be a number" >&2; exit 2 ;; esac
 
-url="$(kubectl -n "$NS" exec deploy/roomler2 -- printenv MESHHARBOR__DATABASE__URL)"
-name="$(kubectl -n "$NS" exec deploy/roomler2 -- printenv MESHHARBOR__DATABASE__NAME)"
+url="$(kubectl -n "$NS" exec deploy/meshharbor2 -- printenv MESHHARBOR__DATABASE__URL)"
+name="$(kubectl -n "$NS" exec deploy/meshharbor2 -- printenv MESHHARBOR__DATABASE__NAME)"
 [ -n "$url" ] || { echo "could not read the database URL" >&2; exit 3; }
 case "$name" in '' | *[!A-Za-z0-9_-]*) echo "unexpected database name" >&2; exit 3 ;; esac
 

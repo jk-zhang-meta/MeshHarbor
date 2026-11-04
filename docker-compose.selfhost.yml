@@ -1,4 +1,4 @@
-# Roomler — self-hosted, one command.
+# MeshHarbor — self-hosted, one command.
 #
 # This is NOT `docker-compose.yml`. That file brings up the *development*
 # dependencies (Mongo, Redis, MinIO, coturn) and expects you to run the API and
@@ -24,7 +24,7 @@
 #   RTC_MIN_PORT / RTC_MAX_PORT       mapped below. 32 ports is enough to try
 #                                     the product; widen for real use.
 #
-# On Linux you can skip all of that by giving the `roomler` service
+# On Linux you can skip all of that by giving the `meshharbor` service
 # `network_mode: host` and deleting its `ports:` block — then the full
 # 40000-49999 range is reachable and ANNOUNCED_IP is just the host's IP. That is
 # how the hosted service runs. It is not available on Docker Desktop for
@@ -47,7 +47,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 12
-    networks: [roomler]
+    networks: [meshharbor]
 
   redis:
     image: redis:7-alpine
@@ -60,7 +60,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 12
-    networks: [roomler]
+    networks: [meshharbor]
 
   # MinIO's own images (minio/minio, minio/mc) are gone from Docker Hub, so a clean `pull` failed
   # here (#2034). Chainguard builds MinIO from source for amd64 and arm64; this is its
@@ -86,7 +86,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 12
-    networks: [roomler]
+    networks: [meshharbor]
 
   # One-shot: create the bucket the API expects. Without it the first file
   # upload fails with a NoSuchBucket that reads like an auth problem.
@@ -104,8 +104,8 @@ services:
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
-      BUCKET: ${MESHHARBOR_S3_BUCKET:-roomler}
-    networks: [roomler]
+      BUCKET: ${MESHHARBOR_S3_BUCKET:-meshharbor}
+    networks: [meshharbor]
     restart: "no"
 
   # TURN relay. Only needed when two peers can punch no direct path AND you want
@@ -120,7 +120,7 @@ services:
       - --fingerprint
       - --use-auth-secret
       - --static-auth-secret=${MESHHARBOR_TURN_SECRET:?set MESHHARBOR_TURN_SECRET in .env.selfhost}
-      - --realm=${MESHHARBOR_TURN_REALM:-roomler.local}
+      - --realm=${MESHHARBOR_TURN_REALM:-meshharbor.local}
       - --no-tls
       - --no-dtls
       - --no-multicast-peers
@@ -136,9 +136,9 @@ services:
       - "3478:3478/udp"
       - "3478:3478/tcp"
       - "49152-49252:49152-49252/udp"
-    networks: [roomler]
+    networks: [meshharbor]
 
-  roomler:
+  meshharbor:
     # Two ways to get this running, and the fast one is the default:
     #
     #   docker compose … pull && docker compose … up -d     ← pulls, ~1 minute
@@ -152,7 +152,7 @@ services:
     #
     # `build:` stays because it is the AGPL promise in practice: the published
     # image must never be the only way to run the server.
-    image: ${MESHHARBOR_IMAGE:-ghcr.io/gjovanov/roomler-ai:latest}
+    image: ${MESHHARBOR_IMAGE:-ghcr.io/jk-zhang-meta/meshharbor:latest}
     build:
       context: .
       args:
@@ -185,13 +185,13 @@ services:
       MESHHARBOR__OAUTH__BASE_URL: ${MESHHARBOR_PUBLIC_URL:-http://localhost:8080}
       # ── datastores ─────────────────────────────────────────────────────────
       MESHHARBOR__DATABASE__URL: mongodb://${MONGO_ROOT_USERNAME}:${MONGO_ROOT_PASSWORD}@mongo:27017/?authSource=admin
-      MESHHARBOR__DATABASE__NAME: ${MESHHARBOR_DB_NAME:-roomler}
+      MESHHARBOR__DATABASE__NAME: ${MESHHARBOR_DB_NAME:-meshharbor}
       MESHHARBOR__REDIS__URL: redis://redis:6379
       MESHHARBOR__S3__ENABLED: "true"
       MESHHARBOR__S3__ENDPOINT: http://minio:9000
       MESHHARBOR__S3__ACCESS_KEY: ${MINIO_ROOT_USER}
       MESHHARBOR__S3__SECRET_KEY: ${MINIO_ROOT_PASSWORD}
-      MESHHARBOR__S3__BUCKET: ${MESHHARBOR_S3_BUCKET:-roomler}
+      MESHHARBOR__S3__BUCKET: ${MESHHARBOR_S3_BUCKET:-meshharbor}
       # ── conference media ───────────────────────────────────────────────────
       MESHHARBOR__MEDIASOUP__ANNOUNCED_IP: ${MESHHARBOR_ANNOUNCED_IP:-127.0.0.1}
       MESHHARBOR__MEDIASOUP__RTC_MIN_PORT: "40000"
@@ -223,7 +223,7 @@ services:
       # The first start runs schema migrations behind a lease, so give it room
       # before a failing probe starts counting against `retries`.
       start_period: 45s
-    networks: [roomler]
+    networks: [meshharbor]
 
 volumes:
   mongo_data:
@@ -231,5 +231,5 @@ volumes:
   minio_data:
 
 networks:
-  roomler:
-    name: roomler-selfhost
+  meshharbor:
+    name: meshharbor-selfhost

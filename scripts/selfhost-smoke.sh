@@ -28,9 +28,9 @@ if [ -d "$RUN" ]; then
 fi
 
 # --- STEP 1: the document's clone ------------------------------------------
-say "STEP 1  git clone (document says: git clone https://github.com/gjovanov/roomler-ai.git)"
+say "STEP 1  git clone (document says: git clone https://github.com/jk-zhang-meta/MeshHarbor.git)"
 T0=$(date +%s)
-git clone --depth 1 https://github.com/gjovanov/roomler-ai.git "$RUN" >>"$LOG" 2>&1 \
+git clone --depth 1 https://github.com/jk-zhang-meta/MeshHarbor.git "$RUN" >>"$LOG" 2>&1 \
   || { say "FAIL: clone"; exit 1; }
 cd "$RUN"
 say "        cloned in $(( $(date +%s) - T0 ))s, HEAD=$(git rev-parse --short HEAD)"
@@ -78,7 +78,7 @@ for i in $(seq 1 60); do
     curl -fsS http://localhost:8080/health 2>&1 | head -3 | tee -a "$LOG"
     break
   fi
-  [ "$i" = 60 ] && { say "        ✘ /health never answered within 600s"; docker compose -f docker-compose.selfhost.yml --env-file .env.selfhost logs --tail 60 roomler 2>&1 | tee -a "$LOG"; exit 1; }
+  [ "$i" = 60 ] && { say "        ✘ /health never answered within 600s"; docker compose -f docker-compose.selfhost.yml --env-file .env.selfhost logs --tail 60 meshharbor 2>&1 | tee -a "$LOG"; exit 1; }
   sleep 10
 done
 

@@ -1,4 +1,4 @@
-Subject: [PATCH] nvenc: do not force an IDR on a bitrate-only reconfigure (roomler FR-62 A2)
+Subject: [PATCH] nvenc: do not force an IDR on a bitrate-only reconfigure (meshharbor FR-62 A2)
 
 A maxrate-only reconfigure of a cq-VBR NVENC stream (our config: averageBitRate
 stays 0, only maxBitRate/vbvBufferSize move) applies live and needs no IDR.
@@ -7,7 +7,7 @@ keyframe is multiple seconds of transit on every AIMD step (FR-62 A0 measured a
 rate-caused IDR on 20/20 rungs, apply ~0.005 ms). Applying the new encodeConfig
 without a reset is exactly OBS's dynamic-bitrate path.
 
-Carried in roomler's vendored FFmpeg only; would upstream behind a private
+Carried in meshharbor's vendored FFmpeg only; would upstream behind a private
 reconfig_idr option (default 1).
 ---
 --- a/libavcodec/nvenc.c
@@ -19,7 +19,7 @@ reconfig_idr option (default 1).
 -            params.resetEncoder = 1;
 -            params.forceIDR = 1;
 -
-+            // roomler fork (FR-62 A2): a bitrate-only reconfigure (our NVENC
++            // meshharbor fork (FR-62 A2): a bitrate-only reconfigure (our NVENC
 +            // keeps averageBitRate == 0 and moves only maxBitRate/vbv for a
 +            // cq-VBR stream) applies LIVE and needs no IDR. Upstream forces one
 +            // (resetEncoder = forceIDR = 1); on a slow relay that keyframe is

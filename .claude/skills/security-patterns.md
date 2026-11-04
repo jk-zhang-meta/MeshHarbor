@@ -1,4 +1,4 @@
-# Security Patterns — Roomler AI
+# Security Patterns — MeshHarbor
 
 ### CORS Fully Permissive — discovered 2026-03-10
 **Symptom:** Any origin can make authenticated requests to the API

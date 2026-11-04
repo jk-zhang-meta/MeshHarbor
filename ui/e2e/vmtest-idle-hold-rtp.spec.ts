@@ -1,5 +1,5 @@
 /**
- * FR-93 lab: AC8's idle hold on the RTP media track, driven by roomler-ai-deploy's
+ * FR-93 lab: AC8's idle hold on the RTP media track, driven by meshharbor-deploy's
  * `vmtest/lab/measure/idle-cost.sh <guest> <label> <on|off> rtp`. One viewer session held for
  * E2E_SOAK_MINUTES (30 by default). Every minute it checks that the session
  * still says connected and that the picture still changes. The lab probe's
@@ -87,7 +87,7 @@ test.describe('vmtest idle hold, RTP (named agent)', () => {
     const token = ((await loginResp.json()) as { access_token: string }).access_token
     await context.addInitScript(() => {
       try {
-        window.localStorage.setItem('roomler-signed-in', '1')
+        window.localStorage.setItem('meshharbor-signed-in', '1')
       } catch {
         /* the cookie still authenticates */
       }
@@ -97,9 +97,9 @@ test.describe('vmtest idle hold, RTP (named agent)', () => {
     // AC8 — FR-29 measured the RTP media track: pin the viewer to it (VP9; this Chromium has no H.264).
     await context.addInitScript(() => {
       try {
-        window.localStorage.setItem('roomler-rc-video-transport.v2', 'webrtc')
-        window.localStorage.setItem('roomler-rc-preferred-codec', 'vp9')
-        window.localStorage.setItem('roomler-rc-render-path', 'video')
+        window.localStorage.setItem('meshharbor-rc-video-transport.v2', 'webrtc')
+        window.localStorage.setItem('meshharbor-rc-preferred-codec', 'vp9')
+        window.localStorage.setItem('meshharbor-rc-render-path', 'video')
       } catch {
         /* the default path, then — the journal's heartbeat names the pump either way */
       }

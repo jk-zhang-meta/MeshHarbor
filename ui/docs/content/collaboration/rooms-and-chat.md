@@ -1,6 +1,6 @@
 ---
 title: Rooms and chat
-description: Organised rooms with threaded replies, reactions, mentions, rich text and full-text search — the conversation layer that ships with every Roomler workspace.
+description: Organised rooms with threaded replies, reactions, mentions, rich text and full-text search — the conversation layer that ships with every MeshHarbor workspace.
 tags: [collaboration, chat, rooms, messaging]
 order: 1
 ---

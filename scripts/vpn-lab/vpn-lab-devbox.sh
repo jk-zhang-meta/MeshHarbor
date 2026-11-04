@@ -4,7 +4,7 @@
 # Runs locally (Git Bash), no fleet-exec dependency; writes into $OUT.
 #
 # Usage: vpn-lab-devbox.sh <out-dir> <duration-s> [target ...]
-# The fleet device name the sampler greps for in `roomler peers` output comes
+# The fleet device name the sampler greps for in `meshharbor peers` output comes
 # from $LAB_TARGET (default "winhost-a") so no real hostname is baked in here.
 set -u
 OUT="${1:?out dir}"; DUR="${2:?duration seconds}"; shift 2
@@ -34,7 +34,7 @@ ping_loop() {
 }
 
 sampler_loop() {
-  local f="$OUT/roomler-samples.txt" i=0
+  local f="$OUT/meshharbor-samples.txt" i=0
   while [ "$(date +%s)" -lt "$end" ]; do
     echo "=== $(date -u +%Y-%m-%dT%H:%M:%S.%3NZ) status" >> "$f"
     "$MESHHARBOR" status 2>&1 | grep -iE "version|srflx|warm|direct sock" >> "$f"

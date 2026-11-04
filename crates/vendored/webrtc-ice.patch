@@ -51,8 +51,8 @@ diff -ruN --strip-trailing-cr upstream/src/agent/agent_gather.rs vendored/src/ag
  
  const STUN_GATHER_TIMEOUT: Duration = Duration::from_secs(5);
  
-+/// Roomler patch (media dodges the overlay): type-preference slot for host
-+/// candidates whose interface IP sits inside the Roomler overlay ranges.
++/// MeshHarbor patch (media dodges the overlay): type-preference slot for host
++/// candidates whose interface IP sits inside the MeshHarbor overlay ranges.
 +/// Chosen BELOW server-reflexive (100) and ABOVE relay (0), so ICE prefers a
 +/// working real-path pair (srflx↔srflx, ~free of overlay weather) over
 +/// tunnelling media through the mesh, while overlay-host pairs stay available
@@ -70,16 +70,16 @@ diff -ruN --strip-trailing-cr upstream/src/agent/agent_gather.rs vendored/src/ag
 +    if std::env::var("MESHHARBOR_ICE_OVERLAY_HOST_DEPRIORITIZE").as_deref() == Ok("0") {
 +        return 0;
 +    }
-+    if !is_roomler_overlay_ip(ip) {
++    if !is_meshharbor_overlay_ip(ip) {
 +        return 0;
 +    }
 +    (1 << 24) * OVERLAY_HOST_TYPE_PREFERENCE + (1 << 8) * 65535 + (256 - u32::from(component))
 +}
 +
-+/// The Roomler overlay addresses: CGNAT 100.64.0.0/10 (v4) and the mesh ULA
++/// The MeshHarbor overlay addresses: CGNAT 100.64.0.0/10 (v4) and the mesh ULA
 +/// fd72:6f6f:6d6c::/48 (v6). Matching by range (not interface name) keeps the
 +/// check OS-independent and immune to adapter renames.
-+pub(crate) fn is_roomler_overlay_ip(ip: &std::net::IpAddr) -> bool {
++pub(crate) fn is_meshharbor_overlay_ip(ip: &std::net::IpAddr) -> bool {
 +    match ip {
 +        std::net::IpAddr::V4(v4) => {
 +            let o = v4.octets();
@@ -125,7 +125,7 @@ diff -ruN --strip-trailing-cr upstream/src/agent/agent_gather.rs vendored/src/ag
 +                            // network type gets "No available ipv6 IP address
 +                            // found" — benign (the host simply has no IPv6), but
 +                            // it fired a WARN per url per gather → thousands of
-+                            // noise lines on corp v4-only endpoints (roomler fleet
++                            // noise lines on corp v4-only endpoints (meshharbor fleet
 +                            // diag 2026-07-13: ~1770× on the overlay hosts). Log
 +                            // the no-address-of-that-family case at DEBUG; keep a
 +                            // genuine DNS failure at WARN.
@@ -260,7 +260,7 @@ diff -ruN --strip-trailing-cr upstream/src/agent/agent_gather.rs vendored/src/ag
                      Ok(conn) => Arc::new(conn),
                      Err(err) => {
                          let _ = client.close().await;
-+                        // Roomler vendor diagnostic (2026-05-18 a third field-test host
++                        // MeshHarbor vendor diagnostic (2026-05-18 a third field-test host
 +                        // / a second field-test host): include the scheme + transport
 +                        // so we can correlate which TURN URL flavour
 +                        // failed. `err` is typically just "attribute
@@ -358,7 +358,7 @@ diff -ruN --strip-trailing-cr upstream/src/agent/agent_internal.rs vendored/src/
          );
  
          if let Some(p) = p {
-+            // Roomler patch (observability, 2026-07-28): selection changes at
++            // MeshHarbor patch (observability, 2026-07-28): selection changes at
 +            // WARN — the agent's default tracing filter uploads `warn`-level
 +            // events from this target fleet-wide, so which path media rides
 +            // (and every mid-session migration) becomes visible in the
@@ -458,7 +458,7 @@ diff -ruN --strip-trailing-cr upstream/src/agent/agent_selector.rs vendored/src/
  use crate::priority::*;
  use crate::use_candidate::*;
  
-+/// Roomler patch (follow-renomination v2, 2026-07-28): how long the currently
++/// MeshHarbor patch (follow-renomination v2, 2026-07-28): how long the currently
 +/// selected pair may go without ANY inbound before a renomination onto an
 +/// overlay-remote pair is accepted as a failover. Live pairs see STUN consent
 +/// checks and media continuously, so 3 s of silence means the pair is dying.
@@ -515,7 +515,7 @@ diff -ruN --strip-trailing-cr upstream/src/agent/agent_selector.rs vendored/src/
 +            && candidate
 +                .address()
 +                .parse::<std::net::IpAddr>()
-+                .is_ok_and(|ip| !crate::agent::agent_gather::is_roomler_overlay_ip(&ip))
++                .is_ok_and(|ip| !crate::agent::agent_gather::is_meshharbor_overlay_ip(&ip))
 +    })
 +}
 +fn should_follow_renomination(
@@ -527,7 +527,7 @@ diff -ruN --strip-trailing-cr upstream/src/agent/agent_selector.rs vendored/src/
 +        .remote
 +        .address()
 +        .parse::<std::net::IpAddr>()
-+        .map(|ip| !crate::agent::agent_gather::is_roomler_overlay_ip(&ip))
++        .map(|ip| !crate::agent::agent_gather::is_meshharbor_overlay_ip(&ip))
 +        .unwrap_or(false);
 +    let current_stale = selected_pair_inbound_age(current, use_pair_proof) > FOLLOW_STALE_AFTER;
 +    follow_renomination_policy(
@@ -554,7 +554,7 @@ diff -ruN --strip-trailing-cr upstream/src/agent/agent_selector.rs vendored/src/
 +    }
 +}
 +
-+/// Roomler patch (warm standby, 2026-07-28): cadence for pinging validated
++/// MeshHarbor patch (warm standby, 2026-07-28): cadence for pinging validated
 +/// pairs that are NOT the selected one. Upstream keepalives only the selected
 +/// pair, so every other validated pair's NAT mapping expires minutes after it
 +/// goes idle (field, WINHOST-C: the agent's srflx mapping died within
@@ -762,7 +762,7 @@ diff -ruN --strip-trailing-cr upstream/src/agent/agent_selector.rs vendored/src/
  
                  if let Err(err) = result {
 -                    log::error!("{}", err);
-+                    // Roomler vendor patch (2026-05-18 a third field-test host log-flood
++                    // MeshHarbor vendor patch (2026-05-18 a third field-test host log-flood
 +                    // fix): downgrade per-attempt STUN build failures
 +                    // to DEBUG so they don't drown the rolling log,
 +                    // and prefix with a target so they're greppable.
@@ -796,7 +796,7 @@ diff -ruN --strip-trailing-cr upstream/src/agent/agent_selector.rs vendored/src/
  
          if let Err(err) = result {
 -            log::error!("{}", err);
-+            // Roomler vendor patch (2026-05-18 a third field-test host log-flood fix):
++            // MeshHarbor vendor patch (2026-05-18 a third field-test host log-flood fix):
 +            // see nominate_pair above; per-candidate STUN build
 +            // failures are not session-fatal.
 +            log::debug!(target: "webrtc_ice::ping_candidate", "STUN message build failed: {}", err);
@@ -830,7 +830,7 @@ diff -ruN --strip-trailing-cr upstream/src/agent/agent_selector.rs vendored/src/
                      selected_pair_is_none
                  );
 -                if pending_request.is_use_candidate && selected_pair_is_none {
-+                // Roomler patch (follow renomination): mirror of the
++                // MeshHarbor patch (follow renomination): mirror of the
 +                // handle_binding_request policy — when the USE-CANDIDATE
 +                // arrived before this pair's own check completed, the
 +                // triggered check's success must also honour the controlling
@@ -887,7 +887,7 @@ diff -ruN --strip-trailing-cr upstream/src/agent/agent_selector.rs vendored/src/
  
          if let Err(err) = result {
 -            log::error!("{}", err);
-+            // Roomler vendor patch (2026-05-18 a third field-test host log-flood fix):
++            // MeshHarbor vendor patch (2026-05-18 a third field-test host log-flood fix):
 +            // see nominate_pair above; per-candidate STUN build
 +            // failures are not session-fatal.
 +            log::debug!(target: "webrtc_ice::ping_candidate", "STUN message build failed: {}", err);
@@ -934,7 +934,7 @@ diff -ruN --strip-trailing-cr upstream/src/agent/agent_selector.rs vendored/src/
                      // nominated flag value of the valid pair to true.
 -                    if self.agent_conn.get_selected_pair().is_none() {
 +                    //
-+                    // Roomler patch (follow renomination): upstream only set the
++                    // MeshHarbor patch (follow renomination): upstream only set the
 +                    // selected pair when NONE was set, pinning the controlled
 +                    // agent to the FIRST nominated pair for the connection's
 +                    // lifetime. Browsers renominate deliberately when they

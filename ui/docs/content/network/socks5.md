@@ -13,7 +13,7 @@ network rather than talking to a single database.
 ## Start one
 
 ```bash
-roomler socks5 --agent <agent-id> --local 1080
+meshharbor socks5 --agent <agent-id> --local 1080
 ```
 
 Then point a client at `localhost:1080`:
@@ -39,7 +39,7 @@ you get mesh mode: one proxy that reaches every machine you are allowed to
 reach, addressing each by its device id as the SOCKS hostname.
 
 ```bash
-roomler socks5 --local 1080                                  # mesh mode
+meshharbor socks5 --local 1080                                  # mesh mode
 curl --socks5-hostname localhost:1080 http://<agent-id>:8080/
 ```
 

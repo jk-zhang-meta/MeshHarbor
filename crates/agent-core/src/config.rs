@@ -23,7 +23,7 @@ use crate::acl::AgentForwardAcl;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentConfig {
-    /// Base URL of the MeshHarbor API, e.g. `https://roomler.live`. No trailing slash.
+    /// Base URL of the MeshHarbor API, e.g. `https://meshharbor.itachi.fans`. No trailing slash.
     pub server_url: String,
     /// Derived WSS URL; recomputed from `server_url` if absent.
     #[serde(default)]
@@ -3709,7 +3709,7 @@ mod tests {
     /// Smallest document `try_load` accepts — enough to exercise save/load.
     fn minimal_toml() -> String {
         r#"
-server_url = "https://roomler.ai"
+server_url = "https://meshharbor.itachi.fans"
 agent_token = "tok"
 agent_id = "aid"
 tenant_id = "tid"
@@ -3787,8 +3787,8 @@ machine_name = "devbox"
     #[test]
     fn ws_url_from_https() {
         assert_eq!(
-            derive_ws_url("https://roomler.live"),
-            "wss://roomler.live/ws"
+            derive_ws_url("https://meshharbor.itachi.fans"),
+            "wss://meshharbor.itachi.fans/ws"
         );
     }
 
@@ -3829,19 +3829,19 @@ machine_name = "devbox"
         load(&path).expect("config loads")
     }
 
-    /// FR-101 AC3, on the load path: a config holding `http://roomler.ai`
+    /// FR-101 AC3, on the load path: a config holding `http://meshharbor.itachi.fans`
     /// signals over `wss://`, while `http://127.0.0.1` stays `ws://`.
     #[test]
     fn a_plaintext_server_url_is_read_as_tls_and_loopback_is_not() {
         let remote = load_toml(&minimal_toml().replace(
-            "server_url = \"https://roomler.ai\"",
-            "server_url = \"http://roomler.ai\"",
+            "server_url = \"https://meshharbor.itachi.fans\"",
+            "server_url = \"http://meshharbor.itachi.fans\"",
         ));
-        assert_eq!(remote.server_url, "https://roomler.ai");
-        assert_eq!(remote.ws_url(), "wss://roomler.ai/ws");
+        assert_eq!(remote.server_url, "https://meshharbor.itachi.fans");
+        assert_eq!(remote.ws_url(), "wss://meshharbor.itachi.fans/ws");
 
         let local = load_toml(&minimal_toml().replace(
-            "server_url = \"https://roomler.ai\"",
+            "server_url = \"https://meshharbor.itachi.fans\"",
             "server_url = \"http://127.0.0.1:3000\"",
         ));
         assert_eq!(local.server_url, "http://127.0.0.1:3000");
@@ -3853,8 +3853,8 @@ machine_name = "devbox"
     #[test]
     fn every_server_url_is_secured_unless_the_owner_kept_plaintext() {
         let toml = minimal_toml().replace(
-            "server_url = \"https://roomler.ai\"",
-            "server_url = \"http://roomler.ai\"\nws_url = \"ws://roomler.ai/ws\"",
+            "server_url = \"https://meshharbor.itachi.fans\"",
+            "server_url = \"http://meshharbor.itachi.fans\"\nws_url = \"ws://meshharbor.itachi.fans/ws\"",
         ) + r#"
 [[orgs]]
 label = "other"
@@ -3864,14 +3864,14 @@ agent_id = "aid2"
 tenant_id = "tid2"
 "#;
         let cfg = load_toml(&toml);
-        assert_eq!(cfg.server_url, "https://roomler.ai");
-        assert_eq!(cfg.ws_url(), "wss://roomler.ai/ws");
+        assert_eq!(cfg.server_url, "https://meshharbor.itachi.fans");
+        assert_eq!(cfg.ws_url(), "wss://meshharbor.itachi.fans/ws");
         assert_eq!(cfg.orgs[0].server_url, "https://other.example");
         assert_eq!(cfg.orgs[0].ws_url(), "wss://other.example/ws");
 
         let lab = load_toml(&format!("allow_plaintext_server = true\n{toml}"));
-        assert_eq!(lab.server_url, "http://roomler.ai");
-        assert_eq!(lab.ws_url(), "ws://roomler.ai/ws");
+        assert_eq!(lab.server_url, "http://meshharbor.itachi.fans");
+        assert_eq!(lab.ws_url(), "ws://meshharbor.itachi.fans/ws");
         assert_eq!(lab.orgs[0].server_url, "HTTP://other.example");
     }
 
@@ -3888,8 +3888,8 @@ tenant_id = "tid2"
     #[test]
     fn ws_url_strips_trailing_slash() {
         assert_eq!(
-            derive_ws_url("https://roomler.live/"),
-            "wss://roomler.live/ws"
+            derive_ws_url("https://meshharbor.itachi.fans/"),
+            "wss://meshharbor.itachi.fans/ws"
         );
     }
 
@@ -4364,7 +4364,7 @@ tenant_id = "tid2"
     #[test]
     fn sanitize_org_label_rules() {
         assert_eq!(sanitize_org_label(" Acme Corp "), Some("acme-corp".into()));
-        assert_eq!(sanitize_org_label("roomler.ai"), Some("meshharbor".into()));
+        assert_eq!(sanitize_org_label("meshharbor.itachi.fans"), Some("meshharbor".into()));
         assert_eq!(sanitize_org_label("Ümlaut__x"), Some("mlaut-x".into()));
         assert_eq!(sanitize_org_label("primary"), None, "reserved");
         assert_eq!(sanitize_org_label("PRIMARY"), None, "reserved, any case");

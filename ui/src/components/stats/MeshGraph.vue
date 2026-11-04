@@ -190,7 +190,7 @@ const props = withDefaults(
     emptyText?: string
   }>(),
   {
-    centerName: 'roomler.ai',
+    centerName: 'meshharbor.itachi.fans',
     emptyText: 'No devices in this organization yet',
   },
 )

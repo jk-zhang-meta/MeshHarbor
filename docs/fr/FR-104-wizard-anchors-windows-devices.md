@@ -1,16 +1,16 @@
 # FR-104: The wizard anchors a Windows device — SYSTEM exec set up at install, with one token and the administrator's prompt
 
-**Issue:** [#2147](https://github.com/gjovanov/roomler-ai/issues/2147) · **Status:** **closed 2026-10-14**: all five criteria field-verified on the released 0.4.135 wizard (§8) · **Owner:**
+**Issue:** [#2147](https://github.com/jk-zhang-meta/MeshHarbor/issues/2147) · **Status:** **closed 2026-10-14**: all five criteria field-verified on the released 0.4.135 wizard (§8) · **Owner:**
 fleet (the anchor route, enrollment tokens), the wizard (`agents/meshharbor-setup`, `crates/meshharbor-setup-core`),
 the admin UI · **Anchors:** master `94a2032c6` · **Builds on:** FR-94 (the anchor; its P1 second half,
 "the wizard writing the anchor", was not built), FR-84 (the wizard)
 
 ## 1. Goal
 
-An administrator installing Roomler on a Windows machine can anchor it for SYSTEM exec in the same pass:
+An administrator installing MeshHarbor on a Windows machine can anchor it for SYSTEM exec in the same pass:
 - one token pasted into the wizard;
 - one more administrator prompt;
-- no separate elevated `roomlerd anchor create` afterwards.
+- no separate elevated `meshharbord anchor create` afterwards.
 
 FR-94's invariant still holds: the anchoring happens inside an elevated process, and the SYSTEM service's
 credential never passes through a process the signed-in user controls.
@@ -28,7 +28,7 @@ credential never passes through a process the signed-in user controls.
 - `used_tokens` is keyed by the bare `jti` (`crates/services/src/dao/used_token.rs` L66–78), whatever the purpose.
 
 **Anchoring needs elevation, and only machine roles have the service.**
-- `roomlerd anchor create` requires elevation (`agents/meshharbord/src/exec_service.rs` `require_elevated` ~L1532) and writes the anchor under a SYSTEM + Administrators DACL.
+- `meshharbord anchor create` requires elevation (`agents/meshharbord/src/exec_service.rs` `require_elevated` ~L1532) and writes the anchor under a SYSTEM + Administrators DACL.
 - Only the `DaemonSystem` and `DaemonMachine` roles (`src/role.rs` L35–55) install the SYSTEM service the anchor is for.
 
 ## 3. Design
@@ -69,7 +69,7 @@ The Medium wizard would then hold the SYSTEM service's credential, and the serve
 sequenceDiagram
   participant A as admin (dashboard)
   participant W as wizard (Medium)
-  participant E as roomlerd anchor (elevated child)
+  participant E as meshharbord anchor (elevated child)
   participant S as server
   A->>S: enroll-token {anchor: true}
   S-->>A: token (claims anchor = true)
@@ -88,7 +88,7 @@ sequenceDiagram
 |---|---|---|---|
 | P0 | This spec, the issue and the registry row | docs only | #2149 |
 | P1 | Server: the `anchor` claim, `enrolled_with_jti`, the second-purpose claim; tests | tokens carry `anchor` only when asked | #2164, on prod since `hosted-20261014-cc63c4d`. The token route reads its body leniently: only a non-empty JSON body is parsed, so the body-less, `curl -d ''` and empty-JSON calls every script made before still mint a plain token |
-| P2 | Admin UI checkbox and copy. The box sits on the Windows tab for the two machine-wide scopes and shows what the token CARRIES (the server's `anchor`), never a wish: ticking it mints a new token (`AgentsSection.vue` `reissueEnrollToken`). An anchoring token adds a fourth Windows block, the elevated `roomlerd anchor create` with the same token, for the script and manual paths (`enrollCommands.ts`). The request carries a body only when asked, so the plain token stays the body-less request every server answers | — | #2174, merged once the wizard with P3 was released (`setup-v0.4.135`): before that the copy would have promised a wizard step the released wizard did not have. On prod with the next promote |
+| P2 | Admin UI checkbox and copy. The box sits on the Windows tab for the two machine-wide scopes and shows what the token CARRIES (the server's `anchor`), never a wish: ticking it mints a new token (`AgentsSection.vue` `reissueEnrollToken`). An anchoring token adds a fourth Windows block, the elevated `meshharbord anchor create` with the same token, for the script and manual paths (`enrollCommands.ts`). The request carries a body only when asked, so the plain token stays the body-less request every server answers | — | #2174, merged once the wizard with P3 was released (`setup-v0.4.135`): before that the copy would have promised a wizard step the released wizard did not have. On prod with the next promote |
 | P3 | Wizard: `spawn_elevated`, the anchor step, progress, Done note | the step runs only for an `anchor: true` token | #2171, released in `agent-v0.4.135` / `setup-v0.4.135` |
 | P4 | Docs; field | — | docs this PR; field rows 1–5 (§8) |
 
@@ -113,26 +113,26 @@ sequenceDiagram
 
 ## 7. Out of scope
 
-- Anchoring from the scripts (`scripts/install.ps1`). An admin can run `roomlerd anchor create` after them.
+- Anchoring from the scripts (`scripts/install.ps1`). An admin can run `meshharbord anchor create` after them.
 - macOS and Linux, which have no anchor (their daemons are root).
 - Pre-existing: the Medium wizard writes the SystemContext config under `%ProgramData%` and hardens it best-effort (`orchestrator_agent.rs` L467–486). Noted, not changed here.
 
 ## 8. Field-verification log
 
-Bare vmtest Win11 guests booted from the golden (no Roomler installed), the wizard launched in the console session **elevated** (`schtasks /IT /RL HIGHEST`, so no prompt blocks the walk) and walked over WebView2 CDP. Each token was minted by the vmtest org's admin with `{"anchor": true}` on prod running P1.
+Bare vmtest Win11 guests booted from the golden (no MeshHarbor installed), the wizard launched in the console session **elevated** (`schtasks /IT /RL HIGHEST`, so no prompt blocks the walk) and walked over WebView2 CDP. Each token was minted by the vmtest org's admin with `{"anchor": true}` on prod running P1.
 
 | # | Cell | Host | Result |
 |---|---|---|---|
 | 1 | **RED**: the released wizard `0.4.134`, *Background service* (`daemon-system`), an anchor token | vmtest Win11 guest | 2026-10-14 07:40Z: the Token step offered nothing (the old wizard has no anchor UI); the install reached Done; the server read the device `anchored=false`, with no `exec-system`. |
 | 2 | **GREEN**: the released wizard `0.4.135` on the same guest (a re-run over the row-1 install), *Background service*, a fresh anchor token | same guest | 10:55Z: the Token step said it would anchor; the checklist read "Anchoring for SYSTEM exec (administrator prompt)" → "Anchored for SYSTEM exec"; the server read `anchored=true`, `exec-system` advertised, 0.4.135. With the person's `exec_enabled` and a `run_as: system` policy, `whoami` through exec: **`NT AUTHORITY\SYSTEM`, session 0, System integrity**, `ran_as=system` in the result and the audit. |
 | 3 | **GREEN**: the released wizard `0.4.135` on a fresh guest, *Attended service* (`daemon-machine`), an anchor token | another vmtest Win11 guest | 11:31Z: the same offer and checklist; `anchored=true`, `exec-system`; `whoami` through exec **`NT AUTHORITY\SYSTEM`, session 0**, `ran_as=system`, while the worker there is the signed-in user. |
-| 4 | **AC4**: every log, temp and state file under the profile, `%ProgramData%\roomler` and the temp dirs (`.log`/`.txt`/`.json`/`.jsonl`, 67 files) scanned for JWT-shaped strings, counted, never printed | the row-3 guest | Exactly one: `exec-service\anchor.json`, the service credential, by design; owned by Administrators, access SYSTEM and Administrators only. No token in any wizard or daemon log. |
-| 5 | **AC3**: the released wizard `0.4.135` launched the way a double-click launches it, at **Medium** (`schtasks /IT /RL LIMITED`); *Attended service*; an anchor token. Each UAC prompt was answered from the hypervisor's console (`virsh send-key`), and identified first by the wizard's running checklist row (a `consent.exe` poll over SSH saw it appear) | a fresh vmtest Win11 guest, renamed before anything enrolled | 12:58:13Z, prompt 1 during the MSI step: Yes (`Alt+Y`). "MSI installer finished (exit 0)", "Enrolled". 12:58:22Z, prompt 2, the running row "Anchoring for SYSTEM exec (administrator prompt)": No (`Esc`). The checklist then read "Not anchored: the administrator prompt was declined (UAC)" → "Done". The Done page: the reason, and `roomlerd anchor create --server https://roomler.ai --token <fresh token> --device <the new id>`. The server: the device online on 0.4.135, `anchored=false`, no `exec-system`; no `anchor.json` on the guest. |
+| 4 | **AC4**: every log, temp and state file under the profile, `%ProgramData%\meshharbor` and the temp dirs (`.log`/`.txt`/`.json`/`.jsonl`, 67 files) scanned for JWT-shaped strings, counted, never printed | the row-3 guest | Exactly one: `exec-service\anchor.json`, the service credential, by design; owned by Administrators, access SYSTEM and Administrators only. No token in any wizard or daemon log. |
+| 5 | **AC3**: the released wizard `0.4.135` launched the way a double-click launches it, at **Medium** (`schtasks /IT /RL LIMITED`); *Attended service*; an anchor token. Each UAC prompt was answered from the hypervisor's console (`virsh send-key`), and identified first by the wizard's running checklist row (a `consent.exe` poll over SSH saw it appear) | a fresh vmtest Win11 guest, renamed before anything enrolled | 12:58:13Z, prompt 1 during the MSI step: Yes (`Alt+Y`). "MSI installer finished (exit 0)", "Enrolled". 12:58:22Z, prompt 2, the running row "Anchoring for SYSTEM exec (administrator prompt)": No (`Esc`). The checklist then read "Not anchored: the administrator prompt was declined (UAC)" → "Done". The Done page: the reason, and `meshharbord anchor create --server https://meshharbor.itachi.fans --token <fresh token> --device <the new id>`. The server: the device online on 0.4.135, `anchored=false`, no `exec-system`; no `anchor.json` on the guest. |
 
 Notes from the cells:
 - An **elevated** WebView2 ignores `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS`, so the walker's CDP port never opened. The per-executable policy key `…\Policies\Microsoft\Edge\WebView2\AdditionalBrowserArguments` (value `meshharbor-setup.exe`) works. Test guests only.
-- The vmtest golden's `vmtest` password expired on 2026-10-14, which stopped its autologon (Winlogon result 1327). The guests for rows 1–3 were fixed one by one. The golden itself is fixed in roomler-ai-deploy#31; row 5's guest booted from it.
-- Every vmtest Win11 clone was named `VMTEST-WIN`, and `machine_id` hashes the host name, so same-type clones in one org shared a device row. roomler-ai-deploy#32 renames each clone first; row 5's guest was renamed by hand before enrolling.
+- The vmtest golden's `vmtest` password expired on 2026-10-14, which stopped its autologon (Winlogon result 1327). The guests for rows 1–3 were fixed one by one. The golden itself is fixed in meshharbor-deploy#31; row 5's guest booted from it.
+- Every vmtest Win11 clone was named `VMTEST-WIN`, and `machine_id` hashes the host name, so same-type clones in one org shared a device row. meshharbor-deploy#32 renames each clone first; row 5's guest was renamed by hand before enrolling.
 
 ## 9. Related
 

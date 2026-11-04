@@ -1,13 +1,13 @@
 ---
 title: The agent
-description: What roomlerd actually is, why it is a single process rather than several, how it runs on each OS, and how it keeps itself updated safely.
+description: What meshharbord actually is, why it is a single process rather than several, how it runs on each OS, and how it keeps itself updated safely.
 tags: [architecture, agent, design, windows, macos, linux]
 hero: devices.svg
 heroAlt: One agent binary on each machine, serving remote desktop, the mesh, tunnels and SSH at once
 order: 2
 ---
 
-`roomlerd` is one native binary that is, simultaneously:
+`meshharbord` is one native binary that is, simultaneously:
 
 :::badges
 - **The remote-desktop target** icon:monitor — capture, encode, input injection, clipboard, file transfer.

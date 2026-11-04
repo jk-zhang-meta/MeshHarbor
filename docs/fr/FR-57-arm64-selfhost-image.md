@@ -2,7 +2,7 @@
 
 > **CLOSED 2026-09-01** — issue #1161 is closed and its acceptance criteria are met. Any status line below is the state while the work was in flight, kept as the record.
 
-**Issue:** [#1161](https://github.com/gjovanov/roomler-ai/issues/1161) ·
+**Issue:** [#1161](https://github.com/jk-zhang-meta/MeshHarbor/issues/1161) ·
 Status: **P1 proven; P2/P3 in this PR** (2026-09-01) · Follows
 [FR-42](FR-42-selfhost-verified-on-a-clean-box.md) (#967), which shipped the
 amd64 image and put arm64 explicitly out of scope.
@@ -78,7 +78,7 @@ recorded result rather than a silent gap.
 
 ## Acceptance criteria
 
-- [ ] `docker manifest inspect ghcr.io/gjovanov/roomler-ai:<tag>` lists **both**
+- [ ] `docker manifest inspect ghcr.io/jk-zhang-meta/meshharbor:<tag>` lists **both**
       `linux/amd64` and `linux/arm64`
 - [ ] the arm64 image is smoke-tested **on an arm64 runner** — `/health` 200 and
       the SPA served, not merely built

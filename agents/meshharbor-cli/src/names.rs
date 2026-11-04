@@ -597,10 +597,10 @@ mod tests {
         }
         // Qualified spellings of a label — the daemon reads the first label;
         // the FQDN is the label too.
-        rows[1].magic_dns_fqdn = Some("home-server.acme.roomler.net".into());
+        rows[1].magic_dns_fqdn = Some("home-server.acme.meshharbor.net".into());
         for typed in [
-            "home-server.acme.roomler.net",
-            "HOME-SERVER.acme.roomler.net.",
+            "home-server.acme.meshharbor.net",
+            "HOME-SERVER.acme.meshharbor.net.",
             "home-server.meshharbor",
         ] {
             assert_eq!(

@@ -5,7 +5,7 @@ tags: [remote-desktop, recording, sessions]
 order: 7
 ---
 
-Roomler records a screen to an ordinary MP4 file. You can record **your own
+MeshHarbor records a screen to an ordinary MP4 file. You can record **your own
 screen** from meshharbor-desktop, or **the screen of a machine you are
 controlling** from the viewer's toolbar. Either way the recording is made on the
 machine whose screen it shows, and the file stays there until someone opens or
@@ -36,11 +36,11 @@ recording** is in the view and in the tray menu.
 The same from a terminal on that machine:
 
 ```bash
-roomler record start --fps 60 --system-audio
-roomler record status
-roomler record stop
-roomler record ls
-roomler record rm <file.mp4>
+meshharbor record start --fps 60 --system-audio
+meshharbor record status
+meshharbor record stop
+meshharbor record ls
+meshharbor record rm <file.mp4>
 ```
 
 ## Record a remote screen
@@ -92,9 +92,9 @@ The machine's microphone is never recorded remotely.
 
 | | Default folder | If that one cannot be used |
 |---|---|---|
-| **Windows** | `Videos\Roomler`, when Videos is local and not under OneDrive | `Roomler Recordings` in your user folder |
-| **macOS** | `~/Movies/Roomler` | `~/Roomler Recordings` |
-| **Linux** | `Roomler` in your Videos folder | `~/Roomler Recordings` |
+| **Windows** | `Videos\MeshHarbor`, when Videos is local and not under OneDrive | `MeshHarbor Recordings` in your user folder |
+| **macOS** | `~/Movies/MeshHarbor` | `~/MeshHarbor Recordings` |
+| **Linux** | `MeshHarbor` in your Videos folder | `~/MeshHarbor Recordings` |
 
 The **Recordings** view shows the folder in use, and says why when it is not the
 usual one. **Change folder…** picks another, **Use the default folder** goes
@@ -131,4 +131,4 @@ In **Recordings**, press **Edit** on a recording.
   audio.
 - Recording arrived with agent **0.4.110**. A machine on an older agent shows no
   Record control.
-- This page is about screens. Roomler does not record video calls.
+- This page is about screens. MeshHarbor does not record video calls.

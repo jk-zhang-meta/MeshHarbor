@@ -677,7 +677,7 @@ pub fn turn_tls_server(urls: &[String]) -> Option<(String, u16, Option<IpAddr>)>
 /// computing MESSAGE-INTEGRITY (`turn-0.9.0` `client/mod.rs:542`), so the
 /// value only has to be non-empty; the live realm wins regardless. We use
 /// the production realm for tidiness.
-const DEFAULT_TURN_REALM: &str = "roomler.ai";
+const DEFAULT_TURN_REALM: &str = "meshharbor.itachi.fans";
 
 /// Cap on the UDP TURN-allocate attempt before falling back to TURNS/TCP.
 /// On a UDP-OK net the allocate completes in ~1 RTT; on a net that blocks
@@ -1023,8 +1023,8 @@ mod tests {
     #[test]
     fn split_host_port_handles_names_v6_and_garbage() {
         assert_eq!(
-            split_host_port("coturn.roomler.ai:3478"),
-            Some(("coturn.roomler.ai", 3478))
+            split_host_port("coturn.meshharbor.itachi.fans:3478"),
+            Some(("coturn.meshharbor.itachi.fans", 3478))
         );
         assert_eq!(split_host_port("[::1]:443"), Some(("::1", 443)));
         assert_eq!(
@@ -1109,13 +1109,13 @@ mod tests {
     fn turn_udp_server_picks_the_udp_url() {
         let prod = vec![
             "stun:stun.l.google.com:19302".to_string(),
-            "turns:coturn.roomler.ai:5349?transport=tcp".to_string(),
-            "turn:coturn.roomler.ai:3478?transport=udp".to_string(),
-            "turn:coturn.roomler.ai:3478?transport=tcp".to_string(),
+            "turns:coturn.meshharbor.itachi.fans:5349?transport=tcp".to_string(),
+            "turn:coturn.meshharbor.itachi.fans:3478?transport=udp".to_string(),
+            "turn:coturn.meshharbor.itachi.fans:3478?transport=tcp".to_string(),
         ];
         assert_eq!(
             turn_udp_server(&prod).as_deref(),
-            Some("coturn.roomler.ai:3478")
+            Some("coturn.meshharbor.itachi.fans:3478")
         );
         // No `?transport` ⇒ UDP default.
         assert_eq!(
@@ -1141,23 +1141,23 @@ mod tests {
     fn turn_tls_server_prefers_443_over_5349() {
         // Mirrors crates/api/src/state.rs::build_turn_config emission order.
         let prod = vec![
-            "turn:coturn.roomler.ai:3478".to_string(), // base (udp default)
-            "turn:coturn.roomler.ai:443?transport=udp".to_string(),
-            "turn:coturn.roomler.ai:3478?transport=tcp".to_string(), // plain turn-tcp (unusable)
-            "turns:coturn.roomler.ai:5349?transport=tcp".to_string(), // :5349 listed FIRST
-            "turns:coturn.roomler.ai:443?transport=udp".to_string(), // turns-udp (DTLS, skipped)
-            "turns:coturn.roomler.ai:443?transport=tcp".to_string(), // :443 listed LATER
+            "turn:coturn.meshharbor.itachi.fans:3478".to_string(), // base (udp default)
+            "turn:coturn.meshharbor.itachi.fans:443?transport=udp".to_string(),
+            "turn:coturn.meshharbor.itachi.fans:3478?transport=tcp".to_string(), // plain turn-tcp (unusable)
+            "turns:coturn.meshharbor.itachi.fans:5349?transport=tcp".to_string(), // :5349 listed FIRST
+            "turns:coturn.meshharbor.itachi.fans:443?transport=udp".to_string(), // turns-udp (DTLS, skipped)
+            "turns:coturn.meshharbor.itachi.fans:443?transport=tcp".to_string(), // :443 listed LATER
         ];
         assert_eq!(
             turn_tls_server(&prod),
-            Some(("coturn.roomler.ai".to_string(), 443, None)),
+            Some(("coturn.meshharbor.itachi.fans".to_string(), 443, None)),
             ":443 must win over :5349 even though :5349 is listed first"
         );
         assert_eq!(
             turn_tls_servers(&prod),
             vec![
-                ("coturn.roomler.ai".to_string(), 443, None),
-                ("coturn.roomler.ai".to_string(), 5349, None),
+                ("coturn.meshharbor.itachi.fans".to_string(), 443, None),
+                ("coturn.meshharbor.itachi.fans".to_string(), 5349, None),
             ],
             "plural returns all turns:tcp, :443 first"
         );
@@ -1166,8 +1166,8 @@ mod tests {
         assert_eq!(
             turn_udp_servers(&prod),
             vec![
-                "coturn.roomler.ai:3478".to_string(),
-                "coturn.roomler.ai:443".to_string(),
+                "coturn.meshharbor.itachi.fans:3478".to_string(),
+                "coturn.meshharbor.itachi.fans:443".to_string(),
             ]
         );
         // turns: without transport=tcp ⇒ DTLS/UDP, unusable by the adapter.
@@ -1186,10 +1186,10 @@ mod tests {
     fn turn_tls_servers_extracts_pin_but_keeps_hostname() {
         assert_eq!(
             turn_tls_servers(&[
-                "turns:coturn.roomler.ai:443?transport=tcp&pin=94.130.141.74".to_string()
+                "turns:coturn.meshharbor.itachi.fans:443?transport=tcp&pin=94.130.141.74".to_string()
             ]),
             vec![(
-                "coturn.roomler.ai".to_string(),
+                "coturn.meshharbor.itachi.fans".to_string(),
                 443,
                 Some("94.130.141.74".parse::<IpAddr>().unwrap())
             )],
@@ -1198,9 +1198,9 @@ mod tests {
         // Unparseable pin ⇒ None (fall back to hostname DNS resolution).
         assert_eq!(
             turn_tls_servers(&[
-                "turns:coturn.roomler.ai:443?transport=tcp&pin=not-an-ip".to_string()
+                "turns:coturn.meshharbor.itachi.fans:443?transport=tcp&pin=not-an-ip".to_string()
             ]),
-            vec![("coturn.roomler.ai".to_string(), 443, None)]
+            vec![("coturn.meshharbor.itachi.fans".to_string(), 443, None)]
         );
         // A stray `&pin=` on a UDP url must not confuse the UDP enumerator.
         assert_eq!(
@@ -1715,7 +1715,7 @@ mod turn_tests {
     // work against live coturn, isolating the relay primitives from the
     // agent/client signaling (which is covered by the wire-lock + glue
     // tests). `#[ignore]` + env-gated so they never run in CI: provide
-    //   MESHHARBOR_TEST_TURN_HOST   = coturn.roomler.ai
+    //   MESHHARBOR_TEST_TURN_HOST   = coturn.meshharbor.itachi.fans
     //   MESHHARBOR_TEST_TURN_SECRET = coturn's static-auth-secret (from the
     //                              k8s secret / MESHHARBOR__TURN__SHARED_SECRET)
     // and run on a host with outbound UDP/3478 (UDP smoke) or TCP/443
@@ -1844,7 +1844,7 @@ mod turn_tests {
     /// sends RAW datagrams both ways — no QUIC/WG, so a failure is coturn's, not
     /// a handshake-timing artifact.
     ///
-    ///   MESHHARBOR_TEST_TURN_HOST=coturn.roomler.ai \
+    ///   MESHHARBOR_TEST_TURN_HOST=coturn.meshharbor.itachi.fans \
     ///   MESHHARBOR_TEST_TURN_SECRET=<secret> MESHHARBOR_TEST_TURN_WORKER=5.9.157.221 \
     ///   cargo test -p meshharbor-tunnel-core --features overlay-l3 \
     ///     --lib relay_to_relay_hairpin_against_real_coturn -- --ignored --nocapture

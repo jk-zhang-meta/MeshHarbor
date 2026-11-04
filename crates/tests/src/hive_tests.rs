@@ -10646,7 +10646,7 @@ async fn a_refused_start_leaves_the_adopted_session_it_was() {
 
 /// FR-90 P2f-4b — the server's gates. Only the owner learns the session
 /// exists; only an ended terminal session, whose mirroring was never stopped
-/// from Roomler, is made a managed one; only on a device that is here and
+/// from MeshHarbor, is made a managed one; only on a device that is here and
 /// makes one; and only with `HIVE_RUN`. Nothing reaches the device on any of
 /// them.
 #[tokio::test]
@@ -10669,7 +10669,7 @@ async fn only_an_ended_terminal_session_is_made_managed_and_by_its_owner() {
     // Someone else's: no such session.
     let (code, _) = post_manage(&app, &tid, &member.access_token, &live, None).await;
     assert_eq!(code, 404, "nobody else learns it exists");
-    // Stopped from Roomler: its terminal went on after the stop.
+    // Stopped from MeshHarbor: its terminal went on after the stop.
     let (code, _) = stop(&app, &tid, &admin.access_token, &live).await;
     assert_eq!(code, 200);
     send(
@@ -13970,7 +13970,7 @@ async fn dev_on_build_boxes(app: &TestApp, tid: &str, token: &str, user: &str) -
         .unwrap();
     assert_eq!(resp.status().as_u16(), 201, "role");
     let text = format!(
-        r#"permit (principal == Roomler::User::"{user}", action == Roomler::Action::"role:assume", resource == Roomler::Role::"dev") when {{ context.device.tags.contains("build") }};"#
+        r#"permit (principal == MeshHarbor::User::"{user}", action == MeshHarbor::Action::"role:assume", resource == MeshHarbor::Role::"dev") when {{ context.device.tags.contains("build") }};"#
     );
     let resp = app
         .auth_post(&format!("/api/tenant/{tid}/vault/policy"), token)

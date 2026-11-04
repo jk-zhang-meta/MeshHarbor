@@ -11,14 +11,14 @@ loop that would propose facts from sessions is P5, and not built.
 
 > Spec: [`fr/FR-90-hive-agent-sessions.md`](fr/FR-90-hive-agent-sessions.md) §3f
 > "P1e … as designed", AC8 and its field run in §8 (#1827). Design:
-> [`roomler-hive-design.md`](roomler-hive-design.md) §10, core memory in §10.3. How a
+> [`meshharbor-hive-design.md`](meshharbor-hive-design.md) §10, core memory in §10.3. How a
 > session runs, and every other gate it passes: [`hive.md`](hive.md).
 
 ```mermaid
 sequenceDiagram
     participant A as an admin, a member, a device manager
     participant S as server (hive)
-    participant D as roomlerd
+    participant D as meshharbord
     participant W as the wrapper (as the account)
     A->>S: POST /api/tenant/{tid}/hive/brain {scope, text, kind?}
     Note over S: inside the scope's budget, or 409 over_budget. brain_rev + 1
@@ -142,13 +142,13 @@ device's:
 ```markdown
 # Organization memory
 
-Kept by this organization's administrators in Roomler for every agent session (brain revision 7).
+Kept by this organization's administrators in MeshHarbor for every agent session (brain revision 7).
 
 - (warning) Never run prod migrations by hand.
 
 # Memory kept by Ann Lee
 
-Kept in Roomler by Ann Lee, who started this session, for the sessions they start.
+Kept in MeshHarbor by Ann Lee, who started this session, for the sessions they start.
 
 - (preference) Small commits.
 ```
@@ -156,7 +156,7 @@ Kept in Roomler by Ann Lee, who started this session, for the sessions they star
 ```markdown
 # Device memory: Build server
 
-Kept in Roomler about this device, for the sessions that run on it.
+Kept in MeshHarbor about this device, for the sessions that run on it.
 
 - (path) Datasets live in /data/sets.
 ```
@@ -185,7 +185,7 @@ a start.
 | The device takes the frame only on its primary enrollment, drops a document over 32 KiB, keeps at most 64 waiting, each for 10 minutes, by (session, fence), and uses each once, for that start's launch | a snapshot is sent right before its start, so anything older or more is waiting for nothing | [`supervisor.rs:1562`](../agents/meshharbord/src/hive/supervisor.rs#L1562) |
 | ⚠️ `hive_core_memory`, a device key, is **off by default** and never pushable. Off, the frame arrives but no file is written, not even the daemon's own copy, and the transcript says so: "This start came with the organization's core memory (brain revision 1); this device shows none to its sessions (hive_core_memory is off)." | the gate that survives a compromised server, like `hive_accounts` (decision 9, §5 below) | [`supervisor.rs:4039`](../agents/meshharbord/src/hive/supervisor.rs#L4039), [`:4970`](../agents/meshharbord/src/hive/supervisor.rs#L4970) |
 | On, the daemon writes the files into its own runtime directory, `<runtime>/<session>/memory/` (`0755`, root's). Each is created afresh at `0600`, handed to the account through the open file, then renamed into place, and a document the snapshot does not carry is removed | the daemon never writes into a tree the account owns. No other local account reads a session's memory, whose `CLAUDE.md` carries the starter's own facts, and a file an earlier run left can never be copied for this one | [`supervisor.rs:4809`](../agents/meshharbord/src/hive/supervisor.rs#L4809) `write_memory` |
-| The wrapper, running as the account, copies `CLAUDE.md` into the session's config directory and `MEMORY.md` into its auto-memory directory, each only where nothing is, not even a link. A copy that fails is skipped. On Windows `roomlerd hive-prep` does the same as the console user, and the session directory's DACL is the handover | a resume keeps what the session has, its own edits included, and memory never stops a session | [`supervisor.rs:108`](../agents/meshharbord/src/hive/supervisor.rs#L108) `WRAPPER`, [`hive_win.rs:844`](../agents/meshharbord/src/hive_win.rs#L844) |
+| The wrapper, running as the account, copies `CLAUDE.md` into the session's config directory and `MEMORY.md` into its auto-memory directory, each only where nothing is, not even a link. A copy that fails is skipped. On Windows `meshharbord hive-prep` does the same as the console user, and the session directory's DACL is the handover | a resume keeps what the session has, its own edits included, and memory never stops a session | [`supervisor.rs:108`](../agents/meshharbord/src/hive/supervisor.rs#L108) `WRAPPER`, [`hive_win.rs:844`](../agents/meshharbord/src/hive_win.rs#L844) |
 | The transcript names the revision a session got: "Core memory from the organization's brain, revision 1: CLAUDE.md." | the model's answers can be read against what it was given | [`supervisor.rs:4970`](../agents/meshharbord/src/hive/supervisor.rs#L4970) `memory_note` |
 | With no frame (a server before P1e, a device without `hive-memory`, a snapshot that did not render, a frame lost), the session starts without core memory, and its transcript carries no memory note | memory is an enhancement, never a single point of failure | |
 

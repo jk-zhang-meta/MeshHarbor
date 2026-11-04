@@ -117,7 +117,7 @@ const { subscribed: nlSubscribed, busy: nlBusy, load: nlLoad, set: nlSet } = use
 // Until storage proves otherwise, behave as already-dismissed — unreadable
 // storage must fail toward not annoying (the tutorial-latch house rule).
 const nlDismissed = ref(true)
-const askKey = () => `roomler:newsletter-ask:${authStore.user?.id ?? 'anon'}`
+const askKey = () => `meshharbor:newsletter-ask:${authStore.user?.id ?? 'anon'}`
 function readAskDismissed(): boolean {
   try {
     return localStorage.getItem(askKey()) !== null

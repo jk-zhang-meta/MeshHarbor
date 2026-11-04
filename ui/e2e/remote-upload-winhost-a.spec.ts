@@ -1,6 +1,6 @@
 /**
  * E2E: upload a >1 MB file to a remote agent via the live
- * roomler.ai production deployment. Validates the rc.23 reconnect +
+ * meshharbor.itachi.fans production deployment. Validates the rc.23 reconnect +
  * rc.22 staging fixes against a real ESET-protected corporate host
  * that was failing 14 MB uploads pre-rc.22.
  *
@@ -14,7 +14,7 @@
  * **Run**:
  * ```bash
  * cd ui && \
- *   E2E_BASE_URL=https://roomler.ai \
+ *   E2E_BASE_URL=https://meshharbor.itachi.fans \
  *   E2E_TENANT_ID=<hex24> E2E_AGENT_ID=<hex24> \
  *   E2E_UPLOAD_FILE=/path/to/payload.pdf \
  *   bunx playwright test remote-upload-winhost-a --headed --reporter=list
@@ -60,7 +60,7 @@ function readCred(): { username: string; password: string } {
 }
 
 /**
- * Login to roomler.ai via the UI. Returns when the URL is the
+ * Login to meshharbor.itachi.fans via the UI. Returns when the URL is the
  * dashboard `/` — pre-condition for navigating to the agent's
  * remote view (which requires auth).
  */
@@ -75,8 +75,8 @@ async function login(page: Page, username: string, password: string) {
 
 test.describe('Remote upload to a field-test host', () => {
   test.skip(
-    !process.env.E2E_BASE_URL || !process.env.E2E_BASE_URL.includes('roomler.ai'),
-    'This spec targets PROD only. Set E2E_BASE_URL=https://roomler.ai to run.'
+    !process.env.E2E_BASE_URL || !process.env.E2E_BASE_URL.includes('meshharbor.itachi.fans'),
+    'This spec targets PROD only. Set E2E_BASE_URL=https://meshharbor.itachi.fans to run.'
   )
   test.skip(
     !TENANT_ID || !AGENT_ID,

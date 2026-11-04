@@ -32,7 +32,7 @@ import { useAuthStore } from '@/stores/auth'
 import { api } from '@/api/client'
 
 /** The non-credential hint the store renders from before `/auth/me`. */
-const SIGNED_IN = 'roomler-signed-in'
+const SIGNED_IN = 'meshharbor-signed-in'
 const USER = { id: 'u1', email: 'a@example.test', username: 'a', display_name: 'A B' }
 
 const vuetify = createVuetify({ components, directives })

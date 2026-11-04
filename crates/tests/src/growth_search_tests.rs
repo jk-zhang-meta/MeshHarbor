@@ -60,8 +60,8 @@ use crate::{
 };
 
 const SECRET: &[u8] = b"fake-google-signing-secret";
-const SA: &str = "growth-reader@roomler-test.iam.gserviceaccount.com";
-const SITE: &str = "sc-domain:roomler.ai";
+const SA: &str = "growth-reader@meshharbor-test.iam.gserviceaccount.com";
+const SITE: &str = "sc-domain:meshharbor.itachi.fans";
 
 // ── A fake Google ───────────────────────────────────────────────────────
 
@@ -130,7 +130,7 @@ fn forbidden() -> (StatusCode, Json<Value>) {
     (
         StatusCode::FORBIDDEN,
         Json(json!({ "error": { "code": 403,
-            "message": "User does not have sufficient permission for site 'sc-domain:roomler.ai'.",
+            "message": "User does not have sufficient permission for site 'sc-domain:meshharbor.itachi.fans'.",
             "status": "PERMISSION_DENIED" } })),
     )
 }
@@ -376,17 +376,17 @@ async fn search_console_pulls_final_days_only_and_weights_position() {
                 (vec!["date"], row(&[], 5.0, 200.0, 6.5)),
                 (
                     vec!["page"],
-                    row(&["https://roomler.ai/blog/a/"], 4.0, 150.0, 5.0),
+                    row(&["https://meshharbor.itachi.fans/blog/a/"], 4.0, 150.0, 5.0),
                 ),
                 (
                     vec!["page"],
-                    row(&["https://roomler.ai/blog/b/"], 1.0, 50.0, 11.0),
+                    row(&["https://meshharbor.itachi.fans/blog/b/"], 1.0, 50.0, 11.0),
                 ),
                 (vec!["query"], row(&["remote desktop"], 3.0, 100.0, 4.0)),
                 (
                     vec!["page", "query"],
                     row(
-                        &["https://roomler.ai/blog/a/", "remote desktop"],
+                        &["https://meshharbor.itachi.fans/blog/a/", "remote desktop"],
                         3.0,
                         90.0,
                         4.0,
@@ -439,12 +439,12 @@ async fn search_console_pulls_final_days_only_and_weights_position() {
         Some(130_000),
         "6.5 × 200 × 100"
     );
-    let a = doc! { "by": "page", "page": "https://roomler.ai/blog/a/" };
+    let a = doc! { "by": "page", "page": "https://meshharbor.itachi.fans/blog/a/" };
     assert_eq!(
         daily(&app, SEARCH_CONSOLE_SOURCE, &d1, "position_x100", a).await,
         Some(75_000)
     );
-    let pq = doc! { "by": "page_query", "page": "https://roomler.ai/blog/a/", "query": "remote desktop" };
+    let pq = doc! { "by": "page_query", "page": "https://meshharbor.itachi.fans/blog/a/", "query": "remote desktop" };
     assert_eq!(
         daily(&app, SEARCH_CONSOLE_SOURCE, &d1, "impressions", pq).await,
         Some(90)
@@ -552,11 +552,11 @@ async fn a_refused_token_or_permission_is_recorded_never_zeroed() {
 
 fn feed_xml(posts: &[(&str, &str, &str)]) -> String {
     let mut s = String::from(
-        "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<feed xmlns=\"http://www.w3.org/2005/Atom\" xml:lang=\"en\">\n  <id>https://roomler.ai/blog/</id>\n  <title>Roomler blog</title>\n",
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<feed xmlns=\"http://www.w3.org/2005/Atom\" xml:lang=\"en\">\n  <id>https://meshharbor.itachi.fans/blog/</id>\n  <title>MeshHarbor blog</title>\n",
     );
     for (slug, title, published) in posts {
         s.push_str(&format!(
-            "  <entry>\n    <id>https://roomler.ai/blog/{slug}/</id>\n    <title>{title}</title>\n    <link rel=\"alternate\" type=\"text/html\" href=\"https://roomler.ai/blog/{slug}/\"/>\n    <published>{published}</published>\n    <updated>{published}</updated>\n    <author><name>Goran</name></author>\n  </entry>\n"
+            "  <entry>\n    <id>https://meshharbor.itachi.fans/blog/{slug}/</id>\n    <title>{title}</title>\n    <link rel=\"alternate\" type=\"text/html\" href=\"https://meshharbor.itachi.fans/blog/{slug}/\"/>\n    <published>{published}</published>\n    <updated>{published}</updated>\n    <author><name>Goran</name></author>\n  </entry>\n"
         ));
     }
     s.push_str("</feed>\n");
@@ -746,7 +746,7 @@ async fn a_read_that_is_not_the_feed_changes_nothing() {
     assert_eq!(r.posts, 2, "{r:?}");
 
     let next = t + Duration::days(1);
-    let html = "<!DOCTYPE html><html><head><title>Roomler</title></head><body><div id=\"app\"></div></body></html>";
+    let html = "<!DOCTYPE html><html><head><title>MeshHarbor</title></head><body><div id=\"app\"></div></body></html>";
     for (hour, answer, url, reason) in [
         (3, None, feed_url.clone(), "feed not found (404)"),
         (
@@ -764,7 +764,7 @@ async fn a_read_that_is_not_the_feed_changes_nothing() {
         (
             6,
             Some(feed_xml(&[])),
-            "http://roomler.ai/blog/feed.xml".to_string(),
+            "http://meshharbor.itachi.fans/blog/feed.xml".to_string(),
             "its URL is not https",
         ),
     ] {
@@ -929,12 +929,12 @@ async fn bing_call(
             { "__type": "RankAndTrafficStats:#Microsoft.Bing.Webmaster.Api", "Date": d(40), "Clicks": 1, "Impressions": 10 },
         ] }),
         "GetQueryStats" => json!({ "d": [
-            { "Query": "roomler", "Date": d(6), "Clicks": 2, "Impressions": 30, "AvgImpressionPosition": 4, "AvgClickPosition": 3 },
+            { "Query": "meshharbor", "Date": d(6), "Clicks": 2, "Impressions": 30, "AvgImpressionPosition": 4, "AvgClickPosition": 3 },
             // Below the floor: its text is never stored.
-            { "Query": "jane doe roomler invoice", "Date": d(6), "Clicks": 1, "Impressions": 3, "AvgImpressionPosition": 1, "AvgClickPosition": 1 },
+            { "Query": "jane doe meshharbor invoice", "Date": d(6), "Clicks": 1, "Impressions": 3, "AvgImpressionPosition": 1, "AvgClickPosition": 1 },
         ] }),
         "GetPageStats" => json!({ "d": [
-            { "Query": "https://roomler.ai/blog/a/", "Date": d(6), "Clicks": 1, "Impressions": 12, "AvgImpressionPosition": 9, "AvgClickPosition": -1 },
+            { "Query": "https://meshharbor.itachi.fans/blog/a/", "Date": d(6), "Clicks": 1, "Impressions": 12, "AvgImpressionPosition": 9, "AvgClickPosition": -1 },
         ] }),
         _ => return (StatusCode::NOT_FOUND, Json(json!({}))),
     };
@@ -990,7 +990,7 @@ async fn bing_lands_at_its_own_grain_and_a_refused_key_is_recorded() {
     let seen = fake.seen.lock().unwrap().clone();
     assert_eq!(seen.len(), 3);
     assert!(
-        seen.iter().all(|(_, site)| site == "https://roomler.ai/"),
+        seen.iter().all(|(_, site)| site == "https://meshharbor.itachi.fans/"),
         "{seen:?}"
     );
 
@@ -1016,7 +1016,7 @@ async fn bing_lands_at_its_own_grain_and_a_refused_key_is_recorded() {
             BING_WEEKLY_SOURCE,
             &w,
             "impressions",
-            doc! { "by": "query", "query": "roomler" }
+            doc! { "by": "query", "query": "meshharbor" }
         )
         .await,
         Some(30)
@@ -1025,7 +1025,7 @@ async fn bing_lands_at_its_own_grain_and_a_refused_key_is_recorded() {
         count(
             &app,
             GROWTH_DAILY,
-            doc! { "source": BING_WEEKLY_SOURCE, "dims.query": "jane doe roomler invoice" }
+            doc! { "source": BING_WEEKLY_SOURCE, "dims.query": "jane doe meshharbor invoice" }
         )
         .await,
         0,
@@ -1132,17 +1132,17 @@ async fn the_content_table_and_the_digest_read_what_the_pullers_stored() {
             (vec!["date"], row(&[], 5.0, 200.0, 6.5)),
             (
                 vec!["page"],
-                row(&["https://roomler.ai/blog/a/"], 4.0, 150.0, 5.0),
+                row(&["https://meshharbor.itachi.fans/blog/a/"], 4.0, 150.0, 5.0),
             ),
             (
                 vec!["page"],
-                row(&["https://roomler.ai/blog/b/"], 1.0, 20.0, 11.0),
+                row(&["https://meshharbor.itachi.fans/blog/b/"], 1.0, 20.0, 11.0),
             ),
             (vec!["query"], row(&["remote desktop"], 3.0, 100.0, 4.0)),
             (
                 vec!["page", "query"],
                 row(
-                    &["https://roomler.ai/blog/a/", "remote desktop"],
+                    &["https://meshharbor.itachi.fans/blog/a/", "remote desktop"],
                     3.0,
                     90.0,
                     4.0,

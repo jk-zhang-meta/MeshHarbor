@@ -538,7 +538,7 @@ else
       echo "  (still running after 10s — an update is in flight and the job is our ancestor)"
     fi
     echo "  This Mac will no longer self-update; new releases must be installed by hand:"
-    echo "    curl -fsSL https://roomler.ai/api/setup/install.sh | sh -s -- --role daemon …"
+    echo "    curl -fsSL https://meshharbor.itachi.fans/api/setup/install.sh | sh -s -- --role daemon …"
   else
     echo "auto-update opted out (/etc/meshharbor/disable-auto-update) — helper not installed"
   fi

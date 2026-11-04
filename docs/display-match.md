@@ -1,6 +1,6 @@
 # Display match — the host's display follows the viewer, never on a screen someone is using
 
-> **Status** (FR-108, [#2322](https://github.com/gjovanov/roomler-ai/issues/2322); spec:
+> **Status** (FR-108, [#2322](https://github.com/jk-zhang-meta/MeshHarbor/issues/2322); spec:
 > [`docs/fr/FR-108-display-follows-the-viewer.md`](fr/FR-108-display-follows-the-viewer.md))
 >
 > | Phase | What | State |
@@ -16,7 +16,7 @@
 
 Remote text is only crisp when the pixels run 1:1 end to end: the host renders at the size the viewer
 shows it, the stream carries those pixels untouched, and the viewer paints them unscaled. RDP gets there by
-changing the session's resolution. Display match is Roomler's equivalent: the viewer sends its stage size,
+changing the session's resolution. Display match is MeshHarbor's equivalent: the viewer sends its stage size,
 and the agent switches the host's primary display to the largest mode that fits inside it
 ([`display_match.rs:50`](../agents/meshharbord/src/display_match.rs#L50) `pick_display_mode`). The change is
 temporary (`CDS_FULLSCREEN`), so even a crash gives the mode back.
@@ -87,7 +87,7 @@ does not, because the worker cannot touch the secure desktop (below).
 ## The owner's key
 
 ```sh
-roomler config set display_match auto     # auto (default) | always | never
+meshharbor config set display_match auto     # auto (default) | always | never
 ```
 
 | Value | Display match switches |
@@ -184,17 +184,17 @@ owner's `never` still holds.
 ```mermaid
 sequenceDiagram
     participant V as Viewer
-    participant A as roomlerd
+    participant A as meshharbord
     participant X as the desktop's Xorg (dummy driver)
     participant C as capture
     V->>A: rc:display-match {946, 598}
-    A->>X: xrandr --newmode roomler-946x598 … · --addmode · --output DUMMY0 --mode
+    A->>X: xrandr --newmode meshharbor-946x598 … · --addmode · --output DUMMY0 --mode
     X-->>A: the screen is 946x598
     A-->>V: rc:display-match.state {on, mode 946x598}
     A->>C: mode generation +1
     C->>C: open again at 946x598 (the encoder follows the new size)
     V->>A: the session ends
-    A->>X: --output DUMMY0 --mode roomler-1920x1080 · --delmode · --rmmode
+    A->>X: --output DUMMY0 --mode meshharbor-1920x1080 · --delmode · --rmmode
     A->>C: mode generation +1
 ```
 
@@ -206,7 +206,7 @@ sequenceDiagram
   and an **empty** config directory, so no `xorg.conf.d` snippet of the host's (a GPU's, an input device's)
   leaks in, and no input device at all: input arrives through XTest, as on Xvfb
   ([`virtual_desktop.rs:182`](../agents/meshharbord/src/virtual_desktop.rs#L182) `xorg_args`). It starts at the
-  configured size exactly, as a `roomler-WxH` modeline
+  configured size exactly, as a `meshharbor-WxH` modeline
   ([`virtual_desktop.rs:138`](../agents/meshharbord/src/virtual_desktop.rs#L138) `xorg_conf`).
 - ⚠️ **The config declares `ReducedBlanking`.** The modelines carry reduced blanking, and without the option
   Xorg drops the start mode ("monitor doesn't support reduced blanking") and starts at the dummy driver's
@@ -239,7 +239,7 @@ The decision is Windows': the owner's `display_match`, and under `auto` whether 
 ```mermaid
 sequenceDiagram
     participant V as Viewer
-    participant A as roomlerd (per-user, X11)
+    participant A as meshharbord (per-user, X11)
     participant P as presence
     participant X as the session's Xorg
     participant G as $XDG_RUNTIME_DIR

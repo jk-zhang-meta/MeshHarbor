@@ -81,7 +81,7 @@
         />
         <div class="text-caption text-medium-emphasis mt-1">
           <i18n-t keypath="mh.settings.exec.requireSystemHint" tag="span" scope="global">
-            <template #cmd><code>roomlerd anchor create</code></template>
+            <template #cmd><code>meshharbord anchor create</code></template>
           </i18n-t>
         </div>
         <v-alert
@@ -96,7 +96,7 @@
       </template>
     </SettingsGate>
 
-    <!-- Roomler SSH gate 1. A SEPARATE card from remote execution above, and
+    <!-- MeshHarbor SSH gate 1. A SEPARATE card from remote execution above, and
          a separate switch server-side: allowing bounded diagnostic commands
          is not the same decision as allowing interactive sessions, and one
          control must never read as the other. -->

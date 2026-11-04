@@ -98,7 +98,7 @@ pub fn origin_ok(server: &str) -> Result<String, String> {
     }
     if url.query().is_some() || url.fragment().is_some() || host.is_empty() {
         return Err(format!(
-            "{server:?} must be a bare origin, like https://roomler.ai"
+            "{server:?} must be a bare origin, like https://meshharbor.itachi.fans"
         ));
     }
     Ok(url.as_str().trim_end_matches('/').to_string())
@@ -2038,23 +2038,23 @@ mod tests {
     #[test]
     fn the_service_talks_https_only() {
         assert_eq!(
-            origin_ok("https://roomler.ai/").unwrap(),
-            "https://roomler.ai"
+            origin_ok("https://meshharbor.itachi.fans/").unwrap(),
+            "https://meshharbor.itachi.fans"
         );
         assert!(origin_ok("http://127.0.0.1:5001").is_ok());
         assert!(origin_ok("http://localhost:3000").is_ok());
         assert!(origin_ok("http://[::1]:3000").is_ok());
-        assert!(origin_ok("http://roomler.ai").is_err());
+        assert!(origin_ok("http://meshharbor.itachi.fans").is_err());
         assert!(origin_ok("http://10.0.0.5").is_err());
-        assert!(origin_ok("ftp://roomler.ai").is_err());
-        assert!(origin_ok("https://roomler.ai/?x=1").is_err());
-        assert!(origin_ok("roomler.ai").is_err());
+        assert!(origin_ok("ftp://meshharbor.itachi.fans").is_err());
+        assert!(origin_ok("https://meshharbor.itachi.fans/?x=1").is_err());
+        assert!(origin_ok("meshharbor.itachi.fans").is_err());
     }
 
     fn anchor() -> Anchor {
         Anchor {
             version: 1,
-            server: "https://roomler.ai".into(),
+            server: "https://meshharbor.itachi.fans".into(),
             tenant_id: "69a1dbbad2000f26adc875ce".into(),
             agent_id: "6ace07367d06cf41e19e54b0".into(),
             device_name: "HOST".into(),
@@ -2077,7 +2077,7 @@ mod tests {
     fn an_anchor_is_validated_whole() {
         assert!(anchor().validate().is_ok());
         let mut a = anchor();
-        a.server = "http://roomler.ai".into();
+        a.server = "http://meshharbor.itachi.fans".into();
         assert!(a.validate().is_err(), "plain http");
         let mut a = anchor();
         a.agent_id = "nope".into();

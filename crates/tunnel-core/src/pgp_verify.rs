@@ -37,7 +37,7 @@ use anyhow::{Context, Result, bail};
 
 /// The ed25519 public point of the release SIGNING subkey, pinned.
 ///
-/// Key: `MeshHarbor Release Signing <releases@roomler.ai>`
+/// Key: `MeshHarbor Release Signing <releases@meshharbor.itachi.fans>`
 /// Subkey fingerprint: `5DB8221F546288DE780C10D3A2C53E5FE6FA485A` (key id
 /// `A2C53E5FE6FA485A`), certified by the offline primary
 /// `D654B016256FD92A81634A0E2AD1E9F025973A7F`.
@@ -473,7 +473,7 @@ hV/0cAHGFizJ3Gl+qz5YZ4IEbnnXtgs=\n\
     /// because it needs release files this repo does not carry:
     ///
     /// ```text
-    /// gh release download agent-v0.3.0-rc.475 --repo gjovanov/roomler-ai \
+    /// gh release download agent-v0.3.0-rc.475 --repo jk-zhang-meta/MeshHarbor \
     ///   --pattern 'meshharbor-agent-*aarch64-apple-darwin.pkg*' --dir /tmp/rel
     /// MESHHARBOR_TEST_ARTIFACT=/tmp/rel/meshharbor-agent-0.3.0-rc.475-aarch64-apple-darwin.pkg \
     ///   cargo test -p meshharbor-tunnel-core --lib -- --ignored real_published_asc

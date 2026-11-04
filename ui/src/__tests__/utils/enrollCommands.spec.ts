@@ -10,10 +10,10 @@ import { DEVICE_ID_PLACEHOLDER, enrollCommands, installCards, type OsCommands } 
  * (the pre-S4 dialogs hardcoded the prod URL and the retired
  * RETIRED-NAME-ANCHOR: names the retired forms on purpose; this suite exists to keep
  * them retired. FR-21.
- * `roomler-agent --enroll` / `roomler-tunnel enroll` forms).
+ * `meshharbor-agent --enroll` / `meshharbor-tunnel enroll` forms).
  */
 describe('enrollCommands', () => {
-  const ORIGIN = 'https://example.roomler.test'
+  const ORIGIN = 'https://example.meshharbor.test'
   const TOKEN = 'eyJTOKEN'
   const SCOPES = ['system', 'machine', 'user'] as const
   const manualOf = (os: OsCommands) => os.blocks.find((b) => b.id.endsWith('-manual'))!
@@ -50,15 +50,15 @@ describe('enrollCommands', () => {
     expect(macos!.blocks[0]!.command).not.toContain('--system')
     // Manual enrolls use the unified daemon binary; S1b: SystemContext
     // reads the machine-global config, so its enroll writes it.
-    expect(manualOf(windows!).command).toMatch(/^roomlerd enroll /)
+    expect(manualOf(windows!).command).toMatch(/^meshharbord enroll /)
     expect(manualOf(windows!).command).toContain('--machine-global')
     expect(manualOf(linux!).command).toMatch(
-      /^sudo roomlerd --config \/etc\/roomler\/config\.toml enroll /,
+      /^sudo meshharbord --config \/etc\/meshharbor\/config\.toml enroll /,
     )
     expect(manualOf(linux!).command).toContain(`--server ${ORIGIN}`)
-    // NOT `roomlerd`: on macOS the daemon lives inside the .app bundle and no
+    // NOT `meshharbord`: on macOS the daemon lives inside the .app bundle and no
     // binary by that name exists anywhere on the machine.
-    expect(manualOf(macos!).command).toMatch(/^\/Library\/Roomler\/roomlerd\.app\S* enroll /)
+    expect(manualOf(macos!).command).toMatch(/^\/Library\/MeshHarbor\/meshharbord\.app\S* enroll /)
   })
 
   it('maps the user scope to the per-user roles', () => {
@@ -67,10 +67,10 @@ describe('enrollCommands', () => {
     expect(linux!.blocks[0]!.command).toContain('--role daemon')
     expect(linux!.blocks[0]!.command).not.toContain('--system')
     for (const os of [windows!, linux!]) {
-      expect(manualOf(os).command).toMatch(/^roomlerd enroll /)
+      expect(manualOf(os).command).toMatch(/^meshharbord enroll /)
     }
     // macOS resolves to the bundle executable — see above.
-    expect(manualOf(macos!).command).toMatch(/^\/Library\/Roomler\/roomlerd\.app\S* enroll /)
+    expect(manualOf(macos!).command).toMatch(/^\/Library\/MeshHarbor\/meshharbord\.app\S* enroll /)
     expect(manualOf(windows!).command).not.toContain('--machine-global')
   })
 
@@ -82,7 +82,7 @@ describe('enrollCommands', () => {
     expect(manualOf(windows!).command).not.toContain('--machine-global')
     // Linux has no attended/SystemContext split — machine-wide = --system.
     expect(linux!.blocks[0]!.command).toContain('--role daemon --system')
-    expect(manualOf(linux!).command).toMatch(/^sudo roomlerd --config /)
+    expect(manualOf(linux!).command).toMatch(/^sudo meshharbord --config /)
     expect(macos!.blocks[0]!.command).not.toContain('--system')
   })
 
@@ -115,12 +115,12 @@ describe('enrollCommands', () => {
     }
   })
 
-  it('tunnel commands use the tunnel roles + the roomler CLI', () => {
+  it('tunnel commands use the tunnel roles + the meshharbor CLI', () => {
     const [windows, linux] = enrollCommands('tunnel', ORIGIN, TOKEN)
     expect(windows!.blocks[0]!.command).toContain('-Role tunnel-client')
     expect(linux!.blocks[0]!.command).toContain('--role tunnel')
-    expect(windows!.blocks[2]!.command).toMatch(/^roomler enroll /)
-    expect(linux!.blocks[2]!.command).toMatch(/^roomler enroll /)
+    expect(windows!.blocks[2]!.command).toMatch(/^meshharbor enroll /)
+    expect(linux!.blocks[2]!.command).toMatch(/^meshharbor enroll /)
   })
 
   it('wizard downloads hit the setup proxy with valid platform slugs', () => {
@@ -135,7 +135,7 @@ describe('enrollCommands', () => {
   })
 
   it('offers the wizard for an agent only where it installs one (FR-97 D5)', () => {
-    // Off Windows, Roomler Setup installs the tunnel client and nothing else
+    // Off Windows, MeshHarbor Setup installs the tunnel client and nothing else
     // (`agents/meshharbor-setup`): offered for an agent there, it could not
     // enroll the device the token was minted for.
     for (const scope of SCOPES) {
@@ -147,7 +147,7 @@ describe('enrollCommands', () => {
   })
 
   it('the homepages offer the wizard by the same rule (FR-97 P0c-4)', () => {
-    // They kept their own per-OS map until P0c-4 and offered Roomler Setup on
+    // They kept their own per-OS map until P0c-4 and offered MeshHarbor Setup on
     // every card, where off Windows it could install only the tunnel client.
     const cards = installCards(ORIGIN)
     expect(cards.map((c) => [c.os, c.wizardUrl])).toEqual([
@@ -175,9 +175,9 @@ describe('enrollCommands', () => {
             // had the name, which is the opposite of what this suite is for.
             // RETIRED-NAME-ANCHOR(3): the retired forms are the SUBJECT of the
             // assertion; naming them is how it asserts they are gone.
-            expect(block.command).not.toContain('roomler-agent')
-            expect(block.command).not.toContain('roomler-tunnel')
-            expect(block.command).not.toContain('https://roomler.ai')
+            expect(block.command).not.toContain('meshharbor-agent')
+            expect(block.command).not.toContain('meshharbor-tunnel')
+            expect(block.command).not.toContain('https://meshharbor.itachi.fans')
           }
         }
       }
@@ -185,15 +185,15 @@ describe('enrollCommands', () => {
   })
 
   it('the macOS manual enroll points at the binary that actually exists there', () => {
-    // There is no `roomlerd` anywhere on a Mac — the daemon ships inside the
-    // .app bundle — so the generic `roomlerd enroll` this used to print was a
+    // There is no `meshharbord` anywhere on a Mac — the daemon ships inside the
+    // .app bundle — so the generic `meshharbord enroll` this used to print was a
     // command the user could not run.
     const macos = enrollCommands('agent', ORIGIN, TOKEN).find((o) => o.os === 'macos')!
     const manual = macos.blocks.find((b) => b.id.endsWith('-manual'))!
     expect(manual.command).toContain(
-      '/Library/Roomler/meshharbord.app/Contents/MacOS/roomlerd enroll',
+      '/Library/MeshHarbor/meshharbord.app/Contents/MacOS/meshharbord enroll',
     )
-    expect(manual.command).not.toMatch(/^roomlerd /)
+    expect(manual.command).not.toMatch(/^meshharbord /)
   })
 
   it('renders a placeholder while the token is still being issued', () => {
@@ -213,7 +213,7 @@ describe('enrollCommands', () => {
  * machine-wide Windows install, nowhere else.
  */
 describe('enrollCommands — the anchor command (FR-104)', () => {
-  const ORIGIN = 'https://example.roomler.test'
+  const ORIGIN = 'https://example.meshharbor.test'
   const TOKEN = 'eyJTOKEN'
   const anchorBlock = (os: OsCommands) =>
     os.blocks.find((b) => b.id === 'agent-windows-anchor')
@@ -225,7 +225,7 @@ describe('enrollCommands — the anchor command (FR-104)', () => {
       expect(block, scope).toBeDefined()
       expect(windows!.blocks.at(-1)).toBe(block)
       expect(block!.command).toBe(
-        `roomlerd anchor create --server ${ORIGIN} --token ${TOKEN} --device ${DEVICE_ID_PLACEHOLDER}`,
+        `meshharbord anchor create --server ${ORIGIN} --token ${TOKEN} --device ${DEVICE_ID_PLACEHOLDER}`,
       )
     }
   })

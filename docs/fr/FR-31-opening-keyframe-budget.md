@@ -37,7 +37,7 @@ every run:
 
 Two things this is NOT, both refuted by data rather than assumed:
 - Not the viewer's FSR pass (FR-26 made it default-on): the curve is the same with
-  `roomler-rc-sharpen=off`.
+  `meshharbor-rc-sharpen=off`.
 - Not the DC-open race: `dc_unopen_drops` was 4 and 7 on runs that looked sharp and 5–16 on
   runs that looked blurry — and the "sharp" runs turned out to be a sampling artifact (Chrome
   throttles background-tab timers to 1 Hz, so the sampler missed the first second).
@@ -148,7 +148,7 @@ on the relay stand-in and then on the real pair `neo16 → CORPLAP-2`, N ≥ 5 e
 
 - The carrier. CORPLAP-2 is relayed because a corporate VPN captures its LAN prefix; routing
   around that is VPN policy evasion (operator's standing rule). Surfacing the capture in
-  `roomler status` / the RC pill is its own FR.
+  `meshharbor status` / the RC pill is its own FR.
 - The relay ceiling (`relay_max_bps`, the measured-rate program) — a faster relay would
   shrink every number here but is a different lever.
 - The viewer's FSR pass, the idle-refine machine, and `dc_unopen_drops` — all measured, none

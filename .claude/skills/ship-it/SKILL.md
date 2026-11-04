@@ -1,6 +1,6 @@
 ---
 name: ship-it
-description: How roomler releases and deploys — the hosted server image (Actions builds, GHCR serves, a dispatch promotes), the agent release lane (MSI/.deb/.pkg, code signing, GPG sidecars, the updater's trust chain), the break-glass build-host path, and the couplings that silently freeze the whole fleet's updates when they drift. Load BEFORE cutting an agent-v*/setup-v* tag, promoting or rolling back a server image, touching release-agent.yml / hosted-image.yml / promote.yml / the Dockerfile / the wxs installer, or changing a version number or signing step. FR-73 / FR-7.
+description: How meshharbor releases and deploys — the hosted server image (Actions builds, GHCR serves, a dispatch promotes), the agent release lane (MSI/.deb/.pkg, code signing, GPG sidecars, the updater's trust chain), the break-glass build-host path, and the couplings that silently freeze the whole fleet's updates when they drift. Load BEFORE cutting an agent-v*/setup-v* tag, promoting or rolling back a server image, touching release-agent.yml / hosted-image.yml / promote.yml / the Dockerfile / the wxs installer, or changing a version number or signing step. FR-73 / FR-7.
 ---
 
 # Shipping: the server image and the agent release
@@ -16,7 +16,7 @@ The hosted image is built by GitHub Actions on **every merge to `master`** that
 can change it (`hosted-image.yml`: `crates/**`, `ui/**`, `files/**`, `config/**`,
 the two installer scripts, the Dockerfile, `Cargo.*`), smoke-booted with Mongo +
 Redis, attested, and pushed as
-`ghcr.io/gjovanov/roomler-ai:hosted-<YYYYMMDD>-<sha7>` plus the moving `hosted`
+`ghcr.io/jk-zhang-meta/meshharbor:hosted-<YYYYMMDD>-<sha7>` plus the moving `hosted`
 pointer.
 
 **Nothing rolls until someone promotes.**
@@ -35,7 +35,7 @@ environment secret is invisible to a job that does not declare the environment,
 and the symptom is the job's "not set" branch, not an error.** Without it the job
 prints the exact manual bump.
 ⚠️ It refuses anything that is not an existing `hosted-*` tag, and refuses while
-the deploy repo's `newName` is not `ghcr.io/gjovanov/roomler-ai`.
+the deploy repo's `newName` is not `ghcr.io/jk-zhang-meta/meshharbor`.
 ⚠️ The e2e lane (`scripts/e2e-nightly.sh`, `e2e-run.sh`) reads the registry from
 the deploy repo's `newName` — a bare tag is resolved against it; a full reference
 containing `/` pins anything.
@@ -50,7 +50,7 @@ These do not error. They make every device quietly stop updating.
 
 | Coupling | What drift does |
 |---|---|
-| `msi_product_version_for` (in `roomlerd`) **vs** the "Derive the MSI ProductVersion" step in `release-agent.yml` — the same `MAJOR.MINOR.RC` mapping, **twice** | Change one and **every agent refuses every update**: a silent fleet-wide freeze, not an error. Re-check with `cargo test -p meshharbord --lib -- --ignored real_published_msi` |
+| `msi_product_version_for` (in `meshharbord`) **vs** the "Derive the MSI ProductVersion" step in `release-agent.yml` — the same `MAJOR.MINOR.RC` mapping, **twice** | Change one and **every agent refuses every update**: a silent fleet-wide freeze, not an error. Re-check with `cargo test -p meshharbord --lib -- --ignored real_published_msi` |
 | The GPG sidecar job | Non-Windows `download_asset` **requires** `<asset-url>.asc` and refuses fail-closed. A release whose GPG job skipped freezes every Linux/macOS agent. `release-agent.yml` now hard-fails on a tag when `GPG_PRIVATE_KEY` is absent (graceful skip only on a branch dispatch), plus a post-signing assertion that every `.deb`/`.pkg`/`.msi` got a sidecar |
 | The version scheme (rolling `0.4.<counter>`) | Six coupled MSI-mapping copies. Agents ≤ rc.483 **refuse** 0.4.x MSIs |
 | Asset ORDER in a release | A frozen agent's picker takes the **first** `.deb` matching its arch, and `/api/agent/latest-release` forwards GitHub's order. Publishing the Linux companion `.deb` into the agent release froze every pre-0.4.16 Linux agent — they apt-installed the companion *as* their daemon update. Fixed server-side (`agent_release::order_assets_daemon_first`) **because a frozen agent cannot receive an agent-side fix** |
@@ -107,7 +107,7 @@ carries no digest.
   an MSI built before #1727 needs `ENABLE_SYSTEM_CONTEXT=1` on the command line.
   Without it, the install switches SystemContext off and the device goes
   offline; CORPLAP-2 did on 2026-09-26. To rescue it, run
-  `roomlerd enable-system-context`. From #1727 on, leaving the property out
+  `meshharbord enable-system-context`. From #1727 on, leaving the property out
   keeps the host's mode.
 - 🔒 **`0.4.106` is RESERVED** for the FR-85 Windows canary (branch
   `fr85-canary-0.4.106`, never merged; the operator, 2026-09-26). **Never tag
@@ -137,7 +137,7 @@ carries no digest.
 ## 4 · Break-glass: the build-host path
 
 For a GitHub outage, or a fix that must not wait for a runner. Build, push to the
-build host's registry, then set **both** `newName: registry.roomler.ai/roomler-ai`
+build host's registry, then set **both** `newName: registry.meshharbor.itachi.fans/meshharbor`
 **and** `newTag` in the deploy repo (`promote` refuses until `newName` is switched
 back to GHCR). Full recipe: [`docs/deployment.md`](../../../docs/deployment.md).
 
@@ -166,13 +166,13 @@ roll — the workflow only proves the public `/health` kept answering:
 ```bash
 # pods on the new image · online-agent count · an RC session ·
 # an overlay pair · a tunnel forward
-roomler exec <device> '<cmd>'      # ⚠️ argv is re-split: Windows targets need ONE quoted arg, ";" never "&&"
-roomler peers
+meshharbor exec <device> '<cmd>'      # ⚠️ argv is re-split: Windows targets need ONE quoted arg, ";" never "&&"
+meshharbor peers
 ```
 
 ⚠️ An exec sweep is a **biased sample** — it only reaches devices that are
 online. Query the server for the denominator.
-⚠️ `roomler exec` on a host that restarts its own service answers "no answer
+⚠️ `meshharbor exec` on a host that restarts its own service answers "no answer
 within 45 s" — the command ran.
 
 ## 6 · The wizard ships in lockstep (FR-84 S1)
@@ -209,7 +209,7 @@ the next version.
 # Verify a lockstep roll — both must hold
 git ls-remote origin 'refs/tags/setup-v<V>^{}' 'refs/tags/agent-v<V>^{}'   # the SAME commit (the release's targetCommitish now reads `master`)
 gh release view setup-v<V> --json assets   # 3 platforms + sidecars
-for p in windows linux macos; do curl -sI https://roomler.ai/api/setup/$p | grep -i content-disposition; done   # every filename carries <V>
+for p in windows linux macos; do curl -sI https://meshharbor.itachi.fans/api/setup/$p | grep -i content-disposition; done   # every filename carries <V>
 
 # Re-run after a failure (the tag already exists at the agent commit; idempotent)
 gh workflow run release-setup.yml --ref setup-v<V> -f version=<V> -f publish_release=true

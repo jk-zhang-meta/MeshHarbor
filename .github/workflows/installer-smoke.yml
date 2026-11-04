@@ -70,7 +70,7 @@ on:
       # self-update silently removed the daemon on a field MacBook.
       - 'agents/meshharbord/packaging/macos/**'
       - 'agents/meshharbord/build.rs'
-      # #1727 — the per-Machine MSI runs `roomlerd keep-system-context`, which
+      # #1727 — the per-Machine MSI runs `meshharbord keep-system-context`, which
       # decides from this module; a change to it changes what an install does.
       - 'agents/meshharbord/src/win_service/system_context_attempt.rs'
       - '.github/workflows/installer-smoke.yml'
@@ -156,14 +156,14 @@ jobs:
           cargo build -p meshharbord --release `
             --features "mf-encoder,scrap-capture,openh264-encoder,enigo-input,clipboard,viewer-indicator,system-context"
 
-      - name: Build the roomler CLI shim for the MSI bundle (P3e lever D)
+      - name: Build the meshharbor CLI shim for the MSI bundle (P3e lever D)
         shell: pwsh
         run: |
           # wix/main.wxs UNCONDITIONALLY bundles a `TunnelExe` component, so
           # the WiX `light` step needs its source EXE present or it fails with
           # LGHT0103 — same failure mode as the wintun.dll staging below.
           # P3e lever D moved that source from the full tunnel CLI to the
-          # ~150 KB shim that re-execs `roomlerd cli`; the INSTALLED name is
+          # ~150 KB shim that re-execs `meshharbord cli`; the INSTALLED name is
           # still meshharbor.exe, which is what the payload assert below checks.
           # Mirrors release-agent.yml's shim build step.
           cargo build -p meshharbor-cli-shim --release
@@ -326,21 +326,21 @@ jobs:
           # fails this step.
           $sid    = ([Security.Principal.WindowsIdentity]::GetCurrent()).User.Value
           $udRoot = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Installer\UserData'
-          function Find-RoomlerProduct($scopeSid) {
+          function Find-MeshHarborProduct($scopeSid) {
             $products = Join-Path $udRoot "$scopeSid\Products"
             if (-not (Test-Path $products)) { return $null }
             Get-ChildItem $products -ErrorAction SilentlyContinue |
               ForEach-Object {
                 Get-ItemProperty (Join-Path $_.PSPath 'InstallProperties') -ErrorAction SilentlyContinue
               } |
-              Where-Object { $_.DisplayName -and $_.DisplayName -match '(?i)roomler.*agent' } |
+              Where-Object { $_.DisplayName -and $_.DisplayName -match '(?i)meshharbor.*agent' } |
               Select-Object -First 1
           }
-          $perUser    = Find-RoomlerProduct $sid
-          $perMachine = Find-RoomlerProduct 'S-1-5-18'
+          $perUser    = Find-MeshHarborProduct $sid
+          $perMachine = Find-MeshHarborProduct 'S-1-5-18'
 
           if (-not $perUser) {
-            Write-Host "--- Roomler ARP entries, per hive (installing SID: $sid) ---"
+            Write-Host "--- MeshHarbor ARP entries, per hive (installing SID: $sid) ---"
             $hives = @{
               'HKCU\Uninstall'           = 'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall'
               'HKLM\Uninstall'           = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall'
@@ -351,10 +351,10 @@ jobs:
               if (-not (Test-Path $root)) { Write-Host "${label}: (absent)"; continue }
               $rows = Get-ChildItem $root -ErrorAction SilentlyContinue |
                         Get-ItemProperty -ErrorAction SilentlyContinue |
-                        Where-Object { $_.DisplayName -like '*roomler*' } |
+                        Where-Object { $_.DisplayName -like '*meshharbor*' } |
                         Select-Object DisplayName, DisplayVersion, UninstallString
               if ($rows) { Write-Host "${label}:"; $rows | Format-Table -AutoSize }
-              else { Write-Host "${label}: (no roomler entry)" }
+              else { Write-Host "${label}: (no meshharbor entry)" }
             }
             Write-Host '--- Installer UserData SIDs present ---'
             Get-ChildItem $udRoot -ErrorAction SilentlyContinue |
@@ -374,7 +374,7 @@ jobs:
           ) | Where-Object { Test-Path $_ } |
               ForEach-Object { Get-ChildItem $_ -ErrorAction SilentlyContinue } |
               Get-ItemProperty -ErrorAction SilentlyContinue |
-              Where-Object { $_.DisplayName -and $_.DisplayName -match '(?i)roomler.*agent' } |
+              Where-Object { $_.DisplayName -and $_.DisplayName -match '(?i)meshharbor.*agent' } |
               Select-Object -First 1
           if ($arp) {
             'INSTALLED_PRODUCT_CODE=' + $arp.PSChildName | Out-File -FilePath $env:GITHUB_ENV -Append
@@ -552,7 +552,7 @@ jobs:
             'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall'
           )
           # Same loose filter as the post-install step — match either
-          # "Roomler Agent" (WiX DisplayName) or "roomler-agent"
+          # "MeshHarbor Agent" (WiX DisplayName) or "meshharbor-agent"
           # (Cargo package name) so a future WiX rename in either
           # direction doesn't silently turn this assert into a no-op.
           $stragglers = @()
@@ -561,11 +561,11 @@ jobs:
             $stragglers += Get-ChildItem $root -ErrorAction SilentlyContinue |
                              Get-ItemProperty -ErrorAction SilentlyContinue |
                              Where-Object {
-                               $_.DisplayName -and $_.DisplayName -match '(?i)roomler.*agent'
+                               $_.DisplayName -and $_.DisplayName -match '(?i)meshharbor.*agent'
                              }
           }
           if ($stragglers.Count -gt 0) {
-            throw "roomler-agent install record still present after uninstall: $($stragglers.DisplayName -join ', ')"
+            throw "meshharbor-agent install record still present after uninstall: $($stragglers.DisplayName -join ', ')"
           }
           # P4b canonical layout: every component-managed payload must
           # be gone from Programs\MeshHarbor (all files are component-
@@ -609,8 +609,8 @@ jobs:
           # above, so clobbering is fine but a stale file would make
           # the produced-MSI assert vacuous.
           Remove-Item target\wix\*.msi -Force -ErrorAction SilentlyContinue
-          $wixDir = "agents\roomlerd\wix"
-          $pmSrc  = "agents\roomlerd\wix-perMachine\main.wxs"
+          $wixDir = "agents\meshharbord\wix"
+          $pmSrc  = "agents\meshharbord\wix-perMachine\main.wxs"
           Copy-Item "$wixDir\main.wxs" "$wixDir\main.wxs.bak" -Force
           Copy-Item $pmSrc "$wixDir\main.wxs" -Force
           try {
@@ -629,7 +629,7 @@ jobs:
         # recreates the service, taking the MESHHARBORD_ENABLE_SYSTEM_SWAP entry of
         # its Environment with it. A SystemContext laptop went offline that way
         # (2026-09-26). The fix keeps the mode the machine was last switched to
-        # (`roomlerd keep-system-context`, from the product's own record).
+        # (`meshharbord keep-system-context`, from the product's own record).
         #
         # Four builds of the SAME binary at rising versions, so each install is
         # a real major upgrade (RemoveExistingProducts runs the old product's
@@ -651,9 +651,9 @@ jobs:
           New-Item -ItemType Directory -Path $out, $logDir -Force | Out-Null
 
           Remove-Item target\wix\*.msi -Force -ErrorAction SilentlyContinue
-          $wixDir = "agents\roomlerd\wix"
+          $wixDir = "agents\meshharbord\wix"
           Copy-Item "$wixDir\main.wxs" "$wixDir\main.wxs.bak" -Force
-          Copy-Item "agents\roomlerd\wix-perMachine\main.wxs" "$wixDir\main.wxs" -Force
+          Copy-Item "agents\meshharbord\wix-perMachine\main.wxs" "$wixDir\main.wxs" -Force
           try {
             foreach ($n in 1..4) {
               cargo wix -p meshharbord --nocapture --no-build --install-version "0.0.$n-smoke.1"
@@ -674,23 +674,23 @@ jobs:
             }
           }
           function Get-Swap {
-            $block = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\Roomler' -Name Environment -ErrorAction SilentlyContinue).Environment
+            $block = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\MeshHarbor' -Name Environment -ErrorAction SilentlyContinue).Environment
             [bool](@($block) -contains 'MESHHARBORD_ENABLE_SYSTEM_SWAP=1')
           }
           function Assert-Mode([string]$label, [bool]$want, [string]$version) {
             $svc = $null
             foreach ($i in 1..60) {
-              $svc = Get-Service Roomler -ErrorAction SilentlyContinue
+              $svc = Get-Service MeshHarbor -ErrorAction SilentlyContinue
               if ($svc -and $svc.Status -eq 'Running') { break }
               Start-Sleep -Seconds 1
             }
             $swap = Get-Swap
             $rec = Get-Content "$env:ProgramData\meshharbor\last-system-context-attempt.json" -Raw -ErrorAction SilentlyContinue | ConvertFrom-Json
             $products = @(Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*' -ErrorAction SilentlyContinue |
-              Where-Object { $_.DisplayName -like 'Roomler*per-Machine*' })
+              Where-Object { $_.DisplayName -like 'MeshHarbor*per-Machine*' })
             Write-Host ("{0}: swap={1} (want {2}) service={3} record={4}/{5} products={6}" -f $label, $swap, $want, $svc.Status, $rec.command, $rec.stage, (($products | ForEach-Object { $_.DisplayVersion }) -join ','))
             if ($swap -ne $want) { throw "${label}: the SystemContext swap is $swap, want $want" }
-            if (-not $svc -or $svc.Status -ne 'Running') { throw "${label}: the Roomler service is $($svc.Status), want Running" }
+            if (-not $svc -or $svc.Status -ne 'Running') { throw "${label}: the MeshHarbor service is $($svc.Status), want Running" }
             if ($products.Count -ne 1 -or $products[0].DisplayVersion -ne $version) {
               throw "${label}: want exactly one per-Machine product at $version, found: $(($products | ForEach-Object { $_.DisplayVersion }) -join ',')"
             }
@@ -707,12 +707,12 @@ jobs:
             Invoke-Msi '/i' (Join-Path $out 'pm-4.msi') (Join-Path $logDir 'pm-4.log') ''
             Assert-Mode 'v4, hand-run upgrade with no property' $false '0.0.4.1'
           } finally {
-            Copy-Item "$env:ProgramData\meshharbor\roomler\service-logs" (Join-Path $logDir 'service-logs') -Recurse -Force -ErrorAction SilentlyContinue
+            Copy-Item "$env:ProgramData\meshharbor\meshharbor\service-logs" (Join-Path $logDir 'service-logs') -Recurse -Force -ErrorAction SilentlyContinue
             Copy-Item "$env:ProgramData\meshharbor\last-system-context-attempt.json" $logDir -Force -ErrorAction SilentlyContinue
           }
 
           Invoke-Msi '/x' (Join-Path $out 'pm-4.msi') (Join-Path $logDir 'pm-uninstall.log') ''
-          if (Get-Service Roomler -ErrorAction SilentlyContinue) { throw 'the Roomler service survived the uninstall' }
+          if (Get-Service MeshHarbor -ErrorAction SilentlyContinue) { throw 'the MeshHarbor service survived the uninstall' }
           Write-Host 'per-Machine uninstall removed the service'
 
       - name: Upload MSI logs on failure
@@ -808,7 +808,7 @@ jobs:
           VERSION="0.0.0-smoke"
           APP=stage/meshharbord.app
           mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Frameworks"
-          cp target/aarch64-apple-darwin/release/roomlerd "$APP/Contents/MacOS/roomlerd"
+          cp target/aarch64-apple-darwin/release/meshharbord "$APP/Contents/MacOS/meshharbord"
 
           # The same dependency walk the release lane runs. Without it the
           # binary loads Homebrew paths that exist here and nowhere else, and
@@ -828,13 +828,13 @@ jobs:
               install_name_tool -change "$dep" "@rpath/$base" "$target"
             done
           }
-          install_name_tool -add_rpath "@executable_path/../Frameworks" "$APP/Contents/MacOS/roomlerd"
-          bundle_deps "$APP/Contents/MacOS/roomlerd"
+          install_name_tool -add_rpath "@executable_path/../Frameworks" "$APP/Contents/MacOS/meshharbord"
+          bundle_deps "$APP/Contents/MacOS/meshharbord"
           # Deliberately AD-HOC here, diverging from the release lane's stable
           # self-signed identity: identity stability is a FLEET property (TCC
           # grants surviving updates), meaningless on a throwaway runner — and
           # fork PRs have no secrets, so requiring the cert would break them.
-          find "$APP" -type f \( -name '*.dylib' -o -name 'roomlerd' \) \
+          find "$APP" -type f \( -name '*.dylib' -o -name 'meshharbord' \) \
             -exec codesign --force --sign - {} \;
 
           cp agents/meshharbord/packaging/macos/fans.itachi.meshharbor.agent.plist "$APP/Contents/Resources/"
@@ -845,7 +845,7 @@ jobs:
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
           <plist version="1.0"><dict>
-            <key>CFBundleExecutable</key><string>roomlerd</string>
+            <key>CFBundleExecutable</key><string>meshharbord</string>
             <key>CFBundleIdentifier</key><string>fans.itachi.meshharbor.agent</string>
             <key>CFBundleVersion</key><string>${VERSION}</string>
             <key>LSUIElement</key><true/>
@@ -872,7 +872,7 @@ jobs:
           <plist version="1.0"><dict>
             <key>CFBundleExecutable</key><string>meshharbor-desktop</string>
             <key>CFBundleIdentifier</key><string>fans.itachi.meshharbor.agent-tray</string>
-            <key>CFBundleName</key><string>Roomler</string>
+            <key>CFBundleName</key><string>MeshHarbor</string>
             <key>CFBundleVersion</key><string>${VERSION}</string>
             <key>LSUIElement</key><true/>
           </dict></plist>
@@ -880,13 +880,13 @@ jobs:
           codesign --force --sign - "$DESK"
 
           mkdir -p payload/Applications payload/usr/local/bin scripts dist
-          mkdir -p payload/Library/Roomler
-          cp -R "$APP" payload/Library/Roomler/
+          mkdir -p payload/Library/MeshHarbor
+          cp -R "$APP" payload/Library/MeshHarbor/
           cp -R "$DESK" payload/Applications/
-          cp target/aarch64-apple-darwin/release/roomler-shim payload/usr/local/bin/roomler
-          chmod 755 payload/usr/local/bin/roomler
-          ln -s /Library/Roomler/meshharbord.app/Contents/MacOS/roomlerd \
-            payload/usr/local/bin/roomlerd
+          cp target/aarch64-apple-darwin/release/meshharbor-shim payload/usr/local/bin/meshharbor
+          chmod 755 payload/usr/local/bin/meshharbor
+          ln -s /Library/MeshHarbor/meshharbord.app/Contents/MacOS/meshharbord \
+            payload/usr/local/bin/meshharbord
           cp agents/meshharbord/packaging/macos/postinstall scripts/postinstall
           chmod 755 scripts/postinstall
           # pkgbuild THEN productbuild — the same two steps release-agent.yml
@@ -933,7 +933,7 @@ jobs:
           pkgutil --payload-files component.pkg | sed -n '1,40p'
           pkgutil --payload-files component.pkg | grep -q 'Contents/Resources/fans.itachi.meshharbor.agent.plist' \
             || { echo "::error::the LaunchAgent plist is not in the payload"; exit 1; }
-          pkgutil --payload-files component.pkg | grep -q 'usr/local/bin/roomler' \
+          pkgutil --payload-files component.pkg | grep -q 'usr/local/bin/meshharbor' \
             || { echo "::error::the CLI is not in the payload"; exit 1; }
 
       # The shipped .pkg refuses a Mac below its floor, and on this runner every
@@ -950,7 +950,7 @@ jobs:
             exit 1
           fi
           cat gate.log
-          [ ! -e /Library/Roomler/meshharbord.app ] \
+          [ ! -e /Library/MeshHarbor/meshharbord.app ] \
             || { echo "::error::the refused install still put the daemon bundle down"; exit 1; }
           echo "refused, and nothing landed"
 
@@ -966,11 +966,11 @@ jobs:
         run: |
           echo "=== console user ==="
           stat -f "%Su" /dev/console || true
-          echo "=== install.log (roomler + script lines) ==="
-          sudo tail -200 /var/log/install.log | grep -iE "roomler|script|error|fail" || true
+          echo "=== install.log (meshharbor + script lines) ==="
+          sudo tail -200 /var/log/install.log | grep -iE "meshharbor|script|error|fail" || true
           echo "=== what landed anyway ==="
-          ls -la /Library/Roomler/meshharbord.app/Contents/MacOS/ 2>&1 || true
-          ls -la /usr/local/bin/roomler 2>&1 || true
+          ls -la /Library/MeshHarbor/meshharbord.app/Contents/MacOS/ 2>&1 || true
+          ls -la /usr/local/bin/meshharbor 2>&1 || true
           echo "=== is /Applications what we think it is? ==="
           ls -ld /Applications 2>&1 || true
           echo "=== did the bundle land SOMEWHERE else? ==="
@@ -987,19 +987,19 @@ jobs:
       - name: Assert the payload landed where everything expects it
         run: |
           set -euo pipefail
-          BIN=/Library/Roomler/meshharbord.app/Contents/MacOS/roomlerd
+          BIN=/Library/MeshHarbor/meshharbord.app/Contents/MacOS/meshharbord
           # Both plists and the docs name this path literally, and a rename
           # would void every TCC grant keyed to the binary.
           test -x "$BIN" || { echo "::error::missing $BIN"; exit 1; }
           # The CLI the pkg did not ship at all before rc.454.
-          test -x /usr/local/bin/roomler || { echo "::error::missing /usr/local/bin/roomler"; exit 1; }
-          # Command-surface parity with Linux and Windows: `roomlerd` on PATH.
-          test -x /usr/local/bin/roomlerd || { echo "::error::missing /usr/local/bin/roomlerd"; exit 1; }
-          [ "$(readlink /usr/local/bin/roomlerd)" = "$BIN" ] \
-            || { echo "::error::roomlerd does not point at the bundle binary"; exit 1; }
+          test -x /usr/local/bin/meshharbor || { echo "::error::missing /usr/local/bin/meshharbor"; exit 1; }
+          # Command-surface parity with Linux and Windows: `meshharbord` on PATH.
+          test -x /usr/local/bin/meshharbord || { echo "::error::missing /usr/local/bin/meshharbord"; exit 1; }
+          [ "$(readlink /usr/local/bin/meshharbord)" = "$BIN" ] \
+            || { echo "::error::meshharbord does not point at the bundle binary"; exit 1; }
           "$BIN" --version
-          /usr/local/bin/roomlerd --version >/dev/null \
-            || { echo "::error::roomlerd on PATH does not run"; exit 1; }
+          /usr/local/bin/meshharbord --version >/dev/null \
+            || { echo "::error::meshharbord on PATH does not run"; exit 1; }
           echo "  payload OK"
 
       # FR-46 P5b — the pre-rename bundle must be SWEPT, not left beside the new
@@ -1014,15 +1014,15 @@ jobs:
       - name: The pre-rename bundle is swept by an upgrade
         run: |
           set -euo pipefail
-          sudo mkdir -p /Library/Roomler/meshharbor-agent.app/Contents/MacOS
-          sudo cp /Library/Roomler/meshharbord.app/Contents/MacOS/roomlerd \
-            /Library/Roomler/meshharbor-agent.app/Contents/MacOS/roomler-agent
-          test -d /Library/Roomler/meshharbor-agent.app \
+          sudo mkdir -p /Library/MeshHarbor/meshharbor-agent.app/Contents/MacOS
+          sudo cp /Library/MeshHarbor/meshharbord.app/Contents/MacOS/meshharbord \
+            /Library/MeshHarbor/meshharbor-agent.app/Contents/MacOS/meshharbor-agent
+          test -d /Library/MeshHarbor/meshharbor-agent.app \
             || { echo "::error::could not seed the pre-rename bundle"; exit 1; }
           sudo installer -verbose -pkg dist/smoke.pkg -target /
-          test ! -d /Library/Roomler/meshharbor-agent.app \
+          test ! -d /Library/MeshHarbor/meshharbor-agent.app \
             || { echo "::error::the pre-rename bundle survived the upgrade"; exit 1; }
-          test -x /Library/Roomler/meshharbord.app/Contents/MacOS/roomlerd \
+          test -x /Library/MeshHarbor/meshharbord.app/Contents/MacOS/meshharbord \
             || { echo "::error::the sweep took the CURRENT bundle with it"; exit 1; }
           echo "  pre-rename bundle swept; current bundle intact"
 
@@ -1107,11 +1107,11 @@ jobs:
       - name: Assert the CLI shim resolves the daemon inside the bundle
         run: |
           set -euo pipefail
-          # macOS is the one platform where the shim's sibling-`roomlerd` probe
+          # macOS is the one platform where the shim's sibling-`meshharbord` probe
           # cannot work, so this covers the bundle fallback. Nothing is enrolled
           # here, so the command itself will fail — what must NOT happen is the
           # shim failing to locate the daemon at all.
-          out="$(/usr/local/bin/roomler status 2>&1 || true)"
+          out="$(/usr/local/bin/meshharbor status 2>&1 || true)"
           echo "$out"
           case "$out" in
             *"daemon binary is missing"*)
@@ -1129,7 +1129,7 @@ jobs:
           # as working because `has_input_permission` was a compile-time
           # constant. Being able to assert this at all is the point of moving
           # it to a runtime probe.
-          caps="$(/Library/Roomler/meshharbord.app/Contents/MacOS/roomlerd caps 2>&1 || true)"
+          caps="$(/Library/MeshHarbor/meshharbord.app/Contents/MacOS/meshharbord caps 2>&1 || true)"
           echo "$caps"
           if echo "$caps" | grep -qi 'has_input_permission: true'; then
             echo "::error::input advertised as granted on a runner that granted nothing"
@@ -1155,7 +1155,7 @@ jobs:
           since=$(date -u "+%Y-%m-%d %H:%M:%S")
           dump_log() {
             echo "--- postinstall output from /var/log/install.log ---"
-            sudo awk -v s="$since" '$0 ~ /roomler|enable-daemon|daemon/ {print "    " $0}' \
+            sudo awk -v s="$since" '$0 ~ /meshharbor|enable-daemon|daemon/ {print "    " $0}' \
               /var/log/install.log 2>/dev/null | tail -25 || true
           }
 
@@ -1172,8 +1172,8 @@ jobs:
           # to the else branch and BOOT OUT the daemon, which is the failure this
           # whole phase is shaped around.
           # RETIRED-NAME-ANCHOR(2): the migration SOURCE, seeded on purpose.
-          sudo mkdir -p /etc/roomler-agent
-          sudo touch /etc/roomler-agent/enable-daemon
+          sudo mkdir -p /etc/meshharbor-agent
+          sudo touch /etc/meshharbor-agent/enable-daemon
           sudo installer -verbose -pkg dist/smoke.pkg -target /
           dump_log
           test -f /Library/LaunchDaemons/fans.itachi.meshharbor.daemon.plist \
@@ -1181,10 +1181,10 @@ jobs:
           echo "  daemon installed"
           # The migration must have MOVED it, not copied it: a legacy directory
           # left behind would be read again by the dual-read gates forever.
-          test -f /etc/roomler/enable-daemon \
-            || { echo "::error::the marker was not migrated to /etc/roomler"; exit 1; }
-          test ! -d /etc/roomler-agent \
-            || { echo "::error::the legacy /etc/roomler-agent survived the migration"; exit 1; }
+          test -f /etc/meshharbor/enable-daemon \
+            || { echo "::error::the marker was not migrated to /etc/meshharbor"; exit 1; }
+          test ! -d /etc/meshharbor-agent \
+            || { echo "::error::the legacy /etc/meshharbor-agent survived the migration"; exit 1; }
           echo "  config dir migrated off the retired name"
 
           echo "=== install 2: plain, i.e. what a self-update runs ==="
@@ -1199,7 +1199,7 @@ jobs:
           # daemon goes. Otherwise this test would pass by making the removal
           # branch unreachable, which is the opposite defect.
           echo "=== install 3: marker removed = a real opt-out ==="
-          sudo rm -f /etc/roomler/enable-daemon
+          sudo rm -f /etc/meshharbor/enable-daemon
           sudo installer -verbose -pkg dist/smoke.pkg -target /
           dump_log
           if [ -f /Library/LaunchDaemons/fans.itachi.meshharbor.daemon.plist ]; then
@@ -1214,7 +1214,7 @@ jobs:
           since=$(date -u "+%Y-%m-%d %H:%M:%S")
           dump_log() {
             echo "--- postinstall output from /var/log/install.log ---"
-            sudo awk -v s="$since" '$0 ~ /roomler|update helper|disable-auto-update/ {print "    " $0}' \
+            sudo awk -v s="$since" '$0 ~ /meshharbor|update helper|disable-auto-update/ {print "    " $0}' \
               /var/log/install.log 2>/dev/null | tail -25 || true
           }
 
@@ -1226,14 +1226,14 @@ jobs:
 
           echo "=== opt out: marker set -> the helper must GO ==="
           # FR-46 P5a — by this point install 1 has already migrated the directory,
-          # so `/etc/roomler` EXISTS and the migration (dest-absent only) will not
+          # so `/etc/meshharbor` EXISTS and the migration (dest-absent only) will not
           # run again. That makes this block exercise the DUAL-READ fallback arm:
           # an opt-out marker sitting at the legacy path must still be honoured,
           # because reading only the current path would auto-update a Mac whose
           # operator opted out. Deliberate coverage, not an accident of ordering.
           # RETIRED-NAME-ANCHOR(2): the legacy opt-out path, seeded on purpose.
-          sudo mkdir -p /etc/roomler-agent
-          sudo touch /etc/roomler-agent/disable-auto-update
+          sudo mkdir -p /etc/meshharbor-agent
+          sudo touch /etc/meshharbor-agent/disable-auto-update
           sudo installer -verbose -pkg dist/smoke.pkg -target /
           dump_log
           if [ -f /Library/LaunchDaemons/fans.itachi.meshharbor.update.plist ]; then
@@ -1249,7 +1249,7 @@ jobs:
           echo "  opt-out removes the helper"
 
           echo "=== opt back in: marker removed -> the helper must RETURN ==="
-          sudo rm -f /etc/roomler-agent/disable-auto-update
+          sudo rm -f /etc/meshharbor-agent/disable-auto-update
           sudo installer -verbose -pkg dist/smoke.pkg -target /
           dump_log
           test -f /Library/LaunchDaemons/fans.itachi.meshharbor.update.plist \

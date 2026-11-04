@@ -162,7 +162,7 @@ pub async fn ok_days(
         .collect())
 }
 
-/// The path of a page URL Google reports (`https://roomler.ai/blog/x/?a` →
+/// The path of a page URL Google reports (`https://meshharbor.itachi.fans/blog/x/?a` →
 /// `/blog/x/`), whatever the host; a value that is already a path keeps
 /// its path. `None` for anything that is neither.
 pub fn path_of(page: &str) -> Option<String> {
@@ -480,7 +480,7 @@ pub struct PageSearch {
 }
 
 /// Pure: the per-path cells over stored `page` and `page_query` rows, keyed
-/// by the path WITHOUT its trailing slash: `https://roomler.ai/blog/a` and
+/// by the path WITHOUT its trailing slash: `https://meshharbor.itachi.fans/blog/a` and
 /// `…/blog/a/` (and any host) are one post, and their rows add up.
 pub fn per_path(
     through: NaiveDate,
@@ -595,7 +595,7 @@ mod tests {
         let pages = sc(
             "2026-10-14",
             "page",
-            &[("page", "https://roomler.ai/blog/a/")],
+            &[("page", "https://meshharbor.itachi.fans/blog/a/")],
             4,
             60,
             3.0,
@@ -648,7 +648,7 @@ mod tests {
         let mut pages = sc(
             "2026-10-14",
             "page",
-            &[("page", "https://roomler.ai/blog/a/")],
+            &[("page", "https://meshharbor.itachi.fans/blog/a/")],
             4,
             60,
             3.0,
@@ -656,7 +656,7 @@ mod tests {
         pages.extend(sc(
             "2026-10-02",
             "page",
-            &[("page", "https://www.roomler.ai/blog/a/")],
+            &[("page", "https://www.meshharbor.itachi.fans/blog/a/")],
             1,
             20,
             9.0,
@@ -665,7 +665,7 @@ mod tests {
         pages.extend(sc(
             "2026-10-14",
             "page",
-            &[("page", "https://roomler.ai/blog/a")],
+            &[("page", "https://meshharbor.itachi.fans/blog/a")],
             2,
             15,
             4.0,
@@ -674,7 +674,7 @@ mod tests {
             "2026-10-14",
             "page_query",
             &[
-                ("page", "https://roomler.ai/blog/a/"),
+                ("page", "https://meshharbor.itachi.fans/blog/a/"),
                 ("query", "remote desktop"),
             ],
             3,
@@ -685,7 +685,7 @@ mod tests {
             "2026-10-14",
             "page_query",
             &[
-                ("page", "https://roomler.ai/blog/a/"),
+                ("page", "https://meshharbor.itachi.fans/blog/a/"),
                 ("query", "self hosted"),
             ],
             0,
@@ -709,7 +709,7 @@ mod tests {
         assert_eq!(a.top_queries_28d[0].key, "remote desktop");
         assert_eq!(a.top_queries_28d.len(), 2);
         assert_eq!(
-            path_of("https://roomler.ai/blog/a/?x=1").as_deref(),
+            path_of("https://meshharbor.itachi.fans/blog/a/?x=1").as_deref(),
             Some("/blog/a/")
         );
         assert_eq!(path_of("/blog/b/").as_deref(), Some("/blog/b/"));

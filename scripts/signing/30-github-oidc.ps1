@@ -3,7 +3,7 @@
 # stored in the repository.
 #
 #   pwsh scripts/signing/30-github-oidc.ps1
-#   pwsh scripts/signing/30-github-oidc.ps1 -AppName roomler-ai-signing -WhatIfOnly
+#   pwsh scripts/signing/30-github-oidc.ps1 -AppName meshharbor-signing -WhatIfOnly
 #
 # Creates:
 #   1. an Entra app registration + service principal (no secret, ever)
@@ -19,7 +19,7 @@
 
 [CmdletBinding()]
 param(
-    [string]$AppName = 'roomler-ai-github-signing',
+    [string]$AppName = 'meshharbor-github-signing',
     [string]$Repo    = '',
     # Branch allowed to sign on workflow_dispatch rehearsals.
     [string]$Branch  = 'master',
@@ -120,7 +120,7 @@ New-Fic 'github-branch' @{
     issuer    = $issuer
     subject   = "repo:${Repo}:ref:refs/heads/$Branch"
     audiences = @($audience)
-    description = "roomler-ai workflow_dispatch rehearsals from $Branch"
+    description = "meshharbor workflow_dispatch rehearsals from $Branch"
 } | Out-Null
 
 # (2) Wildcard over all three release tag families.
@@ -128,7 +128,7 @@ $tagsOk = New-Fic 'github-release-tags' @{
     name      = 'github-release-tags'
     issuer    = $issuer
     audiences = @($audience)
-    description = 'roomler-ai agent-v* / setup-v* / tunnel-v* release tags'
+    description = 'meshharbor agent-v* / setup-v* / tunnel-v* release tags'
     claimsMatchingExpression = @{
         value = "claims['sub'] matches 'repo:${Repo}:ref:refs/tags/*'"
         languageVersion = 1
@@ -145,7 +145,7 @@ if (-not $tagsOk) {
         issuer    = $issuer
         subject   = "repo:${Repo}:environment:$Environment"
         audiences = @($audience)
-        description = "roomler-ai releases via the '$Environment' environment"
+        description = "meshharbor releases via the '$Environment' environment"
     } | Out-Null
 }
 

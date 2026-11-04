@@ -548,8 +548,8 @@ impl Default for OverlaySettings {
 /// infrastructure — like `turn.worker_urls` they live in operator config, not
 /// the DB. `regions` is a JSON array of region specs (see
 /// `remote_control::turn_creds::RelayRegionSpec`):
-/// `[{"id":"us-east","turn_url":"turn:coturn-us-east.roomler.ai:3478",
-///    "derp_url":"wss://derp-us-east.roomler.ai/derp",
+/// `[{"id":"us-east","turn_url":"turn:coturn-us-east.meshharbor.itachi.fans:3478",
+///    "derp_url":"wss://derp-us-east.meshharbor.itachi.fans/derp",
 ///    "caps":{"tls_443_tcp":false}}, …]`
 /// With `regions_enabled=false` (default) every issuance path uses the
 /// legacy `turn.*` single-region config — provably unchanged behaviour.
@@ -753,7 +753,7 @@ pub struct GrowthSettings {
     #[serde(default)]
     pub github_token: String,
     /// P7 — the Search Console property the `saas` puller reads, as Search
-    /// Console names it (`sc-domain:roomler.ai`, or a URL-prefix property's
+    /// Console names it (`sc-domain:meshharbor.itachi.fans`, or a URL-prefix property's
     /// `https://…/`). Env: `MESHHARBOR__GROWTH__SEARCH_CONSOLE_SITE`.
     #[serde(default = "growth_default_search_console_site")]
     pub search_console_site: String,
@@ -793,7 +793,7 @@ fn growth_default_on() -> bool {
 }
 
 fn growth_default_search_console_site() -> String {
-    "sc-domain:roomler.ai".to_string()
+    "sc-domain:meshharbor.itachi.fans".to_string()
 }
 
 fn growth_default_search_console_api_url() -> String {
@@ -801,7 +801,7 @@ fn growth_default_search_console_api_url() -> String {
 }
 
 fn growth_default_bing_site_url() -> String {
-    "https://roomler.ai/".to_string()
+    "https://meshharbor.itachi.fans/".to_string()
 }
 
 fn growth_default_bing_api_url() -> String {
@@ -809,7 +809,7 @@ fn growth_default_bing_api_url() -> String {
 }
 
 fn growth_default_github_repo() -> String {
-    "gjovanov/roomler-ai".to_string()
+    "jk-zhang-meta/MeshHarbor".to_string()
 }
 
 fn growth_default_github_api_url() -> String {
@@ -1433,7 +1433,7 @@ pub struct TurnSettings {
     pub url: Option<String>,
     /// Same-worker TURN affinity: comma-separated per-worker base URLs, one
     /// per coturn worker (e.g.
-    /// "turn:coturn-1.roomler.ai:3478,turn:coturn-2.roomler.ai:3478").
+    /// "turn:coturn-1.meshharbor.itachi.fans:3478,turn:coturn-2.meshharbor.itachi.fans:3478").
     /// Each is expanded into transport variants like `url`. Unset = no
     /// affinity (single-hostname DNS round-robin behaviour).
     pub worker_urls: Option<String>,
@@ -1742,14 +1742,14 @@ impl Settings {
             .set_default("stripe.seat_sync", true)?
             .set_default("giphy.api_key", "")?
             .set_default("email.api_key", "")?
-            .set_default("email.from_email", "noreply@roomler.ai")?
+            .set_default("email.from_email", "noreply@meshharbor.itachi.fans")?
             .set_default("email.from_name", "MeshHarbor")?
             .set_default("email.activation_token_ttl_minutes", 5u64)?
             .set_default("email.smtp_host", None::<String>)?
             .set_default("email.smtp_port", None::<u16>)?
             .set_default("push.vapid_public_key", "")?
             .set_default("push.vapid_private_key", "")?
-            .set_default("push.contact", "mailto:noreply@roomler.ai")?
+            .set_default("push.contact", "mailto:noreply@meshharbor.itachi.fans")?
             .set_default("auth.auto_verify", false)?
             .build()?;
 
@@ -2005,8 +2005,8 @@ mod growth_settings_tests {
         // P7 — the GitHub puller reads the hosted repo by default and needs
         // no token for its counters; traffic needs one. A repo that is not
         // `owner/name` switches the puller off rather than build a path.
-        assert_eq!(d.github_repo(), Some("gjovanov/roomler-ai"));
-        assert_eq!(absent.github_repo(), Some("gjovanov/roomler-ai"));
+        assert_eq!(d.github_repo(), Some("jk-zhang-meta/MeshHarbor"));
+        assert_eq!(absent.github_repo(), Some("jk-zhang-meta/MeshHarbor"));
         assert_eq!(d.github_api_url, "https://api.github.com");
         assert!(!d.github_traffic_configured());
         for bad in [
@@ -2030,8 +2030,8 @@ mod growth_settings_tests {
         assert!(gh.github_traffic_configured());
         // P7 — the search pullers: the hosted property and site by default,
         // and nothing configured until a key is set.
-        assert_eq!(d.search_console_site, "sc-domain:roomler.ai");
-        assert_eq!(d.bing_site_url, "https://roomler.ai/");
+        assert_eq!(d.search_console_site, "sc-domain:meshharbor.itachi.fans");
+        assert_eq!(d.bing_site_url, "https://meshharbor.itachi.fans/");
         assert!(!d.search_console_configured() && !d.bing_configured());
         assert!(!absent.search_console_configured() && !absent.bing_configured());
         assert!(d.blog_feed_url.is_empty());

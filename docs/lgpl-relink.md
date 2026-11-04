@@ -1,8 +1,8 @@
-# Relinking the Roomler agent against your own FFmpeg
+# Relinking the MeshHarbor agent against your own FFmpeg
 
 This page exists to make an LGPL right **exercisable** rather than theoretical.
 
-The Windows Roomler agent (`meshharbord.exe`) links FFmpeg **statically**. FFmpeg is
+The Windows MeshHarbor agent (`meshharbord.exe`) links FFmpeg **statically**. FFmpeg is
 LGPL-2.1-or-later, and §6 of that licence gives you the right to modify FFmpeg
 and relink the application against your modified version. Below is how to do it.
 
@@ -27,7 +27,7 @@ Both halves are satisfied by publication, not by request:
 
 | §6(a) requires | Where it is |
 |---|---|
-| Complete source of **the Library** | [`vendored-ffmpeg-9.0.1`](https://github.com/gjovanov/roomler-ai/releases/tag/vendored-ffmpeg-9.0.1) → `ffmpeg-<version>-corresponding-source.tar.xz` (upstream + every patch our builds apply + the full build recipe) |
+| Complete source of **the Library** | [`vendored-ffmpeg-9.0.1`](https://github.com/jk-zhang-meta/MeshHarbor/releases/tag/vendored-ffmpeg-9.0.1) → `ffmpeg-<version>-corresponding-source.tar.xz` (upstream + every patch our builds apply + the full build recipe) |
 | The **"work that uses the Library"**, as **source code** | This repository. The agent is MPL-2.0; `agents/meshharbord` and every crate it depends on are public. |
 | Terms permitting modification and debugging | MPL-2.0 for our code; upstream licences for vendored crates |
 
@@ -63,7 +63,7 @@ tarball.
 ### 1. Get the FFmpeg corresponding source
 
 ```bash
-gh release download vendored-ffmpeg-9.0.1 --repo gjovanov/roomler-ai \
+gh release download vendored-ffmpeg-9.0.1 --repo jk-zhang-meta/MeshHarbor \
   --pattern 'ffmpeg-*-corresponding-source.tar.xz*'
 sha256sum -c ffmpeg-n9.0.1-corresponding-source.tar.xz.sha256
 tar xf ffmpeg-n9.0.1-corresponding-source.tar.xz
@@ -109,8 +109,8 @@ requires static linkage.
 ### 3. Relink the agent
 
 ```bash
-git clone https://github.com/gjovanov/roomler-ai
-cd roomler-ai
+git clone https://github.com/jk-zhang-meta/MeshHarbor
+cd meshharbor
 git checkout <the tag matching your binary, e.g. agent-v0.4.13>
 ```
 
@@ -132,7 +132,7 @@ cargo build -p meshharbord --release \
   --features "full,vp9-444,vp9-444-bindgen,overlay-l3,overlay-netstack,ffmpeg-encoder,ssh-server"
 ```
 
-The result is `target/release/roomlerd(.exe)`, linked against **your** FFmpeg.
+The result is `target/release/meshharbord(.exe)`, linked against **your** FFmpeg.
 
 ⚠️ Use the feature list for the platform you are reproducing — they differ. macOS
 ships FFmpeg again since 2026-08-25 (a `--disable-everything` tree with the three
@@ -151,8 +151,8 @@ you do not need VP9-4:4:4, drop the `vp9-444` features.
 ### 4. Verify it works
 
 ```bash
-./roomlerd --version
-./roomlerd encoder-smoke --codec hevc     # exercises the FFmpeg encoder path
+./meshharbord --version
+./meshharbord encoder-smoke --codec hevc     # exercises the FFmpeg encoder path
 ```
 
 `encoder-smoke` feeds synthetic frames through the hardware cascade and reports
@@ -172,5 +172,5 @@ or manage updates yourself.
 
 ---
 
-Problems following this? **legal@roomler.ai** — if a step here does not work, the
+Problems following this? **legal@meshharbor.itachi.fans** — if a step here does not work, the
 compliance claim is wrong and we want to fix it.

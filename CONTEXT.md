@@ -1,4 +1,4 @@
-# Roomler
+# MeshHarbor
 
 One daemon and one web app that replace three products: remote desktop and
 control, a private WireGuard mesh, and team collaboration. This file is the
@@ -52,11 +52,11 @@ _Avoid_: caps cache file, cached capabilities, hardware cache
 ### Remote desktop — recording (FR-85)
 
 **Recording**:
-A screen captured to a local file by roomler's own pipeline, at native resolution — never a copy of the rate-controlled live stream. Encoded at the source, in a pipeline of its own.
+A screen captured to a local file by meshharbor's own pipeline, at native resolution — never a copy of the rate-controlled live stream. Encoded at the source, in a pipeline of its own.
 _Avoid_: capture, screen grab, screencast, session recording
 
 **Recorder**:
-The `roomlerd record` child process that captures, paces and encodes one recording. It runs as the person at the device, never SYSTEM/root while a console user exists.
+The `meshharbord record` child process that captures, paces and encodes one recording. It runs as the person at the device, never SYSTEM/root while a console user exists.
 _Avoid_: capturer (the recorder owns a capturer; they are not the same), encoder, recording engine
 
 **Local recording**:
@@ -72,11 +72,11 @@ The encoder settings a recording uses — constant quality, a real GOP, native r
 _Avoid_: quality preset, HQ mode, bitrate ladder (when the recording's own settings are meant)
 
 **Sidecar**:
-The `<name>.roomler.json` beside a recording: its initiator, device, encoder, dimensions, audio sources, events (locks, gaps, drops) and stop reason. Never content.
+The `<name>.meshharbor.json` beside a recording: its initiator, device, encoder, dimensions, audio sources, events (locks, gaps, drops) and stop reason. Never content.
 _Avoid_: metadata file, manifest, json
 
 **Edit list**:
-The `<name>.edit.json` a meshharbor-desktop edit is saved as — contiguous keep / cut / speed-up segments over a recording, read by `roomlerd media export`. Non-destructive.
+The `<name>.edit.json` a meshharbor-desktop edit is saved as — contiguous keep / cut / speed-up segments over a recording, read by `meshharbord media export`. Non-destructive.
 _Avoid_: EDL (except in code), timeline, project file
 
 **Recording activity**:

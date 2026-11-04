@@ -523,7 +523,7 @@ mod tests {
         assert_eq!(project_name("/srv/my_app.v2"), "-srv-my-app-v2");
         assert_eq!(
             project_name(r"C:\dev\gjovanov\meshharbor"),
-            "C--dev-gjovanov-roomler-ai"
+            "C--dev-gjovanov-meshharbor"
         );
     }
 

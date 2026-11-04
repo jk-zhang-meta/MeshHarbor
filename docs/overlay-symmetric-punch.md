@@ -88,7 +88,7 @@ Receiver-side completion; the symmetric side needs no protocol change.
   observed accepted + bound to the receiving socket; LRU/TTL eviction;
   promote epoch guard; both-symmetric pairs still skipped.
 - Field gate: corplap-3 (on VPN) ↔ a cone peer (devbox / cluster) reaches
-  `direct` with the observed-src 5-tuple visible in `roomler peers`
+  `direct` with the observed-src 5-tuple visible in `meshharbor peers`
   detail; no regression in the cone↔cone acceptance sweep.
 
 ## Non-goals

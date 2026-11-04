@@ -110,7 +110,7 @@ describe('useSpotlightTour', () => {
   })
 
   it('survives unreadable storage', () => {
-    localStorage.setItem('roomler-tour-seen', '{not json')
+    localStorage.setItem('meshharbor-tour-seen', '{not json')
     const t = useSpotlightTour()
     expect(t.hasSeen('enroll')).toBe(false)
     expect(t.start('enroll')).toBe(true)

@@ -28,7 +28,7 @@ jobs:
     env:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       MESHHARBOR__DATABASE__URL: mongodb://localhost:27019
-      MESHHARBOR__DATABASE__NAME: roomler_ai_health_check
+      MESHHARBOR__DATABASE__NAME: meshharbor_health_check
       MESHHARBOR__REDIS__URL: redis://localhost:6379
 
     steps:
@@ -41,7 +41,7 @@ jobs:
       - name: Checkout deploy repo
         uses: actions/checkout@v4
         with:
-          repository: gjovanov/roomler-ai-deploy
+          repository: jk-zhang-meta/meshharbor-deploy
           path: ../meshharbor-ai-deploy
           token: ${{ secrets.GH_PAT }}
         continue-on-error: true

@@ -245,7 +245,7 @@ and in the FR-35 memory key (`peer.rs:4595` → `"{ip}|{class}"`, which fixes "a
 onto a slow one"); an additive `carrier` field on the LocalAPI peer entry (`localapi/src/lib.rs:32–38`
 has only `Relay`) so DERP / TURN / org relay are distinguishable. Mitigation for the one path lost
 (proxy-only egress, 443 only): a `turns:` listener on 443 on coturn, or the loopback-TURN opt-in.
-Update `docs/multi-org.md:340–341` (its "ICE never gathers on roomler-*" is true only on Linux) and
+Update `docs/multi-org.md:340–341` (its "ICE never gathers on meshharbor-*" is true only on Linux) and
 `docs/overlay-nat-traversal.md` with the rule.
 
 **Field verification** (CORPLAP-1 multi-org with the VPN on; CORPLAP-3 LAN): `ICE: gathered local
@@ -320,5 +320,5 @@ a routing hole; and the same missing notion of "own adapters" makes `non_overlay
   DERP) and CORPLAP-2 (real relay) from neo16; both arms recorded on each FR issue in the FR-59
   table; each field test shown to fail on the current deploy first.
 - Fleet: heartbeat counters (`idr_count`, `rate_moves`, `rebuilds`, `shadow_disagree_pct`) read
-  with `roomler exec` across Windows/Linux/macOS after every roll; the C2 eviction/revalidation
+  with `meshharbor exec` across Windows/Linux/macOS after every roll; the C2 eviction/revalidation
   counts on the multi-org hosts.

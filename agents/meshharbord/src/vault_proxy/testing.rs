@@ -2070,7 +2070,7 @@ fn run_k8s(acceptor: TlsAcceptor, listener: TcpListener, state: Arc<std::sync::M
                                     let items: Vec<Value> = st
                                         .secrets
                                         .iter()
-                                        .filter(|(_, s)| s.labels.get("roomler.ai/lease").is_some())
+                                        .filter(|(_, s)| s.labels.get("meshharbor.itachi.fans/lease").is_some())
                                         .map(|(name, s)| {
                                             json!({"metadata": {
                                                 "name": name,

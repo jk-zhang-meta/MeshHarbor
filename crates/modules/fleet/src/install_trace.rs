@@ -12,7 +12,7 @@
 //! number, never the User-Agent and never the address.
 //!
 //! ⚠️ **The updater is never counted.** `meshharbord/<ver>` is the daemon's own
-//! update check, and by default it asks `roomler.ai` from self-hosted
+//! update check, and by default it asks `meshharbor.itachi.fans` from self-hosted
 //! devices as well (`agents/meshharbord/src/updater.rs`, `DEFAULT_PROXY_URL`).
 //! Counting it would be exactly the self-host telemetry the product promises
 //! not to collect (`LICENSING.md`, `docs/business-model.md` §6). So is every

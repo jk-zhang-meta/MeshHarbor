@@ -36,7 +36,7 @@ export interface SiteAssets {
    *  `ANALYTICS` is null, and then no page carries a tracker in any form. */
   analytics?: string
   /** The top bar's logo: the light lockup the SPA also uses
-   *  (`ui/src/assets/brand/roomler-logo.svg`; the site has no dark theme).
+   *  (`ui/src/assets/brand/meshharbor-logo.svg`; the site has no dark theme).
    *  Without it the brand is the plain word, as in a test fixture. */
   logo?: string
 }
@@ -171,8 +171,8 @@ export function renderTopbar(nav: ShellNav = DOCS_NAV, logo?: string): string {
       : ''
   // The lockup is 422×120; at the bar's 32 px that is 113 px wide.
   const mark = logo
-    ? `<img class="brand__logo" src="${logo}" alt="Roomler" width="113" height="32">`
-    : '<span class="brand__mark">Roomler</span>'
+    ? `<img class="brand__logo" src="${logo}" alt="MeshHarbor" width="113" height="32">`
+    : '<span class="brand__mark">MeshHarbor</span>'
   const brand =
     current === 'home' || current === 'links'
       ? `<a class="brand" href="/">${mark}</a>`
@@ -196,7 +196,7 @@ export function renderTopbar(nav: ShellNav = DOCS_NAV, logo?: string): string {
     </button>
     <nav class="topbar__links" aria-label="Site">
       ${links}
-      <a href="https://github.com/gjovanov/roomler-ai" target="_blank" rel="noopener noreferrer">GitHub</a>
+      <a href="https://github.com/jk-zhang-meta/MeshHarbor" target="_blank" rel="noopener noreferrer">GitHub</a>
       <a class="btn btn--primary" href="/register">Get started free</a>
     </nav>
   </div>
@@ -212,7 +212,7 @@ export function renderFooter(nav: ShellNav = DOCS_NAV): string {
   return `<footer class="site-footer">
   <div class="site-footer__inner">
     <div>
-      <p class="site-footer__brand">Roomler</p>
+      <p class="site-footer__brand">MeshHarbor</p>
       <p class="site-footer__blurb">Remote desktop in a browser tab, a private WireGuard-style mesh, and team chat and video — on one agent you can self-host.</p>
     </div>
     <div>

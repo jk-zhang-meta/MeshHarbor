@@ -10,7 +10,7 @@ stays on the device.
 
 > Spec, phases and the full field log: [`fr/FR-90-hive-agent-sessions.md`](fr/FR-90-hive-agent-sessions.md)
 > (#1827). The whole design, including the replicaset, the vault, knowhow and the
-> learning loop, none of which is built yet: [`roomler-hive-design.md`](roomler-hive-design.md).
+> learning loop, none of which is built yet: [`meshharbor-hive-design.md`](meshharbor-hive-design.md).
 > This page describes what is built: agent sessions through P1, and P2a's member
 > store. Core memory has its own page, [`brain.md`](brain.md).
 
@@ -29,7 +29,7 @@ flowchart LR
         R[("agent_sessions · agent_approvals<br/>hive_audit · the brain")]
         C["the session's Secret room<br/>notes, turn stubs, approval stubs"]
     end
-    subgraph D["device: roomlerd with feature hive"]
+    subgraph D["device: meshharbord with feature hive"]
         SUP["supervisor<br/>the device's own gates"]
         H["Claude Code, headless,<br/>as the mapped account"]
         ST[("hive.db<br/>the transcript")]
@@ -125,7 +125,7 @@ Administrators on Windows): no local account reads anyone's transcript.
 sequenceDiagram
     participant B as browser
     participant S as server (hive)
-    participant D as device (roomlerd)
+    participant D as device (meshharbord)
     B->>S: hive:view.open {session}
     Note over S: may read it? device online here with hive-view? rate
     S->>D: rc:hive.view.grant {grant, session, user, may_prompt, ttl_secs}
@@ -170,7 +170,7 @@ range, a search) with its result folded under it, and assistant text through
 sequenceDiagram
     participant B as browser (the starter)
     participant S as server (hive)
-    participant D as device (roomlerd)
+    participant D as device (meshharbord)
     participant H as Claude Code
     B->>S: POST /api/tenant/{tid}/hive/session {device_id, folder, title?}
     Note over S: a member? the device live in the org? the org not archived?<br/>HIVE_RUN? online here with hive? at most 10 starts a minute
@@ -248,7 +248,7 @@ Hive key appears in a serialised `DesiredConfig`. The user-facing reference is
 | `hive_store_quota_mib` | unset: the disk's | the most this device keeps as a replica, in MiB |
 | `vault_enabled` | off | let the org's vault lease values to the sessions here; the daemon then makes a key at each start, in memory only, and a build without the `vault` feature ignores it ([`vault.md`](vault.md) §9). From P3-4a it also advertises `vault`, and holds what is leased in daemon memory until the lease expires, is revoked, or its run ends here (§12) |
 | `hive_net` | off | let the sessions here reach a network through another device of the org, `net_socks` and `net_forward`, as the vault grants each call; only beside `vault_enabled`, and only in a build with the `vault` feature (FR-90 P3-7-3c, [`tunnels.md`](tunnels.md#the-tools-net_socks-and-net_forward-p3-7-3c)) |
-| `hive_ssh` | off | let the sessions here run one command on another device of the org over Roomler SSH, `ssh_run`, as the account that device maps, which may be SYSTEM or root there; the vault decides each call and a person approves it; only beside `vault_enabled`, and only in a build with the `vault` and `ssh-server` features (FR-90 P3-8-2b-2, [`roomler-ssh.md`](roomler-ssh.md#the-tool-ssh_run-fr-90-p3-8-2b-2)) |
+| `hive_ssh` | off | let the sessions here run one command on another device of the org over MeshHarbor SSH, `ssh_run`, as the account that device maps, which may be SYSTEM or root there; the vault decides each call and a person approves it; only beside `vault_enabled`, and only in a build with the `vault` and `ssh-server` features (FR-90 P3-8-2b-2, [`meshharbor-ssh.md`](meshharbor-ssh.md#the-tool-ssh_run-fr-90-p3-8-2b-2)) |
 
 ### Who may drive
 
@@ -367,8 +367,8 @@ leads its own process group, so a stop reaches the tools it started.
 
 | What | Where |
 |---|---|
-| the session's config directory (`CLAUDE_CONFIG_DIR`) | `~<account>/.roomler/hive/<session>/claude`, with the project name pinned to `hive-<harness uuid>` (`CLAUDE_CODE_PROJECT_DIR_NAME`), so the history and the auto-memory live under one `projects/hive-<uuid>/` whatever the folder is ([`launch.rs:151`](../crates/hive-node/src/launch.rs#L151)) |
-| the runtime directory, the daemon's | `/run/roomler-hive/<session>` on Linux, `/var/run/roomler-hive/<session>` on macOS, root's and `0755`: `settings.json` and `mcp.json` (root's, `0644`), `toolbelt.sock` (the account's, `0600`), `memory/`, from P3-4c-2 `secrets/` (root's, `0711`: `vault_render`'s files, each the account's and `0600`, gone with their leases and at every daemon start; [`vault.md`](vault.md) §15), and from P3-5b-2 `proxies/` (root's, `0711`: one directory per `vault_connect` endpoint, root's and `0711`, holding its socket `.s.PGSQL.5432`, the account's and `0600`, gone with its leases and at every daemon start; [`vault.md`](vault.md) §19) |
+| the session's config directory (`CLAUDE_CONFIG_DIR`) | `~<account>/.meshharbor/hive/<session>/claude`, with the project name pinned to `hive-<harness uuid>` (`CLAUDE_CODE_PROJECT_DIR_NAME`), so the history and the auto-memory live under one `projects/hive-<uuid>/` whatever the folder is ([`launch.rs:151`](../crates/hive-node/src/launch.rs#L151)) |
+| the runtime directory, the daemon's | `/run/meshharbor-hive/<session>` on Linux, `/var/run/meshharbor-hive/<session>` on macOS, root's and `0755`: `settings.json` and `mcp.json` (root's, `0644`), `toolbelt.sock` (the account's, `0600`), `memory/`, from P3-4c-2 `secrets/` (root's, `0711`: `vault_render`'s files, each the account's and `0600`, gone with their leases and at every daemon start; [`vault.md`](vault.md) §15), and from P3-5b-2 `proxies/` (root's, `0711`: one directory per `vault_connect` endpoint, root's and `0711`, holding its socket `.s.PGSQL.5432`, the account's and `0600`, gone with its leases and at every daemon start; [`vault.md`](vault.md) §19) |
 | the harness, with `hive_harness` unset | the first executable of `~/.local/bin/claude`, `/usr/local/bin/claude`, `/opt/homebrew/bin/claude` (macOS) and `/usr/bin/claude` ([`supervisor.rs:4666`](../agents/meshharbord/src/hive/supervisor.rs#L4666)) |
 
 **The launch is rebuilt in full every time**, because a resume restores neither
@@ -379,7 +379,7 @@ claude -p --input-format stream-json --output-format stream-json --verbose --inc
        --session-id <uuid>                      (or --resume <uuid>)
        --settings <runtime>/<session>/settings.json
        --mcp-config <runtime>/<session>/mcp.json --strict-mcp-config
-       --permission-prompt-tool mcp__roomler__approve
+       --permission-prompt-tool mcp__meshharbor__approve
        --permission-mode default
        --disallowedTools AskUserQuestion
 ```
@@ -387,7 +387,7 @@ claude -p --input-format stream-json --output-format stream-json --verbose --inc
 | Flag or setting | Why |
 |---|---|
 | `--permission-mode default` | ⚠️ unset, a `-p` run that fetches no feature flags, which is every run behind the sidecar, starts in `auto`, where a classifier rather than a person decides what runs. P1a's contract probe found it |
-| `--strict-mcp-config` | a repository's `.mcp.json` cannot shadow `roomler`, the server that decides what runs |
+| `--strict-mcp-config` | a repository's `.mcp.json` cannot shadow `meshharbor`, the server that decides what runs |
 | `--disallowedTools AskUserQuestion` | it would reach the permission tool as a tool call whose answer must carry the person's choices, which no card asks for; the model asks in its reply instead |
 | `settings.json` holds `permissions.deny: ["Read(//proc/**)"]`, `sandbox.autoAllowBashIfSandboxed: false` and no `apiKeyHelper` ([`launch.rs:436`](../crates/hive-node/src/launch.rs#L436)) | the Read tool runs inside the harness, so `/proc/self/environ` would hand the model its environment; a sandbox that comes on, ours or the user's, must not take Bash out of the approvals; nothing in the session can print the provider's key |
 | `--resume` exactly when Claude Code's own history exists (`projects/hive-<uuid>/<uuid>.jsonl`), `--session-id` otherwise, for every launch ([`supervisor.rs:5094`](../agents/meshharbord/src/hive/supervisor.rs#L5094) `decide_history`) | Claude Code refuses both other ways round: "Session ID … is already in use", "No conversation found". The daemon only checks that the entry exists, and never reads it |
@@ -412,7 +412,7 @@ flowchart LR
     SVC -->|"installed without it"| WU["worker: the console user,<br/>elevated"]
     WS -->|"WTSQueryUserToken,<br/>filtered for a UAC administrator"| H["harness: the console user at Medium,<br/>in its own Job Object"]
     WU -->|"a restricted, Medium copy<br/>of its own token"| H
-    WS --- D[("%ProgramData%\roomler\roomler\hive<br/>hive.db · hosted.json · run")]
+    WS --- D[("%ProgramData%\meshharbor\meshharbor\hive<br/>hive.db · hosted.json · run")]
     WU --- D
 ```
 
@@ -420,7 +420,7 @@ flowchart LR
 |---|---|---|
 | ⚠️ A SystemContext worker is SYSTEM from the start and stays SYSTEM. With `MESHHARBORD_ENABLE_SYSTEM_SWAP` on, every cycle of the service reads as if a controller were connected, so the worker is never swapped as one connects or leaves. Without SystemContext the worker is the console user throughout, elevated (`MESHHARBORD_ELEVATE_WORKER`, on by default) | P1i-0 expected a remote-desktop connection to swap the worker and cut the running turns, from a gate 0.3.0-rc.7 retired. P1i-4 measured that it does not | [`win_service/supervisor.rs:891`](../agents/meshharbord/src/win_service/supervisor.rs#L891), [`:768`](../agents/meshharbord/src/win_service/supervisor.rs#L768) `decide_spawn` |
 | Either way the session is the same person at Medium. A SYSTEM worker takes the console session's token; a worker that is the user takes a restricted, Medium copy of its own token: every administrator group deny-only, no privilege but traverse (FR-85's recorder rule) | a session never holds an administrator's rights on Windows | [`hive_win.rs:135`](../agents/meshharbord/src/hive_win.rs#L135) `console_user`, [`win_token.rs:209`](../agents/meshharbord/src/win_token.rs#L209) |
-| `roomlerd hive-prep` does the wrapper's work as the user, in a Job Object of its own with a 30 s deadline: the config directory, core memory copied where nothing is, and the folder opened as the user | the daemon never writes into the user's profile | [`hive_win.rs:844`](../agents/meshharbord/src/hive_win.rs#L844) `prep`, [`:897`](../agents/meshharbord/src/hive_win.rs#L897) `run_prep` |
+| `meshharbord hive-prep` does the wrapper's work as the user, in a Job Object of its own with a 30 s deadline: the config directory, core memory copied where nothing is, and the folder opened as the user | the daemon never writes into the user's profile | [`hive_win.rs:844`](../agents/meshharbord/src/hive_win.rs#L844) `prep`, [`:897`](../agents/meshharbord/src/hive_win.rs#L897) `run_prep` |
 | The harness is created suspended, assigned to its own Job Object (`KILL_ON_JOB_CLOSE`, no breakaway), and only then resumed. It inherits its three standard handles and nothing else | none of its tools escapes the job, and no other session's pipe leaks into it | [`spawn_into_job`](../agents/meshharbord/src/win_service/supervisor.rs#L2390), [`JobObject`](../agents/meshharbord/src/win_service/supervisor.rs#L2273) |
 | The environment is the user's own block with the session's variables laid over it by name, case-insensitively, and a NUL in a name or a value is refused | `Path` and `PATH` are one variable, and a NUL could smuggle in an entry of its own | [`merge_env_block`](../agents/meshharbord/src/win_service/supervisor.rs#L2686) |
 | The harness is `hive_harness`, else the native installer's `%USERPROFILE%\.local\bin\claude.exe`, else npm's `%APPDATA%\npm\claude.cmd` run through `cmd.exe /d /v:off /s /c`. An argument holding one of cmd's metacharacters is refused, never escaped | npm's shim passes the line on again with `%*` inside an `IF (…)` block, and no quoting is right for both readers | [`hive_win.rs:690`](../agents/meshharbord/src/hive_win.rs#L690) `harness_command_line` |
@@ -431,8 +431,8 @@ flowchart LR
 ## 4. Approvals over the toolbelt
 
 Every tool call that Claude Code's read-only rules do not let through waits for a
-driver. Claude Code calls its permission-prompt tool, `mcp__roomler__approve`, on the
-session's toolbelt: a `roomler` MCP server, one per session
+driver. Claude Code calls its permission-prompt tool, `mcp__meshharbor__approve`, on the
+session's toolbelt: a `meshharbor` MCP server, one per session
 ([`toolbelt.rs`](../agents/meshharbord/src/hive/toolbelt.rs)). Where the device takes
 vault leases it also offers the vault's two reads, `vault_list` and `vault_describe`
 (FR-90 P3-4b, [`vault.md`](vault.md) §13). Those need no approval: the session's
@@ -464,10 +464,10 @@ and ended with the grant or the run
 ([`tunnels.md`](tunnels.md#the-tools-net_socks-and-net_forward-p3-7-3c)). The
 settings ASK for both with the uses. From P3-8-2b-2, where the device's owner
 turned on `hive_ssh`, it offers `ssh_run`: one command on another device of
-the organization over Roomler SSH, as the account that device's policy maps.
+the organization over MeshHarbor SSH, as the account that device's policy maps.
 The vault decides each call with a ticket, and this daemon's own SSH client
 runs it with a key minted for the call, which the session never holds
-([`roomler-ssh.md`](roomler-ssh.md#the-tool-ssh_run-fr-90-p3-8-2b-2)). The
+([`meshharbor-ssh.md`](meshharbor-ssh.md#the-tool-ssh_run-fr-90-p3-8-2b-2)). The
 settings ASK for it with the uses. From P3-4e-2, where the vault's
 policies ask for a person's approval of a lease, the vault posts its own card
 into the session's room, and the tool call waits for that card's answer too,
@@ -477,7 +477,7 @@ vault's card, answered on the server, which cannot take the device's word for
 it.
 
 Claude Code starts its MCP servers itself, as the session's account, over stdio. So
-the server it starts is a relay, `roomlerd hive-mcp <socket>`, which pipes its stdin
+the server it starts is a relay, `meshharbord hive-mcp <socket>`, which pipes its stdin
 and stdout to the session's endpoint. The relay is short-circuited at the top of
 `daemon_main`, so it runs none of the daemon's start-up
 ([`main.rs:1190`](../agents/meshharbord/src/main.rs#L1190)), and the daemon speaks MCP on
@@ -485,7 +485,7 @@ the other end.
 
 | | Linux, macOS | Windows |
 |---|---|---|
-| the endpoint | `<runtime>/<session>/toolbelt.sock`, handed to the session's account, `0600`, in a directory only the daemon writes | `\\.\pipe\roomler-hive-<session>-<nonce>`, made with `FILE_FLAG_FIRST_PIPE_INSTANCE` so a name someone holds is refused, never joined; remote clients rejected |
+| the endpoint | `<runtime>/<session>/toolbelt.sock`, handed to the session's account, `0600`, in a directory only the daemon writes | `\\.\pipe\meshharbor-hive-<session>-<nonce>`, made with `FILE_FLAG_FIRST_PIPE_INSTANCE` so a name someone holds is refused, never joined; remote clients rejected |
 | who may connect | the kernel admits the account and root, and the daemon checks the peer's uid again on every connection | the DACL grants SYSTEM and Administrators, and the account `0x12008b`: read and write, but not `FILE_CREATE_PIPE_INSTANCE`, which would let it add an instance of its own and take the next connection. Each client's SID is checked again, and the relay opens the pipe with exactly that access, at the identification level ([`hive_win.rs:990`](../agents/meshharbord/src/hive_win.rs#L990), [`:1148`](../agents/meshharbord/src/hive_win.rs#L1148)) |
 
 ⚠️ **It is deliberately not the LocalAPI socket.** On a root daemon that one is
@@ -494,7 +494,7 @@ session's account can reach the toolbelt too, and all it can do there is ask.
 
 ⚠️ **What fails, fails closed.** A relay that cannot reach its endpoint leaves Claude
 Code without its permission tool. Every call that needs one then errors ("MCP tool
-mcp__roomler__approve … not found") and the harness exits 1: nothing runs
+mcp__meshharbor__approve … not found") and the harness exits 1: nothing runs
 unapproved. So a start whose account cannot execute the relay at all is refused
 `launch_failed` at once, rather than dying at its first approval
 ([`executable_by`](../agents/meshharbord/src/hive/supervisor.rs#L5004)).
@@ -502,7 +502,7 @@ unapproved. So a start whose account cannot execute the relay at all is refused
 ```mermaid
 sequenceDiagram
     participant H as Claude Code (the account)
-    participant D as roomlerd (toolbelt, viewer peer)
+    participant D as meshharbord (toolbelt, viewer peer)
     participant S as server (hive)
     participant V as a driver's browser
     H->>D: tools/call approve {tool_name, input, tool_use_id}
@@ -541,7 +541,7 @@ URL and a token that only this sidecar honours
 ```mermaid
 flowchart LR
     H["Claude Code, as the account<br/>ANTHROPIC_BASE_URL = 127.0.0.1:port/s/session<br/>ANTHROPIC_API_KEY = this run's token"] -->|"x-api-key: the token"| SC
-    subgraph D["roomlerd, SYSTEM or root"]
+    subgraph D["meshharbord, SYSTEM or root"]
         SC["sidecar: this session's token?<br/>does it run here at that fence?<br/>offline for at most 120 s?"]
         K["hive_api_key_helper prints the credential<br/>cached 5 min, run again after a 401"]
     end
@@ -585,9 +585,9 @@ resumes it with the same Claude Code conversation.
 
 ```mermaid
 sequenceDiagram
-    participant D as roomlerd, going down
+    participant D as meshharbord, going down
     participant F as hosted.json
-    participant N as roomlerd, next start
+    participant N as meshharbord, next start
     participant S as server
     Note over D,F: a launch writes the entry, and a turn writes its number before its stub
     D->>D: shutdown signalled, begin_shutdown, the record frozen
@@ -697,14 +697,14 @@ flowchart LR
   device ([`localapi/src/lib.rs:2814`](../crates/localapi/src/lib.rs#L2814)). A missing, older or
   silent daemon (the helper waits at most 2 h) gets the install it got before: the
   helper fails open.
-- ⚠️ `roomlerd self-update`, the CLI, does not wait. It is an operator's explicit
+- ⚠️ `meshharbord self-update`, the CLI, does not wait. It is an operator's explicit
   command, in another process.
 
 ---
 
 ## 8. Adopting terminal sessions
 
-People already run Claude Code in a terminal. `roomler hive adopt` mirrors those
+People already run Claude Code in a terminal. `meshharbor hive adopt` mirrors those
 sessions into the device's store and lists each for its owner alone, read only
 (decision 11). A terminal session passed none of Hive's start gates, so adopting has
 gates of its own, each default-deny and each owned by a different party. It runs on
@@ -723,8 +723,8 @@ Linux and macOS, and on Windows since FR-97 P4c, where the socket is a named pip
 ```mermaid
 sequenceDiagram
     participant T as Claude Code (a terminal, as the account)
-    participant K as roomler hive hook (as the account)
-    participant D as roomlerd (root)
+    participant K as meshharbor hive hook (as the account)
+    participant D as meshharbord (root)
     participant S as server (hive)
     T->>K: SessionStart {session_id, transcript_path, cwd}
     K->>D: the adopt socket: start {harness session, cwd}
@@ -747,14 +747,14 @@ sequenceDiagram
 | No drivers, the owner included: naming one is a 409. Readers by name, as for any session. The record has no title, only the folder's name | the terminal holds the harness, and a terminal's first prompt is content | [`access.rs:77`](../crates/modules/hive/src/access.rs#L77) |
 | Only the person's conversation is mirrored: `user` and `assistant` lines, never a sub-agent's (`isSidechain`) or Claude Code's bookkeeping | the on-disk transcript is Claude Code's internal format, and a change in it must thin the mirror, never stop it | |
 | A terminal killed outright never says `SessionEnd`, so the daemon records Claude Code's process (pid and start time) and ends a session whose process is gone, every minute. That process is the hook's nearest ancestor that is not a shell | Claude Code runs a hook through `/bin/sh -c`, and dash forks it, so the hook's parent is a dying `sh` (P1j-5's field run) | [`procs.rs:51`](../agents/meshharbord/src/hive/procs.rs#L51) `hook_terminal` |
-| "Stop mirroring" ends the record and never the terminal; a `claude --resume` later is offered afresh, as a new record | the terminal is the person's: Roomler can only stop watching it | [`supervisor/adopt.rs:1128`](../agents/meshharbord/src/hive/supervisor/adopt.rs#L1128) |
+| "Stop mirroring" ends the record and never the terminal; a `claude --resume` later is offered afresh, as a new record | the terminal is the person's: MeshHarbor can only stop watching it | [`supervisor/adopt.rs:1128`](../agents/meshharbord/src/hive/supervisor/adopt.rs#L1128) |
 | `adopted.json`, beside `hosted.json`, keeps what is mirrored and the records of the last 1,000 adopted sessions that ended, which the device still serves to their owner with `hive_enabled` off | a restarted daemon goes on mirroring where it stopped, and an owner can read a session that ended | |
 | `hive-adopt` is advertised, and the socket exists, only while `hive_adopt` is on; a daemon started with it off removes a socket its predecessor left | the leftover file read as "this device adopts" (P1j-5) | [`supervisor/adopt.rs:546`](../agents/meshharbord/src/hive/supervisor/adopt.rs#L546) |
 | `unadopt` takes out exactly what `adopt` put in, and gives back a file Claude Code wrote byte for byte | the person's settings, and other tools' hooks in them, are theirs | [`hive_hooks.rs`](../agents/meshharbor-cli/src/hive_hooks.rs) |
 
 ### On Windows
 
-FR-97 P4c. The adopt socket is the named pipe `\\.\pipe\roomler-hive-adopt`, served by the
+FR-97 P4c. The adopt socket is the named pipe `\\.\pipe\meshharbor-hive-adopt`, served by the
 worker that hosts sessions: SYSTEM on a SystemContext install, the signed-in person on an
 attended one. A pipe name is global, unlike a socket in the daemon's own runtime directory,
 so another process may take it first. Each end therefore checks the other through the
@@ -762,9 +762,9 @@ kernel before anything moves.
 
 ```mermaid
 sequenceDiagram
-    participant K as roomler hive hook (as the person)
-    participant P as \\.\pipe\roomler-hive-adopt
-    participant D as roomlerd (SYSTEM, or the person)
+    participant K as meshharbor hive hook (as the person)
+    participant P as \\.\pipe\meshharbor-hive-adopt
+    participant D as meshharbord (SYSTEM, or the person)
     K->>P: open: read and write data only, identification level
     K->>K: the pipe owned by SYSTEM, Administrators or me? else send nothing
     K->>D: Hello {harness session, cwd, event}
@@ -786,7 +786,7 @@ sequenceDiagram
 
 ⚠️ Once its terminal has ended, its owner may make an adopted session a managed one, on the
 device that adopted it, from the terminal's own history (decision 11's other half: §12,
-"P2f-4a"). A session whose mirroring was stopped from Roomler never is. On Windows this
+"P2f-4a"). A session whose mirroring was stopped from MeshHarbor never is. On Windows this
 half is not there yet: putting the history in place runs as the account through Unix
 tools, and the device says so.
 
@@ -845,7 +845,7 @@ other organization reads the 404.
 ### Windows: the directories' DACLs
 
 The store, `hosted.json` and each session's runtime files live in the service's
-machine-wide directory, `%ProgramData%\roomler\roomler\hive`
+machine-wide directory, `%ProgramData%\meshharbor\meshharbor\hive`
 ([`hive_win.rs:1033`](../agents/meshharbord/src/hive_win.rs#L1033)), which both kinds of
 worker reach. Every directory there is owned by Administrators with a protected DACL,
 set by [`dir_with_dacl`](../agents/meshharbord/src/hive_win.rs#L1101) as it is made, or
@@ -889,7 +889,7 @@ have made it. Any other link is refused, as before.
 
 - ⚠️ The published 0.4.122 and 0.4.123 `.pkg`s predate that fix (#1927), so on a Mac
   they refuse every session `launch_failed`. A Mac needs a release that carries it.
-- The runtime directory is `/var/run/roomler-hive`, which macOS clears at boot.
+- The runtime directory is `/var/run/meshharbor-hive`, which macOS clears at boot.
 - launchd does not kill a harness's process group when the daemon leaves, so
   `wind_down` does it: SIGTERM, then SIGKILL after 3 s.
 
@@ -1055,7 +1055,7 @@ flowchart TD
 | the repository | its own, or the one the folder is in; a shadow for a folder in none, and a refusal inside a git directory | [`workspace.rs:399`](../agents/meshharbord/src/hive/workspace.rs#L399) |
 | the index | `$gd/hive-<sid>.index`, a copy of the person's: theirs is read, never written | [`workspace.rs:297`](../agents/meshharbord/src/hive/workspace.rs#L297) |
 | the tree | `write-tree --prefix` for a folder inside a repository, so nothing outside the folder is taken and the repository's `.gitignore` still keeps a `.env` out | [`workspace.rs:452`](../agents/meshharbord/src/hive/workspace.rs#L452) |
-| the commit | "Roomler Hive" as author, never the person; `--no-gpg-sign`, so a person's `commit.gpgSign` never waits on their key; the last checkpoint's commit as parent | [`workspace.rs:247`](../agents/meshharbord/src/hive/workspace.rs#L247) |
+| the commit | "MeshHarbor Hive" as author, never the person; `--no-gpg-sign`, so a person's `commit.gpgSign` never waits on their key; the last checkpoint's commit as parent | [`workspace.rs:247`](../agents/meshharbord/src/hive/workspace.rs#L247) |
 | the pack | thin against the last checkpoint, whole for the first; at most 512 MiB | [`workspace.rs:478`](../agents/meshharbord/src/hive/workspace.rs#L478) |
 | every command | no hook (`core.hooksPath` names nowhere), no fsmonitor, no automatic gc, none of the caller's `GIT_*` environment | [`workspace.rs:1170`](../agents/meshharbord/src/hive/workspace.rs#L1170) |
 
@@ -1076,7 +1076,7 @@ until the session ends or is purged (P2g).
 ### P2b-3a: `hive-checkpoint`, as the account
 
 The daemon never opens a path in the account's tree, so a checkpoint is taken by a
-child it starts as the account, `roomlerd hive-checkpoint <request>`, as the Unix
+child it starts as the account, `meshharbord hive-checkpoint <request>`, as the Unix
 wrapper and Windows' `hive-prep` already run
 ([`checkpointer.rs`](../agents/meshharbord/src/hive/checkpointer.rs)). P2b-3a builds both
 sides. P2b-3b calls it at a turn's end, for a session the server joined as replicated
@@ -1178,7 +1178,7 @@ until then only a Claude Code session is replicated.
 
 The reverse of `hive-checkpoint`. A promotion (P2e) or a teleport (P2f) puts the
 session's last checkpoint back on the device that will run it, and the daemon never
-writes a path in the account's tree. So it starts `roomlerd hive-materialize` as the
+writes a path in the account's tree. So it starts `meshharbord hive-materialize` as the
 target's account and streams it the files
 ([`materializer.rs`](../agents/meshharbord/src/hive/materializer.rs)). P2b-4a builds both
 sides for the config directory; P2b-4b adds the folder (below). Nothing calls it before P2e.
@@ -2229,7 +2229,7 @@ sequenceDiagram
 
 | What | Why | Where |
 |---|---|---|
-| The member is this test binary again, its one member test asked to be a device by an environment variable; an ordinary run passes that test at once | a process holds one supervisor; and a `[[bin]]` cannot carry the test launcher, which reaches `roomlerd` only as a Linux dev-dependency, so that no build but a test's ever compiles it | [`hive_canary.rs:260`](../crates/tests/tests/hive_canary.rs#L260) |
+| The member is this test binary again, its one member test asked to be a device by an environment variable; an ordinary run passes that test at once | a process holds one supervisor; and a `[[bin]]` cannot carry the test launcher, which reaches `meshharbord` only as a Linux dev-dependency, so that no build but a test's ever compiles it | [`hive_canary.rs:260`](../crates/tests/tests/hive_canary.rs#L260) |
 | Each copy is waited for until the member's tip, as the server heard it, is the primary's, which the test reads as a viewer does | the test never opens a store a running device writes | [`hive_canary.rs:314`](../crates/tests/tests/hive_canary.rs#L314), [`hive_canary.rs:304`](../crates/tests/tests/hive_canary.rs#L304) |
 | Every canary is in the member's copy, and so is a checkpoint, none of them failed | a member applies a checkpoint only once it holds every blob it names, so its checkpoint is the blobs' crossing too | [`hive_canary.rs:337`](../crates/tests/tests/hive_canary.rs#L337) |
 | An integration test's device takes its checkpoints in process (`hive-test-launcher`) | its binary is a test's, which knows no `hive-checkpoint`: every checkpoint of a replicated session failed before | [`supervisor.rs:1054`](../agents/meshharbord/src/hive/supervisor.rs#L1054) |
@@ -2832,7 +2832,7 @@ stateDiagram-v2
 |---|---|---|
 | a primary not heard from | 230 s, `UNREACHABLE_SECS` | it may be moved away from with no drain |
 
-⚠️ **The 230 s is the device's own budget, held by a test.** A roomlerd test asserts
+⚠️ **The 230 s is the device's own budget, held by a test.** A meshharbord test asserts
 `UNREACHABLE_SECS == WS_RX_DEADLINE + OFFLINE_GRACE + 30 s`
 ([`sidecar/tests.rs:968`](../agents/meshharbord/src/hive/sidecar/tests.rs#L968)).
 Lengthen either clock on the device and the test fails before the server moves a session
@@ -2954,7 +2954,7 @@ sequenceDiagram
     D->>St: the last tool call, and whether a result follows it
     Note over D: the note composed · left in the runtime directory, the account's, 0600 · recorded as a note event
     D->>H: --resume, with --settings holding a SessionStart hook (matcher resume)
-    H->>H: the hook, as the account: roomlerd hive-resume-note <file>
+    H->>H: the hook, as the account: meshharbord hive-resume-note <file>
     Note over H: the note reaches the model as context · the history keeps it
 ```
 
@@ -2971,7 +2971,7 @@ The last tool call before the move, `cargo test -p meshharbord --lib`, has no re
 |---|---|---|
 | The note is left only for a start that brings the session from another device. Every other launch removes one an earlier launch left: a first start, a restart, a move back | the history keeps each note once, so a restart's resume adds nothing. A move back comes back to its own state and conversation | [`supervisor.rs:2114`](../agents/meshharbord/src/hive/supervisor.rs#L2114), [`:4842`](../agents/meshharbord/src/hive/supervisor.rs#L4842) `leave_note` |
 | The note is the account's, `0600`, in the daemon-owned runtime directory, written as core memory is; on Windows the directory's DACL hands it to the user | it names folders and a command, and no other local account reads it | [`supervisor.rs:4842`](../agents/meshharbord/src/hive/supervisor.rs#L4842) |
-| Every session's settings carry a `SessionStart` hook with the matcher `resume` (and, since P2f-3a, the same hook with `fork`, for a fork's first launch). It runs this binary as the session's account (`roomlerd hive-resume-note <file>`), which prints the note when there is one and nothing otherwise | a hook that prints nothing adds nothing (the probe), so one hook serves every launch. The account runs it, as it runs the toolbelt's relay | [`launch.rs:459`](../crates/hive-node/src/launch.rs#L459), [`resume_note.rs:235`](../agents/meshharbord/src/hive/resume_note.rs#L235), [`:271`](../agents/meshharbord/src/hive/resume_note.rs#L271), [`main.rs:1211`](../agents/meshharbord/src/main.rs#L1211) |
+| Every session's settings carry a `SessionStart` hook with the matcher `resume` (and, since P2f-3a, the same hook with `fork`, for a fork's first launch). It runs this binary as the session's account (`meshharbord hive-resume-note <file>`), which prints the note when there is one and nothing otherwise | a hook that prints nothing adds nothing (the probe), so one hook serves every launch. The account runs it, as it runs the toolbelt's relay | [`launch.rs:459`](../crates/hive-node/src/launch.rs#L459), [`resume_note.rs:235`](../agents/meshharbord/src/hive/resume_note.rs#L235), [`:271`](../agents/meshharbord/src/hive/resume_note.rs#L271), [`main.rs:1211`](../agents/meshharbord/src/main.rs#L1211) |
 | The note's facts come from the move (who moved the session, when, and from which device and folder) and from the device's own store: the last tool call that no result follows | the server holds the first and never the second; the store holds the transcript | [`resume_note.rs:74`](../agents/meshharbord/src/hive/resume_note.rs#L74), [`supervisor.rs:4859`](../agents/meshharbord/src/hive/supervisor.rs#L4859) `last_open_call` |
 | Every quoted name, folder and command is one line, with no control character and no backtick, at most 200 characters | names and folders come from the server and a command from the model; none may break the note's lines or its quoting | [`resume_note.rs:211`](../agents/meshharbord/src/hive/resume_note.rs#L211) |
 | The note goes into the session's transcript as a `note` event, on the device | a viewer sees what the harness was told; like every transcript event, it never reaches the server | [`supervisor.rs:4062`](../agents/meshharbord/src/hive/supervisor.rs#L4062) |
@@ -3115,7 +3115,7 @@ flowchart LR
 
 | Rule | Why | Where |
 |---|---|---|
-| Two questions, each asked of the account's own `git` in a child of its own, `roomlerd hive-pack <request>`, as `hive-checkpoint` runs: which of some commits the folder's repository holds, and the pack that brings a commit into a repository holding some others | the daemon never opens a path in the account's tree (spec §3b) | [`packer.rs:124`](../agents/meshharbord/src/hive/packer.rs#L124) `produce`, [`:280`](../agents/meshharbord/src/hive/packer.rs#L280) `ask` |
+| Two questions, each asked of the account's own `git` in a child of its own, `meshharbord hive-pack <request>`, as `hive-checkpoint` runs: which of some commits the folder's repository holds, and the pack that brings a commit into a repository holding some others | the daemon never opens a path in the account's tree (spec §3b) | [`packer.rs:124`](../agents/meshharbord/src/hive/packer.rs#L124) `produce`, [`:280`](../agents/meshharbord/src/hive/packer.rs#L280) `ask` |
 | A commit another device names is 40 or 64 lowercase hex digits, at most 16 of them in a request, held to that before any git sees it | no revision syntax (`HEAD~1`, `--all`, `^x`) reaches a git that runs as the account | [`workspace.rs:549`](../agents/meshharbord/src/hive/workspace.rs#L549) `is_object_id` |
 | Which candidates a folder's repository holds is one `git cat-file --batch-check`: a commit, each once, in the order asked. A folder that is missing, or in no repository with no shadow yet, holds none, and the question makes nothing | it is asked before the copy is taken, so it must leave the target as it was | [`workspace.rs:569`](../agents/meshharbord/src/hive/workspace.rs#L569), [`:677`](../agents/meshharbord/src/hive/workspace.rs#L677) `holds` |
 | The pack is thin against the haves the session's own repository holds too, and whole against none; those come back with it | a pack is of use only where every commit it is thin against is held | [`workspace.rs:643`](../agents/meshharbord/src/hive/workspace.rs#L643) `pack_against` |
@@ -3308,7 +3308,7 @@ sequenceDiagram
     D->>A: hive-materialize: the parent's last checkpoint, under the fork's ids
     Note over D: the fork's note left for the hook · recorded as a note event
     D->>H: --resume <parent> --fork-session --session-id <fork>
-    H->>H: the hook (source fork): roomlerd hive-resume-note <file>
+    H->>H: the hook (source fork): meshharbord hive-resume-note <file>
     Note over H: at its first prompt, <fork>.jsonl: the parent's conversation, then its own
 ```
 
@@ -3329,7 +3329,7 @@ A note, as a fork receives it at its first launch:
 ```text
 This session is a fork: its earlier turns are another session's, which goes on without it. It runs here, in /home/alice/work-try.
 Those turns worked in /home/alice/work, which stays that session's: paths under /home/alice/work in them live under /home/alice/work-try for this one.
-Outputs those turns saved to files under a folder named hive-<parent> are under /home/alice/.roomler/hive/<fork's sid>/claude/projects/hive-<fork> now.
+Outputs those turns saved to files under a folder named hive-<parent> are under /home/alice/.meshharbor/hive/<fork's sid>/claude/projects/hive-<fork> now.
 ```
 
 The probe behind the hook ran Claude Code 2.1.280 on Windows 11 against a fake Messages API on
@@ -3521,8 +3521,8 @@ history. The route that sends that start is the server's half, P2f-4b.
 ```mermaid
 sequenceDiagram
     participant S as server (hive)
-    participant D as roomlerd<br/>(root / SYSTEM)
-    participant I as roomlerd hive-import<br/>(as the terminal's account)
+    participant D as meshharbord<br/>(root / SYSTEM)
+    participant I as meshharbord hive-import<br/>(as the terminal's account)
     participant H as Claude Code<br/>(the managed harness)
     S->>D: rc:hive.start {from_terminal, its fence}
     Note over D: every start gate, then its own:<br/>the terminal ended HERE, never stopped,<br/>its account by this device's record, its uid
@@ -3536,11 +3536,11 @@ sequenceDiagram
 
 | Rule | Why | Where |
 |---|---|---|
-| Only on the device that adopted it, and only once its terminal ended there. No terminal may be running it: mirrored, stopped from Roomler, or resumed afresh as a new record (`claude --resume`) | two harnesses on one history would both write it (spec §3d), and a history being written is copied cut short | [`adopt.rs:1272`](../agents/meshharbord/src/hive/supervisor/adopt.rs#L1272) |
+| Only on the device that adopted it, and only once its terminal ended there. No terminal may be running it: mirrored, stopped from MeshHarbor, or resumed afresh as a new record (`claude --resume`) | two harnesses on one history would both write it (spec §3d), and a history being written is copied cut short | [`adopt.rs:1272`](../agents/meshharbord/src/hive/supervisor/adopt.rs#L1272) |
 | Whose terminal it was is this device's record: the account the kernel named at the hello, and its uid, kept when the session ended (`ended_terminals` in `adopted.json`). A session that ended before P2f-4a has no such record, and is refused | a server that named another account would pour that person's terminal into this owner's session | [`adopt.rs:156`](../agents/meshharbord/src/hive/supervisor/adopt.rs#L156) `EndedTerminal`, [`:303`](../agents/meshharbord/src/hive/supervisor/adopt.rs#L303) `retire` |
-| A session whose mirroring was stopped from Roomler is never made managed | its terminal went on after the stop, and what it did then is not Roomler's to take | [`adopt.rs:1289`](../agents/meshharbord/src/hive/supervisor/adopt.rs#L1289) |
+| A session whose mirroring was stopped from MeshHarbor is never made managed | its terminal went on after the stop, and what it did then is not MeshHarbor's to take | [`adopt.rs:1289`](../agents/meshharbord/src/hive/supervisor/adopt.rs#L1289) |
 | The starter maps to the account it ran as, and that account still has the uid it had | the history is in that account's home: a remapped starter must not carry it into another's | [`adopt.rs:1302`](../agents/meshharbord/src/hive/supervisor/adopt.rs#L1302), [`:1311`](../agents/meshharbord/src/hive/supervisor/adopt.rs#L1311) |
-| A child AS THE ACCOUNT copies the history (`roomlerd hive-import`); the daemon never reads it. It takes the one regular file `{id}.jsonl` under `~/.claude/projects/*/` (the folder's own project directory first), and the sub-agent transcripts and saved outputs it names. They land under the managed session's names, byte for byte, the history cut at its last newline | the daemon never opens a path in an account's tree (spec §3b); a link could name anything the account reads, so none is followed; a terminal killed mid-write leaves a line cut short | [`importer.rs:109`](../agents/meshharbord/src/hive/importer.rs#L109) `produce`, [`:141`](../agents/meshharbord/src/hive/importer.rs#L141) `find_project`, [`:284`](../agents/meshharbord/src/hive/importer.rs#L284) `copy_in` |
+| A child AS THE ACCOUNT copies the history (`meshharbord hive-import`); the daemon never reads it. It takes the one regular file `{id}.jsonl` under `~/.claude/projects/*/` (the folder's own project directory first), and the sub-agent transcripts and saved outputs it names. They land under the managed session's names, byte for byte, the history cut at its last newline | the daemon never opens a path in an account's tree (spec §3b); a link could name anything the account reads, so none is followed; a terminal killed mid-write leaves a line cut short | [`importer.rs:109`](../agents/meshharbord/src/hive/importer.rs#L109) `produce`, [`:141`](../agents/meshharbord/src/hive/importer.rs#L141) `find_project`, [`:284`](../agents/meshharbord/src/hive/importer.rs#L284) `copy_in` |
 | At most 10,000 files and 512 MiB, nested at most 8 deep; never over a history already there, and the history written last | the session's first checkpoint takes all of it; the history is what makes the launch resume, so a copy cut short must not read as one | [`importer.rs:109`](../agents/meshharbord/src/hive/importer.rs#L109) |
 | The folder's auto-memory, and the person's own settings and `CLAUDE.md`, stay where they are | that memory is every terminal session's of the folder, not this one's; the settings are the person's | [`importer.rs:109`](../agents/meshharbord/src/hive/importer.rs#L109) |
 | It counts on from the turns its terminal began. It is told once, as it resumes, that it ran in a terminal, where its turns worked, what stayed behind, and the tool call the terminal left open | the room's turn stubs go on in order, and the model learns why its tools now wait for a person | [`supervisor.rs:4030`](../agents/meshharbord/src/hive/supervisor.rs#L4030), [`resume_note.rs:169`](../agents/meshharbord/src/hive/resume_note.rs#L169) `compose_terminal` |
@@ -3596,7 +3596,7 @@ stateDiagram-v2
 | the session, the caller's own | **404** | decision 11: nobody else learns that an adopted session exists |
 | the org, and `HIVE_RUN` | `org_archived` · `no_permission` | it runs on the device as any session does |
 | no asking of it in flight | `in_progress` | read before the origin: an asking in flight has made the record a started one |
-| an adopted session; ended; by its terminal's own end (`exited`) | `not_adopted` · `not_ended` · `stopped` · `ended_otherwise` | a stop from Roomler records `stopped`, and its terminal went on after it; any other end (its device, its person, its org) is not the terminal's |
+| an adopted session; ended; by its terminal's own end (`exited`) | `not_adopted` · `not_ended` · `stopped` · `ended_otherwise` | a stop from MeshHarbor records `stopped`, and its terminal went on after it; any other end (its device, its person, its org) is not the terminal's |
 | the device that adopted it: live in the org, connected here, making one | `device_offline` · `device_unsupported` | a removed device answers `device_offline`, never a 404 for the session |
 | the per-(user, device) ceiling | `rate_limited` | LAST: only an asking that would reach the device spends a token |
 
@@ -3681,7 +3681,7 @@ sequenceDiagram
     D->>D: Store::purge (its id kept, Store::purge_copy for leaving: true, nothing kept) — the workplace moves into purge_debts, in the same transaction
     D->>D: its runtime directory, hosted entry, in-memory moves, streams and follow
     D->>C: the debt's {session, state_dir, folder}, on stdin
-    C->>C: refs/hive/<sid>/* and hive-<sid>.index in the folder's repository, then ~/.roomler/hive/<sid>
+    C->>C: refs/hive/<sid>/* and hive-<sid>.index in the folder's repository, then ~/.meshharbor/hive/<sid>
     C-->>D: {state_dir, refs, index}
     D-->>S: rc:hive.purge_ack {store, account, detail}
 ```
@@ -3693,7 +3693,7 @@ sequenceDiagram
 | Nothing is deleted while a run of it here goes on: it is fenced out at once (no model call, prompt or approval answer is taken), stopped, and waited for until its task lets go, or the purge fails whole and comes again | a harness writing into a state directory being deleted would leave half of it | [`purge.rs:160`](../agents/meshharbord/src/hive/supervisor/purge.rs#L160) |
 | The purge holds the start lock for all its steps, and a start of a purged session is refused | a start racing the purge would launch what is being deleted; removal is final | [`supervisor.rs:1227`](../agents/meshharbord/src/hive/supervisor.rs#L1227), [`supervisor.rs:1866`](../agents/meshharbord/src/hive/supervisor.rs#L1866) |
 | `Store::purge` moves the session's workplace into `purge_debts` in its own transaction, and the debt is cleared only once the account's part is done | the account's part may fail (a Windows console user signed out), and its retry needs the record the store purge deletes | [`store.rs:1322`](../crates/hive-node/src/store.rs#L1322) |
-| The account's part runs as the account (`roomlerd hive-purge`, its request on stdin), and holds the request to that account's own home: a state directory that is not `$HOME/.roomler/hive/<sid>` exactly is refused | a record gone wrong must not make it delete anything else of the account's | [`purger.rs:81`](../agents/meshharbord/src/hive/purger.rs#L81) |
+| The account's part runs as the account (`meshharbord hive-purge`, its request on stdin), and holds the request to that account's own home: a state directory that is not `$HOME/.meshharbor/hive/<sid>` exactly is refused | a record gone wrong must not make it delete anything else of the account's | [`purger.rs:81`](../agents/meshharbord/src/hive/purger.rs#L81) |
 | In the folder's repository only `refs/hive/<sid>/*` and the checkpoints' own index go; never the person's branches, index or work tree; the objects stay, unreachable, for the person's own gc | Hive deletes what Hive keeps | [`workspace.rs:1116`](../agents/meshharbord/src/hive/workspace.rs#L1116) `forget` |
 | Nothing is deleted through a link: a state directory that is one is left, and a link inside goes as a link | `remove_dir_all` neither follows links nor races a swapped directory | [`purger.rs:81`](../agents/meshharbord/src/hive/purger.rs#L81) |
 | An adopted terminal session's mirror goes, and so does what was kept of its ended terminal, so it is never made managed; the terminal's own history is the person's and stays | Claude Code's own files are not Hive's | [`adopt.rs:1163`](../agents/meshharbord/src/hive/supervisor/adopt.rs#L1163) `adopt_purge` |
@@ -4033,8 +4033,8 @@ tip or placement: with no record there is no start, and none will come.
 An archive replica is an always-on device of the org that holds copies of its sessions for their
 retention, and serves a session's room when no other member is online (§3b, decision 1). It runs
 no session. The org runs it as a container on its own machines: a replica is a plaintext copy of
-everything the agent saw, so an archive Roomler ran would hold every hosted org's transcripts.
-`Dockerfile.hive-archive` builds it: `roomlerd` with `hive` and `overlay-netstack` only, no
+everything the agent saw, so an archive MeshHarbor ran would hold every hosted org's transcripts.
+`Dockerfile.hive-archive` builds it: `meshharbord` with `hive` and `overlay-netstack` only, no
 capture, no input, no TUN. It is on the org's mesh in that userspace stack (P2k-4), so a member
 that only DERP reaches is followed over DERP.
 
@@ -4057,9 +4057,9 @@ sequenceDiagram
 ```sh
 docker run -d --name hive-archive --hostname hive-archive-1 \
   --restart unless-stopped -v hive-archive:/data \
-  -e MESHHARBOR_SERVER=https://roomler.ai \
+  -e MESHHARBOR_SERVER=https://meshharbor.itachi.fans \
   -e MESHHARBOR_ENROLL_TOKEN=<an ADMINISTRATOR's enrollment token> \
-  ghcr.io/gjovanov/roomler-ai/hive-archive:<tag>
+  ghcr.io/jk-zhang-meta/meshharbor/hive-archive:<tag>
 ```
 
 | What the enrollment writes (`--archive-replica`) | Why |
@@ -4137,7 +4137,7 @@ sequenceDiagram
 unless told not to (`also_latest`, now on by default). Until the operator first publishes, there is
 no image to pull.
 
-⚠️ **The server in the snippet is the browser's origin.** On `https://roomler.ai` that is right.
+⚠️ **The server in the snippet is the browser's origin.** On `https://meshharbor.itachi.fans` that is right.
 A self-hosted server reached by a name its devices cannot use needs another, and an enrollment
 never sends its token in plaintext to any host but loopback (FR-101): a lab server needs TLS, or
 the container a loopback relay to it.
@@ -4431,7 +4431,7 @@ sequenceDiagram
 
 | Rule | Why | Where |
 |---|---|---|
-| Offered to its owner, where sessions are copied, on an adopted session its terminal ended (`end_reason` `exited`), and on nothing else | the server's own gates: only the owner may, the route is the replicaset's, and a session stopped from Roomler, whose terminal went on after it, is not Roomler's to take | [`HiveManage.vue:100`](../ui/src/components/hive/HiveManage.vue#L100), [`hive.ts:287`](../ui/src/stores/hive.ts#L287), [`manage.rs:164`](../crates/modules/hive/src/manage.rs#L164) |
+| Offered to its owner, where sessions are copied, on an adopted session its terminal ended (`end_reason` `exited`), and on nothing else | the server's own gates: only the owner may, the route is the replicaset's, and a session stopped from MeshHarbor, whose terminal went on after it, is not MeshHarbor's to take | [`HiveManage.vue:100`](../ui/src/components/hive/HiveManage.vue#L100), [`hive.ts:287`](../ui/src/stores/hive.ts#L287), [`manage.rs:164`](../crates/modules/hive/src/manage.rs#L164) |
 | Whether sessions are copied there is asked once per organization, by the room too | a room opens without the sessions list, which asks it otherwise | [`HiveManage.vue:138`](../ui/src/components/hive/HiveManage.vue#L138) |
 | Its folder is its terminal's unless another is named, and sent only then | the server defaults to the terminal's folder | [`HiveManage.vue:120`](../ui/src/components/hive/HiveManage.vue#L120) |
 | The answer is a start's: accepted, pending (its device has not answered yet), or refused in the server's words, after which it may be asked again | each refusal names its own next step | [`HiveManage.vue:121`](../ui/src/components/hive/HiveManage.vue#L121) |

@@ -2,12 +2,12 @@
 title: "TeamViewer on Wheels: a tour of the remote desktop my wife's swearing built"
 seoTitle: "Open-source TeamViewer alternative in a browser tab: a tour"
 subtitle: Install, connect, consent, the lock screen, sharp text, files and a private network, and what TeamViewer still does better
-description: "A tour of Roomler, the open-source TeamViewer alternative in a browser tab: install, connect, consent, the lock screen, and what TeamViewer does better."
+description: "A tour of MeshHarbor, the open-source TeamViewer alternative in a browser tab: install, connect, consent, the lock screen, and what TeamViewer does better."
 date: 2026-10-17T19:52:00Z
 author: goran
 tags: [teamviewer, remote-desktop, open-source, self-hosting, unattended-access]
 hero: teamviewer-alternative-tour.png
-heroAlt: The Roomler viewer in a browser tab showing a MacBook's desktop, next to the words TeamViewer alternative, open source, in a browser tab
+heroAlt: The MeshHarbor viewer in a browser tab showing a MacBook's desktop, next to the words TeamViewer alternative, open source, in a browser tab
 related: [/blog/self-hosted-teamviewer-alternative/, /docs/start/quickstart/, /docs/compare/teamviewer/]
 syndication: https://medium.com/@gjovanov/teamviewer-on-wheels-a-tour-of-the-remote-desktop-my-wifes-swearing-built-90b5811774f7
 ---
@@ -21,7 +21,7 @@ This time there is a video. Nine minutes, a MacBook, a few Windows laptops and a
 
 The whole tour, in nine minutes:
 
-[Self-hosted TeamViewer alternative: Roomler on Windows, Mac and Linux](https://www.youtube.com/watch?v=C1YdfmhbAKM)
+[Self-hosted TeamViewer alternative: MeshHarbor on Windows, Mac and Linux](https://www.youtube.com/watch?v=C1YdfmhbAKM)
 
 The first thing you see is a Windows laptop in a browser tab, and typing on it feels local: you press a key and the letter is there, the cursor keeps up, and the text stays sharp, even though every keystroke travels to that laptop and the picture travels back. On the side you sit at, nothing is installed. The browser tab is the whole viewer, which is about the lightest install we could think of.
 
@@ -89,17 +89,17 @@ The clone and four secrets come first, which takes a few minutes more by hand. T
 
 ## 🥊 What TeamViewer does better
 
-TeamViewer and AnyDesk have two decades of polish behind them, and clients on every platform, phones included. Roomler's viewer is a browser tab, and there is no mobile app.
+TeamViewer and AnyDesk have two decades of polish behind them, and clients on every platform, phones included. MeshHarbor's viewer is a browser tab, and there is no mobile app.
 
-They also let you help a stranger who reads out an ID and a password. Roomler can't do that yet, because both machines have to be in the same organization. Enterprise procurement, certifications and support contracts are theirs too. We have a GitHub repository and a lot of enthusiasm :)
+They also let you help a stranger who reads out an ID and a password. MeshHarbor can't do that yet, because both machines have to be in the same organization. Enterprise procurement, certifications and support contracts are theirs too. We have a GitHub repository and a lot of enthusiasm :)
 
 So if your job is supporting people outside your organization, TeamViewer fits it today. The [side-by-side comparison](/docs/compare/teamviewer/) goes through the rest.
 
 ## 🥂 The happy end
 
-My wife and a few of her colleagues were Roomler's first users, and that Friday night is where it all started.
+My wife and a few of her colleagues were MeshHarbor's first users, and that Friday night is where it all started.
 
-Roomler is open source: the server under the AGPL, the agent under the MPL. Try it at [roomler.ai](https://roomler.ai/), or read the code on [GitHub](https://github.com/gjovanov/roomler-ai). And on Fridays, close your sessions gently.
+MeshHarbor is open source: the server under the AGPL, the agent under the MPL. Try it at [meshharbor.itachi.fans](https://meshharbor.itachi.fans/), or read the code on [GitHub](https://github.com/jk-zhang-meta/MeshHarbor). And on Fridays, close your sessions gently.
 
 If you liked what you have read and seen, then as they say:
 
@@ -109,7 +109,7 @@ Hence I would appreciate if:
 
 - Clap & share this post with your friends
 - Star it on github
-- Share your experience with Roomler (how it has benefited you)
+- Share your experience with MeshHarbor (how it has benefited you)
 - Report any issue found on github
 
 Talk to you soon!

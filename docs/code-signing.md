@@ -4,7 +4,7 @@
      what is actually published. -->
 # Code signing
 
-How every published Roomler artifact gets signed, why the pipeline is shaped
+How every published MeshHarbor artifact gets signed, why the pipeline is shaped
 the way it is, and the exact sequence to (re)establish the credentials.
 
 Publisher of record: **G ROX LTD** (Plovdivska 110, 4400 Pazardzhik, Bulgaria
@@ -62,12 +62,12 @@ SmartScreen reputation organically from download volume. What signing buys
 
 - Identity validation **Completed** for G ROX LTD (id
   `2390bcea-a3d5-4919-a624-cb209c875bf7`, valid to 2028-11-21).
-- Account `roomlersigning` (Basic) in **polandcentral**; profile
-  `roomler-public-trust`; subscription `cb6a5135-9bee-4a35-890f-a3f38f867e88`
-  under goran.jovanov@roomler.live.
-- Field-proven: a roomler binary signed from the dev box verifies with
+- Account `meshharborsigning` (Basic) in **polandcentral**; profile
+  `meshharbor-public-trust`; subscription `cb6a5135-9bee-4a35-890f-a3f38f867e88`
+  under goran.jovanov@meshharbor.itachi.fans.
+- Field-proven: a meshharbor binary signed from the dev box verifies with
   `signtool verify /pa` as `CN=G ROX LTD, O=G ROX LTD, L=Pazardzhik, C=BG`.
-- GitHub OIDC wired: app `roomler-ai-github-signing`
+- GitHub OIDC wired: app `meshharbor-github-signing`
   (`9a452e59-1312-49d8-bc4a-8f443be19c5f`), signer role scoped to the
   profile, all seven repo variables set.
 - **Federated-credential caveat**: this tenant rejects wildcard
@@ -79,7 +79,7 @@ SmartScreen reputation organically from download volume. What signing buys
   that line breaks the OIDC exchange for tag builds.
 - **GPG is LIVE** (re-checked 2026-08-24 — this line previously said "pending"
   and was stale). `agent-v0.3.0-rc.458` publishes 9 `.asc` sidecars plus
-  `roomler-release-pubkey.asc`: ed25519 primary `[C]` certify-only
+  `meshharbor-release-pubkey.asc`: ed25519 primary `[C]` certify-only
   `D654B016256FD92A81634A0E2AD1E9F025973A7F` + ed25519 `[S]` subkey
   `5DB8221F546288DE780C10D3A2C53E5FE6FA485A`, both to 2028-08-22. Signatures
   verify; a flipped byte gives `BAD signature`. **The agent checks them too**
@@ -100,8 +100,8 @@ SmartScreen reputation organically from download volume. What signing buys
   the path an end user's download actually takes:
   `spctl -a -vvv -t install` → `source=Notarized Developer ID`,
   `origin=Developer ID Installer: G ROX EOOD (4TG7586MY5)`
-  ([result](https://github.com/gjovanov/roomler-ai/issues/778#issuecomment-5589571740),
-  [on the published artifact](https://github.com/gjovanov/roomler-ai/issues/778#issuecomment-5589756486)).
+  ([result](https://github.com/jk-zhang-meta/MeshHarbor/issues/778#issuecomment-5589571740),
+  [on the published artifact](https://github.com/jk-zhang-meta/MeshHarbor/issues/778#issuecomment-5589756486)).
   That line is the only check that tells *signed* from *signed AND notarised*.
 - ⚠️ What a *release* carries and what the *machine installing an update*
   checks are different questions — §7b. The agent's own check of a `.pkg`
@@ -112,7 +112,7 @@ SmartScreen reputation organically from download volume. What signing buys
 ## 3. Credential setup — `scripts/signing/`
 
 Idempotent operator scripts, in order. State (public identifiers only) is
-shared through `scripts/signing/.roomler-signing.json` so each value is typed
+shared through `scripts/signing/.meshharbor-signing.json` so each value is typed
 once. Full per-script docs in `scripts/signing/README.md`.
 
 ```text
@@ -193,11 +193,11 @@ installing it, and is also bound to the release it claims to be: the Windows
 | `meshharbord.exe`, `meshharbor.exe` **inside** both MSIs | release-agent | sign-windows, *before* `cargo wix` harvests |
 | perUser + perMachine `.msi` | release-agent | sign-windows, before the size-budget/sha256 steps |
 | `meshharbor-desktop-<v>….exe` | release-agent | sign-windows |
-| `roomler-agent-<v>-aarch64-apple-darwin.pkg` | release-agent | inline codesign → productbuild → notarytool → staple → **verify** |
+| `meshharbor-agent-<v>-aarch64-apple-darwin.pkg` | release-agent | inline codesign → productbuild → notarytool → staple → **verify** |
 | `meshharbor-setup.exe` (in the zip) | release-setup | sign-windows, before zipping |
-| `Roomler Setup.app` (in the macOS tarball) | release-setup | sign-macos: bundle → notarise → **staple** (ticket survives tar) |
+| `MeshHarbor Setup.app` (in the macOS tarball) | release-setup | sign-macos: bundle → notarise → **staple** (ticket survives tar) |
 | `meshharbor.exe` (tunnel zip) | release-tunnel | sign-windows (was never signed before) |
-| `roomler` (macOS universal, tunnel tarball) | release-tunnel | sign-macos: bare binary → notarise, **no staple** (Apple can't staple a loose Mach-O; curl\|tar installs never set quarantine, so unaffected) |
+| `meshharbor` (macOS universal, tunnel tarball) | release-tunnel | sign-macos: bare binary → notarise, **no staple** (Apple can't staple a loose Mach-O; curl\|tar installs never set quarantine, so unaffected) |
 | every published asset | all three publish jobs | GPG `.asc` (when key configured) + SLSA provenance attestation (always) |
 | `wintun.dll` | — | **never re-signed** — WireGuard LLC's Authenticode signature must survive; CI asserts it still says WireGuard |
 | `.deb` contents | — | not signed (dpkg doesn't verify; apt-repo signing deferred until an apt channel exists) |
@@ -295,12 +295,12 @@ The PowerShell verifier also does an administrative extract of each MSI
 `wintun.dll` still says WireGuard LLC. Manual user-level checks:
 
 ```powershell
-Get-AuthenticodeSignature "$env:ProgramFiles\Roomler\meshharbord.exe"   # Valid, G ROX LTD
+Get-AuthenticodeSignature "$env:ProgramFiles\MeshHarbor\meshharbord.exe"   # Valid, G ROX LTD
 ```
 ```bash
-spctl -a -vvv -t install roomler-agent-<v>-aarch64-apple-darwin.pkg  # source=Notarized Developer ID
-gh attestation verify roomler-agent-<v>-x86_64-unknown-linux-gnu.deb --repo gjovanov/roomler-ai
-curl -fsSL https://github.com/gjovanov/roomler-ai/releases/latest/download/roomler-release-pubkey.asc | gpg --import
+spctl -a -vvv -t install meshharbor-agent-<v>-aarch64-apple-darwin.pkg  # source=Notarized Developer ID
+gh attestation verify meshharbor-agent-<v>-x86_64-unknown-linux-gnu.deb --repo jk-zhang-meta/MeshHarbor
+curl -fsSL https://github.com/jk-zhang-meta/MeshHarbor/releases/latest/download/meshharbor-release-pubkey.asc | gpg --import
 gpg --verify <asset>.asc <asset>
 ```
 
@@ -314,7 +314,7 @@ keeps the version it is already running.
 | Gate | Module | Answers | Enforced on |
 |---|---|---|---|
 | Authenticode + publisher name | `code_signature::verify_publisher` | *Whose* bytes are these? | Windows |
-| Detached `.asc` vs the signing subkey **pinned in the binary** | `pgp_verify::verify_release_artifact` | *Whose* bytes are these? | Linux, macOS (`.deb`, `.pkg`, tarball) — the `.asc` is **required**. Since FR-97 P6b it lives in tunnel-core, and the tunnel CLI's `roomler self-update` requires it too, on every OS |
+| Detached `.asc` vs the signing subkey **pinned in the binary** | `pgp_verify::verify_release_artifact` | *Whose* bytes are these? | Linux, macOS (`.deb`, `.pkg`, tarball) — the `.asc` is **required**. Since FR-97 P6b it lives in tunnel-core, and the tunnel CLI's `meshharbor self-update` requires it too, on every OS |
 | Embedded version vs manifest claim | `artifact_version::verify_artifact_version` | *Which release* are they? | every installable: the `.msi`, and since FR-97 P6a the `.deb`, `.pkg` and tarball |
 
 **Neither is sufficient alone, and the second is the less obvious one.**
@@ -356,7 +356,7 @@ bytes, and the updater refuses when it disagrees with the tag
 | `.msi` | `ProductVersion` in the `Property` table | the Windows Installer database API | `artifact_version.rs:482` |
 | `.deb` | `Version` in its control file, `0.4.142-1` — the Debian revision (cargo-deb's `-1`) and any epoch dropped, a `~` read back as `-` | `dpkg-deb --field`, from the dpkg the updater requires before it picks a `.deb` | `artifact_version.rs:288` |
 | `.pkg` | `version` on the component `PackageInfo`'s `<pkg-info identifier="fans.itachi.meshharbor.agent">` | `pkgutil --expand` into a fresh directory | `artifact_version.rs:429` |
-| tarball | its one top directory, `roomlerd-<version>-<target>` | `tar -tzf`, which the tarball install runs anyway | `artifact_version.rs:386` |
+| tarball | its one top directory, `meshharbord-<version>-<target>` | `tar -tzf`, which the tarball install runs anyway | `artifact_version.rs:386` |
 
 ```mermaid
 flowchart LR
@@ -389,14 +389,14 @@ Re-check after any change to a reader, or to how the release workflow names
 and versions its artifacts:
 
 ```bash
-gh release download agent-v<version> --repo gjovanov/roomler-ai --pattern 'roomlerd-*' --dir /tmp/rel
-for f in /tmp/rel/roomlerd-*.deb /tmp/rel/roomlerd-*.tar.gz; do   # the .pkg on a Mac
-  roomlerd artifact-version "$f" agent-v<version>                 # hidden: bound / refused / unsupported
+gh release download agent-v<version> --repo jk-zhang-meta/MeshHarbor --pattern 'meshharbord-*' --dir /tmp/rel
+for f in /tmp/rel/meshharbord-*.deb /tmp/rel/meshharbord-*.tar.gz; do   # the .pkg on a Mac
+  meshharbord artifact-version "$f" agent-v<version>                 # hidden: bound / refused / unsupported
 done
 ```
 
 The `.deb`'s `Package` field is deliberately **not** bound (every published
-daemon `.deb` says `roomlerd`). A feed that swapped in the companion's `.deb` at
+daemon `.deb` says `meshharbord`). A feed that swapped in the companion's `.deb` at
 the same version would gain a freeze, which withholding the update gives it
 anyway, while a name check would be one more way to refuse every update. The
 `.pkg` reader names `fans.itachi.meshharbor.agent` for a different reason: a product
@@ -433,9 +433,9 @@ freeze, not an error. Re-check the Rust side against a real artifact after any
 change to either:
 
 ```bash
-gh release download agent-v<version> --repo gjovanov/roomler-ai \
+gh release download agent-v<version> --repo jk-zhang-meta/MeshHarbor \
   --pattern '*perMachine*.msi' --dir /tmp
-MESHHARBOR_TEST_MSI=/tmp/roomler-agent-<version>-perMachine-x86_64-pc-windows-msvc.msi \
+MESHHARBOR_TEST_MSI=/tmp/meshharbor-agent-<version>-perMachine-x86_64-pc-windows-msvc.msi \
 MESHHARBOR_TEST_MSI_TAG=agent-v<version> \
   cargo test -p meshharbord --lib -- --ignored real_published_msi
 ```

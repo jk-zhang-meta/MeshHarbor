@@ -8,7 +8,7 @@ People use it too.
 
 > Spec, steps and the field log: [`fr/FR-90-hive-agent-sessions.md`](fr/FR-90-hive-agent-sessions.md)
 > §3e (#1827). The whole design (roles, Cedar policies, leases, the modes a
-> session gets a secret in) is [`roomler-hive-design.md`](roomler-hive-design.md)
+> session gets a secret in) is [`meshharbor-hive-design.md`](meshharbor-hive-design.md)
 > §8. **This page describes what is built: P3-1, the store; P3-2a, roles and
 > Cedar policies (§7); P3-2b, a session's role, decided at its start and at
 > every move (§8); P3-3a, the key a device's daemon holds for the values it is
@@ -121,7 +121,7 @@ DERP ticket key.
 
 **Recovery without the server.** `age -d -i kek.txt` decrypts a version's
 `dek_wrapped` to its DEK, and the DEK opens the `ciphertext` with the binding
-as associated data: `roomler-vault/v1`, the organization id, the secret id,
+as associated data: `meshharbor-vault/v1`, the organization id, the secret id,
 the field and the version number, NUL-separated
 ([`a_wrapped_data_key_is_an_ordinary_age_file`](../crates/modules/vault/src/crypto.rs#L478)
 is that recipe as a test).
@@ -137,7 +137,7 @@ is that recipe as a test).
 age-keygen -o kek.txt          # keep it out of every backup the database is in
 ```
 
-- A self-hoster keeps the KEK in a file. Hosted roomler.ai keeps it in a sealed
+- A self-hoster keeps the KEK in a file. Hosted meshharbor.itachi.fans keeps it in a sealed
   secret on the cluster, which has no cloud KMS under it.
 - Exactly one identity. Blank lines and `#` comments are skipped, as
   `age-keygen` writes them. More than one identity is refused: a KEK rotation
@@ -205,7 +205,7 @@ to sweep, never a secret brought back.
 |---|---|
 | `[modules] vault` (`MESHHARBOR__MODULES__VAULT`) | **default OFF**, like `hive`: no route is mounted |
 | `vault.tenants` (`MESHHARBOR__VAULT__TENANTS=<id>,<id>`) | the organizations the vault serves. A list alone mounts the module, the form a hosted server uses, because no older image reads it. Clearing it is the kill switch |
-| `vault.people` (`MESHHARBOR__VAULT__PEOPLE=<id>,<id>`, P3-9-1) | the served organizations whose PEOPLE it lends to through `roomler connect` (§23). **Opt-in**: empty, the default, is none, and `*` is every one the vault serves. Clearing it takes every person's lease back at the next sweep |
+| `vault.people` (`MESHHARBOR__VAULT__PEOPLE=<id>,<id>`, P3-9-1) | the served organizations whose PEOPLE it lends to through `meshharbor connect` (§23). **Opt-in**: empty, the default, is none, and `*` is every one the vault serves. Clearing it takes every person's lease back at the next sweep |
 
 `vault.tenants` reads like `hive.tenants`: empty or `*` is every organization,
 and an entry that is not an organization id matches nothing
@@ -267,12 +267,12 @@ flowchart LR
 ```
 
 **The schema** ([`policy.cedarschema`](../crates/modules/vault/src/policy.cedarschema)),
-namespace `Roomler`:
+namespace `MeshHarbor`:
 
 | Entity | What it is |
 |---|---|
-| `User` `in Group` | a person; one `Group` per roomler role they hold (`owner`, `admin`, `member`, … and the organization's own) |
-| `Role` | a vault role, `Roomler::Role::"dev"` |
+| `User` `in Group` | a person; one `Group` per meshharbor role they hold (`owner`, `admin`, `member`, … and the organization's own) |
+| `Role` | a vault role, `MeshHarbor::Role::"dev"` |
 | `Session` `in Role` | an agent session in the role it assumed; `owner`, and `playbook` when it runs one |
 | `Secret` `in SecretFolder` | `rrn:{org}:secret:{path}`, with `path`, `kind`, `tags`, (P3-4c-1) `exec_allow` and (P3-5a) `audiences`; a folder per path prefix, each in the one above |
 | `Node` (P3-7-1a) | a device a session's flow exits through, or (P3-8-1a) its command runs on, named by its id: `os`, `tags` and `owner`, read from its row |
@@ -310,7 +310,7 @@ read from the node's row and never from the request, so an organization can
 forbid a session the daemon's (SYSTEM or root):
 
 ```cedar
-forbid (principal, action == Roomler::Action::"ssh:run", resource)
+forbid (principal, action == MeshHarbor::Action::"ssh:run", resource)
   when { context.account == "daemon" };
 ```
 
@@ -319,9 +319,9 @@ operator's decision 22. A session's device asks with `rc:vault.ssh`,
 answered with a ticket it decides (§22).
 
 `secret:connect` (P3-9-1) decides a PERSON's use, through an endpoint their
-device serves them (`roomler connect`, §23), as designed in the spec's §3e,
-"P3-9, `roomler connect`, as designed". Its principal is a `User`, in a
-`Group` per roomler role they hold: the device's owner as its row names
+device serves them (`meshharbor connect`, §23), as designed in the spec's §3e,
+"P3-9, `meshharbor connect`, as designed". Its principal is a `User`, in a
+`Group` per meshharbor role they hold: the device's owner as its row names
 them, never as a request says. It is an action of its own, never
 `secret:use` widened: `secret:use` takes a `Session`, so no policy written
 for sessions admits a person.
@@ -330,24 +330,24 @@ for sessions admits a person.
 > **Only a permit that names `secret:connect` admits a person**
 > ([`NAMED_ONLY`, `policy.rs:89`](../crates/modules/vault/src/policy.rs#L89)).
 > A permit whose scope names no action admits every action Cedar knows:
-> `permit (principal in Roomler::Group::"admin", action, resource)`, written
+> `permit (principal in MeshHarbor::Group::"admin", action, resource)`, written
 > for `role:assume`, would have admitted every admin to every secret the day
 > `secret:connect` existed, without a line of it changing. So a person's
 > decision is made over the set without such permits
 > ([`named_only`, `policy.rs:1156`](../crates/modules/vault/src/policy.rs#L1156)),
-> and a permit that names it, `action == Roomler::Action::"secret:connect"` or
+> and a permit that names it, `action == MeshHarbor::Action::"secret:connect"` or
 > in an `action in [...]` list, is the only kind that counts. A `forbid`
 > binds whatever its scope, as it always did. This is the vault's rule, not
 > Cedar's, and `simulate` and `simulate/replay` decide by it too.
 
-From P3-4e (§18) the approver is read in a `Group` per roomler role they
+From P3-4e (§18) the approver is read in a `Group` per meshharbor role they
 hold, as a person assuming a role is: `context.approval.approver in
-Roomler::Group::"admin"` holds for an admin's yes.
+MeshHarbor::Group::"admin"` holds for an admin's yes.
 
 > [!NOTE]
 > Only the approver is read in their groups. A session's `owner` and a
 > device's `owner` are named without them, so `principal.owner in
-> Roomler::Group::…` never holds.
+> MeshHarbor::Group::…` never holds.
 
 `os` is `linux`, `macos` or `windows`, exactly as the device rows store it; any
 other spelling is refused, never lowercased into a match. A device's tags are
@@ -386,7 +386,7 @@ one that can apply (P3-2c), and naming only its organization:
 - a `Secret` or `SecretFolder` literal must carry the organization's RRN
   prefix, with a valid path after it;
 - a `Role` must be one of its vault roles;
-- a `Group` must be one of its roomler roles;
+- a `Group` must be one of its meshharbor roles;
 - a `User` must be one of its members;
 - a `Node` (P3-7-1a) must be one of its live devices, named by its id: a policy
   naming another organization's device is refused, so it learns nothing of
@@ -515,7 +515,7 @@ about it. No value crosses yet: leases are P3-3b.
 
 ```mermaid
 sequenceDiagram
-    participant D as roomlerd (vault_enabled on)
+    participant D as meshharbord (vault_enabled on)
     participant F as fleet (the agent socket)
     participant R as the device's agents row
     Note over D: the first hello on the primary enrollment's<br/>connection makes an X25519 key, in memory only
@@ -572,7 +572,7 @@ brings the daemon's half and the session's tools.
 
 ```mermaid
 sequenceDiagram
-    participant D as roomlerd (the session's device)
+    participant D as meshharbord (the session's device)
     participant V as vault (its agent-socket handler)
     participant DB as session record · device row · vault
     D->>V: rc:vault.lease {req_id, session_id, fence, secret, field, mode, audience, ttl_secs}
@@ -659,7 +659,7 @@ sequenceDiagram
     participant A as an administrator · fleet's cascade
     participant V as vault (on the device's pod)
     participant DB as vault_leases · session record · secret · device row
-    participant D as roomlerd (the session's device)
+    participant D as meshharbord (the session's device)
     alt a value written, a secret disabled or deleted, a device removed
         A->>V: the route, or agent_removed after hive's
         V->>DB: revoked_at + revoked_why (a compare-and-set)
@@ -733,7 +733,7 @@ to ask.
 ```mermaid
 sequenceDiagram
     participant T as a session's tool (P3-4c)
-    participant D as roomlerd (its lease client)
+    participant D as meshharbord (its lease client)
     participant V as vault
     T->>D: a request: session, fence, secret, field, mode, audience, TTL
     D->>V: rc:vault.lease {req_id, …} on the primary connection
@@ -794,7 +794,7 @@ nor who wrote it (`VaultSecretMeta`,
 ```mermaid
 sequenceDiagram
     participant M as the session's model
-    participant T as its toolbelt (roomlerd)
+    participant T as its toolbelt (meshharbord)
     participant V as vault
     M->>T: vault_list {prefix?} · vault_describe {secret}
     T->>V: rc:vault.list {req_id, session_id, fence, prefix} · rc:vault.describe {…, secret}
@@ -863,7 +863,7 @@ output, every value scrubbed. The model sees the result, never the values.
 sequenceDiagram
     participant M as the session's model
     participant A as a person (approve)
-    participant T as its toolbelt (roomlerd)
+    participant T as its toolbelt (meshharbord)
     participant V as vault
     M->>T: vault_exec {argv: ["psql", …], env: {PGPASSWORD: "db/main#35;password"}}
     T->>A: approve? (the settings ask for every vault_exec)
@@ -943,7 +943,7 @@ file lives exactly as long as its leases.
 sequenceDiagram
     participant M as the session's model
     participant A as a person (approve)
-    participant T as its toolbelt (roomlerd)
+    participant T as its toolbelt (meshharbord)
     participant V as vault
     M->>T: vault_render {template: "user={{ db/main#35;user }}\npass={{ db/main#35;password }}", dest: "db.env"}
     T->>A: approve? (the settings ask for every vault_render)
@@ -992,7 +992,7 @@ same audience takes it.
 ```mermaid
 sequenceDiagram
     participant M as the session's model
-    participant T as its toolbelt (roomlerd)
+    participant T as its toolbelt (meshharbord)
     participant V as vault
     participant A as a person (approve)
     M->>T: vault_request {handle: "db/main#35;password", mode: exec, audience: "psql", ttl_s: 600}
@@ -1039,7 +1039,7 @@ sequenceDiagram
 The vault's own decisions are in `vault_audit` (§24). What a device says it
 DID with its leases is a different claim, made by a host that may be
 compromised, so it is kept apart in `vault_activity`, as `ssh_activity` is
-kept apart from `ssh_audit` ([`roomler-ssh.md`](roomler-ssh.md)). P3-4d-1
+kept apart from `ssh_audit` ([`meshharbor-ssh.md`](meshharbor-ssh.md)). P3-4d-1
 built the server's half: the frame, the check, the collection and the read.
 P3-4d-2 builds the device's: its owner's `vault_activity_log` switch, and a
 report after each command `vault_exec` ran and each file `vault_render`
@@ -1047,7 +1047,7 @@ wrote.
 
 ```mermaid
 sequenceDiagram
-    participant D as device (roomlerd)
+    participant D as device (meshharbord)
     participant V as vault
     participant A as an administrator
     D->>V: rc:vault.activity {session_id, fence, kind: exec, lease_ids, target: "psql", exit_code}
@@ -1085,7 +1085,7 @@ sequenceDiagram
 
 A policy can allow a use only with a person's approval:
 `when { context has approval }`, or, naming whose yes counts,
-`context.approval.approver in Roomler::Group::"admin"`. P3-4e-1 builds the
+`context.approval.approver in MeshHarbor::Group::"admin"`. P3-4e-1 builds the
 vault's half. When Cedar denies a lease that a yes could allow, the vault
 posts a card into the session's room and answers `awaiting_approval`. One of
 the session's drivers answers the card, and the session's next ask for the
@@ -1099,7 +1099,7 @@ route answers it.
 
 ```mermaid
 sequenceDiagram
-    participant D as device (roomlerd)
+    participant D as device (meshharbord)
     participant V as vault
     participant R as the session's room
     participant P as a driver
@@ -1137,7 +1137,7 @@ instance: a session's owner may not approve their own session's use, and any
 other driver may.
 
 ```cedar
-forbid (principal, action == Roomler::Action::"secret:use", resource)
+forbid (principal, action == MeshHarbor::Action::"secret:use", resource)
 when { context has approval && context.approval.approver == principal.owner };
 ```
 
@@ -1148,7 +1148,7 @@ owner.
 |---|---|---|
 | the refusal | `awaiting_approval`, retryable. `rc:vault.refused` carries `approval_id` with it, and with no other word | [`vault.rs:189`](../crates/remote_control/src/vault.rs#L189), [`signaling.rs:4725`](../crates/remote_control/src/signaling.rs#L4725), [`lease.rs:803`](../crates/modules/vault/src/lease.rs#L803) |
 | the decision | after Cedar's deny: a usable yes, a waiting card, a no, or a new card where a driver's yes would allow it | [`lease.rs:1005`](../crates/modules/vault/src/lease.rs#L1005), [`approval.rs:93`](../crates/modules/vault/src/approval.rs#L93) |
-| the approver | Cedar reads `context.approval.approver` in a `Group` per roomler role they hold, as a person assuming a role is. A recorded request keeps the groups (`approver_groups`), so a replay decides it as it was decided | [`policy.rs:506`](../crates/modules/vault/src/policy.rs#L506), [`policy.rs:987`](../crates/modules/vault/src/policy.rs#L987), [`policy.rs:758`](../crates/modules/vault/src/policy.rs#L758) |
+| the approver | Cedar reads `context.approval.approver` in a `Group` per meshharbor role they hold, as a person assuming a role is. A recorded request keeps the groups (`approver_groups`), so a replay decides it as it was decided | [`policy.rs:506`](../crates/modules/vault/src/policy.rs#L506), [`policy.rs:987`](../crates/modules/vault/src/policy.rs#L987), [`policy.rs:758`](../crates/modules/vault/src/policy.rs#L758) |
 | who may answer | a driver who reads the session, while it is live: hive's own rule for its approvals. Their yes must be one the policy accepts, decided by Cedar with them as the approver when it is given, and again when a lease would spend it. A card is posted only where some driver could give one | [`access.rs:70`](../crates/modules/hive/src/access.rs#L70), [`approval.rs:151`](../crates/modules/vault/src/approval.rs#L151), [`approval.rs:622`](../crates/modules/vault/src/approval.rs#L622) |
 | the card | a message the session authors in its room, bound to `{module: "vault", ref: <approval id>}` and pushed to its drivers as hive's own approvals are. It names the secret's handle, the mode, the audience, the TTL and the deadline, and is edited as the approval moves on: approved, used, denied, expired, withdrawn | [`room.rs:654`](../crates/modules/hive/src/room.rs#L654), [`approval.rs:286`](../crates/modules/vault/src/approval.rs#L286) |
 | the routes | `GET …/vault/approval/{id}`: the approval as the session's readers see it, with `may_answer` (the caller drives it now) and `may_approve` (and the policy would take their yes) for the caller. `POST …/vault/approval/{id}` `{answer: "approve" \| "deny"}` | [`approval.rs:595`](../crates/modules/vault/src/approval.rs#L595), [`approval.rs:622`](../crates/modules/vault/src/approval.rs#L622) |
@@ -1192,14 +1192,14 @@ In `proxy` mode the daemon serves an endpoint that authenticates upstream
 with the leased value, so the session, its model and its transcript never
 hold the value (AC12). A secret's `audiences` say which upstreams it may
 reach (§7). The design is the spec's §3e, "P3-5, `proxy` mode, as designed".
-P3-5b-1 builds the first engine, Postgres's, in `roomlerd`'s module
+P3-5b-1 builds the first engine, Postgres's, in `meshharbord`'s module
 `vault_proxy` (`agents/meshharbord/src/vault_proxy/mod.rs`), and P3-5b-2 serves
 it: `vault_connect` and its endpoint, below.
 
 ```mermaid
 sequenceDiagram
     participant C as client (psql)
-    participant P as the proxy (roomlerd)
+    participant P as the proxy (meshharbord)
     participant U as upstream (Postgres)
     C->>P: SSLRequest
     P-->>C: N (the endpoint is a local socket)
@@ -1313,7 +1313,7 @@ in itself. P3-5c-2 serves it from `vault_connect`, below.
 ```mermaid
 sequenceDiagram
     participant C as client (mongosh, a driver)
-    participant P as the proxy (roomlerd)
+    participant P as the proxy (meshharbord)
     participant U as upstream (mongod, mongos)
     C->>P: its handshake: isMaster or hello, with its metadata
     Note over P: held, not yet sent
@@ -1369,7 +1369,7 @@ designed"); P3-5e-2 serves it so, below.
 ```mermaid
 sequenceDiagram
     participant C as client (git, curl)
-    participant P as the proxy (roomlerd)
+    participant P as the proxy (meshharbord)
     participant U as upstream (https://git.example)
     C->>P: GET /org/repo.git/info/refs, no credential
     Note over P: origin-form only<br/>the client's own Authorization dropped
@@ -1444,7 +1444,7 @@ signs, and only a sign-in to a host the secret names. P3-5f-2 serves it from
 ```mermaid
 sequenceDiagram
     participant S as ssh (OpenSSH 8.9 or later)
-    participant A as the agent (roomlerd)
+    participant A as the agent (meshharbord)
     participant H as the host (sshd)
     S->>H: the key exchange
     H-->>S: its host key, and its signature over the session identifier
@@ -1522,9 +1522,9 @@ is below; git's, through an HTTP endpoint, is the second diagram,
 ```mermaid
 sequenceDiagram
     participant M as the session (Claude Code)
-    participant T as its toolbelt (roomlerd)
+    participant T as its toolbelt (meshharbord)
     participant V as vault
-    participant E as the endpoint (roomlerd)
+    participant E as the endpoint (meshharbord)
     participant U as upstream (Postgres)
     M->>T: vault_connect {handle, engine, upstream, ca?}
     Note over M,T: asked of a person first, as every use is
@@ -1543,7 +1543,7 @@ sequenceDiagram
 ```mermaid
 sequenceDiagram
     participant M as the session (Claude Code)
-    participant T as its toolbelt (roomlerd)
+    participant T as its toolbelt (meshharbord)
     participant G as git, as the session's account
     participant E as the endpoint (127.0.0.1)
     participant U as upstream (https://git.example)
@@ -1583,7 +1583,7 @@ the session's own `ssh` dials the host, and only signs through the agent.
 sequenceDiagram
     participant M as the session (Claude Code)
     participant S as ssh (the session's own)
-    participant A as the agent (roomlerd)
+    participant A as the agent (meshharbord)
     participant H as the host (ssh://git@build.internal)
     M->>A: vault_connect {engine: ssh, upstream: ssh://git@build.internal}<br/>(through its toolbelt)
     A-->>M: env SSH_AUTH_SOCK, known_hosts: the host's keys, no key
@@ -1605,7 +1605,7 @@ sequenceDiagram
 | its place | at most 8 endpoints per run, taken before the vault is asked, so a call past it asks the vault nothing | `vault_connect.rs:913` |
 | the leases | the secret's `user` and `password` (for `bearer`, its `token`; for `client-cert`, its `cert` and `key`; for `ssh`, its `key` and `host_keys`), and the CA's, each in `proxy` mode toward the upstream: `proxy-only-named-audiences` refuses an upstream the secret does not name (§7), recorded. A lease `vault_request` asked for ahead toward the same upstream (§16) is taken as it is | `vault_connect.rs:1241` |
 | the values | read once to check them: a user the database takes; a value `Authorization` can carry (a user with no colon, a token of visible ASCII); a cert and key TLS can present, proven by making a connector with them, the refusal naming no parser's words, which could quote the key; (P3-5f-2) a key and hosts the SSH agent takes, read as it reads them, its refusals naming no byte of either; a CA that parses. Then again from the leases as each connection starts, never kept by the endpoint: a client certificate goes into that one connection's TLS, and an agent's key into that one connection's agent | `vault_connect.rs:1347`, `vault_connect.rs:1370`, `vault_connect.rs:1378`, `vault_connect.rs:1029`, `vault_connect.rs:1071` |
-| the endpoint | a database's, on Unix: `<runtime>/<session>/proxies/<id>/.s.PGSQL.5432`, both directories the daemon's (`0711`), the socket handed to the session's account (`0600`); a Postgres client dials it as `host=<that directory>`, port 5432. For MongoDB the socket is `…/mongodb-27017.sock`, which a driver dials by its path (a host that ends in `.sock`). (P3-5f-2) An SSH agent's is `…/ssh-agent.sock`, on Linux and macOS; (P3-5f-3) on Windows it is a named pipe, `\\.\pipe\roomler-vault-<id>`, its DACL the session's account's to open as Win32-OpenSSH opens an agent, for reading and writing whole (`agent_pipe_sddl`; the toolbelt pipe's grant would refuse a session's `ssh.exe`), local clients only, its first instance made before the session is told its name. Either is named in `SSH_AUTH_SOCK`, as OpenSSH and Win32-OpenSSH dial it. Every database endpoint on Windows (P3-5b-4), and an HTTP or Kubernetes one everywhere (P3-5d-2, P3-5e-2; macOS from P3-5d-3), since neither git nor `kubectl` can dial a Unix socket: `127.0.0.1`, on a port the system picks. A system that cannot say who connected serves no loopback endpoint, refused before anything is leased | `vault_connect.rs:2094`, `vault_connect.rs:2224`, `vault_connect.rs:1446`, `vault_connect.rs:2512`, `vault_connect.rs:2497` |
+| the endpoint | a database's, on Unix: `<runtime>/<session>/proxies/<id>/.s.PGSQL.5432`, both directories the daemon's (`0711`), the socket handed to the session's account (`0600`); a Postgres client dials it as `host=<that directory>`, port 5432. For MongoDB the socket is `…/mongodb-27017.sock`, which a driver dials by its path (a host that ends in `.sock`). (P3-5f-2) An SSH agent's is `…/ssh-agent.sock`, on Linux and macOS; (P3-5f-3) on Windows it is a named pipe, `\\.\pipe\meshharbor-vault-<id>`, its DACL the session's account's to open as Win32-OpenSSH opens an agent, for reading and writing whole (`agent_pipe_sddl`; the toolbelt pipe's grant would refuse a session's `ssh.exe`), local clients only, its first instance made before the session is told its name. Either is named in `SSH_AUTH_SOCK`, as OpenSSH and Win32-OpenSSH dial it. Every database endpoint on Windows (P3-5b-4), and an HTTP or Kubernetes one everywhere (P3-5d-2, P3-5e-2; macOS from P3-5d-3), since neither git nor `kubectl` can dial a Unix socket: `127.0.0.1`, on a port the system picks. A system that cannot say who connected serves no loopback endpoint, refused before anything is leased | `vault_connect.rs:2094`, `vault_connect.rs:2224`, `vault_connect.rs:1446`, `vault_connect.rs:2512`, `vault_connect.rs:2497` |
 | a connection | from the session's account only, root's refused too. On a socket its peer uid is checked again. On a pipe (P3-5f-3), past its DACL, the client's process is read from the pipe (`GetNamedPipeClientProcessId`) and its token's SID compared with the session's, and the next instance is made before the client is looked at, so a second connection always finds one listening. On a loopback port, Windows finds its process in the connection table (`GetExtendedTcpTable`) and compares its token's SID with the session's; Linux (P3-5d-2) reads `/proc/net/tcp` and `tcp6`, whose row for the connection's client end names the uid that owns the socket, and never believes a row in TIME_WAIT or with no inode; macOS (P3-5d-3) reads every process's descriptors (`proc_listpids`, `PROC_PIDLISTFDS`) and each socket's ends (`PROC_PIDFDSOCKETINFO`), and serves the connection only where its client end is held, and held only, by processes running as the session's account; macOS cannot say who made a socket. At most 16 at once, one engine session each | `vault_connect.rs:1992`, `vault_connect.rs:2193`, `vault_connect.rs:2300`, `vault_connect.rs:554`, `vault_connect.rs:736`, `vault_connect.rs:819`, `agents/meshharbord/src/hive_win.rs:348`, `hive_win.rs:318` |
 | its life | the first of its leases to be let go (its expiry, `rc:vault.revoke`, the run's end) cancels the endpoint's stop, which closes its socket, pipe or port and every connection it holds, an upgraded stream (`kubectl exec`) and an agent's connection included. The leases the call asked for itself are then let go too, rather than held to their expiry. An earlier process's endpoints go at the daemon's start | `vault_connect.rs:1478`, `vault_connect.rs:1675`, `vault_connect.rs:417` |
 | the answer | `host`, `port`, `database`, a `uri` and `env` (`PGHOST`, `PGPORT`, `PGDATABASE`), `ttl_s`: no `PGPASSWORD`, no value. On Unix the `uri` is `postgresql:///<db>?host=<dir>&port=5432`; on Windows `postgresql://127.0.0.1:<port>/<db>?sslmode=disable`, with `PGSSLMODE=disable` (the loopback leg is plain; the upstream's is TLS). For MongoDB it is `mongodb://<the socket's path, %-encoded>/<db>?directConnection=true` on Unix, with no `port`, and `mongodb://127.0.0.1:<port>/<db>?directConnection=true` on Windows, in `MONGODB_URI` too; `directConnection` keeps a driver on the one host, never discovering a member to dial around the proxy. For `http` (P3-5d-2) the `uri` is the endpoint's origin, `http://127.0.0.1:<port>`, and `env` holds git's own configuration by environment (`GIT_CONFIG_COUNT=1`, `GIT_CONFIG_KEY_0` = `url.<uri>/.insteadOf`, `GIT_CONFIG_VALUE_0` = `<upstream>/`) and `GIT_TERMINAL_PROMPT=0`: `git clone <upstream>/<repo>` goes through the endpoint with no change to the session's configuration, and a credential the upstream refuses fails at once. For `kubernetes` (P3-5e-2) the `uri` is the endpoint's origin, and the answer carries a `kubeconfig`: one cluster whose `server` is the endpoint, one context, one user with no credential. For `ssh` (P3-5f-2) `host` is the agent's socket, or (P3-5f-3) on Windows its pipe's name, and `env` names it in `SSH_AUTH_SOCK`; the `uri` is the upstream, which the session's own `ssh` dials; and `known_hosts` holds the hosts' keys under the upstream's name (`[host]:port` where the port is not 22), so `ssh` checks the host by the very keys the agent binds to. Nothing in any of them is secret: the session writes a `kubeconfig` or a `known_hosts` to a file of its own | `vault_connect.rs:1568`, `vault_connect.rs:2429`, `vault_connect.rs:1593`, `vault_connect.rs:2015`, `vault_connect.rs:2209`, `vault_connect.rs:1582` |
@@ -1660,7 +1660,7 @@ makes `kubernetes` one.
 ```mermaid
 sequenceDiagram
     participant S as the session's tool
-    participant D as device (roomlerd)
+    participant D as device (meshharbord)
     participant V as vault
     S->>D: vault_exec {env: {PGUSER: "db/dyn#35;user", PGPASSWORD: "db/dyn#35;password"}}
     D->>V: rc:vault.lease {secret: db/dyn, mode: short-lived} (no field: the secret as a whole)
@@ -1699,12 +1699,12 @@ Its caller is the daemon's lease client ("The caller", below).
 
 ```mermaid
 sequenceDiagram
-    participant D as device (roomlerd)
+    participant D as device (meshharbord)
     participant P as Postgres at the secret's audience
     D->>P: TLS against the issuer's ca, SCRAM-SHA-256 as admin_user, to its database
-    D->>P: the expired: named roomler_…, past VALID UNTIL, commented "roomler lease …"
+    D->>P: the expired: named meshharbor_…, past VALID UNTIL, commented "meshharbor lease …"
     D->>P: each of them dropped, as a revocation drops one
-    D->>P: CREATE ROLE roomler_(lease id) LOGIN PASSWORD (its verifier) VALID UNTIL (the lease's end) IN ROLE (the grants), with its COMMENT, in one transaction
+    D->>P: CREATE ROLE meshharbor_(lease id) LOGIN PASSWORD (its verifier) VALID UNTIL (the lease's end) IN ROLE (the grants), with its COMMENT, in one transaction
     Note over D: the session gets user, password, host, port, database
     D->>P: at the lease's end: the role looked up, NOLOGIN, its sessions ended, REASSIGN and DROP OWNED, DROP ROLE
 ```
@@ -1712,11 +1712,11 @@ sequenceDiagram
 | Step | Built |
 |---|---|
 | the issuer | the bundle's `admin_user` and `admin_password`, signed in by SCRAM-SHA-256 over TLS verified against its `ca` (or the system's roots), to its `database`, at the secret's one audience. A bundle that does not parse, or lacks one of those three, is refused before anything is dialled, in words that name no value ([`pg_mint.rs:51`](../agents/meshharbord/src/vault_proxy/pg_mint.rs#L51)). Since P3-6d-1a the bundle is opened by one reader every minter shares, whose parsed fields are zeroed when they drop, so the parse leaves no copy of the password behind ([`bundle.rs:29`](../agents/meshharbord/src/vault_proxy/bundle.rs#L29)). The sign-in is the proxy's own handshake, with no client behind it ([`pg.rs:310`](../agents/meshharbord/src/vault_proxy/pg.rs#L310)) |
-| the sweep | first, at every mint: each role named `roomler_…`, past its `VALID UNTIL`, whose comment is `roomler lease …`, dropped where the issuer may. That is what a daemon that died before revoking left ([`pg_mint.rs:173`](../agents/meshharbord/src/vault_proxy/pg_mint.rs#L173)) |
-| the mint | `CREATE ROLE "roomler_<lease id>" LOGIN PASSWORD '<verifier>' VALID UNTIL '<the lease's end>' IN ROLE <grants>`, and `COMMENT ON ROLE … IS 'roomler lease <lease id>'`, sent as one query and so run as one transaction ([`pg_mint.rs:123`](../agents/meshharbord/src/vault_proxy/pg_mint.rs#L123)). The grants are the issuer's `grants` field, one role per line |
+| the sweep | first, at every mint: each role named `meshharbor_…`, past its `VALID UNTIL`, whose comment is `meshharbor lease …`, dropped where the issuer may. That is what a daemon that died before revoking left ([`pg_mint.rs:173`](../agents/meshharbord/src/vault_proxy/pg_mint.rs#L173)) |
+| the mint | `CREATE ROLE "meshharbor_<lease id>" LOGIN PASSWORD '<verifier>' VALID UNTIL '<the lease's end>' IN ROLE <grants>`, and `COMMENT ON ROLE … IS 'meshharbor lease <lease id>'`, sent as one query and so run as one transaction ([`pg_mint.rs:123`](../agents/meshharbord/src/vault_proxy/pg_mint.rs#L123)). The grants are the issuer's `grants` field, one role per line |
 | the password | 32 random bytes, base64url, one per lease. Postgres is sent its SCRAM-SHA-256 verifier, `SCRAM-SHA-256$4096:<salt>$<StoredKey>:<ServerKey>`, never the password, so a database that logs its statements logs no password ([`scram.rs:239`](../agents/meshharbord/src/vault_proxy/scram.rs#L239)) |
 | the revocation | the role looked up, and a role already gone is done; `NOLOGIN`; its sessions ended (`pg_terminate_backend`); what it owns in the issuer's database given to the issuer (`REASSIGN OWNED`, then `DROP OWNED`); `DROP ROLE` ([`pg_mint.rs:202`](../agents/meshharbord/src/vault_proxy/pg_mint.rs#L202)). Ending its sessions and giving back what it owns are best effort, each refusal logged: `NOLOGIN` has already refused any new session |
-| the names | every name quoted as an identifier, and every value as a literal. A role is dropped only if its name is `roomler_` and 24 hex characters, a lease's id. That is checked before a revocation dials, and again before each drop, which covers whatever the sweep's query returns ([`pg_mint.rs:102`](../agents/meshharbord/src/vault_proxy/pg_mint.rs#L102)) |
+| the names | every name quoted as an identifier, and every value as a literal. A role is dropped only if its name is `meshharbor_` and 24 hex characters, a lease's id. That is checked before a revocation dials, and again before each drop, which covers whatever the sweep's query returns ([`pg_mint.rs:102`](../agents/meshharbord/src/vault_proxy/pg_mint.rs#L102)) |
 
 - ⚠️ **The issuer needs `CREATEROLE`**, and on Postgres 16 and later
   `ADMIN OPTION` on each role in `grants`. Ending a minted role's sessions
@@ -1736,7 +1736,7 @@ the credential back when the lease is let go.
 ```mermaid
 sequenceDiagram
     participant S as the session's tool call
-    participant D as device (roomlerd)
+    participant D as device (meshharbord)
     participant V as vault
     participant P as the issuer's database
     S->>D: vault_exec, env DBU = db/dyn#35;user and DBP = db/dyn#35;password
@@ -1784,13 +1784,13 @@ designed".
 
 ```mermaid
 sequenceDiagram
-    participant D as device (roomlerd)
+    participant D as device (meshharbord)
     participant M as MySQL at the secret's audience
     M-->>D: the greeting, which must offer TLS, or nothing is sent
     D->>M: SSLRequest, then TLS against the issuer's ca
     D->>M: caching_sha2_password as admin_user, to its database
-    D->>M: the ended: roomler_… users whose ATTRIBUTE says their lease is over, each dropped
-    D->>M: CREATE USER roomler_(lease id) AS (its password's form) ATTRIBUTE (its lease, its end)
+    D->>M: the ended: meshharbor_… users whose ATTRIBUTE says their lease is over, each dropped
+    D->>M: CREATE USER meshharbor_(lease id) AS (its password's form) ATTRIBUTE (its lease, its end)
     D->>M: each grant, SET DEFAULT ROLE ALL, then CREATE EVENT at its end, DO DROP USER
     Note over D: the session gets user, password, host, port, database
     D->>M: at the lease's end: ACCOUNT LOCK, KILL its connections, DROP USER, DROP EVENT
@@ -1801,12 +1801,12 @@ sequenceDiagram
 | the client | MySQL's client protocol, a client of its own (`vault_proxy::mysql`). The server's greeting must offer TLS and the 4.1 protocol, or the client sends it nothing at all. Then an `SSLRequest`, and TLS verified against the issuer's `ca` (or the system's roots), before a byte of the sign-in ([`mysql.rs:240`](../agents/meshharbord/src/vault_proxy/mysql.rs#L240)). The sign-in is `caching_sha2_password`: its scramble, and, from a server that has not cached the account, the password itself inside that TLS. A switch to `sha256_password` is followed inside the TLS too: MySQL answers so for an account under it, and for one that is not there. Any other plugin is refused ([`mysql.rs:304`](../agents/meshharbord/src/vault_proxy/mysql.rs#L304)) |
 | a query | `COM_QUERY`, text rows, the server's error in its own words. At most 1 MiB a packet and 10,000 rows an answer. `CLIENT_LOCAL_FILES` is never offered ([`mysql.rs:40`](../agents/meshharbord/src/vault_proxy/mysql.rs#L40)), which the daemon's build checks: since P3-6d-1b, a `CAPS` that offered it does not compile ([`mysql.rs:51`](../agents/meshharbord/src/vault_proxy/mysql.rs#L51)). A server that asks for a local file anyway is refused and sent nothing ([`mysql.rs:353`](../agents/meshharbord/src/vault_proxy/mysql.rs#L353)) |
 | the issuer | the bundle's `admin_user` and `admin_password`, to its `database`, at the secret's one audience. The bundle is opened by the reader the Postgres minter uses: refused before anything is dialled when it does not parse or lacks a field no mint can do without, and zeroed when it drops ([`bundle.rs:43`](../agents/meshharbord/src/vault_proxy/bundle.rs#L43)). The `database` and each grant must be names the minter quotes: no quote, backtick, backslash or control character ([`mysql_mint.rs:49`](../agents/meshharbord/src/vault_proxy/mysql_mint.rs#L49)) |
-| the sweep | first, at every mint: each `roomler_…` user whose `ATTRIBUTE` says its lease has ended, dropped where the issuer may ([`mysql_mint.rs:186`](../agents/meshharbord/src/vault_proxy/mysql_mint.rs#L186)). That covers an event that never ran: the scheduler off, or an end already past when the mint ran |
-| the mint | `CREATE USER 'roomler_<lease id>'@'%' IDENTIFIED WITH caching_sha2_password AS '<form>' ATTRIBUTE '{"roomler": {"lease": "<id>", "until": <end>}}'` ([`mysql_mint.rs:143`](../agents/meshharbord/src/vault_proxy/mysql_mint.rs#L143)). Then each of the issuer's `grants` (`role` or `role@host`, one per line) as its own `GRANT`, and `SET DEFAULT ROLE ALL`. Then its end, in the issuer's database: `CREATE EVENT … ON SCHEDULE AT FROM_UNIXTIME(<end>) ON COMPLETION NOT PRESERVE DO DROP USER IF EXISTS …` ([`mysql_mint.rs:162`](../agents/meshharbord/src/vault_proxy/mysql_mint.rs#L162)). The end is a count of seconds (`FROM_UNIXTIME`), so it names the same instant whatever the server's time zone |
+| the sweep | first, at every mint: each `meshharbor_…` user whose `ATTRIBUTE` says its lease has ended, dropped where the issuer may ([`mysql_mint.rs:186`](../agents/meshharbord/src/vault_proxy/mysql_mint.rs#L186)). That covers an event that never ran: the scheduler off, or an end already past when the mint ran |
+| the mint | `CREATE USER 'meshharbor_<lease id>'@'%' IDENTIFIED WITH caching_sha2_password AS '<form>' ATTRIBUTE '{"meshharbor": {"lease": "<id>", "until": <end>}}'` ([`mysql_mint.rs:143`](../agents/meshharbord/src/vault_proxy/mysql_mint.rs#L143)). Then each of the issuer's `grants` (`role` or `role@host`, one per line) as its own `GRANT`, and `SET DEFAULT ROLE ALL`. Then its end, in the issuer's database: `CREATE EVENT … ON SCHEDULE AT FROM_UNIXTIME(<end>) ON COMPLETION NOT PRESERVE DO DROP USER IF EXISTS …` ([`mysql_mint.rs:162`](../agents/meshharbord/src/vault_proxy/mysql_mint.rs#L162)). The end is a count of seconds (`FROM_UNIXTIME`), so it names the same instant whatever the server's time zone |
 | a step refused | MySQL commits each statement as it runs. A grant or the event refused takes the user back at once, and the mint is refused in MySQL's words: no user is left without its end ([`mysql_mint.rs:112`](../agents/meshharbord/src/vault_proxy/mysql_mint.rs#L112)) |
 | the password | 32 random bytes, base64url, one per lease. MySQL is sent its `caching_sha2_password` form, never the password: `$A$005$`, a 20-character salt, and the SHA-256 crypt digest at 5,000 rounds, which is what MySQL keeps ([`sha_crypt.rs:132`](../agents/meshharbord/src/vault_proxy/sha_crypt.rs#L132)). The salt is drawn from crypt's own alphabet, so the form holds nothing a SQL literal must escape ([`sha_crypt.rs:122`](../agents/meshharbord/src/vault_proxy/sha_crypt.rs#L122)) |
 | the revocation | the user looked up, and a user already gone is done, its event dropped all the same. Otherwise `ACCOUNT LOCK`; its connections listed and ended where the issuer may (`KILL`, sent only for a thread id of digits); `DROP USER`; `DROP EVENT` ([`mysql_mint.rs:213`](../agents/meshharbord/src/vault_proxy/mysql_mint.rs#L213)). Ending its connections is best effort, each refusal logged: the lock has already refused any new sign-in |
-| the names | a user is dropped only if its name is `roomler_` and 24 hex characters, a lease's id: the Postgres minter's rule, and its code ([`pg_mint.rs:102`](../agents/meshharbord/src/vault_proxy/pg_mint.rs#L102)). That is checked before a revocation dials ([`mysql_mint.rs:175`](../agents/meshharbord/src/vault_proxy/mysql_mint.rs#L175)), and again before each drop, whatever the sweep's query returns |
+| the names | a user is dropped only if its name is `meshharbor_` and 24 hex characters, a lease's id: the Postgres minter's rule, and its code ([`pg_mint.rs:102`](../agents/meshharbord/src/vault_proxy/pg_mint.rs#L102)). That is checked before a revocation dials ([`mysql_mint.rs:175`](../agents/meshharbord/src/vault_proxy/mysql_mint.rs#L175)), and again before each drop, whatever the sweep's query returns |
 
 - ⚠️ **The issuer needs** `CREATE USER`, `EVENT` on its database, and each
   role in `grants` granted to it `WITH ADMIN OPTION`. To end a minted user's
@@ -1835,11 +1835,11 @@ the vault leases and the daemon mints for. The design is the spec's §3e
 
 ```mermaid
 sequenceDiagram
-    participant D as device (roomlerd)
+    participant D as device (meshharbord)
     participant K as API server at the secret's audience
-    D->>K: GET its namespace's Secrets labelled roomler.ai/lease (where the issuer may list)
+    D->>K: GET its namespace's Secrets labelled meshharbor.itachi.fans/lease (where the issuer may list)
     D->>K: DELETE each one whose end has passed, on its uid
-    D->>K: POST an empty Secret roomler-(lease id), its lease labelled, its end annotated
+    D->>K: POST an empty Secret meshharbor-(lease id), its lease labelled, its end annotated
     K-->>D: its uid
     D->>K: POST serviceaccounts/(account)/token, bound to that Secret by name and uid
     K-->>D: the token
@@ -1851,11 +1851,11 @@ sequenceDiagram
 |---|---|
 | the client | one request per connection, over TLS verified against the issuer's `ca` (or the system's roots), on the HTTP/1 client the `http` engine dials with. The issuer signs in by `admin_token` in `Authorization`, or by `admin_cert` and `admin_key` in the handshake, the key read again for each connection's TLS alone ([`k8s_mint.rs:466`](../agents/meshharbord/src/vault_proxy/k8s_mint.rs#L466)). Each request has ten seconds, and an answer at most 4 MiB, read into memory that is zeroed when it drops, and that grows without leaving a copy behind ([`:541`](../agents/meshharbord/src/vault_proxy/k8s_mint.rs#L541)) |
 | the issuer | the bundle's one audience, an origin as the `http` engine reads one, `origin_of` ([`mod.rs:110`](../agents/meshharbord/src/vault_proxy/mod.rs#L110)), moved from `hive::vault_connect` for it as `upstream_of` was. Its `namespace` must be a name Kubernetes gives a namespace and its `service_account` one it gives an account, since both go into a request's path; one credential, never both; `audiences` one per line ([`k8s_mint.rs:94`](../agents/meshharbord/src/vault_proxy/k8s_mint.rs#L94)) |
-| the sweep | first, at every mint: the namespace's Secrets labelled `roomler.ai/lease`, and each whose name is a minted one and whose `roomler.ai/until` has passed, deleted on its uid. An issuer that may not list is not swept, and the mint goes on ([`k8s_mint.rs:357`](../agents/meshharbord/src/vault_proxy/k8s_mint.rs#L357)) |
-| the mint | an empty `Opaque` Secret `roomler-<lease id>`, labelled with its lease and annotated with its end (RFC 3339); then a `TokenRequest` bound to it by name and uid (`boundObjectRef`), `expirationSeconds` the lease's TTL or 600, whichever is longer, and the issuer's `audiences` where it names some. A token refused takes the Secret back on its uid, and the mint is refused in the API server's words ([`k8s_mint.rs:251`](../agents/meshharbord/src/vault_proxy/k8s_mint.rs#L251)) |
+| the sweep | first, at every mint: the namespace's Secrets labelled `meshharbor.itachi.fans/lease`, and each whose name is a minted one and whose `meshharbor.itachi.fans/until` has passed, deleted on its uid. An issuer that may not list is not swept, and the mint goes on ([`k8s_mint.rs:357`](../agents/meshharbord/src/vault_proxy/k8s_mint.rs#L357)) |
+| the mint | an empty `Opaque` Secret `meshharbor-<lease id>`, labelled with its lease and annotated with its end (RFC 3339); then a `TokenRequest` bound to it by name and uid (`boundObjectRef`), `expirationSeconds` the lease's TTL or 600, whichever is longer, and the issuer's `audiences` where it names some. A token refused takes the Secret back on its uid, and the mint is refused in the API server's words ([`k8s_mint.rs:251`](../agents/meshharbord/src/vault_proxy/k8s_mint.rs#L251)) |
 | the credential | `token`, `server` (the audience), `ca` (the issuer's, or empty where the system's roots verify the API server) and `namespace`; no issuer field ([`k8s_mint.rs:196`](../agents/meshharbord/src/vault_proxy/k8s_mint.rs#L196)) |
 | the revocation | the Secret deleted on the uid it was made with. One already gone is a revocation done; another object under its name (a `409` on the uid) is left alone, since ours went with its token ([`k8s_mint.rs:327`](../agents/meshharbord/src/vault_proxy/k8s_mint.rs#L327)) |
-| the names | a Secret is deleted only if its name is `roomler-` and a lease's 24 lowercase hex characters, a name Kubernetes takes, checked before the revocation dials and before each of the sweep's deletes ([`k8s_mint.rs:224`](../agents/meshharbord/src/vault_proxy/k8s_mint.rs#L224)) |
+| the names | a Secret is deleted only if its name is `meshharbor-` and a lease's 24 lowercase hex characters, a name Kubernetes takes, checked before the revocation dials and before each of the sweep's deletes ([`k8s_mint.rs:224`](../agents/meshharbord/src/vault_proxy/k8s_mint.rs#L224)) |
 
 - ⚠️ **The issuer needs** `create` on `serviceaccounts/token` for its
   account, and `create` and `delete` on `secrets` in its namespace; `list` on
@@ -1870,7 +1870,7 @@ sequenceDiagram
 ## 21. A session's own egress: `rc:vault.net` (P3-7-1b)
 
 A session reaches a private subnet behind a device, or the internet from a
-chosen place, through Roomler's own tunnels. It asks the vault, not the
+chosen place, through MeshHarbor's own tunnels. It asks the vault, not the
 network module:
 - only the vault can believe a session, because it reads the session's
   record (§10);
@@ -1888,7 +1888,7 @@ builds the vault's half; no device asks before P3-7-3.
 
 ```mermaid
 sequenceDiagram
-    participant D as roomlerd (the session's device)
+    participant D as meshharbord (the session's device)
     participant V as vault (its agent-socket handler)
     participant DB as session record · device rows · vault
     participant A as core's auth service
@@ -1993,7 +1993,7 @@ request's: in its one spelling, and refused where a request would be.
 ## 22. A session's command on another device: `rc:vault.ssh` (P3-8-1a)
 
 A session runs one command on another device of its organization over
-Roomler SSH (`ssh_run`, designed in the spec's §3e, "P3-8, `ssh_run`, as
+MeshHarbor SSH (`ssh_run`, designed in the spec's §3e, "P3-8, `ssh_run`, as
 designed"). The device-originated leg runs under the origin device's owner,
 so a session's request must carry a decision of its own, and as for egress
 (§21) only the vault can believe a session. So the vault decides, with
@@ -2006,7 +2006,7 @@ half; no device asks before P3-8-2b.
 
 ```mermaid
 sequenceDiagram
-    participant D as roomlerd (the session's device)
+    participant D as meshharbord (the session's device)
     participant V as vault (its agent-socket handler)
     participant DB as session record · device rows · vault
     participant A as core's auth service
@@ -2090,24 +2090,24 @@ bash elsewhere.
 | the decision | `ssh:run` in the schema ([`policy.cedarschema:146`](../crates/modules/vault/src/policy.cedarschema#L146)) and `Ask::SshRun` ([`policy.rs`](../crates/modules/vault/src/policy.rs)) |
 | the handler | [`ssh.rs`](../crates/modules/vault/src/ssh.rs) `ticket` ([`ssh.rs:87`](../crates/modules/vault/src/ssh.rs#L87): the checks above), answered in order on the lease queue (§10) |
 | the ticket | [`auth/mod.rs`](../crates/services/src/auth/mod.rs): `TokenType::SshTicket`, `issue_ssh_ticket`, `verify_ssh_ticket`, `ssh_ticket_holds` |
-| the network module's half | P3-8-1b-1 ([roomler-ssh.md](roomler-ssh.md#an-agent-sessions-request-fr-90-p3-8-1b)): the ticket bound at `rc:ssh.request` to this organization, the device that asked and the target, its account still the target's; the session the principal, refused at gate 3 until decision 22; `ssh_audit` naming the session; the echo |
-| what comes next | P3-8-1b-2, gate 3 for a session as decision 22 says. In place: P3-8-2a, the target serving a session's grant one command and nothing else, on the worker and on the SYSTEM service ([roomler-ssh.md](roomler-ssh.md#a-sessions-grant-on-the-target-one-command-fr-90-p3-8-2a)); P3-8-2b-1, the device's ask (`rc:vault.ssh`, answered to its asker on the primary's connection) and its own SSH client ([roomler-ssh.md](roomler-ssh.md#the-sessions-own-device-the-client-fr-90-p3-8-2b)); and P3-8-2b-2, the tool `ssh_run` on the session's toolbelt, where the device's owner turned on `hive_ssh` beside `vault_enabled`, asked of a person on every call ([roomler-ssh.md](roomler-ssh.md#the-tool-ssh_run-fr-90-p3-8-2b-2)) |
+| the network module's half | P3-8-1b-1 ([meshharbor-ssh.md](meshharbor-ssh.md#an-agent-sessions-request-fr-90-p3-8-1b)): the ticket bound at `rc:ssh.request` to this organization, the device that asked and the target, its account still the target's; the session the principal, refused at gate 3 until decision 22; `ssh_audit` naming the session; the echo |
+| what comes next | P3-8-1b-2, gate 3 for a session as decision 22 says. In place: P3-8-2a, the target serving a session's grant one command and nothing else, on the worker and on the SYSTEM service ([meshharbor-ssh.md](meshharbor-ssh.md#a-sessions-grant-on-the-target-one-command-fr-90-p3-8-2a)); P3-8-2b-1, the device's ask (`rc:vault.ssh`, answered to its asker on the primary's connection) and its own SSH client ([meshharbor-ssh.md](meshharbor-ssh.md#the-sessions-own-device-the-client-fr-90-p3-8-2b)); and P3-8-2b-2, the tool `ssh_run` on the session's toolbelt, where the device's owner turned on `hive_ssh` beside `vault_enabled`, asked of a person on every call ([meshharbor-ssh.md](meshharbor-ssh.md#the-tool-ssh_run-fr-90-p3-8-2b-2)) |
 
 ## 23. A person's endpoint: `rc:vault.connect` (P3-9-1)
 
-A **person** runs `roomler connect <handle>` on their device and gets a local
+A **person** runs `meshharbor connect <handle>` on their device and gets a local
 endpoint that signs in to the secret's upstream as the secret's user (a
 database, an HTTP API, a Kubernetes API server, an SSH host). The value never
 reaches them: the daemon holds it, as it does for a session's `vault_connect`
-(§19). Designed in the spec's §3e, "P3-9, `roomler connect`, as designed".
+(§19). Designed in the spec's §3e, "P3-9, `meshharbor connect`, as designed".
 P3-9-1 builds the vault's half: the ask, the decision, the lease and its
 revocation. P3-9-2a builds the daemon's ask and the endpoint it serves,
 renewed while it is held, and P3-9-2b the LocalAPI verb and the
-`roomler connect` that holds it in the foreground (decision 25), both below.
+`meshharbor connect` that holds it in the foreground (decision 25), both below.
 
 ```mermaid
 sequenceDiagram
-    participant D as roomlerd (the person's device)
+    participant D as meshharbord (the person's device)
     participant V as vault (its agent-socket handler)
     participant DB as the device's row · members · vault
     D->>V: rc:vault.connect {req_id, secret, field, audience, ttl_secs}, one per field
@@ -2192,7 +2192,7 @@ device's vault key, which its daemon opens with the same key; or one word,
 >   a session's record: a lease's frame with its session left out does not
 >   decode at all.
 > - **An endpoint, never a value.** The mode is `proxy` alone, and the frame
->   asks no other. `raw`, a value handed to a person (the design's `roomler
+>   asks no other. `raw`, a value handed to a person (the design's `meshharbor
 >   vault get`), is a different verb and not this one.
 > - **Rolling back past P3-9-1**: an older image cannot read a person's lease
 >   row, which names no session. A device holding one, revoked or not, goes
@@ -2205,7 +2205,7 @@ no session it stands on its owner instead: `owner_changed` when the device's
 row names another owner, `owner_not_member` when its owner left the
 organization, and `not_served` when `vault.people` stops listing it, each at
 the next sweep of the device's pod or its hello. And it lives as long as a
-lease does, at most 15 minutes: `roomler connect` stays in the foreground and
+lease does, at most 15 minutes: `meshharbor connect` stays in the foreground and
 asks again before each end, every renewal a new request decided and recorded
 again (decision 25, P3-9-2).
 
@@ -2218,7 +2218,7 @@ again (decision 25, P3-9-2).
 | the switch | `vault.people` (`MESHHARBOR__VAULT__PEOPLE`, [`settings.rs:123`](../crates/config/src/settings.rs#L123)), read by `TenantScope::parse_opt_in` ([`scope.rs:54`](../crates/modules/vault/src/scope.rs#L54)) |
 | `simulate` | `secret:connect` ([`policy_routes.rs:899`](../crates/modules/vault/src/policy_routes.rs#L899)): the principal the device's owner, no mode, and `approver_id` for what a yes would change |
 | the device's half | P3-9-2a, below: the daemon's ask and the endpoint it serves, renewed |
-| the person's command | P3-9-2b, below: the LocalAPI's `Connect`, on the daemon's own endpoint only, held to decision 26, and `roomler connect` in the foreground |
+| the person's command | P3-9-2b, below: the LocalAPI's `Connect`, on the daemon's own endpoint only, held to decision 26, and `meshharbor connect` in the foreground |
 | what comes next | P3k: the field run, for an organization listed in `vault.people`; and the operator's word on decision 26 |
 
 **The device's half (P3-9-2a).** The daemon asks a person's leases with its
@@ -2264,7 +2264,7 @@ stateDiagram-v2
 >   clock that stood still while the device slept is looked at again every
 >   30 s.
 > - **The CA is read once**, when the endpoint opens. A CA that changes later
->   takes the next `roomler connect`.
+>   takes the next `meshharbor connect`.
 
 | Piece | Where |
 |---|---|
@@ -2272,12 +2272,12 @@ stateDiagram-v2
 | the endpoint | `open_person` ([`vault_connect.rs:452`](../agents/meshharbord/src/hive/vault_connect.rs#L452)); the lease source, `PersonLeases` ([`:1169`](../agents/meshharbord/src/hive/vault_connect.rs#L1169)), and the daemon's, `DaemonPersonLeases`, in words for the person (`person_why`, [`:495`](../agents/meshharbord/src/hive/vault_connect.rs#L495)); on Unix, `person_dir` ([`:2085`](../agents/meshharbord/src/hive/vault_connect.rs#L2085)) |
 | the renewal | `renew` ([`vault_connect.rs:1798`](../agents/meshharbord/src/hive/vault_connect.rs#L1798)), `generation` and `swap`; when, `Timing` ([`:1204`](../agents/meshharbord/src/hive/vault_connect.rs#L1204)); what cuts a connection, `Live` ([`:1684`](../agents/meshharbord/src/hive/vault_connect.rs#L1684)); what its holder reads and ends, `Control` ([`:1738`](../agents/meshharbord/src/hive/vault_connect.rs#L1738)) |
 
-**The person's command (P3-9-2b).** `roomler connect` asks the daemon's own
+**The person's command (P3-9-2b).** `meshharbor connect` asks the daemon's own
 LocalAPI endpoint for a person's endpoint, and holds it in the foreground:
 
 ```sh
-sudo roomler connect db/orders --engine postgres --upstream db.internal:5432
-roomler connect ci/kube --engine kubernetes --upstream https://api.k8s.internal:6443 --auth bearer
+sudo meshharbor connect db/orders --engine postgres --upstream db.internal:5432
+meshharbor connect ci/kube --engine kubernetes --upstream https://api.k8s.internal:6443 --auth bearer
 ```
 
 It takes a session's `vault_connect` arguments under the same names (§19), and
@@ -2292,9 +2292,9 @@ line and each change another.
 
 ```mermaid
 sequenceDiagram
-    participant P as roomler connect
+    participant P as meshharbor connect
     participant L as the daemon's LocalAPI listener
-    participant D as roomlerd (person_connect)
+    participant D as meshharbord (person_connect)
     participant V as vault
     P->>L: opens the daemon's own socket or pipe
     L->>L: who connected, from the OS: a uid and gid, or a token's SID and elevation
@@ -2312,11 +2312,11 @@ sequenceDiagram
     L->>D: connect_release(id): the endpoint closes, its leases let go
 ```
 
-| Where the daemon runs | Who may run `roomler connect` | Whom its endpoint serves |
+| Where the daemon runs | Who may run `meshharbor connect` | Whom its endpoint serves |
 |---|---|---|
 | a Linux or macOS system install | root (`sudo`): the daemon's socket is root's, and the person socket refuses the verb | root, so the client runs with `sudo` too |
 | a per-user daemon | its own account, or root | the account that ran it |
-| Windows | SYSTEM, an elevated administrator, or the account Roomler's service runs as (an attended install's person) | the account that ran it, by SID: that account's processes are served whether elevated or not |
+| Windows | SYSTEM, an elevated administrator, or the account MeshHarbor's service runs as (an attended install's person) | the account that ran it, by SID: that account's processes are served whether elevated or not |
 
 > [!WARNING]
 > - **It lends the device OWNER's grants, whoever runs it** (decision 23). So
@@ -2331,7 +2331,7 @@ sequenceDiagram
 >   the client process's token. Nothing the client says names an account.
 > - **Never on the person socket.** Whoever sits at a system install's screen
 >   need not be the device's owner, so `person_may` refuses both verbs there,
->   with its usual answer: `sudo roomler …`.
+>   with its usual answer: `sudo meshharbor …`.
 > - **It ends with its connection.** Ctrl-C, a killed command and a closed
 >   terminal all close the connection, and with it the endpoint, its
 >   connections and its leases. A connection reads only the endpoints it
@@ -2438,5 +2438,5 @@ its lease (§15).
 
 | Step | Builds |
 |---|---|
-| P3-6c to P3-9 | GitHub App tokens, where decision 18 says; SQL Server and Redis users, as decision 19 says; AWS STS, a role's credential per lease, ended at the lease's end by a session policy AWS enforces and minted where decision 21 says (its design: the FR-90 spec, §3e "P3-6e, AWS STS, as designed"); a Kubernetes `TokenRequest`, a service account's token per lease bound to a Secret made for the lease, so deleting the Secret ends it, minted on the device (its design: §3e "P3-6f, a Kubernetes `TokenRequest`, as designed"); the rest of a session's own egress (the tunnel policies a session's flows match, P3-7-2b); the rest of `ssh_run`, one command on another device over Roomler SSH under a ticket of the session's own, whose vault half is built (§22): the network module's half built (P3-8-1b-1, refusing every session at gate 3) and gate 3 as decision 22 says (P3-8-1b-2), the target serving a session one command and nothing else built (P3-8-2a), the device's client built (P3-8-2b-1), and its tool built (P3-8-2b-2) (its design: §3e "P3-8, `ssh_run`, as designed"); `fleet_exec` as decision 5 says; for `roomler connect`, built (§23: the vault's half, P3-9-1; the daemon's ask and its renewing endpoint, P3-9-2a; the LocalAPI verb and the foreground command, P3-9-2b), the operator's word on decision 26, who may run it on Windows (its design: §3e "P3-9, `roomler connect`, as designed") |
+| P3-6c to P3-9 | GitHub App tokens, where decision 18 says; SQL Server and Redis users, as decision 19 says; AWS STS, a role's credential per lease, ended at the lease's end by a session policy AWS enforces and minted where decision 21 says (its design: the FR-90 spec, §3e "P3-6e, AWS STS, as designed"); a Kubernetes `TokenRequest`, a service account's token per lease bound to a Secret made for the lease, so deleting the Secret ends it, minted on the device (its design: §3e "P3-6f, a Kubernetes `TokenRequest`, as designed"); the rest of a session's own egress (the tunnel policies a session's flows match, P3-7-2b); the rest of `ssh_run`, one command on another device over MeshHarbor SSH under a ticket of the session's own, whose vault half is built (§22): the network module's half built (P3-8-1b-1, refusing every session at gate 3) and gate 3 as decision 22 says (P3-8-1b-2), the target serving a session one command and nothing else built (P3-8-2a), the device's client built (P3-8-2b-1), and its tool built (P3-8-2b-2) (its design: §3e "P3-8, `ssh_run`, as designed"); `fleet_exec` as decision 5 says; for `meshharbor connect`, built (§23: the vault's half, P3-9-1; the daemon's ask and its renewing endpoint, P3-9-2a; the LocalAPI verb and the foreground command, P3-9-2b), the operator's word on decision 26, who may run it on Windows (its design: §3e "P3-9, `meshharbor connect`, as designed") |
 | P3k | the field run in the test organization |

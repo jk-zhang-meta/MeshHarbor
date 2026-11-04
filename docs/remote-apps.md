@@ -284,8 +284,8 @@ server outlives both), it is `ssh`-attachable from a real login
 
 | Entry kind | What `launch` does | How the list finds it again |
 |---|---|---|
-| `tmux = true` | `tmux new-session -d -s s<N> <command>`, then `xterm -T roomler:tmux:s<N> -e tmux attach -t s<N>`; at most **32** live sessions (`linux.rs:43`) — a bound on what a misbehaving viewer can spawn | title convention `roomler:tmux:<s>` → `session` |
-| `terminal = true` | `xterm -T roomler:app:<key> -e <command>` — for TUIs | `roomler:app:<key>` → `app_key` |
+| `tmux = true` | `tmux new-session -d -s s<N> <command>`, then `xterm -T meshharbor:tmux:s<N> -e tmux attach -t s<N>`; at most **32** live sessions (`linux.rs:43`) — a bound on what a misbehaving viewer can spawn | title convention `meshharbor:tmux:<s>` → `session` |
+| `terminal = true` | `xterm -T meshharbor:app:<key> -e <command>` — for TUIs | `meshharbor:app:<key>` → `app_key` |
 | neither | `<command>` as argv, detached, stdio to `/dev/null`; the app sets its own title | unmanaged — reported as-is |
 | **detached session** (no live xterm after a restart or a detach) | listed anyway, as `Terminal (s2) — detached` with the synthetic id `tmux:s2` (`linux.rs:39`); `focus` on it spawns a fresh attached xterm — "attach" fits the three-verb protocol with no fourth verb | `tmux list-sessions` minus the attached ones |
 
@@ -343,7 +343,7 @@ rule are [`linux-capture.md`](linux-capture.md) §4.
 | 2026-09-25 | three cluster nodes, over Fleet RPC | AC10, the Xvfb tier | `sources: x11`, `NOT listed: (nothing)`, `missing tools: (none)`, one root xterm each — complete and honest |
 | 2026-09-25 | GNOME Wayland (Asahi), over Fleet RPC | AC10, the missing-helper tier | the agent prints `missing tools: tmux …`; the viewer's parser was read and found to drop it — **P5 never reached a screen** |
 | 2026-09-25 | the WSL node | AC10 | refuses Fleet RPC (`exec_enabled` off — the device-owned gate) — *advertised, unprobed* |
-| 2026-09-26 | two headless cluster nodes, agent-v0.4.103, over Fleet RPC | P6, the `no_session` tier (the nodes run the daemon's own Xvfb, so the probe is run with `DISPLAY` unset to reach the session arm) | **before** (0.4.102, the arm's only output): *"no manageable desktop found. Either apps are disabled in the config, or there is no X display…"*; **after**: `reason [no_session]: No active graphical login session on this host — nobody is at its screen — …`, with the `config:` line naming `/etc/roomler/config.toml` and `enabled = true` |
+| 2026-09-26 | two headless cluster nodes, agent-v0.4.103, over Fleet RPC | P6, the `no_session` tier (the nodes run the daemon's own Xvfb, so the probe is run with `DISPLAY` unset to reach the session arm) | **before** (0.4.102, the arm's only output): *"no manageable desktop found. Either apps are disabled in the config, or there is no X display…"*; **after**: `reason [no_session]: No active graphical login session on this host — nobody is at its screen — …`, with the `config:` line naming `/etc/meshharbor/config.toml` and `enabled = true` |
 | 2026-09-26 | the same node, `DISPLAY` as the daemon has it | AC3 on 0.4.103 | Daemon arm unchanged: `supported: true`, `sources: x11`, one root xterm |
 | 2026-09-26 | GNOME Wayland (Asahi), 0.4.103 | the live session arm | `supported: true` · `NOT listed: native Wayland windows…` · `missing tools: tmux …` — the P2/P5 arms byte-for-byte |
 | 2026-09-26 | the server's `agents` collection | the hello on 0.4.103 | every online Linux/Windows device advertises `status · list · focus · launch`; macOS `null`; each probed host's `list` matches its live state |
@@ -359,7 +359,7 @@ two (somebody must answer the picker), and native enumeration on a wlroots host
 ## 8. Configuration and the probe
 
 ```toml
-# the device's config.toml — read at daemon start, or `roomler config`
+# the device's config.toml — read at daemon start, or `meshharbor config`
 [virtual_desktop_apps]
 enabled = true                       # default true; false → `unavailable{disabled}`
 
@@ -380,12 +380,12 @@ label    = "Text editor"
 
 | Key | Where | Default | Notes |
 |---|---|---|---|
-| `virtual_desktop_apps.enabled` | config (`crates/agent-core/src/apps_config.rs:21`); `roomler config get virtual_desktop_apps` prints the JSON (`config_surface.rs:1502`) | `true` | the kill switch; the hello stops advertising `list` (on a caps-cache hit **and** a miss, since the review of #1667 — §4.3), and a request answers `disabled` |
+| `virtual_desktop_apps.enabled` | config (`crates/agent-core/src/apps_config.rs:21`); `meshharbor config get virtual_desktop_apps` prints the JSON (`config_surface.rs:1502`) | `true` | the kill switch; the hello stops advertising `list` (on a caps-cache hit **and** a miss, since the review of #1667 — §4.3), and a request answers `disabled` |
 | `virtual_desktop_apps.allowlist.<key>` | config | `bash` on Linux, `cmd` on Windows | `command` is argv; an empty command is skipped from `launchable` and refused on launch |
 | `window_capture` | config / `MESHHARBORD_WINDOW_CAPTURE` (`config_surface.rs:1044`) | **off** | P4 — attended by construction; restart required |
 | `MESHHARBORD_VIRTUAL_DESKTOP` | env | off | the daemon's own Xvfb (§2 of [`linux-capture.md`](linux-capture.md)); when set, the Daemon arm wins and no session is discovered |
 
-`roomlerd apps-probe` (`agents/meshharbord/src/main.rs:5893`) answers the whole
+`meshharbord apps-probe` (`agents/meshharbord/src/main.rs:5893`) answers the whole
 question on the host with no session and no browser, the way `capture-smoke`
 does for pixels: which config it loaded and whether apps are enabled there,
 whether a desktop was found and as whom (the display and the cookie), what the
@@ -393,7 +393,7 @@ listing covers and cannot, which helpers are missing, and the windows — or,
 since P6, the refusal's `code` and `reason`. Over Fleet RPC:
 
 ```bash
-roomler exec <device> -- roomlerd apps-probe
+meshharbor exec <device> -- meshharbord apps-probe
 ```
 
 The prose beside an empty list says explicitly that empty is not unsupported

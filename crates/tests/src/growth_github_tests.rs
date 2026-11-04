@@ -202,7 +202,7 @@ fn seed_releases(f: &Fake) {
         "agent-v0.4.999".to_string(),
         true,
         vec![(
-            "roomlerd-0.4.999-x86_64-pc-windows-msvc.msi".to_string(),
+            "meshharbord-0.4.999-x86_64-pc-windows-msvc.msi".to_string(),
             500,
         )],
     )];
@@ -211,9 +211,9 @@ fn seed_releases(f: &Fake) {
             format!("agent-v0.4.{i}"),
             false,
             vec![
-                (format!("roomlerd-0.4.{i}-x86_64-pc-windows-msvc.msi"), 2),
-                (format!("roomlerd_0.4.{i}_amd64.deb"), 1),
-                (format!("roomlerd_0.4.{i}_amd64.deb.asc"), 5),
+                (format!("meshharbord-0.4.{i}-x86_64-pc-windows-msvc.msi"), 2),
+                (format!("meshharbord_0.4.{i}_amd64.deb"), 1),
+                (format!("meshharbord_0.4.{i}_amd64.deb.asc"), 5),
             ],
         ));
     }

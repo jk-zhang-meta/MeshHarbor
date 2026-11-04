@@ -144,8 +144,8 @@ mod tests {
                 .is_ok()
         );
         for url in [
-            "https://github.com/gjovanov/roomler-ai/releases/download/agent-v9/agent.deb",
-            "https://roomler.ai/agent.deb",
+            "https://github.com/jk-zhang-meta/MeshHarbor/releases/download/agent-v9/agent.deb",
+            "https://meshharbor.itachi.fans/agent.deb",
             "https://www.itachi.fans/meshharbor-evil/a.deb",
             "https://www.itachi.fans/a.deb",
         ] {

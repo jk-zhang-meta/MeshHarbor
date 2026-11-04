@@ -21,7 +21,7 @@ diff -ruN --strip-trailing-cr upstream/src/adapter.rs vendored/src/adapter.rs
 +        // `NetworkList\Signatures\Unmanaged` registry entry whose
 +        // ProfileName/Description matched the adapter NAME on every drop —
 +        // erasing the network's NLA identity (and the operator's
-+        // Private-profile categorization) that roomler's constant requested
++        // Private-profile categorization) that meshharbor's constant requested
 +        // GUID exists to keep stable. The deletion (and its helper
 +        // `delete_adapter_info_from_reg`) is removed; the feature flag stays
 +        // declared so `tun`'s `features = ["winreg"]` request still resolves.

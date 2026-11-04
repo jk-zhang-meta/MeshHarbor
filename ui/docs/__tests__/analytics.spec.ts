@@ -6,7 +6,7 @@
  *
  * Before this the shell wrote the tracker's tag into every page, so a
  * self-hosted copy of the docs, a fork and a `localhost` build all reported
- * to purestat.ai as `roomler.ai`. Now every page carries a same-origin
+ * to purestat.ai as `meshharbor.itachi.fans`. Now every page carries a same-origin
  * loader (`theme/analytics.js`) whose configuration rides on its own tag as
  * `data-*`, and the loader injects the tracker only where the SPA's rule
  * would. Three things are held here:
@@ -57,7 +57,7 @@ const assets: SiteAssets = {
 }
 
 /** The one tag the shell writes, on every page. */
-const LOADER_TAG = `<script src="${assets.analytics}" defer data-src="https://purestat.ai/js/purestat.js" data-domain="roomler.ai" data-hosts="roomler.ai,www.roomler.ai"></script>`
+const LOADER_TAG = `<script src="${assets.analytics}" defer data-src="https://purestat.ai/js/purestat.js" data-domain="meshharbor.itachi.fans" data-hosts="meshharbor.itachi.fans,www.meshharbor.itachi.fans"></script>`
 // `\ssrc`, not `\bsrc`: the loader's own tag carries `data-src="https://purestat.ai/…"`.
 const TRACKER_TAG = /<script\b[^>]*\ssrc="https:\/\/purestat\.ai/
 
@@ -123,11 +123,11 @@ describe('analytics.js — one rule, two implementations', () => {
   })
 
   it('injects exactly the tag the pages always carried, deferred, into <head>, when it loads', () => {
-    const doc = run({ hostname: 'roomler.ai', protocol: 'https:', webdriver: false })
+    const doc = run({ hostname: 'meshharbor.itachi.fans', protocol: 'https:', webdriver: false })
     const tag = trackers(doc)[0] as HTMLScriptElement
     expect(tag.parentElement).toBe(doc.head)
     expect(tag.defer).toBe(true)
-    expect(tag.getAttribute('data-domain')).toBe('roomler.ai')
+    expect(tag.getAttribute('data-domain')).toBe('meshharbor.itachi.fans')
     expect(tag.getAttribute('src')).toBe('https://purestat.ai/js/purestat.js')
     expect(tag.getAttribute('type')).toBeNull()
     // Nothing else changed: the loader's own tag is still the only other script.
@@ -144,20 +144,20 @@ describe('analytics.js — one rule, two implementations', () => {
     const fork: Where = { hostname: 'docs.example', protocol: 'https:', webdriver: false }
     expect(trackers(run(fork, { ...DEFAULT_ATTRS, 'data-hosts': 'docs.example,www.docs.example' }))).toHaveLength(1)
     expect(trackers(run(fork, { ...DEFAULT_ATTRS, 'data-hosts': 'www.docs.example' }))).toHaveLength(0)
-    expect(trackers(run({ hostname: 'roomler.ai', protocol: 'https:', webdriver: false }, { ...DEFAULT_ATTRS, 'data-hosts': '' }))).toHaveLength(0)
+    expect(trackers(run({ hostname: 'meshharbor.itachi.fans', protocol: 'https:', webdriver: false }, { ...DEFAULT_ATTRS, 'data-hosts': '' }))).toHaveLength(0)
     // An empty hostname (file:, about:) never matches an empty entry.
     expect(trackers(run({ hostname: '', protocol: 'https:', webdriver: false }, { ...DEFAULT_ATTRS, 'data-hosts': ',' }))).toHaveLength(0)
   })
 
   it('loads the tracker its tag names, for the site its tag names', () => {
-    const doc = run({ hostname: 'roomler.ai', protocol: 'https:', webdriver: false }, { 'data-src': 'https://purestat.ai/js/other.js', 'data-domain': 'x.roomler.ai', 'data-hosts': 'roomler.ai' })
+    const doc = run({ hostname: 'meshharbor.itachi.fans', protocol: 'https:', webdriver: false }, { 'data-src': 'https://purestat.ai/js/other.js', 'data-domain': 'x.meshharbor.itachi.fans', 'data-hosts': 'meshharbor.itachi.fans' })
     const tag = trackers(doc)[0]!
     expect(tag.getAttribute('src')).toBe('https://purestat.ai/js/other.js')
-    expect(tag.getAttribute('data-domain')).toBe('x.roomler.ai')
+    expect(tag.getAttribute('data-domain')).toBe('x.meshharbor.itachi.fans')
   })
 
   it('does nothing without its element, or with a tag missing the tracker or the site', () => {
-    const hosted: Where = { hostname: 'roomler.ai', protocol: 'https:', webdriver: false }
+    const hosted: Where = { hostname: 'meshharbor.itachi.fans', protocol: 'https:', webdriver: false }
     expect(trackers(run(hosted, null))).toHaveLength(0)
     const { 'data-src': _src, ...noSrc } = DEFAULT_ATTRS
     expect(trackers(run(hosted, noSrc))).toHaveLength(0)
@@ -204,7 +204,7 @@ const post: Post = {
   outFile: 'x/index.html',
   sourceFile: 'ui/blog/posts/x.md',
   heroImage: { url: '/docs/assets/remote-desktop.cfab9256a7.svg', width: 760, height: 400 },
-  og: { url: 'https://roomler.ai/docs/assets/og.0123456789.png', width: 1200, height: 630, alt: 'A browser tab' },
+  og: { url: 'https://meshharbor.itachi.fans/docs/assets/og.0123456789.png', width: 1200, height: 630, alt: 'A browser tab' },
   html: '<p>Body.</p>',
   headings: [],
   plain: '',
@@ -224,7 +224,7 @@ const PAGES: ReadonlyArray<[string, (a: SiteAssets) => string]> = [
 describe('the shell', () => {
   it('builds the loader tag from ANALYTICS in site.ts, which is the SPA’s configuration', () => {
     expect(ANALYTICS).toEqual({ src: ANALYTICS_SRC, domain: ANALYTICS_DOMAIN, hosts: ANALYTICS_HOSTS })
-    expect(ANALYTICS!.hosts).toEqual(['roomler.ai', 'www.roomler.ai'])
+    expect(ANALYTICS!.hosts).toEqual(['meshharbor.itachi.fans', 'www.meshharbor.itachi.fans'])
   })
 
   it.each(PAGES)('%s carries the loader once, in <head>, and never the tracker', (_, render) => {
@@ -258,7 +258,7 @@ describe('the shell', () => {
       og: { type: 'website', title: 'x' },
       assets: { ...assets, analytics: '/docs/assets/analytics.0000000000.js' },
     })
-    expect(html).toContain('<script src="/docs/assets/analytics.0000000000.js" defer data-src="https://purestat.ai/js/purestat.js" data-domain="roomler.ai" data-hosts="roomler.ai,www.roomler.ai"></script>')
+    expect(html).toContain('<script src="/docs/assets/analytics.0000000000.js" defer data-src="https://purestat.ai/js/purestat.js" data-domain="meshharbor.itachi.fans" data-hosts="meshharbor.itachi.fans,www.meshharbor.itachi.fans"></script>')
   })
 })
 
@@ -302,7 +302,7 @@ describe('the build publishes the loader into both trees', () => {
     const names = new Set<string>()
     for (const f of html) {
       const text = readFileSync(join(root, f), 'utf8')
-      const m = text.match(new RegExp(`<script src="(${assetBase}/analytics\\.[0-9a-f]{10}\\.js)" defer data-src="https://purestat\\.ai/js/purestat\\.js" data-domain="roomler\\.ai" data-hosts="roomler\\.ai,www\\.roomler\\.ai"></script>`, 'g'))
+      const m = text.match(new RegExp(`<script src="(${assetBase}/analytics\\.[0-9a-f]{10}\\.js)" defer data-src="https://purestat\\.ai/js/purestat\\.js" data-domain="meshharbor\\.ai" data-hosts="meshharbor\\.ai,www\\.meshharbor\\.ai"></script>`, 'g'))
       expect(m, `${f} does not carry the loader`).toHaveLength(1)
       names.add(m![0]!.match(/src="([^"]+)"/)![1]!)
       expect(text, `${f} carries the tracker itself`).not.toMatch(TRACKER_TAG)

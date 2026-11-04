@@ -198,7 +198,7 @@ interface Form {
   autoOffMin: number
 }
 
-const STORAGE_PREFIX = 'roomler-rc-keep-busy.v1:'
+const STORAGE_PREFIX = 'meshharbor-rc-keep-busy.v1:'
 const defaults: Form = { pattern: 'circle', speed: 'normal', size: 'm', resumeAfterS: 30, autoOffMin: 0 }
 
 /** The remembered form for this device, or the defaults with the org's

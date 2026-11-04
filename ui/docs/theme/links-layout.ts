@@ -28,9 +28,9 @@ import {
 import { graph, organization } from './structured.ts'
 
 export const LINKS_URL = '/links/'
-export const LINKS_TITLE = 'Roomler: start here'
+export const LINKS_TITLE = 'MeshHarbor: start here'
 export const LINKS_DESCRIPTION =
-  'Start free, install the agent, read the docs, or follow Roomler on YouTube, TikTok, X and Facebook.'
+  'Start free, install the agent, read the docs, or follow MeshHarbor on YouTube, TikTok, X and Facebook.'
 
 export interface LinksCtx {
   assets: SiteAssets
@@ -79,11 +79,11 @@ export function renderLinks(ctx: LinksCtx): string {
   const main = `<main id="main" class="home links">
   <section class="home-hero links-hero">
     <div class="home-wrap links-wrap">
-      <h1 class="links-title">Roomler</h1>
+      <h1 class="links-title">MeshHarbor</h1>
       <p class="links-lead">${escapeHtml(HOME_DESCRIPTION)}</p>
       <ul class="links-actions">${actions}</ul>
       <p class="links-note">The agent runs on ${escapeHtml(platforms)}. The code is open source.</p>
-      <h2 class="links-h2">Follow Roomler</h2>
+      <h2 class="links-h2">Follow MeshHarbor</h2>
       <ul class="links-channels">${channels}</ul>
     </div>
   </section>

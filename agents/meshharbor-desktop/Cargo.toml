@@ -174,7 +174,7 @@ assets = [
 name = "meshharbor-desktop"
 summary = "MeshHarbor desktop: the consent prompt, banner and tray for the MeshHarbor daemon"
 release = "1"
-url = "https://roomler.ai"
+url = "https://meshharbor.itachi.fans"
 auto-req = "no"
 assets = [
     { source = "target/release/meshharbor-desktop", dest = "/usr/bin/meshharbor-desktop", mode = "755" },

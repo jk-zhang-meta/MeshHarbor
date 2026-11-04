@@ -45,14 +45,14 @@ jobs:
           PERSONAL_ACCESS_TOKEN: ${{ secrets.CLA_SIGNATURES_TOKEN }}
         with:
           path-to-signatures: 'signatures/version1/cla.json'
-          path-to-document: 'https://github.com/gjovanov/roomler-ai/blob/master/docs/CLA.md'
+          path-to-document: 'https://github.com/jk-zhang-meta/MeshHarbor/blob/master/docs/CLA.md'
           branch: 'main'
           allowlist: 'gjovanov,dependabot[bot]'
           remote-organization-name: 'gjovanov'
-          remote-repository-name: 'roomler-cla-signatures'
+          remote-repository-name: 'meshharbor-cla-signatures'
           custom-notsigned-prcomment: |
             Thanks for the contribution! Before we can merge it, please read the
-            [Roomler CLA](https://github.com/gjovanov/roomler-ai/blob/master/docs/CLA.md)
+            [MeshHarbor CLA](https://github.com/jk-zhang-meta/MeshHarbor/blob/master/docs/CLA.md)
             and sign it by commenting below with exactly:
           custom-pr-sign-comment: 'I have read the CLA document and I hereby sign the CLA'
           custom-allsigned-prcomment: 'All contributors have signed the CLA. Thank you!'

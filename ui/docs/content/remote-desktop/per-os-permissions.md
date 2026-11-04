@@ -39,7 +39,7 @@ it.
 @macos
 macOS is the strictest of the three, and the least communicative. **Two grants
 are required**, both under *System Settings → Privacy & Security*, both for
-**Roomler Daemon**:
+**MeshHarbor Daemon**:
 
 | Grant | Without it |
 |---|---|

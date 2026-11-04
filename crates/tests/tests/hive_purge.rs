@@ -445,7 +445,7 @@ async fn pair(app: &TestApp, seeded: &SeededTenant, dir: &Path, tag: &str) -> Pa
     assert!(alive(&a_pid), "A's harness runs the session");
     let a_run = a_dir.join("run").join(&sid);
     assert!(a_run.exists(), "A holds the session's runtime directory");
-    let a_state = a_dir.join("home").join(".roomler").join("hive").join(&sid);
+    let a_state = a_dir.join("home").join(".meshharbor").join("hive").join(&sid);
     assert!(a_state.exists(), "A's account holds the session's state");
     Pair {
         a,

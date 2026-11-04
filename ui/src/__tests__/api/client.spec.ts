@@ -157,7 +157,7 @@ describe('api client', () => {
     })
 
     it('should redirect to login on 401 for non-auth paths', async () => {
-      localStorage.setItem('roomler-signed-in', '1')
+      localStorage.setItem('meshharbor-signed-in', '1')
       // The refresh's answer is stated: before #1788 this test left it
       // unmocked, and the refresh that then THREW counted as a rejection.
       mockFetch
@@ -166,7 +166,7 @@ describe('api client', () => {
 
       await expect(api.get('/tenant/123/room')).rejects.toThrow()
 
-      expect(localStorage.getItem('roomler-signed-in')).toBeNull()
+      expect(localStorage.getItem('meshharbor-signed-in')).toBeNull()
       expect(mockRouter.push).toHaveBeenCalledWith({ name: 'login' })
     })
 
@@ -176,7 +176,7 @@ describe('api client', () => {
     // logged out every non-owner in the org. The old rule made that the
     // CORRECT behaviour, which is why nothing caught it.
     it('a permission 403 on a GET does NOT end the session', async () => {
-      localStorage.setItem('roomler-signed-in', '1')
+      localStorage.setItem('meshharbor-signed-in', '1')
       mockFetch.mockResolvedValueOnce(
         mockJsonResponse(
           403,
@@ -189,7 +189,7 @@ describe('api client', () => {
         'Missing MANAGE_TENANT permission',
       )
 
-      expect(localStorage.getItem('roomler-signed-in')).toBe('1')
+      expect(localStorage.getItem('meshharbor-signed-in')).toBe('1')
       expect(mockRouter.push).not.toHaveBeenCalled()
     })
 
@@ -197,12 +197,12 @@ describe('api client', () => {
     // does NOTHING but throw. That is what keeps a newly-added
     // permission-gated route inert here without anyone remembering it.
     it('an UNCLASSIFIED 403 neither logs out nor navigates', async () => {
-      localStorage.setItem('roomler-signed-in', '1')
+      localStorage.setItem('meshharbor-signed-in', '1')
       mockFetch.mockResolvedValueOnce(mockJsonResponse(403, {}, false))
 
       await expect(api.get('/tenant/123/room')).rejects.toThrow()
 
-      expect(localStorage.getItem('roomler-signed-in')).toBe('1')
+      expect(localStorage.getItem('meshharbor-signed-in')).toBe('1')
       expect(mockRouter.push).not.toHaveBeenCalled()
     })
 
@@ -210,14 +210,14 @@ describe('api client', () => {
     // out of the session: the credential is fine and the user is still in
     // every other org they belong to.
     it('a not_a_member 403 leaves the tenant and KEEPS the session', async () => {
-      localStorage.setItem('roomler-signed-in', '1')
+      localStorage.setItem('meshharbor-signed-in', '1')
       mockFetch.mockResolvedValueOnce(
         mockJsonResponse(403, { error: 'not_a_member', message: 'Not a member' }, false),
       )
 
       await expect(api.get('/tenant/123/device')).rejects.toThrow('Not a member')
 
-      expect(localStorage.getItem('roomler-signed-in')).toBe('1')
+      expect(localStorage.getItem('meshharbor-signed-in')).toBe('1')
       expect(mockRouter.push).toHaveBeenCalledWith({ name: 'dashboard' })
     })
 
@@ -228,7 +228,7 @@ describe('api client', () => {
     it.each(['post', 'put', 'delete'] as const)(
       'should NOT log out or redirect on a 403 %s',
       async (verb) => {
-        localStorage.setItem('roomler-signed-in', '1')
+        localStorage.setItem('meshharbor-signed-in', '1')
         mockFetch.mockResolvedValueOnce(
           mockJsonResponse(
             403,
@@ -244,7 +244,7 @@ describe('api client', () => {
           'Cannot grant permissions you do not hold: EXEC_DEVICE',
         )
 
-        expect(localStorage.getItem('roomler-signed-in')).toBe('1')
+        expect(localStorage.getItem('meshharbor-signed-in')).toBe('1')
         expect(mockRouter.push).not.toHaveBeenCalled()
       },
     )
@@ -270,12 +270,12 @@ describe('api client', () => {
     // session was being logged out and bounced to a login page that was
     // itself throttled.
     it('should NOT log out or redirect on 429', async () => {
-      localStorage.setItem('roomler-signed-in', '1')
+      localStorage.setItem('meshharbor-signed-in', '1')
       mockFetch.mockResolvedValueOnce(mockJsonResponse(429, {}, false))
 
       await expect(api.get('/tenant/123/room')).rejects.toThrow()
 
-      expect(localStorage.getItem('roomler-signed-in')).toBe('1')
+      expect(localStorage.getItem('meshharbor-signed-in')).toBe('1')
       expect(mockRouter.push).not.toHaveBeenCalled()
     })
 
@@ -309,28 +309,28 @@ describe('api client', () => {
     // A throttled refresh says nothing about session validity, so the
     // session must survive it — otherwise being rate limited logs you out.
     it('should keep the session when the token refresh is throttled', async () => {
-      localStorage.setItem('roomler-signed-in', '1')
+      localStorage.setItem('meshharbor-signed-in', '1')
       mockFetch
         .mockResolvedValueOnce(mockJsonResponse(401, {}, false)) // original request
         .mockResolvedValueOnce(mockJsonResponse(429, {}, false)) // refresh throttled
 
       await expect(api.get('/tenant/123/room')).rejects.toThrow()
 
-      expect(localStorage.getItem('roomler-signed-in')).toBe('1')
+      expect(localStorage.getItem('meshharbor-signed-in')).toBe('1')
       expect(mockRouter.push).not.toHaveBeenCalled()
     })
 
     // ...but a genuine rejection still logs out, so the fix above doesn't
     // strand a dead session.
     it('should still log out when the token refresh is rejected', async () => {
-      localStorage.setItem('roomler-signed-in', '1')
+      localStorage.setItem('meshharbor-signed-in', '1')
       mockFetch
         .mockResolvedValueOnce(mockJsonResponse(401, {}, false)) // original request
         .mockResolvedValueOnce(mockJsonResponse(401, {}, false)) // refresh rejected
 
       await expect(api.get('/tenant/123/room')).rejects.toThrow()
 
-      expect(localStorage.getItem('roomler-signed-in')).toBeNull()
+      expect(localStorage.getItem('meshharbor-signed-in')).toBeNull()
       expect(mockRouter.push).toHaveBeenCalledWith({ name: 'login' })
     })
 
@@ -338,8 +338,8 @@ describe('api client', () => {
     // hosted images: after a successful refresh, a retry that met a spent rate
     // limit logged the user out; so did a refresh the next navigation cut short.
     describe('#1788: not every refresh problem is a rejection', () => {
-      const signedIn = () => localStorage.getItem('roomler-signed-in')
-      beforeEach(() => localStorage.setItem('roomler-signed-in', '1'))
+      const signedIn = () => localStorage.getItem('meshharbor-signed-in')
+      beforeEach(() => localStorage.setItem('meshharbor-signed-in', '1'))
 
       it('retries once after a successful refresh and returns the answer', async () => {
         mockFetch

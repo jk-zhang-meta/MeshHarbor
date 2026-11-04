@@ -1,6 +1,6 @@
 # FR-76 — Tenant-owned DERP nodes: a floor the UDP-blocked population can reach *near them*
 
-**Issue:** [#1454](https://github.com/gjovanov/roomler-ai/issues/1454) · **Status:** spec — not started · **Opened:** 2026-09-06
+**Issue:** [#1454](https://github.com/jk-zhang-meta/MeshHarbor/issues/1454) · **Status:** spec — not started · **Opened:** 2026-09-06
 
 ## Goal
 
@@ -166,6 +166,6 @@ easy to mistake for this and it is not.
 ## Related
 
 - **FR-33 / #905** — the LAN-capture surfacing that named this class in one line
-  per host; read `roomler status`'s `lan` line before any archaeology.
+  per host; read `meshharbor status`'s `lan` line before any archaeology.
 - **FR-19 / #805** — org relays; the sibling this cannot reuse, and why.
 - **FR-28** — DERP drain on pod roll.

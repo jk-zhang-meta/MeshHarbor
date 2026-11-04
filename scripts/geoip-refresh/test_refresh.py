@@ -40,11 +40,11 @@ if a[0]=='inspect':
  if s['case']=='restart-noop' and s['restarts']==1: started='initial'
  if s['case']=='drift' and s['inspections']>=2: started='other-deploy'
  source=str(r/'data') if s['case']!='wrong-mount' else '/wrong'
- env=['MESHHARBOR__STATS__GEOIP_MMDB=/usr/share/roomler/geoip-managed/current/dbip-country-lite.mmdb']
+ env=['MESHHARBOR__STATS__GEOIP_MMDB=/usr/share/meshharbor/geoip-managed/current/dbip-country-lite.mmdb']
  if s['case']=='env-drift' and s['inspections']>=2: env=[]
  image='sha256:'+('3' if s['case']=='image-drift' and s['inspections']>=2 else '1')*64
  running=not(s['case']=='stopped-restart-failure' and s['restarts']==1)
- print(json.dumps([{'Id':'2'*64,'Image':image,'State':{'Running':running,'StartedAt':started},'Mounts':[{'Type':'bind','Source':source,'Destination':'/usr/share/roomler/geoip-managed','RW':False}],'Config':{'Env':env}}])); sys.exit(0)
+ print(json.dumps([{'Id':'2'*64,'Image':image,'State':{'Running':running,'StartedAt':started},'Mounts':[{'Type':'bind','Source':source,'Destination':'/usr/share/meshharbor/geoip-managed','RW':False}],'Config':{'Env':env}}])); sys.exit(0)
 if a[0]=='run':
  for seq in [['--rm'],['--network','none'],['--read-only'],['--cap-drop','ALL'],['--security-opt','no-new-privileges'],['--user','65534:65534'],['--memory','128m'],['--cpus','0.5'],['--pids-limit','32'],['--entrypoint','/usr/local/bin/meshharbor-geoip-check']]:
   assert any(a[i:i+len(seq)]==seq for i in range(len(a)))

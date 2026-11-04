@@ -4,7 +4,7 @@
 //!
 //! Two `webrtc-rs` PeerConnections in loopback; the "agent" side runs the
 //! PRODUCTION handler (`meshharbord::recording::remote::attach`), which drives
-//! the PRODUCTION recorder supervisor, which launches the real `roomlerd
+//! the PRODUCTION recorder supervisor, which launches the real `meshharbord
 //! record` child on the synthetic frame source. The "controller" side speaks
 //! the wire. What is checked is what a controller would see (the states),
 //! what the device reports to the server (the activity queue), what the
@@ -63,7 +63,7 @@ struct Setup {
     _dir: tempfile::TempDir,
 }
 
-/// The process-wide recorder, installed once: the real `roomlerd record` on
+/// The process-wide recorder, installed once: the real `meshharbord record` on
 /// the synthetic source, recording into a scratch folder.
 fn setup() -> &'static Setup {
     static SETUP: OnceLock<Setup> = OnceLock::new();
@@ -78,7 +78,7 @@ fn setup() -> &'static Setup {
         cfg.record_dir = Some(out.to_string_lossy().into_owned());
         meshharbor_node_core::config::save(&cfg_path, &cfg).unwrap();
         let manager = Arc::new(
-            RecordingManager::new(PathBuf::from(env!("CARGO_BIN_EXE_roomlerd")), cfg_path)
+            RecordingManager::new(PathBuf::from(env!("CARGO_BIN_EXE_meshharbord")), cfg_path)
                 .with_service_identity(false)
                 .with_unattended_dir(unattended.clone())
                 .with_reattach_grace(GRACE)

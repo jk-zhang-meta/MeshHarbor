@@ -206,7 +206,7 @@ async fn an_export_shows_exactly_the_frames_its_edit_list_says() {
     );
     assert!(
         !d.path()
-            .join(".roomler-partial")
+            .join(".meshharbor-partial")
             .join(format!(
                 "{}.partial",
                 dest.file_name().unwrap().to_string_lossy()
@@ -278,14 +278,14 @@ async fn a_cancelled_or_impossible_export_leaves_nothing_behind() {
     assert!(e.detail().contains("nothing to export"), "{}", e.detail());
 
     assert!(!dest.exists(), "no export file");
-    let staged: Vec<PathBuf> = std::fs::read_dir(d.path().join(".roomler-partial"))
+    let staged: Vec<PathBuf> = std::fs::read_dir(d.path().join(".meshharbor-partial"))
         .map(|r| r.flatten().map(|e| e.path()).collect())
         .unwrap_or_default();
     assert!(staged.is_empty(), "nothing staged left: {staged:?}");
 }
 
-/// The process meshharbor-desktop runs: `roomlerd media probe` says the
-/// recording is editable, and `roomlerd media export` writes the file and
+/// The process meshharbor-desktop runs: `meshharbord media probe` says the
+/// recording is editable, and `meshharbord media export` writes the file and
 /// says so, with what its sound carries (nothing: the recording is silent).
 #[tokio::test]
 async fn the_media_process_probes_and_exports() {
@@ -596,7 +596,7 @@ async fn the_probe_says_a_hardware_recording_is_editable_only_with_the_decoder()
             .arg(fixture_path(f.name))
             .stdin(std::process::Stdio::null())
             .output()
-            .expect("roomlerd media probe");
+            .expect("meshharbord media probe");
         let probe = String::from_utf8_lossy(&out.stdout)
             .lines()
             .find_map(parse_event_line)
@@ -1016,7 +1016,7 @@ mod sound {
             let e = run(&source, &edits).await.unwrap_err();
             assert_eq!(e.code(), "music_unreadable", "{name}: {}", e.detail());
         }
-        let staged: Vec<_> = std::fs::read_dir(d.path().join(".roomler-partial"))
+        let staged: Vec<_> = std::fs::read_dir(d.path().join(".meshharbor-partial"))
             .map(|r| r.flatten().map(|e| e.path()).collect())
             .unwrap_or_default();
         assert!(staged.is_empty(), "nothing staged left: {staged:?}");

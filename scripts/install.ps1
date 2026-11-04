@@ -1,6 +1,6 @@
 # meshharbor install.ps1 -- terminal-driven install of the MeshHarbor node stack on
 # Windows, replicating the meshharbor-setup wizard's steps without a GUI:
-# resolve via the roomler.ai proxy -> download -> sha256-verify -> install ->
+# resolve via the meshharbor.itachi.fans proxy -> download -> sha256-verify -> install ->
 # enroll -> autostart. Installs meshharbord + the meshharbor CLI (both inside the
 # MSI since P4b) and places the meshharbor-desktop companion beside them.
 #

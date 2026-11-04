@@ -12,7 +12,7 @@
 //! platform-keyed archives instead of perUser/perMachine MSI flavours.
 //!
 //! Why proxy: same reasoning as the agent side. Operators behind
-//! corporate proxies can download a single archive via `roomler.ai`
+//! corporate proxies can download a single archive via `meshharbor.itachi.fans`
 //! that the AV layer trusts, without pinning to a specific GitHub IP
 //! or hitting the 60/hr unauthenticated REST quota.
 

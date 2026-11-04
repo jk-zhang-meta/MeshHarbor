@@ -567,7 +567,7 @@ fn install_panic_hook(log_dir: PathBuf) {
         tracing::error!(panic_log = %path.display(), "agent panicked; details written to disk");
 
         // Phase 1B: emit a JSON crash sidecar for the uploader to
-        // ship to roomler.ai on next agent startup. The sidecar is
+        // ship to meshharbor.itachi.fans on next agent startup. The sidecar is
         // INDEPENDENT of the text dump above — even if the recorder
         // recursively panics inside its catch_unwind, the text dump
         // has already flushed to disk. Worker context: panic hook

@@ -1,4 +1,4 @@
-# Roomler Individual Contributor Licence Agreement
+# MeshHarbor Individual Contributor Licence Agreement
 
 **Version 1.0**
 
@@ -10,7 +10,7 @@
 > law. Do not enable the CLA bot against this version — see
 > `.github/workflows/cla.yml`, which is deliberately disabled.
 
-Thank you for your interest in Roomler, a project of **G ROX EOOD** ("we" or
+Thank you for your interest in MeshHarbor, a project of **G ROX EOOD** ("we" or
 "us").
 
 This agreement clarifies the intellectual-property licence granted with
@@ -56,7 +56,7 @@ distribute Your Contributions and such derivative works.
 terms of our choosing, including licences that differ from the licence the
 Contribution was submitted under and including proprietary terms.**
 
-> *Why §2 has a second paragraph.* Roomler is split-licensed — AGPL-3.0-only on
+> *Why §2 has a second paragraph.* MeshHarbor is split-licensed — AGPL-3.0-only on
 > the control plane, MPL-2.0 on everything installed on a machine — and sells
 > exceptions to the AGPL (see [COMMERCIAL.md](../COMMERCIAL.md)). Selling an
 > exception requires the right to license the whole work under other terms. This
@@ -147,11 +147,11 @@ one-time action covering all your future contributions.
 
 If you are contributing as part of your employment and your employer holds
 rights to your work, we need a **Corporate CLA** instead — write to
-**legal@roomler.ai** and we will send one.
+**legal@meshharbor.itachi.fans** and we will send one.
 
 ---
 
-Questions: **legal@roomler.ai**
+Questions: **legal@meshharbor.itachi.fans**
 
 G ROX EOOD · Plovdivska 110, 4400 Pazardzhik, Bulgaria · UIC 205174895 ·
 VAT BG205174895 · represented by Goran Jovanov, Manager

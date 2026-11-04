@@ -273,7 +273,7 @@ request, and the org session the server mints is bound like any other.
 ### Field-verified (2026-10-26)
 
 A TEST rig: center on Isvoro with `enforce` and peer relays `on`; every node a real
-`roomlerd` in netstack mode (`46ee8946`). The mainland member is a workstation in
+`meshharbord` in netstack mode (`46ee8946`). The mainland member is a workstation in
 Henan, the ingress relay po0 GZ, the line the po0 private interconnect to po0 HK
 (`10.42.2.114`), the exit relay po0 HK, and the non-mainland member Hyonix Tokyo.
 

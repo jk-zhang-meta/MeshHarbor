@@ -1,14 +1,14 @@
 ---
 title: Frequently asked questions
-description: Short answers about Roomler — what it is, what it costs, whether it can see your screen, how it compares to Tailscale and RustDesk, and how to self-host it.
+description: Short answers about MeshHarbor — what it is, what it costs, whether it can see your screen, how it compares to Tailscale and RustDesk, and how to self-host it.
 tags: [faq, overview, getting-started, security, self-hosting, pricing]
 faq: true
 order: 0
 ---
 
-## What is Roomler?
+## What is MeshHarbor?
 
-Roomler is three products on one agent: a browser-based remote desktop, a private
+MeshHarbor is three products on one agent: a browser-based remote desktop, a private
 WireGuard-style mesh network between your machines, and team chat with video
 calls. You install one agent per machine and use everything from a browser tab.
 It runs on Windows, macOS and Linux, and you can host the whole thing yourself.
@@ -19,7 +19,7 @@ No. The viewing side is a plain browser with nothing installed (Chrome, Edge or
 another Chromium browser works best; Safari and Firefox work too). Only the
 machine you are reaching runs an agent.
 
-## Can Roomler see my screen or my keystrokes?
+## Can MeshHarbor see my screen or my keystrokes?
 
 No. Remote-desktop video and input travel directly between your browser and the
 machine, encrypted end to end. When no direct path exists the traffic falls back
@@ -50,17 +50,17 @@ one. Nothing is held back from a self-hosted deployment. See
 ## How is this different from Tailscale?
 
 Tailscale is a better mesh network — more years, more platforms, more polish in
-that lane. Roomler's difference is that the same agent is also a remote desktop
+that lane. MeshHarbor's difference is that the same agent is also a remote desktop
 and an SSH server, so you are not running two agents, two control planes and two
-audit trails on every machine. See [Roomler vs Tailscale](/docs/compare/tailscale/).
+audit trails on every machine. See [MeshHarbor vs Tailscale](/docs/compare/tailscale/).
 
 ## How is this different from RustDesk or TeamViewer?
 
 RustDesk is a mature open-source remote desktop, and TeamViewer has two decades
-of polish. Neither also gives you a private network: with Roomler the machine you
+of polish. Neither also gives you a private network: with MeshHarbor the machine you
 just connected to is already reachable by address and name, so a port forward or
-an SSH session needs no second product. See [Roomler vs
-RustDesk](/docs/compare/rustdesk/) and [Roomler vs
+an SSH session needs no second product. See [MeshHarbor vs
+RustDesk](/docs/compare/rustdesk/) and [MeshHarbor vs
 TeamViewer](/docs/compare/teamviewer/).
 
 ## Does it work behind a corporate firewall?
@@ -77,7 +77,7 @@ traffic.
 
 ## Why is my session slow?
 
-Almost always because the two ends fell back to a relay. Run `roomler peers` or
+Almost always because the two ends fell back to a relay. Run `meshharbor peers` or
 check the session's connection indicator — if it says **Relay**, that is the
 answer, and the most common cause is a VPN client on one end capturing the local
 network range. See [cannot connect](/docs/troubleshooting/cannot-connect/).
@@ -104,7 +104,7 @@ the wrong one for a colleague's laptop. See [consent](/docs/remote-desktop/conse
 
 ## Can I SSH to a machine without installing an SSH server?
 
-Yes. Roomler serves SSH on a machine that runs no `sshd`, binds no port and needs
+Yes. MeshHarbor serves SSH on a machine that runs no `sshd`, binds no port and needs
 no firewall rule, including on Windows. It is off by default behind four
 independent gates. See [SSH](/docs/network/ssh/).
 
@@ -142,7 +142,7 @@ releases](/docs/security/signed-releases/).
 
 Yes. The server is AGPL-3.0 and the agent that runs on your machines is MPL-2.0.
 The source is at
-[github.com/gjovanov/roomler-ai](https://github.com/gjovanov/roomler-ai).
+[github.com/jk-zhang-meta/MeshHarbor](https://github.com/jk-zhang-meta/MeshHarbor).
 
 ## Can it record remote sessions for compliance?
 
@@ -153,7 +153,7 @@ need session recording, this is a genuine gap.
 
 ## Where do I report a problem?
 
-[github.com/gjovanov/roomler-ai/issues](https://github.com/gjovanov/roomler-ai/issues).
-Include `roomler status` output — and for a connectivity problem, from both ends.
+[github.com/jk-zhang-meta/MeshHarbor/issues](https://github.com/jk-zhang-meta/MeshHarbor/issues).
+Include `meshharbor status` output — and for a connectivity problem, from both ends.
 Security issues should be reported privately; see
-[`SECURITY.md`](https://github.com/gjovanov/roomler-ai/blob/master/SECURITY.md).
+[`SECURITY.md`](https://github.com/jk-zhang-meta/MeshHarbor/blob/master/SECURITY.md).

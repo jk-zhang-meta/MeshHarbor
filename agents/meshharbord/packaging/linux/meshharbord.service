@@ -27,7 +27,7 @@ User=root
 # wrong tree entirely). Enroll against the SAME path:
 #
 #   sudo meshharbord --config /etc/meshharbor/config.toml \
-#        enroll --server https://roomler.ai --token <jwt> --name "$(hostname)"
+#        enroll --server https://meshharbor.itachi.fans --token <jwt> --name "$(hostname)"
 #
 # `enroll` creates the directory and writes the file 0600 (it holds a bearer
 # token). NOTE: this variable is consumed by systemd to build the argv — it is

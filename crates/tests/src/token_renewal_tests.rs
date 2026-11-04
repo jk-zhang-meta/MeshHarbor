@@ -11,10 +11,10 @@
 //!   re-enrolls and revives the row, every token minted before the removal
 //!   is refused, at the HTTP routes, the agent socket, DERP and the renew
 //!   route alike;
-//! - the same for a `roomler` tunnel client;
+//! - the same for a `meshharbor` tunnel client;
 //! - both kill switches; and the device list's "credential expires".
 //!
-//! And the device's half (P2), the real `roomlerd` code against this server:
+//! And the device's half (P2), the real `meshharbord` code against this server:
 //! a due token is renewed and saved before use; a device that was off across
 //! its expiry renews inside the grace and comes back by itself; a token
 //! re-enrolled on disk is taken up without a restart; a secondary org renews
@@ -494,7 +494,7 @@ async fn a_renewal_shows_in_the_device_list_without_a_reconnect() {
     );
 }
 
-/// A `roomler` tunnel client renews its own token, and removing it ends every
+/// A `meshharbor` tunnel client renews its own token, and removing it ends every
 /// earlier token, as for an agent. The roster route now checks the row too.
 #[tokio::test]
 async fn a_tunnel_client_renews_and_a_removal_ends_its_tokens() {
@@ -591,7 +591,7 @@ async fn a_tunnel_client_renews_and_a_removal_ends_its_tokens() {
 }
 
 // ---------------------------------------------------------------------------
-// FR-103 P2 — the DEVICE's half: the real `roomlerd` renewal code against
+// FR-103 P2 — the DEVICE's half: the real `meshharbord` renewal code against
 // this server.
 // ---------------------------------------------------------------------------
 
@@ -737,7 +737,7 @@ async fn a_lapsed_device_renews_in_the_grace_and_comes_back() {
     task.abort();
 }
 
-/// A device removed and enrolled again (`roomlerd re-enroll`) while its
+/// A device removed and enrolled again (`meshharbord re-enroll`) while its
 /// daemon kept running: the running token is now refused (the removal
 /// advanced the generation), and the daemon switches to the token the
 /// re-enrollment wrote to its config file, without a restart.

@@ -129,7 +129,7 @@ implemented, because it is not implementable as written. The channel's ordering 
 at `createDataChannel`, which must happen before the offer — and whether the session is
 relayed is only known after ICE nominates a pair. Doing it properly needs either a
 second channel the agent selects at runtime, or a renegotiation; both are new failure
-modes. Instead the flag is a per-viewer opt-in (`roomler-rc-unordered-video=1`) so the
+modes. Instead the flag is a per-viewer opt-in (`meshharbor-rc-unordered-video=1`) so the
 relay pair can be measured first. Revisit once FR-16's harness can say what direct
 carriers actually cost.
 

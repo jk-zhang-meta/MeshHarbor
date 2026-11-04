@@ -1,8 +1,8 @@
 # =============================================================================
-# ffmpeg-roomler — stripped FFmpeg port for the Roomler agent.
+# ffmpeg-meshharbor — stripped FFmpeg port for the MeshHarbor agent.
 #
 # This is a custom vcpkg port that builds a minimal FFmpeg with ONLY the
-# encoders Roomler needs:
+# encoders MeshHarbor needs:
 #
 #   HEVC: hevc_nvenc, hevc_qsv, hevc_amf
 #   H.264: h264_nvenc, h264_qsv, h264_amf
@@ -43,10 +43,10 @@ set(FFMPEG_REF "n7.1")
 # vcpkg_from_github will be enabled in rc.65 when this port is actually
 # built by CI. For rc.64 the port is documentation-only — CI does not
 # reference it. We emit a fatal_error so an accidental
-# `vcpkg install ffmpeg-roomler` during rc.64 fails fast rather than
+# `vcpkg install ffmpeg-meshharbor` during rc.64 fails fast rather than
 # silently producing a half-baked artifact.
 message(FATAL_ERROR
-    "ffmpeg-roomler is documentation-only in rc.64 — the port is not yet wired into CI.\n"
+    "ffmpeg-meshharbor is documentation-only in rc.64 — the port is not yet wired into CI.\n"
     "rc.65 implements + tests this port. Until then, the agent's Cargo.toml `ffmpeg-encoder` feature is header-only:\n"
     "  see agents/meshharbord/src/encode/ffmpeg/mod.rs (returns available()=false).\n"
     "Build the agent without `ffmpeg-encoder` for rc.64.")
@@ -71,7 +71,7 @@ message(FATAL_ERROR
 # )
 #
 # # Stripped FFmpeg configure. The encoder list intentionally excludes
-# # av1_* — Roomler's plan is HEVC/H.264/VP9, and the RTX 5090 Blackwell
+# # av1_* — MeshHarbor's plan is HEVC/H.264/VP9, and the RTX 5090 Blackwell
 # # AV1 MFT issue is unresolved upstream (Known Issues). Add av1_nvenc /
 # # av1_qsv / av1_amf here once that lands.
 # vcpkg_configure_make(

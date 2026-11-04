@@ -476,7 +476,7 @@ mod tests {
             tunnel_client_id: "507f1f77bcf86cd799439011".to_string(),
             tenant_id: "507f191e810c19729de860ea".to_string(),
             tunnel_client_token: "tok".to_string(),
-            server_url: "https://roomler.ai".to_string(),
+            server_url: "https://meshharbor.itachi.fans".to_string(),
             machine_name: "lap".to_string(),
         };
         let written = write_config(&r, Some(&path)).unwrap();

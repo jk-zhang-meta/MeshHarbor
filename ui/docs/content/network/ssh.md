@@ -5,7 +5,7 @@ tags: [network, ssh, security, access-control, windows, linux, macos]
 order: 7
 ---
 
-Roomler can serve SSH on a machine that **runs no `sshd`, binds no port and
+MeshHarbor can serve SSH on a machine that **runs no `sshd`, binds no port and
 needs no firewall rule** — including Windows, where an SSH server is usually a
 separate project.
 

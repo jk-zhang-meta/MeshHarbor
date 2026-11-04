@@ -141,7 +141,7 @@ describe('the static homepage', () => {
   it('has a topbar of its own: the brand is home, the sections are anchors, and there is a way in', () => {
     const html = render()
     const top = html.slice(html.indexOf('<header class="topbar">'), html.indexOf('</header>'))
-    expect(top).toContain('<a class="brand" href="/"><span class="brand__mark">Roomler</span></a>')
+    expect(top).toContain('<a class="brand" href="/"><span class="brand__mark">MeshHarbor</span></a>')
     expect(top).not.toContain('data-nav-toggle') // no docs sidebar to open
     expect(top).toContain('<a href="#features">Features</a>')
     expect(top).toContain('<a href="#pricing">Pricing</a>')
@@ -253,7 +253,7 @@ describe('home.js — the signed-in hand-off', () => {
   })
 
   it('ignores any value but "1", as the SPA does', () => {
-    window.localStorage.setItem('roomler-signed-in', 'true')
+    window.localStorage.setItem('meshharbor-signed-in', 'true')
     const run = runHomeJs({ '/api/capabilities': SAAS, '/api/stripe/plans': PLANS_404 })
     expect(run.replace).not.toHaveBeenCalled()
   })

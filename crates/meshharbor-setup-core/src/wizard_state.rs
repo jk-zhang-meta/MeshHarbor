@@ -124,7 +124,7 @@ mod tests {
             schema_version: CURRENT_SCHEMA,
             step: WizardStep::Token,
             role: Some("daemon-system".to_string()),
-            server_url: "https://roomler.ai".to_string(),
+            server_url: "https://meshharbor.itachi.fans".to_string(),
             device_name: "field-laptop".to_string(),
         };
         save(&path, &state).unwrap();

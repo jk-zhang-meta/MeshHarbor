@@ -30,7 +30,7 @@ import { test, expect, type Page } from '@playwright/test'
 const API_URL = process.env.E2E_API_URL || 'http://localhost:5001'
 const BASE_URL = process.env.E2E_BASE_URL || 'http://localhost:5000'
 const TENANT_ID = process.env.E2E_AGENT_E2E_TENANT_ID || ''
-const ADMIN_EMAIL = process.env.E2E_AGENT_E2E_ADMIN_EMAIL || 'agent-e2e-admin@roomler.local'
+const ADMIN_EMAIL = process.env.E2E_AGENT_E2E_ADMIN_EMAIL || 'agent-e2e-admin@meshharbor.local'
 const ADMIN_PASSWORD =
   process.env.E2E_AGENT_E2E_ADMIN_PASSWORD || 'agent-e2e-bootstrap-pw-2026'
 
@@ -95,7 +95,7 @@ test.describe('Switching devices in the nav while on the remote view (#1631)', (
   }) => {
     // -------- Log in: the session is an HttpOnly cookie, so log in through
     // the context's request API (the jar is shared with the page) and set the
-    // `roomler-signed-in` hint the SPA renders its shell on. --------
+    // `meshharbor-signed-in` hint the SPA renders its shell on. --------
     const loginResp = await context.request.post(`${API_URL}/api/auth/login`, {
       data: { email: ADMIN_EMAIL, password: ADMIN_PASSWORD },
     })
@@ -103,7 +103,7 @@ test.describe('Switching devices in the nav while on the remote view (#1631)', (
     const token = ((await loginResp.json()) as { access_token: string }).access_token
     await context.addInitScript(() => {
       try {
-        window.localStorage.setItem('roomler-signed-in', '1')
+        window.localStorage.setItem('meshharbor-signed-in', '1')
       } catch {
         /* private mode / storage blocked — the cookie still authenticates */
       }

@@ -1,18 +1,18 @@
 ---
 title: Install the tunnel CLI only
-description: Install just the roomler command-line client on a machine you sit at, to open port forwards and a SOCKS5 proxy without running the full agent.
+description: Install just the meshharbor command-line client on a machine you sit at, to open port forwards and a SOCKS5 proxy without running the full agent.
 tags: [install, tunnels, cli, getting-started, socks5]
 order: 14
 ---
 
 Not every machine needs the full agent. If you only want to **open tunnels
 from** a machine — your own laptop, a jump box, a CI runner — install the
-**tunnel client**: the `roomler` CLI on its own, with no service, no screen
+**tunnel client**: the `meshharbor` CLI on its own, with no service, no screen
 capture and no mesh membership.
 
 ## Agent or tunnel client?
 
-| Capability | Agent (`roomlerd`) | Tunnel client (`roomler`) |
+| Capability | Agent (`meshharbord`) | Tunnel client (`meshharbor`) |
 |---|---|---|
 | Reach **this** machine remotely | Yes | No |
 | Open tunnels **from** this machine | Yes | Yes |
@@ -37,10 +37,10 @@ from the device enrollment token, so mint it from the right place.
 ## Use it
 
 ```bash
-roomler status                                                    # who am I, and am I connected
-roomler forward --agent <agent-id> --local 5432 --remote localhost:5432
-roomler socks5 --local 1080                                       # a SOCKS5 proxy into the mesh
-roomler flows                                                     # what is open right now
+meshharbor status                                                    # who am I, and am I connected
+meshharbor forward --agent <agent-id> --local 5432 --remote localhost:5432
+meshharbor socks5 --local 1080                                       # a SOCKS5 proxy into the mesh
+meshharbor flows                                                     # what is open right now
 ```
 
 :::warning Targets are device **ids**, not display names
@@ -56,18 +56,18 @@ whole surface, including UDP and mesh mode.
 On a tunnel-only machine the CLI updates itself:
 
 ```bash
-roomler self-update
+meshharbor self-update
 ```
 
 Before it replaces anything it checks the release's signature against the key
 built into the CLI, and on Linux and macOS that the archive is the version it was
 offered as. Where the CLI sits in a system folder, or came from the `.deb`, run it
-as `sudo roomler self-update`. On Linux and macOS this works from the first tunnel
+as `sudo meshharbor self-update`. On Linux and macOS this works from the first tunnel
 release that carries it; an older CLI there points you at the download instead.
 
 :::warning On a machine that also runs the agent, `self-update` refuses
 That is deliberate. On an agent host the installer owns the whole node stack,
-and the `roomler` command is a thin shim that re-execs the agent's own command
+and the `meshharbor` command is a thin shim that re-execs the agent's own command
 surface — so there is nothing separate for it to update, and letting it try
 would replace a 150 KB shim with a full standalone binary.
 :::

@@ -42,11 +42,11 @@ use super::tls;
 /// What every minted Secret's name begins with.
 pub(crate) const SECRET_PREFIX: &str = "meshharbor-";
 /// The label every minted Secret carries, its lease's id: the sweep's mark.
-const LEASE_LABEL: &str = "roomler.ai/lease";
+const LEASE_LABEL: &str = "meshharbor.itachi.fans/lease";
 /// The same, as a query names it.
-const LEASE_SELECTOR: &str = "roomler.ai%2Flease";
+const LEASE_SELECTOR: &str = "meshharbor.itachi.fans%2Flease";
 /// The annotation every minted Secret carries: its lease's end, RFC 3339.
-const UNTIL_ANNOTATION: &str = "roomler.ai/until";
+const UNTIL_ANNOTATION: &str = "meshharbor.itachi.fans/until";
 /// The shortest token Kubernetes mints (`expirationSeconds` below it is
 /// refused).
 pub(crate) const MIN_EXPIRATION_SECS: u32 = 600;

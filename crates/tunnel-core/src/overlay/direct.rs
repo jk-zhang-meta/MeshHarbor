@@ -1301,7 +1301,7 @@ async fn lookup_host_cached(hostport: &str) -> Vec<SocketAddr> {
 /// Phase B — resolve the FIRST usable STUN server from the netmap's `stun_urls`
 /// to a concrete v4 `SocketAddr`. An IP-literal URL is parsed synchronously
 /// ([`parse_stun_url`], no DNS); a hostname URL (the fleet's
-/// `stun:coturn.roomler.ai:3478`) is resolved via DNS and the first IPv4 answer
+/// `stun:coturn.meshharbor.itachi.fans:3478`) is resolved via DNS and the first IPv4 answer
 /// taken (v4-only, CC7). Tries each URL in order; `None` if none resolve to an
 /// IPv4 endpoint. Any single reachable STUN worker suffices — srflx doesn't need
 /// the coturn worker-pinning that the relay hairpin does.
@@ -2682,7 +2682,7 @@ mod tests {
         assert_eq!(parse_stun_url("5.9.157.221:3478"), Some(want));
         assert_eq!(parse_stun_url("  stun:5.9.157.221:3478  "), Some(want));
         // Hostnames need async DNS → the sync parser declines (caller resolves).
-        assert_eq!(parse_stun_url("stun:coturn.roomler.ai:3478"), None);
+        assert_eq!(parse_stun_url("stun:coturn.meshharbor.itachi.fans:3478"), None);
         // IPv6 is out of scope (v4-only cascade).
         assert_eq!(parse_stun_url("stun:[2a01:4f8::2]:3478"), None);
         assert_eq!(parse_stun_url("garbage"), None);
@@ -2695,18 +2695,18 @@ mod tests {
     #[test]
     fn stun_hostport_strips_scheme_and_query_for_every_form() {
         for url in [
-            "stun:coturn-us-east.roomler.ai:3478",
-            "stuns:coturn-us-east.roomler.ai:3478",
-            "turn:coturn-us-east.roomler.ai:3478",
-            "turns:coturn-us-east.roomler.ai:3478",
-            "turn:coturn-us-east.roomler.ai:3478?transport=udp",
-            "turns:coturn-us-east.roomler.ai:3478#frag",
-            "  stun:coturn-us-east.roomler.ai:3478  ",
-            "coturn-us-east.roomler.ai:3478",
+            "stun:coturn-us-east.meshharbor.itachi.fans:3478",
+            "stuns:coturn-us-east.meshharbor.itachi.fans:3478",
+            "turn:coturn-us-east.meshharbor.itachi.fans:3478",
+            "turns:coturn-us-east.meshharbor.itachi.fans:3478",
+            "turn:coturn-us-east.meshharbor.itachi.fans:3478?transport=udp",
+            "turns:coturn-us-east.meshharbor.itachi.fans:3478#frag",
+            "  stun:coturn-us-east.meshharbor.itachi.fans:3478  ",
+            "coturn-us-east.meshharbor.itachi.fans:3478",
         ] {
             assert_eq!(
                 stun_hostport(url),
-                "coturn-us-east.roomler.ai:3478",
+                "coturn-us-east.meshharbor.itachi.fans:3478",
                 "hostport for {url:?}"
             );
         }

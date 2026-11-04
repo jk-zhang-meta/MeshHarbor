@@ -1,7 +1,7 @@
 #!/bin/sh
 # meshharbor install.sh — terminal-driven install of the MeshHarbor node stack
 # (Linux + macOS), replicating the meshharbor-setup wizard's steps without a
-# GUI: resolve via the roomler.ai proxy → download → sha256-verify →
+# GUI: resolve via the meshharbor.itachi.fans proxy → download → sha256-verify →
 # install → enroll → autostart.
 #
 # Usage (pipe from the API, or run a checked-out copy):

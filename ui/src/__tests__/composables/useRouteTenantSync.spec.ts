@@ -36,7 +36,7 @@ describe('useRouteTenantSync', () => {
     store.current = B as StoreTenant
     await nextTick()
     expect(store.current?.id).toBe(A.id)
-    expect(localStorage.getItem('roomler-current-tenant')).toBe(A.id)
+    expect(localStorage.getItem('meshharbor-current-tenant')).toBe(A.id)
   })
 
   it('follows a change of the URL', async () => {

@@ -298,7 +298,7 @@ mod tests {
 
     fn base() -> AgentConfig {
         let mut c = crate::config::test_fixture();
-        c.server_url = "https://roomler.ai".into();
+        c.server_url = "https://meshharbor.itachi.fans".into();
         c.tenant_id = "tid-primary".into();
         c.machine_id = "machine-1".into();
         c

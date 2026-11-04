@@ -104,7 +104,7 @@ enum Command {
     /// tunnel-enrollment token. Writes the long-lived `TunnelClient` JWT
     /// to the config file. Mirrors `meshharbord enroll`.
     Enroll {
-        /// Base URL of the MeshHarbor API (e.g. https://roomler.ai).
+        /// Base URL of the MeshHarbor API (e.g. https://meshharbor.itachi.fans).
         #[arg(long)]
         server: String,
         /// Tunnel-enrollment token, as printed by the admin UI.
@@ -1547,7 +1547,7 @@ mod tests {
             "meshharbor",
             "enroll",
             "--server",
-            "https://roomler.ai",
+            "https://meshharbor.itachi.fans",
             "--token",
             "eyJhbGciOiJIUzI1NiJ9.payload.sig",
             "--name",
@@ -1560,7 +1560,7 @@ mod tests {
                 token,
                 name,
             } => {
-                assert_eq!(server, "https://roomler.ai");
+                assert_eq!(server, "https://meshharbor.itachi.fans");
                 assert_eq!(token, "eyJhbGciOiJIUzI1NiJ9.payload.sig");
                 assert_eq!(name, "example-laptop");
             }

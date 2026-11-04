@@ -39,7 +39,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tracing::{debug, info, warn};
 
 /// Derive the stats URL from a region's `derp_url`
-/// (`wss://derp-x.roomler.ai/derp` → `https://derp-x.roomler.ai/stats`).
+/// (`wss://derp-x.meshharbor.itachi.fans/derp` → `https://derp-x.meshharbor.itachi.fans/stats`).
 fn stats_url(derp_url: &str) -> Option<String> {
     let rest = derp_url
         .strip_prefix("wss://")
@@ -471,8 +471,8 @@ mod tests {
     #[test]
     fn stats_url_derives_from_derp_url() {
         assert_eq!(
-            stats_url("wss://derp-us-east.roomler.ai/derp").as_deref(),
-            Some("https://derp-us-east.roomler.ai/stats")
+            stats_url("wss://derp-us-east.meshharbor.itachi.fans/derp").as_deref(),
+            Some("https://derp-us-east.meshharbor.itachi.fans/stats")
         );
         assert_eq!(stats_url("https://not-ws.example/derp"), None);
     }

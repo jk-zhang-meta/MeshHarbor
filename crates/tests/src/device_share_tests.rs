@@ -2083,7 +2083,7 @@ async fn native_login_cli_child() {
     };
     meshharbor_cli::cli::run_from(
         vec![
-            "roomler".to_owned(),
+            "meshharbor".to_owned(),
             "share-ssh".into(),
             "--server".into(),
             x["server"].as_str().unwrap().into(),

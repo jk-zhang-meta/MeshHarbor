@@ -330,8 +330,8 @@
             <ComponentRef Id='ApplicationShortcut' />
         </Feature>
 
-        <Property Id='ARPHELPLINK' Value='https://roomler.ai/' />
-        <Property Id='ARPURLINFOABOUT' Value='https://roomler.ai/' />
+        <Property Id='ARPHELPLINK' Value='https://meshharbor.itachi.fans/' />
+        <Property Id='ARPURLINFOABOUT' Value='https://meshharbor.itachi.fans/' />
 
         <!--
           Postinstall hook: register the Scheduled Task auto-start

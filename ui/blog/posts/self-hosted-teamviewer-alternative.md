@@ -1,8 +1,8 @@
 ---
 title: My wife’s swearing at TeamViewer made me build my own remote desktop tool with extras
-seoTitle: "Self-hosted TeamViewer alternative: why I built Roomler"
+seoTitle: "Self-hosted TeamViewer alternative: why I built MeshHarbor"
 subtitle: An open-source, self-hosted TeamViewer alternative that runs in any browser tab
-description: "Why I built Roomler: an open-source, self-hosted TeamViewer alternative with unattended access and remote desktop from any browser tab."
+description: "Why I built MeshHarbor: an open-source, self-hosted TeamViewer alternative with unattended access and remote desktop from any browser tab."
 date: 2026-09-25T22:45:13Z
 updated: 2026-09-29T22:20:00Z
 author: goran
@@ -12,7 +12,7 @@ ogImageAlt: A browser tab showing the live desktop of an office PC, connected di
 related: [/docs/compare/teamviewer/, /docs/remote-desktop/unattended-access/, /docs/start/self-hosting/]
 syndication: https://medium.com/@gjovanov/my-wifes-swearing-at-teamviewer-made-me-build-my-own-remote-desktop-tool-with-extras-e48f1f7c5e35
 ---
-*Full disclosure: The story, and the swearing, are 100% human. An AI assistant helped me build Roomler and did minor corrections on the post itself.*
+*Full disclosure: The story, and the swearing, are 100% human. An AI assistant helped me build MeshHarbor and did minor corrections on the post itself.*
 
 ## 😵‍💫 The Pain
 
@@ -40,7 +40,7 @@ This time however (as many other times), has accidently closed the TeamViewer se
 
 Next thing you know, I open up Claude Code and start writing a detailed prompt about building cross-platform (Win, Linux, MacOS) Rust-based remote desktop tool with hardware encoding (GPU-enabled) for unattended and consent-based access, for fleet of machines that can be accessed via browser (WebRTC and WebCodecs API).
 
-I had built video conferencing tools before. In 2020 I wrote here about the first Roomler, “Slack on Crack”, a self-hosted team chat with WebRTC video conferencing ([Building your own Slack](https://medium.com/@gjovanov/building-your-own-slack-54874bf5fd7a)).
+I had built video conferencing tools before. In 2020 I wrote here about the first MeshHarbor, “Slack on Crack”, a self-hosted team chat with WebRTC video conferencing ([Building your own Slack](https://medium.com/@gjovanov/building-your-own-slack-54874bf5fd7a)).
 
 It shouldn’t be that different, right?
 
@@ -55,7 +55,7 @@ Well, it turns out, that there is a lot more to it, than I initially thought.
 - **Encoders**: H.264 · H.265 · VP8 · VP9 · AV1 and their **Backends**: NVENC · QSV · AMF · VideoToolbox · VAAPI · D3D12 · Vulkan · Media Foundation · openh264 · libvpx
 - **Chroma**: 4:4:4 · 4:2:0 (how much color the bitstream keeps)
 
-Fast forward 7 months, and an open source ([self-hostable](/docs/start/self-hosting/)) remote control tool [Roomler-AI](https://github.com/gjovanov/roomler-ai) is live and used by dozens of users. My wife and few of her colleagues being the first users of it.
+Fast forward 7 months, and an open source ([self-hostable](/docs/start/self-hosting/)) remote control tool [MeshHarbor](https://github.com/jk-zhang-meta/MeshHarbor) is live and used by dozens of users. My wife and few of her colleagues being the first users of it.
 
 What it looks like today:
 
@@ -82,7 +82,7 @@ If someone is sitting at the machine, they should see who wants in and click All
 
 ### 🚨 Corporate antivirus
 
-My wife as an accountant accesses corp-machines that belong to someone’s IT department via VPN. Their antivirus blocked installers downloaded from GitHub, so every installer now streams through roomler.ai, a single domain an allow-list can name. The Windows installers are code-signed as well, because an unsigned installer means a SmartScreen warning, and a SmartScreen warning usually means a ticket to IT Security Team.
+My wife as an accountant accesses corp-machines that belong to someone’s IT department via VPN. Their antivirus blocked installers downloaded from GitHub, so every installer now streams through meshharbor.itachi.fans, a single domain an allow-list can name. The Windows installers are code-signed as well, because an unsigned installer means a SmartScreen warning, and a SmartScreen warning usually means a ticket to IT Security Team.
 
 ### 💥 Speed
 
@@ -106,7 +106,7 @@ If nothing opens, you still get a picture.
 
 Here is a short demo preview.
 
-![Roomler remote desktop in one browser tab: a MacBook and three Windows laptops, each connected and shown full screen](demo-preview.gif "Demo Preview")
+![MeshHarbor remote desktop in one browser tab: a MacBook and three Windows laptops, each connected and shown full screen](demo-preview.gif "Demo Preview")
 
 ## 👀 Try it out — remote desktop from your browser
 
@@ -119,7 +119,7 @@ Here is the complete [Getting Started](/docs/start/quickstart/) guide for all su
 Self-hosted — unlimited devices, no licence key, no activation, no phone-home. Same code as the hosted service; there is no crippled community build.
 
 ```bash
-git clone https://github.com/gjovanov/roomler-ai.git && cd roomler-ai
+git clone https://github.com/jk-zhang-meta/MeshHarbor.git && cd meshharbor
 cp .env.selfhost.example .env.selfhost      # fill in 4 values; 2 are `openssl rand -hex 32`
 docker compose -f docker-compose.selfhost.yml --env-file .env.selfhost pull
 docker compose -f docker-compose.selfhost.yml --env-file .env.selfhost up -d
@@ -132,7 +132,7 @@ docker compose -f docker-compose.selfhost.yml --env-file .env.selfhost up -d
 
 ## 3️⃣ The three pillars
 
-![Your devices joined in one encrypted mesh coordinated by roomler.ai: a laptop running a remote desktop to a GPU workstation, a home server and a Kubernetes cluster, connected directly through NAT and firewalls](three-pillars.png "Three pillars of Roomler")
+![Your devices joined in one encrypted mesh coordinated by meshharbor.itachi.fans: a laptop running a remote desktop to a GPU workstation, a home server and a Kubernetes cluster, connected directly through NAT and firewalls](three-pillars.png "Three pillars of MeshHarbor")
 
 ### 1 · Desktop sharing and remote control
 
@@ -150,13 +150,13 @@ On top of the mesh sit **port forwards**, a **SOCKS5 proxy**, **exit nodes**, an
 
 ## 📢 Where it stands
 
-Roomler is open source, **AGPL-3.0** for the server and **MPL-2.0** for the agent, and you can host it yourself with no device limit. The server is **AGPL-3.0**; the agent that runs on your machines is **MPL-2.0**. See [LICENSING.md](https://github.com/gjovanov/roomler-ai/blob/master/LICENSING.md) for the split and what it means if you intend to offer it as a service.
+MeshHarbor is open source, **AGPL-3.0** for the server and **MPL-2.0** for the agent, and you can host it yourself with no device limit. The server is **AGPL-3.0**; the agent that runs on your machines is **MPL-2.0**. See [LICENSING.md](https://github.com/jk-zhang-meta/MeshHarbor/blob/master/LICENSING.md) for the split and what it means if you intend to offer it as a service.
 
 Development is heavily AI-assisteted with Claude Code and covered with automated e2e testing with throwaway VMs.
 
 The same agent is also the remote desktop. It’s young and has few dozens users. The access-control policies are built and tested, but I haven’t yet run a real network with them fully enforced, and that’s the next thing I want to prove.
 
-I would love to hear what your experience with Roomler and what can be improved.
+I would love to hear what your experience with MeshHarbor and what can be improved.
 
 ## 🥂 The Happy End
 
@@ -172,7 +172,7 @@ Hence I would appreciate if:
 
 - Clap & share this post with your friends
 - Star it on github
-- Share your experience with Roomler (how it has benefited you)
+- Share your experience with MeshHarbor (how it has benefited you)
 - Report any issue found on github
 
 Talk to you soon!

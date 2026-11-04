@@ -9,9 +9,9 @@
 #
 #   docker run -d --name hive-archive --hostname hive-archive-1 \
 #     --restart unless-stopped -v hive-archive:/data \
-#     -e MESHHARBOR_SERVER=https://roomler.ai \
+#     -e MESHHARBOR_SERVER=https://meshharbor.itachi.fans \
 #     -e MESHHARBOR_ENROLL_TOKEN=<an ADMINISTRATOR's enrollment token> \
-#     ghcr.io/gjovanov/roomler-ai/hive-archive:<tag>
+#     ghcr.io/jk-zhang-meta/meshharbor/hive-archive:<tag>
 #
 # The first start enrolls (`meshharbord enroll --archive-replica`), and every
 # later one runs from the config on the volume; the token is single use, and

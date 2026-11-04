@@ -1,6 +1,6 @@
 # Privacy mode
 
-> **FR-99** ([#2091](https://github.com/gjovanov/roomler-ai/issues/2091),
+> **FR-99** ([#2091](https://github.com/jk-zhang-meta/MeshHarbor/issues/2091),
 > [spec](fr/FR-99-privacy-mode.md)).
 >
 > **Status: the curtain is released (agent 0.4.136, Windows 10 2004 and later) and
@@ -35,7 +35,7 @@ Two parties have to agree, and the device's owner speaks first.
    `DesiredConfig`, so no server can switch it on. Over the LocalAPI only the person at the
    console may change it, because it is their screen:
    ```
-   roomler config set privacy_mode_allowed true
+   meshharbor config set privacy_mode_allowed true
    ```
 2. **The controller covers the screen.** On a device that allows it, the viewer's toolbar has an
    eye-off toggle ("Cover the device screen"). The session's consent prompt has already told
@@ -45,10 +45,10 @@ Two parties have to agree, and the device's owner speaks first.
 ```mermaid
 sequenceDiagram
     participant P as person at the device
-    participant A as roomlerd (+ its overlay)
+    participant A as meshharbord (+ its overlay)
     participant S as hub (server)
     participant V as viewer (browser)
-    P->>A: roomler config set privacy_mode_allowed true (console only)
+    P->>A: meshharbor config set privacy_mode_allowed true (console only)
     A->>S: caps re-announced with privacy-mode
     V->>S: rc:session.request ... | PRIVACY (only from a device that serves it)
     Note over S: privacy_grant: device_cannot_curtain, break_glass,<br/>outside_the_org, device_not_opted_in strip it, each with its reason
@@ -132,7 +132,7 @@ Two records, written by two parties, as for recordings and transfers
 sequenceDiagram
     autonumber
     participant V as Viewer
-    participant A as roomlerd (the worker)
+    participant A as meshharbord (the worker)
     participant L as Ledger (privacy-curtains.json)
     participant S as Server
     V->>A: rc:privacy.set on
@@ -179,7 +179,7 @@ A remote admin who unlocks a computer to work on it should not leave it unlocked
 console:
 
 ```
-roomler config set lock_on_end auto      # never | auto | always
+meshharbor config set lock_on_end auto      # never | auto | always
 ```
 
 | `lock_on_end` | When the last remote session ends |
@@ -192,7 +192,7 @@ roomler config set lock_on_end auto      # never | auto | always
 sequenceDiagram
     autonumber
     participant V as Viewer
-    participant A as roomlerd (the worker)
+    participant A as meshharbord (the worker)
     participant OS as Windows / logind
     V->>A: the session goes live
     A->>OS: auto: is the screen locked? anyone at it?
@@ -245,7 +245,7 @@ sequenceDiagram
     autonumber
     participant Adm as Admin (device row)
     participant S as hub (server)
-    participant D as roomlerd (daemon)
+    participant D as meshharbord (daemon)
     participant W as worker
     Adm->>S: AccessPolicy.lock_on_end = always
     Note over S: the authz gate reads it for every controller,<br/>the owner and break-glass included

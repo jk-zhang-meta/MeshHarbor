@@ -178,7 +178,7 @@ fi
 #      not about documenting it; a matcher on the word "docs" ANYWHERE counts
 #      them.
 #   ⚠️ …but the index row is not a complete signal either, and that was found
-#      the day this shipped. FR-83's criterion — "Docs: `docs/roomler-ssh.md`
+#      the day this shipped. FR-83's criterion — "Docs: `docs/meshharbor-ssh.md`
 #      shows the ack in the grant sequence" — updates a doc that is ALREADY
 #      indexed, so it has no reason to mention docs/README.md; nor does it name
 #      the rule. The guard failed CI naming FR-83 as a breach of the rule it had

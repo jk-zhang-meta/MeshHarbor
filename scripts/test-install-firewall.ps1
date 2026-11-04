@@ -74,7 +74,7 @@ if ($prep -lt $install.IndexOf("if (`$DownloadOnly)")) {
 if ($install.IndexOf('MESH_SKIP_AUTOSTART=1') -gt $install.IndexOf("Start-Process -FilePath 'msiexec.exe'")) {
     throw 'defer fresh-install autostart before invoking the MSI'
 }
-[xml]$wix = Get-Content -Raw (Join-Path $PSScriptRoot '..\agents\roomlerd\wix\main.wxs')
+[xml]$wix = Get-Content -Raw (Join-Path $PSScriptRoot '..\agents\meshharbord\wix\main.wxs')
 $ns = [System.Xml.XmlNamespaceManager]::new($wix.NameTable)
 $ns.AddNamespace('w', 'http://schemas.microsoft.com/wix/2006/wi')
 $condition = $wix.SelectSingleNode("//w:Custom[@Action='RegisterAutostart']", $ns).InnerText

@@ -6,7 +6,7 @@
 # deterministic name makes the look-up cheap.
 #
 # Each Pod's bootstrap script (baked into the image — see
-# Dockerfile.agent-e2e) calls `roomlerd enroll` on every start,
+# Dockerfile.agent-e2e) calls `meshharbord enroll` on every start,
 # which mints a fresh agent_id per restart. Tests poll
 # `GET /api/tenant/<tid>/agent?name=<hostname>` to resolve the
 # current id before issuing rc:session.request.
@@ -42,20 +42,20 @@ spec:
         # FR-114 — an enrollment token travels over TLS unless the server is
         # LOOPBACK (`normalize_server_url`, crates/agent-core/src/enrollment.rs;
         # FR-101 P1b: no plaintext escape). The e2e server serves plain HTTP on
-        # `roomler2:80`, so the agent reaches it through this byte-transparent
+        # `meshharbor2:80`, so the agent reaches it through this byte-transparent
         # proxy on the pod's own 127.0.0.1, which every container in the pod
         # shares. Signalling and the WebSocket ride it; media is WebRTC, pod to pod.
         - name: server-proxy
           image: alpine/socat:1.8.0.0
-          args: ["TCP-LISTEN:18080,fork,reuseaddr,bind=127.0.0.1", "TCP:roomler2:80"]
+          args: ["TCP-LISTEN:18080,fork,reuseaddr,bind=127.0.0.1", "TCP:meshharbor2:80"]
           resources:
             requests: { cpu: 10m, memory: 16Mi }
             limits: { cpu: 200m, memory: 64Mi }
         - name: agent
-          image: gjovanov/roomlerd-e2e:latest # rewritten by kustomization images:
+          image: jk-zhang-meta/meshharbord-e2e:latest # rewritten by kustomization images:
           imagePullPolicy: IfNotPresent
           env:
-            # The loopback proxy above, never `http://roomler2` itself: the
+            # The loopback proxy above, never `http://meshharbor2` itself: the
             # agent would promote that to https:// and time out.
             - name: MESHHARBOR_E2E_SERVER
               value: http://127.0.0.1:18080
@@ -101,9 +101,9 @@ spec:
               value: "2"
           volumeMounts:
             - name: config
-              mountPath: /etc/roomler
+              mountPath: /etc/meshharbor
             - name: data
-              mountPath: /root/.local/share/roomler
+              mountPath: /root/.local/share/meshharbor
           resources:
             requests:
               cpu: 100m
@@ -112,7 +112,7 @@ spec:
               cpu: 500m
               memory: 512Mi
           # No HTTP listener on the agent — it's an outbound WS
-          # client. Liveness via `roomlerd service status`
+          # client. Liveness via `meshharbord service status`
           # would need wiring through a tiny health-port; skip for
           # the initial Chunk 1B and rely on the watchdog's own
           # process-exit on stall (the supervisor — implicitly the

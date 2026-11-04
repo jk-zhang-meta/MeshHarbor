@@ -50,7 +50,7 @@ fn spawn_agent_signaling(
         let (view_tx, _view_rx) = tokio::sync::watch::channel(Default::default());
         let broker = meshharbord::consent::ConsentBroker::new(
             meshharbord::consent::Mode::AutoGrant,
-            std::env::temp_dir().join(format!("roomler-test-consent-{}", cfg.agent_id)),
+            std::env::temp_dir().join(format!("meshharbor-test-consent-{}", cfg.agent_id)),
         )
         .expect("consent broker init");
         // Read before `cfg` is moved into the call below.

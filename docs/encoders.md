@@ -16,7 +16,7 @@ the words below are the glossary's ([`CONTEXT.md`](../CONTEXT.md)).
 | **encoder** | codec × backend, an FFmpeg name | `hevc_nvenc`, `vp9_vaapi` |
 | **chroma format** | how much colour the bitstream keeps | 4:2:0 (`yuv420`) · 4:4:4 (`yuv444`, "crisp text") |
 | **cell** | codec × chroma format — what a session actually asks for | HEVC 4:4:4 |
-| **probe** | the real-bytes trial that proves a cell on a host | `roomlerd caps-probe` |
+| **probe** | the real-bytes trial that proves a cell on a host | `meshharbord caps-probe` |
 | **probe cache** | the remembered answer of the last probe, kept only under the build, hardware, drivers and settings that produced it | `caps-cache.json` |
 | **denylist** | cells a device must not open or advertise — the kill switch | `hevc_qsv:yuv444` |
 
@@ -24,7 +24,7 @@ the words below are the glossary's ([`CONTEXT.md`](../CONTEXT.md)).
 
 ```mermaid
 flowchart LR
-    subgraph host["Controlled host (roomlerd)"]
+    subgraph host["Controlled host (meshharbord)"]
         CAP["Capture<br/>WGC · DXGI · scrap · GDI · X11"]
         CVT["Convert<br/>BGRA→NV12 / I420 / I444 / VUYX<br/>FP16→BGRA (HDR/ACM) · downscale ≥3.5 Mpx"]
         ENC["Encode<br/>MF · FFmpeg (NVENC · QSV · AMF · VideoToolbox · VAAPI)<br/>OpenH264 · libvpx VP9"]
@@ -186,7 +186,7 @@ mistaken for the cell that was asked for.
 A capability probe is untrusted third-party code by definition — vendor drivers
 and, through them, GPU firmware — so it does not run in the daemon's address
 space. `encode::caps::detect()` (`agents/meshharbord/src/encode/caps.rs`) answers
-from the cache when it can, and otherwise spawns `roomlerd caps-probe` twice:
+from the cache when it can, and otherwise spawns `meshharbord caps-probe` twice:
 
 ```mermaid
 flowchart TD
@@ -228,7 +228,7 @@ service host its stderr reaches no log.
 
 Why a cache (P3a): the matrix probe costs 4–6 s on a Windows host with two GPUs,
 paid on every daemon start for an answer that changes only when the GPU, its
-driver, the OS build or the roomlerd build changes. The key:
+driver, the OS build or the meshharbord build changes. The key:
 
 | Key part | What it is | Why |
 |---|---|---|
@@ -254,7 +254,7 @@ the single-entry cache (`a MESHHARBORD_* knob changed`) and the next start runs
 the full probe — and restoring the old value is a *second* miss. Measured on
 the WSL2 dev host (2026-09-25, FR-45 AC2): a fresh NVENC probe **hung** while a
 software-rendering compositor rig loaded the box — `caps probe: the probe child
-hung` after the 60 s bound, `env -i roomlerd caps` reproducing a 75 s stall
+hung` after the 60 s bound, `env -i meshharbord caps` reproducing a 75 s stall
 where the same command from a login shell took ~5 s — and the pumps then
 missed the watchdog's 90 s window, so the daemon forced `exit(2)` and systemd
 restarted it into the same probe. With the load stopped the identical probe
@@ -442,7 +442,7 @@ that rejects them costs the knob, never the open.
 
 **The positive cell is AMD.** jupiter and zeus (Raphael iGPU, VCN 3.1, Mesa's
 `radeonsi` from `mesa-va-drivers` 25.2.8, Ubuntu 24.04) advertise `hevc/vaapi` +
-`h264/vaapi` in a 100 ms probe, and `roomlerd encoder-smoke --codec hevc` puts real
+`h264/vaapi` in a 100 ms probe, and `meshharbord encoder-smoke --codec hevc` puts real
 HEVC bytes through the pump (`vaapi: device opened /dev/dri/renderD128`). Intel
 (iHD) has no fleet host yet, so its VAAPI cells are exactly as probe-gated as any
 other unproven backend.
@@ -473,7 +473,7 @@ then advertised `hevc/vaapi` and `h264/vaapi` and exited normally.
 session per new cell (CORPLAP-3, jupiter, the dev box — the denylist steering each
 session onto the cell under test). Six decoded cleanly; the dev box's `av1_vulkan`
 opened, encoded, reported nothing wrong, and painted garbage under Chrome's
-hardware AV1 decoder — under dav1d (`localStorage roomler-rc-decode-pref=software`)
+hardware AV1 decoder — under dav1d (`localStorage meshharbor-rc-decode-pref=software`)
 it stalled outright. `encoder-smoke --name av1_vulkan --dump <file>` and the FFmpeg
 CLI's decoders attributed it in one run: the stream is `SeqHdr · 240 B of padding ·
 Frame · Frame …` with **no temporal-delimiter OBU**, which the AV1 spec puts at the
@@ -487,14 +487,14 @@ region smears — correct keyframes, corrupt inter frames — and the FFmpeg CLI
 `av1_vulkan` on the same GPU (testsrc2, the `ivf` muxer inserting the delimiters
 itself) produces frames dav1d refuses at the header (`Error parsing frame header`,
 29 of 29) and libaom aborts on. An FFmpeg 9.0.1 / NVIDIA driver defect with no
-roomler code in the loop, so the cell sits on the built-in denylist
+meshharbor code in the loop, so the cell sits on the built-in denylist
 (`av1_vulkan:yuv420`) until a driver or FFmpeg release decodes. The `--dump` flag
 stays: a cell whose session looks wrong is attributed offline before anyone touches
 the denylist, and the raw dump of a healthy build decodes as-is.
 
 ## Configuration
 
-| Key (config.toml / `roomler config set`) | Env | Default | What |
+| Key (config.toml / `meshharbor config set`) | Env | Default | What |
 |---|---|---|---|
 | `encoder_preference` | `MESHHARBORD_ENCODER` (CLI `--encoder` wins) | `auto` | `auto` · `hardware` · `software` |
 | `encoder_cells_deny` | `MESHHARBORD_ENCODER_CELLS_DENY` | the built-in list | `name:chroma` cells never opened nor advertised; `none` = deny nothing; pushable through remote config (`MANAGE_AGENTS`), `needs_restart` |
@@ -628,7 +628,7 @@ flowchart LR
     window the estimate crossed it. The software pace steps down at once and up only when the encoder clears the higher step by
     2.5 fps; `MESHHARBORD_SW_PACE_UP_MARGIN=0` gives back 0.4.142's pace. A unit test replays the field trace that
     found it, window for window. The hardware pace keeps margin 0 until it is measured on hardware
-    ([#2432](https://github.com/gjovanov/roomler-ai/issues/2432)).
+    ([#2432](https://github.com/jk-zhang-meta/MeshHarbor/issues/2432)).
 - **The bitrate base follows the rate the pump runs at**, by √(fps/30) (`bitrate_base_for_fps`,
   `encode/mod.rs:719`): exactly the old figure at 30, ×1.41 at 60. A linear ×2 bought nothing when it was
   measured.
@@ -688,7 +688,7 @@ On Linux the same recipe is the release lane's: extract the `-minimal-vaapi-vulk
 asset, rewrite the `.pc` prefixes, set `FFMPEG_DIR` / `PKG_CONFIG_PATH` /
 `LD_LIBRARY_PATH` at the tree, and build with `--features ffmpeg-encoder,vp9-444`.
 To drive one backend past the cascade on any host — a cell the vendor SDK
-outranks there — `roomlerd encoder-smoke --name hevc_vulkan` (real bytes) and
+outranks there — `meshharbord encoder-smoke --name hevc_vulkan` (real bytes) and
 `--reconfigure-sweep --name hevc_vulkan --codec hevc` (the FR-62 ladder) open
 exactly that encoder, the same open the capability probe runs.
 The Linux-only code (`encode/ffmpeg/vaapi.rs`) is linted by nothing on Windows —

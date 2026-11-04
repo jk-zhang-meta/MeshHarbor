@@ -1,6 +1,6 @@
 # FR-119: High-refresh streaming — 120 fps on a direct path when the host can sustain it, and the viewer asked
 
-**Issue:** [#2670](https://github.com/gjovanov/roomler-ai/issues/2670) · **Status:** proposed 2026-10-21 —
+**Issue:** [#2670](https://github.com/jk-zhang-meta/MeshHarbor/issues/2670) · **Status:** proposed 2026-10-21 —
 spec and claim · **Owner:** the agent's capture, encode and rate path, the viewer's settings and decode path ·
 **Anchors:** master `c636c6e8c` · **Program:** [StarDesk teardown](../plans/stardesk-teardown-program.md), wave 2
 ("high refresh": D1, then D2) · **Builds on:** [FR-118](FR-118-gpu-resident-frames.md) (the encode stage under
@@ -14,7 +14,7 @@ A controller on a high-refresh display, on a direct path to a host that can sust
 (D1, up to 1440p), and later **144 fps at 4K** (D2), instead of today's hard 60. It happens only when the viewer
 asked for it and the host has proven it can deliver it. Every other session stays exactly as it is today.
 
-StarDesk advertises "4K HDR at up to 144 fps" with an fps lock of 60, 120 or 144. Roomler streams at most 60 on
+StarDesk advertises "4K HDR at up to 144 fps" with an fps lock of 60, 120 or 144. MeshHarbor streams at most 60 on
 every path (§2). That halves the motion steps a person sees on a 120 Hz or 144 Hz screen. FR-98 measures the
 latency side; this FR is the cadence side.
 
@@ -409,12 +409,12 @@ refreshes at, lets an admin push the frame-rate denylist, and has the viewer say
   viewer's picker disables the rates above it, with the reason.
 - **The viewer's words:** a trial reads "on trial until this host has shown it can keep up". `refresh`, `denied`
   and `pipe` get sentences, and an unknown word is still shown as it came.
-- **`fps_high` in config.** The switch is no longer environment-only: `roomler config set fps_high true`
+- **`fps_high` in config.** The switch is no longer environment-only: `meshharbor config set fps_high true`
   (Video encoding, Advanced) bridges to `MESHHARBORD_FPS_HIGH`. It is read at start with the hello's capabilities,
   so a change needs a restart, and it stays device-local: it is not pushable, because it widens what a session
   may do. Default off.
 - **`fps_deny` in config.** The denylist is now a config key on `encoder_cells_deny`'s terms.
-  `roomler config set fps_deny` validates it: a plain FFmpeg name or `*`, and a rate above 60, because an entry
+  `meshharbor config set fps_deny` validates it: a plain FFmpeg name or `*`, and a rate above 60, because an entry
   that could only deny nothing would read as in force. It rides `desired_config` with `MANAGE_AGENTS` alone,
   since it only ever removes rates. The device writes it, reports `needs_restart` (the fallbacks are registered
   once per process), and a blank push clears it. `none` denies nothing, where a blank box in the dialog hands the

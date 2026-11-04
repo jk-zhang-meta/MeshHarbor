@@ -5,7 +5,7 @@ that bit us — what the client is allowed to conclude from a `403`.*
 
 > **Related:** [use-cases.md](use-cases.md) walks the model in plain language ·
 > [api.md](api.md) lists every route · [fleet-rpc.md](fleet-rpc.md) and
-> [roomler-ssh.md](roomler-ssh.md) describe the four-gate chains that *start*
+> [meshharbor-ssh.md](meshharbor-ssh.md) describe the four-gate chains that *start*
 > with a permission bit · [FR-82](fr/FR-82-permission-refusal-is-not-a-logout.md)
 > is the arc that wrote this page.
 
@@ -75,7 +75,7 @@ under *Fleet access* as `2 ** 32` (a shift cannot express it in JS). The rest of
 its chain — the module switch, the ceiling, and the device's own
 `hive_enabled` / `hive_accounts` / `hive_roots` — is in
 [FR-90](fr/FR-90-hive-agent-sessions.md) and the
-[design](roomler-hive-design.md) §3.4.
+[design](meshharbor-hive-design.md) §3.4.
 
 ⚠️ `owner` holds these bits, as part of `ALL`. That is not an exception to the
 rule so much as outside it: the row carries `ADMINISTRATOR`, so `has()` already

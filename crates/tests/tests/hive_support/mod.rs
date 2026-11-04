@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 G ROX EOOD
 //! FR-90 — what the Hive test binaries share: a real server (`TestApp`), a
-//! real device in-process (`roomlerd`'s signalling loop), a browser's user
+//! real device in-process (`meshharbord`'s signalling loop), a browser's user
 //! socket and its viewer peer, and the harness's side of a toolbelt. Each
 //! binary is its own process because the device's Hive supervisor is
 //! process-global (`hive_canary.rs`, `hive_drivers.rs`, `hive_memory.rs`,
@@ -310,7 +310,7 @@ pub async fn enrol(app: &TestApp, seeded: &SeededTenant, machine: &str) -> Agent
     .expect("agent enrollment")
 }
 
-/// `roomlerd run`'s signalling loop, with the handles `main.rs` gives it.
+/// `meshharbord run`'s signalling loop, with the handles `main.rs` gives it.
 pub fn spawn_device(
     cfg: AgentConfig,
     stop: tokio::sync::watch::Receiver<bool>,
@@ -320,7 +320,7 @@ pub fn spawn_device(
         let (view_tx, _view_rx) = tokio::sync::watch::channel(Default::default());
         let broker = meshharbord::consent::ConsentBroker::new(
             meshharbord::consent::Mode::AutoGrant,
-            std::env::temp_dir().join(format!("roomler-test-consent-{}", cfg.agent_id)),
+            std::env::temp_dir().join(format!("meshharbor-test-consent-{}", cfg.agent_id)),
         )
         .expect("consent broker init");
         let exec_enabled = cfg.exec_enabled;
@@ -662,7 +662,7 @@ impl MemoryDevice {
     /// The session's own config directory: where Claude Code reads
     /// `CLAUDE.md`, and under `projects/` the auto-memory index.
     pub fn config_dir(&self, sid: &str) -> PathBuf {
-        self.home.join(".roomler/hive").join(sid).join("claude")
+        self.home.join(".meshharbor/hive").join(sid).join("claude")
     }
 
     /// The daemon's own copy of a session's core memory, which the account

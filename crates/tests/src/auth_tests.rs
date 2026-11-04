@@ -432,7 +432,7 @@ async fn protected_endpoint_returns_401_with_expired_token() {
         "sub": "000000000000000000000000",
         "exp": 0, // epoch = long expired
         "iat": 0,
-        "iss": "roomler-ai",
+        "iss": "meshharbor",
     });
     let expired_token = jsonwebtoken::encode(
         &Header::default(),

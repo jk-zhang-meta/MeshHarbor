@@ -894,7 +894,7 @@ const openGroups = ref<string[]>(['devices'])
 
 // ── Resizable drawer ─────────────────────────────────────────────
 // Default 308 ≈ Vuetify's 256 + 20%; drag the right edge, persisted.
-const NAV_WIDTH_KEY = 'roomler-nav-width'
+const NAV_WIDTH_KEY = 'meshharbor-nav-width'
 const NAV_WIDTH_DEFAULT = 308
 function loadNavWidth(): number {
   try {
@@ -1006,7 +1006,7 @@ const isDark = computed(() => theme.global.current.value.dark)
 function toggleTheme() {
   const next = isDark.value ? 'light' : 'dark'
   theme.global.name.value = next
-  localStorage.setItem('roomler-theme', next)
+  localStorage.setItem('meshharbor-theme', next)
 }
 
 // Call notification snackbar

@@ -1128,7 +1128,7 @@ mod tests {
     /// it after any change to the workflow's version derivation:
     ///
     /// ```text
-    /// gh release download agent-v0.3.0-rc.458 --repo gjovanov/roomler-ai \
+    /// gh release download agent-v0.3.0-rc.458 --repo jk-zhang-meta/MeshHarbor \
     ///   --pattern '*perMachine*.msi' --dir /tmp
     /// MESHHARBOR_TEST_MSI=/tmp/meshharbor-agent-0.3.0-rc.458-perMachine-x86_64-pc-windows-msvc.msi \
     /// MESHHARBOR_TEST_MSI_TAG=agent-v0.3.0-rc.458 \

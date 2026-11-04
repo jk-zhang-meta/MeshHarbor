@@ -47,7 +47,7 @@ afterEach(() => {
   localStorage.removeItem(BENCH_STORAGE_KEY)
 })
 
-describe('rcBench — target mode (roomlerd probe-target)', () => {
+describe('rcBench — target mode (meshharbord probe-target)', () => {
   it('reads the knob: 1 is probe, target is target, anything else is off', () => {
     expect(storedBenchMode()).toBeNull()
     localStorage.setItem(BENCH_STORAGE_KEY, '1')

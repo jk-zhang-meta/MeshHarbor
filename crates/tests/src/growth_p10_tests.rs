@@ -510,7 +510,7 @@ async fn the_weekly_roll_up_is_stored_once_and_mailed_once() {
         assert_eq!(to, "padmin@test.io");
         assert!(
             subject.starts_with(&format!(
-                "Roomler weekly roll-up — {}",
+                "MeshHarbor weekly roll-up — {}",
                 monday_label(monday)
             )),
             "{subject}"
@@ -796,10 +796,10 @@ async fn alerts_fire_once_clear_and_mail_at_most_once_a_day() {
         let sends = mailer.sends.lock().unwrap();
         let subjects: Vec<&str> = sends.iter().map(|s| s.1.as_str()).collect();
         assert!(
-            subjects.contains(&"Roomler growth alert — spike: signups"),
+            subjects.contains(&"MeshHarbor growth alert — spike: signups"),
             "{subjects:?}"
         );
-        assert!(subjects.contains(&"Roomler growth alert — digest_missing: daily"));
+        assert!(subjects.contains(&"MeshHarbor growth alert — digest_missing: daily"));
         assert!(sends.iter().all(|s| s.0 == "padmin@test.io"));
         assert!(
             sends

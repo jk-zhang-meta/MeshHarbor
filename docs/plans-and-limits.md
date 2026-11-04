@@ -107,7 +107,7 @@ another pod — are where the design is unusual:
 ```mermaid
 sequenceDiagram
     participant UI as billing page
-    participant API as roomler (saas)
+    participant API as meshharbor (saas)
     participant S as Stripe
     UI->>API: POST /api/stripe/checkout {plan, interval, currency}
     API->>API: refuse a currency not on sale · refuse a 2nd subscription (409)

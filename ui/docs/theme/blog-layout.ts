@@ -139,10 +139,10 @@ function relatedDocs(related: RelatedPage[]): string {
 }
 
 const CTA =
-  `<aside class="post-cta" aria-label="Try Roomler">` +
+  `<aside class="post-cta" aria-label="Try MeshHarbor">` +
   `<p class="post-cta__title">Run it yourself</p>` +
-  `<p>Roomler is open source: host it on your own server with Docker Compose, or start on the hosted version.</p>` +
-  `<p class="post-cta__actions"><a class="btn btn--primary" href="${BASE}/start/self-hosting/">Self-host Roomler</a> ` +
+  `<p>MeshHarbor is open source: host it on your own server with Docker Compose, or start on the hosted version.</p>` +
+  `<p class="post-cta__actions"><a class="btn btn--primary" href="${BASE}/start/self-hosting/">Self-host MeshHarbor</a> ` +
   `<a class="btn btn--tonal" href="/register">Get started free</a></p></aside>`
 
 function postPager(newer?: Post, older?: Post): string {

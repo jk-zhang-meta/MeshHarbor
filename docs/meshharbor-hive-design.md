@@ -1,4 +1,4 @@
-# Roomler Hive — distributed, self-improving agent sessions
+# MeshHarbor Hive — distributed, self-improving agent sessions
 
 *Design doc · v0.4 · 2026-10-07 · supersedes v0.3 (same day) and v0.2 (2026-09-03).
 Anchors are `path:line` on `origin/master` `7b24900ea`. Status: **design approved
@@ -6,13 +6,13 @@ Anchors are `path:line` on `origin/master` `7b24900ea`. Status: **design approve
 P0b (the server module), P0c (the device supervisor) and P0d-1 (the session room and its turn stubs) are in, P0d-2a and P0d-2b (the viewer peer, device and server), P0d-3 (the UI), P0e (the model sidecar) and P0f (the canary test) are in, and on 2026-10-07 a browser drove a real Claude Code session on a Linux device end to end — AC1, on a throwaway stack (FR-90 spec §8); P1a (approvals through the toolbelt's `approve`) is being built against Claude Code's contract as measured (FR-90 spec §3e)** (§17). Decisions are in §0.1; the review that produced v0.3 is
 [Appendix A](#appendix-a--review-of-v02).*
 
-> **What changed.** v0.2 kept Hive outside Roomler: a separate product behind a new
+> **What changed.** v0.2 kept Hive outside MeshHarbor: a separate product behind a new
 > extension SDK, a second daemon binary, and every session pinned to one canonical
 > folder. Since then the server became a modular monolith (FR-69, shipped the day after
 > v0.2), the licence stopped being MIT, and the requirements grew: sessions recorded per
-> org and read in Roomler chat, teleport to another machine **and another folder**, a
+> org and read in MeshHarbor chat, teleport to another machine **and another folder**, a
 > vault reachable over MCP and referenced from prompts, and a "knowhow" map of the org's
-> infrastructure wired to that vault. v0.3 rebuilt Hive from what Roomler already has —
+> infrastructure wired to that vault. v0.3 rebuilt Hive from what MeshHarbor already has —
 > three server modules, one daemon feature, chat as the UI.
 >
 > **v0.4** applies the decisions on v0.3. Transcripts never reach the server: each
@@ -40,14 +40,14 @@ machines and makes five things first-class:
    a replica; the server holds the room and metadata-only stubs.
 3. **Resume anywhere in the replicaset, teleport anywhere else.** A session resumes on
    any of its replicas in seconds, because the transcript and workspace are already
-   there. It moves to a new machine and folder — `(laptop, C:\dev\roomler-ai)` to
-   `(build box, /home/alice/roomler-ai)` — by joining that machine to the replicaset
+   there. It moves to a new machine and folder — `(laptop, C:\dev\meshharbor)` to
+   `(build box, /home/alice/meshharbor)` — by joining that machine to the replicaset
    first.
 4. **Infrastructure the agent can use without seeing a secret.** The vault holds
    credentials under IAM-style policy. The knowhow graph records what exists and how to
-   reach it (repo `roomler-ai` → deployed to cluster `prod` → reads database
+   reach it (repo `meshharbor` → deployed to cluster `prod` → reads database
    `prod-mongo`, reachable through device `mars`). The agent gets both over MCP and
-   connects through Roomler's own forwards, SOCKS5 and SSH. A prompt can say "check the
+   connects through MeshHarbor's own forwards, SOCKS5 and SSH. A prompt can say "check the
    size of #db/prod-mongo" and the agent never handles the password.
 5. **One brain the whole org's sessions share and improve.** Memory, skills and
    playbooks live centrally: small, curated, versioned, reviewed. Every session on every
@@ -59,10 +59,10 @@ machines and makes five things first-class:
 | `vault` module | `crates/modules/vault` (AGPL) | secrets, versions, envelope encryption, roles, Cedar decisions, leases, templates, audit |
 | `knowhow` module | `crates/modules/knowhow` (AGPL) | entity/edge graph, fleet + network sync, proposals, verification, access plans |
 | `hive` module | `crates/modules/hive` (AGPL) | sessions, leases and fences, replicaset membership, turn stubs and cards, teleport coordination, **the brain** (memory, skills, playbooks), optional LLM gateway |
-| daemon feature `hive` | `agents/meshharbord/src/hive/` (MPL) — **no new binary** | supervisor, `roomlerd hive-host` (re-exec'd as the user), harness adapters, **replica store** (SQLite + FTS5), replication, viewer peer, checkpoints, LLM sidecar, toolbelt (MCP), egress proxy, vault agent, reviewer, scanners |
+| daemon feature `hive` | `agents/meshharbord/src/hive/` (MPL) — **no new binary** | supervisor, `meshharbord hive-host` (re-exec'd as the user), harness adapters, **replica store** (SQLite + FTS5), replication, viewer peer, checkpoints, LLM sidecar, toolbelt (MCP), egress proxy, vault agent, reviewer, scanners |
 | UI | `ui/src/{views,components}/hive/` (AGPL) | session chrome and renderers inside chat, the viewer peer, sessions list, brain review, knowhow map, vault admin |
 
-**Hive's invariants**, on top of Roomler's own:
+**Hive's invariants**, on top of MeshHarbor's own:
 
 - ⚠️ **A session never runs as SYSTEM or root.** It runs as the OS account the *device*
   maps the user to; no mapping ⇒ refuse (§4.2).
@@ -98,7 +98,7 @@ machines and makes five things first-class:
 2. Record every session per org: metadata and the brain centrally, content on a
    replicaset of the org's own devices. Find sessions by summary centrally and by full
    text on the replicas.
-3. Read and drive sessions in Roomler chat, several people per room, with approvals
+3. Read and drive sessions in MeshHarbor chat, several people per room, with approvals
    answerable from any device.
 4. Resume a session on any device of its replicaset within seconds; teleport it to a new
    device and folder; fork it.
@@ -112,9 +112,9 @@ machines and makes five things first-class:
 
 **Non-goals** — a new agent harness; two executors on one session; a public
 model-routing service; replacing the org's code review; running sessions or storing
-transcripts in Roomler's cloud (§19 notes Managed Agents as a possible later harness).
+transcripts in MeshHarbor's cloud (§19 notes Managed Agents as a possible later harness).
 
-**The acceptance bar** is Roomler's ("it just works", CLAUDE.md §2), applied to Hive:
+**The acceptance bar** is MeshHarbor's ("it just works", CLAUDE.md §2), applied to Hive:
 
 | Axis | Cell | Must hold |
 |---|---|---|
@@ -150,7 +150,7 @@ CI green is not done here either; every phase closes on the field cells in §16.
 | **Driver** | a room member who may prompt the session; the owner always is one |
 | **Lease / fence** | the right to execute, held by one member / the monotonic number every model and toolbelt call must carry |
 | **Checkpoint** | a git commit of the workspace (tracked + untracked) plus the transcript position, taken at a turn boundary |
-| **Toolbelt** | the `roomler` MCP server the daemon gives each session: brain, knowhow, vault, connect, fleet, network, child sessions |
+| **Toolbelt** | the `meshharbor` MCP server the daemon gives each session: brain, knowhow, vault, connect, fleet, network, child sessions |
 | **Brain** | the org's central store of memory, skills and playbooks |
 | **Core memory** | the bounded, always-loaded part of the brain, rendered into a session as a frozen snapshot at start |
 | **RRN** | `rrn:{org}:{type}:{path}`, e.g. `rrn:grox:secret:db/prod/app` |
@@ -162,7 +162,7 @@ CI green is not done here either; every phase closes on the field cells in §16.
 ### 3.1 Three modules and a daemon feature
 
 v0.2 invented an extension SDK — a registry, token exchange with its own JWKS, an
-envelope relay, an extension host inside `roomlerd`, an import-map SPA loader — to keep
+envelope relay, an extension host inside `meshharbord`, an import-map SPA loader — to keep
 Hive outside core. FR-69 provides each of those already: modules mount behind one
 `Module` contract (`crates/core/src/module.rs:23`), the SPA gates on
 `/api/capabilities` (`ui/src/stores/capabilities.ts:30`), every wire variant names its
@@ -207,7 +207,7 @@ flowchart BT
   every replicaset (§4.4), revokes its leases and archives its machine entity, in that
   order.
 - `vault` and `knowhow` don't depend on `hive`, and they are useful without any agent:
-  `roomler connect db/prod-mongo` gives a person a credential-injected local endpoint
+  `meshharbor connect db/prod-mongo` gives a person a credential-injected local endpoint
   (§8.7), and the map is an infrastructure inventory.
 
 All three join the `full` profile. A profile that leaves them out answers 503 on their
@@ -216,10 +216,10 @@ routes and its SPA hides their navigation, per FR-69 rules 6–8. Whether a redu
 to use the per-tenant `Capabilities.flags` the contract already defines and nobody
 fills (`crates/core/src/capabilities.rs:31-42`): `hive.enabled` per org.
 
-v0.2 also put the node side in a second binary, `hived`, supervised by `roomlerd`. That
+v0.2 also put the node side in a second binary, `hived`, supervised by `meshharbord`. That
 doubles the signing, updater and installer couplings on every platform and contradicts
-"one daemon per machine". The node side is a cargo feature of `roomlerd`. Its
-user-level half is `roomlerd hive-host`, re-exec'd as the user the way `portal-helper`
+"one daemon per machine". The node side is a cargo feature of `meshharbord`. Its
+user-level half is `meshharbord hive-host`, re-exec'd as the user the way `portal-helper`
 and `record` already are (`agents/meshharbord/src/main.rs:203,346`), so it ships, signs
 and updates with the daemon.
 
@@ -227,14 +227,14 @@ and updates with the daemon.
 
 ```mermaid
 flowchart LR
-  subgraph srv["roomler.ai — one server"]
+  subgraph srv["meshharbor.itachi.fans — one server"]
     HV["hive<br/>sessions · stubs · brain"]
     VT["vault"]
     KH["knowhow"]
     CH["chat"]
   end
   subgraph dev["enrolled device"]
-    subgraph sys["roomlerd — SYSTEM or root"]
+    subgraph sys["meshharbord — SYSTEM or root"]
       SUP["hive supervisor<br/>lease · fence · replication"]
       ST[("replica store<br/>hive.db · FTS5")]
       SC["LLM sidecar (loopback)"]
@@ -242,9 +242,9 @@ flowchart LR
       VA["vault agent<br/>values in memory only"]
     end
     subgraph usr["mapped OS account"]
-      HH["roomlerd hive-host<br/>stdin secret"]
+      HH["meshharbord hive-host<br/>stdin secret"]
       H["claude<br/>headless, tmux or ConPTY"]
-      SH["roomler mcp<br/>stdio shim"]
+      SH["meshharbor mcp<br/>stdio shim"]
       T["git · cargo · psql · kubectl"]
     end
   end
@@ -261,8 +261,8 @@ flowchart LR
 
 | Process | Identity | Holds | Why there |
 |---|---|---|---|
-| supervisor, replica store, sidecar, toolbelt, egress proxy, vault agent (in `roomlerd`) | SYSTEM / root | the lease, the session's canonical copy, LLM credentials, leased secret values, per-session CA keys | a different OS principal from everything the model can run, so `/proc/<pid>/environ`, memory and files of these components are out of the model's reach, and other local users can't read the replica store |
-| `roomlerd hive-host` | the mapped account | the harness's stdin/stdout, the PTY or tmux pane, the session secret | the harness must run as the user; a user-level host outlives a daemon restart (§4.3) |
+| supervisor, replica store, sidecar, toolbelt, egress proxy, vault agent (in `meshharbord`) | SYSTEM / root | the lease, the session's canonical copy, LLM credentials, leased secret values, per-session CA keys | a different OS principal from everything the model can run, so `/proc/<pid>/environ`, memory and files of these components are out of the model's reach, and other local users can't read the replica store |
+| `meshharbord hive-host` | the mapped account | the harness's stdin/stdout, the PTY or tmux pane, the session secret | the harness must run as the user; a user-level host outlives a daemon restart (§4.3) |
 | the harness and its tools | the mapped account | the workspace, the harness's own transcript, the session's config directory | what the user could do by hand, nothing more |
 
 `hive-host` authenticates to the daemon the way FR-43's worker does: the daemon mints a
@@ -289,19 +289,19 @@ matters — policy, approval, fence, audience — is made in the daemon or on th
 | session cards | a replica → `hive`, after the scanner | yes, if the org allows (`session_cards`, §10.4) |
 | the brain — memory, skills, playbooks | `hive` module | yes: curated knowledge, scanned and reviewed (§10) |
 | transcript — prompts, answers, tool calls, outputs | device ⇄ device inside the replicaset; device ⇄ browser over a WebRTC DataChannel | **no** |
-| live PTY bytes and keystrokes | browser ⇄ device WebRTC DataChannel, or `roomler ssh` | no |
+| live PTY bytes and keystrokes | browser ⇄ device WebRTC DataChannel, or `meshharbor ssh` | no |
 | workspace checkpoints, replication, teleport | device ⇄ device on tunnel-core carriers | no; relays forward ciphertext |
 | tool traffic to org resources (DB, k8s, git) | device → forward, SOCKS or overlay → target | no |
 | secret values | vault → device, wrapped for the device key | only inside the vault module while decrypting (managed custody, §8.2) |
 | model traffic | sidecar → provider (default), or through an org-enabled gateway (§11.1) | only on a gateway route |
 
-This keeps Roomler's data-plane rule — "the server never sees pixels, keystrokes,
+This keeps MeshHarbor's data-plane rule — "the server never sees pixels, keystrokes,
 clipboard, files, or overlay plaintext" (`docs/architecture.md`) — true for agent
 sessions too. It costs three things, each answered later: a session is readable only
 while one of its replicas is online (archive replicas, §4.4); full-text search runs on
 replicas, not in the database (§10.4); and opening a session room needs a P2P
 connection (§5.2). What the server does hold is knowledge someone chose to keep: the
-brain, and short summary cards if the org enables them. Roomler SSH's rule that
+brain, and short summary cards if the org enables them. MeshHarbor SSH's rule that
 "session content is never recorded" holds for Hive in the same sense: the server
 records that a session happened, not what was in it.
 
@@ -334,7 +334,7 @@ records that a session happened, not what was in it.
   `PlanLimits` has no AI field (`crates/db/src/models/tenant.rs:251-257`) and limits are
   checked per call site through a closed `Limit` enum (`crates/services/src/quota.rs:26`).
   Hive adds `PlanLimits.agent_sessions` and `Limit::AgentSessions`, Business-only on
-  roomler.ai. A self-hosted operator assigns plans to their own tenants, and the
+  meshharbor.itachi.fans. A self-hosted operator assigns plans to their own tenants, and the
   community edition loses nothing.
 
 ## 4. Sessions
@@ -382,7 +382,7 @@ config and default to deny:
 hive_enabled      = false                        # gate 4 (§13): may run sessions here
 hive_replica      = false                        # may hold copies of sessions (§4.4)
 hive_archive      = false                        # offered to the org as an archive replica
-hive_accounts     = { "alice@grox" = "alice" }   # Roomler user → OS account; unmapped ⇒ refuse
+hive_accounts     = { "alice@grox" = "alice" }   # MeshHarbor user → OS account; unmapped ⇒ refuse
 hive_roots        = ["/home/alice/src"]          # sessions and teleport targets confined here
 hive_max_sessions = 4
 hive_store_quota  = "50 GiB"
@@ -418,7 +418,7 @@ the account that would follow it.
 Each session gets its own Claude Code state directory and a pinned project name:
 
 ```
-CLAUDE_CONFIG_DIR=<home>/.roomler/hive/<sid>/claude
+CLAUDE_CONFIG_DIR=<home>/.meshharbor/hive/<sid>/claude
 CLAUDE_CODE_PROJECT_DIR_NAME=hive-<sid>
 ```
 
@@ -427,7 +427,7 @@ and auto-memory live under `projects/hive-<sid>/` **whatever the working directo
 is** (Claude Code ≥ 2.1.234; [env-vars](https://code.claude.com/docs/en/env-vars)). So
 a session's harness state is one directory, a move carries a directory and a workspace,
 and nothing rewrites a cwd-derived project key. v0.2's canonical-path rule
-(`~/roomler/ws/<name>`) is gone. `--resume <id>` resolves from any directory (≥
+(`~/meshharbor/ws/<name>`) is gone. `--resume <id>` resolves from any directory (≥
 2.1.223) but only when exactly one copy of the transcript exists — which one config
 directory per session guarantees on each device.
 
@@ -439,7 +439,7 @@ claude -p --input-format stream-json --output-format stream-json --verbose \
        --include-partial-messages --resume <sid> \
        --settings   <daemon-owned dir>/<sid>/settings.json \
        --mcp-config <daemon-owned dir>/<sid>/mcp.json --strict-mcp-config \
-       --permission-prompt-tool mcp__roomler__approve --permission-mode default \
+       --permission-prompt-tool mcp__meshharbor__approve --permission-mode default \
        --disallowedTools AskUserQuestion
 env:   ANTHROPIC_BASE_URL=http://127.0.0.1:<sidecar>/s/<sid>
 ```
@@ -454,7 +454,7 @@ env:   ANTHROPIC_BASE_URL=http://127.0.0.1:<sidecar>/s/<sid>
 > is approved automatically in any mode, which would take Bash out of the approvals.
 
 `settings.json` is written by the daemon into a directory the user can read but not
-write. It carries `apiKeyHelper` → `roomler hive token` (the fence-bound session
+write. It carries `apiKeyHelper` → `meshharbor hive token` (the fence-bound session
 token); `http` hooks to the daemon for `SessionStart`, `UserPromptSubmit`,
 `PreToolUse`, `PostToolUse`, `PermissionRequest`, `Stop`, `SessionEnd` and
 `PreCompact`; the sandbox with `network.httpProxyPort`/`socksProxyPort` pointing at the
@@ -468,20 +468,20 @@ outside Hive.
 **Headless is the primary mode.** stream-json is a documented wire; the transcript
 JSONL is "internal to Claude Code and changes between versions" (sessions docs).
 Interactive mode — the TUI in a terminal — is for people who want it. On Linux and
-macOS it runs in a `tmux -L roomler-hive` server owned by the mapped account, the FR-56
+macOS it runs in a `tmux -L meshharbor-hive` server owned by the mapped account, the FR-56
 pattern minus the X terminal (`agents/meshharbord/src/apps/linux.rs:389-433`,
 `docs/remote-apps.md:279-298`), attachable at the machine or with
-`roomler ssh <device> -t 'roomler hive attach <sid>'`. On Windows it is a ConPTY
+`meshharbor ssh <device> -t 'meshharbor hive attach <sid>'`. On Windows it is a ConPTY
 (`agents/meshharbord/src/pty/windows.rs:180-240`). Interactive turns are read by tailing
 the transcript through a version-pinned parser. A session switches modes only at a turn
 boundary.
 
-**Surviving the daemon.** `roomlerd` updates itself fleet-wide; an update must not kill
+**Surviving the daemon.** `meshharbord` updates itself fleet-wide; an update must not kill
 every agent mid-turn.
 
 - Linux: `hive-host` runs as a transient unit outside the daemon's cgroup
   (`systemd-run --uid=…`, as the companion is started, `agents/meshharbord/src/companion.rs:701-731`),
-  so `systemctl restart roomlerd` leaves it running, and it reconnects to the daemon's
+  so `systemctl restart meshharbord` leaves it running, and it reconnects to the daemon's
   per-uid socket.
 - macOS: `hive-host` starts in the user's bootstrap context (`launchctl asuser`, as
   FR-43's worker does) with the same effect.
@@ -523,7 +523,7 @@ flowchart LR
 ```
 
 **Every member keeps the same store**, owned by the daemon and readable by no local
-user — Linux `/var/lib/roomler/hive`, Windows `%ProgramData%\roomler\hive` with a
+user — Linux `/var/lib/meshharbor/hive`, Windows `%ProgramData%\meshharbor\hive` with a
 SYSTEM/Administrators ACL, macOS under `/Library/Application Support/meshharbor`:
 
 - `hive.db` — SQLite in WAL mode with the events of every session the device holds,
@@ -575,7 +575,7 @@ Leaving is a purge on the device, acknowledged.
 
 **Archive replicas** are always-on devices an org admin designates from those that
 offer themselves (`hive_archive = true`): a home server, a build box, an office NAS, or
-a small VM or container running `roomlerd` with a volume. They join every replicaset the
+a small VM or container running `meshharbord` with a volume. They join every replicaset the
 policy allows, keep sessions for the retention period, answer full-text search (§10.4),
 and run the reviewer (§10.5). An org without one still works: a session is readable
 while any member is online, and search falls back to cards plus whichever members are
@@ -659,7 +659,7 @@ What else chat needs (`crates/db/src/models/message.rs`):
   (`ui/src/views/chat/ChatView.vue:51`); a long session room needs a virtualized list.
   Busy chat rooms benefit too.
 - **Push.** Only mentions push today (`crates/core/src/notify.rs`), so Hive calls core's
-  notify itself — with no content: "session roomler-ai#41 needs approval".
+  notify itself — with no content: "session meshharbor#41 needs approval".
 
 ### 5.2 Reading a session: the viewer peer
 
@@ -700,7 +700,7 @@ replica.
   the device. Hive's own tools render as cards that say what happened: "forward to
   database/prod-mongo through mars → 127.0.0.1:6543, credentials injected".
 - The SPA has no xterm.js, Monaco, highlighter or msgpack today (`ui/package.json`), and
-  v1 needs none: terminal blocks are static and diffs render from hunks. `roomler exec`
+  v1 needs none: terminal blocks are static and diffs render from hunks. `meshharbor exec`
   output in the device console is plain `<pre>` interpolation
   (`ui/src/components/admin/DeviceConsoleDialog.vue:128-131`); the terminal block
   component replaces it there too.
@@ -713,12 +713,12 @@ gains three triggers next to the existing `@` mentions:
 
 | Trigger | Inserts | The harness receives |
 |---|---|---|
-| `#` | a knowhow entity chip, `#db/prod-mongo` | the URI `knowhow://grox/database/prod-mongo` plus an entity card in a `<roomler-context>` block: kind, environment, owner, how to reach it (`roomler_connect("database/prod-mongo")`), linked runbook |
+| `#` | a knowhow entity chip, `#db/prod-mongo` | the URI `knowhow://grox/database/prod-mongo` plus an entity card in a `<meshharbor-context>` block: kind, environment, owner, how to reach it (`meshharbor_connect("database/prod-mongo")`), linked runbook |
 | `$` | a secret or template chip, `$aws/prod-deployer` | the handle `secret://grox/aws/prod-deployer` and the ways it may be used — **never a value** (§8.5) |
 | `/` | a playbook or command | the playbook's prompt (`/deploy-prod`), which declares its role and required secrets |
 
 The same references work from a terminal. The toolbelt serves them as MCP resources —
-`@roomler:knowhow://…` inserts the entity card in Claude Code — and a `UserPromptSubmit`
+`@meshharbor:knowhow://…` inserts the entity card in Claude Code — and a `UserPromptSubmit`
 hook resolves `#` and `$` chips typed into the TUI. References are recorded in the
 transcript, and their ids (not the prompt) on the turn stub, which gives the audit and
 the learning loop a "what did this prompt touch" join.
@@ -737,7 +737,7 @@ No browser↔daemon terminal channel exists (the remote-control peer carries `co
 `terminal` DataChannel on the viewer peer, fed by the same PTY code, with a new
 `PromptKind::Hive` consent for write access (`agents/meshharbord/src/consent.rs:174`;
 adding a kind is one variant plus companion rendering). People at a terminal already
-have attach: `roomler ssh <device> -t 'roomler hive attach <sid>'` goes through roomler
+have attach: `meshharbor ssh <device> -t 'meshharbor hive attach <sid>'` goes through meshharbor
 SSH's four gates, single-use grants and consent. Browser attach is P6.
 
 ## 6. Promotion and teleport
@@ -748,7 +748,7 @@ SSH's four gates, single-use grants and consent. Browser attach is P6.
 |---|---|---|
 | transcript and harness state | already there | full sync into the device's store when it joins the replicaset |
 | workspace | the checkpoint is in the replica's bare repo; materialized into the target folder | same, after the sync |
-| path map | `{from: "C:\dev\roomler-ai", to: "/home/alice/roomler-ai"}` appended to the session; old turns keep old paths and the resume note explains | same |
+| path map | `{from: "C:\dev\meshharbor", to: "/home/alice/meshharbor"}` appended to the session; old turns keep old paths and the resume note explains | same |
 | leases | **not moved** — requested again on the target and evaluated there | same |
 | network intents | forwards, SOCKS listeners and egress pins the session opened, reopened from the record | same |
 | background processes, caches, build output | not moved; listed in the resume note | same |
@@ -761,7 +761,7 @@ sequenceDiagram
   participant S as hive module
   participant A as primary
   participant B as target device
-  U->>S: move sid to B, /home/alice/roomler-ai
+  U->>S: move sid to B, /home/alice/meshharbor
   S->>S: policy — session:teleport, role:assume on B, B advertises hive
   S->>B: rc:hive.prepare — account, folder, owner
   B-->>S: ack ready, or refused with a reason
@@ -829,8 +829,8 @@ reserved names (`CON`, `NUL`) and over-long paths **before** the lease moves.
 
 No generic device-to-device stream exists. `SplitTun` intercepts exactly one TCP port
 and its only caller is SSH (`crates/tunnel-core/src/overlay/split_tun.rs:91-126`), and
-the only device-to-device mover is SFTP over roomler SSH, which refuses non-daemon
-accounts on Windows (`docs/roomler-ssh.md:557-575`). Replication, joins and moves
+the only device-to-device mover is SFTP over meshharbor SSH, which refuses non-daemon
+accounts on Windows (`docs/meshharbor-ssh.md:557-575`). Replication, joins and moves
 therefore use the **tunnel-core carriers** without their forward and ACL semantics: a
 member dials another on `quic-v1` with the certificate fingerprint pinned over
 signalling, and falls down the same ladder — TURN over UDP, TURNS over TCP 443,
@@ -865,19 +865,19 @@ message:
 
 ```
 This session was moved by alice at 14:02 UTC.
-From: laptop (Windows 11), C:\dev\roomler-ai, PowerShell.  To: mars (Ubuntu 24.04), /home/alice/roomler-ai, bash.
-Paths in earlier turns under C:\dev\roomler-ai\ now live under /home/alice/roomler-ai/.
+From: laptop (Windows 11), C:\dev\meshharbor, PowerShell.  To: mars (Ubuntu 24.04), /home/alice/meshharbor, bash.
+Paths in earlier turns under C:\dev\meshharbor\ now live under /home/alice/meshharbor/.
 Workspace = checkpoint 0a1b2c3 (turn 41), untracked and uncommitted changes included.
 Last tool call before the move — `cargo test -p meshharbord --lib` — was interrupted; its result is unknown.
 Toolchain drift: rustc 1.90 → 1.89, node 22 → 20.  Not carried: `npm run dev` (port 5000), target/.
 Credentials re-evaluated here: secret://grox/aws/prod-deployer is denied on this device.
 ```
 
-## 7. The toolbelt: Roomler infrastructure as the agent's tools
+## 7. The toolbelt: MeshHarbor infrastructure as the agent's tools
 
-### 7.1 The `roomler` MCP server
+### 7.1 The `meshharbor` MCP server
 
-One MCP server per session, reached through `roomler mcp` (a stdio shim the harness
+One MCP server per session, reached through `meshharbor mcp` (a stdio shim the harness
 starts) over a **per-session endpoint**: a Unix socket owned by the mapped account
 (`0600` under a `0700` directory) or a named pipe whose DACL names only that account's
 SID. It can't be the main LocalAPI endpoint: on a root daemon that socket is root-only
@@ -889,19 +889,19 @@ interactive user and most verbs trust the pipe alone (`lib.rs:1081-1083`).
 | `memory_search(query)`, `memory_propose(scope, text, evidence)` | search the brain beyond the core snapshot; propose a fact (§10) | `brain:read` / `brain:propose` |
 | `session_search(query)` | full-text search over past sessions this session may read: this device's store first, then the org's archive replica over the mesh (§10.4) | `session:read`, per hit |
 | `knowhow_search`, `knowhow_get`, `knowhow_neighbors` | read the graph (§9) | `knowhow:read` |
-| `roomler_connect(entity)` | open the entity's access path from this device; return a local endpoint and how to use it | `knowhow:connect` + the bound credential's `secret:use` |
+| `meshharbor_connect(entity)` | open the entity's access path from this device; return a local endpoint and how to use it | `knowhow:connect` + the bound credential's `secret:use` |
 | `vault_list`, `vault_describe(handle)` | metadata only | `secret:list` |
 | `vault_request(handle, mode, ttl, reason)` | request a lease; may post an approval card | `secret:use` with `context.mode` |
 | `vault_exec(argv, env: {NAME: handle})` | run one command with values injected into its environment; output scrubbed | `secret:use`, `mode = "exec"`, `argv[0]` on the secret's `exec_allow` |
 | `vault_render(template, dest)` | write a template to the session's secrets directory for the lease | `secret:use`, `mode = "file"` |
 | `fleet_devices` | the devices this session may act on | — |
-| `ssh_run(device, argv)` | one command over roomler SSH, as the account the *target* maps | SSH's four gates + `device:ssh` |
-| `fleet_exec(device, command)` | `roomler exec` — **SYSTEM/root** on the target | fleet RPC's four gates + `device:exec` + a person's approval on every call |
+| `ssh_run(device, argv)` | one command over meshharbor SSH, as the account the *target* maps | SSH's four gates + `device:ssh` |
+| `fleet_exec(device, command)` | `meshharbor exec` — **SYSTEM/root** on the target | fleet RPC's four gates + `device:exec` + a person's approval on every call |
 | `net_forward(device, host:port)`, `net_socks(device)` | a session-scoped forward or SOCKS listener | tunnel policy + `net:*` |
 | `hive_spawn(device, folder, prompt, role)`, `hive_wait`, `hive_send` | child sessions (§7.4) | `session:start` on the child's device |
 | `approve` | the `--permission-prompt-tool` target: policy decides, or a card asks a driver | — |
 | resources `knowhow://…`, `secret://…`, `memory://…` | `@`-mentionable cards; a secret's card never holds its value | — |
-| prompts | playbooks as `/mcp__roomler__<playbook>` | — |
+| prompts | playbooks as `/mcp__meshharbor__<playbook>` | — |
 
 Sensitive tools set `_meta["anthropic/requiresUserInteraction"]`, so Claude Code asks
 even under allow rules. Because that is UX, the daemon asks again where it matters.
@@ -914,7 +914,7 @@ even under allow rules. Because that is UX, the daemon asks again where it matte
 > settings file, so the ask prompts even where a repository's own settings allow the tool.
 
 > **As built in P1a** (FR-90 spec §3e has the measured contract). The stdio shim is
-> `roomlerd hive-mcp <socket>` — the daemon's own binary, short-circuited before any of
+> `meshharbord hive-mcp <socket>` — the daemon's own binary, short-circuited before any of
 > its start-up, because Claude Code starts it as the session's account and nothing of
 > the daemon's may run there. The endpoint is `<runtime>/<sid>/toolbelt.sock`: the
 > account's, `0600`, in the daemon's `0755` directory beside the session's
@@ -922,7 +922,7 @@ even under allow rules. Because that is UX, the daemon asks again where it matte
 > `settings.json` from under the daemon); every peer's uid is checked again. The launch
 > pins `--permission-mode default`: with nothing setting a mode, a `-p` run behind a proxy
 > starts in `auto`, where a classifier decides instead of a person. `--strict-mcp-config`
-> keeps a repository's `.mcp.json` from shadowing `roomler`.
+> keeps a repository's `.mcp.json` from shadowing `meshharbor`.
 
 ### 7.2 Reaching org resources without root and without touching routes
 
@@ -1006,7 +1006,7 @@ Version { n, ciphertext, dek_wrapped, created_by, created_at, expires_at? }
 
 - **Envelope encryption.** A data key per version (XChaCha20-Poly1305), wrapped by the
   org's key-encryption key. KEK backends: an `age` key file (the self-host default), AWS,
-  GCP or Azure KMS, PKCS#11. Hosted roomler.ai would use a cloud KMS.
+  GCP or Azure KMS, PKCS#11. Hosted meshharbor.itachi.fans would use a cloud KMS.
 - ⚠️ **Nothing in the server encrypts at rest today.** JWTs are HS256 with a shared secret
   (`crates/services/src/auth/mod.rs:301-315`), and the only asymmetric key signs DERP
   tickets (`crates/remote_control/src/derp_ticket.rs:92,116`). The vault brings its own
@@ -1048,38 +1048,38 @@ read}`; `device:{ssh, exec}`; `net:{forward, socks}`;
 
 ```cedar
 // Developers run sessions as "dev" on devices they own, or on build boxes.
-permit (principal in Roomler::Group::"grox-devs",
-        action == Roomler::Action::"role:assume",
-        resource == Roomler::Role::"dev")
+permit (principal in MeshHarbor::Group::"grox-devs",
+        action == MeshHarbor::Action::"role:assume",
+        resource == MeshHarbor::Role::"dev")
 when { context.device.owner == principal || context.device.tags.contains("build") };
 
 // "dev" uses staging credentials only through a proxy: the value never reaches the session.
-permit (principal in Roomler::Role::"dev",
-        action == Roomler::Action::"secret:use",
-        resource in Roomler::SecretFolder::"rrn:grox:secret:staging")
+permit (principal in MeshHarbor::Role::"dev",
+        action == MeshHarbor::Action::"secret:use",
+        resource in MeshHarbor::SecretFolder::"rrn:grox:secret:staging")
 when { context.mode == "proxy" };
 
 // Prod deploys: the deploy playbook, on a Linux build box, approved by an admin, 15 minutes.
-permit (principal in Roomler::Role::"deployer",
-        action == Roomler::Action::"secret:use",
-        resource in Roomler::SecretFolder::"rrn:grox:secret:prod")
+permit (principal in MeshHarbor::Role::"deployer",
+        action == MeshHarbor::Action::"secret:use",
+        resource in MeshHarbor::SecretFolder::"rrn:grox:secret:prod")
 when { principal has playbook && principal.playbook == "deploy-prod"
        && principal.device.os == "linux" && principal.device.tags.contains("build")
        && context.ttl_s <= 900
-       && context has approval && context.approval.approver in Roomler::Group::"grox-admins" };
+       && context has approval && context.approval.approver in MeshHarbor::Group::"grox-admins" };
 
 // Guardrails (the SCP analogue).
-forbid (principal, action == Roomler::Action::"secret:use",
-        resource in Roomler::SecretFolder::"rrn:grox:secret:prod")
+forbid (principal, action == MeshHarbor::Action::"secret:use",
+        resource in MeshHarbor::SecretFolder::"rrn:grox:secret:prod")
 when { ["file", "env", "exec", "raw"].contains(context.mode) };     // prod never materializes
 
-forbid (principal, action == Roomler::Action::"secret:use", resource)
+forbid (principal, action == MeshHarbor::Action::"secret:use", resource)
 when { principal has device && principal.device.os == "windows"
        && context.mode != "proxy" };                                  // no Claude Code sandbox there
 
-forbid (principal in Roomler::Role::"reviewer",
-        action in [Roomler::Action::"secret:use", Roomler::Action::"secret:read",
-                   Roomler::Action::"policy:write"],
+forbid (principal in MeshHarbor::Role::"reviewer",
+        action in [MeshHarbor::Action::"secret:use", MeshHarbor::Action::"secret:read",
+                   MeshHarbor::Action::"policy:write"],
         resource);
 ```
 
@@ -1116,7 +1116,7 @@ and uses Claude Code's sandbox only to force egress through the daemon.
 
 **Audience binding** closes the confused deputy. Every secret names its audiences: host
 patterns, a knowhow entity, or a named upstream. The daemon injects a value only into a
-request bound for an audience; `roomler_connect` only opens endpoints recorded on the
+request bound for an audience; `meshharbor_connect` only opens endpoints recorded on the
 entity; `vault_exec` only runs an `argv[0]` on the secret's `exec_allow` list (`psql`,
 `kubectl`, `aws`). A handle smuggled into a `curl` to an unknown host resolves to
 nothing.
@@ -1134,7 +1134,7 @@ inputs:
 ```
 
 A `.env` template does the same for a connection string:
-`MONGODB_URI=mongodb://hive@127.0.0.1:{{connect('database/prod-mongo').port}}/roomler`
+`MONGODB_URI=mongodb://hive@127.0.0.1:{{connect('database/prod-mongo').port}}/meshharbor`
 under `proxy`, or the materialized form under `short-lived` where policy allows it.
 
 ### 8.6 Leases, approvals, rotation, audit
@@ -1144,7 +1144,7 @@ A lease is requested with the session token, revoked by a push and by TTL, and a
 rotation bumps the version; proxy-mode leases switch over without the session noticing.
 
 A policy that requires `approval` posts a card into the session's room. The server's
-stub names the session and the secret handle — "session `roomler-ai#41` on mars asks for
+stub names the session and the secret handle — "session `meshharbor#41` on mars asks for
 `$aws/prod-deployer` (`short-lived`, 15 min)". The detail, including the step that led to
 the request, comes from the replica (§5.2), because that step is where an injection
 would show.
@@ -1157,14 +1157,14 @@ The server's decision and the device's report of use stay in separate collection
 
 ### 8.7 People use it too
 
-`roomler connect db/prod-mongo` on a person's laptop takes the same path as
-`roomler_connect` in a session: knowhow resolves the access path, the vault leases the
+`meshharbor connect db/prod-mongo` on a person's laptop takes the same path as
+`meshharbor_connect` in a session: knowhow resolves the access path, the vault leases the
 credential in `proxy` mode, and the person gets `127.0.0.1:6543` with authentication
 already done — credential-injected access over the mesh, with no password on the laptop.
 
-For a vault handle it comes before knowhow: P3-9 (the FR-90 spec, §3e "P3-9, `roomler connect`,
+For a vault handle it comes before knowhow: P3-9 (the FR-90 spec, §3e "P3-9, `meshharbor connect`,
 as designed"). The person acts as the device's owner, read from the device's row as
-`roomler ssh` does. A new Cedar action, `secret:connect`, decides it, so no policy written for
+`meshharbor ssh` does. A new Cedar action, `secret:connect`, decides it, so no policy written for
 sessions admits a person, and the endpoint is the session's `proxy` machinery, served to the
 one account that asked.
 
@@ -1189,11 +1189,11 @@ Kinds: `machine` (mirrors a device), `repo`, `checkout` (repo × machine × path
 
 ```mermaid
 flowchart LR
-  repo["repo roomler-ai"] -->|checked_out_at| lap["machine laptop"]
+  repo["repo meshharbor"] -->|checked_out_at| lap["machine laptop"]
   repo -->|checked_out_at| mars["machine mars"]
-  repo -->|deployed_to| ns["namespace roomler-ai"]
+  repo -->|deployed_to| ns["namespace meshharbor"]
   ns -->|part_of| k8s["cluster prod"]
-  svc["service roomler2"] -->|part_of| ns
+  svc["service meshharbor2"] -->|part_of| ns
   svc -->|reads, writes| db["database prod-mongo"]
   db -->|reachable_via forward through| mars
   db -.->|authenticates_with| s1["secret db/prod/app · proxy"]
@@ -1231,7 +1231,7 @@ primary-org only (`docs/multi-org.md`).
 
 ### 9.3 How agents use it
 
-Through the toolbelt (§7.1) and through chips (§5.4). `roomler_connect(entity)` compiles
+Through the toolbelt (§7.1) and through chips (§5.4). `meshharbor_connect(entity)` compiles
 an access path into actions on the session's device: pick the best *verified* path from
 here (measured, never assumed — pillar 2's first commitment), open the forward or SOCKS
 listener, lease the bound credential in the strongest mode the policy allows, and return
@@ -1263,8 +1263,8 @@ machine" becomes "in the org's database" for the curated layer and "on the repli
 for history.
 
 Storing the transcripts centrally too would be simpler and would give the best search.
-It would also make roomler.ai the store of every org's code, command output and database
-rows, against the property that makes Roomler different. A self-hosted org, whose
+It would also make meshharbor.itachi.fans the store of every org's code, command output and database
+rows, against the property that makes MeshHarbor different. A self-hosted org, whose
 server is its own, may want that trade; §18 keeps it as a later option.
 
 ### 10.2 Layers
@@ -1438,7 +1438,7 @@ reverts the change and quarantines it.
 
 ### 10.8 Adopting sessions that started outside Hive
 
-People already run Claude Code in a terminal. `roomler hive adopt` installs user-level
+People already run Claude Code in a terminal. `meshharbor hive adopt` installs user-level
 hooks (`SessionStart`, `Stop`, `SessionEnd`) that mirror those transcripts into the
 device's Hive store — and from there into a replicaset — and list them in the org as
 read-only `adopted` sessions. It's the same shape as FR-8's `crestore` registry
@@ -1448,7 +1448,7 @@ teleported, and the learning loop sees the work people already do.
 
 ## 11. LLM broker
 
-No LLM code exists in Roomler today: no Anthropic client, model id or configuration key
+No LLM code exists in MeshHarbor today: no Anthropic client, model id or configuration key
 on master. The "Claude AI" service CLAUDE.md lists under `crates/services` and the
 document recognition the README describes are not in the code. The broker is greenfield.
 
@@ -1467,10 +1467,10 @@ Route         { match{role?, playbook?, harness?, model_family}, pool, fallback[
 - `via: gateway` — the sidecar calls the `hive` module's gateway, which holds the key.
   The key never leaves the server, but prompts would cross it, which D1 rules out by
   default. An org may opt in per route; the UI says what it means.
-- `wif` — the org registers Roomler as a federation issuer in its Anthropic organization,
-  and the sidecar exchanges a Roomler-signed session token for a short-lived access
+- `wif` — the org registers MeshHarbor as a federation issuer in its Anthropic organization,
+  and the sidecar exchanges a MeshHarbor-signed session token for a short-lived access
   token (Anthropic's Workload Identity Federation is generally available). No static key
-  anywhere. It needs Roomler to sign with an asymmetric key and publish a JWKS — new
+  anywhere. It needs MeshHarbor to sign with an asymmetric key and publish a JWKS — new
   work, P7.
 
 ### 11.2 The sidecar
@@ -1546,7 +1546,7 @@ open (§18).
 | Prompt injection — a README, a web page, a tool output, a knowhow fact, a chat message | drivers-only prompting; handles not values; audience binding; the egress allowlist; approval cards that show the triggering step; a tool-less reviewer; verified-only knowhow facts |
 | Memory or skill poisoning | the scanner as a required check, quarantine, scope-based acceptance, a person for skills and org facts, evidence links on every fact, contradiction cards, revert |
 | Secret exfiltration through the model | §8.5's modes; materializing modes need a permit and are flagged; guardrails forbid them for prod and on Windows; the scrubber as backstop |
-| Confused deputy — a handle aimed at an attacker's host | audience binding at the egress proxy; `roomler_connect` limited to recorded endpoints; `exec_allow` on `vault_exec` |
+| Confused deputy — a handle aimed at an attacker's host | audience binding at the egress proxy; `meshharbor_connect` limited to recorded endpoints; `exec_allow` on `vault_exec` |
 | Other local users on a shared host | per-session sockets, pipes and SOCKS credentials; per-session CA; per-session config directories owned by the mapped account; a root-only replica store |
 | Local privilege escalation through the daemon | no privileged writes into user trees (§3.2); hardened loopback parsers; no new overlay port |
 | A move to a hostile device | `role:assume` re-evaluated on the target; replica placement policy; consent on devices the starter doesn't own; leases requested afresh there |
@@ -1580,13 +1580,13 @@ Routes, all under `/api/tenant/{tenant_id}/` and all resolving ids within the te
 (`crates/tests/fixtures/composition.baseline.json`) is re-recorded once per phase with a
 commit message that says why.
 
-CLI, in the `roomler` library the daemon already hosts: `roomler hive ls | new | send |
-attach | replicas | promote | teleport | fork | stop | adopt | token`, `roomler mcp`,
-`roomler brain search | propose | review`, `roomler vault ls | put | policy edit |
-simulate | lease`, `roomler knowhow search | show | add | link | verify`,
-`roomler connect <entity>`.
+CLI, in the `meshharbor` library the daemon already hosts: `meshharbor hive ls | new | send |
+attach | replicas | promote | teleport | fork | stop | adopt | token`, `meshharbor mcp`,
+`meshharbor brain search | propose | review`, `meshharbor vault ls | put | policy edit |
+simulate | lease`, `meshharbor knowhow search | show | add | link | verify`,
+`meshharbor connect <entity>`.
 
-Device config, on `roomler config`'s surface and default-deny: `hive_enabled`,
+Device config, on `meshharbor config`'s surface and default-deny: `hive_enabled`,
 `hive_replica`, `hive_archive`, `hive_accounts`, `hive_roots`, `hive_max_sessions`,
 `hive_store_quota`, `hive_harnesses`, `knowhow_scan_roots`.
 
@@ -1602,7 +1602,7 @@ crates/localapi/           (MPL)  + per-session endpoint types
 crates/tunnel-core/        (MPL)  + authenticated SOCKS5, Principal::Session, the replication carrier
 agents/meshharbord/src/hive/  (MPL)  supervisor · hive-host · adapters · store (SQLite + FTS5) · replication · viewer peer
                                   · checkpoints · sidecar · toolbelt · egress proxy · vault agent · reviewer · scanners
-agents/meshharbor-cli/        (MPL)  roomler hive · mcp · brain · vault · knowhow · connect
+agents/meshharbor-cli/        (MPL)  meshharbor hive · mcp · brain · vault · knowhow · connect
 ui/src/…/hive/             (AGPL) session chrome · viewer peer · renderers · sessions list · brain review · knowhow map · vault admin
 ```
 
@@ -1675,12 +1675,12 @@ ship behind their own kill switches.
 | **P0 spike** | `hive` module skeleton; one headless Claude Code session on one Linux device, driven from a chat room; events in the device store; stubs to the server; content to the browser over a viewer peer; sidecar pass-through with the fence; `RunAs::Named` with a working directory | `[modules] hive = false`; device `hive_enabled = false` | a prompt in a room returns a turn whose terminal step renders from the device; the canary test passes; `whoami` in the session prints the mapped account; cutting the device's network stops model calls within `offline_grace` |
 | **P1 sessions in chat** | drivers and composer modes, renderers (markdown, ANSI, diff, cards), approvals via `--permission-prompt-tool`, notifications without content, virtualized list; Windows (console user) and macOS; updater deferral; `adopt`; **core memory** from a hand-curated brain (frozen snapshot, budgets) | org flag `hive.enabled` | on all three operating systems the session runs as the mapped user, never SYSTEM/root; an approval answered on a phone unblocks the tool; a non-driver's message never reaches the harness (mock-llm capture); a daemon update during a turn waits for the turn; a fact added to the brain appears in the next session and not in the running one |
 | **P2 replicaset and moves** | replication over carriers, membership policy, archive replicas, promotion, teleport (join then promote), path map, resume note, fork, purge tombstones, full-text search on archive replicas | `hive.replicaset = false` (a session then lives on its primary only) | promoting a Windows primary's session onto a Linux replica resumes with the same id and tree hash in < 10 s; teleporting to a non-member over a LAN pair takes < 30 s, and < 120 s with the source on the DERP floor; a stale-fence primary makes zero model calls; a purge issued while a member is offline is applied when it returns |
-| **P3 vault + toolbelt** | secrets, envelope + KMS, roles, Cedar, `simulate`, leases, approvals; the MCP toolbelt; proxy modes (HTTP, k8s, SSH agent, Postgres, MongoDB); authenticated session SOCKS; `Principal::Session`; dynamic AWS, DB and GitHub credentials; `roomler connect` | `vault.enabled`; per-secret `disabled` | a prompt with `$db/staging` gets the agent a query result while the value appears in no transcript, no model request (mock-llm) and no session environment; the same session on a Windows device is denied a materializing mode and the denial is in `vault_audit` |
+| **P3 vault + toolbelt** | secrets, envelope + KMS, roles, Cedar, `simulate`, leases, approvals; the MCP toolbelt; proxy modes (HTTP, k8s, SSH agent, Postgres, MongoDB); authenticated session SOCKS; `Principal::Session`; dynamic AWS, DB and GitHub credentials; `meshharbor connect` | `vault.enabled`; per-secret `disabled` | a prompt with `$db/staging` gets the agent a query result while the value appears in no transcript, no model request (mock-llm) and no session environment; the same session on a Windows device is denied a materializing mode and the denial is in `vault_audit` |
 | **P3b placeholder egress** | TLS-terminating egress proxy for audience hosts, per-session CA, placeholder swap | `vault.placeholder = false` | `gh` and `aws` work with placeholders only; a placeholder sent to a non-audience host leaves the device unchanged |
-| **P4 knowhow** | graph, fleet and network sync, scans, map UI, the `roomler_connect` access-path compiler, probes, chips | `knowhow.enabled` | from an empty org, sync plus one scan yield the machines, repos and checkouts; "how big is #db/prod-mongo" is answered through the mesh with no secret in context |
+| **P4 knowhow** | graph, fleet and network sync, scans, map UI, the `meshharbor_connect` access-path compiler, probes, chips | `knowhow.enabled` | from an empty org, sync plus one scan yield the machines, repos and checkouts; "how big is #db/prod-mongo" is answered through the mesh with no secret in context |
 | **P5 learning loop** | reviewer on replicas, proposals and review cards, auto-memory harvesting, scanner, contradiction cards, decay, session cards and central search, telemetry, eval sessions | `hive.learning = false`; `session_cards = metadata` | a correction in a session on one device becomes an accepted fact that a session on another device loads; a poisoned proposal is quarantined; two contradicting facts raise a card; a session is found by its card while every replica is offline |
 | **P6 distributed** | child sessions; automatic failover after a partition suite; browser terminal attach | per feature | failover with no double execution in chaos runs |
-| **P7 custody and identity** | encryption at rest on replicas with per-session keys, customer-managed keys, Roomler as an OIDC issuer (AWS, GCP, Azure, Anthropic WIF), the Codex adapter, an optional `managed` transcript mode for self-hosted orgs | per feature | a session deploys to AWS with no AWS key stored anywhere; a replica's disk read offline yields no plaintext |
+| **P7 custody and identity** | encryption at rest on replicas with per-session keys, customer-managed keys, MeshHarbor as an OIDC issuer (AWS, GCP, Azure, Anthropic WIF), the Codex adapter, an optional `managed` transcript mode for self-hosted orgs | per feature | a session deploys to AWS with no AWS key stored anywhere; a replica's disk read offline yields no plaintext |
 | **Docs** | `docs/hive.md`, `docs/vault.md`, `docs/knowhow.md`, `docs/brain.md` with diagrams, rows in `docs/README.md`; user docs | — | ticked before the close |
 
 ## 18. Open decisions
@@ -1705,7 +1705,7 @@ Automatic failover (P6); encryption at rest on replicas and customer-managed key
 a general TLS-terminating proxy for every host (P3b covers audience hosts only); vector
 search over the brain; a public skills marketplace; computer use through the
 remote-desktop capture and input stack; Anthropic Managed Agents as a harness — its
-self-hosted sandbox could run on a Roomler device, but `environment_variable` vault
+self-hosted sandbox could run on a MeshHarbor device, but `environment_variable` vault
 credentials aren't supported there, and its loop runs on Anthropic's side, which would
 put transcripts there.
 
@@ -1716,9 +1716,9 @@ put transcripts there.
 | # | Finding | Why it matters | Now |
 |---|---|---|---|
 | A1 | Written before FR-69, which shipped the next day | the extension SDK (registry, token exchange + JWKS, envelope relay, extension host, import-map loader) duplicates the module contract | three modules (§3.1) |
-| A2 | "roomler-ai (MIT)", and a separate repo for a separate licence | false — AGPL server, MPL agent — and no proprietary module exists or is wanted ("nothing removed from the community edition") | in-repo under the split (§15) |
+| A2 | "meshharbor (MIT)", and a separate repo for a separate licence | false — AGPL server, MPL agent — and no proprietary module exists or is wanted ("nothing removed from the community edition") | in-repo under the split (§15) |
 | A3 | `hived`, a second native binary | doubles signing, updater and installer couplings; against "one daemon per machine" | a daemon feature and a re-exec'd `hive-host` (§3.1) |
-| A4 | No OS identity for the harness | `roomlerd` is SYSTEM/root, so a harness it spawns without a mapping runs as SYSTEM/root | device-owned account map, `RunAs` reuse, the Windows console-user limit (§4.2) |
+| A4 | No OS identity for the harness | `meshharbord` is SYSTEM/root, so a harness it spawns without a mapping runs as SYSTEM/root | device-owned account map, `RunAs` reuse, the Windows console-user limit (§4.2) |
 | A5 | A separate `hive-ui` with its own Blocks and TTY panes | the requirement is to reuse chat | session = room, turn = stub + content from a replica (§5) |
 | A6 | Replication as hot standby only | the requirement is that sessions are recorded per org and searchable | v0.3 tried server storage; v0.4 makes the replicaset the store, with the brain and cards central (§4.4, §10) |
 | A7 | A canonical workspace path on every node | rules out a move to a different folder | a per-session `CLAUDE_CONFIG_DIR` with a pinned project name (§4.3) |
@@ -1730,8 +1730,8 @@ put transcripts there.
 | A13 | Subscription tokens replicated to the owner's devices | Claude Code's docs disallow offering claude.ai login in third-party products | removed (§11.3) |
 | A14 | A hash-chained LSN log, hot replicas and a partition suite as one v1 bundle | right parts, wrong order | the log's `seq` and `prev_hash` stay; replication and manual promotion in P2; automatic failover after the partition suite (P6) |
 | A15 | "Lift, don't rewrite, from oxmux" | most of the named pieces don't exist there (Appendix B) | sized honestly (§15) |
-| A16 | "The daily health-check agent pattern from oxmux" | it is roomler-ai's own workflow, and a green no-op | a warning (§16) |
-| A17 | Cites `roomler-hive-design-v0.1.md`, `roomler-hive-review.md` and finding ids F1–C1 | neither file exists on the authoring machine or in any git ref | replaced by this appendix |
+| A16 | "The daily health-check agent pattern from oxmux" | it is meshharbor's own workflow, and a green no-op | a warning (§16) |
+| A17 | Cites `meshharbor-hive-design-v0.1.md`, `meshharbor-hive-review.md` and finding ids F1–C1 | neither file exists on the authoring machine or in any git ref | replaced by this appendix |
 | A18 | A credential switch costs "a one-turn cost bump" | caches are per workspace and per model; round-robin pools defeat caching on every request | cache-affine routes (§11.2) |
 | A19 | Open question: "do the bits fit the 24-bit field?" | the field is `u64` — but bits 0–31 are all used and `ALL` stops at 32 | widen `ALL`; place `HIVE_RUN` like `EXEC_DEVICE` (§3.4) |
 | A20 | No FR, no per-phase kill switches, few falsifiable criteria; commercial tiering and a provider-review remark in a public doc | the FR rule; the repo is public | §17; commercial and provider notes removed |

@@ -92,7 +92,7 @@ export async function loginViaUi(page: Page, username: string, password: string)
  * Sessions are cookie-only since #691: an `access_token` seeded into
  * `localStorage` grants nothing, and the viewer shows the login form. Posting
  * the login through `context.request` lands the HttpOnly session cookie in
- * that context's jar. The `roomler-signed-in` hint makes the SPA render its
+ * that context's jar. The `meshharbor-signed-in` hint makes the SPA render its
  * shell and refresh through the cookie instead of bouncing to /login. purestat
  * is aborted, so a test run never feeds the analytics a real visit feeds.
  */
@@ -104,7 +104,7 @@ export async function signInContext(context: BrowserContext, email: string, pass
   expect(login.ok(), `browser login failed: ${login.status()}`).toBeTruthy()
   await context.addInitScript(() => {
     try {
-      window.localStorage.setItem('roomler-signed-in', '1')
+      window.localStorage.setItem('meshharbor-signed-in', '1')
     } catch {
       /* storage blocked — the cookie still authenticates */
     }
@@ -347,9 +347,9 @@ type MailpitListItem = {
  * recipient address. We use it because the inbox may contain emails
  * from other concurrent tests in the same run.
  *
- * NOTE: requires the e2e overlay's roomler2 to have its EmailService
+ * NOTE: requires the e2e overlay's meshharbor2 to have its EmailService
  * routed through SMTP → Mailpit (set via `MESHHARBOR__EMAIL__SMTP_HOST`
- * + `MESHHARBOR__EMAIL__SMTP_PORT` in `configmap-roomler2-config.yaml`).
+ * + `MESHHARBOR__EMAIL__SMTP_PORT` in `configmap-meshharbor2-config.yaml`).
  * Outside that overlay, this helper will time out.
  */
 export async function fetchActivationEmail(

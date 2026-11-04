@@ -604,7 +604,7 @@ mod tests {
             "{bucket:?}"
         );
         let pages: Vec<KeyStats> = serde_json::from_str(
-            r#"[{"Query":"https://roomler.ai/blog/a/","Date":"/Date(1760079600000-0700)/","Clicks":0,"Impressions":2,"AvgImpressionPosition":30,"AvgClickPosition":-1}]"#,
+            r#"[{"Query":"https://meshharbor.itachi.fans/blog/a/","Date":"/Date(1760079600000-0700)/","Clicks":0,"Impressions":2,"AvgImpressionPosition":30,"AvgClickPosition":-1}]"#,
         )
         .unwrap();
         let p = weekly_rows("page", &pages, d("2025-10-01"), d("2025-10-13"));

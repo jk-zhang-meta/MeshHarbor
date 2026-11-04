@@ -546,7 +546,7 @@ pub fn force_exit_on_stall(stalled: &[(&'static str, Duration)]) -> bool {
     tracing::error!(stalled = %summary, "watchdog: forcing process exit");
 
     // Phase 1B (Task 9): emit a crash sidecar BEFORE process-exit
-    // so the next agent startup can upload it to roomler.ai. Worker
+    // so the next agent startup can upload it to meshharbor.itachi.fans. Worker
     // context: the watchdog runs inside the worker process; the SCM
     // supervisor's own crash detection (Phase 1B site 3) excludes
     // STALL_EXIT_CODE explicitly to avoid double-recording.

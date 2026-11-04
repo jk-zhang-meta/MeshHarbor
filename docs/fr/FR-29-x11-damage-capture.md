@@ -1,6 +1,6 @@
 # FR-29 — X11 capture reads the whole screen even when nothing changed
 
-**Issue:** [#864](https://github.com/gjovanov/roomler-ai/issues/864) · **Status:** CLOSED — P1 shipped (0.4.17), P2 merged, P3 ruled out by measurement · **Owner:** agent / capture
+**Issue:** [#864](https://github.com/jk-zhang-meta/MeshHarbor/issues/864) · **Status:** CLOSED — P1 shipped (0.4.17), P2 merged, P3 ruled out by measurement · **Owner:** agent / capture
 
 ## Goal
 
@@ -85,7 +85,7 @@ working diagnostic, so P1 adds a distinct counter and heartbeat field.
 
 ## Acceptance criteria
 
-- [x] Idle 1080p XFCE: roomlerd CPU **45.8 % → 3.4 %** of a core. (The
+- [x] Idle 1080p XFCE: meshharbord CPU **45.8 % → 3.4 %** of a core. (The
       `avg_capture_ms < 2 ms` half is **superseded, not met**: idle ticks no
       longer capture at all, so there is no per-frame capture time to average.
       The criterion assumed a cheaper readback; P1 removes the readback.)
@@ -158,7 +158,7 @@ working diagnostic, so P1 adds a distinct counter and heartbeat field.
 3. **"Idle" desktops are not idle.** The panel clock repaints every second, so
    damage genuinely fires ~1 /s. Any future test of the safety valve must use a
    truly static screen or it will measure the clock instead.
-4. ⚠️ **`roomler-encode-probe` reports nonsense across a session boundary** —
+4. ⚠️ **`meshharbor-encode-probe` reports nonsense across a session boundary** —
    counters reset, so `last - first` goes negative and printed `-10.8/s`. It
    also divides by a near-zero window when few frames encode, which is where a
    misleading `avg_capture_ms=36` came from. Read its output as suspect unless

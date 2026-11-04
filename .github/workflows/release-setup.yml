@@ -10,7 +10,7 @@ name: Release meshharbor-setup
 # The unified wizard superseded the two legacy wizard EXEs, retired
 # RETIRED-NAME-ANCHOR(3): names the two wizards RETIRED in P4c-2. A history line has to
 # name what existed.
-# in P4c-2 (roomler-installer = agent/daemon, roomler-tunnel-installer
+# in P4c-2 (meshharbor-installer = agent/daemon, meshharbor-tunnel-installer
 # = tunnel CLI). On Windows it offers all roles (daemon perMachine-SCM
 # / perUser-task / perMachine + tunnel-client); on Linux/macOS only
 # the tunnel-client role is functional (the daemon roles are MSI-only).
@@ -35,7 +35,7 @@ name: Release meshharbor-setup
 # is bound to that GitHub environment) and HARD-FAILS on a release tag.
 # A credential-less dispatch run still succeeds with a ::warning:: so
 # packaging can be iterated. macOS ships a signed + notarised + STAPLED
-# `Roomler Setup.app` inside the tarball (same asset name — the wizard
+# `MeshHarbor Setup.app` inside the tarball (same asset name — the wizard
 # is the one binary users double-click from Finder, so it gets full
 # offline Gatekeeper validation). See docs/code-signing.md.
 #
@@ -207,7 +207,7 @@ jobs:
       - name: Install Tauri Linux system deps
         # webkit2gtk + libsoup + ayatana; librsvg2 for icon decode. Same
         # set as the legacy tunnel wizard (meshharbor-setup pulls the same
-        # Tauri Linux runtime). roomlerd comes in with DEFAULT
+        # Tauri Linux runtime). meshharbord comes in with DEFAULT
         # features (signalling-only) — no vcpkg/FFmpeg/libvpx needed.
         run: |
           sudo apt-get update
@@ -356,7 +356,7 @@ jobs:
 
       # Wrap the universal binary in a .app BEFORE signing.
       #
-      # This is the one Roomler binary a user genuinely double-clicks from
+      # This is the one MeshHarbor binary a user genuinely double-clicks from
       # Finder, i.e. the worst Gatekeeper case, and a bare Mach-O cannot carry
       # a stapled notarisation ticket (Apple only staples bundles/.dmg/.pkg).
       # A bundle can -- and the ticket lands as a regular file inside it, so
@@ -370,7 +370,7 @@ jobs:
         run: |
           set -euo pipefail
           version="${{ needs.validate-version.outputs.version }}"
-          APP="/tmp/stage/Roomler Setup.app"
+          APP="/tmp/stage/MeshHarbor Setup.app"
           mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
           cp target/release-universal/meshharbor-setup "$APP/Contents/MacOS/meshharbor-setup"
           chmod 755 "$APP/Contents/MacOS/meshharbor-setup"
@@ -386,7 +386,7 @@ jobs:
           <dict>
               <key>CFBundleExecutable</key>          <string>meshharbor-setup</string>
               <key>CFBundleIdentifier</key>          <string>fans.itachi.meshharbor.setup</string>
-              <key>CFBundleName</key>                <string>Roomler Setup</string>
+              <key>CFBundleName</key>                <string>MeshHarbor Setup</string>
               <key>CFBundleShortVersionString</key>  <string>${version}</string>
               <key>CFBundleVersion</key>             <string>${version}</string>
               <key>CFBundlePackageType</key>         <string>APPL</string>
@@ -418,10 +418,10 @@ jobs:
           version="${{ needs.validate-version.outputs.version }}"
           name="meshharbor-setup-${version}-universal-apple-darwin"
           mkdir -p "/tmp/${name}"
-          cp -R "/tmp/stage/Roomler Setup.app" "/tmp/${name}/"
+          cp -R "/tmp/stage/MeshHarbor Setup.app" "/tmp/${name}/"
           # Keep `./meshharbor-setup` working (docs + muscle memory) while the
           # real, stapled code lives in the bundle.
-          ln -s "Roomler Setup.app/Contents/MacOS/meshharbor-setup" "/tmp/${name}/meshharbor-setup"
+          ln -s "MeshHarbor Setup.app/Contents/MacOS/meshharbor-setup" "/tmp/${name}/meshharbor-setup"
           cp LICENSE README.md "/tmp/${name}/" 2>/dev/null || true
           # `tar` preserves the symlink and the stapled ticket; COPYFILE_DISABLE
           # stops bsdtar emitting ._ AppleDouble files alongside every entry.
@@ -502,7 +502,7 @@ jobs:
         uses: ./.github/actions/sign-windows
         with:
           files:                    target\release\meshharbor-setup.exe
-          description:              'Roomler Setup'
+          description:              'MeshHarbor Setup'
           mode:                     ${{ github.event.inputs.signing_mode || 'auto' }}
           require:                  ${{ needs.validate-version.outputs.is_release == 'true' || github.event.inputs.require_signing == 'true' }}
           expect-subject-contains:  ${{ vars.AZURE_SIGNING_EXPECT_SUBJECT }}
@@ -589,7 +589,7 @@ jobs:
             gpg --batch --yes --pinentry-mode loopback --passphrase "$GPG_PASSPHRASE" \
                 --armor --detach-sign "$f"
           done
-          gpg --batch --armor --export > release/roomler-release-pubkey.asc
+          gpg --batch --armor --export > release/meshharbor-release-pubkey.asc
       - name: Attest build provenance
         uses: actions/attest-build-provenance@v3
         with:
@@ -630,27 +630,27 @@ jobs:
             - Windows x86_64: `.zip` containing a signed `meshharbor-setup.exe` — extract + double-click.
             - Linux x86_64: `.tar.gz` — extract, run `./meshharbor-setup`.
             - Linux aarch64: `.tar.gz` — extract, run `./meshharbor-setup`.
-            - macOS universal (x86_64 + aarch64): `.tar.gz` — extract, then open `Roomler Setup.app`
+            - macOS universal (x86_64 + aarch64): `.tar.gz` — extract, then open `MeshHarbor Setup.app`
               (or run `./meshharbor-setup`, a symlink into the bundle). The app is Developer-ID-signed,
               notarised and stapled, so Gatekeeper accepts it even offline — no `xattr` workaround.
 
             **What the wizard does:** pick a role, detect existing installs, paste an enrollment token, and it
             resolves → downloads → verifies → installs → enrolls the node. On Windows the daemon roles
             (be-accessed: perMachine-SCM / perUser / perMachine + SystemContext) run the agent MSI (which
-            carries the `roomler` CLI); every OS offers the tunnel-client role (reach-others). A terminal
-            equivalent is served at `roomler.ai/api/setup/install.sh` (Linux/macOS) and
-            `roomler.ai/api/setup/install.ps1` (Windows).
+            carries the `meshharbor` CLI); every OS offers the tunnel-client role (reach-others). A terminal
+            equivalent is served at `meshharbor.itachi.fans/api/setup/install.sh` (Linux/macOS) and
+            `meshharbor.itachi.fans/api/setup/install.ps1` (Windows).
           files: release/*
 
   # ---------------------------------------------------------------------------
-  # Bust the roomler.ai release cache — see the long-form rationale in
+  # Bust the meshharbor.itachi.fans release cache — see the long-form rationale in
   # release-agent.yml. `/api/{agent,tunnel,setup}/latest-release` share ONE
   # per-pod cache, so every release family needs this step; one POST busts
   # every pod (the receiving pod fans out over the C-1 control bus).
   # Non-blocking: the 15-minute cache TTL is the backstop.
   # ---------------------------------------------------------------------------
   refresh-release-cache:
-    name: Refresh roomler.ai release cache
+    name: Refresh meshharbor.itachi.fans release cache
     if: needs.validate-version.outputs.is_release == 'true'
     needs: [validate-version, publish-release]
     runs-on: ubuntu-latest
@@ -669,7 +669,7 @@ jobs:
           for attempt in 1 2 3; do
             body=$(curl -sS -m 90 -X POST \
               -H "Authorization: Bearer ${TOKEN}" \
-              "https://roomler.ai/api/releases/refresh?expect_tag=${TAG}")
+              "https://meshharbor.itachi.fans/api/releases/refresh?expect_tag=${TAG}")
             if [ "$(jq -r '.all_ok' <<<"$body" 2>/dev/null)" = "true" ]; then
               jq . <<<"$body"
               echo "Release cache refreshed on every live pod for ${TAG}"

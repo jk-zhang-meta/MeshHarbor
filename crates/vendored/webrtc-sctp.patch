@@ -51,7 +51,7 @@ diff -ruN --strip-trailing-cr upstream/src/association/association_test.rs vendo
      Ok(())
  }
 +
-+/// roomler (#1856) — delegates to `inner`, failing the next N sends the way a
++/// meshharbor (#1856) — delegates to `inner`, failing the next N sends the way a
 +/// UDP socket does when its route vanishes underneath it.
 +struct FailNextSends {
 +    inner: Arc<dyn Conn + Send + Sync>,
@@ -116,7 +116,7 @@ diff -ruN --strip-trailing-cr upstream/src/association/association_test.rs vendo
 +    }
 +}
 +
-+/// roomler (#1856): one failed send is a lost packet, not a dead association.
++/// meshharbor (#1856): one failed send is a lost packet, not a dead association.
 +/// A remote-desktop peer whose overlay route vanished for ~3 ms got a single
 +/// `EHOSTUNREACH`; the write loop treated it as fatal, closed the association
 +/// and every data channel on it, and the session died. The dropped DATA chunk
@@ -203,10 +203,10 @@ diff -ruN --strip-trailing-cr upstream/src/association/mod.rs vendored/src/assoc
  /// other constants
  pub(crate) const ACCEPT_CH_SIZE: usize = 16;
  
-+/// roomler (#1856): while sends keep failing, log at most this often.
++/// meshharbor (#1856): while sends keep failing, log at most this often.
 +const SEND_FAILURE_LOG_EVERY: std::time::Duration = std::time::Duration::from_secs(5);
 +
-+/// roomler (#1856): a run of consecutive failed `net_conn` sends. The write
++/// meshharbor (#1856): a run of consecutive failed `net_conn` sends. The write
 +/// loop drops the packet and lets SCTP retransmit it; this only decides what
 +/// gets logged: the first failure of a run, then at most one line per
 +/// [`SEND_FAILURE_LOG_EVERY`], and one line when sends recover.
@@ -268,7 +268,7 @@ diff -ruN --strip-trailing-cr upstream/src/association/mod.rs vendored/src/assoc
 -                            done2.store(true, Ordering::Relaxed)
 -                        } else {
 -                            bytes_sent.fetch_add(raw.len(), Ordering::SeqCst);
-+                        // roomler (#1856): a failed send is a LOST PACKET, not a
++                        // meshharbor (#1856): a failed send is a LOST PACKET, not a
 +                        // dead association. Upstream ended the loop here, which
 +                        // closed the association and every stream on it, so one
 +                        // datagram a route change bounced (EHOSTUNREACH on a
@@ -284,7 +284,7 @@ diff -ruN --strip-trailing-cr upstream/src/association/mod.rs vendored/src/assoc
 +                                if let Some((dropped, over)) =
 +                                    send_failures.sent(std::time::Instant::now())
 +                                {
-+                                    // roomler (#1867): warn, like the failure line it
++                                    // meshharbor (#1867): warn, like the failure line it
 +                                    // closes. The agent keeps `webrtc_sctp` at warn, so
 +                                    // at info the field saw failures and never this.
 +                                    log::warn!(
@@ -331,7 +331,7 @@ diff -ruN --strip-trailing-cr upstream/src/chunk/chunk_forward_tsn.rs vendored/s
  
          let mut streams = vec![];
 -        let mut remaining = buf.len() - offset;
-+        // roomler fork — bound the stream-entry loop by the chunk's own
++        // meshharbor fork — bound the stream-entry loop by the chunk's own
 +        // declared length. Upstream counted `buf.len() - offset`, i.e. every
 +        // byte to the end of the PACKET: a FORWARD-TSN with a chunk bundled
 +        // after it (dcSCTP sends FORWARD-TSN + SACK together whenever it
@@ -355,7 +355,7 @@ diff -ruN --strip-trailing-cr upstream/src/chunk/chunk_test.rs vendored/src/chun
      Ok(())
  }
  
-+/// roomler fork — a FORWARD-TSN followed by a bundled chunk in the SAME
++/// meshharbor fork — a FORWARD-TSN followed by a bundled chunk in the SAME
 +/// buffer (what `Packet::unmarshal` hands every chunk parser: the remainder
 +/// of the packet) must parse ITS stream entries only. Upstream counted to
 +/// the end of the buffer, ran into the next chunk, and failed the packet.
@@ -381,7 +381,7 @@ diff -ruN --strip-trailing-cr upstream/src/chunk/chunk_test.rs vendored/src/chun
 +    Ok(())
 +}
 +
-+/// roomler fork — and the packet level: both chunks come out.
++/// meshharbor fork — and the packet level: both chunks come out.
 +#[test]
 +fn test_packet_with_forward_tsn_then_another_chunk_parses_both() -> Result<()> {
 +    use crate::packet::Packet;

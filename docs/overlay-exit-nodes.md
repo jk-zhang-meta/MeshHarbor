@@ -21,7 +21,7 @@ and it never serves as one. Everything else below is `overlay-l3`.
 
 The design's north star is **"never self-wedge."** A client that routes all
 egress through a peer can trivially cut off its own control channel (the
-WebSocket to roomler.ai) and the WireGuard carrier itself — so the whole
+WebSocket to meshharbor.itachi.fans) and the WireGuard carrier itself — so the whole
 feature is built around *exemptions* and a *safety gate* that refuses to install
 default routing unless the escape hatches are provably in place.
 
@@ -44,7 +44,7 @@ it (below), and a generic advertised `/0` is *inert on every client* (see
 [Safety model](#the-self-wedge-safety-model)).
 
 When a client actually uses the exit, NAT engages automatically on the exit
-(Linux: `iptables` MASQUERADE for the overlay CIDR + `FORWARD -i roomler0
+(Linux: `iptables` MASQUERADE for the overlay CIDR + `FORWARD -i meshharbor0
 ACCEPT` + established-return, `net.ipv4.ip_forward=1`; IPv6: `ip6tables`
 MASQUERADE for the overlay ULA + forwarding + `accept_ra=2` so the host keeps
 its own v6 default). Windows uses WinNAT (v4 only — see
@@ -90,12 +90,12 @@ admin-approved** (its netmap carries `/0`).
 > name selector has resolved, the agent PINS that node for the daemon's
 > lifetime; if the label later resolves elsewhere it withholds default routing
 > and reports `exit-node name now resolves to a DIFFERENT machine` in
-> `roomler status`. A node-id hex selector is unambiguous and never drifts.
+> `meshharbor status`. A node-id hex selector is unambiguous and never drifts.
 
 ## How it works end-to-end
 
 ```
-exit:   overlay_exit_node_enabled=true  ──advertise /0──▶  roomler.ai
+exit:   overlay_exit_node_enabled=true  ──advertise /0──▶  meshharbor.itachi.fans
 admin:  PUT …/exit-node  ──is_exit_node=true, approved_routes+=/0──▶ hub
 client: overlay_exit_node="buildhost"
           │  resolve peer "buildhost" in netmap (name|hex)
@@ -142,7 +142,7 @@ Four layers, each defending against a different way to cut yourself off:
 - **The withhold gate.** The split-default is installed **only if every
   exemption pinned successfully.** If discovery failed or a pin errored, the
   client *withholds* — egress stays on the local uplink — and surfaces a
-  reason (`roomler status` → `exit node <sel> (withheld — <why>)`), logged once
+  reason (`meshharbor status` → `exit node <sel> (withheld — <why>)`), logged once
   per reason-change. It never installs a half-configured reroute.
 - **Generic `/0` is inert (A1).** The normal `install_subnets` path strips
   default routes from **every** peer's allowed-ips + OS routes. Only the peer
@@ -189,14 +189,14 @@ The mechanism reuses what's already there — **zero new wire or model fields**:
   captured by the split-default → resolved from the exit.
 - **MagicDNS off**: point `"."` directly at the configured upstream — again
   captured by the split-default.
-- **Linux**: `resolvectl domain roomler0 ~.` (plus the magic domain when set).
+- **Linux**: `resolvectl domain meshharbor0 ~.` (plus the magic domain when set).
   Per `systemd-resolved(8)`, an explicit `~.` routing domain is the
   best-matching route and wins over a `DefaultRoute=yes` physical link — so we
   do **not** need to demote the physical link.
-- **Windows**: a `.`-root NRPT rule tagged `roomler-exit-dns` (idempotent
+- **Windows**: a `.`-root NRPT rule tagged `meshharbor-exit-dns` (idempotent
   pre-add clear; the tag scopes purges so we never clobber foreign NRPT rules).
 - **macOS** (FR-97 P1c): a dictionary in the SCDynamicStore,
-  `State:/Network/Service/roomler-exit-dns/DNS`, with
+  `State:/Network/Service/meshharbor-exit-dns/DNS`, with
   `SupplementalMatchDomains = [""]`. The empty match domain makes it resolver
   #1 for every name, while the MagicDNS zone (its own key, below) keeps its
   names. Every key is a **temporary** value of one session the daemon holds
@@ -206,9 +206,9 @@ The mechanism reuses what's already there — **zero new wire or model fields**:
 
 ```mermaid
 flowchart LR
-    D["roomlerd: one SCDynamicStore session<br/>(a thread owns it; keys added TEMPORARY)"]
-    D --> Z["State:/Network/Service/roomler-dns-utunN/DNS<br/>Supplemental [magic domain] → self_v4<br/>NoSearch = 1"]
-    D --> X["State:/Network/Service/roomler-exit-dns/DNS<br/>Supplemental [&quot;&quot;] → target"]
+    D["meshharbord: one SCDynamicStore session<br/>(a thread owns it; keys added TEMPORARY)"]
+    D --> Z["State:/Network/Service/meshharbor-dns-utunN/DNS<br/>Supplemental [magic domain] → self_v4<br/>NoSearch = 1"]
+    D --> X["State:/Network/Service/meshharbor-exit-dns/DNS<br/>Supplemental [&quot;&quot;] → target"]
     Z --> C["configd → scutil --dns"]
     X --> C
     K["crash / kill -9"] -.->|"session gone: configd drops<br/>both keys in 1–3 s (measured)"| C
@@ -224,7 +224,7 @@ flowchart LR
 
 Steering is gated on the local resolver having **actually bound** its socket —
 we never point `"."` at a dead `:53` (which would black-hole all DNS). Status
-shows in `roomler status` (`… DNS steered` / `DNS NOT steered`).
+shows in `meshharbor status` (`… DNS steered` / `DNS NOT steered`).
 
 ## Crash-safety
 
@@ -242,7 +242,7 @@ context-free purges — `overlay::tun::purge_split_default()` and
   [exit-client pins](#exit-client-pins-fr-97-p0e) below.
 
 Why it matters most on Windows: a Wintun adapter **persists by name** across a
-crash, so a leftover `0.0.0.0/1 → roomler` would black-hole all egress to a dead
+crash, so a leftover `0.0.0.0/1 → meshharbor` would black-hole all egress to a dead
 NIC until the next clean run. On Linux the `dev`-scoped routes auto-cull, but the
 boot-reconciler covers kill-9/reboot there too. The NRPT DNS rule likewise
 persists across reboot, so `purge_exit_dns()` removes the tagged rule.
@@ -259,7 +259,7 @@ stopped serving kept routing between its adapters for as long as it ran
 ```mermaid
 flowchart LR
     SETUP["setup: per interface<br/>FWD guid ifIndex before"] --> HOLD["ForwardingHolds<br/>refcount per interface"]
-    HOLD --> LEDGER["HKLM\SOFTWARE\Roomler\Overlay<br/>value HostLedger<br/>(GUIDs we turned on)"]
+    HOLD --> LEDGER["HKLM\SOFTWARE\MeshHarbor\Overlay<br/>value HostLedger<br/>(GUIDs we turned on)"]
     DROP["Drop: Remove-NetNat,<br/>release each hold"] --> LAST{"last holder, and<br/>it was Disabled?"}
     LAST -- yes --> OFF["Set-NetIPInterface<br/>-Forwarding Disabled"]
     LAST -- no --> KEEP["leave it: another org's<br/>router still needs it,<br/>or it was never ours"]
@@ -275,7 +275,7 @@ flowchart LR
 | GUIDs are validated strictly before going back into PowerShell | `host_ledger::is_guid` | The ledger is read back at boot |
 | `New-NetNat` failures carry WinNAT's own message to the log | `nat.rs` Windows `setup` | `-ErrorAction SilentlyContinue` used to hide why a NAT never appeared (an overlapping Docker/WSL prefix) |
 | (P0b-2c) Our adapter comes up **not** forwarding | `tun.rs` Windows `up()`, `winroute::forwarding_enabled_v4` | The boot purge cannot reach it: the adapter goes with the process, and Windows re-applies its forwarding setting when it is created again (field: Enabled after `taskkill /F`) |
-| (P0b-2c) The ledger records our WinNAT instances; the revert forgets them and the purge removes them | `host_ledger::record_nat` / `forget_nat`, `nat::remove_nat_instances` | A crash left `roomler-overlay` behind (field, 0.4.134 and the P0b-2b candidate alike). Only names like ours are removed (`host_ledger::is_nat_name`), never Docker's or WSL's instance for the same prefix |
+| (P0b-2c) The ledger records our WinNAT instances; the revert forgets them and the purge removes them | `host_ledger::record_nat` / `forget_nat`, `nat::remove_nat_instances` | A crash left `meshharbor-overlay` behind (field, 0.4.134 and the P0b-2b candidate alike). Only names like ours are removed (`host_ledger::is_nat_name`), never Docker's or WSL's instance for the same prefix |
 
 > ⚠️ Linux is deliberately unchanged: the revert there leaves `ip_forward` on.
 > That sysctl is host-global and routinely shared with Docker and Kubernetes,
@@ -287,7 +287,7 @@ flowchart LR
 > off by default (`Not found`). Field, a Windows 11 Enterprise eval VM: absent
 > with Hyper-V and Containers off, still absent with Containers on, present
 > once Hyper-V was enabled. A device without it withholds the exit and subnet
-> offer and says so (`roomler status`, and the admin row).
+> offer and says so (`meshharbor status`, and the admin row).
 
 ### Exit-client pins (FR-97 P0e)
 
@@ -304,10 +304,10 @@ overlay runtime that would re-pin never starts.
 flowchart LR
     ADD["add_host_exemption:<br/>pin in (Linux/Windows: the write<br/>succeeded; macOS: the TABLE shows it)"] --> REC["host_ledger::record_pin<br/>(ip, next hop, interface)"]
     DEL["del_host_exemption"] --> FORGET["host_ledger::forget_pin"]
-    REC --> STORE[("ledger<br/>Windows: HKLM\SOFTWARE\Roomler\Overlay<br/>Linux: /var/lib/roomler/<br/>macOS: /var/db/roomler/")]
+    REC --> STORE[("ledger<br/>Windows: HKLM\SOFTWARE\MeshHarbor\Overlay<br/>Linux: /var/lib/meshharbor/<br/>macOS: /var/db/meshharbor/")]
     FORGET --> STORE
     BOOT["boot, before the overlay"] --> PURGE["host_ledger::purge()"]
-    EXIT["every exit of roomlerd run<br/>(after the runtime is dropped)<br/>+ every process::exit path"] --> PURGE
+    EXIT["every exit of meshharbord run<br/>(after the runtime is dropped)<br/>+ every process::exit path"] --> PURGE
     STORE --> PURGE
     PURGE --> PINS["tun::purge_pins: remove each pin<br/>that STILL matches its record"]
     PURGE --> FWD["nat::restore_forwarding_guids"]
@@ -318,7 +318,7 @@ flowchart LR
 | A pin is recorded the moment it is in, and forgotten when it is removed | `tun.rs` `add_host_exemption` / `del_host_exemption`, each OS arm | No exit, clean or not, can leave an unrecorded pin |
 | One record per address; a re-pin through a new uplink replaces it | `HostLedger::upsert_pin` | The purge must target the route that exists |
 | The purge removes a route only while it still matches the record | `tun::purge_pins` | Linux and Windows delete the exact (address, next hop, interface) route. macOS deletes only an unscoped static host route the table shows through the recorded next hop and interface, because `route delete` keys on the destination alone |
-| The post-exit purge runs only in a process that held the single-instance lock | `main.rs` `DAEMON_RAN`, set in `run_cmd` after `instance_lock::acquire` | On macOS a second `roomlerd run` returns through `main`; purging there would strip the **running** daemon's routes |
+| The post-exit purge runs only in a process that held the single-instance lock | `main.rs` `DAEMON_RAN`, set in `run_cmd` after `instance_lock::acquire` | On macOS a second `meshharbord run` returns through `main`; purging there would strip the **running** daemon's routes |
 | The Linux and macOS ledgers are believed only from a root-owned directory and file that nobody else may write | `host_ledger::store` (Unix) | Root acts on the ledger at boot |
 | Both halves go through one in-process ledger | `host_ledger::LEDGER` | The forwarding records and the pin records never overwrite each other |
 | (N12) Every ~3 s the client re-reads each family's uplink, adopts one that moved, and re-pins every pin the table does not show through it | `stale_host_exemptions` (each OS arm), pure decision `tun::stale_pins` | Wi-Fi to Ethernet, or a new network, under an active exit. A pin through the old next hop, or one an interface took with it when it went down, black-holes the endpoint it was pinned for |
@@ -374,7 +374,7 @@ AC17 field cells (released 0.4.134, then a P0e candidate; FR-97 §8):
 | **Exit**: v6 egress + NAT | ip6tables MASQUERADE | ✗ → v6 **fail-closed** | pf NAT66 to a stable global address, where an unscoped v6 default exists; else v6 **fail-closed** |
 
 A device that cannot serve as an exit advertises nothing and says why, in
-`roomler status` and in the admin routes table (FR-97 P0b), rather than
+`meshharbor status` and in the admin routes table (FR-97 P0b), rather than
 offering a `/0` that every client taking it would black-hole.
 
 ### macOS client (FR-97 P1a)
@@ -422,7 +422,7 @@ sequenceDiagram
 | Look first, then add; replace with delete + add | `add_host_exemption` `tun.rs:4740` | BSD `route` has no idempotent write, and a re-write is a route-monitor event (#1856). `route change` resolves its target the way the lookup does, so it cannot repoint a pin |
 | Re-check the pins | `stale_host_exemptions` `tun.rs:4838`, the gate `route_guard.rs:599` | Wi-Fi ↔ Ethernet, a new network: a `/32` left on the old next hop black-holes the endpoint it was pinned for, the coordination server included |
 | A pin that cannot follow is deleted before it is forgotten | `route_guard.rs:599` | An untracked host route outlives every teardown, and turns into a black hole at the next network change |
-| One WARN per cause, and the cause in `roomler status` | `note_exemption_failure` `route_guard.rs:393`, `exemption_withheld_reason` `route_guard.rs:405` | The gate retries every few seconds; 0.4.132 logged the same failure every ~5 s and reported a guess (`no original default route?`) |
+| One WARN per cause, and the cause in `meshharbor status` | `note_exemption_failure` `route_guard.rs:393`, `exemption_withheld_reason` `route_guard.rs:405` | The gate retries every few seconds; 0.4.132 logged the same failure every ~5 s and reported a guess (`no original default route?`) |
 
 > ⚠️ **A lookup does not show a pin.** A destination a connection has used
 > keeps an interface-scoped clone of the default route (`WASCLONED,IFSCOPE`).
@@ -443,7 +443,7 @@ sequenceDiagram
 
 > ⚠️ **DNS is not steered on a Mac yet (P1c).** Egress goes through the exit,
 > but queries go to whatever resolver the Mac already uses. A LAN resolver is
-> on-link, so a `/1` never captures it. `roomler status` says `DNS NOT steered`.
+> on-link, so a `/1` never captures it. `meshharbor status` says `DNS NOT steered`.
 
 > 🔑 **Kill switch:** `MESHHARBORD_EXIT_CLIENT_MACOS=0` refuses every exemption
 > again, as 0.4.132 did, so the exit is withheld with that reason. The Linux
@@ -481,7 +481,7 @@ sequenceDiagram
     P-->>R: Ok, so /0 and the subnet routes are offered
     R->>P: serve(utunN, the overlay's blocks)
     P->>K: forwarding on (what it was is recorded)
-    P->>K: pfctl -a com.apple/roomler-utunN -f - (a nat per egress, pass utunN)
+    P->>K: pfctl -a com.apple/meshharbor-utunN -f - (a nat per egress, pass utunN)
     P->>K: pfctl -E (a pfctl with pid M)
     K-->>P: Token : N
     P->>L: anchor, references (N, M), what forwarding was
@@ -521,7 +521,7 @@ sequenceDiagram
 >   from `pgrep`.
 
 > ⚠️ **Root only.** `pfctl` needs root, so a per-user daemon's probe refuses
-> and the Mac offers nothing, with the reason in `roomler status` and the admin
+> and the Mac offers nothing, with the reason in `meshharbor status` and the admin
 > routes table (FR-97 P0b). `MESHHARBORD_PF_NAT=0` refuses the same way.
 
 > ⚠️ **Still unmeasured:** what the common corporate VPN clients do to pf
@@ -536,7 +536,7 @@ sequenceDiagram
 >   incoming".
 > - With stealth mode on, a ping to the Mac's own overlay address goes
 >   unanswered, even from a mesh peer. A failed ping says nothing about a Mac
->   exit's health; check `roomler peers` and the client's egress instead.
+>   exit's health; check `meshharbor peers` and the client's egress instead.
 
 ### A netstack client (FR-97 P0c-3)
 
@@ -566,7 +566,7 @@ flowchart LR
 | Any app not using the front | ❌ direct | nothing in the OS routes through the overlay |
 | DNS | never steered | below |
 
-`roomler status` says so, from `ExitNodeStatus.socks5_port`
+`meshharbor status` says so, from `ExitNodeStatus.socks5_port`
 ([`lib.rs:107`](../crates/localapi/src/lib.rs#L107)):
 
 ```text
@@ -587,7 +587,7 @@ it off from its internal names.
 terminates every packet addressed to it and forwards none, so it withholds
 every route offer, whatever the host's own NAT could do: the reason is
 `this node runs the userspace netstack, which forwards nothing for its peers`,
-in `roomler status` and in the admin routes table. Before P0c-3, a netstack
+in `meshharbor status` and in the admin routes table. Before P0c-3, a netstack
 node on a host where iptables worked offered `/0` (field, 0.4.141), and every
 client of it would have black-holed.
 
@@ -608,14 +608,14 @@ client of it would have black-holed.
   rebuilt, a netmap update) runs the generic `install_subnets`, which
   *replaces* its allowed-IPs with its real subnets. The `/1`s were gone while
   `split_default_installed` still read true, so the OS `/1`s kept routing
-  into the TUN and every packet found no peer, with `roomler status` still
+  into the TUN and every packet found no peer, with `meshharbor status` still
   saying `active`, until a restart. The signature in the log is
   `dropped advertised default route(s) … peer=<the exit>` right before egress
   dies. The reconcile now re-asserts the split-default every time it finds it
   missing (`route_guard::split_default_missing`), as it always did for the v6
   half (`set_v6_exit`), and says so in a WARN.
 - **The daemon's own name lookups follow the exit's DNS steer too, so they
-  must never WAIT on it** ([#2187](https://github.com/gjovanov/roomler-ai/issues/2187)).
+  must never WAIT on it** ([#2187](https://github.com/jk-zhang-meta/MeshHarbor/issues/2187)).
   When an exit's DNS stops answering while its carrier stays up, nothing tears
   the exit down. Every lookup through it waits out the OS resolver's whole retry
   schedule (~11 s a query on Windows), and two things broke:
@@ -657,7 +657,7 @@ client of it would have black-holed.
 
 ## Verifying it works
 
-From the client, after `roomler status` shows `exit node <name> (active, v6 on,
+From the client, after `meshharbor status` shows `exit node <name> (active, v6 on,
 DNS steered)`:
 
 ```bash

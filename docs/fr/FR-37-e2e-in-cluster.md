@@ -2,7 +2,7 @@
 
 > **CLOSED 2026-08-29** — issue #928 is closed and its acceptance criteria are met. Any status line below is the state while the work was in flight, kept as the record.
 
-**Issue:** [#928](https://github.com/gjovanov/roomler-ai/issues/928)
+**Issue:** [#928](https://github.com/jk-zhang-meta/MeshHarbor/issues/928)
 > **Renumbered from FR-36.** #929 (Wayland capture) landed that number on
 > master first, and the shared ledger caught the clash **in the rebase —
 > before anything of mine was published**, which is exactly what the
@@ -26,7 +26,7 @@ through `kubectl port-forward`. That forwards **one TCP port**. Media does not
 use it.
 
 ```
-e2e roomler2 pod:  podIP 10.244.3.196   node k8s-worker-3 (10.10.30.11)
+e2e meshharbor2 pod:  podIP 10.244.3.196   node k8s-worker-3 (10.10.30.11)
                    hostNetwork: <unset>          ← unlike prod, which sets it
 mars -> 10.10.30.11 :  reachable, dev wg0 src 10.10.0.1
 mars -> 10.244.3.196:  via 94.130.141.65 dev eth0   ← i.e. out the DEFAULT ROUTE.
@@ -57,9 +57,9 @@ Every one of those disappears if the browser runs inside the cluster.
 
 ## Key design — move the browser, not the packets
 
-Run the suite as a **Job in the `roomler-ai-e2e` namespace**:
+Run the suite as a **Job in the `meshharbor-e2e` namespace**:
 
-- the browser reaches `http://roomler2` (the Service) directly — same origin as
+- the browser reaches `http://meshharbor2` (the Service) directly — same origin as
   `frontend_url`, so the cookie/WS origin check passes with no override, and my
   2026-08-29 `frontend_url` patch is **reverted** as part of this;
 - RTP goes pod-to-pod on the CNI network, which is what a real call does;
@@ -118,12 +118,12 @@ seam for a production-shaped hazard on a node that also runs real workloads.
 e2e stack; the stack was left exactly as found.
 
 1. **The runner works in-cluster.** The Playwright image schedules and runs in
-   `roomler-ai-e2e`; from it, `http://roomler2/health` → 200,
+   `meshharbor-e2e`; from it, `http://meshharbor2/health` → 200,
    `http://mailpit:8025` → 200, and `registry.npmjs.org` → 200, so `npm i` in
    an initContainer is viable. No image build needed.
 
 2. **🔑 A service URL is NOT a secure context, so there is no media API at
-   all.** Running against `http://roomler2`:
+   all.** Running against `http://meshharbor2`:
 
    ```
    navigator.mediaDevices → undefined
@@ -140,7 +140,7 @@ e2e stack; the stack was left exactly as found.
    argument in `launch()` ("Pass userDataDir to launchPersistentContext").
 
 3. **🔑 The fix is to put the browser in the app pod's own network
-   namespace** — an ephemeral container with `--target=roomler2`. Then the app
+   namespace** — an ephemeral container with `--target=meshharbor2`. Then the app
    is `http://127.0.0.1`, which IS a secure context, and:
 
    ```

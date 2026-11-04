@@ -1,6 +1,6 @@
 # Linux capture — X11, DRM, the desktop portal, and mutter
 
-How `roomlerd` gets pixels off a Linux desktop, and why there are four ways
+How `meshharbord` gets pixels off a Linux desktop, and why there are four ways
 rather than one. This is the Linux half of the capture cascade that
 [`encoders.md`](encoders.md#capture-backends) summarises and
 [`remote-control.md`](remote-control.md#51-capture-targets-per-os) tabulates
@@ -271,7 +271,7 @@ install, no capture key, no restore token), 2026-10-13:
 | the next session | — | the restore token: the capture 85 ms after the offer, no dialog |
 | the screen locked | — | the token still restores: KDE's lock screen at +4 s, no dialog |
 | after the unlock | — | the token still opens the session, no dialog |
-| `wayland_auto = false` | — | `wayland_not_enabled` again, now with the hint that names `roomler config clear wayland_auto`; no request, no dialog |
+| `wayland_auto = false` | — | `wayland_not_enabled` again, now with the hint that names `meshharbor config clear wayland_auto`; no request, no dialog |
 | GNOME 50 per-user, the same build | — | mutter still first: "GNOME screencast · asks nobody", `lit=90.0 %`, no portal request |
 
 ⚠️ **Input follows on both automatic arms.** From P4 the automatic mutter arm
@@ -315,7 +315,7 @@ named carry the same diffs.
 The wheel notch went down only after the helper corrected KDE's negated smooth
 scroll (§4.3).
 
-⚠️ **The recorder asks too.** `roomler record` opens the same cascade in its own
+⚠️ **The recorder asks too.** `meshharbor record` opens the same cascade in its own
 process (FR-85), so on KDE the person at the console is asked once for their
 own recording. The broker is per process, so a viewer's pending request and a
 recording started at the same moment are two dialogs.
@@ -575,7 +575,7 @@ every descendant including a setsid'd grandchild (`at-spi-bus-launcher`, a D-Bus
 service that **ignores SIGTERM**) via the parent-link closure of the daemon's
 direct children. Without it, under systemd `KillMode=control-group` that
 grandchild held the unit's cgroup non-empty until systemd's `TimeoutStopSec`
-(90 s) SIGKILLed it, so `roomler restart` took 96 s (#1684). See
+(90 s) SIGKILLed it, so `meshharbor restart` took 96 s (#1684). See
 [`desktop-companion.md` §7](desktop-companion.md#7-apply-now--restarting-the-service-from-the-companion).
 
 ⚠️ **A virtual-desktop host is not a consent surface**, even though its X
@@ -702,7 +702,7 @@ ever said *"No video from this device after 3 attempts"*. The open now checks
 the handle (`unreadable`, `drm_backend.rs:1128`) and refuses with the fix in
 words, which reach the viewer as the arm's own error (§1.1): *"drm_capture is
 on, but DRM capture could not open: reading the scanout needs CAP_SYS_ADMIN
-(root), which this daemon lacks: on a per-user install run roomler config
+(root), which this daemon lacks: on a per-user install run meshharbor config
 clear drm_capture"*. Clearing the key gives the choice back to the automatic
 arm (§1.2), the desktop's own screencast.
 
@@ -720,7 +720,7 @@ so every order has a test pinned to hand-computed bytes.
 ⚠️ **A reason must fit FR-80's cap whole.** `CaptureUnavailable` keeps 200
 characters of a detail (`capture/mod.rs:2059`), the cascade's prefix included,
 and cuts the rest. The first draft of this reason was longer, and on the lab the
-viewer showed it ending *"…run roomler config clear"*: the fix, at the end, was
+viewer showed it ending *"…run meshharbor config clear"*: the fix, at the end, was
 the part cut off. Each new reason's test now builds the detail as the viewer
 receives it and checks that it fits.
 
@@ -773,7 +773,7 @@ the caps it needs.
 **Measured** on the lab's GNOME 50 system guest (Ubuntu 26.04, virtio-gpu,
 `drm_capture` + `uinput`), 2026-10-13, by the AC5 `cursor` plan of the viewer
 oracle. The person at the screen moves the pointer over QMP, outside every
-roomler input path, and the oracle reads where the viewer draws it:
+meshharbor input path, and the oracle reads where the viewer draws it:
 
 | | 0.4.132, the release | P3c (`1de8d54da`) | P3c, `MESHHARBORD_DRM_CURSOR=0` |
 |---|---|---|---|
@@ -837,7 +837,7 @@ or MESHHARBORD_DRM_IDLE_SKIP=0)`.
 **Measured** on the lab's GNOME 50 system guest (Ubuntu 26.04, virtio-gpu,
 1280×800, `drm_capture` + `uinput`), 2026-10-13. One viewer session on the
 default path (the VP9-444 data-channel pump) held 4 minutes on an idle desktop
-(the probe stopped); every `roomlerd` process's CPU read from `/proc` over two
+(the probe stopped); every `meshharbord` process's CPU read from `/proc` over two
 60 s windows after a 20 s warm-up, as a share of one core:
 
 | | 0.4.133, the release | P3d (`cac2d7c43`) | P3d, `MESHHARBORD_DRM_IDLE_SKIP=0` |
@@ -1051,7 +1051,7 @@ The portal is **per user session**: it lives on the session bus, checks
 `SO_PEERCRED`, and `XDG_RUNTIME_DIR` is `0700`. A root daemon with no session
 bus asking it anything gets `no-session-bus`, which is the architecture rather
 than a misconfiguration. So the daemon spawns **itself** — the hidden
-`roomlerd portal-helper` subcommand — as the console user, with that session's
+`meshharbord portal-helper` subcommand — as the console user, with that session's
 `XDG_RUNTIME_DIR`, `DBUS_SESSION_BUS_ADDRESS`, `DISPLAY` and `WAYLAND_DISPLAY`
 (`capture/portal/mod.rs:1083`), through a verified privilege drop rather than
 `CommandExt::uid()` (which leaves the child in root's supplementary groups — a
@@ -1085,8 +1085,8 @@ is graceful. The SPA POD builders are `static inline` in PipeWire's headers
 
 ```mermaid
 sequenceDiagram
-    participant D as roomlerd<br/>(root, no session bus)
-    participant H as roomlerd portal-helper<br/>(the session user)
+    participant D as meshharbord<br/>(root, no session bus)
+    participant H as meshharbord portal-helper<br/>(the session user)
     participant XDP as xdg-desktop-portal<br/>+ the compositor's backend
     participant PW as PipeWire<br/>(dlopen'd libpipewire)
 
@@ -1147,7 +1147,7 @@ reads as an exit. A request the portal ends without the person answering
 desktop, then a restart of the portal itself.
 
 **Tokens.** The restore token is kept **by the helper**, in
-`$XDG_STATE_HOME/roomler/portal-restore-token` (mode `0600`, the session
+`$XDG_STATE_HOME/meshharbor/portal-restore-token` (mode `0600`, the session
 user's; `-rd` for a see+touch grant, `-win` for a window grant —
 `screencast.rs:597`). The daemon never receives it, by construction: an early
 `SessionReport` carried it and it turned up in plaintext in a redirected log,
@@ -1264,14 +1264,14 @@ deadline. Both fall through to the rest of the cascade with the reason in the
 log. Unattended access on Linux is FR-36's DRM arm (or §5's mutter arm where
 there is no scanout) — never this one. ⚠️ Where the product says so: the spec,
 this page, the `portal_capture` description in the config surface
-(`crates/agent-core/src/config_surface.rs:1052`, which every `roomler config`
+(`crates/agent-core/src/config_surface.rs:1052`, which every `meshharbor config`
 reader sees) and the helper's own log line. Since FR-93 P2c the web viewer says
 it too: `rc:video-info` carries `capture_arm` and `attended`, and the viewer
 names the arm ("desktop portal · allowed at the screen"), FR-45 AC8's option (b).
 
 ### 4.5 Detecting the portal, and why the answer is never cached
 
-`roomlerd capture-smoke` runs the detector *inside the session* and prints one
+`meshharbord capture-smoke` runs the detector *inside the session* and prints one
 line an operator can act on (`main.rs:6020`): `capture-smoke: portal=<status>
 — <advice>`.
 
@@ -1925,7 +1925,7 @@ lets go. Each session registers its control channel as it starts
 ```mermaid
 sequenceDiagram
     participant L as logind
-    participant D as roomlerd (the sleep watcher)
+    participant D as meshharbord (the sleep watcher)
     participant N as NetworkManager
     participant V as the viewer
     D->>L: Inhibit("sleep", delay), while a session is live
@@ -2071,7 +2071,7 @@ now holds the new key.
 Measured on the WSL2 dev host, 2026-09-25: with the test rig loading the box
 (a headless mutter and two weston clients rendering through llvmpipe) the
 fresh NVENC probe **hung** — `caps probe: the probe child hung` after 60 s,
-`env -i roomlerd caps` reproducing a 75 s stall while the same command from an
+`env -i meshharbord caps` reproducing a 75 s stall while the same command from an
 interactive login shell finished in ~5 s — the daemon's pumps then missed the
 watchdog's 90 s window (`main.rs:3498-3486`, `watchdog.rs:493`) and it forced
 `exit(2)`, which systemd answered by restarting it straight back into the same
@@ -2081,11 +2081,11 @@ host at load 5 with no compositor rig — slower, but nowhere near the bound).
 
 The sequence that works, and that the AC2 field run followed:
 
-1. Change the knobs (a drop-in, or `roomler config set …`) while **nothing else
+1. Change the knobs (a drop-in, or `meshharbor config set …`) while **nothing else
    is loading the host** — no compositor rig, no build in flight.
-2. `systemctl daemon-reload && systemctl restart roomlerd`, then wait for
+2. `systemctl daemon-reload && systemctl restart meshharbord`, then wait for
    `caps probe: child reported …` and `rc:agent.hello sent` in the journal,
-   and for `roomler peers` to show the node online.
+   and for `meshharbor peers` to show the node online.
 3. **Only then** start whatever loads the box.
 4. Tear the load down **before** restoring the knobs, for the same reason.
 
@@ -2116,5 +2116,5 @@ defect — the capture arms only expose it by being knobs.
 | `agents/meshharbord/src/capture/portal/wire.rs` · `backend.rs` | the `RPWF` frame wire; `PortalCapture` (`open` `:114`, `HANDSHAKE_DEADLINE` `:669`); FR-93 P5f: a per-user capture's watch on its user's session (`watch_session` `:302`, `SESSION_POLL` `:290`), what reads as away (`session_away` `:396`) from logind's answer (`seat_sessions` `:412`), the answer kept with its time (`SessionWatch` `:338`) and outweighed by a newer frame (`away_now` `:384`, the frame's time `:568`), reported by `waits_for` (`:612`), and its kill switch (`session_watch_enabled` `:294`); FR-93 P6c: the helper's exit status read once its frames stop (`reap` `:630`, `HELPER_EXIT_WAIT` `:625`), status 5 typed as a stop at the screen (`helper_ended` `:649`), and its kill switch (`screen_stop_enabled` `:620`) |
 | `agents/meshharbord/src/peer.rs` | the notice (`media_waiting_payload` `:5037`, `media_waiting_hook` `:5313`); FR-93 P3e/P5f: a running capture's wait in the pumps (`CaptureWait` `:5162`), told after a quiet spell (`QUIET_BEFORE_TELL` `:5183`), and the hold that yields so the pump stays abortable (`:2527`, `:3980`, `:7194`); FR-93 P6c: a stop at the screen ends the session, a shared pipeline's followers first, and never reopens (`end_stopped_at_screen` `:5456`) |
 | `agents/meshharbord/src/capture/portal/input.rs` · `input_route.rs` | FR-45 P4 and FR-93 P4: the helper's `Notify*` mapping (`plan` `:123`, mutter's `mutter_call` `:274`); FR-93 P4b's KDE correction (`for_backend` `:224`) and the awaited portal calls (`Target::delivery` `:348`); the arbiter-side per-event route (`try_route` `:113`) and whose session it feeds (`active` `:97`) |
-| `crates/agent-core/src/config_surface.rs` | the keys in §7 and the descriptions `roomler config` prints (`:1131-1202`) |
+| `crates/agent-core/src/config_surface.rs` | the keys in §7 and the descriptions `meshharbor config` prints (`:1131-1202`) |
 | `agents/meshharbord/src/main.rs` | `capture-smoke` (`capture_smoke_cmd` `:5694`, the portal line `:5721`); the virtual desktop (`maybe_start_virtual_desktop` `:2759`) |

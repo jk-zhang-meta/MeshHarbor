@@ -1,10 +1,10 @@
-# Media over QUIC (MoQ) for Roomler remote desktop — evaluation + deferred plan
+# Media over QUIC (MoQ) for MeshHarbor remote desktop — evaluation + deferred plan
 
 > **Status: evaluated 2026-06-04, DEFERRED — not being implemented now.** Captured for later reference. Verdict: do **not** adopt MoQ for the interactive control path; the only defensible use is a future opt-in multi-viewer broadcast, gated on a Phase-0 spike + a real customer need.
 
 ## Context
 
-The team shipped a QUIC (quinn) transport for the **roomler** CLI (native-to-native TCP forwarder). The follow-on question: should the **remote-desktop** subsystem (TeamViewer-style screen + input control) also adopt **MoQ (Media over QUIC)**?
+The team shipped a QUIC (quinn) transport for the **meshharbor** CLI (native-to-native TCP forwarder). The follow-on question: should the **remote-desktop** subsystem (TeamViewer-style screen + input control) also adopt **MoQ (Media over QUIC)**?
 
 This doc is the answer ("research + evaluate MoQ + weigh pros/cons + decide if it benefits remote desktop + give an implementation plan"). It is grounded in (a) a full code map of the current data plane, (b) the IETF/library/browser state of MoQ as of June 2026, (c) a peer-reviewed QUIC-vs-WebRTC remote-rendering benchmark, and (d) an adversarial stress-test of the conclusion.
 
@@ -43,7 +43,7 @@ Everything is **feature-flagged** (`--features moq-broadcast` + `MESHHARBORD_MOQ
 
 ### Phase 0 — hard-gate spike (the only thing worth doing first; cheap, reversible, throwaway)
 **Build (minimal):**
-- **Agent probe** (`roomlerd moq-probe`, behind the feature): reuse `capture::open_default` + `encode::open_for_codec` (`encode/mod.rs:349`); wrap each frame with the **existing** `frame_video_bytes` 13-byte header verbatim (`peer.rs:1714`); publish via the kixelated **`moq-lite`** + **`web-transport`** Rust crates (native QUIC) — map one keyframe-led GOP = one MoQ *group*, each frame = one *object*.
+- **Agent probe** (`meshharbord moq-probe`, behind the feature): reuse `capture::open_default` + `encode::open_for_codec` (`encode/mod.rs:349`); wrap each frame with the **existing** `frame_video_bytes` 13-byte header verbatim (`peer.rs:1714`); publish via the kixelated **`moq-lite`** + **`web-transport`** Rust crates (native QUIC) — map one keyframe-led GOP = one MoQ *group*, each frame = one *object*.
 - **Relay**: run kixelated **`moq-relay` as one container on an existing coturn host** (we already operate + monitor these). No new cloud account.
 - **Throwaway browser subscriber** (a static page / hidden route, *not* wired into `RemoteControl.vue`): open a `WebTransport` to the relay, subscribe, and `postMessage({type:'chunk', bytes})` to the **unmodified** `rc-vp9-444-worker.ts` / `rc-hevc-worker.ts` (the existing transport-agnostic handoff in `useRemoteControl.ts:~1850`). If frames paint, subscriber-reuse is proven.
 
@@ -73,7 +73,7 @@ Everything is **feature-flagged** (`--features moq-broadcast` + `MESHHARBORD_MOQ
 - `moq-secure-objects` SFrame wrap on publish + unwrap in the worker; distribute the per-track key via the already-authenticated, tenant-gated signaling (`BroadcastJoinGranted.sframe_key`). Re-gate on draft stability. **Do not** attempt MLS group-keying for v1.
 
 ## Honest risks / when NOT to build at all
-- **Pixel-trust regression (highest):** default posture (A) lets a Roomler-operated relay see broadcast pixels — may be a non-starter for a security-sensitive product regardless of engineering. Decide up front.
+- **Pixel-trust regression (highest):** default posture (A) lets a MeshHarbor-operated relay see broadcast pixels — may be a non-starter for a security-sensitive product regardless of engineering. Decide up front.
 - **secure-objects immaturity** + DIY key distribution (if posture B is required, may itself be NO-GO).
 - **quinn/rustls version war** with the kixelated crates (would threaten the no-C-build stance) — a Phase-0 kill condition.
 - **New stateful relay** ops/DoS surface on the coturn hosts.
@@ -92,7 +92,7 @@ Everything is **feature-flagged** (`--features moq-broadcast` + `MESHHARBORD_MOQ
 - New deps (Phase 0): `moq-lite`, `web-transport` (Rust, kixelated/moq-dev); `moq-relay` container. New build feature `moq-broadcast`.
 
 ## Verification (Phase 0)
-Run `roomlerd moq-probe` on a field box, `moq-relay` on a coturn host, open the throwaway subscriber page in 1 + K browser tabs. Confirm frames paint via the unmodified worker (subscriber-reuse), then collect the five measurements above and check them against the GO/NO-GO bars. Everything is behind the `moq-broadcast` feature + `MESHHARBORD_MOQ=1`; deleting the feature is a clean revert. No change to the WebRTC control path is shipped at any point in Phase 0.
+Run `meshharbord moq-probe` on a field box, `moq-relay` on a coturn host, open the throwaway subscriber page in 1 + K browser tabs. Confirm frames paint via the unmodified worker (subscriber-reuse), then collect the five measurements above and check them against the GO/NO-GO bars. Everything is behind the `moq-broadcast` feature + `MESHHARBORD_MOQ=1`; deleting the feature is a clean revert. No change to the WebRTC control path is shipped at any point in Phase 0.
 
 ## Out of scope
 - Replacing the 1:1 WebRTC control transport (rejected — see Evaluation).

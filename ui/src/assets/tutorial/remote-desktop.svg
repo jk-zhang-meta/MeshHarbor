@@ -79,7 +79,7 @@
     <circle cx="93" cy="96" r="2" fill="#ffb300" />
     <circle cx="100" cy="96" r="2" fill="#4caf50" />
     <rect x="110" y="91" width="120" height="10" rx="5" fill="rgba(255,255,255,.15)" />
-    <text x="170" y="98.5" text-anchor="middle" font-size="7.5" fill="rgba(255,255,255,.75)">roomler.ai — office-pc</text>
+    <text x="170" y="98.5" text-anchor="middle" font-size="7.5" fill="rgba(255,255,255,.75)">meshharbor.itachi.fans — office-pc</text>
     <!-- the remote desktop, live inside the tab -->
     <rect x="78" y="106" width="234" height="126" fill="url(#rd-desk)" />
     <rect x="78" y="222" width="234" height="10" fill="rgba(26,26,46,.55)" />

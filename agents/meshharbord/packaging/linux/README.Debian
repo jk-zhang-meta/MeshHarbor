@@ -25,9 +25,9 @@ nobody logged in? Use the system unit.
 Desktop host (systemd --user)
 -----------------------------
 
-  # 1. Generate an enrollment JWT at https://roomler.ai/ (Admin -> Agents).
+  # 1. Generate an enrollment JWT at https://meshharbor.itachi.fans/ (Admin -> Agents).
   # 2. Enroll as your normal user, NOT root:
-  meshharbord enroll --server https://roomler.ai \
+  meshharbord enroll --server https://meshharbor.itachi.fans \
                   --token <paste-enrollment-jwt> \
                   --name "$(hostname)"
 
@@ -70,7 +70,7 @@ with — `enroll` creates the directory and writes the file 0600 (it holds a
 bearer token):
 
   sudo meshharbord --config /etc/meshharbor/config.toml \
-       enroll --server https://roomler.ai \
+       enroll --server https://meshharbor.itachi.fans \
               --token <paste-enrollment-jwt> \
               --name "$(hostname)"
 

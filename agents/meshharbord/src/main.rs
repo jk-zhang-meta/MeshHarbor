@@ -53,7 +53,7 @@ enum Command {
     /// Enroll this machine against a MeshHarbor server using an admin-issued
     /// enrollment token. Writes the resulting agent token to the config file.
     Enroll {
-        /// Base URL of the MeshHarbor API (e.g. https://roomler.live).
+        /// Base URL of the MeshHarbor API (e.g. https://meshharbor.itachi.fans).
         #[arg(long)]
         server: String,
         /// Enrollment token, as printed by the admin UI. Use `-` to read it
@@ -2393,7 +2393,7 @@ fn rollback_attention_msg(
     }
     msg.push_str(
         "\nRecommended action: download the previous installer from\n\
-         https://github.com/gjovanov/roomler-ai/releases\n\
+         https://github.com/jk-zhang-meta/MeshHarbor/releases\n\
          and reinstall manually.",
     );
     msg

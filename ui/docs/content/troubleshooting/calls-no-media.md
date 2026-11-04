@@ -69,7 +69,7 @@ Check the announced address first:
 
 ```bash
 docker compose -f docker-compose.selfhost.yml --env-file .env.selfhost \
-  logs roomler | grep -i announced
+  logs meshharbor | grep -i announced
 ```
 
 If it reports a loopback or container-internal address, that is your answer.

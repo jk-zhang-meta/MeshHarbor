@@ -24,17 +24,17 @@
   ~2s wave, so every wave finds its route missing and takes a strike.
 
 .PARAMETER Adapter
-  The overlay adapter to reap. Default 'roomler'.
+  The overlay adapter to reap. Default 'meshharbor'.
 
 .PARAMETER Family
   IPv4 (peer /32s -- the #1328 Mode A shape) or IPv6 (the ULA). Default IPv4.
 
 .EXAMPLE
   # From another mesh node, on a host running the build under test:
-  roomler exec <device> "& 'C:\Program Files\MeshHarbor\scripts\route-war-repro.ps1' -Seconds 180"
+  meshharbor exec <device> "& 'C:\Program Files\MeshHarbor\scripts\route-war-repro.ps1' -Seconds 180"
 
 .NOTES
-  Read the result as a DIFF of two `roomler status` readings, never an
+  Read the result as a DIFF of two `meshharbor status` readings, never an
   absolute (the counters are cumulative). The pass signature for #1328 is
   `evicted` flattening while `yielded` climbs. A `yielded` that stays 0 means
   the stand-down never engaged and the run measured nothing -- that is a
@@ -53,7 +53,7 @@ param(
     [ValidateRange(100, 5000)]
     [int]$IntervalMs = 700,
 
-    [string]$Adapter = 'roomler',
+    [string]$Adapter = 'meshharbor',
 
     [ValidateSet('IPv4', 'IPv6')]
     [string]$Family = 'IPv4'
@@ -70,7 +70,7 @@ Write-Host "adapter : $($if.Name) (ifIndex $($if.ifIndex))"
 Write-Host "family  : $Family"
 Write-Host "reaping : every ${IntervalMs}ms for ${Seconds}s"
 Write-Host ''
-Write-Host 'Take a `roomler status` reading NOW and another when this exits;'
+Write-Host 'Take a `meshharbor status` reading NOW and another when this exits;'
 Write-Host 'the verdict is the DIFF: evicted flat + yielded climbing = pass.'
 Write-Host ''
 
@@ -118,5 +118,5 @@ try {
     # so say plainly what heals it. The guard re-asserts within ~2s of the
     # last sweep; this only reports, it does not need to repair.
     Write-Host 'Reaping stopped. The route guard re-asserts within ~2s;'
-    Write-Host 'confirm with `roomler peers` before walking away.'
+    Write-Host 'confirm with `meshharbor peers` before walking away.'
 }

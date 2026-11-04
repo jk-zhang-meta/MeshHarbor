@@ -38,7 +38,7 @@ jobs:
   # These five jobs were ONE job, "Rust checks", until it grew to ~35 serial
   # steps: 18–21 min on a WARM cache and 35–45 min cold, over 58 runs. Test
   # EXECUTION was ~3.5 min of that. The rest was compiling workspace crates
-  # one feature configuration after another — `roomlerd` alone in ~12 of
+  # one feature configuration after another — `meshharbord` alone in ~12 of
   # them, 40–80 s each — which no cargo cache helps: Swatinem caches the
   # third-party deps, never the workspace. Split five ways, the same work
   # runs in parallel. The aggregate job `rust` after the lanes keeps the name
@@ -335,7 +335,7 @@ jobs:
       # feature not used." `libclang-dev` (installed above) is the
       # bindgen runtime requirement.
       # The capture path is linted by NO other lane. `--workspace` clippy
-      # compiles roomlerd with DEFAULT features, and its default is `[]`, so
+      # compiles meshharbord with DEFAULT features, and its default is `[]`, so
       # `capture/scrap_backend.rs` — the screen-capture backend on every OS —
       # is never even compiled there. The two agent feature lanes miss it too:
       # `vp9-444` does not enable `scrap-capture`, and `cargo check` does not
@@ -375,7 +375,7 @@ jobs:
         # is exactly where that class of break lands.
         run: cargo clippy -p meshharbor-tunnel-core --features overlay-l3,overlay-netstack --all-targets -- -D warnings
 
-      - name: Clippy roomlerd --features overlay-l3
+      - name: Clippy meshharbord --features overlay-l3
         # Phase 3b: the agent's overlay glue (overlay.rs + the main /
         # signaling hooks) only compiles under the opt-in feature, so the
         # default --workspace clippy never sees it. Lint it explicitly.
@@ -420,7 +420,7 @@ jobs:
       # `crates/api` unit tests ran in NO lane until now: the clippy step above
       # is `--workspace` WITHOUT `--all-targets`, so it does not even compile
       # `#[cfg(test)]` code, and the `cargo test` steps further down name
-      # `roomlerd` / `meshharbor-tunnel-core` explicitly. Every policy test
+      # `meshharbord` / `meshharbor-tunnel-core` explicitly. Every policy test
       # under `routes/` — who may open a session, what a refusal records — was
       # therefore decorative: a green PR did not mean they had run.
       #
@@ -564,7 +564,7 @@ jobs:
         #     `#![cfg(feature = "clipboard")]`, so without it here the
         #     whole suite silently never ran. arboard/png are pure
         #     Rust on Linux (X11 headers already installed above).
-        #   - roomler SSH (`ssh-server`, which implies `overlay-netstack`):
+        #   - meshharbor SSH (`ssh-server`, which implies `overlay-netstack`):
         #     same trap the clipboard note above describes, and it had already
         #     sprung — `agents/meshharbord/src/ssh.rs`'s suite (host key,
         #     auth accept/deny, grant redemption, single-use, expiry) is
@@ -691,7 +691,7 @@ jobs:
         # saves one of its own; a second copy cost ~600 MB of the free 10 GB
         # pool. That lane builds these features plus `audio`, and `cargo tree`
         # resolves the two TEST graphs to the same features for every shared
-        # crate (only roomlerd and the 7 audio-only crates differ), so the
+        # crate (only meshharbord and the 7 audio-only crates differ), so the
         # tests here reuse it. NOT a full superset: this lane's non-test
         # `cargo build -p meshharbord` (no dev-dependency features under resolver
         # v2) needs tokio and ~25 dependents in a variant the audio lane never
@@ -715,12 +715,12 @@ jobs:
         uses: ./.github/actions/ci-linux-system-deps
 
       - name: Test the recorder (FR-85) — unit tests + the recorder integration binary
-        # ⚠️ Named explicitly, twice, on purpose. Every other roomlerd test
+        # ⚠️ Named explicitly, twice, on purpose. Every other meshharbord test
         # step is `--lib`, so `agents/meshharbord/tests/*.rs` runs only when a
         # step NAMES it — `tests/file_dc.rs` has never run in CI for exactly
         # that reason. And `recording` is not in any other feature set here,
         # so its unit tests would not run under the `--lib` step above either.
-        # `synthetic-frame-source` lets the `roomlerd record` process tests
+        # `synthetic-frame-source` lets the `meshharbord record` process tests
         # capture on a runner with no display; openh264 is both the encoder and
         # the decoder the oracle reads frames back through.
         #
@@ -738,7 +738,7 @@ jobs:
         # FR-85 P5a — `export`: a recording whose every frame paints its own
         # index, exported through keep / cut / 4× / keep, decoded back frame
         # for frame (the oracle is proven against the unedited source), plus
-        # the real `roomlerd media probe|export` process.
+        # the real `meshharbord media probe|export` process.
         #
         # FR-85 P5b — `export` again WITH `audio`: the recording's own sound
         # through the same edit (a stepped tone, so every second of the export
@@ -804,7 +804,7 @@ jobs:
         run: |
           cargo test -p meshharbord --features recording,openh264-encoder,synthetic-frame-source --lib --no-run --message-format=json > /tmp/p1eu.json
           BIN=$(jq -r 'select(.reason == "compiler-artifact" and .profile.test == true and .executable != null) | .executable' /tmp/p1eu.json | head -1)
-          if [ -z "$BIN" ]; then echo "::error::no roomlerd lib test binary in the build output"; exit 1; fi
+          if [ -z "$BIN" ]; then echo "::error::no meshharbord lib test binary in the build output"; exit 1; fi
           sudo MESHHARBORD_TEST_REQUIRE_ROOT=1 "$BIN" recording::launch
 
       - name: The tarball repair, as root — another account's tree comes back root's, and no symlink is followed
@@ -816,7 +816,7 @@ jobs:
         run: |
           cargo test -p meshharbord --features recording,openh264-encoder,synthetic-frame-source --lib --no-run --message-format=json > /tmp/tob.json
           BIN=$(jq -r 'select(.reason == "compiler-artifact" and .profile.test == true and .executable != null) | .executable' /tmp/tob.json | head -1)
-          if [ -z "$BIN" ]; then echo "::error::no roomlerd lib test binary in the build output"; exit 1; fi
+          if [ -z "$BIN" ]; then echo "::error::no meshharbord lib test binary in the build output"; exit 1; fi
           sudo MESHHARBORD_TEST_REQUIRE_ROOT=1 "$BIN" tarball_owner
 
       - name: Received files on a Linux system install (FR-97 P3d) — as root, born the person's
@@ -829,7 +829,7 @@ jobs:
         run: |
           cargo test -p meshharbord --features recording,openh264-encoder,synthetic-frame-source --lib --no-run --message-format=json > /tmp/p3d.json
           BIN=$(jq -r 'select(.reason == "compiler-artifact" and .profile.test == true and .executable != null) | .executable' /tmp/p3d.json | head -1)
-          if [ -z "$BIN" ]; then echo "::error::no roomlerd lib test binary in the build output"; exit 1; fi
+          if [ -z "$BIN" ]; then echo "::error::no meshharbord lib test binary in the build output"; exit 1; fi
           sudo MESHHARBORD_TEST_REQUIRE_ROOT=1 "$BIN" files::seat_user_tests
 
       - name: The Linux user unit's sandbox (FR-85 P2c) — it starts on a fresh host, and the recorder writes ~/Videos
@@ -841,7 +841,7 @@ jobs:
         #   * a ReadWritePaths entry that does not exist, listed WITHOUT
         #     systemd's `-`, fails the whole unit with 226/NAMESPACE — the
         #     unit could not start on any such host until P2c;
-        #   * `record --where` must choose ~/Videos/Roomler, and the rest of
+        #   * `record --where` must choose ~/Videos/MeshHarbor, and the rest of
         #     home must stay read-only.
         # A SYSTEM unit with User= needs no user session on the runner and
         # ALWAYS sets up the mount namespace, i.e. the configuration where
@@ -854,12 +854,12 @@ jobs:
         run: |
           set -eu
           cargo build -p meshharbord --features recording,openh264-encoder,synthetic-frame-source --message-format=json > /tmp/p2c-build.json
-          BIN=$(jq -r 'select(.reason == "compiler-artifact" and .target.name == "roomlerd" and .executable != null) | .executable' /tmp/p2c-build.json | tail -1)
-          if [ -z "$BIN" ]; then echo "::error::no roomlerd binary in the build output"; exit 1; fi
+          BIN=$(jq -r 'select(.reason == "compiler-artifact" and .target.name == "meshharbord" and .executable != null) | .executable' /tmp/p2c-build.json | tail -1)
+          if [ -z "$BIN" ]; then echo "::error::no meshharbord binary in the build output"; exit 1; fi
           ME=$(id -un)
           H=$(getent passwd "$ME" | cut -d: -f6)
-          # What `roomlerd enroll` leaves behind, and an XDG Videos folder.
-          mkdir -p "$H/.config/roomler" "$H/.local/share/roomler" "$H/Videos"
+          # What `meshharbord enroll` leaves behind, and an XDG Videos folder.
+          mkdir -p "$H/.config/meshharbor" "$H/.local/share/meshharbor" "$H/Videos"
           printf 'XDG_VIDEOS_DIR="$HOME/Videos"\n' > "$H/.config/user-dirs.dirs"
           # Every path the unit lists as optional (`-`), the XDG user folders
           # (~/Videos, ~/Downloads) aside, must be MISSING, as on any host
@@ -890,10 +890,10 @@ jobs:
             echo "::error::a unit carrying meshharbor.service's sandbox did not start"; exit 1
           fi
           cat "$OUT"
-          grep -q "$H/Videos/Roomler" "$OUT" || { echo "::error::under the sandbox the recorder did not choose ~/Videos/Roomler"; exit 1; }
+          grep -q "$H/Videos/MeshHarbor" "$OUT" || { echo "::error::under the sandbox the recorder did not choose ~/Videos/MeshHarbor"; exit 1; }
           grep -q HOME_READ_ONLY "$OUT" || { echo "::error::the sandbox left the rest of home writable"; exit 1; }
           # FR-96 P2a: a per-user daemon whose host has the root update
-          # helper touches its wake file, /var/tmp/roomler-update-check.
+          # helper touches its wake file, /var/tmp/meshharbor-update-check.
           # ProtectSystem=strict leaves /var/tmp read-only (measured on
           # Fedora 44 KDE: EROFS), so the unit grants it.
           grep -q VARTMP_WRITABLE "$OUT" || { echo "::error::under the sandbox the daemon cannot write /var/tmp — FR-96's wake file would fail EROFS"; exit 1; }
@@ -936,8 +936,8 @@ jobs:
         run: |
           set -eu
           cargo build -p meshharbord --features recording,openh264-encoder,synthetic-frame-source --message-format=json > /tmp/uu-build.json
-          BIN=$(jq -r 'select(.reason == "compiler-artifact" and .target.name == "roomlerd" and .executable != null) | .executable' /tmp/uu-build.json | tail -1)
-          if [ -z "$BIN" ]; then echo "::error::no roomlerd binary in the build output"; exit 1; fi
+          BIN=$(jq -r 'select(.reason == "compiler-artifact" and .target.name == "meshharbord" and .executable != null) | .executable' /tmp/uu-build.json | tail -1)
+          if [ -z "$BIN" ]; then echo "::error::no meshharbord binary in the build output"; exit 1; fi
           ME=$(id -un)
           MYUID=$(id -u)
           H=$(getent passwd "$ME" | cut -d: -f6)
@@ -947,23 +947,23 @@ jobs:
           sudo loginctl enable-linger "$ME"
           for _ in $(seq 1 30); do [ -S "$RUN/systemd/private" ] && break; sleep 1; done
           [ -S "$RUN/systemd/private" ] || { echo "::error::no user manager for $ME"; exit 1; }
-          # What `roomlerd enroll` leaves behind, for a server nobody answers:
+          # What `meshharbord enroll` leaves behind, for a server nobody answers:
           # the daemon takes its lock and binds LocalAPI before it needs one.
-          mkdir -p "$H/.config/roomler" "$H/.local/share/roomler" "$H/.config/systemd/user"
+          mkdir -p "$H/.config/meshharbor" "$H/.local/share/meshharbor" "$H/.config/systemd/user"
           printf '%s\n' 'server_url = "http://127.0.0.1:9"' 'agent_token = "ci"' \
             'agent_id = "000000000000000000000000"' 'tenant_id = "000000000000000000000000"' \
-            'machine_id = "ci"' 'machine_name = "ci"' > "$H/.config/roomler/config.toml"
+            'machine_id = "ci"' 'machine_name = "ci"' > "$H/.config/meshharbor/config.toml"
           sed "s|^ExecStart=.*|ExecStart=$BIN run|" agents/meshharbord/packaging/linux/meshharbor.service > "$H/.config/systemd/user/meshharbor.service"
           systemctl --user daemon-reload
           systemctl --user start meshharbor.service
           sock=""
-          for _ in $(seq 1 45); do [ -S "$RUN/roomler.sock" ] && { sock=1; break; }; sleep 1; done
+          for _ in $(seq 1 45); do [ -S "$RUN/meshharbor.sock" ] && { sock=1; break; }; sleep 1; done
           show_log() { sudo journalctl "_UID=$MYUID" _SYSTEMD_USER_UNIT=meshharbor.service --no-pager -n 25 || true; }
           PID=$(systemctl --user show -p MainPID --value meshharbor.service)
           case "$PID" in ''|0) show_log; echo "::error::the unit has no running daemon"; exit 1 ;; esac
           [ "$(sudo readlink "/proc/$PID/ns/mnt")" != "$(sudo readlink /proc/1/ns/mnt)" ] \
             || { echo "::error::the unit ran in the host's mount namespace: its sandbox did not apply, and this cell proves nothing"; exit 1; }
-          [ -n "$sock" ] || { show_log; echo "::error::no LocalAPI socket at $RUN/roomler.sock within 45 s"; exit 1; }
+          [ -n "$sock" ] || { show_log; echo "::error::no LocalAPI socket at $RUN/meshharbor.sock within 45 s"; exit 1; }
           opts() { sudo awk -v p="$1" '$5 == p { o = $6 } END { print o }' "/proc/$PID/mountinfo"; }
           # The mount that governs a path: the longest mount point containing
           # it. /home is often not a mount of its own, and then ProtectSystem's
@@ -975,7 +975,7 @@ jobs:
           # Measured on Fedora 44 KDE, the field configuration this cell
           # reproduces: 0.4.128's unit left it read-only (EROFS) in the
           # daemon's namespace; the grant makes it a read-write mount of its own.
-          for p in "$RUN" "$H/.local/state/roomler" "$H/.config/roomler" "$H/.local/share/roomler" /var/tmp; do
+          for p in "$RUN" "$H/.local/state/meshharbor" "$H/.config/meshharbor" "$H/.local/share/meshharbor" /var/tmp; do
             case "$(opts "$p")" in
               rw*) ;;
               *) echo "::error::$p is not writable inside the unit (mount options '$(opts "$p")')"; sudo awk '{ print $5, $6 }' "/proc/$PID/mountinfo" | grep -E "^($H|/run/user|/var/tmp)"; exit 1 ;;
@@ -1167,7 +1167,7 @@ jobs:
       - name: cargo check tunnel-core (overlay-l3 + overlay-netstack)
         run: cargo check -p meshharbor-tunnel-core --features overlay-l3,overlay-netstack
 
-      # This job checked tunnel-core ONLY, so `roomlerd`'s `cfg(unix)` code
+      # This job checked tunnel-core ONLY, so `meshharbord`'s `cfg(unix)` code
       # was never compiled for macOS anywhere except a release-tag build — and
       # that has now broken a release three times, always the same way: a libc
       # declaration that differs between Linux and macOS.
@@ -1284,7 +1284,7 @@ jobs:
           # renamed executable. This assert is why a half-done rename cannot ship:
           # a plist still naming the old path installs fine and the daemon simply
           # never starts, which reads as "the overlay is down", not as a typo.
-          grep -q '/Library/Roomler/meshharbord.app/Contents/MacOS/roomlerd' \
+          grep -q '/Library/MeshHarbor/meshharbord.app/Contents/MacOS/meshharbord' \
             agents/meshharbord/packaging/macos/fans.itachi.meshharbor.daemon.plist
 
       - name: macOS overlay against a real utun
@@ -1370,7 +1370,7 @@ jobs:
       # into errors that have nothing to do with the change under test.
       # `hive` (FR-90 P1i): agent sessions on Windows, which no release build
       # carries yet, so this is the only place their code is linted.
-      - name: Clippy roomlerd (overlay-l3 + ssh-server + hive, incl. tests)
+      - name: Clippy meshharbord (overlay-l3 + ssh-server + hive, incl. tests)
         run: cargo clippy -p meshharbord --features overlay-l3,ssh-server,hive,vault --tests -- -D warnings
       # FR-92 P10b — the LocalAPI crate's Windows half ran in NO lane: its
       # tests run on Linux, where every `#[cfg(windows)]` test compiles out,
@@ -1387,14 +1387,14 @@ jobs:
       # into a Job Object, with the session's variables over the user's
       # environment; ending or closing the job ending what it started; the
       # console-user mapping, the harness and its command line, and
-      # `roomlerd hive-prep`. The whole `win_service::supervisor` suite runs
+      # `meshharbord hive-prep`. The whole `win_service::supervisor` suite runs
       # here too: it ran in no lane before. P1i-2: `hive::` as Windows compiles
       # it: the toolbelt over its named pipe, processes by creation time, the
       # store's file in a DACL'd directory. (The supervisor's own tests drive a
       # `/bin/sh` stand-in for Claude Code, and run on Linux and macOS.)
       # #2010: `win_service::tests` — the SCM host's own (the STOP_PENDING
       # report and its order against the supervisor), also in no lane before.
-      # #2465: `win_service::orphan` — which roomlerd is an earlier host's
+      # #2465: `win_service::orphan` — which meshharbord is an earlier host's
       # worker, and the reaper's reads through a real process handle.
       # FR-90 P3-5b-1: `vault_proxy::` — the vault's proxy engines, against a
       # fake upstream over real TLS. `proxy` is the only mode a session on
@@ -1477,12 +1477,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         with:
           family: windows-recorder
-      - name: Clippy roomlerd (recording, incl. tests)
+      - name: Clippy meshharbord (recording, incl. tests)
         run: cargo clippy -p meshharbord --features recording,openh264-encoder,synthetic-frame-source --tests -- -D warnings
       - name: The identity rule — unit tests (the table, argv, env, impersonation)
         run: cargo test -p meshharbord --lib --features recording,openh264-encoder,synthetic-frame-source -- recording::launch --nocapture
       # #1727 — not the recorder, but this is the one lane that builds
-      # roomlerd's lib tests on Windows, and `win_service` is Windows-only:
+      # meshharbord's lib tests on Windows, and `win_service` is Windows-only:
       # its units ran in NO lane before. The same test binary as the step
       # above, so it costs seconds. What an MSI install with no
       # ENABLE_SYSTEM_CONTEXT does is decided here.
@@ -1607,16 +1607,16 @@ jobs:
             --repo "${{ github.repository }}" \
             --pattern 'ffmpeg-9.0.1-linux64-lgpl-shared-minimal-vaapi-vulkan-h264dec-aac.tar.xz' \
             --dir /tmp/ffdl
-          sudo mkdir -p /opt/roomler-ffmpeg
+          sudo mkdir -p /opt/meshharbor-ffmpeg
           sudo tar xf /tmp/ffdl/ffmpeg-9.0.1-linux64-lgpl-shared-minimal-vaapi-vulkan-h264dec-aac.tar.xz \
-            -C /opt/roomler-ffmpeg --strip-components=1
+            -C /opt/meshharbor-ffmpeg --strip-components=1
           # The .pc files hardcode the vendor machine's prefix.
-          sudo sed -i "s|^prefix=.*|prefix=/opt/roomler-ffmpeg|" \
-            /opt/roomler-ffmpeg/lib/pkgconfig/*.pc
+          sudo sed -i "s|^prefix=.*|prefix=/opt/meshharbor-ffmpeg|" \
+            /opt/meshharbor-ffmpeg/lib/pkgconfig/*.pc
           {
-            echo "FFMPEG_DIR=/opt/roomler-ffmpeg"
-            echo "PKG_CONFIG_PATH=/opt/roomler-ffmpeg/lib/pkgconfig"
-            echo "LD_LIBRARY_PATH=/opt/roomler-ffmpeg/lib"
+            echo "FFMPEG_DIR=/opt/meshharbor-ffmpeg"
+            echo "PKG_CONFIG_PATH=/opt/meshharbor-ffmpeg/lib/pkgconfig"
+            echo "LD_LIBRARY_PATH=/opt/meshharbor-ffmpeg/lib"
           } >> "$GITHUB_ENV"
       - name: Prove pkg-config resolved the VENDORED tree
         # ⚠️ Without this, a silent fall-through to some system FFmpeg would
@@ -1628,7 +1628,7 @@ jobs:
           set -euo pipefail
           prefix=$(pkg-config --variable=prefix libavcodec)
           echo "libavcodec $(pkg-config --modversion libavcodec) from $prefix"
-          if [ "$prefix" != "/opt/roomler-ffmpeg" ]; then
+          if [ "$prefix" != "/opt/meshharbor-ffmpeg" ]; then
             echo "::error::pkg-config resolved libavcodec to '$prefix', not the vendored tree — this lane would be testing the wrong library"
             exit 1
           fi
@@ -1726,23 +1726,23 @@ jobs:
             --repo "${{ github.repository }}" \
             --pattern 'ffmpeg-9.0.1-linux64-lgpl-shared-minimal-vaapi-vulkan-h264dec-aac.tar.xz' \
             --dir /tmp/ffdl
-          sudo mkdir -p /opt/roomler-ffmpeg
+          sudo mkdir -p /opt/meshharbor-ffmpeg
           sudo tar xf /tmp/ffdl/ffmpeg-9.0.1-linux64-lgpl-shared-minimal-vaapi-vulkan-h264dec-aac.tar.xz \
-            -C /opt/roomler-ffmpeg --strip-components=1
+            -C /opt/meshharbor-ffmpeg --strip-components=1
           # The .pc files hardcode the vendor machine's prefix.
-          sudo sed -i "s|^prefix=.*|prefix=/opt/roomler-ffmpeg|" \
-            /opt/roomler-ffmpeg/lib/pkgconfig/*.pc
+          sudo sed -i "s|^prefix=.*|prefix=/opt/meshharbor-ffmpeg|" \
+            /opt/meshharbor-ffmpeg/lib/pkgconfig/*.pc
           {
-            echo "FFMPEG_DIR=/opt/roomler-ffmpeg"
-            echo "PKG_CONFIG_PATH=/opt/roomler-ffmpeg/lib/pkgconfig"
-            echo "LD_LIBRARY_PATH=/opt/roomler-ffmpeg/lib"
+            echo "FFMPEG_DIR=/opt/meshharbor-ffmpeg"
+            echo "PKG_CONFIG_PATH=/opt/meshharbor-ffmpeg/lib/pkgconfig"
+            echo "LD_LIBRARY_PATH=/opt/meshharbor-ffmpeg/lib"
           } >> "$GITHUB_ENV"
       - name: Prove pkg-config resolved the VENDORED tree
         run: |
           set -euo pipefail
           prefix=$(pkg-config --variable=prefix libavcodec)
           echo "libavcodec $(pkg-config --modversion libavcodec) from $prefix"
-          if [ "$prefix" != "/opt/roomler-ffmpeg" ]; then
+          if [ "$prefix" != "/opt/meshharbor-ffmpeg" ]; then
             echo "::error::pkg-config resolved libavcodec to '$prefix', not the vendored tree — this lane would be testing the wrong library"
             exit 1
           fi
@@ -2121,7 +2121,7 @@ jobs:
           # file, via `try_files $root_doc =404` — missing, every guest and
           # every crawler would get a 404 at the site root.
           test -f dist/home/index.html || { echo "::error::docs: dist/home/index.html missing (nginx serves it at / to guests and crawlers)"; exit 1; }
-          grep -q '<loc>https://roomler.ai/</loc>' dist/sitemap-docs.xml || { echo "::error::docs: / is missing from dist/sitemap-docs.xml"; exit 1; }
+          grep -q '<loc>https://meshharbor.itachi.fans/</loc>' dist/sitemap-docs.xml || { echo "::error::docs: / is missing from dist/sitemap-docs.xml"; exit 1; }
           exit "$docs_rc"
 
       - name: Run unit tests

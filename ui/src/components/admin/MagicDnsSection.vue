@@ -35,7 +35,7 @@
       <v-text-field
         v-model="domain"
         :label="$t('mh.dns.domain')"
-        placeholder="myorg.roomler.net"
+        placeholder="myorg.meshharbor.net"
         :hint="$t('mh.dns.domainHint')"
         persistent-hint
         class="mb-4"

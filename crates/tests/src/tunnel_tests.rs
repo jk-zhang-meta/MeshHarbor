@@ -22,7 +22,7 @@
 //!   enrol → enrol again with the same `machine_id` → assert the
 //!   second response carries the same `tunnel_client_id`. Locks the
 //!   `find_by_tenant_and_machine` + `rehydrate` path. Without this
-//!   the operator who re-runs `roomler enroll` after a config
+//!   the operator who re-runs `meshharbor enroll` after a config
 //!   loss would mint a fresh row each time and the listing UI would
 //!   show ghosts.
 //!
@@ -1255,7 +1255,7 @@ fn spawn_origin_signaling(
         let (view_tx, _view_rx) = tokio::sync::watch::channel(Default::default());
         let broker = meshharbord::consent::ConsentBroker::new(
             meshharbord::consent::Mode::AutoGrant,
-            std::env::temp_dir().join(format!("roomler-test-consent-{}", cfg.agent_id)),
+            std::env::temp_dir().join(format!("meshharbor-test-consent-{}", cfg.agent_id)),
         )
         .expect("consent broker init");
         // Read before `cfg` is moved into the call below.

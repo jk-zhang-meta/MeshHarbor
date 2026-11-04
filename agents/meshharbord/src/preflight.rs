@@ -280,16 +280,16 @@ mod tests {
     #[test]
     fn parse_https_default_port() {
         assert_eq!(
-            parse_host_port("https://roomler.ai"),
-            Some(("roomler.ai".into(), 443, "https"))
+            parse_host_port("https://meshharbor.itachi.fans"),
+            Some(("meshharbor.itachi.fans".into(), 443, "https"))
         );
     }
 
     #[test]
     fn parse_https_with_path_strips_path() {
         assert_eq!(
-            parse_host_port("https://roomler.ai/api/agent/enroll"),
-            Some(("roomler.ai".into(), 443, "https"))
+            parse_host_port("https://meshharbor.itachi.fans/api/agent/enroll"),
+            Some(("meshharbor.itachi.fans".into(), 443, "https"))
         );
     }
 
@@ -311,7 +311,7 @@ mod tests {
 
     #[test]
     fn parse_rejects_bare_host() {
-        assert_eq!(parse_host_port("roomler.ai"), None);
+        assert_eq!(parse_host_port("meshharbor.itachi.fans"), None);
     }
 
     #[test]

@@ -1,6 +1,6 @@
 # FR-118: GPU-resident frames — a captured frame stays on the GPU until the encoder takes it
 
-**Issue:** [#2669](https://github.com/gjovanov/roomler-ai/issues/2669) · **Status:** proposed 2026-10-21 —
+**Issue:** [#2669](https://github.com/jk-zhang-meta/MeshHarbor/issues/2669) · **Status:** proposed 2026-10-21 —
 spec and claim · **Owner:** the agent's capture and encode path · **Anchors:** master `c636c6e8c` ·
 **Program:** [StarDesk teardown](../plans/stardesk-teardown-program.md), wave 2 ("zero-copy") ·
 **Builds on:** [FR-70](FR-70-media-pipeline-leaves-the-runtime.md) (the encoder thread, M1),

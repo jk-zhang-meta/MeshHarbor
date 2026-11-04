@@ -1,6 +1,6 @@
 # Remote Control — Architecture & Design
 
-> Adds TeamViewer / RustDesk-style unattended remote desktop access to roomler-ai, reusing the existing mediasoup SFU, WebSocket signaling, and COTURN cluster. Targets sub-150 ms input-to-glass latency on LAN, sub-300 ms over WAN.
+> Adds TeamViewer / RustDesk-style unattended remote desktop access to meshharbor, reusing the existing mediasoup SFU, WebSocket signaling, and COTURN cluster. Targets sub-150 ms input-to-glass latency on LAN, sub-300 ms over WAN.
 
 > **One device in N orgs, N users on one host, events from every org:** see
 > [`multi-org.md`](./multi-org.md) — the `[[orgs]]` config, per-org supervisors,
@@ -36,16 +36,16 @@ The current stack already gives us 80% of what's needed:
 | MongoDB + 18 collections | New collections: `agents`, `remote_sessions`, `remote_audit` |
 | WebSocket handler (presence, signaling) | New message namespace `rc:*` for agent registration and control signaling |
 | mediasoup 0.20 SFU + WorkerPool | New router kind `RemoteControlRouter` with one video producer (screen) + bidirectional `SCTP` data channels |
-| COTURN cluster (`coturn.roomler.live`) | Same TURN credentials path; agent fetches short-lived creds from the API |
+| COTURN cluster (`coturn.meshharbor.itachi.fans`) | Same TURN credentials path; agent fetches short-lived creds from the API |
 | JWT + httpOnly cookies | Agent uses a long-lived **agent token** (separate audience claim); controllers use the existing user JWT |
 | Vue 3 + Pinia + mediasoup-client | New view `RemoteControl.vue`, new store `remoteControl.ts`, new composable `useRemoteControl.ts` |
 | Notifications | "X requested control of your machine" goes through the existing notification bell |
 
 The only genuinely new component is the **native agent** (a separate Rust binary that ships per-OS) and a thin signaling extension on the server.
 
-> **See also — the `roomler` subsystem.** A sibling of remote-control that reuses the same agent binary, `rc:*` signaling, and coturn cluster, but for **TCP port-forwarding** (operator's `127.0.0.1:<port>` → agent → an internal service) rather than screen capture + input. Its data plane defaults to **QUIC** (`quic-v1`, quinn) with a WebRTC-data-channel fallback, and crosses corporate NAT / firewalls via the same direct → TURN(UDP) → TURNS/TCP tier walk. The server negotiates `quic-v1` only for agents new enough to speak it (≥ rc.104). Operator guide: [`docs/tunnel-install.md`](./tunnel-install.md).
+> **See also — the `meshharbor` subsystem.** A sibling of remote-control that reuses the same agent binary, `rc:*` signaling, and coturn cluster, but for **TCP port-forwarding** (operator's `127.0.0.1:<port>` → agent → an internal service) rather than screen capture + input. Its data plane defaults to **QUIC** (`quic-v1`, quinn) with a WebRTC-data-channel fallback, and crosses corporate NAT / firewalls via the same direct → TURN(UDP) → TURNS/TCP tier walk. The server negotiates `quic-v1` only for agents new enough to speak it (≥ rc.104). Operator guide: [`docs/tunnel-install.md`](./tunnel-install.md).
 
-> **See also — the L3 overlay & its Windows firewall override.** The `overlay-l3` feature evolves the tunnel into a Tailscale-style per-tenant WireGuard+DERP mesh (Wintun NIC `roomler`, overlay IPs `100.64.0.0/10`). On a GPO-locked Windows host the corporate Defender Firewall drops unsolicited inbound on the overlay adapter; the agent overrides this by programming the Windows Filtering Platform directly (a LUID-scoped, high-weight hard-permit sublayer) from its LocalSystem service. Design, limits (callout/IPsec), and the `MESHHARBORD_WFP_PERMIT` disable: [`docs/overlay-wfp.md`](./overlay-wfp.md).
+> **See also — the L3 overlay & its Windows firewall override.** The `overlay-l3` feature evolves the tunnel into a Tailscale-style per-tenant WireGuard+DERP mesh (Wintun NIC `meshharbor`, overlay IPs `100.64.0.0/10`). On a GPO-locked Windows host the corporate Defender Firewall drops unsolicited inbound on the overlay adapter; the agent overrides this by programming the Windows Filtering Platform directly (a LUID-scoped, high-weight hard-permit sublayer) from its LocalSystem service. Design, limits (callout/IPsec), and the `MESHHARBORD_WFP_PERMIT` disable: [`docs/overlay-wfp.md`](./overlay-wfp.md).
 
 ## 3. High-level topology
 
@@ -54,8 +54,8 @@ At a glance — session establishment and where the data actually flows:
 ```mermaid
 sequenceDiagram
     participant C as Controller (browser)
-    participant S as roomler.ai (signalling)
-    participant A as roomlerd (controlled host)
+    participant S as meshharbor.itachi.fans (signalling)
+    participant A as meshharbord (controlled host)
 
     C->>S: rc:session.request {agent_id}
     S->>A: rc:request (permissions, controller)
@@ -77,12 +77,12 @@ flowchart LR
         V["render: video / WebCodecs canvas"]
         DCs["DCs: input · control · clipboard ·<br/>files · cursor · video-DC"]
     end
-    subgraph H["Controlled host (roomlerd)"]
+    subgraph H["Controlled host (meshharbord)"]
         CAP["capture (WGC/DXGI/scrap/GDI)"]
         ENC["encoder cascade → encoders.md"]
         INJ["input injection (enigo / SystemContext)"]
     end
-    SRV["roomler.ai — signalling + consent + audit only"]
+    SRV["meshharbor.itachi.fans — signalling + consent + audit only"]
     B <-. "rc:* over /ws" .-> SRV <-. "rc:* over /ws" .-> H
     B <==>|"WebRTC P2P (TURN fallback)"| H
     CAP --> ENC --> V
@@ -107,7 +107,7 @@ The original wire-level view:
                │                                                                │
                │ WSS  (signaling: SDP-equivalent, ICE, session control)         │ WSS
                │                                                                │
-               └─────────────────────► Roomler API (Axum) ◄─────────────────────┘
+               └─────────────────────► MeshHarbor API (Axum) ◄─────────────────────┘
                                        ├─ rc_signaling::Hub
                                        ├─ mediasoup RemoteControlRouter
                                        └─ MongoDB (sessions, agents, audit)
@@ -115,21 +115,21 @@ The original wire-level view:
                                               ▲
                                               │ TURN credentials (REST API)
                                               │
-                                       coturn.roomler.live
+                                       coturn.meshharbor.itachi.fans
 ```
 
 The application server **never sees raw input or pixels** — those flow over the WebRTC PeerConnection between agent and controller, either P2P or relayed by TURN. The server only does signaling, authorization, mediasoup routing setup, and audit logging.
 
 ## 4. The agent
 
-A standalone Rust binary, distributed as `roomlerd` per OS. Two operating modes:
+A standalone Rust binary, distributed as `meshharbord` per OS. Two operating modes:
 
-1. **Attended** — user runs `roomlerd --pair` from the tray, gets a one-time PIN, types it in the controller UI. PIN is good for 10 minutes, single use.
+1. **Attended** — user runs `meshharbord --pair` from the tray, gets a one-time PIN, types it in the controller UI. PIN is good for 10 minutes, single use.
 2. **Unattended** — agent registers once with an `enrollment_token` (issued by an org Admin via the existing org settings UI), persists a per-machine `agent_token`, and stays connected to the API via WebSocket whenever the user is logged in.
 
 ### 4.1 Why a native binary (and not just `getDisplayMedia` + browser)
 
-`getDisplayMedia` works for *attended screen sharing* (which roomler already has via `produce`). It cannot:
+`getDisplayMedia` works for *attended screen sharing* (which meshharbor already has via `produce`). It cannot:
 
 - run when no browser tab is open,
 - inject mouse/keyboard into other apps,
@@ -157,9 +157,9 @@ agents/meshharbord/
 ├── Cargo.toml                 # workspace member of the main repo
 ├── src/
 │   ├── main.rs                # tray/CLI entry
-│   ├── config.rs              # ~/.config/roomler/config.toml
+│   ├── config.rs              # ~/.config/meshharbor/config.toml
 │   ├── enrollment.rs          # one-shot enrollment → agent_token
-│   ├── signaling.rs           # WSS to roomler API, rc:* protocol
+│   ├── signaling.rs           # WSS to meshharbor API, rc:* protocol
 │   ├── peer.rs                # webrtc-rs PeerConnection wrapper
 │   ├── capture/
 │   │   ├── mod.rs             # trait ScreenCapture
@@ -198,7 +198,7 @@ agents/meshharbord/
 
 ### 4.3 Why P2P, not always SFU
 
-For 1↔1 remote control, mediasoup as a relay buys you *nothing* and adds a hop. So the agent and controller form a **direct PeerConnection** (P2P with ICE → TURN fallback). The mediasoup SFU only enters the picture when **multiple controllers** observe the same session (e.g., a support session shadowed by a senior engineer, or screen-sharing a remote-control session into a roomler call). In that case, the agent's stream is republished to a mediasoup `RemoteControlRouter` and other controllers consume from the SFU as view-only.
+For 1↔1 remote control, mediasoup as a relay buys you *nothing* and adds a hop. So the agent and controller form a **direct PeerConnection** (P2P with ICE → TURN fallback). The mediasoup SFU only enters the picture when **multiple controllers** observe the same session (e.g., a support session shadowed by a senior engineer, or screen-sharing a remote-control session into a meshharbor call). In that case, the agent's stream is republished to a mediasoup `RemoteControlRouter` and other controllers consume from the SFU as view-only.
 
 ```
 1 controller : 1 agent           → direct PeerConnection (best path)
@@ -206,7 +206,7 @@ N controllers : 1 agent          → agent → mediasoup → N consumers (view-o
 1 active controller + N watchers → split: 1 PC for input controller, SFU for watchers
 ```
 
-This hybrid is exactly the `WorkerPool + RoomManager` pattern already in roomler — we just add a transport kind for "remote screen capture" and a one-producer router shape.
+This hybrid is exactly the `WorkerPool + RoomManager` pattern already in meshharbor — we just add a transport kind for "remote screen capture" and a one-producer router shape.
 
 ### 4.4 Whether a session may ride the overlay (#1882)
 
@@ -235,7 +235,7 @@ flowchart LR
     A --> F3["remote candidates + offer SDP:<br/>drop overlay addresses"]
 ```
 
-The overlay reaches a session's ICE three ways. The interface-name rule RC always had (`is_overlay_iface`: `roomler`, `roomler-*`, `roomler0`) covers only part of the first, so "off" needs one filter per way:
+The overlay reaches a session's ICE three ways. The interface-name rule RC always had (`is_overlay_iface`: `meshharbor`, `meshharbor-*`, `meshharbor0`) covers only part of the first, so "off" needs one filter per way:
 
 | How the overlay gets in | Filter (off) | Where |
 |---|---|---|
@@ -598,7 +598,7 @@ system install, the default, has both.
 
 The inhibitor lives exactly as long as its fd: logind drops it when the fd
 closes, so a daemon that crashes leaves nothing pinned. `systemd-inhibit
---list` shows it (`roomlerd`, `block`) only while a session or an SSH or exec
+--list` shows it (`meshharbord`, `block`) only while a session or an SSH or exec
 run is live.
 
 ### 5.1e Ctrl+Alt+Del that reaches the lock screen (FR-97 P4a)
@@ -631,7 +631,7 @@ sequenceDiagram
     Note over W: every hello: input sas,<br/>or keys-only with the missing half
     V->>W: {t: sas}, only if the hello said sas
     W->>W: the arbiter (input floor + permission),<br/>then availability() again
-    W->>H: SetEvent on Global\roomler-sas-pid<br/>(DACL: SYSTEM only)
+    W->>H: SetEvent on Global\meshharbor-sas-pid<br/>(DACL: SYSTEM only)
     H->>H: the policy again, then SendSAS(FALSE)
     Note over H: the lock screen asks for the password
 ```
@@ -654,7 +654,7 @@ sequenceDiagram
   the policy can change between the hello and the click, and a viewer is not
   trusted to have read the hello.
 - **The relay** ([`sas_relay.rs:43`](../agents/meshharbord/src/win_service/sas_relay.rs#L43))
-  is one named, auto-reset event per host, `Global\roomler-sas-<host pid>`,
+  is one named, auto-reset event per host, `Global\meshharbor-sas-<host pid>`,
   whose protected DACL grants SYSTEM alone. A process that is not SYSTEM cannot
   even open it (a test pins this), so an attended worker cannot ask for a SAS
   and says `keys-only`. A SAS is what the physical chord raises: a SYSTEM
@@ -670,7 +670,7 @@ sequenceDiagram
   never load a copy planted beside the binary.
 - ⚠️ **The policy is read, never written.** It is a security setting, and on
   a managed laptop it is the organisation's. Measured before the build
-  (2026-10-18, read-only over `roomler exec`), the three corporate laptops in
+  (2026-10-18, read-only over `meshharbor exec`), the three corporate laptops in
   the fleet all set it to `1`.
 
 ### 5.2 Encoder selection
@@ -765,7 +765,7 @@ opens).
 | XTest on a real X server (Xorg, or the daemon's own Xvfb) | `full` |
 | XTest on Xwayland | `xwayland_only` |
 | XTest on an Xwayland that sends it through EI, read from that process: `-enable-ei-portal` on its command line (GNOME 49+), or a `LIBEI_SOCKET` in its environment (KWin) | `none` |
-| … through KWin, and the person allowed roomlerd in **Legacy X11 App Support** (kwinrc `[Xwayland] XwaylandEisNoPromptApps`, or the global `XwaylandEisNoPrompt`) | `full` |
+| … through KWin, and the person allowed meshharbord in **Legacy X11 App Support** (kwinrc `[Xwayland] XwaylandEisNoPromptApps`, or the global `XwaylandEisNoPrompt`) | `full` |
 | no X display and no uinput · a build without an injector · a Mac without Accessibility | `none` |
 
 ⚠️ **A sandboxed per-user daemon cannot read Xwayland's environment.** Wherever
@@ -789,7 +789,7 @@ oracle's `points` plan:
 | kwinrc `[Xwayland]` | result |
 |---|---|
 | stock | 🔴 0 events: KWin's prompter could not start, so nothing got through |
-| `XwaylandEisNoPromptApps=roomlerd` | ✅ every pointer target within 1 px, the click, the wheel, `hello 123`; 🔴 only Shift+A lost |
+| `XwaylandEisNoPromptApps=meshharbord` | ✅ every pointer target within 1 px, the click, the wheel, `hello 123`; 🔴 only Shift+A lost |
 
 The name is the one Xwayland gives an X11 client's EI connection, the process
 name. KWin applies the grant only once it has reloaded its options (System
@@ -1143,7 +1143,7 @@ flowchart LR
   subgraph server["server — hub"]
     A["resolve_session_authz<br/>owner → auto (unless prompt_owner)<br/>else the device policy"] --> D["rc:request<br/>consent_mode + windows"]
   end
-  subgraph device["device — roomlerd"]
+  subgraph device["device — meshharbord"]
     L["auto_grant_session<br/>(config.toml — never remote)"] --> S
     D --> S{"strictest_of(directive, local)"}
     S -- "auto, local true" --> G["grant, ~1 ms"]
@@ -1175,7 +1175,7 @@ floor it is **deliberately not remotely configurable** — a control plane that
 could flip it would not be a floor. It **defaults to `true`** (auto-grant), so a
 device that prompts has it explicitly set to `false`; that `false` overrides both
 the `auto` directive *and* the owner shortcut. To change it, do so **on the
-host** — `roomler config set auto_grant_session <true|false>` — then restart the
+host** — `meshharbor config set auto_grant_session <true|false>` — then restart the
 daemon (the config surface notes changes apply on the next start). Making a
 device auto-grant is a device-owner decision the server cannot make for it.
 
@@ -1192,11 +1192,11 @@ device auto-grant is a device-owner decision the server cannot make for it.
 3. **notification** (Linux, FR-93 P6f) — the desktop's own notification with
    **Approve** and **Deny**, where the companion cannot show the question: none
    is installed, or there is no marker for it to read. Posted from inside the
-   person's session by the session helper (`roomlerd portal-helper --notify`,
+   person's session by the session helper (`meshharbord portal-helper --notify`,
    `indicator/notify.rs`), at critical urgency: GNOME and KDE keep it on screen
    until it is answered, and show it under Do Not Disturb. Closing it is a Deny.
    The daemon takes it down when the question ends any other way.
-4. **CLI** — `roomlerd consent --list` / `--approve`, which works everywhere.
+4. **CLI** — `meshharbord consent --list` / `--approve`, which works everywhere.
 5. **none** — reported as `no_prompt_surface`, not as a deny.
 
 ⚠️ **A click on a notification's body is not an answer** (FR-93 P6f). GNOME 50
@@ -1249,7 +1249,7 @@ native panel could not open had no prompt at all. "Already running" now means
 the session user's own companion (`pgrep -u`), not anyone's.
 
 ⚠️ The `.pending` marker is written in ALL cases, because it is also what
-`roomlerd consent --list` reads. `ConsentRequest.surface` is what stops the
+`meshharbord consent --list` reads. `ConsentRequest.surface` is what stops the
 companion from popping a second panel over a native one.
 
 ⚠️ **A virtual-desktop host declines the native surface, even though its X
@@ -1265,7 +1265,7 @@ session dies `timeout` when the truth is `no_prompt_surface`; attended, viewer
 A can click **Approve** on viewer B's request. `indicator/x11.rs` reads the
 daemon's own configuration, not the display, so a real X session on the same
 machine is unaffected and the banner path is untouched. Consequence for such a
-host: use `email`/`push`, or answer with `roomlerd consent`.
+host: use `email`/`push`, or answer with `meshharbord consent`.
 
 ⚠️ **macOS native requires tokio off the main thread.** AppKit delivers events
 on the main run loop and `#[tokio::main]` parks it, so under
@@ -1274,7 +1274,7 @@ main thread to `NSApp`. That is why the feature is compiled by CI but not yet
 in the macOS release build.
 ⚠️ **The macOS panel appears in the captured stream.** `NSWindowSharingNone` is
 ignored by `CGDisplayStream`, which is what our capture uses. ⚠️ Since FR-27 the marker is written by **all three**
-consent-bearing subsystems — remote control, Fleet-RPC `exec` and Roomler SSH —
+consent-bearing subsystems — remote control, Fleet-RPC `exec` and MeshHarbor SSH —
 carrying a `kind` so the modal does not describe a root command as "wants to
 control this device". Before that only remote control wrote one, so an `exec` or
 SSH prompt reached no UI at all. The daemon also starts the companion when a
@@ -1319,7 +1319,7 @@ its answer against its connection's own outbound channel
 (`await_prompt_or_socket_end`, `agents/meshharbord/src/signaling.rs`). That channel's
 receiver lives in the connection's loop, so it closes when the connection ends and never
 before. The prompt is then withdrawn exactly as a `Terminate` withdraws it. The same
-holds for an **exec** prompt (`roomler exec` with consent on), where it matters more: an
+holds for an **exec** prompt (`meshharbor exec` with consent on), where it matters more: an
 Approve on a stale panel would otherwise run the command for a caller no longer waiting
 for it, and twice if that caller retried.
 
@@ -1339,7 +1339,7 @@ name. The hash still lets an auditor tell one file sent five times from five dif
 ```mermaid
 sequenceDiagram
     participant V as Viewer (browser)
-    participant D as Device (roomlerd)
+    participant D as Device (meshharbord)
     participant H as Hub (remote module)
     participant DB as MongoDB
     V->>D: clipboard write / file upload (P2P data channel)
@@ -1384,7 +1384,7 @@ org or a device that sets nothing.
 sequenceDiagram
     participant V as viewer (browser)
     participant S as hub (server)
-    participant A as roomlerd
+    participant A as meshharbord
     participant DB as remote_audit
     V->>S: rc:session.request (clipboard, files, audio asked for)
     Note over S: org policy (tenant row) + the device's floor (its caps),<br/>the stricter wins (FeaturePolicy::stricter)
@@ -1453,7 +1453,7 @@ sequenceDiagram
   autonumber
   participant B as Viewer (browser)
   participant H as Hub (relays, records the verdict)
-  participant D as Device (roomlerd)
+  participant D as Device (meshharbord)
   Note over D: P1a: one P-256 key per enrollment,<br/>peer-auth/#lt;tenant#gt;.json, the public half<br/>rides the hello and the device row
   Note over B: P2b: one P-256 key per user,<br/>non-extractable, in IndexedDB
   B->>H: rc:sdp.offer + peer_auth {nonce, key, sig}
@@ -1493,10 +1493,10 @@ sequenceDiagram
   | `not-asked` | connects, exactly as before |
 
 - **The pins** ([`storagePins`, `peerAuth.ts:201`](../ui/src/utils/peerAuth.ts#L201)) are public keys in this
-  origin's `localStorage` (`roomler.peerAuth.pins.v1`, keyed `user:device`). A browser that refuses storage
+  origin's `localStorage` (`meshharbor.peerAuth.pins.v1`, keyed `user:device`). A browser that refuses storage
   keeps them for the page's life, so the next visit is first use again, never a false alarm. The server's copy
   of the key (the device row) is a hint for the person to compare, never what the page trusts.
-- **The kill switch** is per browser: `localStorage['roomler.peerAuth.ask'] = 'off'` stops asking.
+- **The kill switch** is per browser: `localStorage['meshharbor.peerAuth.ask'] = 'off'` stops asking.
 
 > ⚠️ **What P2a does not stop yet.** An unsigned answer proceeds. An attacker in the signalling path who strips
 > the nonce or the signature gets an **Unverified** session rather than a refusal. Refusing an unsigned answer
@@ -1511,7 +1511,7 @@ sequenceDiagram
 
 | Path | The key file |
 |---|---|
-| `install.sh --uninstall`, Linux and macOS | removed with the config trees: `/etc/roomler`, the caller's and root's. Another account's tree is listed, not removed, and its key with it |
+| `install.sh --uninstall`, Linux and macOS | removed with the config trees: `/etc/meshharbor`, the caller's and root's. Another account's tree is listed, not removed, and its key with it |
 | `install.sh --uninstall --keep-config` | kept |
 | Windows: the MSI, or `install.ps1 -Uninstall` | kept, exactly as they keep `config.toml` with the agent's credential |
 
@@ -1535,7 +1535,7 @@ before FR-100 P3; the record is what the fleet's audit week is counted over.
 - **The keys it remembers** live in `<config dir>/peer-auth/<tenant>.controllers.json`, beside the device key and
   with its protections: public keys only, 16 per user (the oldest goes first), 256 users. They are why a later
   `enforce` can ask only about a browser the device has never met.
-- **The policy is the device owner's**: `roomler config set peer_auth off|audit` (default `audit`), live, and only
+- **The policy is the device owner's**: `meshharbor config set peer_auth off|audit` (default `audit`), live, and only
   from the person at the console. It is never pushable by the server, and `enforce` is refused by name until P3.
   `off` stops the judging, the remembering and the record; the device still signs its answers.
 - **What the browser signs with (P2b)**: a key of its own, made on first use in IndexedDB per user, its private half
@@ -1566,7 +1566,7 @@ the same way and under its own reason (`DeviceEnd`).
 ```mermaid
 sequenceDiagram
     participant H as person at the device
-    participant A as roomlerd
+    participant A as meshharbord
     participant S as hub (server)
     participant V as viewer (browser)
     H->>A: Disconnect (badge / banner over LocalAPI)
@@ -1680,7 +1680,7 @@ things:
 sequenceDiagram
     participant V as viewer (browser)
     participant S as hub (server)
-    participant A as roomlerd
+    participant A as meshharbord
     V->>S: rc:session.request
     Note over S: authz gate: idle = shorter of the org's and the device's
     S->>A: rc:request idle_secs (every agent)
@@ -1739,7 +1739,7 @@ agent refuses before it builds a peer, and the session ends once, with a reason.
 sequenceDiagram
     participant V as viewer (browser)
     participant S as hub (server)
-    participant A as roomlerd
+    participant A as meshharbord
     V->>S: rc:session.request browser_caps=[vp8, vp9, av1]
     S->>A: rc:request
     Note over A: pick_best_codec: nothing in common, so H.264
@@ -1851,7 +1851,7 @@ delegation marker.
 
 Two practical observations:
 
-1. The single biggest WAN latency contributor is TURN relaying through a far-away region. Co-locate TURN with users; roomler already runs `coturn.roomler.live` — for a global rollout, deploy regional TURN endpoints and let the agent pick the lowest-RTT one at registration. **SHIPPED (multi-region relay PoPs, 2026-08)**: `MESHHARBOR__RELAY__REGIONS` declares regional coturn+DERP PoPs (`scripts/relay-pop/` provisions one per cheap VPS); agents advertising `supports_relay_regions` receive the region list (`rc:relay.regions`), time a STUN binding per PoP, and report (`rc:relay.probe_report`); the server derives a hysteresis-guarded `relay_home` per agent and issues every RC-session / overlay-pair / tunnel TURN grant from the nearest region (sticky per pair, same-worker pin preserved within a region). Regional DERP rides EdDSA admission tickets (`crates/derp-relay`, public-key-only PoPs) and is applied to force-DERP-pinned pairs; the ladder DERP tier stays central pending netmap self-home. Master gate `MESHHARBOR__RELAY__REGIONS_ENABLED` (default off = legacy single-region, byte-identical).
+1. The single biggest WAN latency contributor is TURN relaying through a far-away region. Co-locate TURN with users; meshharbor already runs `coturn.meshharbor.itachi.fans` — for a global rollout, deploy regional TURN endpoints and let the agent pick the lowest-RTT one at registration. **SHIPPED (multi-region relay PoPs, 2026-08)**: `MESHHARBOR__RELAY__REGIONS` declares regional coturn+DERP PoPs (`scripts/relay-pop/` provisions one per cheap VPS); agents advertising `supports_relay_regions` receive the region list (`rc:relay.regions`), time a STUN binding per PoP, and report (`rc:relay.probe_report`); the server derives a hysteresis-guarded `relay_home` per agent and issues every RC-session / overlay-pair / tunnel TURN grant from the nearest region (sticky per pair, same-worker pin preserved within a region). Regional DERP rides EdDSA admission tickets (`crates/derp-relay`, public-key-only PoPs) and is applied to force-DERP-pinned pairs; the ladder DERP tier stays central pending netmap self-home. Master gate `MESHHARBOR__RELAY__REGIONS_ENABLED` (default off = legacy single-region, byte-identical).
 2. The single biggest CPU/battery contributor is encoding *unchanged frames*. Dirty-rect skipping is non-negotiable.
 
 ### 12.1 Time-to-first-frame — the connect timeline (FR-22)
@@ -2090,7 +2090,7 @@ message text or hostname can enter the record — locked by
 route by `browser_connect_timing_record_parses` (`agent_log.rs:445`), because a
 422 is swallowed like every other failure and would look like nobody connecting.
 
-**Mining it** (`roomler2`, in the `mongodb-0` pod — credentials from the
+**Mining it** (`meshharbor2`, in the `mongodb-0` pod — credentials from the
 `mongodb-secret`, never on a transcript). Retention is the collection's **7 d
 TTL** (`lib.rs:475`, `crates/db/src/models/agent_log.rs:115`) — the same window
 as the agent's own logs, and the pod log is shorter still — so a stall must be
@@ -2255,9 +2255,9 @@ number that falls.
 | Field signal | `mem-trim: handed the memory finished sessions freed back to the OS (#2024)` with `rss_before_mb`, `rss_after_mb`, `elapsed_ms` |
 
 ⚠️ **RSS is not the heap.** Read what is *in use* before calling anything a leak:
-`sudo gdb -p "$(systemctl show -p MainPID --value roomlerd)" -batch -ex 'call (void) malloc_stats()'`
+`sudo gdb -p "$(systemctl show -p MainPID --value meshharbord)" -batch -ex 'call (void) malloc_stats()'`
 prints every arena's system and in-use bytes on the daemon's stderr, which is
-`journalctl -u roomlerd`. A climbing RSS over a flat in-use is retention, and a
+`journalctl -u meshharbord`. A climbing RSS over a flat in-use is retention, and a
 trim answers it. A climbing in-use is a leak, and a trim hides nothing of it.
 
 ⚠️ **A wrong turn worth keeping.** heaptrack's "leaked at exit" listing read as
@@ -2293,7 +2293,7 @@ That's ~16 weeks for a properly hardened v1, which is in the right ballpark for 
 
 ## 15. Decisions worth flagging
 
-- **`webrtc-rs` over wrapping libwebrtc** — pure Rust toolchain matches the rest of roomler, avoids a C++ build dependency, and the API surface we need (PC + DC + RTP send) is well-supported. The trade-off is fewer mature codec integrations; we route around that by encoding ourselves and feeding raw H.264 NALUs into a `TrackLocalStaticSample`.
+- **`webrtc-rs` over wrapping libwebrtc** — pure Rust toolchain matches the rest of meshharbor, avoids a C++ build dependency, and the API surface we need (PC + DC + RTP send) is well-supported. The trade-off is fewer mature codec integrations; we route around that by encoding ourselves and feeding raw H.264 NALUs into a `TrackLocalStaticSample`.
 - **Tauri for the tray, not Electron** — keeps the agent under 20 MB and the dependency tree close to the rest of your stack.
 - **`enigo` as default, OS-specific only when needed** — same calculus RustDesk made; enigo handles 90% well, the remaining 10% (Wayland, IME, UIPI) needs direct backends.
 - **One unified room kind, not a separate "remote" service** — keeps notifications, RBAC, presence, chat, and recording free. The cost is one new `RoomKind::RemoteControl` variant and the discipline to keep `remote_control` crate's surface narrow.
@@ -2307,13 +2307,13 @@ SystemContext and Linux virtual desktops; (2) still a UX call, plumbing exists;
 keyboard component.*
 
 1. Do you want to allow **headless agents** (no logged-in user, e.g., a server in a rack)? That requires a system service, which is a much bigger blast radius. Recommend deferring past v1.
-2. Should an in-progress remote control session be **shareable into a roomler call** as a screen share automatically? The plumbing supports it; it's a UX call.
+2. Should an in-progress remote control session be **shareable into a meshharbor call** as a screen share automatically? The plumbing supports it; it's a UX call.
 3. **Recording storage**: piggyback on the existing MinIO setup, or push to S3-compatible per-org bucket? Existing MinIO is fine for v1.
 4. **Mobile controller** keyboard UX is genuinely hard (no physical keys, lots of host-OS shortcuts to send). v1 should be view + tap-to-click only on mobile, full input on desktop browsers.
 
 <!-- RETIRED-NAME-ANCHOR-BEGIN: §17-19 are historical appendices. They record what the
      product was called and what operators actually typed at the time (0.1.32 - rc.26),
-     so rewriting `roomler-agent` to `roomlerd` here would falsify the record rather
+     so rewriting `meshharbor-agent` to `meshharbord` here would falsify the record rather
      than update it. The CURRENT encoder reference is docs/encoders.md. docs/fr/FR-21 -->
 
 ## 17. Hardware encoder backends
@@ -2377,7 +2377,7 @@ they see native resolution. Logged at pump start:
 
 Three places, in decreasing priority:
 
-1. **CLI flag**: `roomler-agent run --encoder hardware` (also
+1. **CLI flag**: `meshharbor-agent run --encoder hardware` (also
    accepts `auto`, `software`, `hw`, `sw`, `mf`, `openh264`).
 2. **Env var**: `MESHHARBOR_AGENT_ENCODER=hardware`. Mostly for
    systemd-user / Task Scheduler entries where editing the TOML is
@@ -2399,7 +2399,7 @@ Verification priority: NVIDIA → Intel iGPU → AMD.
 
 ### Encoder smoke test
 
-Release builds run `roomler-agent encoder-smoke --encoder hardware`
+Release builds run `meshharbor-agent encoder-smoke --encoder hardware`
 as part of the Windows CI job. It opens the preferred encoder at
 640×480, feeds 10 synthetic frames, and fails the build if no
 keyframe comes out or the cascade bottoms at `NoopEncoder`.
@@ -2941,9 +2941,9 @@ The five P0 phases that made the agent stop dying silently.
 
 **Persistent file logging + panic hook** (`agents/meshharbord/src/
 logging.rs`): daily-rolling appender via `tracing-appender` at the
-platform data-local dir (`%LOCALAPPDATA%\roomler\roomler-agent\
-data\logs\` on Win; `~/.local/share/roomler-agent/logs/` on Linux;
-`~/Library/Application Support/live.roomler.roomler-agent/logs/`
+platform data-local dir (`%LOCALAPPDATA%\meshharbor\meshharbor-agent\
+data\logs\` on Win; `~/.local/share/meshharbor-agent/logs/` on Linux;
+`~/Library/Application Support/live.meshharbor.meshharbor-agent/logs/`
 on macOS). 14-day retention via prune-on-startup. `WorkerGuard`
 held in a `OnceLock<WorkerGuard>` so the writer thread survives
 process lifetime. Process-wide `std::panic::set_hook` writes a
@@ -2973,12 +2973,12 @@ in `packaging/linux/meshharbor-agent.service`) and macOS launchd
 `KeepAlive` (already in `packaging/macos/fans.itachi.meshharbor.agent.plist`).
 
 **Single-instance lock** (`agents/meshharbord/src/instance_lock.rs`):
-prevents an interactive `roomler-agent run` from racing the
+prevents an interactive `meshharbor-agent run` from racing the
 Scheduled-Task / systemd-launched copy in the same user session.
-Win: `CreateMutexW` named `Local\RoomlerAgent-<sha-prefix12-of-
+Win: `CreateMutexW` named `Local\MeshHarborAgent-<sha-prefix12-of-
 config-path>` (`Local\` namespace = per-session scope; SHA disambig
 covers two enrolments on the same machine for the same user). Unix:
-`flock(LOCK_EX | LOCK_NB)` on `$XDG_RUNTIME_DIR/roomler-agent-<id>.
+`flock(LOCK_EX | LOCK_NB)` on `$XDG_RUNTIME_DIR/meshharbor-agent-<id>.
 lock` (or `~/.cache/...` fallback) with PID written for diagnostics.
 Both kernel-released on process death, no stale-lock cleanup needed
 after `kill -9`. Only `run` gates on the lock — `enroll`,
@@ -3041,7 +3041,7 @@ JWT cache flushes during a deploy used to permanently break every
 agent in the field; now they back off and rejoin within seconds.
 After 3 consecutive 401s, raises `<config-dir>/needs-attention.txt`
 sentinel via `notify::raise_attention` describing the situation +
-recommending `roomlerd re-enroll --token <jwt>` (new CLI
+recommending `meshharbord re-enroll --token <jwt>` (new CLI
 that preserves `machine_id` + `machine_name` from the existing
 config). Sentinel auto-cleared on auth recovery.
 
@@ -3080,7 +3080,7 @@ extracted so tests don't race on process env. Defaults to the
 existing 24 h built-in.
 
 **Post-install watcher** (`agents/meshharbord/src/post_install.rs`):
-new hidden CLI subcommand `roomler-agent post-install-watch
+new hidden CLI subcommand `meshharbor-agent post-install-watch
 --installer-pid <pid> --installer-path <path> --expected-version
 <tag>`. Spawned by `updater::spawn_installer_with_watch` as a
 sibling of msiexec / dpkg / installer(8) just before the parent
@@ -3127,7 +3127,7 @@ yet forward the field).
 
 **`updater::pin_version(tag)`**: fetches a specific release from
 `https://api.github.com/repos/.../releases/tags/<tag>` directly
-(bypasses the roomler-ai proxy because pinning is rare per-agent
+(bypasses the meshharbor proxy because pinning is rare per-agent
 crash-loop recovery, not a fleet-wide poll). Returns the same
 `CheckOutcome::UpdateReady` shape as the regular update path so
 the rest of the install flow composes.
@@ -3151,7 +3151,7 @@ document — both are Schema 1.3+ Settings.* children. schtasks /XML
 on Win10/11 correctly rejected the document with
 `(39,7):DisallowStartOnRemoteAppSession: ERROR: The task XML
 contains an unexpected node`. Field impact: anyone who tried
-`roomlerd service install` after 0.1.50–0.1.52 saw the error
+`meshharbord service install` after 0.1.50–0.1.52 saw the error
 and kept their pre-0.1.50 ONLOGON task. Their *binary* had all the
 in-process resilience features but their *Scheduled Task* still had
 the bad battery defaults.
@@ -3165,7 +3165,7 @@ so a future "let me bump these back in" diff fails CI.
 
 WiX custom actions in `agents/meshharbord/wix/main.wxs`:
 
-- `RegisterAutostart`: `FileKey='roomler_agent_exe'
+- `RegisterAutostart`: `FileKey='meshharbor_agent_exe'
   ExeCommand='service install' Execute='deferred' Impersonate='yes'
   Return='ignore'`. Sequenced `After='InstallFiles'` with condition
   `NOT (REMOVE="ALL")` so it runs on fresh install + repair +
@@ -3212,7 +3212,7 @@ the unfiltered token).
 **Recovery** (one-time, per machine that hits this):
 ```powershell
 # Elevated PowerShell:
-schtasks /Delete /TN RoomlerAgent /F
+schtasks /Delete /TN MeshHarborAgent /F
 
 # Normal PowerShell (post-0.1.54):
 & "$env:LOCALAPPDATA\Programs\meshharbor-agent\meshharbor-agent.exe" service install
@@ -3230,7 +3230,7 @@ of Effort 2 are queued for follow-up.
 
 #### 19.8.1 agent-v0.1.55 — enrollment http→https normalization
 
-Field bug: `roomler-agent enroll --server http://roomler.ai ...` failed
+Field bug: `meshharbor-agent enroll --server http://meshharbor.itachi.fans ...` failed
 with `enrollment rejected (status 405 Method Not Allowed)`. Cause: the
 production ingress 301-redirects plaintext to TLS; reqwest follows the
 redirect but converts POST→GET (RFC 7231 historical behaviour for
@@ -3291,7 +3291,7 @@ are deferred (see §19.8.5).
 **M1 — service host skeleton** (`agents/meshharbord/src/win_service/
 mod.rs`):
 
-  - `install(exe_path)` registers `RoomlerAgentService` with the SCM
+  - `install(exe_path)` registers `MeshHarborAgentService` with the SCM
     (LocalSystem, AutoStart, OWN_PROCESS), launches via the agent's
     own hidden `service-run` subcommand on start.
   - `uninstall()` stops (best-effort 5 s) + deletes; tolerates
@@ -3338,9 +3338,9 @@ feature-gated MF / WGC compilation paths.
 
 **M4 (MSI integration) deferred-by-design**: the agent MSI is
 `InstallScope='perUser'` (no UAC), but `CreateService` requires admin
-elevation. Auto-registering `RoomlerAgentService` from a perUser MSI
+elevation. Auto-registering `MeshHarborAgentService` from a perUser MSI
 is impossible. Operators install the MSI normally, then run
-`roomlerd service install --as-service` from an elevated
+`meshharbord service install --as-service` from an elevated
 PowerShell. Future per-machine MSI flavour can revisit.
 
 ### 19.8.5 Where the cycle ended
@@ -3394,9 +3394,9 @@ The fix is a per-worker **named stop event**
   included) against `UPDATE_STOP_WINDOW` (10 min; the MSI's stop can lag the
   spawn by minutes under EDR). A suppressed unenroll is logged by name. The gate
   is platform-neutral; Linux never needed it only because `dpkg -i` does not
-  restart `roomlerd`.
+  restart `meshharbord`.
 - **A per-user install has no host to signal it.** Since FR-97 P4d, the
-  Scheduled Task's daemon holds its own event, which `roomlerd service stop`
+  Scheduled Task's daemon holds its own event, which `meshharbord service stop`
   signals, and hears sign-out and shutdown through a hidden window. Both reach
   this same arm (`docs/ephemeral-nodes.md`, "A per-user Windows install").
 - **Security** — the event's DACL (`STOP_EVENT_SDDL`, a protected `D:P`) grants
@@ -3453,13 +3453,13 @@ sequenceDiagram
   interval, plus the graceful budget, plus the terminate wait, so raising any of
   those raises the hint with it.
 - ⚠️ Field case, CORPLAP-3 on 0.4.126: a stop took 2.31 s, and the SYSTEM task
-  running `Restart-Service Roomler -Force` exited 1 that same second. The device
+  running `Restart-Service MeshHarbor -Force` exited 1 that same second. The device
   was offline for 10 min 24 s. The same restart earlier that day took 1.74 s and
   came back 162 ms later. Because the failure depends on which side of 2 s a stop
   lands, it is intermittent.
-- `roomler restart` never had this problem. Under the SCM the worker exits 0 and
+- `meshharbor restart` never had this problem. Under the SCM the worker exits 0 and
   the supervisor respawns it in-process, so the service itself never leaves
-  `RUNNING`. Prefer it remotely too: `roomler exec <host> -- roomler restart
+  `RUNNING`. Prefer it remotely too: `meshharbor exec <host> -- meshharbor restart
   --no-wait`.
 - ✅ Field-verified on 0.4.130 (CORPLAP-3). Ten milliseconds after Stop the state
   was `STOP_PENDING` with a 20 s wait hint. The stop took 2.29 s, and
@@ -3468,7 +3468,7 @@ sequenceDiagram
 
 #### 19.8.8 A host that dies comes back (#2087)
 
-Until #2087 the `Roomler` service had **no SCM recovery actions**. A service host
+Until #2087 the `MeshHarbor` service had **no SCM recovery actions**. A service host
 that died left the device dark until the next reboot. Worse, a supervisor that
 failed or panicked still ended with `STOPPED` and exit code 0, which looks like a
 clean stop. A startup error before the supervisor existed did not report
@@ -3501,8 +3501,8 @@ flowchart LR
   | The supervisor returned an error | `ServiceSpecific(2)` | restarts it |
   | The supervisor panicked | `ServiceSpecific(3)` | restarts it |
   | No supervisor at all (the worker path or the startup sequence failed) | `ServiceSpecific(4)` | restarts it |
-  | The worker found the single-instance lock held, and the orphan check read every roomlerd process without finding an earlier host's worker: a second installed flavour (#2465, §19.8.9) | `0` | leaves the service stopped |
-  | The same refusal, but some roomlerd process could not be read, so an orphan cannot be ruled out (#2465) | `ServiceSpecific(5)` | restarts it |
+  | The worker found the single-instance lock held, and the orphan check read every meshharbord process without finding an earlier host's worker: a second installed flavour (#2465, §19.8.9) | `0` | leaves the service stopped |
+  | The same refusal, but some meshharbord process could not be read, so an orphan cannot be ruled out (#2465) | `ServiceSpecific(5)` | restarts it |
 
   ⚠️ A requested stop must stay `0`. With non-crash failure actions on, any other
   code would have the SCM undo an operator's, an MSI's or the OS's stop.
@@ -3580,12 +3580,12 @@ sequenceDiagram
     which needs only `PROCESS_QUERY_LIMITED_INFORMATION` (`cmdline_of`,
     `orphan.rs:313`).
 - **The redundant stop is clean again.** Suppose the `Stop` arm's pass finds no
-  orphan and could read every roomlerd process. Then the lock is held by a second
+  orphan and could read every meshharbord process. Then the lock is held by a second
   installed flavour: the supervisor returns `Redundant`, and the host ends with
   exit **0**, so the recovery actions leave the service stopped, as that arm
   always intended. #2087 had made this end `ServiceSpecific(1)`, a restart every
   minute.
-  - If any roomlerd could not be read, the supervisor returns
+  - If any meshharbord could not be read, the supervisor returns
     `RedundantUnconfirmed` and the host ends `ServiceSpecific(5)`. The SCM's retry
     then still recovers a lock held by a worker the check could not see.
 - ⚠️ **The order of the two fixes matters.** A clean redundant stop *without* the

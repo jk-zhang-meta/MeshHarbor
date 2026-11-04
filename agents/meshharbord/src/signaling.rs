@@ -6710,7 +6710,7 @@ async fn close_all_peers(
     // session being torn down. Previously the indicator only
     // hid on receipt of `rc:terminate`, which never fires when
     // the WS itself drops (e.g. server pod recreate, network
-    // blip). Field repro 2026-05-13 on the field-test host: after a roomler.ai
+    // blip). Field repro 2026-05-13 on the field-test host: after a meshharbor.itachi.fans
     // web deploy, the red "Being viewed by gjovanov" frame stayed
     // painted on the host indefinitely + the operator couldn't
     // reconnect ("agent capacity exceeded") until the agent

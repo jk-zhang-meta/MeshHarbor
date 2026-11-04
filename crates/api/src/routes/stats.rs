@@ -854,7 +854,7 @@ pub(crate) fn to_payload(
     }
     let mut out = serde_json::json!({
         "enabled": true,
-        "center": { "id": "control-plane", "name": "roomler.ai" },
+        "center": { "id": "control-plane", "name": "meshharbor.itachi.fans" },
         "nodes": nodes,
         "agents": agents,
         "edges": edges,
@@ -1629,7 +1629,7 @@ mod mesh_payload_tests {
         let b = built();
         let expected = json!({
             "enabled": true,
-            "center": { "id": "control-plane", "name": "roomler.ai" },
+            "center": { "id": "control-plane", "name": "meshharbor.itachi.fans" },
             "nodes": b.nodes.clone(),
             "agents": b.agents.clone(),
             "edges": b.edges.clone(),

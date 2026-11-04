@@ -24,7 +24,7 @@
 //!   reported while unticked is dropped here, so the SPA cannot leak one by
 //!   calling at the wrong time.
 //! * **The diagnostics go to the server being enrolled into**, so a
-//!   self-hosted server gets its own and roomler.ai never hears of them.
+//!   self-hosted server gets its own and meshharbor.itachi.fans never hears of them.
 //!   The pages happen before the wizard knows that server, so their
 //!   boundaries are **buffered** in memory and flushed when `cmd_install`
 //!   names it ([`Diagnostics::server_known`]); a run cancelled before then
@@ -378,7 +378,7 @@ mod tests {
         d.page(Step::Welcome, Outcome::Ok, 1200);
         d.page(Step::Server, Outcome::Ok, 800);
         d.page(Step::Token, Outcome::Ok, 400);
-        d.server_known("https://roomler.ai/");
+        d.server_known("https://meshharbor.itachi.fans/");
         d.pipeline_started();
         for step in PIPELINE {
             d.begin(step);
@@ -418,7 +418,7 @@ mod tests {
         );
         let mut steps = Vec::new();
         for (url, record) in sent.iter() {
-            assert_eq!(url, "https://roomler.ai/api/setup/diagnostics");
+            assert_eq!(url, "https://meshharbor.itachi.fans/api/setup/diagnostics");
             let v = serde_json::to_value(record).unwrap();
             let keys: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
             assert_eq!(
@@ -488,7 +488,7 @@ mod tests {
         assert_eq!(sent.sent.lock().unwrap().len(), 0);
         d.set_opt_in(false);
         assert!(d.lock().buffered.is_empty(), "unticking drops the buffer");
-        d.server_known("https://roomler.ai");
+        d.server_known("https://meshharbor.itachi.fans");
         assert_eq!(sent.sent.lock().unwrap().len(), 0);
     }
 
@@ -500,7 +500,7 @@ mod tests {
     fn outcomes_and_codes_follow_the_sites() {
         let (d, sent) = recorder();
         d.set_opt_in(true);
-        d.server_known("https://roomler.ai");
+        d.server_known("https://meshharbor.itachi.fans");
         d.pipeline_started();
         d.begin(Step::Msi);
         d.fail(ErrorCode::MsiUserCancel, false);
@@ -536,7 +536,7 @@ mod tests {
     fn only_the_pages_are_page_boundaries() {
         let (d, sent) = recorder();
         d.set_opt_in(true);
-        d.server_known("https://roomler.ai");
+        d.server_known("https://meshharbor.itachi.fans");
         d.page(Step::Msi, Outcome::Ok, 1);
         d.page(Step::Done, Outcome::Ok, 1);
         assert_eq!(sent.sent.lock().unwrap().len(), 0);
@@ -547,7 +547,7 @@ mod tests {
     fn done_closes_the_open_step_and_measures_the_pipeline() {
         let (d, sent) = recorder();
         d.set_opt_in(true);
-        d.server_known("https://roomler.ai");
+        d.server_known("https://meshharbor.itachi.fans");
         d.pipeline_started();
         d.begin(Step::Enroll);
         d.done();

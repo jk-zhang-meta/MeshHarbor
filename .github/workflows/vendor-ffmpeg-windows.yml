@@ -7,7 +7,7 @@ name: Vendor FFmpeg (Windows x64 MSVC static-md, LGPL)
 # build.sh.in) with our component trim injected into its configure options:
 # `--disable-everything` plus exactly the ten HW encoders the agent
 # dispatches (h264/hevc/av1 × nvenc/qsv/amf + vp9_qsv). Measured motivation:
-# the full-featured build linked 23 MiB of avcodec into roomlerd where the
+# the full-featured build linked 23 MiB of avcodec into meshharbord where the
 # ten encoders' true dependency closure is 0.29 MiB — the `allcodecs`
 # registry pulls 1,167 objects (every decoder/muxer/filter FFmpeg ships) the
 # moment `avcodec_find_encoder_by_name` is referenced. Feature-trimming
@@ -43,7 +43,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 90
     steps:
-      # FR-62 A2 — the roomler FFmpeg source patches live in the repo.
+      # FR-62 A2 — the meshharbor FFmpeg source patches live in the repo.
       - uses: actions/checkout@v4
       - name: Build minimal FFmpeg via vcpkg overlay port (x64-windows-static-md, LGPL)
         shell: pwsh
@@ -54,7 +54,7 @@ jobs:
           # component trim happens in the overlay portfile, not here.
           $manifest = @"
           {
-            "name": "roomler-ffmpeg-pin",
+            "name": "meshharbor-ffmpeg-pin",
             "version": "0.0.1",
             "dependencies": [
               {"name": "ffmpeg", "default-features": false, "features": ["avcodec", "avformat", "swresample", "nvcodec", "qsv", "amf", "vulkan"]}
@@ -116,7 +116,7 @@ jobs:
           $inject ='string(APPEND OPTIONS " --disable-everything --disable-network --disable-protocols --disable-devices --disable-filters --disable-bsfs --disable-parsers --disable-demuxers --disable-muxers --disable-decoders --disable-encoders --disable-hwaccels --enable-encoder=h264_nvenc --enable-encoder=hevc_nvenc --enable-encoder=av1_nvenc --enable-encoder=h264_qsv --enable-encoder=hevc_qsv --enable-encoder=av1_qsv --enable-encoder=vp9_qsv --enable-encoder=h264_amf --enable-encoder=hevc_amf --enable-encoder=av1_amf --enable-encoder=h264_d3d12va --enable-encoder=hevc_d3d12va --enable-encoder=av1_d3d12va --enable-encoder=h264_vulkan --enable-encoder=hevc_vulkan --enable-encoder=av1_vulkan --enable-nvenc --enable-amf --enable-libvpl --enable-d3d11va --enable-d3d12va --enable-vulkan --enable-decoder=h264 --enable-encoder=aac")' + "`n" + $anchor
           $content = $content.Replace($anchor, $inject)
 
-          # ── FR-62 A2: apply the roomler FFmpeg source patches via the port's
+          # ── FR-62 A2: apply the meshharbor FFmpeg source patches via the port's
           #    own PATCHES list (vcpkg applies them with -p1 after extract, the
           #    level the diffs were cut at). Copy each patch into the overlay
           #    port dir and inject its filename after the portfile's `PATCHES`
@@ -140,7 +140,7 @@ jobs:
               "$((Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLower())  $($_.Name)"
             }
             $manifestLines -join "`n" | Set-Content -Path "$env:RUNNER_TEMP\MESHHARBOR-PATCHES.txt" -Encoding ascii -NoNewline
-            Write-Host "roomler patch manifest:"; Get-Content "$env:RUNNER_TEMP\MESHHARBOR-PATCHES.txt"
+            Write-Host "meshharbor patch manifest:"; Get-Content "$env:RUNNER_TEMP\MESHHARBOR-PATCHES.txt"
           }
 
           Set-Content -Path $pf -Value $content -Encoding utf8
@@ -337,7 +337,7 @@ jobs:
           curl -sL -o /tmp/ffmpeg.tar.gz https://github.com/FFmpeg/FFmpeg/archive/refs/tags/n9.0.1.tar.gz
           mkdir -p /tmp/ffsrc && tar xf /tmp/ffmpeg.tar.gz -C /tmp/ffsrc --strip-components=1
           cd /tmp/ffsrc
-          # FR-62 A2 — apply every roomler FFmpeg source patch (patch -p1 from
+          # FR-62 A2 — apply every meshharbor FFmpeg source patch (patch -p1 from
           # the source root, the same level the diffs were cut at) BEFORE
           # configure, and record a manifest (sha256 per patch) that
           # release-agent asserts against the committed patches so a stale
@@ -350,7 +350,7 @@ jobs:
             patch -p1 --no-backup-if-mismatch < "$p" || { echo "::error::patch $(basename "$p") failed to apply to n9.0.1"; exit 1; }
           done
           ( cd "$GITHUB_WORKSPACE" && sha256sum .github/ffmpeg-patches/*.patch 2>/dev/null | sed 's#\.github/ffmpeg-patches/##' ) > /tmp/MESHHARBOR-PATCHES.txt || true
-          echo "roomler patch manifest:"; cat /tmp/MESHHARBOR-PATCHES.txt
+          echo "meshharbor patch manifest:"; cat /tmp/MESHHARBOR-PATCHES.txt
           # /opt/ffout first: configure must find the BUNDLED libva/libdrm
           # (FR-77 P4), never the runner's own copies.
           export PKG_CONFIG_PATH=/opt/ffout/lib/pkgconfig:/usr/local/lib/pkgconfig:/usr/local/lib64/pkgconfig:${PKG_CONFIG_PATH:-}

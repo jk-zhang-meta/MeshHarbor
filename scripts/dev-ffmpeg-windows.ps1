@@ -46,7 +46,7 @@ param(
   [string]$LibvpxRelease = 'vendored-libvpx-1.12.0',
   [string]$LibvpxAsset   = 'libvpx-1.12.0-win64-msvc.zip',
   [string]$Root          = 'C:\ffmpeg-pin',
-  [string]$Repo          = 'gjovanov/roomler-ai',
+  [string]$Repo          = 'jk-zhang-meta/MeshHarbor',
   [string]$Vcpkg         = 'C:\dev\vcpkg',
   [switch]$Env,
   [switch]$Force
@@ -131,7 +131,7 @@ if (-not $ready) {
   Set-Content -Path $stamp -Value (Get-Date -Format o) -Encoding ascii -NoNewline
   Write-Step "staged: $ffRoot (FFmpeg) + $vpxRoot (libvpx) + $binDir\pkg-config.exe"
   if (Test-Path (Join-Path $ffRoot 'MESHHARBOR-PATCHES.txt')) {
-    Write-Step "vendored FFmpeg carries roomler patches:"; Get-Content (Join-Path $ffRoot 'MESHHARBOR-PATCHES.txt')
+    Write-Step "vendored FFmpeg carries meshharbor patches:"; Get-Content (Join-Path $ffRoot 'MESHHARBOR-PATCHES.txt')
   }
 }
 

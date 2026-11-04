@@ -100,7 +100,7 @@ kbd {
 .brand:hover { text-decoration: none; }
 .brand__logo { display: block; height: 32px; width: auto; }
 /* On a phone the bar is already full; at 24 px the logo takes the width the
-   word "Roomler" took before it, so it squeezes nothing further. */
+   word "MeshHarbor" took before it, so it squeezes nothing further. */
 @media (max-width: 480px) { .brand__logo { height: 24px; } }
 .brand__docs { font-size: .8rem; font-weight: 600; color: var(--ink-faint); letter-spacing: .04em; text-transform: uppercase; }
 .topbar__burger { display: none; }

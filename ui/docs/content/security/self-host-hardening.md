@@ -1,6 +1,6 @@
 ---
 title: Self-host hardening
-description: What to get right when running Roomler yourself — secrets, TLS, the origin setting, storage, backups and the checks worth doing after every upgrade.
+description: What to get right when running MeshHarbor yourself — secrets, TLS, the origin setting, storage, backups and the checks worth doing after every upgrade.
 tags: [security, self-hosting, operations, hardening, docker]
 order: 7
 ---

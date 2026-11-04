@@ -2,11 +2,11 @@
 
 **Status: SHIPPED + field-verified** (retroactive FR per the CLAUDE.md standing rule —
 the program ran 2026-08-15 → 2026-08-26; this spec records what was required, what was
-built, and how each requirement was proven. Tracking issue: gjovanov/roomler-ai#778. Renumbered FR-3→FR-7 per the lower-issue-id tie-break after the day-one mint races.)
+built, and how each requirement was proven. Tracking issue: jk-zhang-meta/MeshHarbor#778. Renumbered FR-3→FR-7 per the lower-issue-id tie-break after the day-one mint races.)
 
 ## Goal
 
-Every published Roomler artifact — MSIs and the EXEs inside them, the macOS `.pkg`
+Every published MeshHarbor artifact — MSIs and the EXEs inside them, the macOS `.pkg`
 and wizard, the tunnel CLI, the `.deb`s — carries a verifiable publisher identity,
 and the release pipeline makes an unsigned release **impossible** rather than
 merely unlikely. Publisher of record: **G ROX LTD** (BG, UIC 205174895; the
@@ -79,14 +79,14 @@ keys for publicly-trusted code signing since June 2023, so no CA issues a PFX.
   leaks a second RT_VERSION into the Tauri EXEs that depend on these crates.
 - **Identity facts**: Azure identity validation Completed for G ROX LTD
   (id `2390bcea-a3d5-4919-a624-cb209c875bf7`, valid to 2028-11-21); account
-  `roomlersigning` + profile `roomler-public-trust` in **polandcentral**
+  `meshharborsigning` + profile `meshharbor-public-trust` in **polandcentral**
   (westeurope refused new-subscription resources; free-trial subscriptions are
   refused — PAYG required). Cert subject `CN=G ROX LTD, O=G ROX LTD,
   L=Pazardzhik, C=BG`; `AZURE_SIGNING_EXPECT_SUBJECT` locks it in CI.
 - **GPG key shape**: ed25519 certify-only primary
   `D654B016256FD92A81634A0E2AD1E9F025973A7F` + `[S]` signing subkey (only the
   subkey secret reaches CI), expires 2028-08-22; pubkey committed at
-  `scripts/signing/gpg/roomler-release-pubkey.asc`; the Linux/macOS updater
+  `scripts/signing/gpg/meshharbor-release-pubkey.asc`; the Linux/macOS updater
   verifies `.asc` against the key **pinned in the binary** (a key fetched from
   the release would be the same-channel failure as the SHA256).
 - **Apple / D-U-N-S**: D&B already held a number for the entity —
@@ -115,7 +115,7 @@ keys for publicly-trusted code signing since June 2023, so no CA issues a PFX.
   verification live-proven ×2** (rc.481/rc.482 macOS updates logged
   `installer .asc verified against the pinned release signing key`).
 - [x] SLSA provenance attestations on every asset
-  (`gh attestation verify <asset> --repo gjovanov/roomler-ai`).
+  (`gh attestation verify <asset> --repo jk-zhang-meta/MeshHarbor`).
 - [x] macOS interim identity stable across releases: designated requirement
   `identifier "fans.itachi.meshharbor.agent" + cert root H"b2a06501…"` byte-identical
   rc.479→482; TCC Screen-Recording grant survived updates (operator-confirmed
@@ -125,8 +125,8 @@ keys for publicly-trusted code signing since June 2023, so no CA issues a PFX.
   + Installer on the G2 Sub-CA). Field-verified on a real Mac against the
   **published** `.pkg` with quarantine set: `spctl -a -vvv -t install` →
   `source=Notarized Developer ID`
-  ([result](https://github.com/gjovanov/roomler-ai/issues/778#issuecomment-5589571740),
-  [on the published artifact](https://github.com/gjovanov/roomler-ai/issues/778#issuecomment-5589756486)).
+  ([result](https://github.com/jk-zhang-meta/MeshHarbor/issues/778#issuecomment-5589571740),
+  [on the published artifact](https://github.com/jk-zhang-meta/MeshHarbor/issues/778#issuecomment-5589756486)).
   The first run with real credentials was refused as `Invalid` (#1521, fixed).
   *Ticked 2026-09-25: verified on 09-08, left unticked at the close.*
 - [x] Docs, in the house style and linked from `docs/README.md` (the
@@ -165,5 +165,5 @@ keys for publicly-trusted code signing since June 2023, so no CA issues a PFX.
 | 2026-08-24 | First signed release `agent-v0.3.0-rc.453`; updater publisher-verify + anti-rollback binding land |
 | 2026-08-25/26 | GPG `.asc` mandatory + pinned-key verify (#724, #727); macOS stable self-signed DR solves the TCC wipe (#729/#737/#740) |
 | 2026-08-26 | Operator confirms on rc.482: TCC survived the update chain; pinned-GPG verify proven twice in the field |
-| 2026-09-08 | Apple enrolment 5XS5WN8R99 completes; Developer ID Application + Installer issued (G2 Sub-CA, to 2031-09-09). First real run refused as `Invalid` (#1521, fixed). **Field-verified on a real Mac**: the published `.pkg`, quarantine set, `spctl` → `source=Notarized Developer ID` ([#778](https://github.com/gjovanov/roomler-ai/issues/778#issuecomment-5589756486)) |
+| 2026-09-08 | Apple enrolment 5XS5WN8R99 completes; Developer ID Application + Installer issued (G2 Sub-CA, to 2031-09-09). First real run refused as `Invalid` (#1521, fixed). **Field-verified on a real Mac**: the published `.pkg`, quarantine set, `spctl` → `source=Notarized Developer ID` ([#778](https://github.com/jk-zhang-meta/MeshHarbor/issues/778#issuecomment-5589756486)) |
 | 2026-09-25 | Record caught up. The verification-debt guard (#1598) found FR-7 closed with the Apple criterion unticked and no docs criterion. Ticked against the 09-08 evidence; `docs/code-signing.md` brought up to what shipped — it still called Apple "pending" and the updater's pinned-key gate unbuilt |

@@ -4,10 +4,10 @@
 //! behind both wizards' `asset_resolver` wrappers (and the unified
 //! `meshharbor-setup` app).
 //!
-//! The wizards hit roomler.ai's installer proxies (`/api/agent/
+//! The wizards hit meshharbor.itachi.fans's installer proxies (`/api/agent/
 //! installer/{flavour}`, `/api/tunnel/installer/{platform}`) instead
 //! of downloading directly from `github.com`: corporate ESET /
-//! Defender allow-lists are typically per-domain; `roomler.ai`'s TLS
+//! Defender allow-lists are typically per-domain; `meshharbor.itachi.fans`'s TLS
 //! cert is already trusted by IT, `github.com` is often blocked
 //! outright (field-reproduced 2026-05-11).
 //!

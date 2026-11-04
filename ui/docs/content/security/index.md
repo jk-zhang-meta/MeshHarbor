@@ -1,6 +1,6 @@
 ---
 title: Security & access control
-description: How Roomler decides who may reach what — end-to-end encryption, roles and permissions, network ACLs, device-held gates, consent and audit.
+description: How MeshHarbor decides who may reach what — end-to-end encryption, roles and permissions, network ACLs, device-held gates, consent and audit.
 tags: [security, access-control, overview, permissions, audit]
 hero: acl.svg
 heroAlt: Layered access control gating who may reach which machine, with every decision recorded

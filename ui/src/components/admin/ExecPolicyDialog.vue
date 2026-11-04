@@ -61,7 +61,7 @@
             <i18n-t keypath="mh.exec.notAnchored" tag="span" scope="global">
               <template #signedIn><strong>{{ t('mh.exec.signedIn') }}</strong></template>
             </i18n-t>
-            <code>roomlerd anchor create --server … --token … --device {{ agent.id }}</code>
+            <code>meshharbord anchor create --server … --token … --device {{ agent.id }}</code>
           </template>
         </v-alert>
         <v-alert
@@ -180,11 +180,11 @@
         </v-alert>
         <v-alert type="info" variant="tonal" density="compact" class="mt-4">
           <i18n-t keypath="mh.exec.deviceSwitch" tag="span" scope="global">
-            <template #cmd><code>roomler config set exec_enabled true</code></template>
+            <template #cmd><code>meshharbor config set exec_enabled true</code></template>
           </i18n-t>
           <template v-if="anchored">
             <i18n-t keypath="mh.exec.anchorSwitch" tag="span" scope="global">
-              <template #cmd><code>roomlerd anchor exec on</code></template>
+              <template #cmd><code>meshharbord anchor exec on</code></template>
             </i18n-t>
           </template>
         </v-alert>

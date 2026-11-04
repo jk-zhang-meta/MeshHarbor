@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 G ROX EOOD
 //! Fleet RPC end-to-end: the browser/API leg driven against a live `TestApp`
-//! with the real `roomlerd` library on the other end.
+//! with the real `meshharbord` library on the other end.
 //!
 //! What these lock is the thing unit tests can't: that the four gates are
 //! actually wired into the ONE path a command takes, that a refusal is a
@@ -38,7 +38,7 @@ fn spawn_agent(
         let (view_tx, _view_rx) = tokio::sync::watch::channel(Default::default());
         let broker = meshharbord::consent::ConsentBroker::new(
             meshharbord::consent::Mode::AutoGrant,
-            std::env::temp_dir().join(format!("roomler-exec-consent-{}", cfg.agent_id)),
+            std::env::temp_dir().join(format!("meshharbor-exec-consent-{}", cfg.agent_id)),
         )
         .expect("consent broker init");
         // Read before `cfg` is moved into the call below.

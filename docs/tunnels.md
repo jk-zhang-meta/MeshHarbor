@@ -12,16 +12,16 @@ tunnels increasingly ride on is [overlay-communication.md](overlay-communication
 ```mermaid
 flowchart LR
     subgraph client["Client side"]
-        CLI["roomler CLI<br/>(standalone, TunnelClient JWT)"]
-        DMN["roomlerd-embedded client<br/>(declared routes, agent JWT)"]
+        CLI["meshharbor CLI<br/>(standalone, TunnelClient JWT)"]
+        DMN["meshharbord-embedded client<br/>(declared routes, agent JWT)"]
         DESK["meshharbor-desktop<br/>(Tunnels pane via LocalAPI)"]
     end
 
-    subgraph server["roomler.ai"]
+    subgraph server["meshharbor.itachi.fans"]
         POL["default-deny ACL policy<br/>+ tunnel_audit"]
     end
 
-    subgraph exit["Exit side — any enrolled roomlerd"]
+    subgraph exit["Exit side — any enrolled meshharbord"]
         ACC["acceptor: server-granted flow<br/>× agent-local forward_acl<br/>→ dial destination"]
     end
 
@@ -31,10 +31,10 @@ flowchart LR
 
 | Flow type | What it does |
 |---|---|
-| **TCP forward** | `roomler forward --agent <name> --local 127.0.0.1:5432 --remote db:5432` — a local listener whose connections come out of the chosen agent |
-| **SOCKS5 (single agent)** | `roomler socks5 --agent <name> --local 127.0.0.1:1080` — RFC 1928 proxy exiting through one agent. CONNECT **and UDP ASSOCIATE** are supported (one UDP flow per destination, idle-reaped); BIND is not |
-| **SOCKS5 mesh** | `roomler socks5 --local …` (no `--agent`) — one proxy for the whole tenant: address an agent *by name or id as the SOCKS hostname*, and LAN-IP targets route by longest-prefix match against the subnets agents advertise |
-| **Declared routes** | `[[tunnel_routes]]` in the daemon config — `roomlerd` supervises the listeners itself, restart-safe, managed via `roomler route add/rm/ls/enable/disable` or the desktop app |
+| **TCP forward** | `meshharbor forward --agent <name> --local 127.0.0.1:5432 --remote db:5432` — a local listener whose connections come out of the chosen agent |
+| **SOCKS5 (single agent)** | `meshharbor socks5 --agent <name> --local 127.0.0.1:1080` — RFC 1928 proxy exiting through one agent. CONNECT **and UDP ASSOCIATE** are supported (one UDP flow per destination, idle-reaped); BIND is not |
+| **SOCKS5 mesh** | `meshharbor socks5 --local …` (no `--agent`) — one proxy for the whole tenant: address an agent *by name or id as the SOCKS hostname*, and LAN-IP targets route by longest-prefix match against the subnets agents advertise |
+| **Declared routes** | `[[tunnel_routes]]` in the daemon config — `meshharbord` supervises the listeners itself, restart-safe, managed via `meshharbor route add/rm/ls/enable/disable` or the desktop app |
 | **Overlay netstack SOCKS** | a loopback SOCKS5 front into the WireGuard mesh itself (peer names / MagicDNS / overlay IPs, TCP + UDP) — no OS TUN device required |
 
 Declared routes live in a supervisor with explicit state — a revoked or
@@ -42,7 +42,7 @@ cross-tenant route parks as `failed` and never hammers the server:
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Pending: roomlerd start / route add
+    [*] --> Pending: meshharbord start / route add
     Disabled --> Pending: enable
     Pending --> Active: flow created
     Pending --> Backoff: create failed (retryable)
@@ -96,7 +96,7 @@ one of them live.
 and `run_tunnel_session` has many `?` early returns, so **every failed tunnel
 session leaked its whole socket set**.
 
-Measured on devbox: `roomlerd` held **15,446 UDP sockets after 12 h** (10,367 on
+Measured on devbox: `meshharbord` held **15,446 UDP sockets after 12 h** (10,367 on
 `:5353`) — the entire 16,384-port ephemeral range. Every socket allocation on the
 **host** then failed `WSAENOBUFS`/10055 and **the whole machine lost DNS**, while
 `ping 1.1.1.1` stayed at 3 ms.
@@ -124,8 +124,8 @@ actual uptime — the condition the code comment already assumed.
 
 ### ⚠️ The same trap, a second time: the TURN client (FR-48)
 
-Fixed in `agent-v0.4.100` ([#1556](https://github.com/gjovanov/roomler-ai/pull/1556),
-[FR-48](fr/FR-48-roomlerd-ice-socket-leak.md)). Every overlay node leaked **~9 UDP
+Fixed in `agent-v0.4.100` ([#1556](https://github.com/jk-zhang-meta/MeshHarbor/pull/1556),
+[FR-48](fr/FR-48-meshharbord-ice-socket-leak.md)). Every overlay node leaked **~9 UDP
 sockets an hour**, never reclaimed within a daemon's life, and it was the rule above
 in a different crate.
 
@@ -196,8 +196,8 @@ stayed flat.
 - ⚠️ **The leak had a period.** Sockets arrived in pairs ~60 s apart every ~20 minutes.
   A 14-minute uprobe window cannot observe a 20-minute period, and one suspect was
   "eliminated" by exactly that. Measure the period before trusting an elimination.
-- ⚠️ **`bpftrace` on `comm == "roomlerd"` sees almost nothing.** The daemon runs ~19
-  threads named `tokio-rt-worker` and one named `roomlerd`; `comm` is per-thread and
+- ⚠️ **`bpftrace` on `comm == "meshharbord"` sees almost nothing.** The daemon runs ~19
+  threads named `tokio-rt-worker` and one named `meshharbord`; `comm` is per-thread and
   every socket call happens on a worker. Filter on `pid`.
 - 🔑 **`ustack` cannot unwind this binary** (no frame pointers — the frame above
   `__GI_socket` resolves into `[heap]`), **but at function entry the return address is
@@ -206,16 +206,16 @@ stayed flat.
   `socket() ← mio::UdpSocket::bind ← tokio::UdpSocket::bind_addr ←
   tunnel_core::transport::relay::allocate_turn_relay_from`.
 - ⚠️ **A socket census must count only the daemon's own pid.** A host can run a second
-  `roomlerd` inside a container; `pgrep -x roomlerd | head -1` returns whichever comes
-  first, and a bare `grep -c roomlerd` sums both. Ask systemd for `MainPID`.
+  `meshharbord` inside a container; `pgrep -x meshharbord | head -1` returns whichever comes
+  first, and a bare `grep -c meshharbord` sums both. Ask systemd for `MainPID`.
 
 ### ⚠️ The same trap, a third time: a closed ICE agent kept by its mDNS resolution (#1740)
 
-Fixed in the vendored `webrtc-ice` ([#1740](https://github.com/gjovanov/roomler-ai/issues/1740)).
+Fixed in the vendored `webrtc-ice` ([#1740](https://github.com/jk-zhang-meta/MeshHarbor/issues/1740)).
 Here the peer **was** `close()`d, and the close did run to the end. It still freed
 nothing below the ICE agent.
 
-A browser hides its LAN host candidates behind `<uuid>.local` names. `roomlerd`'s
+A browser hides its LAN host candidates behind `<uuid>.local` names. `meshharbord`'s
 `mdns_resolve` asks the OS resolver first. When that gets no answer within 750 ms, which
 is the normal case for a browser that is not on the agent's LAN, the candidate goes
 unmodified to webrtc-ice. webrtc-ice resolves it itself: a task that asks `224.0.0.251`
@@ -227,7 +227,7 @@ UDP socket its candidates owned, the mDNS socket, and the query itself.
 ```mermaid
 sequenceDiagram
     participant B as browser (controller)
-    participant R as roomlerd mdns_resolve
+    participant R as meshharbord mdns_resolve
     participant A as webrtc-ice agent
     participant Q as resolution task
     participant M as mDNS socket :5353
@@ -323,8 +323,8 @@ and a declared route whose target never comes up does it *once per retry* (every
 1–30 s), unbounded.
 
 ⚠️ **Field-measured on `0.4.110`.** A daemon-run WebRTC forward
-(`roomler forward --daemon --agent … --transport webrtc`), used once then stopped
-with `roomler kill fl-N`: the macOS root exit agent's UDP socket count climbed
+(`meshharbor forward --daemon --agent … --transport webrtc`), used once then stopped
+with `meshharbor kill fl-N`: the macOS root exit agent's UDP socket count climbed
 **5 → 11 → 16 across five kills** — its `AgentTunnelPeer` map only ever grew.
 
 The audit (against `origin/master` c443af83e) found the client ends a session
@@ -387,7 +387,7 @@ that never sent its terminate left its peer in the map, `close()`d by nobody, fo
 life of the connection.
 
 **Field, 0.4.110, a macOS exit agent**: a daemon-run WebRTC forward, used once, then
-`roomler kill fl-N` on the client. The agent never received a terminate. Its UDP
+`meshharbor kill fl-N` on the client. The agent never received a terminate. Its UDP
 sockets went **5 → 11 → 16 over five kills** and were still held minutes later — each
 kill stranded the ICE sockets and the 8-channel DC pool of one `AgentTunnelPeer`. On
 the relayed QUIC flavours the stranded object is the TURN allocation too.
@@ -401,9 +401,9 @@ sequenceDiagram
     participant C as client (CLI / daemon)
     participant A as exit agent: AgentTunnelPeer
     participant L as signaling loop (reap arm)
-    participant S as roomler.ai
+    participant S as meshharbor.itachi.fans
 
-    alt clean close (Ctrl-C, roomler kill)
+    alt clean close (Ctrl-C, meshharbor kill)
         C->>A: pc.close(): SCTP stream reset, DTLS close_notify
         A->>L: TunnelReap { dc_closed } — every pool DC's read loop hit EOF (ms)
     else client vanished (crash, cable, sleep)
@@ -569,7 +569,7 @@ ready. The direct-bind and quic-derp branches are synchronous and stay inline.
 
 ```mermaid
 sequenceDiagram
-    participant S as roomler.ai
+    participant S as meshharbor.itachi.fans
     participant L as exit: signaling loop
     participant T as setup task (spawned)
     participant C as client
@@ -638,7 +638,7 @@ own accept loop (`run_webrtc_session` / `run_quic_session` in
 `crates/tunnel-core/src/driver.rs`), spawning one task per accepted connection that
 held `Arc`s to *that* session's DC pool or QUIC connection. Two consequences, both
 field-visible on 2026-09-28 ([FR-86](fr/FR-86-tunnel-transport-reupgrade.md),
-[#1769](https://github.com/gjovanov/roomler-ai/issues/1769)):
+[#1769](https://github.com/jk-zhang-meta/MeshHarbor/issues/1769)):
 
 | Consequence | Why |
 |---|---|
@@ -657,7 +657,7 @@ established beside the first, promoted, the first drained.
 | `FlowListener` | the flow's port: bound **once**, an accept task hands each connection to the current carrier — or **holds** it while there is none — under one lock, so "no carrier ⇒ hold" and "install ⇒ drain the hold" cannot interleave to strand one, and (#1816) the hand-off itself — `carry`, which counts the connection — runs under that lock too, so it cannot interleave with a promotion's swap | [`flow_listener.rs:90`](../crates/tunnel-core/src/flow_listener.rs) · `install` `:172` · `offer` `:219` |
 | `HoldPolicy` | the hold's bounds: at most **64** connections, each for at most **30 s**; past either bound the connection is **closed** (the client sees EOF), never refused | [`flow_listener.rs:67`](../crates/tunnel-core/src/flow_listener.rs) |
 | the daemon's flow | binds once when its supervisor starts (a failed bind retries on the same ladder a failed session did), runs the transport ladder to a carrier, installs it, waits for `dead()`, clears, backs off — the port bound throughout | [`client_mgr.rs:1294`](../agents/meshharbord/src/tunnel/client_mgr.rs) `run_flow_supervisor` · `:1459` `run_flow_cycle` |
-| the standalone CLI | `run_tunnel_session` composes establish + a private accept loop with a per-session bind, so `roomler forward` / `socks5` behave exactly as before | [`driver.rs:924`](../crates/tunnel-core/src/driver.rs) |
+| the standalone CLI | `run_tunnel_session` composes establish + a private accept loop with a per-session bind, so `meshharbor forward` / `socks5` behave exactly as before | [`driver.rs:924`](../crates/tunnel-core/src/driver.rs) |
 
 ```mermaid
 sequenceDiagram
@@ -730,9 +730,9 @@ one in the background and, when it works, switches to it **make-before-break** �
 established connection is never cut, and a new connection is never refused during the
 switch. This is the field bug it fixes: after a client-daemon restart during an exit's
 restart, two routes sat on `webrtc-dc-v1` for hours while `quic-v1` through the same
-exit worked ([#1769](https://github.com/gjovanov/roomler-ai/issues/1769)).
+exit worked ([#1769](https://github.com/jk-zhang-meta/MeshHarbor/issues/1769)).
 
-Only the daemon's supervised flows re-upgrade (the standalone `roomler forward` CLI is
+Only the daemon's supervised flows re-upgrade (the standalone `meshharbor forward` CLI is
 unchanged). The transport order is **`quic-v1` > `quic-derp-v1` > `webrtc-dc-v1`**
 (`quic-derp-v1` counts only where `TUNNEL_DERP_FALLBACK` is on), and only an `auto`
 flow probes — a pinned `--transport` is a decision and never probes.
@@ -781,7 +781,7 @@ counter fires on the last decrement ([`Carrier::drained`], `driver.rs:595`), not
 timer. Cutting it would defeat the whole point.
 
 ⚠️ **A draining carrier's end runs on every exit of its reaper — abort included**
-([#1816](https://github.com/gjovanov/roomler-ai/issues/1816)). The end is two steps in
+([#1816](https://github.com/jk-zhang-meta/MeshHarbor/issues/1816)). The end is two steps in
 one order: drop the carrier (its terminate goes out, the #1754 guard), THEN reap its
 demux entry. Both live in the `DrainGuard` the reaper owns, so `kill_flow` — which
 aborts the supervisor, whose `drains` abort each reaper mid-`select!` — and the
@@ -819,7 +819,7 @@ Read once per serving epoch, so the env var flips it on the next cycle; the conf
 applies on the next daemon restart.
 
 ⚠️ **The `--start-transport` flag is a TEST PIN, not an operational knob.**
-`roomler forward --daemon --start-transport webrtc` forces the daemon's FIRST session
+`meshharbor forward --daemon --start-transport webrtc` forces the daemon's FIRST session
 onto `webrtc-dc-v1` so the probe has a below-best carrier to upgrade, without restarting
 daemons (later sessions and the probe behave as `auto`). It exists for the field
 verification of AC7/AC8; normal routes omit it and start on the ladder.
@@ -868,7 +868,7 @@ binds it to that tunnel, and every flow the tunnel carries is then the
 
 ```mermaid
 sequenceDiagram
-    participant D as roomlerd (the session's device)
+    participant D as meshharbord (the session's device)
     participant S as network module
     participant E as exit
     D->>S: rc:tunnel.open {agent_id: exit, open_nonce, net_grant}
@@ -1019,7 +1019,7 @@ flowchart LR
 
 #### The tools: `net_socks` and `net_forward` (P3-7-3c)
 
-A session asks for its own egress on its toolbelt, the `roomler` MCP server
+A session asks for its own egress on its toolbelt, the `meshharbor` MCP server
 ([hive.md](hive.md) §4). Each call is a grant of its own, served on a
 listener of its own.
 
@@ -1090,11 +1090,11 @@ Four parties each say yes, and each for itself:
 
 ## LocalAPI
 
-The on-host control surface — how `roomler`, `meshharbor-desktop`, and scripts talk
-to a running `roomlerd` without any token:
+The on-host control surface — how `meshharbor`, `meshharbor-desktop`, and scripts talk
+to a running `meshharbord` without any token:
 
-- **Endpoints**: Windows named pipe `\\.\pipe\roomler` (SYSTEM + Admins +
-  Interactive Users, no-write-up); Unix socket `$XDG_RUNTIME_DIR/roomler.sock`
+- **Endpoints**: Windows named pipe `\\.\pipe\meshharbor` (SYSTEM + Admins +
+  Interactive Users, no-write-up); Unix socket `$XDG_RUNTIME_DIR/meshharbor.sock`
   (0600).
 - **Protocol**: newline-delimited JSON, `{"t": "<verb>", "d": {…}}`.
 
@@ -1109,7 +1109,7 @@ to a running `roomlerd` without any token:
 | `ConfigGet` · `ConfigSet` | The config surface, grouped (FR-84 D2) |
 | `RestartDaemon` | "Apply now" — restart only under a proven supervisor (FR-84 D3) |
 | `EncoderCaps` · `Devices` · `Mesh` | What the companion's Overview and Devices pages show (FR-84 D4, D5) |
-| `Connect` · `ConnectStatus` | `roomler connect`'s endpoint and where it stands, held for the connection that opened it. Only root or SYSTEM, an elevated administrator, or the daemon's own account may ask, and never on the person socket (FR-90 P3-9-2b, [vault.md](vault.md) §23) |
+| `Connect` · `ConnectStatus` | `meshharbor connect`'s endpoint and where it stands, held for the connection that opened it. Only root or SYSTEM, an elevated administrator, or the daemon's own account may ask, and never on the person socket (FR-90 P3-9-2b, [vault.md](vault.md) §23) |
 
 ⚠️ **On Windows the pipe keeps a pool of listening instances** (`localapi_pipe_pool`,
 default 4; `1` is the pre-FR-84 single instance). With one instance, a client that
@@ -1120,16 +1120,16 @@ The companion's side of this is [desktop-companion.md](desktop-companion.md) §3
 
 ## CLI
 
-`roomler` is the tunnel CLI on every platform; on daemon hosts the installed
-`roomler` binary is a ~150 KB shim that re-execs `roomlerd cli` — one command
-surface, no version skew. On macOS the shim lands at `/usr/local/bin/roomler`
+`meshharbor` is the tunnel CLI on every platform; on daemon hosts the installed
+`meshharbor` binary is a ~150 KB shim that re-execs `meshharbord cli` — one command
+surface, no version skew. On macOS the shim lands at `/usr/local/bin/meshharbor`
 and resolves the daemon inside the `.app` bundle, since there the two binaries
-cannot be siblings. (Before rc.454 the macOS `.pkg` shipped **no** CLI at all.) Highlights (run `roomler --help` for the full set):
+cannot be siblings. (Before rc.454 the macOS `.pkg` shipped **no** CLI at all.) Highlights (run `meshharbor --help` for the full set):
 
 | Verb | Purpose |
 |---|---|
 | `enroll --server --token --name` | Enroll this machine as a tunnel client |
-| `forward` / `socks5` | Open flows (above); `--transport auto\|quic\|webrtc`; `--daemon` hands ownership to `roomlerd` |
+| `forward` / `socks5` | Open flows (above); `--transport auto\|quic\|webrtc`; `--daemon` hands ownership to `meshharbord` |
 | `route add/rm/ls/enable/disable/edit` | Declared routes |
 | `status` / `peers` / `flows` / `ping` (`--json`) | Live node state via LocalAPI |
 | `devices` | The devices this node's mesh can see, with display names, from the server (FR-84) |
@@ -1144,7 +1144,7 @@ cannot be siblings. (Before rc.454 the macOS `.pkg` shipped **no** CLI at all.) 
 
 The whole stack is built to work from inside strict networks: outbound-only WSS
 control links, TURNS/TCP on :443 as the transport of last resort, the DERP
-fallback for the overlay, and installer downloads proxied through `roomler.ai`
+fallback for the overlay, and installer downloads proxied through `meshharbor.itachi.fans`
 (not `github.com`) so AV allow-lists trust them. The field-tested walkthrough —
 including TLS-inspecting middleboxes and UDP-free networks — is
 [tunnel-install.md](tunnel-install.md).

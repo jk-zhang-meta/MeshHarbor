@@ -1,16 +1,16 @@
 # Platform support — what each OS serves, and why where it does not
 
-> **FR-97** ([#2082](https://github.com/gjovanov/roomler-ai/issues/2082),
+> **FR-97** ([#2082](https://github.com/jk-zhang-meta/MeshHarbor/issues/2082),
 > [spec](fr/FR-97-os-feature-parity.md)). This is agent **0.4.149** (2026-10-21); a row that says
 > "from 0.4.150" or "since 0.4.150" is on master for the next release. The spec's §2 is the register this page was built from: each
 > gap's evidence, its phase and its field run. This page says what is true now. A change that
 > moves a row moves it here, in the same PR.
 >
 > **For users:** the same tables without the anchors, at
-> [roomler.ai/docs/reference/platform-support](https://roomler.ai/docs/reference/platform-support/)
+> [meshharbor.itachi.fans/docs/reference/platform-support](https://meshharbor.itachi.fans/docs/reference/platform-support/)
 > (`ui/docs/content/reference/platform-support.md`).
 
-Roomler is one product on three operating systems. A feature that ships on one ships on the
+MeshHarbor is one product on three operating systems. A feature that ships on one ships on the
 other two, or the device says why it cannot, in its hello and on screen.
 
 | | Meaning |
@@ -79,7 +79,7 @@ flowchart LR
 - An install that runs as the person cannot create an OS adapter. Netstack mode
   (`MESHHARBORD_OVERLAY_NETSTACK_SOCKS`, in every OS's release build) still gives it the mesh,
   outbound, through a loopback SOCKS5 front. Other nodes cannot reach the host's own services
-  that way, but Roomler SSH answers, because it terminates inside the daemon
+  that way, but MeshHarbor SSH answers, because it terminates inside the daemon
   (`agents/meshharbord/src/overlay.rs:334-340`).
 - A Mac needs both halves for both planes: a root process has no WindowServer, and the person
   cannot create a `utun`. Each half is its own enrollment, so such a Mac is two device rows
@@ -144,7 +144,7 @@ and never outliving the daemon (FR-97 P0e).
 | Feature | Windows | Linux | macOS | Why, and where |
 |---|---|---|---|---|
 | `exec` and SSH `daemon` mode | 🟡 SYSTEM on a SystemContext install, or once anchored (FR-94); the signed-in person on an attended one | ✅ root | ✅ root on the root half's row | `docs/fleet-rpc.md`, Who runs the command |
-| `console_user`: the person at the screen | 🟡 where SYSTEM serves the session: SystemContext, or the device's service (FR-105); an attended install refuses it, saying why | ✅ logind's seat0 | ✅ the owner of `/dev/console` | refused while nobody is there (`agents/meshharbord/src/exec.rs:881-885`); Windows: `docs/roomler-ssh.md` |
+| `console_user`: the person at the screen | 🟡 where SYSTEM serves the session: SystemContext, or the device's service (FR-105); an attended install refuses it, saying why | ✅ logind's seat0 | ✅ the owner of `/dev/console` | refused while nobody is there (`agents/meshharbord/src/exec.rs:881-885`); Windows: `docs/meshharbor-ssh.md` |
 | `named:<account>` | ⛔ | ✅ | ✅ | §8 |
 | SFTP and `scp` as the signed-in person | 🟡 where OpenSSH's `sftp-server` is installed | ✅ | ✅ | `agents/meshharbord/src/ssh.rs:1234-1238` |
 | A session starts in the person's home | ✅ | ✅ | ✅ | `agents/meshharbord/src/exec.rs:874` |
@@ -173,7 +173,7 @@ and never outliving the daemon (FR-97 P0e).
 | A crash in a worker is recorded by its supervisor | ✅ | ⛔ systemd | ✅ from 0.4.149, where the root daemon supervises the GUI worker (`macos_supervise_gui_worker`) | a signal, or an exit the agent did not choose; the record rides the root daemon's enrollment (`agents/meshharbord/src/macos_supervisor.rs:238-262`, FR-97 P6e-2) |
 | The daemon survives a log sink it cannot write | ✅ | ✅ | ✅ | #1538 |
 | An update's outcome is recorded | 🟡 written, never read | ❌ | ❌ | FR-67 |
-| The tunnel client updates itself (`roomler self-update`) | ✅ | ✅ from tunnel-v0.4.149: the tarball, or the `.deb` where dpkg owns the binary (field-verified on its release) | ✅ from tunnel-v0.4.149 (field-verified on its release) | every OS checks the release's `.asc` against the pinned key (`agents/meshharbor-cli/src/update.rs:227`); FR-97 P6b |
+| The tunnel client updates itself (`meshharbor self-update`) | ✅ | ✅ from tunnel-v0.4.149: the tarball, or the `.deb` where dpkg owns the binary (field-verified on its release) | ✅ from tunnel-v0.4.149 (field-verified on its release) | every OS checks the release's `.asc` against the pinned key (`agents/meshharbor-cli/src/update.rs:227`); FR-97 P6b |
 | Processors the daemon runs on | 🟡 x64; ❌ ARM64 | ✅ x86_64 and arm64 | 🟡 Apple silicon; ❌ Intel | `agents/meshharbord/wix-perMachine/main.wxs:81`; `.github/workflows/release-agent.yml:2582`; FR-97 D6 |
 | Hardware encoding on Linux arm64 | — | ❌ | — | the arm64 build has no `ffmpeg-encoder` (`.github/workflows/release-agent.yml:1093`); FR-97 P7a |
 | The standalone tunnel client and the wizard on Linux arm64 | — | ✅ from 0.4.149 (FR-97 P7b): the wizard with the agent release, the tunnel client from tunnel-v0.4.149 (its aarch64 `.deb` and tarball run on real arm64, 16 KiB pages included). Before it, x86_64 builds only, and `install.sh --role tunnel` handed an arm64 host the x86_64 CLI; the served script picks the aarch64 build since the 2026-10-21 promote (field-verified on real arm64, FR-97 §8) | — | `.github/workflows/release-tunnel.yml:215`, `.github/workflows/release-setup.yml:255`; the proxy's `linux-aarch64` (`crates/modules/fleet/src/tunnel_release.rs:197`) |
@@ -199,10 +199,10 @@ Release feature sets per OS, which decide what ships: Linux x86_64
 | WFP and the Defender rule; Wintun's stable GUID and the stray-adapter sweep | Linux, macOS | Windows-only machinery for Windows-only failures: a GPO-locked firewall, adapters that outlive their process (`docs/overlay-wfp.md`) |
 | The companion refreshing itself | Linux, macOS | The companion is in neither MSI, so the Windows daemon keeps it at its own version (`agents/meshharbord/src/companion.rs:6-14`). The `.deb`, the `.rpm` and the `.pkg` own its version elsewhere |
 | A probe cache key | macOS | The probe takes about 120 ms and VideoToolbox ships with the OS, so there is no driver identity to key a cache on (`agents/meshharbord/src/encode/hwid.rs:19-21`) |
-| `--machine-global`, `set-service-env-var`, `restart-service` | Linux, macOS | Windows verbs whose outcomes Linux and macOS reach through `/etc/roomler`, the unit files and `launchctl` |
+| `--machine-global`, `set-service-env-var`, `restart-service` | Linux, macOS | Windows verbs whose outcomes Linux and macOS reach through `/etc/meshharbor`, the unit files and `launchctl` |
 
 Not on any OS, by design: `ssh -R`, which would make the device bind a listening socket, the one
-thing Roomler SSH exists to avoid (`docs/roomler-ssh.md`).
+thing MeshHarbor SSH exists to avoid (`docs/meshharbor-ssh.md`).
 
 ## 9. Not platform gaps
 

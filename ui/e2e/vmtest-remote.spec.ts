@@ -7,16 +7,16 @@
  * matrix run keeps several throwaway VMs alive in the same org, so this spec
  * selects the agent by EXACT name (`E2E_AGENT_NAME`) and never falls back.
  *
- * Driven by roomler-ai-deploy/vmtest/playwright/run-rd-check.sh from mars
+ * Driven by meshharbor-deploy/vmtest/playwright/run-rd-check.sh from mars
  * against the real server. Asserts, in order:
  *   1. the named agent reports online in the org listing (polls — the VM
  *      enrolled seconds ago),
  *   2. the viewer connects (phase chip "connected"),
  *   3. FRAMES FLOW, twice, via two independent oracles that together cover
  *      every media path:
- *        - `__roomler_remote_pc` → getStats `framesDecoded` (the RTP track
+ *        - `__meshharbor_remote_pc` → getStats `framesDecoded` (the RTP track
  *          path; the hook remote-session-smoke documents wishing it had),
- *        - `__roomler_remote_stats` → the composable's live fps/bitrate (the
+ *        - `__meshharbor_remote_stats` → the composable's live fps/bitrate (the
  *          DataChannel pump paths, where inbound-rtp stats are silent).
  *      While sampling, the mouse wiggles over the surface so input-capable
  *      cells produce real motion; input-less cells are still covered by the
@@ -79,7 +79,7 @@ async function findNamedOnlineAgent(token: string): Promise<string | null> {
 async function mediaProgress(page: Page): Promise<{ frames: number; fps: number }> {
   return await page.evaluate(async () => {
     const w = window as unknown as Record<string, unknown>
-    const pc = w.__roomler_remote_pc as RTCPeerConnection | undefined
+    const pc = w.__meshharbor_remote_pc as RTCPeerConnection | undefined
     let frames = -1
     if (pc) {
       const stats = await pc.getStats()
@@ -90,7 +90,7 @@ async function mediaProgress(page: Page): Promise<{ frames: number; fps: number 
         }
       })
     }
-    const statsRef = w.__roomler_remote_stats as { value?: { fps?: number } } | undefined
+    const statsRef = w.__meshharbor_remote_stats as { value?: { fps?: number } } | undefined
     const fps = statsRef?.value?.fps ?? -1
     return { frames, fps }
   })
@@ -298,7 +298,7 @@ test.describe('vmtest remote-desktop check (named agent)', () => {
     // access/refresh tokens does NOTHING and the SPA shows the login form.
     // Log in through the context's request API so the HttpOnly session cookie
     // lands in the jar shared with this context's pages, and set the
-    // `roomler-signed-in` hint so the SPA renders its shell and refreshes via
+    // `meshharbor-signed-in` hint so the SPA renders its shell and refreshes via
     // the cookie instead of bouncing to /login.
     const loginResp = await context.request.post(`${API_URL}/api/auth/login`, {
       data: { email: EMAIL, password: PASSWORD },
@@ -307,7 +307,7 @@ test.describe('vmtest remote-desktop check (named agent)', () => {
     const token = ((await loginResp.json()) as { access_token: string }).access_token
     await context.addInitScript(() => {
       try {
-        window.localStorage.setItem('roomler-signed-in', '1')
+        window.localStorage.setItem('meshharbor-signed-in', '1')
       } catch {
         /* private mode / storage blocked — the cookie still authenticates */
       }
@@ -331,7 +331,7 @@ test.describe('vmtest remote-desktop check (named agent)', () => {
 
     const hooks = await page.evaluate(() => {
       const w = window as unknown as Record<string, unknown>
-      return { pc: !!w.__roomler_remote_pc, stats: !!w.__roomler_remote_stats }
+      return { pc: !!w.__meshharbor_remote_pc, stats: !!w.__meshharbor_remote_stats }
     })
     if (!hooks.pc && !hooks.stats) {
       // Viewer build predates the FR-61 hooks (e.g. prod not yet redeployed).
@@ -350,7 +350,7 @@ test.describe('vmtest remote-desktop check (named agent)', () => {
 
     // ── first frames: prefer the counters, but NEVER fail on them alone ────
     // ⚠️ Both counters are RTP-shaped: `getStats` has no inbound-rtp video and
-    // `__roomler_remote_stats` is the RTP stats ref, so BOTH read zero on the
+    // `__meshharbor_remote_stats` is the RTP stats ref, so BOTH read zero on the
     // DataChannel transports even while the viewer paints a perfect stream.
     // Measured 2026-09-04: every Ubuntu cell "failed" RD while the toolbar read
     // `VP9 4:4:4 SW (libvpx) · direct · 28 fps · 9.1 Mbps` and the screenshot

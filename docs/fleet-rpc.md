@@ -16,11 +16,11 @@ That made every hypothesis in a remote investigation cost a human round trip:
 "please run this in an elevated pwsh and paste the output." Fleet RPC removes
 that loop.
 
-**Reading a remote log: always `roomler exec <host> -- roomler logs`** (with
+**Reading a remote log: always `meshharbor exec <host> -- meshharbor logs`** (with
 `--grep <pat>` / `-n <lines>` / `--source daemon|service|panic`), never a path
 guess. The daemon resolves its OWN log file — the path depends on the service
 role, the running user, and a UTC-dated suffix, and a Windows host carries
-two decoy `roomlerd.log*` files (the SCM supervisor's and the updater's).
+two decoy `meshharbord.log*` files (the SCM supervisor's and the updater's).
 Path archaeology has produced a false "the agent's logging is dead" verdict
 twice (2026-08-07 and 2026-08-09); the verb existed both times.
 
@@ -35,7 +35,7 @@ unavailable in the case that motivated the feature. An overlay-direct path
 selection will prefer it only when a carrier is actually up.
 
 ```
-CLI:  roomler → local daemon (LocalAPI) → rc:rpc.request → API pod
+CLI:  meshharbor → local daemon (LocalAPI) → rc:rpc.request → API pod
                                                              │
 UI:   browser → POST …/agent/{id}/exec ──────────────────────┤
                                                              ▼
@@ -55,7 +55,7 @@ Wire variants live in `crates/remote_control/src/signaling.rs`:
 | `rc:rpc.exec` | server → agent | run one bounded command |
 | `rc:rpc.cancel` | server → agent | kill it and its process tree |
 | `rc:rpc.result` | agent → server | the answer (always sent) |
-| `rc:rpc.request` | agent → server | the `roomler exec` leg |
+| `rc:rpc.request` | agent → server | the `meshharbor exec` leg |
 | `rc:rpc.response` | server → agent | its answer |
 
 **Capability gate.** An agent that predates the feature drops an unknown
@@ -92,7 +92,7 @@ Design notes worth keeping:
   visible to whoever is at the machine, and runs as the interactive user.
 - **Gate 4 is the one that survives a compromised server.** Everything else
   lives on the control plane. Clearing the key resets it to `false`, so
-  `roomler config set exec_enabled` with no value can never turn it on.
+  `meshharbor config set exec_enabled` with no value can never turn it on.
 - **`can_originate`** must be set on a device before its CLI may drive commands
   at *other* devices. Without it, compromising any enrolled laptop would
   inherit its owner's exec rights fleet-wide.
@@ -126,7 +126,7 @@ had no admin rights at all.
 
 ```mermaid
 sequenceDiagram
-  participant A as admin (roomler exec / UI)
+  participant A as admin (meshharbor exec / UI)
   participant S as server (any pod)
   participant W as worker (session 1, the user)
   participant V as service (session 0, SYSTEM)
@@ -164,20 +164,20 @@ to a local pipe. What each attempt to get around that meets:
 From an **elevated** prompt on the device:
 
 ```
-roomlerd anchor create --server https://roomler.ai --token <enrollment-token> --device <device id> [--ssh system]
-roomlerd anchor status            # what is anchored (never the credential)
-roomlerd anchor exec on|off       # the anchor's half of gate 4
-roomlerd anchor ssh off|console_user|system   # FR-105: roomler SSH through this service too
-roomlerd anchor remove            # this machine stops offering SYSTEM exec
+meshharbord anchor create --server https://meshharbor.itachi.fans --token <enrollment-token> --device <device id> [--ssh system]
+meshharbord anchor status            # what is anchored (never the credential)
+meshharbord anchor exec on|off       # the anchor's half of gate 4
+meshharbord anchor ssh off|console_user|system   # FR-105: meshharbor SSH through this service too
+meshharbord anchor remove            # this machine stops offering SYSTEM exec
 ```
 
 - **The anchor's SSH ceiling** (FR-105, from 0.4.136) is **off** by default, so
-  no anchor gains SYSTEM SSH by updating. `system` lets roomler SSH sessions run
+  no anchor gains SYSTEM SSH by updating. `system` lets meshharbor SSH sessions run
   through the same service as SYSTEM (session 0) or as the signed-in user;
   `console_user` allows only the latter. `anchor status` then prints the
   service's own SSH host key fingerprint. How the session gets there, and why
   nothing the signed-in user writes can widen it:
-  [`roomler-ssh.md`](roomler-ssh.md) § Through the device's SYSTEM service.
+  [`meshharbor-ssh.md`](meshharbor-ssh.md) § Through the device's SYSTEM service.
 
 - The device is **named**, not derived: on an attended install the enrollment
   belongs to the user who made it, and `machine_id` hashes that user's config
@@ -185,14 +185,14 @@ roomlerd anchor remove            # this machine stops offering SYSTEM exec
 - The enrollment token is single use and burned only once every check passes
   (live device, same org, Windows, host name matches the device unless
   `--force`).
-- The anchor lives in `%ProgramData%\roomler\roomler\exec-service\anchor.json`
+- The anchor lives in `%ProgramData%\meshharbor\meshharbor\exec-service\anchor.json`
   (Administrators-only). The worker learns from the service, every 30 s,
   which device it is anchored for, and offers the `exec-system` capability on
   that connection only. No restart is needed either way.
 
 #### The wizard anchors, with the token it installs with (FR-104)
 
-Roomler Setup anchors a machine-wide install (**Daemon — system** or **Daemon —
+MeshHarbor Setup anchors a machine-wide install (**Daemon — system** or **Daemon —
 machine**) itself, so nobody needs to open an elevated prompt afterwards:
 
 - **The token says so.** In the enrollment dialog, on the Windows tab for a
@@ -207,7 +207,7 @@ machine**) itself, so nobody needs to open an elevated prompt afterwards:
   device, and a second anchor, is refused. A token without the claim is single
   use across both purposes, as before.
 - **The wizard never holds the service's credential.** After the enrollment it
-  runs `roomlerd anchor create --server … --token <the same token> --device
+  runs `meshharbord anchor create --server … --token <the same token> --device
   <the id it just enrolled> --force` in an **elevated child**
   (`updater::spawn_elevated`, a second administrator prompt). That child posts,
   receives and writes the credential, as an administrator running it by hand
@@ -221,7 +221,7 @@ machine**) itself, so nobody needs to open an elevated prompt afterwards:
 sequenceDiagram
   participant A as admin (dashboard)
   participant W as wizard (Medium)
-  participant E as roomlerd anchor (elevated child)
+  participant E as meshharbord anchor (elevated child)
   participant S as server
   A->>S: enroll-token {anchor: true}
   S-->>A: token (claims anchor = true)
@@ -250,7 +250,7 @@ well before its year runs out.
 ```mermaid
 stateDiagram-v2
   [*] --> Unanchored
-  Unanchored --> Anchored: roomlerd anchor create (elevated)
+  Unanchored --> Anchored: meshharbord anchor create (elevated)
   Anchored --> Anchored: renew, same anchor_id
   Anchored --> Anchored: anchor create again, new anchor_id
   Anchored --> Unanchored: DELETE exec-anchor
@@ -260,11 +260,11 @@ stateDiagram-v2
 
 | Event | The service's credential | Where a command goes |
 |---|---|---|
-| `roomlerd anchor create` | minted, carrying a new `anchor_id` | the service, once the device advertises `exec-system` (within about 75 s, no restart) |
+| `meshharbord anchor create` | minted, carrying a new `anchor_id` | the service, once the device advertises `exec-system` (within about 75 s, no restart) |
 | renewal | minted again under the same `anchor_id` | unchanged |
-| `roomlerd anchor create` again | every earlier `anchor_id`'s credential refused (401) | the service holding the new anchor |
+| `meshharbord anchor create` again | every earlier `anchor_id`'s credential refused (401) | the service holding the new anchor |
 | `DELETE …/exec-anchor` | refused (401) | the worker, or refused where the org requires SYSTEM |
-| `roomlerd anchor remove` on the device | the file is gone; the server's record stays | the worker once the device stops advertising `exec-system`, or refused where the org requires SYSTEM |
+| `meshharbord anchor remove` on the device | the file is gone; the server's record stays | the worker once the device stops advertising `exec-system`, or refused where the org requires SYSTEM |
 | the device is removed | ended: the removal clears the anchor (401, "deleted", meanwhile) | nowhere: the device is gone |
 | the same machine re-enrolls | **still refused** (401): the revived row has no anchor | the worker, until an administrator anchors it again |
 
@@ -274,8 +274,8 @@ but not the anchor: `AgentDao::soft_delete` clears `exec_anchor` in the same
 update that tombstones the row. The anchor file still on the machine is then
 useless, since its credential names an anchor the server no longer records. The
 device's commands go to the worker until an administrator runs
-`roomlerd anchor create` again. Re-enrolling a device that was **never
-removed** (a re-run wizard, `roomlerd re-enroll`) keeps its anchor. An
+`meshharbord anchor create` again. Re-enrolling a device that was **never
+removed** (a re-run wizard, `meshharbord re-enroll`) keeps its anchor. An
 ephemeral enrollment's row is deleted outright (FR-51), so nothing of it can
 come back either.
 
@@ -330,7 +330,7 @@ the signed-in user back into SYSTEM.
 screen: logind's seat0 on Linux, the owner of `/dev/console` on macOS. No
 service is involved: the root daemon drops to them itself, by the drop a `named`
 SSH account takes, and refuses when nobody is at the screen
-([`roomler-ssh.md`](roomler-ssh.md) § `console_user` on Linux and macOS). The
+([`meshharbor-ssh.md`](meshharbor-ssh.md) § `console_user` on Linux and macOS). The
 server says so in the frame (`rc:rpc.exec`'s `run_as`), and it is the one frame
 field an older agent must never be sent, because it would ignore the field and
 run the command as root:
@@ -376,8 +376,8 @@ unbounded run (`models::exec_limits`):
   (a caller on a deadline wants a fast "busy", not a slow timeout)
 - no stdin, no interactivity, no streaming — **on this wire**. The engine has a
   streaming entry point beside `run_fed`, `ExecEngine::run_streamed` (FR-89),
-  with no ceiling and no wall clock; Roomler SSH's `ssh <node> 'cmd'` uses it
-  ([`roomler-ssh.md`](roomler-ssh.md) §3). `rc:rpc.exec` keeps every bound
+  with no ceiling and no wall clock; MeshHarbor SSH's `ssh <node> 'cmd'` uses it
+  ([`meshharbor-ssh.md`](meshharbor-ssh.md) §3). `rc:rpc.exec` keeps every bound
   above, because its answer is one persisted `exec_audit` row, and the two
   paths share the identity model, the permit, the redactor and the tree kill —
   only the shape of the output differs.
@@ -401,17 +401,17 @@ truncated sample still ties to what ran.
 ### CLI
 
 ```bash
-roomler exec winhost-a -- Get-NetRoute -AddressFamily IPv4
-roomler exec devbox --shell pwsh --timeout 60 -- Get-NetAdapter
-roomler exec winhost-a --json -- ipconfig /all
-roomler exec "Office PC" -- hostname      # a dashboard display name works too
+meshharbor exec winhost-a -- Get-NetRoute -AddressFamily IPv4
+meshharbor exec devbox --shell pwsh --timeout 60 -- Get-NetAdapter
+meshharbor exec winhost-a --json -- ipconfig /all
+meshharbor exec "Office PC" -- hostname      # a dashboard display name works too
 
 # canned evidence bundles
-roomler diag host winhost-a
-roomler diag pair DEVBOX winhost-a
+meshharbor diag host winhost-a
+meshharbor diag pair DEVBOX winhost-a
 ```
 
-Exit status mirrors the remote command's, so `roomler exec` composes in a
+Exit status mirrors the remote command's, so `meshharbor exec` composes in a
 script: a refusal or failure is non-zero here too, never a silent 0.
 
 The target is a device name or a hex agent id, resolved by the server within
@@ -437,8 +437,8 @@ argument for shipping free-form exec before a typed verb catalog.
 ```
 1. org owner:   Settings → allow remote command execution
 2. fleet admin: device → Execution policy → accept remote commands
-3. on the box:  roomler config set exec_enabled true
-                (then restart the Roomler service)
+3. on the box:  meshharbor config set exec_enabled true
+                (then restart the MeshHarbor service)
 4. role admin:  grant EXEC_DEVICE to whoever should be able to run things
 ```
 
@@ -456,6 +456,6 @@ the machine, on purpose.
   plus exposing the existing `status` / `peers` / `ping` / `config` /
   `tail-log` LocalAPI verbs remotely.
 - Output streaming **on the RPC wire** (the engine
-  itself streams for Roomler SSH since FR-89; the `rc:rpc.result` row and its
+  itself streams for MeshHarbor SSH since FR-89; the `rc:rpc.result` row and its
   audit sample would need a different shape), scheduled probes, and an
   `exec_policies` selector collection shaped like `overlay_policies`.

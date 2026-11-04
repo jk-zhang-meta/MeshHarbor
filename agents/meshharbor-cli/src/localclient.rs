@@ -4039,17 +4039,17 @@ mod tests {
     fn the_recipe_suffix_and_the_magicdns_name_both_yield_the_label() {
         // #1573: `Host *.meshharbor` guarantees `%h` arrives WITH the suffix, so
         // a proxy that looked the name up verbatim failed for every host.
-        let magic = Some("grox.roomler.ai");
+        let magic = Some("grox.meshharbor.itachi.fans");
         assert_eq!(mesh_label("zeus.meshharbor", magic), Some("zeus"));
         assert_eq!(mesh_label("zeus.meshharbor", None), Some("zeus"));
-        assert_eq!(mesh_label("zeus.grox.roomler.ai", magic), Some("zeus"));
+        assert_eq!(mesh_label("zeus.grox.meshharbor.itachi.fans", magic), Some("zeus"));
         // Absolute form, and any casing a user or a config file produces.
-        assert_eq!(mesh_label("zeus.grox.roomler.ai.", magic), Some("zeus"));
+        assert_eq!(mesh_label("zeus.grox.meshharbor.itachi.fans.", magic), Some("zeus"));
         assert_eq!(mesh_label("CORPLAP-3.MESHHARBOR", None), Some("CORPLAP-3"));
-        assert_eq!(mesh_label("zeus.Grox.Roomler.AI", magic), Some("zeus"));
+        assert_eq!(mesh_label("zeus.Grox.meshharbor.itachi.fans", magic), Some("zeus"));
         // A domain reported with dots around it is the same domain.
         assert_eq!(
-            mesh_label("zeus.grox.roomler.ai", Some(".grox.roomler.ai.")),
+            mesh_label("zeus.grox.meshharbor.itachi.fans", Some(".grox.meshharbor.itachi.fans.")),
             Some("zeus")
         );
     }
@@ -4059,11 +4059,11 @@ mod tests {
         // The failure this prevents: a ProxyCommand scoped wider than
         // `*.meshharbor` turning `github.com` into a lookup for a device named
         // `github` and handing the user's git to it.
-        let magic = Some("grox.roomler.ai");
+        let magic = Some("grox.meshharbor.itachi.fans");
         assert_eq!(mesh_label("github.com", magic), None);
-        assert_eq!(mesh_label("zeus.example.roomler.ai", magic), None);
+        assert_eq!(mesh_label("zeus.example.meshharbor.itachi.fans", magic), None);
         // Without the daemon's word for it, a MagicDNS name is not guessed at.
-        assert_eq!(mesh_label("zeus.grox.roomler.ai", None), None);
+        assert_eq!(mesh_label("zeus.grox.meshharbor.itachi.fans", None), None);
         // A suffix that merely ENDS the same way is not the suffix.
         assert_eq!(mesh_label("zeusmeshharbor", None), None);
         assert_eq!(mesh_label("zeus.xmeshharbor", None), None);
@@ -4073,7 +4073,7 @@ mod tests {
     fn nothing_left_after_the_suffix_is_no_label() {
         assert_eq!(mesh_label(".meshharbor", None), None);
         assert_eq!(mesh_label("meshharbor", None), None);
-        assert_eq!(mesh_label("grox.roomler.ai", Some("grox.roomler.ai")), None);
+        assert_eq!(mesh_label("grox.meshharbor.itachi.fans", Some("grox.meshharbor.itachi.fans")), None);
         assert_eq!(mesh_label("", None), None);
         // An empty domain must not turn every dotted name into a match.
         assert_eq!(mesh_label("zeus.local", Some("")), None);

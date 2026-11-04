@@ -960,7 +960,7 @@ mod tests {
                 assets: vec![asset("ffmpeg-linux64-lgpl-shared-minimal.tar.xz", 4000)],
             },
         ];
-        let rows = counter_rows("2026-10-16", "gjovanov/roomler-ai", &info, &releases);
+        let rows = counter_rows("2026-10-16", "jk-zhang-meta/MeshHarbor", &info, &releases);
         // The helper is counted apart: its own total, its release row marked,
         // no flavour of the product's.
         assert_eq!(value(&rows, "repo", None, "helper_downloads"), Some(4000));
@@ -1053,7 +1053,7 @@ mod tests {
         );
         assert!(
             rows.iter()
-                .all(|r| r.dims.get("repo").map(String::as_str) == Some("gjovanov/roomler-ai"))
+                .all(|r| r.dims.get("repo").map(String::as_str) == Some("jk-zhang-meta/MeshHarbor"))
         );
         let ids: std::collections::HashSet<&str> = rows.iter().map(|r| r.id.as_str()).collect();
         assert_eq!(ids.len(), rows.len());

@@ -42,14 +42,14 @@ Gate:
 
 ## State
 
-`00-preflight.ps1` writes `.roomler-signing.json` here; every later script
+`00-preflight.ps1` writes `.meshharbor-signing.json` here; every later script
 reads it, so each value is typed once. It holds only public identifiers
 (subscription id, tenant id, account/profile names) and is gitignored anyway.
 
 ## What must never be committed
 
 `dev-cert/`, `apple/`, and everything under `gpg/` except
-`roomler-release-pubkey.asc` are gitignored. `*.pfx`, `*.p12`, `*.key` and
+`meshharbor-release-pubkey.asc` are gitignored. `*.pfx`, `*.p12`, `*.key` and
 `*.p8` are ignored repo-wide as a backstop.
 
 The Azure path is the exception worth noting: it produces **no key material

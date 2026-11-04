@@ -38,7 +38,7 @@ That is the whole asymmetry.
 **What is NOT forced is two enrollments.** That comes from us: the hub keys a device's
 control WS on `agent_id` and a second connection displaces the first
 (`crates/modules/fleet/src/hub.rs:94`), so we gave each half its own identity and the
-Mac became two rows. Cost, paid daily: every `roomler exec` / `roomler ssh` must target
+Mac became two rows. Cost, paid daily: every `meshharbor exec` / `meshharbor ssh` must target
 the *right* row (the GUI row cannot reach root, the root row cannot see the screen), the
 install needs two tokens, and Devices shows one machine twice.
 
@@ -51,7 +51,7 @@ boot); the GUI-session process becomes an **unenrolled worker** it spawns and dr
   the launchd analogue of `spawn_in_session`. Console-user changes (login, logout, fast
   user switch) drive respawn, mirroring `decide_spawn`'s session-change handling.
 - **Transport**: the LocalAPI unix socket, which already solves exactly this addressing
-  problem — `crates/localapi/src/lib.rs:1966-1875` documents `/var/run/roomler` as the
+  problem — `crates/localapi/src/lib.rs:1966-1875` documents `/var/run/meshharbor` as the
   root daemon's well-known socket precisely because "a per-user path cannot serve a root
   daemon … that is the trap the macOS LaunchDaemon split walks into".
 - **Division**: signalling + consent + policy in the daemon; the rc session's WebRTC
@@ -90,7 +90,7 @@ work, and the design below should be read as such rather than as a translation.
 ### Why not the Windows shape (worker enrolled, daemon only supervising)
 
 Because it deletes the reason the macOS daemon half exists. With nobody logged in there
-would be no agent at all: no overlay, no `roomler ssh`, no `roomler exec`, no presence —
+would be no agent at all: no overlay, no `meshharbor ssh`, no `meshharbor exec`, no presence —
 exactly the "reachable before anyone logs in" property `win_service/mod.rs`'s own module
 docs list as the point of service mode. So the **daemon must hold the enrollment**, and
 the session has to reach the worker some other way.
@@ -154,7 +154,7 @@ screen appears".
 ⚠️ `RcAttach` must be **daemon-only**, not something any local process can call: it would
 otherwise let any user-session process on the box volunteer to serve remote-control
 sessions. The socket's own ACL is the trust boundary today
-(`lib.rs:1818-1828` — `/var/run/roomler`, 0600), which is *not* sufficient on its own here,
+(`lib.rs:1818-1828` — `/var/run/meshharbor`, 0600), which is *not* sufficient on its own here,
 because the worker is an ordinary user process and so is an attacker's. The attach must
 carry the one-shot secret the daemon passed to the worker in its spawn environment, and the
 daemon must accept exactly one attached worker at a time.
@@ -274,7 +274,7 @@ The obvious fix — delay the hello until a worker has attached, so the caps are
 right first time — is **wrong, and expensively so**. It couples the daemon's
 control WS to GUI-worker readiness, which destroys the one property the daemon
 half exists for: reachable *before anyone logs in*. A headless reboot would
-never connect at all, and `roomler ssh` / `exec` / the mesh would wait on a
+never connect at all, and `meshharbor ssh` / `exec` / the mesh would wait on a
 login that may never come. The daemon must say hello immediately and correct
 itself later.
 
@@ -377,11 +377,11 @@ counterpart despite the identical failure mode under PackageKit. Pinned
 ## Acceptance criteria
 
 - [ ] A fresh install with **one** token produces **one** device row, and that row serves
-      both a remote-desktop session and `roomler ssh`.
-- [ ] `roomler exec <mac>` reaches root-owned paths **and** the GUI session's log from the
+      both a remote-desktop session and `meshharbor ssh`.
+- [ ] `meshharbor exec <mac>` reaches root-owned paths **and** the GUI session's log from the
       same row (today this needs two different rows).
-- [ ] After a reboot with **nobody logged in**, the Mac is present in `roomler peers` and
-      `roomler ssh` works — the capability the daemon half exists for.
+- [ ] After a reboot with **nobody logged in**, the Mac is present in `meshharbor peers` and
+      `meshharbor ssh` works — the capability the daemon half exists for.
 - [ ] A remote-desktop session started while logged in streams real pixels and accepts
       input, with `caps` reporting `has_input_permission: true` and **no TCC re-prompt**.
 - [ ] `codesign -d -r-` on the bundle is byte-identical before and after the migration.
@@ -475,7 +475,7 @@ companion.
 ## Field-verification log
 
 All of it on the operator's MacBook (Apple Silicon), driven
-remotely — `roomler exec` for P0, `roomler ssh` on the daemon row from P1 onwards.
+remotely — `meshharbor exec` for P0, `meshharbor ssh` on the daemon row from P1 onwards.
 
 ### 2026-08-30 — P0 spike: the mechanism works, and one half was never measured
 
@@ -485,7 +485,7 @@ screenshot in **233 ms**, and our own binary spawned that way reported both a li
 session and its TCC grants — so the grants survive, which is what made P1 worth building.
 
 **What the spike got wrong, and why:** it never measured the worker's *identity*. The
-probe was `roomlerd caps`, which reports the GUI session and the TCC grants — both of
+probe was `meshharbord caps`, which reports the GUI session and the TCC grants — both of
 which root-in-a-session genuinely has — and says nothing about *which config* the process
 would load. **A probe that shares a blind spot with the design confirms the design.**
 `id -u` was the missing measurement, and it cost the outage below.
@@ -529,9 +529,9 @@ The group structure, measured under supervision:
      (FR-21). Rewriting the capture to the current name would make it a
      transcription rather than evidence. -->
 ```
-25894     1 25894     0  roomler-agent   <- root daemon
+25894     1 25894     0  meshharbor-agent   <- root daemon
 34322 25894 34322     0  sudo            <- our child, OWN group (process_group(0))
-34323 34322 34322   501  roomler-agent   <- worker, SAME group, uid 501
+34323 34322 34322   501  meshharbor-agent   <- worker, SAME group, uid 501
 ```
 
 `sudo` does not `setsid` here (a separate probe showed a shell under `sudo -u "#501"`

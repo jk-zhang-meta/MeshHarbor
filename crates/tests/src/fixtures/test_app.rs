@@ -84,7 +84,7 @@ impl TestApp {
     /// Each test gets a unique database name for isolation.
     pub async fn spawn() -> Self {
         init_tracing();
-        let db_name = format!("roomler_ai_test_{}", uuid::Uuid::new_v4().simple());
+        let db_name = format!("meshharbor_test_{}", uuid::Uuid::new_v4().simple());
 
         let mut settings = Settings::load().unwrap_or_else(|_| {
             // Fallback to minimal settings for tests
@@ -164,7 +164,7 @@ impl TestApp {
     /// liveness deadlines.
     pub async fn spawn_pair(mutator: fn(&mut Settings)) -> (Self, Self) {
         init_tracing();
-        let shared_db = format!("roomler_ai_test_{}", uuid::Uuid::new_v4().simple());
+        let shared_db = format!("meshharbor_test_{}", uuid::Uuid::new_v4().simple());
         let run = uuid::Uuid::new_v4().simple().to_string()[..8].to_string();
         let (db1, pod1) = (shared_db.clone(), format!("testpod1-{run}"));
         let app1 = Self::spawn_with_settings(move |s| {
@@ -191,7 +191,7 @@ impl TestApp {
     /// allowing tests to tweak specific fields (e.g., TURN config).
     pub async fn spawn_with_settings(mutator: impl FnOnce(&mut Settings)) -> Self {
         init_tracing();
-        let db_name = format!("roomler_ai_test_{}", uuid::Uuid::new_v4().simple());
+        let db_name = format!("meshharbor_test_{}", uuid::Uuid::new_v4().simple());
 
         let mut settings = Settings::load().unwrap_or_else(|_| test_settings());
         if let Ok(url) = std::env::var("MESHHARBOR__DATABASE__URL") {
@@ -267,7 +267,7 @@ impl TestApp {
     /// Uses a no-redirect reqwest client so we can inspect the 302/307 Location header.
     pub async fn spawn_with_oauth() -> Self {
         init_tracing();
-        let db_name = format!("roomler_ai_test_{}", uuid::Uuid::new_v4().simple());
+        let db_name = format!("meshharbor_test_{}", uuid::Uuid::new_v4().simple());
 
         let mut settings = Settings::load().unwrap_or_else(|_| test_settings());
         if let Ok(url) = std::env::var("MESHHARBOR__DATABASE__URL") {
@@ -441,7 +441,7 @@ fn test_settings() -> Settings {
         },
         database: meshharbor_config::DatabaseSettings {
             url: "mongodb://localhost:27019".to_string(),
-            name: "roomler_ai_test".to_string(),
+            name: "meshharbor_test".to_string(),
             max_pool_size: Some(5),
             min_pool_size: Some(1),
         },
@@ -450,7 +450,7 @@ fn test_settings() -> Settings {
             previous_secrets: String::new(),
             access_token_ttl_secs: 3600,
             refresh_token_ttl_secs: 604800,
-            issuer: "roomler-ai".to_string(),
+            issuer: "meshharbor".to_string(),
         },
         redis: meshharbor_config::RedisSettings {
             url: "redis://127.0.0.1:6379".to_string(),
@@ -462,7 +462,7 @@ fn test_settings() -> Settings {
             endpoint: "http://localhost:9000".to_string(),
             access_key: "minioadmin".to_string(),
             secret_key: "minioadmin".to_string(),
-            bucket: "roomler-ai-test".to_string(),
+            bucket: "meshharbor-test".to_string(),
             region: "us-east-1".to_string(),
         },
         mediasoup: meshharbor_config::MediasoupSettings {
@@ -553,8 +553,8 @@ fn test_settings() -> Settings {
         },
         email: meshharbor_config::EmailSettings {
             api_key: String::new(),
-            from_email: "test@roomler.ai".to_string(),
-            from_name: "Roomler Test".to_string(),
+            from_email: "test@meshharbor.itachi.fans".to_string(),
+            from_name: "MeshHarbor Test".to_string(),
             activation_token_ttl_minutes: 5,
             smtp_host: None,
             smtp_port: None,
@@ -563,7 +563,7 @@ fn test_settings() -> Settings {
         push: meshharbor_config::PushSettings {
             vapid_public_key: String::new(),
             vapid_private_key: String::new(),
-            contact: "mailto:test@roomler.ai".to_string(),
+            contact: "mailto:test@meshharbor.itachi.fans".to_string(),
         },
         auth: meshharbor_config::AuthSettings::default(),
         // Prod-shaped liveness (90 s — an in-process agent heartbeats every

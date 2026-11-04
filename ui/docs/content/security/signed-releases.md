@@ -1,6 +1,6 @@
 ---
 title: Signed releases
-description: Every Roomler artifact is signed — Authenticode on Windows, GPG and notarisation elsewhere — and the auto-updater verifies the publisher, not just the hash.
+description: Every MeshHarbor artifact is signed — Authenticode on Windows, GPG and notarisation elsewhere — and the auto-updater verifies the publisher, not just the hash.
 tags: [security, signing, updates, verification, supply-chain]
 order: 6
 ---
@@ -78,8 +78,8 @@ Get-AuthenticodeSignature "C:\Program Files\MeshHarbor\meshharbord.exe" |
 **Linux and macOS:**
 
 ```bash
-gpg --verify roomlerd-<version>-x86_64-unknown-linux-gnu.deb.asc roomlerd-<version>-x86_64-unknown-linux-gnu.deb
-gh attestation verify roomlerd-<version>-x86_64-unknown-linux-gnu.deb --repo gjovanov/roomler-ai
+gpg --verify meshharbord-<version>-x86_64-unknown-linux-gnu.deb.asc meshharbord-<version>-x86_64-unknown-linux-gnu.deb
+gh attestation verify meshharbord-<version>-x86_64-unknown-linux-gnu.deb --repo jk-zhang-meta/MeshHarbor
 ```
 
 ## Where downloads come from

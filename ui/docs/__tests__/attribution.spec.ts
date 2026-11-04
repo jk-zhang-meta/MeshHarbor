@@ -51,7 +51,7 @@ const docsBody = renderMarkdown(
   [
     '## Create an account',
     '',
-    'Sign up at [roomler.ai](/register) and name the organization.',
+    'Sign up at [meshharbor.itachi.fans](/register) and name the organization.',
     '',
     '## Enroll a machine',
     '',
@@ -61,7 +61,7 @@ const docsBody = renderMarkdown(
     'Read [the Windows guide](/docs/start/install/windows/), or [the FAQ](/docs/faq/),',
     'or jump back to [the first step](#create-an-account).',
     '',
-    'The code is on [GitHub](https://github.com/gjovanov/roomler-ai).',
+    'The code is on [GitHub](https://github.com/jk-zhang-meta/MeshHarbor).',
   ].join('\n'),
   'test.md',
 )
@@ -98,8 +98,8 @@ const post: Post = {
   outFile: 'x/index.html',
   sourceFile: 'ui/blog/posts/x.md',
   heroImage: { url: '/docs/assets/remote-desktop.cfab9256a7.svg', width: 760, height: 400 },
-  og: { url: 'https://roomler.ai/docs/assets/og.0123456789.png', width: 1200, height: 630, alt: 'A browser tab' },
-  html: '<p>Built with <a href="https://github.com/gjovanov/roomler-ai">Roomler</a>.</p>',
+  og: { url: 'https://meshharbor.itachi.fans/docs/assets/og.0123456789.png', width: 1200, height: 630, alt: 'A browser tab' },
+  html: '<p>Built with <a href="https://github.com/jk-zhang-meta/MeshHarbor">MeshHarbor</a>.</p>',
   headings: [],
   plain: '',
   readingMinutes: 3,
@@ -172,9 +172,9 @@ function expectNoStorage(): void {
 
 describe('attribution.js — without a campaign', () => {
   it.each([
-    ['the homepage', homeHtml, 'https://roomler.ai/'],
-    ['a docs page', docsHtml, 'https://roomler.ai/docs/start/quickstart/'],
-    ['a blog post', postHtml, 'https://roomler.ai/blog/x/'],
+    ['the homepage', homeHtml, 'https://meshharbor.itachi.fans/'],
+    ['a docs page', docsHtml, 'https://meshharbor.itachi.fans/docs/start/quickstart/'],
+    ['a blog post', postHtml, 'https://meshharbor.itachi.fans/blog/x/'],
   ])('leaves every link on %s untouched', (_, html, url) => {
     // An external referrer and unrelated parameters are not a campaign.
     const doc = run(html(), `${url}?q=vpn&landing_path=/x&referrer_host=evil.example`, 'https://www.google.com/')
@@ -184,16 +184,16 @@ describe('attribution.js — without a campaign', () => {
   })
 
   it('treats an empty campaign value as no campaign', () => {
-    const doc = run(homeHtml(), 'https://roomler.ai/?utm_source=&ref=%20')
+    const doc = run(homeHtml(), 'https://meshharbor.itachi.fans/?utm_source=&ref=%20')
     expect(changed(homeHtml(), doc)).toEqual([])
   })
 })
 
 describe('attribution.js — with a campaign', () => {
   it.each([
-    ['the homepage', homeHtml, 'https://roomler.ai/'],
-    ['a docs page', docsHtml, 'https://roomler.ai/docs/start/quickstart/'],
-    ['a blog post', postHtml, 'https://roomler.ai/blog/x/'],
+    ['the homepage', homeHtml, 'https://meshharbor.itachi.fans/'],
+    ['a docs page', docsHtml, 'https://meshharbor.itachi.fans/docs/start/quickstart/'],
+    ['a blog post', postHtml, 'https://meshharbor.itachi.fans/blog/x/'],
   ])('rewrites exactly the allowlisted links on %s, and every one of them', (_, html, url) => {
     const doc = run(html(), `${url}?${CAMPAIGN}`, 'https://www.youtube.com/')
     const diff = changed(html(), doc)
@@ -211,7 +211,7 @@ describe('attribution.js — with a campaign', () => {
   it('never turns an in-page jump into a reload, on a page that is itself a target', () => {
     // The quickstart is an install guide: its `#main` skip link and anything
     // else that resolves to the quickstart itself must keep its href.
-    const url = 'https://roomler.ai/docs/start/quickstart/'
+    const url = 'https://meshharbor.itachi.fans/docs/start/quickstart/'
     const doc = run(docsHtml(), `${url}?${CAMPAIGN}`)
     expect(doc.querySelector('a.skip-link')!.getAttribute('href')).toBe('#main')
     // The table of contents, the heading permalinks and the prose's own jump.
@@ -223,9 +223,9 @@ describe('attribution.js — with a campaign', () => {
   })
 
   it('carries the campaign and where the journey began onto the sign-up link', () => {
-    const doc = run(homeHtml(), `https://roomler.ai/?${CAMPAIGN}&utm_content=desc&utm_term=rd&ref=x`, 'https://www.youtube.com/')
+    const doc = run(homeHtml(), `https://meshharbor.itachi.fans/?${CAMPAIGN}&utm_content=desc&utm_term=rd&ref=x`, 'https://www.youtube.com/')
     const cta = doc.querySelector('a.btn.btn--primary.btn--lg')!.getAttribute('href')!
-    const u = new URL(cta, 'https://roomler.ai')
+    const u = new URL(cta, 'https://meshharbor.itachi.fans')
     expect(u.pathname).toBe('/register')
     // In the register view's order, and nothing else: CARRIED_KEYS is the
     // SPA's list, so the two cannot drift.
@@ -243,11 +243,11 @@ describe('attribution.js — with a campaign', () => {
   })
 
   it('keeps a site-relative href site-relative, and an absolute one absolute', () => {
-    const doc = run(docsHtml(), `https://roomler.ai/docs/start/quickstart/?${CAMPAIGN}`)
+    const doc = run(docsHtml(), `https://meshharbor.itachi.fans/docs/start/quickstart/?${CAMPAIGN}`)
     const all = hrefs(doc)
     expect(all.find((h) => h.startsWith('/register?'))).toBeDefined()
     // The :::enroll download buttons name the absolute origin.
-    const download = all.find((h) => h.startsWith('https://roomler.ai/api/setup/windows'))!
+    const download = all.find((h) => h.startsWith('https://meshharbor.itachi.fans/api/setup/windows'))!
     expect(new URL(download).searchParams.get('utm_campaign')).toBe('fr88-test')
   })
 
@@ -255,16 +255,16 @@ describe('attribution.js — with a campaign', () => {
     const html = docsHtml()
     const doc = run(html, `http://localhost:5000/docs/start/quickstart/?${CAMPAIGN}`)
     const diff = changed(html, doc)
-    expect(diff.some(([b]) => b.startsWith('https://roomler.ai/'))).toBe(false)
+    expect(diff.some(([b]) => b.startsWith('https://meshharbor.itachi.fans/'))).toBe(false)
     expect(diff.some(([b]) => b === '/register')).toBe(true)
   })
 
   it('records the referrer as a HOST, and only when it is another site', () => {
     const at = (referrer: string) =>
-      new URL(run(homeHtml(), `https://roomler.ai/?${CAMPAIGN}`, referrer).querySelector('a[href^="/register"]')!.getAttribute('href')!, 'https://roomler.ai')
+      new URL(run(homeHtml(), `https://meshharbor.itachi.fans/?${CAMPAIGN}`, referrer).querySelector('a[href^="/register"]')!.getAttribute('href')!, 'https://meshharbor.itachi.fans')
         .searchParams
     expect(at('https://www.reddit.com/r/selfhosted/comments/abc/private-title/').get('referrer_host')).toBe('www.reddit.com')
-    expect(at('https://roomler.ai/docs/').has('referrer_host')).toBe(false)
+    expect(at('https://meshharbor.itachi.fans/docs/').has('referrer_host')).toBe(false)
     expect(at('').has('referrer_host')).toBe(false)
   })
 
@@ -273,39 +273,39 @@ describe('attribution.js — with a campaign', () => {
     // link; the first page's landing and referrer must survive.
     const doc = run(
       docsHtml(),
-      `https://roomler.ai/docs/start/quickstart/?${CAMPAIGN}&referrer_host=www.youtube.com&landing_path=%2F`,
-      'https://roomler.ai/?utm_source=youtube',
+      `https://meshharbor.itachi.fans/docs/start/quickstart/?${CAMPAIGN}&referrer_host=www.youtube.com&landing_path=%2F`,
+      'https://meshharbor.itachi.fans/?utm_source=youtube',
     )
-    const u = new URL(doc.querySelector('a[href^="/register"]')!.getAttribute('href')!, 'https://roomler.ai')
+    const u = new URL(doc.querySelector('a[href^="/register"]')!.getAttribute('href')!, 'https://meshharbor.itachi.fans')
     expect(u.searchParams.get('referrer_host')).toBe('www.youtube.com')
     expect(u.searchParams.get('landing_path')).toBe('/')
   })
 
   it('leaves a value a link names itself alone', () => {
     const html = '<!DOCTYPE html><html><body><a href="/register?utm_source=own#top">x</a></body></html>'
-    const doc = run(html, `https://roomler.ai/docs/?${CAMPAIGN}`)
-    const u = new URL(doc.querySelector('a')!.getAttribute('href')!, 'https://roomler.ai')
+    const doc = run(html, `https://meshharbor.itachi.fans/docs/?${CAMPAIGN}`)
+    const u = new URL(doc.querySelector('a')!.getAttribute('href')!, 'https://meshharbor.itachi.fans')
     expect(u.searchParams.get('utm_source')).toBe('own')
     expect(u.searchParams.get('utm_campaign')).toBe('fr88-test')
     expect(u.hash).toBe('#top')
   })
 
   it('caps every value at the 64 characters the server keeps', () => {
-    const doc = run(homeHtml(), `https://roomler.ai/?utm_campaign=${'c'.repeat(300)}`)
-    const u = new URL(doc.querySelector('a[href^="/register"]')!.getAttribute('href')!, 'https://roomler.ai')
+    const doc = run(homeHtml(), `https://meshharbor.itachi.fans/?utm_campaign=${'c'.repeat(300)}`)
+    const u = new URL(doc.querySelector('a[href^="/register"]')!.getAttribute('href')!, 'https://meshharbor.itachi.fans')
     expect(u.searchParams.get('utm_campaign')).toBe('c'.repeat(64))
   })
 
   it('changes nothing but hrefs (and the newsletter source): no layout can shift', () => {
     const html = homeHtml()
     const strip = (s: string) => s.replace(/\shref="[^"]*"/g, ' href').replace(/\sdata-source="[^"]*"/g, '')
-    const doc = run(html, `https://roomler.ai/?${CAMPAIGN}`, 'https://www.youtube.com/')
+    const doc = run(html, `https://meshharbor.itachi.fans/?${CAMPAIGN}`, 'https://www.youtube.com/')
     const pristine = new DOMParser().parseFromString(html, 'text/html')
     expect(strip(doc.documentElement.outerHTML)).toBe(strip(pristine.documentElement.outerHTML))
   })
 
   it('hands the newsletter form the campaign as its source, cleaned as the server cleans it', () => {
-    const src = (qs: string) => run(homeHtml(), `https://roomler.ai/?${qs}`).querySelector('form[data-subscribe]')!.getAttribute('data-source')
+    const src = (qs: string) => run(homeHtml(), `https://meshharbor.itachi.fans/?${qs}`).querySelector('form[data-subscribe]')!.getAttribute('data-source')
     expect(src(CAMPAIGN)).toBe('fr88-test')
     expect(src('utm_campaign=a%20b%3Cc%3E')).toBe('abc')
     expect(src(`utm_campaign=${'x'.repeat(40)}`)).toBe('x'.repeat(32))
@@ -325,18 +325,18 @@ describe('attribution.js — with a campaign', () => {
 describe('attribution.js — sign-in and the install pages', () => {
   const carriedTo = (doc: Document, path: string) =>
     [...doc.querySelectorAll('a[href]')]
-      .map((a) => new URL(a.getAttribute('href')!, 'https://roomler.ai'))
+      .map((a) => new URL(a.getAttribute('href')!, 'https://meshharbor.itachi.fans'))
       .filter((u) => u.pathname === path)
 
   it('carries onto the sign-in link: a provider "sign-in" creates the account when there is none', () => {
-    const doc = run(homeHtml(), `https://roomler.ai/?${CAMPAIGN}`)
+    const doc = run(homeHtml(), `https://meshharbor.itachi.fans/?${CAMPAIGN}`)
     const login = carriedTo(doc, '/login')
     expect(login.length).toBeGreaterThan(0)
     for (const u of login) expect(u.searchParams.get('utm_campaign')).toBe('fr88-test')
   })
 
   it('carries onto every install page a page links to, the docs home included', () => {
-    const doc = run(homeHtml(), `https://roomler.ai/?${CAMPAIGN}`)
+    const doc = run(homeHtml(), `https://meshharbor.itachi.fans/?${CAMPAIGN}`)
     for (const path of ['/docs/', '/docs/start/quickstart/']) {
       const links = carriedTo(doc, path)
       expect(links.length, path).toBeGreaterThan(0)
@@ -346,7 +346,7 @@ describe('attribution.js — sign-in and the install pages', () => {
 
   it('needs the build’s list: the unfilled source reaches no install page at all', () => {
     // The fixed targets still work; the install pages are the build's to write.
-    const doc = run(homeHtml(), `https://roomler.ai/?${CAMPAIGN}`, '', SOURCE)
+    const doc = run(homeHtml(), `https://meshharbor.itachi.fans/?${CAMPAIGN}`, '', SOURCE)
     expect(carriedTo(doc, '/register')[0]!.searchParams.get('utm_source')).toBe('youtube')
     for (const path of ['/docs/', '/docs/start/quickstart/']) {
       for (const u of carriedTo(doc, path)) expect(u.search, path).toBe('')
@@ -370,10 +370,10 @@ describe('carryScript — the build writes INSTALL_PAGES into the script', () =>
 
 describe('installPageErrors — the build gate that keeps the lists together', () => {
   const block = (cmd: string) => renderMarkdown(md, ['```bash', cmd, '```'].join('\n'), 'x.md').html
-  const install = block('curl -fsSL https://roomler.ai/api/setup/install.sh | sh -s -- --role daemon --token <t>')
+  const install = block('curl -fsSL https://meshharbor.itachi.fans/api/setup/install.sh | sh -s -- --role daemon --token <t>')
   const pages = [
     { id: 'ui/docs/content/index.md', url: `${BASE}/`, html: install },
-    { id: 'ui/docs/content/faq/index.md', url: `${BASE}/faq/`, html: block('roomler status') },
+    { id: 'ui/docs/content/faq/index.md', url: `${BASE}/faq/`, html: block('meshharbor status') },
   ]
 
   it('passes when every page with an install command is listed', () => {

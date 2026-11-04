@@ -1,6 +1,6 @@
-# FR-91: Scheduled blog publishing — a post goes live without rolling `roomler2`
+# FR-91: Scheduled blog publishing — a post goes live without rolling `meshharbor2`
 
-**Issue:** [#1880](https://github.com/gjovanov/roomler-ai/issues/1880) · **Status:** proposed 2026-10-09
+**Issue:** [#1880](https://github.com/jk-zhang-meta/MeshHarbor/issues/1880) · **Status:** proposed 2026-10-09
 — spec and claim · **Owner:** web / public site + deploy · **Anchors:** master `251abb731` ·
 **Builds on:** [FR-87](FR-87-blog-and-google-indexing.md) (the blog, its gates, IndexNow),
 [FR-60](FR-60-public-docs-site.md) (the generator), [FR-88](FR-88-promotion-attribution-and-site-video.md)
@@ -9,7 +9,7 @@
 ## 1. Goal
 
 A blog post is part of the server image. It goes live only through a full image build and a promote,
-and the promote rolls both `roomler2` pods, which re-homes every remote-desktop session, tunnel and
+and the promote rolls both `meshharbor2` pods, which re-homes every remote-desktop session, tunnel and
 DERP socket on each replaced pod. That price is acceptable for a release, but not per article.
 
 This FR gives the blog its own publishing lane:
@@ -17,7 +17,7 @@ This FR gives the blog its own publishing lane:
 1. **A blog-only build** of the same generator. It runs every gate the image build runs today and
    emits `/blog/**` with its own asset base, so its output does not depend on the image's hashed
    `/docs/assets/`.
-2. **A `roomler-blog` server**: a small nginx Deployment fed from a MinIO bucket that sends the same
+2. **A `meshharbor-blog` server**: a small nginx Deployment fed from a MinIO bucket that sends the same
    security headers from one shared include. The mars edge routes `/blog/` and `/sitemap-blog.xml` to
    it, and rolling it touches no long-lived socket.
 3. **A publisher contract**: build, upload, verify on the served site, tell IndexNow, then archive the
@@ -35,7 +35,7 @@ lane, and it is out of scope here, as FR-39 requires for campaign material.
 | A post is `ui/blog/posts/<slug>.md`, built by `ui/docs/build.ts` into `ui/dist` | `ui/package.json` `build`; `Dockerfile:100-105` | — |
 | `ui/dist` is copied into the runtime image, which serves it from the pod nginx | `Dockerfile:132-133`; `files/nginx-pod.conf:134-137` (`/blog/`), `:142-146` (feed) | a post is a property of the image |
 | `hosted-image.yml` builds on any `ui/**` change | `.github/workflows/hosted-image.yml:31` | every post is an image |
-| Only `promote.yml` puts an image live; it rolls `roomler2` (2 replicas, hostNetwork, maxSurge 0) | `promote.yml`; `docs/deployment.md` | every post is a roll |
+| Only `promote.yml` puts an image live; it rolls `meshharbor2` (2 replicas, hostNetwork, maxSurge 0) | `promote.yml`; `docs/deployment.md` | every post is a roll |
 | IndexNow runs only inside a promote | `promote.yml:90-101`, `:179-190` | a post published any other way is never announced |
 | A future `date` is a build error, by design | `ui/docs/theme/posts.ts:169` | there is no scheduling inside this repo, and this FR keeps it that way |
 | `draft` is refused: a file here IS published | `ui/docs/theme/posts.ts:92-94` | unpublished copy lives elsewhere (FR-39/FR-87) |
@@ -75,11 +75,11 @@ New front-matter key **`installCopy: true`**, added to `BLOG_FRONTMATTER_KEYS` (
 The `date` gate does not move. The publisher writes `date` as the moment of publication, so
 `posts.ts:169` holds as written.
 
-### 3b. Serving: `roomler-blog`
+### 3b. Serving: `meshharbor-blog`
 
-A Deployment in the `roomler-ai` namespace, defined in the deploy repo:
+A Deployment in the `meshharbor` namespace, defined in the deploy repo:
 - nginx ×2 serving an emptyDir.
-- An **initContainer** fills the emptyDir from the bucket `roomler-blog`.
+- An **initContainer** fills the emptyDir from the bucket `meshharbor-blog`.
 - A **sidecar** follows a pointer object (`current`) and mirrors the release it names into a fresh
   directory, then swaps a symlink, so nginx never serves a half-written tree.
 - A MinIO blip leaves the running pods serving their last good copy.
@@ -94,8 +94,8 @@ Headers and caching are byte-identical to the pod nginx:
 
 ### 3c. Routing at the edge
 
-The mars edge vhost for roomler.ai gains `location ^~ /blog/` and `location = /sitemap-blog.xml`,
-pointing at an upstream of the `roomler-blog` NodePort. Everything else (`/`, `/docs/`, `/api/`, `/ws`,
+The mars edge vhost for meshharbor.itachi.fans gains `location ^~ /blog/` and `location = /sitemap-blog.xml`,
+pointing at an upstream of the `meshharbor-blog` NodePort. Everything else (`/`, `/docs/`, `/api/`, `/ws`,
 `/derp`) keeps going where it goes today.
 
 - That vhost is in no repository today. It is committed to the deploy repo **before** the change, so
@@ -115,8 +115,8 @@ While the lane is on, the sitemap index lists `sitemap-blog.xml` **without** `la
 sequenceDiagram
     participant P as Publisher (private)
     participant B as build.ts --blog-only
-    participant M as MinIO roomler-blog
-    participant N as roomler-blog nginx
+    participant M as MinIO meshharbor-blog
+    participant N as meshharbor-blog nginx
     participant E as mars edge
     P->>B: master + the post (date = now) [+ installCopy]
     B-->>P: /blog/** or a gate failure (stop)
@@ -130,7 +130,7 @@ sequenceDiagram
 Rules for any publisher:
 - It never uploads a tree that failed a gate.
 - It verifies the **served** page, not its build.
-- It holds one credential only: a MinIO user limited to put/delete on `roomler-blog`. It holds no
+- It holds one credential only: a MinIO user limited to put/delete on `meshharbor-blog`. It holds no
   GitHub token.
 - The archive PR goes through the normal CI, including `machine-names` and `commit-identity`. The next
   promote's image then carries the post in docs search and backlinks.
@@ -153,7 +153,7 @@ onto the same targets it uses today: when **no** campaign parameter is present, 
 |---|---|---|---|
 | P0 | Claim: issue #1880, this spec, the ledger row | Docs only | this PR |
 | P1 | `--blog-only` + the second `AssetEmitter`, `installCopy`, the sitemap-index change behind `BLOG_LANE` in `site.ts`, `files/security-headers.conf`, `public-site-smoke.sh --blog` (compares `/blog/` headers with `/docs/`), tests | `--blog-only` not passed ⇒ output identical to today; `BLOG_LANE = false` | PR open #1883 |
-| P2 | The deploy repo: `roomler-blog` Deployment + Service, bucket + scoped users, the edge vhost committed and then routed; one promote for P1 | Remove the two edge locations | — |
+| P2 | The deploy repo: `meshharbor-blog` Deployment + Service, bucket + scoped users, the edge vhost committed and then routed; one promote for P1 | Remove the two edge locations | — |
 | P3 | §3e: the organic carry and the admin breakdown | `ATTRIBUTION_ENABLED` (existing) | — |
 | P4 | Docs: `docs/public-site.md` gains "Publishing without a roll" (the sequence above, the edge flowchart, the kill switch); `docs/README.md` row; the field log | — | — |
 
@@ -161,7 +161,7 @@ onto the same targets it uses today: when **no** campaign parameter is present, 
 
 - [ ] **AC1:** for the existing post, `--blog-only` output matches the image's `/blog/**` once asset URLs
   are normalised. A test asserts it.
-- [ ] **AC2:** a new post goes live on production with **zero** `roomler2` restarts and unchanged pod
+- [ ] **AC2:** a new post goes live on production with **zero** `meshharbor2` restarts and unchanged pod
   ages, measured before and after the publish.
 - [ ] **AC3:** the served `/blog/<slug>/` sends CSP, HSTS, X-Frame-Options, X-Content-Type-Options,
   Referrer-Policy and Permissions-Policy byte-identical to `/docs/`, and the `--blog` smoke passes.
@@ -170,7 +170,7 @@ onto the same targets it uses today: when **no** campaign parameter is present, 
   and IndexNow answers 200 or 202 for it.
 - [ ] **AC5:** with the two edge locations removed, the image's blog serves and the smoke passes for the
   older post. Restoring them serves the lane again.
-- [ ] **AC6:** with the bucket unreachable, the running `roomler-blog` pods keep serving the last
+- [ ] **AC6:** with the bucket unreachable, the running `meshharbor-blog` pods keep serving the last
   release.
 - [ ] **AC7:** a post that shows an install line fails `--blog-only` without `installCopy: true` and
   builds with it. The carry then reaches its install links.

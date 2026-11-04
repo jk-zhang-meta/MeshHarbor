@@ -51,7 +51,7 @@ jobs:
           New-Item -ItemType Directory -Path C:\vpx-pin -Force | Out-Null
           @'
           {
-            "name": "roomler-vpx-pin",
+            "name": "meshharbor-vpx-pin",
             "version": "0.0.1",
             "dependencies": [{"name": "libvpx", "version>=": "1.12.0"}],
             "overrides":    [{"name": "libvpx", "version":   "1.12.0"}],

@@ -283,7 +283,7 @@ fn spawn_keyed_agent(
         let (view_tx, _view_rx) = tokio::sync::watch::channel(Default::default());
         let broker = meshharbord::consent::ConsentBroker::new(
             meshharbord::consent::Mode::AutoGrant,
-            std::env::temp_dir().join(format!("roomler-device-key-consent-{}", cfg.agent_id)),
+            std::env::temp_dir().join(format!("meshharbor-device-key-consent-{}", cfg.agent_id)),
         )
         .expect("consent broker init");
         let _ = signaling::run(

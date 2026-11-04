@@ -1549,7 +1549,7 @@ pub fn run(
 
                             // Phase 1B (Task 9): record a crash
                             // sidecar so the next worker uploads it
-                            // to roomler.ai. The predicate explicitly
+                            // to meshharbor.itachi.fans. The predicate explicitly
                             // excludes STALL_EXIT_CODE — the watchdog
                             // already recorded that case before
                             // forcing exit; double-recording would

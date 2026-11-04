@@ -1,12 +1,12 @@
 ---
 title: How devices connect
-description: The connection cascade — LAN, direct internet, NAT hole-punching, then relays — how Roomler picks a path, and how to see which one a pair is using.
+description: The connection cascade — LAN, direct internet, NAT hole-punching, then relays — how MeshHarbor picks a path, and how to see which one a pair is using.
 tags: [network, nat, connectivity, troubleshooting, performance, relay]
 order: 2
 ---
 
 Two machines that want to talk are rarely on the same network, and are usually
-both behind NAT. Roomler tries a **ladder of paths** and takes the best one that
+both behind NAT. MeshHarbor tries a **ladder of paths** and takes the best one that
 actually works — measured, not assumed.
 
 ## The ladder
@@ -28,7 +28,7 @@ actually works — measured, not assumed.
 ## Seeing which path you are on
 
 ```bash
-roomler peers
+meshharbor peers
 ```
 
 Every peer, with the path currently carrying it. The remote-desktop session

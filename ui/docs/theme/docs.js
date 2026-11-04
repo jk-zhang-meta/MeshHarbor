@@ -16,7 +16,7 @@
 ;(function () {
   'use strict'
 
-  var OS_KEY = 'roomler-docs-os'
+  var OS_KEY = 'meshharbor-docs-os'
   var VALID_OS = { windows: 1, macos: 1, linux: 1 }
 
   function readOs() {
@@ -131,7 +131,7 @@
   // ── the repository goal (FR-88) ───────────────────────────────────────
   // Any link into the repository: the top bar's GitHub link, the ones in the
   // prose, "Edit this page". Not the author's profile, not another repo.
-  var REPO = /^https:\/\/github\.com\/gjovanov\/roomler-ai(?:[/?#]|\.git|$)/i
+  var REPO = /^https:\/\/github\.com\/gjovanov\/meshharbor(?:[/?#]|\.git|$)/i
 
   function initOutbound() {
     function onClick(ev) {

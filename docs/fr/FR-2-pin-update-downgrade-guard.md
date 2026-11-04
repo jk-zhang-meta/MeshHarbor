@@ -2,7 +2,7 @@
 
 > **CLOSED 2026-08-27** — issue #770 is closed and its acceptance criteria are met. Any status line below is the state while the work was in flight, kept as the record.
 
-**Issue:** gjovanov/roomler-ai — `FR-2: pin-update downgrade guard` (filed with this doc)
+**Issue:** jk-zhang-meta/MeshHarbor — `FR-2: pin-update downgrade guard` (filed with this doc)
 **Status:** implemented, pending field verification
 
 ## Goal
