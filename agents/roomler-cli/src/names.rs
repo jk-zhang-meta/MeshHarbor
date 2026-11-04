@@ -28,7 +28,7 @@
 //! Every function is pure — slices in, verdicts out — so the precedence is
 //! locked by unit tests with no daemon.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::net::IpAddr;
 
 use tunnel_core::localapi::{DeviceRowLite, PeerInfo};
@@ -182,6 +182,33 @@ pub enum Resolution<'a> {
 pub fn is_literal(target: &str) -> bool {
     target.parse::<IpAddr>().is_ok()
         || (target.len() == 24 && target.chars().all(|c| c.is_ascii_hexdigit()))
+}
+
+/// An SSH grant names an agent, never an address. Resolve only against the
+/// primary enrollment's authenticated mesh. No dashboard-list permission is
+/// needed for an address already present in the netmap.
+pub fn ssh_agent_for_ip(
+    ip: IpAddr,
+    peers: &[PeerInfo],
+    primary_org: Option<&str>,
+) -> anyhow::Result<String> {
+    let same = |value: Option<&str>| value.and_then(|s| s.parse::<IpAddr>().ok()) == Some(ip);
+    let mut ids = peers
+        .iter()
+        .filter(|p| p.org.is_empty() || Some(p.org.as_str()) == primary_org)
+        .filter(|p| same(p.overlay_ip.as_deref()) || same(p.overlay_ip6.as_deref()))
+        .filter_map(|p| p.agent_id.as_deref())
+        .filter(|id| id.len() == 24 && id.bytes().all(|b| b.is_ascii_hexdigit()))
+        .map(str::to_ascii_lowercase)
+        .collect::<BTreeSet<_>>()
+        .into_iter();
+    match (ids.next(), ids.next()) {
+        (Some(id), None) => Ok(id),
+        (None, _) => {
+            anyhow::bail!("no SSH device in the primary organization has overlay address {ip}")
+        }
+        _ => anyhow::bail!("overlay address {ip} identifies multiple SSH devices; use a device id"),
+    }
 }
 
 /// Resolve `target` against the device list, by the precedence
@@ -339,6 +366,47 @@ mod tests {
     const HOME_SERVER: &str = "aaaaaaaaaaaaaaaaaaaaaaa2";
     const BUILD_BOX: &str = "aaaaaaaaaaaaaaaaaaaaaaa3";
     const OFFICE_PC: &str = "aaaaaaaaaaaaaaaaaaaaaaa4";
+
+    #[test]
+    fn ssh_overlay_addresses_resolve_only_one_primary_agent() {
+        let mut p = peer("node-laptop", "laptop", "alpha");
+        p.agent_id = Some(LAPTOP.into());
+        p.overlay_ip = Some("100.64.0.2".into());
+        p.overlay_ip6 = Some("fd72:6f6f:6d6c::6440:2".into());
+        let v4 = "100.64.0.2".parse().unwrap();
+        let v6 = "FD72:6F6F:6D6C:0:0:0:6440:2".parse().unwrap();
+        assert_eq!(
+            ssh_agent_for_ip(v4, &[p.clone()], Some("alpha")).unwrap(),
+            LAPTOP
+        );
+        assert_eq!(
+            ssh_agent_for_ip(v6, &[p.clone()], Some("alpha")).unwrap(),
+            LAPTOP
+        );
+        let mut secondary = p.clone();
+        secondary.org = "beta".into();
+        assert!(ssh_agent_for_ip(v6, &[secondary], Some("alpha")).is_err());
+        assert!(
+            ssh_agent_for_ip("100.64.0.99".parse().unwrap(), &[p.clone()], Some("alpha")).is_err()
+        );
+        let mut client = p.clone();
+        client.agent_id = None;
+        assert!(ssh_agent_for_ip(v4, &[client.clone()], Some("alpha")).is_err());
+        assert_eq!(
+            ssh_agent_for_ip(v4, &[p.clone(), client], Some("alpha")).unwrap(),
+            LAPTOP
+        );
+        assert_eq!(
+            ssh_agent_for_ip(v4, &[p.clone(), p.clone()], Some("alpha")).unwrap(),
+            LAPTOP
+        );
+        let mut invalid = p.clone();
+        invalid.agent_id = Some("another-device-name".into());
+        assert!(ssh_agent_for_ip(v4, &[invalid], Some("alpha")).is_err());
+        let mut duplicate = p.clone();
+        duplicate.agent_id = Some(HOME_SERVER.into());
+        assert!(ssh_agent_for_ip(v4, &[p, duplicate], Some("alpha")).is_err());
+    }
 
     fn fleet() -> Vec<DeviceRowLite> {
         vec![

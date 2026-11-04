@@ -1853,6 +1853,7 @@ fn build_overlay_view(
         path_trials: None,
         self_ip: (!self_ip.is_empty()).then(|| self_ip.to_string()),
         self_ip6: derived_v6_of(self_ip),
+        overlay_socks5_port: None,
         peers,
         // Set by `publish_view` from the runtime's exit-routing state (S4)
         // and DNS bring-up state (S2).
@@ -2360,6 +2361,7 @@ impl OverlayRuntime {
                 self.org_primary && path_trial::enabled() && path_trial_supported,
             );
             view.exit_node = exit_status;
+            view.overlay_socks5_port = self.netstack_socks;
             // FR-97 P0b — why this node offers no routes it was configured to.
             view.route_offer_withheld = self.route_offer_withheld.clone();
             // S2 — ditto for the DNS bring-up outcome.

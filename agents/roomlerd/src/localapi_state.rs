@@ -667,6 +667,7 @@ impl LocalApiState for DaemonState {
             // so it's kept even across a brief disconnect.
             overlay_ip: self.overlay.borrow().self_ip.clone(),
             overlay_ip6: self.overlay.borrow().self_ip6.clone(),
+            overlay_socks5_port: self.overlay.borrow().overlay_socks5_port,
             connected,
             // FR-51 P4 — the primary enrollment's nature, stamped at startup.
             ephemeral: self.ephemeral,
@@ -2227,6 +2228,7 @@ mod tests {
             path_trials: None,
             self_ip: Some("100.64.0.2".into()),
             self_ip6: Some("fd72:6f6f:6d6c::6440:2".into()),
+            overlay_socks5_port: None,
             peers: vec![PeerInfo {
                 node_id: "n2".into(),
                 name: "peer".into(),

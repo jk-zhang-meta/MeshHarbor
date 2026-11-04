@@ -209,6 +209,7 @@ pub fn with_machine_network(mut own: NodeStatus, machine: &NodeStatus) -> NodeSt
     if machine.overlay_ip.is_some() {
         own.overlay_ip = machine.overlay_ip.clone();
         own.overlay_ip6 = machine.overlay_ip6.clone();
+        own.overlay_socks5_port = machine.overlay_socks5_port;
         own.exit_node = machine.exit_node.clone();
         own.dns = machine.dns.clone();
     }
@@ -490,13 +491,14 @@ mod tests {
         );
         let machine = status(
             r#"{"node_id":"d","name":"mac-d","version":"0.4.149","mode":"service","connected":true,
-                "overlay_ip":"100.64.0.9","overlay_ip6":"fd7a:115c:a1e0::9",
+                "overlay_ip":"100.64.0.9","overlay_ip6":"fd7a:115c:a1e0::9","overlay_socks5_port":1089,
                 "dns":{"magic_domain":"vmtest.roomler.ai","resolver_bound":true,
                        "os_steer_active":true,"upstream":"192.0.2.53:53","answer_aaaa":true}}"#,
         );
         let merged = with_machine_network(own.clone(), &machine);
         assert_eq!(merged.overlay_ip.as_deref(), Some("100.64.0.9"));
         assert_eq!(merged.overlay_ip6.as_deref(), Some("fd7a:115c:a1e0::9"));
+        assert_eq!(merged.overlay_socks5_port, Some(1089));
         assert!(merged.dns.is_some());
         assert_eq!(merged.dns, machine.dns);
         // Its own identity and its own link to the server stay its own.
