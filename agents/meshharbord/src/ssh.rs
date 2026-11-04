@@ -67,7 +67,9 @@
 //! [`ssh_authorized_keys`]: crate::config::AgentConfig::ssh_authorized_keys
 
 use meshharbor_remote_control::models::{SshActivityEvent, SshActivityKind};
-use tracing::{debug, warn};
+use tracing::debug;
+#[cfg(any(feature = "overlay-l3", feature = "overlay-netstack"))]
+use tracing::warn;
 
 /// Process services a session depends on, threaded EXPLICITLY from the daemon
 /// into the SSH server instead of discovered through process globals.
@@ -306,7 +308,7 @@ pub fn maybe_intercept(
 
 /// Builds without the userspace stack cannot intercept anything; say so once
 /// rather than leaving the operator to wonder why `ssh_enabled` did nothing.
-#[cfg(not(feature = "overlay-netstack"))]
+#[cfg(all(feature = "overlay-l3", not(feature = "overlay-netstack")))]
 pub fn maybe_intercept(
     inner: tunnel_core::overlay::runtime::TunFactory,
     cfg: &crate::config::AgentConfig,

@@ -2541,7 +2541,19 @@ mod tests {
     async fn config_set_files_dir_is_gated_before_the_save_and_live_after_it() {
         let _lock = crate::files::FILES_DIR_TEST_LOCK.lock().await;
         crate::files::set_files_dir(None);
-        let dir = tempfile::tempdir().unwrap();
+        // A privileged writer must stay inside its active profile even in a
+        // test. Keep the file-vs-folder assertion behind the same placement gate.
+        let writer = crate::files::writer_context();
+        let dir = if writer.privileged {
+            tempfile::tempdir_in(
+                writer
+                    .active_home
+                    .expect("a privileged test runner has a home"),
+            )
+            .unwrap()
+        } else {
+            tempfile::tempdir().unwrap()
+        };
         let path = dir.path().join("config.toml");
         crate::config::save(&path, &crate::config::test_fixture()).unwrap();
         let (_tx, rx) = watch::channel(view());

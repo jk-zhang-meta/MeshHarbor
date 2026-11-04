@@ -137,10 +137,8 @@ pub mod person_socket;
 /// so the CLI's `self-update` shares it. Re-exported, so `crate::pgp_verify`
 /// still names it.
 pub use tunnel_core::pgp_verify;
-/// MeshHarbor SSH — the in-daemon SSH surface served on this node's overlay
-/// address, intercepted before the OS (`ssh_enabled`, default off). Gated with
-/// [`overlay`]: without an overlay there is no address to serve on.
-#[cfg(any(feature = "overlay-l3", feature = "overlay-netstack"))]
+/// Device-owned login-account RPC, independent of the overlay transport.
+/// The handler enforces `ssh_enabled` and the device's privilege ceiling.
 pub mod local_accounts;
 pub mod managed_forward;
 #[cfg(target_os = "linux")]
@@ -224,10 +222,10 @@ pub mod subnet_detect;
 /// evidence the supervisor left; the only gate on `RestartDaemon`. Pure and
 /// ungated so its table is a unit test on every platform.
 pub mod supervision;
-#[cfg(any(target_os = "macos", test))]
-pub mod tcc_recovery;
 #[cfg(feature = "system-context")]
 pub mod system_context;
+#[cfg(any(target_os = "macos", test))]
+pub mod tcc_recovery;
 /// Re-export, not a module: the TCC probes live in `agent-core` so the desktop
 /// companion can use them without depending on the agent (P3e lever E). Every
 /// `crate::tcc::…` call site here is unchanged.

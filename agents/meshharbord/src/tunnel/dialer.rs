@@ -91,16 +91,21 @@ pub async fn dial_udp(
 mod tests {
     use super::*;
 
-    /// Localhost on an unbound port should fail to connect quickly
+    /// Localhost on a reserved, non-listening port should fail to connect quickly
     /// (RST from the OS). Verifies the error path returns `Io` —
     /// not the timeout branch — for the common-case-fast-failure.
     #[tokio::test]
     async fn unbound_port_fails_fast_not_timeout() {
-        let result = dial_dst("127.0.0.1", 1, Duration::from_secs(5)).await;
+        // Reserve an ephemeral port without listening, so another process cannot
+        // claim it and host policy for a fixed service port cannot affect us.
+        let socket = tokio::net::TcpSocket::new_v4().unwrap();
+        socket.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+        let port = socket.local_addr().unwrap().port();
+        let result = dial_dst("127.0.0.1", port, Duration::from_secs(5)).await;
         match result {
             Err(DialError::Io(_)) => { /* expected — connection refused */ }
             Err(DialError::Timeout(_)) => panic!("should fail fast, not time out"),
-            Ok(_) => panic!("port 1 unexpectedly bound on this host"),
+            Ok(_) => panic!("non-listening socket unexpectedly accepted a connection"),
         }
     }
 
