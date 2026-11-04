@@ -70,8 +70,8 @@ impl EnigoInjector {
             if !trusted {
                 tracing::warn!(
                     "macOS Accessibility permission MISSING — injected input will be silently dropped. \
-                     Grant it under System Settings → Privacy & Security → Accessibility, then restart the \
-                     agent (launchctl kickstart -k gui/$UID/com.roomler.agent)"
+                     Grant it under System Settings → Privacy & Security → Accessibility; \
+                     the agent retries input after the grant"
                 );
             }
             trusted
@@ -678,7 +678,14 @@ impl InputInjector for EnigoInjector {
     }
 
     fn has_permission(&self) -> bool {
-        self.has_perm
+        #[cfg(target_os = "macos")]
+        {
+            self.has_perm && crate::tcc::accessibility_trusted()
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            self.has_perm
+        }
     }
 
     fn cursor_px(&mut self) -> Result<(i32, i32)> {

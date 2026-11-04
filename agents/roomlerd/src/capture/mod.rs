@@ -607,8 +607,8 @@ impl CaptureUnavailableCode {
         match self {
             Self::Permission => {
                 if cfg!(target_os = "macos") {
-                    "Grant Screen Recording to Roomler in System Settings → Privacy & Security, \
-                     then reconnect. A macOS update or a change to the app's code signature \
+                    "Grant Screen Recording to MeshHarbor in System Settings → Privacy & Security; \
+                     capture retries automatically. A macOS update or a change to the app's code signature \
                      invalidates an existing grant."
                 } else {
                     "The host denied this agent permission to capture the screen. Grant it on \
@@ -2349,13 +2349,45 @@ impl Default for NoopCapture {
     }
 }
 
+impl NoopCapture {
+    #[cfg(any(target_os = "macos", test))]
+    async fn next_frame_with_permission(
+        &self,
+        mut granted: impl FnMut() -> bool,
+    ) -> Result<Option<Frame>> {
+        if self
+            .reason
+            .as_ref()
+            .is_some_and(|r| r.code == CaptureUnavailableCode::Permission)
+        {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                if granted() {
+                    // All media pumps already reopen on capture errors.
+                    anyhow::bail!("Screen Recording permission granted — reopen capture");
+                }
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+        Ok(None)
+    }
+}
+
 #[async_trait::async_trait]
 impl ScreenCapture for NoopCapture {
     async fn next_frame(&mut self) -> Result<Option<Frame>> {
+        #[cfg(target_os = "macos")]
+        {
+            self.next_frame_with_permission(crate::tcc::screen_recording_granted)
+                .await
+        }
         // Park the task — real backends would block on a GPU fence or a
         // PipeWire readable.
-        tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
-        Ok(None)
+        #[cfg(not(target_os = "macos"))]
+        {
+            tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+            Ok(None)
+        }
     }
     fn monitor_count(&self) -> u8 {
         0
@@ -3162,6 +3194,20 @@ fn open_with(
     let wayland_arm_failure = wayland_arm_error.as_deref();
     #[cfg(all(not(target_os = "linux"), feature = "scrap-capture"))]
     let wayland_arm_failure: Option<&str> = None;
+    // A denied CGDisplayStream can open and emit wallpaper forever. Keep the
+    // denial explicit instead, and reopen through Noop's permission poll.
+    // Do not reclassify it using another preflight: a grant between the two
+    // probes would mislabel the denial as BackendError and park forever.
+    #[cfg(all(target_os = "macos", feature = "scrap-capture"))]
+    if crate::tcc::has_gui_session()
+        && !crate::tcc::screen_recording_granted()
+        && !crate::tcc::request_screen_recording()
+    {
+        return Box::new(NoopCapture::unavailable(CaptureUnavailable::new(
+            CaptureUnavailableCode::Permission,
+            "macOS Screen Recording permission is not granted; waiting for the owner",
+        )));
+    }
     #[cfg(feature = "scrap-capture")]
     let reason = match scrap_backend::ScrapCapture::primary(_target_fps, _downscale) {
         Ok(c) => {
@@ -3298,6 +3344,48 @@ mod synthetic_env_tests {
 #[cfg(test)]
 mod frame_tests {
     use super::*;
+
+    #[tokio::test(start_paused = true)]
+    async fn permission_capture_reopens_only_after_the_grant() {
+        let capture = NoopCapture::unavailable(CaptureUnavailable::new(
+            CaptureUnavailableCode::Permission,
+            "Screen Recording denied",
+        ));
+        let started = tokio::time::Instant::now();
+        let mut probes = 0;
+        let result = capture
+            .next_frame_with_permission(|| {
+                probes += 1;
+                probes == 3
+            })
+            .await;
+        assert!(result.is_err(), "the pump must reopen the denied stream");
+        assert_eq!(probes, 3);
+        assert_eq!(started.elapsed(), std::time::Duration::from_secs(3));
+        let denied = capture.next_frame_with_permission(|| false);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(2), denied)
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn non_permission_noop_does_not_probe_or_reopen() {
+        for code in [
+            CaptureUnavailableCode::NoDisplay,
+            CaptureUnavailableCode::NotBuilt,
+            CaptureUnavailableCode::BackendError,
+        ] {
+            let capture = NoopCapture::unavailable(CaptureUnavailable::new(code, "unavailable"));
+            let result = tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                capture.next_frame_with_permission(|| panic!("no permission wait for {code:?}")),
+            )
+            .await;
+            assert!(result.is_err());
+        }
+    }
 
     /// FR-93 P6c — the pumps find the person's Stop under any context a
     /// caller added on the way up, and no other capture error reads as it.
@@ -3766,7 +3854,10 @@ mod wayland_reason_tests {
         assert!(!root.contains("portal_capture"), "{root}");
 
         let user = wayland_hint(false);
-        assert!(user.contains("meshharbor config clear wayland_auto"), "{user}");
+        assert!(
+            user.contains("meshharbor config clear wayland_auto"),
+            "{user}"
+        );
         assert!(user.contains("portal_capture"), "{user}");
         assert!(user.contains("mutter_capture"), "{user}");
         assert!(!user.contains("sudo"), "{user}");

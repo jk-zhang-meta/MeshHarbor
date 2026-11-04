@@ -560,6 +560,12 @@ impl InputInjector for NoopInjector {
 /// fall through to [`enigo_backend::EnigoInjector`] with no behaviour
 /// change.
 pub fn open_default() -> Box<dyn InputInjector + Send> {
+    // Plain preflight: while the owner grants Accessibility, do not construct
+    // an enigo worker (and prompt) for every incoming event.
+    #[cfg(target_os = "macos")]
+    if !crate::tcc::accessibility_trusted() {
+        return Box::new(NoopInjector);
+    }
     #[cfg(all(
         feature = "system-context",
         target_os = "windows",

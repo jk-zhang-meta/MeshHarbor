@@ -3304,7 +3304,7 @@ fn macos_permission_preflight() {
         tcc::open_settings_pane(tcc::PANE_ACCESSIBILITY);
     }
     tracing::warn!(
-        "after granting, restart the agent: launchctl kickstart -k gui/$(id -u)/com.roomler.agent"
+        "the agent will retry capture and input after macOS reports the new permission grants"
     );
 }
 
