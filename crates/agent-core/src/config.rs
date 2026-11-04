@@ -4368,7 +4368,7 @@ tenant_id = "tid2"
         assert_eq!(sanitize_org_label(" Acme Corp "), Some("acme-corp".into()));
         assert_eq!(
             sanitize_org_label("meshharbor.itachi.fans"),
-            Some("meshharbor".into())
+            Some("meshharbor-itachi-fans".into())
         );
         assert_eq!(sanitize_org_label("Ümlaut__x"), Some("mlaut-x".into()));
         assert_eq!(sanitize_org_label("primary"), None, "reserved");

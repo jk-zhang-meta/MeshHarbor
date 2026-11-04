@@ -1140,7 +1140,10 @@ mod tests {
         let EnrollOutcome::AppendedOrg { label } = outcome else {
             panic!("expected append, got {outcome:?}");
         };
-        assert_eq!(label, "meshharbor", "label derives from the server host");
+        assert_eq!(
+            label, "meshharbor-itachi-fans",
+            "label derives from the server host"
+        );
         assert_eq!(cfg.orgs.len(), 1);
         let entry = &cfg.orgs[0];
         assert_eq!(entry.tenant_id, "t-new");
@@ -1212,13 +1215,17 @@ mod tests {
     #[test]
     fn apply_enrollment_appended_label_uniquifies_on_collision() {
         let mut existing = crate::config::test_fixture();
-        existing.orgs = vec![org("meshharbor", "https://other.invalid", "t-x")];
+        existing.orgs = vec![org(
+            "meshharbor-itachi-fans",
+            "https://other.invalid",
+            "t-x",
+        )];
         let fresh = fresh_for("https://meshharbor.itachi.fans", "t-y", "tok-y");
         let (_cfg, outcome) = apply_enrollment(Some(existing), fresh, None, false).unwrap();
         assert_eq!(
             outcome,
             EnrollOutcome::AppendedOrg {
-                label: "meshharbor-2".into()
+                label: "meshharbor-itachi-fans-2".into()
             }
         );
     }
