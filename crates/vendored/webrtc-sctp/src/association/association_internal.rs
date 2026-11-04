@@ -1317,45 +1317,33 @@ impl AssociationInternal {
         &mut self,
         cum_tsn_ack_point: u32,
         htna: u32,
+        highest_reported_tsn: u32,
         cum_tsn_ack_point_advanced: bool,
     ) -> Result<()> {
-        // HTNA algorithm - RFC 4960 Sec 7.2.4
-        // Increment missIndicator of each chunks that the SACK reported missing
-        // when either of the following is met:
-        // a)  Not in fast-recovery
-        //     miss indications are incremented only for missing TSNs prior to the
-        //     highest TSN newly acknowledged in the SACK.
-        // b)  In fast-recovery AND the Cumulative TSN Ack Point advanced
-        //     the miss indications are incremented for all TSNs reported missing
-        //     in the SACK.
-        if !self.in_fast_recovery || cum_tsn_ack_point_advanced {
-            let max_tsn = if !self.in_fast_recovery {
-                // a) increment only for missing TSNs prior to the HTNA
-                htna
-            } else {
-                // b) increment for all TSNs reported missing
-                cum_tsn_ack_point + (self.inflight_queue.len() as u32) + 1
-            };
+        // RFC 9260 section 7.2.4: HTNA applies to every SACK, including
+        // recovery. An advancing cumulative ACK in recovery additionally
+        // reports all holes below the highest gap ACK, never the unseen tail.
+        let max_tsn = if self.in_fast_recovery && cum_tsn_ack_point_advanced {
+            highest_reported_tsn
+        } else {
+            htna
+        };
 
-            let mut tsn = cum_tsn_ack_point + 1;
-            while sna32lt(tsn, max_tsn) {
-                if let Some(c) = self.inflight_queue.get_mut(tsn) {
-                    if !c.acked && !c.abandoned() && c.miss_indicator < 3 {
-                        c.miss_indicator += 1;
-                        if c.miss_indicator == 3 && !self.in_fast_recovery {
-                            // 2)  If not in Fast Recovery, adjust the ssthresh and cwnd of the
-                            //     destination address(es) to which the missing DATA chunks were
-                            //     last sent, according to the formula described in Section 7.2.3.
+        let mut tsn = cum_tsn_ack_point.wrapping_add(1);
+        while sna32lt(tsn, max_tsn) {
+            if let Some(c) = self.inflight_queue.get_mut(tsn) {
+                if !c.acked && !c.abandoned() && c.miss_indicator < 3 {
+                    c.miss_indicator += 1;
+                    if c.miss_indicator == 3 {
+                        self.will_retransmit_fast = true;
+                        if !self.in_fast_recovery {
                             self.in_fast_recovery = true;
-                            // RFC 9260 section 7.2.4: cover the whole outstanding
-                            // flight, not just this SACK's newly acknowledged TSN.
-                            // Otherwise a second hole can halve cwnd again before
-                            // the original flight has recovered.
+                            // Cover the whole outstanding flight, so a second
+                            // hole cannot halve cwnd before this one recovers.
                             self.fast_recover_exit_point = self.my_next_tsn.wrapping_sub(1);
                             self.ssthresh = std::cmp::max(self.cwnd / 2, 4 * self.mtu);
                             self.cwnd = self.ssthresh;
                             self.partial_bytes_acked = 0;
-                            self.will_retransmit_fast = true;
 
                             log::trace!(
                                 "[{}] updated cwnd={} ssthresh={} inflight={} recovery_exit={} (FR)",
@@ -1367,12 +1355,12 @@ impl AssociationInternal {
                             );
                         }
                     }
-                } else {
-                    return Err(Error::ErrTsnRequestNotExist);
                 }
-
-                tsn += 1;
+            } else {
+                return Err(Error::ErrTsnRequestNotExist);
             }
+
+            tsn = tsn.wrapping_add(1);
         }
 
         if self.in_fast_recovery && cum_tsn_ack_point_advanced {
@@ -1463,7 +1451,19 @@ impl AssociationInternal {
             self.rwnd = d.advertised_receiver_window_credit - bytes_outstanding;
         }
 
-        self.process_fast_retransmission(d.cumulative_tsn_ack, htna, cum_tsn_ack_point_advanced)?;
+        let highest_reported_tsn = d.cumulative_tsn_ack.wrapping_add(
+            d.gap_ack_blocks
+                .iter()
+                .map(|g| u32::from(g.end))
+                .max()
+                .unwrap_or(0),
+        );
+        self.process_fast_retransmission(
+            d.cumulative_tsn_ack,
+            htna,
+            highest_reported_tsn,
+            cum_tsn_ack_point_advanced,
+        )?;
 
         if self.use_forward_tsn {
             // RFC 3758 Sec 3.5 C1
@@ -1501,8 +1501,11 @@ impl AssociationInternal {
             self.awake_write_loop();
         }
 
-        self.postprocess_sack(state, cum_tsn_ack_point_advanced)
-            .await;
+        self.postprocess_sack(
+            state,
+            cum_tsn_ack_point_advanced || self.will_retransmit_fast,
+        )
+        .await;
 
         Ok(vec![])
     }
@@ -2352,6 +2355,12 @@ impl RtxTimerObserver for AssociationInternal {
 
                 self.ssthresh = std::cmp::max(self.cwnd / 2, 4 * self.mtu);
                 self.cwnd = self.mtu;
+                // T3 resumes slow start (RFC 9260 section 7.2.3). Leave the
+                // previous recovery episode so advancing ACKs can grow cwnd.
+                self.in_fast_recovery = false;
+                self.fast_recover_exit_point = 0;
+                self.will_retransmit_fast = false;
+                self.partial_bytes_acked = 0;
                 log::trace!(
                     "[{}] updated cwnd={} ssthresh={} inflight={} (RTO)",
                     self.name,

@@ -5,7 +5,8 @@
 # fails the whole packet — see src/chunk/chunk_forward_tsn.rs; and #1856, where a
 # failed send is a lost packet rather than a closed association — see
 # src/association/mod.rs; and the whole-flight fast-recovery exit point in
-# src/association/association_internal.rs, RFC 9260 section 7.2.4).
+# src/association/association_internal.rs, RFC 9260 sections 7.2.3/7.2.4,
+# including HTNA/gap bounds and leaving fast recovery when T3 resumes slow start).
 # This script makes that relationship mechanical:
 #
 #   scripts/revendor-webrtc-sctp.sh [version]           rebuild the vendored tree
