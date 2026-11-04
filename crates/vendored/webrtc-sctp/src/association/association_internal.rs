@@ -1347,18 +1347,23 @@ impl AssociationInternal {
                             //     destination address(es) to which the missing DATA chunks were
                             //     last sent, according to the formula described in Section 7.2.3.
                             self.in_fast_recovery = true;
-                            self.fast_recover_exit_point = htna;
+                            // RFC 9260 section 7.2.4: cover the whole outstanding
+                            // flight, not just this SACK's newly acknowledged TSN.
+                            // Otherwise a second hole can halve cwnd again before
+                            // the original flight has recovered.
+                            self.fast_recover_exit_point = self.my_next_tsn.wrapping_sub(1);
                             self.ssthresh = std::cmp::max(self.cwnd / 2, 4 * self.mtu);
                             self.cwnd = self.ssthresh;
                             self.partial_bytes_acked = 0;
                             self.will_retransmit_fast = true;
 
                             log::trace!(
-                                "[{}] updated cwnd={} ssthresh={} inflight={} (FR)",
+                                "[{}] updated cwnd={} ssthresh={} inflight={} recovery_exit={} (FR)",
                                 self.name,
                                 self.cwnd,
                                 self.ssthresh,
-                                self.inflight_queue.get_num_bytes()
+                                self.inflight_queue.get_num_bytes(),
+                                self.fast_recover_exit_point
                             );
                         }
                     }
