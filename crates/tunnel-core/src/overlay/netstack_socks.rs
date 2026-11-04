@@ -352,6 +352,7 @@ mod tests {
             path_trials: None,
             self_ip: Some("100.64.0.1".into()),
             self_ip6: None,
+            overlay_socks5_port: None,
             peers: vec![
                 peer("DEVBOX", "100.64.0.2"),
                 peer("winhost-a", "100.64.0.4"),
@@ -434,6 +435,7 @@ mod tests {
             path_trials: None,
             self_ip: Some(a_ip.to_string()),
             self_ip6: None,
+            overlay_socks5_port: None,
             peers: vec![peer("peerb", &b_ip.to_string())],
             exit_node: None,
             route_offer_withheld: None,

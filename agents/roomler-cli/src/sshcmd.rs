@@ -13,8 +13,8 @@
 //!
 //! So this mints a single-session identity, asks the daemon for a grant, drops
 //! the pieces into a private temp directory, and hands off. The user's own
-//! `ssh` does the session; roomler is not in the data path, which is the same
-//! property the server has by design.
+//! `ssh` does the session. OS-TUN nodes dial directly; a netstack-only node
+//! feeds its byte stream through the daemon's existing loopback SOCKS front.
 //!
 //! ## Host-key verification is the point
 //!
@@ -40,6 +40,7 @@ use crate::localclient;
 const SSH_USER: &str = "roomler";
 
 pub async fn run(device: &str, session_secs: u64, args: &[String]) -> Result<i32> {
+    let (node, socks_port) = localclient::ssh_target(device).await?;
     // 1. A fresh identity per session. Never reused, never written anywhere
     //    but the private temp dir below, and the daemon never sees the
     //    private half.
@@ -53,7 +54,6 @@ pub async fn run(device: &str, session_secs: u64, args: &[String]) -> Result<i32
     //    A dashboard display name is turned into the hex agent id first
     //    (`docs/device-naming.md`); anything the server resolves itself —
     //    a fleet name, an id — goes exactly as typed.
-    let node = localclient::agent_selector(device).await?;
     let grant = localclient::ssh_session(&node, &public_openssh, session_secs).await?;
 
     if let Some(err) = grant.error {
@@ -73,6 +73,18 @@ pub async fn run(device: &str, session_secs: u64, args: &[String]) -> Result<i32
         );
     };
 
+    // The netstack installs no OS route. Own one loopback connection for this
+    // SSH process and bridge it through the primary's existing SOCKS front.
+    let front = if socks_port.is_some() {
+        Some(tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await?)
+    } else {
+        None
+    };
+    let (ssh_address, ssh_port) = match &front {
+        Some(listener) => ("127.0.0.1".to_string(), listener.local_addr()?.port()),
+        None => (address.clone(), port),
+    };
+
     // 3. Everything `ssh` needs, in a directory only this user can read.
     let dir = PrivateDir::new().context("creating a private directory for the session")?;
     let key_path = dir.path().join("id");
@@ -86,12 +98,12 @@ pub async fn run(device: &str, session_secs: u64, args: &[String]) -> Result<i32
     // roomler SSH is the normal case (default 2222).
     write_private(
         &kh_path,
-        format!("[{address}]:{port} {host_pubkey}\n").as_bytes(),
+        format!("[{ssh_address}]:{ssh_port} {host_pubkey}\n").as_bytes(),
     )
     .context("writing known_hosts")?;
 
     // 4. Hand off.
-    let status = std::process::Command::new("ssh")
+    let child = tokio::process::Command::new("ssh")
         // The grant supplies this session's settings. Ignore ambient config,
         // including system Includes that the current user cannot read.
         .args(["-F", "none"])
@@ -110,16 +122,17 @@ pub async fn run(device: &str, session_secs: u64, args: &[String]) -> Result<i32
         .arg("-o")
         .arg("IdentityAgent=none")
         .arg("-p")
-        .arg(port.to_string())
-        .arg(format!("{SSH_USER}@{address}"))
+        .arg(ssh_port.to_string())
+        .arg(format!("{SSH_USER}@{ssh_address}"))
         .args(args)
-        .status();
+        .kill_on_drop(true)
+        .spawn();
 
-    let status = match status {
+    let mut child = match child {
         Ok(s) => s,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             bail!(
-                "no `ssh` client found on this machine. roomler uses the system OpenSSH \
+                "no `ssh` client found on this machine. MeshHarbor uses the system OpenSSH \
                  client for the session itself.\nInstall it (Windows: \
                  `Add-WindowsCapability -Online -Name OpenSSH.Client~~~~0.0.1.0`; \
                  Linux/macOS: your distribution's openssh-client)."
@@ -127,11 +140,56 @@ pub async fn run(device: &str, session_secs: u64, args: &[String]) -> Result<i32
         }
         Err(e) => return Err(anyhow!("could not start ssh: {e}")),
     };
+    let bridge = async {
+        match (front, socks_port) {
+            (Some(front), Some(socks)) => socks_bridge(front, socks, &address, port).await,
+            _ => std::future::pending::<Result<()>>().await,
+        }
+    };
+    let status = tokio::select! {
+        status = child.wait() => status.context("waiting for SSH client")?,
+        result = bridge => {
+            if let Err(error) = result {
+                let _ = child.kill().await;
+                return Err(error);
+            }
+            child.wait().await.context("waiting for SSH after bridge closed")?
+        }
+    };
 
     // `dir` drops here, taking the key with it.
     Ok(status
         .code()
         .unwrap_or(if status.success() { 0 } else { 1 }))
+}
+
+/// One session, one accepted connection; dropping this future closes both
+/// sockets and its listener. A SOCKS failure never falls back to an OS route.
+async fn socks_bridge(
+    listener: tokio::net::TcpListener,
+    socks_port: u16,
+    address: &str,
+    port: u16,
+) -> Result<()> {
+    let (mut client, _) = listener
+        .accept()
+        .await
+        .context("accepting local SSH client")?;
+    drop(listener);
+    let mut upstream = tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        let mut stream =
+            tokio::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, socks_port))
+                .await
+                .context("connecting to the daemon's overlay SOCKS5 front")?;
+        tunnel_core::socks5::client_connect(&mut stream, address, port).await?;
+        Ok::<_, anyhow::Error>(stream)
+    })
+    .await
+    .context("overlay SOCKS5 connection timed out")??;
+    let _ = client.set_nodelay(true);
+    let _ = upstream.set_nodelay(true);
+    tokio::io::copy_bidirectional(&mut client, &mut upstream).await?;
+    Ok(())
 }
 
 /// `roomler proxy <host> <port>` — a stdio↔TCP pipe for OpenSSH's
@@ -337,6 +395,124 @@ pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn netstack_bridge_keeps_the_reply_after_client_eof() {
+        use tokio::{
+            io::{AsyncReadExt, AsyncWriteExt},
+            net::{TcpListener, TcpStream},
+        };
+        let front = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let local = front.local_addr().unwrap();
+        let socks = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let socks_port = socks.local_addr().unwrap().port();
+        let server = async {
+            let (mut stream, _) = socks.accept().await.unwrap();
+            assert_eq!(
+                tunnel_core::socks5::accept_connect(&mut stream)
+                    .await
+                    .unwrap(),
+                ("100.64.0.9".into(), 2222)
+            );
+            tunnel_core::socks5::reply(&mut stream, tunnel_core::socks5::REP_SUCCESS).await;
+            let mut data = Vec::new();
+            stream.read_to_end(&mut data).await.unwrap();
+            assert_eq!(data, b"request");
+            stream.write_all(b"SSH-reply").await.unwrap();
+            stream.shutdown().await.unwrap();
+        };
+        let client = async {
+            let mut stream = TcpStream::connect(local).await.unwrap();
+            stream.write_all(b"request").await.unwrap();
+            stream.shutdown().await.unwrap();
+            let mut data = Vec::new();
+            stream.read_to_end(&mut data).await.unwrap();
+            assert_eq!(data, b"SSH-reply");
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let (bridge, (), ()) = tokio::join!(
+                socks_bridge(front, socks_port, "100.64.0.9", 2222),
+                server,
+                client
+            );
+            bridge.unwrap();
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn netstack_bridge_does_not_dial_the_os_target_after_socks_rejection() {
+        use tokio::{
+            io::AsyncReadExt,
+            net::{TcpListener, TcpStream},
+        };
+        let trap = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let target = trap.local_addr().unwrap().port();
+        let front = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let local = front.local_addr().unwrap();
+        let socks = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let socks_port = socks.local_addr().unwrap().port();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let server = async {
+                let (mut stream, _) = socks.accept().await.unwrap();
+                assert_eq!(
+                    tunnel_core::socks5::accept_connect(&mut stream)
+                        .await
+                        .unwrap(),
+                    ("127.0.0.1".into(), target)
+                );
+                tunnel_core::socks5::reply(&mut stream, tunnel_core::socks5::REP_GENERAL_FAILURE)
+                    .await;
+            };
+            let client = async {
+                let mut stream = TcpStream::connect(local).await.unwrap();
+                assert_eq!(stream.read(&mut [0]).await.unwrap(), 0);
+            };
+            let (bridge, (), ()) = tokio::join!(
+                socks_bridge(front, socks_port, "127.0.0.1", target),
+                server,
+                client
+            );
+            assert!(bridge.is_err());
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            trap.into_std().unwrap().accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelling_the_netstack_bridge_closes_all_owned_sockets() {
+        use tokio::{
+            io::AsyncReadExt,
+            net::{TcpListener, TcpStream},
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let front = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let local = front.local_addr().unwrap();
+            let socks = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let socks_port = socks.local_addr().unwrap().port();
+            let bridge =
+                tokio::spawn(
+                    async move { socks_bridge(front, socks_port, "100.64.0.9", 2222).await },
+                );
+            let mut client = TcpStream::connect(local).await.unwrap();
+            let (mut upstream, _) = socks.accept().await.unwrap();
+            let mut greeting = [0; 3];
+            upstream.read_exact(&mut greeting).await.unwrap();
+            assert_eq!(greeting, [5, 1, 0]);
+            bridge.abort();
+            assert!(bridge.await.unwrap_err().is_cancelled());
+            assert_eq!(upstream.read(&mut [0]).await.unwrap(), 0);
+            assert_eq!(client.read(&mut [0]).await.unwrap(), 0);
+            assert!(TcpStream::connect(local).await.is_err());
+        })
+        .await
+        .unwrap();
+    }
 
     #[tokio::test]
     async fn proxy_reports_an_unknown_name_instead_of_dialling_something() {

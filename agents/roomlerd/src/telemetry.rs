@@ -241,6 +241,7 @@ mod tests {
             path_trials: None,
             self_ip: Some("100.64.0.7".into()),
             self_ip6: None,
+            overlay_socks5_port: None,
             peers: vec![
                 peer(true, ConnectionType::Direct, Some(10), None),
                 peer(true, ConnectionType::Relay, Some(50), Some("turn")),
@@ -283,6 +284,7 @@ mod tests {
             path_trials: None,
             self_ip: Some("100.64.0.7".into()),
             self_ip6: None,
+            overlay_socks5_port: None,
             peers: vec![
                 peer(true, ConnectionType::Direct, Some(10), None),
                 peer(false, ConnectionType::Offline, None, None),
@@ -315,6 +317,7 @@ mod tests {
             path_trials: None,
             self_ip: Some("100.64.0.7".into()),
             self_ip6: None,
+            overlay_socks5_port: None,
             peers: vec![
                 peer_with_bytes(
                     true,
@@ -356,6 +359,7 @@ mod tests {
             path_trials: None,
             self_ip: Some("100.64.0.7".into()),
             self_ip6: None,
+            overlay_socks5_port: None,
             peers: vec![
                 peer_with_relay("turn", Some("udp")),
                 peer_with_relay("derp", Some("tcp")),

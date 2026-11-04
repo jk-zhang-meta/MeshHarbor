@@ -471,7 +471,7 @@ enum Command {
     /// A dashboard display name works too: `meshharbor ssh "Office PC"`.
     Ssh {
         /// Target device — a device name (e.g. `build-box`), a dashboard
-        /// display name, or a hex agent id. Resolved like `exec`'s: a display
+        /// display name, an overlay IP, or a hex agent id. A display
         /// name counts only when no device NAME matches it, and one that two
         /// devices share is refused rather than guessed.
         device: String,

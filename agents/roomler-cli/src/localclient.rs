@@ -418,6 +418,54 @@ pub async fn agent_selector(target: &str) -> Result<String> {
     }
 }
 
+/// SSH uses the primary's grant authority and its own userspace front. Neither
+/// a literal overlay IP nor a daemon-only SOCKS environment variable is a
+/// server-side agent selector or an OS route.
+pub async fn ssh_target(target: &str) -> Result<(String, Option<u16>)> {
+    let mut client = localapi::connect().await.map_err(daemon_err)?;
+    let status = client.status().await.map_err(daemon_err)?;
+    let socks = ssh_socks_port(&status)?;
+    let node = if let Ok(ip) = target.parse::<std::net::IpAddr>() {
+        let peers = client.peers().await.map_err(daemon_err)?;
+        let primary = status
+            .orgs
+            .iter()
+            .find(|o| o.primary)
+            .map(|o| o.label.as_str());
+        names::ssh_agent_for_ip(ip, &peers, primary)?
+    } else if names::is_literal(target) {
+        target.to_string()
+    } else {
+        let rows = primary_devices(&mut client).await;
+        match names::resolve_selector(target, rows.as_deref(), Need::AgentId) {
+            Resolution::AsTyped => target.to_string(),
+            Resolution::Device(row) => row.id.clone(),
+            Resolution::Ambiguous(rows) => return Err(names::ambiguity_error(target, &rows)),
+        }
+    };
+    Ok((node, socks))
+}
+
+fn ssh_socks_port(status: &tunnel_core::localapi::NodeStatus) -> Result<Option<u16>> {
+    let port = status
+        .overlay_socks5_port
+        .or_else(|| status.exit_node.as_ref().and_then(|s| s.socks5_port));
+    if port == Some(0) {
+        bail!("the daemon reported an invalid overlay SOCKS5 port");
+    }
+    if port.is_none()
+        && status
+            .orgs
+            .iter()
+            .any(|o| o.primary && o.overlay_mode == "netstack")
+    {
+        bail!(
+            "the netstack SOCKS5 front is not reported yet; wait for the overlay to join, or update an older controller daemon before using SSH"
+        );
+    }
+    Ok(port)
+}
+
 /// `ping`: the target to SEND — as typed, or the overlay address of the one
 /// device whose display name it is (the published IPv6 with `prefer_v6`).
 async fn ping_target(
@@ -3193,6 +3241,39 @@ fn route_state_word(s: &RouteState) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ssh_uses_the_primary_front_without_guessing_an_os_route() {
+        let mut status: tunnel_core::localapi::NodeStatus =
+            serde_json::from_value(serde_json::json!({
+                "node_id":"self", "name":"ctl", "version":"test", "mode":"user", "connected":true,
+                "orgs":[{"label":"alpha", "server_url":"http://127.0.0.1", "agent_id":"self",
+                    "primary":true,"enabled":true,"connected":true,"overlay_mode":"netstack"}]
+            }))
+            .unwrap();
+        assert!(
+            ssh_socks_port(&status).is_err(),
+            "a known netstack must not fall back to OS routes"
+        );
+        status.orgs[0].overlay_mode = "tun".into();
+        assert_eq!(ssh_socks_port(&status).unwrap(), None);
+        let mut secondary = status.orgs[0].clone();
+        secondary.primary = false;
+        secondary.overlay_mode = "netstack".into();
+        status.orgs.push(secondary);
+        assert_eq!(ssh_socks_port(&status).unwrap(), None);
+        status.exit_node = Some(
+            serde_json::from_value(serde_json::json!({
+                "selector":"exit", "active":false, "socks5_port":1080
+            }))
+            .unwrap(),
+        );
+        assert_eq!(ssh_socks_port(&status).unwrap(), Some(1080));
+        status.overlay_socks5_port = Some(1089);
+        assert_eq!(ssh_socks_port(&status).unwrap(), Some(1089));
+        status.overlay_socks5_port = Some(0);
+        assert!(ssh_socks_port(&status).is_err());
+    }
 
     fn tier_row(tier: &str, eligible: bool, available: Option<bool>) -> TierWhy {
         TierWhy {

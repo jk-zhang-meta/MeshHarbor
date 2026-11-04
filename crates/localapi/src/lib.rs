@@ -167,6 +167,10 @@ pub struct NodeStatus {
     /// the overlay runtime alongside the v4. Absent on a v4-only daemon.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub overlay_ip6: Option<String>,
+    /// Primary overlay's configured loopback SOCKS5 front. Netstack clients
+    /// dial it instead of relying on OS routes. Absent on OS-TUN/older nodes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overlay_socks5_port: Option<u16>,
     /// Connected to the coordination server.
     pub connected: bool,
     /// FR-51 P4 — this daemon's PRIMARY enrollment is ephemeral: the server
@@ -2613,6 +2617,8 @@ pub struct OverlayView {
     /// alongside `self_ip` (the daemon never derives — it has no `overlay`
     /// feature guarantee).
     pub self_ip6: Option<String>,
+    /// Runtime's configured loopback front, independent of exit use.
+    pub overlay_socks5_port: Option<u16>,
     /// Peers as the runtime currently reaches them.
     pub peers: Vec<PeerInfo>,
     /// P5 exit-node routing status (S4), filled by the overlay runtime. `None`
@@ -5555,6 +5561,24 @@ mod tests {
         assert_eq!(back.org_relay, s.org_relay);
     }
 
+    #[test]
+    fn overlay_socks_front_is_reported_without_being_an_exit_client() {
+        let mut status = Mock.status();
+        assert!(status.exit_node.is_none());
+        let old = serde_json::to_value(&status).unwrap();
+        assert!(old.get("overlay_socks5_port").is_none());
+        assert_eq!(
+            serde_json::from_value::<NodeStatus>(old)
+                .unwrap()
+                .overlay_socks5_port,
+            None
+        );
+        status.overlay_socks5_port = Some(1089);
+        let value = serde_json::to_value(status).unwrap();
+        assert_eq!(value["overlay_socks5_port"], 1089);
+        assert!(value.get("exit_node").is_none());
+    }
+
     /// FR-33 — the probe-off state must be distinguishable on the wire from
     /// both "probed, clear" and "old daemon": `lan_capture_probe: false`
     /// travels, and a daemon that predates the field reads as `None` (so the
@@ -5595,6 +5619,7 @@ mod tests {
                 tenant_id: Some("t1".into()),
                 overlay_ip: Some("100.64.0.2".into()),
                 overlay_ip6: None,
+                overlay_socks5_port: None,
                 connected: true,
                 ephemeral: false,
                 exit_node: None,

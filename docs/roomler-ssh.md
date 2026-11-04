@@ -836,6 +836,20 @@ roomler ssh "Office PC"            # a dashboard display name works too
 before the grant request by the rule in `docs/device-naming.md` (never over a
 device name, and refused when two devices share it).
 
+An overlay IPv4 or published overlay IPv6 address also selects an SSH device:
+`meshharbor ssh 100.64.0.2 -- id`. The CLI resolves it to exactly one agent in
+the primary organization's authenticated mesh view before requesting the grant. Unknown,
+ambiguous and client-only addresses are refused.
+
+On a netstack-only controller, the updated daemon reports its primary
+`overlay_socks5_port` through LocalAPI status. SSH then uses a temporary
+loopback connection through that existing SOCKS front; it needs no OS TUN or
+route. The grant's host key stays pinned at that temporary endpoint. Listener
+and streams close when the client exits or is cancelled. A SOCKS failure is
+reported without retrying through an OS route. An older netstack controller
+daemon may need updating to report the port; exit-client daemons that already
+report `exit_node.socks5_port` remain supported.
+
 **It execs the system `ssh` rather than embedding a client.** What roomler adds
 is discovery, authorization and host-key distribution — which device, may you,
 where does it live, what key will answer. Once those are known, the rest (raw
