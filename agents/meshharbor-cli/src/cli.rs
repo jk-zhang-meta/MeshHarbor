@@ -1695,7 +1695,10 @@ mod tests {
             }
             other => panic!("expected Devices, got {other:?}"),
         }
-        match Cli::try_parse_from(["meshharbor", "devices"]).unwrap().command {
+        match Cli::try_parse_from(["meshharbor", "devices"])
+            .unwrap()
+            .command
+        {
             Command::Devices {
                 org,
                 q,

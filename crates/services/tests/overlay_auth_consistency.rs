@@ -4,12 +4,12 @@
 //! CAS acknowledgement watermarks (`OverlayNodeDao::record_applied_auth_revision`).
 
 use bson::oid::ObjectId;
-use mongodb::Client;
 use meshharbor_remote_control::models::{NodeRef, OverlayAclMode, PeerRelayMode};
 use meshharbor_services::dao::{
     overlay_network::OverlayNetworkDao,
     overlay_node::{NewOverlayNode, OverlayNodeDao},
 };
+use mongodb::Client;
 
 async fn test_db(name: &str) -> mongodb::Database {
     let uri = std::env::var("MESHHARBOR_TEST_MONGO_URL")

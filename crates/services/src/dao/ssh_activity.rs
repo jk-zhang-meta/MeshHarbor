@@ -27,8 +27,8 @@
 //! gate a session. Rows TTL out after 90 days (`crates/db/src/indexes.rs`).
 
 use bson::{doc, oid::ObjectId};
-use mongodb::Database;
 use meshharbor_remote_control::models::SshActivityEvent;
+use mongodb::Database;
 
 use super::base::{BaseDao, DaoResult, PaginatedResult, PaginationParams};
 

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 G ROX EOOD
-use mongodb::{Client, Database, options::ClientOptions};
 use meshharbor_config::Settings;
+use mongodb::{Client, Database, options::ClientOptions};
 use tracing::info;
 
 pub async fn connect(settings: &Settings) -> Result<Database, mongodb::error::Error> {

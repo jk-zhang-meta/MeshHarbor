@@ -16,8 +16,8 @@
 //! 90 days (`crates/db/src/indexes.rs`), matching the other audit logs.
 
 use bson::{DateTime, doc, oid::ObjectId};
-use mongodb::Database;
 use meshharbor_remote_control::models::KeyRotationAuditEvent;
+use mongodb::Database;
 
 use super::base::{BaseDao, DaoResult, PaginatedResult, PaginationParams};
 

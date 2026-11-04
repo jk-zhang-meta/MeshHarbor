@@ -54,7 +54,9 @@ use tunnel_core::transport::{TRANSPORT_QUIC_V1, TRANSPORT_WEBRTC_DC_V1};
 use crate::NetworkState;
 use crate::agent_arms::pump_server_messages;
 use axum::{extract::WebSocketUpgrade, response::Response};
-use meshharbor_core::ws::upgrade::{MAX_WS_MESSAGE_BYTES, send_goodbye_and_close, tid_matches_claim};
+use meshharbor_core::ws::upgrade::{
+    MAX_WS_MESSAGE_BYTES, send_goodbye_and_close, tid_matches_claim,
+};
 use meshharbor_core::{business_authority::AuthenticatedDevice, client_ip::ConnectionOrigin};
 
 /// Outbound channel capacity. Per-tunnel-client. Generous because a
@@ -952,7 +954,9 @@ async fn handle_tunnel_open(
                 );
             }
         }
-        meshharbor_core::cluster::metrics::bump(&meshharbor_core::cluster::metrics::TUNNEL_REHOME_TOTAL);
+        meshharbor_core::cluster::metrics::bump(
+            &meshharbor_core::cluster::metrics::TUNNEL_REHOME_TOTAL,
+        );
         // Pod identity stays in server logs; the wire carries only the
         // actionable fact + the open_nonce so the CLI fails the exact
         // pending flow and its reconnect loop dials fresh.

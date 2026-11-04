@@ -322,7 +322,10 @@ mod x11_tests {
     #[test]
     fn xfixes_says_where_the_pointer_is_in_the_frames_own_pixels() {
         let Ok((conn, screen)) = x11rb::connect(None) else {
-            assert!(!required(), "MESHHARBORD_TEST_X11=1 but there is no X server");
+            assert!(
+                !required(),
+                "MESHHARBORD_TEST_X11=1 but there is no X server"
+            );
             eprintln!("no X server — skipping (MESHHARBORD_TEST_X11=1 makes this a failure)");
             return;
         };

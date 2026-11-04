@@ -74,7 +74,8 @@ pub async fn create(
     // reads the data and flips the tenant to `Enforce`.
     let tenant = state.tenants.base.find_by_id(tid).await?;
     // FR-102 P4 — through core, which also counts the collision per org.
-    if let Err(d) = meshharbor_core::quota::require_feature(&state, &tenant, quota::Limit::Recordings)
+    if let Err(d) =
+        meshharbor_core::quota::require_feature(&state, &tenant, quota::Limit::Recordings)
     {
         return Err(ApiError::Forbidden(d.message()));
     }

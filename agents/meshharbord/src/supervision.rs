@@ -524,7 +524,12 @@ pub fn launchd_restarts(show: &str, my_pid: u32) -> Result<(), String> {
 pub async fn confirm_launchd() -> Result<(), String> {
     let label = std::env::var(LAUNCHD_LABEL_ENV)
         .map_err(|_| "no launchd job label is available".to_string())?;
-    if !["fans.itachi.meshharbor.agent", "fans.itachi.meshharbor.daemon"].contains(&label.as_str()) {
+    if ![
+        "fans.itachi.meshharbor.agent",
+        "fans.itachi.meshharbor.daemon",
+    ]
+    .contains(&label.as_str())
+    {
         return Err("the launchd label is not one of the packaged daemon jobs".into());
     }
     // SAFETY: geteuid has no arguments and does not change process identity.
@@ -769,7 +774,10 @@ mod tests {
             Supervision::WindowsScm
         );
         // launchd: our labels only.
-        for label in ["fans.itachi.meshharbor.agent", "fans.itachi.meshharbor.daemon"] {
+        for label in [
+            "fans.itachi.meshharbor.agent",
+            "fans.itachi.meshharbor.daemon",
+        ] {
             assert_eq!(
                 detect(None, false, &env_of(&[(LAUNCHD_LABEL_ENV, label)]), None),
                 Supervision::Launchd,

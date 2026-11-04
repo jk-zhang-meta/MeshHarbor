@@ -948,7 +948,8 @@ mod tests {
     /// read it can re-open the grant.
     #[test]
     fn the_restore_token_round_trips_and_is_owner_only() {
-        let dir = std::env::temp_dir().join(format!("meshharbor-portal-tok-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("meshharbor-portal-tok-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let store = TokenStore::at(dir.join("meshharbor").join("portal-restore-token"));
 
@@ -982,7 +983,8 @@ mod tests {
     /// failure would look like a revoked grant rather than a corrupt file.
     #[test]
     fn a_blank_token_file_reads_as_absent() {
-        let dir = std::env::temp_dir().join(format!("meshharbor-portal-blank-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("meshharbor-portal-blank-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let path = dir.join("portal-restore-token");
         std::fs::create_dir_all(&dir).unwrap();

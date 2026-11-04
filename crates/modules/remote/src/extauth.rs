@@ -272,7 +272,8 @@ async fn forward(
     else {
         return false;
     };
-    let Some(pod) = meshharbor_core::cluster::directory::OwnerRecord::parse(&owner).map(|r| r.pod_id)
+    let Some(pod) =
+        meshharbor_core::cluster::directory::OwnerRecord::parse(&owner).map(|r| r.pod_id)
     else {
         return false;
     };
@@ -820,7 +821,10 @@ pub async fn charge_scope(
     state: &RemoteState,
     principal: ObjectId,
     charge_org: Option<&str>,
-) -> Option<(meshharbor_core::cluster::session_slots::SlotScope, Option<u32>)> {
+) -> Option<(
+    meshharbor_core::cluster::session_slots::SlotScope,
+    Option<u32>,
+)> {
     use meshharbor_core::cluster::session_slots::SlotScope;
     let orgs: Vec<_> = state
         .tenants

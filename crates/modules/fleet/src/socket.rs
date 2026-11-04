@@ -32,7 +32,9 @@ use tracing::{debug, info, warn};
 use crate::FleetState;
 use crate::hub::DispatchCtx;
 use axum::{extract::WebSocketUpgrade, response::Response};
-use meshharbor_core::ws::upgrade::{MAX_WS_MESSAGE_BYTES, send_goodbye_and_close, tid_matches_claim};
+use meshharbor_core::ws::upgrade::{
+    MAX_WS_MESSAGE_BYTES, send_goodbye_and_close, tid_matches_claim,
+};
 use meshharbor_core::{business_authority::AuthenticatedDevice, client_ip::ConnectionOrigin};
 
 /// Authority is stricter than the legacy management token-generation switch:

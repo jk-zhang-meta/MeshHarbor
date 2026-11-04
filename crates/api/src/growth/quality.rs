@@ -60,6 +60,7 @@ use axum::{
 };
 use bson::{Bson, DateTime, Document, doc, oid::ObjectId};
 use chrono::NaiveDate;
+use meshharbor_core::growth::ExclusionSet;
 use meshharbor_db::models::agent_log::AgentLogBatch;
 use meshharbor_services::dao::{
     growth_digest::ExcludedCounts,
@@ -69,7 +70,6 @@ use meshharbor_services::dao::{
         TtffQuality, UNKNOWN_VERSION,
     },
 };
-use meshharbor_core::growth::ExclusionSet;
 use serde::{Deserialize, Serialize};
 use tracing::info;
 

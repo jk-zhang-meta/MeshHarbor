@@ -111,7 +111,10 @@ mod tests {
     /// URL is promoted; loopback stays as it is.
     #[test]
     fn plaintext_to_a_remote_host_is_promoted() {
-        assert_eq!(s("http://meshharbor.itachi.fans"), ("https://meshharbor.itachi.fans".into(), true));
+        assert_eq!(
+            s("http://meshharbor.itachi.fans"),
+            ("https://meshharbor.itachi.fans".into(), true)
+        );
         assert_eq!(
             s("http://meshharbor.itachi.fans/"),
             ("https://meshharbor.itachi.fans/".into(), true)

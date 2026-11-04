@@ -273,10 +273,14 @@ mod tests {
             normalize(Path::new(
                 r"\\?\C:\Program Files\MeshHarbor\meshharbor-desktop.exe"
             )),
-            normalize(Path::new(r"c:\program files\meshharbor\MESHHARBOR-DESKTOP.EXE"))
+            normalize(Path::new(
+                r"c:\program files\meshharbor\MESHHARBOR-DESKTOP.EXE"
+            ))
         );
         assert_ne!(
-            normalize(Path::new(r"C:\Program Files\MeshHarbor\meshharbor-desktop.exe")),
+            normalize(Path::new(
+                r"C:\Program Files\MeshHarbor\meshharbor-desktop.exe"
+            )),
             normalize(Path::new(
                 r"C:\Users\x\AppData\Local\Programs\MeshHarbor\meshharbor-desktop.exe"
             ))

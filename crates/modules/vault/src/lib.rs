@@ -40,8 +40,8 @@ use axum::{
     routing::{delete, get, post, put},
 };
 use meshharbor_config::Settings;
-use meshharbor_db::indexes::{IndexSet, index, index_ttl, index_unique, index_unique_partial};
 use meshharbor_core::{AgentSocketHooks, Capabilities, Core, Hooks, Module, TenantCtx};
+use meshharbor_db::indexes::{IndexSet, index, index_ttl, index_unique, index_unique_partial};
 
 pub mod approval;
 pub mod connect;

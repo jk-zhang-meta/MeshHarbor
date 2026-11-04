@@ -8868,8 +8868,9 @@ mod tests {
             eprintln!("SKIP wg_single_relay_against_real_coturn_udp: TURN env unset");
             return;
         };
-        let worker_ip: std::net::IpAddr =
-            worker.parse().expect("MESHHARBOR_TEST_TURN_WORKER is an IP");
+        let worker_ip: std::net::IpAddr = worker
+            .parse()
+            .expect("MESHHARBOR_TEST_TURN_WORKER is an IP");
         let stun_server = SocketAddr::new(worker_ip, 3478);
 
         // Anchor = smaller pubkey (QUIC server + WG initiator, install_ready's

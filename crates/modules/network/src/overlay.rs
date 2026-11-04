@@ -5264,7 +5264,10 @@ mod tests {
             Some("coturn.meshharbor.itachi.fans:443")
         );
         // No port → None (STUN needs an explicit endpoint).
-        assert_eq!(turn_url_host_port("turn:coturn.meshharbor.itachi.fans"), None);
+        assert_eq!(
+            turn_url_host_port("turn:coturn.meshharbor.itachi.fans"),
+            None
+        );
     }
 
     #[test]
@@ -5457,8 +5460,10 @@ mod tests {
                 "stun:94.130.141.74:3478".to_string(),
                 "turn:94.130.141.74:3478?transport=udp".to_string(),
                 "turn:94.130.141.74:443?transport=udp".to_string(),
-                "turns:coturn.meshharbor.itachi.fans:443?transport=tcp&pin=94.130.141.74".to_string(),
-                "turns:coturn.meshharbor.itachi.fans:5349?transport=tcp&pin=94.130.141.74".to_string(),
+                "turns:coturn.meshharbor.itachi.fans:443?transport=tcp&pin=94.130.141.74"
+                    .to_string(),
+                "turns:coturn.meshharbor.itachi.fans:5349?transport=tcp&pin=94.130.141.74"
+                    .to_string(),
             ]
         );
     }

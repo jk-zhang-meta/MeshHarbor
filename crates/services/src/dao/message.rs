@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 G ROX EOOD
 use bson::{DateTime, doc, oid::ObjectId};
-use mongodb::Database;
 use meshharbor_db::models::{
     AuthorType, ContentType, Mentions, Message, MessageAttachment, MessageType, ReactionSummary,
 };
+use mongodb::Database;
 
 use super::base::{BaseDao, DaoResult, PaginatedResult, PaginationParams};
 

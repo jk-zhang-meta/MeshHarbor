@@ -44,6 +44,7 @@ use axum::{
 };
 use bson::{Bson, DateTime, Document, doc};
 use chrono::{Duration, NaiveDate, Timelike};
+use meshharbor_core::growth::ExclusionSet;
 use meshharbor_services::dao::{
     growth::{
         BING_SOURCE, CONTENT_SOURCE, GITHUB_SOURCE, GITHUB_TRAFFIC_SOURCE, GrowthDao, GrowthPull,
@@ -52,7 +53,6 @@ use meshharbor_services::dao::{
     growth_alert::{GrowthAlert, GrowthAlertDao},
     growth_digest::{DigestStatus, DigestStore},
 };
-use meshharbor_core::growth::ExclusionSet;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 

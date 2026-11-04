@@ -111,8 +111,8 @@ fn device_process() {
                 .build()
                 .unwrap();
             rt.block_on(async move {
-                let cfg =
-                    meshharbord::config::load(&dir.join("config.toml")).expect("the device's config");
+                let cfg = meshharbord::config::load(&dir.join("config.toml"))
+                    .expect("the device's config");
                 meshharbord::hive::init_as_daemon(
                     &cfg,
                     &dir.join("hive.db"),

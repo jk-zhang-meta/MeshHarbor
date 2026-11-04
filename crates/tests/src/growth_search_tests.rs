@@ -990,7 +990,8 @@ async fn bing_lands_at_its_own_grain_and_a_refused_key_is_recorded() {
     let seen = fake.seen.lock().unwrap().clone();
     assert_eq!(seen.len(), 3);
     assert!(
-        seen.iter().all(|(_, site)| site == "https://meshharbor.itachi.fans/"),
+        seen.iter()
+            .all(|(_, site)| site == "https://meshharbor.itachi.fans/"),
         "{seen:?}"
     );
 

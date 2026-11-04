@@ -29,8 +29,8 @@
 
 use std::collections::HashSet;
 
-use pulldown_cmark::{Event, Options, Parser, Tag, html};
 use meshharbor_db::models::NewsletterIssue;
+use pulldown_cmark::{Event, Options, Parser, Tag, html};
 
 /// Sentinel the wrapper embeds where a recipient's unsubscribe URL belongs.
 /// Chosen to survive both markdown rendering and HTML escaping unchanged; an
@@ -364,7 +364,10 @@ mod tests {
     }
 
     fn tags() -> LinkTags {
-        LinkTags::for_issue("october-notes", site_hosts("https://meshharbor.itachi.fans"))
+        LinkTags::for_issue(
+            "october-notes",
+            site_hosts("https://meshharbor.itachi.fans"),
+        )
     }
 
     const TAGGED: &str = "utm_source=newsletter&utm_medium=email&utm_campaign=nl-october-notes";
@@ -435,7 +438,10 @@ mod tests {
     fn the_site_hosts_are_the_hosted_pair_and_the_frontend() {
         assert_eq!(
             site_hosts("https://meshharbor.itachi.fans"),
-            vec!["meshharbor.itachi.fans".to_string(), "www.meshharbor.itachi.fans".to_string()]
+            vec![
+                "meshharbor.itachi.fans".to_string(),
+                "www.meshharbor.itachi.fans".to_string()
+            ]
         );
         assert_eq!(
             site_hosts("http://Localhost:5173/"),
@@ -460,10 +466,14 @@ mod tests {
         let html = render_issue_html(&i, Some(&tags()));
         let amp = TAGGED.replace('&', "&amp;");
         assert!(
-            html.contains(&format!("href=\"https://meshharbor.itachi.fans/docs?{amp}\"")),
+            html.contains(&format!(
+                "href=\"https://meshharbor.itachi.fans/docs?{amp}\""
+            )),
             "{html}"
         );
-        assert!(html.contains(&format!("href=\"https://meshharbor.itachi.fans/blog/x?{amp}\"")));
+        assert!(html.contains(&format!(
+            "href=\"https://meshharbor.itachi.fans/blog/x?{amp}\""
+        )));
         assert!(
             html.contains("href=\"https://github.com/jk-zhang-meta/MeshHarbor\""),
             "third-party links are untouched"
@@ -579,7 +589,10 @@ mod tests {
     #[test]
     fn substitution_replaces_every_occurrence() {
         let html = render_issue_html(&issue("body"), None);
-        let out = substitute_recipient(&html, "https://meshharbor.itachi.fans/api/subscribe/unsubscribe/abc");
+        let out = substitute_recipient(
+            &html,
+            "https://meshharbor.itachi.fans/api/subscribe/unsubscribe/abc",
+        );
         assert!(!out.contains(UNSUB_PLACEHOLDER));
         assert!(out.contains("unsubscribe/abc"));
     }

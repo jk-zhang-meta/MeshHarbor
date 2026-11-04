@@ -23,8 +23,8 @@
 use bson::{Bson, DateTime, Document, doc, oid::ObjectId};
 use chrono::NaiveDate;
 use meshharbor_api::growth::{cohorts::week_start, digest, quality, weekly};
-use meshharbor_services::dao::growth_quality::{ALL_VERSIONS, GROWTH_QUALITY_DAILY, Scope};
 use meshharbor_core::growth::ExclusionSet;
+use meshharbor_services::dao::growth_quality::{ALL_VERSIONS, GROWTH_QUALITY_DAILY, Scope};
 use serde_json::{Value, json};
 
 use crate::{

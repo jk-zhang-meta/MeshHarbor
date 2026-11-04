@@ -764,7 +764,9 @@ mod tests {
         let (mut client, server) = tokio::io::duplex(8192);
         let task = tokio::spawn(handle_conn(server, Some(desc())));
         client
-            .write_all(b"GET /rc-local-turn HTTP/1.1\r\nOrigin: https://meshharbor.itachi.fans\r\n\r\n")
+            .write_all(
+                b"GET /rc-local-turn HTTP/1.1\r\nOrigin: https://meshharbor.itachi.fans\r\n\r\n",
+            )
             .await
             .unwrap();
         let mut out = Vec::new();
@@ -782,7 +784,9 @@ mod tests {
         let (mut client, server) = tokio::io::duplex(8192);
         let task = tokio::spawn(handle_conn(server, None));
         client
-            .write_all(b"GET /rc-local-turn HTTP/1.1\r\nOrigin: https://meshharbor.itachi.fans\r\n\r\n")
+            .write_all(
+                b"GET /rc-local-turn HTTP/1.1\r\nOrigin: https://meshharbor.itachi.fans\r\n\r\n",
+            )
             .await
             .unwrap();
         let mut out = Vec::new();

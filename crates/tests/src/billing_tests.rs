@@ -1674,8 +1674,8 @@ mod fr115_testmode {
     use super::fr115::{billing_of, checkout, set_seats};
     use super::*;
     use bson::{doc, oid::ObjectId};
-    use reqwest::Method;
     use meshharbor_services::stripe::StripeService;
+    use reqwest::Method;
     use std::time::Duration;
 
     const API: &str = "https://api.stripe.com";

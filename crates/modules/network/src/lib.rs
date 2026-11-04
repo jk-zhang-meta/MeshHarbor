@@ -30,6 +30,10 @@ use axum::{
 use bson::oid::ObjectId;
 use dashmap::DashMap;
 use meshharbor_config::Settings;
+use meshharbor_core::{
+    Capabilities, Core, Hooks, Module, TenantCtx, WsRegistration, rate_limit::RateLimiter,
+    ws::UpgradeSpec,
+};
 use meshharbor_db::indexes::{
     IndexOp, IndexSet, index, index_ttl, index_unique, index_unique_partial,
 };
@@ -41,10 +45,6 @@ use meshharbor_services::dao::{
     peer_relay_audit::PeerRelayAuditDao, ssh_activity::SshActivityDao, ssh_audit::SshAuditDao,
     ssh_pending::SshPendingDao, tunnel_audit::TunnelAuditDao, tunnel_client::TunnelClientDao,
     tunnel_policy::TunnelPolicyDao,
-};
-use meshharbor_core::{
-    Capabilities, Core, Hooks, Module, TenantCtx, WsRegistration, rate_limit::RateLimiter,
-    ws::UpgradeSpec,
 };
 use std::collections::HashSet;
 use tokio::sync::mpsc;

@@ -53,6 +53,7 @@ use async_trait::async_trait;
 use base64::Engine;
 use bson::{DateTime, oid::ObjectId};
 use dashmap::DashMap;
+use meshharbor_core::{AgentCtx, AgentMsgHandler, AgentSocketLifecycle};
 use meshharbor_mod_hive::model::{AgentSession, SessionStatus};
 use meshharbor_remote_control::{
     models::{Agent, OsKind, RpcCap},
@@ -60,7 +61,6 @@ use meshharbor_remote_control::{
     vault::{LeaseRefusal, VaultActivityKind, lease_limits, program_name_ok, providers::Provider},
 };
 use meshharbor_services::dao::base::DaoError;
-use meshharbor_core::{AgentCtx, AgentMsgHandler, AgentSocketLifecycle};
 use tokio::sync::mpsc::{self, error::TrySendError};
 use tracing::{debug, warn};
 use zeroize::Zeroizing;

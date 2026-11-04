@@ -5,8 +5,8 @@
 //! decision; see [`TransferActivityEvent`].
 
 use bson::{doc, oid::ObjectId};
-use mongodb::Database;
 use meshharbor_remote_control::models::TransferActivityEvent;
+use mongodb::Database;
 
 use super::base::{BaseDao, DaoResult, PaginatedResult, PaginationParams};
 

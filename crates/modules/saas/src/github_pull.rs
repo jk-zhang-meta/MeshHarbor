@@ -78,6 +78,7 @@ use std::collections::BTreeMap;
 use bson::DateTime;
 use chrono::Duration;
 use meshharbor_config::GrowthSettings;
+use meshharbor_core::Core;
 use meshharbor_services::dao::{
     base::DaoResult,
     growth::{
@@ -85,7 +86,6 @@ use meshharbor_services::dao::{
         PulledDay, daily_row,
     },
 };
-use meshharbor_core::Core;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tracing::{info, warn};
 
@@ -1018,7 +1018,9 @@ mod tests {
         assert!(is_sidecar(
             "meshharbord-0.4.140-x86_64-unknown-linux-gnu.deb.ASC"
         ));
-        assert!(!is_sidecar("meshharbord-0.4.140-x86_64-unknown-linux-gnu.deb"));
+        assert!(!is_sidecar(
+            "meshharbord-0.4.140-x86_64-unknown-linux-gnu.deb"
+        ));
         assert_eq!(
             value(
                 &rows,

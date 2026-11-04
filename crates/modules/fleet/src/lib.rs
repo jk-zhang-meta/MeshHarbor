@@ -41,6 +41,7 @@ use axum::{
 use bson::oid::ObjectId;
 use dashmap::DashMap;
 use meshharbor_config::Settings;
+use meshharbor_core::{Capabilities, Core, Module, TenantCtx, rate_limit::RateLimiter};
 use meshharbor_db::indexes::{
     IndexSet, index, index_text, index_ttl, index_unique, index_unique_partial,
 };
@@ -52,7 +53,6 @@ use meshharbor_services::dao::{
     exec_audit::ExecAuditDao, exec_pending::ExecPendingDao, external_rc_audit::ExternalRcAuditDao,
     keep_busy_event::KeepBusyEventDao, setup_diagnostics::SetupDiagnosticsDao,
 };
-use meshharbor_core::{Capabilities, Core, Module, TenantCtx, rate_limit::RateLimiter};
 use tokio::sync::mpsc;
 
 pub mod agent;
@@ -322,7 +322,8 @@ impl Module for FleetState {
                         if !hub.is_agent_online(agent_id) {
                             continue;
                         }
-                        let key = meshharbor_core::cluster::directory::agent_key(&agent_id.to_hex());
+                        let key =
+                            meshharbor_core::cluster::directory::agent_key(&agent_id.to_hex());
                         match dir.refresh_if_mine(&key, &token, 90).await {
                             Ok(true) => {}
                             Ok(false) => tracing::warn!(

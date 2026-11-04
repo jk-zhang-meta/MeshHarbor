@@ -1107,7 +1107,9 @@ fn member(store: &mut Store, publish: &broadcast::Sender<Arc<EventEnvelope>>, cm
             ));
         }
         Member::AnswerHello { hello, live, reply } => {
-            let _ = reply.send(meshharbor_hive_node::stream::answer_hello(store, &hello, live));
+            let _ = reply.send(meshharbor_hive_node::stream::answer_hello(
+                store, &hello, live,
+            ));
         }
     }
 }

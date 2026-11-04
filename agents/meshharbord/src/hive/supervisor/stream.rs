@@ -53,15 +53,15 @@ use std::time::Duration;
 
 use anyhow::Context as _;
 use bson::oid::ObjectId;
+use meshharbor_hive_node::checkpoint::{Digest, WorkspaceSnap, chunk_bytes};
+use meshharbor_hive_node::store::{StoreError, Substitute};
+use meshharbor_hive_node::stream::{self as wire, BlobMsg, EventMeta, Mark, MemberMsg, SourceMsg};
+use meshharbor_hive_node::{ChainError, ChainTip, EventEnvelope, TranscriptEvent};
 use meshharbor_remote_control::hive::{
     HiveStreamPath, HiveStreamRefusal, is_dialable, stream_limits,
 };
 use meshharbor_remote_control::signaling::{ClientMsg, IceServer};
 use meshharbor_remote_control::turn_url;
-use meshharbor_hive_node::checkpoint::{Digest, WorkspaceSnap, chunk_bytes};
-use meshharbor_hive_node::store::{StoreError, Substitute};
-use meshharbor_hive_node::stream::{self as wire, BlobMsg, EventMeta, Mark, MemberMsg, SourceMsg};
-use meshharbor_hive_node::{ChainError, ChainTip, EventEnvelope, TranscriptEvent};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use tokio::sync::{broadcast, mpsc, watch};

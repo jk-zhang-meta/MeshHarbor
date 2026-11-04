@@ -18,8 +18,8 @@
 //! an `agent_id` alone is never a key (CLAUDE.md, Security Baseline).
 
 use bson::{DateTime, doc, oid::ObjectId};
-use mongodb::Database;
 use meshharbor_remote_control::models::KeepBusyEvent;
+use mongodb::Database;
 
 use super::base::{BaseDao, DaoResult};
 

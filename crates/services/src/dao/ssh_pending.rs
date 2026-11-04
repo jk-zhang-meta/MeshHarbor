@@ -15,9 +15,9 @@
 //! unique, and a TTL on `expires_at`.
 
 use bson::{DateTime, doc, oid::ObjectId};
+use meshharbor_remote_control::models::SshPending;
 use mongodb::Database;
 use mongodb::options::ReturnDocument;
-use meshharbor_remote_control::models::SshPending;
 
 use super::base::{BaseDao, DaoResult};
 

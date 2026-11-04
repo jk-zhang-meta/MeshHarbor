@@ -419,8 +419,10 @@ fn is_vault_tool(name: &str) -> bool {
 /// The vault tools, as Claude Code names them: allowed in the session's
 /// settings wherever they are offered, since they read and their gate is the
 /// vault's own `secret:list`, not a person's approval.
-pub(crate) const VAULT_TOOLS: [&str; 2] =
-    ["mcp__meshharbor__vault_list", "mcp__meshharbor__vault_describe"];
+pub(crate) const VAULT_TOOLS: [&str; 2] = [
+    "mcp__meshharbor__vault_list",
+    "mcp__meshharbor__vault_describe",
+];
 
 /// FR-90 P3-4c — the vault's uses, as Claude Code names them: ASKED for in
 /// the session's settings (`permissions.ask`) wherever they are offered.
@@ -444,7 +446,8 @@ pub(crate) const VAULT_AHEAD_TOOLS: [&str; 1] = ["mcp__meshharbor__vault_request
 /// a person on every call, like the vault's uses. Each opens a listener this
 /// session reaches a network through.
 #[cfg(feature = "vault")]
-pub(crate) const NET_TOOLS: [&str; 2] = ["mcp__meshharbor__net_socks", "mcp__meshharbor__net_forward"];
+pub(crate) const NET_TOOLS: [&str; 2] =
+    ["mcp__meshharbor__net_socks", "mcp__meshharbor__net_forward"];
 
 /// FR-90 P3-8-2b-2 — `ssh_run`, as the session's settings name it: asked of
 /// a person on every call. Each runs a command on another device, as the

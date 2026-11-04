@@ -104,8 +104,8 @@ fn device_process() {
                 .build()
                 .unwrap();
             rt.block_on(async move {
-                let cfg =
-                    meshharbord::config::load(&dir.join("config.toml")).expect("the device's config");
+                let cfg = meshharbord::config::load(&dir.join("config.toml"))
+                    .expect("the device's config");
                 meshharbord::hive::init_as_daemon(
                     &cfg,
                     &dir.join("hive.db"),
@@ -445,7 +445,11 @@ async fn pair(app: &TestApp, seeded: &SeededTenant, dir: &Path, tag: &str) -> Pa
     assert!(alive(&a_pid), "A's harness runs the session");
     let a_run = a_dir.join("run").join(&sid);
     assert!(a_run.exists(), "A holds the session's runtime directory");
-    let a_state = a_dir.join("home").join(".meshharbor").join("hive").join(&sid);
+    let a_state = a_dir
+        .join("home")
+        .join(".meshharbor")
+        .join("hive")
+        .join(&sid);
     assert!(a_state.exists(), "A's account holds the session's state");
     Pair {
         a,

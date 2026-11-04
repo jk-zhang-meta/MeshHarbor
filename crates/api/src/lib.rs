@@ -17,7 +17,9 @@ pub mod ws;
 // serve `Core`'s fields, or are the request-side primitives a module's
 // handlers need: the error type, the session cookie helpers, the origin
 // policy); re-exported so every `crate::…` path in this crate reads as before.
-pub use meshharbor_core::{cookies, error, origin, rate_limit, relay_load, storage, user_analytics};
+pub use meshharbor_core::{
+    cookies, error, origin, rate_limit, relay_load, storage, user_analytics,
+};
 
 use axum::{
     Router,

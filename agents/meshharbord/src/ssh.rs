@@ -1303,7 +1303,8 @@ pub(crate) mod sshd {
                         .extended_data(
                             channel,
                             1,
-                            format!("meshharbor: could not start sftp-server: {e}\r\n").into_bytes(),
+                            format!("meshharbor: could not start sftp-server: {e}\r\n")
+                                .into_bytes(),
                         )
                         .await;
                     let _ = handle.close(channel).await;
@@ -1548,7 +1549,11 @@ pub(crate) mod sshd {
                 .await
             {
                 let _ = handle
-                    .extended_data(channel, 1, format!("meshharbor-ssh: {why}\r\n").into_bytes())
+                    .extended_data(
+                        channel,
+                        1,
+                        format!("meshharbor-ssh: {why}\r\n").into_bytes(),
+                    )
                     .await;
                 let _ = handle.exit_status_request(channel, 1).await;
                 let _ = handle.close(channel).await;
@@ -2326,7 +2331,11 @@ pub(crate) mod sshd {
         why: &str,
     ) -> Result<(), russh::Error> {
         warn!(%peer, request = %what, "ssh: refused an unsupported request");
-        let _ = session.extended_data(channel, 1, format!("meshharbor-ssh: {why}\r\n").into_bytes());
+        let _ = session.extended_data(
+            channel,
+            1,
+            format!("meshharbor-ssh: {why}\r\n").into_bytes(),
+        );
         session.channel_failure(channel)?;
         Ok(())
     }
@@ -2606,7 +2615,11 @@ pub(crate) mod sshd {
             .await
         {
             let _ = handle
-                .extended_data(channel, 1, format!("meshharbor-ssh: {why}\r\n").into_bytes())
+                .extended_data(
+                    channel,
+                    1,
+                    format!("meshharbor-ssh: {why}\r\n").into_bytes(),
+                )
                 .await;
             let _ = handle.exit_status_request(channel, 1).await;
             let _ = handle.close(channel).await;
@@ -2656,7 +2669,11 @@ pub(crate) mod sshd {
         // printed nothing", which is the opposite of what happened.
         if let Some(err) = &finished.error {
             let _ = handle
-                .extended_data(channel, 1, format!("meshharbor-ssh: {err}\r\n").into_bytes())
+                .extended_data(
+                    channel,
+                    1,
+                    format!("meshharbor-ssh: {err}\r\n").into_bytes(),
+                )
                 .await;
         }
 
@@ -3572,7 +3589,10 @@ mod tests {
         let session = connect(addr, key).await;
 
         let mut channel = session.channel_open_session().await.unwrap();
-        channel.exec(true, "echo meshharbor-ssh-p2-ok").await.unwrap();
+        channel
+            .exec(true, "echo meshharbor-ssh-p2-ok")
+            .await
+            .unwrap();
 
         let mut stdout = Vec::new();
         let mut exit = None;

@@ -660,7 +660,10 @@ mod tests {
             verdict_from("meshharbord 0.4.134\n", "0.4.133"),
             Verdict::Other("0.4.134".into())
         );
-        assert_eq!(verdict_from("meshharbord 0.4.133\n", "0.4.133"), Verdict::Same);
+        assert_eq!(
+            verdict_from("meshharbord 0.4.133\n", "0.4.133"),
+            Verdict::Same
+        );
         // An admin's downgrade is still what is installed.
         assert_eq!(
             verdict_from("meshharbord 0.4.120", "0.4.133"),
@@ -695,7 +698,10 @@ mod tests {
             exe
         );
         assert_eq!(pick_exec_path(None, exe.clone()), exe);
-        assert_eq!(pick_exec_path(Some(OsStr::new("./meshharbord")), None), None);
+        assert_eq!(
+            pick_exec_path(Some(OsStr::new("./meshharbord")), None),
+            None
+        );
     }
 
     #[test]

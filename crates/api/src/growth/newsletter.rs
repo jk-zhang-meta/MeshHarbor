@@ -35,6 +35,10 @@ use axum::{
 };
 use bson::{Bson, DateTime, Document, doc, oid::ObjectId};
 use chrono::NaiveDate;
+use meshharbor_core::{
+    campaign::{CampaignKey, KeyDepth},
+    growth::ExclusionSet,
+};
 use meshharbor_services::{
     dao::{
         growth_digest::ExcludedCounts,
@@ -42,10 +46,6 @@ use meshharbor_services::{
     },
     newsletter::{ISSUE_UTM_MEDIUM, ISSUE_UTM_SOURCE},
     purestat::{Filter, Query},
-};
-use meshharbor_core::{
-    campaign::{CampaignKey, KeyDepth},
-    growth::ExclusionSet,
 };
 use serde::{Deserialize, Serialize};
 
@@ -709,14 +709,15 @@ mod tests {
         assert_eq!(k.campaign.as_deref(), Some("nl-october-notes"));
         assert_eq!(k.content, None);
         // A sign-up that came through the link, as ingress stores it.
-        let stored =
-            meshharbor_core::attribution::sanitize(meshharbor_core::attribution::AttributionInput {
+        let stored = meshharbor_core::attribution::sanitize(
+            meshharbor_core::attribution::AttributionInput {
                 source: Some("newsletter".into()),
                 medium: Some("email".into()),
                 campaign: Some(campaign.clone()),
                 ..Default::default()
-            })
-            .unwrap();
+            },
+        )
+        .unwrap();
         let from_signup = CampaignKey::normalized(
             stored.source.as_deref(),
             stored.medium.as_deref(),

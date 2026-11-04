@@ -327,7 +327,10 @@ mod tests {
         build_zip_to_path(
             &archive,
             &[
-                ("meshharbor-tunnel-1.2.3-target/meshharbor-tunnel.exe", b"binary"),
+                (
+                    "meshharbor-tunnel-1.2.3-target/meshharbor-tunnel.exe",
+                    b"binary",
+                ),
                 ("meshharbor-tunnel-1.2.3-target/README.txt", b"readme"),
             ],
         )

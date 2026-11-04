@@ -13,8 +13,8 @@
 
 use bson::{Document, doc, oid::ObjectId};
 use futures::TryStreamExt;
-use mongodb::Database;
 use meshharbor_db::models::{AgentLogBatch, LogSource};
+use mongodb::Database;
 
 use super::base::{BaseDao, DaoError, DaoResult};
 

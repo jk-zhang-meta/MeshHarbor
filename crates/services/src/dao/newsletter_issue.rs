@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 G ROX EOOD
 use bson::{DateTime, doc};
-use mongodb::Database;
 use meshharbor_db::models::NewsletterIssue;
+use mongodb::Database;
 
 use super::base::{BaseDao, DaoResult};
 

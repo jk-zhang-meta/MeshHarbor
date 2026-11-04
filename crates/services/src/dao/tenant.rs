@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 G ROX EOOD
 use bson::{DateTime, Document, doc, oid::ObjectId};
-use mongodb::Database;
 use meshharbor_db::models::{
     Plan, RcFeaturePolicy, Role, Tenant, TenantMember, TenantSettings, role,
 };
+use mongodb::Database;
 
 use super::base::{BaseDao, DaoError, DaoResult};
 

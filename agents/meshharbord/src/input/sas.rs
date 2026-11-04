@@ -308,7 +308,11 @@ mod tests {
     /// lock screen and what would change it.
     #[test]
     fn each_refusal_says_why() {
-        assert!(SasRefusal::NoService.reason().contains("MeshHarbor service"));
+        assert!(
+            SasRefusal::NoService
+                .reason()
+                .contains("MeshHarbor service")
+        );
         assert!(
             SasRefusal::Policy(SasPolicy::Nothing)
                 .reason()

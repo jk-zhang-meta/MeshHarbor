@@ -8,9 +8,9 @@
 //! rule instead of a copy; the `ChatState` forms below bind them.
 
 use bson::oid::ObjectId;
+use meshharbor_core::ApiError;
 use meshharbor_db::models::{Message, Room};
 use meshharbor_services::dao::{room::RoomDao, tenant::TenantDao};
-use meshharbor_core::ApiError;
 
 use crate::ChatState;
 

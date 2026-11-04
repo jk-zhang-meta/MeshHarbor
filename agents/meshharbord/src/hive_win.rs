@@ -1586,7 +1586,9 @@ mod tests {
         assert_eq!(parsed, a);
 
         let with_memory = PrepArgs {
-            memory_dir: Some(PathBuf::from(r"C:\ProgramData\MeshHarbor\hive\run\s1\memory")),
+            memory_dir: Some(PathBuf::from(
+                r"C:\ProgramData\MeshHarbor\hive\run\s1\memory",
+            )),
             ..a
         };
         let back = argv(
@@ -2187,7 +2189,10 @@ mod tests {
     async fn the_adopt_pipe_names_its_client_by_its_token() {
         use std::os::windows::io::{AsRawHandle, IntoRawHandle};
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        let name = format!(r"\\.\pipe\meshharbor-adopt-peer-test-{}", std::process::id());
+        let name = format!(
+            r"\\.\pipe\meshharbor-adopt-peer-test-{}",
+            std::process::id()
+        );
         let mut sddl = Sddl::new(&adopt_pipe_sddl(&own_sid().unwrap())).unwrap();
         // SAFETY: the attributes outlive the call; the descriptor is copied.
         let mut server = unsafe {

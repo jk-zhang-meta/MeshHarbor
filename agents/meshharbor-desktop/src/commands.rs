@@ -2738,7 +2738,10 @@ mod tests {
         assert!(r.enrolled);
         assert_eq!(r.agent_id.as_deref(), Some("6ab7a24f352abff7547c5062"));
         assert_eq!(r.tenant_id.as_deref(), Some("6a975e17971e2d55ddcdedb2"));
-        assert_eq!(r.server_url.as_deref(), Some("https://meshharbor.itachi.fans"));
+        assert_eq!(
+            r.server_url.as_deref(),
+            Some("https://meshharbor.itachi.fans")
+        );
         assert_eq!(r.device_name.as_deref(), Some("vmtest-w-ins-sys-104457"));
     }
 

@@ -602,15 +602,24 @@ mod tests {
     #[test]
     fn substitutable_origin_accepts_a_plain_scheme_host_port() {
         for (input, want) in [
-            ("https://meshharbor.itachi.fans", "https://meshharbor.itachi.fans"),
-            ("https://meshharbor.itachi.fans/", "https://meshharbor.itachi.fans"),
+            (
+                "https://meshharbor.itachi.fans",
+                "https://meshharbor.itachi.fans",
+            ),
+            (
+                "https://meshharbor.itachi.fans/",
+                "https://meshharbor.itachi.fans",
+            ),
             ("http://localhost:8080", "http://localhost:8080"),
             ("http://localhost:8080/", "http://localhost:8080"),
             (
                 "https://my-meshharbor.example.com:8443",
                 "https://my-meshharbor.example.com:8443",
             ),
-            ("  https://meshharbor.itachi.fans  ", "https://meshharbor.itachi.fans"),
+            (
+                "  https://meshharbor.itachi.fans  ",
+                "https://meshharbor.itachi.fans",
+            ),
             (
                 "https://www.itachi.fans/meshharbor",
                 "https://www.itachi.fans/meshharbor",

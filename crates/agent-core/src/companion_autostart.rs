@@ -397,7 +397,10 @@ mod tests {
         assert_eq!(plan_run_key(Some(v), Some(v)), Keep);
         assert_eq!(plan_run_key(None, Some(v)), Write(v.to_string()));
         assert_eq!(
-            plan_run_key(Some(r#""C:\old\meshharbor-desktop.exe" --autostart"#), Some(v)),
+            plan_run_key(
+                Some(r#""C:\old\meshharbor-desktop.exe" --autostart"#),
+                Some(v)
+            ),
             Write(v.to_string()),
             "a moved install rewrites the value"
         );
@@ -518,7 +521,9 @@ mod tests {
                 .as_nanos()
         );
         delete_tree(Hive::CurrentUser, &scratch);
-        let v = windows_run_command(Path::new(r"C:\Program Files\MeshHarbor\meshharbor-desktop.exe"));
+        let v = windows_run_command(Path::new(
+            r"C:\Program Files\MeshHarbor\meshharbor-desktop.exe",
+        ));
 
         assert_eq!(
             read_value(Hive::CurrentUser, &scratch, WINDOWS_RUN_VALUE_NAME).unwrap(),

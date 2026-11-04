@@ -100,7 +100,8 @@ END
         let rc_path = out_dir.join("meshharbor-shim-version.rc");
         fs::write(&rc_path, rc).expect("failed to write the VERSIONINFO resource script");
 
-        let result = embed_resource::compile_for(&rc_path, ["meshharbor-shim"], embed_resource::NONE);
+        let result =
+            embed_resource::compile_for(&rc_path, ["meshharbor-shim"], embed_resource::NONE);
 
         // A missing rc.exe/llvm-rc must not break a developer's local build,
         // but it must never silently ship a release binary with no version

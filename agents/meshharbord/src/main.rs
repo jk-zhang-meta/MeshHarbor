@@ -1320,7 +1320,8 @@ async fn daemon_main() -> Result<()> {
     // thread to AppKit. Both are needed: this one covers every other platform,
     // that one has to run before a run loop it can never return from.
     if let Some(argv) = embedded_cli_args() {
-        return meshharbor_cli::cli::run_from(argv, meshharbor_cli::cli::Origin::EmbeddedInDaemon).await;
+        return meshharbor_cli::cli::run_from(argv, meshharbor_cli::cli::Origin::EmbeddedInDaemon)
+            .await;
     }
 
     // FR-96 P3 — `meshharbord update-helper --capabilities`: what this binary's
@@ -2227,7 +2228,10 @@ async fn rc_cmd(disconnect: Option<&str>) -> Result<()> {
         if !s.permissions.is_empty() {
             println!("    granted:    {}", s.permissions);
         }
-        println!("    disconnect: meshharbor rc --disconnect {}", s.session_id);
+        println!(
+            "    disconnect: meshharbor rc --disconnect {}",
+            s.session_id
+        );
     }
     Ok(())
 }
@@ -2322,8 +2326,9 @@ async fn consent_cmd(session_hex: &str, approve: bool, deny: bool) -> Result<()>
     // broker, just borrowing its sentinel-path layout. Using
     // AutoGrant skips the directory existence check so the CLI
     // works even before the agent's first session.
-    let broker = meshharbord::consent::ConsentBroker::new(meshharbord::consent::Mode::AutoGrant, dir)
-        .context("opening consent broker for CLI")?;
+    let broker =
+        meshharbord::consent::ConsentBroker::new(meshharbord::consent::Mode::AutoGrant, dir)
+            .context("opening consent broker for CLI")?;
     let path = broker.write_sentinel(session_hex, kind)?;
     println!(
         "operator consent {} for session {}\n  sentinel: {}",
@@ -2847,7 +2852,9 @@ async fn re_enroll_cmd(
         )
     } else {
         let entry = existing.find_org(org_label).ok_or_else(|| {
-            anyhow::anyhow!("no org labelled {org_label:?} in this config — see `meshharbord org ls`")
+            anyhow::anyhow!(
+                "no org labelled {org_label:?} in this config — see `meshharbord org ls`"
+            )
         })?;
         (
             entry.server_url.clone(),
@@ -3893,8 +3900,10 @@ async fn run_cmd(
         // Keyed on WHO spawned this worker, not on "some SCM service runs": a
         // per-user task install beside a running perMachine service still
         // refreshes its own `%LOCALAPPDATA%` companion.
-        let host_refreshes_companion =
-            matches!(supervision, meshharbord::supervision::Supervision::WindowsScm);
+        let host_refreshes_companion = matches!(
+            supervision,
+            meshharbord::supervision::Supervision::WindowsScm
+        );
         tokio::spawn(async move {
             if !host_refreshes_companion {
                 meshharbord::companion::refresh_if_stale(respawn_ctx).await;
@@ -4127,8 +4136,9 @@ async fn run_cmd(
     // P3b-2 PR-C: the tunnel-client hub, created ONCE here (stable across WS
     // reconnects) and SHARED between the LocalAPI's DaemonState (create/kill/
     // flows verbs) and the signaling loop (publish the live egress + demux).
-    let tunnel_hub =
-        meshharbord::tunnel::client_mgr::TunnelClientHub::new(env!("CARGO_PKG_VERSION").to_string());
+    let tunnel_hub = meshharbord::tunnel::client_mgr::TunnelClientHub::new(
+        env!("CARGO_PKG_VERSION").to_string(),
+    );
     // FR-90 P3-7-3c — the primary enrollment's hub is where an agent
     // session's own egress opens its flows (`net_socks`, `net_forward`).
     tunnel_hub.set_primary();
@@ -4452,7 +4462,8 @@ async fn run_cmd(
     let localapi_state: std::sync::Arc<dyn tunnel_core::localapi::LocalApiState> =
         std::sync::Arc::new(daemon_state);
     #[cfg(target_os = "macos")]
-    let tcc_recovery_task = meshharbord::tcc_recovery::spawn(localapi_state.clone(), restart.clone());
+    let tcc_recovery_task =
+        meshharbord::tcc_recovery::spawn(localapi_state.clone(), restart.clone());
     // P3b-3: the RTT prober. Pings each carrier-reachable peer every
     // RTT_PROBE_INTERVAL into rtt_cache; exits on shutdown. A fresh
     // `overlay_view_tx.subscribe()` receiver (the original moved into
@@ -4937,8 +4948,11 @@ async fn run_cmd(
     // `auto_update = false` does not stop it; it leaves through FR-84 D3's
     // door (`restart`), the one way this process restarts itself.
     #[cfg(target_os = "linux")]
-    let replaced_task =
-        meshharbord::replaced_binary::spawn(shutdown_rx.clone(), restart.clone(), rc_sessions.clone());
+    let replaced_task = meshharbord::replaced_binary::spawn(
+        shutdown_rx.clone(),
+        restart.clone(),
+        rc_sessions.clone(),
+    );
 
     // Wait for an internal shutdown, Ctrl-C (SIGINT), or SIGTERM.
     let mut graceful_shutdown = false;
@@ -6924,8 +6938,8 @@ mod tests {
 
     #[test]
     fn parses_restart_service_custom_timeout() {
-        let cli =
-            Cli::try_parse_from(["meshharbord", "restart-service", "--timeout-secs", "60"]).unwrap();
+        let cli = Cli::try_parse_from(["meshharbord", "restart-service", "--timeout-secs", "60"])
+            .unwrap();
         match cli.command {
             Some(Command::RestartService { timeout_secs }) => assert_eq!(timeout_secs, 60),
             other => panic!("expected RestartService --timeout-secs 60, got {other:?}"),

@@ -604,7 +604,8 @@ pub(crate) fn real_mysql() -> Option<super::pg::Upstream> {
     let at = std::env::var("MESHHARBOR_TEST_MYSQL").ok()?;
     let (host, port) = at.rsplit_once(':')?;
     let ca = std::fs::read_to_string(std::env::var("MESHHARBOR_TEST_MYSQL_CA").ok()?).ok()?;
-    let word = std::fs::read_to_string(std::env::var("MESHHARBOR_TEST_MYSQL_AUTH_FILE").ok()?).ok()?;
+    let word =
+        std::fs::read_to_string(std::env::var("MESHHARBOR_TEST_MYSQL_AUTH_FILE").ok()?).ok()?;
     Some(super::pg::Upstream {
         host: host.to_string(),
         port: port.parse().ok()?,
@@ -2070,7 +2071,9 @@ fn run_k8s(acceptor: TlsAcceptor, listener: TcpListener, state: Arc<std::sync::M
                                     let items: Vec<Value> = st
                                         .secrets
                                         .iter()
-                                        .filter(|(_, s)| s.labels.get("meshharbor.itachi.fans/lease").is_some())
+                                        .filter(|(_, s)| {
+                                            s.labels.get("meshharbor.itachi.fans/lease").is_some()
+                                        })
                                         .map(|(name, s)| {
                                             json!({"metadata": {
                                                 "name": name,

@@ -622,7 +622,10 @@ const PUBLISH_TIMEOUT: Duration = Duration::from_secs(30);
 #[cfg(all(windows, feature = "ssh-server"))]
 fn http(total: Duration) -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
-        .user_agent(concat!("meshharbord-ssh-service/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!(
+            "meshharbord-ssh-service/",
+            env!("CARGO_PKG_VERSION")
+        ))
         .connect_timeout(Duration::from_secs(5))
         .timeout(total)
         .build()

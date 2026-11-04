@@ -337,7 +337,9 @@ impl SelfView {
         let Some(row) = row else {
             return Err(Upstream::new(
                 "unknown_org",
-                format!("this device has no enrollment labelled {want:?} (see `meshharbord org ls`)"),
+                format!(
+                    "this device has no enrollment labelled {want:?} (see `meshharbord org ls`)"
+                ),
             ));
         };
         if !row.enabled {

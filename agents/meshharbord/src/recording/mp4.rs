@@ -1521,8 +1521,11 @@ mod tests {
     use crate::recording::annexb::length_prefixed_to_annexb;
 
     fn scratch(name: &str) -> PathBuf {
-        let dir =
-            std::env::temp_dir().join(format!("meshharbor-fr85-mp4-{}-{}", std::process::id(), name));
+        let dir = std::env::temp_dir().join(format!(
+            "meshharbor-fr85-mp4-{}-{}",
+            std::process::id(),
+            name
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir

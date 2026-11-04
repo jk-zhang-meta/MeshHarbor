@@ -3991,7 +3991,10 @@ async fn the_net_tools_are_offered_only_where_the_owner_offers_egress() {
         json!(["exit", "host", "port"]),
         "{list}"
     );
-    let named: Vec<String> = net.iter().map(|n| format!("mcp__meshharbor__{n}")).collect();
+    let named: Vec<String> = net
+        .iter()
+        .map(|n| format!("mcp__meshharbor__{n}"))
+        .collect();
     assert_eq!(
         named, NET_TOOLS,
         "what the settings ask a person about is what is offered"

@@ -449,7 +449,10 @@ pub fn default_install_root() -> anyhow::Result<PathBuf> {
     {
         let dirs = directories::UserDirs::new()
             .ok_or_else(|| anyhow::anyhow!("no macOS home dir resolvable"))?;
-        Ok(dirs.home_dir().join("Applications").join("MeshHarborTunnel"))
+        Ok(dirs
+            .home_dir()
+            .join("Applications")
+            .join("MeshHarborTunnel"))
     }
     #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
     {

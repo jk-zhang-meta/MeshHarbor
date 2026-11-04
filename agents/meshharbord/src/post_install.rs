@@ -890,7 +890,10 @@ mod tests {
         assert!(version_matches("meshharbord 0.1.50", "agent-v0.1.50"));
         assert!(version_matches("meshharbord 0.1.50", "0.1.50"));
         assert!(version_matches("meshharbord 0.1.50", "v0.1.50"));
-        assert!(version_matches("meshharbord 1.2.3 (some-build-id)", "v1.2.3"));
+        assert!(version_matches(
+            "meshharbord 1.2.3 (some-build-id)",
+            "v1.2.3"
+        ));
         // RETIRED-NAME-ANCHOR(2): a ROLLBACK re-runs the previous binary, which
         // still prints the pre-FR-21 name. Prefix tolerance is the contract.
         assert!(version_matches("meshharbor-agent 0.1.50", "agent-v0.1.50"));

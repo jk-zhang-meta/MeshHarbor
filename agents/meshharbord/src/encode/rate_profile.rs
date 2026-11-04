@@ -1380,9 +1380,13 @@ mod tests {
         );
         unsafe { tunnel_core::env::test_env::set_as("MESHHARBORD_", "RATE_FACTOR_VP9_444", "10") };
         assert_eq!(chroma_rate_factor_pct("VP9", true), 50);
-        unsafe { tunnel_core::env::test_env::set_as("MESHHARBORD_", "RATE_FACTOR_VP9_444", "9000") };
+        unsafe {
+            tunnel_core::env::test_env::set_as("MESHHARBORD_", "RATE_FACTOR_VP9_444", "9000")
+        };
         assert_eq!(chroma_rate_factor_pct("VP9", true), 400);
-        unsafe { tunnel_core::env::test_env::set_as("MESHHARBORD_", "RATE_FACTOR_VP9_444", "crisp") };
+        unsafe {
+            tunnel_core::env::test_env::set_as("MESHHARBORD_", "RATE_FACTOR_VP9_444", "crisp")
+        };
         assert_eq!(chroma_rate_factor_pct("VP9", true), 150);
         unsafe { tunnel_core::env::test_env::clear("RATE_FACTOR_VP9_444") };
         assert_eq!(chroma_rate_factor_pct("VP9", true), 150);

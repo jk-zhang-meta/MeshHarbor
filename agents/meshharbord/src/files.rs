@@ -2180,7 +2180,11 @@ const AGENT_STATE_RUNS: &[&[&str]] = &[
     &["library", "caches", "live.meshharbor.meshharbor"],
     &["var", "log", "meshharbor"],
     &["etc", "meshharbor"],
-    &["library", "application support", "live.meshharbor.meshharbor"],
+    &[
+        "library",
+        "application support",
+        "live.meshharbor.meshharbor",
+    ],
     &["library", "caches", "live.meshharbor.meshharbor"],
     // RETIRED-NAME-ANCHOR(4): a pre-rename Mac keeps its state (its config included) in the old segment's folder.
     &[
@@ -3513,7 +3517,10 @@ mod tests {
         // Support still works: the drawer lists the agent's folders and a
         // log downloads — only the secret-bearing files are refused.
         let log_ok = FilesHandler::new()
-            .begin_outgoing("o3".into(), &path(&state.join("logs").join("meshharbord.log")))
+            .begin_outgoing(
+                "o3".into(),
+                &path(&state.join("logs").join("meshharbord.log")),
+            )
             .await
             .is_ok();
         let listing_ok = list_dir(&path(&state)).await.is_ok();

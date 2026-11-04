@@ -88,8 +88,8 @@ pub use hooks::{
     SessionGate, TenantLifecycle,
 };
 pub use job::{Cadence, Job, JobFuture};
-pub use module::Module;
 pub use meshharbor_db::indexes::{IndexOp, IndexPlan, IndexSet};
+pub use module::Module;
 pub use state::Core;
 pub use ws::{Role, UpgradeSpec, WsCtx, WsHandler, WsHandlerSpec, WsRegistration};
 

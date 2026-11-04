@@ -1431,7 +1431,9 @@ pub fn open_default(
             // Windows builds that didn't opt into MF.
         }
     } else if preference == EncoderPreference::Auto {
-        tracing::info!("MESHHARBORD_HW_AUTO=0 — skipping MF-HW on Auto, going straight to openh264");
+        tracing::info!(
+            "MESHHARBORD_HW_AUTO=0 — skipping MF-HW on Auto, going straight to openh264"
+        );
     }
 
     #[cfg(feature = "openh264-encoder")]

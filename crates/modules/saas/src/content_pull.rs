@@ -33,12 +33,12 @@
 //!   `url_inspection:<day>` (the UTC day of the read).
 
 use bson::DateTime;
+use meshharbor_core::Core;
 use meshharbor_services::dao::{
     base::DaoResult,
     growth::{GrowthDao, PulledDay},
     growth_content::{FeedPost, GrowthContentDao, Inspection},
 };
-use meshharbor_core::Core;
 use serde::Serialize;
 use tracing::warn;
 
@@ -612,7 +612,9 @@ mod tests {
     /// site.
     #[test]
     fn the_feed_url_must_be_https() {
-        assert!(feed_url_allowed("https://meshharbor.itachi.fans/blog/feed.xml"));
+        assert!(feed_url_allowed(
+            "https://meshharbor.itachi.fans/blog/feed.xml"
+        ));
         assert!(feed_url_allowed("http://127.0.0.1:5000/blog/feed.xml"));
         assert!(feed_url_allowed("http://localhost/blog/feed.xml"));
         assert!(feed_url_allowed("http://[::1]:8080/blog/feed.xml"));

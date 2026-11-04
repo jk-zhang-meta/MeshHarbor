@@ -837,7 +837,10 @@ mod tests {
         // We don't validate — the reqwest call will fail with a clearer
         // error than we could produce here. Just confirm we don't
         // accidentally rewrite these.
-        assert_eq!(normalize_server_url("meshharbor.itachi.fans"), "meshharbor.itachi.fans");
+        assert_eq!(
+            normalize_server_url("meshharbor.itachi.fans"),
+            "meshharbor.itachi.fans"
+        );
         assert_eq!(normalize_server_url("file:///tmp/foo"), "file:///tmp/foo");
     }
 

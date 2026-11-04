@@ -158,7 +158,10 @@ enum RequestError {
 async fn request(server_url: &str, token: &str) -> Result<Option<String>, RequestError> {
     let base = server_url.trim().trim_end_matches('/');
     let client = reqwest::Client::builder()
-        .user_agent(concat!("meshharbor-token-renewal/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!(
+            "meshharbor-token-renewal/",
+            env!("CARGO_PKG_VERSION")
+        ))
         .timeout(Duration::from_secs(20))
         .build()
         .map_err(|e| RequestError::Other(e.into()))?;

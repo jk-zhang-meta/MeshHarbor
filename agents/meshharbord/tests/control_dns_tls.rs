@@ -134,10 +134,12 @@ async fn dual_port() -> (u16, TcpListener, TcpListener) {
 
 /// The text of the first frame, or the dial's error.
 async fn dial(url: &str) -> Result<String, tungstenite::Error> {
-    let (mut ws, _) =
-        tokio::time::timeout(Duration::from_secs(15), meshharbord::ws_connect::connect(url))
-            .await
-            .expect("the dial is bounded")?;
+    let (mut ws, _) = tokio::time::timeout(
+        Duration::from_secs(15),
+        meshharbord::ws_connect::connect(url),
+    )
+    .await
+    .expect("the dial is bounded")?;
     match ws.next().await {
         Some(Ok(Message::Text(t))) => Ok(t.to_string()),
         other => panic!("expected a text frame, got {other:?}"),

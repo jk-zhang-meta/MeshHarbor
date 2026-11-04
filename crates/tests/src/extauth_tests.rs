@@ -20,10 +20,10 @@ use std::time::{Duration, Instant};
 
 use base64::Engine as _;
 use futures::{SinkExt, StreamExt};
-use opaque_ke::{ClientLogin, ClientLoginFinishParameters, CredentialResponse};
-use rand_opaque::rngs::OsRng;
 use meshharbord::external_access::{Suite, set_password};
 use meshharbord::{config::AgentConfig, encode::EncoderPreference, enrollment, signaling};
+use opaque_ke::{ClientLogin, ClientLoginFinishParameters, CredentialResponse};
+use rand_opaque::rngs::OsRng;
 use serde_json::{Value, json};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 

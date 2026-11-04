@@ -138,7 +138,8 @@ pub fn load(path: Option<PathBuf>) -> Result<TunnelConfig> {
 /// rather than a file? Then [`load`] never reads one, and nothing may be
 /// saved to one on its behalf.
 pub fn from_environment() -> bool {
-    std::env::var("MESHHARBOR_TUNNEL_SERVER").is_ok() && std::env::var("MESHHARBOR_TUNNEL_TOKEN").is_ok()
+    std::env::var("MESHHARBOR_TUNNEL_SERVER").is_ok()
+        && std::env::var("MESHHARBOR_TUNNEL_TOKEN").is_ok()
 }
 
 /// Persist `cfg` to `path` (or the default). Creates the parent

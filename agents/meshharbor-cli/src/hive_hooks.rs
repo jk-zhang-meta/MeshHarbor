@@ -443,7 +443,10 @@ pub fn unadopt(explicit: Option<PathBuf>) -> Result<()> {
             written.display()
         );
     } else {
-        println!("Nothing to undo: no MeshHarbor hooks in {}.", path.display());
+        println!(
+            "Nothing to undo: no MeshHarbor hooks in {}.",
+            path.display()
+        );
     }
     Ok(())
 }

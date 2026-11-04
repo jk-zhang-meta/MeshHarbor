@@ -965,7 +965,8 @@ mod tests {
 
     #[test]
     fn kwinrc_grants_are_read() {
-        let lab = "[Desktops]\nNumber=1\n\n[Xwayland]\nScale=1\nXwaylandEisNoPromptApps=meshharbord\n";
+        let lab =
+            "[Desktops]\nNumber=1\n\n[Xwayland]\nScale=1\nXwaylandEisNoPromptApps=meshharbord\n";
         assert!(kwinrc_grants(lab, "", "meshharbord"));
         assert!(
             !kwinrc_grants(lab, "", "xdotool"),

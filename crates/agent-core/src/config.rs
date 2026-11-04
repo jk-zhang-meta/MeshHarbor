@@ -2331,7 +2331,9 @@ pub fn promote_org_to_primary(
                 .enumerate()
                 .any(|(i, o)| i != idx && o.label == clean)
             {
-                anyhow::bail!("another org is already labelled {clean:?} — see `meshharbord org ls`");
+                anyhow::bail!(
+                    "another org is already labelled {clean:?} — see `meshharbord org ls`"
+                );
             }
             clean
         }
@@ -4364,7 +4366,10 @@ tenant_id = "tid2"
     #[test]
     fn sanitize_org_label_rules() {
         assert_eq!(sanitize_org_label(" Acme Corp "), Some("acme-corp".into()));
-        assert_eq!(sanitize_org_label("meshharbor.itachi.fans"), Some("meshharbor".into()));
+        assert_eq!(
+            sanitize_org_label("meshharbor.itachi.fans"),
+            Some("meshharbor".into())
+        );
         assert_eq!(sanitize_org_label("Ümlaut__x"), Some("mlaut-x".into()));
         assert_eq!(sanitize_org_label("primary"), None, "reserved");
         assert_eq!(sanitize_org_label("PRIMARY"), None, "reserved, any case");

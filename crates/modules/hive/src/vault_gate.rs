@@ -21,8 +21,8 @@
 //! moves, without the role it holds having been decided.
 
 use bson::oid::ObjectId;
-use meshharbor_remote_control::models::{Agent, OsKind};
 use meshharbor_core::RoleAsk;
+use meshharbor_remote_control::models::{Agent, OsKind};
 use tracing::warn;
 
 use crate::HiveState;

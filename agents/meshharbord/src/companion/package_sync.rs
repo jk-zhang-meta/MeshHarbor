@@ -667,7 +667,9 @@ mod tests {
 
     #[test]
     fn only_a_companion_on_a_replaced_image_is_restarted() {
-        assert!(is_replaced_companion("/usr/bin/meshharbor-desktop (deleted)"));
+        assert!(is_replaced_companion(
+            "/usr/bin/meshharbor-desktop (deleted)"
+        ));
         assert!(is_replaced_companion(
             "/usr/local/bin/meshharbor-desktop (deleted)"
         ));

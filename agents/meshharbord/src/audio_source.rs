@@ -267,7 +267,9 @@ pub fn pick_linux(named: Option<&str>, devices: &[&str]) -> Result<usize, AudioU
     Err(match named {
         Some(want) => AudioUnavailable::new(
             AudioUnavailableCode::SourceNotFound,
-            format!("MESHHARBORD_AUDIO_SOURCE={want} is not a capture device here (devices: {here})"),
+            format!(
+                "MESHHARBORD_AUDIO_SOURCE={want} is not a capture device here (devices: {here})"
+            ),
         ),
         None => AudioUnavailable::new(
             AudioUnavailableCode::NoMonitor,

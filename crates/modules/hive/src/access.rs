@@ -26,8 +26,8 @@
 //! reached yet.
 
 use bson::oid::ObjectId;
-use meshharbor_mod_chat::bound::BoundChat;
 use meshharbor_core::Core;
+use meshharbor_mod_chat::bound::BoundChat;
 
 use crate::HiveState;
 use crate::model::{AgentSession, SessionOrigin};

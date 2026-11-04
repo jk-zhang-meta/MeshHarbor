@@ -193,8 +193,8 @@ fn device_process() {
                 .build()
                 .unwrap();
             rt.block_on(async move {
-                let cfg =
-                    meshharbord::config::load(&dir.join("config.toml")).expect("the device's config");
+                let cfg = meshharbord::config::load(&dir.join("config.toml"))
+                    .expect("the device's config");
                 meshharbord::hive::init_as_daemon(
                     &cfg,
                     &dir.join("hive.db"),
@@ -267,7 +267,12 @@ fn device_dir(dir: &Path) -> PathBuf {
 }
 
 /// A device that runs the owner's sessions; one that `holds` copies too.
-fn runs(cfg: &mut meshharbord::config::AgentConfig, seeded: &SeededTenant, dir: &Path, holds: bool) {
+fn runs(
+    cfg: &mut meshharbord::config::AgentConfig,
+    seeded: &SeededTenant,
+    dir: &Path,
+    holds: bool,
+) {
     cfg.hive_enabled = true;
     cfg.hive_replica = holds;
     cfg.hive_accounts

@@ -755,7 +755,11 @@ mod tests {
     /// the name goes back into PowerShell, so the check is strict.
     #[test]
     fn only_our_nat_names_are_nat_names() {
-        for good in ["meshharbor-overlay", "meshharbor-overlay-1", "meshharbor-overlay-12"] {
+        for good in [
+            "meshharbor-overlay",
+            "meshharbor-overlay-1",
+            "meshharbor-overlay-12",
+        ] {
             assert!(is_nat_name(good), "{good}");
         }
         for bad in [

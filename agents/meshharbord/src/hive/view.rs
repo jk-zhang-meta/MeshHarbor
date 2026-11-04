@@ -49,9 +49,9 @@ use std::time::Duration;
 
 use bson::oid::ObjectId;
 use bytes::Bytes;
+use meshharbor_hive_node::EventEnvelope;
 use meshharbor_remote_control::hive::{HiveRunState, HiveViewRefusal, search_limits, view_limits};
 use meshharbor_remote_control::signaling::{ClientMsg, IceServer};
-use meshharbor_hive_node::EventEnvelope;
 use serde_json::{Value, json};
 use tokio::sync::{broadcast, mpsc};
 use tokio::time::Instant;
@@ -82,7 +82,8 @@ const OFFER_DEADLINE: Duration = if cfg!(test) {
 const MAX_TTL_SECS: u32 = 60 * 60;
 // P2i-1 — a search grant names at most what the store takes as a filter: a
 // grant the device accepted must never be a search the store refuses.
-const _: () = assert!(search_limits::MAX_SESSIONS == meshharbor_hive_node::store::MAX_SEARCH_SESSIONS);
+const _: () =
+    assert!(search_limits::MAX_SESSIONS == meshharbor_hive_node::store::MAX_SEARCH_SESSIONS);
 /// Bytes queued on the channel before the device waits for the viewer.
 const BACKPRESSURE_HIGH: usize = 4 * 1024 * 1024;
 /// A viewer that reads nothing for this long is gone.

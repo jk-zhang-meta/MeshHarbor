@@ -618,7 +618,8 @@ mod tests {
             "token_uri": "https://oauth2.googleapis.com/token",
         })
         .to_string();
-        let c = ScClient::from_key_json("sc-domain:meshharbor.itachi.fans", "https://x", &key_json).unwrap();
+        let c = ScClient::from_key_json("sc-domain:meshharbor.itachi.fans", "https://x", &key_json)
+            .unwrap();
         let now = DateTime::now().timestamp_millis() / 1000;
         let jwt = c.assertion(now).unwrap();
         let mut v = jsonwebtoken::Validation::new(Algorithm::RS256);

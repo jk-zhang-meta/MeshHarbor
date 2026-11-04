@@ -445,7 +445,10 @@ mod tests {
     /// A pipe name of a test's own, never the daemon's.
     #[cfg(windows)]
     fn test_pipe(tag: &str) -> String {
-        format!(r"\\.\pipe\meshharbor-adopt-test-{tag}-{}", std::process::id())
+        format!(
+            r"\\.\pipe\meshharbor-adopt-test-{tag}-{}",
+            std::process::id()
+        )
     }
 
     /// FR-97 P4c — the hook keeps a pipe its own account serves (an attended

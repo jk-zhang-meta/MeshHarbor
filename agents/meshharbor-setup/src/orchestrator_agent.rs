@@ -516,14 +516,16 @@ async fn run_install_inner(
     #[cfg(target_os = "windows")]
     if advanced.prepare_firewall {
         let public = advanced.firewall_public;
-        let dir =
-            meshharbord::updater::install_dir_with_name(wfx, meshharbord::updater::INSTALL_FOLDER_NAME)
-                .ok_or_else(|| {
-                failed(
-                    ErrorCode::Other,
-                    "The installed daemon folder was not found".into(),
-                )
-            })?;
+        let dir = meshharbord::updater::install_dir_with_name(
+            wfx,
+            meshharbord::updater::INSTALL_FOLDER_NAME,
+        )
+        .ok_or_else(|| {
+            failed(
+                ErrorCode::Other,
+                "The installed daemon folder was not found".into(),
+            )
+        })?;
         let exe = dir.join("meshharbord.exe");
         let result = tokio::task::spawn_blocking(move || -> Result<(), String> {
             use std::os::windows::process::CommandExt;
@@ -780,9 +782,10 @@ async fn anchor_device(
         emit(on_event, ProgressEvent::AnchorSkipped { reason });
         Some(false)
     };
-    let Some(dir) =
-        meshharbord::updater::install_dir_with_name(flavour, meshharbord::updater::INSTALL_FOLDER_NAME)
-    else {
+    let Some(dir) = meshharbord::updater::install_dir_with_name(
+        flavour,
+        meshharbord::updater::INSTALL_FOLDER_NAME,
+    ) else {
         return skipped("the install folder could not be found".to_string());
     };
     let exe = dir.join("meshharbord.exe");
@@ -851,8 +854,10 @@ async fn place_desktop_companion(
     server: &str,
     on_event: &Channel<ProgressEvent>,
 ) -> Option<bool> {
-    let dir =
-        meshharbord::updater::install_dir_with_name(flavour, meshharbord::updater::INSTALL_FOLDER_NAME)?;
+    let dir = meshharbord::updater::install_dir_with_name(
+        flavour,
+        meshharbord::updater::INSTALL_FOLDER_NAME,
+    )?;
     emit(
         on_event,
         ProgressEvent::AssetResolving {
@@ -991,9 +996,10 @@ async fn place_desktop_companion(
 fn cli_done_surface(
     flavour: WindowsInstallFlavour,
 ) -> (Option<String>, Option<bool>, Option<bool>) {
-    let Some(dir) =
-        meshharbord::updater::install_dir_with_name(flavour, meshharbord::updater::INSTALL_FOLDER_NAME)
-    else {
+    let Some(dir) = meshharbord::updater::install_dir_with_name(
+        flavour,
+        meshharbord::updater::INSTALL_FOLDER_NAME,
+    ) else {
         return (None, Some(false), None);
     };
     let cli = dir.join("meshharbor.exe");

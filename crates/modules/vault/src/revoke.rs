@@ -45,6 +45,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use bson::{DateTime, oid::ObjectId};
 use dashmap::DashMap;
+use meshharbor_core::{FleetLifecycle, ReleasedLease};
 use meshharbor_mod_hive::model::{AgentSession, SessionStatus};
 use meshharbor_remote_control::{
     models::{Agent, RpcCap},
@@ -52,7 +53,6 @@ use meshharbor_remote_control::{
     vault::{RevokeReason, lease_limits},
 };
 use meshharbor_services::dao::base::DaoError;
-use meshharbor_core::{FleetLifecycle, ReleasedLease};
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 

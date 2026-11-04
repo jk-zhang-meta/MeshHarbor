@@ -7,8 +7,8 @@
 //! thin binding to [`ConferenceState`], so the handlers read as before.
 
 use bson::oid::ObjectId;
-use meshharbor_db::models::Room;
 use meshharbor_core::ApiError;
+use meshharbor_db::models::Room;
 
 use crate::ConferenceState;
 

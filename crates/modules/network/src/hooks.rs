@@ -11,10 +11,10 @@
 
 use async_trait::async_trait;
 use bson::oid::ObjectId;
-use meshharbor_remote_control::models::NodeRef;
 use meshharbor_core::hooks::{
     FleetLifecycle, ReleasedLease, RenamePropagation, TenantArchived, TenantLifecycle,
 };
+use meshharbor_remote_control::models::NodeRef;
 
 use crate::NetworkState;
 

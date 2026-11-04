@@ -183,7 +183,8 @@ pub fn cmd_desktop_state() -> DesktopStateView {
         },
         // The plist is world-readable; `/etc/meshharbor` (0700) is not.
         macos_privileged_half: cfg!(target_os = "macos")
-            && std::path::Path::new("/Library/LaunchDaemons/fans.itachi.meshharbor.daemon.plist").exists(),
+            && std::path::Path::new("/Library/LaunchDaemons/fans.itachi.meshharbor.daemon.plist")
+                .exists(),
     }
 }
 

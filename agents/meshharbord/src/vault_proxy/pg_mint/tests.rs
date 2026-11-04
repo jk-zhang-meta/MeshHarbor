@@ -232,7 +232,10 @@ async fn the_expired_are_swept_at_the_next_mint() {
         let mut roles = f.roles.lock().unwrap();
         roles.insert(
             format!("meshharbor_{old}"),
-            role("2001-01-01T00:00:00Z", Some(format!("meshharbor lease {old}"))),
+            role(
+                "2001-01-01T00:00:00Z",
+                Some(format!("meshharbor lease {old}")),
+            ),
         );
         roles.insert(
             format!("meshharbor_{live}"),
@@ -247,7 +250,10 @@ async fn the_expired_are_swept_at_the_next_mint() {
         );
         roles.insert(
             "meshharbor_admin".into(),
-            role("2001-01-01T00:00:00Z", Some("meshharbor lease forged".into())),
+            role(
+                "2001-01-01T00:00:00Z",
+                Some("meshharbor lease forged".into()),
+            ),
         );
     }
     let issuer = Issuer::from_bundle(&bundle(&f, &admin, ""), upstream_of).unwrap();

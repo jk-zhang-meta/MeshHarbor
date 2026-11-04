@@ -1527,9 +1527,10 @@ impl LocalApiState for DaemonState {
     async fn keep_busy_on(&self, opts: tunnel_core::localapi::KeepBusyStartOpts) -> Response {
         if self.keep_busy_worker.is_some() {
             return Response::Error {
-                message: "keep busy runs in this Mac's GUI session: turn it on from the MeshHarbor \
+                message:
+                    "keep busy runs in this Mac's GUI session: turn it on from the MeshHarbor \
                           menu-bar app, or with `meshharbor keep-busy on` as yourself"
-                    .into(),
+                        .into(),
             };
         }
         match crate::keep_busy::start_locally_and_wait(&opts, crate::keep_busy::LOCAL_OFF_WAIT)
@@ -2277,7 +2278,10 @@ mod tests {
     fn consent_broker(tag: &str) -> crate::consent::ConsentBroker {
         crate::consent::ConsentBroker::new(
             crate::consent::Mode::AutoGrant,
-            std::env::temp_dir().join(format!("meshharbor-las-consent-{tag}-{}", std::process::id())),
+            std::env::temp_dir().join(format!(
+                "meshharbor-las-consent-{tag}-{}",
+                std::process::id()
+            )),
         )
         .unwrap()
     }
@@ -2771,8 +2775,10 @@ mod tests {
     /// A fresh config directory holding a real `config.toml` (the verb reads
     /// `local_restart_enabled` from the FILE), unique per test.
     fn restart_dir(tag: &str, enabled: bool) -> std::path::PathBuf {
-        let dir =
-            std::env::temp_dir().join(format!("meshharbor-las-restart-{tag}-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "meshharbor-las-restart-{tag}-{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let mut cfg = crate::config::test_fixture();

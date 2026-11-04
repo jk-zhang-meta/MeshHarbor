@@ -108,7 +108,10 @@ mod tests {
         let p = origin_policy(&[], "https://meshharbor.itachi.fans");
         assert!(is_trusted(&p, "https://meshharbor.itachi.fans"));
         assert!(!is_trusted(&p, "https://evil.example"));
-        assert!(!is_trusted(&p, "https://meshharbor.itachi.fans.evil.example"));
+        assert!(!is_trusted(
+            &p,
+            "https://meshharbor.itachi.fans.evil.example"
+        ));
     }
 
     #[test]
@@ -131,7 +134,10 @@ mod tests {
     #[test]
     fn scheme_and_port_are_part_of_the_identity() {
         let p = origin_policy(&[], "https://meshharbor.itachi.fans");
-        assert!(!is_trusted(&p, "http://meshharbor.itachi.fans"), "scheme must match");
+        assert!(
+            !is_trusted(&p, "http://meshharbor.itachi.fans"),
+            "scheme must match"
+        );
         assert!(
             !is_trusted(&p, "https://meshharbor.itachi.fans:8443"),
             "port must match"
@@ -171,7 +177,13 @@ mod tests {
     #[test]
     fn junk_and_null_origins_are_refused() {
         let p = origin_policy(&[], "https://meshharbor.itachi.fans");
-        for origin in ["", "   ", "null", "meshharbor.itachi.fans", "://meshharbor.itachi.fans"] {
+        for origin in [
+            "",
+            "   ",
+            "null",
+            "meshharbor.itachi.fans",
+            "://meshharbor.itachi.fans",
+        ] {
             assert!(!is_trusted(&p, origin), "{origin:?} must not be trusted");
         }
     }

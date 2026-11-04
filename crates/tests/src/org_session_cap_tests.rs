@@ -574,8 +574,8 @@ async fn a_stale_slot_this_pod_claimed_does_not_lock_the_org_out() {
 #[tokio::test]
 async fn an_external_session_is_charged_to_the_org_it_is_for() {
     use bson::oid::ObjectId;
-    use meshharbor_mod_remote::extauth::charge_scope;
     use meshharbor_core::cluster::session_slots::SlotScope;
+    use meshharbor_mod_remote::extauth::charge_scope;
     let app = TestApp::spawn().await;
     let remote = app
         .state

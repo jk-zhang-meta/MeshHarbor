@@ -1687,7 +1687,8 @@ mod socket_tests {
     /// in review, so they are asserted.
     #[tokio::test]
     async fn the_socket_is_0600_and_the_directory_is_traversable_only() {
-        let tmp = std::env::temp_dir().join(format!("meshharbor-deleg-test-{}", std::process::id()));
+        let tmp =
+            std::env::temp_dir().join(format!("meshharbor-deleg-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         let host = DelegateHost::new();
         let uid = unsafe { libc::getuid() };

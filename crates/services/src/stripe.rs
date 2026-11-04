@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 G ROX EOOD
-use mongodb::bson::{DateTime, doc, oid::ObjectId};
 use meshharbor_config::StripeSettings;
 use meshharbor_db::models::tenant::{
     BillingCurrency, BillingInfo, BillingInterval, Plan, PlanLimits, SubscriptionStatus, Tenant,
 };
+use mongodb::bson::{DateTime, doc, oid::ObjectId};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tracing::{info, warn};

@@ -30,7 +30,9 @@ const SCRIPT_NAME: &str = "meshharbor-banner-pin";
 /// `MESHHARBOR_DESKTOP_BANNER_PIN=0` (or `false`/`off`) — neither pin.
 fn enabled() -> bool {
     !matches!(
-        std::env::var("MESHHARBOR_DESKTOP_BANNER_PIN").ok().as_deref(),
+        std::env::var("MESHHARBOR_DESKTOP_BANNER_PIN")
+            .ok()
+            .as_deref(),
         Some("0") | Some("false") | Some("off")
     )
 }

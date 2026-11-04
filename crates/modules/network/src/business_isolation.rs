@@ -54,8 +54,8 @@
 use std::time::Duration;
 
 use bson::oid::ObjectId;
-use meshharbor_remote_control::models::{NodeRef, OverlayNode};
 use meshharbor_core::business_authority::BusinessZone;
+use meshharbor_remote_control::models::{NodeRef, OverlayNode};
 
 use tracing::{debug, info, warn};
 
@@ -211,7 +211,9 @@ pub struct Lines {
 }
 
 impl Lines {
-    pub fn ref_identity(r: &NodeRef) -> (meshharbor_core::business_authority::DeviceKind, ObjectId) {
+    pub fn ref_identity(
+        r: &NodeRef,
+    ) -> (meshharbor_core::business_authority::DeviceKind, ObjectId) {
         match r {
             NodeRef::Agent { agent_id } => (
                 meshharbor_core::business_authority::DeviceKind::Agent,
@@ -329,7 +331,8 @@ pub async fn lines(state: &NetworkState, mode: Mode, tenant_id: ObjectId) -> Lin
     // empty), while `roles_read_failed` is exposed so teardown/reconcile
     // paths preserve existing sessions/carriers/DERP tables and retry.
     let (roles, mut roles_read_failed) =
-        match meshharbor_core::business_authority::current_approved_roles(&state.core, tenant_id).await
+        match meshharbor_core::business_authority::current_approved_roles(&state.core, tenant_id)
+            .await
         {
             Ok(r) => (r, false),
             Err(e) => {

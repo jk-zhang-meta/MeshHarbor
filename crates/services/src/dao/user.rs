@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 G ROX EOOD
 use bson::{DateTime, doc, oid::ObjectId};
-use mongodb::Database;
 use meshharbor_db::models::{
     MAX_TUTORIAL_CHAPTER_ID_LEN, MAX_TUTORIAL_CHAPTERS, NotificationPrefs, OAuthProvider, Presence,
     SignupAttribution, TutorialState, User, UserStatusInfo,
 };
+use mongodb::Database;
 use serde::Deserialize;
 
 use super::base::{BaseDao, DaoError, DaoResult};

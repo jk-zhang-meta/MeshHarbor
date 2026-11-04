@@ -738,7 +738,12 @@ mod tests {
         let weekly = vec![
             week("2026-10-10", "meshharbor", "clicks", 3),
             week("2026-10-10", "meshharbor", "impressions", 50),
-            week("2026-10-10", "meshharbor", "avg_impression_position_x10", 40),
+            week(
+                "2026-10-10",
+                "meshharbor",
+                "avg_impression_position_x10",
+                40,
+            ),
             week("2026-10-03", "old", "clicks", 9),
         ];
         let b = bing_report(d("2026-10-16"), &daily, &weekly, "2026-10-15");

@@ -437,7 +437,8 @@ mod tests {
     fn the_prefix_is_the_recorders() {
         // meshharbord's `recording::child::EVENT_PREFIX`. A change there that is
         // not made here leaves every export looking like it never answered.
-        let ev = parse_event_line("MESHHARBOR_REC_JSON:{\"ev\":\"done\",\"frames\":3}\r\n").unwrap();
+        let ev =
+            parse_event_line("MESHHARBOR_REC_JSON:{\"ev\":\"done\",\"frames\":3}\r\n").unwrap();
         assert_eq!(ev["frames"], 3);
         assert!(parse_event_line("INFO a log line").is_none());
         assert!(parse_event_line("MESHHARBOR_REC_JSON:not json").is_none());

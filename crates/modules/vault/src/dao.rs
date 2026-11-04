@@ -9,8 +9,8 @@
 
 use bson::{DateTime, Document, doc, oid::ObjectId};
 use futures::TryStreamExt;
-use mongodb::{Database, options::ReturnDocument};
 use meshharbor_services::dao::base::{BaseDao, DaoError, DaoResult, escape_regex};
+use mongodb::{Database, options::ReturnDocument};
 use serde::{Deserialize, Serialize};
 
 use crate::model::{

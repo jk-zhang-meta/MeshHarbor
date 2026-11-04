@@ -11,8 +11,8 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use bson::oid::ObjectId;
-use meshharbor_remote_control::hive::HiveRefusal;
 use meshharbor_node_core::config::AgentConfig;
+use meshharbor_remote_control::hive::HiveRefusal;
 
 /// `hive_max_sessions` when unset.
 pub const DEFAULT_MAX_SESSIONS: usize = 4;

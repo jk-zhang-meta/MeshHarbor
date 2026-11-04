@@ -11,8 +11,8 @@
 //! (`crates/db/src/indexes.rs`), matching `remote_audit` / `tunnel_audit`.
 
 use bson::{doc, oid::ObjectId};
-use mongodb::Database;
 use meshharbor_remote_control::models::ExecAuditEvent;
+use mongodb::Database;
 
 use super::base::{BaseDao, DaoResult, PaginatedResult, PaginationParams};
 

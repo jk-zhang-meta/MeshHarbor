@@ -2251,7 +2251,8 @@ mod tests {
     /// whatever someone's yes would say.
     #[test]
     fn a_persons_endpoint_is_held_by_its_own_guardrails() {
-        let any = r#"permit (principal, action == MeshHarbor::Action::"secret:connect", resource);"#;
+        let any =
+            r#"permit (principal, action == MeshHarbor::Action::"secret:connect", resource);"#;
         let set = set_with(&[any]);
         assert!(decide(&set, &connect(&[], "db/orders", &[], "db.internal:5432")).allow);
         let with_yes = |mut ask: Ask| {

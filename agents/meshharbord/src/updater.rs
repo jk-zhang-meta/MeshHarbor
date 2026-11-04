@@ -1029,7 +1029,9 @@ fn is_daemon_asset(lower_name: &str) -> bool {
     let meshharbor = lower_name
         .strip_prefix("meshharbor-")
         .is_some_and(|rest| rest.starts_with(|c: char| c.is_ascii_digit()));
-    meshharbor || lower_name.starts_with("meshharbor-agent") || lower_name.starts_with("meshharbord")
+    meshharbor
+        || lower_name.starts_with("meshharbor-agent")
+        || lower_name.starts_with("meshharbord")
 }
 
 /// Choose the Linux asset: the right ARCH always, and the format this host
@@ -5489,7 +5491,9 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let unit = tmp.path().join("meshharbor-update.path");
         let live = tmp.path().join("paths.target.wants-meshharbor-update.path");
-        let dangling = tmp.path().join("timers.target.wants-meshharbor-update.timer");
+        let dangling = tmp
+            .path()
+            .join("timers.target.wants-meshharbor-update.timer");
         let absent = tmp.path().join("never-made");
         std::fs::write(&unit, b"[Path]\n").expect("unit");
         std::os::unix::fs::symlink(&unit, &live).expect("live link");
@@ -6101,7 +6105,10 @@ mod tests {
         ];
         let picked =
             pick_linux_asset(&release, x86, true).expect("must find the renamed daemon deb");
-        assert_eq!(picked.name, "meshharbord-0.4.38-x86_64-unknown-linux-gnu.deb");
+        assert_eq!(
+            picked.name,
+            "meshharbord-0.4.38-x86_64-unknown-linux-gnu.deb"
+        );
 
         assert!(is_daemon_asset(
             "meshharbord-0.4.38-x86_64-unknown-linux-gnu.deb"

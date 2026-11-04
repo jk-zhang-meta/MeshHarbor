@@ -488,7 +488,10 @@ async fn handle_client_message(
         _ => {
             // FR-69 — a module's namespace (`typing:*` is chat's). The host
             // knows the socket; the module knows the message.
-            if let Some(handler) = state.modules.ws_handler(meshharbor_core::Role::User, msg_type) {
+            if let Some(handler) = state
+                .modules
+                .ws_handler(meshharbor_core::Role::User, msg_type)
+            {
                 let ctx = meshharbor_core::WsCtx {
                     connection_id: connection_id.to_string(),
                     role: meshharbor_core::Role::User,

@@ -202,7 +202,10 @@ fn xorg_args(display: &str, conf: &Path, configdir: &Path, log: &Path) -> Vec<St
 
 /// Where the desktop's Xorg keeps its config and log: private to the daemon.
 fn xorg_dir(display: &str) -> std::path::PathBuf {
-    std::env::temp_dir().join(format!("meshharbor-xorg-{}", display.trim_start_matches(':')))
+    std::env::temp_dir().join(format!(
+        "meshharbor-xorg-{}",
+        display.trim_start_matches(':')
+    ))
 }
 
 /// The running desktop's display and server, for display match (FR-108 P2).

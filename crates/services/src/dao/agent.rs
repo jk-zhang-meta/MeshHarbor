@@ -3,11 +3,11 @@
 use std::collections::HashMap;
 
 use bson::{DateTime, Document, doc, oid::ObjectId};
-use mongodb::Database;
 use meshharbor_remote_control::models::{
     AccessPolicy, Agent, AgentCaps, AgentStatus, DesiredConfig, DisplayInfo, ExecPolicy,
     ExternalAccessPolicy, InstallInfo, OsKind, PeerRelayPolicy, RpcCap, SshPolicy,
 };
+use mongodb::Database;
 
 use super::base::{BaseDao, DaoResult, PaginatedResult, PaginationParams};
 

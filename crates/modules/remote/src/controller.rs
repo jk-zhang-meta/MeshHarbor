@@ -306,7 +306,9 @@ pub async fn dispatch_controller_rc(
             .await
         {
             note_agent_offline_evidence(state, agent_hex.clone(), "controller_session");
-            meshharbor_core::cluster::metrics::bump(&meshharbor_core::cluster::metrics::RC_REHOME_TOTAL);
+            meshharbor_core::cluster::metrics::bump(
+                &meshharbor_core::cluster::metrics::RC_REHOME_TOTAL,
+            );
             let record = meshharbor_core::cluster::directory::OwnerRecord::parse(&owner);
             let owner_pod = record
                 .as_ref()

@@ -46,7 +46,6 @@ use std::time::{Duration, Instant};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use bson::{DateTime, oid::ObjectId};
 use dashmap::DashMap;
-use rand::RngCore;
 use meshharbor_remote_control::{
     models::{
         Agent, NodeRef, OverlayNode, PeerRelayAuditAction, PeerRelayAuditEvent,
@@ -57,6 +56,7 @@ use meshharbor_remote_control::{
         RelayProbeTargetWire, ServerMsg,
     },
 };
+use rand::RngCore;
 use tracing::{debug, info, warn};
 use tunnel_core::policy::{OverlayPeerRef, OverlaySource, evaluate_overlay};
 
@@ -1054,9 +1054,10 @@ impl OrgRelaySession {
         device_id: ObjectId,
     ) -> bool {
         let is = |n: &NodeRef| match (kind, n) {
-            (meshharbor_core::business_authority::DeviceKind::Agent, NodeRef::Agent { agent_id }) => {
-                *agent_id == device_id
-            }
+            (
+                meshharbor_core::business_authority::DeviceKind::Agent,
+                NodeRef::Agent { agent_id },
+            ) => *agent_id == device_id,
             (
                 meshharbor_core::business_authority::DeviceKind::TunnelClient,
                 NodeRef::TunnelClient { tunnel_client_id },
@@ -2281,7 +2282,8 @@ async fn plan_mint_candidates_with_trial_diagnostics(
     let iso_mode = iso::mode(state);
     let unknown_role_mode = iso::unknown_role_mode(state);
     let approved_roles = if iso_mode == Mode::Enforce || unknown_role_mode != Mode::Off {
-        match meshharbor_core::business_authority::current_approved_roles(&state.core, tenant_id).await
+        match meshharbor_core::business_authority::current_approved_roles(&state.core, tenant_id)
+            .await
         {
             Ok(roles) => (unknown_role_mode != Mode::Off).then_some(roles),
             Err(e) if iso_mode == Mode::Enforce => {
@@ -2366,7 +2368,8 @@ async fn plan_mint_candidates_with_trial_diagnostics(
     let mut servers: Vec<ObjectId> = Vec::new();
     let mut servers_unreadable = false;
     if peer_relay_mode(state, tenant_id).await == PeerRelayMode::Auto {
-        match meshharbor_core::business_authority::current_server_agents(&state.core, tenant_id).await
+        match meshharbor_core::business_authority::current_server_agents(&state.core, tenant_id)
+            .await
         {
             Ok(agents) => {
                 for agent in agents {
@@ -4976,7 +4979,8 @@ pub async fn reconcile_acl(state: &NetworkState, tenant_id: ObjectId) -> bool {
         }
     }
     let server_agents: Option<std::collections::HashSet<ObjectId>> =
-        match meshharbor_core::business_authority::current_server_agents(&state.core, tenant_id).await
+        match meshharbor_core::business_authority::current_server_agents(&state.core, tenant_id)
+            .await
         {
             Ok(agents) => Some(agents.into_iter().filter_map(|a| a.id).collect()),
             Err(_) => {

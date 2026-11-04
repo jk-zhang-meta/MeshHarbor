@@ -21,8 +21,8 @@
 
 use bson::{DateTime, Document, doc, oid::ObjectId};
 use futures::TryStreamExt;
-use mongodb::{Collection, Database};
 use meshharbor_remote_control::setup_diagnostics::SetupDiagnostic;
+use mongodb::{Collection, Database};
 use serde::{Deserialize, Serialize};
 
 use super::base::DaoResult;

@@ -551,7 +551,8 @@ async fn an_owner_who_is_no_member_is_nobodys_principal() {
         &t,
         &[(
             "anyone-connects",
-            r#"permit (principal, action == MeshHarbor::Action::"secret:connect", resource);"#.into(),
+            r#"permit (principal, action == MeshHarbor::Action::"secret:connect", resource);"#
+                .into(),
         )],
     )
     .await;
@@ -595,7 +596,8 @@ async fn a_persons_lease_is_taken_back_when_the_owner_changes_or_leaves() {
         &t,
         &[(
             "anyone-connects",
-            r#"permit (principal, action == MeshHarbor::Action::"secret:connect", resource);"#.into(),
+            r#"permit (principal, action == MeshHarbor::Action::"secret:connect", resource);"#
+                .into(),
         )],
     )
     .await;

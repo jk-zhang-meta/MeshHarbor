@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 G ROX EOOD
-use mongodb::{Client, Database, options::ClientOptions};
 use meshharbor_api::{build_router, state::AppState};
 use meshharbor_config::Settings;
 use meshharbor_db::indexes::ensure_indexes;
+use mongodb::{Client, Database, options::ClientOptions};
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
 

@@ -48,11 +48,11 @@ use std::collections::BTreeMap;
 
 use bson::DateTime;
 use chrono::Duration;
+use meshharbor_core::Core;
 use meshharbor_services::dao::{
     base::DaoResult,
     growth::{GrowthDaily, GrowthDao, PulledDay, SEARCH_CONSOLE_SOURCE, daily_row},
 };
-use meshharbor_core::Core;
 use serde::Serialize;
 use tracing::{info, warn};
 
@@ -401,12 +401,20 @@ mod tests {
                 Some(3.5),
             ),
             row(
-                &["https://meshharbor.itachi.fans/blog/a/", " remote desktop\u{0}"],
+                &[
+                    "https://meshharbor.itachi.fans/blog/a/",
+                    " remote desktop\u{0}",
+                ],
                 1.0,
                 10.0,
                 Some(8.0),
             ),
-            row(&["https://meshharbor.itachi.fans/blog/b/", ""], 5.0, 5.0, Some(1.0)),
+            row(
+                &["https://meshharbor.itachi.fans/blog/b/", ""],
+                5.0,
+                5.0,
+                Some(1.0),
+            ),
             row(
                 &["https://meshharbor.itachi.fans/blog/c/", "self hosted"],
                 0.0,
@@ -424,9 +432,8 @@ mod tests {
         // (3.5 × 40 + 8 × 10) × 100 = 22,000 → an average of 4.4.
         assert_eq!(value(&out, &a, "position_x100"), Some(22_000));
         assert!(
-            out.iter()
-                .all(|r| r.dims.get("page").map(String::as_str)
-                    != Some("https://meshharbor.itachi.fans/blog/b/")),
+            out.iter().all(|r| r.dims.get("page").map(String::as_str)
+                != Some("https://meshharbor.itachi.fans/blog/b/")),
             "an empty query is no key"
         );
         let c = [("query", "self hosted")];

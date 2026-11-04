@@ -5473,7 +5473,8 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn the_peer_pid_of_a_listener_is_its_process() {
-        let path = std::env::temp_dir().join(format!("meshharbor-2511-{}.sock", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("meshharbor-2511-{}.sock", std::process::id()));
         let _ = std::fs::remove_file(&path);
         let listener = tokio::net::UnixListener::bind(&path).expect("bind a test socket");
         let accept = tokio::spawn(async move { listener.accept().await.map(|_| ()) });
@@ -8650,7 +8651,10 @@ mod tests {
         ),
     ) {
         use tokio::net::windows::named_pipe::ClientOptions;
-        let pipe = format!(r"\\.\pipe\meshharbor-test-pool{pool}-{}", std::process::id());
+        let pipe = format!(
+            r"\\.\pipe\meshharbor-test-pool{pool}-{}",
+            std::process::id()
+        );
         let (sd_tx, sd_rx) = watch::channel(false);
         let state: Arc<dyn LocalApiState> = Arc::new(Mock);
         let pipe_srv = pipe.clone();

@@ -1186,7 +1186,8 @@ mod tests {
     fn turn_tls_servers_extracts_pin_but_keeps_hostname() {
         assert_eq!(
             turn_tls_servers(&[
-                "turns:coturn.meshharbor.itachi.fans:443?transport=tcp&pin=94.130.141.74".to_string()
+                "turns:coturn.meshharbor.itachi.fans:443?transport=tcp&pin=94.130.141.74"
+                    .to_string()
             ]),
             vec![(
                 "coturn.meshharbor.itachi.fans".to_string(),

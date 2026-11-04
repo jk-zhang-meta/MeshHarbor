@@ -4185,8 +4185,8 @@ impl Hub {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mongodb::Client;
     use meshharbor_remote_control::audit::AuditSink;
+    use mongodb::Client;
     use std::time::Duration;
 
     async fn test_hub() -> Hub {

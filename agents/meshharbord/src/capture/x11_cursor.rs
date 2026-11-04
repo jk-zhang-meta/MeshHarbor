@@ -419,7 +419,10 @@ mod x11_tests {
     #[test]
     fn the_pointer_reaches_the_slot_with_its_shape_place_and_name() {
         let Ok((conn, screen)) = x11rb::connect(None) else {
-            assert!(!required(), "MESHHARBORD_TEST_X11=1 but there is no X server");
+            assert!(
+                !required(),
+                "MESHHARBORD_TEST_X11=1 but there is no X server"
+            );
             eprintln!("no X server — skipping (MESHHARBORD_TEST_X11=1 makes this a failure)");
             return;
         };

@@ -19,9 +19,9 @@
 use std::sync::Arc;
 
 use bson::oid::ObjectId;
+use meshharbor_hive_node::store::WorkplaceRecord;
 use meshharbor_remote_control::hive::{HivePurgePart, hive_limits};
 use meshharbor_remote_control::signaling::ClientMsg;
-use meshharbor_hive_node::store::WorkplaceRecord;
 use tracing::{info, warn};
 
 use super::{Input, SUPERSEDE_WAIT, Supervisor};

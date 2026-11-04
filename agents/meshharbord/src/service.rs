@@ -444,8 +444,7 @@ pub mod system {
     pub const MACOS_PLIST: &str = "/Library/LaunchDaemons/fans.itachi.meshharbor.daemon.plist";
     /// The plist the `.pkg` carries inside the bundle; its postinstall copies
     /// it to [`MACOS_PLIST`] when the marker below exists.
-    pub const MACOS_PLIST_SOURCE: &str =
-        "/Library/MeshHarbor/meshharbord.app/Contents/Resources/fans.itachi.meshharbor.daemon.plist";
+    pub const MACOS_PLIST_SOURCE: &str = "/Library/MeshHarbor/meshharbord.app/Contents/Resources/fans.itachi.meshharbor.daemon.plist";
     /// The postinstall's opt-in for the root half. Its ABSENCE makes the next
     /// package upgrade remove the LaunchDaemon, so install writes it and
     /// uninstall removes it: the verb and every later upgrade agree.
@@ -2252,7 +2251,10 @@ mod tests {
     fn linux_names_the_start_systemd_will_not_make() {
         // exit 7 is in `RestartPreventExitStatus` for both units.
         let system = Install::LinuxSystem.after_re_enroll(true);
-        assert!(system.contains("sudo systemctl start meshharbord"), "{system}");
+        assert!(
+            system.contains("sudo systemctl start meshharbord"),
+            "{system}"
+        );
         let user = Install::LinuxUser.after_re_enroll(true);
         assert!(user.contains("meshharbord service start"), "{user}");
         assert!(!user.contains("sudo"), "a user unit needs no root: {user}");

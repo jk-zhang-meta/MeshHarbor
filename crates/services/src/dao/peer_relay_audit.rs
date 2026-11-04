@@ -23,8 +23,8 @@
 //! (`crates/db/src/indexes.rs`), matching the other decision logs.
 
 use bson::{doc, oid::ObjectId};
-use mongodb::Database;
 use meshharbor_remote_control::models::PeerRelayAuditEvent;
+use mongodb::Database;
 
 use super::base::{BaseDao, DaoResult, PaginatedResult, PaginationParams};
 

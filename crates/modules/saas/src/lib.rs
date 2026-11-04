@@ -44,6 +44,7 @@ use axum::{
     routing::{get, post, put},
 };
 use meshharbor_config::Settings;
+use meshharbor_core::{Capabilities, Core, Module, TenantCtx};
 use meshharbor_db::indexes::{
     IndexSet, index, index_unique, index_unique_partial, index_unique_sparse,
 };
@@ -51,7 +52,6 @@ use meshharbor_services::dao::{
     newsletter_issue::NewsletterIssueDao, newsletter_send::NewsletterSendDao,
     subscriber::SubscriberDao,
 };
-use meshharbor_core::{Capabilities, Core, Module, TenantCtx};
 
 pub mod bing_pull;
 pub mod capped;

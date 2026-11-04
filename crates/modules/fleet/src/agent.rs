@@ -261,7 +261,8 @@ pub async fn enroll_agent(
         // FR-32: decision + record in `quota::check`. `MaxDevices` is an
         // established limit, so it refuses whatever the tenant's mode says.
         // FR-102 P4 — through core, which also counts the collision per org.
-        if let Err(d) = meshharbor_core::quota::check(&state, &tenant, quota::Limit::MaxDevices, used)
+        if let Err(d) =
+            meshharbor_core::quota::check(&state, &tenant, quota::Limit::MaxDevices, used)
         {
             return Err(ApiError::Forbidden(format!(
                 "Device limit reached for the {:?} plan ({} of {} devices used). \

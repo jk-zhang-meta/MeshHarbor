@@ -6613,7 +6613,8 @@ mod system {
         #[test]
         #[ignore]
         fn manual_list_v4_probe() {
-            let luid = super::winroute::luid_for_alias("meshharbor").expect("no meshharbor adapter");
+            let luid =
+                super::winroute::luid_for_alias("meshharbor").expect("no meshharbor adapter");
             println!("luid={luid}");
             let addrs = super::winaddr::list_v4(luid);
             println!("list_v4 -> {addrs:?}");

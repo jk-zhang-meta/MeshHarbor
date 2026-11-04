@@ -2654,7 +2654,10 @@ mod tests {
         );
         // P7 is built: no section of this day still waits for it.
         assert!(!text.contains("arrives with P7"), "{text}");
-        assert_eq!(subject("2026-10-13"), "MeshHarbor daily digest — 2026-10-13");
+        assert_eq!(
+            subject("2026-10-13"),
+            "MeshHarbor daily digest — 2026-10-13"
+        );
         // P10 — the day's alerts: the open row listed once (it fired that
         // day too), with its detail as text.
         assert!(text.contains("== Alerts =="), "{text}");

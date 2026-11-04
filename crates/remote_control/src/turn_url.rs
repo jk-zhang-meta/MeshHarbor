@@ -198,7 +198,10 @@ mod tests {
     #[test]
     fn legacy_six_variant_golden() {
         assert_eq!(
-            expand_turn_url("turn:coturn.meshharbor.itachi.fans:3478", &VariantCaps::default()),
+            expand_turn_url(
+                "turn:coturn.meshharbor.itachi.fans:3478",
+                &VariantCaps::default()
+            ),
             vec![
                 "turn:coturn.meshharbor.itachi.fans:3478",
                 "turn:coturn.meshharbor.itachi.fans:443?transport=udp",
@@ -214,7 +217,10 @@ mod tests {
     #[test]
     fn media_subset_golden() {
         assert_eq!(
-            expand_turn_url("turn:coturn.meshharbor.itachi.fans:3478", &VariantCaps::media()),
+            expand_turn_url(
+                "turn:coturn.meshharbor.itachi.fans:3478",
+                &VariantCaps::media()
+            ),
             vec![
                 "turn:coturn.meshharbor.itachi.fans:3478",
                 "turn:coturn.meshharbor.itachi.fans:443?transport=udp",

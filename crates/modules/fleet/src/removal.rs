@@ -12,9 +12,9 @@
 //! then this, the record owner. Same order as before, one owner per step.
 
 use bson::oid::ObjectId;
+use meshharbor_core::hooks::ReleasedLease;
 use meshharbor_remote_control::models::Agent;
 use meshharbor_services::dao::base::{DaoError, DaoResult};
-use meshharbor_core::hooks::ReleasedLease;
 
 use crate::FleetState;
 

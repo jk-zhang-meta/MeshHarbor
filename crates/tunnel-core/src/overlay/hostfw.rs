@@ -331,7 +331,12 @@ mod tests {
     #[test]
     fn a_zone_with_ports_and_protocols_lists_them() {
         let text = "work\n  target: %%REJECT%%\n  services: ssh\n  ports: 8080/tcp 5353/udp\n  protocols: icmp\n";
-        let s = firewalld_status("meshharbor0", "work", false, &parse_info_zone(text).unwrap());
+        let s = firewalld_status(
+            "meshharbor0",
+            "work",
+            false,
+            &parse_info_zone(text).unwrap(),
+        );
         assert!(!s.admits_all);
         assert_eq!(s.admits, ["ssh", "8080/tcp", "5353/udp", "icmp"]);
     }

@@ -24,8 +24,8 @@
 use std::time::{Duration, Instant};
 
 use bson::{DateTime, doc, oid::ObjectId};
-use meshharbor_remote_control::net_inventory::{MAX_BOOT_ID, MAX_PAGES, NetInventory};
 use meshharbor_core::AgentCtx;
+use meshharbor_remote_control::net_inventory::{MAX_BOOT_ID, MAX_PAGES, NetInventory};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
 

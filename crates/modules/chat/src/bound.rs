@@ -22,11 +22,11 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use bson::oid::ObjectId;
+use meshharbor_core::Core;
 use meshharbor_db::models::{Binding, Message, Room};
 use meshharbor_services::dao::base::{DaoError, DaoResult};
 use meshharbor_services::dao::message::MessageDao;
 use meshharbor_services::dao::room::RoomDao;
-use meshharbor_core::Core;
 
 /// Chat's bound-room surface for another module.
 #[derive(Clone)]

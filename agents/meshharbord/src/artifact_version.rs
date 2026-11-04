@@ -883,7 +883,12 @@ mod tests {
 
     #[test]
     fn formats_with_no_reader_report_unsupported_rather_than_refusing() {
-        for name in ["meshharbord.tgz", "meshharbord.zip", "meshharbord.gz", "meshharbord"] {
+        for name in [
+            "meshharbord.tgz",
+            "meshharbord.zip",
+            "meshharbord.gz",
+            "meshharbord",
+        ] {
             let err = verify_artifact_version(&PathBuf::from(name), "agent-v0.4.142")
                 .expect_err("no binding is implemented for this format");
             assert!(

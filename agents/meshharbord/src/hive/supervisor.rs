@@ -45,11 +45,6 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use bson::oid::ObjectId;
-use meshharbor_remote_control::hive::{
-    HARNESS_CLAUDE_CODE, HiveApprovalStatus, HiveDrainRefusal, HiveForkOf, HiveManifestEntry,
-    HivePlace, HiveRefusal, HiveRunState, HiveTurnStatus, hive_limits, promote_limits,
-};
-use meshharbor_remote_control::signaling::ClientMsg;
 use meshharbor_hive_node::checkpoint::Checkpoint;
 #[cfg(unix)]
 use meshharbor_hive_node::launch::unix_base_env;
@@ -60,6 +55,11 @@ use meshharbor_hive_node::launch::{
 use meshharbor_hive_node::stream_json::{Limits, parse_line};
 use meshharbor_hive_node::{TranscriptEvent, approval_outcome};
 use meshharbor_node_core::config::AgentConfig;
+use meshharbor_remote_control::hive::{
+    HARNESS_CLAUDE_CODE, HiveApprovalStatus, HiveDrainRefusal, HiveForkOf, HiveManifestEntry,
+    HivePlace, HiveRefusal, HiveRunState, HiveTurnStatus, hive_limits, promote_limits,
+};
+use meshharbor_remote_control::signaling::ClientMsg;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader};
 #[cfg(unix)]
 use tokio::process::{Child, ChildStdin};
@@ -7201,8 +7201,8 @@ done
     /// holds, or for a session it holds nothing of, is refused.
     #[tokio::test]
     async fn a_primarys_join_ahead_of_its_start_raises_the_floor_of_its_copy() {
-        use meshharbor_remote_control::hive::{HiveJoinRefusal, HiveReplicaRole};
         use meshharbor_hive_node::EventEnvelope;
+        use meshharbor_remote_control::hive::{HiveJoinRefusal, HiveReplicaRole};
         let r = rig(true, 4);
         let sid = ObjectId::new();
         let s = sid.to_hex();

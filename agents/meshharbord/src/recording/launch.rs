@@ -958,7 +958,10 @@ pub(crate) mod win {
                 "C:\\Users\\a b\\Videos\\MeshHarbor",
             ];
             let args: Vec<OsString> = cases.iter().map(OsString::from).collect();
-            let cmd = command_line(Path::new(r"C:\Program Files\MeshHarbor\meshharbord.exe"), &args);
+            let cmd = command_line(
+                Path::new(r"C:\Program Files\MeshHarbor\meshharbord.exe"),
+                &args,
+            );
             let mut n = 0i32;
             // SAFETY: a NUL-terminated command line; the array is freed below.
             let argv = unsafe { CommandLineToArgvW(cmd.as_ptr(), &mut n) };

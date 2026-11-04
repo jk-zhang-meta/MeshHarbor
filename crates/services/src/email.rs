@@ -789,7 +789,9 @@ mod tests {
             .expect("message should build");
         let wire = String::from_utf8_lossy(&msg.formatted()).to_string();
         assert!(
-            wire.contains("List-Unsubscribe: <https://meshharbor.test/api/subscribe/unsubscribe/tok>"),
+            wire.contains(
+                "List-Unsubscribe: <https://meshharbor.test/api/subscribe/unsubscribe/tok>"
+            ),
             "unsubscribe header missing from the wire form:\n{wire}"
         );
         assert!(wire.contains("List-Unsubscribe-Post: List-Unsubscribe=One-Click"));

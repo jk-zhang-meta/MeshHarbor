@@ -759,7 +759,8 @@ mod tests {
         } else {
             ("UDP", "9A4DA9F2-F9BF-4137-913A-0165EF107A8F")
         };
-        let id = format!("{tag} Query User{{{guid}}}C:\\program files\\meshharbor\\meshharbord.exe");
+        let id =
+            format!("{tag} Query User{{{guid}}}C:\\program files\\meshharbor\\meshharbord.exe");
         let value = format!(
             "v2.33|Action=Block|Active=TRUE|Dir=In|Protocol={proto}|Profile=Public|App=C:\\program files\\meshharbor\\meshharbord.exe|Name=MeshHarbor Daemon|Desc=MeshHarbor Daemon|Defer=User|"
         );
@@ -804,7 +805,10 @@ mod tests {
             windows_file_stem(r"C:\Program Files\MeshHarbor\meshharbord.exe"),
             Some("meshharbord")
         );
-        assert_eq!(windows_file_stem("C:/Tools/meshharbor.exe"), Some("meshharbor"));
+        assert_eq!(
+            windows_file_stem("C:/Tools/meshharbor.exe"),
+            Some("meshharbor")
+        );
         assert_eq!(windows_file_stem("meshharbord.exe"), Some("meshharbord"));
         assert_eq!(windows_file_stem(r"C:\x\noext"), Some("noext"));
         assert_eq!(windows_file_stem(r"C:\x\.hidden"), Some(".hidden"));
@@ -944,7 +948,7 @@ mod tests {
         }
         for id in [
             "{8C1F3A5B-2D4E-4F60-9A7B-1C2D3E4F5A6B}", // netsh / wf.msc
-            "Block meshharbor",                          // New-NetFirewallRule -Name
+            "Block meshharbor",                       // New-NetFirewallRule -Name
             "tcp query user{1}x",                     // wrong case
             "TCP Query User 1",                       // no brace
             " TCP Query User{1}",                     // not a prefix

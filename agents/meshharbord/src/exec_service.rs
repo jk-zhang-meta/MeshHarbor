@@ -838,7 +838,9 @@ mod svc {
         let anchor = match load_anchor() {
             Ok(Some(a)) => a,
             Ok(None) => {
-                return refused("this device is not anchored (`meshharbord anchor create`, elevated)");
+                return refused(
+                    "this device is not anchored (`meshharbord anchor create`, elevated)",
+                );
             }
             Err(e) => {
                 error!(%e, "ssh-service: the anchor cannot be trusted");
@@ -942,7 +944,10 @@ mod svc {
     /// the worker rather than abandoned by it.
     fn client(total: Duration) -> Result<reqwest::Client, String> {
         reqwest::Client::builder()
-            .user_agent(concat!("meshharbord-exec-service/", env!("CARGO_PKG_VERSION")))
+            .user_agent(concat!(
+                "meshharbord-exec-service/",
+                env!("CARGO_PKG_VERSION")
+            ))
             .connect_timeout(Duration::from_secs(10))
             .timeout(total)
             .build()

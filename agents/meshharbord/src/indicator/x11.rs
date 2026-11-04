@@ -727,7 +727,10 @@ mod tests {
         // replaced read only the first and last, so `MESHHARBOR_NODE_*` — and the
         // config fallback behind it — were invisible here while `main.rs` saw
         // them. docs/fr/FR-46
-        const KEYS: [&str; 2] = ["MESHHARBORD_VIRTUAL_DESKTOP", "MESHHARBOR_NODE_VIRTUAL_DESKTOP"];
+        const KEYS: [&str; 2] = [
+            "MESHHARBORD_VIRTUAL_DESKTOP",
+            "MESHHARBOR_NODE_VIRTUAL_DESKTOP",
+        ];
         const RETIRED: &str = "MESHHARBOR_AGENT_VIRTUAL_DESKTOP";
         let saved: Vec<_> = KEYS
             .iter()

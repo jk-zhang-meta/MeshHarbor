@@ -12,9 +12,9 @@
 //! overlay block allocator and the `used_tokens` single-use claim.
 
 use bson::{DateTime, doc, oid::ObjectId};
+use meshharbor_remote_control::models::{EnrollmentKey, EnrollmentKeyUse};
 use mongodb::Database;
 use mongodb::options::ReturnDocument;
-use meshharbor_remote_control::models::{EnrollmentKey, EnrollmentKeyUse};
 
 use super::base::{BaseDao, DaoResult};
 

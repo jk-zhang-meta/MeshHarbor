@@ -409,7 +409,8 @@ pub fn tail_source_path(source: &str) -> Option<PathBuf> {
             {
                 let dir = crate::appdirs::machine_global_dir().join("service-logs");
                 newest_file_matching(&[dir], |name| {
-                    name.starts_with("meshharbord-service.log") || name.starts_with("meshharbord.log")
+                    name.starts_with("meshharbord-service.log")
+                        || name.starts_with("meshharbord.log")
                 })
             }
             #[cfg(not(target_os = "windows"))]

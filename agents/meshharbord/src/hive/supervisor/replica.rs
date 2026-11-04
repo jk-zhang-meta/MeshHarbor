@@ -32,13 +32,13 @@
 //! them: the device runs the session, and took its history before the move.
 
 use bson::oid::ObjectId;
+use meshharbor_hive_node::store::StoreError;
+use meshharbor_hive_node::{FenceEnd, GENESIS};
 use meshharbor_remote_control::hive::{
     HiveCheckpointMark, HiveCopyTip, HiveFenceMark, HiveJoinRefusal, HiveReplicaManifestEntry,
     HiveReplicaRole, is_hash_hex, replica_limits,
 };
 use meshharbor_remote_control::signaling::ClientMsg;
-use meshharbor_hive_node::store::StoreError;
-use meshharbor_hive_node::{FenceEnd, GENESIS};
 use std::sync::atomic::Ordering;
 use tracing::{info, warn};
 

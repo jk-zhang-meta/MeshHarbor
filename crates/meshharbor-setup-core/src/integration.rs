@@ -329,7 +329,11 @@ fn retire_legacy_symlink(current: &Path) {
 fn unix_local_bin_path() -> Result<PathBuf> {
     let dirs = directories::UserDirs::new()
         .ok_or_else(|| anyhow::anyhow!("could not resolve user home dir"))?;
-    Ok(dirs.home_dir().join(".local").join("bin").join("meshharbor"))
+    Ok(dirs
+        .home_dir()
+        .join(".local")
+        .join("bin")
+        .join("meshharbor"))
 }
 
 #[cfg(test)]

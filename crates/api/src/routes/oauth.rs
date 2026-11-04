@@ -7,8 +7,8 @@ use axum::{
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
 };
-use meshharbor_services::oauth::OAuthUserInfo;
 use meshharbor_core::attribution::{self, AttributionInput};
+use meshharbor_services::oauth::OAuthUserInfo;
 use serde::Deserialize;
 use tracing::debug;
 use uuid::Uuid;
@@ -245,7 +245,10 @@ mod tests {
     #[test]
     fn the_callback_redirect_carries_a_signup_marker_and_never_a_token() {
         let created = callback_redirect("https://meshharbor.itachi.fans", true);
-        assert_eq!(created, "https://meshharbor.itachi.fans/oauth/callback#signup=1");
+        assert_eq!(
+            created,
+            "https://meshharbor.itachi.fans/oauth/callback#signup=1"
+        );
         let returning = callback_redirect("https://meshharbor.itachi.fans", false);
         assert_eq!(returning, "https://meshharbor.itachi.fans/oauth/callback");
         for url in [&created, &returning] {

@@ -215,7 +215,8 @@ pub async fn join_org(
         // organization"). `MaxDevices` is an established limit, so this
         // refuses regardless of the tenant's `plan_enforcement` mode.
         // FR-102 P4 — through core, which also counts the collision per org.
-        if let Err(d) = meshharbor_core::quota::check(&state, &tenant, quota::Limit::MaxDevices, used)
+        if let Err(d) =
+            meshharbor_core::quota::check(&state, &tenant, quota::Limit::MaxDevices, used)
         {
             return Err(ApiError::Forbidden(format!(
                 "Device limit reached for the {:?} plan in the target organization \

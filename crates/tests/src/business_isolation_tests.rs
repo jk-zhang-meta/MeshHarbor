@@ -7777,11 +7777,11 @@ async fn staged_nhop_trial_off_warn_endpoint_zone_parity_two_and_three() {
 /// inserts trial state without issuing grants; real trial admission is separate.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn staged_nhop_trial_zone_fixture_rechecks_middle_and_members() {
+    use meshharbor_core::business_authority::BusinessZone::Mainland;
     use meshharbor_mod_network::org_relay::{
         LineLeg, OrgRelaySession, SessionMember, SessionParty, candidate_test_support as support,
     };
     use meshharbor_remote_control::models::NodeRef;
-    use meshharbor_core::business_authority::BusinessZone::Mainland;
     use std::time::Instant;
     for case in [
         "changed",

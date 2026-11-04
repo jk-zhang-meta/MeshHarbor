@@ -350,7 +350,10 @@ pub fn no_service(e: &std::io::Error) -> bool {
 /// FR-85 — the recorder's input after a poll. `Some(answer)`: the service
 /// answered, and `Some(None)` is no service at all, so nothing records.
 /// `None`: the poll failed; what the last answer said stands.
-fn recorder_running(answer: Option<Option<&meshharbor_localapi::RecordingState>>, was: bool) -> bool {
+fn recorder_running(
+    answer: Option<Option<&meshharbor_localapi::RecordingState>>,
+    was: bool,
+) -> bool {
     match answer {
         Some(state) => state.is_some_and(|s| s.active),
         None => was,
@@ -666,7 +669,8 @@ mod tests {
         );
         // A service that cannot record here (no recorder, or SYSTEM/root
         // until P1e) answers idle — and the item stays greyed out.
-        let cannot = meshharbor_localapi::RecordingState::unavailable(meshharbor_localapi::NO_RECORDER);
+        let cannot =
+            meshharbor_localapi::RecordingState::unavailable(meshharbor_localapi::NO_RECORDER);
         assert!(!record_labels(Some(&cannot)).1);
         let live = meshharbor_localapi::RecordingState {
             available: true,

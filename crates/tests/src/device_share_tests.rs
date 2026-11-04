@@ -867,8 +867,8 @@ async fn device_share_remote_distinct_grants_do_not_coalesce_and_live_allowlist_
 #[tokio::test]
 async fn device_share_shared_lease_exact_agent_scope_and_live_policy_pdp() {
     use futures::{SinkExt, StreamExt};
-    use meshharbor_remote_control::signaling::{ClientMsg, ServerMsg};
     use meshharbor_core::{AgentCtx, AgentMsgHandler};
+    use meshharbor_remote_control::signaling::{ClientMsg, ServerMsg};
     use std::time::Duration;
     use tokio_tungstenite::{connect_async, tungstenite::Message};
     let f = fixture().await;
@@ -1094,8 +1094,8 @@ async fn shared_ssh_start(
     tokio::sync::mpsc::Receiver<meshharbor_remote_control::signaling::ServerMsg>,
 ) {
     use futures::SinkExt;
-    use meshharbor_remote_control::signaling::{ClientMsg, ServerMsg};
     use meshharbor_core::{AgentMsgHandler, AgentSocketLifecycle};
+    use meshharbor_remote_control::signaling::{ClientMsg, ServerMsg};
     use tokio_tungstenite::tungstenite::client::IntoClientRequest;
     let grant = create(f).await["id"].as_str().unwrap().to_owned();
     let (tx, _, mut target) = f
@@ -1368,8 +1368,8 @@ async fn device_share_shared_ssh_metadata_caps_and_bearer_only_recipient_boundar
 #[tokio::test]
 async fn device_share_shared_ssh_typed_single_flow_and_exact_target_reply_guard() {
     use futures::{SinkExt, StreamExt};
-    use meshharbor_remote_control::signaling::{ClientMsg, ServerMsg};
     use meshharbor_core::AgentMsgHandler;
+    use meshharbor_remote_control::signaling::{ClientMsg, ServerMsg};
     let f = shared_ssh_fixture().await;
     let (_grant, mut ws, sid, setup, ctx, handler, mut target) = shared_ssh_start(&f).await;
     let send = ClientMsg::TunnelSdpOffer {
@@ -1443,8 +1443,8 @@ async fn device_share_shared_ssh_typed_single_flow_and_exact_target_reply_guard(
 }
 #[tokio::test]
 async fn device_share_shared_ssh_live_revoke_stops_scope_and_lease_echo() {
-    use meshharbor_remote_control::signaling::{ClientMsg, ServerMsg};
     use meshharbor_core::AgentMsgHandler;
+    use meshharbor_remote_control::signaling::{ClientMsg, ServerMsg};
     let f = shared_ssh_fixture().await;
     let (grant, mut ws, sid, setup, ctx, handler, mut target) = shared_ssh_start(&f).await;
     handler
@@ -1882,8 +1882,8 @@ async fn native_shared_ssh_mfa_real_metadata_ws_and_web_refresh_cannot_bypass() 
 }
 #[tokio::test]
 async fn native_shared_ssh_mfa_real_live_lease_stops_after_account_or_tenant_change() {
-    use meshharbor_remote_control::signaling::{ClientMsg, ServerMsg};
     use meshharbor_core::AgentMsgHandler;
+    use meshharbor_remote_control::signaling::{ClientMsg, ServerMsg};
     for target in ["account", "tenant"] {
         let f = shared_ssh_fixture().await;
         let (_grant, _ws, sid, setup, ctx, handler, mut peer) = shared_ssh_start(&f).await;

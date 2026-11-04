@@ -34,11 +34,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bson::oid::ObjectId;
+use meshharbor_hive_node::store::RetainWord;
 use meshharbor_remote_control::hive::{
     HiveCopyPurged, HiveRetainWord, replica_limits, retain_limits,
 };
 use meshharbor_remote_control::signaling::ClientMsg;
-use meshharbor_hive_node::store::RetainWord;
 use tracing::{debug, info, warn};
 
 use super::Supervisor;

@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 G ROX EOOD
 use bson::oid::ObjectId;
-use mongodb::Database;
 use meshharbor_config::Settings;
+use meshharbor_core::turn::build_turn_map;
 use meshharbor_services::{
     AuthService, EmailService, OAuthService, PushService, TaskService,
     dao::{
@@ -11,7 +11,7 @@ use meshharbor_services::{
         tenant::TenantDao, user::UserDao,
     },
 };
-use meshharbor_core::turn::build_turn_map;
+use mongodb::Database;
 
 use std::sync::Arc;
 

@@ -331,7 +331,8 @@ mod tests {
         // The links to this site carry the issue's tags; the rest do not.
         let tagged = "utm_source=newsletter&amp;utm_medium=email&amp;utm_campaign=nl-october-notes";
         for l in &la {
-            let ours = l.contains("://meshharbor.itachi.fans/") || l.contains("://www.meshharbor.itachi.fans/");
+            let ours = l.contains("://meshharbor.itachi.fans/")
+                || l.contains("://www.meshharbor.itachi.fans/");
             let is_link = l.starts_with("href=");
             let is_unsub = l.contains("/api/subscribe/unsubscribe/");
             if is_link && ours && !is_unsub {

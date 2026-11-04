@@ -18,8 +18,8 @@
 
 use bson::oid::ObjectId;
 use bson::{Document, doc};
-use meshharbor_services::dao::user::UserDao;
 use meshharbor_core::attribution::{AttributionInput, oauth_park_key, sanitize, take_for_oauth};
+use meshharbor_services::dao::user::UserDao;
 use serde_json::{Value, json};
 
 use crate::fixtures::test_app::TestApp;

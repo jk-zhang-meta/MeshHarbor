@@ -196,7 +196,8 @@ pub async fn accept_invite(
         let tenant = state.tenants.base.find_by_id(invite.tenant_id).await?;
         let used = state.tenants.count_members(invite.tenant_id).await?;
         // FR-102 P4 — through core, which also counts the collision per org.
-        if let Err(d) = meshharbor_core::quota::check(&state, &tenant, quota::Limit::MaxMembers, used)
+        if let Err(d) =
+            meshharbor_core::quota::check(&state, &tenant, quota::Limit::MaxMembers, used)
         {
             return Err(ApiError::Forbidden(d.message()));
         }
@@ -535,7 +536,8 @@ pub async fn add_member(
         let tenant = state.tenants.base.find_by_id(tid).await?;
         let used = state.tenants.count_members(tid).await?;
         // FR-102 P4 — through core, which also counts the collision per org.
-        if let Err(d) = meshharbor_core::quota::check(&state, &tenant, quota::Limit::MaxMembers, used)
+        if let Err(d) =
+            meshharbor_core::quota::check(&state, &tenant, quota::Limit::MaxMembers, used)
         {
             return Err(ApiError::Forbidden(d.message()));
         }

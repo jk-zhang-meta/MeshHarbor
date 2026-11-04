@@ -53,6 +53,10 @@ use std::collections::{BTreeMap, HashMap};
 
 use bson::DateTime;
 use chrono::{Duration, NaiveDate};
+use meshharbor_core::{
+    Core,
+    campaign::{CampaignKey, UTM_DIMENSIONS},
+};
 use meshharbor_services::{
     dao::{
         base::DaoResult,
@@ -62,10 +66,6 @@ use meshharbor_services::{
         },
     },
     purestat::{PurestatClient, PurestatError, Query, Row},
-};
-use meshharbor_core::{
-    Core,
-    campaign::{CampaignKey, UTM_DIMENSIONS},
 };
 use serde::Serialize;
 use tracing::{debug, info, warn};

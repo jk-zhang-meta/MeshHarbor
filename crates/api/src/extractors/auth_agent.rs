@@ -17,8 +17,8 @@
 //! not a credential problem.
 
 use axum::{extract::FromRequestParts, http::request::Parts};
-use meshharbor_mod_fleet::auth_agent::{AuthAgent, authenticate};
 use meshharbor_core::ApiError;
+use meshharbor_mod_fleet::auth_agent::{AuthAgent, authenticate};
 
 use crate::state::AppState;
 

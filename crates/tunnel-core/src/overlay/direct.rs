@@ -522,7 +522,17 @@ pub fn lan_iface_denied(name: &str, description: &str) -> bool {
     // wg0, ppp0, bridge100). Prefix (not substring) so real adapters whose
     // names merely CONTAIN these stay allowed.
     const NAME_PREFIX: &[&str] = &[
-        "docker", "veth", "virbr", "br-", "bridge", "tun", "tap", "utun", "wg", "ppp", "meshharbor",
+        "docker",
+        "veth",
+        "virbr",
+        "br-",
+        "bridge",
+        "tun",
+        "tap",
+        "utun",
+        "wg",
+        "ppp",
+        "meshharbor",
     ];
     let n = name.to_ascii_lowercase();
     let d = description.to_ascii_lowercase();
@@ -2682,7 +2692,10 @@ mod tests {
         assert_eq!(parse_stun_url("5.9.157.221:3478"), Some(want));
         assert_eq!(parse_stun_url("  stun:5.9.157.221:3478  "), Some(want));
         // Hostnames need async DNS → the sync parser declines (caller resolves).
-        assert_eq!(parse_stun_url("stun:coturn.meshharbor.itachi.fans:3478"), None);
+        assert_eq!(
+            parse_stun_url("stun:coturn.meshharbor.itachi.fans:3478"),
+            None
+        );
         // IPv6 is out of scope (v4-only cascade).
         assert_eq!(parse_stun_url("stun:[2a01:4f8::2]:3478"), None);
         assert_eq!(parse_stun_url("garbage"), None);

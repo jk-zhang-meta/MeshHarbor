@@ -191,8 +191,7 @@ mod tests {
 
     #[test]
     fn vm_rss_is_read_from_proc_status() {
-        let status =
-            "Name:\tmeshharbord\nVmPeak:\t  412000 kB\nVmRSS:\t  303104 kB\nRssAnon:\t  256224 kB\n";
+        let status = "Name:\tmeshharbord\nVmPeak:\t  412000 kB\nVmRSS:\t  303104 kB\nRssAnon:\t  256224 kB\n";
         assert_eq!(vm_rss_kb(status), Some(303_104));
         assert_eq!(vm_rss_kb("Name:\tmeshharbord\n"), None);
     }
