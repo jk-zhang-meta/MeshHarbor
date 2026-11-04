@@ -861,6 +861,41 @@ pub mod candidate_test_support {
             .chain(delivery.bridges)
             .collect())
     }
+    /// Read only: distinguish a missing current observation from GEO-04.
+    pub async fn zone_snapshot_for_fixture(
+        state: &NetworkState,
+        id: ObjectId,
+    ) -> Result<serde_json::Value, String> {
+        let node = state
+            .overlay_nodes
+            .base
+            .find_by_id(id)
+            .await
+            .map_err(|e| e.to_string())?;
+        let observed = observed_zone(state, node.tenant_id, &node.node_ref)
+            .await
+            .map(|(zone, _)| format!("{zone:?}"));
+        let zone = node_zone(state, &node)
+            .await
+            .map(|zone| format!("{zone:?}"));
+        Ok(
+            serde_json::json!({"node":id.to_hex(),"observed":observed,"zone":zone,
+            "relay_withdrawn":state.org_relay.join_extras(id).relay_withdrawn,
+            "srflx":node.srflx_endpoints,"lan":node.lan_endpoints}),
+        )
+    }
+
+    pub fn last_mint_for_fixture(
+        state: &NetworkState,
+        a: ObjectId,
+        b: ObjectId,
+    ) -> Option<serde_json::Value> {
+        state.org_relay.last_mint_audit.get(&pair_key(a,b)).map(|entry| {
+            serde_json::json!({"denied":format!("{:?}",entry.0.0),"warn_only":entry.0.1,
+                "age_ms":entry.1.elapsed().as_millis(),"eligibility_epoch":state.org_relay.eligibility_generation()})
+        })
+    }
+
     pub async fn select_path(
         state: &NetworkState,
         requester: ObjectId,

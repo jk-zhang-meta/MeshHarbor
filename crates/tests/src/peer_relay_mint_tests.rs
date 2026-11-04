@@ -2427,6 +2427,9 @@ impl CompositeDirectLink {
     pub(crate) fn recover(&self) {
         self.delay.store(0, std::sync::atomic::Ordering::Relaxed);
     }
+    pub(crate) fn degrade(&self) {
+        self.delay.store(40, std::sync::atomic::Ordering::Relaxed);
+    }
 }
 
 #[cfg(target_os = "linux")]

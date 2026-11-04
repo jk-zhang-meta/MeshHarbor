@@ -8219,18 +8219,26 @@ async fn staged_nhop_trial_zone_fixture_rechecks_middle_and_members() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[cfg(target_os = "linux")]
 async fn staged_graph_multihop_discovery_bilateral_client_wg_commit_return() {
-    run_multihop_discovery_bilateral_client_wg(false).await;
+    run_multihop_discovery_bilateral_client_wg(false, false).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[cfg(target_os = "linux")]
 async fn staged_graph_multihop_discovery_bilateral_client_wg_commit_return_at_exit() {
-    run_multihop_discovery_bilateral_client_wg(true).await;
+    run_multihop_discovery_bilateral_client_wg(true, false).await;
+}
+
+/// Kill the active middle listener, complete the measured return, then rejoin
+/// the same endpoint and carry fresh WG payload through a newly minted path.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[cfg(target_os = "linux")]
+async fn staged_graph_multihop_middle_listener_restart_remints_and_carries_wg() {
+    run_multihop_discovery_bilateral_client_wg(false, true).await;
 }
 
 #[cfg(target_os = "linux")]
-async fn run_multihop_discovery_bilateral_client_wg(flipped: bool) {
-    tokio::time::timeout(Duration::from_secs(180), async {
+async fn run_multihop_discovery_bilateral_client_wg(flipped: bool, restart_listener: bool) {
+    tokio::time::timeout(Duration::from_secs(if restart_listener {240}else{180}), async {
         use crate::peer_relay_mint_tests::{CompositeDirectLink, composite_ip};
         use meshharbor_mod_network::org_relay::candidate_test_support as support;
         use meshharbor_remote_control::signaling::{ClientMsg, NetmapPeer, ServerMsg};
@@ -8268,7 +8276,7 @@ async fn run_multihop_discovery_bilateral_client_wg(flipped: bool) {
                 if let Ok(message)=serde_json::from_value(value) { owner.control(message).await; }
             }
         }
-        let slug=if flipped {"iso-nhop-client-native-exit"}else{"iso-nhop-client-native"}; let rig=Rig::up(slug,"enforce").await;
+        let slug=if restart_listener {"iso-nhop-client-listener-restart"}else if flipped {"iso-nhop-client-native-exit"}else{"iso-nhop-client-native"}; let rig=Rig::up(slug,"enforce").await;
         let mut native=Vec::new(); let mut relays=Vec::new(); let mut agents=Vec::new(); let mut nodes=Vec::new();
         for index in 0..4u8 {
             let relay=NativeRelay::start().await.unwrap(); let name=format!("{slug}-r{index}");
@@ -8345,11 +8353,13 @@ async fn run_multihop_discovery_bilateral_client_wg(flipped: bool) {
             if page==1 {assert_eq!(metadata["candidates"][0]["path"]["relay_node_ids"],json!(nodes),"actual first graph candidate must carry all four relays");assert_eq!(metadata["candidates"][0]["requester_at_exit"],json!(flipped));}
             requester.receive_discovery(serde_json::from_value(metadata).unwrap());
         }
+        let original_request;
         {
             let (requester,output,ws)=if flipped {(&mut b,&mut b_out,&mut b_ws)}else{(&mut a,&mut a_out,&mut a_ws)};
             requester.tick().await;
             let request=tokio::time::timeout(Duration::from_secs(2),output.recv()).await.unwrap().expect("actual four-relay client request");
             assert!(matches!(&request,ClientMsg::OverlayPathTrialRequest{path,requester_at_exit,..} if *requester_at_exit==flipped && path.relay_node_ids().iter().map(|id|id.to_hex()).collect::<Vec<_>>()==nodes));
+            original_request=serde_json::to_value(&request).unwrap();
             ws.send(Message::Text(serde_json::to_string(&request).unwrap().into())).await.unwrap();
         }
         let wait=Duration::from_secs(8);let mut serves=Vec::new();let mut bridges=Vec::new();
@@ -8377,10 +8387,12 @@ async fn run_multihop_discovery_bilateral_client_wg(flipped: bool) {
         for (owner,tag) in [("a","rc:overlay.path_trial_ready"),("b","rc:overlay.path_trial_ready"),("a","rc:overlay.path_trial_committed"),("b","rc:overlay.path_trial_committed"),("server->a","rc:overlay.path_trial_finalize"),("server->b","rc:overlay.path_trial_finalize")] {
             assert!(trace.iter().any(|(observed,kind)|observed==owner&&kind==tag),"missing actual client/server phase {owner} {tag}");
         }
-        let forward=composite_ip(a_ip,b_ip,b"bilateral real client four relay WG forward");
-        assert!(a.send_packet(&forward).await);assert_eq!(b.receive_packet().await.unwrap(),forward);
-        let reverse=composite_ip(b_ip,a_ip,b"bilateral real client four relay WG reverse");
-        assert!(b.send_packet(&reverse).await);assert_eq!(a.receive_packet().await.unwrap(),reverse);
+        for sequence in 0..if restart_listener {64}else{1} {
+            let forward=composite_ip(a_ip,b_ip,format!("bilateral real client four relay WG forward {sequence}").as_bytes());
+            assert!(a.send_packet(&forward).await);assert_eq!(b.receive_packet().await.unwrap(),forward);
+            let reverse=composite_ip(b_ip,a_ip,format!("bilateral real client four relay WG reverse {sequence}").as_bytes());
+            assert!(b.send_packet(&reverse).await);assert_eq!(a.receive_packet().await.unwrap(),reverse);
+        }
         let mut evidence=Vec::new();
         for index in 0..3 {let id=ObjectId::parse_str(bridges[index]["bridge"]["trial_id"].as_str().unwrap()).unwrap();
             let generation=bridges[index]["bridge"]["generation"].as_u64().unwrap();
@@ -8388,9 +8400,17 @@ async fn run_multihop_discovery_bilateral_client_wg(flipped: bool) {
         for node in &nodes {assert_eq!(support::trial_slots_on_relay(network,ObjectId::parse_str(node).unwrap()),1);}
         let bridge=ObjectId::parse_str(bridges[1]["bridge"]["trial_id"].as_str().unwrap()).unwrap();
         let generation=bridges[1]["bridge"]["generation"].as_u64().unwrap();
-        native[1].fail_owned_bridge(bridge,generation).await.expect("actual middle manager failure");
+        let stopped_port=if restart_listener {
+            Some(native[1].stop_listener().await.expect("actual active middle listener stopped"))
+        } else {
+            native[1].fail_owned_bridge(bridge,generation).await.expect("actual middle manager failure");
+            None
+        };
         direct.recover();let fault=Instant::now();
-        for relay in &native {relay.probe_healthy().await.expect("listener remains healthy during private bridge loss");}
+        for (index,relay) in native.iter().enumerate() {
+            if restart_listener&&index==1 {continue;}
+            relay.probe_healthy().await.expect("unrelated listener remains healthy during the fault");
+        }
         loop {
             pump("a",&mut a,&mut a_out,&mut a_ws,&mut trace,trial,Some(fault),false,&mut held).await;
             pump("b",&mut b,&mut b_out,&mut b_ws,&mut trace,trial,Some(fault),true,&mut held).await;
@@ -8431,18 +8451,163 @@ async fn run_multihop_discovery_bilateral_client_wg(flipped: bool) {
             assert!(trace.iter().any(|(observed,kind)|observed==owner&&kind==tag),"missing real return phase {owner} {tag}");
         }
         for node in &nodes {assert_eq!(support::trial_slots_on_relay(network,ObjectId::parse_str(node).unwrap()),0);}
-        for relay in &native {
+        for (index,relay) in native.iter().enumerate() {
+            if restart_listener&&index==1 {continue;}
             tokio::time::timeout(Duration::from_secs(2),async {
                 while relay.session_counts().sessions_revoked!=1 {tokio::time::sleep(Duration::from_millis(10)).await;}
             }).await.expect("native session revoke applied");
             relay.probe_healthy().await.unwrap();
         }
+        if let Some(port)=stopped_port {
+            // A same-port fresh listener is an actual process-state loss: none
+            // of its old grants or manager tasks survives. The API receives a
+            // fresh join before it is asked to mint the next directed path.
+            native[1].restart_listener(port).await.expect("same middle endpoint restored");
+            native[1].probe_healthy().await.expect("restored middle listener responds");
+            assert_eq!(native[1].session_counts().sessions_installed,0);
+            line_join(&mut relays[1],11,&format!("223.6.6.7:{port}"),
+                json!({"relay_backbone_ready":true,"relay_port":port})).await;
+            assert_observed(&rig.app,&agents[1],Some(CN_R)).await;
+            assert_eq!(rig.node(&format!("{slug}-r1")).await,nodes[1]);
+
+            // Keep the SAME live member owners, WG state and authenticated WS.
+            // Restore the incumbent's original measured latency so the new
+            // relay trial has to prove itself again; no score is fabricated.
+            // The control re-request is explicit, not an automatic retry claim.
+            direct.degrade();
+            assert!(a.handshake_done()&&b.handshake_done(),"member WG state survived relay restart");
+            let mut request=original_request;
+            request["request_id"]=json!(request["request_id"].as_u64().unwrap().checked_add(1).unwrap());
+            a_ws.send(Message::Text(request.to_string().into())).await.unwrap();
+            let mut recovered_serves=Vec::new();let mut recovered_bridges=Vec::new();
+            for (index,ws) in relays.iter_mut().enumerate() {
+                let serve=recv_t(ws,"rc:overlay.relay_serve",wait).await.expect("fresh grant after middle rejoin");
+                assert!(serve["generation"].as_u64().unwrap()>serves[index]["generation"].as_u64().unwrap(),"recovery must mint fresh generations");
+                native[index].serve(serde_json::from_value(serve.clone()).unwrap(),None);
+                recovered_serves.push(serve);
+            }
+            for (index,ws) in relays.iter_mut().take(3).enumerate() {
+                let bridge=recv_t(ws,"rc:overlay.relay_bridge_serve",wait).await.expect("fresh bridge after middle rejoin");
+                native[index].serve(serde_json::from_value(bridge.clone()).unwrap(),Some(native[index].policy_to(&native[index+1])));
+                recovered_bridges.push(bridge);
+            }
+            let mut start_a=recv_t(&mut a_ws,"rc:overlay.path_trial_start",wait).await.expect("recovery requester Start");
+            let mut start_b=recv_t(&mut b_ws,"rc:overlay.path_trial_start",wait).await.expect("recovery responder Start");
+            let recovered_trial=ObjectId::parse_str(start_a["trial_id"].as_str().unwrap()).unwrap();
+            assert_ne!(recovered_trial,trial,"restore reused the retired trial");
+            assert_eq!(start_a["path"]["relay_node_ids"],json!(nodes));
+            assert_eq!(start_a["trial_id"],start_b["trial_id"]);
+            start_a["relay_endpoints"]=json!([native[0].endpoint().to_string()]);
+            start_b["relay_endpoints"]=json!([native[3].endpoint().to_string()]);
+            a.control(serde_json::from_value(start_a).unwrap()).await;
+            b.control(serde_json::from_value(start_b).unwrap()).await;
+            loop {
+                pump("recovered-a",&mut a,&mut a_out,&mut a_ws,&mut trace,recovered_trial,None,false,&mut held).await;
+                pump("recovered-b",&mut b,&mut b_out,&mut b_ws,&mut trace,recovered_trial,None,false,&mut held).await;
+                if a.snapshot(recovered_trial).phase=="finalized"&&b.snapshot(recovered_trial).phase=="finalized" {break;}
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            assert!(!a.snapshot(recovered_trial).direct_sender&&!b.snapshot(recovered_trial).direct_sender,"recovered payload must use the freshly minted four-relay path");
+            for sequence in 0..64 {
+                let packet=composite_ip(a_ip,b_ip,format!("restored middle fresh WG forward {sequence}").as_bytes());
+                assert!(a.send_packet(&packet).await);assert_eq!(b.receive_packet().await.unwrap(),packet);
+                let packet=composite_ip(b_ip,a_ip,format!("restored middle fresh WG reverse {sequence}").as_bytes());
+                assert!(b.send_packet(&packet).await);assert_eq!(a.receive_packet().await.unwrap(),packet);
+            }
+            let mut recovered_evidence=Vec::new();
+            for index in 0..3 {
+                let id=ObjectId::parse_str(recovered_bridges[index]["bridge"]["trial_id"].as_str().unwrap()).unwrap();
+                let generation=recovered_bridges[index]["bridge"]["generation"].as_u64().unwrap();
+                let (watch,sockets)=native[index].bridge_evidence(id,generation).unwrap();
+                recovered_evidence.push((id,watch,sockets));
+            }
+            // An authenticated mode-off is also the recovery round's negative
+            // control: all actual relay grants and native managers must retire.
+            let revoked_before:Vec<_>=native.iter().map(|relay|relay.session_counts().sessions_revoked).collect();
+            set_mode(&rig.app,&rig.seeded,"off").await;
+            async fn next_cleanup(ws:&mut Ws)->Value {
+                loop {
+                    match ws.next().await {
+                        Some(Ok(Message::Text(text)))=>{
+                            let value:Value=serde_json::from_str(&text).unwrap();
+                            match value["t"].as_str().expect("cleanup frame tag") {
+                                "rc:overlay.path_trial_abort"|"rc:overlay.relay_revoke"|"rc:overlay.relay_bridge_revoke"=>return value,
+                                // Mode changes also republish peer metadata;
+                                // these are explicitly not cleanup commands.
+                                "rc:overlay.netmap"|"rc:overlay.netmap_delta"=>{},
+                                other=>panic!("unexpected mode-off control frame: {other}"),
+                            }
+                        }
+                        Some(Ok(Message::Ping(data)))=>ws.send(Message::Pong(data)).await.unwrap(),
+                        Some(Ok(Message::Pong(_)))=>{},
+                        other=>panic!("mode-off control stream ended: {other:?}"),
+                    }
+                }
+            }
+            for (owner,ws) in [(&mut a,&mut a_ws),(&mut b,&mut b_ws)] {
+                let (old,fresh)=tokio::time::timeout(wait,async {
+                    let mut old=None;let mut fresh=None;
+                    while old.is_none()||fresh.is_none() {
+                        let abort=next_cleanup(ws).await;
+                        assert_eq!(abort["t"],"rc:overlay.path_trial_abort");
+                        if abort["trial_id"]==trial.to_hex() {assert!(old.replace(abort).is_none(),"duplicate old abort");}
+                        else {assert_eq!(abort["trial_id"],recovered_trial.to_hex(),"unknown aborted trial");assert!(fresh.replace(abort).is_none(),"duplicate fresh abort");}
+                    }
+                    (old.unwrap(),fresh.unwrap())
+                }).await.expect("mode-off must abort both exact retained and recovered trials");
+                // Deliver the actual stale frame first even if the transport
+                // presented the fresh one first, so this fence is exercised.
+                owner.control(serde_json::from_value(old).unwrap()).await;
+                assert_eq!(owner.snapshot(recovered_trial).phase,"finalized","old abort retired the recovered trial");
+                owner.control(serde_json::from_value(fresh).unwrap()).await;
+                assert_eq!(owner.snapshot(recovered_trial).phase,"retired");
+            }
+            for (index,ws) in relays.iter_mut().enumerate() {
+                tokio::time::timeout(wait,async {
+                    let mut seen=[false,false,index==3,index==3];
+                    while !seen.iter().all(|v|*v) {
+                        let revoke=next_cleanup(ws).await;
+                        let slot=match revoke["t"].as_str().unwrap() {
+                            "rc:overlay.relay_revoke"=>{
+                                assert_eq!(revoke["scope"]["relay_node_id"],nodes[index]);
+                                assert!(revoke["scope"]["peer_node_id"].is_null(),"relay revoke addressed a member");
+                                let matches=|serve:&Value|revoke["vni"]==serve["vni"]&&revoke["scope"]["generation"]==serve["generation"];
+                                if matches(&serves[index]) {0}else{assert!(matches(&recovered_serves[index]),"unknown relay generation revoke");1}
+                            }
+                            "rc:overlay.relay_bridge_revoke"=>{
+                                assert!(index<3,"exit relay has no outgoing bridge");
+                                let matches=|bridge:&Value|revoke["trial_id"]==bridge["bridge"]["trial_id"]&&revoke["generation"]==bridge["bridge"]["generation"];
+                                if matches(&bridges[index]) {2}else{assert!(matches(&recovered_bridges[index]),"unknown bridge generation revoke");3}
+                            }
+                            other=>panic!("unexpected relay cleanup command: {other}"),
+                        };
+                        assert!(!std::mem::replace(&mut seen[slot],true),"duplicate exact relay cleanup command");
+                        native[index].serve(serde_json::from_value(revoke).unwrap(),None);
+                    }
+                }).await.expect("mode-off must revoke every exact old/fresh relay session and bridge");
+            }
+            for (index,(id,watch,sockets)) in recovered_evidence.into_iter().enumerate() {
+                native[index].assert_bridge_retired(id,watch,sockets).await.expect("recovered manager sockets released");
+            }
+            for (index,relay) in native.iter().enumerate() {
+                tokio::time::timeout(Duration::from_secs(2),async {
+                    while relay.session_counts().sessions_revoked!=revoked_before[index]+1 {tokio::time::sleep(Duration::from_millis(10)).await;}
+                }).await.expect("fresh native revoke applied");
+                assert_eq!(support::trial_slots_on_relay(network,ObjectId::parse_str(&nodes[index]).unwrap()),0);
+            }
+        }
         drop(native); // Post-return payload cannot be secretly carried by any relay.
         let packet=composite_ip(a_ip,b_ip,b"after real bilateral return client P2P forward");
-        assert!(a.send_packet(&packet).await);assert_eq!(b.receive_packet().await.unwrap(),packet);
-        let packet=composite_ip(b_ip,a_ip,b"after real bilateral return client P2P reverse");
-        assert!(b.send_packet(&packet).await);assert_eq!(a.receive_packet().await.unwrap(),packet);
-    }).await.expect("bounded four-relay actual-client lifecycle exceeded180 seconds");
+        if restart_listener {
+            assert!(!a.send_packet(&packet).await,"mode-off must leave no recovered sender");
+            let packet=composite_ip(b_ip,a_ip,b"mode-off recovered reverse must be refused");
+            assert!(!b.send_packet(&packet).await,"mode-off must leave no reverse recovered sender");
+        } else {
+            assert!(a.send_packet(&packet).await);assert_eq!(b.receive_packet().await.unwrap(),packet);
+            let packet=composite_ip(b_ip,a_ip,b"after real bilateral return client P2P reverse");
+            assert!(b.send_packet(&packet).await);assert_eq!(a.receive_packet().await.unwrap(),packet);
+        }
+    }).await.expect("bounded four-relay actual-client lifecycle exceeded its deadline");
 }
 
 /// The complete four-relay trial carries real encrypted packets before and
@@ -10860,4 +11025,563 @@ async fn unknown_role_enforce_transient_role_read_failure_preserves_live_state_a
         net.org_relay.active_session(&pair).is_some(),
         "healthy approved org-relay session us_a <-> us_b remains active"
     );
+}
+
+/// Full legacy member runtimes own discovery, WG, carrier health and retries.
+/// The enclosing disposable network namespace supplies only the ingress/exit
+/// public aliases; the middle's advertised member endpoint is unreachable.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[cfg(target_os = "linux")]
+async fn legacy_three_relay_runtime_recovers_automatically_after_middle_restart() {
+    use meshharbor_remote_control::signaling::{ClientMsg, ServerMsg};
+    use meshharbord::relay_server::backbone_test_support::{
+        ConnectionType, NativeRelay, Netstack, NetstackHandle, OverlayEvent, OverlayRuntime,
+        OverlayView, TunFactory, TunIo, WgKeypair, prober,
+    };
+    use std::{
+        io,
+        net::{Ipv4Addr, SocketAddr},
+        sync::{Arc, Mutex as StdMutex, atomic::{AtomicBool, Ordering}},
+    };
+    use tokio::{io::{AsyncReadExt, AsyncWriteExt}, sync::{Mutex, mpsc, watch}, task::JoinHandle};
+
+    struct Tasks(Vec<JoinHandle<()>>);
+    impl Drop for Tasks {
+        fn drop(&mut self) { for task in &self.0 { task.abort(); } }
+    }
+    struct TraceState {
+        started: std::time::Instant,
+        inner: StdMutex<(Vec<Value>,std::collections::HashMap<&'static str,String>)>,
+    }
+    impl TraceState {
+        fn record(&self,role:&'static str,event:&str,data:Value) {
+            let mut inner=self.inner.lock().unwrap();let seq=inner.0.len()+1;
+            inner.0.push(json!({"seq":seq,"relative_ms":self.started.elapsed().as_millis(),
+                "context_role":role,"event":event,"data":data}));
+        }
+        fn bind(&self,role:&'static str,node:&str) {self.inner.lock().unwrap().1.insert(role,node.into());}
+        fn phase(&self,name:&str) {self.record("test","phase",json!({"phase":name}));}
+        fn wire(&self,role:&'static str,message:&ServerMsg) {
+            // Full serialization is ephemeral. Only the explicit identity
+            // whitelist below enters the retained trace or its printed log.
+            let raw=serde_json::to_value(message).unwrap();let tag=raw["t"].as_str().unwrap_or("");
+            if !(tag.starts_with("rc:overlay.path_trial_")||matches!(tag,
+                "rc:overlay.relay_grant"|"rc:overlay.relay_session"|"rc:overlay.relay_serve"
+                |"rc:overlay.relay_revoke"|"rc:overlay.relay_bridge_serve"|"rc:overlay.relay_bridge_revoke")) {return;}
+            let mut safe=serde_json::Map::new();
+            for key in ["t","vni","generation","peer_node_id","relay_node_id","trial_id"] {
+                if let Some(value)=raw.get(key) {safe.insert(key.into(),value.clone());}
+            }
+            for (nested,keys) in [("scope",&["relay_node_id","generation","peer_node_id"][..]),
+                ("bridge",&["trial_id","generation","local_vni","local_generation","remote_vni","remote_generation","source_agent_id","target_agent_id"][..])] {
+                if let Some(object)=raw.get(nested).and_then(Value::as_object) {
+                    let mut fields=serde_json::Map::new();for key in keys {
+                        if let Some(value)=object.get(*key) {fields.insert((*key).into(),value.clone());}
+                    }
+                    safe.insert(nested.into(),Value::Object(fields));
+                }
+            }
+            self.record(role,"received_wire",Value::Object(safe));
+        }
+    }
+    struct TraceGuard(Arc<TraceState>);
+    impl Drop for TraceGuard {
+        fn drop(&mut self) {
+            let inner=self.0.inner.lock().unwrap();
+            for event in &inner.0 {
+                let mut safe=event.clone();let role=event["context_role"].as_str().unwrap();
+                safe["context_node_id"]=inner.1.get(role).map(|id|json!(id)).unwrap_or(Value::Null);
+                println!("X4_LEGACY_TRACE {safe}");
+            }
+        }
+    }
+    struct Member {
+        handle: NetstackHandle,
+        view: watch::Receiver<OverlayView>,
+        requests: Arc<StdMutex<Vec<ObjectId>>>,
+        join_caps: Arc<StdMutex<Vec<Value>>>,
+        probes: Arc<StdMutex<Vec<(ObjectId,bool,Option<u32>)>>>,
+        metadata_seen: Arc<AtomicBool>,
+        forbidden_carrier: Arc<AtomicBool>,
+        runtime: usize,
+        pump: usize,
+        _events: mpsc::Sender<OverlayEvent>,
+    }
+    impl Member {
+        fn healthy(&self, peer: &str) -> bool {
+            self.view.borrow().peers.iter().any(|p| p.node_id==peer
+                && p.connection==ConnectionType::Relay && p.relay_kind.as_deref()==Some("org")
+                && !p.stalled && p.debug.as_ref().is_some_and(|d|d.hs_done))
+        }
+        fn requests_for(&self, peer: ObjectId) -> usize {
+            self.requests.lock().unwrap().iter().filter(|p|**p==peer).count()
+        }
+        fn assert_live(&self, tasks: &Tasks) {
+            assert!(!tasks.0[self.runtime].is_finished(),"member runtime stopped");
+            assert!(!tasks.0[self.pump].is_finished(),"member control pump stopped");
+            assert!(!self.forbidden_carrier.load(Ordering::SeqCst),"backbone-only peer used Direct/TURN/DERP");
+        }
+    }
+    async fn member(mut ws: Ws, agent: String, other_agent: ObjectId, endpoint: String,
+        key: WgKeypair, tasks: &mut Tasks, context:(&'static str,Arc<TraceState>)) -> Member {
+        let (role,trace)=context;
+        let mainland=endpoint.starts_with("223.");
+        let (out,mut outbound)=mpsc::channel::<ClientMsg>(256);
+        let (events,event_rx)=mpsc::channel(256);
+        let (handle_tx,mut handle_rx)=mpsc::unbounded_channel();
+        let factory:TunFactory=Box::new(move |ip,nm,mtu| {
+            let stack=Netstack::start(ip,u32::from(nm).count_ones() as u8,mtu);
+            handle_tx.send(stack.handle).map_err(|_|io::Error::other("member handle receiver gone"))?;
+            Ok(stack.tun as Arc<dyn TunIo>)
+        });
+        let (view_tx,view)=watch::channel(OverlayView::default());
+        let runtime=OverlayRuntime::new_relay(key,out,factory,1280)
+            .with_org_primary(true).with_backbone_enabled(true)
+            .with_netstack_socks(Some(0)).with_peer_view(view_tx);
+        let runtime_index=tasks.0.len();
+        tasks.0.push(tokio::spawn(runtime.run(event_rx,vec![endpoint])));
+        let requests=Arc::new(StdMutex::new(Vec::new()));
+        let join_caps=Arc::new(StdMutex::new(Vec::new()));let probes=Arc::new(StdMutex::new(Vec::new()));
+        let metadata_seen=Arc::new(AtomicBool::new(false));
+        let expected_peer=Arc::new(StdMutex::new(None::<ObjectId>));
+        let pump_index=tasks.0.len();
+        let pump_events=events.clone();let pump_requests=requests.clone();let seen=metadata_seen.clone();
+        let caps=join_caps.clone();let reported=probes.clone();
+        tasks.0.push(tokio::spawn(async move {
+            let mut heartbeat=tokio::time::interval(Duration::from_secs(25));heartbeat.tick().await;
+            loop { tokio::select! {
+                _=heartbeat.tick()=>ws.send(Message::Ping(Vec::new().into())).await.unwrap(),
+                message=outbound.recv()=>{
+                    let message=message.expect("member runtime control remains live");
+                    if let ClientMsg::OverlayJoin{supports_org_relay,supports_backbone_only_v1,
+                        supports_path_backbone_v1,org_primary,endpoints,..}=&message {
+                        caps.lock().unwrap().push(json!({"org_relay":supports_org_relay,
+                            "backbone_only":supports_backbone_only_v1,"path_backbone":supports_path_backbone_v1,
+                            "primary":org_primary}));
+                        assert!(*supports_org_relay&&*supports_backbone_only_v1&&*supports_path_backbone_v1
+                            &&*org_primary==Some(true),"three-relay fixture needs primary/org/backbone capabilities and MESHHARBORD_PATH_TRIAL=1");
+                        assert!(!endpoints.iter().any(|e|e.starts_with(if mainland {"1.1.1.1:"}else{"223.6.6.6:"})),
+                            "mixed-zone fixture NIC aliases were advertised: run with MESHHARBORD_OVERLAY_DIRECT=0; never bypass GEO-04");
+                    }
+                    if let ClientMsg::OverlayRelayRequest{peer_node_id,..}
+                        |ClientMsg::OverlayOrgRelayFallbackRequest{peer_node_id,..}=&message {
+                        pump_requests.lock().unwrap().push(*peer_node_id);
+                    }
+                    if let ClientMsg::OverlayRelayProbe{relay_node_id,reachable,rtt_ms,..}=&message {
+                        reported.lock().unwrap().push((*relay_node_id,*reachable,*rtt_ms));
+                    }
+                    ws.send(Message::Text(serde_json::to_string(&message).unwrap().into())).await.unwrap();
+                }
+                message=ws.next()=>match message {
+                    Some(Ok(Message::Text(text)))=>{
+                        let message:ServerMsg=serde_json::from_str(&text).expect("real member server frame");
+                        trace.wire(role,&message);
+                        let peers=match &message {
+                            ServerMsg::OverlayNetmap{peers,..}=>peers.as_slice(),
+                            ServerMsg::OverlayNetmapDelta{upserts,..}=>upserts.as_slice(),
+                            _=>&[],
+                        };
+                        for peer in peers.iter().filter(|p|p.agent_id==Some(other_agent)) {
+                            assert!(peer.backbone_only,"authoritative cross-zone peer must be backbone-only");
+                            *expected_peer.lock().unwrap()=Some(peer.node_id);
+                            seen.store(true,Ordering::SeqCst);
+                        }
+                        if let ServerMsg::OverlayRelayGrant{peer_node_id,..}|ServerMsg::OverlayForceDerp{peer_node_id,..}=&message {
+                            assert_ne!(Some(*peer_node_id),*expected_peer.lock().unwrap(),"server offered forbidden fallback for cross-zone pair");
+                        }
+                        let _=meshharbord::overlay::intercept(&pump_events,message,true,&agent);
+                    }
+                    Some(Ok(Message::Ping(data)))=>ws.send(Message::Pong(data)).await.unwrap(),
+                    Some(Ok(Message::Pong(_)))=>{},
+                    other=>panic!("member control ended: {other:?}"),
+                }
+            }}
+        }));
+        let forbidden_carrier=Arc::new(AtomicBool::new(false));
+        let violation=forbidden_carrier.clone();let mut observed=view.clone();let other=other_agent.to_hex();
+        tasks.0.push(tokio::spawn(async move {
+            while observed.changed().await.is_ok() {
+                let snapshot=observed.borrow().clone();
+                for peer in snapshot.peers.iter().filter(|p|p.agent_id.as_deref()==Some(other.as_str())) {
+                    if matches!(peer.connection,ConnectionType::Direct|ConnectionType::Tunnel)
+                        || (peer.connection==ConnectionType::Relay&&peer.relay_kind.as_deref()!=Some("org")) {
+                        violation.store(true,Ordering::SeqCst);
+                    }
+                }
+            }
+        }));
+        let handle=tokio::time::timeout(Duration::from_secs(20),handle_rx.recv()).await
+            .expect("runtime initial netmap/TunFactory").expect("netstack handle");
+        Member{handle,view,requests,join_caps,probes,metadata_seen,forbidden_carrier,runtime:runtime_index,pump:pump_index,_events:events}
+    }
+    async fn relay_probe_targets(message:&ServerMsg,native:&Arc<Mutex<NativeRelay>>,
+        target:Option<&Arc<Mutex<NativeRelay>>>,context:(&'static str,&TraceState),
+        targets:&watch::Sender<Vec<prober::Target>>) {
+        let ServerMsg::OverlayNetmap{network,..}=message else {return;};
+        let policy=if let Some(target)=target {
+            let next=target.lock().await;Some(native.lock().await.policy_to(&next))
+        }else{None};
+        let accepted=prober::targets_from_wire(&network.relay_probe_targets,&network.backbone_probe_targets,policy.as_ref());
+        let safe=|offered:&[meshharbor_remote_control::signaling::RelayProbeTargetWire]|
+            offered.iter().map(|t|json!({"relay_node_id":t.relay_node_id.to_hex(),"endpoints":t.endpoints})).collect::<Vec<_>>();
+        context.1.record(context.0,"received_probe_targets",json!({
+            "public":safe(&network.relay_probe_targets),"backbone":safe(&network.backbone_probe_targets),
+            "accepted":accepted.iter().map(|t|json!({"relay_node_id":t.relay_node_id.to_hex(),
+                "endpoints":t.endpoints.iter().map(ToString::to_string).collect::<Vec<_>>(),"via":t.via})).collect::<Vec<_>>()}));
+        // Production runtime replaces this watch on every full netmap,
+        // including identical values. The production prober owns round timing.
+        targets.send_replace(accepted);
+    }
+    async fn relay_pump(mut ws: Ws, native: Arc<Mutex<NativeRelay>>, target: Option<Arc<Mutex<NativeRelay>>>,
+        context:(&'static str,Arc<TraceState>),initial:ServerMsg,
+        targets:watch::Sender<Vec<prober::Target>>,mut outcomes:mpsc::Receiver<Vec<prober::Outcome>>) {
+        let (role,trace)=context;
+        relay_probe_targets(&initial,&native,target.as_ref(),(role,&trace),&targets).await;
+        // The production agent initiates pings; the server deliberately never
+        // does. A silent fixture otherwise loses its WS receive-liveness lease.
+        let mut heartbeat=tokio::time::interval(Duration::from_secs(25));heartbeat.tick().await;
+        loop {
+            let frame=tokio::select! {
+                _=heartbeat.tick()=>{ws.send(Message::Ping(Vec::new().into())).await.unwrap();continue;}
+                round=outcomes.recv()=>{
+                    let Some(round)=round else {break;};
+                    for outcome in round {
+                        let rtt_ms=outcome.rtt.map(|d|u32::try_from(d.as_millis()).unwrap_or(u32::MAX));
+                        trace.record(role,"measured_probe",json!({"relay_node_id":outcome.relay_node_id.to_hex(),
+                            "endpoint":outcome.endpoint.to_string(),"reachable":outcome.rtt.is_some(),"rtt_ms":rtt_ms}));
+                        let report=ClientMsg::OverlayRelayProbe{relay_node_id:outcome.relay_node_id,
+                            endpoint:outcome.endpoint.to_string(),reachable:outcome.rtt.is_some(),rtt_ms};
+                        ws.send(Message::Text(serde_json::to_string(&report).unwrap().into())).await.unwrap();
+                    }
+                    continue;
+                }
+                frame=ws.next()=>frame,
+            };
+            let Some(frame)=frame else {break;};
+            match frame.expect("relay control frame") {
+                Message::Text(text)=>{
+                    let message:ServerMsg=serde_json::from_str(&text).expect("relay server message");
+                    trace.wire(role,&message);
+                    relay_probe_targets(&message,&native,target.as_ref(),(role,&trace),&targets).await;
+                    match &message {
+                        ServerMsg::OverlayRelayServe{..}|ServerMsg::OverlayRelayRevoke{..}
+                        |ServerMsg::OverlayRelayBridgeServe{..}|ServerMsg::OverlayRelayBridgeRevoke{..}=>{
+                            let policy=if matches!(&message,ServerMsg::OverlayRelayBridgeServe{..}) {
+                                let next=target.as_ref().expect("bridge requires next relay").lock().await;
+                                Some(native.lock().await.policy_to(&next))
+                            }else{None};
+                            native.lock().await.serve(message,policy);
+                        }
+                        // These relay fixtures serve production listener/bridge
+                        // control only; their member metadata is not installed.
+                        _=>{},
+                    }
+                }
+                Message::Ping(data)=>ws.send(Message::Pong(data)).await.unwrap(),
+                Message::Pong(_)=>{},
+                other=>panic!("relay control ended: {other:?}"),
+            }
+        }
+    }
+    fn start_relay(ws:Ws,native:Arc<Mutex<NativeRelay>>,target:Option<Arc<Mutex<NativeRelay>>>,
+        context:(&'static str,Arc<TraceState>),initial:ServerMsg,tasks:&mut Tasks)->usize {
+        let (targets,target_rx)=watch::channel(Vec::<prober::Target>::new());
+        let (outcomes,outcome_rx)=mpsc::channel(8);
+        tasks.0.push(prober::spawn(target_rx,outcomes));
+        let index=tasks.0.len();
+        tasks.0.push(tokio::spawn(relay_pump(ws,native,target,context,initial,targets,outcome_rx)));
+        index
+    }
+    async fn tcp64(from:&NetstackHandle,to:&NetstackHandle,target:Ipv4Addr,port:u16)->io::Result<()> {
+        fn stage(error:io::Error,side:&str,sequence:usize,operation:&str,port:u16)->io::Error {
+            io::Error::new(error.kind(),format!("TCP echo port={port} {side} completed={sequence}/64 {operation}: {error}"))
+        }
+        let mut listener=to.listen(port).await.map_err(|e|stage(e,"server",0,"listen",port))?;
+        let echo=async {
+            let mut stream=listener.accept().await.ok_or_else(||io::Error::other("echo listener closed"))?;
+            for sequence in 0..64 {
+                let mut bytes=[0;512];
+                stream.read_exact(&mut bytes).await.map_err(|e|stage(e,"server",sequence,"read request",port))?;
+                stream.write_all(&bytes).await.map_err(|e|stage(e,"server",sequence,"write echo",port))?;
+            }
+            // NsTcpStream writes enqueue; dropping the stream aborts its
+            // smoltcp socket. Keep this owner alive until the client has read
+            // the 64th echo and half-closes, rather than dropping queued data.
+            let mut extra=[0;1];
+            if stream.read(&mut extra).await.map_err(|e|stage(e,"server",64,"await client EOF",port))?!=0 {
+                return Err(io::Error::other("TCP echo server received more than 64*512 bytes"));
+            }
+            stream.shutdown().await.map_err(|e|stage(e,"server",64,"shutdown",port))
+        };
+        let send=async {
+            let mut stream=from.connect(SocketAddr::from((target,port))).await.map_err(|e|stage(e,"client",0,"connect",port))?;
+            for sequence in 0..64u8 {
+                let bytes=[sequence;512];
+                stream.write_all(&bytes).await.map_err(|e|stage(e,"client",usize::from(sequence),"write request",port))?;
+                let mut reply=[0;512];
+                stream.read_exact(&mut reply).await.map_err(|e|stage(e,"client",usize::from(sequence),"read echo",port))?;
+                if reply!=bytes{return Err(io::Error::other(format!("TCP echo port={port} sequence={sequence} payload mismatch")));}
+            }
+            stream.shutdown().await.map_err(|e|stage(e,"client",64,"shutdown after all replies",port))?;
+            let mut extra=[0;1];
+            if stream.read(&mut extra).await.map_err(|e|stage(e,"client",64,"await server EOF",port))?!=0 {
+                return Err(io::Error::other("TCP echo client received more than 64*512 bytes"));
+            }
+            Ok(())
+        };
+        tokio::try_join!(echo,send)?;Ok(())
+    }
+
+    // Allow the unchanged 240-second production probe cadence plus ordinary
+    // setup, automatic member retry and resource teardown; never accelerate it.
+    tokio::time::timeout(Duration::from_secs(480),async {
+        let slug="iso-legacy-runtime-restart";let rig=Rig::up(slug,"enforce").await;
+        // Declared after Rig: both success and panic unwinding print the
+        // sanitized trace before TestApp's database teardown runs.
+        let trace=TraceGuard(Arc::new(TraceState{started:std::time::Instant::now(),inner:StdMutex::new((Vec::new(),std::collections::HashMap::new()))}));
+        let mut tasks=Tasks(Vec::new());let mut native=Vec::new();let mut relay_ws=Vec::new();let mut relay_maps=Vec::new();
+        let mut agents=Vec::new();let mut nodes=Vec::new();let mut tokens=Vec::new();
+        for index in 0..3u8 {
+            let relay=NativeRelay::start().await.unwrap();let port=relay.port();
+            let name=format!("{slug}-r{index}");let (agent,token)=enroll(&rig.app,&rig.seeded,&name).await;
+            let origin=if index==2 {US_R}else{CN_R};
+            let mut ws=connect_from(&rig.app,&token,&["relay-server"],Some(origin)).await;
+            assert_observed(&rig.app,&agent,Some(origin)).await;
+            let public=["223.6.6.6","223.6.6.7","1.1.1.1"][usize::from(index)];
+            let initial=line_join(&mut ws,10+index,&format!("{public}:{port}"),json!({"relay_backbone_ready":index<2,"relay_port":port})).await;
+            assert_eq!(approve(&rig.app,&rig.seeded,&agent,true).await,200);
+            let node=rig.node(&name).await;grant_relay(&rig.app,&rig.seeded,&node).await;
+            trace.0.bind(["relay0","relay1","relay2"][usize::from(index)],&node);
+            native.push(Arc::new(Mutex::new(relay)));relay_ws.push(ws);relay_maps.push(initial);agents.push(agent);tokens.push(token);nodes.push(node);
+        }
+        for index in 0..2 {
+            let endpoint=native[index+1].lock().await.underlay_endpoint().to_string();
+            let (status,body)=put(&rig.app,&format!("/api/tenant/{}/agent/{}/peer-relay-policy",rig.seeded.tenant_id,agents[index]),
+                &rig.seeded.admin.access_token,json!({"serve":true,"approved_backbone_edges":[
+                    {"relay_agent_id":agents[index+1],"endpoint":endpoint,"cross_border":index==1}]})).await;
+            assert_eq!(status,200,"{body}");
+        }
+        set_mode(&rig.app,&rig.seeded,"on").await;
+        // The earlier joins predated approval/ACL/edge configuration. Those
+        // HTTP edits send deltas, not replacement network probe targets. Get
+        // genuine configured full maps for ALL relays before starting probes.
+        for (index,ws) in relay_ws.iter_mut().enumerate() {
+            let port=native[index].lock().await.port();
+            let public=["223.6.6.6","223.6.6.7","1.1.1.1"][index];
+            let fresh=line_join(ws,10+index as u8,&format!("{public}:{port}"),
+                json!({"relay_backbone_ready":index<2,"relay_port":port})).await;
+            if index<2 {
+                let expected=native[index+1].lock().await.underlay_endpoint().to_string();
+                assert!(fresh["network"]["backbone_probe_targets"].as_array().is_some_and(|targets|
+                    targets.iter().any(|target|target["relay_node_id"]==nodes[index+1]
+                        &&target["endpoints"].as_array().is_some_and(|endpoints|endpoints.iter().any(|endpoint|endpoint==&expected)))),
+                    "configured full map must offer its actual approved private edge");
+            }
+            relay_maps[index]=fresh;
+        }
+        trace.0.phase("configured_relay_joins_complete");
+        let mut relay_task_indices=Vec::new();
+        for (index,(ws,initial)) in relay_ws.into_iter().zip(relay_maps).enumerate() {
+            relay_task_indices.push(start_relay(ws,native[index].clone(),native.get(index+1).cloned(),
+                (["relay0","relay1","relay2"][index],trace.0.clone()),serde_json::from_value(initial).unwrap(),&mut tasks));
+        }
+        for (index,relay) in native.iter().cloned().enumerate() {
+            let observed=trace.0.clone();let role=["relay0","relay1","relay2"][index];
+            tasks.0.push(tokio::spawn(async move {
+                let mut tick=tokio::time::interval(Duration::from_millis(250));let mut previous=(0,0);
+                loop {tick.tick().await;if let Ok(relay)=relay.try_lock() {
+                    let counts=relay.session_counts();let current=(counts.sessions_installed,counts.sessions_revoked);
+                    if current!=previous {observed.record(role,"applied_native_counts",json!({
+                        "sessions_installed":current.0,"sessions_revoked":current.1}));previous=current;}
+                }}
+            }));
+        }
+        let (a_agent,a_token)=enroll(&rig.app,&rig.seeded,&format!("{slug}-a")).await;
+        let (b_agent,b_token)=enroll(&rig.app,&rig.seeded,&format!("{slug}-b")).await;
+        let a_ws=connect_from(&rig.app,&a_token,&[],Some(CN_A)).await;
+        let b_ws=connect_from(&rig.app,&b_token,&[],Some(US_A)).await;
+        assert_observed(&rig.app,&a_agent,Some(CN_A)).await;
+        assert_observed(&rig.app,&b_agent,Some(US_A)).await;
+        let a_agent_id=ObjectId::parse_str(&a_agent).unwrap();let b_agent_id=ObjectId::parse_str(&b_agent).unwrap();
+        let a=member(a_ws,a_agent,b_agent_id,"223.5.5.5:41641".into(),WgKeypair::generate(),&mut tasks,("memberA",trace.0.clone())).await;
+        let b=member(b_ws,b_agent,a_agent_id,"8.8.8.8:41641".into(),WgKeypair::generate(),&mut tasks,("memberB",trace.0.clone())).await;
+        let a_node=rig.node(&format!("{slug}-a")).await;let b_node=rig.node(&format!("{slug}-b")).await;
+        trace.0.bind("memberA",&a_node);trace.0.bind("memberB",&b_node);
+        let a_id=ObjectId::parse_str(&a_node).unwrap();let b_id=ObjectId::parse_str(&b_node).unwrap();
+        let network=rig.app.state.network();let pair=meshharbor_mod_network::overlay::pair_key(a_id,b_id);
+        let initial=tokio::time::timeout(Duration::from_secs(90),async {
+            loop {a.assert_live(&tasks);b.assert_live(&tasks);if a.healthy(&b_node)&&b.healthy(&a_node){break;}
+                tokio::time::sleep(Duration::from_millis(50)).await;}
+        }).await;
+        if initial.is_err() {
+            let view=|member:&Member|member.view.borrow().peers.iter().map(|p|json!({
+                "node":p.node_id,"connection":p.connection,"relay_kind":p.relay_kind,
+                "stalled":p.stalled,"hs_done":p.debug.as_ref().map(|d|d.hs_done)})).collect::<Vec<_>>();
+            let extras=|node|{let e=network.org_relay.join_extras(node);json!({"primary":e.org_primary,
+                "backbone_only":e.supports_backbone_only_v1,"path_backbone":e.supports_path_backbone_v1})};
+            let mut counts=Vec::new();for relay in &native {let c=relay.lock().await.session_counts();
+                counts.push(json!({"installed":c.sessions_installed,"revoked":c.sessions_revoked}));}
+            let session=network.org_relay.active_session(&pair).map(|s|json!({"vni":s.vni,"generation":s.generation,"hops":s.hops.len()}));
+            eprintln!("legacy initial diagnostic {}",json!({"views":[view(&a),view(&b)],
+                "requests":[a.requests_for(b_id),b.requests_for(a_id)],
+                "metadata":[a.metadata_seen.load(Ordering::SeqCst),b.metadata_seen.load(Ordering::SeqCst)],
+                "join_caps":[a.join_caps.lock().unwrap().clone(),b.join_caps.lock().unwrap().clone()],
+                "probes":[a.probes.lock().unwrap().iter().map(|(n,r,t)|json!({"relay":n.to_hex(),"reachable":r,"rtt":t})).collect::<Vec<_>>(),
+                    b.probes.lock().unwrap().iter().map(|(n,r,t)|json!({"relay":n.to_hex(),"reachable":r,"rtt":t})).collect::<Vec<_>>()],
+                "server_extras":[extras(a_id),extras(b_id)],"native":counts,"active":session}));
+            panic!("full runtimes must establish org line automatically");
+        }
+        assert!(a.metadata_seen.load(Ordering::SeqCst)&&b.metadata_seen.load(Ordering::SeqCst));
+        trace.0.phase("initialhealthy");
+        let original=network.org_relay.active_session(&pair).expect("actual legacy line");
+        assert_eq!(std::iter::once(original.relay.node_id).chain(original.hops.iter().map(|h|h.relay.node_id)).map(|id|id.to_hex()).collect::<Vec<_>>(),nodes);
+        let a_ip:Ipv4Addr=a.view.borrow().self_ip.as_ref().unwrap().parse().unwrap();
+        let b_ip:Ipv4Addr=b.view.borrow().self_ip.as_ref().unwrap().parse().unwrap();
+        tokio::time::timeout(Duration::from_secs(20),tcp64(&a.handle,&b.handle,b_ip,35101)).await.unwrap().unwrap();
+        tokio::time::timeout(Duration::from_secs(20),tcp64(&b.handle,&a.handle,a_ip,35102)).await.unwrap().unwrap();
+        let requests_before_each=[a.requests_for(b_id),b.requests_for(a_id)];
+        let requests_before=requests_before_each.iter().sum::<usize>();
+        let port=native[1].lock().await.stop_listener().await.expect("kill active middle listener");
+        trace.0.phase("middlestopped");
+        tasks.0[relay_task_indices[1]].abort(); // actual relay control disconnect
+        tokio::time::timeout(Duration::from_secs(45),async {
+            while a.healthy(&b_node)&&b.healthy(&a_node) {a.assert_live(&tasks);b.assert_live(&tasks);tokio::time::sleep(Duration::from_millis(100)).await;}
+        }).await.expect("real runtime must observe middle failure");
+        native[1].lock().await.restart_listener(port).await.unwrap();
+        trace.0.phase("listenerrestarted");
+        let rejoin_started=std::time::Instant::now();
+        let mut ws=connect_from(&rig.app,&tokens[1],&["relay-server"],Some(CN_R)).await;
+        assert_observed(&rig.app,&agents[1],Some(CN_R)).await;
+        let rejoin_map=line_join(&mut ws,11,&format!("223.6.6.7:{port}"),json!({"relay_backbone_ready":true,"relay_port":port})).await;
+        trace.0.phase("rejoincompleted");
+        assert_eq!(rig.node(&format!("{slug}-r1")).await,nodes[1]);
+        start_relay(ws,native[1].clone(),Some(native[2].clone()),("relay1",trace.0.clone()),serde_json::from_value(rejoin_map).unwrap(),&mut tasks);
+        // Rejoin invalidates old incoming-edge observations. The source's
+        // next real production round is 240 seconds later; cover that round
+        // and normal member retries without forcing another source join.
+        let recovery=tokio::time::timeout(Duration::from_secs(300),async {
+            loop {a.assert_live(&tasks);b.assert_live(&tasks);
+                let reminted=network.org_relay.active_session(&pair).is_some_and(|s|s.generation!=original.generation);
+                if reminted&&a.healthy(&b_node)&&b.healthy(&a_node){break;}
+                tokio::time::sleep(Duration::from_millis(50)).await;}
+        }).await;
+        if recovery.is_err() {
+            let view=|member:&Member|member.view.borrow().peers.iter().map(|p|json!({
+                "node":p.node_id,"connection":p.connection,"relay_kind":p.relay_kind,
+                "stalled":p.stalled,"hs_done":p.debug.as_ref().map(|d|d.hs_done)})).collect::<Vec<_>>();
+            let extras=|node|{let e=network.org_relay.join_extras(node);json!({"primary":e.org_primary,
+                "backbone_only":e.supports_backbone_only_v1,"path_backbone":e.supports_path_backbone_v1,
+                "backbone_ready":e.relay_backbone_ready,"relay_port":e.relay_port})};
+            let mut roles=Vec::new();let mut counts=Vec::new();
+            for (index,relay) in native.iter().enumerate() {
+                let agent=ObjectId::parse_str(&agents[index]).unwrap();
+                let c=relay.lock().await.session_counts();
+                counts.push(json!({"installed":c.sessions_installed,"revoked":c.sessions_revoked}));
+                roles.push(json!({"node":nodes[index],"online":network.fleet.rc_hub.is_agent_online(agent),
+                    "has_live_conn":meshharbor_mod_network::org_relay::candidate_test_support::current_connection_id(network,agent).is_some(),
+                    "extras":extras(ObjectId::parse_str(&nodes[index]).unwrap())}));
+            }
+            let session=network.org_relay.active_session(&pair).map(|s|json!({"vni":s.vni,"generation":s.generation,"hops":s.hops.len()}));
+            use meshharbor_mod_network::org_relay::candidate_test_support as diagnostics;
+            let latest_denial=diagnostics::last_mint_for_fixture(network,a_id,b_id);
+            let zone_graph=tokio::time::timeout(Duration::from_secs(10),async {
+                let mut zones=Vec::new();
+                let ids=std::iter::once(a_id).chain(std::iter::once(b_id))
+                    .chain(nodes.iter().map(|id|ObjectId::parse_str(id).unwrap()));
+                for node in ids {
+                    zones.push(match diagnostics::zone_snapshot_for_fixture(network,node).await {
+                        Ok(snapshot)=>snapshot,
+                        Err(error)=>json!({"node":node.to_hex(),"error":error}),
+                    });
+                }
+                let mut orientations=Vec::new();
+                for (requester,peer) in [(a_id,b_id),(b_id,a_id)] {
+                    let edges=match diagnostics::prepare_edges(network,requester,peer,false).await {
+                        Ok(edges)=>json!({"ok":edges.into_iter().map(|(from,to,endpoint,cross_border)|
+                            json!({"from_agent":from.to_hex(),"to_agent":to.to_hex(),"endpoint":endpoint,"cross_border":cross_border})).collect::<Vec<_>>()}),
+                        Err(error)=>json!({"error":format!("{error:?}")}),
+                    };
+                    let selected=match diagnostics::select_path(network,requester,peer,false).await {
+                        Ok(Some((relays,flipped)))=>json!({"ok":{"relay_agents":relays.into_iter().map(|id|id.to_hex()).collect::<Vec<_>>(),"flipped":flipped}}),
+                        Ok(None)=>json!({"ok":null}),
+                        Err(error)=>json!({"error":format!("{error:?}")}),
+                    };
+                    orientations.push(json!({"requester":requester.to_hex(),"peer":peer.to_hex(),"prepared_edges":edges,"selected_path":selected}));
+                }
+                json!({"zones":zones,"orientations":orientations})
+            }).await.unwrap_or_else(|_|json!({"diagnostic_timeout_seconds":10}));
+            eprintln!("legacy recovery diagnostic {}",json!({"views":[view(&a),view(&b)],
+                "requests_before":requests_before,"requests":[a.requests_for(b_id),b.requests_for(a_id)],
+                "metadata":[a.metadata_seen.load(Ordering::SeqCst),b.metadata_seen.load(Ordering::SeqCst)],
+                "join_caps":[a.join_caps.lock().unwrap().clone(),b.join_caps.lock().unwrap().clone()],
+                "probes":[a.probes.lock().unwrap().iter().map(|(n,r,t)|json!({"relay":n.to_hex(),"reachable":r,"rtt":t})).collect::<Vec<_>>(),
+                    b.probes.lock().unwrap().iter().map(|(n,r,t)|json!({"relay":n.to_hex(),"reachable":r,"rtt":t})).collect::<Vec<_>>()],
+                "server_member_extras":[extras(a_id),extras(b_id)],"relays":roles,
+                "native":counts,"active":session,"original_generation":original.generation,
+                "latest_denial":latest_denial,"zone_graph":zone_graph}));
+            panic!("same full runtimes must recover with automatic requests");
+        }
+        let recovery_elapsed_ms=rejoin_started.elapsed().as_millis();
+        trace.0.phase("recovered");
+        assert!(a.requests_for(b_id)+b.requests_for(a_id)>requests_before,"no runtime-generated post-fault request");
+        let requests_after_each=[a.requests_for(b_id),b.requests_for(a_id)];
+        let recovered=network.org_relay.active_session(&pair).unwrap();
+        assert_eq!(std::iter::once(recovered.relay.node_id).chain(recovered.hops.iter().map(|h|h.relay.node_id)).map(|id|id.to_hex()).collect::<Vec<_>>(),nodes);
+        tokio::time::timeout(Duration::from_secs(20),tcp64(&a.handle,&b.handle,b_ip,35201)).await.unwrap().unwrap();
+        tokio::time::timeout(Duration::from_secs(20),tcp64(&b.handle,&a.handle,a_ip,35202)).await.unwrap().unwrap();
+        let mut evidence=Vec::new();
+        for index in 0..2 {
+            let hop=&recovered.hops[index];let generation=if index==0 {recovered.generation}else{recovered.hops[index-1].generation};
+            let (watch,sockets)=native[index].lock().await.bridge_evidence(hop.bridge_id,generation).unwrap();
+            evidence.push((hop.bridge_id,watch,sockets));
+        }
+        trace.0.phase("modeoff");
+        set_mode(&rig.app,&rig.seeded,"off").await;
+        tokio::time::timeout(Duration::from_secs(15),async {
+            while network.org_relay.active_session(&pair).is_some()||a.healthy(&b_node)||b.healthy(&a_node) {
+                a.assert_live(&tasks);b.assert_live(&tasks);tokio::time::sleep(Duration::from_millis(50)).await;}
+        }).await.expect("mode-off withdraws legacy line");
+        for (index,(id,watch,sockets)) in evidence.into_iter().enumerate() {
+            native[index].lock().await.assert_bridge_retired(id,watch,sockets).await.unwrap();
+        }
+        let _listener_a=a.handle.listen(35301).await.unwrap();let _listener_b=b.handle.listen(35302).await.unwrap();
+        assert!(!matches!(tokio::time::timeout(Duration::from_secs(3),a.handle.connect(SocketAddr::from((b_ip,35302)))).await,Ok(Ok(_))),"mode-off bypassed line A→B");
+        assert!(!matches!(tokio::time::timeout(Duration::from_secs(3),b.handle.connect(SocketAddr::from((a_ip,35301)))).await,Ok(Ok(_))),"mode-off bypassed line B→A");
+        a.assert_live(&tasks);b.assert_live(&tasks);
+        for relay in &native {relay.lock().await.stop_listener().await.unwrap();}
+        drop((_listener_a,_listener_b));drop(a);drop(b);
+        for task in &tasks.0 {task.abort();}
+        for task in tasks.0.drain(..) {if let Err(error)=task.await {assert!(error.is_cancelled(),"fixture task panicked: {error}");}}
+        // Client tasks ending is not server teardown. Keep this TestApp and its
+        // Mongo runtime alive until all five authenticated sockets have left
+        // both the Hub and network's exact-connection registry.
+        let mut identities=agents.iter().map(|id|ObjectId::parse_str(id).unwrap()).collect::<Vec<_>>();
+        identities.extend([a_agent_id,b_agent_id]);
+        tokio::time::timeout(Duration::from_secs(15),async {
+            loop {
+                let gone=identities.iter().all(|id|!network.fleet.rc_hub.is_agent_online(*id)
+                    &&meshharbor_mod_network::org_relay::candidate_test_support::current_connection_id(network,*id).is_none());
+                // socket.rs closes its observation LAST, after the Mongo
+                // Offline/presence writes. Hub removal alone precedes those
+                // awaits and cannot certify that DB cleanup has finished.
+                let open_observations=rig.app.db.collection::<bson::Document>(
+                    meshharbor_core::business_authority::OBSERVATIONS_COLLECTION)
+                    .count_documents(bson::doc!{"identity.device_id":{"$in":identities.clone()},"closed_at":bson::Bson::Null})
+                    .await.expect("read owned socket cleanup observations");
+                if gone&&open_observations==0 {break;}
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        }).await.expect("owned authenticated sockets did not complete server disconnect");
+        tokio::time::timeout(Duration::from_secs(15),meshharbor_api::state::shutdown_cleanup(&rig.app.state))
+            .await.expect("owned test API module shutdown did not finish");
+        println!("legacy recovery success {}",json!({
+            "chain_relays":1+recovered.hops.len(),"old_generation":original.generation,
+            "new_generation":recovered.generation,"automatic_requests_before":requests_before_each,
+            "automatic_requests_after":requests_after_each,
+            "recovery_elapsed_ms_from_rejoin_start":recovery_elapsed_ms,
+            "tcp_echo":{"before":{"a_to_b":64,"b_to_a":64},"after":{"a_to_b":64,"b_to_a":64},"bytes_each":512},
+            "same_member_owners":true,"mode_off_denied_both_directions":true,
+            "bridge_sockets_released":true,"all_listeners_released":true,
+            "owned_tasks_joined":true,"authenticated_connections_gone":identities.len(),"api_shutdown_complete":true}));
+    }).await.expect("bounded full-runtime legacy recovery exceeded480 seconds");
 }

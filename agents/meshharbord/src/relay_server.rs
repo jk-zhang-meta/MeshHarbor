@@ -836,13 +836,18 @@ pub mod backbone_test_support {
         net::{IpAddr, SocketAddr},
         time::Duration,
     };
-    pub use tunnel_core::localapi::{PathTrialEvent, PathTrialPhase, PathTrialStatus};
+    pub use tunnel_core::localapi::{
+        ConnectionType, OverlayView, PathTrialEvent, PathTrialPhase, PathTrialStatus,
+    };
+    pub use tunnel_core::overlay::netstack::{Netstack, NetstackHandle};
     pub use tunnel_core::overlay::orgrelay::{
         bind::BindSecret,
         build_data,
         client::{OrgRelayConn, bind as bind_member},
-        parse_data,
+        parse_data, prober,
     };
+    pub use tunnel_core::overlay::runtime::{OverlayEvent, OverlayRuntime, TunFactory};
+    pub use tunnel_core::overlay::tun::TunIo;
     pub use tunnel_core::overlay::wg::{Carrier, WgDevice};
     pub use tunnel_core::overlay::{
         WgKeypair,
