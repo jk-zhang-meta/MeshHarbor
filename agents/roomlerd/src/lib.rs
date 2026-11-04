@@ -223,6 +223,8 @@ pub mod subnet_detect;
 /// evidence the supervisor left; the only gate on `RestartDaemon`. Pure and
 /// ungated so its table is a unit test on every platform.
 pub mod supervision;
+#[cfg(any(target_os = "macos", test))]
+pub mod tcc_recovery;
 #[cfg(feature = "system-context")]
 pub mod system_context;
 /// Re-export, not a module: the TCC probes live in `agent-core` so the desktop

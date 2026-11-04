@@ -1029,6 +1029,20 @@ fn warm(injector: &mut Option<Box<dyn super::InputInjector + Send>>) {
 }
 
 fn inject_all(injector: &mut Option<Box<dyn super::InputInjector + Send>>, msgs: &[InputMsg]) {
+    inject_all_with(
+        injector,
+        msgs,
+        cfg!(target_os = "macos"),
+        super::open_default,
+    );
+}
+
+fn inject_all_with(
+    injector: &mut Option<Box<dyn super::InputInjector + Send>>,
+    msgs: &[InputMsg],
+    retry_unpermitted: bool,
+    mut open: impl FnMut() -> Box<dyn super::InputInjector + Send>,
+) {
     for m in msgs {
         // FR-45 P4 — while a portal capture with granted input is live, the
         // portal session owns injection: on the hosts that backend serves,
@@ -1047,7 +1061,16 @@ fn inject_all(injector: &mut Option<Box<dyn super::InputInjector + Send>>, msgs:
         if injector.as_deref().is_some_and(|i| super::stale(i)) {
             *injector = None;
         }
-        let inj = injector.get_or_insert_with(super::open_default);
+        // Match keep_busy_op: a denied backend must not pin Noop for the
+        // daemon's lifetime. Retry on the next event after the owner grants it.
+        if retry_unpermitted && injector.as_deref().is_some_and(|i| !i.has_permission()) {
+            *injector = None;
+        }
+        let inj = injector.get_or_insert_with(&mut open);
+        if retry_unpermitted && !inj.has_permission() {
+            *injector = None;
+            continue;
+        }
         if let Err(e) = inj.inject(m.clone()) {
             tracing::debug!(%e, "input arbiter: inject failed");
         }
@@ -1234,6 +1257,48 @@ fn ghost_broadcast(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn input_recovers_after_permission_is_granted_without_caching_a_denial() {
+        struct Granted(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+        impl crate::input::InputInjector for Granted {
+            fn inject(&mut self, _: InputMsg) -> anyhow::Result<()> {
+                self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                Ok(())
+            }
+            fn has_permission(&self) -> bool {
+                true
+            }
+        }
+        let events = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        // Include the Noop cached by an earlier event on the baseline.
+        let mut injector: Option<Box<dyn crate::input::InputInjector + Send>> =
+            Some(Box::new(crate::input::NoopInjector));
+        inject_all_with(&mut injector, &[key(0x04, true)], true, || {
+            Box::new(crate::input::NoopInjector)
+        });
+        assert!(injector.is_none(), "a denied backend must not be cached");
+        assert_eq!(events.load(std::sync::atomic::Ordering::Relaxed), 0);
+        inject_all_with(&mut injector, &[key(0x04, true)], true, || {
+            Box::new(Granted(events.clone()))
+        });
+        inject_all_with(&mut injector, &[key(0x04, false)], true, || {
+            panic!("the permitted backend should be reused")
+        });
+        assert_eq!(events.load(std::sync::atomic::Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn input_without_permission_recovery_keeps_the_existing_fallback() {
+        let mut injector: Option<Box<dyn crate::input::InputInjector + Send>> = None;
+        inject_all_with(&mut injector, &[key(0x04, true)], false, || {
+            Box::new(crate::input::NoopInjector)
+        });
+        assert!(injector.is_some());
+        inject_all_with(&mut injector, &[key(0x04, false)], false, || {
+            panic!("non-macOS fallback behavior must stay unchanged")
+        });
+    }
 
     fn sid() -> ObjectId {
         ObjectId::new()

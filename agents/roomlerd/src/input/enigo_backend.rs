@@ -70,8 +70,8 @@ impl EnigoInjector {
             if !trusted {
                 tracing::warn!(
                     "macOS Accessibility permission MISSING — injected input will be silently dropped. \
-                     Grant it under System Settings → Privacy & Security → Accessibility, then restart the \
-                     agent (launchctl kickstart -k gui/$UID/com.roomler.agent)"
+                     Grant it under System Settings → Privacy & Security → Accessibility; \
+                     the agent retries input after the grant"
                 );
             }
             trusted
