@@ -1292,18 +1292,17 @@ mod ifname_tests {
     #[test]
     fn per_org_ifname_fits_ifnamsiz_on_every_platform() {
         let tenant = "6a712a572ceed780ac1ccbce";
-        // Linux base "meshharbor0" (8): 15 - 9 = 6-hex suffix → 15 total.
+        // Linux base "meshharbor0" (11): 15 - 12 = 3-hex suffix → 15 total.
         let linux = per_org_ifname("meshharbor0", tenant);
-        assert_eq!(linux, "meshharbor0-6a712a");
+        assert_eq!(linux, "meshharbor0-6a7");
         assert!(linux.len() <= 15, "linux name too long: {linux}");
-        // Windows base "meshharbor" (7): 15 - 8 = 7-hex suffix → 15 total
-        // (unchanged from the pre-fix Windows behavior, which already fit).
+        // Windows base "meshharbor" (10): 15 - 11 = 4-hex suffix → 15 total.
         let win = per_org_ifname("meshharbor", tenant);
-        assert_eq!(win, "meshharbor-6a712a5");
+        assert_eq!(win, "meshharbor-6a71");
         assert!(win.len() <= 15, "windows name too long: {win}");
         // A short org key never overflows and keeps its full suffix.
         assert_eq!(per_org_ifname("meshharbor0", "abc"), "meshharbor0-abc");
-        // Distinct tenants that share a 6-hex prefix would clash on NAME —
+        // Distinct tenants that share a 3-hex prefix would clash on NAME —
         // acceptable (the full-tenant GUID still differs), and real fleet
         // tenants (grox 69a1…, jovanov 6a71…) don't even share the first char.
         assert_ne!(
