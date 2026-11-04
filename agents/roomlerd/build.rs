@@ -70,9 +70,9 @@ fn windows_main_stack() {
         return;
     }
     match std::env::var("CARGO_CFG_TARGET_ENV").as_deref() {
-        Ok("msvc") => println!("cargo:rustc-link-arg-bin=roomlerd=/STACK:{STACK_BYTES}"),
+        Ok("msvc") => println!("cargo:rustc-link-arg-bin=meshharbord=/STACK:{STACK_BYTES}"),
         Ok("gnu") | Ok("gnullvm") => {
-            println!("cargo:rustc-link-arg-bin=roomlerd=-Wl,--stack,{STACK_BYTES}")
+            println!("cargo:rustc-link-arg-bin=meshharbord=-Wl,--stack,{STACK_BYTES}")
         }
         _ => {}
     }
@@ -187,7 +187,7 @@ END
         let rc_path = out_dir.join("roomlerd-version.rc");
         fs::write(&rc_path, rc).expect("failed to write the VERSIONINFO resource script");
 
-        let result = embed_resource::compile_for(&rc_path, ["roomlerd"], embed_resource::NONE);
+        let result = embed_resource::compile_for(&rc_path, ["meshharbord"], embed_resource::NONE);
 
         // A missing rc.exe/llvm-rc must not break a developer's local build,
         // but it must never silently ship a release binary with no version

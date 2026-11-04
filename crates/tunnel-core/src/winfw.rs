@@ -31,6 +31,11 @@
 
 use std::path::Path;
 
+/// Opt-in installer rules. Kept separate from the legacy SCM/TUN rule:
+/// installation defaults to Private + Domain and includes TCP as well as UDP.
+#[cfg(any(windows, test))]
+pub mod install;
+
 /// Display-name prefix of every binary's rule; the exe stem follows in
 /// parentheses so `roomlerd` and the `roomler` tunnel client never fight over
 /// one rule. The measured guest and the field notes both name this spelling.

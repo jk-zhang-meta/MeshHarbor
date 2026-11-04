@@ -267,6 +267,8 @@ pub mod win_timer;
 /// processes with (a recording, an agent session).
 #[cfg(target_os = "windows")]
 pub mod win_token;
+#[cfg(target_os = "windows")]
+pub mod windows_firewall;
 /// #2187 — the control WS and DERP dial the server's remembered address
 /// (`tunnel_core::ctl_dns`), so a dead exit DNS can never keep them offline.
 pub mod ws_connect;

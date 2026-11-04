@@ -937,6 +937,23 @@ enum MediaAction {
 
 #[derive(Debug, Subcommand)]
 enum ServiceAction {
+    /// Prepare this binary's TCP/UDP rules for Domain and Private networks.
+    #[cfg(target_os = "windows")]
+    PrepareFirewall {
+        /// Also allow Public networks (off by default).
+        #[arg(long)]
+        allow_public: bool,
+        /// Request administrator approval for this command only.
+        #[arg(long)]
+        elevate: bool,
+    },
+    /// Remove only this installation's firewall rules, before uninstalling.
+    #[cfg(target_os = "windows")]
+    RemoveFirewall {
+        /// Request administrator approval only when owned rules exist.
+        #[arg(long)]
+        elevate: bool,
+    },
     /// Register the agent for auto-start on the next login.
     Install {
         /// Register the ROOT daemon with the OS's own service manager instead
@@ -5094,6 +5111,19 @@ async fn run_cmd(
 
 async fn service_cmd(action: ServiceAction, config_path: &PathBuf) -> Result<()> {
     match action {
+        #[cfg(target_os = "windows")]
+        ServiceAction::PrepareFirewall {
+            allow_public,
+            elevate,
+        } => {
+            roomlerd::windows_firewall::prepare(allow_public, elevate)?;
+            println!(
+                "MeshHarbor local TCP/UDP rules verified. Administrator and group policies can override local rules."
+            );
+            Ok(())
+        }
+        #[cfg(target_os = "windows")]
+        ServiceAction::RemoveFirewall { elevate } => roomlerd::windows_firewall::remove(elevate),
         ServiceAction::Install { as_service: false } => {
             service::install().context("installing auto-start hook")?;
             println!("Auto-start registered. The agent will launch on next login.");

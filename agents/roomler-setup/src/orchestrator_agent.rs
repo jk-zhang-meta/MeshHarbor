@@ -65,6 +65,9 @@ use crate::role::Role;
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct AdvancedOptions {
+    /// Explicit install-time choice; never persisted into agent configuration.
+    pub prepare_firewall: bool,
+    pub firewall_public: bool,
     pub overlay_enabled: Option<bool>,
     pub advertise_local_subnets: Option<bool>,
     pub auto_grant_session: Option<bool>,
@@ -93,6 +96,9 @@ impl AdvancedOptions {
     /// Fail fast on bad route CIDRs (called pre-MSI). Bool options
     /// can't be invalid.
     fn validate(&self) -> Result<(), String> {
+        if self.firewall_public && !self.prepare_firewall {
+            return Err("Public networks require firewall preparation to be selected".into());
+        }
         for (key, val) in self.route_fields() {
             if let Some(v) = val {
                 roomlerd::config_surface::validate_cidr_list(v)
@@ -223,6 +229,12 @@ async fn run_install_inner(
     advanced
         .validate()
         .map_err(|e| failed(ErrorCode::AdvancedOptions, e))?;
+    if advanced.prepare_firewall && role != Role::DaemonUser {
+        return Err(failed(
+            ErrorCode::AdvancedOptions,
+            "Optional firewall preparation applies only to a per-user installation".into(),
+        ));
+    }
 
     // --- Role → flavour (was: parse_flavour on the SPA string) ----------
     let flavour_str = role
@@ -399,6 +411,9 @@ async fn run_install_inner(
     //                          downgrade from a SC-on host)
     //   permachine+SC        → ENABLE_SYSTEM_CONTEXT=1
     let properties: Vec<(&str, &str)> = match wfx {
+        WindowsInstallFlavour::PerUser if advanced.prepare_firewall => {
+            vec![("MESH_SKIP_AUTOSTART", "1")]
+        }
         WindowsInstallFlavour::PerUser => Vec::new(),
         WindowsInstallFlavour::PerMachine => {
             vec![(
@@ -494,6 +509,54 @@ async fn run_install_inner(
                 format!("MSI installer exited with unexpected code {code}"),
             ));
         }
+    }
+
+    // The per-user MSI deferred its logon task for this explicit choice.
+    // Prepare only the installed daemon's rules before enrollment or startup.
+    #[cfg(target_os = "windows")]
+    if advanced.prepare_firewall {
+        let public = advanced.firewall_public;
+        let dir =
+            roomlerd::updater::install_dir_with_name(wfx, roomlerd::updater::INSTALL_FOLDER_NAME)
+                .ok_or_else(|| {
+                failed(
+                    ErrorCode::Other,
+                    "The installed daemon folder was not found".into(),
+                )
+            })?;
+        let exe = dir.join("roomlerd.exe");
+        let result = tokio::task::spawn_blocking(move || -> Result<(), String> {
+            use std::os::windows::process::CommandExt;
+            // Invoke the installed binary so current_exe names the rule's
+            // final path, never the downloaded wizard or a versioned stage.
+            let mut args = vec!["service", "prepare-firewall", "--elevate"];
+            if public {
+                args.push("--allow-public");
+            }
+            let status = std::process::Command::new(&exe)
+                .args(args)
+                .creation_flags(0x0800_0000)
+                .status()
+                .map_err(|e| e.to_string())?;
+            if !status.success() {
+                return Err(
+                    "Firewall preparation was cancelled or failed; the daemon was not started"
+                        .into(),
+                );
+            }
+            let status = std::process::Command::new(&exe)
+                .args(["service", "install"])
+                .creation_flags(0x0800_0000)
+                .status()
+                .map_err(|e| e.to_string())?;
+            if !status.success() {
+                return Err("Could not register the daemon's logon task".into());
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|e| failed(ErrorCode::Other, e.to_string()))?;
+        result.map_err(|e| failed(ErrorCode::Other, e))?;
     }
 
     // --- Step 7: enroll --------------------------------------------------
