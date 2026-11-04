@@ -208,8 +208,14 @@ Details worth knowing:
   `%LOCALAPPDATA%\Programs\Roomler\roomlerd.exe` path, so updates keep the same
   path-based rules. Moving the executable requires preparing the new path.
   A final MSI uninstall removes these two install-owned rules, requesting
-  administrator approval only when they exist; declining removal stops the
-  uninstall so it can be retried. An upgrade keeps the rules for that fixed path.
+  administrator approval only when they exist. Cancellation or removal failure
+  is recorded as a custom-action result in the MSI log and **does not block
+  uninstall**; the rules remain at that fixed path. Reinstalling at the same
+  path reuses them. To clean them separately, restore/run the daemon at that
+  same path and use `roomlerd.exe service remove-firewall --elevate` with
+  administrator approval. For an explicit uninstall log, pass
+  `/L*v "%TEMP%\meshharbor-uninstall.log"` to `msiexec /x`.
+  An upgrade keeps the rules for that fixed path.
 
   **Blocking the Windows network prompt does not necessarily prevent ICE
   connections.** A 2026-11-04 data-channel-only check between Surface and Mac on

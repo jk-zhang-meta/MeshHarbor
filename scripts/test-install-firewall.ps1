@@ -85,4 +85,8 @@ $removal = $wix.SelectSingleNode("//w:Custom[@Action='RemoveInstallFirewall']", 
 if ($removal -notmatch 'NOT UPGRADINGPRODUCTCODE') {
     throw 'upgrades must preserve the same-path firewall rules without another approval'
 }
-Write-Output 'PASS: PS parser, bounded elevation, failure propagation, elevated caller, install ordering, MSI autostart deferral'
+$removalAction = $wix.SelectSingleNode("//w:CustomAction[@Id='RemoveInstallFirewall']", $ns)
+if ($removalAction.Return -ne 'ignore') {
+    throw 'firewall cancellation/failure must not block MSI uninstall'
+}
+Write-Output 'PASS: PS parser, bounded elevation, failure propagation, elevated caller, install ordering, MSI autostart deferral, nonblocking uninstall'

@@ -367,14 +367,14 @@
             Return='ignore' />
 
         <!-- Only installations that opted into rules require administrator
-             approval here. Do this before removing the binary; cancellation
-             fails the uninstall so a retry can still remove its exact rules. -->
+             approval here. MSI logs the action result; cancellation/failure
+             must not prevent uninstall. Same-path rules can be cleaned later. -->
         <CustomAction
             Id='RemoveInstallFirewall'
             FileKey='roomler_agent_exe'
             ExeCommand='service remove-firewall --elevate'
             Execute='immediate'
-            Return='check' />
+            Return='ignore' />
 
         <!--
           rc.18: cross-flavour cleanup. When the operator installs the
