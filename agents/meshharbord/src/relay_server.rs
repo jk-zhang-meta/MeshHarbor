@@ -463,13 +463,14 @@ fn revoke_bridge_for(running: &Running, id: ObjectId, generation: u64) {
 
 /// FR-19 P4b — drop a session on `rc:overlay.relay_revoke`, if this node
 /// holds it. Silent when it does not: the same frame reaches members too.
-pub fn revoke_from_wire(vni: u32) {
+pub fn revoke_from_wire(vni: u32, generation: u64) {
     if let Some(h) = handle()
-        && h.revoke(vni)
+        && h.revoke(vni, generation)
     {
         tracing::info!(vni, "org-relay: session revoked by the server");
     }
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -898,6 +899,44 @@ pub mod backbone_test_support {
         pub fn underlay_endpoint(&self) -> SocketAddr {
             SocketAddr::new(self.ip, self.port())
         }
+        /// Kill the actual listener and prove it released its bound UDP port.
+        pub async fn stop_listener(&mut self) -> io::Result<u16> {
+            let port = self.port();
+            self.task.abort();
+            if let Err(error) = (&mut self.task).await
+                && !error.is_cancelled()
+            {
+                return Err(io::Error::other(error));
+            }
+            if self.running.readiness.borrow().is_some() {
+                return Err(io::Error::other("stopped listener still ready"));
+            }
+            let released = tokio::net::UdpSocket::bind(("0.0.0.0", port)).await?;
+            drop(released);
+            Ok(port)
+        }
+        /// Rejoin on the same endpoint with fresh session and bridge state.
+        pub async fn restart_listener(&mut self, port: u16) -> io::Result<()> {
+            let original = self
+                .running
+                .listening
+                .parse::<SocketAddr>()
+                .map_err(io::Error::other)?
+                .port();
+            if !self.task.is_finished()
+                || self.running.readiness.borrow().is_some()
+                || port != original
+            {
+                return Err(io::Error::other(
+                    "restart requires the stopped original listener",
+                ));
+            }
+            let (tx, _) = watch::channel(None);
+            let (running, task) = start_listener(port, tx).await?;
+            self.running = running;
+            self.task = task;
+            Ok(())
+        }
         pub fn port(&self) -> u16 {
             self.running
                 .readiness
@@ -1000,8 +1039,9 @@ pub mod backbone_test_support {
                     trial_id,
                     generation,
                 } => revoke_bridge_for(&self.running, trial_id, generation),
-                ServerMsg::OverlayRelayRevoke { vni } => {
-                    self.running.handle.revoke(vni);
+                ServerMsg::OverlayRelayRevoke { vni, scope } => {
+                    assert!(scope.peer_node_id.is_none());
+                    self.running.handle.revoke(vni, scope.generation);
                 }
                 _ => panic!("unexpected native fixture control frame"),
             }

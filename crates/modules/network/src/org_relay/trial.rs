@@ -298,6 +298,11 @@ fn retire_relays(state: &NetworkState, trial: &Trial) {
         &trial.session.relay.node_ref,
         ServerMsg::OverlayRelayRevoke {
             vni: trial.session.vni,
+            scope: RelayRevokeScopeWire {
+                relay_node_id: trial.session.relay.node_id,
+                generation: trial.session.generation,
+                peer_node_id: None,
+            },
         },
     );
     for (target, message) in trial.session.hop_revocations() {
@@ -307,7 +312,14 @@ fn retire_relays(state: &NetworkState, trial: &Trial) {
         push_control(
             state,
             &path.exit.relay.node_ref,
-            ServerMsg::OverlayRelayRevoke { vni: path.exit.vni },
+            ServerMsg::OverlayRelayRevoke {
+                vni: path.exit.vni,
+                scope: RelayRevokeScopeWire {
+                    relay_node_id: path.exit.relay.node_id,
+                    generation: path.exit.generation,
+                    peer_node_id: None,
+                },
+            },
         );
         push_control(
             state,

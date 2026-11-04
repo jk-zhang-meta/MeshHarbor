@@ -1259,6 +1259,7 @@ pub enum OverlayEvent {
     /// org mode off, an ACL edit, the relay's approval cleared, a party gone).
     OrgRelayRevoke {
         vni: u32,
+        scope: meshharbor_remote_control::signaling::RelayRevokeScopeWire,
     },
     /// Discovery metadata only: never grants or installs an org-relay session.
     OrgRelayCandidates {
@@ -5348,10 +5349,10 @@ impl OverlayRuntime {
                             org_discovery.invalidate();
                         }
                     }
-                    Some(OverlayEvent::OrgRelayRevoke { vni }) => {
+                    Some(OverlayEvent::OrgRelayRevoke { vni, scope }) => {
                         org_discovery.invalidate(); // no stale hints survive any relay revocation
                         if let Some(r) = relay.as_mut()
-                            && let Some(peer) = r.org_session_revoke(vni)
+                            && let Some(peer) = r.org_session_revoke(vni, &scope)
                         {
                             org_q.invalidate(&peer);
                             cancel_org_upgrade_candidate(&peer, &mut wg, &mut by_node);
@@ -12563,9 +12564,19 @@ mod org_upgrade_tests {
             60,
         )
         .unwrap();
+        let revoke_scope = meshharbor_remote_control::signaling::RelayRevokeScopeWire {
+            relay_node_id: session.relay_node_id,
+            generation: session.generation,
+            peer_node_id: Some(a.id),
+        };
         assert!(a.relay.as_mut().unwrap().org_session_accept(a.id, session));
         stage(&mut a, la).await;
-        let id = a.relay.as_mut().unwrap().org_session_revoke(77).unwrap();
+        let id = a
+            .relay
+            .as_mut()
+            .unwrap()
+            .org_session_revoke(77, &revoke_scope)
+            .unwrap();
         cancel_org_upgrade_candidate(&id, &mut a.wg, &mut a.installed);
         stage(&mut b, lb).await;
         tokio::time::sleep(Duration::from_millis(30)).await;
@@ -12766,8 +12777,18 @@ mod org_upgrade_tests {
                         60,
                     )
                     .unwrap();
+                    let revoke_scope = meshharbor_remote_control::signaling::RelayRevokeScopeWire {
+                        relay_node_id: session.relay_node_id,
+                        generation: session.generation,
+                        peer_node_id: Some(a.id),
+                    };
                     a.relay.as_mut().unwrap().org_session_accept(a.id, session);
-                    let peer = a.relay.as_mut().unwrap().org_session_revoke(77).unwrap();
+                    let peer = a
+                        .relay
+                        .as_mut()
+                        .unwrap()
+                        .org_session_revoke(77, &revoke_scope)
+                        .unwrap();
                     cancel_org_upgrade_candidate(&peer, &mut a.wg, &mut a.installed);
                 }
                 1 => {

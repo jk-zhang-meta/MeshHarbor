@@ -2087,8 +2087,19 @@ impl RelayCoordinator {
         self.org_sessions.contains_key(peer)
     }
 
-    pub fn org_session_revoke(&mut self, vni: u32) -> Option<ObjectId> {
-        let peer = *self.org_sessions.iter().find(|(_, s)| s.vni == vni)?.0;
+    pub fn org_session_revoke(
+        &mut self,
+        vni: u32,
+        scope: &meshharbor_remote_control::signaling::RelayRevokeScopeWire,
+    ) -> Option<ObjectId> {
+        let peer = scope.peer_node_id?;
+        let session = self.org_sessions.get(&peer)?;
+        if session.vni != vni
+            || session.relay_node_id != scope.relay_node_id
+            || session.generation != scope.generation
+        {
+            return None;
+        }
         self.drop_org_session(&peer);
         Some(peer)
     }
@@ -2659,10 +2670,93 @@ mod tests {
             "a second request while binding queues nothing"
         );
 
-        assert_eq!(coord.org_session_revoke(7), Some(node));
+        let scope = meshharbor_remote_control::signaling::RelayRevokeScopeWire {
+            relay_node_id: coord.org_sessions[&node].relay_node_id,
+            generation: 1,
+            peer_node_id: Some(node),
+        };
+        assert_eq!(coord.org_session_revoke(7, &scope), Some(node));
         assert_ne!(coord.relay_strategy(&node, &peer), RelayStrategy::OrgRelay);
         assert!(!coord.is_tracking(&node), "revoke clears the tracking too");
-        assert_eq!(coord.org_session_revoke(7), None, "already gone");
+        assert_eq!(coord.org_session_revoke(7, &scope), None, "already gone");
+    }
+
+    #[tokio::test]
+    async fn org_revoke_scope_preserves_another_relay_and_a_replacement_generation() {
+        use meshharbor_remote_control::signaling::RelayRevokeScopeWire;
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+        let mut coord = RelayCoordinator::new(tx, [0u8; 32], true, vec![], None);
+        let a = ObjectId::new();
+        let b = ObjectId::new();
+        coord.org_session_accept(a, org_session(7, 60));
+        coord.org_session_accept(b, org_session(7, 60));
+        // Both relays may legitimately allocate VNI 7 and generation 1.
+        // Target the second map entry so the old first-VNI lookup is wrong
+        // deterministically, independently of HashMap iteration order.
+        let first = *coord
+            .org_sessions
+            .iter()
+            .find(|(_, s)| s.vni == 7)
+            .unwrap()
+            .0;
+        let target = if first == a { b } else { a };
+        let scope = RelayRevokeScopeWire {
+            relay_node_id: coord.org_sessions[&target].relay_node_id,
+            generation: 1,
+            peer_node_id: Some(target),
+        };
+        for invalid in [
+            RelayRevokeScopeWire {
+                relay_node_id: ObjectId::new(),
+                ..scope.clone()
+            },
+            RelayRevokeScopeWire {
+                generation: 2,
+                ..scope.clone()
+            },
+            RelayRevokeScopeWire {
+                peer_node_id: Some(first),
+                ..scope.clone()
+            },
+            RelayRevokeScopeWire {
+                peer_node_id: None,
+                ..scope.clone()
+            },
+        ] {
+            assert_eq!(coord.org_session_revoke(7, &invalid), None);
+            assert!(coord.holds_org_session(&a));
+            assert!(coord.holds_org_session(&b));
+        }
+        assert_eq!(coord.org_session_revoke(8, &scope), None);
+        assert_eq!(coord.org_session_revoke(7, &scope), Some(target));
+        assert!(
+            coord.holds_org_session(&first),
+            "another relay must survive"
+        );
+        assert!(!coord.holds_org_session(&target));
+
+        let mut replacement = org_session(7, 60);
+        replacement.relay_node_id = scope.relay_node_id;
+        replacement.generation = 2;
+        coord.org_session_accept(target, replacement);
+        assert_eq!(
+            coord.org_session_revoke(7, &scope),
+            None,
+            "a delayed revoke must preserve the replacement generation"
+        );
+        assert!(coord.holds_org_session(&target));
+        assert!(coord.holds_org_session(&first));
+        assert_eq!(
+            coord.org_session_revoke(
+                7,
+                &RelayRevokeScopeWire {
+                    generation: 2,
+                    ..scope.clone()
+                }
+            ),
+            Some(target)
+        );
+        assert!(coord.holds_org_session(&first));
     }
 
     /// Expiry reaps on the member's own clock; a bind that completes for a
@@ -2708,7 +2802,12 @@ mod tests {
         assert!(!coord.is_tracking(&node), "bound ⇒ no longer coordinating");
         assert!(fresh.is_alive());
 
-        coord.org_session_revoke(11);
+        let scope = meshharbor_remote_control::signaling::RelayRevokeScopeWire {
+            relay_node_id: coord.org_sessions[&node].relay_node_id,
+            generation: coord.org_sessions[&node].generation,
+            peer_node_id: Some(node),
+        };
+        coord.org_session_revoke(11, &scope);
         assert!(
             !fresh.is_alive(),
             "revoking a bound session closes its carrier"

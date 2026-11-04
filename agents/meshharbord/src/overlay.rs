@@ -1237,11 +1237,14 @@ fn intercept_with_bridge_installer(
             );
             return None;
         }
-        // A revoke reaches BOTH halves: the relay server drops the session if
-        // it holds it, and the member runtime tears its carrier down.
-        ServerMsg::OverlayRelayRevoke { vni } => {
-            crate::relay_server::revoke_from_wire(vni);
-            OverlayEvent::OrgRelayRevoke { vni }
+        ServerMsg::OverlayRelayRevoke { vni, scope } => {
+            // A node can serve one VNI while using the same VNI on a different
+            // relay. A scoped revoke belongs to exactly one of these roles.
+            if scope.peer_node_id.is_none() {
+                crate::relay_server::revoke_from_wire(vni, scope.generation);
+                return None;
+            }
+            OverlayEvent::OrgRelayRevoke { vni, scope }
         }
         other => return Some(other),
     };
@@ -1470,6 +1473,53 @@ pub fn last_join_refusal() -> Option<localapi::JoinRefusalStatus> {
 #[cfg(test)]
 mod org_relay_discovery_dispatch_tests {
     use super::*;
+    #[test]
+    fn scoped_revoke_routes_only_to_its_recipient_role() {
+        use meshharbor_remote_control::signaling::RelayRevokeScopeWire;
+        let (tx, mut rx) = mpsc::channel(4);
+        let scope = RelayRevokeScopeWire {
+            relay_node_id: bson::oid::ObjectId::new(),
+            generation: 7,
+            peer_node_id: None,
+        };
+        assert!(
+            intercept(
+                &tx,
+                ServerMsg::OverlayRelayRevoke {
+                    vni: 1,
+                    scope: scope.clone(),
+                },
+                true,
+                ""
+            )
+            .is_none()
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "serving revoke must not reach member runtime"
+        );
+
+        let member_scope = RelayRevokeScopeWire {
+            peer_node_id: Some(bson::oid::ObjectId::new()),
+            ..scope
+        };
+        assert!(
+            intercept(
+                &tx,
+                ServerMsg::OverlayRelayRevoke {
+                    vni: 1,
+                    scope: member_scope.clone(),
+                },
+                true,
+                ""
+            )
+            .is_none()
+        );
+        assert!(matches!(rx.try_recv(), Ok(OverlayEvent::OrgRelayRevoke {
+            vni: 1, scope: got,
+        }) if got == member_scope));
+    }
+
     #[test]
     fn bridge_dispatch_checks_primary_enrollment_and_local_source() {
         let (tx, _) = mpsc::channel(2);

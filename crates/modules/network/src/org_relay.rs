@@ -53,7 +53,7 @@ use meshharbor_remote_control::{
     },
     signaling::{
         OrgRelayCandidateWire, OrgRelayDiscoveryCursorWire, RelayMemberWire, RelayPathWire,
-        RelayProbeTargetWire, ServerMsg,
+        RelayProbeTargetWire, RelayRevokeScopeWire, ServerMsg,
     },
 };
 use rand::RngCore;
@@ -1135,7 +1135,14 @@ impl OrgRelaySession {
             };
             messages.push((
                 hop.relay.node_ref.clone(),
-                ServerMsg::OverlayRelayRevoke { vni: hop.vni },
+                ServerMsg::OverlayRelayRevoke {
+                    vni: hop.vni,
+                    scope: RelayRevokeScopeWire {
+                        relay_node_id: hop.relay.node_id,
+                        generation: hop.generation,
+                        peer_node_id: None,
+                    },
+                },
             ));
             messages.push((
                 source.clone(),
@@ -4518,13 +4525,30 @@ fn revoke_matching_sync(
         {
             continue;
         }
-        let revoke = |vni| ServerMsg::OverlayRelayRevoke { vni };
-        push_control(state, &session.relay.node_ref, revoke(session.vni));
+        let revoke = |vni, relay_node_id, generation, peer_node_id| ServerMsg::OverlayRelayRevoke {
+            vni,
+            scope: RelayRevokeScopeWire {
+                relay_node_id,
+                generation,
+                peer_node_id,
+            },
+        };
+        push_control(
+            state,
+            &session.relay.node_ref,
+            revoke(session.vni, session.relay.node_id, session.generation, None),
+        );
         for (i, member) in session.members.iter().enumerate() {
+            let leg = session.member_leg(i);
             push_control(
                 state,
                 &member.party.node_ref,
-                revoke(session.member_leg(i).vni),
+                revoke(
+                    leg.vni,
+                    leg.relay_node_id,
+                    leg.generation,
+                    Some(session.members[1 - i].party.node_id),
+                ),
             );
         }
         for (recipient, message) in session.hop_revocations() {
@@ -5519,7 +5543,10 @@ mod tests {
                 }
             );
             assert!(
-                matches!(messages[2*i].1, ServerMsg::OverlayRelayRevoke { vni } if vni == 11 + i as u32)
+                matches!(&messages[2*i].1, ServerMsg::OverlayRelayRevoke { vni, scope }
+                    if *vni == 11 + i as u32 && scope.generation == session.hops[i].generation
+                        && scope.relay_node_id == session.hops[i].relay.node_id
+                        && scope.peer_node_id.is_none())
             );
             assert_eq!(messages[2 * i + 1].0, NodeRef::Agent { agent_id: ids[i] });
             assert!(

@@ -175,10 +175,13 @@ impl RelayStats {
 
 /// The only way a session enters or leaves a running relay.
 pub enum RelayCommand {
-    /// Boxed: a Session is ~250 bytes and Revoke is 4, and clippy is right that
+    /// Boxed: a Session is ~250 bytes and Revoke is small, so clippy is right that
     /// every queued Revoke should not pay for the larger variant.
     Install(Box<Session>),
-    Revoke(u32),
+    Revoke {
+        vni: u32,
+        generation: u64,
+    },
 }
 
 /// A cloneable handle to a running [`RelayServer`]. P3 holds one per relay and
@@ -194,8 +197,10 @@ impl RelayHandle {
         self.tx.send(RelayCommand::Install(Box::new(s))).is_ok()
     }
 
-    pub fn revoke(&self, vni: u32) -> bool {
-        self.tx.send(RelayCommand::Revoke(vni)).is_ok()
+    pub fn revoke(&self, vni: u32, generation: u64) -> bool {
+        self.tx
+            .send(RelayCommand::Revoke { vni, generation })
+            .is_ok()
     }
 }
 
@@ -251,8 +256,8 @@ impl RelayServer {
                         .fetch_add(1, Ordering::Relaxed);
                 }
             },
-            RelayCommand::Revoke(vni) => {
-                if self.sessions.revoke(vni) {
+            RelayCommand::Revoke { vni, generation } => {
+                if self.sessions.revoke(vni, generation) {
                     self.stats.sessions_revoked.fetch_add(1, Ordering::Relaxed);
                 }
             }
@@ -547,7 +552,10 @@ mod tests {
             1,
             "an existing unbound session is not UnknownVni"
         );
-        server.apply(RelayCommand::Revoke(VNI));
+        server.apply(RelayCommand::Revoke {
+            vni: VNI,
+            generation: 1,
+        });
         server.handle(source, &build_data(VNI, &data), now);
         assert_eq!(stats.fixture_rejected_data_count(), 2);
     }
@@ -683,7 +691,7 @@ mod tests {
         expect_silence(&intruder, "a refused bind draws no reply at all").await;
 
         // Revocation kills the LIVE session: A's next frame goes nowhere.
-        assert!(handle.revoke(VNI));
+        assert!(handle.revoke(VNI, 1));
         wait_until(&stats, |c| c.sessions_revoked == 1).await;
         a.send_to(&build_data(VNI, b"after-revoke"), relay)
             .await

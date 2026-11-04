@@ -4504,7 +4504,12 @@ pub enum ServerMsg {
     /// is a push rather than an expiry because a session's idle deadline is
     /// refreshed by traffic and never fires under a WireGuard keepalive.
     #[serde(rename = "rc:overlay.relay_revoke")]
-    OverlayRelayRevoke { vni: u32 },
+    OverlayRelayRevoke {
+        vni: u32,
+        /// Exact relay-local generation and recipient role. Bare VNI revokes
+        /// cannot distinguish sessions on different relays and are refused.
+        scope: RelayRevokeScopeWire,
+    },
 
     /// FR-47 — the join could not be completed, and this says why.
     ///
@@ -5605,6 +5610,21 @@ pub struct RelayMemberWire {
     pub wg_public_key: String,
     /// base64 32-byte bind secret for THIS member.
     pub bind_secret: String,
+}
+
+/// Exact immutable session being revoked. VNI alone is only relay-local.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct RelayRevokeScopeWire {
+    #[serde(with = "oid_hex")]
+    pub relay_node_id: ObjectId,
+    pub generation: u64,
+    /// Present for a member recipient; absent for the serving relay recipient.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "option_oid_hex"
+    )]
+    pub peer_node_id: Option<ObjectId>,
 }
 
 /// One relay region as pushed in [`ServerMsg::RelayRegions`] — the probe
@@ -11907,8 +11927,25 @@ mod tests {
         assert_eq!(members.len(), 2);
         assert_eq!(members[1].bind_secret, "d");
 
-        let s = serde_json::to_string(&ServerMsg::OverlayRelayRevoke { vni: 7 }).unwrap();
-        assert!(s.contains(r#""t":"rc:overlay.relay_revoke""#), "{s}");
+        assert!(
+            serde_json::from_str::<ServerMsg>(r#"{"t":"rc:overlay.relay_revoke","vni":7}"#)
+                .is_err(),
+            "a bare VNI is ambiguous and must be refused"
+        );
+        let scope = RelayRevokeScopeWire {
+            relay_node_id: oid,
+            generation: 19,
+            peer_node_id: Some(ObjectId::new()),
+        };
+        let scoped = serde_json::to_string(&ServerMsg::OverlayRelayRevoke {
+            vni: 7,
+            scope: scope.clone(),
+        })
+        .unwrap();
+        assert!(
+            matches!(serde_json::from_str::<ServerMsg>(&scoped).unwrap(),
+            ServerMsg::OverlayRelayRevoke { vni: 7, scope: got } if got == scope)
+        );
 
         let m = ClientMsg::OverlayRelayProbe {
             relay_node_id: oid,

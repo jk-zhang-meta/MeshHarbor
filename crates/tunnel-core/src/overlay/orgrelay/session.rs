@@ -171,8 +171,18 @@ impl SessionTable {
     /// ⚠️ Revocation is a **push**, not an expiry. Without it, flipping the org
     /// switch off would leave a live session forwarding until its idle deadline
     /// — which, refreshed by traffic under a 25 s keepalive, is never.
-    pub fn revoke(&mut self, vni: u32) -> bool {
-        self.by_vni.remove(&vni).is_some()
+    /// A delayed revoke must not tear down a reminted generation of this VNI.
+    pub fn revoke(&mut self, vni: u32, generation: u64) -> bool {
+        if self
+            .by_vni
+            .get(&vni)
+            .is_some_and(|s| s.generation == generation)
+        {
+            self.by_vni.remove(&vni);
+            true
+        } else {
+            false
+        }
     }
 
     pub fn len(&self) -> usize {
@@ -558,12 +568,27 @@ mod tests {
             RelayAction::Forward { .. }
         ));
 
-        assert!(t.revoke(42));
+        assert!(t.revoke(42, 1));
         assert_eq!(
             t.decide(42, a, Inbound::Data(b"x"), now),
             RelayAction::Drop(DropReason::UnknownVni)
         );
-        assert!(!t.revoke(42), "revoking twice is not an error, just false");
+        assert!(
+            !t.revoke(42, 1),
+            "revoking twice is not an error, just false"
+        );
+    }
+
+    #[test]
+    fn stale_revoke_preserves_a_new_generation_on_the_serving_relay() {
+        let (mut table, now) = table();
+        let mut replacement = session(42, now);
+        replacement.generation = 2;
+        table.insert(replacement).unwrap();
+        assert!(!table.revoke(42, 1), "a delayed revoke is stale");
+        assert_eq!(table.len(), 1);
+        assert!(table.revoke(42, 2));
+        assert!(table.is_empty());
     }
 
     /// One member's secret must not bind the other's slot: the relay learns
