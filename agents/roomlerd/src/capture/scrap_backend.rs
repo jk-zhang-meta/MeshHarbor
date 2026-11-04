@@ -649,7 +649,11 @@ impl ScreenCapture for ScrapCapture {
         // the readback with the period and restores ~30 and ~45-55 fps. macOS is
         // the exception: its CGDisplayStream self-paces and does not block in the
         // reply, so arrival timing stays correct there.
-        self.last_frame_at = Some(gate_mark(asked_at, Instant::now(), cfg!(target_os = "macos")));
+        self.last_frame_at = Some(gate_mark(
+            asked_at,
+            Instant::now(),
+            cfg!(target_os = "macos"),
+        ));
         let _ = self.monitor; // (exercised below by `monitor_count`)
         reply
     }
