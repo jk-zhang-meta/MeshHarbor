@@ -63,7 +63,8 @@ windows-sys = { version = "0.59", features = [
 [features]
 # Exposes `config::test_fixture` to DOWNSTREAM test builds (a foreign crate's
 # `cargo test` compiles this crate in normal mode, so `#[cfg(test)]` alone
-# hides it). Enabled from meshharbord's [dev-dependencies] only.
+# hides it). Also enables the explicit MESHHARBORD_TEST_STATE_ROOT override
+# for isolated native fixtures. Normal builds do not enable this feature.
 test-fixtures = []
 # Passthrough twins of meshharbord's overlay features, for ONE call site:
 # enrollment's org-append mints the org's own WG identity when an overlay

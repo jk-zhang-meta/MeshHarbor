@@ -48,6 +48,25 @@ const NEW_APP: &str = "meshharbor";
 // re-enrolls as a stranger. See docs/fr/FR-21.
 const OLD_APP: &str = "meshharbor-agent";
 
+/// Explicit isolation for native test builds. Windows KnownFolders ignore
+/// APPDATA overrides, so fixtures must supply an absolute private root here.
+/// Normal builds do not read this environment variable.
+#[cfg(any(test, feature = "test-fixtures"))]
+fn test_state_root() -> Option<PathBuf> {
+    static ROOT: OnceLock<Option<PathBuf>> = OnceLock::new();
+    ROOT.get_or_init(|| {
+        std::env::var_os("MESHHARBORD_TEST_STATE_ROOT").map(|value| {
+            let root = PathBuf::from(value);
+            assert!(
+                root.is_absolute(),
+                "MESHHARBORD_TEST_STATE_ROOT must be an absolute path"
+            );
+            root
+        })
+    })
+    .clone()
+}
+
 /// True if a NEW-segment `ProjectDirs` tree is present on disk.
 fn tree_exists(app: &str) -> bool {
     ProjectDirs::from(QUALIFIER, ORG, app)
@@ -73,6 +92,12 @@ fn app_segment() -> &'static str {
 /// install is detected (then the OLD segment, so its enrolled config is never
 /// orphaned). `None` only if the platform exposes no config dir at all.
 pub fn project_dirs() -> Option<ProjectDirs> {
+    #[cfg(any(test, feature = "test-fixtures"))]
+    if let Some(root) = test_state_root() {
+        return Some(
+            ProjectDirs::from_path(root).expect("test fixture directory resolution failed"),
+        );
+    }
     ProjectDirs::from(QUALIFIER, ORG, app_segment())
 }
 
@@ -83,6 +108,10 @@ pub fn project_dirs() -> Option<ProjectDirs> {
 /// (`config.toml`, `service-logs`, `crashes`, `staging`, ...).
 #[cfg(target_os = "windows")]
 pub fn machine_global_dir() -> PathBuf {
+    #[cfg(any(test, feature = "test-fixtures"))]
+    if let Some(root) = test_state_root() {
+        return root.join("machine");
+    }
     static DECISION: OnceLock<PathBuf> = OnceLock::new();
     DECISION
         .get_or_init(|| {
@@ -123,6 +152,10 @@ fn resolve_machine_global(base: &Path) -> PathBuf {
 /// Windows only, like the workers that need it.
 #[cfg(target_os = "windows")]
 pub fn data_local_dir_in_profile(profile: &Path) -> PathBuf {
+    #[cfg(any(test, feature = "test-fixtures"))]
+    if let Some(root) = test_state_root() {
+        return root.join("data");
+    }
     profile
         .join("AppData")
         .join("Local")
@@ -173,6 +206,10 @@ pub fn migration_notes() -> &'static [String] {
 /// may hold open handles inside the tree, and a pre-S1a tray would keep
 /// writing the old tree after the move, re-manufacturing the split.
 pub fn migrate_legacy_trees(companion_running: bool) {
+    #[cfg(any(test, feature = "test-fixtures"))]
+    if test_state_root().is_some() {
+        return;
+    }
     let mut notes = Vec::new();
     if companion_running {
         notes.push(
@@ -291,6 +328,10 @@ fn migrate_dir(old: &Path, new: &Path) -> Option<String> {
 /// can no longer disagree about where this host's identity lives.
 #[cfg(target_os = "linux")]
 pub fn system_config_path() -> PathBuf {
+    #[cfg(any(test, feature = "test-fixtures"))]
+    if let Some(root) = test_state_root() {
+        return root.join("system/config.toml");
+    }
     PathBuf::from("/etc/meshharbor/config.toml")
 }
 
@@ -322,6 +363,10 @@ pub fn running_as_root() -> bool {
 /// note-collecting instead of tracing.
 #[cfg(target_os = "linux")]
 pub fn migrate_system_config() {
+    #[cfg(any(test, feature = "test-fixtures"))]
+    if test_state_root().is_some() {
+        return;
+    }
     let mut notes = Vec::new();
     if !running_as_root() {
         let _ = SYSTEM_CONFIG_NOTES.set(notes);
@@ -456,6 +501,92 @@ fn migrate_children(old: &Path, new: &Path, root_err: &std::io::Error) -> String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Fresh child processes exercise the actual cached resolver without
+    /// mutating this test runner's environment or racing other directory tests.
+    #[test]
+    fn test_state_override_is_absolute_isolated_and_fail_closed() {
+        const CHILD: &str = "MESHHARBOR_APPDIRS_PROBE_CHILD";
+        const ROOT_ENV: &str = "MESHHARBORD_TEST_STATE_ROOT";
+        if std::env::var_os(CHILD).is_some() {
+            let root = PathBuf::from(std::env::var_os(ROOT_ENV).expect("fixture root"));
+            let dirs = project_dirs().expect("fixture directories");
+            for path in [
+                dirs.config_dir(),
+                dirs.config_local_dir(),
+                dirs.data_dir(),
+                dirs.data_local_dir(),
+                dirs.cache_dir(),
+                dirs.preference_dir(),
+            ] {
+                assert!(
+                    path.starts_with(&root),
+                    "directory escaped fixture: {path:?}"
+                );
+            }
+            for path in [dirs.runtime_dir(), dirs.state_dir()].into_iter().flatten() {
+                assert!(
+                    path.starts_with(&root),
+                    "directory escaped fixture: {path:?}"
+                );
+            }
+            #[cfg(target_os = "windows")]
+            {
+                assert!(machine_global_dir().starts_with(&root));
+                assert_eq!(
+                    data_local_dir_in_profile(Path::new(r"C:\unrelated-profile")),
+                    dirs.data_local_dir()
+                );
+            }
+            #[cfg(target_os = "linux")]
+            {
+                assert!(system_config_path().starts_with(&root));
+                migrate_system_config();
+            }
+            migrate_legacy_trees(false);
+            std::fs::create_dir_all(dirs.data_local_dir()).expect("fixture data directory");
+            std::fs::write(
+                dirs.data_local_dir().join("keep-busy.json"),
+                br#"{"on":false}"#,
+            )
+            .expect("fixture store");
+            println!("ISOLATED_APPDIRS_OK {}", root.display());
+            return;
+        }
+        let root = tempfile::tempdir().expect("owned fixture root");
+        for (value, success) in [
+            (root.path().as_os_str(), true),
+            (std::ffi::OsStr::new("relative-fixture"), false),
+        ] {
+            let result =
+                std::process::Command::new(std::env::current_exe().expect("test executable"))
+                    .args([
+                        "--exact",
+                        "appdirs::tests::test_state_override_is_absolute_isolated_and_fail_closed",
+                        "--nocapture",
+                    ])
+                    .env(CHILD, "1")
+                    .env(ROOT_ENV, value)
+                    .output()
+                    .expect("fixture subprocess");
+            assert_eq!(
+                result.status.success(),
+                success,
+                "{}",
+                String::from_utf8_lossy(&result.stdout)
+            );
+            let output = format!(
+                "{}{}",
+                String::from_utf8_lossy(&result.stdout),
+                String::from_utf8_lossy(&result.stderr)
+            );
+            if success {
+                assert!(output.contains("ISOLATED_APPDIRS_OK"));
+            } else {
+                assert!(output.contains("MESHHARBORD_TEST_STATE_ROOT must be an absolute path"));
+            }
+        }
+    }
 
     /// FR-92 — the profile-relative form must name the SAME directory the
     /// person's own `project_dirs()` does, or a SystemContext worker and a
