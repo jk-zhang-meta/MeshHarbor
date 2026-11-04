@@ -608,7 +608,7 @@ impl CaptureUnavailableCode {
             Self::Permission => {
                 if cfg!(target_os = "macos") {
                     "Grant Screen Recording to MeshHarbor in System Settings → Privacy & Security; \
-                     capture retries automatically. A macOS update or a change to the app's code signature \
+                     if the image does not resume, restart MeshHarbor. A macOS update or a change to the app's code signature \
                      invalidates an existing grant."
                 } else {
                     "The host denied this agent permission to capture the screen. Grant it on \
@@ -2337,6 +2337,10 @@ impl NoopCapture {
 
     /// A frameless capturer that knows why it is frameless.
     pub fn unavailable(reason: CaptureUnavailable) -> Self {
+        #[cfg(target_os = "macos")]
+        if reason.code == CaptureUnavailableCode::Permission {
+            crate::tcc_recovery::watch_permissions();
+        }
         Self {
             reason: Some(reason),
         }
@@ -2378,7 +2382,7 @@ impl ScreenCapture for NoopCapture {
     async fn next_frame(&mut self) -> Result<Option<Frame>> {
         #[cfg(target_os = "macos")]
         {
-            self.next_frame_with_permission(crate::tcc::screen_recording_granted)
+            self.next_frame_with_permission(crate::tcc_recovery::screen_ready)
                 .await
         }
         // Park the task — real backends would block on a GPU fence or a
@@ -3203,6 +3207,9 @@ fn open_with(
         && !crate::tcc::screen_recording_granted()
         && !crate::tcc::request_screen_recording()
     {
+        tracing::warn!(
+            "tcc: Screen Recording unavailable; waiting for a fresh-process permission probe"
+        );
         return Box::new(NoopCapture::unavailable(CaptureUnavailable::new(
             CaptureUnavailableCode::Permission,
             "macOS Screen Recording permission is not granted; waiting for the owner",

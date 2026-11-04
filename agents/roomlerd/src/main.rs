@@ -1198,6 +1198,9 @@ fn embedded_cli_args() -> Option<Vec<std::ffi::OsString>> {
 /// clean shutdown is a `process::exit` after its drain.
 #[cfg(all(target_os = "macos", feature = "viewer-indicator-macos"))]
 fn main() -> Result<()> {
+    if roomlerd::tcc_recovery::probe_if_requested()? {
+        return Ok(());
+    }
     // The embedded CLI must still short-circuit before any of this — and it
     // must NOT hand the main thread to AppKit, since a CLI call has to be able
     // to return an exit code.
@@ -1254,6 +1257,10 @@ fn main() -> Result<()> {
 /// exit (an auto-update, a SIGTERM) already gets. Nothing else changes.
 #[cfg(not(all(target_os = "macos", feature = "viewer-indicator-macos")))]
 fn main() -> Result<()> {
+    #[cfg(target_os = "macos")]
+    if roomlerd::tcc_recovery::probe_if_requested()? {
+        return Ok(());
+    }
     #[cfg(all(target_os = "linux", target_env = "gnu"))]
     pin_mmap_threshold();
     // The runtime is a temporary: it is dropped at the end of this statement,
@@ -4427,6 +4434,8 @@ async fn run_cmd(
     roomlerd::exec_service::spawn_health_watch();
     let localapi_state: std::sync::Arc<dyn tunnel_core::localapi::LocalApiState> =
         std::sync::Arc::new(daemon_state);
+    #[cfg(target_os = "macos")]
+    let tcc_recovery_task = roomlerd::tcc_recovery::spawn(localapi_state.clone(), restart.clone());
     // P3b-3: the RTT prober. Pings each carrier-reachable peer every
     // RTT_PROBE_INTERVAL into rtt_cache; exits on shutdown. A fresh
     // `overlay_view_tx.subscribe()` receiver (the original moved into
@@ -4990,6 +4999,8 @@ async fn run_cmd(
     clean_run_task.abort();
     crash_drain_task.abort();
     localapi_task.abort();
+    #[cfg(target_os = "macos")]
+    tcc_recovery_task.abort();
     // Multi-org P1 — the secondary org loops observe the same shutdown
     // watch; the abort is belt-and-suspenders for loops mid-backoff.
     for t in org_tasks {

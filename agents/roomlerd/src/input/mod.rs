@@ -564,6 +564,7 @@ pub fn open_default() -> Box<dyn InputInjector + Send> {
     // an enigo worker (and prompt) for every incoming event.
     #[cfg(target_os = "macos")]
     if !crate::tcc::accessibility_trusted() {
+        crate::tcc_recovery::watch_permissions();
         return Box::new(NoopInjector);
     }
     #[cfg(all(

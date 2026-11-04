@@ -478,15 +478,78 @@ pub fn systemd_restart_within_secs(show: &str) -> Option<u64> {
     }
 }
 
-/// Ask systemd — the manager itself, not the unit file — whether it will
-/// restart this process after `exit_code`. Bounded (5 s); any failure to get
-/// an answer is a refusal, because "probably" is not a restart.
-///
-/// On success returns the unit's [`systemd_restart_within_secs`] hint (`None`
-/// when systemd did not report the timers), read from the SAME `systemctl show`
-/// so the restart verb can tell the caller how long the relaunch may take
-/// (#1684) — a SIGTERM-deaf process in the cgroup can push a stop out to
-/// `TimeoutStopSec + RestartSec`, well past a fixed 60 s wait.
+/// The loaded macOS job, not its plist on disk. macOS 27 prints the active
+/// KeepAlive condition as `semaphores { successful exit => 0 }`. Require that
+/// single condition and THIS process as the job's main PID. Unknown formats
+/// or extra conditions fail closed. Captured with owned sleep-only jobs.
+pub fn launchd_restarts(show: &str, my_pid: u32) -> Result<(), String> {
+    let mut pid = None;
+    let mut pid_count = 0;
+    let mut semaphore_blocks = 0;
+    let mut in_semaphores = false;
+    let mut conditions = Vec::new();
+    for line in show.lines() {
+        let Some(one) = line.strip_prefix('\t') else {
+            continue;
+        };
+        if !one.starts_with('\t') {
+            let field = one.trim();
+            if let Some(value) = field.strip_prefix("pid = ") {
+                pid_count += 1;
+                pid = value.parse::<u32>().ok();
+            }
+            if field == "semaphores = {" {
+                semaphore_blocks += 1;
+                in_semaphores = true;
+            } else if field == "}" {
+                in_semaphores = false;
+            }
+        } else if in_semaphores && !one.starts_with("\t\t") {
+            let condition = one.trim();
+            if !condition.is_empty() {
+                conditions.push(condition);
+            }
+        }
+    }
+    if pid_count != 1 || pid != Some(my_pid) {
+        return Err("launchd did not identify this process as the job's main PID".into());
+    }
+    if semaphore_blocks != 1 || conditions != ["successful exit => 0"] {
+        return Err("launchd did not prove KeepAlive on an unsuccessful exit".into());
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+pub async fn confirm_launchd() -> Result<(), String> {
+    let label = std::env::var(LAUNCHD_LABEL_ENV)
+        .map_err(|_| "no launchd job label is available".to_string())?;
+    if !["com.roomler.agent", "com.roomler.daemon"].contains(&label.as_str()) {
+        return Err("the launchd label is not one of the packaged daemon jobs".into());
+    }
+    // SAFETY: geteuid has no arguments and does not change process identity.
+    let uid = unsafe { libc::geteuid() };
+    for domain in [format!("gui/{uid}/{label}"), format!("system/{label}")] {
+        let mut command = tokio::process::Command::new("/bin/launchctl");
+        command
+            .args(["print", &domain])
+            .stdin(std::process::Stdio::null())
+            .kill_on_drop(true);
+        let output = tokio::time::timeout(Duration::from_secs(2), command.output())
+            .await
+            .map_err(|_| "launchd policy query timed out".to_string())?
+            .map_err(|_| "launchd policy could not be queried".to_string())?;
+        if output.status.success() {
+            // Never log the raw output: a job's environment may hold secrets.
+            return launchd_restarts(&String::from_utf8_lossy(&output.stdout), std::process::id());
+        }
+    }
+    Err("the loaded launchd job could not be found".into())
+}
+
+/// Ask systemd itself whether it will restart this process after `exit_code`.
+/// Bounded (5 s); unreadable policy refuses. The restart timing hint is read
+/// from the same effective policy, including stop timeout and restart delay.
 pub async fn confirm_systemd(unit: SystemdUnit, exit_code: i32) -> Result<Option<u64>, String> {
     let mut cmd = tokio::process::Command::new("systemctl");
     if unit.user {
@@ -608,6 +671,46 @@ pub fn sanitize_reason(reason: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn launchd_restart_proof_requires_the_loaded_main_pid_and_failure_condition() {
+        let show = "gui/501/com.roomler.agent = {\n\tpid = 4242\n\tsemaphores = {\n\t\tsuccessful exit => 0\n\t}\n}\n";
+        assert!(launchd_restarts(show, 4242).is_ok());
+        assert!(
+            launchd_restarts(show, 4243).is_err(),
+            "an inherited label proves nothing"
+        );
+        assert!(
+            launchd_restarts(
+                &show.replace("successful exit => 0", "successful exit => 1"),
+                4242
+            )
+            .is_err()
+        );
+        assert!(
+            launchd_restarts(
+                &show.replace("successful exit => 0", "network state => 1"),
+                4242
+            )
+            .is_err()
+        );
+        assert!(
+            launchd_restarts(
+                &show.replace(
+                    "\t\tsuccessful exit => 0",
+                    "\t\tsuccessful exit => 0\n\t\tunknown => 1"
+                ),
+                4242
+            )
+            .is_err()
+        );
+        assert!(launchd_restarts(&show.replace("semaphores", "environment"), 4242).is_err());
+        assert!(
+            launchd_restarts(&show.replace('\t', "  "), 4242).is_err(),
+            "unknown formats fail closed"
+        );
+        assert!(launchd_restarts("", 4242).is_err());
+    }
 
     fn env_of(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
         let owned: Vec<(String, String)> = pairs

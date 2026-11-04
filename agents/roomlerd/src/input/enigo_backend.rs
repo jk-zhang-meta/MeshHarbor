@@ -678,14 +678,7 @@ impl InputInjector for EnigoInjector {
     }
 
     fn has_permission(&self) -> bool {
-        #[cfg(target_os = "macos")]
-        {
-            self.has_perm && crate::tcc::accessibility_trusted()
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            self.has_perm
-        }
+        self.has_perm
     }
 
     fn cursor_px(&mut self) -> Result<(i32, i32)> {
