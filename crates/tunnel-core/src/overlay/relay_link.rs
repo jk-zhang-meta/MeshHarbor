@@ -1368,12 +1368,33 @@ impl RelayCoordinator {
         })
     }
 
+    /// A topology hint can shorten only a matching, unanswered request's
+    /// initial grace. It grants no credentials and leaves its TURN owner intact.
+    pub(crate) fn matching_ungranted_peer(&self, peer: &ObjectId, current: &PeerConfig) -> bool {
+        self.pending.get(peer).is_some_and(|pending| {
+            pending.ice.is_none()
+                && pending.peer.public_key == current.public_key
+                && pending.peer.overlay_ip == current.overlay_ip
+        })
+    }
+
     /// Query only the ORG mint path, gated by fresh metadata in the runtime.
     /// Neither the installed DERP carrier nor legacy TURN pending is changed.
     pub(crate) async fn request_org_fallback(&mut self, peer: ObjectId, now: Instant) -> bool {
+        self.request_org_fallback_inner(peer, now, false).await
+    }
+
+    async fn request_org_fallback_inner(
+        &mut self,
+        peer: ObjectId,
+        now: Instant,
+        reactive: bool,
+    ) -> bool {
         if !self.org_relay
             || self.forced_derp_active(&peer)
-            || (self.pending.contains_key(&peer) && !self.ungranted_org_retry_due(&peer, now))
+            || (self.pending.contains_key(&peer)
+                && !self.ungranted_org_retry_due(&peer, now)
+                && !(reactive && self.pending.get(&peer).is_some_and(|p| p.ice.is_none())))
             || self.org_binding.contains(&peer)
             || self
                 .death_streaks
@@ -1483,15 +1504,46 @@ impl RelayCoordinator {
     /// not let a stable traversal refresh the same first 64 peers forever.
     pub(crate) async fn request_org_fallback_batch(
         &mut self,
+        peers: Vec<ObjectId>,
+        now: Instant,
+    ) -> Vec<ObjectId> {
+        self.request_org_fallback_batch_inner(peers, now, false)
+            .await
+    }
+
+    pub(crate) async fn request_org_fallback_batch_reactive(
+        &mut self,
+        peers: Vec<(ObjectId, PeerConfig)>,
+        now: Instant,
+    ) -> Vec<ObjectId> {
+        let peers = peers
+            .into_iter()
+            .filter(|(id, current)| {
+                !self.pending.contains_key(id) || self.matching_ungranted_peer(id, current)
+            })
+            .map(|(id, _)| id)
+            .collect();
+        self.request_org_fallback_batch_inner(peers, now, true)
+            .await
+    }
+
+    async fn request_org_fallback_batch_inner(
+        &mut self,
         mut peers: Vec<ObjectId>,
         now: Instant,
+        reactive: bool,
     ) -> Vec<ObjectId> {
         let cursor = self.org_fallback_cursor;
         peers.sort_unstable_by_key(|id| (cursor.is_some_and(|last| *id <= last), *id));
         peers.dedup();
         let mut sent = Vec::new();
         for peer in peers {
-            if self.request_org_fallback(peer, now).await {
+            let requested = if reactive {
+                self.request_org_fallback_inner(peer, now, true).await
+            } else {
+                self.request_org_fallback(peer, now).await
+            };
+            if requested {
                 sent.push(peer);
             }
         }
@@ -5021,6 +5073,169 @@ mod tests {
             assert!(rx.try_recv().is_err());
             assert!(c.org_fallback_last.is_empty());
         }
+    }
+
+    #[tokio::test]
+    async fn reactive_org_query_keeps_real_rpc_spacing_and_the_ungranted_owner() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        let mut c = RelayCoordinator::new(tx, [0; 32], true, vec![], None);
+        c.set_org_relay(true);
+        let id = ObjectId::new();
+        let peer = base_peer();
+        c.request(id, peer.clone()).await;
+        assert!(
+            matches!(rx.try_recv(), Ok(ClientMsg::OverlayRelayRequest { peer_node_id, .. }) if peer_node_id == id)
+        );
+        let now = Instant::now();
+        let original = c.pending[&id].requested_at;
+        assert_eq!(
+            c.request_org_fallback_batch_reactive(vec![(id, peer.clone())], now)
+                .await,
+            vec![id]
+        );
+        assert!(
+            matches!(rx.try_recv(), Ok(ClientMsg::OverlayOrgRelayFallbackRequest { peer_node_id, .. }) if peer_node_id == id)
+        );
+        assert_eq!(c.pending[&id].requested_at, original);
+        c.request(id, peer.clone()).await;
+        assert!(
+            rx.try_recv().is_err(),
+            "the retained owner must not reopen TURN"
+        );
+        assert!(
+            c.request_org_fallback_batch_reactive(
+                vec![(id, peer.clone())],
+                now + ORG_FALLBACK_GAP - Duration::from_nanos(1)
+            )
+            .await
+            .is_empty()
+        );
+        assert!(rx.try_recv().is_err());
+        assert_eq!(
+            c.request_org_fallback_batch_reactive(vec![(id, peer.clone())], now + ORG_FALLBACK_GAP)
+                .await,
+            vec![id]
+        );
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(ClientMsg::OverlayOrgRelayFallbackRequest { .. })
+        ));
+        assert!(
+            c.grant_accept(
+                id,
+                vec![ice("turn:127.0.0.1:3478?transport=udp")],
+                "late-owned-ice".into()
+            )
+            .is_some()
+        );
+        assert!(
+            c.request_org_fallback_batch_reactive(vec![(id, peer)], now + ORG_FALLBACK_GAP * 2)
+                .await
+                .is_empty()
+        );
+        assert!(rx.try_recv().is_err());
+        assert!(
+            c.is_tracking(&id),
+            "late credentials retain the original pending owner"
+        );
+    }
+
+    #[tokio::test]
+    async fn reactive_org_query_respects_identity_ice_bind_pin_off_and_death_guards() {
+        for gate in 0..7 {
+            let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+            let mut c = RelayCoordinator::new(tx, [0; 32], true, vec![], None);
+            c.set_org_relay(true);
+            let id = ObjectId::new();
+            let mut current = base_peer();
+            c.request(id, current.clone()).await;
+            assert!(matches!(
+                rx.try_recv(),
+                Ok(ClientMsg::OverlayRelayRequest { .. })
+            ));
+            let now = Instant::now();
+            match gate {
+                0 => current.public_key = [99; 32],
+                1 => current.overlay_ip = Ipv4Addr::new(100, 64, 0, 99),
+                2 => {
+                    assert!(
+                        c.grant_accept(
+                            id,
+                            vec![ice("turn:127.0.0.1:3478?transport=udp")],
+                            "owned-ice".into()
+                        )
+                        .is_some()
+                    );
+                }
+                3 => {
+                    c.org_binding.insert(id);
+                }
+                4 => {
+                    c.forced_derp_until
+                        .insert(id, now + Duration::from_secs(120));
+                }
+                5 => c.set_org_relay(false),
+                6 => {
+                    c.death_streaks.insert(id, (3, now + ORG_FALLBACK_GAP));
+                }
+                _ => unreachable!(),
+            }
+            assert!(
+                c.request_org_fallback_batch_reactive(vec![(id, current)], now)
+                    .await
+                    .is_empty(),
+                "reactive gate {gate}"
+            );
+            assert!(rx.try_recv().is_err());
+            assert!(c.org_fallback_last.is_empty());
+            assert!(c.is_tracking(&id));
+        }
+    }
+
+    #[tokio::test]
+    async fn reactive_org_queue_failure_consumes_the_same_actual_rpc_gap() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let fill = tx.clone();
+        let mut c = RelayCoordinator::new(tx, [0; 32], true, vec![], None);
+        c.set_org_relay(true);
+        let id = ObjectId::new();
+        let peer = base_peer();
+        c.request(id, peer.clone()).await;
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(ClientMsg::OverlayRelayRequest { .. })
+        ));
+        fill.send(ClientMsg::OverlayWarmRelayRequest {})
+            .await
+            .unwrap();
+        let now = Instant::now();
+        assert!(
+            c.request_org_fallback_batch_reactive(vec![(id, peer.clone())], now)
+                .await
+                .is_empty()
+        );
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(ClientMsg::OverlayWarmRelayRequest {})
+        ));
+        assert!(
+            c.request_org_fallback_batch_reactive(
+                vec![(id, peer.clone())],
+                now + Duration::from_secs(1)
+            )
+            .await
+            .is_empty()
+        );
+        assert!(rx.try_recv().is_err());
+        assert_eq!(
+            c.request_org_fallback_batch_reactive(vec![(id, peer)], now + ORG_FALLBACK_GAP)
+                .await,
+            vec![id]
+        );
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(ClientMsg::OverlayOrgRelayFallbackRequest { .. })
+        ));
     }
 
     #[tokio::test]
