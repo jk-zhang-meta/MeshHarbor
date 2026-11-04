@@ -618,13 +618,14 @@ async fn request_org_fallbacks(
         }
         candidates.push(*id);
     }
-    // #21 — DERP never carries a line peer, so one with no carrier at all
-    // asks for its line here (the fallback's own gap paces it).
+    // DERP never carries a line peer. An ordinary carrierless peer joins this
+    // lane only after an actual unanswered request exhausts its initial grace;
+    // fresh ordinary establishment still belongs to the normal ladder.
     candidates.extend(
         peers
             .iter()
             .filter(|(id, p)| {
-                p.backbone_only
+                (p.backbone_only || relay.ungranted_org_retry_due(id, now))
                     && p.supports_org_relay
                     && p.reachable
                     && !installed.contains_key(id)
@@ -12032,6 +12033,74 @@ mod org_fallback_tests {
             assert!(rx.try_recv().is_err(), "unsafe request at gate {gate}");
         }
     }
+    #[tokio::test]
+    async fn org_fallback_runtime_retries_an_aged_unanswered_ordinary_peer_without_turn_reopen() {
+        let (id, mut installed, mut peers, _, _, _, _) = fixture().await;
+        installed.clear();
+        assert!(!peers[&id].backbone_only);
+        peers.get_mut(&id).unwrap().relay_strategy =
+            Some(meshharbor_remote_control::signaling::RelayStrategyWire::BothAllocate);
+        let cfg = peer_config_from_netmap(&peers[&id]).unwrap();
+        let (tx, mut rx) = mpsc::channel(8);
+        let mut coordinator = RelayCoordinator::new(tx, [0; 32], true, vec![], None);
+        coordinator.set_org_relay(true);
+        let began = Instant::now();
+        coordinator.request(id, cfg.clone()).await;
+        assert!(matches!(rx.try_recv(), Ok(ClientMsg::OverlayRelayRequest {
+            peer_node_id, ..
+        }) if peer_node_id == id));
+        // A refused request has no Grant; retain the same control channel,
+        // current reachable ORG-capable peer, and carrierless runtime state.
+        let posted = Instant::now();
+        let gap = Duration::from_secs(60);
+        let mut relay = Some(coordinator);
+        assert!(
+            request_org_fallbacks(
+                true,
+                &installed,
+                &peers,
+                &mut relay,
+                began + gap - Duration::from_millis(1)
+            )
+            .await
+            .is_empty()
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "ordinary establishment keeps its initial grace"
+        );
+        assert_eq!(
+            request_org_fallbacks(true, &installed, &peers, &mut relay, posted + gap).await,
+            vec![id],
+            "an ordinary ungranted request must not permanently suppress ORG recovery"
+        );
+        assert!(
+            matches!(rx.try_recv(), Ok(ClientMsg::OverlayOrgRelayFallbackRequest {
+            peer_node_id, ..
+        }) if peer_node_id == id)
+        );
+        relay.as_mut().unwrap().request(id, cfg).await;
+        assert!(
+            rx.try_recv().is_err(),
+            "ORG recovery must not reopen TURN coordination"
+        );
+        assert!(
+            request_org_fallbacks(
+                true,
+                &installed,
+                &peers,
+                &mut relay,
+                posted + gap + gap - Duration::from_millis(1)
+            )
+            .await
+            .is_empty()
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "the existing ORG request gap still applies"
+        );
+    }
+
     #[tokio::test]
     async fn org_fallback_runtime_asks_for_the_line_of_a_line_peer_with_no_carrier() {
         let (id, mut installed, mut peers, _discovery, mut relay, mut rx, now) = fixture().await;
