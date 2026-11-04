@@ -111,6 +111,8 @@ pub(crate) async fn run_with_token(
         format!("[127.0.0.1]:{} {}\n", addr.port(), device.host_pubkey).as_bytes(),
     )?;
     let mut child = tokio::process::Command::new("ssh")
+        // Keep the grant-pinned session independent of ambient SSH Includes.
+        .args(["-F", "none"])
         .arg("-i")
         .arg(private)
         .arg("-o")

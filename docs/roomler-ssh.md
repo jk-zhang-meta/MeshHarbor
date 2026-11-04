@@ -853,6 +853,16 @@ the same gate path the HTTP route uses → `ServerMsg::SshResponse` →
 `known_hosts` into a `0700` temp directory and execs `ssh` with
 `StrictHostKeyChecking=yes`.
 
+Managed device and shared SSH sessions also pass `-F none`: OpenSSH skips
+ambient user and system client configuration, including system `Include`
+files an ordinary user cannot read. The grant supplies the destination, port,
+session identity and pinned host key explicitly. `Host`, `ProxyJump` and other
+defaults in `~/.ssh/config` do not apply to these managed sessions. The
+user-configured `meshharbor proxy` integration below retains its existing behavior.
+This uses OpenSSH's documented
+[`-F` option](https://man.openbsd.org/ssh.1#F), without creating or editing an
+SSH configuration file.
+
 ⚠️ **`IdentitiesOnly=yes` + `IdentityAgent=none` are load-bearing, not
 hygiene.** Without them `ssh` also offers every key in the agent and
 `~/.ssh` — so a device with a matching `authorized_keys` entry could

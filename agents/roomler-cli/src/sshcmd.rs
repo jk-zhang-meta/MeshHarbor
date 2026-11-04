@@ -92,6 +92,9 @@ pub async fn run(device: &str, session_secs: u64, args: &[String]) -> Result<i32
 
     // 4. Hand off.
     let status = std::process::Command::new("ssh")
+        // The grant supplies this session's settings. Ignore ambient config,
+        // including system Includes that the current user cannot read.
+        .args(["-F", "none"])
         .arg("-i")
         .arg(&key_path)
         .arg("-o")
